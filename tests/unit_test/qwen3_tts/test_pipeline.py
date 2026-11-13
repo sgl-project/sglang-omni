@@ -4208,6 +4208,44 @@ def test_qwen3_tts_whole_request_never_reuses_a_retired_slot(
     assert not scheduler.codec_arena.retired & set(scheduler.idle_whole_request_slots)
 
 
+def test_qwen3_tts_whole_requests_waiting_for_a_slot_fail_once_cuda_decode_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replay that disabled CUDA decode and retired every whole-request slot left the requests waiting for a slot unanswered."""
+    scheduler, _, runner = whole_request_scheduler(monkeypatch)
+    scheduler.idle_whole_request_slots = scheduler.idle_whole_request_slots[
+        : runner.bucket
+    ]
+
+    def disable_and_retire(
+        plans: Sequence[IncrementalDecodePlan],
+        *,
+        stream: torch.Stream | None,
+        incremental: IncrementalDecodeBatch | None = None,
+    ) -> Qwen3TTSDecodeHandle:
+        scheduler.cuda_decode_failed = True
+        for slot in incremental.slots:
+            scheduler.codec_arena.retire(slot)
+        raise RuntimeError("decode completion not proven")
+
+    monkeypatch.setattr(scheduler, "launch_decode_plans", disable_and_retire)
+    request_ids = [f"whole-{index}" for index in range(runner.bucket + 2)]
+
+    scheduler.run_non_streaming_batch(
+        [whole_request_message(request_id, 4) for request_id in request_ids],
+        asyncio.new_event_loop(),
+    )
+    scheduler.run_initial_pass()
+    scheduler.run_initial_pass()
+
+    results = {}
+    while not scheduler.outbox.empty():
+        message = scheduler.outbox.get_nowait()
+        results[message.request_id] = message.type
+    assert results == {request_id: "error" for request_id in request_ids}
+    assert not scheduler.whole_requests
+
+
 def test_qwen3_tts_whole_requests_finish_on_the_stateful_decoder_without_window_graphs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

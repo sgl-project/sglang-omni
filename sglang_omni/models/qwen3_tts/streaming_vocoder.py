@@ -3045,6 +3045,17 @@ class Qwen3TTSStreamingVocoderScheduler(
 
         A request past the idle slots waits, and those holding slots finish and release them.
         """
+        if self.cuda_decode_failed:
+            # note (ratish): a retired slot never frees, so a request waiting for one fails here, as its launch would.
+            error = RuntimeError(
+                "Qwen3-TTS CUDA decode is disabled after an unrecoverable stream failure"
+            )
+            for request in self.whole_requests:
+                self.fail_whole_request(request, error)
+            self.whole_requests.clear()
+            return None
+        else:
+            pass
         window_runner = self.initial_window_decode_graphs
         widths = window_runner.fresh_frames
         replay: WholeRequestReplay | None = None
