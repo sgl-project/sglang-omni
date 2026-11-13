@@ -19,6 +19,11 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr const char *kWordMarker = "\xE2\x96\x81"; // U+2581
+// Note (Jiaxin Deng): chunks overlap by 1 s, so a shorter request advances a
+// sample at a time, and the encoder's attention grows with the square of a
+// longer one; automatic mode bounds chunks to 30 s at quiet boundaries.
+constexpr double kMinRequestedWindowSeconds = 2.0;
+constexpr double kMaxRequestedWindowSeconds = 300.0;
 constexpr double kWholeRecordingChunkSeconds = 1199.0;
 // Note (Mengwei Liu): quiet cuts and a useful final tail reduce blank
 // predictions on short crops without unbounded encoder attention.
@@ -33,7 +38,6 @@ constexpr int kRecoveryAttemptCount = 2;
 constexpr double kRecoveryMinimumMeanSquaredAmplitude = 1e-5;
 constexpr double kChunkSearchSeconds = 5.0;
 constexpr double kChunkEnergyWindowSeconds = 0.1;
-constexpr size_t kBufferCacheLimitBytes = 256ULL << 20;
 constexpr double kMinChunkSeconds = 0.5;
 constexpr double kChunkOverlapSeconds = 1.0;
 
@@ -239,12 +243,24 @@ std::vector<AlignedToken> MergeTokens(const std::vector<AlignedToken> &a,
 
 } // namespace
 
+ParakeetOptions ChunkDurationOptions(double chunk_duration_seconds) {
+  if (!std::isfinite(chunk_duration_seconds) ||
+      chunk_duration_seconds < kMinRequestedWindowSeconds ||
+      (chunk_duration_seconds > kMaxRequestedWindowSeconds &&
+       chunk_duration_seconds < kWholeRecordingChunkSeconds)) {
+    throw std::invalid_argument(
+        "chunk_duration must be 2 to 300 seconds, or 1199 or more for a "
+        "whole recording");
+  } else if (chunk_duration_seconds >= kWholeRecordingChunkSeconds) {
+    return ParakeetOptions();
+  } else {
+    return ParakeetOptions{chunk_duration_seconds};
+  }
+}
+
 ParakeetTranscriber::ParakeetTranscriber(
     const std::filesystem::path &model_directory)
     : model_(model_directory) {
-  // Note (Mengwei Liu): each process serves one model; bound freed buffers
-  // for both the server and multi-file CLI, not only when a server is idle.
-  mx::set_cache_limit(kBufferCacheLimitBytes);
   for (const std::string &piece : model_.config().vocabulary) {
     std::string text = piece;
     for (size_t marker = text.find(kWordMarker); marker != std::string::npos;
@@ -399,12 +415,10 @@ ParakeetTranscriber::Transcribe(const std::vector<float> &samples,
                                 const ParakeetOptions &options,
                                 const std::atomic<bool> &cancel) const {
   const double sample_rate = omni_common::kSampleRate;
-  const bool whole_recording =
-      options.chunk_duration_seconds >= kWholeRecordingChunkSeconds;
+  const bool whole_recording = !options.window_seconds.has_value();
   const double chunk_seconds =
-      whole_recording
-          ? kFinalChunkSeconds
-          : std::max(kMinChunkSeconds, options.chunk_duration_seconds);
+      whole_recording ? kFinalChunkSeconds
+                      : std::max(kMinChunkSeconds, *options.window_seconds);
   const size_t chunk_samples =
       std::max<size_t>(1, static_cast<size_t>(chunk_seconds * sample_rate));
   const size_t overlap_samples =

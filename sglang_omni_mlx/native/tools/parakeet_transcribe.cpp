@@ -5,24 +5,16 @@
 //   parakeet_transcribe --model-path DIR [--chunk-duration S] a.wav...
 #include <atomic>
 #include <chrono>
-#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "common/audio.h"
 #include "nlohmann/json.hpp"
 #include "parakeet/parakeet_transcriber.h"
-
-namespace {
-
-constexpr double kMinimumChunkDurationSeconds = 2.0;
-constexpr double kMaximumChunkDurationSeconds = 300.0;
-constexpr double kWholeRecordingChunkDurationSeconds = 1199.0;
-
-} // namespace
 
 int main(int argc, char **argv) {
   std::string model_path;
@@ -40,7 +32,13 @@ int main(int argc, char **argv) {
     if (argument == "--model-path") {
       model_path = value();
     } else if (argument == "--chunk-duration") {
-      options.chunk_duration_seconds = std::stod(value());
+      const double chunk_duration_seconds = std::stod(value());
+      try {
+        options = parakeet::ChunkDurationOptions(chunk_duration_seconds);
+      } catch (const std::invalid_argument &error) {
+        std::cerr << argv[0] << ": " << error.what() << "\n";
+        return 2;
+      }
     } else if (argument.rfind("--", 0) == 0) {
       std::cerr << argv[0] << ": unknown option " << argument << "\n";
       return 2;
@@ -48,16 +46,8 @@ int main(int argc, char **argv) {
       files.push_back(argument);
     }
   }
-  if (!std::isfinite(options.chunk_duration_seconds) ||
-      options.chunk_duration_seconds < kMinimumChunkDurationSeconds ||
-      (options.chunk_duration_seconds > kMaximumChunkDurationSeconds &&
-       options.chunk_duration_seconds < kWholeRecordingChunkDurationSeconds)) {
-    std::cerr << argv[0]
-              << ": chunk_duration must be 2 to 300 seconds, or 1199 or more "
-                 "for a whole recording\n";
-    return 2;
-  } else {
-  }
+  // The server's limit, so the tool's time and memory match its.
+  mlx::core::set_cache_limit(parakeet::kBufferCacheLimitBytes);
   const auto load_started = std::chrono::steady_clock::now();
   const parakeet::ParakeetTranscriber transcriber(model_path);
   std::cerr << "loaded in "
