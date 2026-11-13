@@ -38,8 +38,8 @@ DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
 # The codec of the public S2-Pro release, pinned to an immutable commit.
 DEFAULT_CODEC_PATH = "fishaudio/s2-pro@1de9996b6be38b745688de084d87a5633f714e4e"
 PREPROCESSING_TOTAL_RESERVE_BYTES = "6GiB"
-TTS_ENGINE_GPU_MEMORY_FRACTION = 0.70
-VOCODER_GPU_MEMORY_FRACTION = 0.10
+TTS_ENGINE_GPU_MEMORY_FRACTION = 0.65
+VOCODER_GPU_MEMORY_FRACTION = 0.15
 VOCODER_WINDOW_FIELDS = (
     "stream_stride",
     "stream_followup_stride_ramp",
@@ -106,6 +106,8 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     stream_decode: Literal["incremental", "overlap"] = "incremental"
     max_stream_batch_size: int = Field(default=16, ge=1)
     stream_slot_count: int = Field(default=256, ge=1)
+    # Bounds inbox ingestion before a ready decode step.
+    decode_step_message_budget: int = Field(default=8, ge=1)
 
 
 class Drama3VocoderStageConfig(StageConfig):

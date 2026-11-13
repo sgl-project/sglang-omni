@@ -30,6 +30,7 @@ from sglang_omni.models.fishaudio_drama3.frame_kernels import (
 )
 from sglang_omni.models.fishaudio_drama3.head_sampling import (
     HeadSampling,
+    head_has_forward_hooks,
     head_sampling_unsupported_reason,
 )
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
@@ -612,8 +613,7 @@ class AudioDecoder(nn.Module):
             if (
                 head_sampling is not None
                 and head_sampling.covers(row_count)
-                # torch.nn.Module keeps its hooks under this private name.
-                and not head._forward_hooks  # noqa: leading-underscore
+                and not head_has_forward_hooks(head)
                 and hidden_states.stride(1) == 1
             ):
                 head_sampling.sample(

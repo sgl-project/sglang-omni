@@ -417,7 +417,6 @@ class IncrementalStream:
 
 
 class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
-
     DECODE_STEP_MESSAGE_BUDGET = 8
 
     def __init__(
@@ -428,6 +427,7 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
         max_stream_batch_size: int,
         stream_slot_count: int,
         max_stream_frames: int,
+        decode_step_message_budget: int = 8,
         device: str,
         stream_stride: int,
         stream_followup_stride_ramp: tuple[int, ...],
@@ -466,6 +466,7 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
         self.streams: dict[str, IncrementalStream] = {}
         self.stream_arrivals = 0
         self.messages_since_decode_step = 0
+        self.DECODE_STEP_MESSAGE_BUDGET = decode_step_message_budget
 
     def handle_message(
         self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop

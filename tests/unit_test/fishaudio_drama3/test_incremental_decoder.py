@@ -12,15 +12,21 @@ import torch
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
 )
-from sglang_omni.models.fishaudio_drama3.config import Drama3VocoderFactoryArgs
+from sglang_omni.models.fishaudio_drama3.config import (
+    DEFAULT_CODEC_PATH,
+    Drama3VocoderFactoryArgs,
+)
 from sglang_omni.models.fishaudio_drama3.incremental_decoder import (
     IncrementalDecoder,
     IncrementalWindowDecoder,
     incremental_window_lengths,
 )
+from sglang_omni.models.fishaudio_drama3.stages import resolve_codec_directory
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3IncrementalVocoderScheduler,
 )
+from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import DAC
+from sglang_omni.models.fishaudio_s2_pro.stages import load_codec
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from tests.unit_test.fishaudio_drama3.test_vocoder import (
@@ -574,3 +580,59 @@ def test_frame_latents_clamp_codes_to_their_codebook() -> None:
         assert torch.equal(
             incremental.frame_latents(indices), incremental.frame_latents(clamped)
         )
+
+
+@pytest.fixture(scope="module")
+def checkpoint_codec() -> DAC:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    codec = load_codec(resolve_codec_directory(DEFAULT_CODEC_PATH), "cuda")
+    codec.fold_weight_norm()
+    return codec
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("use_graphs", [False, True])
+def test_the_checkpoint_decodes_identically_across_chunk_boundaries(
+    checkpoint_codec: DAC, use_graphs: bool
+) -> None:
+    codec = checkpoint_codec
+    num_codebooks = (
+        codec.quantizer.semantic_quantizer.n_codebooks
+        + codec.quantizer.quantizer.n_codebooks
+    )
+    decoder = ChannelsLastDecoder(codec, dtype=torch.float16)
+    incremental = IncrementalDecoder(
+        decoder,
+        stream_slots=2,
+        max_window_frames=max(STRIDES),
+        device=torch.device("cuda"),
+    )
+    window_decoder = IncrementalWindowDecoder(
+        incremental,
+        num_codebooks=num_codebooks,
+        frame_length=int(codec.frame_length),
+        device=torch.device("cuda"),
+        batch_sizes=(1,),
+        window_lengths=incremental_window_lengths(STRIDES),
+        use_graphs=use_graphs,
+    )
+    frame_count = 120
+    generator = torch.Generator().manual_seed(3630)
+    codes = torch.randint(0, 64, (num_codebooks, frame_count), generator=generator)
+    with torch.no_grad():
+        whole = decoder(codes[None].cuda())[0, 0].float().cpu()
+    stream = streamed_in_windows(window_decoder, codes, slot=1)
+
+    assert stream.shape == whole.shape
+    difference = (stream - whole).abs()
+    max_difference = float(difference.max())
+    assert max_difference < 5e-2, f"waveform delta {max_difference:.4f}"
+    frame_length = window_decoder.frame_length
+    for _, last in windows_of(frame_count)[:-1]:
+        boundary = last * frame_length
+        window_difference = difference[boundary : boundary + frame_length]
+        peak = float(window_difference.max())
+        assert peak < 5e-2, f"chunk boundary {last}: {peak:.4f}"

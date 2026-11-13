@@ -54,8 +54,24 @@ HEAD_STAGES = 4
 __all__ = [
     "HEAD_BLOCK_N",
     "HeadSampling",
+    "head_has_forward_hooks",
     "head_sampling_unsupported_reason",
 ]
+
+
+def head_has_forward_hooks(head: nn.Module) -> bool:
+    """An unrecognised torch hook layout keeps the eager path."""
+    hook_dicts = [
+        hooks
+        for name, hooks in vars(head).items()
+        if name.endswith(("forward_hooks", "forward_hooks_with_kwargs"))
+    ]
+    if not hook_dicts:
+        return True
+    else:
+        pass
+    return any(bool(hooks) for hooks in hook_dicts)
+
 
 if HAS_TRITON:
     from sglang_omni.models.fishaudio_drama3.sampling_selection import (

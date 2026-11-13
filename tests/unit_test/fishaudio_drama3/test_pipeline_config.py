@@ -47,7 +47,7 @@ def test_every_process_on_the_shared_gpu_declares_its_memory() -> None:
         6 * 1024**3,
         True,
     )
-    assert (tts_engine.gpu_memory_fraction, vocoder.gpu_memory_fraction) == (0.70, 0.10)
+    assert (tts_engine.gpu_memory_fraction, vocoder.gpu_memory_fraction) == (0.65, 0.15)
 
 
 def test_each_factory_gets_the_defaults_written_once() -> None:
@@ -65,7 +65,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
     assert launch_kwargs(config, "tts_engine") == {
         "model_path": "checkpoint",
         "gpu_id": 0,
-        "total_gpu_memory_fraction": 0.70,
+        "total_gpu_memory_fraction": 0.65,
         "context_length": 16384,
         "max_running_requests": 16,
         "max_new_tokens": 2048,
@@ -82,7 +82,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
     }
     assert launch_kwargs(config, "vocoder") == {
         "gpu_id": 0,
-        "total_gpu_memory_fraction": 0.10,
+        "total_gpu_memory_fraction": 0.15,
         "codec_path": DEFAULT_CODEC_PATH,
         **VOCODER_WINDOWS,
         "window_cuda_graphs": True,
@@ -90,6 +90,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "stream_decode": "incremental",
         "max_stream_batch_size": 16,
         "stream_slot_count": 256,
+        "decode_step_message_budget": 8,
         "max_new_tokens": 2048,
     }
 

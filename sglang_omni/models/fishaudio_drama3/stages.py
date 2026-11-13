@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import math
 import os
@@ -61,36 +62,54 @@ from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleSched
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
 
-try:
-    from sglang.kernels.ops.attention.flash_attention_v3 import (
-        _is_fa3_supported as fa3_supported_check,
-    )
-except ImportError:
-    fa3_supported_check = None
-
 logger = logging.getLogger(__name__)
 
 CODEC_FILE_NAME = "codec.pth"
 REFERENCE_ENCODE_WARMUP_SECONDS = 1.0
 MEMORY_PROBE_ROW_COUNT = 2
 MEMORY_PROBE_FRAME_COUNT = 128
+# sglang 0.5.23 FA3 paged-KV kernel: SM 8.x/9.x, CUDA >= 12.3.
+FA3_COMPUTE_CAPABILITY_MAJORS = frozenset({8, 9})
+MINIMUM_FA3_CUDA_VERSION = (12, 3)
 # A hub codec names a full commit, so preprocessing and the vocoder load one file.
 HUB_CODEC_PATTERN = re.compile(
     r"(?P<repo_id>[^@\s]+/[^@\s]+)@(?P<revision>[0-9a-f]{40})"
 )
 
 
+def cuda_compute_capability(device: torch.device) -> tuple[int, int] | None:
+    try:
+        major, minor = torch.cuda.get_device_capability(device)
+        return major, minor
+    except (AssertionError, AttributeError, RuntimeError, ValueError):
+        return None
+
+
+def cuda_runtime_version() -> tuple[int, ...] | None:
+    version = getattr(torch.version, "cuda", None)
+    if not version:
+        return None
+    else:
+        pass
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return None
+
+
 def fa3_available(device: torch.device) -> bool:
     """FA3's paged KV attention is available only on SM 8.x/9.x (sglang 0.5.23)."""
-    if device.type != "cuda" or fa3_supported_check is None:
+    if device.type != "cuda":
         return False
     else:
         pass
-    if device.index is None:
-        return bool(fa3_supported_check())
+    capability = cuda_compute_capability(device)
+    if capability is None or capability[0] not in FA3_COMPUTE_CAPABILITY_MAJORS:
+        return False
     else:
-        with torch.cuda.device(device):
-            return bool(fa3_supported_check())
+        pass
+    version = cuda_runtime_version()
+    return version is not None and version >= MINIMUM_FA3_CUDA_VERSION
 
 
 def incremental_decode_enabled(
@@ -326,6 +345,7 @@ def create_vocoder_executor(
     stream_decode: Literal["incremental", "overlap"] = "overlap",
     max_stream_batch_size: int = 16,
     stream_slot_count: int = 256,
+    decode_step_message_budget: int = 8,
 ) -> Drama3VocoderScheduler:
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     torch_device = torch.device(resolved_device)
@@ -357,6 +377,25 @@ def create_vocoder_executor(
         )
     else:
         pass
+
+    def overlap_window() -> WindowDecoder:
+        if window_cuda_graphs:
+            return WindowGraphDecoder(
+                decode,
+                num_codebooks=num_codebooks,
+                frame_length=int(codec.frame_length),
+                device=torch_device,
+                window_lengths=stream_window_lengths(
+                    stream_stride=stream_stride,
+                    stream_followup_stride_ramp=stream_followup_stride_ramp,
+                    stream_followup_stride=stream_followup_stride,
+                    stream_overlap_tokens=stream_overlap_tokens,
+                ),
+            )
+        else:
+            return decode
+
+    window_decoder: IncrementalWindowDecoder | None = None
     if is_incremental:
         window_decoder = build_incremental_window_decoder(
             decode,
@@ -377,33 +416,46 @@ def create_vocoder_executor(
             f"grouped up to {max_stream_batch_size} windows of "
             f"{window_decoder.window_lengths} frames"
         )
-    elif window_cuda_graphs:
-        window_decoder = None
-        decode_window = WindowGraphDecoder(
-            decode,
-            num_codebooks=num_codebooks,
-            frame_length=int(codec.frame_length),
-            device=torch_device,
-            window_lengths=stream_window_lengths(
-                stream_stride=stream_stride,
-                stream_followup_stride_ramp=stream_followup_stride_ramp,
-                stream_followup_stride=stream_followup_stride,
-                stream_overlap_tokens=stream_overlap_tokens,
-            ),
-        )
     else:
-        window_decoder = None
-        decode_window = decode
+        decode_window = overlap_window()
+
     if torch_device.type == "cpu":
         max_padded_frames_per_decode = None
     else:
-        max_padded_frames_per_decode = measure_max_padded_frames_per_decode(
-            decode,
-            device=torch_device,
-            num_codebooks=num_codebooks,
-            total_gpu_memory_fraction=total_gpu_memory_fraction,
-            max_new_tokens=max_new_tokens,
-        )
+        try:
+            max_padded_frames_per_decode = measure_max_padded_frames_per_decode(
+                decode,
+                device=torch_device,
+                num_codebooks=num_codebooks,
+                total_gpu_memory_fraction=total_gpu_memory_fraction,
+                max_new_tokens=max_new_tokens,
+            )
+        except ValueError as budget_error:
+            if window_decoder is None:
+                raise
+            else:
+                pass
+            logger.warning(
+                "Drama 3 vocoder: incremental decoding does not fit the vocoder's "
+                "GPU memory share (%s); falling back to overlap decoding. Raise "
+                "--vocoder.gpu_memory_fraction or lower "
+                "--vocoder.factory.stream_slot_count to keep incremental streams.",
+                budget_error,
+            )
+            del window_decoder
+            gc.collect()
+            device_module = torch.get_device_module(torch_device)
+            device_module.synchronize(torch_device)
+            device_module.empty_cache()
+            window_decoder = None
+            decode_window = overlap_window()
+            max_padded_frames_per_decode = measure_max_padded_frames_per_decode(
+                decode,
+                device=torch_device,
+                num_codebooks=num_codebooks,
+                total_gpu_memory_fraction=total_gpu_memory_fraction,
+                max_new_tokens=max_new_tokens,
+            )
     scheduler_args = dict(
         device=resolved_device,
         stream_stride=stream_stride,
@@ -425,6 +477,7 @@ def create_vocoder_executor(
             max_stream_batch_size=max_stream_batch_size,
             stream_slot_count=stream_slot_count,
             max_stream_frames=int(codec.quantizer.post_module.freqs_cis.shape[0]),
+            decode_step_message_budget=decode_step_message_budget,
             **scheduler_args,
         )
 

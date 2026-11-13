@@ -4,6 +4,8 @@ logits, and their logits are the head projection's up to bf16 rounding."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 from torch import nn
@@ -11,6 +13,7 @@ from torch import nn
 from sglang_omni.models.fishaudio_drama3.audio_decoder import CODEBOOK_TOP_K
 from sglang_omni.models.fishaudio_drama3.head_sampling import (
     HeadSampling,
+    head_has_forward_hooks,
     head_sampling_unsupported_reason,
 )
 from sglang_omni.models.fishaudio_drama3.sampling import MINIMUM_TEMPERATURE
@@ -32,6 +35,21 @@ accelerator = pytest.mark.skipif(
     not current_platform.is_cuda() or not torch.cuda.is_available(),
     reason="the fused codebook heads run on CUDA only",
 )
+
+
+def test_hook_detection_keeps_the_eager_path_when_torch_changes() -> None:
+    assert head_has_forward_hooks(SimpleNamespace()) is True
+    assert head_has_forward_hooks(SimpleNamespace(_forward_hooks={})) is False
+    assert head_has_forward_hooks(SimpleNamespace(_forward_hooks={"probe": 1})) is True
+
+
+def test_hook_detection_sees_a_real_forward_hook() -> None:
+    head = nn.Linear(2, 2)
+    assert head_has_forward_hooks(head) is False
+    handle = head.register_forward_hook(lambda module, inputs, output: output)
+    assert head_has_forward_hooks(head) is True
+    handle.remove()
+    assert head_has_forward_hooks(head) is False
 
 
 def random_head(device: torch.device, seed: int) -> nn.Linear:

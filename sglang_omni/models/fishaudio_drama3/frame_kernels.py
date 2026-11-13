@@ -28,6 +28,7 @@ MINIMUM_EMBEDDING_BLOCK = 32
 
 __all__ = [
     "EMBEDDING_BLOCK",
+    "MINIMUM_EMBEDDING_BLOCK",
     "embedding_block",
     "frame_backbone_input",
     "frame_shared_input",
@@ -37,8 +38,6 @@ __all__ = [
 
 
 def embedding_block(dim: int) -> int:
-    """Columns per program: the largest power of two up to EMBEDDING_BLOCK that
-    divides dim; below MINIMUM_EMBEDDING_BLOCK the kernels do not apply."""
     return math.gcd(dim, EMBEDDING_BLOCK)
 
 
