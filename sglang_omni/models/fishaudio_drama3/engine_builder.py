@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.distributed.parallel_state import graph_capture
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
 )
@@ -68,6 +70,7 @@ from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     MAX_FUSED_ROWS,
 )
 from sglang_omni.models.fishaudio_drama3.tower_prefill import Drama3TowerPrefill
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
@@ -86,8 +89,8 @@ logger = logging.getLogger(__name__)
 
 
 class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
-    """Single-GPU engine replaying decode CUDA graphs; no radix, chunked prefill or
-    overlap."""
+    """Engine on one GPU or one tensor-parallel rank, replaying decode CUDA graphs;
+    no radix, chunked prefill or overlap."""
 
     model_name = "Fish Audio Drama 3"
     supports_breakable_prefill_cuda_graph = (
@@ -118,6 +121,9 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        tp_rank: int = 0,
+        tp_size: int = 1,
+        nccl_port: int | None = None,
     ) -> None:
         self.context_length = context_length
         self.max_running_requests = max_running_requests
@@ -134,11 +140,17 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.tower_fused_layers = tower_fused_layers
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.tp_rank = tp_rank
+        self.tp_size = tp_size
+        self.nccl_port = nccl_port
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
 
     def resolve_checkpoint(self, model_path: str) -> str:
         return resolve_checkpoint(model_path)
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        return {"tp_rank": self.tp_rank, "nccl_port": self.nccl_port}
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         """Register the classes the checkpoint names; the directory is the contract."""
@@ -166,6 +178,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         overrides.setdefault("page_size", 1)
+        overrides.setdefault("tp_size", self.tp_size)
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
         attention_backends = {
@@ -216,12 +229,15 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 "Drama 3 keeps page_size=1 and the KV cache in the model dtype"
             )
         elif (
-            parallel_sizes != (1, 1, 1) or server_args.speculative_algorithm is not None
+            parallel_sizes != (self.tp_size, 1, 1)
+            or server_args.speculative_algorithm is not None
         ):
             raise ValueError(
-                f"Drama 3 runs on one rank without speculative decoding; got "
-                f"tp/pp/dp={parallel_sizes} and "
-                f"speculative_algorithm={server_args.speculative_algorithm}"
+                f"Drama 3 runs on the tts_engine stage's {self.tp_size} tensor-parallel "
+                f"ranks without pipeline or data parallelism or speculative decoding; "
+                f"got tp/pp/dp={parallel_sizes} and "
+                f"speculative_algorithm={server_args.speculative_algorithm}; set "
+                f"--tts_engine.tp_size for tensor parallelism"
             )
         elif self.context_length > max_position_embeddings:
             raise ValueError(
@@ -349,16 +365,20 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 self.first_frame_cuda_graph_max_requests, decode_graph_runner.max_bs
             )
             text_config = model.config.text_config
-            first_frame_graphs = Drama3FirstFrameGraphs.capture(
-                sample_first_frames=model.sample_first_frames,
-                attention_backend=attention_backend,
-                max_request_count=max_request_count,
-                vocab_size=int(model.audio_decoder.main_token_candidate_ids.shape[0]),
-                hidden_size=text_config.hidden_size,
-                hidden_dtype=sglang_runner.model_config.dtype,
-                frame_width=1 + model.config.audio_decoder_config.num_codebooks,
-                device=model.lm_head.weight.device,
-            )
+            # Tensor-parallel tower all-reduces record through the graph-safe communicators.
+            with graph_capture() if self.tp_size > 1 else nullcontext():
+                first_frame_graphs = Drama3FirstFrameGraphs.capture(
+                    sample_first_frames=model.sample_first_frames,
+                    attention_backend=attention_backend,
+                    max_request_count=max_request_count,
+                    vocab_size=int(
+                        model.audio_decoder.main_token_candidate_ids.shape[0]
+                    ),
+                    hidden_size=text_config.hidden_size,
+                    hidden_dtype=sglang_runner.model_config.dtype,
+                    frame_width=1 + model.config.audio_decoder_config.num_codebooks,
+                    device=model.lm_head.weight.device,
+                )
             model.first_frame_graphs = first_frame_graphs
             logger.info(
                 f"Drama 3 first-frame CUDA graphs: on for 1..{max_request_count} "

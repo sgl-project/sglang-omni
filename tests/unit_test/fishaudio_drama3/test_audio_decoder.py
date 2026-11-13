@@ -6,7 +6,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Literal
@@ -17,6 +19,7 @@ from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
 from sglang.kernels.spec import KernelBackend
 from sglang.srt.model_loader.utils import set_default_torch_dtype
 
+from sglang_omni.models.fishaudio_drama3 import decoder_layers
 from sglang_omni.models.fishaudio_drama3.audio_decoder import (
     CODEBOOK_TOP_K,
     AudioDecoder,
@@ -549,6 +552,81 @@ def test_tower_matches_the_hand_written_formulas() -> None:
                 )
                 torch.testing.assert_close(
                     entry[2], reference_entry[2], rtol=1e-4, atol=1e-4
+                )
+
+
+@pytest.mark.parametrize("tp_size", [2, 4])
+@torch_fused_op_backend()
+def test_tensor_parallel_ranks_match_the_hand_written_formulas(
+    monkeypatch: pytest.MonkeyPatch, tp_size: int
+) -> None:
+    """Ranks holding a slice of the heads and MLP width sample the reference frames
+    and cache only their key/value head; past two ranks, ranks share a head."""
+    checkpoint = random_checkpoint(seed=0)
+    prefill_hidden, decode_hidden, semantic_logits = random_inputs(seed=1)
+    barrier = threading.Barrier(tp_size)
+    thread_state = threading.local()
+    partial_outputs: dict[int, torch.Tensor] = {}
+
+    def all_reduce(output: torch.Tensor) -> torch.Tensor:
+        partial_outputs[thread_state.tp_rank] = output
+        barrier.wait()
+        total = sum(partial_outputs[tp_rank] for tp_rank in range(tp_size))
+        barrier.wait()
+        return total
+
+    kv_head_count = max(1, KV_HEAD_COUNT // tp_size)
+    attentions = [
+        DenseAttention(
+            head_count=HEAD_COUNT // tp_size,
+            kv_head_count=kv_head_count,
+            head_dim=HEAD_DIM,
+        )
+        for _ in range(tp_size)
+    ]
+
+    def run_rank(tp_rank: int) -> torch.Tensor:
+        thread_state.tp_rank = tp_rank
+        try:
+            decoder = AudioDecoder(small_config(), tp_rank=tp_rank, tp_size=tp_size)
+            load_audio_decoder_weights(decoder, checkpoint.items())
+            _, frames = run_decoder(
+                decoder,
+                attentions[tp_rank],
+                prefill_hidden,
+                decode_hidden,
+                semantic_logits,
+                [1] * len(REQUEST_FRAMES),
+            )
+        except BaseException:
+            barrier.abort()
+            raise
+        else:
+            return frames
+
+    monkeypatch.setattr(decoder_layers, "tensor_model_parallel_all_reduce", all_reduce)
+    with ThreadPoolExecutor(max_workers=tp_size) as executor:
+        rank_frames = list(executor.map(run_rank, range(tp_size)))
+    reference, reference_frames = run_reference(
+        checkpoint, prefill_hidden, decode_hidden, semantic_logits
+    )
+
+    assert [frames.tolist() for frames in rank_frames] == [reference_frames] * tp_size
+    for tp_rank, attention in enumerate(attentions):
+        rank_heads = slice(
+            tp_rank * KV_HEAD_COUNT // tp_size,
+            tp_rank * KV_HEAD_COUNT // tp_size + kv_head_count,
+        )
+        assert attention.entries.keys() == reference.caches.keys()
+        for cache_key, entries in attention.entries.items():
+            for entry, reference_entry in zip(
+                entries, reference.caches[cache_key], strict=True
+            ):
+                torch.testing.assert_close(
+                    entry[1], reference_entry[1][rank_heads], rtol=1e-4, atol=1e-4
+                )
+                torch.testing.assert_close(
+                    entry[2], reference_entry[2][rank_heads], rtol=1e-4, atol=1e-4
                 )
 
 

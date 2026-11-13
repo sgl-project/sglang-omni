@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -38,7 +39,7 @@ func TestLLMWaitRow(t *testing.T) {
 	inView("English", "Automatic")
 	click(t, tt, "Automatic")
 	click(t, tt, "5 minutes")
-	if got := a.settings.Get().Models.LLMWait; got != settings.Wait5Min {
+	if got := a.settings.Get().Models.LLMWait; got != settings.Wait5Min || a.llmWaitCustom {
 		t.Errorf("saved %q", got)
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Models.LLMWait = settings.Wait10Min })
@@ -50,6 +51,55 @@ func TestLLMWaitRow(t *testing.T) {
 		t.Errorf("in Chinese: %q", firstTexts(tt))
 	}
 	inView("zh-Hans", "10 分钟")
+}
+
+// TestLLMWaitCustom (#3941): Custom… on the wait select opens a minutes
+// field; what is typed in 1..60 is saved as that many minutes, and a value
+// outside is ignored. A custom wait saved elsewhere opens on Custom… with
+// its minutes, also in Chinese; a preset closes the field again.
+func TestLLMWaitCustom(t *testing.T) {
+	t.Cleanup(func() { i18n.SetLocale("en") })
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	frames(tt)
+	const field = "Wait for the language model in minutes"
+	click(t, tt, "Automatic")
+	click(t, tt, "Custom…")
+	if got := a.settings.Get().Models.LLMWait; got != "1m" || !tt.HasText("min") {
+		t.Fatalf("Custom… from Automatic saved %q; texts %q", got, firstTexts(tt))
+	}
+	if err := tt.Click(field); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	tt.Key(0, ui.KeyUp) // 1 → 2
+	frames(tt)
+	tt.Type("0") // "20"
+	frames(tt)
+	if got := a.settings.Get().Models.LLMWait; got != "20m" {
+		t.Errorf("typed 20: saved %q", got)
+	}
+	tt.Type("0") // "200": over the most, ignored
+	frames(tt)
+	if got := a.settings.Get().Models.LLMWait; got != "20m" {
+		t.Errorf("typed 200: saved %q", got)
+	}
+	if d := a.settings.Get().Models.LLMWaitFor(); d != 20*time.Minute {
+		t.Errorf("wait %v", d)
+	}
+
+	a.updateSettings(func(s *settings.Settings) { s.Models.LLMWait = "45m"; s.General.Language = "zh-Hans" })
+	frames(tt)
+	if !hasExact(tt, "自定义…") || a.llmWaitMin != 45 {
+		t.Errorf("a custom wait made elsewhere, in Chinese: %v %q", a.llmWaitMin, firstTexts(tt))
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "en" })
+	frames(tt)
+	click(t, tt, "Custom…")
+	click(t, tt, "5 minutes")
+	if got := a.settings.Get().Models.LLMWait; got != settings.Wait5Min || a.llmWaitCustom {
+		t.Errorf("back to a preset: %q, field open %v", got, a.llmWaitCustom)
+	}
 }
 
 // TestSkipLLMPill (#3821): while the language model works on speech that

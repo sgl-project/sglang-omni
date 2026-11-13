@@ -1176,6 +1176,7 @@
   "Voxt was updated. Restart it to finish.": "Voxt 已更新，重启后生效。",
   "Wait for the downloads to finish, or cancel them, then try again.": "请等下载完成或取消下载后再试。",
   "Wait for the language model": "等待语言模型",
+  "Wait for the language model in minutes": "等待语言模型的分钟数",
   "Websites": "网站",
   "Welcome": "欢迎",
   "Welcome to Voxt": "欢迎使用 Voxt",
