@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -41,6 +42,30 @@ class Emit:
     sample_offset: int
 
 
+# note (Qing Guo): load_silero_vad builds a new ONNX Runtime session on every call; keyed by the loader so a substituted silero_vad module never receives another module's model.
+SILERO_ONNX_BY_LOADER: dict[Callable[..., object], object] = {}
+
+
+def load_silero_stream() -> object:
+    """Silero VAD with its own RNN state on one ONNX session shared by the process."""
+    # note (ratish): importing silero_vad sets torch to one intra-op thread for
+    # the whole process, so only the process that loads the model imports it.
+    import silero_vad
+
+    shared_model = SILERO_ONNX_BY_LOADER.get(silero_vad.load_silero_vad)
+    if shared_model is None:
+        shared_model = silero_vad.load_silero_vad(onnx=True)
+        SILERO_ONNX_BY_LOADER[silero_vad.load_silero_vad] = shared_model
+    else:
+        pass
+    stream_model = copy.copy(shared_model)
+    if hasattr(stream_model, "reset_states"):
+        stream_model.reset_states()  # type: ignore[union-attr]
+    else:
+        pass
+    return stream_model
+
+
 class SpeechProbabilityModel(Protocol):
     def predict(self, frame: np.ndarray, sample_rate: int) -> float: ...
 
@@ -51,11 +76,7 @@ class SileroSpeechModel:
     """Per-frame speech probability. Holds no turn state, only the RNN's."""
 
     def __init__(self) -> None:
-        # note (ratish): importing silero_vad sets torch to one intra-op thread for
-        # the whole process, so only the process that loads the model imports it.
-        import silero_vad
-
-        self.model = silero_vad.load_silero_vad(onnx=True)
+        self.model = load_silero_stream()
 
     def predict(self, frame: np.ndarray, sample_rate: int) -> float:
         with torch.inference_mode():
@@ -184,11 +205,7 @@ class StreamingVAD:
 
     def __init__(self, config: VADConfig | None = None) -> None:
         self.config = config or VADConfig()
-        # note (ratish): imported here, not at module scope, for the thread side
-        # effect described in SileroSpeechModel.
-        import silero_vad
-
-        self.vad_model = silero_vad.load_silero_vad(onnx=True)
+        self.vad_model = load_silero_stream()
         self.leftover_pcm = bytearray()
         self.samples_consumed = 0
         self.is_speech = False

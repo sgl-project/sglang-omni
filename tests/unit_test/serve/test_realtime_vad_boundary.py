@@ -11,11 +11,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+import silero_vad
 
 from sglang_omni.audio.vad import (
     VAD_FRAME_SAMPLES,
     VAD_SAMPLE_RATE,
     Emit,
+    StreamingVAD,
+    VADConfig,
     VADEvent,
     offsets_to_ms,
 )
@@ -211,6 +214,36 @@ async def test_silero_silence_threshold_across_appends():
     assert len(commits) == 2 and reset_calls == 0
     assert second in wav_pcm(commits[1][1])
     await stop(session)
+
+
+def test_vad_streams_share_one_silero_session_but_not_its_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every realtime session loaded its own Silero ONNX session; streams now share one and still score independently."""
+    loads = 0
+    load_silero_vad = silero_vad.load_silero_vad
+
+    def counting_load(**kwargs: Any) -> Any:
+        nonlocal loads
+        loads += 1
+        return load_silero_vad(**kwargs)
+
+    monkeypatch.setattr(silero_vad, "load_silero_vad", counting_load)
+    frames = (
+        np.frombuffer(speechish(8), dtype="<i2").astype(np.float32) / 32768.0
+    ).reshape(-1, VAD_FRAME_SAMPLES)
+    silence = np.zeros(VAD_FRAME_SAMPLES, dtype=np.float32)
+    alone, listener, bystander = (StreamingVAD(VADConfig()) for _ in range(3))
+
+    expected = [alone.infer(frame) for frame in frames]
+    interleaved = []
+    for frame in frames:
+        interleaved.append(listener.infer(frame))
+        bystander.infer(silence)
+
+    assert loads == 1
+    assert max(expected) > 0.5
+    assert interleaved == expected
 
 
 def test_tail_zero_returns_empty_bytes():
