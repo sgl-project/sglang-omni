@@ -114,9 +114,14 @@ loads the entry's revision. A revision the stage sets wins, and `none` loads
 the repo's default branch. A cookbook command, an example config or a model's
 defaults that serve the draft give that entry's algorithm, draft repo and
 settings. They leave the revision out, and a revision they do give must match
-the entry. A model's defaults turn the draft on only for that entry's model
-path. `sgl-omni config resolve` shows the engine block as written, and the
-pinned revision is added when the stage's server args are built.
+the entry. `sgl-omni serve` adds a default-on entry's draft after every
+source is merged, so the model path and TP size that launch decide it: only
+for that entry's model path, with or without an `@<revision>` pin, or a
+Hugging Face cache snapshot of it, only on CUDA, and only to a stage with
+`tp_size` 1 that does not set `disable_speculative_decoding`. Like the TP
+derivation, it fills only the `speculative_*` keys no source set.
+`sgl-omni config resolve` shows these keys and the engine block as written,
+and the pinned revision is added when the stage's server args are built.
 `tests/unit_test/speculative/test_draft_registry.py` checks these rules, so a
 new draft adds its entry in the same change.
 
