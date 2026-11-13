@@ -436,7 +436,7 @@ def save_json_results(results: dict, output_dir: str, filename: str) -> str:
     """Write results as JSON to output_dir/filename and return the path."""
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, filename)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     logger.info(f"Results saved to {path}")
     return path
