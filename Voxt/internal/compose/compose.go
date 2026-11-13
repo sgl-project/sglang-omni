@@ -159,8 +159,8 @@ type Output struct {
 	// GlossaryAllUpTo terms (the terms the text mentions), which opens
 	// User; "" for none (a smaller dictionary's is in System).
 	Glossary string
-	// Dictionary is the personal dictionary's layer of System (its rule
-	// and the notes), "" for none: for the Dictionary page's example.
+	// Dictionary is the personal dictionary's layer of System (the notes
+	// as written), "" for none: for the Dictionary page's example.
 	Dictionary string
 	// Language is the template set used (English, Chinese).
 	Language string
@@ -308,7 +308,7 @@ func Build(in Input) (Output, error) {
 			add("followup", render("followup", nil))
 		}
 	}
-	dictionary := addDictionary(in, add, render)
+	dictionary := addDictionary(in, add)
 	if s := in.Scene; s != nil && strings.TrimSpace(s.AppName) != "" {
 		add("scene", render("scene", map[string]string{"SCENE_PROMPT": Render(strings.TrimSpace(s.Prompt), vars, nil)}))
 	}

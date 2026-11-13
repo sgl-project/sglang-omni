@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 import torch
+from sglang.srt.distributed.utils import divide
 from sglang.srt.layers.activation import SiluAndMul
 from sglang.srt.layers.layernorm import GemmaRMSNorm
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
@@ -18,6 +19,7 @@ from sglang_omni.models.fishaudio_drama3.tower_tiles import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.interface import JointRopeInplaceKernel
+from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 
 
 class DecoderAttention(Protocol):
@@ -102,17 +104,23 @@ class InterleavedRotaryEmbedding(nn.Module):
 
 
 class DecoderSelfAttention(nn.Module):
+    """Gated attention over this tensor-parallel rank's heads and key/value heads."""
+
     def __init__(
         self,
         config: FishOmniAudioDecoderConfig,
         rotary_embedding: InterleavedRotaryEmbedding,
+        tp_size: int,
     ) -> None:
         super().__init__()
-        self.head_count: int = config.n_head
-        self.kv_head_count: int = config.n_local_heads
+        self.tp_size: int = tp_size
+        self.head_count: int = divide(config.n_head, tp_size)
+        # Ranks beyond the key/value head count share heads, as the backbone's do.
+        self.kv_head_count: int = max(1, config.n_local_heads // tp_size)
+        self.total_kv_head_count: int = config.n_local_heads
         self.head_dim: int = config.head_dim
-        query_width = config.n_head * config.head_dim
-        key_value_width = config.n_local_heads * config.head_dim
+        query_width = self.head_count * config.head_dim
+        key_value_width = self.kv_head_count * config.head_dim
         # Output rows: each head's [query, gate] pair, then key, then value.
         self.qkv_proj: nn.Linear = nn.Linear(
             config.dim, 2 * query_width + 2 * key_value_width, bias=False
@@ -146,25 +154,37 @@ class DecoderSelfAttention(nn.Module):
             ),
         )
         attended = attention(layer_index, query, key, value)
-        return self.o_proj(
+        output = self.o_proj(
             attended * torch.sigmoid(gate.reshape(row_count, query_width))
         )
+        if self.tp_size > 1:
+            return tensor_model_parallel_all_reduce(output)
+        else:
+            return output
 
 
 class DecoderMlp(nn.Module):
-    def __init__(self, hidden_size: int, intermediate_size: int) -> None:
+    """SwiGLU over this tensor-parallel rank's slice of the intermediate width."""
+
+    def __init__(self, hidden_size: int, intermediate_size: int, tp_size: int) -> None:
         super().__init__()
+        self.tp_size: int = tp_size
+        rank_intermediate_size = divide(intermediate_size, tp_size)
         # Output rows: gate, then up.
         self.gate_up_proj: nn.Linear = nn.Linear(
-            hidden_size, 2 * intermediate_size, bias=False
+            hidden_size, 2 * rank_intermediate_size, bias=False
         )
         self.silu_and_mul: SiluAndMul = SiluAndMul()
         self.down_proj: nn.Linear = nn.Linear(
-            intermediate_size, hidden_size, bias=False
+            rank_intermediate_size, hidden_size, bias=False
         )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(self.silu_and_mul(self.gate_up_proj(hidden_states)))
+        output = self.down_proj(self.silu_and_mul(self.gate_up_proj(hidden_states)))
+        if self.tp_size > 1:
+            return tensor_model_parallel_all_reduce(output)
+        else:
+            return output
 
 
 class DecoderLayer(nn.Module):
@@ -174,6 +194,7 @@ class DecoderLayer(nn.Module):
         self,
         config: FishOmniAudioDecoderConfig,
         rotary_embedding: InterleavedRotaryEmbedding,
+        tp_size: int,
     ) -> None:
         super().__init__()
         self.token_embedding: nn.Embedding = nn.Embedding(config.vocab_size, config.dim)
@@ -181,9 +202,9 @@ class DecoderLayer(nn.Module):
         self.hnorm: GemmaRMSNorm = GemmaRMSNorm(config.dim, config.norm_eps)
         self.eh_proj: nn.Linear = nn.Linear(2 * config.dim, config.dim, bias=False)
         self.self_attn: DecoderSelfAttention = DecoderSelfAttention(
-            config, rotary_embedding
+            config, rotary_embedding, tp_size
         )
-        self.mlp: DecoderMlp = DecoderMlp(config.dim, config.intermediate_size)
+        self.mlp: DecoderMlp = DecoderMlp(config.dim, config.intermediate_size, tp_size)
         self.input_layernorm: GemmaRMSNorm = GemmaRMSNorm(config.dim, config.norm_eps)
         self.post_attention_layernorm: GemmaRMSNorm = GemmaRMSNorm(
             config.dim, config.norm_eps

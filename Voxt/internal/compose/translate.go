@@ -68,6 +68,17 @@ func Untranslated(source, result, target string) bool {
 	return resLetters > 0 && resShare < 0.5 && srcShare < 0.5
 }
 
+// Written says whether most of text's words are in the script of the
+// language code; false for no words or an unknown script.
+func Written(text, code string) bool {
+	is := scriptOf(code)
+	if is == nil {
+		return false
+	}
+	s, n := share(text, is)
+	return n > 0 && s >= 0.5
+}
+
 // fold is s without case, spaces and punctuation.
 func fold(s string) string {
 	return strings.Map(func(r rune) rune {

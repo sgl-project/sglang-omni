@@ -137,15 +137,40 @@ class Drama3ForCausalLM(nn.Module):
                 f"text_config.tower_layer_count={text_config.tower_layer_count} but "
                 f"the decoder has {tower_layer_count} tower layers"
             )
-        elif get_parallel().pp_size != 1 or get_parallel().tp_size != 1:
-            raise NotImplementedError("Drama 3 runs with one tensor and pipeline rank")
+        elif get_parallel().pp_size != 1:
+            raise NotImplementedError("Drama 3 runs with one pipeline rank")
+        elif (
+            decoder_config.n_local_heads % get_parallel().tp_size != 0
+            and get_parallel().tp_size % decoder_config.n_local_heads != 0
+        ):
+            # The tower's key/value heads share the backbone's pool and its split.
+            raise NotImplementedError(
+                f"Drama 3 splits or replicates its {decoder_config.n_local_heads} "
+                f"key/value heads across tensor-parallel ranks, so tp_size must "
+                f"divide them or be a multiple of them; got "
+                f"tp_size={get_parallel().tp_size}"
+            )
+        elif (
+            get_parallel().attn_tp_size != get_parallel().tp_size
+            or get_parallel().attn_dcp_size != 1
+        ):
+            raise NotImplementedError(
+                f"Drama 3 splits the tower's attention across all "
+                f"{get_parallel().tp_size} tensor-parallel ranks, so the backbone's "
+                f"attention cannot use data, context or decode-context parallelism; "
+                f"got attn_tp_size={get_parallel().attn_tp_size} and "
+                f"attn_dcp_size={get_parallel().attn_dcp_size}"
+            )
         else:
             pass
         self.config = config
         self.model = Drama3Backbone(
             text_config, quant_config=quant_config, prefix=add_prefix("model", prefix)
         )
-        self.audio_decoder = AudioDecoder(config)
+        self.audio_decoder = AudioDecoder(
+            config, tp_rank=get_parallel().tp_rank, tp_size=get_parallel().tp_size
+        )
+        tower_self_attention = self.audio_decoder.shared_layers[0].self_attn
         self.lm_head = ParallelLMHead(
             int(self.audio_decoder.main_token_candidate_ids.shape[0]),
             text_config.hidden_size,
@@ -156,10 +181,10 @@ class Drama3ForCausalLM(nn.Module):
         self.logits_processor = LogitsProcessor(text_config)
         self.tower_attention = nn.ModuleList(
             RadixAttention(
-                num_heads=decoder_config.n_head,
+                num_heads=tower_self_attention.head_count,
                 head_dim=decoder_config.head_dim,
                 scaling=decoder_config.head_dim**-0.5,
-                num_kv_heads=decoder_config.n_local_heads,
+                num_kv_heads=tower_self_attention.kv_head_count,
                 layer_id=text_config.num_hidden_layers + tower_index,
                 prefix=add_prefix(f"tower_attention.{tower_index}", prefix),
             )
@@ -335,9 +360,14 @@ class Drama3ForCausalLM(nn.Module):
         hidden_states = self.model(
             input_ids, positions, forward_batch, input_embeds=input_embeds
         )
-        return hidden_states, self.logits_processor(
+        logits_output = self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )
+        # Tensor parallelism pads the candidate columns to a multiple of the ranks.
+        logits_output.next_token_logits = logits_output.next_token_logits[
+            :, : self.lm_head.org_vocab_size
+        ]
+        return hidden_states, logits_output
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
         decoder_weights: list[tuple[str, torch.Tensor]] = []

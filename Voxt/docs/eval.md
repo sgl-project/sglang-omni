@@ -316,6 +316,15 @@ The decode times are per request over both ways of each run.
   - A dictation recognised in pieces (3.7a) was already in requests of 20–45 s.
 - **Result:** a 5-minute dictation peaks at about 3.7–3.9 GB, against 9.7–10.3 GB before: the 2.35 GB of weights, the 512 MB cache, and one request's activations.
 
+### The draft at 8 bits (11-11, #3874)
+
+Voxt starts a speech model that has its DFlash draft with `--draft-bits 8` (`internal/omni/process.go`). The draft only proposes tokens and the speech model checks each one, so the draft's precision can change speed but should not change text. Measured on the Voxt 2.0.3 runtime (Apple M5 Max, 36 GB, macOS 27.0.1), against the bf16 draft, with the speech models and drafts at the catalogue's commits:
+
+- **Text, Voxt's eval set**: the 29 clips and one 192 s clip of all of them in a row, each without and with the eval dictionary as the prompt, 3 rounds, one server per precision: identical in 180 of 180 requests on 0.6B (4bit) and 180 of 180 on 1.7B (8bit).
+- **Text, 448 clips** (XXXXRT/qwen3-asr-test-corpus, 113 min, 11-09): identical in 448 of 448 on both models, with NAX on and off, on both runtimes measured then.
+- **Time**, the eval set's 60 requests per round, median of 3 rounds, the two servers alternating which goes first: 0.6B 5.74 → 5.69 s (−1%), 1.7B 11.17 → 10.93 s (−2%); rounds within 1% of each other. On the 448 clips 8-bit was 0–6% faster.
+- **Memory**, the server with Voxt's flags (`--cache-limit-mb 512`) after the 192 s clip, 2 runs: 0.6B 1235 → 1112 MB, 1.7B 3356–3361 → 3050–3097 MB; the peak during it fell 90–170 MB (0.6B) and 320–550 MB (1.7B).
+
 ### Spoken Translate with Hy-MT2 (`llm.translate`)
 
 Hy-MT2 takes its own prompt and no clean-up rules (behavior.md 3.13). Raw speech, the same speech without its fillers, and `llm.balanced`'s clean-up first:
