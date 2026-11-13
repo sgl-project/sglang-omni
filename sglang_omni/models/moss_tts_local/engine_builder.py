@@ -68,7 +68,9 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         total_gpu_memory_fraction: float | None,
         codec_mem_reserve: float,
         process_total_gpu_memory_fraction: float | None = None,
+        frame_graph_batch_sizes: list[int] | None = None,
     ) -> None:
+        self.frame_graph_batch_sizes = frame_graph_batch_sizes
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
@@ -177,10 +179,18 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
         self.model = model_worker.model_runner.model
+        if self.frame_graph_batch_sizes is not None:
+            self.model.init_frame_decode_graphs(self.frame_graph_batch_sizes)
+        else:
+            pass
 
     def post_cuda_graph_setup(
         self, model: MossTTSLocalSGLangModel, server_args: ServerArgs
     ) -> None:
+        if self.frame_graph_batch_sizes is not None:
+            return
+        else:
+            pass
         from sglang_omni.scheduling.generation_batch_policy import (
             get_decode_cuda_graph_bs,
         )

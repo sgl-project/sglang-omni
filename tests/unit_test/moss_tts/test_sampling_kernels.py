@@ -15,13 +15,46 @@ from torch._dynamo.utils import counters
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts.sampling_kernels import (
     multinomial_with_seed_and_token_ids,
+    sample_seeded_branchless,
     seeded_gumbel_argmax,
 )
 from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
+from sglang_omni.platforms import current_platform
 
 pytestmark = pytest.mark.accelerator
 
 UINT32_MAX_HASH_POSITION = 1_707_985_137
+
+
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires NPU")
+@pytest.mark.parametrize(
+    "vocab,expected_tokens",
+    [
+        (2, [0, 1, 0, 0, 0, 1]),
+        (32, [22, 13, 7, 27, 25, 13]),
+        (1024, [514, 738, 934, 264, 641, 511]),
+    ],
+)
+def test_npu_seeded_sampling_matches_scalar_murmur_vectors(
+    vocab: int, expected_tokens: list[int]
+) -> None:
+    """Unsigned-shift errors must fail even when eager and graph agree."""
+    device = torch.device(current_platform.device_type)
+    seeds = torch.tensor([0, 42, 2**32 + 3, 2**62 + 17, 2**63 - 1, 1234], device=device)
+    positions = torch.tensor([0, 1, 13, 2**32 - 1, 2**32 + 17, 4095], device=device)
+    logits = torch.zeros(6, vocab, device=device)
+    parameters = {
+        "temperature": torch.full((6,), 1.7, device=device),
+        "top_p": torch.ones(6, device=device),
+        "top_k": torch.zeros(6, dtype=torch.long, device=device),
+        "seeds": seeds,
+        "positions": positions,
+    }
+    expected = torch.tensor(expected_tokens)
+    actual = sample_seeded_branchless(logits, **parameters)
+    general = MossTTSModelRunner.sample_tokens(logits, **parameters)
+    assert torch.equal(actual.cpu(), expected)
+    assert torch.equal(general.cpu(), expected)
 
 
 @pytest.mark.parametrize("equal_scores", [False, True], ids=["random", "tied"])
