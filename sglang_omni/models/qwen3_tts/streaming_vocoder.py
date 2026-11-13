@@ -195,7 +195,7 @@ class Qwen3TTSWholeRequest:
     next_frame: int
     tail_frames: int
     # note (ratish): each window's samples land here as it resolves, so finishing joins no pieces.
-    audio: bytearray
+    audio: np.ndarray[tuple[int], np.dtype[np.float32]]
     stored_samples: int = 0
     slot: int | None = None
 
@@ -2930,18 +2930,21 @@ class Qwen3TTSStreamingVocoderScheduler(
             and tail_runner.enabled
             and frames - reference_frames >= tail_runner.emit_frames
         ):
-            first_chunk_frames = (
-                min(
-                    reference_frames,
-                    self.incremental_decoder.first_chunk_reference_frames(
-                        tail_runner.emit_frames
-                    ),
-                )
-                + tail_runner.emit_frames
+            # note (ratish): as a stream's first decode, it starts at the first frame its emitted
+            # frames and kept state read.
+            start = max(
+                0,
+                reference_frames
+                - self.incremental_decoder.first_chunk_reference_frames(
+                    tail_runner.emit_frames
+                ),
             )
-            if tail_runner.tail_frames <= first_chunk_frames:
-                tail_frames = first_chunk_frames
-                next_frame = reference_frames + tail_runner.emit_frames - tail_frames
+            if (
+                reference_frames + tail_runner.emit_frames - start
+                >= tail_runner.tail_frames
+            ):
+                next_frame = start
+                tail_frames = reference_frames + tail_runner.emit_frames - start
             else:
                 pass
         else:
@@ -2970,10 +2973,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             reference_frames=reference_frames,
             next_frame=next_frame,
             tail_frames=tail_frames,
-            audio=bytearray(
-                (frames - reference_frames)
-                * self.samples_per_frame
-                * torch.float32.itemsize
+            audio=np.empty(
+                (frames - reference_frames) * self.samples_per_frame, dtype=np.float32
             ),
         )
 
@@ -3172,11 +3173,11 @@ class Qwen3TTSStreamingVocoderScheduler(
                 continue
             else:
                 pass
-            room = np.frombuffer(request.audio, dtype=np.float32)[
-                request.stored_samples :
-            ]
-            samples = delta[: room.shape[0]].numpy()
-            room[: samples.shape[0]] = samples
+            # note (ratish): the last window's padded frames have no room left in the buffer.
+            samples = delta[: request.audio.shape[0] - request.stored_samples].numpy()
+            request.audio[
+                request.stored_samples : request.stored_samples + samples.shape[0]
+            ] = samples
             request.stored_samples += samples.shape[0]
             request.next_frame += frames
             request.tail_frames = 0
@@ -3186,16 +3187,11 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
             self.release_whole_request_slot(request)
-            request.payload.data = self.audio_result_data(
+            self.store_audio_result(
+                request.payload,
                 request.final_state,
-                audio_waveform_payload(
-                    np.frombuffer(request.audio, dtype=np.float32)[
-                        : request.stored_samples
-                    ],
-                    sample_rate=self.sample_rate,
-                    modality="audio",
-                    source_hint="Qwen3-TTS",
-                ),
+                request.audio[: request.stored_samples],
+                self.sample_rate,
             )
             self.emit_result(request.request_id, request.payload)
 
@@ -4113,24 +4109,24 @@ class Qwen3TTSStreamingVocoderScheduler(
             waveform = waveform[cut:]
         else:
             pass
-        payload.data = self.audio_result_data(
-            state,
+        self.store_audio_result(payload, state, waveform, sample_rate)
+        return payload
+
+    def store_audio_result(
+        self,
+        payload: StagePayload,
+        state: Qwen3TTSState,
+        waveform: np.ndarray[tuple[int, ...], np.dtype[np.float32]],
+        sample_rate: int,
+    ) -> None:
+        """A finished request's response: its audio after the reference, its usage and finish reason."""
+        data: dict[str, bytes | list[int] | str | int | dict[str, int | float]] = dict(
             audio_waveform_payload(
                 waveform,
                 sample_rate=int(sample_rate),
                 modality="audio",
                 source_hint="Qwen3-TTS",
-            ),
-        )
-        return payload
-
-    def audio_result_data(
-        self,
-        state: Qwen3TTSState,
-        audio_payload: dict[str, bytes | list[int] | str | int],
-    ) -> dict[str, bytes | list[int] | str | int | dict[str, int | float]]:
-        data: dict[str, bytes | list[int] | str | int | dict[str, int | float]] = dict(
-            audio_payload
+            )
         )
         usage = build_usage(state)
         if usage is not None:
@@ -4141,7 +4137,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             data["finish_reason"] = state.finish_reason
         else:
             pass
-        return data
+        payload.data = data
 
     def decode_state_audio(self, state: Qwen3TTSState) -> torch.Tensor | None:
         if state.audio_codes is None:
