@@ -62,13 +62,14 @@ type announceSeen struct {
 
 // checkAnnouncements reads the announcements in the background, unless
 // one check runs or the last began less than 10 minutes ago, and posts a
-// card for the newest one not seen yet.
+// card for the newest one for Voxt 2 in the UI's language not seen yet.
 func (a *app) checkAnnouncements() {
 	if a.announceURL == "" || a.announceBusy || !a.announceAt.IsZero() && time.Since(a.announceAt) < announceEvery {
 		return
 	}
 	a.announceAt, a.announceBusy = time.Now(), true
 	base, client, docs, notes := a.announceURL, a.networkFor(a.prefs).Client, a.lib.store.Documents(), a.notes
+	chinese := i18n.Locale() == "zh-Hans"
 	a.async(func() {
 		defer a.post(func() { a.announceBusy = false })
 		defer client.CloseIdleConnections() // a client of its own each time, whose idle connections never time out
@@ -86,8 +87,8 @@ func (a *app) checkAnnouncements() {
 		if list == nil && revision == seen.Revision {
 			return
 		}
-		if len(list) > 0 && !slices.Contains(seen.IDs, list[0].ID) {
-			n := list[0]
+		if shown := announce.For(list, chinese); len(shown) > 0 && !slices.Contains(seen.IDs, shown[0].ID) {
+			n := shown[0]
 			notes.Post(core.Notification{ID: announcePrefix + n.ID, Severity: core.SeverityInfo, Title: n.Title,
 				Body: strings.TrimSpace(n.Content), Link: linkAnnouncement, Time: n.PublishedAt, Version: strings.TrimSpace(n.Version)})
 		}

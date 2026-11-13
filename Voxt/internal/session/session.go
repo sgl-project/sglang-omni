@@ -287,9 +287,11 @@ type Services struct {
 }
 
 // Resolver opens the models a session of kind uses with settings s; it
-// may block (it may start a runtime). A model that is not ready is nil
+// may block (it may start a runtime). speech false: the session hears
+// nothing (a selection to translate, a typed text), so no speech model
+// is opened and ASR stays nil (#3838). A model that is not ready is nil
 // in Services (an error wrapping ErrNoASR works too).
-type Resolver func(ctx context.Context, kind Kind, s settings.Settings) (Services, error)
+type Resolver func(ctx context.Context, kind Kind, s settings.Settings, speech bool) (Services, error)
 
 // ErrNoASR: no speech model is ready.
 var ErrNoASR = errors.New("session: no speech model is ready")
@@ -311,6 +313,10 @@ type Config struct {
 	// Select reads the selection (nil: Translate and Rewrite never see
 	// one).
 	Select Selector
+	// Window takes a JPEG of app pid's front window (the helper's
+	// screen.window; nil without a picture) for the language model, when
+	// the settings send one (Privacy.SendWindow). Nil: never.
+	Window func(ctx context.Context, pid int) ([]byte, error)
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History

@@ -21,4 +21,7 @@ class Ming3AudioConfig(BailingHybridConfig):
         fields.update(kwargs)
         fields.pop("model_type", None)
         fields.pop("auto_map", None)
+        # note (wilsonzheng0327): named here, not in json_model_override_args, which
+        # SGLang also applies to a draft's config.
+        fields["architectures"] = ["BailingMoeV3ForCausalLM"]
         super().__init__(**fields)

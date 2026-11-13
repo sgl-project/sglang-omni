@@ -122,7 +122,7 @@ func (r *run) retryScene(e store.Entry) {
 // first error (e as far as it got).
 func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, error) {
 	cfg := r.m.cfg
-	svc, err := cfg.Resolve(r.ctx, e.Kind, r.settings)
+	svc, err := cfg.Resolve(r.ctx, e.Kind, r.settings, true)
 	if err != nil {
 		return e, err
 	}

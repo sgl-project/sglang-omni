@@ -678,7 +678,7 @@ python -m sglang_omni.cli serve \
 
 The example sets a 65,536-token context limit for both preprocessing and model
 execution. Adjust it and the GPU configuration for the selected videos and
-available hardware; see [Qwen3-Omni configuration](../docs/basic_usage/qwen3_omni.md).
+available hardware; see [Qwen3-Omni configuration](../docs/cookbook/qwen3_omni.md).
 Run the benchmark on the server host or use a shared filesystem with identical
 media paths. `--base-url` accepts the server root, such as
 `http://localhost:8000`, or the same address ending in `/v1` or
