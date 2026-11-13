@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 )
 
 func TestNormalize(t *testing.T) {
+	modelRoot := filepath.Join(t.TempDir(), "hub")
 	ok := map[string][2]string{
 		"lang":    {KeyLanguage, "zh-Hans"},
 		"sys":     {KeyLanguage, ""},
@@ -21,7 +23,7 @@ func TestNormalize(t *testing.T) {
 		"socks":   {KeyProxy, "socks5://127.0.0.1:7897"},
 		"ep":      {KeyHFEndpoints, "mirror"},
 		"urls":    {KeyHFEndpoints, "https://a.example/ https://b.example"},
-		"root":    {KeyModelsRoot, "/Volumes/X/hub/"},
+		"root":    {KeyModelsRoot, modelRoot + string(filepath.Separator)},
 		"default": {KeyModelsRoot, ""},
 	}
 	for name, kv := range ok {
@@ -32,7 +34,7 @@ func TestNormalize(t *testing.T) {
 	if v, _ := Normalize(KeyHFEndpoints, "https://a.example/ https://b.example"); v != "https://a.example https://b.example" {
 		t.Error(v)
 	}
-	if v, _ := Normalize(KeyModelsRoot, "/Volumes/X/hub/"); v != "/Volumes/X/hub" {
+	if v, _ := Normalize(KeyModelsRoot, modelRoot+string(filepath.Separator)); v != modelRoot {
 		t.Error(v)
 	}
 	bad := [][2]string{{KeyLanguage, "zh_CN"}, {KeyProxy, "127.0.0.1:7897"}, {KeyProxy, "ftp://x"}, {KeyHFEndpoints, "x y"}, {KeyModelsRoot, "rel/path"}, {"other.key", "x"}}
@@ -127,13 +129,14 @@ func TestEffectiveAndFollow(t *testing.T) {
 
 func TestMigrate(t *testing.T) {
 	d := family.At(t.TempDir())
+	modelRoot := filepath.Join(t.TempDir(), "Models", "hub")
 	ctx := context.Background()
 	// AudioSmith first: a custom proxy and model folder, default language.
 	out, err := Migrate(ctx, d, "dev.hehehai.audiosmith", map[string]Local{
 		KeyLanguage:    {Value: "", IsDefault: true},
 		KeyProxy:       {Value: "http://127.0.0.1:7897"},
 		KeyHFEndpoints: {Value: "auto", IsDefault: true},
-		KeyModelsRoot:  {Value: "/Volumes/Models/hub"},
+		KeyModelsRoot:  {Value: modelRoot},
 	})
 	if err != nil {
 		t.Fatal(err)

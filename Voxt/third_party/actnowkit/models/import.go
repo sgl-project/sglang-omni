@@ -439,7 +439,14 @@ func linkFiles(dir string, files []srcFile, fresh bool) error {
 			}
 			_ = os.Remove(link)
 		}
-		if err := os.Symlink(target, link); err != nil {
+		if err := os.Symlink(target, link); err == nil {
+			continue
+		}
+		blob := filepath.Join(dir, "..", "..", "blobs", f.blob)
+		if err := os.Link(blob, link); err == nil {
+			continue
+		}
+		if err := copyBlob(blob, link, f.size); err != nil {
 			return err
 		}
 	}

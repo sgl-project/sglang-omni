@@ -62,6 +62,22 @@ func funlock(f *os.File) error {
 	return err
 }
 
-// ProcessAlive reports whether a process with this pid exists; on this
-// system it cannot tell and says true for any positive pid.
-func ProcessAlive(pid int) bool { return pid > 0 }
+// ProcessAlive reports whether a process with this pid exists (it may be
+// another user's). Pids are reused: use it only to ignore stale hints
+// (lock owners, runtime files), never as proof an app runs.
+func ProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return !errors.Is(err, windows.ERROR_INVALID_PARAMETER)
+	}
+	defer windows.CloseHandle(handle)
+	var exitCode uint32
+	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
+		return true
+	}
+	const stillActive = 259
+	return exitCode == stillActive
+}

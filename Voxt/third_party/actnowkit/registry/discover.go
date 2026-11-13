@@ -174,12 +174,16 @@ func BundlePath() string {
 }
 
 func bundleOf(exe string) string {
-	for dir := filepath.Dir(exe); dir != "/" && dir != "." && dir != ""; dir = filepath.Dir(dir) {
+	for dir := filepath.Dir(exe); ; {
 		if strings.HasSuffix(dir, ".app") {
 			return dir
 		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
 	}
-	return ""
 }
 
 // TeamID is the Team ID of the running app's signature ("" when ad hoc

@@ -150,7 +150,11 @@ func TestCheck(t *testing.T) {
 	os.WriteFile(filepath.Join(fx.Family.Root, "secret.txt"), []byte("sk-0123456789abcdefghijklmnop"), 0o600)
 	problems := Check(fx.Family, fx.Hub, FixtureSystem{})
 	text := fmt.Sprint(problems)
-	for _, want := range []string{"settings.json", "../x", "0644", "secret"} {
+	wants := []string{"settings.json", "../x", "secret"}
+	if runtime.GOOS != "windows" {
+		wants = append(wants, "0644")
+	}
+	for _, want := range wants {
 		if !strings.Contains(text, want) {
 			t.Errorf("no problem mentions %q: %v", want, problems)
 		}

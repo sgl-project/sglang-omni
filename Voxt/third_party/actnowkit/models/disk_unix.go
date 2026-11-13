@@ -28,7 +28,7 @@ func freeSpace(dir string) int64 {
 
 // linkedElsewhere reports a file with other hard links (an imported blob
 // still in the Hugging Face cache): removing this name frees nothing.
-func linkedElsewhere(fi os.FileInfo) bool {
+func linkedElsewhere(_ string, fi os.FileInfo, _ uint32) bool {
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	return ok && st.Nlink > 1
 }

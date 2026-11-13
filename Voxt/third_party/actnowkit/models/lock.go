@@ -77,16 +77,10 @@ func (l *HeldLock) Mode() family.LockMode { return l.lock.Mode }
 func ReadOwner(lockPath string) (Owner, bool) {
 	data, err := family.ReadLimited(lockPath + ".owner")
 	if err != nil {
-		println("ReadLimited owner error:", lockPath, err.Error())
 		return Owner{}, false
 	}
 	var o Owner
-	if err := json.Unmarshal(data, &o); err != nil {
-		println("owner JSON error:", lockPath, err.Error())
-		return Owner{}, false
-	}
-	alive := family.ProcessAlive(o.PID)
-	if !alive {
+	if json.Unmarshal(data, &o) != nil || !family.ProcessAlive(o.PID) {
 		return Owner{}, false
 	}
 	return o, true

@@ -99,25 +99,27 @@ func TestResolveHub(t *testing.T) {
 	if h, src := EnvHub(); h != "/cache" || src != FromEnvHub {
 		t.Errorf("EnvHub %s %s", h, src)
 	}
-	if h, src := ResolveHub(false, "/fam", "/own/"); h != "/own" || src != FromApp {
+	own := filepath.Clean("/own")
+	familyRoot := filepath.Clean("/fam")
+	if h, src := ResolveHub(false, familyRoot, own+string(filepath.Separator)); h != own || src != FromApp {
 		t.Errorf("%s %s", h, src)
 	}
-	if h, src := ResolveHub(true, "/fam", "/own"); h != "/fam" || src != FromFamily {
+	if h, src := ResolveHub(true, familyRoot, own); h != familyRoot || src != FromFamily {
 		t.Errorf("%s %s", h, src)
 	}
 }
 
 func TestPaths(t *testing.T) {
-	if got := RepoDir("/h", repoA); got != "/h/models--mlx-community--Qwen3-ASR-0.6B-4bit" {
+	if got := RepoDir("/h", repoA); got != filepath.Join("/h", "models--mlx-community--Qwen3-ASR-0.6B-4bit") {
 		t.Error(got)
 	}
-	if got := BlobLockFile("/h", repoA, "abc"); got != "/h/.locks/models--mlx-community--Qwen3-ASR-0.6B-4bit/abc.lock" {
+	if got := BlobLockFile("/h", repoA, "abc"); got != filepath.Join("/h", ".locks", "models--mlx-community--Qwen3-ASR-0.6B-4bit", "abc.lock") {
 		t.Error(got)
 	}
-	if got := RepoLockFile("/h", repoA); got != "/h/.locks/models--mlx-community--Qwen3-ASR-0.6B-4bit/actnow-repo.lock" {
+	if got := RepoLockFile("/h", repoA); got != filepath.Join("/h", ".locks", "models--mlx-community--Qwen3-ASR-0.6B-4bit", "actnow-repo.lock") {
 		t.Error(got)
 	}
-	if got := EngineCopy("/h", repoA); got != "/h/mlx-audio/mlx-community_Qwen3-ASR-0.6B-4bit" {
+	if got := EngineCopy("/h", repoA); got != filepath.Join("/h", "mlx-audio", "mlx-community_Qwen3-ASR-0.6B-4bit") {
 		t.Error(got)
 	}
 	for _, bad := range []string{"", "a", "a/b/c", "../x", "a/..", "a/.b/../c", "/abs", "a/b c"} {

@@ -151,7 +151,9 @@ func (fx *Fixture) Install(r Repo) {
 		must(fx.T, os.MkdirAll(filepath.Dir(link), 0o755))
 		os.Remove(link)
 		target := strings.Repeat("../", strings.Count(f.Path, "/")+2) + "blobs/" + f.BlobID()
-		must(fx.T, os.Symlink(target, link))
+		if err := os.Symlink(target, link); err != nil {
+			must(fx.T, os.Link(blob, link))
+		}
 	}
 	must(fx.T, os.MkdirAll(filepath.Join(dir, "refs"), 0o755))
 	must(fx.T, os.WriteFile(filepath.Join(dir, "refs", "main"), []byte(r.Ref.Revision), 0o644))

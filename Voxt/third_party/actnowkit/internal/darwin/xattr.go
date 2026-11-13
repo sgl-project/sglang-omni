@@ -15,7 +15,6 @@ func errno() syscall.Errno {
 	return syscall.EIO
 }
 
-
 // SetXattr sets an extended attribute of path (following symlinks).
 func SetXattr(path, name string, value []byte) error {
 	if err := loadLibSystem(); err != nil {
