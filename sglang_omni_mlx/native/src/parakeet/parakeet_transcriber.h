@@ -56,9 +56,12 @@ private:
   std::vector<AlignedToken> DecodeChunk(const std::vector<float> &samples,
                                         const std::atomic<bool> &cancel) const;
 
+  // DecodeChunk, then bounded retries of an audible tail it left blank;
+  // samples hold at most max_chunk_samples.
   std::vector<AlignedToken>
-  DecodeFinalChunk(const std::vector<float> &samples,
-                   const std::atomic<bool> &cancel) const;
+  DecodeWithBlankTailRecovery(const std::vector<float> &samples,
+                              size_t max_chunk_samples,
+                              const std::atomic<bool> &cancel) const;
 
   ParakeetModel model_;
   std::vector<std::string> token_texts_;
