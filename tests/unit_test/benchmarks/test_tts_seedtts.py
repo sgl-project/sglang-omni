@@ -3,10 +3,14 @@
 configuration, concurrency sweeps and sustained overshoot."""
 
 import asyncio
+import base64
+import io
 import json
+import os
 import socket
 import sys
 import threading
+import wave
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -188,6 +192,7 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
     [
         ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
         ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", None),
+        ("tencent/AuK-Flash", None),
     ],
 )
 def test_max_new_tokens_default_applies_without_cli(model, max_new_tokens):
@@ -751,6 +756,85 @@ async def test_sustained_overshoot_uses_open_loop_and_unique_output_dir(
     }
     assert len(set(seen_samples[0])) == 64
     assert (tmp_path / "overshoot" / "sustained_overshoot.json").is_file()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="libproc is macOS only")
+@pytest.mark.asyncio
+async def test_native_server_run_inlines_references_and_samples_its_tree(
+    tmp_path: Path,
+) -> None:
+    """A native server reads ref_audio only as a data URI, and its stage
+    workers' memory must count toward the peak."""
+    reference = tmp_path / "ref.wav"
+    reference.write_bytes(b"RIFF-reference")
+    received: list[dict[str, object]] = []
+
+    async def speech(request: web.Request) -> web.Response:
+        received.append(await request.json())
+        audio = io.BytesIO()
+        with wave.open(audio, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(24000)
+            writer.writeframes(bytes(4800))
+        return web.Response(body=audio.getvalue(), content_type="audio/wav")
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/speech", speech)
+    server = web.AppRunner(application)
+    await server.setup()
+    # A child of this process stands in for a server's stage worker.
+    worker = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)"
+    )
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.setblocking(False)
+        await web.SockSite(server, listener).start()
+        try:
+            config = config_from_cli(
+                "--model",
+                "tencent/AuK-Flash",
+                "--base-url",
+                f"http://127.0.0.1:{listener.getsockname()[1]}",
+                "--use-existing-server",
+                "--generate-only",
+                "--inline-ref-audio",
+                "--server-pid",
+                str(os.getpid()),
+                "--warmup",
+                "0",
+                "--disable-tqdm",
+                "--output-dir",
+                str(tmp_path / "results"),
+            )
+            await tts.run_tts_seedtts_benchmark(
+                config,
+                samples=[
+                    SampleInput(
+                        sample_id="sample-1",
+                        ref_text="reference",
+                        ref_audio=str(reference),
+                        target_text="hello world",
+                    )
+                ],
+            )
+        finally:
+            worker.kill()
+            await worker.wait()
+            await server.cleanup()
+    assert received[0]["ref_audio"] == "data:audio/wav;base64," + base64.b64encode(
+        b"RIFF-reference"
+    ).decode("ascii")
+    assert "max_new_tokens" not in received[0]
+    memory = json.loads((tmp_path / "results" / "memory.json").read_text())
+    sampled_processes = {
+        process["process_id"]
+        for sample in memory["samples"]
+        for process in sample["processes"]
+    }
+    assert {os.getpid(), worker.pid} <= sampled_processes
+    assert memory["peak_physical_footprint_bytes"] > 0
 
 
 def test_asr_speed_counts_scored_and_unscorable_transcriptions() -> None:
