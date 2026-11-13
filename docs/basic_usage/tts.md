@@ -532,8 +532,29 @@ These fields are accepted by the shared speech endpoint. Model support and defau
 | `epsilon_cutoff` | float | `null` | Model-specific sampling cutoff |
 | `repetition_penalty` | float | `null` | Repetition penalty |
 | `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
+| `extra_params` | object | `null` | Nested sampling settings and model-specific generation parameters |
 | `stage_params` | object | `null` | Model-specific stage overrides; see the model cookbook |
 | `return_spec_tokens_details` | bool | `false` | With a speculative draft, return this request's acceptance statistics: `X-SGLang-Omni-Spec-*` headers on buffered audio, `sglext.spec_tokens_details` on `speech.audio.done` and on the raw audio outcome |
+
+### Nested Generation Parameters
+
+For `POST /v1/audio/speech`, sampling settings can also be supplied inside `extra_params`:
+
+```json
+{
+  "input": "Hello, how are you?",
+  "extra_params": {
+    "temperature": 0.3,
+    "top_p": 0.8,
+    "top_k": 17,
+    "repetition_penalty": 1.2
+  }
+}
+```
+
+Nested `temperature`, `top_p`, `top_k`, `epsilon_cutoff`, `repetition_penalty`, `seed`, and `max_new_tokens` use the same validation and sampling behavior as their top-level forms. A non-null top-level value takes precedence, including zero; a null top-level value leaves the nested value in effect. Omitting both forms preserves the served model's defaults.
+
+Other keys are passed as model-specific generation parameters. Use only parameters supported by the served model; models that restrict their speech fields can reject unsupported options. An explicit top-level `initial_codec_chunk_frames` also takes precedence over the nested value.
 
 ## Error Handling
 
