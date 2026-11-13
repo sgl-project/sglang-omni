@@ -259,3 +259,20 @@ graphs enabled, and runs the image and audio encoders on their own NPU stream.
 On NPU the reference audio for voice cloning is decoded through the soundfile
 fallback because torchcodec is not usable in NPU images. Validated on Ascend
 910 / CANN 9.1.0 / torch 2.10 / torch_npu 2.10.0.post6 / SGLang 0.5.22.
+
+### MOSS-Transcribe-Diarize
+
+MOSS-Transcribe-Diarize runs with the stock serving command on Ascend 910; no NPU-specific flags are needed:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --port 8000 \
+  --asr.engine.max_running_requests 16 \
+  --asr.engine.cuda_graph_max_bs 16 \
+  --mem-fraction-static 0.80
+```
+
+Decode, breakable prefill, and all eight Whisper encoder graph buckets are captured through SGLang's NPU graph backend. The engine disables `torch.compile` on NPU: the fused QKV RMSNorm+RoPE path queries the triton driver while dynamo traces the decoder, which aborts decode graph capture, so decode stays eager while graph replay remains active. It also sets `PER_STREAM_QUEUE=1` before the stage process starts, because the shared host task queue lets a decode-graph replay overlap the graph update that rebinds KV lengths and the scheduler deadlocks. Any other value restores that deadlock, so an override must be paired with `disable_cuda_graph: true` or `cuda_graph_max_bs: 1`. Startup rejects NPU decode graphs above one row combined with a `PER_STREAM_QUEUE` that is not `1`, rather than hanging after the first batch.
+
+Validated on Ascend 910 / CANN 9.1.0 / torch 2.10 / torch_npu 2.10.0.post6 / SGLang 0.5.23.
