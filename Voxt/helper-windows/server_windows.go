@@ -19,12 +19,27 @@ import (
 type helperJob struct {
 	method     string
 	cancel     chan struct{}
+	stop       chan struct{}
 	done       chan struct{}
 	cancelOnce sync.Once
+	stopOnce   sync.Once
 }
 
 func (job *helperJob) requestCancel() {
 	job.cancelOnce.Do(func() { close(job.cancel) })
+}
+
+func (job *helperJob) requestStop() {
+	job.stopOnce.Do(func() { close(job.stop) })
+}
+
+func (job *helperJob) stopped() bool {
+	select {
+	case <-job.stop:
+		return true
+	default:
+		return false
+	}
 }
 
 func (job *helperJob) cancelled() bool {
@@ -59,6 +74,9 @@ func implementedMethods() []string {
 		proto.MethodPermissionsStatus,
 		proto.MethodPermissionsRequest,
 		proto.MethodAppFrontmost,
+		proto.MethodCaptureDevices,
+		proto.MethodCaptureStart,
+		proto.MethodCaptureStop,
 		proto.MethodTextFocus,
 		proto.MethodTextPaste,
 	}
@@ -207,6 +225,12 @@ func (server *helperServer) serve(message proto.Message) {
 			return
 		}
 		server.result(message.ID, app)
+	case proto.MethodCaptureDevices:
+		server.serveCaptureDevices(message)
+	case proto.MethodCaptureStart:
+		server.startCapture(message)
+	case proto.MethodCaptureStop:
+		server.stopCapture(message)
 	case proto.MethodTextFocus, proto.MethodTextPaste:
 		server.serveTextIO(message)
 	default:
@@ -269,7 +293,14 @@ func (server *helperServer) registerJob(id, method string) (*helperJob, *proto.E
 	if _, running := server.jobs[id]; running {
 		return nil, proto.Errorf(proto.CodeBusy, "Job %s is running already", id)
 	}
-	job := &helperJob{method: method, cancel: make(chan struct{}), done: make(chan struct{})}
+	if method == proto.MethodCaptureStart {
+		for _, running := range server.jobs {
+			if running.method == method {
+				return nil, proto.Errorf(proto.CodeBusy, "A recording is running already")
+			}
+		}
+	}
+	job := &helperJob{method: method, cancel: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
 	server.jobs[id] = job
 	return job, nil
 }
