@@ -103,7 +103,12 @@ printf '<key>CFBundleShortVersionString</key>\n<string>%s</string>\n' "$version"
 			if err != nil {
 				t.Fatalf("codesign did not run: %v\n%s", err, output)
 			}
-			if !strings.Contains(string(codesignLog), filepath.Join(outDir, "voxtnew-helper")) {
+			stagedForBash, err := exec.Command("bash", "-c", "cd \"$1\" && pwd", "bash", outDir).Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			staged := strings.TrimSpace(string(stagedForBash)) + "/voxtnew-helper"
+			if !strings.Contains(string(codesignLog), staged) {
 				t.Fatalf("codesign ran on something else:\n%s", codesignLog)
 			}
 		})

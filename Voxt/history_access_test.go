@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -120,8 +122,13 @@ func TestHistoryAccessFlow(t *testing.T) {
 	openPrivacy(t, a, tt)
 	turnOnAccess(t, a, tt, drain)
 	fi, err := os.Stat(a.historySocket())
-	if err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("mode %v %v", fi, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Log("skipping the socket mode assertion: Windows does not expose Unix permission bits")
+	} else if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", fi.Mode())
 	}
 	if !has(tt, "Command line") || !has(tt, "history export --day") {
 		t.Errorf("no command: %q", tt.Texts())
@@ -239,7 +246,7 @@ func TestHistoryAccessQuit(t *testing.T) {
 func TestHistorySocketInDefaultFolder(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.dataHome = "/default/home"
-	if got := a.historySocket(); got != "/default/home/"+historyapi.SocketName {
+	if got := a.historySocket(); got != filepath.Join(a.dataHome, historyapi.SocketName) {
 		t.Errorf("socket at %s", got)
 	}
 }
