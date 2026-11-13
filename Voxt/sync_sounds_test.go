@@ -63,7 +63,7 @@ mkdir -p "$last" && echo '{}' > "$last/catalog.json"
 			cacheHome := filepath.Join(root, "cache")
 			library := filepath.Join(cacheHome, "actnow-sounds")
 			environment := append(os.Environ(),
-				"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"PATH="+bashPathWithFakeBin(fakeBinDir),
 				"XDG_CACHE_HOME="+cacheHome,
 				"FAKE_GO_LOG="+goLogPath)
 			if testCase.userDir {

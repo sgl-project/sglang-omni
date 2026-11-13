@@ -277,6 +277,13 @@ func requireCJKFont(t *testing.T) {
 	}
 }
 
+func bashPathWithFakeBin(dir string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.ToSlash(dir) + ":" + os.Getenv("PATH")
+	}
+	return dir + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
 // frames runs the tester a few frames, so state set in one shows.
 func frames(tt *ui.Tester) {
 	for range 3 {

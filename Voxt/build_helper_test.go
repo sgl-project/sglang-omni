@@ -81,7 +81,7 @@ printf '<key>CFBundleShortVersionString</key>\n<string>%s</string>\n' "$version"
 			outDir := filepath.Join(root, "staged")
 			command := exec.Command("bash", filepath.Join(root, "scripts/build-helper.sh"), "--out", outDir)
 			command.Env = append(os.Environ(),
-				"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"PATH="+bashPathWithFakeBin(fakeBinDir),
 				"FAKE_SWIFT_PRODUCTS="+productDir,
 				"FAKE_CODESIGN_LOG="+codesignLogPath)
 			output, err := command.CombinedOutput()
