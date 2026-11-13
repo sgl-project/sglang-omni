@@ -3,23 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from typing import Any
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.client import GenerateChunk
+from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve import speech_ws as speech_ws_module
-from sglang_omni.serve.protocol import SpeechStreamSessionConfig
+from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechStreamSessionConfig
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import (
     MAX_SPEECH_INPUT_CHARS,
+    PreparedSpeechRequest,
     SpeechRequestValidator,
 )
 from sglang_omni.serve.speech_ws import (
@@ -444,8 +448,115 @@ def test_speech_websocket_config_uses_served_model_and_default_voice() -> None:
     asyncio.run(run())
 
 
+def test_speech_websocket_carries_pcm_as_wav_reference() -> None:
+    async def run() -> None:
+        client = StreamingSpeechClient()
+        pcm_bytes = encode_pcm(
+            np.array([0.0, 0.1, -0.1, 0.0], dtype=np.float32), client.sample_rate
+        )
+
+        async def pcm_speech(request: Any, **kwargs: Any) -> SpeechResult:
+            del kwargs
+            client.speech_prompts.append(request.prompt)
+            return SpeechResult(
+                audio_bytes=pcm_bytes,
+                mime_type="audio/pcm",
+                format="pcm",
+                sample_rate=client.sample_rate,
+            )
+
+        client.speech = pcm_speech
+        speech_service = SpeechRequestValidator(default_model="tts")
+        session = SpeechWebSocketSession(
+            RecordingWebSocket(),
+            client=client,
+            speech_service=speech_service,
+        )
+        session.config = SpeechStreamSessionConfig(
+            model="tts",
+            response_format="pcm",
+            stream_audio=False,
+            carry_previous_audio=True,
+        )
+        session.config_prepared_request = PreparedSpeechRequest(
+            request=CreateSpeechRequest(input="probe", model="tts"),
+            reference_descriptors=[{"audio_path": "ref.wav", "text": "ref"}],
+        )
+        await session.generate_sentence("First.")
+        await session.generate_sentence("Second.")
+        carried = client.speech_prompts[1]["references"][0]
+        assert carried["media_type"] == "audio/wav"
+        assert base64.b64decode(carried["data"]).startswith(b"RIFF")
+
+    asyncio.run(run())
+
+
+def test_speech_websocket_skips_decode_when_carry_disabled() -> None:
+    async def run() -> None:
+        client = StreamingSpeechClient()
+        speech_service = SpeechRequestValidator(default_model="tts")
+        session = SpeechWebSocketSession(
+            RecordingWebSocket(),
+            client=client,
+            speech_service=speech_service,
+        )
+        session.config = SpeechStreamSessionConfig(
+            model="tts",
+            response_format="flac",
+            stream_audio=False,
+            carry_previous_audio=False,
+        )
+        session.config_prepared_request = PreparedSpeechRequest(
+            request=CreateSpeechRequest(input="probe", model="tts"),
+            reference_descriptors=[{"audio_path": "ref.wav", "text": "ref"}],
+        )
+
+        async def fake_speech(*_args, **_kwargs):
+            return SpeechResult(
+                audio_bytes=b"fLaC-not-wav",
+                mime_type="audio/flac",
+                format="flac",
+                sample_rate=24000,
+            )
+
+        client.speech = fake_speech  # type: ignore[method-assign]
+        total = await session.send_sentence_audio(
+            "Hello.", request_id="r0", sentence_index=0
+        )
+        assert total == len(b"fLaC-not-wav")
+        assert session.previous_reference_descriptors == []
+
+    asyncio.run(run())
+
+
+def test_speech_websocket_rejects_carry_with_unsupported_format() -> None:
+    async def run() -> None:
+        speech_service = SpeechRequestValidator(default_model="tts")
+        session = SpeechWebSocketSession(
+            RecordingWebSocket(),
+            client=StreamingSpeechClient(),
+            speech_service=speech_service,
+        )
+        with pytest.raises(SpeechAPIError, match="carry_previous_audio=true requires"):
+            await session.parse_config(
+                session_config(
+                    response_format="flac",
+                    carry_previous_audio=True,
+                )
+            )
+
+    asyncio.run(run())
+
+
 WS_SUPPORTED_SPEECH_FIELDS = frozenset(
-    {"model", "voice", "response_format", "stream_audio", "split_granularity"}
+    {
+        "model",
+        "voice",
+        "response_format",
+        "stream_audio",
+        "split_granularity",
+        "carry_previous_audio",
+    }
 )
 
 
