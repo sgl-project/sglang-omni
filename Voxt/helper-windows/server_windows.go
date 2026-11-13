@@ -62,9 +62,10 @@ type helperServer struct {
 	jobsMu sync.Mutex
 	jobs   map[string]*helperJob
 
-	events     *windowsEventLoop
-	automation *automationThread
-	hotkeys    *windowsHotkeys
+	events      *windowsEventLoop
+	automation  *automationThread
+	hotkeys     *windowsHotkeys
+	outputAudio *windowsOutput
 
 	frontMu    sync.RWMutex
 	frontCache proto.App
@@ -83,6 +84,10 @@ func implementedMethods() []string {
 		proto.MethodCaptureStop,
 		proto.MethodHotkeyConfigure,
 		proto.MethodHotkeyStatus,
+		proto.MethodOutputWatch,
+		proto.MethodOutputMute,
+		proto.MethodOutputRelease,
+		proto.MethodOutputRecover,
 		proto.MethodTextFocus,
 		proto.MethodTextSelection,
 		proto.MethodTextPaste,
@@ -110,6 +115,8 @@ func runHelper() error {
 	server.automation = automation
 	defer automation.close()
 	server.hotkeys = newWindowsHotkeys(server)
+	server.outputAudio = newWindowsOutput(server)
+	defer server.outputAudio.close()
 
 	messages := make(chan proto.Message)
 	readErrors := make(chan error, 1)
@@ -254,6 +261,8 @@ func (server *helperServer) serve(message proto.Message) {
 		server.result(message.ID, status)
 	case proto.MethodHotkeyStatus:
 		server.result(message.ID, server.hotkeys.status())
+	case proto.MethodOutputWatch, proto.MethodOutputMute, proto.MethodOutputRelease, proto.MethodOutputRecover:
+		server.serveOutput(message)
 	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste, proto.MethodTextRead:
 		server.serveTextIO(message)
 	default:
