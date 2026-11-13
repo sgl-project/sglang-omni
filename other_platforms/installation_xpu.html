@@ -610,6 +610,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#whisper-asr-speech-to-text-single-xpu">Whisper ASR (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-asr-nano-speech-to-text-single-xpu">Fun-ASR-Nano (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nemotron-3-5-asr-speech-to-text-single-xpu">Nemotron 3.5 ASR (speech-to-text, single XPU)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ming-3-0-asr-tiny-speech-to-text-single-xpu">Ming-3.0-ASR-Tiny (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hy-simulmt-speech-translation-multi-xpu-tensor-parallel">Hy-SimulMT (speech translation, multi-XPU tensor parallel)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-tts-text-to-speech-single-xpu">Qwen3-TTS (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#auk-speech-generation-and-editing-single-xpu">AuK (speech generation and editing, single XPU)</a></li>
@@ -813,6 +814,27 @@ eager, so a transcript is never at stake.</p>
 <p>Add <code class="docutils literal notranslate"><span class="pre">--enable-realtime</span></code> to accept native 16 kHz mono PCM16 over <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>.</p>
 <p>The streaming encoder captures its subsequent-window batch sizes at startup on XPU as on CUDA, which roughly halves the steady-state streaming window; pass <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_encoder_cuda_graph</span> <span class="pre">false</span></code> to run entirely eager. See the <a class="reference internal" href="../cookbook/nemotron3_5_asr.html"><span class="std std-doc">Nemotron cookbook</span></a> for request parameters.</p>
 <p><strong>Expected result:</strong> The JSON response contains the transcription and segment timestamps.</p>
+</section>
+<section id="ming-3-0-asr-tiny-speech-to-text-single-xpu">
+<span id="ming-30-asr-tiny-speech-to-text-single-xpu"></span><h3>Ming-3.0-ASR-Tiny (speech-to-text, single XPU)<a class="headerlink" href="#ming-3-0-asr-tiny-speech-to-text-single-xpu" title="Link to this heading">#</a></h3>
+<p>Serves on the stock defaults. The Whisper audio encoder and the Ling V3 mixture-of-experts language model share one card and hold about 22 GB of a 24 GB card, so give the model an otherwise-idle GPU.</p>
+<p><strong>Launch</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>inclusionAI/Ming-3.0-asr-tiny<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="s2">"file=@tests/data/query_to_cars.wav"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="s2">"model=inclusionAI/Ming-3.0-asr-tiny"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="s2">"response_format=json"</span>
+</pre></div>
+</div>
+<p>Keep the default <code class="docutils literal notranslate"><span class="pre">triton</span></code> attention backend. <code class="docutils literal notranslate"><span class="pre">intel_xpu</span></code> cannot capture this model’s decode graph, and on a clip near the 30-second limit it answers with a few unrelated characters instead of the transcript unless <code class="docutils literal notranslate"><span class="pre">language</span></code> is set.</p>
+<p>The backbone mixes linear-attention and full-attention layers whose Triton kernels are compiled and tuned on first use, so the first request of each new audio length or encoder batch size costs seconds to minutes while later ones do not. The tuning cache is on disk, so a restart reuses it.</p>
+<p>See the <a class="reference internal" href="../cookbook/ming3_asr.html"><span class="std std-doc">Ming-3.0-ASR cookbook</span></a> for request parameters.</p>
+<p><strong>Expected result:</strong> The JSON response contains <code class="docutils literal notranslate"><span class="pre">how</span> <span class="pre">many</span> <span class="pre">cars</span> <span class="pre">are</span> <span class="pre">there</span> <span class="pre">in</span> <span class="pre">the</span> <span class="pre">picture</span></code> under <code class="docutils literal notranslate"><span class="pre">text</span></code>.</p>
 </section>
 <section id="hy-simulmt-speech-translation-multi-xpu-tensor-parallel">
 <h3>Hy-SimulMT (speech translation, multi-XPU tensor parallel)<a class="headerlink" href="#hy-simulmt-speech-translation-multi-xpu-tensor-parallel" title="Link to this heading">#</a></h3>
@@ -1391,6 +1413,7 @@ Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#whisper-asr-speech-to-text-single-xpu">Whisper ASR (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-asr-nano-speech-to-text-single-xpu">Fun-ASR-Nano (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nemotron-3-5-asr-speech-to-text-single-xpu">Nemotron 3.5 ASR (speech-to-text, single XPU)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ming-3-0-asr-tiny-speech-to-text-single-xpu">Ming-3.0-ASR-Tiny (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hy-simulmt-speech-translation-multi-xpu-tensor-parallel">Hy-SimulMT (speech translation, multi-XPU tensor parallel)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-tts-text-to-speech-single-xpu">Qwen3-TTS (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#auk-speech-generation-and-editing-single-xpu">AuK (speech generation and editing, single XPU)</a></li>
