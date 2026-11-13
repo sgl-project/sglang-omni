@@ -10,7 +10,11 @@ from sglang.srt.managers.schedule_batch import (
     Req,
     ScheduleBatch,
 )
-from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
+from sglang.srt.managers.schedule_policy import (
+    CLIP_MAX_NEW_TOKENS,
+    AddReqResult,
+    PrefillAdder,
+)
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
@@ -149,10 +153,19 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
         """Reject a request whose rows can never hold the KV cache together."""
         guided = req_data.cfg_uncond is not None
         rows = [req_data, req_data.cfg_uncond] if guided else [req_data]
+        page = self.page_size
         required = sum(
-            len(row.req.origin_input_ids) + row.req.sampling_params.max_new_tokens
+            -(-len(row.req.origin_input_ids) // page) * page
+            + row.req.sampling_params.max_new_tokens
             for row in rows
         )
+        if guided:
+            # note (ruiling): a retracted pair replays its output, and SGLang reserves the first row's whole budget again on top of it.
+            required += page + min(
+                req_data.req.sampling_params.max_new_tokens, CLIP_MAX_NEW_TOKENS
+            )
+        else:
+            pass
         # note (ruiling): SGLang admits a row only with one spare page, and keeps one token free.
         capacity = (
             self.tp_worker.model_runner.effective_max_total_num_tokens

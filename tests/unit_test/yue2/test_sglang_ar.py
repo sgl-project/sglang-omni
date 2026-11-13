@@ -310,8 +310,20 @@ def test_cfg_pair_that_cannot_fit_the_kv_cache_is_a_client_error(
     assert row_tokens < 4096 < 2 * row_tokens
     pair_tokens = row_tokens + len(guided.cfg_uncond.prefix) + 2500
     # SGLang admits the pair only with a spare page per row and one free token.
-    assert capacity_scheduler(pair_tokens + 3).kv_capacity_error(guided) is None
-    assert capacity_scheduler(pair_tokens + 2).kv_capacity_error(guided) is not None
+    # A retracted pair replays its output while SGLang reserves the first row's budget again.
+    resumed_tokens = pair_tokens + 2500 + 1
+    assert capacity_scheduler(resumed_tokens + 3).kv_capacity_error(guided) is None
+    assert capacity_scheduler(resumed_tokens + 2).kv_capacity_error(guided) is not None
+    # SGLang rounds each prefix up to whole pages.
+    paged_tokens = (
+        3 * 2500
+        + 16
+        + sum(-(-len(row.prefix) // 16) * 16 for row in (guided, guided.cfg_uncond))
+    )
+    for pool, fits in ((paged_tokens + 33, True), (paged_tokens + 32, False)):
+        paged = capacity_scheduler(pool)
+        paged.page_size = 16
+        assert (paged.kv_capacity_error(guided) is None) == fits
     scheduler.enqueue_built_request(guided.stage_payload, False, guided)
     assert enqueued == []
     request_id, error = scheduler.emit_request_error.call_args.args
@@ -370,6 +382,34 @@ def test_retracted_row_resumes_sampling_from_its_committed_tokens() -> None:
     assert data.recent_tokens.tolist() == [14, 15, 12, 13]
     rewind_sampling(data, [10, 11])
     assert data.recent_tokens.tolist() == [10, 11, -1, -1]
+
+
+def test_requeued_retracted_row_is_rewound(
+    builder: Yue2RequestBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queued = []
+    monkeypatch.setattr(
+        OmniScheduler,
+        "_add_request_to_queue",
+        lambda scheduler, req, is_retracted=False: queued.append(req),
+    )
+    data = builder(payload("a", abc="X:1\nK:C\nCDEF"))
+    req = data.req
+    req.omni_data = data
+    req.output_ids = [10, 11, 12]
+    scheduler = object.__new__(Yue2Scheduler)
+    scheduler.decoding_batch = None
+    data.generated_tokens = 4
+    scheduler._add_request_to_queue(  # noqa: leading-underscore  # upstream spelling
+        req, is_retracted=False
+    )
+    assert data.generated_tokens == 4
+    req.is_retracted = True
+    scheduler._add_request_to_queue(  # noqa: leading-underscore  # upstream spelling
+        req, is_retracted=True
+    )
+    assert data.generated_tokens == 3
+    assert queued == [req, req]
 
 
 def test_finished_score_starts_the_audio_request(builder: Yue2RequestBuilder) -> None:
