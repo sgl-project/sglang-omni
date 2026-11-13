@@ -104,10 +104,11 @@ type answerCard struct {
 	// llmID is the language model service that answered (its settings'
 	// Provider.ID); think the thinking level the answer was asked with,
 	// nil the service's; redoThink the redo's; thinkMenu: the card's menu
-	// (langOpen) lists the thinking levels, not the languages.
-	llmID            string
-	think, redoThink *llm.Thinking
-	thinkMenu        bool
+	// (langOpen) lists the thinking levels, not the languages; pillMenu:
+	// the working pill's (#3940), not the card's.
+	llmID               string
+	think, redoThink    *llm.Thinking
+	thinkMenu, pillMenu bool
 	// copied: Copy's mark shows (2 s, Voxt's); copySeq numbers the
 	// copies, so that a copy's timer clears only its own mark.
 	copied  bool

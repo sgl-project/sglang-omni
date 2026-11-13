@@ -15,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -30,14 +31,18 @@ type run struct {
 	ctx       context.Context // the session's: cancelled by Cancel and at the end
 	cancel    context.CancelFunc
 	cancelled atomic.Bool
-	// llmCtx is the language model's requests': SkipLLM and StopLLM
-	// cancel it (llmStop), and skipped or stopped says which; the session
-	// goes on.
+	// llmCtx is the language model's requests': SkipLLM, StopLLM and
+	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
+	// again), and skipped, stopped or rethink says which; the session goes
+	// on.
 	llmCtx  context.Context
 	llmStop context.CancelFunc
 	skipped atomic.Bool
 	stopped atomic.Bool
-	stop    chan struct{}
+	rethink atomic.Bool
+	// think is the level Rethink chose (guarded by m.mu).
+	think *llm.Thinking
+	stop  chan struct{}
 	// recorded is closed once listen's recording loop has the capture's
 	// end: the stream's Finish waits for it, so that the Final's answer
 	// never comes while that loop still runs.
