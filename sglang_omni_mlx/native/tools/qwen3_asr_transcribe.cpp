@@ -12,6 +12,7 @@
 
 #include "common/audio.h"
 #include "common/tokenizer.h"
+#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/qwen3_asr_model.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
@@ -186,7 +187,7 @@ int main(int argc, char **argv) {
                          ? nlohmann::json(*result.language)
                          : nlohmann::json()},
         {"generated_token_count", result.generated_token_count},
-        {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
+        {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
         {"verify_rounds", result.verify_round_count},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)

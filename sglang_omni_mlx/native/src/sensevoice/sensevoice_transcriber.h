@@ -14,7 +14,7 @@
 #include <vector>
 
 #include "common/swift_port.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/transcription.h"
 #include "sensevoice/sensevoice_model.h"
 #include "silero_vad/silero_vad.h"
 
@@ -51,7 +51,7 @@ public:
   // The text, the language detected (on long audio, the one most chunks with
   // text detect), and one segment per pass with its language, emotion and
   // event, which Voxt merges into its metadata.
-  qwen3_asr::TranscriptionResult
+  omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples,
              const SenseVoiceOptions &options,
              const std::atomic<bool> &cancel) const;

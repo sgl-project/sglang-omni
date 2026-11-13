@@ -7,14 +7,15 @@
 
 #include "common/audio.h"
 #include "common/text.h"
+#include "common/transcription.h"
 
 namespace moss {
 
 using omni_common::kSampleRate;
+using omni_common::SpeakerSegment;
+using omni_common::SpeakerSegmentsJson;
 using omni_common::StripUnicodeWhitespace;
-using qwen3_asr::SpeakerSegment;
-using qwen3_asr::SpeakerSegmentsJson;
-using qwen3_asr::TranscriptionResult;
+using omni_common::TranscriptionResult;
 
 namespace {
 

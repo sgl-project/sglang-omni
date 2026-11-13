@@ -8,6 +8,7 @@
 
 #include "common/swift_port.h"
 #include "common/text.h"
+#include "common/transcription.h"
 
 namespace nemotron {
 
@@ -104,7 +105,7 @@ bool NemotronTranscriber::HasStandaloneSpace(int token_id) const {
   return standalone_spaces_.at(token_id);
 }
 
-qwen3_asr::TranscriptionResult
+omni_common::TranscriptionResult
 NemotronTranscriber::Transcribe(const std::vector<float> &samples,
                                 const NemotronOptions &options,
                                 const std::atomic<bool> &cancel) const {
@@ -184,7 +185,7 @@ void NemotronStream::Decode(int mel_frame_limit, bool flush,
                  mx::bfloat16);
   while (consumed_mel_frames_ < limit) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::TranscriptionCancelled();
     } else {
     }
     const int end = std::min(consumed_mel_frames_ + chunk_mel_frames, limit);
@@ -321,13 +322,13 @@ std::string NemotronStream::Text() const {
   return swift_port::TrimWhitespace(text, true);
 }
 
-qwen3_asr::TranscriptionResult NemotronStream::Result() const {
+omni_common::TranscriptionResult NemotronStream::Result() const {
   const double frame_seconds = transcriber_.frame_seconds();
-  qwen3_asr::TranscriptionResult result;
+  omni_common::TranscriptionResult result;
   result.text = Text();
   result.language = language_;
   result.generated_token_count = static_cast<int>(tokens_.size());
-  result.finish_reason = qwen3_asr::FinishReason::kStop;
+  result.finish_reason = omni_common::FinishReason::kStop;
   // Note (Dayuxiaoshui): a sentence closes on ! ? and their CJK forms, or on a
   // period that ends the transcript or precedes a word boundary.
   std::string sentence;

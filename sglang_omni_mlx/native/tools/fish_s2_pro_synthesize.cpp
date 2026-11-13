@@ -18,6 +18,7 @@
 
 #include "common/audio.h"
 #include "common/reference_audio.h"
+#include "common/transcription.h"
 #include "fish_s2_pro/fish_s2_pro_model.h"
 #include "nlohmann/json.hpp"
 
@@ -109,7 +110,7 @@ int main(int argc, char **argv) {
   std::vector<mlx::core::array> frames;
   nlohmann::json frame_codes = nlohmann::json::array();
   const std::atomic<bool> cancel(false);
-  const qwen3_asr::FinishReason finish_reason = model.Generate(
+  const omni_common::FinishReason finish_reason = model.Generate(
       prompt, max_frames, sampling, cancel, [&](const mlx::core::array &codes) {
         const int32_t *values = codes.data<int32_t>();
         frame_codes.push_back(
@@ -151,7 +152,7 @@ int main(int argc, char **argv) {
   const nlohmann::json line = {
       {"prompt_token_count", prompt.ids.size()},
       {"frame_count", frame_codes.size()},
-      {"finish_reason", qwen3_asr::FinishReasonName(finish_reason)},
+      {"finish_reason", omni_common::FinishReasonName(finish_reason)},
       {"prompt_seconds", prompt_seconds},
       {"generate_seconds", generate_seconds},
       {"seconds", seconds},

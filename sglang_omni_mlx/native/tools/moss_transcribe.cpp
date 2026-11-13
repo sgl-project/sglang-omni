@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/transcription.h"
 #include "moss/moss_transcriber.h"
 #include "nlohmann/json.hpp"
 
@@ -86,9 +87,9 @@ int main(int argc, char **argv) {
                          ? nlohmann::ordered_json(*result.language)
                          : nlohmann::ordered_json()},
         {"generated_token_count", result.generated_token_count},
-        {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
+        {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
         {"verify_rounds", result.verify_round_count},
-        {"segments", qwen3_asr::SpeakerSegmentsJson(result.segments)},
+        {"segments", omni_common::SpeakerSegmentsJson(result.segments)},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
                         .count()},

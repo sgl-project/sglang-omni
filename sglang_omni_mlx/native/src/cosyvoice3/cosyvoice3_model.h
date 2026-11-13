@@ -17,11 +17,11 @@
 #include "common/layers.h"
 #include "common/text.h"
 #include "common/tokenizer.h"
+#include "common/transcription.h"
 #include "cosyvoice3/cosyvoice3_audio.h"
 #include "cosyvoice3/cosyvoice3_speech_tokenizer.h"
 #include "cosyvoice3/cosyvoice3_vocoder.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "qwen3_asr/qwen3_decoder.h"
 
 namespace cosyvoice3 {
@@ -76,7 +76,7 @@ struct Reference {
 struct GeneratedSpeech {
   // As sampled, before silent runs are trimmed.
   std::vector<int> speech_tokens;
-  qwen3_asr::FinishReason finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::FinishReason finish_reason = omni_common::FinishReason::kStop;
 };
 
 class CosyVoice3Model {

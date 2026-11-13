@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/transcription.h"
 #include "nemotron/nemotron_transcriber.h"
 #include "nlohmann/json.hpp"
 
@@ -64,7 +65,7 @@ int main(int argc, char **argv) {
     bytes << stream.rdbuf();
     const std::vector<float> samples = omni_common::DecodeWav(bytes.str());
     const auto started = std::chrono::steady_clock::now();
-    const qwen3_asr::TranscriptionResult result =
+    const omni_common::TranscriptionResult result =
         transcriber.Transcribe(samples, options, cancel);
     nlohmann::json line = {
         {"file", file},
@@ -73,7 +74,7 @@ int main(int argc, char **argv) {
                          ? nlohmann::json(*result.language)
                          : nlohmann::json()},
         {"generated_token_count", result.generated_token_count},
-        {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
+        {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
                         .count()},

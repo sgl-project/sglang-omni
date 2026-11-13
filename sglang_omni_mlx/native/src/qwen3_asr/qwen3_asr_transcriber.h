@@ -7,21 +7,16 @@
 #include <exception>
 #include <filesystem>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "common/audio.h"
 #include "common/tokenizer.h"
-#include "nlohmann/json.hpp"
+#include "common/transcription.h"
 #include "qwen3_asr/dflash_draft.h"
 #include "qwen3_asr/qwen3_asr_model.h"
 
 namespace qwen3_asr {
-
-enum class FinishReason { kStop, kLength };
-
-const char *FinishReasonName(FinishReason reason);
 
 struct TranscriptionOptions {
   std::optional<std::string> language;
@@ -40,40 +35,6 @@ struct TranscriptionOptions {
   std::string prefix_text;
 };
 
-struct SpeakerSegment {
-  double start_seconds = 0.0;
-  double end_seconds = 0.0;
-  // Empty when the output carried no speaker segments.
-  std::string speaker;
-  std::string text;
-  // Note (Dayuxiaoshui): SenseVoice's language, emotion and audio event of
-  // the segment's audio; none for other models.
-  std::optional<std::string> language;
-  std::optional<std::string> emotion;
-  std::optional<std::string> event;
-};
-
-struct TranscriptionResult {
-  std::string text;
-  std::optional<std::string> language;
-  int generated_token_count = 0;
-  FinishReason finish_reason = FinishReason::kLength;
-  // Timestamped speaker segments, for models that produce them.
-  std::vector<SpeakerSegment> segments;
-  // Rounds of draft verification; 0 when decoding without a draft.
-  int verify_round_count = 0;
-};
-
-class TranscriptionCancelled : public std::runtime_error {
-public:
-  TranscriptionCancelled() : std::runtime_error("transcription cancelled") {}
-};
-
-// Segments as the HTTP and realtime APIs send them: start, end, speaker, text,
-// and language, emotion and event when set.
-nlohmann::ordered_json
-SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments);
-
 // The canonical prompt name for a Qwen3-ASR language code or name. Like
 // Voxt's Swift port, a name outside the table is used as given; blank is none.
 std::optional<std::string> NormalizeLanguage(const std::string &language);
@@ -86,7 +47,7 @@ struct BatchRequest {
 
 // A finished request's result, or the exception that ended it.
 struct BatchOutcome {
-  std::optional<TranscriptionResult> result;
+  std::optional<omni_common::TranscriptionResult> result;
   std::exception_ptr error;
 };
 
@@ -104,9 +65,10 @@ public:
   // Text already shown minus its last tokens, cut back to whole characters.
   std::pair<std::vector<int>, std::string>
   RetainedPrefix(const std::string &text, int rollback_token_count) const;
-  TranscriptionResult Transcribe(const std::vector<float> &samples,
-                                 const TranscriptionOptions &options,
-                                 const std::atomic<bool> &cancel) const;
+  omni_common::TranscriptionResult
+  Transcribe(const std::vector<float> &samples,
+             const TranscriptionOptions &options,
+             const std::atomic<bool> &cancel) const;
   // Whether the request can decode together with others: the batched loop
   // has neither the draft nor the repetition penalty.
   bool CanBatch(const TranscriptionOptions &options) const {
@@ -131,11 +93,11 @@ private:
   bool IsStopToken(int token_id, const TranscriptionOptions &options) const;
   // The result for a finished output; a stop on a token loop keeps one copy
   // of the looping unit.
-  TranscriptionResult FinishedResult(const std::vector<int> &output_ids,
-                                     const TranscriptionOptions &options,
-                                     FinishReason finish_reason,
-                                     bool stopped_on_token_loop,
-                                     int verify_round_count = 0) const;
+  omni_common::TranscriptionResult
+  FinishedResult(const std::vector<int> &output_ids,
+                 const TranscriptionOptions &options,
+                 omni_common::FinishReason finish_reason,
+                 bool stopped_on_token_loop, int verify_round_count = 0) const;
 
   struct BatchRow;
   // Prefills every request; one that fails is reported finished with its
@@ -174,7 +136,8 @@ struct BatchableTranscription {
   std::vector<float> samples;
   TranscriptionOptions options;
 
-  TranscriptionResult operator()(const std::atomic<bool> &cancel) const {
+  omni_common::TranscriptionResult
+  operator()(const std::atomic<bool> &cancel) const {
     return transcriber->Transcribe(samples, options, cancel);
   }
 };
