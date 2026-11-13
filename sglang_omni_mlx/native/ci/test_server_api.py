@@ -297,7 +297,7 @@ def wav_bytes(pcm: bytes) -> bytes:
 
 
 def long_wav(seconds: int) -> bytes:
-   """Distinct long clips joined to seconds, so a full decode takes several seconds."""
+    """Distinct long clips joined to seconds, so a full decode takes several seconds."""
     pcm = b"".join(pcm16(f"{index:04d}_en_long") for index in range(344, 360))
     assert len(pcm) >= seconds * 32000
     return wav_bytes(pcm[: seconds * 32000])
