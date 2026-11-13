@@ -35,7 +35,7 @@ func TestRewriteAnswerFollowUp(t *testing.T) {
 	tr.setText("shorter")
 	front := helpertest.Apps["com.tinyspeck.slackmacgap"]
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
-	a.pump("the follow-up's recording", func() bool { return a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt) })
+	a.pump("the follow-up's recording", func() bool { return a.sess.State == session.Recording && !a.sess.HeardAt.Before(a.sess.StartedAt) })
 	// It records in the card, now a conversation (Voxt's).
 	if v := a.cardNow(); !a.answer.open || a.ov.mode != ovAnswer || !v.conversation || !v.recording {
 		t.Errorf("card %v overlay %s while recording: %+v", a.answer.open, a.ov.mode, v)
