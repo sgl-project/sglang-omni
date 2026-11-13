@@ -49,6 +49,8 @@ Default optimizations that are on without further flags: backbone decode device 
 
 Classifier-free guidance is on in both stages and has no flag. See [Guidance](#guidance) for what it costs you, because the AR half changes how much a request occupies.
 
+To run it on Ascend NPU, follow the [MiniMax-Music3 Ascend NPU guide](../other_platforms/installation_npu.md#minimax-music3).
+
 ## Apple Silicon: native MLX
 
 The standalone `music3_server` runs entirely in C++ under

@@ -206,6 +206,9 @@ type Snapshot struct {
 	// CanSkip: while Composing, SkipLLM inserts the recognised text in
 	// place of the model's answer (Transcribe, and Translate of speech).
 	CanSkip bool
+	// Thinking is the thinking level chosen for Transcribe's clean-up in
+	// the preview (Manager.Rethink); nil: the service's setting.
+	Thinking *llm.Thinking
 	// Inserted: the result was pasted; Card: it shows in the answer card
 	// (Delivery says why it was not inserted). While the model writes,
 	// Card says the answer streams into the card.

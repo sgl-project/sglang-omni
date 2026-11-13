@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -109,4 +110,64 @@ func TestTranslateTimeoutKeepsSpeech(t *testing.T) {
 	if p := h.text.pastes(); len(p) != 1 || p[0] != "hello" {
 		t.Errorf("pasted %q", p)
 	}
+}
+
+// TestRethink (#3940): while the language model cleans up Transcribe's
+// text, Rethink asks again at the level chosen in the preview: the
+// request so far ends, the next one carries the level, its answer is
+// inserted once, and the snapshot says the level. Translate's step is
+// left alone (its card has its own menu).
+func TestRethink(t *testing.T) {
+	off := &llm.Thinking{Mode: llm.ThinkOff}
+	t.Run("transcribe", func(t *testing.T) {
+		model := &fakeLLM{text: "Hello, VoxtNew.", hang: true, hangOn: 1}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, model, nil)
+		id, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.speak(id, 3)
+		h.rec.waitFor(t, "the first answer", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+		h.m.Rethink(id, off)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Problem != nil || end.Result != "Hello, VoxtNew." || end.Thinking == nil || *end.Thinking != *off {
+			t.Errorf("end %s %+v %q %+v", end.State, end.Problem, end.Result, end.Thinking)
+		}
+		if r := model.requests(); len(r) != 2 || r[0].Thinking != nil || r[1].Thinking == nil || *r[1].Thinking != *off {
+			t.Errorf("requests %d: %+v", len(r), r)
+		}
+		if p := h.text.pastes(); len(p) != 1 || p[0] != "Hello, VoxtNew." {
+			t.Errorf("pasted %q", p)
+		}
+	})
+	t.Run("then skip", func(t *testing.T) {
+		model := &fakeLLM{hang: true}
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, model, nil)
+		id, _ := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+		h.speak(id, 3)
+		h.rec.waitFor(t, "the first answer", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+		h.m.Rethink(id, off)
+		h.rec.waitFor(t, "the second answer", func(Snapshot) bool { return len(model.requests()) == 2 })
+		h.m.SkipLLM(id)
+		if end := h.rec.wait(t); end.State != Done || end.Problem != nil || end.Result != "hello VoxtNew" {
+			t.Errorf("end %s %+v %q", end.State, end.Problem, end.Result)
+		}
+		if p := h.text.pastes(); len(p) != 1 {
+			t.Errorf("pasted %q", p)
+		}
+	})
+	t.Run("translate", func(t *testing.T) {
+		model := &fakeLLM{hang: true}
+		h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, _ *settings.Settings) { c.Select = &fakeSelector{} })
+		id, _ := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack})
+		h.speak(id, 3)
+		h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+		h.m.Rethink(id, off)
+		time.Sleep(50 * time.Millisecond)
+		if s := h.m.Current(); s.State != Composing || s.Thinking != nil || len(model.requests()) != 1 {
+			t.Errorf("Rethink moved Translate: %s %+v, %d requests", s.State, s.Thinking, len(model.requests()))
+		}
+		h.m.Cancel(id)
+		h.rec.wait(t)
+	})
 }
