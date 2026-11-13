@@ -12,25 +12,32 @@ FP32_PARAM_HOLDER_RENAMES = {
     ".mixer._fp32_params.dt_bias": ".mixer.dt_bias",
     ".mixer._fp32_params.D": ".mixer.D",
 }
+MTP_CHECKPOINT_PREFIX = "llm.mtp."
 SKIPPED_CHECKPOINT_PREFIXES = (
-    "llm.mtp.",
+    MTP_CHECKPOINT_PREFIX,
     "ctc_timestamp.",
     "perception.encoder.diarization_model.preprocessor.",
 )
 
 
-def classify_checkpoint_name(name: str) -> tuple[CheckpointTensorKind, str]:
+def classify_checkpoint_name(
+    name: str, *, is_mtp_draft: bool = False
+) -> tuple[CheckpointTensorKind, str]:
     """Return the tensor kind and its target name or fused expert module prefix."""
-    if "._extra_state" in name or name.startswith(SKIPPED_CHECKPOINT_PREFIXES):
+    if "._extra_state" in name:
         return "skip", ""
-    else:
-        pass
-    if name.startswith("perception."):
+    elif is_mtp_draft:
+        if name.startswith(MTP_CHECKPOINT_PREFIX):
+            hf_name = "mtp." + name[len(MTP_CHECKPOINT_PREFIX) :]
+        else:
+            return "skip", ""
+    elif name.startswith(SKIPPED_CHECKPOINT_PREFIXES):
+        return "skip", ""
+    elif name.startswith("perception."):
         return "perception", name[len("perception.") :]
     else:
-        pass
-    hf_name = name.replace("llm.model.", "backbone.", 1)
-    hf_name = hf_name.replace("llm.lm_head", "lm_head", 1)
+        hf_name = name.replace("llm.model.", "backbone.", 1)
+        hf_name = hf_name.replace("llm.lm_head", "lm_head", 1)
     for holder, target in FP32_PARAM_HOLDER_RENAMES.items():
         if hf_name.endswith(holder):
             hf_name = hf_name[: -len(holder)] + target

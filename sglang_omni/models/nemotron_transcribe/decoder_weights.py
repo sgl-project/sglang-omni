@@ -13,11 +13,11 @@ from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
 
 
 def checkpoint_to_language_model_weights(
-    weights: Iterable[tuple[str, torch.Tensor]],
+    weights: Iterable[tuple[str, torch.Tensor]], *, is_mtp_draft: bool = False
 ) -> Iterable[tuple[str, torch.Tensor]]:
     """Yield NemotronH parameter names and tensors for language_model.load_weights."""
     for name, tensor in weights:
-        kind, payload = classify_checkpoint_name(name)
+        kind, payload = classify_checkpoint_name(name, is_mtp_draft=is_mtp_draft)
         if kind == "split_down":
             for index in range(tensor.shape[0]):
                 yield f"{payload}.experts.{index}.down_proj.weight", tensor[index].t()

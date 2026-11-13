@@ -13,7 +13,7 @@ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.mm_utils import (
     MultiModalityDataPaddingPatternMultimodalTokens,
-    general_mm_embed_routine,
+    prepare_mm_inputs,
 )
 from sglang.srt.managers.schedule_batch import (
     Modality,
@@ -77,6 +77,16 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
     def get_input_embeddings(self) -> nn.Module:
         return self.language_model.get_input_embeddings()
 
+    @property
+    def lm_head(self) -> nn.Module:
+        return self.language_model.lm_head
+
+    def get_embed_and_head(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.language_model.get_embed_and_head()
+
+    def set_embed_and_head(self, embed: torch.Tensor, head: torch.Tensor) -> None:
+        self.language_model.set_embed_and_head(embed, head)
+
     def pad_input_ids(
         self, input_ids: list[int], mm_inputs: MultimodalInputs
     ) -> list[int]:
@@ -125,20 +135,41 @@ class NemotronTranscribeForConditionalGeneration(nn.Module):
             outputs.append(emb)
         return outputs
 
+    def compose_input_embeds(
+        self,
+        input_ids: torch.Tensor,
+        forward_batch: ForwardBatch,
+        language_model_kwargs: dict[str, object],
+    ) -> torch.Tensor:
+        # note (yhayaran): get_audio_feature runs here only when the pre-LM encoder is disabled.
+        return prepare_mm_inputs(
+            input_ids,
+            forward_batch,
+            self.language_model,
+            language_model_kwargs,
+            data_embedding_funcs={Modality.AUDIO: self.get_audio_feature},
+        )
+
     def forward(
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
+        input_embeds: torch.Tensor | None = None,
         **kwargs: object,
     ) -> LogitsProcessorOutput:
-        # note (yhayaran): get_audio_feature runs here only when the pre-LM encoder is disabled.
-        return general_mm_embed_routine(
-            input_ids=input_ids,
+        kwargs.pop("omni_prefill_rids", None)
+        kwargs.pop("input_embeds_are_projected", None)
+        kwargs["positions"] = positions
+        if input_embeds is None:
+            input_embeds = self.compose_input_embeds(input_ids, forward_batch, kwargs)
+        else:
+            pass
+        return self.language_model(
+            input_ids=None,
             forward_batch=forward_batch,
-            language_model=self.language_model,
-            data_embedding_funcs={Modality.AUDIO: self.get_audio_feature},
-            positions=positions,
+            input_embeds=input_embeds,
+            **kwargs,
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:

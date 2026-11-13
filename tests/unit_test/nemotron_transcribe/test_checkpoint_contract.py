@@ -69,6 +69,56 @@ def test_language_model_names_cover_the_decoder_remap() -> None:
         assert classify_checkpoint_name(name) == expected
 
 
+def test_mtp_draft_names_keep_only_the_mtp_layer() -> None:
+    """The draft loads from the target checkpoint, so every backbone tensor is dropped and llm.mtp. becomes mtp."""
+    samples = {
+        "llm.mtp.layers.0.eh_proj.weight": ("rename", "mtp.layers.0.eh_proj.weight"),
+        "llm.mtp.layers.0.mixer.q_proj.weight": (
+            "rename",
+            "mtp.layers.0.mixer.q_proj.weight",
+        ),
+        "llm.mtp.layers.1.mixer.experts.gate_and_up_projs": (
+            "split_up",
+            "mtp.layers.1.mixer",
+        ),
+        "llm.mtp.layers.1.mixer.experts.down_projs": (
+            "split_down",
+            "mtp.layers.1.mixer",
+        ),
+        "llm.mtp.layers.1.final_layernorm.weight": (
+            "rename",
+            "mtp.layers.1.final_layernorm.weight",
+        ),
+        "llm.mtp.layers.0.eh_proj._extra_state": ("skip", ""),
+        "llm.model.embeddings.weight": ("skip", ""),
+        "llm.lm_head.weight": ("skip", ""),
+        "llm.model.layers.3.mixer.experts.down_projs": ("skip", ""),
+        "perception.proj.weight": ("skip", ""),
+    }
+    for name, expected in samples.items():
+        assert classify_checkpoint_name(name, is_mtp_draft=True) == expected
+    converted = dict(
+        checkpoint_to_language_model_weights(
+            [
+                (
+                    "llm.mtp.layers.1.mixer.experts.gate_and_up_projs",
+                    torch.ones(2, 3, 4),
+                ),
+                (
+                    "llm.model.layers.1.mixer.experts.gate_and_up_projs",
+                    torch.ones(2, 3, 4),
+                ),
+            ],
+            is_mtp_draft=True,
+        )
+    )
+    assert sorted(converted) == [
+        "mtp.layers.1.mixer.experts.0.up_proj.weight",
+        "mtp.layers.1.mixer.experts.1.up_proj.weight",
+    ]
+    assert converted["mtp.layers.1.mixer.experts.0.up_proj.weight"].shape == (4, 3)
+
+
 def test_expert_weight_conversion_preserves_ungated_relu2_computation() -> None:
     up_weights = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4) / 16
     down_weights = torch.arange(24, dtype=torch.float32).reshape(2, 4, 3) / 16
