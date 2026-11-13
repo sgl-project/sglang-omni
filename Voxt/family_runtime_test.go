@@ -73,7 +73,6 @@ func (a *app) waitIdle(t *testing.T, events <-chan resident.Event, ids ...string
 // The fake servers cannot be measured (procMemory: on a Mac the test's
 // own process would be, a few MB), so their sizes are written.
 func TestFamilyRuntimeOmni(t *testing.T) {
-	skipWindowsActNow(t)
 	fakeOmni(t, omnitest.Opts{Text: "hello from omni"})
 	events := omniEvents(t)
 	(&fakeProcMemory{mem: map[int]int64{}}).install(t)

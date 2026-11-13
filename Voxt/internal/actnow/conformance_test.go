@@ -23,9 +23,6 @@ func TestFamilyConformance(t *testing.T) {
 	}
 	for _, scenario := range conformance.Scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
-			if scenario.Name == "SettingsFollowFamily" || scenario.Name == "ForwardCompatibleSettings" {
-				skipWindowsFileLocks(t)
-			}
 			fx := conformance.New(t)
 			scenario.Run(t, fx, newApp)
 		})
