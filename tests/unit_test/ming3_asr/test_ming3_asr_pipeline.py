@@ -244,6 +244,7 @@ def test_dspark_checkpoint_lives_until_stage_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DSpark greedy requests must survive architecture and sampling adaptation."""
+    monkeypatch.setattr(stages, "patch_kda_diagonal_anchor", MagicMock())
     checkpoint = TemporaryDirectory(prefix="test-ming-dspark-")
     checkpoint_path = Path(checkpoint.name)
     Qwen3Config(
@@ -341,6 +342,7 @@ def test_dspark_checkpoint_lives_until_stage_shutdown(
 def test_dspark_startup_failure_releases_adapted_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(stages, "patch_kda_diagonal_anchor", MagicMock())
     checkpoint = TemporaryDirectory(prefix="test-ming-dspark-")
     checkpoint_path = Path(checkpoint.name)
     monkeypatch.setattr(
