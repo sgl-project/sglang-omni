@@ -9,7 +9,6 @@ package main
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -56,8 +55,8 @@ echo metal > "$1/bin/mlx.metallib"
 	write(filepath.Join(fakeBin, "uv"), "#!/bin/sh\nexit 0\n")
 	write(filepath.Join(fakeBin, "codesign"), "#!/bin/sh\nexit 0\n")
 	out := filepath.Join(root, "staged")
-	cmd := exec.Command("bash", filepath.Join(root, "scripts/build-omni.sh"), "--out", out)
-	cmd.Env = append(os.Environ(), "PATH="+bashPathWithFakeBin(fakeBin), "OMNI_NATIVE="+native)
+	cmd := shellWithFakeBin("bash", fakeBin, filepath.Join(root, "scripts/build-omni.sh"), "--out", out)
+	cmd.Env = append(cmd.Env, "OMNI_NATIVE="+native)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build-omni.sh failed: %v\n%s", err, output)
 	}

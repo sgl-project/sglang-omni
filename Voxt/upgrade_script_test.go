@@ -9,7 +9,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,8 +33,8 @@ func TestUpgradeScriptRows(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		cmd := exec.Command("bash", "scripts/upgrade-test.sh", c.step)
-		cmd.Env = append(os.Environ(), "PATH="+bashPathWithFakeBin(bin),
+		cmd := shellWithFakeBin("bash", bin, "scripts/upgrade-test.sh", c.step)
+		cmd.Env = append(cmd.Env,
 			"HOME="+t.TempDir(), "OUT="+out, "FROM_TAG=voxt-v1.16.3", "TO_VERSION=2.0.2")
 		printed, err := cmd.CombinedOutput()
 		results, _ := os.ReadFile(filepath.Join(out, "results.md"))

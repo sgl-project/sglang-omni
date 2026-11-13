@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -172,8 +171,8 @@ esac
 	if runtime.GOOS == "windows" {
 		voxt = filepath.ToSlash(voxt)
 	}
-	cmd := exec.Command("bash", "-c", strings.Replace(script, real, "VOXT="+voxt, 1))
-	cmd.Env = append(os.Environ(), "HOME="+dir, "PATH="+bashPathWithFakeBin(dir))
+	cmd := shellWithFakeBin("bash", dir, "-c", strings.Replace(script, real, "VOXT="+voxt, 1))
+	cmd.Env = append(cmd.Env, "HOME="+dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}

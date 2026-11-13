@@ -277,11 +277,33 @@ func requireCJKFont(t *testing.T) {
 	}
 }
 
-func bashPathWithFakeBin(dir string) string {
-	if runtime.GOOS == "windows" {
-		return filepath.ToSlash(dir) + ":" + os.Getenv("PATH")
+func shellWithFakeBin(shell, dir string, args ...string) *exec.Cmd {
+	if runtime.GOOS != "windows" {
+		cmd := exec.Command(shell, args...)
+		cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		return cmd
 	}
-	return dir + string(os.PathListSeparator) + os.Getenv("PATH")
+	path := filepath.ToSlash(dir)
+	volume := filepath.VolumeName(path)
+	if len(volume) >= 2 && volume[1] == ':' {
+		path = "/" + strings.ToLower(volume[:1]) + strings.TrimPrefix(path, volume)
+	}
+	if len(args) > 0 && args[0] == "-c" {
+		cmd := exec.Command(shell, "-c", "PATH="+path+":$PATH; bash -s")
+		cmd.Stdin = strings.NewReader(args[1])
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	command := "PATH=" + path + ":$PATH; "
+	for i, arg := range args {
+		if i > 0 {
+			command += " "
+		}
+		command += "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+	}
+	cmd := exec.Command(shell, "-c", command)
+	cmd.Env = os.Environ()
+	return cmd
 }
 
 // frames runs the tester a few frames, so state set in one shows.
