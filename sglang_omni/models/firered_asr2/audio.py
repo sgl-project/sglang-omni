@@ -68,7 +68,8 @@ class FireRedFeatureExtractor:
     def __call__(self, waveform: NDArray[np.float32]) -> torch.Tensor:
         if knf is None:
             raise ImportError(
-                "FireRedASR2 requires kaldi-native-fbank; install the firered-asr2 extra"
+                "FireRedASR2 requires kaldi-native-fbank. "
+                "Install it with: python -m pip install 'kaldi-native-fbank>=1.20.0'"
             )
         else:
             pass
