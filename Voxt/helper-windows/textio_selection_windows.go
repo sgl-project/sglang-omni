@@ -108,14 +108,15 @@ func readSelectionProbe(element *comObject) selectionProbe {
 	defer selection.release()
 	var same int32
 	result := selection.call(textRangeCompareEndpoints,
-		uintptr(unsafe.Pointer(selection)), textPatternEndpointStart,
-		uintptr(unsafe.Pointer(selection)), textPatternEndpointEnd,
+		textPatternEndpointStart,
+		uintptr(unsafe.Pointer(selection)),
+		textPatternEndpointEnd,
 		uintptr(unsafe.Pointer(&same)),
 	)
 	if int32(result) < 0 {
 		return selectionProbe{}
 	}
-	probe := selectionProbe{available: true, hasSelection: same == 0}
+	probe := selectionProbe{available: true, hasSelection: same != 0}
 	if !probe.hasSelection {
 		return probe
 	}
@@ -123,18 +124,12 @@ func readSelectionProbe(element *comObject) selectionProbe {
 	return probe
 }
 
-func (server *helperServer) copySelection(timeout time.Duration) (text string, note string, returnErr error) {
-	dataObject, err := clipboardObject()
+func (server *helperServer) copySelection(timeout time.Duration) (string, string, error) {
+	snapshot, err := snapshotClipboard()
 	if err != nil {
 		return "", "copy: snapshot failed", err
 	}
-	if dataObject != nil {
-		defer func() {
-			if dataObject != nil {
-				dataObject.release()
-			}
-		}()
-	}
+	defer snapshot.discard()
 	sequence, _, _ := procGetClipboardSequence.Call()
 	before := uint32(sequence)
 	if err := sendKeyCombo(virtualKeyC, []string{proto.ModControl}); err != nil {
@@ -156,26 +151,12 @@ func (server *helperServer) copySelection(timeout time.Duration) (text string, n
 		return "", "copy: clipboard unchanged", nil
 	}
 	text, readErr := clipboardText()
-	var restoreResult uintptr
-	if dataObject != nil {
-		restoreResult = setClipboardObject(dataObject)
-	} else if openErr := openClipboard(); openErr != nil {
-		returnErr = openErr
-	} else {
-		emptyResult, _, emptyErr := procEmptyClipboard.Call()
-		procCloseClipboard.Call()
-		if emptyResult == 0 {
-			returnErr = emptyErr
-		}
-	}
-	if dataObject != nil && int32(restoreResult) < 0 {
-		returnErr = hresultError("OleSetClipboard", restoreResult)
-	}
+	restoreErr := snapshot.writeBack()
 	if readErr != nil {
 		return "", "copy: read failed", readErr
 	}
-	if returnErr != nil {
-		return "", "copy: restore failed", returnErr
+	if restoreErr != nil {
+		return "", "copy: restore failed", restoreErr
 	}
 	return text, "copy: changed", nil
 }

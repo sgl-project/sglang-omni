@@ -17,40 +17,63 @@ const (
 )
 
 var (
-	kernel32                 = windows.NewLazySystemDLL("kernel32.dll")
-	procCloseClipboard       = user32.NewProc("CloseClipboard")
-	procEmptyClipboard       = user32.NewProc("EmptyClipboard")
-	procGetClipboardData     = user32.NewProc("GetClipboardData")
-	procGetClipboardSequence = user32.NewProc("GetClipboardSequenceNumber")
-	procGlobalAlloc          = kernel32.NewProc("GlobalAlloc")
-	procGlobalFree           = kernel32.NewProc("GlobalFree")
-	procGlobalLock           = kernel32.NewProc("GlobalLock")
-	procGlobalSize           = kernel32.NewProc("GlobalSize")
-	procGlobalUnlock         = kernel32.NewProc("GlobalUnlock")
-	procOleGetClipboard      = ole32.NewProc("OleGetClipboard")
-	procOleSetClipboard      = ole32.NewProc("OleSetClipboard")
-	procOpenClipboard        = user32.NewProc("OpenClipboard")
-	procRtlMoveMemory        = kernel32.NewProc("RtlMoveMemory")
-	procSetClipboardData     = user32.NewProc("SetClipboardData")
+	kernel32                       = windows.NewLazySystemDLL("kernel32.dll")
+	procCloseClipboard             = user32.NewProc("CloseClipboard")
+	procEmptyClipboard             = user32.NewProc("EmptyClipboard")
+	procGetClipboardData           = user32.NewProc("GetClipboardData")
+	procGetClipboardSequence       = user32.NewProc("GetClipboardSequenceNumber")
+	procGlobalAlloc                = kernel32.NewProc("GlobalAlloc")
+	procGlobalFree                 = kernel32.NewProc("GlobalFree")
+	procGlobalLock                 = kernel32.NewProc("GlobalLock")
+	procGlobalSize                 = kernel32.NewProc("GlobalSize")
+	procGlobalUnlock               = kernel32.NewProc("GlobalUnlock")
+	procIsClipboardFormatAvailable = user32.NewProc("IsClipboardFormatAvailable")
+	procOleGetClipboard            = ole32.NewProc("OleGetClipboard")
+	procOleSetClipboard            = ole32.NewProc("OleSetClipboard")
+	procOpenClipboard              = user32.NewProc("OpenClipboard")
+	procRtlMoveMemory              = kernel32.NewProc("RtlMoveMemory")
+	procSetClipboardData           = user32.NewProc("SetClipboardData")
 )
 
 type clipboardSnapshot struct {
-	dataObject  *comObject
-	ourSequence uint32
+	dataObject   *comObject
+	ourSequence  uint32
+	originalText string
+	hasText      bool
+}
+
+func snapshotClipboard() (*clipboardSnapshot, error) {
+	snapshot := &clipboardSnapshot{}
+	dataObject, err := clipboardObject()
+	if err != nil {
+		return nil, err
+	}
+	snapshot.dataObject = dataObject
+	available, _, _ := procIsClipboardFormatAvailable.Call(clipboardUnicodeText)
+	if available != 0 {
+		snapshot.originalText, err = clipboardText()
+		if err != nil {
+			snapshot.discard()
+			return nil, err
+		}
+		snapshot.hasText = true
+	}
+	return snapshot, nil
 }
 
 func snapshotAndSetClipboard(text string, preserve bool) (*clipboardSnapshot, error) {
 	snapshot := &clipboardSnapshot{}
 	if preserve {
-		result, _, _ := procOleGetClipboard.Call(uintptr(unsafe.Pointer(&snapshot.dataObject)))
-		if int32(result) < 0 {
-			return nil, hresultError("OleGetClipboard", result)
+		var err error
+		snapshot, err = snapshotClipboard()
+		if err != nil {
+			return nil, err
 		}
 	}
 	if err := setClipboardText(text); err != nil {
-		if snapshot.dataObject != nil {
-			setClipboardObject(snapshot.dataObject)
-			snapshot.dataObject.release()
+		if preserve {
+			_ = snapshot.writeBack()
+			snapshot.discard()
 		}
 		return nil, err
 	}
@@ -60,13 +83,19 @@ func snapshotAndSetClipboard(text string, preserve bool) (*clipboardSnapshot, er
 }
 
 func setClipboardText(text string) error {
+	return writeClipboardText(text, true)
+}
+
+func writeClipboardText(text string, empty bool) error {
 	if err := openClipboard(); err != nil {
 		return err
 	}
 	defer procCloseClipboard.Call()
-	result, _, callErr := procEmptyClipboard.Call()
-	if result == 0 {
-		return fmt.Errorf("EmptyClipboard: %w", callErr)
+	if empty {
+		result, _, callErr := procEmptyClipboard.Call()
+		if result == 0 {
+			return fmt.Errorf("EmptyClipboard: %w", callErr)
+		}
 	}
 	encoded := append(utf16.Encode([]rune(text)), 0)
 	memory, _, callErr := procGlobalAlloc.Call(globalMoveable, uintptr(len(encoded))*2)
@@ -80,7 +109,7 @@ func setClipboardText(text string) error {
 	}
 	procRtlMoveMemory.Call(destination, uintptr(unsafe.Pointer(&encoded[0])), uintptr(len(encoded))*2)
 	procGlobalUnlock.Call(memory)
-	result, _, callErr = procSetClipboardData.Call(clipboardUnicodeText, memory)
+	result, _, callErr := procSetClipboardData.Call(clipboardUnicodeText, memory)
 	if result == 0 {
 		procGlobalFree.Call(memory)
 		return fmt.Errorf("SetClipboardData: %w", callErr)
@@ -141,22 +170,39 @@ func (snapshot *clipboardSnapshot) discard() {
 	}
 }
 
+func (snapshot *clipboardSnapshot) writeBack() error {
+	if snapshot.dataObject != nil {
+		result := setClipboardObject(snapshot.dataObject)
+		if int32(result) < 0 {
+			return hresultError("OleSetClipboard", result)
+		}
+	} else {
+		if err := openClipboard(); err != nil {
+			return err
+		}
+		result, _, callErr := procEmptyClipboard.Call()
+		procCloseClipboard.Call()
+		if result == 0 {
+			return callErr
+		}
+	}
+	if snapshot.hasText {
+		return writeClipboardText(snapshot.originalText, false)
+	}
+	return nil
+}
+
 func (snapshot *clipboardSnapshot) restore() (restored bool, taken bool, err error) {
 	if snapshot == nil {
 		return false, false, nil
 	}
-	if snapshot.dataObject == nil {
-		return false, false, nil
-	}
-	defer snapshot.dataObject.release()
+	defer snapshot.discard()
 	sequence, _, _ := procGetClipboardSequence.Call()
 	if uint32(sequence) != snapshot.ourSequence {
 		return false, true, nil
 	}
-	result := setClipboardObject(snapshot.dataObject)
-	if int32(result) < 0 {
-		return false, false, hresultError("OleSetClipboard", result)
+	if err := snapshot.writeBack(); err != nil {
+		return false, false, err
 	}
-	snapshot.dataObject = nil
 	return true, false, nil
 }
