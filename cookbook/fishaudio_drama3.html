@@ -612,6 +612,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attention-backend">Attention Backend</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#int4-checkpoint">Int4 Checkpoint</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deployment-performance">Deployment Performance</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensor-parallelism">Tensor Parallelism</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#high-concurrency">High Concurrency</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#production-serving">Production Serving</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#non-streaming-requests">Non-Streaming Requests</a></li>
@@ -847,6 +848,61 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\<
 </pre></div>
 </div>
 <p>When the engine and the vocoder share one GPU, <code class="docutils literal notranslate"><span class="pre">--mps</span> <span class="pre">on</span></code> lets their processes share it through CUDA MPS (see <a class="reference internal" href="../basic_usage/mps_dp.html"><span class="std std-doc">Same-GPU Data Parallelism with CUDA MPS</span></a>). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.</p>
+<section id="tensor-parallelism">
+<h3>Tensor Parallelism<a class="headerlink" href="#tensor-parallelism" title="Link to this heading">#</a></h3>
+<p>When the FP8 checkpoint does not fit one GPU, <code class="docutils literal notranslate"><span class="pre">--tts_engine.tp_size</span></code> splits the engine across 2 or 4 GPUs: SGLang shards the backbone, and each GPU holds its share of the codebook tower’s attention heads and MLP width; with 4 GPUs, pairs of GPUs share each of the tower’s two key/value heads, as they share the backbone’s. The FP8 routed experts are stored in 128-wide blocks, so their 512-wide intermediate splits across at most 4 GPUs. On two 32 GB GPUs, such as two RTX 5090:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>fishaudio/drama-3<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.tp_size<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.gpu<span class="w"> </span><span class="s2">"[0, 1]"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.75<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--preprocessing.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vocoder.gpu<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vocoder.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.2
+</pre></div>
+</div>
+<p>Each GPU then holds 18.5 GB of engine weights, and 9.7 GB with <code class="docutils literal notranslate"><span class="pre">--tts_engine.tp_size</span> <span class="pre">4</span> <span class="pre">--tts_engine.gpu</span> <span class="pre">&quot;[0,</span> <span class="pre">1,</span> <span class="pre">2,</span> <span class="pre">3]&quot;</span></code>. The vocoder’s default share of 0.10 is sized for an H200: on a 32 GB GPU it cannot hold one non-streaming decode of <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> frames, so the command raises it to 0.2. The fused codebook tower layers stay off under tensor parallelism. Table 4 compares these layouts with one H200 on the Seed-TTS English workload of Table 3, all measured with checkpoint revision <code class="docutils literal notranslate"><span class="pre">78e5ab7</span></code>; compare its rows with each other rather than with Table 3.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setup</p></th>
+<th class="head text-right"><p>Latency mean</p></th>
+<th class="head text-right"><p>Latency p95</p></th>
+<th class="head text-right"><p>RTF mean</p></th>
+<th class="head text-right"><p>Throughput (req/s)</p></th>
+<th class="head text-right"><p>WER (corpus)</p></th>
+<th class="head text-right"><p>Samples above 50% WER</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>One H200</p></td>
+<td class="text-right"><p>1.048 s</p></td>
+<td class="text-right"><p>1.551 s</p></td>
+<td class="text-right"><p>0.237</p></td>
+<td class="text-right"><p>7.62</p></td>
+<td class="text-right"><p>0.85%</p></td>
+<td class="text-right"><p>0</p></td>
+</tr>
+<tr class="row-odd"><td><p>Two RTX 5090, tensor parallel</p></td>
+<td class="text-right"><p>1.255 s</p></td>
+<td class="text-right"><p>1.876 s</p></td>
+<td class="text-right"><p>0.283</p></td>
+<td class="text-right"><p>6.37</p></td>
+<td class="text-right"><p>0.90%</p></td>
+<td class="text-right"><p>0</p></td>
+</tr>
+<tr class="row-even"><td><p>Four RTX 5090, tensor parallel</p></td>
+<td class="text-right"><p>1.403 s</p></td>
+<td class="text-right"><p>2.081 s</p></td>
+<td class="text-right"><p>0.316</p></td>
+<td class="text-right"><p>5.69</p></td>
+<td class="text-right"><p>0.87%</p></td>
+<td class="text-right"><p>0</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><em>Table 4. Drama 3 FP8 checkpoint on Seed-TTS English, non-streaming requests at concurrency 8.</em></p>
+</section>
 <section id="high-concurrency">
 <h3>High Concurrency<a class="headerlink" href="#high-concurrency" title="Link to this heading">#</a></h3>
 <p>The defaults run at most 16 requests at a time on the engine and give it 0.70 of the GPU’s memory. For more streams at once, raise the request cap; the measurements below also raise the engine’s share:</p>
@@ -1034,7 +1090,7 @@ by default) and logs:</p>
 <span class="w">      </span><span class="nt">decode_dtype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">float32</span>
 </pre></div>
 </div>
-<p>Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:</p>
+<p>Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference, under tensor parallelism, or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Drama 3 codebook sampling: PyTorch, untested GPU sm_120
 Drama 3 tower fused layers: off, untested GPU sm_120
 </pre></div>
@@ -1304,6 +1360,7 @@ sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span cla
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attention-backend">Attention Backend</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#int4-checkpoint">Int4 Checkpoint</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deployment-performance">Deployment Performance</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensor-parallelism">Tensor Parallelism</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#high-concurrency">High Concurrency</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#production-serving">Production Serving</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#non-streaming-requests">Non-Streaming Requests</a></li>
