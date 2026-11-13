@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -111,10 +112,19 @@ func TestConflicts(t *testing.T) {
 	}
 }
 
+func skipWindowsFileLocks(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		// TODO(W1): Implement actnowkit's file locks with LockFileEx.
+		t.Skip("actnowkit file locks are not supported on Windows")
+	}
+}
+
 // TestSharedSettings: at the first start, VoxtNew's changed language goes
 // to the family; a family value on a default follows; a family value on
 // a changed one is a conflict, kept, noticed once; Mirror and Follow.
 func TestSharedSettings(t *testing.T) {
+	skipWindowsFileLocks(t)
 	fx := conformance.New(t)
 	ctx := context.Background()
 	if _, err := famsettings.Set(ctx, fx.Family, "dev.hehehai.dicta", KeyProxy, "http://127.0.0.1:7897"); err != nil {
@@ -169,6 +179,7 @@ func TestSharedSettings(t *testing.T) {
 // beside the family directory, until the family's models.root names one
 // and VoxtNew follows it.
 func TestHub(t *testing.T) {
+	skipWindowsFileLocks(t)
 	fx := conformance.New(t)
 	ctx := context.Background()
 	hub := func(prefs settings.Settings) string {
