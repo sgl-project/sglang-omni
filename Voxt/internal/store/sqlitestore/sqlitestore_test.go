@@ -7,6 +7,7 @@ package sqlitestore
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -426,7 +427,10 @@ func TestCheckAndRewritePaths(t *testing.T) {
 	e := entry("a", store.KindTranscribe, time.Now(), "x", "y")
 	e.Error = "could not read " + dir + "/audio/a.wav"
 	s.History().Put(ctx, e)
-	s.Documents().Put(ctx, "k", []byte(`{"path":"`+dir+`/audio/a.wav"}`))
+	audioPath, _ := json.Marshal(dir + "/audio/a.wav")
+	if err := s.Documents().Put(ctx, "k", []byte(`{"path":`+string(audioPath)+`}`)); err != nil {
+		t.Fatal(err)
+	}
 	s.Close()
 	db := filepath.Join(dir, FileName)
 	n, err := RewritePaths(ctx, db, dir, "/Volumes/Data/VoxtNew")
