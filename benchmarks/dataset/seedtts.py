@@ -118,7 +118,7 @@ def _load_from_meta_lst(
             line = line.strip()
             if not line:
                 continue
-            parts = line.split("|")
+            parts = line.split("|", 3)
             if len(parts) < 4:
                 continue
             ref_audio = os.path.join(base_dir, parts[2])

@@ -150,20 +150,81 @@ def test_load_seedtts_samples_accepts_local_meta_lst(tmp_path: Path) -> None:
     assert samples[0].target_text == "target one"
 
 
+@pytest.mark.parametrize(
+    ("metadata_row", "target_text", "reference_text"),
+    [
+        (
+            "sample-1|你好, hello|ref.wav|<|emotion:elation|>你好 | Hello, café!",
+            "<|emotion:elation|>你好 | Hello, café!",
+            "你好, hello",
+        ),
+        (
+            "sample-1|hello|ref.wav|Read the literal separator A | B aloud.",
+            "Read the literal separator A | B aloud.",
+            "hello",
+        ),
+        ("sample-1||ref.wav||Hello||world|", "|Hello||world|", ""),
+    ],
+    ids=[
+        "control_tokens",
+        "literal_pipe",
+        "edge_pipes",
+    ],
+)
+def test_local_meta_lst_preserves_target_pipes(
+    tmp_path: Path, metadata_row: str, target_text: str, reference_text: str
+) -> None:
+    reference_path = tmp_path / "ref.wav"
+    reference_path.write_bytes(b"wav")
+    metadata_path = tmp_path / "meta.lst"
+    metadata_path.write_text(
+        f"\nmalformed\nonly|two\nonly|three|columns\n{metadata_row}\n"
+        "sample-2|world|ref.wav|not selected\n",
+        encoding="utf-8",
+    )
+
+    samples = seedtts.load_seedtts_samples(str(metadata_path), max_samples=1)
+
+    assert samples == [
+        seedtts.SampleInput(
+            sample_id="sample-1",
+            ref_text=reference_text,
+            ref_audio=str(reference_path),
+            target_text=target_text,
+        )
+    ]
+
+
 def test_load_seedtts_samples_unique_audio_counts_clips_in_meta_lst(
     tmp_path: Path,
 ) -> None:
     """SeedTTS lists a clip once per target text; unique_audio keeps each clip's first row and caps clips, not rows."""
     meta_path = tmp_path / "meta.lst"
     meta_path.write_text(
-        "a-1|ref a|a.wav|one\na-2|ref a|a.wav|two\nb-1|ref b|b.wav|three\nc-1|ref c|c.wav|four\n"
+        "a-1|ref a|a.wav|<|emotion:elation|>one | first\n"
+        "a-2|ref a|a.wav|two | repeated\n"
+        "b-1|ref b|b.wav|three | second\n"
+        "c-1|ref c|c.wav|four\n"
     )
 
     samples = seedtts.load_seedtts_samples(
         str(meta_path), max_samples=2, unique_audio=True
     )
 
-    assert [sample.sample_id for sample in samples] == ["a-1", "b-1"]
+    assert samples == [
+        seedtts.SampleInput(
+            sample_id="a-1",
+            ref_text="ref a",
+            ref_audio=str(tmp_path / "a.wav"),
+            target_text="<|emotion:elation|>one | first",
+        ),
+        seedtts.SampleInput(
+            sample_id="b-1",
+            ref_text="ref b",
+            ref_audio=str(tmp_path / "b.wav"),
+            target_text="three | second",
+        ),
+    ]
 
 
 def test_local_seedtts_source_does_not_claim_huggingface_revision(
