@@ -51,7 +51,7 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 		t.Fatalf("Continue did nothing: %+v", a.answer)
 	}
 	a.pump("the follow-up's recording", func() bool {
-		return a.sess.ID != first && a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt)
+		return a.sess.ID != first && a.sess.State == session.Recording && !a.sess.HeardAt.Before(a.sess.StartedAt)
 	})
 	// It is asked in the same card, the conversation above the text box.
 	if v := a.boxViewState(); !a.boxHoldsCard(a.overlayModeNow()) || !v.Conversation || !v.Recording {
