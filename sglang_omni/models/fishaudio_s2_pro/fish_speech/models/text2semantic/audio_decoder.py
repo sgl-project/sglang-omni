@@ -6,7 +6,6 @@ from __future__ import annotations
 import math
 import os
 from functools import cache
-from typing import Callable
 
 import torch
 import torch.nn as nn
@@ -154,35 +153,30 @@ def cuda_kvcache_attention(
     num_splits: int,
     cache_position: int,
 ) -> torch.Tensor:
-    """Dispatch Fast-AR attention to the validated CUDA backend."""
-    device_index = q.device.index
-    if device_index is None:
-        raise RuntimeError("FishAudio S2-Pro Fast-AR requires an indexed CUDA device")
-    else:
-        pass
-    if fast_ar_uses_fa3(device_index):
+    """Run Fast-AR attention with the native FA3 path on CUDA/MUSA."""
+    if q.device.type == "musa":
+        from flash_attn_interface import flash_attn_with_kvcache
+    elif fast_ar_uses_fa3(q.device.index):
         from sgl_kernel.flash_attn import flash_attn_with_kvcache
-
-        return flash_attn_with_kvcache(
+    else:
+        return flashinfer_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
             k=k,
             v=v,
-            cache_seqlens=cache_seqlens,
             causal=causal,
-            num_splits=num_splits,
+            cache_position=cache_position,
         )
-    else:
-        pass
-    return flashinfer_kvcache_attention(
+    return flash_attn_with_kvcache(
         q=q,
         k_cache=k_cache,
         v_cache=v_cache,
         k=k,
         v=v,
+        cache_seqlens=cache_seqlens,
         causal=causal,
-        cache_position=cache_position,
+        num_splits=num_splits,
     )
 
 
@@ -210,7 +204,7 @@ def flash_attn_kvcache_op(
             v=v,
             cache_position=cache_position,
         )
-    elif device_type == "cuda":
+    elif device_type in ("cuda", "musa"):
         output = cuda_kvcache_attention(
             q=q,
             k_cache=k_cache,
@@ -226,7 +220,7 @@ def flash_attn_kvcache_op(
         )
     else:
         raise RuntimeError(
-            "FishAudio S2-Pro Fast-AR attention supports CUDA and NPU, "
+            "FishAudio S2-Pro Fast-AR attention supports CUDA, NPU and MUSA, "
             f"but got device type {device_type!r}"
         )
     return output

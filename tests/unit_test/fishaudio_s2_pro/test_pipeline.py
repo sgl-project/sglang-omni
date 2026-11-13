@@ -82,7 +82,7 @@ def cuda_platform_for_engine_builder_tests(
     monkeypatch.setattr(
         fish_engine,
         "current_platform",
-        SimpleNamespace(is_npu=lambda: False),
+        SimpleNamespace(is_musa=lambda: False, is_npu=lambda: False),
     )
 
 
@@ -181,8 +181,13 @@ def test_fish_preprocessing_encodes_references_on_the_placement_device(
 
     s2pro_stages.create_preprocessing_executor("ckpt", gpu_id=gpu_id, max_concurrency=1)
 
-    assert loaded_on == [expected_device]
-    assert warmups == ([] if expected_device == "cpu" else [(expected_device, 44100)])
+    resolved_device = (
+        expected_device
+        if expected_device == "cpu"
+        else str(torch.device("cuda", gpu_id))
+    )
+    assert loaded_on == [resolved_device]
+    assert warmups == ([] if resolved_device == "cpu" else [(resolved_device, 44100)])
     assert torch.backends.cudnn.allow_tf32 is expected_tf32
 
 
