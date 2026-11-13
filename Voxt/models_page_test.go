@@ -46,7 +46,6 @@ func reopenModels(a *app) {
 }
 
 func TestModelsPage(t *testing.T) {
-	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 4800) // the retired models are below the speech model cards
 	a.navigate(modelsPath)
@@ -111,7 +110,6 @@ func TestModelsPage(t *testing.T) {
 // (the model deleted first) keeps its row, so it can be deleted too; so
 // does a draft still downloading.
 func TestModelsPageDraftAlone(t *testing.T) {
-	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 1600)
 	seedModels(t, a, models.ASRFastDraft)
@@ -222,7 +220,6 @@ func TestHideModel(t *testing.T) {
 // TestModelDownloadStates: a download in progress (Cancel), stopped
 // (Resume), failed (Try again), against a fake Hub.
 func TestModelDownloadStates(t *testing.T) {
-	skipWindowsActNow(t)
 	release := make(chan struct{})
 	var mode atomic.Value // "hold" | "missing"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

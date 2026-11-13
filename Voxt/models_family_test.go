@@ -77,7 +77,6 @@ func toasted(a *app, tt *ui.Tester, msg string) bool {
 // 2.0.1, and models.root names the folder, so that AudioSmith finds them
 // there. A folder the user chose stays.
 func TestModelsInOnePlace(t *testing.T) {
-	skipWindowsActNow(t)
 	a, _, _ := newTestApp(t)
 	ctx := context.Background()
 	old := &fammodels.Store{Family: a.fam.Dir(), Hub: fammodels.DefaultHubIn(a.fam.Dir()), BundleID: audioSmithID, AppID: "audiosmith"}
@@ -113,7 +112,6 @@ func TestModelsInOnePlace(t *testing.T) {
 // another disk, which would be copied before the window opens) is left to
 // its app, and models.root is written all the same.
 func TestGatherSkipsLibraries(t *testing.T) {
-	skipWindowsActNow(t)
 	a, _, _ := newTestApp(t)
 	ctx := context.Background()
 	old := &fammodels.Store{Family: a.fam.Dir(), Hub: fammodels.DefaultHubIn(a.fam.Dir()), BundleID: audioSmithID, AppID: "audiosmith"}
@@ -137,7 +135,6 @@ func TestGatherSkipsLibraries(t *testing.T) {
 // default library (ActNow/models/hub); this version's start brings them
 // into its own folder (hard links: no space used) and claims them there.
 func TestModelsFromTheFamilyLibrary(t *testing.T) {
-	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	ctx := context.Background()
 	old := &fammodels.Store{Family: a.fam.Dir(), Hub: fammodels.DefaultHubIn(a.fam.Dir()), BundleID: a.fam.BundleID(), AppID: "voxtnew"}
@@ -182,7 +179,6 @@ func TestModelsFromTheFamilyLibrary(t *testing.T) {
 }
 
 func TestModelDeleteShared(t *testing.T) {
-	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 1600)
 	seedModels(t, a, models.ASRFast, models.VADSilero)
@@ -225,7 +221,6 @@ func TestModelDeleteShared(t *testing.T) {
 }
 
 func TestModelDeleteCancelShared(t *testing.T) {
-	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 4800) // the retired models under every speech model's card
 	seedModels(t, a, models.LLMTranslate)
@@ -249,7 +244,6 @@ func TestModelDeleteCancelShared(t *testing.T) {
 // TestModelDeleteBusy: another app holds the model's lock (it downloads
 // it): deleting says so and keeps everything.
 func TestModelDeleteBusy(t *testing.T) {
-	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 1600)
 	seedModels(t, a, models.ASRFast, models.VADSilero)
@@ -273,7 +267,6 @@ func TestModelDeleteBusy(t *testing.T) {
 // TestModelElsewhere: another app downloads a model VoxtNew lacks: the
 // card says so and Download waits; a model deleted elsewhere says who.
 func TestModelElsewhere(t *testing.T) {
-	skipWindowsActNow(t)
 	srv := httptest.NewServer(http.NotFoundHandler()) // a download that starts fails at once
 	defer srv.Close()
 	t.Setenv("HF_ENDPOINT", srv.URL)
@@ -316,7 +309,6 @@ func TestModelElsewhere(t *testing.T) {
 // TestModelWaitingFor: VoxtNew's download waits for a file another app
 // is downloading.
 func TestModelWaitingFor(t *testing.T) {
-	skipWindowsActNow(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if rest, ok := strings.CutPrefix(r.URL.Path, "/api/models/"); ok {
 			repo, _, _ := strings.Cut(rest, "/revision/")
@@ -384,7 +376,6 @@ func TestModelFamilyText(t *testing.T) {
 // model already on disk, so it never became VoxtNew's. A retired model
 // (the borrowed language models) another app installed is not listed.
 func TestBorrowedModel(t *testing.T) {
-	skipWindowsActNow(t)
 	t.Run("retired", func(t *testing.T) {
 		a, _, tt := newTestApp(t)
 		tt.SetSize(windowWidth, 1600)

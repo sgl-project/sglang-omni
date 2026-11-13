@@ -218,14 +218,6 @@ func (f *fakeSupervisor) methods() []string {
 	return out
 }
 
-func skipWindowsActNow(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		// TODO(W1): Implement actnowkit's file locks with LockFileEx and hardlink/copy model links.
-		t.Skip("ActNow file locks and privileged model links are not available on Windows")
-	}
-}
-
 // newTestApp is the app over a new library in a temporary directory, with
 // the fake supervisor started and fake permissions (microphone allowed,
 // Accessibility not).

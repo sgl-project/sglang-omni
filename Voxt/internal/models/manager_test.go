@@ -11,7 +11,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -55,14 +54,6 @@ type testEnv struct {
 	fx  *conformance.Fixture
 	hub *conformance.FakeHub
 	m   *Manager
-}
-
-func skipWindowsModelLibrary(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		// TODO(W1): Add LockFileEx and hardlink/copy snapshot support to actnowkit.
-		t.Skip("ActNow model-library integration needs Windows file locks and HF symlink privilege")
-	}
 }
 
 // newEnv is VoxtNew's Manager over a fixture, AudioSmith and Dicta
@@ -113,7 +104,6 @@ func (e *testEnv) claim(t *testing.T, bundleID string, r conformance.Repo) {
 // TestDownloadClaims: a speech model downloads with its VAD into $HUB,
 // both claimed for VoxtNew, and Dir is the model's snapshot.
 func TestDownloadClaims(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	if err := e.m.Download("asr"); err != nil {
 		t.Fatal(err)
@@ -146,7 +136,6 @@ func TestDownloadClaims(t *testing.T) {
 // on disk for VoxtNew at once, shared with it, and VoxtNew's when "Use
 // them" claims it (origin reused), downloading nothing.
 func TestReuseWithoutDownload(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	e.fx.Install(repoLLM)
 	e.claim(t, audiosmith, repoLLM)
@@ -179,7 +168,6 @@ func TestReuseWithoutDownload(t *testing.T) {
 // and leaves a tombstone, after which AudioSmith's claim goes too. A
 // model nobody else uses is deleted.
 func TestDelete(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	e.fx.Install(repoLLM)
 	e.claim(t, audiosmith, repoLLM)
@@ -229,7 +217,6 @@ func TestDelete(t *testing.T) {
 // TestDeleteWhileAnotherDownloads: a repo another app holds fails the
 // delete at once, naming it, and keeps VoxtNew's claim.
 func TestDeleteWhileAnotherDownloads(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	e.fx.Install(repoLLM)
 	if err := e.m.Use(ctxT(t), "llm"); err != nil {
@@ -252,7 +239,6 @@ func TestDeleteWhileAnotherDownloads(t *testing.T) {
 // TestWaitingFor (scenario 3): while Dicta holds a blob's lock, the
 // download says it waits for Dicta; once Dicta lets go, it goes on.
 func TestWaitingFor(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	weights := repoLLM.Files[2]
 	lock, err := fammodels.TryLockBlob(e.fx.Hub, repoLLM.Ref.Repo, weights.BlobID(), fammodels.Owner{BundleID: dicta, Op: fammodels.OpDownload})
@@ -279,7 +265,6 @@ func TestWaitingFor(t *testing.T) {
 // TestElsewhere: a download another app runs shows on the model while
 // VoxtNew does not download it.
 func TestElsewhere(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	lock, err := fammodels.TryLockRepo(e.fx.Hub, repoLLM.Ref.Repo, family.Shared, fammodels.Owner{BundleID: audiosmith, Op: fammodels.OpDownload})
 	if err != nil {
@@ -302,7 +287,6 @@ func TestAccept(t *testing.T) {
 	old := conformance.TestRepo(repoLLM.Ref.Repo, "4444444444444444444444444444444444444444", 4<<10)
 	cat := testCatalog()
 	cat[2].Accept = []string{old.Ref.Revision}
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, cat, Options{})
 	e.fx.Install(old)
 	e.m.Refresh()
@@ -316,7 +300,6 @@ func TestAccept(t *testing.T) {
 func TestBorrowed(t *testing.T) {
 	cat := testCatalog()
 	cat[2].Borrowed, cat[2].Files, cat[2].Bytes = true, nil, repoLLM.Size()
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, cat, Options{})
 	if !errors.Is(e.m.Download("llm"), ErrBorrowed) {
 		t.Error("downloads a borrowed model")
@@ -342,7 +325,6 @@ func TestBorrowed(t *testing.T) {
 func TestMigrateRetired(t *testing.T) {
 	cat := testCatalog()
 	cat[2].Retired = true
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, cat, Options{})
 	e.fx.Install(repoLLM)
 	e.m.Refresh()
@@ -358,7 +340,6 @@ func TestMigrateRetired(t *testing.T) {
 // there, claimed again, and the models other apps claim too (not a model
 // no app claims); the library stays as it was.
 func TestMoveTo(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	other := conformance.TestRepo("mlx-community/other-app", "4444444444444444444444444444444444444444", 8<<10)
 	stray := conformance.TestRepo("someone/stray", "5555555555555555555555555555555555555555", 8<<10)
@@ -408,7 +389,6 @@ func TestMoveTo(t *testing.T) {
 // and no other app claims, origin migrated, reading the disk only;
 // another app's model waits for "Use them".
 func TestMigrate(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	e.fx.Install(repoSpeech)
 	e.fx.Install(repoVAD)
@@ -437,7 +417,6 @@ func TestMigrate(t *testing.T) {
 // TestCancelResume: a cancelled download keeps its part (Status.Done
 // after a Refresh), and the next one fetches only the rest.
 func TestCancelResume(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	reached, release := e.hub.Pause(repoLLM.Ref.Repo, "model.safetensors", 32<<10)
 	if err := e.m.Download("llm"); err != nil {
@@ -467,7 +446,6 @@ func TestCancelResume(t *testing.T) {
 // second still gets the VAD: it waits for that job, then fetches what is
 // missing. It used to end installed with no VAD on disk.
 func TestNeedsAfterAnotherJob(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	second := repoModel("asr2", ASR, repoLLM)
 	second.Needs = []string{"vad"}
 	e := newEnv(t, append(testCatalog(), second), Options{})
@@ -495,7 +473,6 @@ func TestNeedsAfterAnotherJob(t *testing.T) {
 // not LFS when .actnow/blobs.json is missing. The claim gave Check no
 // sizes, so only blobs.json could catch it.
 func TestTruncatedFileIsNotInstalled(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	if err := e.m.Download("llm"); err != nil {
 		t.Fatal(err)
@@ -520,7 +497,6 @@ func TestTruncatedFileIsNotInstalled(t *testing.T) {
 // TestDiskSpace: a download that would leave less than the reserve
 // fails before fetching, with hfhub's error.
 func TestDiskSpace(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{ReserveBytes: 1 << 62})
 	if err := e.m.Download("llm"); err != nil {
 		t.Fatal(err)
@@ -536,7 +512,6 @@ func TestDiskSpace(t *testing.T) {
 // TestDeletedBy: Dicta deleting a model for all apps takes it from
 // VoxtNew; its status says who did.
 func TestDeletedBy(t *testing.T) {
-	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	e.fx.Install(repoLLM)
 	if err := e.m.Use(ctxT(t), "llm"); err != nil {

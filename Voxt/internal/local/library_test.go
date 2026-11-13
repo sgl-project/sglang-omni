@@ -3,7 +3,7 @@ package local
 import (
 	"context"
 	"errors"
-	"runtime"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -36,16 +36,7 @@ func snapshot(hub, id string) string {
 	return models.SnapshotDir(hub, m, "")
 }
 
-func skipWindowsSymlink(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		// TODO(W1): Fall back to hard links or copies for the HF-style model cache.
-		t.Skip("Windows symlink privilege is required for HF-style model cache fixtures")
-	}
-}
-
 func TestLibrary(t *testing.T) {
-	skipWindowsSymlink(t)
 	m, hub := openModels(t, models.ASRFast, models.VADSilero, models.LLMTranslate, models.LLMFast)
 	name := func(id string) string { return "name of " + id }
 	var s Services = NewLibrary(m, Openers{}, name)
@@ -99,7 +90,7 @@ func TestLibrary(t *testing.T) {
 	if len(opened) != 1 || opened[0] != want[0] {
 		t.Errorf("opened %q, want %q", opened, want)
 	}
-	if !strings.Contains(want[0], "/models--mlx-community--Qwen3-ASR-0.6B-4bit/snapshots/313d850181767edf09f00a9c289becca70e58cd0") {
+	if !strings.Contains(filepath.ToSlash(want[0]), "/models--mlx-community--Qwen3-ASR-0.6B-4bit/snapshots/313d850181767edf09f00a9c289becca70e58cd0") {
 		t.Errorf("snapshot %s", want[0])
 	}
 	if lib.Dir(models.VADSilero) != snapshot(hub, models.VADSilero) || lib.Dir(models.ASRAccurate) != "" {
@@ -122,7 +113,6 @@ func TestLibrary(t *testing.T) {
 
 // TestLibraryDelete: the runtime unloads a model before its files go.
 func TestLibraryDelete(t *testing.T) {
-	skipWindowsSymlink(t)
 	m, _ := openModels(t, models.ASRFast)
 	var unloaded []string
 	lib := NewLibrary(m, Openers{Unload: func(id string) {
