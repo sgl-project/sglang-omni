@@ -1,6 +1,6 @@
 # FireRedASR2-LLM
 
-FireRedASR2-LLM uses a Kaldi fbank/CMVN frontend, Conformer encoder, frame adapter, and SGLang's Qwen2 decoder in one ASR stage. No FireRed-specific patch to SGLang or vLLM dependency is required.
+FireRedASR2-LLM uses a Kaldi fbank/CMVN frontend, Conformer encoder, frame adapter, and SGLang's Qwen2 decoder in one ASR stage. No FireRed-specific patch to SGLang is required.
 
 ## Installation
 
