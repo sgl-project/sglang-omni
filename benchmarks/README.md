@@ -244,6 +244,8 @@ base64-encodes packets before the first-send timestamp.
 `benchmark_omni_seedtts.py` documents local vs CI GPU usage in its module
 docstring (sequential phases on CI to reduce OOM risk).
 
+For open-loop runs, use a finite `--request-rate` together with `--arrival-seed` to reproduce the planned Poisson arrival schedule. Keep the sample order, sample count, and request rate unchanged across comparisons. The arrival seed is independent of the model `--seed` and is saved in the results configuration. Omitting it generates a fresh arrival schedule.
+
 Omni warmup runs in the benchmark client after the server is available. By
 default it repeats one sample concurrently; `--warmup 0` disables it. Use
 `--warmup-meta` with a separate SeedTTS metadata file or dataset to exercise
