@@ -77,7 +77,6 @@ class FireRedASR2EngineBuilder(AsrEngineBuilder[FireRedRequestData]):
         server_args: ServerArgs,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        # note (cocoa00): Local model registration bypasses SGLang multimodal cache setup.
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[FireRedRequestData]:
