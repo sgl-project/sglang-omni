@@ -47,16 +47,25 @@ func appForWindow(windowHandle uintptr) (proto.App, error) {
 
 func appForProcess(processID uint32) proto.App {
 	app := proto.App{PID: int(processID)}
+	path := processExecutablePath(processID)
+	if path == "" {
+		return app
+	}
+	app.BundleID = stableAppID(path)
+	app.Name = strings.TrimSuffix(filepath.Base(path), ".exe")
+	return app
+}
+
+func processExecutablePath(processID uint32) string {
 	process, err := windows.OpenProcess(processQueryLimitedInformation, false, processID)
 	if err != nil {
-		return app
+		return ""
 	}
 	defer windows.CloseHandle(process)
 	path := make([]uint16, windows.MAX_LONG_PATH)
 	pathLength := uint32(len(path))
 	if err := windows.QueryFullProcessImageName(process, 0, &path[0], &pathLength); err != nil {
-		return app
+		return ""
 	}
-	app.Name = strings.TrimSuffix(filepath.Base(windows.UTF16ToString(path[:pathLength])), ".exe")
-	return app
+	return windows.UTF16ToString(path[:pathLength])
 }
