@@ -33,6 +33,7 @@ from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.output import (
     ResponseFinished,
     ResponseStarted,
+    ResponseStatus,
     TextDelta,
     TextFinished,
 )
@@ -91,12 +92,16 @@ class EchoAdapter(InteractionAdapter):
     """Answers every native unit with a short text response so the server keeps sending."""
 
     reply_text: str = DEFAULT_REPLY_TEXT
+    reply_chunks: int = 1
+    chunk_delay_ms: float = 0.0
     process_delay_ms: float = 0.0
     close_delay_ms: float = 0.0
     slots: ModelSlots | None = None
     output_sink: OutputSink | None = None
     unit_count: int = 0
     is_holding_slot: bool = False
+    is_replying: bool = False
+    is_cancel_requested: bool = False
     is_closed: bool = False
 
     async def open(
@@ -122,17 +127,37 @@ class EchoAdapter(InteractionAdapter):
         response_id = f"response_{unit.index}"
         item_id = f"item_{unit.index}"
         await self.output_sink(ResponseStarted(response_id), unit)
-        await self.output_sink(TextDelta(response_id, item_id, self.reply_text), unit)
+        self.is_replying = True
+        reply_text = ""
+        for _ in range(self.reply_chunks):
+            if self.chunk_delay_ms > 0:
+                await asyncio.sleep(self.chunk_delay_ms / MS_PER_SECOND)
+            else:
+                pass
+            if self.is_cancel_requested:
+                break
+            else:
+                reply_text += self.reply_text
+                await self.output_sink(
+                    TextDelta(response_id, item_id, self.reply_text), unit
+                )
+        status: ResponseStatus
+        if self.is_cancel_requested:
+            status, reason = "cancelled", "client_cancelled"
+        else:
+            status, reason = "completed", "stop"
+            await self.output_sink(TextFinished(response_id, item_id, reply_text), unit)
+        self.is_replying = False
+        self.is_cancel_requested = False
         await self.output_sink(
-            TextFinished(response_id, item_id, self.reply_text), unit
-        )
-        await self.output_sink(
-            ResponseFinished(
-                response_id, item_id, self.reply_text, False, "completed", "stop"
-            ),
+            ResponseFinished(response_id, item_id, reply_text, False, status, reason),
             unit,
         )
         return unit.real_samples
+
+    async def cancel(self) -> None:
+        # note (Yi Zhao): a cancel that finds no reply in progress must not end the next one.
+        self.is_cancel_requested = self.is_replying
 
     async def close(self) -> None:
         if self.close_delay_ms > 0:
@@ -157,6 +182,8 @@ class MockSettings:
     session_update_timeout_s: float = RuntimeLimits().session_update_timeout_s
     cleanup_timeout_s: float = RuntimeLimits().cleanup_timeout_s
     reply_text: str = DEFAULT_REPLY_TEXT
+    reply_chunks: int = 1
+    chunk_delay_ms: float = 0.0
     process_delay_ms: float = 0.0
     close_delay_ms: float = 0.0
 
@@ -174,6 +201,8 @@ def build_mock_app(settings: MockSettings) -> FastAPI:
             capabilities=Capabilities(),
             adapter_factory=lambda: EchoAdapter(
                 reply_text=settings.reply_text,
+                reply_chunks=settings.reply_chunks,
+                chunk_delay_ms=settings.chunk_delay_ms,
                 process_delay_ms=settings.process_delay_ms,
                 close_delay_ms=settings.close_delay_ms,
                 slots=slots,

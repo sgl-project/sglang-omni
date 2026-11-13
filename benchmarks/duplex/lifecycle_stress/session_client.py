@@ -30,6 +30,7 @@ from benchmarks.duplex.lifecycle_stress.records import (
     CloseStyle,
     DropPoint,
     DropStyle,
+    IdlePoint,
     Outcome,
     ServerSnapshot,
     SessionOutcome,
@@ -39,10 +40,25 @@ from benchmarks.duplex.oracle_models import is_admission_rejection
 SESSION_TIMEOUT_S = 30.0
 MS_PER_SECOND = 1000
 NORMAL_CLOSE_CODE = 1000
+POLICY_CLOSE_CODE = 1008
 DEBUG_ROUTE_PATH = "/debug/lifecycle"
+CAPABILITIES_ROUTE_PATH = "/v1/realtime/capabilities"
+# note (Yi Zhao): the server closes an idle session with the name of the limit that expired, and publishes that limit under the same name plus _s.
+EXPIRY_LIMITS: dict[IdlePoint, str] = {
+    "created": "session_update_timeout",
+    "open": "idle_timeout",
+}
 SNAPSHOT_TIMEOUT_S = 5.0
 # One 80 ms packet of 16 kHz PCM16 silence, the same packet the duplex client sends.
 SILENCE_PACKET = base64.b64encode(bytes(PACKET_BYTES)).decode("ascii")
+
+
+@dataclass(kw_only=True)
+class Hold:
+    """Keeps an admitted session open until the cycle that started it lets it close."""
+
+    release: asyncio.Event
+    is_admitted: bool = False
 
 
 @dataclass(kw_only=True)
@@ -51,6 +67,9 @@ class SessionPlan:
     drop_point: DropPoint = "none"
     drop_style: DropStyle = "abort"
     close_style: CloseStyle = "event"
+    idle_point: IdlePoint = "none"
+    should_cancel_reply: bool = False
+    hold: Hold | None = None
     timeout_s: float = SESSION_TIMEOUT_S
     append_interval_s: float = PACKET_MS / MS_PER_SECOND
 
@@ -69,16 +88,36 @@ def client_event(
     return json.dumps({"event_id": event_id, "type": event_type, **(fields or {})})
 
 
-async def receive_until(connection: ClientConnection, event_type: str) -> None:
-    """Read server events until one of the given type arrives; an error event ends the wait."""
+async def receive_until(
+    connection: ClientConnection, event_type: str
+) -> list[dict[str, JsonValue]]:
+    """Read server events up to the first of the given type, which is the last one returned; an error event ends the wait."""
+    events: list[dict[str, JsonValue]] = []
     while True:
         event = json.loads(await connection.recv())
+        events.append(event)
         if event["type"] == event_type:
-            return
+            return events
         elif event["type"] == "error":
             raise ServerErrorEvent(event)
         else:
             pass
+
+
+async def await_expiry(connection: ClientConnection, idle_point: IdlePoint) -> Outcome:
+    """Send nothing more and read until the server closes; expired only if it names the timeout of this idle point."""
+    try:
+        while True:
+            await connection.recv()
+    except ConnectionClosed:
+        pass
+    if (
+        connection.close_code == POLICY_CLOSE_CODE
+        and connection.close_reason == EXPIRY_LIMITS[idle_point]
+    ):
+        return "expired"
+    else:
+        return "errored"
 
 
 async def leave_early(connection: ClientConnection, drop_style: DropStyle) -> None:
@@ -91,67 +130,112 @@ async def leave_early(connection: ClientConnection, drop_style: DropStyle) -> No
 
 
 async def drive_session(
-    connection: ClientConnection, plan: SessionPlan
+    connection: ClientConnection, plan: SessionPlan, connect_started_s: float
 ) -> SessionOutcome:
     """Run the plan on an open socket; the caller has already measured the connect."""
     started_s = time.perf_counter()
     await receive_until(connection, "session.created")
     connect_ms = (time.perf_counter() - started_s) * MS_PER_SECOND
-    update_sent_s = time.perf_counter()
-    await connection.send(client_event("session.update", "update_0", {"session": {}}))
-    if plan.drop_point == "update":
-        await leave_early(connection, plan.drop_style)
-        return SessionOutcome(
-            outcome="dropped",
-            close_code=connection.close_code,
-            close_reason=connection.close_reason,
-            connect_ms=connect_ms,
-            wall_ms=(time.perf_counter() - started_s) * MS_PER_SECOND,
-            ended_s=time.perf_counter(),
-        )
-    else:
-        pass
-    await receive_until(connection, "session.updated")
-    admit_ms = (time.perf_counter() - update_sent_s) * MS_PER_SECOND
-    first_append_s = time.perf_counter()
-    for append_index in range(plan.appends):
-        due_s = first_append_s + append_index * plan.append_interval_s
-        await asyncio.sleep(max(0.0, due_s - time.perf_counter()))
-        await connection.send(
-            client_event(
-                "input_audio_buffer.append",
-                f"append_{append_index}",
-                {
-                    "audio": SILENCE_PACKET,
-                    "sglang": {
-                        "seq": append_index,
-                        "t_start_ms": append_index * PACKET_MS,
-                    },
-                },
-            )
-        )
     outcome: Outcome
-    if plan.drop_point == "append":
-        await leave_early(connection, plan.drop_style)
-        outcome = "dropped"
-    elif plan.close_style == "event":
-        await connection.send(client_event("session.close", "close_0"))
-        await receive_until(connection, "session.closed")
-        await connection.wait_closed()
-        outcome = (
-            "completed" if connection.close_code == NORMAL_CLOSE_CODE else "errored"
-        )
+    admit_ms: float | None = None
+    expire_ms: float | None = None
+    cancel_ms: float | None = None
+    cancel_status: str | None = None
+    late_outputs: int | None = None
+    # note (Yi Zhao): the server's idle clock restarts no earlier than the client's last send, so a wait measured from there that is shorter than the limit is an early close.
+    last_sent_s = connect_started_s
+    if plan.idle_point == "created":
+        outcome = await await_expiry(connection, plan.idle_point)
+        expire_ms = (time.perf_counter() - last_sent_s) * MS_PER_SECOND
     else:
-        await connection.close()
-        outcome = (
-            "completed" if connection.close_code == NORMAL_CLOSE_CODE else "errored"
+        last_sent_s = time.perf_counter()
+        await connection.send(
+            client_event("session.update", "update_0", {"session": {}})
         )
+        if plan.drop_point == "update":
+            await leave_early(connection, plan.drop_style)
+            outcome = "dropped"
+        else:
+            await receive_until(connection, "session.updated")
+            admit_ms = (time.perf_counter() - last_sent_s) * MS_PER_SECOND
+            cancelled_response_id: str | None = None
+            first_append_s = time.perf_counter()
+            for append_index in range(plan.appends):
+                due_s = first_append_s + append_index * plan.append_interval_s
+                await asyncio.sleep(max(0.0, due_s - time.perf_counter()))
+                last_sent_s = time.perf_counter()
+                await connection.send(
+                    client_event(
+                        "input_audio_buffer.append",
+                        f"append_{append_index}",
+                        {
+                            "audio": SILENCE_PACKET,
+                            "sglang": {
+                                "seq": append_index,
+                                "t_start_ms": append_index * PACKET_MS,
+                            },
+                        },
+                    )
+                )
+                if plan.should_cancel_reply and append_index == 0:
+                    # note (Yi Zhao): cancelling on the first response.created read live keeps the reply in progress; one read from a backlog may already be over.
+                    created = await receive_until(connection, "response.created")
+                    cancelled_response_id = created[-1]["response"]["id"]
+                    cancel_sent_s = time.perf_counter()
+                    await connection.send(client_event("response.cancel", "cancel_0"))
+                    while cancel_status is None:
+                        done = await receive_until(connection, "response.done")
+                        if done[-1]["response"]["id"] == cancelled_response_id:
+                            cancel_status = done[-1]["response"]["status"]
+                        else:
+                            pass
+                    cancel_ms = (time.perf_counter() - cancel_sent_s) * MS_PER_SECOND
+                else:
+                    pass
+            if plan.hold is not None:
+                plan.hold.is_admitted = True
+                await plan.hold.release.wait()
+            else:
+                pass
+            if plan.idle_point == "open":
+                outcome = await await_expiry(connection, plan.idle_point)
+                expire_ms = (time.perf_counter() - last_sent_s) * MS_PER_SECOND
+            elif plan.drop_point == "append":
+                await leave_early(connection, plan.drop_style)
+                outcome = "dropped"
+            elif plan.close_style == "event":
+                await connection.send(client_event("session.close", "close_0"))
+                closing_events = await receive_until(connection, "session.closed")
+                if cancelled_response_id is not None:
+                    late_outputs = sum(
+                        event.get("response_id") == cancelled_response_id
+                        for event in closing_events
+                    )
+                else:
+                    pass
+                await connection.wait_closed()
+                outcome = (
+                    "completed"
+                    if connection.close_code == NORMAL_CLOSE_CODE
+                    else "errored"
+                )
+            else:
+                await connection.close()
+                outcome = (
+                    "completed"
+                    if connection.close_code == NORMAL_CLOSE_CODE
+                    else "errored"
+                )
     return SessionOutcome(
         outcome=outcome,
         close_code=connection.close_code,
         close_reason=connection.close_reason,
         connect_ms=connect_ms,
         admit_ms=admit_ms,
+        expire_ms=expire_ms,
+        cancel_ms=cancel_ms,
+        cancel_status=cancel_status,
+        late_outputs=late_outputs,
         wall_ms=(time.perf_counter() - started_s) * MS_PER_SECOND,
         ended_s=time.perf_counter(),
     )
@@ -171,7 +255,7 @@ async def run_lifecycle_session(url: str, plan: SessionPlan) -> SessionOutcome:
                 ping_interval=None,
                 open_timeout=plan.timeout_s,
             ) as connection:
-                return await drive_session(connection, plan)
+                return await drive_session(connection, plan, started_s)
     except InvalidStatus as exc:
         if exc.response.status_code == ADMISSION_DENIED_STATUS:
             outcome = "denied"
@@ -217,11 +301,11 @@ async def probe_capacity(
     )
 
 
-def debug_url_of(realtime_url: str) -> str:
-    """The mock's debug route on the same host as its realtime route."""
+def http_url_of(realtime_url: str, route_path: str) -> str:
+    """An HTTP route on the same host as the realtime route."""
     parts = urlsplit(realtime_url)
     scheme = "https" if parts.scheme == "wss" else "http"
-    return urlunsplit((scheme, parts.netloc, DEBUG_ROUTE_PATH, "", ""))
+    return urlunsplit((scheme, parts.netloc, route_path, "", ""))
 
 
 @dataclass(kw_only=True)

@@ -11,12 +11,13 @@ SAMPLES_FILE = "samples.json"
 SUMMARY_FILE = "summary.json"
 REPORT_FILE = "report.md"
 
-Scenario = Literal["churn", "drop"]
+Scenario = Literal["churn", "drop", "fill", "idle", "reconnect", "cancel"]
 CloseStyle = Literal["event", "frame"]
 DropPoint = Literal["none", "append", "update"]
 DropStyle = Literal["abort", "close"]
+IdlePoint = Literal["none", "created", "open"]
 ServerMode = Literal["deployment", "legacy"]
-Outcome = Literal["completed", "dropped", "denied", "errored"]
+Outcome = Literal["completed", "dropped", "denied", "errored", "expired"]
 
 
 class ServerSnapshot(BaseModel):
@@ -40,6 +41,12 @@ class SessionOutcome(BaseModel):
     error: str | None = None
     connect_ms: float | None = None
     admit_ms: float | None = None
+    expire_ms: float | None = None
+    reconnect_denials: int | None = None
+    readmit_ms: float | None = None
+    cancel_ms: float | None = None
+    cancel_status: str | None = None
+    late_outputs: int | None = None
     wall_ms: float
     ended_s: float
 
@@ -60,6 +67,7 @@ class CycleSample(BaseModel):
     is_cleanup_timed_out: bool
     capacity_probe: CapacityProbe | None
     capacity_recovery_ms: float | None
+    overflow_probe: CapacityProbe | None = None
     snapshot_after: ServerSnapshot | None
 
 
@@ -75,6 +83,9 @@ class StressSamples(BaseModel):
     close_style: CloseStyle
     drop_point: DropPoint
     drop_style: DropStyle
+    idle_point: IdlePoint = "none"
+    reconnects: int = 0
+    server_timeout_s: float | None = None
     max_connections: int | None
     has_debug_route: bool
     server_pid: int | None

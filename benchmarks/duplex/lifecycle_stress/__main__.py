@@ -29,9 +29,13 @@ from benchmarks.duplex.lifecycle_stress.scenarios import (
     RunSettings,
     run_stress,
 )
-from benchmarks.duplex.lifecycle_stress.session_client import debug_url_of
+from benchmarks.duplex.lifecycle_stress.session_client import (
+    DEBUG_ROUTE_PATH,
+    http_url_of,
+)
 from benchmarks.duplex.lifecycle_stress.summary import (
     REVISION_DISPLAY_LENGTH,
+    leave_label,
     render_report,
     write_summary,
 )
@@ -41,6 +45,7 @@ DEFAULT_PORT = 8765
 DEFAULT_CONCURRENCY = 64
 DEFAULT_CYCLES = 50
 DEFAULT_APPENDS_PER_SESSION = 5
+DEFAULT_RECONNECTS = 5
 
 
 def mock(arguments: argparse.Namespace) -> None:
@@ -52,6 +57,8 @@ def mock(arguments: argparse.Namespace) -> None:
         session_update_timeout_s=arguments.session_update_timeout_s,
         cleanup_timeout_s=arguments.cleanup_timeout_s,
         reply_text=arguments.reply_text,
+        reply_chunks=arguments.reply_chunks,
+        chunk_delay_ms=arguments.chunk_delay_ms,
         process_delay_ms=arguments.process_delay_ms,
         close_delay_ms=arguments.close_delay_ms,
     )
@@ -71,7 +78,13 @@ def run(arguments: argparse.Namespace) -> None:
     elif arguments.debug_url is not None:
         debug_url = arguments.debug_url
     else:
-        debug_url = debug_url_of(arguments.url)
+        debug_url = http_url_of(arguments.url, DEBUG_ROUTE_PATH)
+    if arguments.scenario == "drop":
+        drop_point = arguments.drop_point or "append"
+    elif arguments.scenario in ("reconnect", "cancel"):
+        drop_point = arguments.drop_point or "none"
+    else:
+        drop_point = "none"
     settings = RunSettings(
         url=arguments.url,
         server=server,
@@ -80,8 +93,10 @@ def run(arguments: argparse.Namespace) -> None:
         cycles=arguments.cycles,
         appends_per_session=arguments.appends_per_session,
         close_style=arguments.close_style,
-        drop_point=arguments.drop_point if arguments.scenario == "drop" else "none",
+        drop_point=drop_point,
         drop_style=arguments.drop_style,
+        idle_point=arguments.idle_point if arguments.scenario == "idle" else "none",
+        reconnects=arguments.reconnects,
         max_connections=arguments.max_connections,
         server_pid=arguments.server_pid,
         debug_url=debug_url,
@@ -100,11 +115,12 @@ def report(arguments: argparse.Namespace) -> None:
             (run_dir / SAMPLES_FILE).read_text()
         )
         mode = "unknown" if samples.baseline is None else samples.baseline.mode
-        leave = (
-            f"{samples.drop_point}_{samples.drop_style}"
-            if samples.scenario == "drop"
-            else samples.close_style
-        )
+        leave = leave_label(
+            samples.idle_point,
+            samples.drop_point,
+            samples.drop_style,
+            samples.close_style,
+        ).replace(" ", "_")
         revision = str(samples.server["revision"])[:REVISION_DISPLAY_LENGTH]
         grouped.setdefault(f"{samples.scenario}_{mode}_{leave}_{revision}", []).append(
             samples
@@ -155,6 +171,18 @@ def main() -> None:
     )
     mock_parser.add_argument("--reply-text", default=mock_defaults.reply_text)
     mock_parser.add_argument(
+        "--reply-chunks",
+        type=int,
+        default=mock_defaults.reply_chunks,
+        help="text deltas in each reply",
+    )
+    mock_parser.add_argument(
+        "--chunk-delay-ms",
+        type=float,
+        default=mock_defaults.chunk_delay_ms,
+        help="wait before each text delta, so a reply lasts long enough to be cancelled or left in progress",
+    )
+    mock_parser.add_argument(
         "--process-delay-ms", type=float, default=mock_defaults.process_delay_ms
     )
     mock_parser.add_argument(
@@ -167,7 +195,12 @@ def main() -> None:
     )
     run_parser.add_argument("--url", required=True, help="ws://host:port/v1/realtime")
     add_server_identity_args(run_parser)
-    run_parser.add_argument("--scenario", choices=("churn", "drop"), required=True)
+    run_parser.add_argument(
+        "--scenario",
+        choices=("churn", "drop", "fill", "idle", "reconnect", "cancel"),
+        required=True,
+        help="churn: open, talk, close. drop: leave without reading replies. fill: hold --max-connections sessions open and try --concurrency more. idle: stop sending and wait for the server's timeout. reconnect: each client opens its next session the moment the last one ends. cancel: cancel the first reply while it is in progress",
+    )
     run_parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     run_parser.add_argument("--cycles", type=int, default=DEFAULT_CYCLES)
     run_parser.add_argument(
@@ -179,14 +212,26 @@ def main() -> None:
     run_parser.add_argument(
         "--drop-point",
         choices=("append", "update"),
-        default="append",
-        help="where the drop scenario leaves: after the last append, or right after session.update",
+        default=None,
+        help="where a session leaves without reading replies: after the last append (the drop scenario's default), or right after session.update; reconnect and cancel close normally unless this is given",
     )
     run_parser.add_argument(
         "--drop-style",
         choices=("abort", "close"),
         default="abort",
         help="how it leaves: a TCP reset, or a close frame sent without reading the server's replies",
+    )
+    run_parser.add_argument(
+        "--idle-point",
+        choices=("created", "open"),
+        default="open",
+        help="where the idle scenario stops sending: before session.update, or after the last append",
+    )
+    run_parser.add_argument(
+        "--reconnects",
+        type=int,
+        default=DEFAULT_RECONNECTS,
+        help="sessions each client of the reconnect scenario opens after its first one in a cycle",
     )
     run_parser.add_argument("--max-connections", type=int, default=None)
     run_parser.add_argument("--server-pid", type=int, default=None)
@@ -204,7 +249,14 @@ def main() -> None:
     report_parser.set_defaults(handler=report)
 
     arguments = parser.parse_args()
-    arguments.handler(arguments)
+    if (
+        arguments.command == "run"
+        and arguments.scenario == "fill"
+        and arguments.max_connections is None
+    ):
+        parser.error("--scenario fill needs --max-connections, the cap to fill")
+    else:
+        arguments.handler(arguments)
 
 
 if __name__ == "__main__":
