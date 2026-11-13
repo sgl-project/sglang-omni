@@ -84,8 +84,8 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
     its numbers read out as words. supported_languages are the tags the
-    service takes, Qwen3-TTS's by default; a dialog's language must be one of
-    them.
+    service takes, Qwen3-TTS's by default; under language="auto" a dialog's
+    language must be one of them.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
