@@ -43,6 +43,14 @@ fail() {
   exit 2
 }
 
+json_python() {
+  if python3 -c 'pass' >/dev/null 2>&1; then
+    python3 "$@"
+  else
+    python "$@"
+  fi
+}
+
 # Voxt 1.x's build number of a version: major×10⁸ + minor×10⁵ + patch×100
 # + 99, or + 0 for a pre-release (X.Y.Z-nightly.…), which comes before its
 # release.
@@ -155,7 +163,13 @@ case "${1:-}" in
     rendered="$(items)"
     if grep -xF "$2 $hardware" <<< "$rendered" >/dev/null; then
       echo "The appcast's item of build $2 has sparkle:hardwareRequirements $hardware"
-    elif jq -e --arg hw "$hardware" '.ok == true and .data.hardwareRequirements == $hw' <<< "$3" >/dev/null 2>&1 \
+    elif json_python -c 'import json, sys
+try:
+    reply = json.loads(sys.argv[1])
+except (ValueError, TypeError):
+    sys.exit(1)
+data = reply.get("data") if isinstance(reply, dict) else None
+sys.exit(0 if isinstance(reply, dict) and reply.get("ok") is True and isinstance(data, dict) and data.get("hardwareRequirements") == sys.argv[2] else 1)' "$3" "$hardware" >/dev/null 2>&1 \
       && grep -E " $hardware\$" <<< "$rendered" >/dev/null; then
       echo "The update service kept hardwareRequirements $hardware and its appcast renders it"
     else
@@ -210,8 +224,11 @@ case "${1:-}" in
     english_notes="$(notes_html en <<< "$release_body")"
     [[ -n "$english_notes" ]] || fail "release notes must include English content before the first level-two heading"
     chinese_notes="$(notes_html zh-Hans <<< "$release_body")"
-    jq -cn --arg en "$english_notes" --arg zh "$chinese_notes" \
-      '{en: $en} + (if $zh == "" then {} else {"zh-Hans": $zh} end)'
+    ENGLISH_NOTES="$english_notes" CHINESE_NOTES="$chinese_notes" json_python -c 'import json, os
+payload = {"en": os.environ["ENGLISH_NOTES"]}
+if os.environ["CHINESE_NOTES"]:
+    payload["zh-Hans"] = os.environ["CHINESE_NOTES"]
+print(json.dumps(payload, ensure_ascii=True, separators=(",", ":")))'
     ;;
   cask)
     (($# == 4)) || usage
