@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -156,7 +157,12 @@ func TestLegacyPreferencesUnreadable(t *testing.T) {
 		t.Helper()
 		fakeLegacyPlutil(t, nil)
 		script := filepath.Join(t.TempDir(), "plutil")
-		if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		body := "#!/bin/sh\nexit 1\n"
+		if runtime.GOOS == "windows" {
+			script += ".bat"
+			body = "@exit /b 1\r\n"
+		}
+		if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		legacyPlutil = script
