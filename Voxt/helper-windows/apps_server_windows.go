@@ -6,6 +6,13 @@ import "github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 
 func (server *helperServer) serveApps(message proto.Message) {
 	switch message.Method {
+	case proto.MethodAppConfigure:
+		var params proto.AppConfigureParams
+		if err := message.DecodeParams(&params); err != nil {
+			server.fail(message.ID, proto.CodeBadRequest, "Bad params: %v", err)
+			return
+		}
+		server.result(message.ID, proto.Empty{})
 	case proto.MethodAppList:
 		var params proto.AppListParams
 		if err := message.DecodeParams(&params); err != nil {

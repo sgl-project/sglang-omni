@@ -49,13 +49,14 @@ type App struct {
 
 // ---- app.configure ----
 
-// AppConfigureParams says which apps the helper gives Chromium's
+// AppConfigureParams says which macOS apps the helper gives Chromium's
 // AXManualAccessibility as they come to the front (once per process),
 // besides the Electron apps it finds itself: Chromium builds a page's
 // accessibility tree only when asked, and only a moment later, so
 // browser.url and textio find it when a shortcut comes. The app sends its
 // Chromium browsers (internal/appctx) while app enhancement is on; it
-// replaces the last list, and a new helper has none. The result is Empty.
+// replaces the last list, and a new helper has none. Windows acknowledges
+// the list without retaining it: UIA needs no equivalent opt-in. The result is Empty.
 type AppConfigureParams struct {
 	ManualAccessibility []string `json:"manualAccessibility,omitempty"` // bundle ids
 }

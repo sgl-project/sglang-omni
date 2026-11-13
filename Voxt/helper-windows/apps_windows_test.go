@@ -3,14 +3,38 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 )
+
+func TestAppConfigureAcknowledgesWithoutChangingUIA(t *testing.T) {
+	var wire bytes.Buffer
+	server := &helperServer{output: bufio.NewWriter(&wire)}
+	server.initialized.Store(true)
+	request, err := proto.NewRequest("configure-1", proto.MethodAppConfigure, proto.AppConfigureParams{ManualAccessibility: []string{"Win32.Chromium"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.serve(request)
+	response, err := proto.Decode(wire.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ID != request.ID || response.Error != nil || string(response.Result) != "{}" {
+		t.Fatalf("response = %+v", response)
+	}
+	if !slices.Contains(implementedMethods(), proto.MethodAppConfigure) {
+		t.Fatal("app.configure is not advertised")
+	}
+}
 
 func TestStableAppIDNormalizesPathCase(t *testing.T) {
 	first := stableAppID(`C:\Program Files\Example\App.exe`)
