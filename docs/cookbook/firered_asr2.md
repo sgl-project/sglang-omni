@@ -8,7 +8,6 @@ Follow the [installation guide](../get_started/installation.md), or the [Ascend 
 
 ```bash
 pip install kaldi-native-fbank
-hf download allendou/FireRedASR2-LLM-vllm --local-dir /models/firered-asr2
 ```
 
 The `firered-asr2` extra also installs the frontend. Use the merged checkpoint referenced by the [official serving guide](https://github.com/FireRedTeam/FireRedASR2S): `config.json` with `audio_encoder_conf`, CMVN statistics in `preprocessor_config.json`, a tokenizer, and safetensors with `encoder.*`, `encoder_projector.*`, and `llm.*` weights.
@@ -18,7 +17,7 @@ The `firered-asr2` extra also installs the frontend. Use the merged checkpoint r
 ```bash
 sgl-omni serve \
   --config examples/configs/firered_asr2.yaml \
-  --model-path /models/firered-asr2 \
+  --model-path allendou/FireRedASR2-LLM-vllm \
   --host 127.0.0.1 --port 8000
 
 curl http://127.0.0.1:8000/v1/audio/transcriptions \
