@@ -85,7 +85,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     templates/{en,zh-Hans}; 112 golden prompts; Untranslated, ParseAnswer;
 │   │                     long speech in pieces (Pieces, BuildParts, JoinParts)
 │   ├── deliver/          the insert transaction: textio.focus, then textio.paste or the answer card
-│   ├── historyapi/       other programs reading the history: the exported fields (Row), its renderers, the Unix-socket server and client (`Voxt history`, docs/history-access.md)  (store)
+│   ├── historyapi/       other programs reading the history: the exported fields (Row), its renderers, the Unix-socket server and client (loopback TCP on Windows; `Voxt history`, docs/history-access.md)  (store)
 │   ├── hotkey/           the shortcuts' grammar, bindings for hotkey.configure and the Carbon
 │   │                     fallback, conflict checks, routing an event to an action
 │   ├── appctx/           app enhancement: groups (document appctx:rules), URL rules and their

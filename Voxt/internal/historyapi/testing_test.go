@@ -80,7 +80,7 @@ func entryID(i int) string {
 	return "e" + string(rune('a'+i/676)) + string(rune('a'+i/26%26)) + string(rune('a'+i%26))
 }
 
-// startServer serves f on a socket in a new folder; the returned stop
+// startServer serves f on a listener in a new folder; the returned stop
 // waits for it to end.
 func startServer(t *testing.T, s *Server) (path string, cancel func()) {
 	t.Helper()

@@ -1,5 +1,5 @@
 // Package historyapi lets programs on this Mac read the finished history
-// through the running app, over a Unix socket (docs/history-access.md).
+// through the running app, over a Unix socket or Windows loopback TCP (docs/history-access.md).
 // The fields a row carries are listed here, in Row, and nowhere else:
 // a new field of store.Entry does not come along by itself.
 //

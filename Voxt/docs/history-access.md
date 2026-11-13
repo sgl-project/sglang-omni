@@ -6,7 +6,7 @@ Voxt can hand your dictation history to a program you run on this Mac: a nightly
 
 Settings → Privacy → Other programs → **Let programs on this Mac read the history** is off by default and asks once before it turns on. With it off the connection does not exist, and `Voxt history` fails with exit 3. With it on, each read is logged (time, entry count, program name) and a program name not seen before raises a notice. The log holds no history text.
 
-**The switch governs this command and its socket, nothing more.** Voxt is not sandboxed and keeps its data in `~/Library/Application Support/VoxtNew`. Any non-sandboxed program running under your account can read `voxtnew.db` directly, whether this switch is on or off, and that reading is not logged. The switch makes the documented way in opt-in and visible; it does not protect your history from a program already running as you. Other macOS accounts cannot reach the socket (mode 0600, inside `~/Library`), and there is no network port, so web pages, other devices and your network cannot reach it either. Do not treat this as a security boundary against software on your own account.
+**The switch governs this command and its connection, nothing more.** Voxt is not sandboxed and keeps its data in `~/Library/Application Support/VoxtNew` on macOS and Voxt's per-user configuration folder on Windows. Any non-sandboxed program running under your account can read `voxtnew.db` directly, whether this switch is on or off, and that reading is not logged. The switch makes the documented way in opt-in and visible; it does not protect your history from a program already running as you. On macOS, other accounts cannot reach the socket (mode 0600, inside `~/Library`). On Windows, `history.sock` holds a loopback-only TCP address and a random access token in the same protected per-user folder; the token changes each time the listener starts. No listener accepts connections from other devices or the network. Do not treat this as a security boundary against software on your own account.
 
 Where a program sends the text afterwards, a cloud model included, is up to that program.
 
@@ -53,7 +53,7 @@ The command opens no window and no database, and leaves Voxt's windows alone.
 | `target_lang` | The translation's target language | For a translation |
 | `selection` | Text you selected in the app | **Only** with Settings → Privacy → Also include the text you selected |
 
-Only entries that finished with a result are listed; failed or cancelled ones are not. Never exported, by this command or by Export text: recordings, the URL host, error messages, rule names, model names, timings. Within schema 1 fields are only added, never removed. The socket's own wire format is internal to Voxt and can change; the command's output and exit codes are the contract.
+Only entries that finished with a result are listed; failed or cancelled ones are not. Never exported, by this command or by Export text: recordings, the URL host, error messages, rule names, model names, timings. Within schema 1 fields are only added, never removed. The connection's own wire format is internal to Voxt and can change; the command's output and exit codes are the contract.
 
 ## A daily file, without opening Voxt
 

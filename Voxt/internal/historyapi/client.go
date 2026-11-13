@@ -6,13 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"time"
 )
 
 // Errors of a client call: the CLI's exit codes follow them.
 var (
-	// ErrUnavailable: no socket to reach (Voxt not running, or the
+	// ErrUnavailable: no connection to reach (Voxt not running, or the
 	// setting off).
 	ErrUnavailable = errors.New("historyapi: unavailable")
 	// ErrInterrupted: the reply stopped before its end line.
@@ -53,7 +52,7 @@ func FetchStatus(path string) (Status, error) {
 // exchange sends req and passes the reply's lines to each until the end
 // line. A reply without one fails with ErrInterrupted.
 func exchange(path string, req Request, each func([]byte) error) (int, error) {
-	conn, err := net.Dial("unix", path)
+	conn, err := dial(path)
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}

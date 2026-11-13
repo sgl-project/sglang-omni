@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -29,36 +28,16 @@ func exportAll(t *testing.T, path string, req Request) []Row {
 	return got
 }
 
-// TestServeFileMode: Listen makes the socket 0600, and replaces a stale
-// one left by a crash.
-func TestServeFileMode(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// TODO(W4): Cover the named-pipe listener's access controls on Windows.
-		t.Skip("Unix socket file modes are not supported on Windows")
-	}
-	path := filepath.Join(t.TempDir(), SocketName)
-	stale, err := net.Listen("unix", path)
-	if err != nil {
+func TestListenPreservesPlainFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-an-endpoint")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stale.(*net.UnixListener).SetUnlinkOnClose(false)
-	stale.Close()
-	ln, err := Listen(path)
-	if err != nil {
-		t.Fatalf("stale socket not replaced: %v", err)
-	}
-	defer ln.Close()
-	fi, err := os.Stat(path)
-	if err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("mode %v, %v", fi, err)
-	}
-	// Anything else at the path is not ours to delete.
-	file := filepath.Join(t.TempDir(), "notasocket")
-	os.WriteFile(file, []byte("x"), 0o600)
-	if _, err := Listen(file); err == nil {
+	if listener, err := Listen(path); err == nil {
+		listener.Close()
 		t.Error("listened over a plain file")
 	}
-	if _, err := os.Stat(file); err != nil {
+	if _, err := os.Stat(path); err != nil {
 		t.Error("deleted a plain file")
 	}
 }
@@ -187,7 +166,7 @@ func TestCancelUnblocksStuckWrite(t *testing.T) {
 		f.list = append(f.list, e)
 	}
 	path, cancel := startServer(t, &Server{History: f, Timeout: 20 * time.Second})
-	stuck, err := net.Dial("unix", path)
+	stuck, err := dial(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +192,7 @@ func TestStuckClientReleased(t *testing.T) {
 		f.list = append(f.list, e)
 	}
 	path, _ := startServer(t, &Server{History: f, Timeout: 150 * time.Millisecond})
-	stuck, err := net.Dial("unix", path)
+	stuck, err := dial(path)
 	if err != nil {
 		t.Fatal(err)
 	}

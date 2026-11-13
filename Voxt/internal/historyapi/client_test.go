@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
-	"net"
 	"path/filepath"
 	"testing"
 )
@@ -22,7 +21,7 @@ func TestUnavailable(t *testing.T) {
 // TestNoEndLine: a reply that stops short is interrupted, not success.
 func TestNoEndLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.sock")
-	ln, err := net.Listen("unix", path)
+	ln, err := Listen(path)
 	if err != nil {
 		t.Fatal(err)
 	}
