@@ -32,6 +32,7 @@ model you are serving.
 | [Ming-3.0 audio](../cookbook/ming3_audio.md) | See cookbook | Speech uses one reference clip and its transcript |
 | [Zonos2](../cookbook/zonos2.md) | Yes | Reference cloning and model-specific chunk configuration |
 | [Zonos3](../cookbook/zonos3.md) | Yes | Optional reference clip; no transcript needed |
+| [CSM-1B](../cookbook/csm_tts.md) | Yes | Sesame CSM-1B; plain TTS plus optional context audio; 24 kHz / 12.5 Hz |
 | [AuK](../cookbook/auk.md) | No | Serial, non-streaming engine; `stage_params.auk_engine.gen_seconds` is required for speech |
 
 Ming-Omni-TTS sets its first and steady chunk cadence through the
