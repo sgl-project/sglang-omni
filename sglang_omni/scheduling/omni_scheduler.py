@@ -4328,7 +4328,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
     @DynamicGradMode()
     def event_loop_spec_overlap(self) -> None:
-        """Submit the next speculative round before consuming the previous result, except that a decode batch under async_decode_min_batch_size is consumed right after its own launch."""
+        """Submit the next speculative round before consuming the previous result, except that a decode batch under async_decode_min_batch_size is consumed right after its own launch, and a prefill after which fewer requests than it are decoding is consumed before the next batch is chosen."""
         self.enable_skip_finishing_decode = True
         while self.running:
             self.process_admin_requests()
