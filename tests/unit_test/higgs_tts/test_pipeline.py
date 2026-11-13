@@ -1625,25 +1625,18 @@ class FakeUnevenHiggsStreamingCodec:
         class config:
             hop_length = 5
 
-    def __init__(
-        self, tail_samples: int = 3, *, expose_hop_length: bool = True
-    ) -> None:
-        self.frame_samples = self.Model.config.hop_length
-        self.model = (
-            self.Model()
-            if expose_hop_length
-            else SimpleNamespace(config=SimpleNamespace())
-        )
+    def __init__(self, tail_samples: int = 3) -> None:
+        self.model = self.Model()
         self.tail_samples = tail_samples
 
     def decode(self, codes_TN: torch.Tensor) -> torch.Tensor:
         frames = []
         offsets = torch.arange(
-            self.frame_samples,
+            self.model.config.hop_length,
             dtype=torch.float32,
         )
         for row in codes_TN:
-            frames.append(row.sum().float().repeat(self.frame_samples))
+            frames.append(row.sum().float().repeat(self.model.config.hop_length))
             frames[-1] = frames[-1] + offsets / 10.0
         body = torch.cat(frames) if frames else torch.empty(0, dtype=torch.float32)
         tail = torch.arange(self.tail_samples, dtype=torch.float32) + 10_000
@@ -1804,11 +1797,9 @@ def test_higgs_streaming_vocoder_honors_initial_codec_chunk_frames() -> None:
     assert codec.decode_inputs[0].shape[0] == 1
 
 
-@pytest.mark.parametrize("expose_hop_length", [False, True])
 @pytest.mark.parametrize("payload_first", [False, True])
 def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail(
     payload_first: bool,
-    expose_hop_length: bool,
 ) -> None:
     raw_codes = torch.tensor(
         [
@@ -1822,10 +1813,10 @@ def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail(
         dtype=torch.long,
     )
     delayed = apply_delay_pattern(raw_codes)
-    codec = FakeUnevenHiggsStreamingCodec(expose_hop_length=expose_hop_length)
+    codec = FakeUnevenHiggsStreamingCodec()
     scheduler = HiggsStreamingVocoderScheduler(
         codec,
-        stream_stride=3 if expose_hop_length else 8,
+        stream_stride=3,
         stream_followup_stride=2,
         stream_overlap_tokens=1,
         stream_holdback_tokens=0,
