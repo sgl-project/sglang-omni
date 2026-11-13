@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise Talker rollback on CPU with simulated decode preparation.
+"""Exercise the Talker scheduler on CPU: decode rollback and text-gated admission.
 
 Allocation and release use SGLang's paged allocator, but the test does not
 execute its GPU decode allocation kernel.
@@ -7,11 +7,12 @@ execute its GPU decode allocation kernel.
 
 from collections import deque
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import patch
 
 import pytest
 import torch
-from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
 from sglang.srt.sampling.sampling_params import SamplingParams
@@ -129,3 +130,128 @@ def test_skipped_decode_preserves_live_pages(page_size, prompt_lengths):
             live_slots = pool[index, : req.kv.kv_committed_len]
             allocator.free(live_slots)
         assert allocator.available_size() == allocator.size
+
+
+def make_idle_talker_scheduler() -> NemotronTalkerScheduler:
+    scheduler = object.__new__(NemotronTalkerScheduler)
+    scheduler.running_batch = ScheduleBatch(reqs=[], batch_is_full=False)
+    scheduler.last_batch = None
+    scheduler.waiting_queue = []
+    scheduler.pending_request_builds = {}
+    scheduler.pending_request_admissions = {}
+    scheduler.backlogged_request_build_payloads = deque()
+    scheduler.deferred_request_payloads = {}
+    scheduler.dirty_deferred_request_ids = set()
+    return scheduler
+
+
+def test_idle_talker_admits_request_before_its_text() -> None:
+    scheduler = make_idle_talker_scheduler()
+    payload = SimpleNamespace(prefetched_chunks=[])
+    assert scheduler.is_request_build_ready(payload, pending_stream_done=False)
+
+
+@pytest.mark.parametrize(
+    "busy_state", ["decoding", "prefilling", "waiting", "deferred"]
+)
+def test_busy_talker_admits_request_once_its_text_arrives(
+    busy_state: Literal["decoding", "prefilling", "waiting", "deferred"],
+) -> None:
+    scheduler = make_idle_talker_scheduler()
+    other_request = SimpleNamespace(rid="other")
+    if busy_state == "decoding":
+        scheduler.running_batch = ScheduleBatch(
+            reqs=[other_request], batch_is_full=False
+        )
+    elif busy_state == "prefilling":
+        scheduler.last_batch = ScheduleBatch(reqs=[other_request], batch_is_full=False)
+    elif busy_state == "waiting":
+        scheduler.waiting_queue = [other_request]
+    else:
+        scheduler.deferred_request_payloads = {
+            "other": SimpleNamespace(prefetched_chunks=[])
+        }
+    payload = SimpleNamespace(prefetched_chunks=[])
+    assert not scheduler.is_request_build_ready(payload, pending_stream_done=False)
+    assert scheduler.is_request_build_ready(payload, pending_stream_done=True)
+    payload.prefetched_chunks.append(SimpleNamespace(data=torch.tensor([7])))
+    assert scheduler.is_request_build_ready(payload, pending_stream_done=False)
+
+
+@pytest.mark.parametrize("is_talker_busy", [False, True])
+def test_talker_rechecks_deferred_requests_once_idle(is_talker_busy: bool) -> None:
+    scheduler = make_idle_talker_scheduler()
+    if is_talker_busy:
+        scheduler.running_batch = ScheduleBatch(
+            reqs=[SimpleNamespace(rid="other")], batch_is_full=False
+        )
+    else:
+        pass
+    scheduler.deferred_request_payloads = {
+        request_id: SimpleNamespace(prefetched_chunks=[])
+        for request_id in ("first", "second")
+    }
+    with patch.object(OmniScheduler, "get_next_batch_to_run", return_value=None):
+        assert scheduler.get_next_batch_to_run() is None
+    if is_talker_busy:
+        assert scheduler.dirty_deferred_request_ids == set()
+    else:
+        rechecked_first, rechecked_second = scheduler.take_deferred_request_payloads()
+        assert scheduler.is_request_build_ready(
+            rechecked_first, pending_stream_done=False
+        )
+        scheduler.waiting_queue.append(rechecked_first)
+        assert not scheduler.is_request_build_ready(
+            rechecked_second, pending_stream_done=False
+        )
+
+
+def test_idle_talker_admits_one_of_two_deferred_requests() -> None:
+    scheduler = make_idle_talker_scheduler()
+    scheduler.deferred_request_payloads = {
+        request_id: SimpleNamespace(prefetched_chunks=[])
+        for request_id in ("first", "second")
+    }
+    with patch.object(OmniScheduler, "get_next_batch_to_run", return_value=None):
+        assert scheduler.get_next_batch_to_run() is None
+    first, second = scheduler.take_deferred_request_payloads()
+    assert scheduler.is_request_build_ready(first, pending_stream_done=False)
+    scheduler.waiting_queue.append(first)
+    assert not scheduler.is_request_build_ready(second, pending_stream_done=False)
+    scheduler.deferred_request_payloads["second"] = second
+    with patch.object(OmniScheduler, "get_next_batch_to_run", return_value=None):
+        assert scheduler.get_next_batch_to_run() is None
+    assert scheduler.dirty_deferred_request_ids == set()
+    second.prefetched_chunks.append(SimpleNamespace(data=torch.tensor([7])))
+    assert scheduler.is_request_build_ready(second, pending_stream_done=False)
+
+
+@pytest.mark.parametrize("has_dirty_deferred", [True, False])
+def test_talker_skips_idle_wait_while_deferred_requests_await_recheck(
+    has_dirty_deferred: bool,
+) -> None:
+    scheduler = make_idle_talker_scheduler()
+    if has_dirty_deferred:
+        scheduler.dirty_deferred_request_ids = {"first"}
+    else:
+        pass
+    with patch.object(OmniScheduler, "sleep_during_idle") as idle_wait:
+        scheduler.sleep_during_idle()
+    assert idle_wait.called is not has_dirty_deferred
+
+
+def test_prefetched_text_reaches_talker_queue_in_order() -> None:
+    scheduler = object.__new__(NemotronTalkerScheduler)
+    scheduler.stream_chunk_handler = None
+    request_data = SimpleNamespace(
+        pending_text_queue=deque(), thinker_chunks_done=False
+    )
+    payload = SimpleNamespace(
+        prefetched_chunks=[
+            SimpleNamespace(data=torch.tensor([token_id])) for token_id in (5, 7, 9)
+        ],
+        prefetched_stream_done=True,
+    )
+    scheduler.initialize_request_stream_state(request_data, payload)
+    assert list(request_data.pending_text_queue) == [5, 7, 9]
+    assert request_data.thinker_chunks_done
