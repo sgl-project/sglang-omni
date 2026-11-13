@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -35,7 +36,16 @@ func snapshot(hub, id string) string {
 	return models.SnapshotDir(hub, m, "")
 }
 
+func skipWindowsSymlink(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		// TODO(W1): Fall back to hard links or copies for the HF-style model cache.
+		t.Skip("Windows symlink privilege is required for HF-style model cache fixtures")
+	}
+}
+
 func TestLibrary(t *testing.T) {
+	skipWindowsSymlink(t)
 	m, hub := openModels(t, models.ASRFast, models.VADSilero, models.LLMTranslate, models.LLMFast)
 	name := func(id string) string { return "name of " + id }
 	var s Services = NewLibrary(m, Openers{}, name)
@@ -112,6 +122,7 @@ func TestLibrary(t *testing.T) {
 
 // TestLibraryDelete: the runtime unloads a model before its files go.
 func TestLibraryDelete(t *testing.T) {
+	skipWindowsSymlink(t)
 	m, _ := openModels(t, models.ASRFast)
 	var unloaded []string
 	lib := NewLibrary(m, Openers{Unload: func(id string) {
