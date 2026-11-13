@@ -29,6 +29,20 @@ func (server *helperServer) serveTextIO(message proto.Message) {
 			return
 		}
 		server.result(message.ID, result)
+	case proto.MethodTextSelection:
+		var params proto.SelectionParams
+		if err := message.DecodeParams(&params); err != nil {
+			server.fail(message.ID, proto.CodeBadRequest, "Bad params: %v", err)
+			return
+		}
+		var result proto.SelectionResult
+		if !server.automation.call(func(automation *comObject) {
+			result = server.selection(automation, params)
+		}) {
+			server.fail(message.ID, proto.CodeInternal, "The UI Automation thread stopped")
+			return
+		}
+		server.result(message.ID, result)
 	case proto.MethodTextPaste:
 		var params proto.PasteParams
 		if err := message.DecodeParams(&params); err != nil {

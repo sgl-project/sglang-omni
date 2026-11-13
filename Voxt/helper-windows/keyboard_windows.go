@@ -14,6 +14,7 @@ const (
 	keyEventKeyUp     = 0x0002
 	helperInputMarker = 0x564F5854
 	virtualKeyControl = 0x11
+	virtualKeyC       = 0x43
 	virtualKeyV       = 0x56
 )
 

@@ -20,10 +20,12 @@ var (
 	kernel32                 = windows.NewLazySystemDLL("kernel32.dll")
 	procCloseClipboard       = user32.NewProc("CloseClipboard")
 	procEmptyClipboard       = user32.NewProc("EmptyClipboard")
+	procGetClipboardData     = user32.NewProc("GetClipboardData")
 	procGetClipboardSequence = user32.NewProc("GetClipboardSequenceNumber")
 	procGlobalAlloc          = kernel32.NewProc("GlobalAlloc")
 	procGlobalFree           = kernel32.NewProc("GlobalFree")
 	procGlobalLock           = kernel32.NewProc("GlobalLock")
+	procGlobalSize           = kernel32.NewProc("GlobalSize")
 	procGlobalUnlock         = kernel32.NewProc("GlobalUnlock")
 	procOleGetClipboard      = ole32.NewProc("OleGetClipboard")
 	procOleSetClipboard      = ole32.NewProc("OleSetClipboard")
@@ -58,17 +60,8 @@ func snapshotAndSetClipboard(text string, preserve bool) (*clipboardSnapshot, er
 }
 
 func setClipboardText(text string) error {
-	opened := false
-	for attempt := 0; attempt < 25; attempt++ {
-		result, _, _ := procOpenClipboard.Call(0)
-		if result != 0 {
-			opened = true
-			break
-		}
-		waitForClipboardMessage()
-	}
-	if !opened {
-		return fmt.Errorf("OpenClipboard failed after 250 ms")
+	if err := openClipboard(); err != nil {
+		return err
 	}
 	defer procCloseClipboard.Call()
 	result, _, callErr := procEmptyClipboard.Call()
@@ -93,6 +86,41 @@ func setClipboardText(text string) error {
 		return fmt.Errorf("SetClipboardData: %w", callErr)
 	}
 	return nil
+}
+
+func openClipboard() error {
+	for attempt := 0; attempt < 25; attempt++ {
+		result, _, _ := procOpenClipboard.Call(0)
+		if result != 0 {
+			return nil
+		}
+		waitForClipboardMessage()
+	}
+	return fmt.Errorf("OpenClipboard failed after 250 ms")
+}
+
+func clipboardText() (string, error) {
+	if err := openClipboard(); err != nil {
+		return "", err
+	}
+	defer procCloseClipboard.Call()
+	memory, _, callErr := procGetClipboardData.Call(clipboardUnicodeText)
+	if memory == 0 {
+		return "", fmt.Errorf("GetClipboardData(CF_UNICODETEXT): %w", callErr)
+	}
+	address, _, callErr := procGlobalLock.Call(memory)
+	if address == 0 {
+		return "", fmt.Errorf("GlobalLock: %w", callErr)
+	}
+	byteCount, _, _ := procGlobalSize.Call(memory)
+	if byteCount < 2 {
+		procGlobalUnlock.Call(memory)
+		return "", nil
+	}
+	encoded := make([]uint16, byteCount/2)
+	procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&encoded[0])), address, byteCount)
+	procGlobalUnlock.Call(memory)
+	return windows.UTF16ToString(encoded), nil
 }
 
 func setClipboardObject(dataObject *comObject) uintptr {

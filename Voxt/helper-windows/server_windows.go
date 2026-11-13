@@ -84,6 +84,7 @@ func implementedMethods() []string {
 		proto.MethodHotkeyConfigure,
 		proto.MethodHotkeyStatus,
 		proto.MethodTextFocus,
+		proto.MethodTextSelection,
 		proto.MethodTextPaste,
 	}
 }
@@ -252,7 +253,7 @@ func (server *helperServer) serve(message proto.Message) {
 		server.result(message.ID, status)
 	case proto.MethodHotkeyStatus:
 		server.result(message.ID, server.hotkeys.status())
-	case proto.MethodTextFocus, proto.MethodTextPaste:
+	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste:
 		server.serveTextIO(message)
 	default:
 		server.fail(message.ID, proto.CodeMethodNotFound, "Unknown method %s", message.Method)
