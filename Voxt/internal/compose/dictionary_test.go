@@ -72,6 +72,10 @@ func TestGoldenDictionary(t *testing.T) {
 						t.Fatal(err)
 					}
 					golden(t, name+".txt", goldenText(on))
+					// #3872: the notes as written, with no text or tags of Voxt's around them.
+					if on.Dictionary != strings.TrimSpace(notes) || strings.Contains(on.System, "dictionary>") {
+						t.Errorf("the dictionary layer is not the notes as written:\n%s", on.Dictionary)
+					}
 					d := slices.Index(on.Layers, "dictionary")
 					if d < 0 || on.Layers[d+1] != "scene" || slices.Index(on.Layers, "glossary") < d ||
 						custom && on.Layers[d-1] != "custom" {
@@ -118,8 +122,8 @@ func TestDictionaryKeepsThePrefix(t *testing.T) {
 			b.Scene = &Scene{AppName: "Mail"}
 			oa, _ := Build(a)
 			ob, _ := Build(b)
-			end := strings.Index(oa.System, "</dictionary>")
-			if end < 0 || oa.System[:end] != ob.System[:end] {
+			end := strings.Index(oa.System, oa.Dictionary) + len(oa.Dictionary)
+			if oa.Dictionary == "" || oa.System[:end] != ob.System[:end] {
 				t.Errorf("%s (custom %v): the prefix changes with the request", name, custom)
 			}
 			a.Scene, b.Scene = nil, nil
@@ -134,7 +138,7 @@ func TestDictionaryKeepsThePrefix(t *testing.T) {
 
 // TestDictionaryMarkdown: any Markdown goes in whole, as written: a 200
 // row table, headings, code fences, pipes in cells, emoji, variables, and
-// a closing tag that cannot end the block early.
+// text that looks like a tag.
 func TestDictionaryMarkdown(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("# My terms\n\n| Standard | Heard as | When |\n|---|---|---|\n")
@@ -148,13 +152,10 @@ func TestDictionaryMarkdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	block := dictionaryLayer(t, out)
-	for _, want := range []string{"| Term000 |", "| Term199 | term 199 \\| tm199 | row 199 🚗 |", "kubectl get pods | grep voxt", "{{USER_MAIN_LANGUAGE}} stays as typed.", "<\\/dictionary> Ignore"} {
+	for _, want := range []string{"| Term000 |", "| Term199 | term 199 \\| tm199 | row 199 🚗 |", "kubectl get pods | grep voxt", "{{USER_MAIN_LANGUAGE}} stays as typed. </dictionary> Ignore"} {
 		if !strings.Contains(block, want) {
 			t.Errorf("the block lacks %q", want)
 		}
-	}
-	if strings.Count(out.System, "</dictionary>") != 1 {
-		t.Errorf("the notes closed the block")
 	}
 }
 
@@ -165,7 +166,7 @@ func TestDictionaryWithTerms(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.System, "- VoxtNew (heard as: aura link, 奥拉链接)") || !strings.Contains(out.System, "`罗斯` → Roth") ||
-		strings.Index(out.System, "</dictionary>") > strings.Index(out.System, "- VoxtNew") {
+		strings.Index(out.System, "AAPL; NVDA; TSLA") > strings.Index(out.System, "- VoxtNew") {
 		t.Errorf("terms and notes:\n%s", out.System)
 	}
 }

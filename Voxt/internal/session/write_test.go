@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -267,6 +268,17 @@ func TestWrite(t *testing.T) {
 			states: "composing done", state: Done, result: "おはよう", card: deliver.ReasonCard,
 		},
 		{
+			// The card's thinking menu: the level goes with the request.
+			name: "again with another thinking level, in the card", kind: store.KindRewrite, sel: &fakeSelector{text: "unused"}, llm: &fakeLLM{text: "We ship on Friday."},
+			req:    StartRequest{Text: &TextInput{Raw: "make it short", Selection: "We will ship it on Friday."}, Card: true, Thinking: &llm.Thinking{Mode: llm.ThinkEffort, Effort: "low"}},
+			states: "composing done", state: Done, result: "We ship on Friday.", card: deliver.ReasonCard,
+			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
+				if r := model.requests(); len(r) != 1 || r[0].Thinking == nil || *r[0].Thinking != (llm.Thinking{Mode: llm.ThinkEffort, Effort: "low"}) || len(sel.params()) != 0 {
+					t.Errorf("requests %+v, %d reads", r, len(sel.params()))
+				}
+			},
+		},
+		{
 			// A follow-up answers in plain text, a conversation's turn (Voxt's).
 			name: "a follow-up", kind: store.KindRewrite, sel: &fakeSelector{}, llm: &fakeLLM{text: "Friday."},
 			req:   StartRequest{Previous: []compose.Turn{{Instruction: "write it", Answer: compose.Answer{Title: "Friday", Content: "We ship on Friday."}}}},
@@ -401,6 +413,24 @@ func TestRewriteReadsASlowSelection(t *testing.T) {
 	}
 }
 
+// TestRewriteLogsNoSelection: when the helper reads no selection, the
+// log says which steps it tried, so a report from an app that hides its
+// selection (Acrobat, a page selected with ⌘A) shows where the read
+// stopped (#3835).
+func TestRewriteLogsNoSelection(t *testing.T) {
+	sel := &fakeSelector{steps: []string{"focus=AXWebArea", "range=0,0", "copy: clipboard unchanged held=control"}}
+	h := newHarness(t, &fakeFile{text: " hello aura link "}, &fakeLLM{text: "Short."}, func(c *Config, s *settings.Settings) { c.Select = sel })
+	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.speak(id, 5)
+	h.rec.wait(t)
+	if !h.logged("no selection (none, 1 ms; focus=AXWebArea, range=0,0, copy: clipboard unchanged held=control)") {
+		t.Errorf("logs %q", h.logs)
+	}
+}
+
 // TestWriteCancel cancels Translate while it reads the selection and
 // while the answer streams: nothing is pasted or kept.
 func TestWriteCancel(t *testing.T) {
@@ -516,6 +546,50 @@ func TestTranslateTarget(t *testing.T) {
 	}
 }
 
+// TestTranslateDirection: Translate goes between the user's main
+// language and the target by the source (#3897): a selection or speech
+// already in the target goes into the main language; the rest, and a
+// language the user picked on the card, keep the target. Scripts cannot
+// tell English from French, so Latin into Latin keeps the target.
+func TestTranslateDirection(t *testing.T) {
+	for _, tc := range []struct {
+		name, main, target, override, sel, want string
+	}{
+		{"Chinese into English", "zh", "", "", "早上好，团队。", "en"},
+		{"English into Chinese", "zh", "", "", "Good morning, team.", "zh-Hans"},
+		{"mostly Chinese, English words", "zh", "", "", "我用 Voxt 写 code", "en"},
+		{"mostly English, a Chinese name", "zh", "", "", "Ask 张伟 about the release", "zh-Hans"},
+		{"English main, Chinese into English", "en", "", "", "早上好", "en"},
+		{"English main, English into Chinese", "en", "", "", "Good morning", "zh-Hans"},
+		{"Japanese target, Japanese text", "zh", "ja", "", "おはようございます", "zh-Hans"},
+		{"French target, English text", "en", "fr", "", "Good morning", "fr"},
+		{"picked on the card", "zh", "", "en", "Good morning", "en"},
+		{"digits only", "zh", "", "", "2026-11-12 10:00", "en"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "x"}
+			h := newHarness(t, &fakeFile{text: "x"}, model, func(c *Config, s *settings.Settings) {
+				c.Select = &fakeSelector{text: tc.sel}
+				s.General.MainLanguage, s.Features.Translate.Target = tc.main, tc.target
+			})
+			if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack, TargetLanguage: tc.override}); err != nil {
+				t.Fatal(err)
+			}
+			end := h.rec.wait(t)
+			if end.TargetLanguage != tc.want {
+				t.Errorf("into %q, want %q", end.TargetLanguage, tc.want)
+			}
+			name := compose.LanguageName(tc.want, compose.TemplateSet(tc.main))
+			if reqs := model.requests(); len(reqs) == 0 || !strings.Contains(reqs[0].Messages[0].Content, name) {
+				t.Errorf("the prompt does not say %q: %+v", name, reqs)
+			}
+			if es := h.hist.all(); len(es) != 1 || es[0].TargetLang != tc.want {
+				t.Errorf("entries %+v", es)
+			}
+		})
+	}
+}
+
 func TestAllowCopy(t *testing.T) {
 	for id, want := range map[string]bool{
 		"com.apple.TextEdit": true, "com.tinyspeck.slackmacgap": true, "": true,
@@ -591,6 +665,58 @@ func TestWarmLLM(t *testing.T) {
 			if p.Skill != chat.Skill || len(p.Messages) != n || n < 2 || !reflect.DeepEqual(p.Messages[:n-1], chat.Messages[:n-1]) ||
 				p.Messages[n-1].Content == chat.Messages[n-1].Content {
 				t.Errorf("prefill %+v\nchat %+v", p, chat)
+			}
+		})
+	}
+}
+
+// TestTranslateOpensNoSpeechModelItDoesNotUse: a selection to translate
+// and a typed text are not heard, so the session does not ask for a
+// speech model (it waited for one to load again after it went idle,
+// #3838) and works with none installed; with no selection, Translate
+// asks again with one and hears the text; speech Translate is unchanged.
+func TestTranslateOpensNoSpeechModelItDoesNotUse(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		sel    Selector
+		req    StartRequest
+		speak  bool
+		speech []bool
+		asked  string // in the language model's last message
+	}{
+		{"a selection", &fakeSelector{text: "Voxt translates the selected text"}, StartRequest{}, false, []bool{false}, "Voxt translates the selected text"},
+		{"no selection", &fakeSelector{}, StartRequest{}, true, []bool{false, true}, "hello VoxtNew"},
+		{"the selection is not read", &fakeSelector{err: errors.New("AX failed")}, StartRequest{}, true, []bool{false, true}, "hello VoxtNew"},
+		{"a typed text", &fakeSelector{text: "unused"}, StartRequest{Text: &TextInput{Selection: "Good morning"}}, false, []bool{false}, "Good morning"},
+		{"no selector: speech", nil, StartRequest{}, true, []bool{true}, "hello VoxtNew"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "好的。"} // the target language: no strict retry
+			h := newHarness(t, &fakeFile{text: "hello aura link"}, model, func(c *Config, _ *settings.Settings) { c.Select = tc.sel })
+			if !tc.speak {
+				h.asr = nil // no speech model installed
+			}
+			req := tc.req
+			req.Kind, req.Target = store.KindTranslate, slack
+			id, err := h.m.Start(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.speak {
+				h.speak(id, 5)
+			}
+			end := h.rec.wait(t)
+			reqs := model.requests()
+			if end.State != Done || len(reqs) != 1 || !strings.Contains(reqs[0].Messages[len(reqs[0].Messages)-1].Content, tc.asked) {
+				t.Fatalf("end %s %v, requests %+v", end.State, end.Problem, reqs)
+			}
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if !slices.Equal(h.speech, tc.speech) {
+				t.Errorf("Resolve asked for speech %v; want %v", h.speech, tc.speech)
+			}
+			if !tc.speak && h.audio.recorded() != 0 {
+				t.Errorf("recorded %d frames", h.audio.recorded())
 			}
 		})
 	}
