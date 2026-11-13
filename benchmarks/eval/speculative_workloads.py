@@ -18,6 +18,7 @@ from benchmarks.eval.benchmark_asr_transcribe_diarize import (
 from benchmarks.metrics.speculative import AccuracyMetric, LoadMeasurement, mean_or_none
 
 HOST = "127.0.0.1"
+TTS_CLIENT = "benchmarks.eval.benchmark_tts_seedtts"
 TRANSCRIBE_DIARIZE_CLIENT = "benchmarks.eval.benchmark_asr_transcribe_diarize"
 
 
@@ -37,15 +38,35 @@ class TranscribeDiarizeWorkload:
     dataset: str
 
 
-WORKLOADS: dict[str, AsrWorkload | TranscribeDiarizeWorkload] = {
-    "seedtts-en": AsrWorkload(
-        client="benchmarks.eval.benchmark_asr_seedtts",
+@dataclass(frozen=True, kw_only=True)
+class TtsWorkload:
+    """SeedTTS synthesis followed by transcription after the TTS server stops."""
+
+    client: str
+    client_arguments: tuple[str, ...]
+    error_rate: Literal["WER", "CER"]
+
+
+WORKLOADS: dict[str, AsrWorkload | TranscribeDiarizeWorkload | TtsWorkload] = {
+    "tts-seedtts-en": TtsWorkload(
+        client=TTS_CLIENT,
         client_arguments=("--lang", "en"),
         error_rate="WER",
     ),
-    "seedtts-zh": AsrWorkload(
-        client="benchmarks.eval.benchmark_asr_seedtts",
+    "tts-seedtts-zh": TtsWorkload(
+        client=TTS_CLIENT,
         client_arguments=("--lang", "zh"),
+        error_rate="CER",
+    ),
+    # note (wilsonzheng0327): two copies of one clip sent together are prefilled as one batch, which hides the wait of a request that arrives alone. The names keep these runs apart from earlier ones over every SeedTTS row.
+    "seedtts-en-unique-clips": AsrWorkload(
+        client="benchmarks.eval.benchmark_asr_seedtts",
+        client_arguments=("--lang", "en", "--unique-audio"),
+        error_rate="WER",
+    ),
+    "seedtts-zh-unique-clips": AsrWorkload(
+        client="benchmarks.eval.benchmark_asr_seedtts",
+        client_arguments=("--lang", "zh", "--unique-audio"),
         error_rate="CER",
     ),
     "longlibriheavy-30": AsrWorkload(

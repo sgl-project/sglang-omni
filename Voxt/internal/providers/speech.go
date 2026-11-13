@@ -34,6 +34,11 @@ type Speech struct {
 	Endpoint string   // the default URL
 	Model    string   // the default model
 	Models   []string // the model menu's (any id may be typed)
+	// Uploads are the models of a streaming service that get the
+	// recording once it stops all the same (Doubao's flash recognition),
+	// at UploadEndpoint by default.
+	Uploads        []string
+	UploadEndpoint string
 	// AppID: the key may come with an App ID (Doubao's older console;
 	// its newer one gives a single API key).
 	AppID bool
@@ -54,7 +59,7 @@ var speechPresets = []Speech{
 	{ID: openai.ID, Name: "OpenAI Transcribe", Endpoint: openai.DefaultEndpoint, Model: openai.DefaultModel, Models: openai.Models, KeyOptional: true,
 		KeyURL: "https://platform.openai.com/api-keys"},
 	{ID: doubao.ID, Name: "Doubao (Volcengine)", Stream: true, Endpoint: doubao.DefaultEndpoint, Model: doubao.DefaultModel, Models: doubao.Models, AppID: true,
-		KeyURL: "https://console.volcengine.com/speech/app"},
+		Uploads: []string{doubao.ModelFlash}, UploadEndpoint: doubao.FlashEndpoint, KeyURL: "https://console.volcengine.com/speech/app"},
 	{ID: ZhipuASR, Name: "Zhipu GLM-ASR", Endpoint: "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", Model: "glm-asr-2512", Models: []string{"glm-asr-2512", "glm-asr-1"}, KeyOptional: true,
 		KeyURL: "https://bigmodel.cn/usercenter/proj-mgmt/apikeys"},
 	{ID: aliyun.ID, Name: "Aliyun Bailian ASR", Stream: true, Endpoint: aliyun.InferenceEndpoint, Model: aliyun.DefaultModel, Models: aliyun.Models,
@@ -72,6 +77,20 @@ var speechPresets = []Speech{
 // SpeechPresets returns the remote speech services, in display order (a
 // copy).
 func SpeechPresets() []Speech { return slices.Clone(speechPresets) }
+
+// Streams says whether the service recognises model while the user
+// speaks.
+func (s Speech) Streams(model string) bool {
+	return s.Stream && !slices.Contains(s.Uploads, model)
+}
+
+// EndpointOf is model's default URL.
+func (s Speech) EndpointOf(model string) string {
+	if slices.Contains(s.Uploads, model) {
+		return s.UploadEndpoint
+	}
+	return s.Endpoint
+}
 
 // LookupSpeech returns the speech service id.
 func LookupSpeech(id string) (Speech, bool) {
@@ -159,6 +178,9 @@ func NewASR(p settings.Provider, key string, client *http.Client) (asr.Provider,
 		}
 		return c, err
 	case doubao.ID:
+		if !pr.Streams(cfg.Model) {
+			return doubao.NewFlash(cfg)
+		}
 		return doubao.New(cfg)
 	case aliyun.ID:
 		return aliyun.New(cfg)

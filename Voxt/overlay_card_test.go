@@ -10,10 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/ink"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -25,6 +28,13 @@ import (
 // cardLong is a translation longer than the card's 220 of text.
 var cardLong = strings.Repeat("goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。", 12)
 
+// cardQuote and cardQuoteLong are text selected for a follow-up: a
+// short one, and one of 3,000 characters.
+var (
+	cardQuote     = "Anna: I can start the meeting."
+	cardQuoteLong = strings.Repeat("Ben: I will send the notes after the meeting. ", 66)[:3000]
+)
+
 // cardStep is one state of the answer card, set on an app.
 type cardStep struct {
 	name  string
@@ -34,6 +44,7 @@ type cardStep struct {
 	body                                                   int
 	msg                                                    bool
 	insert, copy, followUp, stop, retry, lang, busy, convo bool
+	think                                                  bool // the thinking button
 }
 
 // cardSteps walk the answer card through its states, as one Translate
@@ -50,7 +61,7 @@ func cardSteps() []cardStep {
 		{name: "short", apply: func(a *app) {
 			snap(a, tr(session.Done, "goroutine 是由 Go 运行时管理的轻量级线程。", "goroutine 是由 Go 运行时管理的轻量级线程。"))
 		},
-			insert: true, copy: true, lang: true},
+			insert: true, copy: true, followUp: true, lang: true},
 		{name: "redo", apply: func(a *app) {
 			a.answer.redo, a.answer.redoLang = "t2", "ja"
 			snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranslate, State: session.Composing, Card: true, Target: arc, Selection: sel, TargetLanguage: "ja", Draft: "ゴルーチン"})
@@ -58,12 +69,12 @@ func cardSteps() []cardStep {
 		{name: "redone-long", apply: func(a *app) {
 			snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranslate, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Target: arc,
 				Selection: sel, TargetLanguage: "ja", Result: cardLong})
-		}, body: layout.CardBodyMax, insert: true, copy: true, lang: true},
-		{name: "copied", apply: func(a *app) { a.answer.copied = true }, body: layout.CardBodyMax, insert: true, copy: true, lang: true},
+		}, body: layout.CardBodyMax, insert: true, copy: true, followUp: true, lang: true},
+		{name: "copied", apply: func(a *app) { a.answer.copied = true }, body: layout.CardBodyMax, insert: true, copy: true, followUp: true, lang: true},
 		{name: "insert-failed", apply: func(a *app) {
 			a.answer.copied, a.answer.text = false, "goroutine 是由 Go 运行时管理的轻量级线程。"
 			a.answer.msg = uitext.DeliveryText(deliver.Result{Reason: deliver.ReasonNotFront}, arc)
-		}, msg: true, insert: true, copy: true, lang: true},
+		}, msg: true, insert: true, copy: true, followUp: true, lang: true},
 		{name: "failed", apply: func(a *app) {
 			snap(a, session.Snapshot{ID: "t3", Kind: store.KindTranslate, State: session.Recording})
 			snap(a, session.Snapshot{ID: "t3", Kind: store.KindTranslate, State: session.Failed, Card: true, Target: arc, Selection: sel,
@@ -87,6 +98,22 @@ func cardSteps() []cardStep {
 			snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "shorter",
 				Title: "Late", Result: "Ten minutes late: start without me."})
 		}, body: -1, insert: true, copy: true, followUp: true, convo: true},
+		// Continue with more text selected (#3816): it shows under the
+		// follow-up, a long one cut until Show all.
+		{name: "follow-up-selected", apply: func(a *app) {
+			a.followUp = "r2"
+			snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Recording, Selection: cardQuote})
+			snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "add these",
+				Selection: cardQuote, Result: "Ten minutes late, Anna starts."})
+		}, body: -1, insert: true, copy: true, followUp: true, convo: true},
+		{name: "follow-up-selected-long", apply: func(a *app) {
+			a.followUp = "r3"
+			snap(a, session.Snapshot{ID: "r4", Kind: store.KindRewrite, State: session.Recording, Selection: cardQuoteLong})
+			snap(a, session.Snapshot{ID: "r4", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "and these",
+				Selection: cardQuoteLong, Result: "Late; Anna starts; notes later."})
+		}, body: -1, insert: true, copy: true, followUp: true, convo: true},
+		{name: "follow-up-selected-open", apply: func(a *app) { a.toggleQuote(3) },
+			body: -1, insert: true, copy: true, followUp: true, convo: true},
 		// Cut off at the model's length limit: in the card, which says so.
 		{name: "cut-off", apply: func(a *app) {
 			a.closeAnswer()
@@ -95,7 +122,25 @@ func cardSteps() []cardStep {
 			cut.Problem = &session.Problem{Code: session.ProblemTruncated, Degraded: true}
 			snap(a, session.Snapshot{ID: "t4", Kind: store.KindTranslate, State: session.Composing})
 			snap(a, cut)
-		}, msg: true, insert: true, copy: true, lang: true},
+		}, msg: true, insert: true, copy: true, followUp: true, lang: true},
+		// A service with thinking levels (#3879): its button, by the
+		// language capsule; after Continue in Rewrite's.
+		{name: "thinking", apply: func(a *app) {
+			a.closeAnswer()
+			a.prefs.Providers.LLM = []settings.Provider{{ID: "deepseek"}}
+			th := tr(session.Done, "goroutine 是由 Go 运行时管理的轻量级线程。", "")
+			th.ID, th.LLM = "t5", session.Model{ID: "deepseek"}
+			snap(a, session.Snapshot{ID: "t5", Kind: store.KindTranslate, State: session.Composing})
+			snap(a, th)
+			a.answer.think = &llm.Thinking{Mode: llm.ThinkEffort, Effort: "high"}
+		}, insert: true, copy: true, followUp: true, lang: true, think: true},
+		{name: "thinking-rewrite", apply: func(a *app) {
+			a.closeAnswer()
+			snap(a, session.Snapshot{ID: "r5", Kind: store.KindRewrite, State: session.Recording})
+			snap(a, session.Snapshot{ID: "r5", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "write that I am late",
+				Title: "Running late", Result: "Sorry, I am running about ten minutes late: please start without me.", LLM: session.Model{ID: "deepseek"}})
+			a.answer.think = &llm.Thinking{Mode: llm.ThinkOff}
+		}, body: -1, insert: true, copy: true, followUp: true, think: true},
 	}
 }
 
@@ -107,6 +152,7 @@ func TestAnswerCardStates(t *testing.T) {
 	for _, pos := range []string{"bottom", "top"} {
 		t.Run(pos, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
+			shortScreen(t, a)
 			// Saved, so that a later save (Setup.Tried) keeps it.
 			a.updateSettings(func(s *settings.Settings) { s.Overlay.Position = pos })
 			for _, st := range cardSteps() {
@@ -140,8 +186,8 @@ func TestAnswerCardStates(t *testing.T) {
 					t.Errorf("%s: %d high, want %d (line %q)", st.name, a.ov.h, want, v.msg)
 				}
 				anchored(t, st.name, a.prefs.Overlay, a.ov.frame)
-				got := []bool{v.canInsert, v.canCopy, v.canFollowUp, v.canStop, v.canRetry, v.canLang, v.busy, v.conversation}
-				exp := []bool{st.insert, st.copy, st.followUp, st.stop, st.retry, st.lang, st.busy, st.convo}
+				got := []bool{v.canInsert, v.canCopy, v.canFollowUp, v.canStop, v.canRetry, v.canLang, v.busy, v.conversation, v.thinks}
+				exp := []bool{st.insert, st.copy, st.followUp, st.stop, st.retry, st.lang, st.busy, st.convo, st.think}
 				for i := range got {
 					if got[i] != exp[i] {
 						t.Errorf("%s: insert, copy, follow up, stop, retry, language, busy, conversation = %v, want %v", st.name, got, exp)
@@ -159,6 +205,7 @@ func TestAnswerCardStates(t *testing.T) {
 // down to just above the bottom padding (no empty space, nothing cut).
 func TestAnswerCardInk(t *testing.T) {
 	a, _, _ := newTestApp(t)
+	shortScreen(t, a)
 	defer func() { a.measureHook = guessText }()
 	for _, st := range cardSteps() {
 		st.apply(a)
@@ -192,9 +239,9 @@ func TestAnswerCardInteraction(t *testing.T) {
 	ft := new(fakeTimers).install(a)
 	steps := cardSteps()
 	steps[0].apply(a) // the short answer
-	tt := cardTester(a)
+	tt := cardTester(t, a)
 	frames(tt)
-	for _, s := range []string{"Translation", "goroutine 是由 Go 运行时管理的轻量级线程。", "Simplified Chinese", "Insert", "Copy", "Close"} {
+	for _, s := range []string{"goroutine 是由 Go 运行时管理的轻量级线程。", "Simplified Chinese", "Continue", "Insert", "Copy", "Close"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
 		}
@@ -307,6 +354,7 @@ func TestLanguageMenuPlace(t *testing.T) {
 	for _, pos := range []string{"bottom", "top"} {
 		t.Run(pos, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
+			shortScreen(t, a)
 			// Saved, so that a later save (Setup.Tried) keeps it.
 			a.updateSettings(func(s *settings.Settings) { s.Overlay.Position = pos })
 			cardSteps()[0].apply(a) // a translation in the card
@@ -361,7 +409,7 @@ func TestCardHeaderFits(t *testing.T) {
 			snap(a, session.Snapshot{ID: "h1", Kind: store.KindTranslate, State: session.Recording})
 			snap(a, session.Snapshot{ID: "h1", Kind: store.KindTranslate, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
 				Selection: "x", TargetLanguage: "zh-Hant", Result: "你好。"}) // "Traditional Chinese": the widest name
-		}, []string{"Translate into", "Insert", "Copy", "Close"}},
+		}, []string{"Translate into", "Continue", "Insert", "Copy", "Close"}},
 		{"rewrite", func(a *app) {
 			snap(a, session.Snapshot{ID: "h2", Kind: store.KindRewrite, State: session.Recording})
 			snap(a, session.Snapshot{ID: "h2", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
@@ -405,8 +453,10 @@ func TestCardHeaderFits(t *testing.T) {
 				}
 				if c.name == "translate" {
 					title, ok := tt.Find(i18n.T("Translation"))
-					if !ok || title.X+title.W > first.X-layout.CardHeadGap+0.5 {
-						t.Errorf("the title %+v runs into the capsule at %v", title, first.X)
+					// The capsule names the card: no title to cut to "…" beside
+					// Continue (#3897). (The Chinese icon's label is the title.)
+					if ok && title.W > layout.CardIcon+0.5 {
+						t.Errorf("a title %+v beside the capsule", title)
 					}
 				}
 				if c.name == "rewrite" {
@@ -420,5 +470,117 @@ func TestCardHeaderFits(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestCardSizes: a feature's page sets its own answer card size; a larger
+// card is wider, and any card grows with a long answer to the work
+// area's height, its ink still from padding to padding. The other features keep theirs
+// (#3644 FB41: a long explanation read badly in the small card).
+func TestCardSizes(t *testing.T) {
+	if hotkey.Transcribe != string(store.KindTranscribe) || hotkey.Translate != string(store.KindTranslate) || hotkey.Rewrite != string(store.KindRewrite) {
+		t.Fatal("Features.CardSizes's keys: the pages' feature ids are not store.Kind's")
+	}
+	a, tt := pageTester(t, "/rewrite")
+	if err := tt.ClickControl("Large"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if got := a.settings.Get().Features.CardSizes; got[hotkey.Rewrite] != 2 || len(got) != 1 {
+		t.Fatalf("card sizes %v", got)
+	}
+	long := strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 90)
+	a.ov.area = a.overlayArea() // as when the card shows: its size depends on the screen's room
+	for _, c := range []struct {
+		kind store.Kind
+		size layout.CardSize
+	}{{store.KindRewrite, layout.CardSizes[2]}, {store.KindTranslate, layout.CardSizes[0]}} {
+		a.answer = answerCard{open: true, kind: c.kind, text: long}
+		want := layout.CardChrome + a.cardBodyMax(a.cardNow())
+		if w, h, _ := a.cardSize(); w != c.size.W || h != want {
+			t.Errorf("%s: %d×%d, want %d×%d", c.kind, w, h, c.size.W, want)
+		}
+	}
+	defer func() { a.measureHook = guessText }()
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: long}
+	a.overlaySync()
+	img := renderOverlay(t, a)
+	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cardNow())); len(bad) > 0 || a.ov.w != layout.CardSizes[2].W {
+		t.Errorf("the large card, %d wide: %v", a.ov.w, bad)
+	}
+	if dir := os.Getenv("VOXTNEW_INK"); dir != "" {
+		var b bytes.Buffer
+		png.Encode(&b, img)
+		os.WriteFile(filepath.Join(dir, "card-large.png"), b.Bytes(), 0o644)
+	}
+}
+
+// TestCardResizeOnCard: the card steps through its sizes from the card
+// itself (#3644 FB41: a long answer needed a trip to the feature's page
+// for a larger card): Small, Medium, Large and back to Small, saved as the
+// feature's size, and the card takes each at once.
+func TestCardResizeOnCard(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 30)}
+	a.overlaySync()
+	tt := hudTester(a.overlayView, layout.CardSizes[2].W+2*layout.Pad, 900)
+	for i, c := range []struct {
+		label string
+		step  int
+	}{{"Make the card larger", 1}, {"Make the card larger", 2}, {"Make the card smaller", 0}} {
+		frames(tt)
+		if err := tt.ClickControl(c.label); err != nil {
+			t.Fatalf("step %d: %v (controls %q)", i, err, tt.AccessLabels())
+		}
+		frames(tt)
+		got := a.settings.Get().Features.CardSizes
+		_, kept := got[hotkey.Rewrite]
+		if got[hotkey.Rewrite] != c.step || kept != (c.step != 0) || a.ov.w != layout.CardSizes[c.step].W {
+			t.Errorf("step %d: sizes %v, the card %d wide", i, got, a.ov.w)
+		}
+	}
+}
+
+// TestCardFitsTheScreen: a large card with a long answer on a short
+// screen keeps its text to the room the work area leaves, instead of
+// reaching past the screen's other edge.
+func TestCardFitsTheScreen(t *testing.T) {
+	saved := ovTestArea
+	t.Cleanup(func() { ovTestArea = saved })
+	ovTestArea = mygo.Rectangle{X: 0, Y: 25, Width: 1280, Height: 600}
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) { s.Features.CardSizes = map[string]int{hotkey.Rewrite: 2} })
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 90)}
+	a.overlaySync()
+	if f := a.ov.frame; f.Y < ovTestArea.Y || f.Y+f.Height > ovTestArea.Y+ovTestArea.Height {
+		t.Errorf("the card's window %+v is not inside the work area %+v", f, ovTestArea)
+	}
+}
+
+// TestCardDragged: a card the user dragged (overlayDragged keeps the
+// offset) keeps its place as its answer grows, stays on the screen, and
+// the next card shows at the anchor again.
+func TestCardDragged(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	anchored := a.ov.frame
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.answer.text = strings.Repeat("A longer answer, a few lines more. ", 12)
+	a.overlaySync()
+	if f := a.ov.frame; f.Height <= anchored.Height || f.X != anchored.X-300 || f.Y+f.Height != anchored.Y+anchored.Height-200 {
+		t.Errorf("dragged, then grown: %+v; anchored %+v", f, anchored)
+	}
+	a.ov.dragged.y = -5000
+	a.overlaySync()
+	if a.ov.frame.Y != a.ov.area.Y-layout.Pad {
+		t.Errorf("dragged past the top: %+v", a.ov.frame)
+	}
+	a.answer = answerCard{}
+	a.overlaySync()
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	if a.ov.frame != anchored {
+		t.Errorf("the next card: %+v, want %+v", a.ov.frame, anchored)
 	}
 }

@@ -42,9 +42,10 @@ type Caps struct {
 	// of words to favour (hot words), the dictionary's terms.
 	Prompt bool
 	Hints  bool
-	// MaxBytes bounds a recording's size (0: no bound known); MaxDuration
-	// a recording (0: none known). Longer recordings fail with KindAudio
-	// before anything is sent.
+	// MaxBytes bounds one upload (0: no bound known); MaxDuration a
+	// recording (0: none known). A PCM recording over MaxBytes goes in
+	// pieces (TranscribeInPieces); others fail with KindAudio before
+	// anything is sent.
 	MaxBytes    int64
 	MaxDuration time.Duration
 }
@@ -68,6 +69,10 @@ type FileRequest struct {
 	// Speech models without Caps.Hints fold the hints into the prompt.
 	Hints  []string
 	Prompt string
+	// MaxBytes, when over 0 and under the service's own upload limit,
+	// caps each upload instead (Settings → Audio, #3840): a longer PCM
+	// recording goes in smaller pieces (TranscribeInPieces).
+	MaxBytes int
 }
 
 // Result is a finished transcription.
@@ -91,6 +96,10 @@ type StreamRequest struct {
 	Lang       string // a language hint, "" detects
 	Hints      []string
 	Prompt     string
+	// LiveResult asks for the live text as the result, without a second
+	// pass over the whole recording at Finish, where the model makes one
+	// (settings.Audio.LiveResult); the others ignore it.
+	LiveResult bool
 }
 
 // Streamer opens recognition streams.

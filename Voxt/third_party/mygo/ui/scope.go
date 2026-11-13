@@ -113,7 +113,7 @@ func (rt *engine) scopeOf(id uint64) uint64 {
 // top) first, and reports whether such a key was delivered to it.
 func (rt *engine) overlayShortcut(e *node, mods Modifiers, key Key) bool {
 	id := e.id
-	rt.nextRegs = append(rt.nextRegs, shortcutReg{id: id, mods: mods, key: key, overlay: true, serial: e.serial})
+	rt.nextRegs = append(rt.nextRegs, shortcutReg{id: id, mods: mods, key: key, overlay: true, serial: e.serial, tip: e.role == RoleTooltip})
 	for i, d := range rt.delivered {
 		if d.id == id && d.mods == mods && d.key == key {
 			rt.delivered = append(rt.delivered[:i], rt.delivered[i+1:]...)

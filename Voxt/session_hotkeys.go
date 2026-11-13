@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,12 +32,31 @@ func (a *app) hotkeyPhase() hotkey.Phase {
 	return hotkey.Idle
 }
 
+// strictFeature is the feature whose shortcuts stop the session with
+// Strict shortcuts on ("": off, any feature's do).
+func (a *app) strictFeature() string {
+	switch {
+	case !a.prefs.Features.StrictShortcuts:
+		return ""
+	case a.sess.Note:
+		return hotkey.Note
+	case a.sess.Kind == store.KindTranslate:
+		return hotkey.Translate
+	case a.sess.Kind == store.KindRewrite:
+		return hotkey.Rewrite
+	}
+	return hotkey.Transcribe
+}
+
 // hotkeyFired acts on a shortcut (the helper's hotkey.event, or a Carbon
 // shortcut).
 func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	target := a.front
 	if e.Front != nil {
 		target = *e.Front
+	}
+	if a.pressDuringSelection(e) { // dictionary_selection.go
+		return
 	}
 	if e.Binding == proto.HotkeyCancel && a.answer.langOpen {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
@@ -50,12 +70,17 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			a.closeAnswer()
 			return
 		case a.followUp != "" && a.followUp == a.answer.id:
-			// A follow-up: the cancel shortcut cancels it, the card stays (Voxt's).
-			a.cancelSession()
+			// A follow-up: the cancel shortcut cancels it, the card stays (Voxt's);
+			// its answer streaming, it stops there and the card keeps it (#3886).
+			if a.sess.CanStop() {
+				a.stopLLM()
+			} else {
+				a.cancelSession()
+			}
 			return
 		}
 	}
-	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding)
+	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature())
 	switch d.Action {
 	case hotkey.Start:
 		hold := ""
@@ -73,6 +98,11 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			kind = store.KindRewrite
 		}
 		req := session.StartRequest{Kind: kind, Target: target, HoldBinding: hold}
+		if d.Feature == hotkey.Note { // a note, from any app and page: never a try
+			req.Note = true
+			a.startSession(req)
+			return
+		}
 		// VoxtNew in front, on a page with a Try area for it: a try there.
 		switch place := a.tryPlace(kind, target); place {
 		case placeNone:
@@ -85,10 +115,22 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			a.tryStarted(place, kind, id, n)
 			return
 		}
+		if kind == store.KindTranscribe {
+			a.transcribeOrAddSelection(req) // dictionary_selection.go: a few words selected go to the dictionary
+			return
+		}
 		a.startSession(req)
 	case hotkey.Stop:
 		a.stopSession()
 	case hotkey.Cancel:
+		if a.writingAnswer() {
+			a.stopLLM() // the writing card's Stop: the answer so far stays (#3886)
+			return
+		}
+		if a.sess.State == session.Composing && a.sess.CanSkip {
+			a.skipLLM() // the preview's Use transcript (#3821)
+			return
+		}
 		a.cancelSession()
 	case hotkey.Paste:
 		a.pasteLast(target)
@@ -96,13 +138,20 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 }
 
 // hotkeyPlan is what the settings' shortcuts become.
-func (a *app) hotkeyPlan() hotkey.Plan { return hotkey.Build(a.prefs.Features, liveFeatures) }
+func (a *app) hotkeyPlan() hotkey.Plan {
+	shown := slices.DeleteFunc(slices.Clone(liveFeatures), a.prefs.Features.IsHidden)
+	return hotkey.Build(a.prefs.Features, shown)
+}
 
 // syncHotkeys sends the shortcuts to the helper (and flips "active" while
 // a session runs or the answer card shows), and keeps the Carbon
 // fallback in step with the event tap.
 func (a *app) syncHotkeys() {
 	plan := a.hotkeyPlan()
+	paused := a.keysListening
+	if paused {
+		plan = hotkey.Plan{} // the keys go to the field that records them
+	}
 	a.syncCarbon(plan)
 	if !a.helperReady() {
 		a.hotkeysSent = ""
@@ -121,6 +170,15 @@ func (a *app) syncHotkeys() {
 			return
 		}
 		was := a.hotkeys.Installed
+		if paused {
+			// With no bindings the helper removes its tap: off on purpose
+			// while a shortcut field records keys, not for want of
+			// Accessibility. Read as missing, it put up the "Without
+			// Accessibility" notice beside the field (whose Open Permissions
+			// went with the notice once the field lost the focus) and
+			// registered the Carbon fallback, which took the keys.
+			st.Installed = was
+		}
 		a.hotkeys = st
 		if st.Installed != was {
 			a.syncCarbon(a.hotkeyPlan())

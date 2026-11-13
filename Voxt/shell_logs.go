@@ -51,6 +51,12 @@ func (a *app) logsView(c *ui.Context, panel bool) {
 	t := c.Theme()
 	k := tok(t)
 	lines := a.visibleLogs()
+	q := strings.TrimSpace(a.logsQuery)
+	hits := findHits(q, len(lines), func(i int) []string { return []string{lines[i].Source, lines[i].Message} })
+	if a.logsFind.advance(hits[len(lines)]) {
+		row, _ := rowOf(hits, a.logsFind.cur)
+		a.logSel.views[viewOf(panel)].list.ScrollIntoView(row)
+	}
 	picked := &a.logSel.m
 	picked.Prune(logSeqs(lines)) // lines filtered out or gone from the log
 	ui.Row(c).Padding(px(t, 6), px(t, sp3), px(t, 6), px(t, sp6)).Gap(px(t, 6)).AlignItems(ui.Center).Shrink(0).Children(func() {
@@ -70,7 +76,10 @@ func (a *app) logsView(c *ui.Context, panel bool) {
 				}
 			}
 		}
-		ui.TextInput(c.Key("logs-search"), &a.logsQuery).Placeholder(i18n.T("Filter")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 80)).Label(i18n.T("Filter the logs"))
+		a.logsFind.keys(ui.TextInput(c.Key("logs-search"), &a.logsQuery).Placeholder(i18n.T("Filter")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 80)).Label(i18n.T("Filter logs")))
+		if hits[len(lines)] > 0 { // none: the list says nothing matches
+			a.logsFind.count(c, q, hits[len(lines)])
+		}
 		ui.Spacer(c)
 		if n := picked.Count(); n > 0 {
 			// While lines are selected: how many, Copy and Deselect.
@@ -100,19 +109,32 @@ func (a *app) logsView(c *ui.Context, panel bool) {
 	})
 	ui.Divider(c)
 	if len(lines) == 0 {
-		ui.Column(c).Grow(1).Center().Children(func() {
-			ui.Text(c, i18n.T("No log lines yet.")).TextColor(t.TextMuted)
+		// Compact, not emptyState: the panel can be 120 points high.
+		ui.Column(c).Grow(1).Center().Gap(px(t, sp2)).Children(func() {
+			q := strings.TrimSpace(a.logsQuery)
+			if q == "" {
+				ui.Text(c, i18n.T("No log lines yet.")).TextColor(t.TextMuted)
+				return
+			}
+			if r := []rune(q); len(r) > 40 {
+				q = string(r[:40]) + "…"
+			}
+			ui.Text(c, i18n.T("Nothing matches “%s”", q)).TextColor(t.TextMuted).TextAlign(ui.Center)
+			if ghostButton(c.Key("logs-clear-filter"), i18n.T("Clear filter")).Clicked() {
+				a.logsQuery = ""
+			}
 		})
 		return
 	}
-	a.logRows(c, lines, viewOf(panel))
+	a.logRows(c, lines, viewOf(panel), q, hits)
 }
 
 // logRows are the lines, the newest first, in a list that keeps its place
 // as lines come (shell_logs_order.go) and that the pointer selects
 // (shell_logs_select.go): the line under it lit, the lines selected in the
-// accent's tint.
-func (a *app) logRows(c *ui.Context, lines []core.LogEntry, v logView) {
+// accent's tint. The matches of the filter q are marked (hits: findHits
+// over each line's source and message).
+func (a *app) logRows(c *ui.Context, lines []core.LogEntry, v logView, q string, hits []int) {
 	t := c.Theme()
 	k := tok(t)
 	s := &a.logSel
@@ -123,6 +145,7 @@ func (a *app) logRows(c *ui.Context, lines []core.LogEntry, v logView) {
 	edge := s.m.Dragging() && logsAutoScroll(t, s.drag.y, s.drag.h, &o.scroll)
 	pressing := s.m.Pressed()
 	s.spans = s.spans[:0]
+	cur, curAt := rowOf(hits, a.logsFind.cur)
 	ui.Column(c.Key("logs-area")).Grow(1).MinHeight(0).Children(func() {
 		list := ui.List(c.Key("logs-rows"), &o.list, len(lines), func(i int) {
 			e := lines[i]
@@ -151,11 +174,15 @@ func (a *app) logRows(c *ui.Context, lines []core.LogEntry, v logView) {
 				s.spans = append(s.spans, logSpan{seq: e.Seq, top: b.Y, bottom: b.Y + b.H})
 			}
 			a.logRowMenu(c, row, e, lines)
+			at := -1
+			if i == cur {
+				at = curAt
+			}
 			row.Children(func() {
 				ui.Text(c, e.Time.Format("15:04:05")).Font("monospace").FontSize(px(t, fsMicro)).TextColor(k.Text3).Shrink(0)
-				ui.Text(c, e.Source).Font("monospace").FontSize(px(t, fsMicro)).TextColor(k.Text2).Width(px(t, 80)).Shrink(0).SingleLine().Ellipsis("…")
+				markedText(c, e.Source, q, curIn(at, 0)).Font("monospace").FontSize(px(t, fsMicro)).TextColor(k.Text2).Width(px(t, 80)).Shrink(0).SingleLine().Ellipsis("…")
 				// Not Selectable: the pointer chooses lines, not characters.
-				ui.Text(c, e.Message).Font("monospace").FontSize(px(t, 11)).TextColor(color).Grow(1).MinWidth(0)
+				markedText(c, e.Message, q, curIn(at, len(findFolded(e.Source, q)))).Font("monospace").FontSize(px(t, 11)).TextColor(color).Grow(1).MinWidth(0)
 			})
 		})
 		list.TrackScroll(&o.scroll).Grow(1).MinHeight(0).Padding(px(t, 5), px(t, sp3-4), px(t, 5), px(t, sp6-4)).Focusable().Label(i18n.T("Log lines"))

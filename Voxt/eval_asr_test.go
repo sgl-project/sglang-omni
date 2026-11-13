@@ -67,6 +67,10 @@ func TestEvalASR(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if d := e.draft(id); d != "" {
+			t.Logf("%s with its draft %s", id, d)
+			a = a.WithDraft(d)
+		}
 		t0 := time.Now()
 		if _, err := a.Transcribe(ctx, asr.FileRequest{Audio: clips[0].PCM, Format: "pcm", Lang: "zh"}); err != nil {
 			t.Fatalf("%s: %v", id, err)

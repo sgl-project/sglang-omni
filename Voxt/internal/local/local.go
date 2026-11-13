@@ -4,8 +4,8 @@
 //
 // Library is the Services of the app: the models internal/models
 // installed, opened by the runtimes' openers (Openers: the Omni native
-// MLX servers for speech, the voxtnew-llm process for language). Without
-// a runtime an open fails with ErrNoRuntime. NotInstalled lists nothing
+// MLX servers for speech; no runtime opens a language model since the
+// local ones retired). Without a runtime an open fails with ErrNoRuntime. NotInstalled lists nothing
 // and fails every open with ErrNotInstalled.
 //
 // Installed reads memory only, so that views may call it while they
@@ -52,6 +52,9 @@ type Model struct {
 	// Features are the only features it serves ("translate"), nil for
 	// every one (ForFeature).
 	Features []string
+	// Stream: a speech model that recognises while the user speaks, so
+	// the text shows as it comes (Voxt 1.x's Realtime tag).
+	Stream bool
 }
 
 // For says whether m serves feature ("transcribe", "translate",

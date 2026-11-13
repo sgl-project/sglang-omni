@@ -7,6 +7,7 @@ The small Swift process VoxtNew runs beside its window, for what MyGo cannot do 
 - **text in and out**: what is focused in the app in front, its selected text (Accessibility, else ⌘C when the app allows), and pasting through the clipboard with keys after it and the clipboard put back (`textio.*`);
 - **the app in front**: kept from NSWorkspace and told to the app (`app.frontmost`, `app.activated`, and `front` in each `hotkey.event`);
 - **browser URLs**: the front tab's URL from the Accessibility tree only, with no Automation consent to ask (`browser.url`), and the apps to pick from for app enhancement (`app.list`) with their icons (`app.icons`);
+- **a window's picture**: a JPEG of the window the user speaks into, for a language model that reads images, only when the user turned that on (`screen.window`, Screen Recording);
 - **permissions**: the Microphone and Accessibility as the helper sees them, and macOS's prompts (`permissions.*`);
 - **the output's mute**: the default output device's mute while VoxtNew records (`output.*`), the mutes it made kept in a journal and undone when the app goes away, before sleep, or by the next helper.
 
@@ -35,6 +36,7 @@ helper/
     TextIO.swift                  focus, selection, paste
     Browser.swift                 browser URLs (AX), app.list
     AppIcons.swift                app.icons: apps' icons as PNGs
+    ScreenWindow.swift            screen.window: a JPEG of an app's front window (ScreenCaptureKit)
     Permissions.swift             Microphone, Accessibility
     Output.swift                  Core Audio's output devices, their listeners, undoing on exit and sleep
   Tests/VoxtNewHelperKitTests/  FixtureTests (helper/Fixtures), the recognizer, the framer, the file input, ManualAccessibility, OutputMute

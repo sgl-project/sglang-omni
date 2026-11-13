@@ -68,7 +68,7 @@ func TestGenerationFields(t *testing.T) {
 	if b = bodyFor(t, "omlx", "m", Generation{IncludeUsage: ptr(false)}, Request{Messages: msgs("hi")}); b["stream_options"] != nil {
 		t.Errorf("omlx usage: %v", b["stream_options"])
 	}
-	if b = bodyFor(t, "ollama", "m", Generation{KeepAlive: "5m", Options: map[string]any{"num_ctx": 8192}}, Request{Messages: msgs("hi")}); b["keep_alive"] != "5m" || js(b["options"]) != `{"num_ctx":8192}` {
+	if b = bodyFor(t, "ollama", "m", Generation{KeepAlive: "5m", ExtraBody: map[string]any{"options": map[string]any{"num_ctx": 8192}, "keep_alive": nil}}, Request{Messages: msgs("hi")}); b["keep_alive"] != nil || js(b["options"]) != `{"num_ctx":8192}` {
 		t.Errorf("ollama: %s", js(b))
 	}
 }
@@ -110,5 +110,57 @@ func TestGenerationThinking(t *testing.T) {
 				t.Errorf("%s %+v: %s = %s, want %s", c.id, c.t, k, got, w)
 			}
 		}
+	}
+}
+
+// TestAnthropicBudgetRaisesMaxTokens: Voxt 1.x kept max_tokens above the
+// budget; below it the request would be refused.
+func TestAnthropicBudgetRaisesMaxTokens(t *testing.T) {
+	budget := Thinking{Mode: ThinkBudget, Budget: 8192}
+	for _, c := range []struct {
+		name string
+		g    Generation
+		req  Request
+		want any
+	}{
+		{"below", Generation{MaxOutputTokens: ptr(4096), Thinking: budget}, Request{}, 8193.0},
+		{"equal", Generation{MaxOutputTokens: ptr(8192), Thinking: budget}, Request{}, 8193.0},
+		{"above", Generation{MaxOutputTokens: ptr(16384), Thinking: budget}, Request{}, 16384.0},
+		{"request's own limit", Generation{Thinking: budget}, Request{MaxTokens: 512}, 8193.0},
+		{"none sent", Generation{Thinking: budget}, Request{}, nil},
+		{"another mode", Generation{MaxOutputTokens: ptr(4096), Thinking: Thinking{Mode: ThinkOff}}, Request{}, 4096.0},
+		{"no budget", Generation{MaxOutputTokens: ptr(4096), Thinking: Thinking{Mode: ThinkBudget}}, Request{}, 4096.0},
+	} {
+		c.req.Messages = msgs("hi")
+		if got := bodyFor(t, "anthropic", "m", c.g, c.req)["max_tokens"]; got != c.want {
+			t.Errorf("%s: max_tokens %v, want %v", c.name, got, c.want)
+		}
+	}
+	// Another service with a budget is left alone.
+	g := Generation{MaxOutputTokens: ptr(4096), Thinking: budget}
+	if got := bodyFor(t, "zhipu", "m", g, Request{Messages: msgs("hi")})["max_tokens"]; got != 4096.0 {
+		t.Errorf("zhipu max_tokens %v", got)
+	}
+}
+
+// TestRequestThinkingOverrides: a request's Thinking (the answer card's
+// menu) replaces the setup's for that request only, and a Default one
+// brings the preset's own fields back.
+func TestRequestThinkingOverrides(t *testing.T) {
+	off := Generation{Thinking: Thinking{Mode: ThinkOff}}
+	b := bodyFor(t, "deepseek", "deepseek-chat", off, Request{Messages: msgs("hi"), Thinking: &Thinking{Mode: ThinkEffort, Effort: "high"}})
+	if b["reasoning_effort"] != "high" || b["thinking"] != nil {
+		t.Errorf("effort over off: %s", js(b))
+	}
+	b = bodyFor(t, "deepseek", "deepseek-chat", Generation{Thinking: Thinking{Mode: ThinkOn}}, Request{Messages: msgs("hi"), Thinking: &Thinking{}})
+	if js(b["thinking"]) != `{"type":"disabled"}` {
+		t.Errorf("default over on: the preset's extra body, got %s", js(b))
+	}
+	b = bodyFor(t, "anthropic", "m", Generation{MaxOutputTokens: ptr(512)}, Request{Messages: msgs("hi"), Thinking: &Thinking{Mode: ThinkBudget, Budget: 4096}})
+	if js(b["thinking"]) != `{"budget_tokens":4096,"type":"enabled"}` || b["max_tokens"] != 4097.0 {
+		t.Errorf("budget: %s", js(b))
+	}
+	if b = bodyFor(t, "deepseek", "deepseek-chat", off, Request{Messages: msgs("hi")}); js(b["thinking"]) != `{"type":"disabled"}` || b["reasoning_effort"] != nil {
+		t.Errorf("no override: %s", js(b))
 	}
 }

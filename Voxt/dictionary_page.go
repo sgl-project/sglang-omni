@@ -6,11 +6,13 @@ package main
 // Terms go to the speech model as hints (dict.Hints) and to the
 // language model as a glossary (compose.Glossary); the switches at the
 // top say where. Search, add, edit, delete, and import or export CSV and
-// plain text (internal/dict).
+// plain text (internal/dict). The Personal dictionary view, Markdown notes
+// for the language model: dictionary_notes.go.
 //
 // The page keeps the terms of its search in memory, read in the
 // background when it shows and after each change; sessions read the
-// store themselves, so a change applies to the next one.
+// store themselves, so a change applies to the next one. Suggested terms:
+// dictionary_suggest.go; the history scan: dictionary_scan.go.
 
 import (
 	"context"
@@ -22,10 +24,12 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/learn"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -33,11 +37,19 @@ import (
 
 // dictionaryState is the Dictionary page's view state.
 type dictionaryState struct {
-	dv dictView
+	dv              dictView
+	book            *learn.Book
+	suggestions     []learn.Suggestion // the sidebar's count and the page's section
+	suggestionReads int                // numbers the reads: only the last one lands
+	scanner         *learn.Scanner
+	// selPress is the transcribe shortcut whose selection is being read
+	// (dictionary_selection.go).
+	selPress *selectionPress
 }
 
 type dictView struct {
 	query string
+	find  finder // Return steps through the matches (find_marks.go)
 	// list holds the terms read for listFor (the search); "\x00" before
 	// the first read. seq numbers the reads: only the last one lands.
 	list    []store.Term
@@ -48,12 +60,30 @@ type dictView struct {
 	err     string
 	total   int // terms in the dictionary (the last read without a search)
 	listUI  ui.ListState
+	// guideOpen: the usage guide is unfolded.
+	guideOpen bool
 	// The term dialog.
 	editOpen bool
 	edit     termEdit
 	editWas  termEdit // the form as opened: a stray click or Escape keeps a changed one open
 	// importing: an import runs.
 	importing bool
+	// allSuggestions: the section shows every suggestion, not the first five.
+	allSuggestions bool
+	// scan is the history scan's dialog (dictionary_scan.go).
+	scan scanState
+	// tab is the view: the terms or the personal dictionary
+	// (dictionary_notes.go), whose editor is notes and whose example is
+	// of notesFeatures[notesFeature].
+	tab          int
+	notes        speechContextState
+	notesFeature int
+	// notesQuery and notesFind are the view's search (find_marks.go).
+	notesQuery string
+	notesFind  finder
+	// all are the terms of the last read without a search, for the
+	// example's glossary.
+	all []store.Term
 }
 
 // termEdit is the term dialog's fields: a new term when id is "".
@@ -66,6 +96,7 @@ type termEdit struct {
 	saving          bool
 	createdAt       time.Time
 	original, title string
+	suggestion      string // the key of the suggestion the dialog accepts, if any
 }
 
 // Test seams: the file dialogs of Import and Export.
@@ -73,16 +104,16 @@ var (
 	chooseImportFile = func(a *app, then func(string)) {
 		go func() {
 			files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import terms"),
-				Filters: []mygo.FileFilter{{Name: i18n.T("Dictionary (CSV, text or the previous Voxt's export)"), Extensions: []string{"csv", "txt", "json"}}}})
+				Filters: []mygo.FileFilter{{Name: i18n.T("Dictionary (CSV, text or Voxt 1.x export)"), Extensions: []string{"csv", "txt", "json"}}}})
 			if err != nil || len(files) == 0 {
 				return
 			}
 			a.post(func() { then(files[0]) })
 		}()
 	}
-	chooseExportFile = func(a *app, name string, then func(string)) {
+	chooseExportFile = func(a *app, title, name string, then func(string)) {
 		go func() {
-			dst, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: a.win, Title: i18n.T("Export terms"), DefaultPath: name,
+			dst, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: a.win, Title: title, DefaultPath: name,
 				Filters: []mygo.FileFilter{{Name: strings.ToUpper(filepath.Ext(name)[1:]), Extensions: []string{filepath.Ext(name)[1:]}}}})
 			if err != nil || dst == "" {
 				return
@@ -118,7 +149,7 @@ func (a *app) loadDict() {
 			}
 			d.list, d.err = list, ""
 			if q == "" {
-				d.total = len(list)
+				d.total, d.all = len(list), list
 			}
 		})
 	})
@@ -130,7 +161,8 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	if !d.read && !d.loading {
 		a.loadDict()
 	}
-	pageHeader(c, i18n.T("Dictionary"), func() {
+	scanModel, canScan := a.scanModel()
+	widePageHeader(c, i18n.T("Dictionary"), func() {
 		if d.total > 0 {
 			caption(c, i18n.N(d.total, "%d term", "%d terms", d.total)).SingleLine()
 		}
@@ -144,11 +176,14 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			v := *on
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Enabled = v })
 		}
+		if ui.Button(c.Key("dict-scan"), i18n.T("Scan history…")).Disabled(!canScan).Clicked() {
+			a.openScan(scanModel)
+		}
 		moreMenu(c.Key("dict-more"), "", func(m *ui.Menu) {
 			if m.Item(i18n.T("Import…")).Chosen() {
 				a.importTerms()
 			}
-			if legacyLibrary() != "" && m.Item(i18n.T("Import from the previous Voxt…")).Chosen() {
+			if legacyLibrary() != "" && m.Item(i18n.T("Import from Voxt 1.x…")).Chosen() {
 				a.importLegacy()
 			}
 			if m.Item(i18n.T("Export as CSV…")).Chosen() {
@@ -162,38 +197,69 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			a.openTerm(store.Term{Enabled: true})
 		}
 	})
-	ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-			if searchField(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search the dictionary")).Changed() {
-				a.loadDict()
-			}
-			a.dictSwitches(c)
+	pageBody(c).Children(func() {
+		ui.Row(c).Padding(px(t, sp1), px(t, sp6), 0).Shrink(0).Children(func() {
+			segmentedFit(c.Key("dict-tab"), &d.tab, i18n.T("Terms"), i18n.T("Personal dictionary")).Label(i18n.T("Dictionary view"))
 		})
-		if !a.prefs.Dictionary.Enabled {
-			notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off: its terms go nowhere."), "", nil, nil)
+		if d.tab == dictNotesTab {
+			a.notesView(c)
+			return
 		}
-		if d.err != "" {
-			notice(c, "dict-err", noticeError, i18n.T("Could not read the dictionary."), d.err, func() {
-				if ghostButton(c.Key("dict-retry"), i18n.T("Try again")).Clicked() {
+		list := d.list
+		hits := findHits(d.listFor, len(list), func(i int) []string { return termTexts(list[i]) })
+		if d.find.advance(hits[len(list)]) {
+			row, _ := rowOf(hits, d.find.cur)
+			d.listUI.ScrollIntoView(row)
+		}
+		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+				if d.find.field(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
 					a.loadDict()
 				}
-			}, nil)
-		}
-	})
-	list := d.list
-	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-		switch {
-		case !d.read:
-		case len(list) == 0:
-			a.dictEmpty(c)
-		default:
-			ui.List(c.Key("dict-list"), &d.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
-				ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
-				a.termRow(c, list[r.Index])
+				d.find.count(c, d.listFor, hits[len(list)])
+				a.dictSwitches(c)
 			})
-		}
+			if !canScan {
+				ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
+					caption(c, i18n.T("Choose a language model for Transcribe first")).SingleLine().MinWidth(0).Shrink(1)
+					if ghostButton(c.Key("dict-scan-model"), i18n.T("Open Transcribe")).Clicked() {
+						a.navigate("/transcribe")
+					}
+				})
+			}
+			a.dictGuide(c)
+			if !a.prefs.Dictionary.Enabled {
+				notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off, so its terms are not used."), "", nil, nil)
+			}
+			if d.err != "" {
+				notice(c, "dict-err", noticeError, i18n.T("Could not read the dictionary."), d.err, func() {
+					if ghostButton(c.Key("dict-retry"), i18n.T("Try again")).Clicked() {
+						a.loadDict()
+					}
+				}, nil)
+			}
+		})
+		a.suggestionsSection(c)
+		cur, curAt := rowOf(hits, d.find.cur)
+		ui.Column(c).Grow(1).MinHeight(0).Children(func() {
+			switch {
+			case !d.read:
+			case len(list) == 0:
+				a.dictEmpty(c)
+			default:
+				ui.List(c.Key("dict-list"), &d.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
+					ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
+					at := -1
+					if r.Index == cur {
+						at = curAt
+					}
+					a.termRow(c, list[r.Index], at)
+				})
+			}
+		})
 	})
 	a.termDialog(c)
+	a.scanDialog(c)
 }
 
 // dictSwitches say where the terms go.
@@ -203,16 +269,34 @@ func (a *app) dictSwitches(c *ui.Context) {
 	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
 		hints := &a.prefs.Dictionary.ASRHints
 		if ui.Checkbox(c.Key("dict-hints"), hints, i18n.T("Speech hints")).Disabled(off).
-			Tooltip(i18n.T("Sent to the speech model as words to expect. It keeps a limited number: the terms changed last go first.")).Changed() {
+			Tooltip(i18n.T("Terms go to the speech model as words to expect.")).Changed() {
 			v := *hints
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.ASRHints = v })
 		}
 		gl := &a.prefs.Dictionary.Glossary
 		if ui.Checkbox(c.Key("dict-glossary"), gl, i18n.T("Glossary for the language model")).Disabled(off).
-			Tooltip(i18n.T("Clean-up writes the terms as spelled here, also when recognition heard them a little differently. A dictionary of up to 30 terms goes in whole; a larger one only with the terms found in what you said.")).Changed() {
+			Tooltip(i18n.T("The language model writes terms as spelled here.")).Changed() {
 			v := *gl
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = v })
 		}
+		learnOn := &a.prefs.Dictionary.Learn
+		if ui.Checkbox(c.Key("dict-learn"), learnOn, i18n.T("Learn from my corrections")).Disabled(off).
+			Tooltip(i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds)).Changed() {
+			v := *learnOn
+			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Learn = v })
+		}
+	})
+}
+
+// dictGuide says where a term applies, folded under the switches
+// (docs/behavior.md 5.16, 7.9, 7.9a).
+func (a *app) dictGuide(c *ui.Context) {
+	collapsible(c.Key("dict-guide"), i18n.T("How the dictionary works"), &a.dv.guideOpen, nil, func() {
+		caption(c, i18n.T("Each enabled term is used in three places:"))
+		caption(c, i18n.T("Speech recognition: with Speech hints on, terms go to the speech model as words to expect. Aliases are not sent."))
+		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes terms as spelled here. With more than %d terms, only those found in the text are sent, up to %d.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
+		caption(c, i18n.T("Aliases: misspellings Voxt replaces with the term, even without a language model."))
+		caption(c, i18n.T("Rules a term cannot hold, such as when a spelling applies, go in the Personal dictionary: Markdown notes for the language model only, with an example of the prompt."))
 	})
 }
 
@@ -220,8 +304,8 @@ func (a *app) dictSwitches(c *ui.Context) {
 func (a *app) dictEmpty(c *ui.Context) {
 	d := &a.dv
 	if q := strings.TrimSpace(d.listFor); q != "" {
-		emptyState(c, icons.Magnifer, i18n.T("No term matches “%s”", q), i18n.T("The search looks in terms, aliases and notes."), func() {
-			if ghostButton(c.Key("dict-clear-search"), i18n.T("Clear the search")).Clicked() {
+		emptyState(c, icons.Magnifer, i18n.T("No term matches “%s”", q), "", func() {
+			if ghostButton(c.Key("dict-clear-search"), i18n.T("Clear search")).Clicked() {
 				d.query = ""
 				a.loadDict()
 			}
@@ -229,7 +313,7 @@ func (a *app) dictEmpty(c *ui.Context) {
 		return
 	}
 	emptyState(c, dictionaryIcon, i18n.T("Names and terms you use"),
-		i18n.T("Add the names, products and jargon you say: speech recognition expects them, and clean-up writes them as you spell them here."), func() {
+		i18n.T("Add the names and jargon you say, spelled as they should be written."), func() {
 			if ghostIconButton(c.Key("dict-empty-add"), icons.Add, i18n.T("Add term")).Clicked() {
 				a.openTerm(store.Term{Enabled: true})
 			}
@@ -239,11 +323,21 @@ func (a *app) dictEmpty(c *ui.Context) {
 		})
 }
 
+// termTexts are the texts a term's row shows, where the search marks
+// its matches: the term, its aliases and its note.
+func termTexts(term store.Term) []string {
+	return []string{term.Term, strings.Join(term.Aliases, i18n.T(", ")), term.Note}
+}
+
 // termRow is a term in the list: its switch, the term, its aliases and
-// note, Edit and Delete.
-func (a *app) termRow(c *ui.Context, term store.Term) {
+// note, Edit and Delete, the search's matches marked; at is the current
+// match's index within the row (-1 for none).
+func (a *app) termRow(c *ui.Context, term store.Term, at int) {
 	t := c.Theme()
 	k := tok(t)
+	q := a.dv.listFor
+	texts := termTexts(term)
+	nTerm, nAliases := len(findFolded(texts[0], q)), len(findFolded(texts[1], q))
 	row := ui.Row(c.Key("term-"+term.ID)).Padding(px(t, 6), px(t, sp2)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
 		Gap(px(t, sp2)).AlignItems(ui.Center)
 	if row.Hovered() {
@@ -258,16 +352,21 @@ func (a *app) termRow(c *ui.Context, term store.Term) {
 		})
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				tx := ui.Text(c, term.Term).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+				tx := markedText(c, term.Term, q, curIn(at, 0)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 				if !term.Enabled {
 					tx.TextColor(k.Text3)
 				}
 				if len(term.Aliases) > 0 {
-					truncText(c, i18n.T("heard as %s", strings.Join(term.Aliases, i18n.T(", ")))).FontSize(px(t, fsCaption)).TextColor(k.Text2).Grow(1)
+					heard := i18n.T("heard as %s", texts[1])
+					before, after, _ := strings.Cut(i18n.T("heard as %s", "\x00"), "\x00")
+					spans := append([]ui.Span{{Text: before}}, markSpans(k.Danger, ui.Span{}, texts[1], q, curIn(at, nTerm))...)
+					ui.RichText(c, append(spans, ui.Span{Text: after})...).Label(heard).Tooltip(heard).
+						FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 				}
 			})
 			if term.Note != "" {
-				truncText(c, term.Note).FontSize(px(t, fsCaption)).TextColor(k.Text3)
+				markedText(c, term.Note, q, curIn(at, nTerm+nAliases)).Tooltip(term.Note).
+					FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
 			}
 		})
 		if iconButton(c.Key("edit"), icons.Pen2, i18n.T("Edit %s", term.Term)).Clicked() {
@@ -300,7 +399,7 @@ func (a *app) termDialog(c *ui.Context) {
 		title = i18n.T("Edit term")
 	}
 	if dialogFrame(c, "term-dlg", &d.editOpen, title, "", 460, func() {
-		fieldInfo(c, i18n.T("Term"), i18n.T("As it must be written: Voxt, Kubernetes, 豆包."), func() {
+		fieldInfo(c, i18n.T("Term"), i18n.T("As it should be written: Voxt, Kubernetes, 豆包."), func() {
 			in := ui.TextInput(c.Key("term-term"), &e.term).Label(i18n.T("Term as written")).Placeholder("Voxt").AutoFocus()
 			if in.Changed() {
 				e.err = ""
@@ -309,10 +408,10 @@ func (a *app) termDialog(c *ui.Context) {
 				a.submitTerm()
 			}
 		})
-		fieldInfo(c, i18n.T("Aliases"), i18n.T("What speech recognition writes instead, separated by commas: Vox T, 沃克斯特. Voxt puts the term in their place, also without a language model."), func() {
+		fieldInfo(c, i18n.T("Aliases"), i18n.T("Wrong spellings to replace, separated by commas: Vox T, 沃克斯特."), func() {
 			ui.TextInput(c.Key("term-aliases"), &e.aliases).Label(i18n.T("Aliases of the term")).Placeholder(i18n.T("Vox T, 沃克斯特"))
 		})
-		fieldInfo(c, i18n.T("Note"), i18n.T("For you only: it is sent nowhere."), func() {
+		fieldInfo(c, i18n.T("Note"), i18n.T("Only for you, never sent."), func() {
 			ui.TextArea(c.Key("term-note"), &e.note).Label(i18n.T("Note on the term")).MinHeight(px(t, 56))
 		})
 		ui.Checkbox(c.Key("term-enabled"), &e.enabled, i18n.T("Use this term"))
@@ -345,6 +444,10 @@ func (a *app) submitTerm() {
 		return
 	}
 	e.saving = true
+	if e.suggestion != "" {
+		a.acceptSuggestion(e.suggestion, term, true)
+		return
+	}
 	a.saveTerm(term, true)
 }
 
@@ -423,7 +526,7 @@ func (a *app) importFile(path string) {
 				terms, skipped, err = dict.Import(data, dict.FormatOf(path))
 			}
 			if err != nil {
-				return i18n.T("Could not import %s: it is not a CSV or text list of terms, or the previous Voxt's dictionary export.", filepath.Base(path))
+				return i18n.T("Could not import %s: it is not a CSV or text list of terms, or a Voxt 1.x dictionary export.", filepath.Base(path))
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -468,7 +571,7 @@ func mergeImported(ctx context.Context, repo store.Dictionary, terms []store.Ter
 // exportTerms writes every term to a file the user picks.
 func (a *app) exportTerms(format string) {
 	name := "voxtnew-dictionary." + format
-	chooseExportFile(a, name, func(dst string) { a.exportFile(dst, format) })
+	chooseExportFile(a, i18n.T("Export terms"), name, func(dst string) { a.exportFile(dst, format) })
 }
 
 func (a *app) exportFile(dst, format string) {
