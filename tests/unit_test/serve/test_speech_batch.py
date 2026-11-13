@@ -364,21 +364,36 @@ def test_batch_speech_applies_reference_text_instruction_exclusion() -> None:
     assert client_impl.requests == []
 
 
-def test_batch_speech_item_null_voice_inherits_default_voice() -> None:
+def test_batch_speech_items_inherit_the_batch_defaults() -> None:
+    """A null item voice takes the default voice, and the prompt fields set on the batch reach each item unless it sets its own; the batch once dropped prepend_silence and the condition fields."""
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     response = client.post(
         "/v1/audio/speech/batch",
         json={
-            "items": [{"input": "one", "voice": None}],
+            "prepend_silence": False,
+            "condition_buckets": {"loudness": 3},
+            "condition_values": {"fmax": 6000.0},
+            "items": [
+                {"input": "one", "voice": None},
+                {"input": "two", "condition_buckets": {"loudness": 5}},
+            ],
         },
     )
 
     assert response.status_code == 200
-    assert response.json()["succeeded"] == 1
-    assert [request.prompt for request in client_impl.requests] == ["one"]
-    assert client_impl.requests[0].metadata["tts_params"]["voice"] == "default"
+    assert response.json()["succeeded"] == 2
+    assert [request.prompt for request in client_impl.requests] == ["one", "two"]
+    first_params, second_params = (
+        request.metadata["tts_params"] for request in client_impl.requests
+    )
+    assert first_params["voice"] == "default"
+    assert first_params["prepend_silence"] is False
+    assert first_params["condition_buckets"] == {"loudness": 3}
+    assert first_params["condition_values"] == {"fmax": 6000.0}
+    assert second_params["condition_buckets"] == {"loudness": 5}
+    assert second_params["condition_values"] == {"fmax": 6000.0}
 
 
 def test_batch_speech_rejects_stringified_default_types() -> None:

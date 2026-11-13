@@ -48,19 +48,20 @@ func New(cfg Config) *Manager {
 			*d = v
 		}
 	}
-	def(&cfg.MaxRecording, DefaultMaxRecording)
 	def(&cfg.MinRecording, DefaultMinRecording)
 	def(&cfg.ASRTimeout, DefaultASRTimeout)
 	def(&cfg.ASRPerSecond, DefaultASRPerSecond)
 	def(&cfg.AudioRetention, DefaultAudioRetention)
-	def(&cfg.LLMFirstToken, DefaultLLMFirstToken)
+	def(&cfg.LLMBase, DefaultLLMBase)
 	def(&cfg.LLMStall, DefaultLLMStall)
 	def(&cfg.LLMPerChar, DefaultLLMPerChar)
 	def(&cfg.LLMTimeout, DefaultLLMTimeout)
 	def(&cfg.WriteTimeout, DefaultWriteTimeout)
 	def(&cfg.ReadTimeout, DefaultReadTimeout)
+	def(&cfg.RewriteReadTimeout, DefaultRewriteReadTimeout)
 	def(&cfg.DeliverTime, DefaultDeliverTimeout)
 	def(&cfg.StopGrace, DefaultStopGrace)
+	def(&cfg.EndWordPause, DefaultEndWordPause)
 	def(&cfg.WaitNote, DefaultWaitNote)
 	return &Manager{cfg: cfg, snap: Snapshot{State: Idle}}
 }
@@ -119,10 +120,11 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 		m: m, id: m.cfg.NewID(), req: req, settings: m.cfg.Settings(), ctx: ctx, cancel: cancel,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
 	}
+	r.llmCtx, r.llmStop = context.WithCancel(ctx)
 	m.cur = r
 	m.rev++
 	m.snap = Snapshot{
-		Rev: m.rev, ID: r.id, Kind: req.Kind, State: r.firstState(), Try: req.Try, HoldBinding: req.HoldBinding,
+		Rev: m.rev, ID: r.id, Kind: req.Kind, State: r.firstState(), Try: req.Try, Note: req.Note, HoldBinding: req.HoldBinding,
 		Target: req.Target, StartedAt: at,
 	}
 	if req.Kind == store.KindTranslate {
@@ -166,6 +168,20 @@ func (m *Manager) Cancel(id string) {
 	}
 }
 
+// SkipLLM ends session id's language model step where it is, when its
+// snapshot says it can (Snapshot.CanSkip): the recognised text goes on
+// in place of the answer (#3821). Otherwise it does nothing.
+func (m *Manager) SkipLLM(id string) {
+	m.mu.Lock()
+	r := m.cur
+	ok := r != nil && r.id == id && m.snap.State == Composing && m.snap.CanSkip
+	m.mu.Unlock()
+	if ok {
+		r.skipped.Store(true)
+		r.llmStop()
+	}
+}
+
 // update changes the snapshot of run r, if r is still the current,
 // live session, and publishes it. It reports whether it did.
 func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
@@ -199,7 +215,7 @@ func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot))
 	}
 	m.snap.State = st
 	r.ended = true
-	if st == Done && m.snap.Result != "" && !m.snap.Try {
+	if st == Done && m.snap.Result != "" && !m.snap.Try && !m.snap.Note {
 		m.last = m.snap.Result
 	}
 	m.rev++

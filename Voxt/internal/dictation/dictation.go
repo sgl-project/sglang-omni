@@ -215,7 +215,7 @@ func (s *Services) SetHelper(h Caller) {
 func (s *Services) Installed(kind local.Kind) []local.Model {
 	out := s.Services.Installed(kind)
 	if kind == local.ASR && s.helper.Load() != nil {
-		out = append(slices.Clip(out), local.Model{Kind: local.ASR, ID: ModelID, Name: s.name(ModelID)})
+		out = append(slices.Clip(out), local.Model{Kind: local.ASR, ID: ModelID, Name: s.name(ModelID), Stream: true})
 	}
 	return out
 }

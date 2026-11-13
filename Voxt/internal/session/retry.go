@@ -56,7 +56,7 @@ func (m *Manager) Retry(ctx context.Context, req RetryRequest) (store.Entry, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	r := &run{m: m, id: e.ID, req: StartRequest{Kind: e.Kind}, settings: cfg.Settings(), ctx: ctx, cancel: cancel,
+	r := &run{m: m, id: e.ID, req: StartRequest{Kind: e.Kind}, settings: cfg.Settings(), ctx: ctx, cancel: cancel, llmCtx: ctx,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(), target: e.TargetLang}
 	r.pcm.append(pcm)
 	r.retryScene(e)
@@ -122,7 +122,7 @@ func (r *run) retryScene(e store.Entry) {
 // first error (e as far as it got).
 func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, error) {
 	cfg := r.m.cfg
-	svc, err := cfg.Resolve(r.ctx, e.Kind, r.settings)
+	svc, err := cfg.Resolve(r.ctx, e.Kind, r.settings, true)
 	if err != nil {
 		return e, err
 	}
@@ -151,7 +151,7 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	e.SentMS = asr.Duration(upload, asr.SampleRate).Milliseconds()
 	r.asrLimit = cfg.asrLimit(asr.Duration(pcm, asr.SampleRate))
 	actx, acancel := context.WithTimeout(r.ctx, r.asrLimit)
-	res, err := ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints()})
+	res, err := ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext()})
 	if err != nil && actx.Err() != nil {
 		err = r.ctxErr(actx)
 	}
@@ -160,7 +160,7 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	if err != nil {
 		return e, err
 	}
-	raw := strings.TrimSpace(res.Text)
+	raw, _ := withoutEndWord(strings.TrimSpace(res.Text), r.endWord())
 	r.logf("info", "retry: recognised %s in %v", r.logText(raw), time.Duration(e.ASRMS)*time.Millisecond)
 	if raw == "" {
 		return e, errors.New("nothing was recognised in the recording")
@@ -189,13 +189,13 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 		}
 	} else {
 		var ans compose.Answer
-		ans, _, _, llmErr = r.ask(r.writeInput(text, e.SourceText)) // nothing is pasted: a cut-off answer only updates the entry
+		ans, _, _, llmErr = r.askOrFallback(r.writeInput(text, e.SourceText)) // nothing is pasted: a cut-off answer only updates the entry
 		e.Result = strings.TrimSpace(ans.Content)
 		if llmErr == nil && e.Result == "" {
-			llmErr = errors.New("the language model answered nothing")
+			llmErr = errors.New("the language model returned an empty answer")
 		}
 	}
 	e.LLMMS = r.now().Sub(llmStart).Milliseconds()
-	e.LLMProvider, e.LLMModel = svc.LLMInfo.ID, svc.LLMInfo.Model
+	e.LLMProvider, e.LLMModel = r.svc.LLMInfo.ID, r.svc.LLMInfo.Model // the fallback's, when it answered
 	return e, llmErr
 }

@@ -40,16 +40,17 @@ final class SpeechJobs: @unchecked Sendable {
         lock.withLock { jobs[id] = job }
         out.notify(Method.speechStarted, SpeechStartedParams(job: id, locale: recognizer.locale.identifier(.bcp47)))
         let task = recognizer.recognitionTask(with: request) { [self] result, error in
-            if let result, result.isFinal {
-                finish(id) { out.result(id, SpeechResult(text: result.bestTranscription.formattedString)) }
-            } else if let result {
-                if lock.withLock({ jobs[id] }) != nil {
-                    out.notify(Method.speechPartial, SpeechPartialParams(job: id, text: result.bestTranscription.formattedString))
+            if let result {
+                let text = job.transcript.update(result.bestTranscription.formattedString)
+                if result.isFinal {
+                    finish(id) { out.result(id, SpeechResult(text: text)) }
+                } else if lock.withLock({ jobs[id] }) != nil {
+                    out.notify(Method.speechPartial, SpeechPartialParams(job: id, text: text))
                 }
             } else if let error {
                 let e = error as NSError
-                if e.domain == "kAFAssistantErrorDomain" && e.code == 1110 { // no speech detected: nothing was said
-                    finish(id) { out.result(id, SpeechResult(text: "")) }
+                if e.domain == "kAFAssistantErrorDomain" && e.code == 1110 { // no speech detected (since a restart, perhaps)
+                    finish(id) { out.result(id, SpeechResult(text: job.transcript.text)) }
                 } else {
                     finish(id) { out.fail(id, RPCError(Code.internal, errorMessage(error))) }
                 }
@@ -127,6 +128,8 @@ private final class SpeechJob: @unchecked Sendable {
     let format: AVAudioFormat
     /// Set under SpeechJobs' lock.
     var task: SFSpeechRecognitionTask?
+    /// The text so far; only the recognizer's callbacks (one at a time) touch it.
+    var transcript = SpeechTranscript()
 
     init(request: SFSpeechAudioBufferRecognitionRequest, format: AVAudioFormat) {
         self.request = request

@@ -126,11 +126,14 @@ func clone(s Settings) Settings {
 	f.Transcribe.Hotkeys = slices.Clone(f.Transcribe.Hotkeys)
 	f.Translate.Hotkeys = slices.Clone(f.Translate.Hotkeys)
 	f.Rewrite.Hotkeys = slices.Clone(f.Rewrite.Hotkeys)
+	f.Hidden = slices.Clone(f.Hidden)
+	f.CardSizes = maps.Clone(f.CardSizes)
 	s.AppEnhancement.Browsers = slices.Clone(s.AppEnhancement.Browsers)
 	s.Family.Follow = maps.Clone(s.Family.Follow)
 	s.Family.Conflicts = slices.Clone(s.Family.Conflicts)
 	s.Family.Prompted = slices.Clone(s.Family.Prompted)
 	s.Family.KeysSince = maps.Clone(s.Family.KeysSince)
+	s.Models.Faster = maps.Clone(s.Models.Faster)
 	return s
 }
 
@@ -186,6 +189,10 @@ func normalize(s Settings) Settings {
 	if f.Cancel.Keys != "" {
 		f.Cancel = normalizeHotkey(f.Cancel)
 		f.Cancel.Trigger = TriggerTap // a cancel is always a single press
+	}
+	if f.Note.Keys != "" {
+		f.Note = normalizeHotkey(f.Note)
+		f.Note.Trigger = TriggerTap
 	}
 	for _, f := range []*Feature{&f.Transcribe.Feature, &f.Translate.Feature, &f.Rewrite.Feature} {
 		f.ASR, f.LLM = strings.TrimSpace(f.ASR), strings.TrimSpace(f.LLM)

@@ -2,19 +2,30 @@
 // MLX runtime (sglang_omni_mlx/native): C++ servers, one process per
 // model, spoken to over loopback HTTP and WebSockets. It supervises them
 // and implements internal/asr's FileTranscriber and Streamer for the
-// curated Qwen3-ASR models, and internal/vad's Model for Silero VAD.
+// curated speech models, and internal/vad's Model for Silero VAD.
 //
 // # Models
 //
 // Only a few models, each with parameters tuned for it (models.go): the
 // speech models Qwen3-ASR 1.7B 8-bit (the default, accurate) and 0.6B
-// 4-bit (fast), and Silero VAD v6. They are keyed by the catalogue's
-// stable ids (ASRAccurate "asr.accurate", ASRFast "asr.fast", VADSilero
-// "vad.silero"); the Hugging Face repository and its pinned revision are
-// recorded beside them. Downloads, checksums and install state are
+// 4-bit (fast), Voxt 1.x's other local models (Qwen3-ASR 1.7B 6-bit,
+// Whisper, Parakeet, SenseVoice, Cohere Transcribe, Nemotron, MOSS), and
+// Silero VAD v6. They are keyed by the catalogue's stable ids
+// (ASRAccurate "asr.accurate", ASRFast "asr.fast", VADSilero
+// "vad.silero", …); the Hugging Face repository and its pinned revision
+// are recorded beside them. Only Qwen3-ASR takes a context (the
+// dictionary's terms); MOSS gets its plain-text instruction as its prompt.
+// The models other than Qwen3-ASR run on servers of their own
+// (Spec.Binary: whisper_server, parakeet_server, …), which take only the
+// common launch flags; Nemotron and MOSS have a realtime API, the others
+// a batch preview (preview.go). Downloads, checksums and install state are
 // internal/models'; this package gets a model's folder. An ASR may carry
 // the VAD (WithVAD): its VAD method is local.VoiceActivity, how a session
-// finds the Silero model beside the speech model.
+// finds the Silero model beside the speech model. It may carry a
+// speculative draft (WithDraft): the DFlash draft the catalogue pairs
+// with the model goes to the server as --draft-model-path, which then
+// decodes several tokens a step; a server that refuses the draft starts
+// again without it.
 //
 // # Processes (Runtime)
 //
@@ -53,8 +64,10 @@
 // the terms it did not hear go (echo.go).
 //
 // Live (WS /v1/realtime): a manual-turn session with the language hint;
-// the server decodes 100 ms after the first audible audio, then once a
-// second (launch flags). Its segments make the partial text. At Finish
+// Qwen3-ASR's server decodes 100 ms after the first audible audio, then
+// once a second (launch flags). A model without the realtime API previews
+// with a Final request over the audio not yet in a piece, once a second
+// of new audio came. Its segments make the partial text. At Finish
 // the socket is dropped and the Final above runs on everything sent, as
 // Voxt: the Final, with its context bias, is the text that counts. The
 // stream's events are partials, then exactly one final or error, then the

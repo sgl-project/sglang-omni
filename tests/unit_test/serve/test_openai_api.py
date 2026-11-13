@@ -4372,6 +4372,32 @@ def test_transcription_endpoint_maps_unsupported_language_error_to_400() -> None
     assert "Use a supported language code" in response.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    "model_name", ["Qwen/Qwen3-ASR-1.7B", "OpenMOSS-Team/MOSS-Transcribe-Diarize"]
+)
+@pytest.mark.parametrize("temperature", [-1.0, 0.0])
+def test_transcription_temperature_is_validated_before_generation(
+    model_name: str, temperature: float
+) -> None:
+    """Negative temperature reached generation and produced length-limited nonsense."""
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(create_app(transcription_client, model_name=model_name))
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": model_name, "temperature": str(temperature)},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    if temperature < 0:
+        assert response.status_code == 422
+        assert transcription_client.requests == []
+    else:
+        assert response.status_code == 200
+        assert len(transcription_client.requests) == 1
+        assert transcription_client.requests[0].sampling.temperature == temperature
+
+
 def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(

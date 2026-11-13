@@ -246,6 +246,7 @@ func TestSceneLLMOff(t *testing.T) {
 func TestSceneAnswerCard(t *testing.T) {
 	h := newHarness(t, &fakeStreamer{final: "hello"}, &fakeLLM{text: "Hello."}, func(c *Config, s *settings.Settings) {
 		c.Scene = &SceneConfig{Rules: func() (appctx.Rules, bool) { return sceneRules(), true }}
+		s.Features.Transcribe.ShowCard = true
 	})
 	h.text.focus = proto.FocusResult{PID: slack.PID, Role: "AXButton"}
 	id := h.start()
@@ -283,6 +284,7 @@ func TestSceneWrite(t *testing.T) {
 			h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
 				c.Select = &fakeSelector{text: tc.sel}
 				c.Scene = &SceneConfig{Rules: func() (appctx.Rules, bool) { return rules, true }}
+				s.Features.Rewrite.ShowCard = false // inserted, as the others: the key after it
 			})
 			id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack})
 			if err != nil {
@@ -293,8 +295,8 @@ func TestSceneWrite(t *testing.T) {
 				h.speak(id, 3)
 			}
 			end := h.rec.wait(t)
-			// Rewrite answers wait in the card (Voxt's); the rest is inserted.
-			if end.State != Done || end.Inserted == (tc.kind == store.KindRewrite) || end.Card != (tc.kind == store.KindRewrite) {
+			// The card switch off: every answer is inserted.
+			if end.State != Done || !end.Inserted || end.Card {
 				t.Fatalf("end %+v", end)
 			}
 			sys := h.llmRequest(t)
@@ -304,12 +306,7 @@ func TestSceneWrite(t *testing.T) {
 			h.text.mu.Lock()
 			presses := h.text.presses
 			h.text.mu.Unlock()
-			switch {
-			case tc.kind == store.KindRewrite:
-				if len(presses) != 0 { // nothing pasted: the card inserts when asked
-					t.Errorf("presses %+v", presses)
-				}
-			case len(presses) != 1 || (presses[0] != nil) != tc.press:
+			if len(presses) != 1 || (presses[0] != nil) != tc.press {
 				t.Errorf("presses %+v", presses)
 			}
 		})
