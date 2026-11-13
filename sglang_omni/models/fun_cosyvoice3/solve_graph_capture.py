@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""One graph pool and capture stream for the Flow's Euler solve graphs."""
+"""One graph pool and capture stream for the vocoder's graphs: the Flow's Euler solves
+and HiFT's decode."""
 
 from __future__ import annotations
 
@@ -20,21 +21,34 @@ logger = logging.getLogger(__name__)
 CAPTURE_WARMUP_RUNS = 2
 
 
+def row_tiers(max_rows: int) -> list[int]:
+    """The decode ladder (1, 2, 4, 8, 12, then steps of 8) up to max_rows, which is
+    always a tier."""
+    return sorted(
+        {
+            rows
+            for rows in (1, 2, 4, 8, 12, *range(16, max_rows + 1, 8))
+            if rows <= max_rows
+        }
+        | {max_rows}
+    )
+
+
 class GraphSolve(Protocol):
     def __call__(self) -> torch.Tensor: ...
 
 
 class SolveGraphCapture:
-    """Captures the prefix hop and whole history solve graphs into one pool. They
-    share it because a stream step replays one graph at a time, under the scheduler's
-    state lock, and clones its output before the next replay."""
+    """Captures the Flow's solve graphs and HiFT's decode graphs into one pool. They share
+    it because a stream step replays one graph at a time, under the scheduler's state
+    lock, and consumes its output on this stream (a clone or a host copy) first."""
 
     def __init__(
         self,
         backend: DeviceGraphBackend,
         *,
         device: torch.device,
-        autocast_dtype: torch.dtype,
+        autocast_dtype: torch.dtype | None,
     ) -> None:
         self.backend = backend
         self.device = device
@@ -55,19 +69,26 @@ class SolveGraphCapture:
             yield
         after_mem = get_available_gpu_memory(self.device.type, self.device.index)
         logger.info(
-            f"Fun-CosyVoice3 {name} solve graphs captured: tiers={list(tier_frames)} "
+            f"Fun-CosyVoice3 {name} graphs captured: tiers={list(tier_frames)} "
             f"frames, elapsed={time.perf_counter() - started:.2f} s, "
             f"mem usage={before_mem - after_mem:.2f} GB, avail mem={after_mem:.2f} GB."
         )
 
-    def capture(self, solve: GraphSolve) -> tuple[ReplayableGraph, torch.Tensor]:
-        """solve warmed on the capture stream, then captured into the shared pool.
-        Returns the graph and the output its replays write."""
+    def capture(
+        self, solve: GraphSolve, *, autocast: bool = True
+    ) -> tuple[ReplayableGraph, torch.Tensor]:
+        """solve warmed on the capture stream, then captured into the shared pool, under
+        the Flow's autocast or, for HiFT's float32 decode, none. Returns the graph and
+        the output its replays write."""
         current_stream = self.device_module.current_stream(self.device)
         self.stream.wait_stream(current_stream)
         with (
             self.device_module.stream(self.stream),
-            torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype),
+            torch.autocast(
+                device_type=self.device.type,
+                dtype=self.autocast_dtype,
+                enabled=autocast,
+            ),
         ):
             for _ in range(CAPTURE_WARMUP_RUNS):
                 solve()
@@ -77,7 +98,11 @@ class SolveGraphCapture:
             self.backend.capture(
                 pool=self.pool, stream=self.stream, thread_local_errors=True
             ) as graph,
-            torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype),
+            torch.autocast(
+                device_type=self.device.type,
+                dtype=self.autocast_dtype,
+                enabled=autocast,
+            ),
         ):
             output = solve()
         self.device_module.synchronize(self.device)

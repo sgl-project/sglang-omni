@@ -8,7 +8,6 @@ import base64
 import binascii
 import logging
 import os
-import random
 import struct
 import time
 from typing import Any, TypedDict
@@ -16,7 +15,7 @@ from typing import Any, TypedDict
 import aiohttp
 
 from benchmarks.benchmarker.conditions import sampling_seed_field
-from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.data import RequestResult, finish_reason_from_server
 from benchmarks.benchmarker.runner import SendFn
 from benchmarks.benchmarker.utils import get_wav_duration
 from benchmarks.dataset.videomme import VideoAMMESample, VideoMMESample
@@ -52,7 +51,7 @@ class VideoMMERecord(TypedDict):
     raw_response: str
     is_correct: bool
     is_success: bool
-    is_mc_fallback: bool
+    is_unparseable: bool
     error: str
 
 
@@ -65,6 +64,9 @@ def _apply_chat_completion_response(
 ) -> bool:
     message = body.get("choices", [{}])[0].get("message", {})
     result.text = message.get("content", "") or ""
+    result.finish_reason = finish_reason_from_server(
+        body.get("choices", [{}])[0].get("finish_reason")
+    )
     wav_bytes = b""
 
     if audio_output_dir:
@@ -195,7 +197,6 @@ def build_videomme_result_records(
     assert len(samples) == len(
         results
     ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
-    random.seed(42)
 
     per_sample: list[VideoMMERecord] = []
 
@@ -228,7 +229,7 @@ def build_videomme_result_records(
             "raw_response": result.error,
             "is_correct": False,
             "is_success": False,
-            "is_mc_fallback": False,
+            "is_unparseable": False,
             "error": result.error,
         }
 
@@ -236,21 +237,23 @@ def build_videomme_result_records(
             per_sample.append(record)
             continue
 
-        predicted, is_fallback = parse_multi_choice_response(
+        predicted, is_unparseable = parse_multi_choice_response(
             result.text,
             sample.all_choices,
             sample.index2ans,
         )
         is_correct = predicted == sample.answer
-        if is_fallback:
-            logger.debug("Video-MME parse fallback for sample %s", sample.sample_id)
+        if is_unparseable:
+            logger.debug(f"Video-MME answer unparseable for sample {sample.sample_id}")
+        else:
+            pass
 
         record.update(
             predicted=predicted,
             raw_response=result.text,
             is_correct=is_correct,
             is_success=True,
-            is_mc_fallback=is_fallback,
+            is_unparseable=is_unparseable,
             error="",
         )
         per_sample.append(record)

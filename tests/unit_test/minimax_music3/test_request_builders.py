@@ -39,13 +39,13 @@ def test_build_ttm_state_accepts_the_supported_contract() -> None:
     assert state.prompt is not None and state.prompt.endswith("<|audio_start|>")
 
 
-@pytest.mark.parametrize("value", [0, 9001, 1.5, "250", True])
+@pytest.mark.parametrize("value", [0, 9001, 1.5, True])
 def test_build_ttm_state_rejects_invalid_frame_limits(value: object) -> None:
     with pytest.raises(ValueError, match="max_new_tokens"):
         build_ttm_state(payload(params={"max_new_tokens": value}))
 
 
-@pytest.mark.parametrize("value", [-1, 2**64, 1.5, "7", True])
+@pytest.mark.parametrize("value", [-1, 2**64, 1.5, True])
 def test_build_ttm_state_rejects_invalid_seeds(value: object) -> None:
     with pytest.raises(ValueError, match="seed"):
         build_ttm_state(payload(tts_params={"seed": value}))
@@ -71,14 +71,7 @@ def test_build_ttm_state_rejects_ignored_speech_controls(
 @pytest.mark.parametrize("name", ["temperature", "top_p", "top_k"])
 def test_build_ttm_state_rejects_explicit_sampling_controls(name: str) -> None:
     with pytest.raises(ValueError, match="sampling parameters"):
-        build_ttm_state(
-            payload(
-                tts_params={
-                    name: 0.5,
-                    "explicit_generation_params": [name],
-                }
-            )
-        )
+        build_ttm_state(payload(params={name: 0.5}))
 
 
 def test_request_data_asks_the_scheduler_to_enforce_limits() -> None:

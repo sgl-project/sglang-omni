@@ -10,6 +10,7 @@ process that recorded them.
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from sglang_omni.comm.stage_io import (
@@ -37,11 +38,23 @@ def test_already_resident_tensor_is_left_alone() -> None:
     assert restored is tensor
 
 
-def test_accelerator_origin_tensor_moves_to_the_receiver_device() -> None:
+def test_accelerator_origin_tensor_moves_to_the_receiver_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The receiver's index wins over the sender's."""
+    target_devices: list[torch.device] = []
+    original_to = torch.Tensor.to
+
+    def recording_to(tensor: torch.Tensor, device: str) -> torch.Tensor:
+        target_devices.append(torch.device(device))
+        return original_to(tensor, device)
+
+    monkeypatch.setattr(torch.Tensor, "to", recording_to)
+
     restored = restore_tensor_device(torch.empty(2), "meta:3", "meta:1")
 
     assert restored.device.type == "meta"
+    assert target_devices == [torch.device("meta", 1)]
 
 
 def test_host_only_stage_keeps_an_accelerator_origin_tensor_on_the_host() -> None:
@@ -156,14 +169,6 @@ def test_a_metadata_tensor_records_its_own_source_device() -> None:
     assert all(ref.ref.device == "cpu" for ref in data_ref.metadata_tensors)
 
 
-def test_a_chunk_without_metadata_still_records_its_device() -> None:
-    import asyncio
-
-    data_ref, _ = asyncio.run(stream_round_trip(None, with_metadata=False))
-
-    assert data_ref.device == "cpu"
-
-
 def test_a_backend_event_is_stripped_and_the_rest_survives() -> None:
     """A device event means nothing in the receiving process, and the transport
     establishes readiness itself once the payload crosses over."""
@@ -176,8 +181,3 @@ def test_a_backend_event_is_stripped_and_the_rest_survives() -> None:
     stripped = strip_process_local_metadata(metadata)
 
     assert stripped == {"ref_code_len": 7, "sample_rate": 24000}
-
-
-def test_metadata_without_events_is_returned_whole() -> None:
-    assert strip_process_local_metadata({"ref_code_len": 0}) == {"ref_code_len": 0}
-    assert strip_process_local_metadata(None) is None

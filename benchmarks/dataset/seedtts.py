@@ -37,7 +37,9 @@ class SampleInput:
     target_text: str
 
 
-_STAGED_CACHE: dict[tuple[str, str, str | None, int | None], list[SampleInput]] = {}
+_STAGED_CACHE: dict[
+    tuple[str, str, str | None, int | None, bool], list[SampleInput]
+] = {}
 
 
 def _resolve_staged_audio_path(
@@ -83,6 +85,7 @@ def load_seedtts_samples(
     *,
     split: str = "en",
     revision: str | None = None,
+    unique_audio: bool = False,
 ) -> list[SampleInput]:
     """Load SeedTTS evaluation samples.
 
@@ -90,22 +93,26 @@ def load_seedtts_samples(
     a HuggingFace dataset repo id (e.g.
     ``zhaochenyang20/seed-tts-eval-50-arrow``). Arrow/Parquet datasets are
     fetched via ``datasets.load_dataset`` and audio bytes are staged to a
-    temporary directory.
+    temporary directory. With *unique_audio*, each reference clip is loaded
+    once, as its first row, and *max_samples* counts clips.
     """
     if os.path.isfile(source) or source.endswith(".lst"):
-        return _load_from_meta_lst(source, max_samples)
+        return _load_from_meta_lst(source, max_samples, unique_audio)
     if revision is None and source == SEEDTTS_DATASET_ID:
         revision = SEEDTTS_DATASET_REVISION
-    return _load_from_arrow(source, split, revision, max_samples)
+    return _load_from_arrow(source, split, revision, max_samples, unique_audio)
 
 
-def _load_from_meta_lst(path: str, max_samples: int | None) -> list[SampleInput]:
+def _load_from_meta_lst(
+    path: str, max_samples: int | None, unique_audio: bool
+) -> list[SampleInput]:
     """Parse a local seed-tts-eval meta.lst file."""
     if max_samples is not None and max_samples <= 0:
         return []
 
     base_dir = os.path.dirname(path)
     samples: list[SampleInput] = []
+    loaded_audio_paths: set[str] = set()
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -114,11 +121,16 @@ def _load_from_meta_lst(path: str, max_samples: int | None) -> list[SampleInput]
             parts = line.split("|", 3)
             if len(parts) < 4:
                 continue
+            ref_audio = os.path.join(base_dir, parts[2])
+            if unique_audio and ref_audio in loaded_audio_paths:
+                continue
+            else:
+                loaded_audio_paths.add(ref_audio)
             samples.append(
                 SampleInput(
                     sample_id=parts[0],
                     ref_text=parts[1],
-                    ref_audio=os.path.join(base_dir, parts[2]),
+                    ref_audio=ref_audio,
                     target_text=parts[3],
                 )
             )
@@ -132,14 +144,15 @@ def _load_from_arrow(
     split: str,
     revision: str | None,
     max_samples: int | None,
+    unique_audio: bool,
 ) -> list[SampleInput]:
     """Load from a HuggingFace Arrow/Parquet dataset repo."""
-    full_cache_key = (repo_id, split, revision, None)
-    if full_cache_key in _STAGED_CACHE:
+    full_cache_key = (repo_id, split, revision, None, False)
+    if full_cache_key in _STAGED_CACHE and not unique_audio:
         samples = _STAGED_CACHE[full_cache_key]
         return samples[:max_samples] if max_samples is not None else list(samples)
 
-    cache_key = (repo_id, split, revision, max_samples)
+    cache_key = (repo_id, split, revision, max_samples, unique_audio)
     if cache_key in _STAGED_CACHE:
         return list(_STAGED_CACHE[cache_key])
 
@@ -161,8 +174,15 @@ def _load_from_arrow(
         )
 
     ds = ds.cast_column("ref_audio", Audio(decode=False))
-    if max_samples is not None:
+    if unique_audio:
+        first_row_per_clip: dict[str, int] = {}
+        for row_index, ref_audio_path in enumerate(ds["ref_audio_path"]):
+            first_row_per_clip.setdefault(ref_audio_path, row_index)
+        ds = ds.select(list(first_row_per_clip.values())[:max_samples])
+    elif max_samples is not None:
         ds = ds.select(list(range(min(max_samples, len(ds)))))
+    else:
+        pass
 
     tmpdir = Path(tempfile.mkdtemp(prefix=f"seedtts_{split}_"))
     atexit.register(shutil.rmtree, str(tmpdir), True)

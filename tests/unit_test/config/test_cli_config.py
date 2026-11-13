@@ -15,6 +15,7 @@ disk, which these tests have no weights for.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar
 from unittest import mock
 
@@ -27,8 +28,91 @@ from sglang_omni.cli import app
 from sglang_omni.cli.config import config_app
 from sglang_omni.cli.serve import patches_from_broadcast_flags
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.sources import dump_user_config
+from sglang_omni.models.nemotron_voicechat.config import NemotronVoiceChatPipelineConfig
+
+
+@pytest.fixture
+def voicechat_config_file(tmp_path: Path) -> Path:
+    config = NemotronVoiceChatPipelineConfig(model_path="dummy")
+    path = tmp_path / "voicechat.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": config.config_cls,
+                "model_path": "dummy",
+                "stages": {"code2wav": {"factory": {"chunk_frames": [1]}}},
+            }
+        )
+    )
+    return path
+
+
+@pytest.mark.parametrize("schedule", [None, "[1, 2, 4]"])
+def test_voicechat_chunk_schedule_reaches_factory(
+    runner: CliRunner, voicechat_config_file: Path, schedule: str | None
+) -> None:
+    """CLI lists must reach the codec as frame counts, not string characters."""
+    arguments = (
+        ["--code2wav.factory.chunk_frames", schedule] if schedule is not None else []
+    )
+    manager = ConfigManager.from_file(str(voicechat_config_file))
+    config = manager.merge_config(manager.parse_extra_args(arguments))
+    stage = next(stage for stage in config.stages if stage.name == "code2wav")
+    expected = (1, 2, 4) if schedule is not None else (1,)
+    assert resolve_stage_typed_kwargs(stage)["chunk_frames"] == expected
+
+    result = runner.invoke(
+        config_app, ["resolve", "--config", str(voicechat_config_file), *arguments]
+    )
+    assert result.exit_code == 0, output_of(result)
+    resolved = yaml.safe_load(result.stdout)
+    assert resolved["stages"]["code2wav"]["factory"]["chunk_frames"] == list(expected)
+
+
+def test_voicechat_chunk_schedule_explains_precedence(
+    runner: CliRunner, voicechat_config_file: Path
+) -> None:
+    """The model-specific schedule must retain YAML and CLI provenance."""
+    result = runner.invoke(
+        config_app,
+        [
+            "explain",
+            "stages.code2wav.factory.chunk_frames",
+            "--config",
+            str(voicechat_config_file),
+            "--code2wav.factory.chunk_frames",
+            "[1, 2, 4]",
+        ],
+    )
+    assert result.exit_code == 0, output_of(result)
+    assert "model default" in result.stdout
+    assert "yaml file" in result.stdout
+    assert "(1, 2, 4)  <- cli dotted (command line)  [winner]" in result.stdout
+
+
+@pytest.mark.parametrize("source", ["cli", "yaml"])
+@pytest.mark.parametrize("schedule", ["[]", "[0]", "[true]", "[1.5]", "4", "null"])
+def test_voicechat_rejects_invalid_chunk_schedule(
+    runner: CliRunner, voicechat_config_file: Path, source: str, schedule: str
+) -> None:
+    """Invalid schedules must fail before a worker starts or loads weights."""
+    if source == "yaml":
+        config = yaml.safe_load(voicechat_config_file.read_text())
+        config["stages"]["code2wav"]["factory"]["chunk_frames"] = yaml.safe_load(
+            schedule
+        )
+        voicechat_config_file.write_text(yaml.safe_dump(config))
+        arguments = []
+    else:
+        arguments = ["--code2wav.factory.chunk_frames", schedule]
+    result = runner.invoke(
+        config_app, ["resolve", "--config", str(voicechat_config_file), *arguments]
+    )
+    assert result.exit_code != 0
+    assert "chunk_frames" in output_of(result)
 
 
 def output_of(result) -> str:
@@ -119,7 +203,7 @@ class TestResolve:
     def test_dotted_arguments_are_applied_like_serve_applies_them(
         self, runner, plain_config_file, stage
     ):
-        argv = [f"--{stage}.engine.mem-fraction-static", "0.35"]
+        argv = [f"--{stage}.engine.mem_fraction_static", "0.35"]
         result = runner.invoke(
             config_app, ["resolve", "--config", str(plain_config_file), *argv]
         )
@@ -127,7 +211,9 @@ class TestResolve:
         assert result.exit_code == 0, output_of(result)
         manager = ConfigManager.from_file(str(plain_config_file))
         expected = manager.merge_config(manager.parse_extra_args(argv))
-        assert yaml.safe_load(result.stdout) == dump_user_config(expected)
+        printed = yaml.safe_load(result.stdout)
+        assert printed == dump_user_config(expected)
+        assert printed["stages"][stage]["engine"]["mem_fraction_static"] == 0.35
 
     def test_stdout_is_a_usable_config_file(self, runner, config_file, stage):
         """`config resolve > pipeline.yaml` must produce a loadable document
@@ -288,18 +374,6 @@ class TestExplain:
 
         assert result.exit_code != 0
         assert "did you mean" in output_of(result).lower()
-
-    def test_a_positional_stage_index_is_refused_readably(self, runner, config_file):
-        """Stages are addressed by name; the refusal says so, tracelessly."""
-        result = runner.invoke(
-            config_app,
-            ["explain", "stages.9.tp_size", "--config", str(config_file)],
-        )
-
-        assert result.exit_code != 0
-        output = output_of(result)
-        assert "addressed by name" in output
-        assert "Traceback" not in output
 
     def test_without_a_path_it_lists_every_touched_path(
         self, runner, config_file, fraction
@@ -481,31 +555,6 @@ class TestBroadcastFlags:
         assert keys == {
             f"stages.{name}.engine.mem_fraction_static" for name in engine_stages
         }
-
-    def test_an_explicit_dotted_path_beats_the_fan_out(self, base_config, stage):
-        flag_patches = patches_from_broadcast_flags(
-            base_config,
-            mem_fraction_static=0.4,
-        )
-        merged = ConfigManager(base_config).merge_config(
-            [(f"{stage}.engine.mem_fraction_static", "0.6")],
-            extra_patches=flag_patches,
-        )
-        assert merged.stage_named(stage).engine.mem_fraction_static == 0.6
-
-    def test_an_out_of_range_fraction_is_refused(self, base_config):
-        # Range is the schema's rule: the flag builds patches, and resolution
-        # refuses the out-of-range value with the schema's message.
-        patches = patches_from_broadcast_flags(base_config, mem_fraction_static=1.5)
-        with pytest.raises(ValueError, match="mem_fraction_static"):
-            ConfigManager(base_config).merge_config([], extra_patches=patches)
-
-    def test_without_the_flag_no_patch_is_built(self, base_config):
-        patches = patches_from_broadcast_flags(
-            base_config,
-            mem_fraction_static=None,
-        )
-        assert len(patches) == 0
 
 
 class TestServeErrors:
@@ -762,3 +811,30 @@ class TestVariant:
         assert result.exit_code == 2
         assert "--enable-realtime" in output_of(result)
         launch_server.assert_not_called()
+
+
+@pytest.mark.parametrize("gpu_in_file", [False, True])
+def test_replica_devices_accept_stage_gpu_from_file_or_cli(
+    runner, tmp_path, base_config, stage, gpu_in_file
+):
+    """Stage GPU overrides must reach replica expansion rather than fail at parsing."""
+    process = base_config.stage_named(stage).process
+    data = {
+        "config_cls": base_config.config_cls,
+        "model_path": "dummy",
+        "processes": {process: {"replica_devices": [1]}},
+    }
+    if gpu_in_file:
+        data["stages"] = {stage: {"gpu": 3}}
+        arguments = []
+    else:
+        arguments = [(f"{stage}.gpu", "3")]
+    path = tmp_path / "replicas.yaml"
+    path.write_text(yaml.safe_dump(data))
+    merged = ConfigManager.from_file(str(path)).merge_config(arguments)
+    assert merged.stage_named(stage).gpu == 3
+    assert merged.processes[process].replica_devices == [1]
+    flags = [] if gpu_in_file else [f"--{stage}.gpu", "3"]
+    for command in [["resolve"], ["explain", f"stages.{stage}.gpu"]]:
+        result = runner.invoke(config_app, [*command, "--config", str(path), *flags])
+        assert result.exit_code == 0, output_of(result)

@@ -172,6 +172,7 @@ class TalkerPrefillBuilder:
         self.device = model.model.codec_embedding.weight.device
         self.dtype = model.activation_dtype
         self.thinker_embed_cache: dict[int, torch.Tensor] = {}
+        self.projected_text_cache: dict[int, torch.Tensor] = {}
         self.tts_special_cache: (
             tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None
         ) = None
@@ -198,12 +199,36 @@ class TalkerPrefillBuilder:
 
         thinker_input_ids = torch.cat([prompt_ids, assistant_token_ids], dim=0)
         thinker_embed = torch.cat([prompt_embed, assistant_embed], dim=0)
-        # note (ratish): the talker projects zeros in place of the thinker's hidden at
-        # multimodal prompt rows, the only prompt rows the hidden is read at.
-        thinker_hidden = torch.cat(
-            [torch.zeros_like(prompt_embed), assistant_embed], dim=0
-        )
         multimodal_mask = self.build_multimodal_mask(thinker_input_ids)
+        prompt_hidden = torch.zeros_like(prompt_embed)
+        prompt_chunk = thinker_chunks[0]
+        captured_positions = (prompt_chunk.metadata or {}).get(
+            "prompt_hidden_positions"
+        )
+        # note (ratish): a session turn reuses its slot's KV and sends no prompt rows, so it
+        # keeps zeros at the multimodal rows, the only prompt rows the hidden is read at.
+        if captured_positions is not None:
+            # note (ratish): checked on the CPU prompt ids, so the device mask is never read back.
+            multimodal_token_ids = prompt_ids.new_tensor(
+                [
+                    int(token_id)
+                    for token_id in (
+                        self.audio_token_id,
+                        self.image_token_id,
+                        self.video_token_id,
+                    )
+                    if token_id is not None
+                ]
+            )
+            prompt_positions = torch.isin(prompt_ids, multimodal_token_ids)
+            assert (
+                captured_positions
+                == prompt_positions.nonzero(as_tuple=True)[0].tolist()
+            ), "the thinker's prompt hidden rows are not the prompt's multimodal rows"
+            prompt_hidden[captured_positions] = prompt_chunk.data.to(prompt_hidden)
+        else:
+            pass
+        thinker_hidden = torch.cat([prompt_hidden, assistant_embed], dim=0)
 
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.get_tts_special_embeds()
         speaker_id = resolve_speaker_id(payload.request.params, self.speaker_map)
@@ -296,16 +321,24 @@ class TalkerPrefillBuilder:
     def project_assistant_chunk(self, chunk: StreamItem) -> torch.Tensor:
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
-        if token_id is not None:
-            chunk_tensor = self.load_prompt_token_embeddings(
-                torch.tensor([int(token_id)], dtype=torch.long)
-            )
-        else:
+        if token_id is None:
             chunk_tensor = chunk.data.to(
                 device=self.device, dtype=self.dtype
             ).unsqueeze(0)
-        projected = self.model.text_projection(chunk_tensor)
-        return projected[0].detach()
+            return self.model.text_projection(chunk_tensor)[0].detach()
+        else:
+            pass
+        # note (ratish): a token's projected row depends only on its id, so each id is projected once and every request shares the row, as the tts special rows are shared.
+        projected = self.projected_text_cache.get(int(token_id))
+        if projected is None:
+            chunk_tensor = self.load_prompt_token_embeddings(
+                torch.tensor([int(token_id)], dtype=torch.long)
+            )
+            projected = self.model.text_projection(chunk_tensor)[0].detach()
+            self.projected_text_cache[int(token_id)] = projected
+        else:
+            pass
+        return projected
 
     def build_multimodal_mask(self, token_ids: torch.Tensor) -> torch.Tensor:
         mask = torch.zeros(token_ids.shape[0], dtype=torch.bool, device=self.device)

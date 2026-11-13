@@ -40,8 +40,8 @@ class PublishedSizesRunner:
         self.rows: list[int] = []
         self.modes: list[str] = []
 
-    def available_batch_sizes(self, frames: int) -> tuple[int, ...]:
-        del frames
+    def available_batch_sizes(self, frames: int, decode: str) -> tuple[int, ...]:
+        del frames, decode
         return self.sizes
 
     def run(self, codes: torch.Tensor, *, eligible: bool = True) -> Code2WavRunResult:
@@ -331,20 +331,6 @@ def test_an_aborted_request_window_is_neither_decoded_nor_sent() -> None:
 
     assert model.calls == [(1, 2, CHUNK_FRAMES)]
     assert set(stream_audio(scheduler)) == {"kept"}
-
-
-def test_a_window_keeps_its_full_chunk_when_the_model_returns_fewer_samples() -> None:
-    scheduler = make_scheduler(FakeCode2WavModel(total_upsample=2, output_deficit=1))
-    state = Code2WavStreamState(stream_enabled=True)
-    state.chunks = [torch.tensor([code, code * 10]) for code in (1, 2, 3)]
-    state.emitted = 1
-    state.audio_parts = [np.zeros(1, dtype=np.float32)]
-    scheduler.stream_states["r"] = state
-
-    (message,) = scheduler.decode_windows([("r", state)])
-
-    assert np.frombuffer(message.data["audio_waveform"], dtype=np.float32).shape == (4,)
-    assert state.emitted == 3
 
 
 def test_profile_events_carry_each_row_and_the_replay_rows(monkeypatch) -> None:

@@ -304,7 +304,7 @@ def fuse_vocoder_decoder(decoder: torch.nn.Module) -> int:
     replacements: list[tuple[torch.nn.Module, str]] = []
     for module in decoder.modules():
         for name, child in module.named_children():
-            if type(child).__name__ == "SnakeBeta":
+            if type(child).__name__ in ("SnakeBeta", "Qwen3OmniMoeSnakeBeta"):
                 replacements.append((module, name))
             else:
                 pass

@@ -4,6 +4,7 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -110,3 +111,31 @@ def test_initialization_rejects_existing_distributed_runtime(monkeypatch):
 def test_invalid_initialization_settings(kwargs):
     with pytest.raises(ValueError):
         runtime.initialize_decoder_runtime("unused", **kwargs)
+
+
+@pytest.mark.parametrize(
+    "failure_point", ["_sync_srt_world_group", "_sync_srt_tp_group"]
+)
+def test_partial_initialization_releases_groups(
+    monkeypatch: pytest.MonkeyPatch, failure_point: str
+) -> None:
+    parallel_state = pytest.importorskip(
+        "sglang.multimodal_gen.runtime.distributed.parallel_state"
+    )
+    from sglang.multimodal_gen.runtime.server_args import server_args
+    from sglang.srt import runtime_context
+
+    error = RuntimeError("initialization failed after group creation")
+    monkeypatch.setattr(parallel_state, failure_point, Mock(side_effect=error))
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            runtime.initialize_decoder_runtime("unused", gpu_id=None)
+        assert raised.value is error
+        assert not runtime.dist.is_initialized()
+        assert not parallel_state.world_group_is_initialized()
+        assert not parallel_state.model_parallel_is_initialized()
+    finally:
+        parallel_state.destroy_model_parallel()
+        parallel_state.destroy_distributed_environment()
+        server_args.set_global_server_args(None)
+        runtime_context.reset_context()

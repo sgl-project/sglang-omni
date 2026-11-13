@@ -1,18 +1,34 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Streaming vocoder scheduler for MOSS-TTS Delay."""
+"""Streaming vocoder scheduler for MOSS-TTS Delay.
+
+Delayed rows are reversed into raw codec frames per request. Due streams are
+coalesced into one batched decode step on the stateful codec session shared
+with MOSS-TTS Local, so each frame is decoded once with its full causal context.
+"""
 
 from __future__ import annotations
 
+import logging
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Mapping
+from typing import Literal
 
 import torch
 
+from sglang_omni.models.moss_tts.audio_tokenizer import (
+    MossAudioTokenizerVocoder,
+    MossAudioTokenizerVocoderDecoder,
+)
+from sglang_omni.models.moss_tts.codec_session import (
+    CoalescedStepPlan,
+    CodecStreamSession,
+)
 from sglang_omni.models.moss_tts.payload_types import (
     load_moss_tts_state,
     resolve_moss_audio_pad_code,
 )
+from sglang_omni.models.moss_tts.vocoder import MossTTSVocoder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import (
@@ -20,89 +36,114 @@ from sglang_omni.scheduling.streaming_vocoder import (
     resolve_initial_codec_chunk_frames,
 )
 
-if TYPE_CHECKING:
-    from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioVocoder
-    from sglang_omni.models.moss_tts.vocoder import MossTTSVocoder
-else:
-    pass
+logger = logging.getLogger(__name__)
 
 
-@dataclass
-class MossSegmentState:
-    frames: list[torch.Tensor] = field(default_factory=list)
-    emitted_frames: int = 0
-    closed: bool = False
-    tail_emitted: bool = False
+def streaming_codec_view(codec: MossAudioTokenizerVocoder) -> MossAudioTokenizerVocoder:
+    """Weight-sharing codec whose decoder owns the streaming state.
+
+    The native decoder also serves the non-streaming batched and standalone
+    decodes, which must never see live streaming offsets or KV.
+    """
+    view = MossAudioTokenizerVocoder(
+        vars(codec.config),
+        parameter_device="meta",
+        decoder_dtype=codec.decoder_dtype,
+        compute_dtype=codec.compute_dtype,
+        attention_backend=codec.attention_backend,
+    )
+    view.uses_moss_audio_tokenizer_v1_weights = (
+        codec.uses_moss_audio_tokenizer_v1_weights
+    )
+    view.quantizer = codec.quantizer
+    view.decoder = MossAudioTokenizerVocoderDecoder(
+        source_decoder=codec.decoder,
+        attention_backend=codec.attention_backend,
+    )
+    return view.eval()
+
+
+def stream_contract_integer(
+    request_id: str,
+    field_name: Literal["n_vq", "audio_pad_code", "sample_rate"],
+    value: object,
+    previous: int | None,
+) -> int:
+    """Read a positive wire integer without changing the stream contract."""
+    resolved_value = int(value)
+    if resolved_value <= 0:
+        raise ValueError(
+            f"MOSS-TTS stream {field_name} for {request_id!r} must be > 0, got {value}"
+        )
+    elif previous is not None and previous != resolved_value:
+        raise ValueError(
+            f"MOSS-TTS stream {field_name} changed for {request_id!r}: "
+            f"{previous} -> {value}"
+        )
+    else:
+        return resolved_value
 
 
 @dataclass
 class MossStreamState:
     delay_window: deque[torch.Tensor] = field(default_factory=deque)
-    pending_raw_frames: deque[torch.Tensor] = field(default_factory=deque)
-    segments: list[MossSegmentState] = field(default_factory=list)
-    active_segment: int | None = None
-    delayed_count: int = 0
-    next_decode_rows: int = 0
+    pending: list[torch.Tensor] = field(default_factory=list)
+    ready_audio: list[torch.Tensor] = field(default_factory=list)
+    slot: int | None = None
+    segment_open: bool = False
+    segment_started: bool = False
+    threshold: int = 0
     n_vq: int | None = None
     audio_pad_code: int | None = None
     sample_rate: int = 24000
-    initial_codec_chunk_frames: int = 0
-    samples_per_frame: int | None = None
 
 
-class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None]):
-    """Incrementally reverse MOSS delay rows and decode overlap windows."""
+class MossStreamingVocoderScheduler(
+    StreamingVocoderBase[MossStreamState, CoalescedStepPlan]
+):
+    """Reverse MOSS delay rows and decode them in coalesced session steps."""
+
+    can_batch_stream_chunks = True
+    stream_chunk_batch_distinct_requests = True
 
     def __init__(
         self,
         vocoder: MossTTSVocoder,
         *,
-        stream_stride: int = 8,
-        stream_followup_stride: int = 8,
-        stream_overlap_tokens: int = 8,
-        stream_holdback_tokens: int = 1,
-        initial_chunk_frames: int = 0,
+        stream_chunk_frames: int = 16,
+        initial_chunk_frames: int = 4,
+        coalesce_floor_frames: int = 4,
+        stream_slots: int = 32,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
+        vocoder_cuda_graph: bool = True,
+        vocoder_cuda_graph_min_free_gb: float = 3.0,
     ) -> None:
-        if stream_stride <= 0 or stream_followup_stride <= 0:
-            raise ValueError("stream strides must be > 0")
+        if stream_chunk_frames <= 0 or stream_slots <= 0:
+            raise ValueError("stream_chunk_frames and stream_slots must be > 0")
         else:
             pass
-        if stream_overlap_tokens <= 0:
-            raise ValueError("stream overlap must be > 0")
-        else:
-            pass
-        if stream_holdback_tokens < 0:
-            raise ValueError("stream holdback must be >= 0")
-        else:
-            pass
-
         self.vocoder = vocoder
         self.audio_vocoder = vocoder.audio_vocoder
-        self.stream_stride = int(stream_stride)
-        self.stream_followup_stride = int(stream_followup_stride)
-        self.stream_overlap_tokens = int(stream_overlap_tokens)
-        self.stream_holdback_tokens = int(stream_holdback_tokens)
-        self.default_initial_chunk_frames = max(0, int(initial_chunk_frames))
-        self.default_n_vq = int(
-            getattr(getattr(vocoder.processor, "model_config", None), "n_vq", 0)
-            or 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        model_config = getattr(vocoder.processor, "model_config", None)
+        self.default_n_vq = int(getattr(model_config, "n_vq", 0) or 0)
+        self.default_audio_pad_code = resolve_moss_audio_pad_code(model_config)
+        self.stream_chunk_frames = int(stream_chunk_frames)
+        self.default_initial_chunk_frames = max(
+            0, min(int(initial_chunk_frames), self.stream_chunk_frames)
         )
-        self.default_audio_pad_code = resolve_moss_audio_pad_code(
-            getattr(
-                vocoder.processor, "model_config", None
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.coalesce_floor_frames = max(
+            1, min(int(coalesce_floor_frames), self.stream_chunk_frames)
         )
-        sample_rate = int(self.audio_vocoder.sample_rate)
-        self.default_samples_per_frame = self.resolve_samples_per_frame(
-            self.audio_vocoder, sample_rate
-        )
-
+        self.stream_slots = int(stream_slots)
+        self.stream_chunk_batch_max = self.stream_slots
+        self.vocoder_cuda_graph = bool(vocoder_cuda_graph)
+        self.vocoder_cuda_graph_min_free_gb = float(vocoder_cuda_graph_min_free_gb)
+        self.session: CodecStreamSession | None = None
         super().__init__(
             self.vocode_payload,
             batch_compute_fn=self.vocode_payloads,
-            sample_rate=sample_rate,
+            sample_rate=int(self.audio_vocoder.sample_rate),
             stream_source_hint="MOSS-TTS",
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
@@ -114,7 +155,6 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
             n_vq=self.default_n_vq or None,
             audio_pad_code=self.default_audio_pad_code,
             sample_rate=self.sample_rate,
-            samples_per_frame=self.default_samples_per_frame,
         )
 
     def latch_stream_contract(
@@ -126,52 +166,55 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
         origin: str,
     ) -> None:
         if origin == "payload":
-            payload = source
-            final_state = load_moss_tts_state(payload)
-            delayed = final_state.delayed_audio_codes
-            n_vq = state.n_vq
-            if delayed is not None:
-                delayed_tensor = torch.as_tensor(delayed)
-                if delayed_tensor.ndim == 2 and int(delayed_tensor.shape[1]) > 0:
-                    n_vq = int(delayed_tensor.shape[1])
-                else:
-                    pass
-            else:
-                pass
-            self.latch_contract_values(
-                request_id,
-                state,
-                n_vq=n_vq,
-                audio_pad_code=state.audio_pad_code,
-                sample_rate=final_state.sample_rate or state.sample_rate,
-                source=origin,
+            params = source.request.params
+            self.latch_threshold(
+                request_id, state, params if isinstance(params, dict) else None
             )
-            params = (
-                payload.request.params
-                if isinstance(payload.request.params, dict)
-                else None
-            )
-            self.latch_initial_chunk_frames(state, params)
             return
         else:
             pass
+        n_vq = source.get("n_vq")
+        if n_vq is not None:
+            state.n_vq = stream_contract_integer(request_id, "n_vq", n_vq, state.n_vq)
+        else:
+            pass
+        audio_pad_code = source.get("audio_pad_code")
+        if audio_pad_code is not None:
+            state.audio_pad_code = stream_contract_integer(
+                request_id, "audio_pad_code", audio_pad_code, state.audio_pad_code
+            )
+        else:
+            pass
+        sample_rate = source.get("sample_rate")
+        if sample_rate is not None:
+            state.sample_rate = stream_contract_integer(
+                request_id, "sample_rate", sample_rate, state.sample_rate
+            )
+        else:
+            pass
+        if state.threshold == 0:
+            self.latch_threshold(request_id, state, source)
+        else:
+            pass
 
-        metadata: Mapping[str, object] = source
-        self.latch_contract_values(
-            request_id,
-            state,
-            n_vq=metadata.get("n_vq", state.n_vq),
-            audio_pad_code=metadata.get("audio_pad_code", state.audio_pad_code),
-            sample_rate=metadata.get("sample_rate", state.sample_rate),
-            source=origin,
-        )
-        self.latch_initial_chunk_frames(state, metadata)
-
-    def validate_chunk(
+    def latch_threshold(
         self,
         request_id: str,
         state: MossStreamState,
-        codes: torch.Tensor,
+        values: Mapping[str, object] | None,
+    ) -> None:
+        initial_frames = resolve_initial_codec_chunk_frames(
+            values,
+            steady_chunk_frames=self.stream_chunk_frames,
+            default_frames=self.default_initial_chunk_frames,
+        )
+        if initial_frames > 0 and not self.stream_has_emitted(request_id):
+            state.threshold = initial_frames
+        else:
+            state.threshold = self.stream_chunk_frames
+
+    def validate_chunk(
+        self, request_id: str, state: MossStreamState, codes: torch.Tensor
     ) -> torch.Tensor:
         rows = codes.to(dtype=torch.long)
         if rows.ndim == 1:
@@ -183,106 +226,231 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
             )
         else:
             pass
-        n_vq, _ = self.require_contract(state, request_id)
-        if int(rows.shape[1]) != n_vq:
+        if state.n_vq is None or state.audio_pad_code is None:
+            raise RuntimeError(
+                f"MOSS-TTS stream contract for {request_id!r} is incomplete"
+            )
+        else:
+            pass
+        if int(rows.shape[1]) != state.n_vq:
             raise ValueError(
                 f"MOSS-TTS stream chunk has {int(rows.shape[1])} codebooks, "
-                f"expected {n_vq}"
+                f"expected {state.n_vq}"
             )
         else:
             pass
         return rows
 
     def ingest(
-        self,
-        request_id: str,
-        state: MossStreamState,
-        codes: torch.Tensor,
+        self, request_id: str, state: MossStreamState, codes: torch.Tensor
     ) -> None:
         del request_id
-        n_vq, _ = self.require_contract(state, "<stream>")
+        n_vq = int(state.n_vq)
         for row in codes.detach().to(device="cpu", dtype=torch.long).unbind(0):
             state.delay_window.append(row)
-            state.delayed_count += 1
             if len(state.delay_window) < n_vq:
                 continue
             else:
                 pass
-            raw_frame = torch.stack(
+            frame = torch.stack(
                 [state.delay_window[channel][channel] for channel in range(n_vq)]
             )
-            state.pending_raw_frames.append(raw_frame)
             state.delay_window.popleft()
+            self.ingest_raw_frame(state, frame)
 
-    def decode_delta(
-        self,
-        request_id: str,
-        state: MossStreamState,
-        *,
-        is_final: bool,
-    ) -> torch.Tensor | None:
-        n_vq, audio_pad_code = self.require_contract(state, request_id)
-        next_decode_rows = state.next_decode_rows or self.first_decode_rows(state, n_vq)
-        if not is_final and state.delayed_count < next_decode_rows:
-            state.next_decode_rows = next_decode_rows
+    def ingest_raw_frame(self, state: MossStreamState, frame: torch.Tensor) -> None:
+        if not bool(torch.all((frame >= 0) & (frame < int(state.audio_pad_code)))):
+            self.close_segment(state)
+            return
+        else:
+            pass
+        if not state.segment_open and state.segment_started:
+            # Note (Jiaxin Deng): each pad-separated segment decodes from a fresh
+            # codec state, like the non-streaming per-segment decode.
+            if state.slot is not None:
+                self.ensure_session().reset_slots([state.slot])
+            else:
+                pass
+        else:
+            pass
+        state.segment_open = True
+        state.segment_started = True
+        state.pending.append(frame)
+        if state.slot is None:
+            state.slot = self.ensure_session().acquire()
+        else:
+            pass
+
+    def close_segment(self, state: MossStreamState) -> None:
+        if not state.segment_open:
+            return
+        else:
+            pass
+        state.segment_open = False
+        self.drain_pending(state)
+
+    def drain_pending(self, state: MossStreamState) -> None:
+        """Decode every buffered frame of the open segment for one request."""
+        if not state.pending:
+            return
+        else:
+            pass
+        codes = torch.stack(state.pending, dim=0)
+        state.pending = []
+        if state.slot is None:
+            state.ready_audio.append(
+                self.vocoder.decode_segments([codes])[0].reshape(-1)
+            )
+            return
+        else:
+            pass
+        audio = self.ensure_session().step({state.slot: codes.transpose(0, 1)})
+        state.ready_audio.append(audio[state.slot].reshape(-1))
+
+    def take_ready_audio(self, state: MossStreamState) -> torch.Tensor | None:
+        parts = state.ready_audio
+        state.ready_audio = []
+        if not parts:
             return None
         else:
             pass
+        return parts[0] if len(parts) == 1 else torch.cat(parts)
 
-        pending_count = len(state.pending_raw_frames)
-        process_count = (
-            pending_count
-            if is_final
-            else max(0, pending_count - self.stream_holdback_tokens)
-        )
-        for _ in range(process_count):
-            self.ingest_raw_frame(
-                state,
-                state.pending_raw_frames.popleft(),
-                audio_pad_code=audio_pad_code,
-            )
-        if is_final:
-            self.close_active_segment(state)
+    def decode_delta(
+        self, request_id: str, state: MossStreamState, *, is_final: bool
+    ) -> torch.Tensor | None:
+        """Stream-done drain; steady chunks go through the coalesced steps."""
+        del request_id, is_final
+        self.drain_pending(state)
+        if state.slot is not None and self.session is not None:
+            self.session.release(state.slot)
+            state.slot = None
         else:
             pass
+        return self.take_ready_audio(state)
 
-        chunks: list[torch.Tensor] = []
-        for segment in state.segments:
-            chunk = self.decode_segment_delta(
-                state,
-                segment,
-                flush_tail=bool(segment.closed or is_final),
-            )
-            if chunk is not None:
-                chunks.append(chunk)
+    def pump_one_step(self) -> list[str] | None:
+        # Note (Jiaxin Deng): a pad-closed segment drains into ready_audio outside
+        # any step; emit it now instead of holding it until the next step or done.
+        for request_id, state in self.stream_state_items():
+            if not state.ready_audio or self.is_aborted(request_id):
+                continue
             else:
                 pass
+            self.mark_stream_emitted(request_id)
+            self.outbox.put(
+                self.stream_chunk_message(request_id, self.take_ready_audio(state))
+            )
+        return super().pump_one_step()
 
-        if chunks:
-            state.next_decode_rows = state.delayed_count + self.stream_followup_stride
-            return chunks[0] if len(chunks) == 1 else torch.cat(chunks)
+    def select_step_participants(self) -> list[tuple[str, MossStreamState]]:
+        """Streams whose buffer crossed their threshold are due; already-emitting
+        peers with at least the join floor ride along in the same step."""
+        slotted = [
+            (request_id, state)
+            for request_id, state in self.stream_state_items()
+            if state.slot is not None and state.threshold > 0
+        ]
+        due = [
+            entry for entry in slotted if len(entry[1].pending) >= entry[1].threshold
+        ]
+        if not due:
+            return []
         else:
             pass
+        floor = min(
+            min(len(state.pending) for _, state in due), self.coalesce_floor_frames
+        )
+        return [
+            (request_id, state)
+            for request_id, state in slotted
+            if len(state.pending) >= state.threshold
+            or (self.stream_has_emitted(request_id) and len(state.pending) >= floor)
+        ]
 
-        if not is_final:
-            if len(state.pending_raw_frames) <= self.stream_holdback_tokens:
-                state.next_decode_rows = max(
-                    state.delayed_count + 1,
-                    n_vq + self.stream_holdback_tokens,
-                )
+    def build_step_plan(
+        self, participants: list[tuple[str, MossStreamState]]
+    ) -> CoalescedStepPlan:
+        step_t = min(
+            min(len(state.pending) for _, state in participants),
+            self.stream_chunk_frames,
+        )
+        for request_id, state in participants:
+            if not self.stream_has_emitted(request_id):
+                step_t = min(step_t, state.threshold)
             else:
-                state.next_decode_rows = (
-                    state.delayed_count + self.stream_followup_stride
-                )
+                pass
+        return CoalescedStepPlan(
+            step_t=step_t,
+            slot_codes={
+                state.slot: torch.stack(state.pending[:step_t], dim=1)
+                for _, state in participants
+            },
+        )
+
+    def run_step(
+        self,
+        participants: list[tuple[str, MossStreamState]],
+        plan: CoalescedStepPlan,
+    ) -> dict[str, torch.Tensor]:
+        decoded = self.ensure_session().step(plan.slot_codes)
+        out: dict[str, torch.Tensor] = {}
+        for request_id, state in participants:
+            del state.pending[: plan.step_t]
+            state.threshold = self.stream_chunk_frames
+            state.ready_audio.append(decoded[state.slot].reshape(-1))
+            out[request_id] = self.take_ready_audio(state)
+        return out
+
+    def release_stream_resources(self, request_id: str, state: MossStreamState) -> None:
+        del request_id
+        if state.slot is not None and self.session is not None:
+            self.session.release(state.slot)
+            state.slot = None
         else:
             pass
-        return None
+
+    def ensure_session(self) -> CodecStreamSession:
+        if self.session is None:
+            self.session = CodecStreamSession(
+                streaming_codec_view(self.audio_vocoder.model),
+                stream_slots=self.stream_slots,
+                n_vq=self.default_n_vq,
+            )
+        else:
+            pass
+        return self.session
+
+    def warmup_now(self) -> None:
+        """Capture the session's decode graphs before the stage is marked ready;
+        best-effort, serving falls back to eager decode."""
+        on_cuda = next(self.audio_vocoder.model.parameters()).device.type == "cuda"
+        if not self.vocoder_cuda_graph or not on_cuda:
+            return
+        else:
+            pass
+        session = self.ensure_session()
+        try:
+            captured = session.warmup_cuda_graph(
+                list(range(1, self.stream_chunk_frames + 1)),
+                min_free_gb=self.vocoder_cuda_graph_min_free_gb,
+            )
+        except Exception:
+            logger.exception(
+                "MOSS-TTS streaming vocoder CUDA-graph capture failed; serving eager"
+            )
+            return
+        logger.info("MOSS-TTS streaming vocoder CUDA graphs captured: T=%s", captured)
+
+    def on_serving_stop(self) -> None:
+        if self.session is not None:
+            self.session.close()
+            self.session = None
+        else:
+            pass
 
     def fallback_full_decode(
-        self,
-        request_id: str,
-        payload: StagePayload,
-        state: MossStreamState,
+        self, request_id: str, payload: StagePayload, state: MossStreamState
     ) -> torch.Tensor | None:
         del request_id, state
         final_state, delayed_codes = self.vocoder.prepare_item(payload)
@@ -290,10 +458,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
         return waveform
 
     def final_result_data(
-        self,
-        request_id: str,
-        payload: StagePayload,
-        state: MossStreamState,
+        self, request_id: str, payload: StagePayload, state: MossStreamState
     ) -> dict[str, object]:
         del request_id
         final_state = load_moss_tts_state(payload)
@@ -326,176 +491,6 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
             self.vocoder.store_result(payload, item[0], waveform, sample_rate)
             for payload, item, (waveform, sample_rate) in zip(payloads, items, results)
         ]
-
-    def decode_segment_delta(
-        self,
-        state: MossStreamState,
-        segment: MossSegmentState,
-        *,
-        flush_tail: bool,
-    ) -> torch.Tensor | None:
-        total_frames = len(segment.frames)
-        emitted_frames = int(segment.emitted_frames)
-        if total_frames < emitted_frames:
-            raise RuntimeError("MOSS-TTS streaming segment cursor moved backwards")
-        else:
-            pass
-        if total_frames == emitted_frames and (not flush_tail or segment.tail_emitted):
-            return None
-        else:
-            pass
-
-        window_start = max(0, emitted_frames - self.stream_overlap_tokens)
-        window = torch.stack(segment.frames[window_start:], dim=0)
-        decoded = self.audio_vocoder.decode_codes([window])
-        if not decoded:
-            return None
-        else:
-            pass
-        audio = torch.as_tensor(decoded[0]).detach().reshape(-1).to(torch.float32)
-        decoded_frames = total_frames - window_start
-        samples_per_frame = state.samples_per_frame or max(
-            int(audio.numel()) // max(decoded_frames, 1), 1
-        )
-        state.samples_per_frame = int(samples_per_frame)
-        trim_frames = emitted_frames - window_start
-        trim_samples = min(trim_frames * samples_per_frame, int(audio.numel()))
-        if flush_tail:
-            delta = audio[trim_samples:].contiguous()
-            segment.tail_emitted = True
-        else:
-            new_frames = total_frames - emitted_frames
-            emit_samples = new_frames * samples_per_frame
-            delta = audio[trim_samples : trim_samples + emit_samples].contiguous()
-        segment.emitted_frames = total_frames
-        return delta if delta.numel() else None
-
-    @staticmethod
-    def ingest_raw_frame(
-        state: MossStreamState,
-        frame: torch.Tensor,
-        *,
-        audio_pad_code: int,
-    ) -> None:
-        is_pad = bool(torch.all(frame == int(audio_pad_code)))
-        is_complete = bool(torch.all((frame >= 0) & (frame < int(audio_pad_code))))
-        if is_pad or not is_complete:
-            MossStreamingVocoderScheduler.close_active_segment(state)
-            return
-        else:
-            pass
-        if state.active_segment is None:
-            state.segments.append(MossSegmentState())
-            state.active_segment = len(state.segments) - 1
-        else:
-            pass
-        state.segments[state.active_segment].frames.append(frame)
-
-    @staticmethod
-    def close_active_segment(state: MossStreamState) -> None:
-        if state.active_segment is None:
-            return
-        else:
-            pass
-        state.segments[state.active_segment].closed = True
-        state.active_segment = None
-
-    def first_decode_rows(self, state: MossStreamState, n_vq: int) -> int:
-        initial_frames = int(state.initial_codec_chunk_frames)
-        if initial_frames > 0:
-            return n_vq - 1 + initial_frames + self.stream_holdback_tokens
-        else:
-            pass
-        return max(n_vq, self.stream_stride)
-
-    def latch_initial_chunk_frames(
-        self,
-        state: MossStreamState,
-        values: Mapping[str, object] | None,
-    ) -> None:
-        self.require_contract(state, "<stream>")
-        steady_frames = self.stream_followup_stride
-        state.initial_codec_chunk_frames = resolve_initial_codec_chunk_frames(
-            values,
-            steady_chunk_frames=steady_frames,
-            default_frames=self.default_initial_chunk_frames,
-        )
-
-    @staticmethod
-    def latch_contract_values(
-        request_id: str,
-        state: MossStreamState,
-        *,
-        n_vq: object,
-        audio_pad_code: object,
-        sample_rate: object,
-        source: str,
-    ) -> None:
-        try:
-            n_vq_i = int(n_vq)
-            audio_pad_code_i = int(audio_pad_code)
-            sample_rate_i = int(sample_rate)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(
-                f"MOSS-TTS {source} for {request_id!r} has invalid codec metadata"
-            ) from exc
-        if n_vq_i <= 0 or audio_pad_code_i <= 0 or sample_rate_i <= 0:
-            raise ValueError(
-                f"MOSS-TTS {source} for {request_id!r} has invalid codec metadata"
-            )
-        else:
-            pass
-        for name, value in (
-            ("n_vq", n_vq_i),
-            ("audio_pad_code", audio_pad_code_i),
-            ("sample_rate", sample_rate_i),
-        ):
-            previous = getattr(state, name)
-            if previous is not None and int(previous) != value:
-                raise ValueError(
-                    f"MOSS-TTS stream {name} changed for {request_id!r}: "
-                    f"{previous} -> {value}"
-                )
-            else:
-                pass
-            setattr(state, name, value)
-
-    @staticmethod
-    def require_contract(
-        state: MossStreamState,
-        request_id: str,
-    ) -> tuple[int, int]:
-        if state.n_vq is None or state.audio_pad_code is None:
-            raise RuntimeError(
-                f"MOSS-TTS stream contract for {request_id!r} is incomplete"
-            )
-        else:
-            pass
-        return int(state.n_vq), int(state.audio_pad_code)
-
-    @staticmethod
-    def resolve_samples_per_frame(
-        audio_vocoder: MossAudioVocoder,
-        sample_rate: int,
-    ) -> int | None:
-        config = getattr(getattr(audio_vocoder, "model", None), "config", None)
-        for attr in (
-            "downsample_rate",
-            "samples_per_frame",
-            "frame_length",
-            "hop_length",
-        ):
-            value = getattr(config, attr, None)
-            if value and int(value) > 0:
-                return int(value)
-            else:
-                pass
-        frame_rate = getattr(config, "frame_rate", None)
-        if frame_rate and float(frame_rate) > 0:
-            return max(int(round(sample_rate / float(frame_rate))), 1)
-        else:
-            pass
-        return None
 
 
 __all__ = ["MossStreamingVocoderScheduler"]

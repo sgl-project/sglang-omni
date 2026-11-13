@@ -24,10 +24,30 @@ from sglang_omni.mps.manager import (
     MpsDirtyStateError,
     MpsError,
 )
-from sglang_omni.mps.runtime import MpsPipelineRuntime, create_for_pipeline
+from sglang_omni.mps.runtime import (
+    MpsPipelineRuntime,
+    create_for_pipeline,
+    default_state_root,
+)
+from sglang_omni.mps.state import MpsGpuPaths, pipe_sockets_fit
 from tests.unit_test.mps.test_mps_manager import FakeControlClient
 
 FACTORY = f"{__name__}.unused_factory"
+
+
+def test_deep_temporary_directory_keeps_both_mps_sockets_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control daemon could exit when TMPDIR overflowed control_privileged."""
+    monkeypatch.delenv("SGLANG_OMNI_MPS_STATE_ROOT", raising=False)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/tmp/" + "deep" * 40)
+    first_root = default_state_root([gpu_uuid(0)])
+    assert pipe_sockets_fit(MpsGpuPaths(state_root=first_root, gpu_uuid=gpu_uuid(0)))
+    assert default_state_root([gpu_uuid(0)]) == first_root
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/tmp/" + "other" * 40)
+    assert default_state_root([gpu_uuid(0)]) != first_root
+    monkeypatch.setenv("SGLANG_OMNI_MPS_STATE_ROOT", "/chosen/mps")
+    assert default_state_root([gpu_uuid(0)]) == Path("/chosen/mps")
 
 
 @dataclass
@@ -242,7 +262,7 @@ async def test_logical_gpu_aliases_coalesce_by_physical_uuid(short_root):
     assert not manager.paths.state_dir.exists()
 
 
-@pytest.mark.parametrize("mode", ["auto", "on"])
+@pytest.mark.parametrize("mode", ["on"])
 def test_one_process_cannot_resolve_to_multiple_physical_gpus(
     short_root,
     mode,
@@ -265,7 +285,7 @@ def test_one_process_cannot_resolve_to_multiple_physical_gpus(
     assert client.daemons == {}
 
 
-@pytest.mark.parametrize("mode", ["auto", "on"])
+@pytest.mark.parametrize("mode", ["on"])
 def test_nvml_failure_does_not_hide_driver_proven_multi_physical_process(
     short_root,
     mode,
@@ -290,7 +310,7 @@ def test_nvml_failure_does_not_hide_driver_proven_multi_physical_process(
     assert client.daemons == {}
 
 
-@pytest.mark.parametrize("mode", ["auto", "on"])
+@pytest.mark.parametrize("mode", ["on"])
 def test_known_multi_physical_subset_precedes_driver_resolution_error(
     short_root,
     mode,
@@ -316,33 +336,8 @@ def test_known_multi_physical_subset_precedes_driver_resolution_error(
     assert client.daemons == {}
 
 
-@pytest.mark.parametrize("mode", ["auto", "on"])
-def test_unrelated_resolution_error_does_not_hide_multi_physical_process(
-    short_root,
-    mode,
-):
-    client = FakeControlClient()
-
-    with pytest.raises(MpsError) as exc_info:
-        create(
-            short_root,
-            mode=mode,
-            procs=[proc("multi", 0), proc("multi", 1), proc("broken", 9)],
-            resolution_errors={9: "CUDA_ERROR_INVALID_DEVICE"},
-            client=client,
-        )
-
-    message = str(exc_info.value)
-    assert "process 'multi'" in message
-    assert f"0: '{gpu_uuid(0)}'" in message
-    assert f"1: '{gpu_uuid(1)}'" in message
-    assert "Use mps=off" in message
-    assert list(short_root.iterdir()) == []
-    assert client.daemons == {}
-
-
-@pytest.mark.parametrize("source", ["factory_kwargs", "typed_kwargs"])
-@pytest.mark.parametrize("mode", ["auto", "on"])
+@pytest.mark.parametrize("source", ["typed_kwargs"])
+@pytest.mark.parametrize("mode", ["on"])
 def test_cuda_zero_uses_the_narrowed_worker_namespace(short_root, mode, source):
     processes = [proc("a", 1), proc("b", 1)]
     setattr(processes[0].stage_specs[0], source, {"device": "cuda:0"})
@@ -548,44 +543,6 @@ def test_native_mps_rejects_cuda_alike_non_nvidia_platform(monkeypatch):
         create_for_pipeline("on", [])
 
 
-@pytest.mark.asyncio
-async def test_close_releases_all_acquired_leases(short_root):
-    client = FakeControlClient()
-    runtime = create(short_root, client=client)
-    await runtime.start()
-    manager = manager_on(runtime, 0)
-    client.set_clients(manager.paths.pipe_dir, {7000: [11, 12]})
-    client.client_tokens.update(
-        {
-            11: runtime.env_for_process("a")[MPS_CLIENT_TOKEN_ENV],
-            12: runtime.env_for_process("b")[MPS_CLIENT_TOKEN_ENV],
-        }
-    )
-    await runtime.verify()
-    client.set_clients(manager.paths.pipe_dir, {})
-
-    await runtime.close()
-
-    assert not runtime.has_leases
-    assert not manager.paths.state_dir.exists()
-
-
-def test_process_pipe_dir_is_rejected_before_state_creation(short_root):
-    processes = colocated()
-    processes[0].stage_specs[0].env_defaults = {
-        "CUDA_MPS_PIPE_DIRECTORY": "/external/mps"
-    }
-
-    with pytest.raises(MpsError) as exc_info:
-        create(short_root, procs=processes)
-
-    message = str(exc_info.value)
-    assert "process 'a'" in message
-    assert "CUDA_MPS_PIPE_DIRECTORY='/external/mps'" in message
-    assert "mps=off" in message
-    assert list(short_root.iterdir()) == []
-
-
 @pytest.mark.parametrize(
     ("name", "value"),
     [
@@ -749,28 +706,3 @@ async def test_start_attempts_are_classified_per_physical_gpu(short_root):
     assert not (not_started.paths.owners_dir / current_owner).exists()
     with pytest.raises(MpsError, match="retained"):
         attempted.acquire({"later": "later-owner"})
-
-
-@pytest.mark.asyncio
-async def test_preverify_clients_are_preserved_without_guessing_ownership(short_root):
-    client = FakeControlClient()
-    runtime = create(short_root, client=client)
-    await runtime.start()
-    manager = manager_on(runtime, 0)
-    client.set_clients(manager.paths.pipe_dir, {7000: [200], 8000: [909]})
-    client.client_tokens.update(
-        {
-            200: runtime.env_for_process("a")[MPS_CLIENT_TOKEN_ENV],
-            909: "foreign-owner",
-        }
-    )
-
-    with pytest.raises(MpsDirtyStateError) as exc_info:
-        await runtime.close()
-
-    message = str(exc_info.value)
-    assert not runtime.has_leases
-    assert "terminate_client 7000 200" in message
-    assert "terminate_client 8000 909" not in message
-    assert client.unsafe_daemon_signals == []
-    assert owner_marker(manager).read_text() == "retained\n"

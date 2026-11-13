@@ -16,6 +16,12 @@ from fastapi import WebSocket
 from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
+from sglang_omni.audio.vad import (
+    VAD_FRAME_SAMPLES,
+    StatelessVAD,
+    VADConfig,
+    offsets_to_ms,
+)
 from sglang_omni.client import Client, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime.audio_buffer import (
@@ -45,12 +51,6 @@ from sglang_omni.serve.realtime.events import (
     TurnDetection,
     TurnDetectionType,
     parse_transcription_client_event,
-)
-from sglang_omni.serve.realtime.vad import (
-    VAD_FRAME_SAMPLES,
-    StatelessVAD,
-    VADConfig,
-    offsets_to_ms,
 )
 from sglang_omni.serve.transcription_chunking import (
     SILENT_CHUNK_PEAK_THRESHOLD,
@@ -113,6 +113,7 @@ class ActiveTranscriptionSegment:
     start_sample: int
     strategy_state: object
     next_refresh_sample: int
+    language: str | None
     decode_attempt: int = 0
     last_text: str = ""
 
@@ -120,6 +121,7 @@ class ActiveTranscriptionSegment:
 @dataclass(slots=True)
 class FinalDecode:
     segment: ActiveTranscriptionSegment
+    end_sample: int
     pcm: bytes
     audio: bytes
     done: asyncio.Future[None]
@@ -129,6 +131,7 @@ class FinalDecode:
 class CommittedTranscriptionSegment:
     segment_id: int
     text: str
+    language: str | None
 
 
 class RealtimeTranscriptionSession:
@@ -171,9 +174,6 @@ class RealtimeTranscriptionSession:
         self.max_segment_samples = (
             int(max_segment_s * PCM_SAMPLE_RATE) if max_segment_s is not None else None
         )
-        self.refresh_interval_samples = (
-            transcription_config.decode_interval_ms * PCM_SAMPLE_RATE // 1000
-        )
         max_buffer_seconds = (
             max_segment_s + 4 if max_segment_s is not None else _UNBOUNDED_BUFFER_S
         )
@@ -197,6 +197,10 @@ class RealtimeTranscriptionSession:
         self.final_waiters: set[asyncio.Future[None]] = set()
         self.inflight_request_id: str | None = None
         self.decode_worker_task = self.spawn_decode_worker()
+
+    @property
+    def refresh_interval_samples(self) -> int:
+        return self.settings.decode_interval_ms * PCM_SAMPLE_RATE // 1000
 
     async def run(self) -> None:
         await self.send(TranscriptionSessionCreated(session=self.session_object()))
@@ -375,12 +379,13 @@ class RealtimeTranscriptionSession:
     async def handle_session_update(self, event: TranscriptionSessionUpdate) -> None:
         update = event.session.model_dump(exclude_unset=True)
         if not self.audio_buffer.is_empty() and any(
-            key in update for key in ("language", "turn_detection")
+            key in update
+            for key in ("language", "decode_interval_ms", "turn_detection")
         ):
             await self.send_error(
                 "invalid_request_error",
                 "session_active",
-                "Language and VAD settings cannot change "
+                "Language, decode interval and VAD settings cannot change "
                 "while uncommitted audio is buffered.",
             )
             return
@@ -390,6 +395,15 @@ class RealtimeTranscriptionSession:
         if "language" in update:
             language = update["language"]
             self.settings.language = language.strip() if language else None
+        else:
+            pass
+        if "decode_interval_ms" in update:
+            decode_interval_ms = update["decode_interval_ms"]
+            self.settings.decode_interval_ms = (
+                decode_interval_ms
+                if decode_interval_ms is not None
+                else self.transcription_config.decode_interval_ms
+            )
         else:
             pass
         if "turn_detection" in update:
@@ -525,6 +539,7 @@ class RealtimeTranscriptionSession:
                 language=self.settings.language,
             ),
             next_refresh_sample=start_sample + self.refresh_interval_samples,
+            language=self.settings.language,
         )
         self.next_segment_id += 1
         self.active_segment = segment
@@ -602,6 +617,7 @@ class RealtimeTranscriptionSession:
         self.pending_finals.append(
             FinalDecode(
                 segment=segment,
+                end_sample=end_sample,
                 pcm=pcm,
                 audio=self.audio_buffer.pcm_to_wav_bytes(pcm),
                 done=done,
@@ -660,10 +676,18 @@ class RealtimeTranscriptionSession:
                 final = self.pending_finals.popleft()
                 try:
                     if self.is_silent(final.pcm):
-                        await self.emit_hypothesis(final.segment, "", is_final=True)
+                        await self.emit_hypothesis(
+                            final.segment,
+                            "",
+                            end_sample=final.end_sample,
+                            is_final=True,
+                        )
                     else:
                         await self.decode_and_emit(
-                            final.segment, final.audio, is_final=True
+                            final.segment,
+                            final.audio,
+                            end_sample=final.end_sample,
+                            is_final=True,
                         )
                 finally:
                     if not final.done.done():
@@ -682,7 +706,7 @@ class RealtimeTranscriptionSession:
             else:
                 pass
             segment.next_refresh_sample = end_sample + self.refresh_interval_samples
-            pcm = self.audio_buffer.slice(segment.start_sample)
+            pcm = self.audio_buffer.slice(segment.start_sample, end_sample)
             if self.is_silent(pcm):
                 continue
             else:
@@ -690,6 +714,7 @@ class RealtimeTranscriptionSession:
             await self.decode_and_emit(
                 segment,
                 self.audio_buffer.pcm_to_wav_bytes(pcm),
+                end_sample=end_sample,
                 is_final=False,
             )
 
@@ -710,6 +735,7 @@ class RealtimeTranscriptionSession:
         segment: ActiveTranscriptionSegment,
         audio: bytes,
         *,
+        end_sample: int,
         is_final: bool,
     ) -> None:
         segment.decode_attempt += 1
@@ -737,6 +763,7 @@ class RealtimeTranscriptionSession:
             return
         else:
             pass
+        segment.language = result.language or segment.language
         text = self.strategy.update_hypothesis(
             generated_text=result.text,
             language=result.language,
@@ -746,21 +773,27 @@ class RealtimeTranscriptionSession:
             return
         else:
             pass
-        await self.emit_hypothesis(segment, text, is_final=is_final)
+        await self.emit_hypothesis(
+            segment, text, end_sample=end_sample, is_final=is_final
+        )
 
     async def emit_hypothesis(
         self,
         segment: ActiveTranscriptionSegment,
         text: str,
         *,
+        end_sample: int,
         is_final: bool,
     ) -> None:
         segment.last_text = text
         await self.send(
             TranscriptionSegment(
                 segment_id=segment.segment_id,
+                audio_start_ms=offsets_to_ms(segment.start_sample),
+                audio_end_ms=offsets_to_ms(end_sample),
                 text=text,
                 is_final=is_final,
+                language=segment.language,
             )
         )
         if is_final:
@@ -768,6 +801,7 @@ class RealtimeTranscriptionSession:
                 CommittedTranscriptionSegment(
                     segment_id=segment.segment_id,
                     text=text,
+                    language=segment.language,
                 )
             )
         else:
@@ -835,9 +869,12 @@ class RealtimeTranscriptionSession:
             pass
         await self.cancel_and_abort(self.decode_worker_task, None)
         ordered = sorted(self.committed_segments, key=lambda item: item.segment_id)
+        # The latest spoken segment names the language the user is speaking now.
+        spoken_languages = [item.language for item in ordered if item.text]
         await self.send(
             TranscriptionCompleted(
                 text=join_transcript_parts(item.text for item in ordered),
+                language=spoken_languages[-1] if spoken_languages else None,
             )
         )
 

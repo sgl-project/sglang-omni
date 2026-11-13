@@ -24,6 +24,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.comm import KVBufferRegion, KVPageDestination, KVPool
 from sglang_omni.proto import KVTransferPrepareMessage, StagePayload
+from sglang_omni.proto.session import find_session_operation
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ class DecodeContinuation:
     return_routed_experts: bool = False
     return_indexer_topk: bool = False
     multimodal_resume: dict[str, object] | None = None
+    priority: int | None = None
     version: int = CONTINUATION_VERSION
 
     def __post_init__(self) -> None:
@@ -120,6 +122,10 @@ class DecodeContinuation:
             pass
         if self.vocab_size <= 0:
             raise ValueError("decode continuation vocab_size must be positive")
+        else:
+            pass
+        if self.priority is not None and type(self.priority) is not int:
+            raise ValueError("decode continuation priority must be an integer or None")
         else:
             pass
         for name in ("sampling_params", "stage_payload"):
@@ -205,6 +211,15 @@ def continuation_from_req(
     data = (
         req.omni_data
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    if (
+        req.session is not None
+        or find_session_operation(data.stage_payload.request.metadata) is not None
+    ):
+        raise NotImplementedError(
+            "PD does not transfer retained streaming-session state"
+        )
+    else:
+        pass
     if data.input_embeds_are_projected or getattr(
         req,
         "_input_embeds_are_projected",
@@ -224,6 +239,7 @@ def continuation_from_req(
     payload, multimodal_resume, origin_input_ids = state_builder(req)
     return DecodeContinuation(
         request_id=req.rid,
+        priority=req.priority,
         transfer_id=transfer_id,
         origin_input_ids=origin_input_ids,
         origin_input_ids_unpadded=(
@@ -284,6 +300,7 @@ def req_from_continuation(
     sampling_params = SamplingParams(**sampling_values)
     req = Req(
         rid=continuation.request_id,
+        priority=continuation.priority,
         origin_input_text="",
         origin_input_ids=array("q", continuation.origin_input_ids),
         origin_input_ids_unpadded=(
@@ -352,10 +369,10 @@ def req_from_continuation(
     except Exception:
         req_to_token_pool.free(req)
         raise
-    req.prefix_indices = allocation.slots
+    req.prefix_len = allocation.seq_len
     req.kv.kv_committed_len = allocation.seq_len
     req.kv.kv_allocated_len = allocation.seq_len
-    req.set_extend_range(allocation.seq_len, allocation.seq_len)
+    req.extend_end = allocation.seq_len
     req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     req._coalesce_enqueue_t = 0.0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     return req
@@ -366,8 +383,7 @@ def sampling_params_to_dict(params: SamplingParams) -> dict[str, object]:
     values = {name: getattr(params, name) for name in allowed if hasattr(params, name)}
     custom = values.get("custom_params")
     if isinstance(custom, dict):
-        # Note(Yue Yin): Req.__init__ injects the live Req under "__req__", and
-        # injects it again on the Decode side. Do not serialize it.
+        # note (Yue Yin): Legacy custom parameters can retain a live Req; it must not cross the PD transport.
         values["custom_params"] = {
             key: value for key, value in custom.items() if key != "__req__"
         }
