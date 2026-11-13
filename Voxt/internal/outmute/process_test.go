@@ -197,7 +197,10 @@ func TestProcessChanges(t *testing.T) {
 	a := startApp(t, t.TempDir(), "out-switch=30")
 	defer a.sup.Stop()
 	a.c.Engage("s1")
-	waitFor(t, "AirPods muted", func() bool { return a.muted(pods) })
+	waitFor(t, "AirPods muted", func() bool {
+		claim := a.c.Status().Claim
+		return claim != nil && claim.UID == pods
+	})
 	if a.muted(spk) {
 		t.Error("the speakers stay muted after the switch")
 	}
