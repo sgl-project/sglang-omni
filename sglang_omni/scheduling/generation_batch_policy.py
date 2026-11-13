@@ -190,6 +190,7 @@ class GenerationStageDefaults(TypedDict, total=False):
     disable_overlap_schedule: bool
     disable_radix_cache: bool
     enable_torch_compile: bool | None
+    enable_lean_attention: bool | None
     enable_mixed_chunk: bool
     trust_remote_code: bool
     max_prefill_tokens: int
