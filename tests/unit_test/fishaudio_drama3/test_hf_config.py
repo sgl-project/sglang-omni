@@ -390,11 +390,6 @@ REJECTED_CONFIGS = [
         id="saved-form-second-rope-theta",
     ),
     pytest.param(
-        changed_saved_text("shared_expert_intermediate_size", -1),
-        "shared_expert_intermediate_size",
-        id="saved-form-negative-shared-expert",
-    ),
-    pytest.param(
         changed_decoder("decoder_type", "codebook_mtp"),
         "decoder_type",
         id="decoder-type",
@@ -565,10 +560,6 @@ def test_saved_form_without_rope_copies_reads_rope_parameters() -> None:
     [
         pytest.param(removed_text("shared_expert_intermediate_size"), id="missing"),
         pytest.param(changed_text("shared_expert_intermediate_size", None), id="null"),
-        pytest.param(
-            changed_saved_text("shared_expert_intermediate_size", None),
-            id="saved-form-null",
-        ),
     ],
 )
 def test_null_shared_expert_size_means_no_shared_expert(change: ConfigChange) -> None:

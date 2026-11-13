@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Omni Seed-TTS benchmark: warmup, speaker references, talker parameters, sweeps."""
 
 import asyncio
 import base64

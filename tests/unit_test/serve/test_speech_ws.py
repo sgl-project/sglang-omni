@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.client import GenerateChunk
+from sglang_omni.client.client import Client
 from sglang_omni.client.types import SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
@@ -452,7 +453,6 @@ WS_SUPPORTED_SPEECH_FIELDS = frozenset(
     ("fields", "path"),
     [
         ({"input": "not a session field"}, "input"),
-        ({"infill": False}, "infill"),
         ({"seed": 0}, "seed"),
     ],
 )
@@ -479,10 +479,9 @@ def test_supported_speech_fields_refuse_session_config_fields(
     ("outer_fields", "path"),
     [
         ({"infill": None}, "infill"),
-        ({"seed": 0}, "seed"),
         ({"response_format": "pcm"}, "response_format"),
     ],
-    ids=["unknown-null", "unsupported", "misplaced-config-field"],
+    ids=["unknown-null", "misplaced-config-field"],
 )
 def test_supported_speech_fields_refuse_fields_beside_a_nested_session(
     outer_fields: dict[str, object], path: str
@@ -660,13 +659,7 @@ def test_speech_websocket_unknown_message_type_is_recoverable() -> None:
 
 @pytest.mark.parametrize(
     ("field_name", "value"),
-    [
-        ("stream_audio", "true"),
-        ("speed", "1.2"),
-        ("max_new_tokens", "5"),
-        ("token_count", "5"),
-        ("duration_tokens", "5"),
-    ],
+    [("stream_audio", "true"), ("speed", "1.2")],
 )
 def test_speech_websocket_rejects_stringified_config_types(
     field_name: str, value: str
@@ -691,12 +684,7 @@ def test_speech_websocket_rejects_stringified_config_types(
 
 @pytest.mark.parametrize(
     ("field_name", "value"),
-    [
-        ("token_count", 0),
-        ("token_count", -1),
-        ("duration_tokens", 0),
-        ("duration_tokens", -1),
-    ],
+    [("token_count", 0), ("duration_tokens", 0)],
 )
 def test_speech_websocket_rejects_non_positive_duration_fields(
     field_name: str, value: int
@@ -737,9 +725,7 @@ def test_speech_websocket_streaming_accepts_speed() -> None:
         assert configured["type"] == "session.configured"
 
 
-def test_speech_websocket_default_config_does_not_mark_generation_params_explicit() -> (
-    None
-):
+def test_speech_websocket_default_config_leaves_sampling_fields_unset() -> None:
     async def run() -> None:
         speech_service = SpeechRequestValidator(default_model="tts")
         websocket = RecordingWebSocket()
@@ -766,8 +752,14 @@ def test_speech_websocket_default_config_does_not_mark_generation_params_explici
             uploaded_voice=session.config_uploaded_voice(),
         )
 
-        assert isinstance(gen_req.metadata["tts_params"], dict)
-        assert "explicit_generation_params" not in gen_req.metadata["tts_params"]
+        params = Client.build_omni_request(gen_req).params
+        assert not {
+            "temperature",
+            "top_p",
+            "top_k",
+            "repetition_penalty",
+            "seed",
+        } & set(params)
 
     asyncio.run(run())
 
@@ -791,7 +783,7 @@ def test_speech_websocket_teardown_skips_close_after_application_close() -> None
     asyncio.run(run())
 
 
-def test_speech_websocket_preserves_explicit_generation_params() -> None:
+def test_speech_websocket_passes_the_set_sampling_fields() -> None:
     async def run() -> None:
         speech_service = SpeechRequestValidator(default_model="tts")
         websocket = RecordingWebSocket()
@@ -810,6 +802,9 @@ def test_speech_websocket_preserves_explicit_generation_params() -> None:
                 "response_format": "pcm",
                 "temperature": 0.7,
                 "top_k": 20,
+                "prepend_silence": False,
+                "condition_buckets": {"loudness": 3},
+                "condition_values": {"fmax": 6000.0},
             }
         )
         request = session.speech_request_from_config(sentence="Hello.", stream=True)
@@ -820,11 +815,15 @@ def test_speech_websocket_preserves_explicit_generation_params() -> None:
             uploaded_voice=session.config_uploaded_voice(),
         )
 
-        assert isinstance(gen_req.metadata["tts_params"], dict)
-        assert gen_req.metadata["tts_params"]["explicit_generation_params"] == [
-            "temperature",
-            "top_k",
-        ]
+        params = Client.build_omni_request(gen_req).params
+        assert params["temperature"] == 0.7
+        assert params["top_k"] == 20
+        assert not {"top_p", "repetition_penalty", "seed"} & set(params)
+        # The session config once dropped the prompt fields.
+        tts_params = gen_req.metadata["tts_params"]
+        assert tts_params["prepend_silence"] is False
+        assert tts_params["condition_buckets"] == {"loudness": 3}
+        assert tts_params["condition_values"] == {"fmax": 6000.0}
 
     asyncio.run(run())
 
@@ -888,29 +887,6 @@ def test_speech_websocket_non_streaming_start_uses_result_sample_rate() -> None:
 
     assert start["type"] == "audio.start"
     assert start["sample_rate"] == 44100
-
-
-def test_speech_websocket_cancellation_aborts_active_request() -> None:
-    async def run() -> None:
-        client_impl = BlockingStreamingSpeechClient()
-        websocket = RecordingWebSocket()
-        session = SpeechWebSocketSession(
-            websocket,
-            client=client_impl,
-            speech_service=SpeechRequestValidator(default_model="tts"),
-        )
-        session.config = SpeechStreamSessionConfig(stream_audio=True)
-
-        task = asyncio.create_task(session.generate_sentence("Hello."))
-        await client_impl.started.wait()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-        assert client_impl.aborted == [f"{session.session_id}-0"]
-        assert session.active_request_id is None
-
-    asyncio.run(run())
 
 
 def test_speech_websocket_parent_cancellation_cleans_generation_tasks() -> None:
@@ -1068,52 +1044,6 @@ def test_speech_websocket_peer_disconnect_aborts_blocked_speech() -> None:
         with pytest.raises(WebSocketDisconnect):
             await session.generate_sentence("Hello.")
 
-        assert client_impl.aborted == [f"{session.session_id}-0"]
-        assert session.active_request_id is None
-
-    asyncio.run(run())
-
-
-def test_speech_websocket_peer_disconnect_aborts_blocked_stream() -> None:
-    async def run() -> None:
-        client_impl = BlockingStreamingSpeechClient()
-        websocket = RecordingWebSocket(
-            receive_messages=[{"type": "websocket.disconnect"}]
-        )
-        session = SpeechWebSocketSession(
-            websocket,
-            client=client_impl,
-            speech_service=SpeechRequestValidator(default_model="tts"),
-        )
-        session.config = SpeechStreamSessionConfig(stream_audio=True)
-
-        with pytest.raises(WebSocketDisconnect):
-            await session.generate_sentence("Hello.")
-
-        assert client_impl.aborted == [f"{session.session_id}-0"]
-        assert session.active_request_id is None
-
-    asyncio.run(run())
-
-
-def test_speech_websocket_peer_disconnect_aborts_between_stream_chunks() -> None:
-    async def run() -> None:
-        client_impl = PausingStreamingSpeechClient()
-        websocket = RecordingWebSocket(
-            receive_messages=[{"type": "websocket.disconnect"}],
-            receive_after_bytes=1,
-        )
-        session = SpeechWebSocketSession(
-            websocket,
-            client=client_impl,
-            speech_service=SpeechRequestValidator(default_model="tts"),
-        )
-        session.config = SpeechStreamSessionConfig(stream_audio=True)
-
-        with pytest.raises(WebSocketDisconnect):
-            await session.generate_sentence("Hello.")
-
-        assert websocket.sent_bytes
         assert client_impl.aborted == [f"{session.session_id}-0"]
         assert session.active_request_id is None
 

@@ -1,3 +1,5 @@
+"""Protocol oracle verdicts and metrics on native duplex session traces."""
+
 import base64
 import copy
 
@@ -5,209 +7,8 @@ import pytest
 from pydantic import JsonValue
 
 from benchmarks.duplex.oracle import evaluate_trace
-
-GRANTED = {
-    "interaction": "native",
-    "native_full_duplex": True,
-    "proactive_output": False,
-    "turn_control": [None],
-    "client_commit": False,
-    "input_modalities": ["audio"],
-    "output_modalities": ["audio"],
-    "input_audio_format": {"type": "audio/pcm", "rate": 16000},
-    "output_audio_format": {"type": "audio/pcm", "rate": 22050},
-    "native_unit_ms": 80,
-    "first_unit_ms": 80,
-    "microturn_ms": None,
-    "tail_policy": "pad",
-    "supports_server_interrupt": False,
-    "supports_truncate": False,
-    "supports_resume": False,
-    "partial_style": "append_only",
-    "pressure_policy": "reject",
-    "strict_order": True,
-    "limits": {
-        "max_input_bytes": 1920000,
-        "max_input_chunks": 128,
-        "max_output_bytes": 4194304,
-        "max_output_events": 256,
-        "max_responses": 128,
-        "max_segments": 256,
-        "max_history_chars": 65536,
-        "session_timeout_s": 240,
-        "cleanup_timeout_s": 30,
-    },
-    "rejections": [],
-}
-
-
-def trace_fixture() -> list[dict[str, JsonValue]]:
-    pcm = base64.b64encode(b"\x00\x00" * 1280).decode()
-    output = base64.b64encode(b"\x01\x00" * 1764).decode()
-    result = []
-
-    def add(time_s: float, direction: str, event_type: str, **event: JsonValue) -> None:
-        result.append(
-            {
-                "direction": direction,
-                "time_s": 100 + time_s,
-                "event": {
-                    "type": event_type,
-                    "event_id": f"event_{len(result)}",
-                    **event,
-                },
-            }
-        )
-
-    def unit_done(time_s: float, index: int, duration_ms: float) -> None:
-        add(
-            time_s,
-            "receive",
-            "sglang.unit.done",
-            unit_id=f"unit_{index}",
-            sglang={
-                "unit_id": f"unit_{index}",
-                "chunk_seq": 0,
-                "media_time": {
-                    "t_start_ms": index * 80,
-                    "duration_ms": duration_ms,
-                },
-            },
-        )
-
-    add(
-        0.00,
-        "receive",
-        "session.created",
-        session={"id": "session_A", "sglang": {"granted": None}},
-    )
-    add(
-        0.01,
-        "send",
-        "session.update",
-        event_id="configure",
-        session={"output_modalities": ["audio"]},
-    )
-    add(
-        0.02,
-        "receive",
-        "session.updated",
-        client_event_id="configure",
-        session={"id": "session_A", "sglang": {"granted": copy.deepcopy(GRANTED)}},
-    )
-    add(
-        0.10,
-        "send",
-        "input_audio_buffer.append",
-        event_id="input0",
-        audio=pcm,
-        sglang={"seq": 0, "t_start_ms": 0},
-    )
-    add(
-        0.11,
-        "receive",
-        "sglang.input_audio.accepted",
-        seq=0,
-        accepted_end_ms=80,
-        client_event_id="input0",
-    )
-    add(
-        0.12,
-        "receive",
-        "response.created",
-        response={"id": "response0", "status": "in_progress"},
-    )
-    add(
-        0.13,
-        "receive",
-        "response.output_audio.delta",
-        response_id="response0",
-        item_id="item0",
-        output_index=0,
-        content_index=0,
-        delta=output,
-    )
-    unit_done(0.135, 0, 80)
-    add(
-        0.18,
-        "send",
-        "input_audio_buffer.append",
-        event_id="input1",
-        audio=pcm,
-        sglang={"seq": 1, "t_start_ms": 80},
-    )
-    add(
-        0.19,
-        "receive",
-        "sglang.input_audio.accepted",
-        seq=1,
-        accepted_end_ms=160,
-        client_event_id="input1",
-    )
-    add(
-        0.20,
-        "receive",
-        "response.output_audio.delta",
-        response_id="response0",
-        item_id="item0",
-        output_index=0,
-        content_index=0,
-        delta=output,
-    )
-    unit_done(0.21, 1, 80)
-    add(0.23, "send", "sglang.input_audio.end", event_id="end")
-    add(
-        0.24,
-        "receive",
-        "sglang.input_audio.ended",
-        accepted_end_ms=160,
-        tail_policy="pad",
-        client_event_id="end",
-    )
-    add(
-        0.25,
-        "receive",
-        "response.output_audio.done",
-        response_id="response0",
-    )
-    add(
-        0.26,
-        "receive",
-        "response.done",
-        response={
-            "id": "response0",
-            "status": "completed",
-            "status_details": {"reason": "stop"},
-        },
-    )
-    unit_done(0.264, 2, 0)
-    add(
-        0.27,
-        "receive",
-        "sglang.input_audio.drained",
-        accepted_end_ms=160,
-        consumed_ms=160,
-        discarded_ms=0,
-        padding_ms=0,
-        client_event_id="end",
-    )
-    add(0.28, "send", "session.close", event_id="close")
-    add(
-        0.29,
-        "receive",
-        "session.closed",
-        client_event_id="close",
-        reason="client_closed",
-    )
-    return result
-
-
-def find_event(
-    records: list[dict[str, JsonValue]], event_type: str
-) -> dict[str, JsonValue]:
-    return next(
-        record["event"] for record in records if record["event"]["type"] == event_type
-    )
+from benchmarks.duplex.profiles import ProfileName
+from tests.unit_test.fixtures.duplex_fakes import find_event, trace_fixture
 
 
 def test_known_good_trace_and_hand_calculated_metrics() -> None:
@@ -344,7 +145,6 @@ def test_native_capability_requires_actual_true(value: JsonValue) -> None:
     ("key", "value"),
     [
         ("supports_resume", True),
-        ("supports_truncate", True),
         ("supports_server_interrupt", True),
         ("output_modalities", ["text"]),
         ("output_audio_format", {"type": "audio/pcm", "rate": 16000}),
@@ -717,6 +517,108 @@ def test_exhausted_admission_without_a_session_fails() -> None:
     assert "missing audio input" in result["violations"]
 
 
+def rejection(**error: JsonValue) -> dict[str, JsonValue]:
+    return {
+        "direction": "receive",
+        "time_s": 100.008,
+        "event": {
+            "type": "error",
+            "event_id": "rejection",
+            "sglang": {"fatal": False},
+            "error": {
+                "type": "invalid_request_error",
+                "code": "admission_rejected",
+                "message": "The request queue is full.",
+                "event_id": "rejected",
+                "param": None,
+                **error,
+            },
+        },
+    }
+
+
+def rejected_update() -> dict[str, JsonValue]:
+    return {
+        "direction": "send",
+        "time_s": 100.004,
+        "event": {
+            "type": "session.update",
+            "event_id": "rejected",
+            "session": {"output_modalities": ["audio"]},
+        },
+    }
+
+
+@pytest.mark.parametrize("retry_limit", [2, 3])
+def test_oracle_checks_the_combined_admission_budget(retry_limit: int) -> None:
+    """A recorder cannot spend a fresh retry budget after HTTP admission."""
+    records = trace_fixture()
+    records[1:1] = [rejected_update(), rejection()]
+    result = evaluate_trace(
+        [admission(1), admission(2), *records], max_admission_attempts=retry_limit
+    )
+    assert result["metrics"]["admission_denials"] == 2
+    assert result["metrics"]["admission_rejections"] == 1
+    if retry_limit == 3:
+        assert result["status"] == "pass", result
+    else:
+        assert result["failure_kind"] == "runtime"
+        assert any("limit" in violation for violation in result["violations"])
+
+
+def test_overlapping_updates_cannot_bypass_the_shared_budget() -> None:
+    """Two pending updates let a fifth admission attempt pass a three-retry limit."""
+    records = trace_fixture()
+    records.insert(1, rejected_update())
+    denied = rejection()
+    denied["time_s"] = 100.015
+    records.insert(3, denied)
+    result = evaluate_trace(
+        [admission(1), admission(2), admission(3), *records],
+        max_admission_attempts=3,
+    )
+    assert result["status"] == "fail", result
+    assert any("pending" in violation for violation in result["violations"])
+
+
+@pytest.mark.parametrize(
+    "profile", ["nemotron-voicechat-pr2188", "qwen3-omni-half-duplex"]
+)
+def test_partial_http_rejection_trace_is_not_clean_exhaustion(
+    profile: ProfileName,
+) -> None:
+    """Interrupted HTTP retries must not look like final admission rejection."""
+    result = evaluate_trace([admission(1)], profile=profile, max_admission_attempts=3)
+    assert result["failure_kind"] == "runtime"
+    exhausted = evaluate_trace(
+        [admission(i) for i in range(1, 5)], profile=profile, max_admission_attempts=3
+    )
+    assert exhausted["failure_kind"] == "admission_rejected"
+    assert exhausted["metrics"]["admission_denials"] == 4
+
+
+@pytest.mark.parametrize(
+    ("record", "violation"),
+    [
+        (rejection(), None),
+        (rejection(code="invalid_request"), "code=invalid_request"),
+    ],
+)
+def test_only_an_admission_rejection_of_a_sent_update_is_a_retry(
+    record: dict[str, JsonValue], violation: str | None
+) -> None:
+    trace = trace_fixture()
+    trace[1:1] = [rejected_update(), record]
+    result = evaluate_trace(trace)
+    if violation is None:
+        assert result["status"] == "pass", result
+        assert result["metrics"]["admission_rejections"] == 1
+    else:
+        assert result["status"] == "fail"
+        assert any(violation in item for item in result["violations"])
+        assert result["metrics"]["admission_rejections"] == 0
+
+
 @pytest.mark.parametrize(
     ("status", "reason", "violation"),
     [
@@ -724,6 +626,7 @@ def test_exhausted_admission_without_a_session_fails() -> None:
         ("cancelled", "stop", "contradicts reason"),
         ("completed", "disconnect", "unsupported response terminal reason"),
         ("cancelled", "client_cancelled", "unsupported response terminal reason"),
+        ("completed", "max_output_tokens", "unsupported response terminal reason"),
     ],
 )
 def test_response_terminal_reason_must_match_client_commands(
@@ -736,6 +639,15 @@ def test_response_terminal_reason_must_match_client_commands(
     result = evaluate_trace(trace)
     assert result["status"] == "fail"
     assert any(violation in item for item in result["violations"])
+
+
+def test_a_reply_cut_by_the_talker_budget_ends_incomplete() -> None:
+    """A MiniCPM-o reply whose turn ended before the talker spoke all its text failed the recording as an unsupported terminal."""
+    trace = trace_fixture()
+    find_event(trace, "response.done")["response"].update(
+        status="incomplete", status_details={"reason": "max_output_tokens"}
+    )
+    assert evaluate_trace(trace)["violations"] == []
 
 
 def test_response_terminal_without_reason_fails() -> None:

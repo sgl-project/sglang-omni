@@ -16,15 +16,27 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, JsonValue
 
+from benchmarks.duplex.profiles import Protocol
+
 
 class TraceFormat(str, Enum):
     PCM16 = "realtime-pcm16-v1"
     LEGACY_PCM16 = "realtime-legacy-pcm16-v1"
+    TURN_BASED_PCM16 = "realtime-turn-based-pcm16-v1"
 
 
 AUDIO_DELTA = {
     TraceFormat.PCM16: "response.output_audio.delta",
     TraceFormat.LEGACY_PCM16: "response.audio.delta",
+    TraceFormat.TURN_BASED_PCM16: "response.output_audio.delta",
+}
+FORMAT_PROTOCOL: dict[TraceFormat, Protocol] = {
+    TraceFormat.PCM16: "native",
+    TraceFormat.LEGACY_PCM16: "legacy",
+    TraceFormat.TURN_BASED_PCM16: "turn_based",
+}
+PROTOCOL_FORMAT = {
+    protocol: trace_format for trace_format, protocol in FORMAT_PROTOCOL.items()
 }
 
 
@@ -145,7 +157,7 @@ def parse_pcm16_trace(
             elif (
                 row.direction == "receive"
                 and kind == "session.updated"
-                and trace_format is TraceFormat.PCM16
+                and trace_format is not TraceFormat.LEGACY_PCM16
             ):
                 session = event.get("session") or {}
                 audio = session.get("audio") or {}

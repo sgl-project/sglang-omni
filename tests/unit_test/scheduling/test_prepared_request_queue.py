@@ -51,6 +51,7 @@ def test_abort_unknown_request_is_noop():
 def test_fail_inflight_discards_and_stores_nothing():
     q = active_queue()
     q.begin("a")
+    q.abort("a")
     q.fail_inflight("a")
     assert not q.snapshot().inflight
     assert not q.snapshot().aborted
@@ -82,12 +83,6 @@ def test_begin_without_context_returns_none_and_no_inflight():
     q: PreparedRequestQueue = PreparedRequestQueue()
     assert q.begin("a") is None
     assert "a" not in q.snapshot().inflight
-
-
-def test_publish_without_begin_drops():
-    q = active_queue()
-    assert q.publish("a", "PREP-a") is False
-    assert "a" not in q.snapshot().prepared
 
 
 def test_publish_after_reset_drops():

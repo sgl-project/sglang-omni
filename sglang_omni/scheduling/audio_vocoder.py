@@ -152,7 +152,15 @@ class StreamingVocoderScheduler(StreamingSimpleScheduler, ABC):
                     data={
                         field_name: field_value
                         for field_name, field_value in result.data.items()
-                        if field_name in {"audio_data", "sample_rate", "modality"}
+                        if field_name
+                        in {
+                            "audio_data",
+                            "audio_waveform",
+                            "audio_waveform_shape",
+                            "audio_waveform_dtype",
+                            "sample_rate",
+                            "modality",
+                        }
                     },
                     metadata={"modality": "audio"},
                 )

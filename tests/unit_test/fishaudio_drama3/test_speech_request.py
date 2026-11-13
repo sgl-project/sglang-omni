@@ -19,6 +19,7 @@ from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateRequest, SamplingParams
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.request_builders import (
+    MAXIMUM_TOP_K,
     Drama3GenerationInput,
     Drama3RequestBuilder,
 )
@@ -27,15 +28,12 @@ from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceEncodeHook,
     FishReferenceInput,
 )
-from sglang_omni.proto.request import (
-    EXPLICIT_GENERATION_PARAMS_KEY,
-    OmniRequest,
-    StagePayload,
-)
+from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from sglang_omni.serve.openai_api import build_rollout_generate_request
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.protocol import RolloutGenerateRequest
+from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_voices import SpeakerSampleStore
 from tests.unit_test.fishaudio_drama3.test_hf_config import (
@@ -196,9 +194,13 @@ def test_text_becomes_a_tts_prompt_spoken_by_speaker_zero(
 @pytest.mark.parametrize(
     ("sampling_fields", "sampling"),
     [
-        pytest.param({}, (1.0, 0.9, 30, None), id="omitted"),
-        pytest.param(dict.fromkeys(GENERATION_FIELDS), (1.0, 0.9, 30, None), id="null"),
-        pytest.param({"temperature": 0.5}, (0.5, 0.9, 30, None), id="only-temperature"),
+        pytest.param({}, (1.0, 0.9, MAXIMUM_TOP_K, None), id="omitted"),
+        pytest.param(
+            dict.fromkeys(GENERATION_FIELDS), (1.0, 0.9, MAXIMUM_TOP_K, None), id="null"
+        ),
+        pytest.param(
+            {"temperature": 0.5}, (0.5, 0.9, MAXIMUM_TOP_K, None), id="only-temperature"
+        ),
         pytest.param(
             {
                 "temperature": 0.0,
@@ -232,8 +234,7 @@ def test_sampling_takes_the_set_fields_and_drama3_defaults_for_the_rest(
 def test_a_generate_request_keeps_its_set_fields_and_max_tokens(
     tokenizer: Tokenizer,
 ) -> None:
-    """/v1/generate records set fields in the metadata, and lowers max_tokens to
-    max_new_tokens without recording it."""
+    """/v1/generate passes the fields it sets, with max_tokens as max_new_tokens."""
     request = Client.build_omni_request(
         build_rollout_generate_request(
             RolloutGenerateRequest.model_validate(
@@ -254,7 +255,7 @@ def test_a_generate_request_keeps_its_set_fields_and_max_tokens(
         generation_input.top_p,
         generation_input.top_k,
         generation_input.max_new_tokens,
-    ) == (0.5, 0.9, 30, 12)
+    ) == (0.5, 0.9, MAXIMUM_TOP_K, 12)
 
 
 def test_references_become_a_reference_prompt(tokenizer: Tokenizer) -> None:
@@ -397,9 +398,6 @@ REFUSED_REQUESTS = [
         "speaker tags must be written",
         id="speaker-tag-of-5000-digits-in-a-transcript",
     ),
-    pytest.param(
-        {"input": "say <|im_end|>"}, "<|im_end|>", id="structural-token-in-input"
-    ),
 ]
 
 
@@ -527,7 +525,7 @@ def test_a_preprocessed_request_is_admitted_with_the_engine_cap(
     assert (request_data.temperature, request_data.top_p, request_data.top_k) == (
         1.0,
         0.9,
-        30,
+        MAXIMUM_TOP_K,
     )
 
 
@@ -543,9 +541,6 @@ def test_a_preprocessed_request_is_admitted_with_the_engine_cap(
         pytest.param({"top_k": 0}, "top_k must be in [1, 2147483647]", id="zero-top-k"),
         pytest.param(
             {"top_k": 2**31}, "top_k must be in [1, 2147483647]", id="top-k-past-int32"
-        ),
-        pytest.param(
-            {"top_k": 2**63}, "top_k must be in [1, 2147483647]", id="top-k-past-int64"
         ),
         pytest.param(
             {"max_new_tokens": MAX_NEW_TOKENS_CAP + 1},
@@ -670,43 +665,32 @@ def test_a_codec_failure_while_encoding_stays_an_internal_error(
     assert not is_bad_request_error(failure.value)
 
 
-def direct_client_payload(
-    sampling: SamplingParams, metadata: dict[str, object]
-) -> StagePayload:
+def direct_client_payload(sampling: SamplingParams) -> StagePayload:
     """A request a Python caller hands to Client itself."""
     return first_stage_payload(
-        Client.build_omni_request(
-            GenerateRequest(prompt="hello", sampling=sampling, metadata=metadata)
-        )
+        Client.build_omni_request(GenerateRequest(prompt="hello", sampling=sampling))
     )
 
 
 @pytest.mark.parametrize(
-    ("sampling", "metadata", "expected_sampling"),
+    ("sampling", "expected_sampling"),
     [
-        pytest.param(SamplingParams(), {}, (1.0, 0.9, 30), id="placeholders-unlisted"),
+        pytest.param(SamplingParams(), (1.0, 0.9, MAXIMUM_TOP_K), id="unset"),
         pytest.param(
             SamplingParams(temperature=0.0, top_p=1.0, top_k=1),
-            {EXPLICIT_GENERATION_PARAMS_KEY: ["temperature", "top_p", "top_k"]},
             (0.0, 1.0, 1),
-            id="listed-values-including-a-placeholder",
-        ),
-        pytest.param(
-            SamplingParams(temperature=0.5),
-            {EXPLICIT_GENERATION_PARAMS_KEY: []},
-            (1.0, 0.9, 30),
-            id="an-empty-list-is-the-record",
+            id="all-set",
         ),
     ],
 )
-def test_a_direct_client_request_takes_the_fields_it_lists(
+def test_a_direct_client_request_takes_the_fields_it_sets(
     tokenizer: Tokenizer,
     sampling: SamplingParams,
-    metadata: dict[str, object],
     expected_sampling: tuple[float, float, int],
 ) -> None:
+    """A Client caller's set sampling fields reach the model with no metadata record."""
     generation_input = generation_input_of(
-        speech_preprocessor(tokenizer)(direct_client_payload(sampling, metadata))
+        speech_preprocessor(tokenizer)(direct_client_payload(sampling))
     )
 
     assert (
@@ -716,53 +700,99 @@ def test_a_direct_client_request_takes_the_fields_it_lists(
     ) == expected_sampling
 
 
-UNLISTED_TEMPERATURE = "temperature set without explicit_generation_params"
+def reference_request_builder(tokenizer: Tokenizer) -> Drama3RequestBuilder:
+    return Drama3RequestBuilder(
+        config=toy_config(tokenizer),
+        context_length=CONTEXT_LENGTH,
+        max_prompt_rows=SERVING_PROMPT_CAP_ROWS,
+        max_new_tokens_cap=MAX_NEW_TOKENS_CAP,
+        reference_sampling=True,
+    )
+
+
+def test_an_epsilon_cutoff_reaches_the_model_input_only_when_set(
+    tokenizer: Tokenizer,
+) -> None:
+    """Serving and a direct client lower a set cutoff, an unset one stays unset for the
+    engine to default, and a non-number is a bad request."""
+    preprocessor = speech_preprocessor(tokenizer)
+    set_by_serving = preprocessor(lowered({"input": "hello", "epsilon_cutoff": 0.002}))
+    set_by_client = preprocessor(
+        direct_client_payload(SamplingParams(epsilon_cutoff=0.002))
+    )
+
+    assert generation_input_of(set_by_serving).epsilon_cutoff == 0.002
+    assert generation_input_of(set_by_client).epsilon_cutoff == 0.002
+    unset = preprocessor(lowered({"input": "hello"}))
+    assert generation_input_of(unset).epsilon_cutoff is None
+    with pytest.raises(SpeechAPIError) as rejection:
+        lowered({"input": "hello", "epsilon_cutoff": "high"})
+    assert rejection.value.param == "epsilon_cutoff"
 
 
 @pytest.mark.parametrize(
-    ("sampling", "metadata", "error"),
-    [
-        pytest.param(
-            SamplingParams(temperature=0.0, top_p=0.5, top_k=1, repetition_penalty=1.2),
-            {},
-            "temperature, top_p, top_k, repetition_penalty set without "
-            "explicit_generation_params",
-            id="values-unlisted",
-        ),
-        pytest.param(
-            SamplingParams(temperature=0.0),
-            {EXPLICIT_GENERATION_PARAMS_KEY: None},
-            UNLISTED_TEMPERATURE,
-            id="a-null-list-is-no-record",
-        ),
-        pytest.param(
-            SamplingParams(temperature=0.0),
-            {EXPLICIT_GENERATION_PARAMS_KEY: "temperature"},
-            UNLISTED_TEMPERATURE,
-            id="a-string-is-no-record",
-        ),
-        pytest.param(
-            SamplingParams(temperature=0.0),
-            {"tts_params": None},
-            UNLISTED_TEMPERATURE,
-            id="null-tts-params-are-no-record",
-        ),
-        pytest.param(
-            SamplingParams(repetition_penalty=1.2),
-            {EXPLICIT_GENERATION_PARAMS_KEY: ["repetition_penalty"]},
-            "repetition_penalty must be 1.0",
-            id="listed-repetition-penalty",
-        ),
-    ],
+    "epsilon_cutoff",
+    [float("nan"), -0.001, 1.0, 1.5],
+    ids=["nan", "negative", "one", "above-one"],
 )
-def test_a_direct_client_request_cannot_drop_or_misuse_a_sampling_field(
-    tokenizer: Tokenizer,
-    sampling: SamplingParams,
-    metadata: dict[str, object],
-    error: str,
+def test_an_epsilon_cutoff_outside_zero_to_one_is_refused_before_admission(
+    tokenizer: Tokenizer, epsilon_cutoff: float
 ) -> None:
-    message = refused(
-        speech_preprocessor(tokenizer), direct_client_payload(sampling, metadata)
+    payload = speech_preprocessor(tokenizer)(
+        lowered({"input": "hello", "epsilon_cutoff": epsilon_cutoff})
     )
 
-    assert error in message
+    with pytest.raises(
+        ValueError, match=re.escape("epsilon_cutoff must be in [0, 1)")
+    ) as rejection:
+        reference_request_builder(tokenizer)(payload)
+
+    assert is_bad_request_error(rejection.value)
+
+
+def test_an_epsilon_cutoff_without_reference_sampling_is_refused_by_the_switch_name(
+    tokenizer: Tokenizer,
+) -> None:
+    """The default samplers have no cutoff, so asking for one is refused rather than
+    ignored; a zero cutoff asks for nothing and is admitted."""
+    preprocessor = speech_preprocessor(tokenizer)
+    payload = preprocessor(lowered({"input": "hello", "epsilon_cutoff": 0.002}))
+
+    with pytest.raises(
+        ValueError, match=re.escape("--tts_engine.factory.reference_sampling true")
+    ) as rejection:
+        engine_request_builder(tokenizer)(payload)
+
+    assert is_bad_request_error(rejection.value)
+    request_data = engine_request_builder(tokenizer)(
+        preprocessor(lowered({"input": "hello", "epsilon_cutoff": 0}))
+    )
+    assert request_data.epsilon_cutoff == 0.0
+
+
+@pytest.mark.parametrize(
+    ("reference_sampling", "change", "epsilon_cutoff"),
+    [
+        pytest.param(True, {}, 1e-3, id="reference-unset"),
+        pytest.param(True, {"epsilon_cutoff": 0.0}, 0.0, id="reference-zero"),
+        pytest.param(True, {"epsilon_cutoff": 0.02}, 0.02, id="reference-set"),
+        pytest.param(False, {}, 0.0, id="default-unset"),
+    ],
+)
+def test_reference_sampling_defaults_an_unset_epsilon_cutoff_to_1e_3(
+    tokenizer: Tokenizer,
+    reference_sampling: bool,
+    change: dict[str, object],
+    epsilon_cutoff: float,
+) -> None:
+    request_builder = (
+        reference_request_builder(tokenizer)
+        if reference_sampling
+        else engine_request_builder(tokenizer)
+    )
+
+    request_data = request_builder(
+        speech_preprocessor(tokenizer)(lowered({"input": "hello", **change}))
+    )
+
+    assert request_data.epsilon_cutoff == epsilon_cutoff

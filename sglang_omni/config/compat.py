@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import difflib
 
-from sglang_omni.config.path import ConfigPathError
+from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.schema import PipelineConfig
 
 __all__ = ["canonicalize_dotted_key"]
@@ -39,6 +39,17 @@ def canonicalize_dotted_key(key: str, config: PipelineConfig) -> str:
 
     if head in stage_names and len(parts) > 1:
         if head in top_fields:
+            candidates = []
+            for candidate in (key, f"stages.{key}"):
+                try:
+                    ConfigPath.parse(candidate, type(config))
+                except ConfigPathError:
+                    continue
+                candidates.append(candidate)
+            if len(candidates) == 1:
+                return candidates[0]
+            else:
+                pass
             raise ConfigPathError(
                 f"{key!r} is ambiguous: {head!r} is both a stage name and a "
                 "top-level configuration field. Rename the stage; the CLI "

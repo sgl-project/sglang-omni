@@ -81,6 +81,11 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
     def get_input_embeddings(self) -> nn.Embedding:
         return self.emb_code
 
+    @property
+    def model(self) -> nn.Module:
+        # note (0xtoward): SGLang's prefill graph setup looks for the decoder here.
+        return self.llama.model
+
     def build_condition_embeddings(
         self, tts_token_ids: torch.Tensor, tts_hidden: torch.Tensor
     ) -> torch.Tensor:

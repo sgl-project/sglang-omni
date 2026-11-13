@@ -2,7 +2,7 @@
 
 [nvidia/personaplex-7b-v1](https://huggingface.co/nvidia/personaplex-7b-v1) is a 7B full-duplex speech-to-speech model built on [Moshi](https://arxiv.org/abs/2410.00037): every 80 ms it reads one text token and 16 [Mimi](https://huggingface.co/kyutai/mimi) codes (8 for what it says, 8 for what it hears) and writes the next frame. A voice prompt and a `<system>` role prompt set the persona, and the model decides for itself when to speak; there is no VAD.
 
-SGLang-Omni serves it as an **offline** pipeline: one recording of the caller's side in, the agent's reply as text and 24 kHz audio of the same length out. Live duplex sessions over `/v1/realtime` are tracked in [#1909](https://github.com/sgl-project/sglang-omni/issues/1909).
+SGLang-Omni serves it two ways: an **offline** pipeline (one recording of the caller's side in, the agent's reply as text and 24 kHz audio of the same length out) and a **session** variant that holds live full-duplex sessions over `/v1/realtime` ([#1909](https://github.com/sgl-project/sglang-omni/issues/1909)).
 
 ## Prerequisites
 
@@ -15,6 +15,10 @@ hf download nvidia/personaplex-7b-v1
 It ships the 7B weights, the Mimi codec, the SentencePiece text model and `voices.tgz`, which is unpacked into `voices/` next to the checkpoint on first use, or into the temp directory when that folder cannot be written. Recorded voice prompts (`--voice some.wav`) also need `pip install pyloudnorm`; the packaged `.pt` voices do not.
 
 Everything runs on one GPU. On an H200 the LM engine reserves `mem_fraction_static=0.3` and the two Mimi instances stay under 1 GB each. This value is a fraction of total device memory, so a smaller-memory device can need a higher fraction to fit the model weights.
+
+The Mimi encoder stage loads only its encoding path, and Code2Wav loads only its
+decoding path. Both retain the codebooks and quantizer projections their path
+needs, reducing the combined FP32 codec weights and buffers by about 302 MiB.
 
 ## Running the offline example
 
@@ -34,7 +38,7 @@ Five stages run under `MultiProcessPipelineRunner` (preprocessing, Mimi encode, 
 - Prompt plus reply must fit the LM context, 8192 positions by default (about 10.8 minutes); a longer recording is rejected with the limit in the message and needs `--lm.engine.context_length`.
 - The reply text is the model's inner monologue with the frame markers (`PAD`, `EPAD`, `BOS`, `EOS`) removed.
 
-For Intel GPUs, follow the [PersonaPlex XPU recipe](../get_started/installation_xpu.md#personaplex-speech-to-speech-single-xpu).
+For Intel GPUs, follow the [PersonaPlex XPU recipe](../other_platforms/installation_xpu.md#personaplex-speech-to-speech-single-xpu).
 
 ## Serving over HTTP
 
@@ -54,29 +58,28 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 }'
 ```
 
+## Native Full-Duplex Ability
+
+PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-personaplex).
+
 ## Request parameters
 
 | Parameter | Effect |
 |---|---|
 | `voice` | A packaged voice name (`NATF0..3`, `NATM0..3`, `VARF0..4`, `VARM0..4`), a `.pt` file, or a recording. Default `NATF2`; an empty string runs without a voice prompt. |
 | `text_prompt` (or `instructions`) | The role prompt, wrapped in `<system>` tags. Default: the reference assistant prompt. |
-| `temperature`, `top_k` | Text sampling; defaults 0.7 / 25, which the client's filler values (1.0 / -1) do not override unless set explicitly. `temperature=0` is greedy. |
+| `temperature`, `top_k` | Text sampling, defaults 0.7 / 25. `temperature=0` is greedy. |
 | `audio_temperature`, `audio_top_k` | Code sampling in the depformer; defaults 0.8 / 250. |
 | `seed` | Makes both draws reproducible (a child seed each for text and audio). |
 | `max_new_tokens` | Ignored; the frame count is fixed by the input length. |
 
-### Explicit stage sampling
+### Stage sampling
 
-HTTP chat and rollout requests preserve which fields were provided in
-`stage_sampling.lm`. For example, `{"seed": 7}` keeps the PersonaPlex text
-defaults (temperature 0.7, top-k 25), while
-`{"temperature": 1.0, "top_k": -1}` explicitly selects temperature 1.0 and
-disables top-k filtering. In-process stage `SamplingParams` objects are complete configurations:
-all serialized fields are explicit. Thus `SamplingParams(seed=7)` in
-`stage_sampling.lm` selects temperature 1.0 and top-k -1 as well as seed 7.
-To keep PersonaPlex text defaults, omit `stage_sampling` and set the seed in
-the top-level `sampling=SamplingParams(seed=7)` instead. Top-level client
-filler handling is unchanged.
+Fields left out of `stage_sampling.lm` keep the PersonaPlex text defaults.
+For example, `{"seed": 7}` keeps temperature 0.7 and top-k 25, while
+`{"temperature": 1.0, "top_k": -1}` samples at temperature 1.0 with no top-k
+filtering. The same holds for `SamplingParams` objects passed to the Python
+client: `SamplingParams(seed=7)` in `stage_sampling.lm` sets only the seed.
 
 Text sampling uses `stage_sampling.lm`, then `stage_params.lm`, then top-level
 request values. Stage sampling also takes precedence for `seed`.
@@ -85,13 +88,45 @@ request values. Stage sampling also takes precedence for `seed`.
 The fixed caller-frame budget still determines the number of generated frames.
 
 
+## Opt-in FP8 inference
+
+BF16 is the default. Two LM engine flags switch the backbone to FP8, separately or together; the text head, embeddings, Depformer and Mimi keep their precision.
+
+| Flags | Backbone weights | KV positions in 8 GiB | Audio s/s, C1 / C8 | First audio, C1 / C8 |
+|---|---:|---:|---:|---:|
+| None (BF16) | 13.15 GB | 16,384 | 6.95 / 44.40 | 58.2 / 172.7 ms |
+| `--lm.engine.quantization fp8` | 6.58 GB | 16,384 | 8.23 / 50.66 | 66.5 / 179.1 ms |
+| `--lm.engine.kv_cache_dtype fp8_e4m3` | 13.15 GB | 32,768 | 6.82 / 44.68 | 59.8 / 171.8 ms |
+| Both | 6.58 GB | 32,768 | 7.89 / 50.14 | 69.3 / 176.6 ms |
+
+*Offline requests on one H100 with FA3, SGLang 0.5.22, `--lm.engine.max_running_requests 8`.*
+
+FP8 weights are the speed option: they halve the weight memory and raise throughput by 14–18%, at 6–10 ms more first-audio latency. On A100 they run as weight-only Marlin and raise C1 throughput by 27%. FP8 KV is the capacity option: a KV budget holds twice the positions, with no speed gain. On 416 English prompts at C8, every FP8 option stayed within 0.10 UTMOS and 1 WER point of BF16.
+
+These results cover offline requests, not full-duplex sessions. FP8 KV was tested only on H100 with FA3, and its scales are fixed at 1.0.
+
 ## Known limitations
 
+### All platforms
+
 - Offline, one request at a time by default (`max_running_requests=1`). If you raise `--lm.engine.max_running_requests`, the requests in a batch share one depformer pass per frame, and each seeded request still draws from its own generator. A seeded reply repeats exactly only with one request in flight, because batched kernels can round differently.
-- On CUDA the backbone's decode step replays a CUDA graph (`--lm.engine.disable_cuda_graph true` turns it off); the 8 depformer steps still run eagerly, so a frame runs close to the 80 ms budget rather than well inside it.
-- On CUDA, streaming Mimi decode replays CUDA graphs for chunks of 1 to `max_graph_frames` frames on `num_decode_slots` resident decode states (default 8); other platforms decode eagerly. When unset, `max_graph_frames` follows the widest entry in `chunk_ramp_frames` (default `[1, 4]`: the first frame alone, then four at a time), covering both regular chunks and shorter final chunks. Each decode handles one request; slots hold independent request states, not a decode batch. A stream that arrives while every slot is taken decodes eagerly, so keep `--code2wav.factory.num_decode_slots` at or above `--lm.engine.max_running_requests`; an explicit `--code2wav.factory.max_graph_frames N` overrides the graph limit, and `0` turns the graphs off.
+- Streaming Mimi decode follows `--code2wav.factory.chunk_ramp_frames` (default `[1, 4]`: the first frame alone, then four at a time; a finished stream flushes its shorter remainder). Ready requests whose chunks share a width decode in one batched step of up to `max_batch_size` (default 8), each at its own decode position. `num_decode_slots` resident decode states default to the LM's effective `max_running_requests`, and a smaller explicit value is rejected; a stream that finds every slot taken while another stream's tail drains waits for the next free slot, so sustained overload is not bounded by this queue.
 - The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.
-- On a CUDA platform with resolved `device=cuda`, `page_size=1` and radix caching disabled (the default), window KV releases expired positions for reuse. Steady decode holds about 3.1k positions (1.5 GiB of BF16 KV) per long request with the default eviction interval; prefill and retract replay can temporarily hold more. CPU stages, other platforms, page sizes and radix-enabled configurations use the full KV pool. Context and request-length limits remain unchanged, and returning slots does not shrink the preallocated pool. Set `--lm.engine.disable_hybrid_swa_memory true` to use the full pool explicitly.
+- Radix caching stays off: the stage refuses `--lm.engine.disable_radix_cache false` at startup. The prompt ids do not identify the voice, so a radix hit could reuse another voice's prompt KV.
+
+### CUDA
+
+- On CUDA, the Depformer's RMSNorm and SiLU-gate run as fused Triton kernels whose outputs match the eager operations bit for bit; other devices use the eager operations.
+- On CUDA the backbone's decode step and all 8 Depformer steps replay CUDA graphs. At startup, offline serving captures the default audio-sampling layout for every configured batch bucket through the smallest bucket that covers the effective `max_running_requests`; session serving captures the same buckets with the deployment's resolved audio sampling. Other sampling layouts and batch shapes run eagerly. `--lm.engine.disable_cuda_graph true` disables both backbone and Depformer graphs, while `--lm.factory.depformer_cuda_graph_batch_sizes '[]'` disables only Depformer graphs. Seeded requests preserve their per-request RNG draws.
+- Decode feedback stays on device. On CUDA, `--lm.factory.enable_async_decode true` launches the next decode before collecting the previous result and can add 16–21% throughput with identical audio; synchronous decode remains the default. Other platforms, requests needing host token history for sampling, and requests returning log probabilities use the synchronous path. When any request reaches its caller-frame budget, the whole batch uses synchronous decode for that step.
+- On CUDA, Mimi decode graphs cover every batch size up to `min(max_batch_size, num_decode_slots)` and every chunk width up to `max_graph_frames` (the widest ramp entry unless set; `0` turns the graphs off), 8 × 4 = 32 graphs at LM concurrency 16; other shapes and platforms decode eagerly with the same states.
+- On CUDA, streaming Mimi decode uses a dedicated stream. The stage accepts CPU codes only; transfers and decode-slot reset/replay stay on that stream, so waveform collection does not drain queued LM forwards. Other devices retain their normal execution context.
+- On a CUDA platform with resolved `device=cuda` and `page_size=1`, window KV releases expired positions for reuse. Steady decode holds about 3.1k positions (1.5 GiB of BF16 KV) per long request with the default eviction interval; prefill and retract replay can temporarily hold more. CPU stages, other platforms and other page sizes use the full KV pool. Context and request-length limits remain unchanged, and returning slots does not shrink the preallocated pool. Set `--lm.engine.disable_hybrid_swa_memory true` to use the full pool explicitly.
+
+### Ascend NPU
+
+- On Ascend NPU the backbone graph is off by default; pass `--lm.engine.disable_cuda_graph false` to replay the backbone's NPU graph.
+- On Ascend NPU, the platform enables the same Mimi graph ladder; the capture temporarily disables internal formats so Mimi's convolutions run through [aclnn](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/API/aolapi/context/ops-math/op_api_list.md).
 
 ## Tests
 

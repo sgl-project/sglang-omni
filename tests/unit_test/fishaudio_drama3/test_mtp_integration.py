@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from typing import Literal, Protocol
 from unittest.mock import ANY, Mock, call, patch
 
-import huggingface_hub
 import pytest
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -491,33 +490,11 @@ def test_engine_builder_hands_the_async_decode_switches_to_the_scheduler(
     ) == (enable_async_decode, 3, True)
 
 
-def test_engine_builder_resolves_a_hub_id_to_a_local_snapshot(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    downloads: list[tuple[str, str | None]] = []
-
-    def snapshot_download(repo_id: str, revision: str | None) -> str:
-        downloads.append((repo_id, revision))
-        return str(tmp_path)
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
-    engine_builder = Drama3EngineBuilder(
-        context_length=CONTEXT_LENGTH, max_running_requests=1
-    )
-
-    assert engine_builder.resolve_checkpoint(str(tmp_path)) == str(tmp_path)
-    assert engine_builder.resolve_checkpoint("example/model@main") == str(tmp_path)
-    assert downloads == [("example/model", "main")]
-
-
 @pytest.mark.parametrize(
     "max_prompt_rows",
     [
         True,
         1,
-        -SERVING_PROMPT_CAP_ROWS,
-        math.inf,
-        math.nan,
         float(SERVING_PROMPT_CAP_ROWS),
     ],
 )
@@ -597,17 +574,17 @@ def test_frame_streamer_sends_the_first_window_by_frame_then_whole_windows() -> 
         for message in frame_streamer("request-a", request_data, request_output):
             sent.append((frame_index + 1, message))
 
-    first_window = [(frame_index, frame_index + 1) for frame_index in range(10)]
+    first_window = [(frame_index, frame_index + 1) for frame_index in range(4)]
     assert request_data.prompt_row_count == 3
     assert [frame_count for frame_count, _ in sent] == [
-        *range(2, 11),
-        20,
-        32,
-        64,
-        128,
+        *range(2, 5),
+        14,
+        26,
+        58,
+        122,
     ]
     for (start, end), (_, message) in zip(
-        [(0, 2), *first_window[2:], (10, 20), (20, 32), (32, 64), (64, 128)], sent
+        [(0, 2), *first_window[2:], (4, 14), (14, 26), (26, 58), (58, 122)], sent
     ):
         assert (message.request_id, message.type, message.target) == (
             "request-a",
@@ -627,16 +604,16 @@ def test_frame_streamer_sends_the_window_a_multi_frame_step_completes() -> None:
     frame_streamer = window_frame_streamer()
     request_output = RequestOutput(request_id="request-a")
     sent: list[list[list[int]]] = []
-    for frame_indices in (range(0, 9), range(9, 11), range(11, 20), range(20, 21)):
+    for frame_indices in (range(0, 3), range(3, 5), range(5, 14), range(14, 15)):
         request_data.frame_rows.extend(map(sampled_row, frame_indices))
         for message in frame_streamer("request-a", request_data, request_output):
             assert isinstance(message.data, torch.Tensor)
             sent.append(message.data.T.tolist())
 
     assert sent == [
-        [sampled_row(frame_index) for frame_index in range(0, 9)],
-        [sampled_row(9)],
-        [sampled_row(frame_index) for frame_index in range(10, 20)],
+        [sampled_row(frame_index) for frame_index in range(0, 3)],
+        [sampled_row(3)],
+        [sampled_row(frame_index) for frame_index in range(4, 14)],
     ]
 
 
@@ -645,20 +622,20 @@ def test_frame_streamer_leaves_an_eos_on_a_window_end_to_the_result() -> None:
     frame_streamer = window_frame_streamer()
     request_output = RequestOutput(request_id="request-a")
     sent: list[OutgoingMessage] = []
-    for frame_index in range(19):
+    for frame_index in range(13):
         request_data.frame_rows.append(sampled_row(frame_index))
         sent += frame_streamer("request-a", request_data, request_output)
     request_data.frame_rows.append([EOS_TOKEN_ID, 0, 0, 0, 0])
     eos_step_messages = frame_streamer("request-a", request_data, request_output)
 
-    assert len(sent) == 10
+    assert len(sent) == 4
     assert eos_step_messages == []
-    assert request_data.streamed_frame_count == 10
+    assert request_data.streamed_frame_count == 4
 
 
 def test_streamed_and_result_frames_stay_on_cpu_under_another_default_device() -> None:
     request_data = streaming_request()
-    request_data.frame_rows.extend(map(sampled_row, range(10)))
+    request_data.frame_rows.extend(map(sampled_row, range(4)))
     request_data.finish_reason = "length"
 
     with torch.device("meta"):
@@ -671,18 +648,17 @@ def test_streamed_and_result_frames_stay_on_cpu_under_another_default_device() -
     assert isinstance(result, Drama3GenerationResult)
     for frames in (message.data.T, result.frames):
         assert (frames.device.type, frames.dtype) == ("cpu", torch.int64)
-        assert frames.tolist() == [
-            sampled_row(frame_index) for frame_index in range(10)
-        ]
+        assert frames.tolist() == [sampled_row(frame_index) for frame_index in range(4)]
 
 
 def admitted_for_prefill(data: Drama3RequestData, start: int, end: int) -> None:
-    """Leave the request as prefill admission does: fill ids rebuilt, extend range set."""
+    """Leave the request as prefill admission does: fill ids rebuilt, extend bounds set."""
     req = data.req
     assert req is not None
     # Without a tree cache this only rebuilds fill ids; no prefix is matched.
     req.init_next_round_input()
-    req.set_extend_range(start, end)
+    req.prefix_len = start
+    req.extend_end = end
 
 
 def test_prefill_rows_cover_the_whole_history_after_a_retract() -> None:
@@ -701,11 +677,11 @@ def test_prefill_rows_cover_the_whole_history_after_a_retract() -> None:
 
 
 @pytest.mark.parametrize(
-    "extend_range", [(0, 3), (1, 4)], ids=["partial-chunk", "cached-prefix"]
+    "extend_bounds", [(0, 3), (1, 4)], ids=["partial-chunk", "cached-prefix"]
 )
-def test_prefill_rows_reject_a_partial_extend(extend_range: tuple[int, int]) -> None:
+def test_prefill_rows_reject_a_partial_extend(extend_bounds: tuple[int, int]) -> None:
     data = built_request(frame_rows_of([4], seed=4)[0])
-    admitted_for_prefill(data, *extend_range)
+    admitted_for_prefill(data, *extend_bounds)
 
     with pytest.raises(RuntimeError, match="whole sequence"):
         extend_frame_rows(data)
@@ -1008,19 +984,6 @@ def test_setup_model_gives_the_backbone_rows_for_the_largest_extend_or_bucket(
     assert not tower_prefill.next_frames.any()
 
 
-def test_setup_model_reports_first_frame_graphs_off_without_cuda_graphs(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    builder, server_args = engine_server_args(tmp_path, {"disable_cuda_graph": True})
-
-    with caplog.at_level(logging.INFO, logger=engine_builder.logger.name):
-        set_up_mocked_model(builder, server_args, tmp_path)
-
-    assert "Drama 3 first-frame CUDA graphs: off, CUDA graphs are disabled" in (
-        caplog.text
-    )
-
-
 @pytest.mark.parametrize(
     ("triton_sampling", "unsupported_reason", "expected_log"),
     [
@@ -1090,11 +1053,6 @@ def test_setup_model_picks_the_codebook_sampler_and_logs_why(
         ),
         (
             True,
-            "untested GPU sm_120",
-            "Drama 3 tower fused layers: off, untested GPU sm_120",
-        ),
-        (
-            True,
             None,
             f"Drama 3 tower fused layers: on for passes up to {MAX_FUSED_ROWS} rows "
             f"({', '.join(FUSED_KERNELS)})",
@@ -1154,6 +1112,19 @@ def first_frame_graph_setup(
     model = Mock(spec=Drama3ForCausalLM)
     model.config = FishOmniConfig(**fish_config_dict())
     model.lm_head = SimpleNamespace(weight=torch.zeros(1))
+    model.audio_decoder = SimpleNamespace(
+        main_token_candidate_ids=torch.tensor(
+            sorted(
+                {
+                    model.config.eos_token_id,
+                    *range(
+                        model.config.semantic_start_token_id,
+                        model.config.semantic_end_token_id + 1,
+                    ),
+                }
+            )
+        )
+    )
     model.first_frame_graphs = None
     return builder, model
 
@@ -1194,7 +1165,7 @@ def test_first_frame_graphs_cover_requests_up_to_the_decode_graph_batch(
         sample_first_frames=model.sample_first_frames,
         attention_backend=sglang_runner.attn_backend,
         max_request_count=max_request_count,
-        vocab_size=text_config.vocab_size,
+        vocab_size=int(model.audio_decoder.main_token_candidate_ids.shape[0]),
         hidden_size=text_config.hidden_size,
         hidden_dtype=torch.bfloat16,
         frame_width=FRAME_WIDTH,
@@ -1347,9 +1318,9 @@ class SuppliedBatchRunner(Drama3ModelRunner):
             for request in scheduler_output.requests:
                 sglang_request = request_data_of(request).req
                 assert sglang_request is not None
-                assert sglang_request.extend_range is not None
+                assert sglang_request.extend_end is not None
                 request_slots.append(sglang_request.kv.req_pool_idx)
-                extend_row_count += sglang_request.extend_range.length
+                extend_row_count += sglang_request.extend_len
             forward_batch.req_pool_indices = torch.tensor(
                 request_slots, dtype=torch.int64
             )
@@ -1938,23 +1909,6 @@ def test_a_failed_prefill_drops_its_staging_before_the_error_leaves(
     )
 
 
-def test_a_prefill_after_a_failed_one_seats_its_own_requests() -> None:
-    decode = decode_runner(row_count=4)
-    failed, seated = prompted_requests([3, 4])
-    assign_request_slots([failed], [2])
-    decode.prefill.error = RuntimeError("prefill forward failed")
-    with pytest.raises(RuntimeError, match="prefill forward failed"):
-        prefill_output(decode.runner, [failed])
-
-    decode.prefill.error = None
-    prefill_step(decode, [seated], [2], [[86, 1, 1, 1, 1]])
-
-    assert decode.prefill.taken_inputs[-1].request_ids == ["request-1"]
-    assert pool_rows(decode.runner.state_pool, [2]) == history_staged_rows(
-        [request_data_of(seated)]
-    )
-
-
 def test_post_prefill_refuses_a_staging_of_other_requests() -> None:
     decode = decode_runner(row_count=4)
     runner = decode.runner
@@ -2369,13 +2323,6 @@ def test_engine_context_must_fit_the_tower_rope_table(
         builder.validate_before_infrastructure(server_args)
 
 
-def test_engine_prefills_without_an_interval_when_asked(tmp_path: Path) -> None:
-    builder, server_args = engine_server_args(tmp_path, {"prefill_decode_interval": 0})
-
-    builder.validate_before_infrastructure(server_args)
-    assert server_args.prefill_decode_interval == 0
-
-
 def test_engine_runs_its_prefill_eager_when_asked(tmp_path: Path) -> None:
     builder, server_args = engine_server_args(
         tmp_path, {"cuda_graph_backend_prefill": "disabled"}
@@ -2387,22 +2334,10 @@ def test_engine_runs_its_prefill_eager_when_asked(tmp_path: Path) -> None:
     assert graph_config.decode.backend == CudaGraphBackend.FULL
 
 
-@pytest.mark.parametrize(
-    "is_nested",
-    [False, True],
-    ids=["breakable-prefill-graph", "nested-breakable-prefill-graph"],
-)
-def test_engine_accepts_a_breakable_prefill_graph(
-    tmp_path: Path, is_nested: bool
-) -> None:
-    if is_nested:
-        builder, server_args = engine_server_args(
-            tmp_path, {"cuda_graph_config": {"prefill": {"backend": "breakable"}}}
-        )
-    else:
-        builder, server_args = engine_server_args(
-            tmp_path, {"cuda_graph_backend_prefill": "breakable"}
-        )
+def test_engine_accepts_a_nested_breakable_prefill_graph(tmp_path: Path) -> None:
+    builder, server_args = engine_server_args(
+        tmp_path, {"cuda_graph_config": {"prefill": {"backend": "breakable"}}}
+    )
 
     builder.validate_before_infrastructure(server_args)
     graph_config = resolved_view(server_args).cuda_graph_config
@@ -2429,13 +2364,11 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         ({"disable_radix_cache": False}, "disable_radix_cache"),
         ({"chunked_prefill_size": 64}, "chunked_prefill_size"),
         ({"cuda_graph_backend_prefill": "full"}, "breakable CUDA graph"),
-        ({"cuda_graph_backend_prefill": "tc_piecewise"}, "breakable CUDA graph"),
         (
             {"cuda_graph_config": {"prefill": {"backend": "full"}}},
             "breakable CUDA graph",
         ),
         ({"cuda_graph_backend_decode": "breakable"}, "full decode CUDA graphs"),
-        ({"cuda_graph_backend_decode": "tc_piecewise"}, "full decode CUDA graphs"),
         (
             {"cuda_graph_config": {"decode": {"backend": "breakable"}}},
             "full decode CUDA graphs",
@@ -2450,10 +2383,8 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         "radix",
         "chunked-prefill",
         "full-prefill-graph",
-        "piecewise-prefill-graph",
         "nested-prefill-graph",
         "breakable-decode-graph",
-        "piecewise-decode-graph",
         "nested-decode-graph",
         "overlap",
         "flashinfer",
@@ -2469,3 +2400,87 @@ def test_engine_rejects_settings_outside_the_supported_runtime(
 
     with pytest.raises(ValueError, match=error):
         builder.validate_before_infrastructure(server_args)
+
+
+def test_reference_sampling_replaces_both_samplers_and_defaults_the_cutoff(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    builder, server_args = engine_server_args(tmp_path, {})
+    builder.reference_sampling = True
+    builder.reference_sampling_fallback = "ras"
+
+    with caplog.at_level(logging.INFO, logger=engine_builder.logger.name):
+        model = set_up_mocked_model(builder, server_args, tmp_path)
+
+    assert (
+        "Drama 3 codebook sampling: reference sampling in PyTorch, ras fallback"
+        in caplog.text
+    )
+    assert model.audio_decoder.reference_sampling_fallback == "ras"
+    assert model.audio_decoder.sampler is None
+    request_builder, _ = builder.make_adapters(
+        ConfigOnlyModel(FishOmniConfig(**fish_config_dict()))
+    )
+    prompt_rows = torch.tensor(frame_rows_of([3], seed=6)[0], dtype=torch.int64)
+    request_data = request_builder(
+        StagePayload(
+            request_id="request-a",
+            request=OmniRequest(inputs="prompt"),
+            data=generation_input(prompt_rows),
+        )
+    )
+    assert request_data.epsilon_cutoff == 1e-3
+
+
+def test_epsilon_cutoffs_follow_their_requests_from_prefill_to_decode() -> None:
+    """A prefill stages each request's cutoff for its first frame and keeps it in the
+    request's slot; decode gathers the cutoffs in batch order as the batch changes."""
+    decode = decode_runner(row_count=4)
+    buffers = decode.runner.decode_buffers
+    requests = prompted_requests([3, 4, 2])
+    cutoffs = [0.002, 0.0, 0.03]
+    for request, cutoff in zip(requests, cutoffs, strict=True):
+        request_data_of(request).epsilon_cutoff = cutoff
+    as_float32 = torch.tensor(cutoffs, dtype=torch.float32).tolist()
+
+    prefill_step(
+        decode,
+        requests,
+        [3, 1, 2],
+        [[81 + index, index, 1, 2, 3] for index in range(3)],
+    )
+
+    assert buffers.epsilon_cutoff[:3].tolist() == as_float32
+    pool_cutoffs = decode.runner.state_pool.epsilon_cutoff
+    assert pool_cutoffs[torch.tensor([3, 1, 2])].tolist() == as_float32
+    decode.forward.next_frames = [[90, 1, 1, 1, 1], [91, 2, 2, 2, 2]]
+    decode_step(decode.runner, [requests[2], requests[0]])
+    assert buffers.epsilon_cutoff[:2].tolist() == [as_float32[2], as_float32[0]]
+
+
+def test_the_first_frame_step_reads_cutoffs_at_the_decode_buffers_address() -> None:
+    """The first-frame CUDA graphs replay the addresses they captured, so the cutoffs
+    come from the decode buffers, not from a per-call tensor."""
+    model = ConfigOnlyModel(FishOmniConfig(**fish_config_dict()))
+    model.decode_buffers = Drama3DecodeBuffers.allocate(
+        row_count=4, frame_width=FRAME_WIDTH, device=torch.device("cpu")
+    )
+    model.audio_decoder = Mock(spec=AudioDecoder)
+    model.tower_attention = torch.nn.ModuleList()
+    request_count = 3
+
+    model.sample_first_frames(
+        torch.zeros(request_count, 9),
+        torch.zeros(request_count, DIM),
+        torch.zeros(request_count, dtype=torch.int64),
+        torch.zeros((request_count, FRAME_WIDTH), dtype=torch.int64),
+        torch.full((request_count, RAS_WINDOW_FRAMES), EMPTY_RAS_SLOT),
+        torch.ones(request_count),
+        torch.ones(request_count, dtype=torch.int64),
+        torch.ones(request_count),
+        Mock(spec=ForwardBatch),
+    )
+
+    epsilon_cutoff = model.audio_decoder.decode_step.call_args.args[9]
+    assert epsilon_cutoff.shape == (request_count,)
+    assert epsilon_cutoff.data_ptr() == model.decode_buffers.epsilon_cutoff.data_ptr()

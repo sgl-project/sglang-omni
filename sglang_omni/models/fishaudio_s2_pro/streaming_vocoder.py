@@ -21,6 +21,7 @@ from sglang_omni.scheduling.audio_stream import (
 )
 from sglang_omni.scheduling.audio_vocoder import StreamingVocoderScheduler
 from sglang_omni.scheduling.pipeline_state import build_usage
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 __all__ = [
     "S2ProVocoderScheduler",
@@ -115,16 +116,20 @@ class S2ProVocoderScheduler(StreamingVocoderScheduler):
         audio_np: torch.Tensor,
     ) -> StagePayload:
         usage = payload.data.get("usage") or build_usage(state)
-        state.audio_samples = audio_np
-        state.sample_rate = self.codec.sample_rate
-        data = state.to_dict()
+        data = audio_waveform_payload(
+            audio_np,
+            sample_rate=self.codec.sample_rate,
+            modality="audio",
+            source_hint="Fish S2-Pro",
+        )
         if usage is not None:
             data["usage"] = usage
         else:
             pass
-        data["audio_data"] = audio_np.tolist()
-        data["sample_rate"] = self.codec.sample_rate
-        data["modality"] = "audio"
+        if state.finish_reason is not None:
+            data["finish_reason"] = state.finish_reason
+        else:
+            pass
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,

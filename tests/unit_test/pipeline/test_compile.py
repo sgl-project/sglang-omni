@@ -481,50 +481,13 @@ def test_runner_specs_expose_process_total_in_construction_order(
     ] == pytest.approx(expected_fractions)
 
 
-def test_same_process_stages_compile_to_local_edges() -> None:
-    config = PipelineConfig(
-        model_path="model",
-        stages=[
-            stage("preprocess", next="encoder", process="frontend"),
-            stage("encoder", next="decode", gpu=0, process="frontend"),
-            stage("decode", terminal=True, process="decode"),
-        ],
-    )
-    prep = prepare_pipeline_runtime(config)
-
-    assert [stage_cfg.name for stage_cfg in prep.stages_cfg] == [
-        "preprocess",
-        "encoder",
-        "decode",
-    ]
-    assert prep.entry_stage == "preprocess"
-    assert prep.process_plan.stage_to_process["preprocess"] == (
-        prep.process_plan.stage_to_process["encoder"]
-    )
-    assert prep.process_plan.stage_to_process["decode"] != (
-        prep.process_plan.stage_to_process["encoder"]
-    )
-
-    groups = build_stage_groups(
-        config,
-        ctx=FakeMpContext(),
-        stages_cfg=prep.stages_cfg,
-        endpoints=prep.endpoints,
-        placement_plan=prep.placement_plan,
-        process_plan=prep.process_plan,
-    )
-    specs = {spec.stage_name: spec for group in groups for spec in group.specs}
-
-    assert specs["preprocess"].same_process_targets == {"encoder"}
-    assert specs["encoder"].same_process_targets == set()
-
-
 def test_runner_specs_wire_same_process_stream_targets() -> None:
     config = PipelineConfig(
         model_path="model",
         stages=[
-            stage("thinker", next="decode", stream_to=["decode"]),
+            stage("thinker", next="decode", stream_to=["decode", "monitor"]),
             stage("decode", terminal=True, can_accept_stream_before_payload=True),
+            stage("monitor", terminal=True, can_accept_stream_before_payload=True),
         ],
     )
     prep = prepare_pipeline_runtime(config)
@@ -538,7 +501,7 @@ def test_runner_specs_wire_same_process_stream_targets() -> None:
     )
     specs = {spec.stage_name: spec for group in groups for spec in group.specs}
 
-    assert specs["thinker"].same_process_targets == {"decode"}
+    assert specs["thinker"].same_process_targets == {"decode", "monitor"}
 
 
 def test_runner_specs_wire_direct_cuda_ipc_payload_disable_flag() -> None:

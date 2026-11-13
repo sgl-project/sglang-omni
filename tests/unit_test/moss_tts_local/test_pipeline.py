@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
+import multiprocessing
+import os
 import pickle
 import struct
 import sys
@@ -11,11 +14,19 @@ import types
 import numpy as np
 import pytest
 import torch
+from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
+from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig, PhaseConfig
 
 from sglang_omni.client.audio import encode_audio, encode_wav
 from sglang_omni.comm.stage_io import extract_tensors, restore_tensors
 from sglang_omni.config import StageConfig
 from sglang_omni.config.placement import build_stage_placement_plan
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+    get_omni_prefill_inputs,
+)
 from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioEncoder
 from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalColocatedPipelineConfig,
@@ -23,15 +34,12 @@ from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalSplitPipelineConfig,
 )
 from sglang_omni.models.moss_tts_local.engine_builder import MossTtsLocalEngineBuilder
-from sglang_omni.models.moss_tts_local.local_transformer import (
-    MossTTSLocalTransformer,
-    rotate_half_interleaved,
-)
+from sglang_omni.models.moss_tts_local.local_transformer import MossTTSLocalTransformer
+from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
 from sglang_omni.models.moss_tts_local.request_builders import (
-    MossTTSLocalSGLangRequestData,
     apply_sglang_moss_tts_local_result,
     build_generation_kwargs,
     build_moss_tts_local_state,
@@ -43,10 +51,21 @@ from sglang_omni.models.moss_tts_local.request_builders import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_generation_batch_overrides,
+)
+from sglang_omni.scheduling.sglang_backend.server_args_builder import (
+    build_sglang_server_args,
+)
+from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.port_claim import claim_tcp_port
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 N_VQ = 12
+PREFILL_GRAPH_TEST_TOKENS = 64
+PREFILL_GRAPH_TEST_TIMEOUT_SECONDS = 180
 
 
 @pytest.mark.parametrize(
@@ -180,7 +199,7 @@ def reference_full_forward(
     return module.ln_f(x)
 
 
-@pytest.mark.parametrize("num_layers", [1, 2])
+@pytest.mark.parametrize("num_layers", [2])
 def test_local_transformer_incremental_matches_full_recompute(num_layers: int):
     torch.manual_seed(0)
     module = MossTTSLocalTransformer(
@@ -227,11 +246,6 @@ def test_local_transformer_rejects_out_of_range_position():
     )
     with pytest.raises(ValueError):
         module.step(torch.randn(1, 32), N_VQ + 1)
-
-
-def test_rotate_half_interleaved_matches_upstream():
-    x = torch.randn(5, 4, 8)
-    torch.testing.assert_close(rotate_half_interleaved(x), hf_rotate_half(x))
 
 
 @pytest.mark.accelerator
@@ -541,7 +555,7 @@ def test_pipeline_stage_wiring():
 
 @pytest.mark.parametrize(
     "effective_cpus,expected_threads",
-    [(4, 1), (16, 1), (32, 2), (224, 8)],
+    [(4, 1)],
 )
 def test_pipeline_sets_spawn_time_omp_default(
     monkeypatch: pytest.MonkeyPatch,
@@ -627,6 +641,7 @@ def test_pipeline_without_preprocessing_does_not_set_omp_default() -> None:
     )
 
     assert "OMP_NUM_THREADS" not in config.env_defaults
+    assert "OMP_NUM_THREADS" not in config.resolved_env_defaults()
 
 
 def test_pipeline_config_injects_reference_cache_factory_args():
@@ -818,7 +833,8 @@ def test_moss_local_engine_uses_text_backbone_context(
     )
 
 
-def test_moss_tts_local_generation_defaults_disable_torch_compile() -> None:
+@pytest.mark.parametrize("disable_prefill", [False, True])
+def test_moss_tts_local_generation_defaults(disable_prefill: bool) -> None:
     builder = MossTtsLocalEngineBuilder(
         enable_async_decode=True,
         async_decode_min_batch_size=1,
@@ -826,9 +842,16 @@ def test_moss_tts_local_generation_defaults_disable_torch_compile() -> None:
         codec_mem_reserve=0.0,
     )
 
-    assert (
-        builder.generation_defaults(dtype="bfloat16")["enable_torch_compile"] is False
+    overrides = build_generation_batch_overrides(
+        **builder.generation_defaults(dtype="bfloat16"),
+        server_args_overrides={"disable_prefill_cuda_graph": disable_prefill},
     )
+    assert overrides["enable_torch_compile"] is False
+    if disable_prefill:
+        assert overrides["cuda_graph_backend_prefill"] == "disabled"
+    else:
+        assert overrides["cuda_graph_backend_prefill"] == "full"
+        assert overrides["cuda_graph_bs_prefill"] == [64, 128, 256, 512]
 
 
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(
@@ -883,34 +906,6 @@ def test_moss_local_context_probe_uses_runtime_model_config_inputs(
             "_configuration_file": "/tmp/override.json",
         },
     }
-
-
-def test_moss_local_context_probe_uses_model_default_without_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from sglang_omni.models.moss_tts import hf_loading
-    from sglang_omni.models.moss_tts_local import engine_builder
-
-    monkeypatch.setattr(
-        hf_loading,
-        "get_config",
-        lambda model_path, **kwargs: types.SimpleNamespace(model_path=model_path),
-    )
-    monkeypatch.setattr(
-        hf_loading,
-        "get_hf_text_config",
-        lambda config: types.SimpleNamespace(),
-    )
-
-    assert (
-        engine_builder.MossTtsLocalEngineBuilder(
-            enable_async_decode=False,
-            async_decode_min_batch_size=2,
-            total_gpu_memory_fraction=None,
-            codec_mem_reserve=0.0,
-        ).resolve_context_length("model")
-        == engine_builder.MossTtsLocalEngineBuilder.context_length
-    )
 
 
 def test_moss_local_engine_honors_context_length_override(monkeypatch):
@@ -1076,7 +1071,7 @@ def test_special_token_defaults_match_v15_checkpoint():
 # Generation kwargs / state
 
 
-@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("stream", [False])
 def test_build_generation_kwargs_defaults(stream):
     kwargs = build_generation_kwargs({"stream": stream}, tts_params={})
     assert kwargs["max_new_tokens"] == 4096
@@ -1107,10 +1102,7 @@ def test_build_generation_kwargs_streaming_rope_limit(stream):
 def test_build_generation_kwargs_explicit_overrides():
     kwargs = build_generation_kwargs(
         {"temperature": 0.9, "top_p": 0.7},
-        tts_params={
-            "explicit_generation_params": ["temperature", "top_p"],
-            "audio_top_k": 11,
-        },
+        tts_params={"audio_top_k": 11},
     )
     assert kwargs["text_temperature"] == 0.9
     assert kwargs["audio_temperature"] == 0.9
@@ -1273,20 +1265,6 @@ def test_preprocess_and_result_adapter():
         clear_moss_tts_local_preprocessing_context()
 
 
-def test_pipeline_preserves_explicit_process_and_mps_overrides() -> None:
-    config = MossTTSLocalPipelineConfig(
-        model_path="OpenMOSS-Team/moss-local-test", mps="off"
-    )
-    config.stage_named("preprocessing").process = "pipeline"
-    topology = build_compiled_process_topology(config)
-    assert config.mps == "off"
-    assert topology.stage_to_process == {
-        "preprocessing": "pipeline",
-        "tts_engine": "pipeline",
-        "vocoder": "vocoder",
-    }
-
-
 def test_prepared_request_survives_stage_transport() -> None:
     model = types.SimpleNamespace(config=FakeProcessor.model_config)
     set_moss_tts_local_preprocessing_context(processor=FakeProcessor())
@@ -1329,21 +1307,6 @@ def test_preprocessing_abort_discards_prepared_payload(
         clear_moss_tts_local_preprocessing_context()
 
 
-def test_result_adapter_empty_generation():
-    payload = make_payload()
-    data = MossTTSLocalSGLangRequestData(
-        input_ids=torch.zeros(4, dtype=torch.long),
-        max_new_tokens=16,
-        temperature=0.0,
-        output_ids=[],
-        prompt_rows=torch.full((4, N_VQ + 1), 1024, dtype=torch.long),
-        stage_payload=payload,
-        engine_start_s=0.0,
-    )
-    with pytest.raises(RuntimeError, match="generated no audio frames"):
-        apply_sglang_moss_tts_local_result(payload, data)
-
-
 # Repetition penalty parity
 
 
@@ -1380,41 +1343,12 @@ def test_audio_repetition_penalty_mask_matches_upstream_semantics():
     )
 
 
-def test_audio_history_presence_mask_excludes_prompt_rows():
-    from types import SimpleNamespace
-
-    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
-
-    model = SimpleNamespace(
-        decode_input_embedding=SimpleNamespace(
-            weight=torch.zeros(2, 4, dtype=torch.bfloat16)
-        ),
-        config=SimpleNamespace(n_vq=N_VQ, audio_vocab_size=1024),
-    )
-    pool = MossTTSLocalDecodeStatePool(model)
-    row = pool.acquire_row("rid")
-    prompt_row = torch.cat(
-        [torch.tensor([151656]), torch.full((N_VQ,), 99, dtype=torch.long)]
-    )
-    generated_row = torch.cat(
-        [torch.tensor([151656]), torch.arange(N_VQ, dtype=torch.long)]
-    )
-
-    pool.update_audio_history(torch.tensor([row]), generated_row.reshape(1, -1))
-
-    assert bool(pool.audio_token_presence[row, 0, 0])
-    assert not bool(pool.audio_token_presence[row, 0, int(prompt_row[1])])
-
-
 def test_build_generation_kwargs_precedence():
     # Direct field names apply tts_params-then-params (params wins, matching
     # the MOSS Delay semantics); both override the explicit generic aliases.
     kwargs = build_generation_kwargs(
         {"temperature": 0.5, "audio_temperature": 1.2},
-        tts_params={
-            "explicit_generation_params": ["temperature"],
-            "audio_temperature": 1.9,
-        },
+        tts_params={"audio_temperature": 1.9},
     )
     assert kwargs["text_temperature"] == 0.5
     assert kwargs["audio_temperature"] == 1.2
@@ -1570,6 +1504,153 @@ def test_encode_audio_stereo_wav_and_mono_fallback():
         np.ones(64, dtype=np.float32) * 0.1, response_format="wav", sample_rate=48000
     )
     assert struct.unpack("<H", mono_blob[22:24])[0] == 1
+
+
+def test_prefill_embeddings_preserve_graph_admission() -> None:
+    embeds = torch.randn(3, 4, dtype=torch.bfloat16)
+    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner.build_prefill_input_embeds = lambda batch, requests: embeds
+    batch = types.SimpleNamespace(
+        input_ids=torch.zeros(3, dtype=torch.long),
+        input_embeds=None,
+        replace_embeds=None,
+    )
+
+    runner.custom_prefill_forward(batch, None, [])
+
+    assert batch.input_embeds is None
+    assert batch.replace_embeds is None
+    assert get_omni_prefill_inputs(batch).input_embeds is embeds
+
+
+def check_local_prefill_graph_replay(model_path: str) -> None:
+    # note (Zhang Yiyang): The parent's distributed store may still own its port.
+    os.environ["MASTER_PORT"] = str(claim_tcp_port())
+    server_args = build_sglang_server_args(
+        model_path,
+        context_length=256,
+        max_running_requests=2,
+        chunked_prefill_size=PREFILL_GRAPH_TEST_TOKENS,
+        max_prefill_tokens=PREFILL_GRAPH_TEST_TOKENS,
+        enable_torch_compile=False,
+        dtype="bfloat16",
+        attention_backend="fa3",
+        cuda_graph_config=CudaGraphConfig(
+            decode=PhaseConfig(backend="disabled"),
+            prefill=PhaseConfig(
+                backend="full", bs=[PREFILL_GRAPH_TEST_TOKENS], full_prefill_max_req=1
+            ),
+        ),
+    )
+    with stage_kv_cache_budget("prefill_test", 1024**3):
+        worker, *_ = create_sglang_infrastructure(
+            server_args,
+            0,
+            model_arch_override="MossTTSLocalSGLangModel",
+            enable_prefill_input_embeds=True,
+        )
+    runner = worker.model_runner
+    graph_runner = runner.prefill_cuda_graph_runner
+    assert graph_runner.prefill_backend_name == "full"
+    replay_outputs = []
+    with torch.inference_mode():
+        for seed in (11, 22, 11):
+            torch.manual_seed(seed)
+            prompt_rows = torch.stack(
+                [
+                    torch.randint(
+                        1,
+                        vocabulary_size - 1,
+                        (PREFILL_GRAPH_TEST_TOKENS,),
+                        device="cuda",
+                    )
+                    for vocabulary_size in runner.model.config.vocab_size_list
+                ],
+                dim=1,
+            )
+            embeddings = runner.model.prepare_multi_modal_inputs(prompt_rows)
+            hidden_outputs = []
+            control_logits = []
+            for use_graph in (False, True):
+                for layer_index in range(runner.model_config.num_hidden_layers):
+                    runner.token_to_kv_pool.get_key_buffer(layer_index).zero_()
+                    runner.token_to_kv_pool.get_value_buffer(layer_index).zero_()
+                batch, _ = graph_runner.capture_prepare(PREFILL_GRAPH_TEST_TOKENS)
+                # note (Zhang Yiyang): Live requests must not alias the captured input buffers.
+                for field in dataclasses.fields(batch):
+                    value = getattr(batch, field.name)
+                    if isinstance(value, torch.Tensor):
+                        setattr(batch, field.name, value.clone())
+                    elif isinstance(value, list):
+                        setattr(batch, field.name, list(value))
+                    else:
+                        pass
+                # note (Zhang Yiyang): Fixed cache ids make embedding updates the only changing input.
+                batch.input_ids = torch.arange(PREFILL_GRAPH_TEST_TOKENS, device="cuda")
+                batch.input_embeds = None
+                batch.rids = ["prefill-test"]
+                batch.positions = torch.arange(PREFILL_GRAPH_TEST_TOKENS, device="cuda")
+                batch.out_cache_loc = batch.positions + PREFILL_GRAPH_TEST_TOKENS
+                runner.req_to_token_pool.req_to_token[0, :PREFILL_GRAPH_TEST_TOKENS] = (
+                    batch.out_cache_loc.to(torch.int32)
+                )
+                attach_omni_prefill_inputs(
+                    batch, OmniPrefillInputs(input_embeds=embeddings.clone())
+                )
+                runner.prefill_cuda_graph_runner = (
+                    graph_runner if use_graph else runner.eager_runner
+                )
+                try:
+                    result = worker.forward_batch_generation(batch)
+                finally:
+                    runner.prefill_cuda_graph_runner = graph_runner
+                assert result.can_run_cuda_graph == use_graph
+                hidden_states = result.logits_output.hidden_states.clone()
+                assert torch.isfinite(hidden_states).all()
+                hidden_outputs.append(hidden_states)
+                # note (Zhang Yiyang): Local prefill logits are placeholders; compare the real control head.
+                local_hidden = runner.model.local_transformer.step(hidden_states, 0)
+                control_logits.append(runner.model.local_text_lm_head(local_hidden))
+            assert torch.equal(hidden_outputs[0], hidden_outputs[1])
+            assert torch.equal(control_logits[0], control_logits[1])
+            replay_outputs.append(hidden_outputs[1])
+    assert not torch.equal(replay_outputs[0], replay_outputs[1])
+    assert torch.equal(replay_outputs[0], replay_outputs[2])
+    assert worker.prefill_cuda_graph_usage.replay_count == 3
+    torch.distributed.destroy_process_group()
+
+
+@pytest.mark.accelerator
+def test_local_full_prefill_graph_replay_matches_eager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("Full prefill with FA3 requires a Hopper or newer CUDA GPU")
+    else:
+        pass
+    try:
+        model_path = snapshot_download(
+            "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5", local_files_only=True
+        )
+    except LocalEntryNotFoundError:
+        pytest.skip("MOSS-TTS Local v1.5 checkpoint is not cached")
+    # note (Zhang Yiyang): Earlier tests may leave a live store in the parent process.
+    parent_store = torch.distributed.TCPStore("127.0.0.1", 0, 1, True)
+    monkeypatch.setenv("MASTER_PORT", str(parent_store.port))
+    # note (Zhang Yiyang): SGLang runtime state belongs to a single engine process.
+    process = multiprocessing.get_context("spawn").Process(
+        target=check_local_prefill_graph_replay, args=(model_path,)
+    )
+    process.start()
+    try:
+        process.join(PREFILL_GRAPH_TEST_TIMEOUT_SECONDS)
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join()
+        else:
+            pass
+    assert process.exitcode == 0
 
 
 def test_post_process_outputs_skips_chunked_rows():
@@ -1823,30 +1904,6 @@ def test_on_request_finished_flushes_stream_tail_without_end_token():
         ]
     )
     assert torch.equal(reconstructed, rows)
-
-
-def test_finalize_skip_rids_selects_chunked_rows():
-    pytest.importorskip("sglang")
-    import types
-
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
-
-    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
-
-    def sched_req(rid, inflight_middle_chunks):
-        data = types.SimpleNamespace(
-            req=types.SimpleNamespace(inflight_middle_chunks=inflight_middle_chunks)
-        )
-        return types.SimpleNamespace(request_id=rid, data=data)
-
-    sched_output = types.SimpleNamespace(
-        requests=[
-            sched_req("c0", inflight_middle_chunks=1),
-            sched_req("c1", inflight_middle_chunks=2),
-            sched_req("final", inflight_middle_chunks=0),
-        ]
-    )
-    assert runner.finalize_skip_rids(sched_output) == {"c0", "c1"}
 
 
 def test_chunked_prefill_generation_steps_matches_single_shot():

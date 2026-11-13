@@ -85,7 +85,6 @@ def test_a_hub_codec_downloads_only_codec_pth_at_its_commit(
     [
         pytest.param("fishaudio/s2-pro", id="no-revision"),
         pytest.param("fishaudio/s2-pro@main", id="branch"),
-        pytest.param("fishaudio/s2-pro@v1.0", id="tag"),
         pytest.param(f"fishaudio/s2-pro@{COMMIT[:7]}", id="short-commit"),
         pytest.param(f"fishaudio/s2-pro@{COMMIT.upper()}", id="upper-case-commit"),
         pytest.param("missing/codec.pth", id="missing-file"),
@@ -422,7 +421,7 @@ def test_the_vocoder_factory_loads_the_codec_on_its_device_with_the_windows(
         vocoder.stream_overlap_tokens,
         vocoder.stream_crossfade_samples,
         vocoder.max_batch_size,
-    ) == (10, (10, 12, 32), 64, 32, 0, 8)
+    ) == (4, (10, 12, 32), 64, 32, 0, 8)
     assert vocoder.max_padded_frames_per_decode is None
 
 

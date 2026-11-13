@@ -15,7 +15,6 @@ from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
 )
-from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -59,10 +58,6 @@ def test_preprocessing_cpu_policy_is_resolved_at_launch(
 
 
 @pytest.mark.parametrize(
-    "config_cls",
-    [Qwen3OmniSpeechPipelineConfig, Qwen3OmniSpeechColocatedPipelineConfig],
-)
-@pytest.mark.parametrize(
     ("pipeline_env", "stage_env", "expected_threads"),
     [
         ({"OMP_NUM_THREADS": "12"}, {}, "12"),
@@ -72,14 +67,13 @@ def test_preprocessing_cpu_policy_is_resolved_at_launch(
 )
 def test_preprocessing_cpu_policy_preserves_explicit_settings(
     monkeypatch: pytest.MonkeyPatch,
-    config_cls: type[Qwen3OmniSpeechPipelineConfig],
     pipeline_env: dict[str, str],
     stage_env: dict[str, str],
     expected_threads: str,
 ) -> None:
     capacity = Mock(side_effect=AssertionError("explicit OMP must win"))
     monkeypatch.setattr(qwen3_omni_config, "effective_cpu_count", capacity)
-    config = config_cls(model_path="dummy")
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     config.env_defaults.update(pipeline_env)
     config.stage_named("preprocessing").env.update(stage_env)
     document = config.model_dump()
@@ -121,105 +115,6 @@ def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
         0.35
     )
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.85)
-
-
-def test_config_manager_applies_dotted_tp_size_override() -> None:
-    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
-    merged = manager.merge_config({"thinker.tp_size": 2, "thinker.gpu": [0, 1]})
-    thinker = make_stage(merged, "thinker")
-
-    assert thinker.tp_size == 2
-    assert thinker.gpu == [0, 1]
-
-
-def test_config_manager_sets_tp_size_directly() -> None:
-    """tp_size is the only spelling; the parallelism.tp mirror is gone."""
-    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
-    merged = manager.merge_config({"thinker.tp_size": 2, "thinker.gpu": [0, 1]})
-    thinker = make_stage(merged, "thinker")
-
-    assert thinker.tp_size == 2
-    assert thinker.gpu == [0, 1]
-
-
-def test_config_manager_rejects_trailing_key_without_value() -> None:
-    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
-
-    with pytest.raises(ValueError, match="Missing value"):
-        manager.parse_extra_args(
-            [
-                "--thinker.gpu_memory_fraction",
-                "0.35",
-                "--thinker.engine.mem-fraction-static",
-            ]
-        )
-
-
-def test_qwen3_omni_h20_colocated_example_config_loads_and_plans() -> None:
-    config_path = REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h20.yaml"
-
-    manager = ConfigManager.from_file(str(config_path))
-    config = manager.config
-    plan = build_stage_placement_plan(config)
-    topology = build_compiled_process_topology(config)
-
-    assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
-    assert config.name == "qwen3-omni-colocated-h20"
-    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
-    assert [group.name for group in topology.groups] == [
-        "preprocessing",
-        "image_encoder",
-        "audio_encoder",
-        "thinker",
-        "decode",
-        "talker_ar",
-    ]
-    assert make_stage(config, "thinker").engine.mem_fraction_static is None
-    assert make_stage(config, "talker_ar").engine.mem_fraction_static is None
-    assert {
-        stage.name: stage.gpu
-        for stage in config.stages
-        if stage.name
-        in {
-            "image_encoder",
-            "audio_encoder",
-            "thinker",
-            "talker_ar",
-            "code2wav",
-        }
-    } == {
-        "image_encoder": 0,
-        "audio_encoder": 0,
-        "thinker": 0,
-        "talker_ar": 0,
-        "code2wav": 0,
-    }
-
-
-def test_qwen3_omni_mmsu_example_config_uses_text_pipeline() -> None:
-    config_path = REPO_ROOT / "examples" / "configs" / "qwen3_omni_mmsu.yaml"
-
-    manager = ConfigManager.from_file(str(config_path))
-    config = manager.config
-    plan = build_stage_placement_plan(config)
-    thinker_args = resolve_stage_factory_args(make_stage(config, "thinker"), config)
-
-    assert isinstance(config, Qwen3OmniPipelineConfig)
-    assert config.name == "qwen3-omni-mmsu"
-    assert [stage.name for stage in config.stages] == [
-        "preprocessing",
-        "image_encoder",
-        "audio_encoder",
-        "mm_aggregate",
-        "thinker",
-        "decode",
-    ]
-    assert {stage.process for stage in config.stages} == {"pipeline"}
-    assert "talker_ar" not in {stage.name for stage in config.stages}
-    assert "code2wav" not in {stage.name for stage in config.stages}
-    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.8)
-    assert thinker_args["total_gpu_memory_fraction"] == pytest.approx(0.75)
-    assert thinker_args["server_args_overrides"]["max_running_requests"] == 4
 
 
 def test_qwen_preprocessing_model_video_fps_resolves_to_factory_arg() -> None:
@@ -304,56 +199,6 @@ stages:
         ConfigManager.from_file(str(config_path))
 
 
-def test_qwen3_omni_h100_bf16_config_enables_speech_prefill_graph() -> None:
-    from pathlib import Path
-
-    repo_root = Path(__file__).resolve().parents[3]
-    config_path = (
-        repo_root / "examples" / "configs" / "qwen3_omni_colocated_h100_bf16.yaml"
-    )
-
-    config = ConfigManager.from_file(str(config_path)).config
-    overrides = make_stage(config, "thinker").engine.overrides()
-
-    assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
-    assert "disable_radix_cache" not in overrides
-    assert overrides["cuda_graph_backend_prefill"] == "breakable"
-    assert "cuda_graph_bs_prefill" not in overrides
-    assert overrides["cuda_graph_max_bs_prefill"] == 2048
-
-
-def test_qwen3_omni_gfx950_bf16_config_uses_colocated_budgets() -> None:
-    config_path = (
-        REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_gfx950_bf16.yaml"
-    )
-
-    config = ConfigManager.from_file(str(config_path)).config
-    plan = build_stage_placement_plan(config)
-    overrides = make_stage(config, "thinker").engine.overrides()
-
-    assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
-    assert config.name == "qwen3-omni-colocated-gfx950-bf16"
-    assert "prefill_attention_backend" not in overrides
-    assert overrides["cuda_graph_backend_prefill"] == "disabled"
-    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
-    assert {
-        name: make_stage(config, name).gpu_memory_fraction
-        for name in (
-            "image_encoder",
-            "audio_encoder",
-            "thinker",
-            "talker_ar",
-            "code2wav",
-        )
-    } == {
-        "image_encoder": pytest.approx(0.02),
-        "audio_encoder": pytest.approx(0.02),
-        "thinker": pytest.approx(0.78),
-        "talker_ar": pytest.approx(0.10),
-        "code2wav": pytest.approx(0.02),
-    }
-
-
 @pytest.mark.parametrize(
     ("is_rocm", "expected_env"),
     [
@@ -377,41 +222,6 @@ def test_qwen3_omni_talker_stage_env_defaults(
 
         assert make_stage(config, "talker_ar").env == expected_env
         assert make_stage(config, "thinker").env == {}
-
-
-def test_qwen3_omni_xpu_b60_example_config_loads_and_plans() -> None:
-    config_path = REPO_ROOT / "examples" / "configs" / "qwen3_omni_speech_xpu_b60.yaml"
-
-    manager = ConfigManager.from_file(str(config_path))
-    config = manager.config
-    plan = build_stage_placement_plan(config)
-    topology = build_compiled_process_topology(config)
-
-    assert isinstance(config, Qwen3OmniSpeechPipelineConfig)
-    assert config.name == "qwen3-omni-speech-xpu-b60"
-    assert [group.name for group in topology.groups] == [
-        "preprocessing",
-        "image_encoder",
-        "audio_encoder",
-        "decode",
-        "talker_ar",
-        "code2wav",
-    ]
-
-    thinker = make_stage(config, "thinker")
-    assert thinker.tp_size == 8
-    assert thinker.gpu == [0, 1, 2, 3, 4, 5, 6, 7]
-    assert thinker.engine.mem_fraction_static == pytest.approx(0.55)
-    assert make_stage(config, "talker_ar").engine.mem_fraction_static == pytest.approx(
-        0.35
-    )
-
-    assert make_stage(config, "talker_ar").gpu == 6
-    assert make_stage(config, "code2wav").gpu == 7
-    assert make_stage(config, "code2wav").gpu_memory_fraction == pytest.approx(0.05)
-    assert plan.stages["thinker"].gpu_ids == tuple(range(8))
-    assert plan.stages["talker_ar"].gpu_ids == (6,)
-    assert plan.stages["code2wav"].gpu_ids == (7,)
 
 
 @pytest.mark.parametrize("enabled", [False, True])

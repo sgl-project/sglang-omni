@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Compiles the sampler's torch.compile'd functions while a model loads, in the forms
-its default requests reach in the default no-grad mode."""
+its default requests reach in the default no-grad mode, and loads FlashInfer's
+sampling module when it draws those requests."""
 
 from __future__ import annotations
 
@@ -11,6 +12,13 @@ from sglang.srt.layers.sampler import multinomial_with_seed
 from sglang.srt.sampling.penaltylib.repetition_penalty import apply_scaling_penalties
 from sglang.srt.utils import DynamicGradMode
 
+from sglang_omni.platforms import current_platform
+
+if current_platform.is_cuda():
+    from flashinfer.sampling import top_k_top_p_sampling_from_probs
+else:
+    pass
+
 
 @dataclass(frozen=True, kw_only=True)
 class SamplerCompileForms:
@@ -18,6 +26,7 @@ class SamplerCompileForms:
     vocab_size: int
     seeded_log_probability_dtype: torch.dtype | None = None
     penalized_logits_dtype: torch.dtype | None = None
+    should_load_flashinfer_sampling: bool = False
 
 
 def compile_sampler_functions(forms: SamplerCompileForms) -> None:
@@ -53,3 +62,15 @@ def compile_sampler_functions(forms: SamplerCompileForms) -> None:
                 )
             else:
                 pass
+    if forms.should_load_flashinfer_sampling:
+        # note (ratish): the first call builds or loads FlashInfer's sampling module.
+        top_k_top_p_sampling_from_probs(
+            probs=torch.full(
+                (1, forms.vocab_size), 1 / forms.vocab_size, device=forms.device
+            ),
+            top_k=1,
+            top_p=1.0,
+            filter_apply_order="joint",
+        )
+    else:
+        pass

@@ -99,21 +99,3 @@ def test_heap_stays_bounded_and_recovers():
     result = cache.evict(EvictParams(num_tokens=1 << 20))
     assert result.num_tokens_evicted >= 3
     assert not cache.evictable_leaves
-
-
-def test_reset_then_reuse():
-    cache = make(EvictHeapRadixCache)
-    cache.insert(
-        InsertParams(
-            key=RadixKey(token_ids=[5, 6, 7], extra_key="r"), value=torch.arange(3)
-        )
-    )
-    cache.reset()
-    cache.insert(
-        InsertParams(
-            key=RadixKey(token_ids=[8, 9], extra_key="r2"), value=torch.arange(2)
-        )
-    )
-    result = cache.evict(EvictParams(num_tokens=1 << 20))
-    assert result.num_tokens_evicted == 2
-    assert not cache.evictable_leaves

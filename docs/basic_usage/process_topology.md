@@ -81,6 +81,8 @@ processes:
 overrides the placement of every GPU stage inside that replica. CPU stages are
 unaffected and stay on the host.
 
+Configuration sources first resolve each field in precedence order: model defaults, then YAML, then CLI. Replica expansion then applies a separate placement rule: the final `replica_devices` overrides every non-CPU stage GPU in that process, even if the stage GPU came from CLI. This also applies to a single replica. Expansion logs one warning per affected logical stage with its declared GPU and all per-replica assignments. The resolved source configuration remains unchanged; expanded stage copies carry the effective devices. Remove `replica_devices` to use stage GPU assignments instead. This placement rule does not make other related settings override each other.
+
 A GPU Process with `num_replicas > 1` must declare `replica_devices`: `N`
 device ids for a non-TP Process, `N x T` for a Process with TP size `T`. Every
 GPU stage factory declares `device: str | None = None` and
@@ -219,7 +221,7 @@ processes:
 
 Resolved layout:
 
-```
+```text
 GPU 0: image_encoder + audio_encoder + thinker
 GPU 1: talker_ar@r0 + code2wav@r0
 GPU 2: talker_ar@r1 + code2wav@r1

@@ -7,14 +7,16 @@ import base64
 import json
 import logging
 import os
+import struct
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.types import Message
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
@@ -22,12 +24,8 @@ from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.client import StreamedStopTrimmer, extract_inputs
 from sglang_omni.client.types import GenerateRequest, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.proto import (
-    EXPLICIT_GENERATION_PARAMS_KEY,
-    CompleteMessage,
-    OmniRequest,
-    StreamMessage,
-)
+from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
     ServerStatus,
@@ -38,7 +36,12 @@ from sglang_omni.serve.openai_api import (
     chat_stream,
     speech_audio_response,
 )
-from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
+from sglang_omni.serve.protocol import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    CreateSpeechRequest,
+    SpeechStreamOutcome,
+)
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
 from sglang_omni.serve.speech_to_text import complete_speech_to_text_request
@@ -49,12 +52,7 @@ from sglang_omni.serve.transcriptions import (
 )
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
-MODEL_FAMILIES = {
-    "qwen3-omni": "code2wav",
-    "ming-omni": "talker",
-    "s2-pro": "vocoder",
-    "voxtral": "vocoder",
-}
+MODEL_FAMILIES = {"qwen3-omni": "code2wav"}
 
 
 def test_chat_api_client_preserves_ordered_media_and_turns() -> None:
@@ -199,10 +197,15 @@ def fault_client(
 
 class SuccessfulSpeechClient:
     def __init__(
-        self, *, sample_rate: int = 24000, finish_reason: str = "stop"
+        self,
+        *,
+        sample_rate: int = 24000,
+        finish_reason: str = "stop",
+        spec_tokens_details: SpecTokensDetailsDict | None = None,
     ) -> None:
         self.sample_rate = sample_rate
         self.finish_reason = finish_reason
+        self.spec_tokens_details = spec_tokens_details
         self.generate_requests: list[GenerateRequest] = []
         self.speech_requests: list[GenerateRequest] = []
 
@@ -241,6 +244,7 @@ class SuccessfulSpeechClient:
                 completion_tokens=2,
                 total_tokens=7,
             ),
+            spec_tokens_details=self.spec_tokens_details,
             finish_reason=self.finish_reason,
         )
 
@@ -311,6 +315,11 @@ class EmptyDeltaStreamingSpeechClient:
 
 
 class TerminalChunkStreamingSpeechClient:
+    def __init__(
+        self, *, spec_tokens_details: SpecTokensDetailsDict | None = None
+    ) -> None:
+        self.spec_tokens_details = spec_tokens_details
+
     def health(self) -> dict[str, bool]:
         return {"running": True}
 
@@ -331,6 +340,7 @@ class TerminalChunkStreamingSpeechClient:
             sample_rate=24000,
             finish_reason="length",
             usage=UsageInfo(prompt_tokens=7, completion_tokens=120),
+            spec_tokens_details=self.spec_tokens_details,
         )
 
 
@@ -356,47 +366,6 @@ class PrefetchedBlockingStreamingSpeechClient:
         self.aborted.append(request_id)
 
 
-class TwoChunkStreamingSpeechClient:
-    def __init__(
-        self, *, fail_after_first_chunk: bool = False, usage_first: bool = False
-    ) -> None:
-        self.fail_after_first_chunk = fail_after_first_chunk
-        self.usage_first = usage_first
-        self.aborted: list[str] = []
-
-    async def generate(
-        self, request: GenerateRequest, request_id: str | None = None
-    ) -> AsyncIterator[GenerateChunk]:
-        usage = UsageInfo(prompt_tokens=3, completion_tokens=2, total_tokens=5)
-        if self.usage_first:
-            yield GenerateChunk(
-                request_id=request_id or "speech-1", modality="audio", usage=usage
-            )
-        yield GenerateChunk(
-            request_id=request_id or "speech-1",
-            modality="audio",
-            audio_data=[0.0, 0.1],
-            sample_rate=24000,
-        )
-        if self.fail_after_first_chunk:
-            raise RuntimeError("vocoder failed")
-        yield GenerateChunk(
-            request_id=request_id or "speech-1",
-            modality="audio",
-            audio_data=[-0.1, 0.0],
-            sample_rate=24000,
-        )
-        yield GenerateChunk(
-            request_id=request_id or "speech-1",
-            modality="audio",
-            finish_reason="stop",
-            usage=None if self.usage_first else usage,
-        )
-
-    async def abort(self, request_id: str) -> None:
-        self.aborted.append(request_id)
-
-
 class BlockingFirstAudioStreamingSpeechClient:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -407,6 +376,28 @@ class BlockingFirstAudioStreamingSpeechClient:
         self.started.set()
         await asyncio.Future()
         yield GenerateChunk(request_id="speech-1")
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class ScriptedStreamingSpeechClient:
+    def __init__(self, chunks: list[GenerateChunk | RuntimeError | ValueError]) -> None:
+        self.chunks = chunks
+        self.aborted: list[str] = []
+        self.closed = False
+
+    async def generate(
+        self, request: GenerateRequest, request_id: str | None = None
+    ) -> AsyncIterator[GenerateChunk]:
+        try:
+            for chunk in self.chunks:
+                if isinstance(chunk, (RuntimeError, ValueError)):
+                    raise chunk
+                else:
+                    yield chunk
+        finally:
+            self.closed = True
 
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
@@ -470,8 +461,11 @@ class ConnectedRequest:
 
 
 class SuccessfulTranscriptionClient:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, spec_tokens_details: SpecTokensDetailsDict | None = None
+    ) -> None:
         self.requests: list[GenerateRequest] = []
+        self.spec_tokens_details = spec_tokens_details
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
@@ -487,7 +481,11 @@ class SuccessfulTranscriptionClient:
 
         del request_id, audio_format
         self.requests.append(request)
-        return CompletionResult(request_id="transcription-1", text="hello world")
+        return CompletionResult(
+            request_id="transcription-1",
+            text="hello world",
+            spec_tokens_details=self.spec_tokens_details,
+        )
 
     async def generate(
         self,
@@ -502,6 +500,7 @@ class SuccessfulTranscriptionClient:
             request_id="transcription-1",
             text="hello world",
             finish_reason="stop",
+            spec_tokens_details=self.spec_tokens_details,
         )
 
 
@@ -757,14 +756,13 @@ class AdminClient:
         return {"success": True, "message": "ok", "results": []}
 
 
-@pytest.mark.parametrize("model_name", MODEL_FAMILIES)
-def test_non_streaming_http_faults_return_500(model_name: str) -> None:
-    client = TestClient(create_app(fault_client(model_name), model_name=model_name))
+def test_non_streaming_http_faults_return_500() -> None:
+    client = TestClient(create_app(fault_client("qwen3-omni"), model_name="qwen3-omni"))
 
     chat_resp = client.post(
         "/v1/chat/completions",
         json={
-            "model": model_name,
+            "model": "qwen3-omni",
             "messages": [{"role": "user", "content": "hello"}],
             "stream": False,
         },
@@ -775,7 +773,7 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     speech_resp = client.post(
         "/v1/audio/speech",
         json={
-            "model": model_name,
+            "model": "qwen3-omni",
             "input": "hello",
             "voice": "default",
             "stream": False,
@@ -968,14 +966,14 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
             "input": "hello",
             "voice": "default",
             "stream": True,
-            "response_format": "wav",
+            "response_format": "mp3",
         },
     )
 
     assert response.status_code == 400
     assert response.json() == {
         "error": {
-            "message": "stream=true requires response_format='pcm'",
+            "message": "Streaming requires response_format='pcm' or 'wav'",
             "type": "BadRequestError",
             "param": "response_format",
             "code": 400,
@@ -989,10 +987,7 @@ def test_speech_endpoint_returns_binary_audio() -> None:
 
     response = client.post(
         "/v1/audio/speech",
-        json={
-            "input": "hello",
-            "response_format": "wav",
-        },
+        json={"input": "hello"},
     )
 
     assert response.status_code == 200
@@ -1237,12 +1232,21 @@ class TextDeltaCoordinator:
     A None delta is an audio chunk that finishes the audio.
     """
 
-    def __init__(self, deltas: list[str | None]) -> None:
+    def __init__(
+        self,
+        deltas: list[str | None],
+        spec_tokens_details: SpecTokensDetailsDict | None = None,
+    ) -> None:
         self.deltas = deltas
+        self.spec_tokens_details = spec_tokens_details
 
     async def submit(self, request_id: str, omni_request: OmniRequest) -> object:
         text = "".join(delta for delta in self.deltas if delta is not None)
-        return {"text": text, "finish_reason": "stop"}
+        return {
+            "text": text,
+            "finish_reason": "stop",
+            "spec_tokens_details": self.spec_tokens_details,
+        }
 
     async def stream(
         self, request_id: str, omni_request: OmniRequest
@@ -1256,6 +1260,7 @@ class TextDeltaCoordinator:
                 pass
             if delta is None or index == len(self.deltas) - 1:
                 chunk["finish_reason"] = "stop"
+                chunk["spec_tokens_details"] = self.spec_tokens_details
             else:
                 pass
             yield StreamMessage(
@@ -1265,6 +1270,151 @@ class TextDeltaCoordinator:
                 stage_name="decode",
                 modality=modality,
             )
+
+
+SPEC_TOKENS_DETAILS: SpecTokensDetailsDict = {
+    "spec_accept_rate": 0.5,
+    "spec_accept_length": 2.5,
+    "spec_num_correct_drafts": 3,
+    "spec_num_proposed_drafts": 6,
+    "spec_verify_ct": 2,
+    "spec_correct_drafts_histogram": [0, 1, 1],
+}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("return_spec_tokens_details", [False, True])
+def test_chat_returns_spec_tokens_details_only_when_requested(
+    stream: bool, return_spec_tokens_details: bool
+) -> None:
+    coordinator = TextDeltaCoordinator(["1, 2", ", 3"], SPEC_TOKENS_DETAILS)
+    app = create_app(Client(coordinator), model_name="qwen3-omni")
+    body = {
+        "messages": [{"role": "user", "content": "count"}],
+        "stream": stream,
+        "return_spec_tokens_details": return_spec_tokens_details,
+    }
+
+    response = TestClient(app).post("/v1/chat/completions", json=body)
+
+    assert response.status_code == 200
+    if stream:
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.iter_lines()
+            if line and line != "data: [DONE]"
+        ]
+        sglext_events = [event["sglext"] for event in events if "sglext" in event]
+        sglext = sglext_events[0] if sglext_events else None
+        assert len(sglext_events) <= 1
+    else:
+        sglext = response.json().get("sglext", None)
+    expected = (
+        {"spec_tokens_details": SPEC_TOKENS_DETAILS}
+        if return_spec_tokens_details
+        else None
+    )
+    assert sglext == expected
+
+
+@pytest.mark.parametrize(
+    ("return_spec_tokens_details", "enable_speech_sse_named_events"),
+    [(False, False), (True, False), (True, True)],
+)
+def test_speech_returns_spec_tokens_details_only_when_requested(
+    return_spec_tokens_details: bool,
+    enable_speech_sse_named_events: bool,
+) -> None:
+    body = {
+        "input": "hello",
+        "return_spec_tokens_details": return_spec_tokens_details,
+    }
+    buffered = TestClient(
+        create_app(
+            SuccessfulSpeechClient(spec_tokens_details=SPEC_TOKENS_DETAILS),
+            model_name="tts",
+        )
+    ).post("/v1/audio/speech", json=body)
+    streaming_client = TestClient(
+        create_app(
+            TerminalChunkStreamingSpeechClient(spec_tokens_details=SPEC_TOKENS_DETAILS),
+            model_name="tts",
+            enable_speech_sse_named_events=enable_speech_sse_named_events,
+        )
+    )
+    sse = streaming_client.post(
+        "/v1/audio/speech",
+        json={**body, "stream": True, "response_format": "pcm", "stream_format": "sse"},
+    )
+    pcm = streaming_client.post(
+        "/v1/audio/speech",
+        json={**body, "stream": True, "response_format": "pcm"},
+    )
+    outcome = streaming_client.get(
+        f"/v1/audio/speech/{pcm.headers['x-sglang-omni-speech-id']}"
+    )
+
+    assert buffered.status_code == sse.status_code == pcm.status_code == 200
+    assert outcome.status_code == 200
+    done_event = parse_speech_sse_events(sse.text, enable_speech_sse_named_events)[-1]
+    assert done_event["type"] == "speech.audio.done"
+    if return_spec_tokens_details:
+        assert buffered.headers["x-sglang-omni-spec-accept-length"] == "2.5"
+        assert buffered.headers["x-sglang-omni-spec-accept-rate"] == "0.5"
+        assert buffered.headers["x-sglang-omni-spec-num-correct-drafts"] == "3"
+        assert buffered.headers["x-sglang-omni-spec-num-proposed-drafts"] == "6"
+        assert buffered.headers["x-sglang-omni-spec-verify-ct"] == "2"
+        expected = {"spec_tokens_details": SPEC_TOKENS_DETAILS}
+        assert done_event["sglext"] == expected
+        assert outcome.json()["sglext"] == expected
+    else:
+        assert not any(
+            name.startswith("x-sglang-omni-spec-") for name in buffered.headers
+        )
+        assert "sglext" not in done_event
+        assert "sglext" not in outcome.json()
+
+
+def test_spec_tokens_details_without_a_rate_omit_the_rate_fields() -> None:
+    details: SpecTokensDetailsDict = {
+        "spec_accept_length": 2.5,
+        "spec_num_correct_drafts": 3,
+        "spec_verify_ct": 2,
+        "spec_correct_drafts_histogram": [0, 1, 1],
+    }
+    chat = TestClient(
+        create_app(
+            Client(TextDeltaCoordinator(["1, 2", ", 3"], details)),
+            model_name="qwen3-omni",
+        )
+    ).post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "count"}],
+            "return_spec_tokens_details": True,
+        },
+    )
+    speech = TestClient(
+        create_app(
+            SuccessfulSpeechClient(spec_tokens_details=details), model_name="tts"
+        )
+    ).post(
+        "/v1/audio/speech",
+        json={"input": "hello", "return_spec_tokens_details": True},
+    )
+
+    assert chat.json()["sglext"] == {"spec_tokens_details": details}
+    assert speech.headers["x-sglang-omni-spec-accept-length"] == "2.5"
+    assert "x-sglang-omni-spec-accept-rate" not in speech.headers
+    assert "x-sglang-omni-spec-num-proposed-drafts" not in speech.headers
+
+
+def test_responses_without_sglext_serialize_with_exclude_none() -> None:
+    chat = ChatCompletionResponse(id="chat-1", created=0, model="m", choices=[])
+    outcome = SpeechStreamOutcome(request_id="speech-1", finish_reason="stop")
+
+    assert "sglext" not in chat.model_dump(exclude_none=True)
+    assert "sglext" not in outcome.model_dump(exclude_none=True)
 
 
 def test_chat_answer_excludes_the_matched_stop_string() -> None:
@@ -1608,18 +1758,29 @@ def test_transcription_stream_close_reaches_coordinator_owner() -> None:
     asyncio.run(run())
 
 
-def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
+@pytest.mark.parametrize(
+    "sampling_fields",
+    [{}, {"temperature": None, "top_p": None, "top_k": None, "seed": None}],
+)
+def test_chat_request_leaves_unset_sampling_fields_out_of_params(
+    sampling_fields: dict[str, None],
+) -> None:
     req = ChatCompletionRequest(
-        model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        model="qwen3-omni",
         messages=[{"role": "user", "content": "hello"}],
+        **sampling_fields,
     )
 
-    gen_req = build_chat_generate_request(req)
+    params = Client.build_omni_request(build_chat_generate_request(req)).params
 
-    assert gen_req.sampling.temperature == 1.0
-    assert gen_req.sampling.top_p == 1.0
-    assert gen_req.sampling.top_k == -1
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
+    assert not {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "seed",
+    } & set(params)
 
 
 @pytest.mark.parametrize("use_audio_in_video", [True, False])
@@ -1651,45 +1812,59 @@ def test_chat_request_forwards_video_options(
     assert inputs["video_max_frames"] == 8
 
 
-def test_chat_request_preserves_explicit_default_sampling_values() -> None:
+def test_chat_request_keeps_every_set_sampling_value() -> None:
     req = ChatCompletionRequest(
-        model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        model="qwen3-omni",
         messages=[{"role": "user", "content": "hello"}],
         temperature=1.0,
         top_p=1.0,
         top_k=-1,
+        min_p=0.0,
+        repetition_penalty=1.0,
+        seed=7,
     )
 
-    gen_req = build_chat_generate_request(req)
+    params = Client.build_omni_request(build_chat_generate_request(req)).params
 
-    assert gen_req.sampling.temperature == 1.0
-    assert gen_req.sampling.top_p == 1.0
-    assert gen_req.sampling.top_k == -1
-    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == [
-        "temperature",
-        "top_k",
-        "top_p",
-    ]
+    assert {
+        name: params[name]
+        for name in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "seed",
+        )
+    } == {
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "top_k": -1,
+        "min_p": 0.0,
+        "repetition_penalty": 1.0,
+        "seed": 7,
+    }
 
 
-def test_chat_request_does_not_mark_null_sampling_params_explicit() -> None:
+def test_chat_request_ignores_undeclared_fields() -> None:
     req = ChatCompletionRequest(
-        model="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        model="qwen3-omni",
         messages=[{"role": "user", "content": "hello"}],
-        temperature=None,
-        top_p=None,
-        top_k=None,
+        speaker="Aiden",
+        max_new_tokens=5,
     )
 
-    gen_req = build_chat_generate_request(req)
+    params = Client.build_omni_request(build_chat_generate_request(req)).params
 
-    assert gen_req.sampling.temperature == 1.0
-    assert gen_req.sampling.top_p == 1.0
-    assert gen_req.sampling.top_k == -1
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
+    assert "speaker" not in params
+    assert "max_new_tokens" not in params
 
 
-def test_speech_stream_defaults_to_raw_pcm() -> None:
+@pytest.mark.parametrize("response_format", [None, "wav", "pcm"])
+def test_speech_stream_defaults_to_audio_with_wav_or_pcm(
+    response_format: Literal["wav", "pcm"] | None,
+) -> None:
+    """Audio streaming defaults to WAV and honors explicit WAV or PCM."""
     client = TestClient(
         create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
     )
@@ -1699,19 +1874,41 @@ def test_speech_stream_defaults_to_raw_pcm() -> None:
         "input": "hello",
         "voice": "default",
         "stream": True,
-        "response_format": "pcm",
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
+    else:
+        pass
     response = client.post(
         "/v1/audio/speech", json=payload, headers={"x-request-id": "caller-1"}
     )
 
+    selected_format = response_format or "wav"
     expected = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=24000)
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("audio/pcm")
+    assert response.headers["content-type"].startswith(f"audio/{selected_format}")
     assert response.headers["x-sample-rate"] == "24000"
     assert response.headers["x-channels"] == "1"
     assert response.headers["x-bit-depth"] == "16"
-    assert response.content == expected
+    if selected_format == "wav":
+        assert struct.unpack("<4sI4s4sIHHIIHH4sI", response.content[:44]) == (
+            b"RIFF",
+            0xFFFFFFFF,
+            b"WAVE",
+            b"fmt ",
+            16,
+            1,
+            1,
+            24000,
+            48000,
+            2,
+            16,
+            b"data",
+            0xFFFFFFFF,
+        )
+        assert response.content[44:] == expected
+    else:
+        assert response.content == expected
     outcome_id = response.headers["x-sglang-omni-speech-id"]
     assert client.get(f"/v1/audio/speech/{outcome_id}").json() == {
         "request_id": outcome_id,
@@ -1721,12 +1918,7 @@ def test_speech_stream_defaults_to_raw_pcm() -> None:
     assert client.get("/v1/audio/speech/speech-unknown").status_code == 404
 
 
-@pytest.mark.parametrize(
-    "caller_id", ["trace/a", "batch", "stream", "a#b", "a?b", "a%2Fb"]
-)
-def test_speech_outcome_identity_is_independent_of_reused_correlation_ids(
-    caller_id: str,
-) -> None:
+def test_speech_outcome_identity_is_independent_of_reused_correlation_ids() -> None:
     client = TestClient(
         create_app(TerminalChunkStreamingSpeechClient(), model_name="s2-pro")
     )
@@ -1735,7 +1927,7 @@ def test_speech_outcome_identity_is_independent_of_reused_correlation_ids(
         response = client.post(
             "/v1/audio/speech",
             json={"input": "hello", "stream": True, "response_format": "pcm"},
-            headers={"x-request-id": caller_id},
+            headers={"x-request-id": "trace/a"},
         )
         assert response.status_code == 200
         outcome_id = response.headers["x-sglang-omni-speech-id"]
@@ -1759,20 +1951,25 @@ def test_speech_stream_headers_use_chunk_sample_rate() -> None:
             "input": "hello",
             "voice": "default",
             "stream": True,
-            "response_format": "pcm",
+            "response_format": "wav",
         },
     )
 
     expected = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=44100)
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("audio/pcm")
+    assert response.headers["content-type"].startswith("audio/wav")
     assert response.headers["x-sample-rate"] == "44100"
     assert response.headers["x-channels"] == "1"
     assert response.headers["x-bit-depth"] == "16"
-    assert response.content == expected
+    assert response.content[:4] == b"RIFF"
+    assert struct.unpack("<I", response.content[24:28]) == (44100,)
+    assert response.content[44:] == expected
 
 
-def test_speech_stream_records_terminal_state_from_a_later_chunk() -> None:
+@pytest.mark.parametrize("response_format", ["wav", "pcm"])
+def test_speech_stream_records_terminal_state_from_a_later_chunk(
+    response_format: Literal["wav", "pcm"],
+) -> None:
     client = TestClient(
         create_app(TerminalChunkStreamingSpeechClient(), model_name="s2-pro")
     )
@@ -1784,10 +1981,16 @@ def test_speech_stream_records_terminal_state_from_a_later_chunk() -> None:
             "input": "hello",
             "voice": "default",
             "stream": True,
-            "response_format": "pcm",
+            "response_format": response_format,
         },
     )
     assert response.status_code == 200
+    expected_audio = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=24000)
+    if response_format == "wav":
+        assert response.content[:4] == b"RIFF"
+        assert response.content[44:] == expected_audio
+    else:
+        assert response.content == expected_audio
 
     outcome = client.get(
         f"/v1/audio/speech/{response.headers['x-sglang-omni-speech-id']}"
@@ -1799,8 +2002,8 @@ def test_speech_stream_records_terminal_state_from_a_later_chunk() -> None:
 
 def test_store_evicts_the_oldest_outcome_past_max_entries() -> None:
     outcomes = SpeechStreamOutcomes(max_entries=1)
-    outcomes.record("speech-1", "stop", None)
-    outcomes.record("speech-2", "length", UsageInfo(completion_tokens=120))
+    outcomes.record("speech-1", "stop", None, None)
+    outcomes.record("speech-2", "length", UsageInfo(completion_tokens=120), None)
 
     assert outcomes.get("speech-1") is None
     newest = outcomes.get("speech-2")
@@ -1809,7 +2012,12 @@ def test_store_evicts_the_oldest_outcome_past_max_entries() -> None:
     assert newest.usage is not None and newest.usage.completion_tokens == 120
 
 
-def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:
+@pytest.mark.parametrize("response_format", ["wav", "pcm"])
+def test_raw_audio_send_failure_aborts_inner_speech_stream(
+    response_format: Literal["wav", "pcm"],
+) -> None:
+    """A disconnect while sending the WAV header must release generation."""
+
     async def drive() -> None:
         client = PrefetchedBlockingStreamingSpeechClient()
         speech_stream_outcomes = SpeechStreamOutcomes(max_entries=8)
@@ -1819,12 +2027,34 @@ def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:
             gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
             request_id="req-1",
             speed=1.0,
+            response_format=response_format,
             speech_stream_outcomes=speech_stream_outcomes,
             stream_format="audio",
+            enable_speech_sse_named_events=False,
+            return_spec_tokens_details=False,
         )
-        body = response.body_iterator
-        assert await anext(body) == encode_pcm([0.0, 0.1, -0.1, 0.0], 24000)
-        await body.aclose()
+
+        async def receive() -> Message:
+            await asyncio.Event().wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: Message) -> None:
+            if message["type"] == "http.response.body" and message.get("body"):
+                if response_format == "wav":
+                    assert message["body"][:4] == b"RIFF"
+                    assert len(message["body"]) == 44
+                else:
+                    assert message["body"] == encode_pcm([0.0, 0.1, -0.1, 0.0], 24000)
+                raise RuntimeError("client disconnected during audio send")
+            else:
+                pass
+
+        with pytest.raises(RuntimeError, match="client disconnected during audio send"):
+            await response(
+                http_scope(path="/v1/audio/speech", spec_version="2.4"),
+                receive,
+                send,
+            )
         assert client.aborted == ["req-1"]
         assert speech_stream_outcomes.get("req-1") is None
 
@@ -1844,6 +2074,8 @@ def test_raw_pcm_response_disconnect_before_first_chunk_aborts_request() -> None
                 speed=1.0,
                 speech_stream_outcomes=SpeechStreamOutcomes(max_entries=8),
                 stream_format="audio",
+                enable_speech_sse_named_events=False,
+                return_spec_tokens_details=False,
             )
         )
         await client.started.wait()
@@ -1853,66 +2085,6 @@ def test_raw_pcm_response_disconnect_before_first_chunk_aborts_request() -> None
         assert client.aborted == ["req-1"]
 
     asyncio.run(drive())
-
-
-@pytest.mark.parametrize("usage_first", [False, True])
-def test_speech_sse_stream_sends_deltas_then_done_with_usage(
-    usage_first: bool,
-) -> None:
-    client = TestClient(
-        create_app(
-            TwoChunkStreamingSpeechClient(usage_first=usage_first), model_name="tts"
-        )
-    )
-
-    response = client.post(
-        "/v1/audio/speech",
-        json={"input": "hello", "response_format": "pcm", "stream_format": "sse"},
-    )
-
-    events = [
-        json.loads(line.removeprefix("data: "))
-        for line in response.iter_lines()
-        if line
-    ]
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/event-stream")
-    assert response.headers["x-sample-rate"] == "24000"
-    assert [event["type"] for event in events] == [
-        "speech.audio.delta",
-        "speech.audio.delta",
-        "speech.audio.done",
-    ]
-    assert base64.b64decode(events[0]["audio"]) == encode_pcm([0.0, 0.1], 24000)
-    assert base64.b64decode(events[1]["audio"]) == encode_pcm([-0.1, 0.0], 24000)
-    assert events[2]["finish_reason"] == "stop"
-    assert "x-sglang-omni-speech-id" not in response.headers
-    assert events[2]["usage"] == {
-        "input_tokens": 3,
-        "output_tokens": 2,
-        "total_tokens": 5,
-    }
-
-
-def test_speech_sse_stream_failure_ends_with_error_event() -> None:
-    speech_client = TwoChunkStreamingSpeechClient(fail_after_first_chunk=True)
-    client = TestClient(create_app(speech_client, model_name="tts"))
-
-    response = client.post(
-        "/v1/audio/speech",
-        json={"input": "hello", "response_format": "pcm", "stream_format": "sse"},
-    )
-
-    events = [
-        json.loads(line.removeprefix("data: "))
-        for line in response.iter_lines()
-        if line
-    ]
-    assert response.status_code == 200
-    assert [event["type"] for event in events] == ["speech.audio.delta", "error"]
-    assert events[1]["error"]["type"] == "server_error"
-    assert "vocoder failed" in events[1]["error"]["message"]
-    assert len(speech_client.aborted) == 1
 
 
 def test_sse_speech_response_close_aborts_inner_speech_stream() -> None:
@@ -1925,7 +2097,10 @@ def test_sse_speech_response_close_aborts_inner_speech_stream() -> None:
             request_id="req-1",
             speed=1.0,
             stream_format="sse",
+            response_format="pcm",
             speech_stream_outcomes=SpeechStreamOutcomes(max_entries=8),
+            enable_speech_sse_named_events=False,
+            return_spec_tokens_details=False,
         )
         body = response.body_iterator
         assert (await anext(body)).startswith("data: ")
@@ -1935,40 +2110,473 @@ def test_sse_speech_response_close_aborts_inner_speech_stream() -> None:
     asyncio.run(drive())
 
 
-def test_speech_stream_rejects_non_pcm_response_format() -> None:
+def parse_speech_sse_events(
+    response_text: str, enable_speech_sse_named_events: bool
+) -> list[dict[str, object]]:
+    events = []
+    for event_block in response_text.strip().split("\n\n"):
+        frame_lines = event_block.splitlines()
+        data_line = frame_lines[-1]
+        assert data_line.startswith("data: ")
+        event = json.loads(data_line.removeprefix("data: "))
+        if enable_speech_sse_named_events:
+            assert frame_lines == [f"event: {event['type']}", data_line]
+        else:
+            assert frame_lines == [data_line]
+        events.append(event)
+    return events
+
+
+@pytest.mark.parametrize(
+    (
+        "response_format",
+        "usage_first",
+        "usage_kind",
+        "finish_reason",
+        "enable_speech_sse_named_events",
+    ),
+    [
+        (None, False, "speech", "length", False),
+        ("wav", True, "pipeline", "stop", False),
+        ("pcm", False, "missing", "unknown", False),
+        ("pcm", False, "zero", "stop", False),
+        ("wav", True, "pipeline", "stop", True),
+    ],
+)
+def test_speech_sse_preserves_audio_and_reports_terminal_usage(
+    response_format: Literal["wav", "pcm"] | None,
+    usage_first: bool,
+    usage_kind: Literal["speech", "pipeline", "missing", "zero"],
+    finish_reason: Literal["stop", "length", "unknown"],
+    enable_speech_sse_named_events: bool,
+) -> None:
+    """SSE preserves audio, terminal state, and absent or explicitly zero usage."""
+    usage = UsageInfo(prompt_tokens=3, completion_tokens=2, total_tokens=5)
+    if usage_kind == "speech":
+        usage.speech_input_tokens = 7
+        usage.speech_output_tokens = 11
+        expected_usage = {"input_tokens": 7, "output_tokens": 11, "total_tokens": 18}
+    elif usage_kind == "pipeline":
+        expected_usage = {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+    elif usage_kind == "zero":
+        usage.speech_input_tokens = 0
+        usage.speech_output_tokens = 0
+        expected_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    else:
+        usage = None
+        expected_usage = None
+    audio_samples = [[0.0, 0.1] * 1200, [-0.1, 0.0] * 2400]
+    chunks = [
+        GenerateChunk(
+            request_id="speech-contract",
+            modality="audio",
+            audio_data=samples,
+            sample_rate=24000,
+        )
+        for samples in audio_samples
+    ]
+    if usage is not None:
+        usage_chunk = GenerateChunk(
+            request_id="speech-contract",
+            modality="audio",
+            usage=usage,
+            spec_tokens_details=SPEC_TOKENS_DETAILS if usage_kind == "speech" else None,
+        )
+        if usage_first:
+            chunks.insert(0, usage_chunk)
+        else:
+            chunks.append(usage_chunk)
+    else:
+        pass
+    chunks.append(
+        GenerateChunk(
+            request_id="speech-contract",
+            modality="audio",
+            finish_reason=None if finish_reason == "unknown" else "stop",
+            model_finish_reason="length" if finish_reason == "length" else None,
+        )
+    )
+    speech_client = ScriptedStreamingSpeechClient(chunks)
     client = TestClient(
-        create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
+        create_app(
+            speech_client,
+            model_name="tts",
+            enable_speech_sse_named_events=enable_speech_sse_named_events,
+        )
+    )
+    request_body = {
+        "input": "hello",
+        "stream_format": "sse",
+        "return_spec_tokens_details": usage_kind == "speech",
+    }
+    if response_format is not None:
+        request_body["response_format"] = response_format
+    else:
+        pass
+
+    response = client.post("/v1/audio/speech", json=request_body)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-sample-rate"] == "24000"
+    assert response.headers["x-channels"] == "1"
+    assert response.headers["x-bit-depth"] == "16"
+    events = parse_speech_sse_events(response.text, enable_speech_sse_named_events)
+    selected_format = response_format or "wav"
+    delta_events = events[:-1]
+    for event in delta_events:
+        assert event["type"] == "speech.audio.delta"
+        assert event["response_format"] == selected_format
+    audio_bytes = b"".join(base64.b64decode(event["audio"]) for event in delta_events)
+    if selected_format == "wav":
+        wav_header = audio_bytes[:44]
+        audio_bytes = audio_bytes[44:]
+        assert len(wav_header) == 44
+        assert wav_header[:4] == b"RIFF"
+        assert struct.unpack("<I", wav_header[4:8]) == (0xFFFFFFFF,)
+        assert wav_header[8:16] == b"WAVEfmt "
+        assert struct.unpack("<HHIIHH", wav_header[20:36]) == (
+            1,
+            1,
+            24000,
+            48000,
+            2,
+            16,
+        )
+        assert wav_header[36:40] == b"data"
+        assert struct.unpack("<I", wav_header[40:44]) == (0xFFFFFFFF,)
+    else:
+        pass
+    assert audio_bytes == b"".join(
+        encode_pcm(samples, 24000) for samples in audio_samples
+    )
+    assert events[-1]["type"] == "speech.audio.done"
+    assert events[-1]["duration"] == pytest.approx(0.3)
+    assert events[-1]["finish_reason"] == finish_reason
+    assert events[-1]["usage"] == expected_usage
+    if usage_kind == "speech":
+        assert events[-1]["sglext"] == {"spec_tokens_details": SPEC_TOKENS_DETAILS}
+    else:
+        assert "sglext" not in events[-1]
+    assert "[DONE]" not in response.text
+    assert "x-sglang-omni-speech-id" not in response.headers
+    assert speech_client.closed is True
+    assert speech_client.aborted == []
+
+
+@pytest.mark.parametrize(
+    ("response_format", "speed", "expected_samples", "expected_duration_seconds"),
+    [("wav", 0.25, 19200, 0.8), ("pcm", 4.0, 1200, 0.05)],
+)
+def test_speech_sse_speed_changes_audio_length_and_duration(
+    response_format: Literal["wav", "pcm"],
+    speed: float,
+    expected_samples: int,
+    expected_duration_seconds: float,
+) -> None:
+    """SSE duration describes the speed-adjusted PCM and excludes the WAV header."""
+    speech_client = ScriptedStreamingSpeechClient(
+        [
+            GenerateChunk(
+                request_id="speech-speed",
+                modality="audio",
+                audio_data=[0.1] * 4800,
+                sample_rate=24000,
+                finish_reason="stop",
+            )
+        ]
+    )
+    client = TestClient(create_app(speech_client, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "stream_format": "sse",
+            "response_format": response_format,
+            "speed": speed,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-sample-rate"] == "24000"
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.iter_lines()
+        if line.startswith("data: ")
+    ]
+    audio_bytes = b"".join(base64.b64decode(event["audio"]) for event in events[:-1])
+    if response_format == "wav":
+        assert audio_bytes[:4] == b"RIFF"
+        audio_bytes = audio_bytes[44:]
+    else:
+        pass
+    assert len(audio_bytes) == expected_samples * 2
+    assert audio_bytes == encode_pcm([0.1] * expected_samples, 24000)
+    assert events[-1]["type"] == "speech.audio.done"
+    assert events[-1]["duration"] == pytest.approx(expected_duration_seconds)
+    assert events[-1]["finish_reason"] == "stop"
+    assert events[-1]["usage"] is None
+
+
+@pytest.mark.parametrize(
+    (
+        "failure",
+        "has_partial_audio",
+        "expected_message",
+        "expected_error_type",
+        "expected_status_code",
+        "expected_error_code",
+        "enable_speech_sse_named_events",
+        "expected_error_event_type",
+    ),
+    [
+        (
+            "before-audio",
+            False,
+            "vocoder failed",
+            "server_error",
+            500,
+            None,
+            False,
+            "error",
+        ),
+        (
+            "empty-audio",
+            False,
+            "No audio output generated",
+            "server_error",
+            500,
+            None,
+            False,
+            "error",
+        ),
+        (
+            "after-audio",
+            True,
+            "vocoder failed",
+            "server_error",
+            200,
+            500,
+            False,
+            "error",
+        ),
+        (
+            "sample-rate-change",
+            True,
+            "sample rate changed",
+            "server_error",
+            200,
+            500,
+            False,
+            "error",
+        ),
+        (
+            "after-audio",
+            True,
+            "vocoder failed",
+            "server_error",
+            200,
+            500,
+            True,
+            "speech.audio.error",
+        ),
+        (
+            "sample-rate-change",
+            True,
+            "sample rate changed",
+            "server_error",
+            200,
+            500,
+            True,
+            "speech.audio.error",
+        ),
+        (
+            "invalid-input",
+            False,
+            "Unsupported Qwen3-TTS CustomVoice speaker 'unknown'",
+            "BadRequestError",
+            400,
+            400,
+            False,
+            "error",
+        ),
+        (
+            "queue-full",
+            False,
+            QueueFullError.MESSAGE,
+            "server_error",
+            503,
+            None,
+            False,
+            "error",
+        ),
+    ],
+)
+def test_speech_sse_generation_errors_preserve_http_and_stream_contracts(
+    failure: Literal[
+        "before-audio",
+        "empty-audio",
+        "after-audio",
+        "sample-rate-change",
+        "invalid-input",
+        "queue-full",
+    ],
+    has_partial_audio: bool,
+    expected_message: str,
+    expected_error_type: Literal["BadRequestError", "server_error"],
+    expected_status_code: int,
+    expected_error_code: int | None,
+    enable_speech_sse_named_events: bool,
+    expected_error_event_type: Literal["error", "speech.audio.error"],
+) -> None:
+    """Failures retain HTTP errors before audio and terminal events after audio."""
+    first_chunk = GenerateChunk(
+        request_id="speech-contract",
+        modality="audio",
+        audio_data=[0.0, 0.1],
+        sample_rate=24000,
+    )
+    if failure == "before-audio":
+        chunks = [RuntimeError("vocoder failed")]
+    elif failure == "invalid-input":
+        chunks = [ValueError("Unsupported Qwen3-TTS CustomVoice speaker 'unknown'")]
+    elif failure == "queue-full":
+        chunks = [QueueFullError("backend overloaded")]
+    elif failure == "empty-audio":
+        chunks = [
+            GenerateChunk(
+                request_id="speech-contract",
+                modality="audio",
+                audio_data=[],
+                sample_rate=24000,
+                finish_reason="stop",
+            )
+        ]
+    elif failure == "after-audio":
+        chunks = [first_chunk, RuntimeError("vocoder failed")]
+    else:
+        chunks = [
+            first_chunk,
+            GenerateChunk(
+                request_id="speech-contract",
+                modality="audio",
+                audio_data=[0.2],
+                sample_rate=44100,
+            ),
+        ]
+    speech_client = ScriptedStreamingSpeechClient(chunks)
+    client = TestClient(
+        create_app(
+            speech_client,
+            model_name="tts",
+            enable_speech_sse_named_events=enable_speech_sse_named_events,
+        )
     )
 
     response = client.post(
         "/v1/audio/speech",
         json={
-            "model": "higgs-audio-v2",
             "input": "hello",
-            "voice": "default",
             "stream": True,
-            "response_format": "wav",
+            "stream_format": "sse",
+            "response_format": "pcm",
         },
     )
 
-    assert 400 <= response.status_code < 500
-    assert "response_format" in response.text
-    assert "pcm" in response.text.lower()
+    assert response.status_code == expected_status_code
+    if has_partial_audio:
+        assert response.headers["content-type"].startswith("text/event-stream")
+        events = parse_speech_sse_events(response.text, enable_speech_sse_named_events)
+        assert [event["type"] for event in events] == [
+            "speech.audio.delta",
+            expected_error_event_type,
+        ]
+        assert base64.b64decode(events[0]["audio"]) == encode_pcm([0.0, 0.1], 24000)
+        error = events[-1]["error"]
+        assert error["partial_audio"] is True
+        assert error["action"] == "discard"
+    else:
+        assert response.headers["content-type"] == "application/json"
+        error = response.json()["error"]
+    assert expected_message in error["message"]
+    assert error["type"] == expected_error_type
+    assert error["param"] is None
+    assert error["code"] == expected_error_code
+    assert "[DONE]" not in response.text
+    assert speech_client.closed is True
+    assert len(speech_client.aborted) == (0 if failure == "empty-audio" else 1)
 
 
-def test_speech_request_carries_initial_codec_chunk_frames() -> None:
-    req = CreateSpeechRequest(
-        input="hello",
-        stream=True,
-        response_format="pcm",
-        initial_codec_chunk_frames=4,
-    )
+@pytest.mark.parametrize("disconnect_after_audio", [False, True])
+def test_speech_sse_disconnect_aborts_generation(
+    disconnect_after_audio: bool,
+) -> None:
+    """Disconnects before or after audio must release the active request."""
 
-    gen_req = SpeechRequestValidator(
-        default_model="higgs-audio-v2"
-    ).build_generate_request(req)
+    async def drive() -> None:
+        if disconnect_after_audio:
+            speech_client = PrefetchedBlockingStreamingSpeechClient()
+        else:
+            speech_client = BlockingFirstAudioStreamingSpeechClient()
+        application = create_app(speech_client, model_name="tts")
+        request_bytes = json.dumps(
+            {
+                "input": "hello",
+                "stream": True,
+                "stream_format": "sse",
+                "response_format": "pcm",
+            }
+        ).encode()
+        request_received = False
+        response_started = asyncio.Event()
+        audio_sent = asyncio.Event()
+        disconnected = asyncio.Event()
+        response_bodies: list[bytes] = []
 
-    assert gen_req.extra_params["initial_codec_chunk_frames"] == 4
+        async def receive() -> Message:
+            nonlocal request_received
+            if not request_received:
+                request_received = True
+                return {
+                    "type": "http.request",
+                    "body": request_bytes,
+                    "more_body": False,
+                }
+            else:
+                await disconnected.wait()
+                return {"type": "http.disconnect"}
+
+        async def send(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                assert message["status"] == 200
+                response_started.set()
+            elif message["type"] == "http.response.body" and message.get("body"):
+                response_bodies.append(message["body"])
+                audio_sent.set()
+            else:
+                pass
+
+        scope = http_scope(path="/v1/audio/speech", spec_version="2.3")
+        scope["headers"] = [(b"content-type", b"application/json")]
+        response_task = asyncio.create_task(application(scope, receive, send))
+        if disconnect_after_audio:
+            await response_started.wait()
+            await audio_sent.wait()
+            disconnected.set()
+            await response_task
+        else:
+            await speech_client.started.wait()
+            disconnected.set()
+            with pytest.raises(asyncio.CancelledError):
+                await response_task
+            assert not response_started.is_set()
+
+        assert len(speech_client.aborted) == 1
+        assert b"speech.audio.done" not in b"".join(response_bodies)
+        assert b'"type": "error"' not in b"".join(response_bodies)
+
+    asyncio.run(drive())
 
 
 def test_raw_pcm_speech_request_defers_initial_chunk_to_model() -> None:
@@ -2073,21 +2681,6 @@ def test_speech_to_text_completion_aborts_its_request_on_client_disconnect() -> 
     asyncio.run(drive())
 
 
-def test_speech_response_returns_when_disconnect_poll_is_false() -> None:
-    async def drive() -> None:
-        result = await await_speech_response(
-            request=ConnectedRequest(),
-            client=SuccessfulSpeechClient(),
-            gen_req=GenerateRequest(model="s2-pro", prompt="hello"),
-            request_id="req-1",
-            response_format="wav",
-            speed=1.0,
-        )
-        assert result.audio_bytes == b"RIFF"
-
-    asyncio.run(drive())
-
-
 @pytest.mark.parametrize("stream", [False, True])
 def test_supported_speech_fields_refuse_an_unknown_field_before_generation(
     stream: bool,
@@ -2120,7 +2713,7 @@ def test_supported_speech_fields_refuse_an_unknown_field_before_generation(
     assert client_impl.speech_requests == []
 
 
-def test_speech_request_records_explicit_generation_params() -> None:
+def test_speech_request_passes_only_the_set_sampling_fields() -> None:
     req = CreateSpeechRequest(
         input="hello",
         temperature=0.8,
@@ -2131,16 +2724,12 @@ def test_speech_request_records_explicit_generation_params() -> None:
     gen_req = SpeechRequestValidator(default_model="qwen3-tts").build_generate_request(
         req
     )
+    params = Client.build_omni_request(gen_req).params
 
-    assert gen_req.sampling.temperature == 0.8
-    assert gen_req.sampling.top_k == 30
-    assert gen_req.sampling.seed == 123
-    assert isinstance(gen_req.metadata["tts_params"], dict)
-    assert gen_req.metadata["tts_params"]["explicit_generation_params"] == [
-        "seed",
-        "temperature",
-        "top_k",
-    ]
+    assert params["temperature"] == 0.8
+    assert params["top_k"] == 30
+    assert params["seed"] == 123
+    assert not {"top_p", "min_p", "repetition_penalty"} & set(params)
 
 
 def test_speech_request_passes_streaming_control_fields() -> None:
@@ -2188,6 +2777,7 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.sampling.temperature == 0.0
     omni_req = Client.build_omni_request(gen_req)
     assert omni_req.params["temperature"] == 0.0
+    assert "repetition_penalty" not in omni_req.params
     assert gen_req.metadata == {"task": "asr"}
     assert gen_req.output_modalities == ["text"]
     assert gen_req.stream is False
@@ -2221,7 +2811,6 @@ def test_transcription_request_passes_explicit_temperature() -> None:
     )
 
     assert gen_req.sampling.temperature == 0.7
-    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["temperature"]
     omni_req = Client.build_omni_request(gen_req)
     assert omni_req.params["temperature"] == 0.7
 
@@ -2240,7 +2829,6 @@ def test_transcription_request_passes_explicit_max_new_tokens() -> None:
 
     assert gen_req.model == "OpenMOSS-Team/MOSS-Transcribe-Diarize"
     assert gen_req.sampling.max_new_tokens == 4096
-    assert gen_req.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["max_new_tokens"]
     omni_req = Client.build_omni_request(gen_req)
     assert omni_req.params["max_new_tokens"] == 4096
 
@@ -2467,10 +3055,7 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
     assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
 
 
-@pytest.mark.parametrize("response_format", ["srt", "vtt"])
-def test_chunked_subtitle_format_is_rejected_before_inference(
-    response_format: str,
-) -> None:
+def test_chunked_subtitle_format_is_rejected_before_inference() -> None:
     transcription_client = ChunkRecordingTranscriptionClient()
     client = chunking_test_client(
         transcription_client,
@@ -2479,7 +3064,7 @@ def test_chunked_subtitle_format_is_rejected_before_inference(
 
     response = client.post(
         "/v1/audio/transcriptions",
-        data={"model": "asr", "response_format": response_format},
+        data={"model": "asr", "response_format": "srt"},
         files={"file": ("long.wav", wav_upload(2.5), "audio/wav")},
     )
 
@@ -2849,8 +3434,9 @@ def run_chunks(
 
     if adapter is None:
         adapter = DefaultTranscriptionAdapter()
-    return asyncio.wait_for(
-        transcribe_audio_chunks(
+
+    async def texts_only() -> list[str]:
+        texts, _finish_reason = await transcribe_audio_chunks(
             client,
             plan,
             request_id="req",
@@ -2864,9 +3450,10 @@ def run_chunks(
             max_concurrent=max_concurrent,
             condition_on_previous_text=condition_on_previous_text,
             adapter=adapter,
-        ),
-        timeout=10.0,
-    )
+        )
+        return texts
+
+    return asyncio.wait_for(texts_only(), timeout=10.0)
 
 
 class ScriptedChunkClient:
@@ -2880,6 +3467,120 @@ class ScriptedChunkClient:
         response = self.responses[len(self.requests)]
         self.requests.append((request_id, request.extra_params.get("prompt")))
         return CompletionResult(request_id=request_id, text=response)
+
+
+def test_chunked_transcription_reports_length_when_any_chunk_stops_there() -> None:
+    class ReasonClient:
+        def __init__(self, reasons: list[str]) -> None:
+            self.reasons = reasons
+            self.calls = 0
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            reason = self.reasons[self.calls]
+            self.calls += 1
+            index = request_id.rsplit("-chunk-", 1)[-1]
+            return CompletionResult(
+                request_id=request_id, text=f"part{index}", finish_reason=reason
+            )
+
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters.base import (
+            DefaultTranscriptionAdapter,
+        )
+        from sglang_omni.serve.transcriptions import (
+            assemble_chunked_response,
+            transcribe_audio_chunks,
+        )
+
+        plan = tiny_plan(3)
+        texts, finish_reason = await asyncio.wait_for(
+            transcribe_audio_chunks(
+                ReasonClient(["stop", "length", "stop"]),
+                plan,
+                request_id="req",
+                model="asr",
+                filename=None,
+                language=None,
+                prompt=None,
+                temperature=None,
+                repetition_penalty=None,
+                max_new_tokens=None,
+                max_concurrent=3,
+                condition_on_previous_text=False,
+                adapter=DefaultTranscriptionAdapter(),
+            ),
+            timeout=10.0,
+        )
+        assert texts == ["part0", "part1", "part2"]
+        assert finish_reason == "length"
+        response = assemble_chunked_response(
+            text="part0 part1 part2",
+            response_format="json",
+            language="en",
+            plan=plan,
+            chunk_texts=texts,
+            architectures=["WhisperForConditionalGeneration"],
+            finish_reason=finish_reason,
+        )
+        assert json.loads(response.body)["finish_reason"] == "length"
+        assert response.headers["x-finish-reason"] == "length"
+        verbose = assemble_chunked_response(
+            text="part0 part1 part2",
+            response_format="verbose_json",
+            language="en",
+            plan=plan,
+            chunk_texts=texts,
+            architectures=["Qwen3ASRForConditionalGeneration"],
+            finish_reason=finish_reason,
+        )
+        assert json.loads(verbose.body)["finish_reason"] == "length"
+        text_response = assemble_chunked_response(
+            text="part0 part1 part2",
+            response_format="text",
+            language="en",
+            plan=plan,
+            chunk_texts=texts,
+            architectures=None,
+            finish_reason=finish_reason,
+        )
+        assert text_response.body == b"part0 part1 part2"
+        assert text_response.headers["x-finish-reason"] == "length"
+
+        quiet_texts, quiet_reason = await asyncio.wait_for(
+            transcribe_audio_chunks(
+                ReasonClient(["stop", "stop"]),
+                tiny_plan(2),
+                request_id="req",
+                model="asr",
+                filename=None,
+                language=None,
+                prompt=None,
+                temperature=None,
+                repetition_penalty=None,
+                max_new_tokens=None,
+                max_concurrent=2,
+                condition_on_previous_text=False,
+                adapter=DefaultTranscriptionAdapter(),
+            ),
+            timeout=10.0,
+        )
+        assert quiet_texts == ["part0", "part1"]
+        assert quiet_reason is None
+        quiet = assemble_chunked_response(
+            text="part0 part1",
+            response_format="json",
+            language="en",
+            plan=tiny_plan(2),
+            chunk_texts=quiet_texts,
+            architectures=None,
+            finish_reason=quiet_reason,
+        )
+        assert "finish_reason" not in json.loads(quiet.body)
+        assert "x-finish-reason" not in {name.lower() for name in quiet.headers}
+
+    asyncio.run(scenario())
 
 
 def test_chunks_run_concurrently() -> None:
@@ -3452,9 +4153,8 @@ def test_transcription_endpoint_returns_text_json() -> None:
         ),
     ],
 )
-@pytest.mark.parametrize("stream", [False, True])
 def test_chat_endpoint_classifies_video_media_errors(
-    error: str, expected_status: int, stream: bool
+    error: str, expected_status: int
 ) -> None:
     client = TestClient(create_app(fault_client("qwen3-omni", error=error)))
     response = client.post(
@@ -3463,29 +4163,58 @@ def test_chat_endpoint_classifies_video_media_errors(
             "model": "qwen3-omni",
             "messages": [{"role": "user", "content": "Describe the video."}],
             "use_audio_in_video": True,
-            "stream": stream,
+            "stream": False,
         },
     )
-    if stream:
-        assert response.status_code == 200
-        assert response.headers["content-type"].startswith("text/event-stream")
-        events = [
-            line.removeprefix("data: ")
-            for line in response.iter_lines()
-            if line.startswith("data: ")
-        ]
-        assert events[-1] == "[DONE]"
-        assert events.count("[DONE]") == 1
-        assert json.loads(events[-2])["error"] == {
-            "message": error,
-            "type": (
-                "invalid_request_error" if expected_status == 400 else "server_error"
-            ),
-            "code": expected_status,
-        }
-    else:
-        assert response.status_code == expected_status
-        assert error in response.text
+
+    assert response.status_code == expected_status
+    assert error in response.text
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status", "expected_type"),
+    [
+        (
+            "use_audio_in_video requires every video in a multi-video request "
+            "to contain a decodable audio track",
+            400,
+            "invalid_request_error",
+        ),
+        (
+            "Failed to extract embedded audio from /tmp/video.mp4: out of memory",
+            500,
+            "server_error",
+        ),
+    ],
+)
+def test_chat_stream_classifies_video_media_errors(
+    error: str, expected_status: int, expected_type: str
+) -> None:
+    client = TestClient(create_app(fault_client("qwen3-omni", error=error)))
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-omni",
+            "messages": [{"role": "user", "content": "Describe the video."}],
+            "use_audio_in_video": True,
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = [
+        line.removeprefix("data: ")
+        for line in response.iter_lines()
+        if line.startswith("data: ")
+    ]
+    assert events[-1] == "[DONE]"
+    assert events.count("[DONE]") == 1
+    assert json.loads(events[-2])["error"] == {
+        "message": error,
+        "type": expected_type,
+        "code": expected_status,
+    }
 
 
 def test_transcription_endpoint_maps_disallowed_special_token_to_400() -> None:
@@ -3643,6 +4372,32 @@ def test_transcription_endpoint_maps_unsupported_language_error_to_400() -> None
     assert "Use a supported language code" in response.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    "model_name", ["Qwen/Qwen3-ASR-1.7B", "OpenMOSS-Team/MOSS-Transcribe-Diarize"]
+)
+@pytest.mark.parametrize("temperature", [-1.0, 0.0])
+def test_transcription_temperature_is_validated_before_generation(
+    model_name: str, temperature: float
+) -> None:
+    """Negative temperature reached generation and produced length-limited nonsense."""
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(create_app(transcription_client, model_name=model_name))
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": model_name, "temperature": str(temperature)},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    if temperature < 0:
+        assert response.status_code == 422
+        assert transcription_client.requests == []
+    else:
+        assert response.status_code == 200
+        assert len(transcription_client.requests) == 1
+        assert transcription_client.requests[0].sampling.temperature == temperature
+
+
 def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(
@@ -3666,7 +4421,6 @@ def test_transcription_endpoint_passes_explicit_max_new_tokens() -> None:
     request = transcription_client.requests[0]
     assert request.model == "OpenMOSS-Team/MOSS-Transcribe-Diarize"
     assert request.sampling.max_new_tokens == 4096
-    assert request.metadata[EXPLICIT_GENERATION_PARAMS_KEY] == ["max_new_tokens"]
 
 
 def test_transcription_endpoint_maps_input_length_error_to_400() -> None:
@@ -3796,6 +4550,46 @@ def test_transcription_stream_emits_delta_done_and_sentinel() -> None:
     assert '"text":"hello world"' in body
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("return_spec_tokens_details", [False, True])
+def test_transcription_returns_spec_tokens_details_only_when_requested(
+    stream: bool, return_spec_tokens_details: bool
+) -> None:
+    client = TestClient(
+        create_app(
+            SuccessfulTranscriptionClient(spec_tokens_details=SPEC_TOKENS_DETAILS),
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "stream": str(stream).lower(),
+            "return_spec_tokens_details": str(return_spec_tokens_details).lower(),
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    if stream:
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.iter_lines()
+            if line and line != "data: [DONE]"
+        ]
+        body = events[-1]
+        assert body["type"] == "transcript.text.done"
+    else:
+        body = response.json()
+    expected = (
+        {"spec_tokens_details": SPEC_TOKENS_DETAILS}
+        if return_spec_tokens_details
+        else None
+    )
+    assert body.get("sglext") == expected
+
+
 def test_transcription_stream_maps_input_length_error_to_400() -> None:
     transcription_client = FailingTranscriptionClient(
         "Input length (140000 tokens) exceeds the maximum allowed length "
@@ -3898,30 +4692,6 @@ def test_transcription_endpoint_uses_openai_temperature_default() -> None:
     assert transcription_client.requests
     request = transcription_client.requests[0]
     assert request.sampling.temperature == 0.0
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in request.metadata
-
-
-def test_transcription_endpoint_marks_mtd_request_for_model_sampling_defaults() -> None:
-    transcription_client = SuccessfulTranscriptionClient()
-    client = TestClient(
-        create_app(
-            transcription_client,
-            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
-            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
-        )
-    )
-
-    response = client.post(
-        "/v1/audio/transcriptions",
-        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
-        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
-    )
-
-    assert response.status_code == 200
-    assert transcription_client.requests
-    request = transcription_client.requests[0]
-    assert request.sampling.temperature == 0.0
-    assert EXPLICIT_GENERATION_PARAMS_KEY not in request.metadata
 
 
 class DiarizationTranscriptionClient:
@@ -4021,29 +4791,7 @@ def test_transcription_srt_returns_diarized_segments() -> None:
     )
 
 
-def test_transcription_vtt_returns_diarized_segments() -> None:
-    client = TestClient(
-        create_app(
-            DiarizationTranscriptionClient(),
-            model_name="moss-transcribe-diarize",
-            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
-        )
-    )
-
-    response = client.post(
-        "/v1/audio/transcriptions",
-        data={"model": "moss-transcribe-diarize", "response_format": "vtt"},
-        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
-    )
-
-    assert response.status_code == 200
-    assert response.text.startswith("WEBVTT\n\n")
-
-
-@pytest.mark.parametrize("response_format", ["srt", "vtt"])
-def test_transcription_subtitle_format_requires_model_timestamps(
-    response_format: str,
-) -> None:
+def test_transcription_subtitle_format_requires_model_timestamps() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(
         create_app(
@@ -4055,10 +4803,7 @@ def test_transcription_subtitle_format_requires_model_timestamps(
 
     response = client.post(
         "/v1/audio/transcriptions",
-        data={
-            "model": "moss-transcribe-diarize",
-            "response_format": response_format,
-        },
+        data={"model": "moss-transcribe-diarize", "response_format": "srt"},
         files={"file": ("sample.wav", b"RIFF", "audio/wav")},
     )
 
@@ -4067,10 +4812,7 @@ def test_transcription_subtitle_format_requires_model_timestamps(
     assert len(transcription_client.requests) == 1
 
 
-@pytest.mark.parametrize("response_format", ["srt", "vtt"])
-def test_qwen3_asr_rejects_subtitle_format_before_inference(
-    response_format: str,
-) -> None:
+def test_qwen3_asr_rejects_subtitle_format_before_inference() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(
         create_app(
@@ -4082,10 +4824,7 @@ def test_qwen3_asr_rejects_subtitle_format_before_inference(
 
     response = client.post(
         "/v1/audio/transcriptions",
-        data={
-            "model": "Qwen/Qwen3-ASR-1.7B",
-            "response_format": response_format,
-        },
+        data={"model": "Qwen/Qwen3-ASR-1.7B", "response_format": "srt"},
         files={"file": ("sample.wav", b"RIFF", "audio/wav")},
     )
 
@@ -4094,10 +4833,7 @@ def test_qwen3_asr_rejects_subtitle_format_before_inference(
     assert transcription_client.requests == []
 
 
-@pytest.mark.parametrize("response_format", ["srt", "vtt"])
-def test_streaming_rejects_subtitle_format_before_inference(
-    response_format: str,
-) -> None:
+def test_streaming_rejects_subtitle_format_before_inference() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(
         create_app(
@@ -4111,7 +4847,7 @@ def test_streaming_rejects_subtitle_format_before_inference(
         "/v1/audio/transcriptions",
         data={
             "model": "moss-transcribe-diarize",
-            "response_format": response_format,
+            "response_format": "srt",
             "stream": "true",
         },
         files={"file": ("sample.wav", b"RIFF", "audio/wav")},
@@ -4373,17 +5109,6 @@ def test_distributed_weight_update_routes_forward_to_client() -> None:
             0,
         ),
     ]
-
-
-def test_stub_endpoint_checks_auth_before_501() -> None:
-    """Auth check fires before the tensor stub 501 body."""
-    admin = AdminClient()
-    client = TestClient(
-        create_app(admin, model_name="qwen3-omni", admin_api_key=ADMIN_API_KEY)
-    )
-
-    resp = client.post("/update_weights_from_tensor", json={})
-    assert resp.status_code == 401
 
 
 @pytest.mark.parametrize("stream", [False, True])

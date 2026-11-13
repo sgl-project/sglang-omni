@@ -34,6 +34,7 @@ from sglang_omni.scheduling.reference_encoder import (
 )
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.utils.device import resolve_concrete_device
 
 if TYPE_CHECKING:
     from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
@@ -304,7 +305,14 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
 
     def input_key(self, item: FishReferenceInput) -> str | None:
         if item.source_kind == "path":
-            return _reference_path_cache_key(str(item.source), trust_stat=False)
+            source = str(item.source)
+            # Uploaded voices reach the hook as a data URL in audio_path; it is
+            # not a file on disk, so key it by its content instead.
+            if source.startswith("data:"):
+                return f"data:{_hash_bytes(source.encode('utf-8'))}"
+            else:
+                pass
+            return _reference_path_cache_key(source, trust_stat=False)
         else:
             pass
         if item.source_kind == "bytes":
@@ -366,9 +374,11 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
 def create_preprocessing_executor(
     model_path: str,
     *,
+    device: str | None = None,
+    gpu_id: int | None = None,
     max_concurrency: int = 8,
 ):
-    """Returns a threaded scheduler for CPU-heavy preprocessing."""
+    """Returns a threaded scheduler that tokenizes and encodes reference audio."""
     from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
     worker_count = max(int(max_concurrency), 1)
@@ -389,9 +399,26 @@ def create_preprocessing_executor(
 
     tokenizer = PreTrainedTokenizerFast.from_pretrained(checkpoint_dir)
     adapter = S2ProTokenizerAdapter(tokenizer)
-    codec = load_codec(checkpoint_dir, "cpu")
+    if device is None and gpu_id is None:
+        device = "cpu"
+    else:
+        pass
+    device = str(resolve_concrete_device(device, gpu_id))
+    codec = load_codec(checkpoint_dir, device)
+    reference_encode_hook = FishReferenceEncodeHook(
+        codec=codec, checkpoint_id=checkpoint_dir, device=device
+    )
+    if torch.device(device).type != "cpu":
+        # Note (Jiaxin Deng): TF32 convolutions flip ~3% of reference codes versus
+        # the CPU encode; full fp32 keeps them identical at the same speed.
+        torch.backends.cudnn.allow_tf32 = False
+        reference_encode_hook.encode_reference_waveform(
+            torch.zeros((1, int(codec.sample_rate))), int(codec.sample_rate)
+        )
+    else:
+        pass
     reference_encode_service = ReferenceEncodeService(
-        FishReferenceEncodeHook(codec=codec, checkpoint_id=checkpoint_dir),
+        reference_encode_hook,
         max_items=256,
         max_bytes=64 * 1024 * 1024,
         timeout_s=130.0,
@@ -466,6 +493,7 @@ def create_sglang_tts_engine_executor(
     max_new_tokens: int = 2048,
     top_k: int = 30,
     ras_window: int = 16,
+    enable_async_decode: bool = False,
     server_args_overrides: Mapping[str, object] | None = None,
 ):
     """Returns OmniScheduler for the Fish TTS AR engine."""
@@ -477,6 +505,7 @@ def create_sglang_tts_engine_executor(
     return FishS2ProEngineBuilder(
         max_new_tokens=max_new_tokens,
         ras_window=ras_window,
+        enable_async_decode=enable_async_decode,
     ).build(
         model_path,
         device=device,

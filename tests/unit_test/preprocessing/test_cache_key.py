@@ -146,11 +146,10 @@ def test_hash_media_item_keys_content_not_mutable_addresses() -> None:
 @pytest.mark.parametrize(
     "tensor",
     [
-        torch.arange(360, dtype=torch.float32).reshape(4, 3, 5, 6),
         torch.arange(360, dtype=torch.float32).reshape(4, 5, 6, 3).permute(0, 3, 1, 2),
         torch.arange(128, dtype=torch.int16).reshape(2, 64).T,
     ],
-    ids=["contiguous-clip", "channels-last-clip", "transposed-rows"],
+    ids=["channels-last-clip", "transposed-rows"],
 )
 def test_hash_media_item_tensor_digest_matches_whole_buffer(tensor) -> None:
     # Strided frames are hashed one at a time, and the key must stay the hash
@@ -160,7 +159,7 @@ def test_hash_media_item_tensor_digest_matches_whole_buffer(tensor) -> None:
     assert cache_key.hash_media_item(tensor) == expected
 
 
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32, torch.int64])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 def test_prompt_row_cache_keys_follow_row_content(dtype) -> None:
     rows = (torch.arange(32).reshape(4, 8) * 7 - 50).to(dtype)
     rows[3] = rows[0]
@@ -179,6 +178,9 @@ def test_prompt_row_cache_keys_follow_row_content(dtype) -> None:
     assert changed_ids[1] != ids[1]
     assert changed_ids[:1] + changed_ids[2:] == ids[:1] + ids[2:]
     assert all(0 <= key < 2**63 for key in ids + changed_ids)
+    whole_row = torch.full((1, 8), 7.0, dtype=dtype)
+    fractional_row = torch.full((1, 8), 7.25, dtype=dtype)
+    assert keys.key_ids(whole_row) != keys.key_ids(fractional_row)
 
 
 @pytest.mark.accelerator

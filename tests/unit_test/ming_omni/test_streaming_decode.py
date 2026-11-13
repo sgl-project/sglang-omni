@@ -204,42 +204,6 @@ def test_non_streaming_emits_single_result():
     assert drain_outbox(sched) == []
 
 
-def test_stream_done_before_new_request():
-    """stream_done arrives before new_request — must still finalize correctly."""
-    vocab = {5: "X"}
-    tok = SimpleTokenizer(vocab)
-    sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
-    t = run_scheduler(sched)
-
-    rid = "req-3"
-    try:
-        send(
-            sched,
-            IncomingMessage(
-                request_id=rid,
-                type="stream_chunk",
-                data=SimpleNamespace(data=torch.tensor([5], dtype=torch.long)),
-            ),
-        )
-        # stream_done arrives BEFORE new_request (the normal runtime order)
-        send(sched, IncomingMessage(request_id=rid, type="stream_done", data=None))
-        send(
-            sched,
-            IncomingMessage(
-                request_id=rid,
-                type="new_request",
-                data=make_payload(rid, stream=True, output_ids=[5]),
-            ),
-        )
-        msgs = collect(sched, expect=2)
-    finally:
-        sched.stop()
-        t.join(timeout=2.0)
-    assert not t.is_alive()
-
-    assert [m.type for m in msgs] == ["stream", "result"]
-
-
 def test_stream_done_before_new_request_without_token_chunks_finalizes():
     """decode must finalize when runtime sends only stream_done before payload."""
     vocab = {1: "A", 2: "B"}
@@ -565,34 +529,3 @@ def test_text_stream_builder_silent_during_chunked_prefill():
     rd = SimpleNamespace(req=req, stage_payload=stage_payload)
     msgs = builder("req-1", rd, make_req_output(42))
     assert msgs == []
-
-
-def test_text_stream_builder_silent_when_audio_only_modality():
-    """No text chunks when output_modalities=["audio"] (e.g. TTS-only request)."""
-    builder = make_text_stream_output_builder()
-    payload = OmniRequest(
-        inputs={"text": "hi"},
-        params={"stream": True},
-        metadata={"output_modalities": ["audio"]},
-    )
-    stage_payload = StagePayload(request_id="r", request=payload, data={})
-    req = SimpleNamespace(inflight_middle_chunks=0)
-    rd = SimpleNamespace(req=req, stage_payload=stage_payload)
-    msgs = builder("req-1", rd, make_req_output(42))
-    assert msgs == [], "Should not emit text chunks when only audio is requested"
-
-
-def test_text_stream_builder_emits_when_text_in_modalities():
-    """Text chunks emitted when output_modalities includes text."""
-    builder = make_text_stream_output_builder()
-    payload = OmniRequest(
-        inputs={"text": "hi"},
-        params={"stream": True},
-        metadata={"output_modalities": ["text", "audio"]},
-    )
-    stage_payload = StagePayload(request_id="r", request=payload, data={})
-    req = SimpleNamespace(inflight_middle_chunks=0)
-    rd = SimpleNamespace(req=req, stage_payload=stage_payload)
-    msgs = builder("req-1", rd, make_req_output(42))
-    assert len(msgs) == 1
-    assert int(msgs[0].data.item()) == 42

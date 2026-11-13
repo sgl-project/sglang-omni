@@ -1,6 +1,7 @@
 """Realtime output delivery and completion state."""
 
 import asyncio
+import math
 from collections import deque
 from dataclasses import dataclass, replace
 
@@ -8,10 +9,11 @@ from sglang_omni.serve.realtime.control import Closed, Failure
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
-    ContextLimitError,
+    InputTranscription,
     OutputEvent,
     ResponseEvent,
     ResponseFinished,
+    ResponseProgress,
     ResponseStarted,
     ResponseStatus,
     TextDelta,
@@ -19,14 +21,28 @@ from sglang_omni.serve.realtime.output import (
 )
 from sglang_omni.serve.realtime.types import (
     PCM16_BYTES_PER_SAMPLE,
+    ContextLimitError,
     Envelope,
+    OutputBudgetError,
     RuntimeLimits,
     Unit,
 )
 
+# Note (Junnan Li): The JSON of one server event around its audio or text: type, event and item ids, indexes.
+ENVELOPE_BYTES = 256
+
 
 def envelope_size_bytes(envelope: Envelope) -> int:
-    return len(repr(envelope.event).encode())
+    """The bytes the event puts on the websocket: its base64 audio or UTF-8 text plus the envelope."""
+    event = envelope.event
+    if isinstance(event, AudioDelta):
+        return math.ceil(len(event.pcm) / 3) * 4 + ENVELOPE_BYTES
+    elif isinstance(
+        event, (TextDelta, TextFinished, ResponseFinished, InputTranscription)
+    ):
+        return len(event.text.encode()) + ENVELOPE_BYTES
+    else:
+        return ENVELOPE_BYTES
 
 
 @dataclass(kw_only=True)
@@ -59,11 +75,8 @@ class OutputBuffer:
 
     def enqueue(self, envelope: Envelope) -> None:
         size_bytes = envelope_size_bytes(envelope)
-        if (
-            len(self.queued_envelopes) >= self.limits.max_output_events
-            or self.queued_bytes + size_bytes > self.limits.max_output_bytes
-        ):
-            raise RuntimeError("outbound event budget exhausted")
+        if self.queued_bytes + size_bytes > self.limits.max_output_bytes:
+            raise OutputBudgetError()
         else:
             pass
         self.append_unbounded(envelope, size_bytes)
@@ -94,7 +107,10 @@ class OutputBuffer:
         modalities = (
             response_state.output_modalities if response_state is not None else None
         ) or output_modalities
-        if isinstance(event, (AudioDelta, AudioFinished)) and "audio" not in modalities:
+        if (
+            isinstance(event, (AudioDelta, ResponseProgress, AudioFinished))
+            and "audio" not in modalities
+        ):
             return
         elif isinstance(event, ResponseFinished) and "audio" not in modalities:
             event = replace(event, has_audio=False)
@@ -104,7 +120,14 @@ class OutputBuffer:
             self.start_response(event.response_id, modalities)
         elif isinstance(
             event,
-            (TextDelta, TextFinished, AudioDelta, AudioFinished, ResponseFinished),
+            (
+                TextDelta,
+                TextFinished,
+                AudioDelta,
+                ResponseProgress,
+                AudioFinished,
+                ResponseFinished,
+            ),
         ):
             response_state = self.responses.get(event.response_id)
             if response_state is None:
@@ -123,7 +146,7 @@ class OutputBuffer:
                     else event.text
                 )
                 if len(response_text) > self.limits.max_history_chars:
-                    raise ContextLimitError("response text context limit")
+                    raise ContextLimitError()
                 else:
                     pass
                 response_state.text = response_text
@@ -133,6 +156,21 @@ class OutputBuffer:
                 raise RuntimeError("producer emitted invalid PCM16")
             elif isinstance(event, ResponseFinished):
                 response_state.is_terminal = True
+                if event.status == "cancelled":
+                    # Note (ruoyu): The listener stopped this reply, so its audio still waiting for a slow socket must not leave; the socket can hold seconds of it.
+                    self.queued_envelopes = deque(
+                        (envelope, size_bytes)
+                        for envelope, size_bytes in self.queued_envelopes
+                        if not (
+                            isinstance(envelope.event, AudioDelta)
+                            and envelope.event.response_id == event.response_id
+                        )
+                    )
+                    self.queued_bytes = sum(
+                        size_bytes for _, size_bytes in self.queued_envelopes
+                    )
+                else:
+                    pass
             else:
                 pass
         else:
@@ -150,13 +188,11 @@ class OutputBuffer:
     def start_response(self, response_id: str, modalities: tuple[str, ...]) -> None:
         if response_id in self.responses:
             raise RuntimeError("duplicate response creation")
-        elif len(self.responses) >= self.limits.max_output_events:
-            raise RuntimeError("unfinished response budget exhausted")
         else:
             self.responses[response_id] = ResponseState(output_modalities=modalities)
 
     def finish_responses(self, status: ResponseStatus, reason: str) -> None:
-        """Reserve at most three closing events per bounded response slot."""
+        """Queue at most three closing events per visible response."""
         for response_id, response_state in list(self.responses.items()):
             if (
                 response_state.is_terminal_sent

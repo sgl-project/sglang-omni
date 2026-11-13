@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import sglang_omni.platforms as platforms
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_factory_signature_args,
@@ -18,6 +20,48 @@ from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
+
+
+@pytest.mark.parametrize(
+    "stage_overrides",
+    [
+        [("vocoder.process", "tts_frontend")],
+        [("vocoder.process", "tts_frontend"), ("vocoder.gpu", "1")],
+        [("vocoder.process", "tts_frontend"), ("vocoder.gpu", "null")],
+    ],
+)
+def test_higgs_rejects_cuda_consumers_sharing_reference_encoder_process(
+    monkeypatch: pytest.MonkeyPatch,
+    stage_overrides: list[tuple[str, str]],
+) -> None:
+    """Encode backend settings must not reach another stage's CUDA launches."""
+    monkeypatch.setattr(platforms.current_platform, "device_type", "cuda")
+    config = HiggsTtsPipelineConfig(model_path="model")
+    with pytest.raises(
+        ValueError, match="CUDA audio_encoder must use a separate process"
+    ):
+        ConfigManager(config).merge_config(stage_overrides)
+
+
+@pytest.mark.parametrize("cpu_stage", ["audio_encoder", "vocoder"])
+def test_higgs_allows_cpu_codec_to_share_a_cuda_stage_process(
+    monkeypatch: pytest.MonkeyPatch,
+    cpu_stage: str,
+) -> None:
+    """CPU codecs do not change the CUDA backend policy of a shared process."""
+    monkeypatch.setattr(platforms.current_platform, "device_type", "cuda")
+    config = ConfigManager(HiggsTtsPipelineConfig(model_path="model")).merge_config(
+        [
+            ("audio_encoder.process", "tts_frontend"),
+            ("vocoder.process", "tts_frontend"),
+            (f"{cpu_stage}.factory.device", "cpu"),
+        ]
+    )
+    assert (
+        config.stage_named("audio_encoder").process
+        == config.stage_named("vocoder").process
+    )
+    assert config.stage_named(cpu_stage).factory.device == "cpu"
 
 
 def same_gpu_frontend_replica_config(tmp_path) -> HiggsTtsPipelineConfig:

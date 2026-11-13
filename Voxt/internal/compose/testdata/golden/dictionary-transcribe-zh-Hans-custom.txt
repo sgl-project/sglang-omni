@@ -1,0 +1,34 @@
+# profile: custom:dictionary+scene+glossary
+# layers: custom dictionary scene glossary
+
+My own prompt for 中文.
+
+<dictionary>
+| Standard spelling | Correction mapping | Condition / cue |
+|---|---|---|
+| 101; 280; I-80; SR-85 | `幺零幺` → 101 | Bay Area highways; keep the I- / SR- prefix as spoken |
+| 401(k); Roth | `401 K` / `四零一 K` → 401(k); `罗斯` → Roth | retirement accounts |
+| AAPL; NVDA; TSLA | — | tickers, all caps, only when the ticker itself is said |
+</dictionary>
+
+场景：文字会插入到 Slack。用户为这个场景写的规则：
+Casual.
+场景只用来选择措辞和格式，不要补充没有说过的事实。
+
+术语表：下面的词按这里的写法输出，即使语音识别听成了别的写法。
+- Kubernetes
+- VoxtNew（可能被听成：aura link、奥拉链接）
+- DeepSeek（可能被听成：deep seek）
+
+---- user ----
+<input>
+呃，帮我把那个周报，嗯，发给小王，不对，是发给小李，今天下班前。今天下班前一定要发，就是说，今天下班前一定要发出去。
+</input>
+
+---- assistant ----
+帮我把周报发给小李，今天下班前。今天下班前一定要发出去。
+
+---- user ----
+<input>
+我走幺零幺去 罗斯 账户
+</input>

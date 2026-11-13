@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+from flashinfer.sampling import get_sampling_module
 from sglang.srt.layers.sampler import multinomial_with_seed
 from sglang.srt.sampling.penaltylib.repetition_penalty import apply_scaling_penalties
 from sglang.srt.utils import DynamicGradMode
@@ -57,3 +58,24 @@ def test_compiled_forms_serve_views_and_standalone_tensors_at_every_batch_size()
             torch.ones(2, VOCAB_SIZE, device=device),
         )
     assert counters["frames"]["ok"] == compiled_frames + 1
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("should_load_flashinfer_sampling", [False, True])
+def test_flashinfer_form_loads_the_sampling_module(
+    should_load_flashinfer_sampling: bool,
+) -> None:
+    get_sampling_module.cache_clear()
+
+    compile_sampler_functions(
+        SamplerCompileForms(
+            device=torch.device("cuda", torch.cuda.current_device()),
+            vocab_size=VOCAB_SIZE,
+            should_load_flashinfer_sampling=should_load_flashinfer_sampling,
+        )
+    )
+
+    assert get_sampling_module.cache_info().currsize == int(
+        should_load_flashinfer_sampling
+    )

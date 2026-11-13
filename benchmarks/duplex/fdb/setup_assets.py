@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from importlib.metadata import PackageNotFoundError, requires
+from importlib.metadata import PackageNotFoundError, requires, version
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download, model_info, snapshot_download
@@ -19,7 +19,6 @@ from benchmarks.duplex.fdb.common import (
     FDB_SOURCE_REVISION,
     FDB_SOURCE_URL,
     JUDGE_MODEL_ID,
-    MODEL_ID,
     PARAKEET_FILENAME,
     PARAKEET_REPO_ID,
     PARAKEET_REVISION,
@@ -31,6 +30,10 @@ from benchmarks.duplex.reference_core import V10_REFERENCE_FILES
 from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
 from benchmarks.duplex.v15_dataset import SUBSETS
+from benchmarks.metrics.speaker_similarity_assets import (
+    ensure_speaker_similarity_assets,
+)
+from benchmarks.metrics.utmos import ensure_utmos_assets
 
 REFERENCE_FILE_SHA256 = {
     "v1_v1.5/get_transcript/asr.py": "aedaee0d50f2bc47947caf6f3899939461e290225a98c0ddc434c360189596cf",
@@ -71,12 +74,27 @@ V10_DATASET_DRIVE_FILE_IDS = {
     "synthetic_user_interruption": "1I36wGbPtZObjqI_1h11Rb2s1ulerb65a",
     "icc_backchannel": "1HttNZbi0bYHe7a-CO_9vg_z7hMM8a5h0",
 }
+# note (jeffro): qwen-asr pins a transformers release of its own, so the
+# cascade's forced-alignment worker runs from a venv apart from the server's.
+# this need double check.
+ALIGNER_PACKAGES = [
+    "qwen-asr==0.0.6",
+    "fastapi==0.156.4",
+    "uvicorn==0.54.0",
+    "httpx==0.28.1",
+    "msgpack==1.2.3",
+    "msgspec==0.22.0",
+    "numpy==2.5.4",
+    "pydantic==2.14.1",
+    "regex==2026.9.29",
+    "websockets==17.3",
+]
 SERVING_DISTRIBUTION = "sglang-omni"
 MODEL_EXTRA = "minicpm-o"
 
 
 def setup_model_extra() -> None:
-    log(f"== [1/8] {MODEL_EXTRA} extra in the serving venv ({sys.executable})")
+    log(f"== [1/9] {MODEL_EXTRA} extra in the serving venv ({sys.executable})")
     try:
         declared = requires(SERVING_DISTRIBUTION) or []
     except PackageNotFoundError:
@@ -94,7 +112,7 @@ def setup_model_extra() -> None:
             and marker.evaluate({"extra": MODEL_EXTRA})
             and not marker.evaluate({"extra": ""})
         ):
-            extra_requirements.append(f"{requirement.name}{requirement.specifier}")
+            extra_requirements.append(requirement)
         else:
             pass
     if not extra_requirements:
@@ -105,6 +123,21 @@ def setup_model_extra() -> None:
         )
     else:
         pass
+    missing_requirements = []
+    for requirement in extra_requirements:
+        try:
+            installed = version(requirement.name)
+        except PackageNotFoundError:
+            missing_requirements.append(requirement)
+        else:
+            if installed not in requirement.specifier:
+                missing_requirements.append(requirement)
+            else:
+                pass
+    if not missing_requirements:
+        return
+    else:
+        pass
     subprocess.run(
         [
             "uv",
@@ -113,14 +146,17 @@ def setup_model_extra() -> None:
             "--quiet",
             "--python",
             sys.executable,
-            *extra_requirements,
+            *(
+                f"{requirement.name}{requirement.specifier}"
+                for requirement in missing_requirements
+            ),
         ],
         check=True,
     )
 
 
 def setup_reference_source(settings: Settings) -> None:
-    log(f"== [2/8] Full-Duplex-Bench reference checkout at {FDB_SOURCE_REVISION}")
+    log(f"== [2/9] Full-Duplex-Bench reference checkout at {FDB_SOURCE_REVISION}")
     if not (settings.fdb_source / ".git").is_dir():
         subprocess.run(
             ["git", "clone", FDB_SOURCE_URL, str(settings.fdb_source)], check=True
@@ -148,7 +184,7 @@ def setup_reference_source(settings: Settings) -> None:
 
 
 def setup_scoring_venv(settings: Settings) -> None:
-    log(f"== [3/8] Scoring venv at {settings.scoring_venv}")
+    log(f"== [3/9] Scoring venv at {settings.scoring_venv}")
     if not settings.scoring_python.is_file():
         subprocess.run(
             [
@@ -244,7 +280,7 @@ def setup_dataset(
 
 
 def setup_parakeet(settings: Settings) -> None:
-    log("== [6/8] Parakeet ASR checkpoint")
+    log("== [6/9] Parakeet ASR checkpoint")
     nemo = settings.parakeet_nemo
     if nemo.is_file() and file_sha256(nemo) == PARAKEET_SHA256:
         return
@@ -262,15 +298,56 @@ def setup_parakeet(settings: Settings) -> None:
         pass
 
 
-def setup_models(settings: Settings) -> None:
-    log(f"== [7/8] Model under test at {settings.model_path}")
-    if not (settings.model_path / "config.json").is_file():
-        snapshot_download(
-            MODEL_ID, revision=settings.model_revision, local_dir=settings.model_path
+def setup_aligner_venv(settings: Settings) -> None:
+    log(f"   forced-alignment worker venv at {settings.aligner_python.parent.parent}")
+    if not settings.aligner_python.is_file():
+        subprocess.run(
+            [
+                "uv",
+                "venv",
+                "--python",
+                SCORING_PYTHON_VERSION,
+                str(settings.aligner_python.parent.parent),
+            ],
+            check=True,
         )
     else:
         pass
-    log(f"== [8/8] Judge model at {settings.judge_model_path} (JUDGE={settings.judge})")
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--quiet",
+            "--python",
+            str(settings.aligner_python),
+            *ALIGNER_PACKAGES,
+        ],
+        check=True,
+    )
+
+
+def setup_models(settings: Settings) -> None:
+    engine = settings.engine
+    if engine.launch_config is None:
+        log(f"== [7/9] Model under test at {settings.model_path}")
+        if not (settings.model_path / "config.json").is_file():
+            snapshot_download(
+                engine.model_id,
+                revision=settings.model_revision,
+                local_dir=settings.model_path,
+            )
+        else:
+            pass
+    else:
+        log(f"== [7/9] Models of {engine.name} in the Hugging Face cache")
+        for model_id in engine.hf_model_ids:
+            snapshot_download(model_id)
+    if engine.needs_aligner:
+        setup_aligner_venv(settings)
+    else:
+        pass
+    log(f"== [8/9] Judge model at {settings.judge_model_path} (JUDGE={settings.judge})")
     if settings.judge == "qwen" and not settings.judge_revision_file.is_file():
         judge_revision = model_info(JUDGE_MODEL_ID).sha
         snapshot_download(
@@ -281,13 +358,19 @@ def setup_models(settings: Settings) -> None:
         pass
 
 
+def setup_listening_models() -> None:
+    log("== [9/9] UTMOS and WavLM speaker models for the listening metrics")
+    ensure_utmos_assets()
+    ensure_speaker_similarity_assets()
+
+
 def setup(settings: Settings) -> None:
     setup_model_extra()
     (settings.fdb_work / "models").mkdir(parents=True, exist_ok=True)
     setup_reference_source(settings)
     setup_scoring_venv(settings)
     setup_dataset(
-        "[4/8]",
+        "[4/9]",
         settings,
         settings.dataset,
         settings.dataset_revision_file,
@@ -296,7 +379,7 @@ def setup(settings: Settings) -> None:
         DATASET_DRIVE_FILE_IDS,
     )
     setup_dataset(
-        "[5/8]",
+        "[5/9]",
         settings,
         settings.dataset_v10,
         settings.dataset_v10_revision_file,
@@ -306,4 +389,5 @@ def setup(settings: Settings) -> None:
     )
     setup_parakeet(settings)
     setup_models(settings)
+    setup_listening_models()
     log("Setup complete.")

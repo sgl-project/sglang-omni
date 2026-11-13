@@ -7,33 +7,8 @@ import pytest
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.config.sources import patches_from_shared_block
-from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
-
-
-def test_dots_tts_uses_framework_stage_boundaries() -> None:
-    from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
-    from sglang_omni.models.dots_tts.payload_types import DotsTTSState
-
-    config = DotsTTSPipelineConfig(model_path="model")
-
-    assert [stage.name for stage in config.stages] == [
-        "preprocessing",
-        "reference_encode",
-        "latent_engine",
-        "vocoder",
-    ]
-    assert {stage.process for stage in config.stages} == {"pipeline"}
-    assert config.terminal_stages == ["vocoder"]
-    assert config.required_speech_reference_count == 1
-    assert config.speech_reference_text_required is True
-    assert config.additional_speech_languages == frozenset({"auto_detect"})
-    assert (
-        PIPELINE_CONFIG_REGISTRY.get_config("DotsTTSForConditionalGeneration")
-        is DotsTTSPipelineConfig
-    )
-    assert DotsTTSState().num_steps == 4
 
 
 def test_dots_tts_shares_acoustic_limits_via_shared() -> None:

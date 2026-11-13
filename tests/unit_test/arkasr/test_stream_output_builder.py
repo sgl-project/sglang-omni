@@ -220,6 +220,7 @@ def test_concatenated_deltas_strip_matches_result_adapter_text() -> None:
             engine_start_s=None,
             language="en",
             audio_duration_s=0.0,
+            spec_tokens_details=None,
         )
     )
     joined = "".join(deltas)

@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import shutil
 import subprocess
 import sys
@@ -13,9 +15,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from benchmarks.duplex.fdb.common import (
-    ENGINE_LABEL,
-    MODEL_ID,
-    RECORD_PROFILE,
+    ENGINE_FILE,
     REPO_ROOT,
     V10_DIR,
     Settings,
@@ -23,6 +23,7 @@ from benchmarks.duplex.fdb.common import (
     log,
     log_tail,
     run_command,
+    visible_devices,
 )
 from benchmarks.duplex.fdb.selection import (
     SampleSelection,
@@ -39,6 +40,7 @@ from benchmarks.duplex.run_artifacts import accounting, load_run
 from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
 
 PROGRESS_INTERVAL_S = 60
+WARMUP_DIR = "warmup"
 
 
 def record_command(
@@ -52,13 +54,25 @@ def record_command(
         capture_output=True,
         text=True,
     ).stdout.strip()
+    engine = settings.engine
+    turn_detection_arguments = (
+        []
+        if engine.turn_detection is None
+        else ["--turn-detection", engine.turn_detection]
+    )
+    revision_arguments = (
+        []
+        if settings.model_revision is None
+        else ["--model-revision", settings.model_revision]
+    )
     return [
         sys.executable,
         "-m",
         module,
         "record",
         "--profile",
-        RECORD_PROFILE,
+        engine.record_profile,
+        *turn_detection_arguments,
         "--dataset-root",
         str(dataset),
         "--dataset-revision",
@@ -66,9 +80,8 @@ def record_command(
         "--url",
         settings.realtime_url,
         "--model",
-        MODEL_ID,
-        "--model-revision",
-        settings.model_revision,
+        engine.model_id,
+        *revision_arguments,
         "--server-revision",
         server_revision,
         "--timeout",
@@ -96,14 +109,16 @@ def v10_record_command(settings: Settings) -> list[str]:
     )
 
 
-def record_shards(
-    base_command: list[str],
+def run_shards(
+    base_commands: list[list[str]],
     root: Path,
     sample_ids: list[str],
     sessions_per_sample: int,
     num_shards: int,
-) -> list[Path]:
-    """Run num_shards recorders in parallel under root/recording; returns the shard directories."""
+) -> tuple[list[Path], int]:
+    """Run num_shards recorders in parallel under root/recording, shard i on model
+    server i mod the server count; returns the shard directories and how many
+    shards had a session that did not pass."""
     session_count = sessions_per_sample * len(sample_ids)
     shards = [
         (
@@ -115,7 +130,7 @@ def record_shards(
     shards = [(shard_dir, shard_ids) for shard_dir, shard_ids in shards if shard_ids]
     with ExitStack() as stack:
         processes = []
-        for shard_dir, shard_ids in shards:
+        for index, (shard_dir, shard_ids) in enumerate(shards):
             shard_log_path = root / "logs" / f"record-{shard_dir.name}.log"
             shard_log = stack.enter_context(shard_log_path.open("w"))
             stack.enter_context(follow_log(shard_log_path))
@@ -126,7 +141,12 @@ def record_shards(
             ]
             processes.append(
                 subprocess.Popen(
-                    [*base_command, "--output", str(shard_dir), *sample_arguments],
+                    [
+                        *base_commands[index % len(base_commands)],
+                        "--output",
+                        str(shard_dir),
+                        *sample_arguments,
+                    ],
                     cwd=REPO_ROOT,
                     stdout=shard_log,
                     stderr=subprocess.STDOUT,
@@ -142,14 +162,61 @@ def record_shards(
                     f"   {time.strftime('%H:%M:%S')} finished sessions: {finished} / {session_count}"
                 )
             pending = [process for process in pending if process.poll() is None]
-    failed_shards = sum(process.returncode != 0 for process in processes)
+    return [shard_dir for shard_dir, _ in shards], sum(
+        process.returncode != 0 for process in processes
+    )
+
+
+def record_shards(
+    base_commands: list[list[str]],
+    root: Path,
+    sample_ids: list[str],
+    sessions_per_sample: int,
+    num_shards: int,
+) -> list[Path]:
+    """Record the scored sessions; returns the shard directories."""
+    shard_dirs, failed_shards = run_shards(
+        base_commands, root, sample_ids, sessions_per_sample, num_shards
+    )
     if failed_shards:
         log(
             f"WARNING: {failed_shards} shard(s) had non-passing sessions; they stay in the denominator."
         )
     else:
         pass
-    return [shard_dir for shard_dir, _ in shards]
+    return shard_dirs
+
+
+def warm_up(
+    base_commands: list[list[str]],
+    repeat_dir: Path,
+    sample_id: str,
+    sessions_per_sample: int,
+    num_shards: int,
+) -> None:
+    """Record sample_id once in every shard under repeat_dir/warmup before the
+    scored sessions; nothing scores these sessions."""
+    # note (jeffro): the first sessions on a fresh server pay its first-use
+    # costs, and with every shard starting at once some H100 runs first spoke
+    # seconds late, after the overlap they were meant to test had ended. One
+    # session per shard reproduces the scored run's concurrency, and like
+    # BenchmarkRunner's warmup it repeats one sample, the first selected.
+    root = repeat_dir / WARMUP_DIR
+    (root / "logs").mkdir(parents=True)
+    log(
+        f"== Warming up with {sample_id} in {num_shards} shard(s), "
+        f"{sessions_per_sample * num_shards} unscored session(s) -> {root}"
+    )
+    _, failed_shards = run_shards(
+        base_commands, root, [sample_id] * num_shards, sessions_per_sample, num_shards
+    )
+    if failed_shards:
+        log(
+            f"WARNING: {failed_shards} warmup shard(s) had non-passing sessions; "
+            f"see {root / 'logs'}. The scored recording follows."
+        )
+    else:
+        pass
 
 
 def print_variant_status(root: Path, shard_dir: Path) -> None:
@@ -173,9 +240,9 @@ def export_reference_audio(
         "benchmarks.eval.benchmark_duplex_reference",
         "export",
         "--engine",
-        ENGINE_LABEL,
+        settings.engine.name,
         "--trace-format",
-        "realtime-pcm16-v1",
+        settings.engine.trace_format.value,
         "--dataset-root",
         str(settings.dataset),
         "--out",
@@ -204,6 +271,8 @@ def export_v10_reference(
         str(settings.dataset_v10),
         "--out",
         str(v10_dir / "reference"),
+        "--trace-format",
+        settings.engine.trace_format.value,
     ]
     for shard_dir in shard_dirs:
         command += ["--run", str(shard_dir)]
@@ -219,7 +288,43 @@ def generate(
     selection: SampleSelection,
     v10_selection: SampleSelection,
     num_shards: int,
+    gpus: tuple[str, ...],
+    *,
+    should_warm_up: bool = True,
 ) -> None:
+    replicas = [settings.on_gpu(gpu) for gpu in gpus]
+    max_sessions = settings.engine.max_sessions
+    if settings.engine.server_gpu_count > 1 and len(gpus) > 1:
+        raise SystemExit(
+            f"ERROR: ENGINE={settings.engine.name} runs one server on every visible "
+            "GPU; leave out --gpus and raise --num-shards for parallel sessions."
+        )
+    elif num_shards < len(gpus):
+        raise SystemExit(
+            f"ERROR: --num-shards {num_shards} leaves model servers idle; "
+            f"use at least one shard per GPU in --gpus ({len(gpus)})."
+        )
+    elif math.ceil(num_shards / len(gpus)) > max_sessions:
+        raise SystemExit(
+            f"ERROR: --num-shards {num_shards} over {len(gpus)} GPU(s) exceeds the "
+            f"model server's max_sessions {max_sessions}; it rejects extra "
+            "connections with HTTP 503."
+        )
+    elif "CUDA_VISIBLE_DEVICES" in os.environ and not set(gpus) <= set(
+        visible_devices()
+    ):
+        raise SystemExit(
+            f"ERROR: --gpus {','.join(gpus)} reaches outside "
+            f"CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}; list only "
+            "visible GPUs."
+        )
+    elif len({replica.server_port for replica in replicas}) < len(replicas):
+        raise SystemExit(
+            "ERROR: SERVER_PORT gives every model server the same port; unset it "
+            "so each GPU in --gpus derives its own."
+        )
+    else:
+        pass
     repeat_dir = settings.repeat_dir(repeat)
     v10_dir = repeat_dir / V10_DIR
     if (repeat_dir / "recording").exists() or (v10_dir / "recording").exists():
@@ -232,6 +337,12 @@ def generate(
         # of an attempt that stopped before the server came up; this attempt's
         # own selection decides whether the repeat has a v1.0 half.
         shutil.rmtree(v10_dir)
+    else:
+        pass
+    if (repeat_dir / WARMUP_DIR).exists():
+        # note (jeffro): no recording follows a warmup that is still here, and
+        # this attempt warms its own server up again.
+        shutil.rmtree(repeat_dir / WARMUP_DIR)
     else:
         pass
     sample_ids = select_samples(settings.dataset, selection)
@@ -251,9 +362,12 @@ def generate(
         pass
     # note (luojiaxuan): both recorder commands read pinned inputs; resolving
     # them here fails before a single session is recorded.
-    record = v15_record_command(settings) if sample_ids else []
-    v10_record = v10_record_command(settings) if v10_sample_ids else []
+    record = [v15_record_command(replica) for replica in replicas] if sample_ids else []
+    v10_record = (
+        [v10_record_command(replica) for replica in replicas] if v10_sample_ids else []
+    )
     (repeat_dir / "logs").mkdir(parents=True, exist_ok=True)
+    (settings.run_root / ENGINE_FILE).write_text(f"{settings.engine.name}\n")
     (repeat_dir / "sample-ids.txt").write_text(ids_text(sample_ids))
     if sample_ids:
         log(f"== Selected {len(sample_ids)} v1.5 pairs: {describe(sample_ids)}")
@@ -268,13 +382,28 @@ def generate(
         )
     else:
         pass
-    with model_server(settings, repeat_dir / "logs" / "model-server.log") as server:
+    with ExitStack() as stack:
+        servers = [
+            stack.enter_context(
+                model_server(
+                    replica, repeat_dir / "logs" / f"model-server-gpu{replica.gpu}.log"
+                )
+            )
+            for replica in replicas
+        ]
+        if not should_warm_up:
+            log("== Warmup skipped")
+        elif sample_ids:
+            warm_up(record, repeat_dir, sample_ids[0], 2, num_shards)
+        else:
+            warm_up(v10_record, repeat_dir, v10_sample_ids[0], 1, num_shards)
         shard_dirs = []
         if sample_ids:
             (repeat_dir / "recording").mkdir()
             log(
                 f"== Recording {len(sample_ids)} v1.5 pairs "
                 f"({2 * len(sample_ids)} sessions) in {num_shards} shard(s) "
+                f"on {len(gpus)} GPU(s) "
                 f"-> {repeat_dir}"
             )
             shard_dirs = record_shards(record, repeat_dir, sample_ids, 2, num_shards)
@@ -285,14 +414,15 @@ def generate(
             (v10_dir / "recording").mkdir()
             log(
                 f"== Recording {len(v10_sample_ids)} v1.0 samples (one session each) "
-                f"in {num_shards} shard(s) -> {v10_dir}"
+                f"in {num_shards} shard(s) on {len(gpus)} GPU(s) -> {v10_dir}"
             )
             v10_shard_dirs = record_shards(
                 v10_record, v10_dir, v10_sample_ids, 1, num_shards
             )
         else:
             pass
-        server.ensure_alive("during the recordings")
+        for server in servers:
+            server.ensure_alive("during the recordings")
     for shard_dir in shard_dirs:
         print_variant_status(repeat_dir, shard_dir)
     if shard_dirs:

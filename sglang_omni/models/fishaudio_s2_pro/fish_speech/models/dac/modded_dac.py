@@ -972,8 +972,18 @@ class DAC(BaseModel, CodecMixin):
             pass
 
         z = self.encoder(audio_data)
-        vq_results = self.quantizer(z, n_quantizers, **kwargs)
-        indices = vq_results.codes
+        encode_codes = getattr(self.quantizer, "encode_codes", None)
+        # note (Zhuofeng-Li): encoding needs codes, without reconstructing unused latents.
+        if (
+            not self.training
+            and not self.quantizer.training
+            and not kwargs
+            and callable(encode_codes)
+        ):
+            indices = encode_codes(z, n_quantizers=n_quantizers)
+        else:
+            vq_results = self.quantizer(z, n_quantizers, **kwargs)
+            indices = vq_results.codes
         indices_lens = torch.ceil(audio_lengths / self.frame_length).long()
         return indices, indices_lens
 

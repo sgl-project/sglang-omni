@@ -30,11 +30,14 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
+    DEFAULT_REFERENCE_SAMPLING,
+    DEFAULT_REFERENCE_SAMPLING_FALLBACK,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
     DEFAULT_TOWER_FUSED_LAYERS,
     DEFAULT_TRITON_SAMPLING,
+    ReferenceSamplingFallback,
 )
 from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
@@ -43,7 +46,9 @@ from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
 from sglang_omni.models.fishaudio_drama3.quantization import (
+    INT4_QUANTIZATION_METHOD,
     QUANTIZATION_METHOD,
+    ExpertDenseInt4Config,
     ExpertFp8Config,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import (
@@ -106,6 +111,10 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS
         ),
         triton_sampling: bool = DEFAULT_TRITON_SAMPLING,
+        reference_sampling: bool = DEFAULT_REFERENCE_SAMPLING,
+        reference_sampling_fallback: ReferenceSamplingFallback = (
+            DEFAULT_REFERENCE_SAMPLING_FALLBACK
+        ),
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
@@ -120,6 +129,8 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.first_frame_cuda_graphs = first_frame_cuda_graphs
         self.first_frame_cuda_graph_max_requests = first_frame_cuda_graph_max_requests
         self.triton_sampling = triton_sampling
+        self.reference_sampling = reference_sampling
+        self.reference_sampling_fallback = reference_sampling_fallback
         self.tower_fused_layers = tower_fused_layers
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
@@ -134,6 +145,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         AutoConfig.register(FishOmniConfig.model_type, FishOmniConfig, exist_ok=True)
         ModelRegistry.models[FISH_OMNI_ARCHITECTURE] = Drama3ForCausalLM
         QUANTIZATION_METHODS[QUANTIZATION_METHOD] = ExpertFp8Config
+        QUANTIZATION_METHODS[INT4_QUANTIZATION_METHOD] = ExpertDenseInt4Config
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
@@ -263,7 +275,13 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             audio_decoder.codebook_size,
             audio_decoder.main_token_candidate_ids.shape[0],
         )
-        if not self.triton_sampling:
+        if self.reference_sampling:
+            audio_decoder.reference_sampling_fallback = self.reference_sampling_fallback
+            logger.info(
+                f"Drama 3 codebook sampling: reference sampling in PyTorch, "
+                f"{self.reference_sampling_fallback} fallback"
+            )
+        elif not self.triton_sampling:
             logger.info(
                 "Drama 3 codebook sampling: PyTorch, "
                 "tts_engine.factory.triton_sampling is false"
@@ -335,7 +353,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 sample_first_frames=model.sample_first_frames,
                 attention_backend=attention_backend,
                 max_request_count=max_request_count,
-                vocab_size=text_config.vocab_size,
+                vocab_size=int(model.audio_decoder.main_token_candidate_ids.shape[0]),
                 hidden_size=text_config.hidden_size,
                 hidden_dtype=sglang_runner.model_config.dtype,
                 frame_width=1 + model.config.audio_decoder_config.num_codebooks,
@@ -372,6 +390,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 context_length=self.context_length,
                 max_prompt_rows=self.max_prompt_rows,
                 max_new_tokens_cap=self.max_new_tokens_cap,
+                reference_sampling=self.reference_sampling,
             ),
             Drama3ResultAdapter(eos_token_id=model.config.eos_token_id),
         )
