@@ -269,6 +269,7 @@ def make_arkasr_scheduler_adapters(
                 "duration_s": data.audio_duration_s,
                 "asr_latency_s": engine_time_s,
                 "usage": {"engine_time_s": engine_time_s},
+                "spec_tokens_details": data.spec_tokens_details,
                 "modality": "text",
             },
         )

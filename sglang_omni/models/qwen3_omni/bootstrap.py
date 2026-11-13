@@ -23,17 +23,18 @@ def create_thinker_scheduler(
     server_args: "ServerArgs",
     gpu_id: int = 0,
     *,
+    enable_async_decode: bool,
     speech_enabled: bool = False,
     execution_mode: Literal["request", "session"] = "request",
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
-    enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
     operator_selected_prefill_backend: bool = False,
+    continuation_aware_admission: bool = True,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Create the Qwen thinker scheduler."""
     # Note (Junnan Li): The engine, runner and scheduler imports stay in the factory: this module is imported by the platform layer before a device exists.
@@ -98,6 +99,8 @@ def create_thinker_scheduler(
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             enable_prefill_input_embeds=enable_prefill_input_embeds,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
+            supports_speculative_decoding=True,
+            enable_async_decode=enable_async_decode,
         )
         if capture_prompt_hidden_states:
             infrastructure[0].model_runner.model.set_talker_layers_to_capture()
@@ -163,6 +166,8 @@ def create_thinker_scheduler(
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
         capture_prompt_hidden_states=capture_prompt_hidden_states,
+        speech_enabled=speech_enabled,
+        is_speculative=model_worker.speculative_worker is not None,
     )
     # Note (Junnan Li): A session turn streams its tokens to the talker like any request; the session only owns the lifecycle.
     stream_output_builder = make_thinker_stream_output_builder(
@@ -173,10 +178,13 @@ def create_thinker_scheduler(
         session_adapter = None
     else:
         session_adapter = QwenThinkerSessionAdapter(
-            tokenizer, model_config.vocab_size, thinker_config
+            tokenizer,
+            model_config.vocab_size,
+            thinker_config,
+            speech_enabled=speech_enabled,
         )
 
-    return OmniScheduler(
+    scheduler = OmniScheduler(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -198,7 +206,13 @@ def create_thinker_scheduler(
             if model_runner.prompt_hidden_store is not None
             else None
         ),
+        continuation_aware_admission=continuation_aware_admission,
     )
+    if session_adapter is not None:
+        session_adapter.outbox = scheduler.outbox
+    else:
+        pass
+    return scheduler
 
 
 def create_talker_scheduler(
@@ -220,6 +234,7 @@ def create_talker_scheduler(
     codec_coalesce_frames: int = 0,
     codec_coalesce_first_frames: int = 0,
     codec_coalesce_early_frames: int = 0,
+    continuation_aware_admission: bool = True,
 ) -> "QwenTalkerScheduler":
     """Create the Qwen talker scheduler."""
     del speech_enabled
@@ -383,6 +398,7 @@ def create_talker_scheduler(
         partial_start_min_chunks=partial_start_min_chunks,
         enable_talker_start_topology=enable_talker_start_topology,
         im_end_token_id=root_config.im_end_token_id,
+        continuation_aware_admission=continuation_aware_admission,
     )
 
     if session_adapter is not None:

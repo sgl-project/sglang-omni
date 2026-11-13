@@ -18,6 +18,9 @@ from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME, TEXT_CARD
+from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
+    DepformerCudaGraphRunner,
+)
 from sglang_omni.models.personaplex.config import DEFAULT_LM_MAX_RUNNING_REQUESTS
 from sglang_omni.models.personaplex.hf_config import (
     DEFAULT_CONTEXT_LENGTH,
@@ -31,6 +34,7 @@ from sglang_omni.models.personaplex.request_builders import (
     build_lm_request,
     lm_stream_output_builder,
 )
+from sglang_omni.models.personaplex.sampling import AudioSampling
 from sglang_omni.models.personaplex.sglang_model import PersonaPlexForCausalLM
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.platforms import current_platform
@@ -85,11 +89,17 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         self,
         *,
         enable_async_decode: bool,
+        depformer_cuda_graph_batch_sizes: list[int],
+        depformer_cuda_graph_sampling: AudioSampling,
         max_running_requests: int = DEFAULT_LM_MAX_RUNNING_REQUESTS,
         context_length: int | None = None,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.enable_async_decode = enable_async_decode
+        self.depformer_cuda_graph_batch_sizes: tuple[int, ...] = tuple(
+            depformer_cuda_graph_batch_sizes
+        )
+        self.depformer_cuda_graph_sampling = depformer_cuda_graph_sampling
         self.model_arch_override = PERSONAPLEX_ARCH
         if context_length is not None:
             self.context_length = int(context_length)
@@ -123,7 +133,6 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
             current_platform.is_cuda()
             and config.device == "cuda"
             and config.page_size == 1
-            and config.disable_radix_cache
         ):
             pass
         else:
@@ -135,10 +144,19 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
             logger.info(
                 f"PersonaPlex uses the full KV pool on device={config.device}, "
                 f"platform={current_platform.device_type} "
-                f"with page_size={config.page_size}, "
-                f"disable_radix_cache={config.disable_radix_cache}; "
-                "window KV requires CUDA, page_size=1 and disabled radix caching"
+                f"with page_size={config.page_size}; "
+                "window KV requires CUDA and page_size=1"
             )
+
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        if not resolved_view(server_args).disable_radix_cache:
+            raise ValueError(
+                "PersonaPlex needs disable_radix_cache=True: its prompt ids do not "
+                "identify the voice, so a radix hit would reuse another voice's "
+                "prompt KV"
+            )
+        else:
+            pass
 
     def setup_model(
         self,
@@ -149,14 +167,34 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
         gpu_id: int,
         server_args: ServerArgs,
     ) -> None:
-        """Nothing beyond SGLang's own load: the model owns its buffers."""
+        """Warm the Depformer pointwise kernels before accepting requests."""
+        model = model_worker.model_runner.model
+        assert isinstance(model, PersonaPlexForCausalLM)
+        model.depformer.warmup_pointwise()
 
     def make_model_runner(
         self,
         model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> PersonaPlexModelRunner:
-        return PersonaPlexModelRunner(model_worker, output_proc)
+        runner = PersonaPlexModelRunner(model_worker, output_proc)
+        server_args = model_worker.server_args
+        if (
+            current_platform.is_cuda()
+            and not server_args.disable_cuda_graph
+            and self.depformer_cuda_graph_batch_sizes
+        ):
+            graph_runner = DepformerCudaGraphRunner(
+                runner.model.depformer, self.depformer_cuda_graph_batch_sizes
+            )
+            graph_runner.capture_graphs(
+                self.depformer_cuda_graph_sampling,
+                max_batch_size=server_args.max_running_requests,
+            )
+            runner.depformer_cuda_graph = graph_runner
+        else:
+            pass
+        return runner
 
     def make_adapters(self, model: PersonaPlexForCausalLM) -> tuple[
         LMRequestBuilder,
@@ -188,10 +226,15 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         *,
         tokenizer: SentencePieceProcessor,
         enable_async_decode: bool,
+        depformer_cuda_graph_batch_sizes: list[int],
+        depformer_cuda_graph_sampling: AudioSampling,
         context_length: int | None = None,
     ) -> None:
         super().__init__(
-            enable_async_decode=enable_async_decode, context_length=context_length
+            enable_async_decode=enable_async_decode,
+            depformer_cuda_graph_batch_sizes=depformer_cuda_graph_batch_sizes,
+            depformer_cuda_graph_sampling=depformer_cuda_graph_sampling,
+            context_length=context_length,
         )
         self.tokenizer = tokenizer
 

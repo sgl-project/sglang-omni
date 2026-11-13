@@ -29,6 +29,10 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
+from sglang_omni.models.minicpm_o.components.token2wav.hift_cuda_graph import (
+    HiftBodyCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.hift_layers import (
     SourceModuleHnNSF2,
 )
@@ -334,9 +338,13 @@ def find_checkpoint_dir() -> Path | None:
 
 def require_checkpoint_dir() -> Path:
     checkpoint = find_checkpoint_dir()
-    if checkpoint is None or resolve_concrete_device(None).type not in ("cuda", "xpu"):
+    if checkpoint is None or resolve_concrete_device(None).type not in (
+        "cuda",
+        "xpu",
+        "npu",
+    ):
         pytest.skip(
-            "Set MINICPMO_CHECKPOINT and provide CUDA or XPU for vocoder validation"
+            "Set MINICPMO_CHECKPOINT and provide CUDA, XPU, or NPU for vocoder validation"
         )
     else:
         pass
@@ -362,6 +370,7 @@ def build_code2wav_stage(
         batch_wait_when_idle=factory.batch_wait_when_idle,
         enable_dit_torch_compile=factory.enable_dit_torch_compile,
         enable_hift_torch_compile=factory.enable_hift_torch_compile,
+        hift_cuda_graph_capture_shapes=factory.hift_cuda_graph_capture_shapes,
         enable_flow_cuda_graph=factory.enable_flow_cuda_graph,
         flow_cuda_graph_capture_shapes=factory.flow_cuda_graph_capture_shapes,
         packed_dit_cuda_graph_capture_shapes=factory.packed_dit_cuda_graph_capture_shapes,
@@ -430,9 +439,11 @@ def test_source_module_noise_leaves_the_global_generator_unchanged() -> None:
 def test_native_vocoder_with_checkpoint() -> None:
     model = load_checkpoint_model(require_checkpoint_dir())
     device_module = torch.get_device_module(model.token2wav.device)
-    assert (
-        model.decode_stream.priority == code2wav_stage_factory().decode_stream_priority
-    )
+    if model.token2wav.device.type == "cuda":
+        assert (
+            model.decode_stream.priority
+            == code2wav_stage_factory().decode_stream_priority
+        )
     device_generator_state = device_module.get_rng_state(model.token2wav.device)
     output = model(codec_tokens=torch.tensor(CHECKPOINT_CODEC_TOKENS))
     assert torch.equal(
@@ -474,6 +485,8 @@ def test_mixed_reference_batch_matches_single_row_mels(
     max_relative_rms_error: float,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if enable_flow_variable_length and resolve_concrete_device(None).type == "npu":
+        pytest.skip("packed flow reaches varlen_attn, which is CUDA-only")
     checkpoint = require_checkpoint_dir()
     model = load_checkpoint_model(
         checkpoint, enable_flow_variable_length=enable_flow_variable_length
@@ -643,6 +656,101 @@ def test_compiled_hift_matches_eager(compiled_vocoder: MiniCPMOCode2Wav) -> None
         with torch.compiler.set_stance("force_eager"):
             eager = hift.decode(mel, source)
     assert relative_rms_error(compiled, eager) < 1e-2
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("compile_body", [False, True])
+def test_hift_graph_matches_decode_across_shapes_and_replays(
+    compile_body: bool,
+) -> None:
+    """Graphs preserve waveform boundaries, new inputs and earlier pooled outputs."""
+    # note (MayDomine): backend flags are dynamic attributes; restore values instead of monkeypatching them.
+    previous_matmul_tf32 = torch.backends.cuda.matmul.allow_tf32
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        with torch.backends.cudnn.flags(
+            benchmark=False, deterministic=True, allow_tf32=False
+        ):
+            torch.manual_seed(7)
+            hift = HiFTGenerator(base_channels=32).cuda().eval()
+            if compile_body:
+                hift.decode_body = torch.compile(
+                    hift.decode_body,
+                    dynamic=True,
+                    fullgraph=True,
+                    options={"triton.cudagraphs": False},
+                )
+            else:
+                pass
+            runner = HiftBodyCudaGraphRunner(hift.decode_body)
+            device = hift.stft_window.device
+            runner.capture(
+                ((1, 4), (2, 6)),
+                device=device,
+                mel_channels=80,
+                samples_per_frame=int(hift.f0_upsamp.scale_factor),
+                fft_samples=hift.istft_params["n_fft"],
+                hop_samples=hift.istft_params["hop_len"],
+            )
+            fallback = MagicMock(wraps=runner.decode_body)
+            runner.decode_body = fallback
+            saved_outputs: list[tuple[torch.Tensor, torch.Tensor]] = []
+            with torch.inference_mode():
+                # note (MayDomine): alternating tails expose stale padding and missing masks.
+                for batch_size, mel_frames in (
+                    (1, 4),
+                    (2, 6),
+                    (1, 3),
+                    (1, 5),
+                    (1, 1),
+                    (3, 4),
+                    (1, 7),
+                    (1, 4),
+                ):
+                    mel = torch.randn(batch_size, 80, mel_frames, device=device)
+                    source = (
+                        torch.randn(
+                            batch_size,
+                            1,
+                            mel_frames * int(hift.f0_upsamp.scale_factor),
+                            device=device,
+                        )
+                        * 0.01
+                    )
+                    hift.body_graph_runner = None
+                    expected_waveform = hift.decode(mel, source)
+                    hift.body_graph_runner = runner
+                    actual_waveform = hift.decode(mel, source)
+                    torch.testing.assert_close(
+                        actual_waveform, expected_waveform, rtol=1e-4, atol=1e-5
+                    )
+                    real, imaginary = hift.stft(source.squeeze(1))
+                    spectrum = torch.cat((real, imaginary), dim=1)
+                    magnitude, phase = runner.run(mel, spectrum)
+                    expected_magnitude, expected_phase = hift.decode_body(mel, spectrum)
+                    saved_outputs.extend(
+                        ((magnitude, expected_magnitude), (phase, expected_phase))
+                    )
+                for actual, expected in saved_outputs:
+                    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+            assert runner.graphs.keys() == {(1, 4), (2, 6)}
+            assert fallback.call_count == 4
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = previous_matmul_tf32
+
+
+def test_hift_graph_without_capture_preserves_cpu_decode() -> None:
+    """An empty graph table keeps the full waveform and its boundary unchanged."""
+    torch.manual_seed(7)
+    hift = HiFTGenerator(base_channels=32).eval()
+    mel = torch.randn(1, 80, 3)
+    source = torch.randn(1, 1, 3 * int(hift.f0_upsamp.scale_factor)) * 0.01
+    with torch.inference_mode():
+        expected = hift.decode(mel, source)
+        hift.body_graph_runner = HiftBodyCudaGraphRunner(hift.decode_body)
+        actual = hift.decode(mel, source)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 def test_dit_torch_compile_rejects_non_cuda_device() -> None:

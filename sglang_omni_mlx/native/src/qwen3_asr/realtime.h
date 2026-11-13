@@ -30,9 +30,6 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
 // Join segment texts, with a space only between two spaced scripts.
 std::string JoinTranscriptParts(const std::vector<std::string> &parts);
 
-// The bytes of base64 text; none when its padding is invalid.
-std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text);
-
 // One realtime socket's session: numbered events out, client events in.
 // Handle runs on the socket's thread; decodes run on the worker and report
 // back through the sender.

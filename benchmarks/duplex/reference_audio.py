@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from pydantic import JsonValue
 from scipy.signal import resample_poly
 
+from benchmarks.duplex.oracle_models import is_admission_rejection
 from benchmarks.duplex.profiles import PROFILES
 from benchmarks.duplex.reference_capture import (
     AUDIO_DELTA,
@@ -191,6 +192,9 @@ def analyze_variant(
     }
     first_audio_s = last_audio_s = None
     live_after_t = False
+    admitted = False
+    pending_update_id: str | None = None
+    recovery_pending = False
     interrupts_on_speech = None
     barge_in_cuts = 0
     created_responses, response_terminals = set(), {}
@@ -240,6 +244,12 @@ def analyze_variant(
             last_time = time_s if last_time is None else max(last_time, time_s)
             if direction == "send" and kind == "input_audio_buffer.append":
                 if first_append_s is None:
+                    if recovery_pending:
+                        reasons.append(
+                            "admission retry not acknowledged before audio input"
+                        )
+                    else:
+                        pass
                     first_append_s, window_end_s = time_s, time_s + window_s
                 else:
                     pass
@@ -272,6 +282,13 @@ def analyze_variant(
             else:
                 pass
             if direction == "send":
+                if kind == "session.update":
+                    update_id = event.get("event_id")
+                    pending_update_id = (
+                        update_id if isinstance(update_id, str) else None
+                    )
+                else:
+                    pass
                 if first_append_s is not None:
                     accepted_receipts.setdefault(f"sent:{kind}", at(time_s))
                 else:
@@ -307,6 +324,24 @@ def analyze_variant(
                 live_after_t = True
             else:
                 pass
+            if kind == "session.updated":
+                if not recovery_pending:
+                    pass
+                elif (
+                    pending_update_id is not None
+                    and event.get("client_event_id") == pending_update_id
+                    and first_append_s is None
+                ):
+                    recovery_pending = False
+                else:
+                    problem(
+                        "admission retry lacks a matching acknowledgment before audio input",
+                        time_s,
+                    )
+                pending_update_id = None
+                admitted = True
+            else:
+                pass
             if capture.declares_output_rate:
                 out_rate = capture.output_rate
             elif kind == "session.closed":
@@ -316,6 +351,21 @@ def analyze_variant(
                     reasons.append("session.closed at or before window end")
                 else:
                     pass
+            elif (
+                is_admission_rejection(event)
+                and not admitted
+                and first_append_s is None
+                and pending_update_id is not None
+                and event["error"].get("event_id") == pending_update_id
+            ):
+                pending_update_id = None
+                recovery_pending = True
+                anomalies.append(
+                    {
+                        "elapsed_s": at(time_s),
+                        "message": f"admission rejected before session.updated: {event['error']}",
+                    }
+                )
             elif kind == "error":
                 problem(f"native server error: {event.get('error', event)}", time_s)
             elif kind == "response.created":

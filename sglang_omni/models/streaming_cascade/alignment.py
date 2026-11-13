@@ -13,7 +13,13 @@ import httpx
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from sglang_omni.audio.spoken_prefix import spoken_prefix_end
+from sglang_omni.audio.spoken_prefix import (
+    TRAILING_PUNCTUATION,
+    NormalizedUnit,
+    matched_prefix_end,
+    normalized_units,
+    spoken_prefix_end,
+)
 from sglang_omni.models.streaming_cascade.base import (
     PROBE_TIMEOUT_S,
     SPEECH_SAMPLE_RATE_HZ,
@@ -25,6 +31,7 @@ from sglang_omni.models.streaming_cascade.base import (
     stop_running,
     with_language,
 )
+from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.models.streaming_cascade.recognizers import (
     TranscriptionResult,
     request_transcription,
@@ -34,6 +41,7 @@ from sglang_omni.proto.streams import (
     PCM_F32,
     REPLY_DELIVERED,
     REPLY_PROGRESS,
+    REPLY_SENTENCE,
     TEXT_DELTA,
     TRUNCATE,
     chunk_language,
@@ -46,6 +54,31 @@ logger = logging.getLogger(__name__)
 MAX_ALIGNMENT_AUDIO_BYTES = 32 * 1024 * 1024
 WARM_UP_TEXT = "hello"
 WARM_UP_SAMPLES = np.zeros(SPEECH_SAMPLE_RATE_HZ, dtype=np.float32)
+
+
+def spoken_units(text: str, language: str) -> list[NormalizedUnit]:
+    """Expanded readings with original offsets and complete source-unit boundaries."""
+    complete_ends_chars = {unit.end_chars for unit in normalized_units(text)}
+    spoken, origin = spoken_text(text, language)
+    units: list[NormalizedUnit] = []
+    for unit in normalized_units(spoken):
+        original_end_chars = origin[unit.end_chars - 1] + 1
+        next_start_chars = unit.end_chars
+        while next_start_chars < len(spoken) and spoken[next_start_chars].isspace():
+            next_start_chars += 1
+        units.append(
+            NormalizedUnit(
+                unit.text,
+                original_end_chars,
+                has_joiner=unit.has_joiner,
+                is_complete=original_end_chars in complete_ends_chars
+                and (
+                    next_start_chars == len(origin)
+                    or origin[next_start_chars] + 1 != original_end_chars
+                ),
+            )
+        )
+    return units
 
 
 class AlignmentBoundary(BaseModel):
@@ -135,7 +168,7 @@ async def probe_alignment_worker(config: AlignmentConfig) -> None:
 
 @dataclass(frozen=True)
 class SentenceAudio:
-    """A spoken sentence of `turn` for the forced aligner: `text` begins at character `start` of the reply and its audio at `start_ms`; `language` is the reply's, None while unknown."""
+    """A spoken sentence of `turn` for the forced aligner: `text` begins at character `start` of the reply and its audio at `start_ms`; `language` is the synthesizer's tag for it, or the reply's when it sent none, None while unknown."""
 
     turn: int
     text: str
@@ -159,7 +192,7 @@ class HeardAudio:
 
 @dataclass
 class SpokenReply:
-    """One reply's text, language and audio; `start` and `start_ms` open the sentence being spoken.
+    """One reply's text, language and audio; `start` and `start_ms` open the sentence being spoken, and `sentence_language` is the synthesizer's tag for it.
 
     With a transcription service the reply also keeps its ended sentences,
     the word ends the forced aligner found, the cut positions the client's
@@ -171,6 +204,7 @@ class SpokenReply:
     language: str | None = None
     start: int = 0
     start_ms: float = 0.0
+    sentence_language: str | None = None
     samples: list[np.ndarray] = field(default_factory=list)
     sentences: list[SentenceAudio] = field(default_factory=list)
     word_ends: list[tuple[int, float]] = field(default_factory=list)
@@ -262,6 +296,8 @@ class Alignment(StreamComponent):
             self.reply_of(chunk.turn).samples.append(
                 np.frombuffer(chunk.payload, dtype="<f4")
             )
+        elif event == REPLY_SENTENCE:
+            self.reply_of(chunk.turn).sentence_language = chunk.payload.get("language")
         elif event == REPLY_PROGRESS:
             self.end_sentence(
                 self.reply_of(chunk.turn),
@@ -278,7 +314,12 @@ class Alignment(StreamComponent):
         ):
             self.reply.delivered_ms = float(chunk.payload["audio_ms"])
             self.cut(self.reply, sentences)
-        elif event == TRUNCATE and self.config.hears() and self.reply is not None:
+        elif (
+            event == TRUNCATE
+            and self.config.hears()
+            and self.reply is not None
+            and chunk.turn in (None, self.reply.turn)
+        ):
             self.reply.client_ms = float(chunk.payload["t_ms"])
             self.cut(self.reply, sentences)
         else:
@@ -302,7 +343,11 @@ class Alignment(StreamComponent):
                 reply.start + len(span) - len(span.lstrip()),
                 reply.start_ms,
                 np.concatenate(reply.samples),
-                reply.language,
+                (
+                    reply.language
+                    if reply.sentence_language is None
+                    else reply.sentence_language
+                ),
             )
             if self.config.method == "forced":
                 sentences.put_nowait(sentence)
@@ -402,6 +447,17 @@ class Alignment(StreamComponent):
             )
             return 0
         matched = spoken_prefix_end(heard.text, result.text)
+        if heard.language in ("English", "Chinese"):
+            expanded_end_chars = matched_prefix_end(
+                spoken_units(heard.text, heard.language),
+                spoken_units(result.text, heard.language),
+            )
+            matched = max(matched, expanded_end_chars)
+        else:
+            pass
+        matched = (
+            TRAILING_PUNCTUATION.match(heard.text, matched).end() if matched else 0
+        )
         logger.info(
             "heard turn %d to %.0f ms: %d ms of sentence audio transcribed as %r in %.0f ms keeps %d of %d chars",
             heard.turn,
@@ -497,21 +553,27 @@ def heard_audio(reply: SpokenReply, cut_ms: float) -> HeardAudio | None:
     ]
     if ended:
         sentence = ended[0]
-        text, start, start_ms, samples = (
+        text, start, start_ms, samples, language = (
             sentence.text,
             sentence.start,
             sentence.start_ms,
             sentence.samples,
+            sentence.language,
         )
     elif reply.samples and cut_ms > reply.start_ms:
         span = reply.text[reply.start :]
         text = span.strip()
         start = reply.start + len(span) - len(span.lstrip())
         start_ms, samples = reply.start_ms, np.concatenate(reply.samples)
+        language = (
+            reply.language
+            if reply.sentence_language is None
+            else reply.sentence_language
+        )
     else:
         return None
     cut = samples[: round((cut_ms - start_ms) * SPEECH_SAMPLE_RATE_HZ / 1000)]
     if text and len(cut):
-        return HeardAudio(reply.turn, text, start, cut_ms, cut, reply.language)
+        return HeardAudio(reply.turn, text, start, cut_ms, cut, language)
     else:
         return None

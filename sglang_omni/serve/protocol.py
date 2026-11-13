@@ -13,11 +13,14 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
 from sglang_omni.client.types import UsageInfo
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 
 class UsageResponse(BaseModel):
@@ -26,6 +29,45 @@ class UsageResponse(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+
+
+class SpecTokensDetails(BaseModel):
+    """Per-request speculative decoding statistics."""
+
+    spec_accept_rate: float | None = None
+    spec_accept_length: float
+    spec_num_correct_drafts: int
+    spec_num_proposed_drafts: int | None = None
+    spec_verify_ct: int
+    spec_correct_drafts_histogram: list[int]
+
+    @model_serializer(mode="wrap")
+    def drop_unknown_rate(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.spec_accept_rate is None:
+            data.pop("spec_accept_rate", None)
+            data.pop("spec_num_proposed_drafts", None)
+        else:
+            pass
+        return data
+
+
+class SglExt(BaseModel):
+    """Response-level extension fields outside the OpenAI schema."""
+
+    spec_tokens_details: SpecTokensDetails
+
+
+def build_sglext(
+    return_spec_tokens_details: bool,
+    spec_tokens_details: SpecTokensDetailsDict | None,
+) -> SglExt | None:
+    if return_spec_tokens_details and spec_tokens_details is not None:
+        return SglExt(spec_tokens_details=SpecTokensDetails(**spec_tokens_details))
+    else:
+        return None
 
 
 class ChatMessage(BaseModel):
@@ -137,6 +179,7 @@ class ChatCompletionRequest(BaseModel):
     talker_max_new_tokens: int | None = None
 
     # Misc
+    return_spec_tokens_details: bool = False
     request_id: str | None = None
     user: str | None = None
 
@@ -172,6 +215,18 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[ChatCompletionChoice]
     usage: UsageResponse | None = None
+    sglext: SglExt | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_sglext(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext", None)
+        else:
+            pass
+        return data
 
 
 class ChatCompletionStreamDelta(BaseModel):
@@ -199,6 +254,7 @@ class ChatCompletionStreamResponse(BaseModel):
     model: str
     choices: list[ChatCompletionStreamChoice]
     usage: UsageResponse | None = None
+    sglext: SglExt | None = None
 
 
 class RolloutSamplingParams(BaseModel):
@@ -396,6 +452,7 @@ class SpeechReference(BaseModel):
     media_type: str | None = None
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
+    speaker_embedding: list[float] | None = None
 
 
 class CreateSpeechRequest(BaseModel):
@@ -440,11 +497,17 @@ class CreateSpeechRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    prepend_silence: bool | None = None
+    condition_buckets: dict[str, int | None] | None = None
+    condition_values: dict[str, float | None] | None = None
 
     # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, object]] | None = None
+
+    return_spec_tokens_details: bool = False
 
 
 class SpeechBatchItem(BaseModel):
@@ -477,8 +540,12 @@ class SpeechBatchItem(BaseModel):
     temperature: object = None
     top_p: object = None
     top_k: object = None
+    epsilon_cutoff: object = None
     repetition_penalty: object = None
     seed: object = None
+    prepend_silence: object = None
+    condition_buckets: object = None
+    condition_values: object = None
     stage_params: object = None
 
 
@@ -512,8 +579,12 @@ class CreateSpeechBatchRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    prepend_silence: bool | None = None
+    condition_buckets: dict[str, int | None] | None = None
+    condition_values: dict[str, float | None] | None = None
     stage_params: dict[str, dict[str, object]] | None = None
 
 
@@ -530,11 +601,23 @@ class SpeechBatchResult(BaseModel):
 
 
 class SpeechStreamOutcome(BaseModel):
-    """Terminal state of a finished raw PCM speech stream."""
+    """Terminal state of a finished speech audio stream."""
 
     request_id: str
     finish_reason: str
     usage: UsageInfo | None = None
+    sglext: SglExt | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_sglext(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext", None)
+        else:
+            pass
+        return data
 
 
 class SpeechBatchResponse(BaseModel):
@@ -577,8 +660,12 @@ class SpeechStreamSessionConfig(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    prepend_silence: bool | None = None
+    condition_buckets: dict[str, int | None] | None = None
+    condition_values: dict[str, float | None] | None = None
     stage_params: dict[str, dict[str, object]] | None = None
 
 
@@ -616,6 +703,8 @@ class TranscriptionResponse(BaseModel):
 
     text: str
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class TranscriptionSegment(BaseModel):
@@ -636,6 +725,8 @@ class TranscriptionVerboseResponse(BaseModel):
     text: str
     segments: list[TranscriptionSegment] = Field(default_factory=list)
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class TranscriptionTextDeltaEvent(BaseModel):
@@ -651,6 +742,8 @@ class TranscriptionTextDoneEvent(BaseModel):
     type: str = "transcript.text.done"
     text: str
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class ModelPermission(BaseModel):

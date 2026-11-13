@@ -47,6 +47,7 @@ from sglang_omni.proto.session import (
     SessionLimits,
     TimedChunk,
 )
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 
 class EncodeAudioOptions(TypedDict, total=False):
@@ -225,6 +226,7 @@ class Client:
         saw_output_token_logprobs = False
         omni_rollout: dict[str, object] | None = None
         weight_version: str | None = None
+        spec_tokens_details: SpecTokensDetailsDict | None = None
         language: str | None = None
         streamed_segments: list[UMMSegment] | None = None
         image_base64: str | None = None
@@ -270,6 +272,10 @@ class Client:
                 pass
             if chunk.weight_version is not None:
                 weight_version = chunk.weight_version
+            else:
+                pass
+            if chunk.spec_tokens_details is not None:
+                spec_tokens_details = chunk.spec_tokens_details
             else:
                 pass
             if chunk.language is not None:
@@ -328,6 +334,7 @@ class Client:
             ),
             omni_rollout=omni_rollout,
             weight_version=weight_version,
+            spec_tokens_details=spec_tokens_details,
             language=language,
             diarization=last_chunk.diarization,
             image=image_base64,
@@ -415,6 +422,7 @@ class Client:
                     audio_b64=audio_b64,
                     finish_reason=chunk.finish_reason,
                     usage=chunk.usage,
+                    spec_tokens_details=chunk.spec_tokens_details,
                     stage_name=chunk.stage_name,
                 )
                 if isinstance(chunk, UMMGenerateChunk):
@@ -510,6 +518,7 @@ class Client:
             format=actual_format,
             sample_rate=sample_rate,
             usage=last_chunk.usage if last_chunk else None,
+            spec_tokens_details=last_chunk.spec_tokens_details if last_chunk else None,
             finish_reason=(
                 (last_chunk.reported_finish_reason or UNKNOWN_FINISH_REASON)
                 if last_chunk
@@ -718,6 +727,11 @@ class Client:
             usage["engine_time_s"] = data.get("engine_time_s")
         else:
             pass
+        for field_name in ("speech_input_tokens", "speech_output_tokens"):
+            if field_name not in usage and data.get(field_name) is not None:
+                usage[field_name] = data.get(field_name)
+            else:
+                pass
         return UsageInfo.from_dict(usage)
 
     @staticmethod
@@ -818,6 +832,7 @@ class Client:
                 chunk.weight_version = weight_version
             else:
                 pass
+            chunk.spec_tokens_details = result.get("spec_tokens_details")
             finish_reason = result.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
@@ -930,6 +945,7 @@ class Client:
                 chunk.weight_version = weight_version
             else:
                 pass
+            chunk.spec_tokens_details = data.get("spec_tokens_details")
             finish_reason = data.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason

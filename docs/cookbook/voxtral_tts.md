@@ -184,6 +184,7 @@ The requests above work unchanged. The native server differs from the CUDA serve
   503, and `/health` shows the queue.
 - A request not finished `--request-timeout-s` (default 600) seconds after it arrives, time in
   the queue included, is cancelled: it returns 504, or its stream ends early.
+- A request body over 1 MiB returns 413.
 - Output varies between requests: the acoustic head samples flow-matching noise.
 
 Measured on an M4 MacBook Air (16 GB), warm: 3.3 s load, 0.55–0.85 s to the first streamed

@@ -532,6 +532,10 @@ class ThinkerModelRunner(ModelRunner):
         else:
             pass
 
+        if self.retain_prefill_input_embeds:
+            self.retained_prefill_input_embeds = input_embeds
+        else:
+            pass
         with attn_forward_context(model_runner.attn_backend):
             hidden_states = outer.model(
                 input_ids=None,
@@ -596,7 +600,6 @@ class ThinkerModelRunner(ModelRunner):
                 or sp.presence_penalty != 0.0
                 or sp.frequency_penalty != 0.0
                 or sp.min_new_tokens > 0
-                or sp.sampling_seed is not None
                 or sp.logit_bias is not None
                 or sp.custom_params
             ):
@@ -629,6 +632,10 @@ class ThinkerModelRunner(ModelRunner):
         # note (jiaxin deng): penalties never reach here (lookahead_eligible routes
         # those batches to sync); only static suppress tokens are lag-safe.
         self.apply_codec_suppress_tokens(logits_output, requests)
+        # note (YifanLi3): seeds are lag-safe too: the seeded sampler keys on
+        # positions, which prepare_for_decode advances before the previous step
+        # resolves.
+        self.install_sampling_seeds(forward_batch, requests)
         return self.tp_worker.model_runner.sample(logits_output, forward_batch)
 
     def post_decode_launch(

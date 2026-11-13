@@ -9,7 +9,7 @@ CANCELLATION_ROUNDS = 2
 
 
 async def cancel_local_tasks(
-    tasks: Iterable[asyncio.Task[None] | None], timeout_s: float
+    tasks: Iterable[asyncio.Task[None] | asyncio.Task[bool] | None], timeout_s: float
 ) -> None:
     local_tasks = {
         task

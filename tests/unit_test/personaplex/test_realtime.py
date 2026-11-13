@@ -115,6 +115,8 @@ def test_the_deployment_takes_24khz_audio_in_80ms_units_up_to_max_sessions_calls
     assert capabilities.tail_policy == "pad"
     assert capabilities.voices == ("NATF2", "NATM1")
     assert set(capabilities.sampling_parameters) >= {"temperature", "audio_top_k"}
+    # Note (ruoyu): The adapter answers response.cancel with not_supported, so a page must treat its stop button as a local mute.
+    assert capabilities.supports_cancel is False
     assert deployment.max_connections == 2
 
     first, second = deployment.adapter_factory(), deployment.adapter_factory()

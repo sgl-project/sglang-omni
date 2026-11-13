@@ -1,14 +1,41 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Process exit helpers."""
+"""Process exit and thread naming helpers."""
 
 from __future__ import annotations
 
 import atexit
+import ctypes
 import os
 import sys
 import threading
 import traceback
+from contextlib import suppress
 from typing import NoReturn
+
+_PR_SET_NAME = 15
+# note (db-ol): ref counter files of prewarm CUDA IPC shares, which no consumer releases.
+_prewarm_cuda_ipc_handles: list[bytes] = []
+
+
+def register_prewarm_cuda_ipc_handle(handle: bytes) -> None:
+    """Unlink this CUDA IPC ref counter file when the process exits without teardown."""
+    _prewarm_cuda_ipc_handles.append(handle)
+
+
+def unlink_prewarm_cuda_ipc_files() -> None:
+    """Remove prewarm reference counter files without touching CUDA."""
+    for handle in _prewarm_cuda_ipc_handles:
+        with suppress(OSError):
+            os.unlink(b"/dev/shm/" + handle.lstrip(b"/"))
+    _prewarm_cuda_ipc_handles.clear()
+
+
+def terminate_gpu_worker() -> NoReturn:
+    """Fail the process without cleanup that could touch unfinished GPU work."""
+    try:
+        unlink_prewarm_cuda_ipc_files()
+    finally:
+        os._exit(1)  # noqa: leading-underscore  # bypass unsafe GPU teardown
 
 
 def exit_without_teardown(code: int) -> NoReturn:
@@ -47,6 +74,9 @@ def release_cuda_ipc_file() -> None:
     the C++ teardown that os._exit skips removes it once no consumer holds a
     sent tensor. A process that never initialized CUDA has no such file.
     """
+    # note (db-ol): a prewarm share holds its slot to the end, so its file is unlinked
+    # here. A normal exit never reaches this, and its teardown removes the file itself.
+    unlink_prewarm_cuda_ipc_files()
     torch = sys.modules.get("torch")
     if torch is None or not torch.cuda.is_initialized():
         return
@@ -56,3 +86,20 @@ def release_cuda_ipc_file() -> None:
         torch.cuda.ipc_collect()
     except Exception:
         traceback.print_exc()
+
+
+def name_native_thread() -> None:
+    """Give the calling thread its Python name in top, nsys and torch traces.
+
+    Linux shows a thread by its comm name of at most 15 bytes, which Python
+    below 3.14 never sets.
+    """
+    if sys.platform != "linux":
+        return
+    else:
+        pass
+    name = threading.current_thread().name.encode()[:15]
+    try:
+        ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_NAME, name, 0, 0, 0)
+    except (OSError, AttributeError):
+        pass

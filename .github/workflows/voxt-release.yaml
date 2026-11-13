@@ -1,21 +1,48 @@
 name: Voxt Release
 
-# Builds Voxt with the native runtime for a voxt-vX.Y.Z tag, which sets the
-# version and build number (newer than every voxt-v tag), as a universal app
-# (the runtime stays arm64; on Intel Voxt uses remote ASR), signs it with the
-# Developer ID certificates and provisioning profile, notarizes it, and uploads
-# it to a draft release whose notes a maintainer writes before publishing it.
-# Publishing it runs Voxt Appcast. A run without a tag only builds an unsigned package, as a
-# check of the build on GitHub's runner.
+# Builds Voxt (Voxt/: Go on MyGo, with the Swift helper and the Omni runtime
+# inside) with scripts/release.sh for a voxt-vX.Y.Z tag, which
+# sets the version (newer than every voxt-v tag): signed with the Developer
+# ID of the voxt-release environment, notarized, checked by
+# scripts/release-verify.sh, and uploaded with the app's ZIP (for Voxt 1.x's
+# in-app update and Homebrew, voxt-appcast.yaml) and their SHA-256 to a draft
+# release whose notes are the version's section of Voxt/CHANGELOG.md. Apple
+# silicon only. The nightly from main (voxt-nightly.yaml, version
+# X.Y.Z-nightly.YYYYMMDD) and the beta of each Voxt change merged into main
+# (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N with Z one past mygo.json's
+# patch), or either run by hand from any branch, are signed and notarized
+# the same way and keep their disk image and its SHA-256 as an artifact,
+# without the ZIP, which only a release's update uses. A beta from main is
+# also a prerelease voxt-vX.Y.Z-beta.YYYYMMDD.N with them, the last five
+# kept, which the app's Beta updates offers. A beta takes the Omni runtime from the cache when
+# one was built from the same sources. Any other run (a pull request that
+# changes the release, or this workflow by hand) builds the same app ad
+# hoc, unsigned, and keeps its disk image the same way.
 
 on:
   push:
     tags: ["voxt-v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/voxt-release.yaml"
+      - "Voxt/scripts/release*.sh"
+      - "Voxt/scripts/build-*.sh"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      nightly:
+        description: Set the version to X.Y.Z-nightly.YYYYMMDD, and from main or run by hand sign and notarize it
+        type: boolean
+        default: false
+      beta:
+        description: Set the version to X.Y.Z-beta.YYYYMMDD.N (N the caller's run number), take the Omni runtime from the cache, and from main or run by hand sign and notarize it
+        type: boolean
+        default: false
 
+# The calling workflow's name keeps a nightly and a release run of one pull request from cancelling each other.
 concurrency:
-  group: voxt-release-${{ github.ref }}
-  cancel-in-progress: false
+  group: voxt-release-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -25,34 +52,43 @@ jobs:
     name: Voxt release package
     runs-on: macos-26
     timeout-minutes: 150
-    environment: ${{ startsWith(github.ref, 'refs/tags/voxt-v') && 'voxt-release' || '' }}
+    # A release, or a nightly or a beta from main or run by hand. A run by hand from a branch the environment does not let in fails here.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'))) && 'voxt-release' || '' }}
     permissions:
       contents: write
-      pull-requests: read
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
       IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/voxt-v') }}
+      IS_NIGHTLY: ${{ inputs.nightly == true }}
+      IS_BETA: ${{ inputs.beta == true }}
+      IS_SIGNED: ${{ startsWith(github.ref, 'refs/tags/voxt-v') || ((inputs.nightly == true || inputs.beta == true) && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')) }}
+      # A beta's Omni runtime (RUNTIMES/omni), built or from the cache, for scripts/release.sh --runtimes.
+      RUNTIMES: ${{ github.workspace }}/Voxt/build/runtimes
+      # The team of the voxt-release environment's Developer ID, as for the Swift Voxt 1.x.
+      TEAM_ID: RY2TQTYSKQ
+      GIT_TERMINAL_PROMPT: "0"
+    defaults:
+      run:
+        working-directory: Voxt
     steps:
       - uses: actions/checkout@v4
         with:
-          # The draft lists the pull requests since the previous voxt-v tag.
-          fetch-depth: 0
+          # A release compares its tag with every voxt-v tag.
+          fetch-depth: ${{ startsWith(github.ref, 'refs/tags/voxt-v') && '0' || '1' }}
+          # The build runs third-party code, and only the draft release needs the write token.
+          persist-credentials: false
 
       - name: Resolve the version
         run: |
           set -euo pipefail
-          project=Voxt/Voxt.xcodeproj/project.pbxproj
-          marketing_version="$(awk -F' = ' '/^[[:space:]]*MARKETING_VERSION = / {sub(/;$/, "", $2); print $2; exit}' "$project")"
           if [[ "$IS_RELEASE" == "true" ]]; then
             version="${GITHUB_REF_NAME#voxt-v}"
-            if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "::error::The tag must be voxt-vX.Y.Z, got $GITHUB_REF_NAME"
               exit 1
             else
-              # The original Voxt releases' scheme: 1.15.0 is build 101500099.
-              build_number=$((10#${BASH_REMATCH[1]} * 100000000 + 10#${BASH_REMATCH[2]} * 100000 + 10#${BASH_REMATCH[3]} * 100 + 99))
+              :
             fi
-            # The tag sets the version; the app only updates to a higher build, so it must be newer than every voxt-v tag.
+            # Versions only go up: newer than every other voxt-v tag, so that a failed tag can be pushed again.
             newest="$(git tag --list 'voxt-v*' | grep -vxF "$GITHUB_REF_NAME" | sed 's/^voxt-v//' \
               | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)"
             highest="$(printf '%s\n%s\n' "$newest" "$version" | sed '/^$/d' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
@@ -62,41 +98,41 @@ jobs:
             else
               :
             fi
+          elif [[ "$IS_NIGHTLY" == "true" ]]; then
+            version="$(jq -r .version mygo.json)-nightly.$(date -u +%Y%m%d)"
+          elif [[ "$IS_BETA" == "true" ]]; then
+            # A beta previews the next patch: after release X.Y.Z, X.Y.Z-beta would sort before it and the app's check would never offer it. The run number tells apart the betas of one day.
+            IFS=. read -r major minor patch <<< "$(jq -r .version mygo.json)"
+            version="$major.$minor.$((patch + 1))-beta.$(date -u +%Y%m%d).$GITHUB_RUN_NUMBER"
           else
-            version="$marketing_version"
-            build_number="$(awk -F' = ' '/^[[:space:]]*CURRENT_PROJECT_VERSION = / {sub(/;$/, "", $2); print $2; exit}' "$project")"
+            version="$(jq -r .version mygo.json)"
+          fi
+          # A tag, a nightly or a beta sets the version of the app and the helper, which scripts/release.sh checks agree.
+          if [[ "$IS_RELEASE" == "true" || "$IS_NIGHTLY" == "true" || "$IS_BETA" == "true" ]]; then
+            jq --arg v "$version" '.version = $v' mygo.json > mygo.json.tmp
+            mv mygo.json.tmp mygo.json
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" helper/Support/Info.plist
+          else
+            :
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
-          echo "Voxt $version ($build_number), release: $IS_RELEASE"
+          echo "Voxt $version, release: $IS_RELEASE"
 
-      # Since Xcode 26 the Metal compiler is a separate component, which
-      # mlx-swift needs to build its kernels.
-      - name: Install the Metal toolchain
-        run: |
-          set -euo pipefail
-          xcodebuild -version
-          if xcrun metal --version > /dev/null 2>&1; then
-            :
-          else
-            xcodebuild -downloadComponent MetalToolchain
-          fi
-          xcrun metal --version
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Build the native runtime
-        run: sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
-
-      - name: Import the signing identities
-        if: env.IS_RELEASE == 'true'
+      - name: Import the signing identity
+        if: env.IS_SIGNED == 'true'
         env:
           DEVELOPER_ID_APP_CERT_P12: ${{ secrets.DEVELOPER_ID_APP_CERT_P12 }}
           DEVELOPER_ID_APP_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_APP_CERT_PASSWORD }}
-          DEVELOPER_ID_INSTALLER_CERT_P12: ${{ secrets.DEVELOPER_ID_INSTALLER_CERT_P12 }}
-          DEVELOPER_ID_INSTALLER_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_INSTALLER_CERT_PASSWORD }}
-          DEVELOPER_ID_PROVISIONING_PROFILE: ${{ secrets.DEVELOPER_ID_PROVISIONING_PROFILE }}
           APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
+          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+          APPLE_NOTARIZATION_ISSUER: ${{ secrets.APPLE_NOTARIZATION_ISSUER }}
         run: |
           set -euo pipefail
           keychain="$RUNNER_TEMP/voxt-release.keychain-db"
@@ -104,97 +140,151 @@ jobs:
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 7200 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
+          echo "RELEASE_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
           printf '%s' "$DEVELOPER_ID_APP_CERT_P12" | base64 --decode > "$RUNNER_TEMP/app.p12"
-          printf '%s' "$DEVELOPER_ID_INSTALLER_CERT_P12" | base64 --decode > "$RUNNER_TEMP/installer.p12"
           security import "$RUNNER_TEMP/app.p12" -k "$keychain" -P "$DEVELOPER_ID_APP_CERT_PASSWORD" \
             -T /usr/bin/codesign > /dev/null
-          security import "$RUNNER_TEMP/installer.p12" -k "$keychain" -P "$DEVELOPER_ID_INSTALLER_CERT_PASSWORD" \
-            -T /usr/bin/productbuild > /dev/null
-          rm -f "$RUNNER_TEMP/app.p12" "$RUNNER_TEMP/installer.p12"
-          security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild: -s \
+          rm -f "$RUNNER_TEMP/app.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
             -k "$keychain_password" "$keychain" > /dev/null
           search_list=("$keychain")
           while IFS= read -r keychain_path; do
             search_list+=("$keychain_path")
           done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"$/\1/')
           security list-keychains -d user -s "${search_list[@]}"
-          printf '%s' "$DEVELOPER_ID_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/voxt.provisionprofile"
+          # Fails unless the certificate is a valid Developer ID Application of TEAM_ID.
+          identity="$(scripts/release-identity.sh "$TEAM_ID" "$keychain" | cut -f1)"
+          echo "VOXTNEW_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
           printf '%s' "$APPLE_NOTARIZATION_KEY" > "$RUNNER_TEMP/notary.p8"
-          identities="$(security find-identity -v -p codesigning "$keychain")"
-          app_identity="$(awk '/Developer ID Application/ {print $2; exit}' <<< "$identities")"
-          if [[ -z "$app_identity" ]]; then
-            echo "::error::The Developer ID Application identity is missing from the keychain"
-            exit 1
-          else
-            echo "APP_SIGN_IDENTITY=$app_identity" >> "$GITHUB_ENV"
-            echo "RELEASE_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
-          fi
+          xcrun notarytool store-credentials voxt-notary --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$APPLE_NOTARIZATION_KEY_ID" --issuer "$APPLE_NOTARIZATION_ISSUER" --keychain "$keychain"
 
-      - name: Package
+      # The Omni runtime's cache key names the Xcode it was built with: a new
+      # one on the runner builds it again.
+      - name: Key the Omni runtime's cache
+        id: runtimes
+        if: env.IS_BETA == 'true'
+        run: echo "xcode=$(xcodebuild -version | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      # The staged Omni runtime does not depend on the app's version or
+      # identity (build-omni.sh signs it ad hoc; mygo build signs the app's
+      # copy), so a cached one for the same sources is the same.
+      - name: Restore the Omni runtime
+        id: omni-cache
+        if: env.IS_BETA == 'true'
+        uses: actions/cache@v4
+        with:
+          path: Voxt/build/runtimes/omni
+          key: voxt-omni-${{ steps.runtimes.outputs.xcode }}-${{ hashFiles('sglang_omni_mlx/native/**', 'Voxt/scripts/build-omni.sh') }}
+
+      - name: Build the Omni runtime
+        if: env.IS_BETA == 'true' && steps.omni-cache.outputs.cache-hit != 'true'
+        run: scripts/build-omni.sh --out "$RUNTIMES/omni" --clean
+
+      - name: Build, sign, notarize and check
         env:
-          DEVELOPER_ID_INSTALLER_IDENTITY: ${{ secrets.DEVELOPER_ID_INSTALLER_IDENTITY }}
-          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
-          APPLE_NOTARIZATION_ISSUER: ${{ secrets.APPLE_NOTARIZATION_ISSUER }}
+          # Reads hehehai/actnow-sounds, the sound library of official builds;
+          # without it the app plays macOS's system sounds.
+          ACTNOW_SOUNDS_TOKEN: ${{ secrets.ACTNOW_SOUNDS_TOKEN }}
         run: |
           set -euo pipefail
-          package_args=(
-            --optimized --universal --version "$VERSION" --build-number "$BUILD_NUMBER"
-            --native-runtime "$RUNNER_TEMP/runtime"
-            --output-dir "$RUNNER_TEMP/package" --derived-data "$RUNNER_TEMP/derived-data"
-          )
-          if [[ "$IS_RELEASE" == "true" ]]; then
-            package_args+=(
-              --provisioning-profile "$RUNNER_TEMP/voxt.provisionprofile"
-              --app-sign-identity "$APP_SIGN_IDENTITY" --pkg-sign-identity "$DEVELOPER_ID_INSTALLER_IDENTITY"
-              --notary-key "$RUNNER_TEMP/notary.p8" --notary-key-id "$APPLE_NOTARIZATION_KEY_ID"
-              --notary-issuer "$APPLE_NOTARIZATION_ISSUER"
-            )
+          if [[ -n "${ACTNOW_SOUNDS_TOKEN:-}" ]]; then
+            auth="$(printf 'x-access-token:%s' "$ACTNOW_SOUNDS_TOKEN" | base64)"
+            git -c http.extraheader="Authorization: Basic $auth" \
+              clone --depth 1 https://github.com/hehehai/actnow-sounds "$RUNNER_TEMP/actnow-sounds"
+            export ACTNOW_SOUNDS="$RUNNER_TEMP/actnow-sounds"
           else
-            package_args+=(--no-sign)
+            echo "::warning::No ACTNOW_SOUNDS_TOKEN: this build has no sound library and plays macOS's system sounds"
           fi
-          Voxt/tools/package_local_app.sh "${package_args[@]}"
-          artifacts_dir="$(find "$RUNNER_TEMP/package" -mindepth 1 -maxdepth 1 -type d -print -quit)"
-          echo "ARTIFACTS_DIR=$artifacts_dir" >> "$GITHUB_ENV"
-          ls -l "$artifacts_dir"
-
-      - name: Check the package
-        run: |
-          set -euo pipefail
-          app="$RUNNER_TEMP/derived-data/Build/Products/Release/Voxt.app"
-          archs="$(lipo -archs "$app/Contents/MacOS/Voxt")"
-          minimum="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")"
-          echo "Voxt.app: $archs, LSMinimumSystemVersion $minimum"
-          if [[ "$archs" != *x86_64* || "$archs" != *arm64* ]]; then
-            echo "::error::Voxt.app must be universal, got $archs"
-            exit 1
+          args=()
+          if [[ "$IS_SIGNED" == "true" ]]; then
+            args+=(--notarize voxt-notary --keychain "$RELEASE_KEYCHAIN")
+            export EXPECT_TEAM="$TEAM_ID"
           else
             :
           fi
-          too_new="$(find "$app" -type f -perm -u+x -print0 | while IFS= read -r -d '' file; do
-            if file -b "$file" | grep -q Mach-O; then
-              vtool -show-build "$file" 2>/dev/null | awk -v f="$file" -v m="$minimum" \
-                '/minos/ { split($2, a, "."); split(m, b, "."); if (a[1] + 0 > b[1] + 0 || (a[1] == b[1] && a[2] + 0 > b[2] + 0)) print f " " $2; exit }'
-            else
-              :
-            fi
-          done)"
-          if [[ -n "$too_new" ]]; then
-            echo "::error::Binaries need a newer macOS than $minimum:"
-            echo "$too_new"
-            exit 1
+          if [[ "$IS_BETA" == "true" ]]; then
+            args+=(--runtimes "$RUNTIMES")
           else
             :
           fi
+          scripts/release.sh ${args[@]+"${args[@]}"}
 
-      - name: Remove the signing identities
-        if: always() && env.IS_RELEASE == 'true'
+      - name: Remove the signing identity
+        if: always() && env.IS_SIGNED == 'true'
         run: |
           if [[ -n "${RELEASE_KEYCHAIN:-}" ]]; then
             security delete-keychain "$RELEASE_KEYCHAIN" || true
           else
             :
           fi
-          rm -f "$RUNNER_TEMP/voxt.provisionprofile" "$RUNNER_TEMP/notary.p8"
+          rm -f "$RUNNER_TEMP/notary.p8"
+
+      - name: Collect the disk image, and a release's ZIP
+        run: |
+          set -euo pipefail
+          dmg="$(compgen -G 'build/darwin-arm64/*.dmg' | head -1 || true)"
+          if [[ -z "$dmg" ]]; then
+            echo "::error::No disk image in Voxt/build/darwin-arm64"
+            exit 1
+          else
+            :
+          fi
+          # What Voxt 1.x's Sparkle checks before it installs the ZIP's app (scripts/release.sh writes it).
+          want="$(scripts/release-appcast.sh info-plist "$VERSION" | jq -c .)"
+          got="$(plutil -convert json -o - build/darwin-arm64/Voxt.app/Contents/Info.plist | jq -c '{CFBundleVersion, SUPublicEDKey}')"
+          if [[ "$got" != "$want" ]]; then
+            echo "::error::Voxt.app's Info.plist has $got, Voxt 1.x's update needs $want"
+            exit 1
+          else
+            :
+          fi
+          out="$RUNNER_TEMP/artifacts"
+          read -r zip_name name <<< "$(scripts/release-appcast.sh assets "$VERSION")"
+          mkdir -p "$out"
+          cp "$dmg" "$out/$name"
+          # The SHA-256 files name the artifacts, not local paths, so shasum -c works after a download.
+          (cd "$out" && shasum -a 256 "$name" > "$name.sha256")
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            # Voxt 1.x's in-app update and the Homebrew cask install the app from the release's ZIP (voxt-appcast.yaml), as Voxt 1.x's release made it.
+            ditto -c -k --sequesterRsrc --keepParent build/darwin-arm64/Voxt.app "$out/$zip_name"
+            (cd "$out" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
+          else
+            :
+          fi
+          echo "ARTIFACTS_DIR=$out" >> "$GITHUB_ENV"
+          ls -l "$out"
+
+      - name: Keep the disk image
+        if: env.IS_RELEASE != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voxt-${{ env.VERSION }}-arm64${{ env.IS_SIGNED != 'true' && '-unsigned' || '' }}
+          path: ${{ env.ARTIFACTS_DIR }}
+          retention-days: 14
+
+      # Beta updates in the app (updates_github.go) offers the newest of these prereleases; never the latest release, and only the last few kept.
+      - name: Publish the beta as a prerelease
+        if: env.IS_BETA == 'true' && env.IS_SIGNED == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_BETAS: 5
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/beta-notes.md"
+          section="$(awk '/^## /{f = index($0, "[Unreleased]") > 0; next} f' CHANGELOG.md)"
+          cat > "$notes" <<NOTES
+          A beta of Voxt built from main at $GITHUB_SHA after each merged change. Open Voxt-$VERSION-arm64.dmg and drag Voxt to Applications. Betas are not tested as releases are.
+
+          $section
+          NOTES
+          gh release create "voxt-v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Voxt v$VERSION" --notes-file "$notes" "$ARTIFACTS_DIR"/*
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | test("^voxt-v[0-9]+\\.[0-9]+\\.[0-9]+-beta\\.[0-9]{8}\\.[0-9]+$")))] | sort_by(.createdAt) | reverse | .[env.KEEP_BETAS | tonumber:][] | .tagName' \
+            | while read -r tag; do
+                gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+              done
 
       - name: Create the draft release
         if: env.IS_RELEASE == 'true'
@@ -203,58 +293,28 @@ jobs:
         run: |
           set -euo pipefail
           notes="$RUNNER_TEMP/release-notes.md"
-          todo="TODO: describe this release before publishing."
-          # Pull requests that touched Voxt or its runtime since the previous voxt-v tag on this history.
-          previous="$(git tag --list 'voxt-v*' --sort=-v:refname --merged HEAD | grep -vxF "$GITHUB_REF_NAME" | head -1 || true)"
-          pulls=""
-          if [[ -n "$previous" ]]; then
-            while IFS= read -r subject; do
-              if [[ "$subject" =~ ^(.*)\ \(#([0-9]+)\)$ ]]; then
-                author="$(gh api "repos/$GITHUB_REPOSITORY/pulls/${BASH_REMATCH[2]}" --jq .user.login)"
-                pulls+="- ${BASH_REMATCH[1]} by @$author in https://github.com/$GITHUB_REPOSITORY/pull/${BASH_REMATCH[2]}"$'\n'
-              else
-                :
-              fi
-            done < <(git log --format=%s "$previous..HEAD" -- Voxt sglang_omni_mlx/native)
+          # The version's section of CHANGELOG.md, else Unreleased (a tag on a commit that did not name the version).
+          section="$(awk -v v="$VERSION" '/^## /{f = index($0, "[" v "]") || $2 == v; next} f' CHANGELOG.md)"
+          if [[ -z "${section//[[:space:]]/}" ]]; then
+            section="$(awk '/^## /{f = index($0, "[Unreleased]") > 0; next} f' CHANGELOG.md)"
           else
             :
           fi
-          if [[ -z "$pulls" ]]; then
-            pulls="- $todo"$'\n'
-          else
-            :
-          fi
-          mlx_version="$(awk -F'==' '$1 == "mlx" {print $2}' sglang_omni_mlx/native/scripts/build-tools.lock)"
-          # The maintainer replaces every TODO line; Voxt Appcast refuses notes that still hold one.
           cat > "$notes" <<NOTES
-          $todo
-
           ### Requirements
 
-          - macOS 15 or later.
-          - Local models need Apple Silicon. On an Intel Mac, Voxt installs and works with a remote speech recognition provider.
+          - A Mac with Apple silicon and macOS 15 or later.
 
           ### Install
 
-          - Open Voxt-$VERSION.dmg and drag Voxt to Applications, or run Voxt-$VERSION.pkg.
-          - Upgrading from an earlier Voxt: install over it, or let the app's update check install it; settings, history, permissions and downloaded models carry over.
-          - New Homebrew installs (brew install --cask voxt) get this version.
+          - Open Voxt-$VERSION-arm64.dmg and drag Voxt to Applications. It replaces Voxt 1.x there.
+          - This version does not update itself: install a newer one the same way.
 
-          ### Changed
+          $section
 
-          - $todo
-
-          ### Fixed
-
-          - $todo
-
-          ### What's Changed
-
-          ${pulls}
           ### Build
 
-          - Built from $GITHUB_SHA by the Voxt Release workflow, with the runtime from sglang_omni_mlx/native built against MLX $mlx_version (macOS 15 wheels).
-          - Signed with Developer ID and notarized by Apple. SHA-256 checksums are attached.
+          - Built from $GITHUB_SHA by the Voxt Release workflow. Signed with Developer ID and notarized by Apple. The SHA-256 checksum is attached.
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --latest \
             --title "Voxt v$VERSION" --notes-file "$notes" "$ARTIFACTS_DIR"/*

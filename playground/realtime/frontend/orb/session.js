@@ -37,13 +37,15 @@ export function base64ToBytes(encoded) {
 
 export class DuplexSession {
   // transport(event) sends one JSON-serialisable client event; now() returns ms.
-  // extension is sent as session.sglang (sampling, reference_audio, max_slice_nums, ...).
-  constructor({ transport, now, outputModalities = ["audio"], instructions = "", extension = null, listeners = {} }) {
+  // extension is sent as session.sglang (sampling, reference_audio, max_slice_nums, ...);
+  // turnDetection as session.audio.input.turn_detection.
+  constructor({ transport, now, outputModalities = ["audio"], instructions = "", extension = null, turnDetection = null, listeners = {} }) {
     this.transport = transport;
     this.now = now;
     this.outputModalities = outputModalities;
     this.instructions = instructions;
     this.extension = extension;
+    this.turnDetection = turnDetection;
     this.listeners = listeners;
     this.state = "connecting";
     this.sessionId = null;
@@ -60,8 +62,11 @@ export class DuplexSession {
     this.unitAudio = new Map();
     this.responseOpen = false;
     this.responseId = null;
+    // A response.cancel was sent for the open reply and its response.done has not arrived.
+    this.stopPending = false;
     // Turn-based servers report the user's speech from their VAD.
     this.userSpeaking = false;
+    this.lastSpeechStartedAt = -Infinity;
     this.transcript = "";
     this.lastLatencyMs = null;
     this.errors = [];
@@ -99,6 +104,18 @@ export class DuplexSession {
 
   get turnBased() {
     return Boolean(this.granted) && this.granted.interaction === "turn_based";
+  }
+
+  // Whether the server stops its open reply on response.cancel; otherwise a page can only mute its playback.
+  get cancellable() {
+    return Boolean(this.granted) && this.granted.supports_cancel === true;
+  }
+
+  // Asks the server to stop the open reply, once; its response.done then says whether it was cancelled.
+  cancelReply() {
+    if (this.state !== "ready" || !this.cancellable || !this.responseOpen || this.stopPending) return;
+    this.stopPending = true;
+    this.send("response.cancel");
   }
 
   get unitMs() {
@@ -295,6 +312,7 @@ export class DuplexSession {
         this.state = "negotiating";
         const session = { output_modalities: this.outputModalities };
         if (this.instructions) session.instructions = this.instructions;
+        if (this.turnDetection) session.audio = { input: { turn_detection: this.turnDetection } };
         if (this.extension && Object.keys(this.extension).length) session.sglang = this.extension;
         this.send("session.update", { session });
         break;
@@ -346,6 +364,7 @@ export class DuplexSession {
       case "input_audio_buffer.speech_started":
       case "input_audio_buffer.speech_stopped":
         this.userSpeaking = event.type === "input_audio_buffer.speech_started";
+        if (this.userSpeaking) this.lastSpeechStartedAt = this.now();
         break;
       case "response.created":
         this.responseOpen = true;
@@ -364,12 +383,16 @@ export class DuplexSession {
         this.transcript += event.delta || "";
         this.emit("text", event.delta || "");
         break;
-      case "response.done":
+      case "response.done": {
+        const status = event.response && event.response.status;
+        const stopConfirmed = this.stopPending && status === "cancelled";
+        this.stopPending = false;
         this.responseOpen = false;
         this.responseId = null;
         if (this.transcript && !this.transcript.endsWith("\n")) this.transcript += "\n";
-        this.emit("response", { open: false, id: event.response && event.response.id, status: event.response && event.response.status });
+        this.emit("response", { open: false, id: event.response && event.response.id, status, stopConfirmed });
         break;
+      }
       case "sglang.unit.done":
         this.completeUnit(event);
         break;

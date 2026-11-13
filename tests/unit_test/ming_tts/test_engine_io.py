@@ -123,10 +123,12 @@ def test_ming_tts_result_adapter_infers_length_at_max_steps() -> None:
 def test_ming_tts_stream_output_consumes_pending_patch_once() -> None:
     data = request_data()
     data.is_streaming = True
-    data.pending_stream_patch = MingTTSLatentPatch(
-        latent=torch.ones((2, 3), dtype=torch.float64),
-        is_last=True,
-    )
+    data.pending_stream_patches = [
+        MingTTSLatentPatch(
+            latent=torch.ones((2, 3), dtype=torch.float64),
+            is_last=True,
+        )
+    ]
 
     messages = build_ming_tts_stream_output("req-ming-tts", data, None)
 
@@ -140,8 +142,52 @@ def test_ming_tts_stream_output_consumes_pending_patch_once() -> None:
     }
     assert messages[0].data.device.type == "cpu"
     assert messages[0].data.dtype == torch.float32
-    assert data.pending_stream_patch is None
+    assert data.pending_stream_patches == []
     assert build_ming_tts_stream_output("req-ming-tts", data, None) == []
+
+
+class FakeCopyEvent:
+    def __init__(self, *, is_done: bool) -> None:
+        self.is_done = is_done
+        self.synchronized = False
+
+    def query(self) -> bool:
+        return self.is_done
+
+    def synchronize(self) -> None:
+        self.synchronized = True
+        self.is_done = True
+
+
+def test_ming_tts_stream_output_holds_in_flight_patches_until_terminal_flush() -> None:
+    data = request_data()
+    data.is_streaming = True
+    landed = FakeCopyEvent(is_done=True)
+    in_flight = FakeCopyEvent(is_done=False)
+    data.pending_stream_patches = [
+        MingTTSLatentPatch(latent=torch.zeros(2, 3), is_last=False, ready=landed),
+        MingTTSLatentPatch(latent=torch.ones(2, 3), is_last=False, ready=in_flight),
+    ]
+
+    first = build_ming_tts_stream_output("req-ming-tts", data, None)
+
+    assert [message.data.sum().item() for message in first] == [0.0]
+    assert in_flight.synchronized is False
+    assert len(data.pending_stream_patches) == 1
+
+    data.pending_stream_patches.append(
+        MingTTSLatentPatch(
+            latent=torch.full((2, 3), 2.0),
+            is_last=True,
+            ready=FakeCopyEvent(is_done=False),
+        )
+    )
+    flushed = build_ming_tts_stream_output("req-ming-tts", data, None)
+
+    assert [message.data.sum().item() for message in flushed] == [6.0, 12.0]
+    assert [message.metadata["is_last"] for message in flushed] == [False, True]
+    assert in_flight.synchronized is True
+    assert data.pending_stream_patches == []
 
 
 def test_ming_tts_result_adapter_resets_state_after_serialization_error(

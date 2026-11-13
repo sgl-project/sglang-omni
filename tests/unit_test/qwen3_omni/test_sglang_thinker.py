@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Protocol
 
 import pytest
 
@@ -21,12 +22,18 @@ from sglang.srt.layers.moe.topk import StandardTopKOutput
 from sglang.srt.layers.moe.utils import MoeRunnerBackend
 from sglang.srt.layers.quantization.fp8 import Fp8Config
 from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
+from sglang.srt.layers.rotary_embedding import get_rope
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
+from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel
 from sglang.srt.runtime_context import get_context
+from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
+    Qwen3OmniMoeTalkerRotaryEmbedding,
+    apply_rotary_pos_emb,
+)
 
 from sglang_omni.models.qwen3_omni.components import (
     sglang_thinker as sglang_thinker_module,
@@ -118,6 +125,7 @@ def test_real_qwen_config_drives_prefill_positions(
 
     runner = object.__new__(PrefillCudaGraphRunner)
     runner.model_runner = SimpleNamespace(model=wrapper)
+    runner.enable_cp_bcg_capture = False
     ordinary_positions = torch.arange(4, dtype=torch.long)
     mrope_positions = ordinary_positions.repeat(3, 1)
     forward_batch = SimpleNamespace(
@@ -159,6 +167,88 @@ def test_talker_config_rebuilt_from_serialized_hf_config_keeps_mrope_and_theta()
     assert rebuilt.text_config.rope_scaling["mrope_section"] == [1, 1, 2]
     assert rebuilt.text_config.rope_scaling["rope_type"] == "default"
     assert rebuilt.text_config.rope_theta == 123456.0
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("native_interleaved", [None, False])
+def test_serialized_talker_rotates_image_positions_in_checkpoint_axis_order(
+    native_interleaved: bool | None,
+) -> None:
+    """A serialized checkpoint flag was ignored, rotating image lanes on the wrong axes."""
+    checkpoint_config = transformers.Qwen3OmniMoeTalkerConfig(
+        text_config={
+            "hidden_size": 128,
+            "intermediate_size": 256,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 1,
+            "num_key_value_heads": 1,
+            "head_dim": 128,
+            "max_position_embeddings": 32,
+            "rope_parameters": {
+                "rope_type": "default",
+                "mrope_section": [24, 20, 20],
+                "interleaved": True,
+                "rope_theta": 1000000.0,
+            },
+        }
+    )
+    serialized = checkpoint_config.to_dict()
+    if native_interleaved is not None:
+        serialized["text_config"]["rope_parameters"][
+            "mrope_interleaved"
+        ] = native_interleaved
+    else:
+        pass
+    rebuilt = Qwen3OmniMoeTalkerConfig(**serialized).text_config
+    rotary = get_rope(
+        rebuilt.head_dim,
+        rotary_dim=rebuilt.head_dim,
+        max_position=rebuilt.max_position_embeddings,
+        base=rebuilt.rope_theta,
+        rope_scaling=rebuilt.rope_scaling,
+        dtype=torch.bfloat16,
+    )
+    positions = torch.tensor([[4, 4, 4, 4], [4, 4, 5, 5], [4, 5, 4, 5]])
+    queries = (
+        torch.linspace(-1, 1, positions.shape[1] * rebuilt.head_dim)
+        .reshape(positions.shape[1], rebuilt.head_dim)
+        .to(torch.bfloat16)
+    )
+    keys = queries.flip(-1)
+    if native_interleaved is None:
+        checkpoint_rotary = Qwen3OmniMoeTalkerRotaryEmbedding(
+            checkpoint_config.text_config
+        )
+        cosine, sine = checkpoint_rotary(queries, positions[:, None])
+        expected_queries, expected_keys = apply_rotary_pos_emb(
+            queries[None, None], keys[None, None], cosine, sine
+        )
+        expected_queries = expected_queries[0, 0]
+        expected_keys = expected_keys[0, 0]
+    else:
+        native_rotary = get_rope(
+            rebuilt.head_dim,
+            rotary_dim=rebuilt.head_dim,
+            max_position=rebuilt.max_position_embeddings,
+            base=rebuilt.rope_theta,
+            rope_scaling={
+                "rope_type": "default",
+                "mrope_section": [24, 20, 20],
+                "mrope_interleaved": native_interleaved,
+            },
+            dtype=torch.bfloat16,
+        )
+        expected_queries, expected_keys = native_rotary.forward_native(
+            positions, queries.clone(), keys.clone()
+        )
+
+    actual_queries, actual_keys = rotary.forward_native(
+        positions, queries.clone(), keys.clone()
+    )
+
+    assert torch.equal(actual_queries, expected_queries)
+    assert torch.equal(actual_keys, expected_keys)
 
 
 def test_outer_thinker_forward_accepts_sidecar_request_identity():
@@ -318,6 +408,7 @@ def test_the_thinker_captures_the_talkers_accept_layer_in_every_forward(
     ("forward_mode", "out_cache_loc", "expected_live_rows"),
     [
         (ForwardMode.DECODE, [7, 3, 0, 0], [True, True, False, False]),
+        (ForwardMode.TARGET_VERIFY, [7, 8, 3, 4, 0, 0], [True] * 4 + [False] * 2),
         (ForwardMode.DECODE, [7], None),
         (ForwardMode.EXTEND, [7, 3, 0, 0], None),
     ],
@@ -337,6 +428,79 @@ def test_thinker_forward_marks_decode_rows_by_their_kv_slot(
     else:
         assert seen_mask.tolist() == expected_live_rows
     assert wrapper.decode_live_rows.is_live_row is None
+
+
+class LayerCaptureSetter(Protocol):
+    def __call__(
+        self, thinker: Qwen3OmniThinkerForCausalLM, layer_ids: list[int]
+    ) -> None: ...
+
+
+class CapturingTextModel(torch.nn.Module):
+    """Text model that records capture layers through the real setters."""
+
+    set_dflash_layers_to_capture = Qwen3MoeLLMModel.set_dflash_layers_to_capture
+    set_eagle3_layers_to_capture = Qwen3MoeLLMModel.set_eagle3_layers_to_capture
+
+    def __init__(
+        self, hidden_states: torch.Tensor, auxiliary_hidden_states: list[torch.Tensor]
+    ) -> None:
+        super().__init__()
+        self.layers = torch.nn.ModuleList(torch.nn.Identity() for _ in range(48))
+        self.layers_to_capture: list[int] = []
+        self.hidden_states = hidden_states
+        self.auxiliary_hidden_states = auxiliary_hidden_states
+
+    def forward(
+        self,
+        *,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        forward_batch: SimpleNamespace,
+        input_embeds: torch.Tensor | None,
+        pp_proxy_tensors: None,
+        input_deepstack_embeds: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        return self.hidden_states, self.auxiliary_hidden_states
+
+
+@pytest.mark.parametrize(
+    "set_layers_to_capture",
+    [
+        Qwen3OmniThinkerForCausalLM.set_dflash_layers_to_capture,
+        Qwen3OmniThinkerForCausalLM.set_eagle3_layers_to_capture,
+    ],
+)
+def test_speculative_capture_hands_the_named_layers_to_the_logits_processor(
+    set_layers_to_capture: LayerCaptureSetter,
+) -> None:
+    wrapper = make_bare_wrapper()
+    hidden_states = torch.zeros(2, 3)
+    auxiliary_hidden_states = [torch.ones(2, 3), torch.full((2, 3), 2.0)]
+    wrapper.model = CapturingTextModel(hidden_states, auxiliary_hidden_states)
+    seen: dict[str, torch.Tensor | list[torch.Tensor]] = {}
+
+    def logits_processor(input_ids, hidden, lm_head, forward_batch, aux_hidden_states):
+        seen.update(hidden=hidden, auxiliary=aux_hidden_states)
+        return "logits"
+
+    wrapper.logits_processor = logits_processor
+    set_layers_to_capture(wrapper, [1, 12, 23])
+    result = wrapper.forward(
+        input_ids=torch.ones(2, dtype=torch.long),
+        positions=torch.zeros(2, dtype=torch.long),
+        forward_batch=SimpleNamespace(
+            mrope_positions=None,
+            forward_mode=ForwardMode.EXTEND,
+            out_cache_loc=torch.tensor([5, 6]),
+        ),
+    )
+
+    # A draft's target layer id i reads the stream after layer i.
+    assert wrapper.model.layers_to_capture == [2, 13, 24]
+    assert result == "logits"
+    assert seen["hidden"] is hidden_states
+    assert seen["auxiliary"] is auxiliary_hidden_states
 
 
 def test_decode_mask_is_cleared_when_the_model_call_fails() -> None:

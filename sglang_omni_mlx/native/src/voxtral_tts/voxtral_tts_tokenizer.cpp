@@ -8,7 +8,7 @@
 #include <stdexcept>
 
 #include "common/layers.h"
-#include "qwen3_asr/realtime.h"
+#include "common/text.h"
 
 namespace voxtral_tts {
 
@@ -42,7 +42,7 @@ struct SpeechTokenizer::Pcre2Regex {
 SpeechTokenizer::SpeechTokenizer(const std::filesystem::path &model_directory)
     : split_pattern_(std::make_unique<Pcre2Regex>()) {
   const nlohmann::json tekken =
-      qwen3_asr::ReadJson(model_directory / "tekken.json");
+      omni_common::ReadJson(model_directory / "tekken.json");
   const nlohmann::json &config = tekken.at("config");
   special_token_count_ = config.at("default_num_special_tokens").get<int>();
   // Note (Minyi Tang): tekken.json lists more ranks than the model uses;
@@ -57,7 +57,7 @@ SpeechTokenizer::SpeechTokenizer(const std::filesystem::path &model_directory)
   }
   ranks_.reserve(ordinary_token_count);
   for (int rank = 0; rank < ordinary_token_count; ++rank) {
-    const auto bytes = qwen3_asr::DecodeBase64(
+    const auto bytes = omni_common::DecodeBase64(
         vocabulary[rank].at("token_bytes").get<std::string>());
     if (!bytes.has_value() || vocabulary[rank].at("rank").get<int>() != rank) {
       throw std::runtime_error("tekken.json has a malformed token at rank " +

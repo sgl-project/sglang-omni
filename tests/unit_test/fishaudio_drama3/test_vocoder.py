@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
+import torch.nn.functional as F
+from dac.nn.layers import Snake1d
 
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
@@ -27,12 +31,22 @@ from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
     WindowGraphDecoder,
 )
+from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
+    CausalConvNet,
+    DecoderBlock,
+    ResidualUnit,
+)
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.profiler import event_recorder
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
+from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
+    CublasFlagSetter,
+    cublas_flags,
+)
 
 SAMPLES_PER_FRAME = 4
 SAMPLE_RATE = 44100
@@ -160,11 +174,12 @@ def streamed(
     is_done_first: bool,
     codec: FrameNumberCodec | None = None,
     decode_window: WindowDecoder | None = None,
+    factory_args: Drama3VocoderFactoryArgs | None = None,
 ) -> tuple[FrameNumberCodec, list[OutgoingMessage]]:
     """Stream chunks of the given sizes, then hand over the final payload with all
     total_frame_count frames and signal the end of the stream."""
     codec = FrameNumberCodec() if codec is None else codec
-    vocoder = vocoder_with(codec, decode_window)
+    vocoder = vocoder_with(codec, decode_window, factory_args=factory_args)
     frames = numbered_frames(total_frame_count)
     start = 0
     for chunk_id, frame_count in enumerate(chunk_frame_counts):
@@ -187,48 +202,65 @@ def streamed(
     return codec, drained(vocoder)
 
 
-WINDOWS_TO_214 = [(0, 10), (10, 20), (20, 32), (32, 64), (64, 128), (128, 192)]
-WINDOWS_TO_300 = WINDOWS_TO_214 + [(192, 256)]
+WINDOWS_TO_214 = [(0, 4), (4, 14), (14, 26), (26, 58), (58, 122), (122, 186)]
+WINDOWS_TO_300 = WINDOWS_TO_214 + [(186, 250)]
+DECODED_TO_214 = [
+    (0, 4),
+    (0, 14),
+    (0, 26),
+    (0, 58),
+    (26, 122),
+    (90, 186),
+    (154, 214),
+]
+DECODED_TO_300 = [
+    (0, 4),
+    (0, 14),
+    (0, 26),
+    (0, 58),
+    (26, 122),
+    (90, 186),
+    (154, 250),
+    (218, 300),
+]
 FINAL_PAYLOAD_ONLY_CASE = pytest.param(
     300,
     [1] * 5,
-    WINDOWS_TO_300 + [(256, 300)],
-    [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128), (96, 192), (160, 256)]
-    + [(224, 300)],
+    WINDOWS_TO_300 + [(250, 300)],
+    DECODED_TO_300,
     id="295-frames-only-in-the-final-payload",
 )
 STREAMING_CASES = [
     pytest.param(
         214,
         [1] * 214,
-        WINDOWS_TO_214 + [(192, 214)],
-        [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128), (96, 192), (160, 214)],
+        WINDOWS_TO_214 + [(186, 214)],
+        DECODED_TO_214,
         id="frame-by-frame",
     ),
     pytest.param(
         214,
         [1] * 5 + [150] + [1] * 59,
-        WINDOWS_TO_214 + [(192, 214)],
-        [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128), (96, 192), (160, 214)],
+        WINDOWS_TO_214 + [(186, 214)],
+        DECODED_TO_214,
         id="a-150-frame-chunk-midstream",
     ),
     pytest.param(
         300,
         [1] * 5 + [295],
-        WINDOWS_TO_300 + [(256, 300)],
-        [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128), (96, 192), (160, 256)]
-        + [(224, 300)],
+        WINDOWS_TO_300 + [(250, 300)],
+        DECODED_TO_300,
         id="a-295-frame-last-chunk",
     ),
     FINAL_PAYLOAD_ONLY_CASE,
     pytest.param(
-        128,
-        [1] * 128,
-        [(0, 10), (10, 20), (20, 32), (32, 64), (64, 128)],
-        [(0, 10), (0, 20), (0, 32), (0, 64), (32, 128)],
+        122,
+        [1] * 122,
+        [(0, 4), (4, 14), (14, 26), (26, 58), (58, 122)],
+        [(0, 4), (0, 14), (0, 26), (0, 58), (26, 122)],
         id="whole-windows-and-no-tail",
     ),
-    pytest.param(7, [1] * 7, [(0, 7)], [(0, 7)], id="only-a-tail"),
+    pytest.param(3, [1] * 3, [(0, 3)], [(0, 3)], id="only-a-tail"),
 ]
 
 
@@ -283,7 +315,7 @@ def test_streaming_emits_the_fixed_windows_however_frames_arrive(
         "window_frame_counts",
     ),
     [
-        pytest.param(10, (10, 12, 32), 64, 32, (10, 20, 32, 64, 96), id="defaults"),
+        pytest.param(4, (10, 12, 32), 64, 32, (4, 14, 26, 58, 96), id="defaults"),
         pytest.param(40, (), 45, 20, (40, 65), id="no-ramp"),
         pytest.param(10, (), 16, 40, (10, 26, 42, 56), id="context-fills-late"),
         pytest.param(10, (), 10, 0, (10,), id="no-context"),
@@ -319,7 +351,7 @@ def test_every_streamed_window_decodes_through_the_given_window_decoder() -> Non
         214, [1] * 214, is_done_first=False, codec=codec, decode_window=decode_window
     )
 
-    assert decoded_frame_counts == [10, 20, 32, 64, 96, 96, 54]
+    assert decoded_frame_counts == [4, 14, 26, 58, 96, 96, 60]
     np.testing.assert_array_equal(
         streamed_audio(messages),
         np.repeat(np.arange(214, dtype=np.float32), SAMPLES_PER_FRAME),
@@ -462,6 +494,181 @@ def test_a_non_streaming_batch_decodes_through_the_given_window_decoder() -> Non
     ]
 
 
+class CpuSnakeDecoder(ChannelsLastDecoder):
+    """Runs the real sequence and convolution paths with a CPU Snake boundary."""
+
+    def snake(
+        self,
+        module: Snake1d,
+        hidden_states: torch.Tensor,
+        pad_left: int = 0,
+        pad_right: int = 0,
+    ) -> torch.Tensor:
+        self.snake_padding.append((pad_left, pad_right))
+        activated = module(hidden_states.transpose(1, 2)).transpose(1, 2).contiguous()
+        return F.pad(activated, (0, 0, pad_left, pad_right))
+
+
+@pytest.mark.parametrize("context", ["sequence", "residual", "block", "decoder"])
+@pytest.mark.parametrize("frame_count", [11, 12])
+def test_snake_padding_preserves_real_decoder_sequences(
+    context: str, frame_count: int
+) -> None:
+    codec = tiny_codec()
+    codec.fold_weight_norm()
+    if context == "sequence":
+        sequence = torch.nn.Sequential(
+            Snake1d(8),
+            Snake1d(8),
+            CausalConvNet(8, 8, kernel_size=3, dilation=3),
+            torch.nn.Tanh(),
+            Snake1d(8),
+        )
+    elif context == "residual":
+        sequence = torch.nn.Sequential(ResidualUnit(8, dilation=3, causal=True))
+    elif context == "block":
+        sequence = torch.nn.Sequential(
+            DecoderBlock(input_dim=8, output_dim=4, stride=2, causal=True)
+        )
+    else:
+        sequence = codec.decoder.model
+    codec.decoder.model = sequence
+    decoder = CpuSnakeDecoder(codec, dtype=torch.float32)
+    decoder.snake_padding: list[tuple[int, int]] = []
+    with torch.no_grad():
+        if context == "decoder":
+            codes = torch.randint(0, 16, (2, 10, frame_count))
+            expected = codec.from_indices(codes)
+            actual = decoder(codes)
+        else:
+            activation = torch.randn(2, frame_count + 5, 8)[:, :frame_count]
+            expected = sequence(activation.transpose(1, 2)).transpose(1, 2)
+            actual = decoder.apply_sequence(sequence, activation)
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    assert any(left > 0 for left, _ in decoder.snake_padding)
+    if context == "sequence":
+        assert decoder.snake_padding == [(0, 0), (6, (-frame_count) % 3), (0, 0)]
+    elif context == "block":
+        assert decoder.snake_padding[0] == (0, 0)
+        assert len(decoder.snake_padding) == 7
+    else:
+        assert len(decoder.snake_padding) >= 2
+
+
+@pytest.mark.parametrize("dilation", [1, 3, 9])
+@pytest.mark.parametrize("frame_count", [11, 12])
+def test_prepadded_causal_conv_keeps_original_length(
+    dilation: int, frame_count: int
+) -> None:
+    codec = tiny_codec()
+    module = CausalConvNet(8, 4, kernel_size=3, dilation=dilation)
+    codec.decoder.model = torch.nn.Sequential(module)
+    decoder = ChannelsLastDecoder(codec, dtype=torch.float32)
+    activation = torch.randn(2, frame_count + 5, 8)[:, :frame_count]
+    alignment = (-(module.padding + frame_count)) % dilation
+    padded = F.pad(activation, (0, 0, module.padding, alignment))
+    with torch.no_grad():
+        expected = module(activation.transpose(1, 2)).transpose(1, 2)
+        actual = decoder.causal_conv(module, padded, original_frame_count=frame_count)
+        fallback = decoder.causal_conv(module, activation)
+    assert actual.shape == (2, frame_count, 4)
+    torch.testing.assert_close(actual, expected)
+    assert torch.equal(actual, fallback)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize(
+    ("frame_count", "channel_count", "pad_left", "dilation", "trim_frames"),
+    [(11, 7, 0, 1, 0), (13, 65, 6, 3, 5), (17, 96, 54, 9, 3)],
+)
+def test_fused_snake_padding_is_bitwise_equal_to_snake_then_pad(
+    dtype: torch.dtype,
+    batch_size: int,
+    frame_count: int,
+    channel_count: int,
+    pad_left: int,
+    dilation: int,
+    trim_frames: int,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    generator = torch.Generator(device="cuda").manual_seed(7)
+    activation = torch.randn(
+        batch_size,
+        frame_count + trim_frames,
+        channel_count,
+        generator=generator,
+        device="cuda",
+        dtype=dtype,
+    )[:, :frame_count]
+    alpha = torch.rand(channel_count, generator=generator, device="cuda") * 4 + 0.05
+    inverse_alpha = (alpha + 1e-9).reciprocal()
+    pad_right = (-(pad_left + frame_count)) % dilation
+    unpadded = torch.empty(activation.shape, device="cuda", dtype=dtype)
+    output = torch.empty(
+        (batch_size, frame_count + pad_left + pad_right, channel_count),
+        device="cuda",
+        dtype=dtype,
+    )
+    for target, left, right in [(unpadded, 0, 0), (output, pad_left, pad_right)]:
+        rows = batch_size * target.shape[1]
+        snake_channels_last_kernel[((rows + 31) // 32, (channel_count + 63) // 64)](
+            activation,
+            alpha,
+            inverse_alpha,
+            target,
+            rows,
+            frame_count,
+            channel_count,
+            activation.stride(0) // channel_count,
+            BLOCK_ROWS=32,
+            BLOCK_CHANNELS=64,
+            PAD_LEFT=left,
+            pad_right=right,
+        )
+    expected = F.pad(unpadded, (0, 0, pad_left, pad_right))
+    assert torch.equal(output.view(torch.uint8), expected.view(torch.uint8))
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_snake_new_lengths_reuse_the_compiled_kernel(dtype: torch.dtype) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    alpha = torch.ones(96, device="cuda")
+    inverse_alpha = (alpha + 1e-9).reciprocal()
+    compiled_hashes: set[str] = set()
+    for frame_count in [1, 8, 9, 16, 17, 31, 32, 33, 64, 127]:
+        pad_right = (-frame_count) % 9
+        activation = torch.randn(2, frame_count + 3, 96, device="cuda", dtype=dtype)
+        output = torch.empty(
+            (2, frame_count + 54 + pad_right, 96), device="cuda", dtype=dtype
+        )
+        rows = 2 * output.shape[1]
+        compiled = snake_channels_last_kernel[((rows + 31) // 32, 2)](
+            activation,
+            alpha,
+            inverse_alpha,
+            output,
+            rows,
+            frame_count,
+            96,
+            frame_count + 3,
+            BLOCK_ROWS=32,
+            BLOCK_CHANNELS=64,
+            PAD_LEFT=54,
+            pad_right=pad_right,
+        )
+        compiled_hashes.add(compiled.hash)
+    assert len(compiled_hashes) == 1
+
+
 @pytest.mark.accelerator
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
@@ -507,14 +714,17 @@ def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
     ids=["float32", "float16"],
 )
 def test_the_channels_last_decoder_decodes_like_the_codec(
-    monkeypatch: pytest.MonkeyPatch, dtype: torch.dtype, tolerance: float
+    monkeypatch: pytest.MonkeyPatch,
+    cublas_flags: CublasFlagSetter,
+    dtype: torch.dtype,
+    tolerance: float,
 ) -> None:
     if not torch.cuda.is_available():
         pytest.skip("needs a CUDA device")
     else:
         pass
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    cublas_flags("allow_tf32", False)
     reference = tiny_codec().cuda()
     reference.fold_weight_norm()
     channels_last = tiny_codec().cuda()
@@ -589,7 +799,7 @@ def test_streaming_crossfade_preserves_audio_across_chunk_sizes(
     ],
 )
 def test_a_ramp_with_a_non_positive_stride_is_refused(
-    stream_followup_stride_ramp: tuple[int, ...]
+    stream_followup_stride_ramp: tuple[int, ...],
 ) -> None:
     with pytest.raises(ValueError, match="stream_followup_stride_ramp"):
         Drama3VocoderScheduler(
@@ -786,4 +996,110 @@ def test_non_streaming_batch_preserves_request_audio_with_bounded_padding(
         codes.shape[0] == 1
         or codes.shape[0] * codes.shape[-1] <= max_padded_frames_per_decode
         for codes in codec.decoded_codes
+    )
+
+
+FIRST_CHUNK_WINDOWS = [
+    (0, 0, 0, 4, 4),
+    (1, 0, 0, 10, 14),
+    (2, 0, 0, 12, 26),
+    (3, 0, 0, 32, 58),
+]
+
+
+@pytest.mark.parametrize(
+    (
+        "total_frame_count",
+        "chunk_frame_counts",
+        "is_done_first",
+        "crossfade_samples",
+        "windows",
+    ),
+    [
+        pytest.param(
+            150,
+            [64, 86],
+            False,
+            0,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="payload-before-done",
+        ),
+        pytest.param(
+            150,
+            [64, 86],
+            True,
+            0,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="done-before-payload",
+        ),
+        pytest.param(
+            122,
+            [64, 58],
+            False,
+            0,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96)],
+            id="ends-on-a-window",
+        ),
+        pytest.param(
+            150,
+            [64],
+            False,
+            0,
+            FIRST_CHUNK_WINDOWS + [(4, -1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="window-only-in-the-final-result",
+        ),
+        pytest.param(
+            150,
+            [64, 86],
+            False,
+            40,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="crossfade-tail-not-yet-sent",
+        ),
+    ],
+)
+def test_every_decoded_window_records_its_decode(
+    tmp_path: Path,
+    total_frame_count: int,
+    chunk_frame_counts: list[int],
+    is_done_first: bool,
+    crossfade_samples: int,
+    windows: list[tuple[int, int, int, int, int]],
+) -> None:
+    path = event_recorder.get_recorder().start("drama3", str(tmp_path), "vocoder")
+    try:
+        streamed(
+            total_frame_count,
+            chunk_frame_counts,
+            is_done_first=is_done_first,
+            factory_args=Drama3VocoderFactoryArgs(
+                stream_crossfade_samples=crossfade_samples
+            ),
+        )
+    finally:
+        event_recorder.get_recorder().stop(wait=True)
+
+    events = [json.loads(line) for line in Path(path).read_text().splitlines()]
+    assert [
+        (
+            event["event_name"].removeprefix("drama3_vocoder_window_decode_"),
+            event["metadata"]["window_index"],
+            event["metadata"]["chunk_id"],
+            event["metadata"]["is_final"],
+            event["metadata"]["emitted_frames"],
+            event["metadata"]["decoded_frames"],
+        )
+        for event in events
+    ] == [
+        (phase, window_index, chunk_id, is_final, emitted, decoded)
+        for window_index, chunk_id, is_final, emitted, decoded in windows
+        for phase in ("started", "finished")
+    ]
+    # note (Haoling Pu): a crossfade holds back the last decoded samples, unsent, until the next window blends them.
+    assert events[-1]["metadata"]["emitted_audio_s"] == pytest.approx(
+        (
+            sum(window[3] for window in windows[:-1]) * SAMPLES_PER_FRAME
+            - crossfade_samples
+        )
+        / SAMPLE_RATE
     )
