@@ -35,7 +35,7 @@ func TestUpgradeScriptRows(t *testing.T) {
 			}
 		}
 		cmd := exec.Command("bash", "scripts/upgrade-test.sh", c.step)
-		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		cmd.Env = append(os.Environ(), "PATH="+bashPathWithFakeBin(bin),
 			"HOME="+t.TempDir(), "OUT="+out, "FROM_TAG=voxt-v1.16.3", "TO_VERSION=2.0.2")
 		printed, err := cmd.CombinedOutput()
 		results, _ := os.ReadFile(filepath.Join(out, "results.md"))
