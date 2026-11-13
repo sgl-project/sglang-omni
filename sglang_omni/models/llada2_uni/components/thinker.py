@@ -291,6 +291,13 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             quant_config=quant_config,
             reduce_results=False,
         )
+        if self.topk is not None:
+            self.topk.bind_runner_backend(
+                self.experts.runner_backend,
+                routing_method_type=self.experts.routing_method_type,
+            )
+        else:
+            pass
 
         # Shared expert
         if config.num_shared_experts and config.num_shared_experts > 0:

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, sentinel
 
 import pytest
 import torch
@@ -60,14 +60,20 @@ def test_moe_expert_projections_return_rank_partials(
     monkeypatch: pytest.MonkeyPatch,
     backend: str,
 ) -> None:
-    routed_experts = Mock(return_value=nn.Identity())
+    routed_experts = Mock(
+        return_value=Mock(
+            runner_backend=sentinel.runner_backend,
+            routing_method_type=sentinel.routing_method_type,
+        )
+    )
     down_projection = Mock(return_value=nn.Identity())
     monkeypatch.setattr(thinker, "get_moe_impl_class", lambda config: routed_experts)
     monkeypatch.setattr(
         thinker, "MergedColumnParallelLinear", Mock(return_value=nn.Identity())
     )
     monkeypatch.setattr(thinker, "RowParallelLinear", down_projection)
-    monkeypatch.setattr(thinker, "TopK", Mock(return_value=nn.Identity()))
+    topk = Mock()
+    monkeypatch.setattr(thinker, "TopK", topk)
     config = PretrainedConfig(
         num_experts=4,
         num_experts_per_tok=2,
@@ -84,6 +90,13 @@ def test_moe_expert_projections_return_rank_partials(
 
     assert routed_experts.call_args.kwargs["reduce_results"] is False
     assert down_projection.call_args.kwargs["reduce_results"] is False
+    if backend == "sglang":
+        topk.return_value.bind_runner_backend.assert_called_once_with(
+            sentinel.runner_backend,
+            routing_method_type=sentinel.routing_method_type,
+        )
+    else:
+        topk.assert_not_called()
 
 
 def test_reference_routing_bias_selects_experts_without_changing_weights() -> None:
