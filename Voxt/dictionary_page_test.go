@@ -250,6 +250,9 @@ func dictShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	save("page-dictionary-notes-empty")
 	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = reporterNotes(t) })
 	save("page-dictionary-notes")
+	a.dv.notesQuery, a.dv.notesFind = "401", finder{cur: 2}
+	save("page-dictionary-notes-find")
+	a.dv.notesQuery, a.dv.notesFind = "", finder{}
 	scrollToText(tt, i18n.T("How it is used"))
 	save("page-dictionary-notes-example")
 	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = longNotes(200) })
@@ -312,7 +315,7 @@ func TestDictionaryNotes(t *testing.T) {
 	}
 	sys := out.Messages()[0].Content
 	if !strings.Contains(sys, "`罗斯` → Roth") || !strings.Contains(sys, "- VoxtNew") || strings.Contains(sys, "MyGo") ||
-		strings.Index(sys, "</dictionary>") > strings.Index(sys, "- VoxtNew") || !has(tt, sys) || !has(tt, out.Dictionary) {
+		strings.Contains(sys, "dictionary>") || strings.Index(sys, "`罗斯` → Roth") > strings.Index(sys, "- VoxtNew") || !has(tt, sys) || !has(tt, out.Dictionary) {
 		t.Errorf("the example's system prompt:\n%s", sys)
 	}
 	if !has(tt, trySample()) || !has(tt, "+ Speech recognition text") || !has(tt, "= What the language model receives") {

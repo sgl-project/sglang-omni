@@ -325,6 +325,10 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 		{"overlay-recording", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-12 * time.Second), Levels: wave()}, nil, nil},
 		{"overlay-recording-time", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-12 * time.Second), Levels: wave()},
 			func() { a.prefs.Overlay.ShowTime = true }, nil},
+		// The limits of Settings → Audio near (#3840).
+		{"overlay-length-limit", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-9*time.Minute - 18*time.Second), Levels: wave(), MaxLen: 10 * time.Minute},
+			func() { a.prefs.Overlay.ShowTime = true }, nil},
+		{"overlay-upload-limit", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-13*time.Minute - 20*time.Second), Levels: wave(), UploadLen: 13*time.Minute + 39*time.Second}, nil, nil},
 		{"overlay-live-short", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-3 * time.Second), Levels: wave(),
 			Partial: "Meet at three tomorrow"}, nil, nil},
 		{"overlay-live-short-zh", session.Snapshot{State: session.Recording, StartedAt: now, HeardAt: now.Add(-3 * time.Second), Levels: wave(),

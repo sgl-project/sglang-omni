@@ -19,11 +19,23 @@ import (
 func TestLLMWaitRow(t *testing.T) {
 	t.Cleanup(func() { i18n.SetLocale("en") })
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 4800)
 	a.navigate(remotePath)
 	if !hasExact(tt, "Wait for the language model") || !hasExact(tt, "Automatic") {
 		t.Fatalf("no row: %q", firstTexts(tt))
 	}
+	inView := func(what, text string) {
+		t.Helper()
+		for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}} {
+			tt.SetSize(size[0], size[1])
+			frames(tt)
+			if r, ok := tt.Find(text); !ok || r.Y+r.H > float32(size[1]) {
+				t.Errorf("%s, %dx%d: the wait needs a scroll: %v %v", what, size[0], size[1], r, ok)
+			}
+		}
+		tt.SetSize(windowWidth, windowHeight)
+		frames(tt)
+	}
+	inView("English", "Automatic")
 	click(t, tt, "Automatic")
 	click(t, tt, "5 minutes")
 	if got := a.settings.Get().Models.LLMWait; got != settings.Wait5Min {
@@ -37,17 +49,23 @@ func TestLLMWaitRow(t *testing.T) {
 	if frames(tt); !hasExact(tt, "等待语言模型") || !hasExact(tt, "10 分钟") {
 		t.Errorf("in Chinese: %q", firstTexts(tt))
 	}
+	inView("zh-Hans", "10 分钟")
 }
 
 // TestSkipLLMPill (#3821): while the language model works on speech that
 // can go in as said, the working pill ends its row with Use transcript,
-// inside the face, and takes the pointer; Rewrite's pill has none and
-// lets the pointer through, as before.
+// inside the face, and takes the pointer, with the live text in one line
+// or in lines (the default); Rewrite's pill has none and lets the pointer
+// through, as before.
 func TestSkipLLMPill(t *testing.T) {
 	t.Cleanup(func() { i18n.SetLocale("en") })
-	for _, lang := range []string{"en", "zh-Hans"} {
+	for _, c := range []struct {
+		lang  string
+		lines bool
+	}{{"en", false}, {"zh-Hans", false}, {"en", true}, {"zh-Hans", true}} { // lines: a fresh install's
+		lang := c.lang
 		a, _, _ := newTestApp(t)
-		a.updateSettings(func(s *settings.Settings) { s.Overlay.LiveLines, s.General.Language = false, lang })
+		a.updateSettings(func(s *settings.Settings) { s.Overlay.LiveLines, s.General.Language = c.lines, lang })
 		label := i18n.T("Use transcript")
 		snap(a, session.Snapshot{Kind: store.KindTranscribe, State: session.Composing, CanSkip: true, Partial: "so the release moves to thursday"})
 		tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
@@ -65,7 +83,7 @@ func TestSkipLLMPill(t *testing.T) {
 
 		snap(a, session.Snapshot{ID: "s2", Kind: store.KindRewrite, State: session.Composing, Partial: "make it shorter", Selection: "x"})
 		frames(tt)
-		if has(tt, label) || !a.ov.passThrough {
+		if has(tt, label) || !a.ov.passThrough && !c.lines { // lines take the pointer anyway
 			t.Errorf("%s: Rewrite's pill: %q, pass %v", lang, firstTexts(tt), a.ov.passThrough)
 		}
 	}

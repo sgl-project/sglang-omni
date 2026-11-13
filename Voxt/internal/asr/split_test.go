@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -65,5 +66,29 @@ func TestTranscribeInPieces(t *testing.T) {
 		return Result{}, boom
 	}); !errors.Is(err, boom) || calls != 1 {
 		t.Errorf("error: %v after %d calls", err, calls)
+	}
+}
+
+// TestTranscribeInPiecesUserLimit: the user's upload limit (Settings →
+// Audio) makes smaller pieces when it is under the service's; over the
+// service's, or under a WAV header, the service's limit stands.
+func TestTranscribeInPiecesUserLimit(t *testing.T) {
+	for _, c := range []struct {
+		user, pieces, most int
+	}{
+		{0, 1, 4000},
+		{44 + 1000, 4, 1000},
+		{1 << 20, 1, 4000},
+		{10, 1, 4000},
+	} {
+		var sent []int
+		one := func(_ context.Context, r FileRequest) (Result, error) {
+			sent = append(sent, len(r.Audio))
+			return Result{Text: "x"}, nil
+		}
+		if _, err := TranscribeInPieces(context.Background(), FileRequest{Audio: loud(4000), Format: "pcm", MaxBytes: c.user}, 44+4000, one); err != nil ||
+			len(sent) != c.pieces || slices.Max(sent) > c.most {
+			t.Errorf("user limit %d: %v, sent %v; want %d pieces of at most %d", c.user, err, sent, c.pieces, c.most)
+		}
 	}
 }
