@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/historyapi"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -148,7 +149,7 @@ func historyTime(s string, loc *time.Location) (time.Time, error) {
 // historyFailed says what went wrong on stderr and picks the exit code.
 func historyFailed(stderr io.Writer, err error) int {
 	if errors.Is(err, historyapi.ErrUnavailable) {
-		fmt.Fprintln(stderr, "Voxt is not answering: it is not running, or Settings → Privacy → Let programs on this Mac read the history is off. Open Voxt, or turn the setting on.")
+		fmt.Fprintln(stderr, i18n.Platform("Voxt is not answering: it is not running, or Settings → Privacy → Let programs on this Mac read the history is off. Open Voxt, or turn the setting on.", "Voxt is not answering: it is not running, or Settings → Privacy → Let programs on this PC read the history is off. Open Voxt, or turn the setting on."))
 		return exitUnavailable
 	}
 	fmt.Fprintf(stderr, "The read stopped before the end: %v\n", err)

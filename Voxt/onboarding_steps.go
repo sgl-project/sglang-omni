@@ -31,10 +31,10 @@ func obWelcomeStep(c *ui.Context, state onboardingWelcomeViewState, actions onbo
 	if state.LegacyAvailable {
 		obLegacyCard(c, state.Legacy, actions)
 	}
-	obRow(c, "ob-p-local-models", modelsIcon, i18n.T("Your audio stays on this Mac"),
-		i18n.T("Speech is recognised on this Mac unless you choose a remote speech service. Text goes only to the language model you set up. Voxt has no server of its own, no account and no analytics."))
-	obRow(c, "ob-p-local", icons.Database, i18n.T("History stays on this Mac"),
-		i18n.T("Results, and their recordings if you choose, are kept only on this Mac. You can turn this off in Settings → Privacy."))
+	obRow(c, "ob-p-local-models", modelsIcon, i18n.Platform("Your audio stays on this Mac", "Your audio stays on this PC"),
+		i18n.Platform("Speech is recognised on this Mac unless you choose a remote speech service. Text goes only to the language model you set up. Voxt has no server of its own, no account and no analytics.", "Speech is recognised on this PC unless you choose a remote speech service. Text goes only to the language model you set up. Voxt has no server of its own, no account and no analytics."))
+	obRow(c, "ob-p-local", icons.Database, i18n.Platform("History stays on this Mac", "History stays on this PC"),
+		i18n.Platform("Results, and their recordings if you choose, are kept only on this Mac. You can turn this off in Settings → Privacy.", "Results, and their recordings if you choose, are kept only on this PC. You can turn this off in Settings → Privacy."))
 	obRow(c, "ob-p-urls", appEnhancementIcon, i18n.T("Browser addresses only choose which rules apply"),
 		i18n.T("With App enhancement, the address of the current tab picks a group of rules. The language model never sees it."))
 }
@@ -45,7 +45,7 @@ func obLegacyCard(c *ui.Context, state onboardingLegacyViewState, actions onboar
 	t := c.Theme()
 	card(c.Key("ob-legacy")).Children(func() {
 		ui.Column(c).Gap(px(t, sp2)).Children(func() {
-			ui.Text(c, i18n.T("The previous Voxt is on this Mac")).FontWeight(600)
+			ui.Text(c, i18n.Platform("The previous Voxt is on this Mac", "The previous Voxt is on this PC")).FontWeight(600)
 			caption(c, i18n.T("Click Import from Voxt 1.x to bring over its dictionary, history and settings. The previous Voxt keeps all its data."))
 			if state.Done || state.Failed != "" {
 				onboardingLegacyReportView(c, state, actions)

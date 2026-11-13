@@ -19,7 +19,8 @@ import (
 const moduleRoot = "../.."
 
 // sourceKeys scans every non-test .go file of the module for calls to
-// i18n.T, i18n.N, i18n.X and an explicit translator's T whose message arguments are string literals,
+// i18n.T, i18n.N, i18n.X, i18n.Platform, i18n.PlatformN and an explicit
+// translator's T whose message arguments are string literals,
 // and returns the catalog keys they need, with a position for each.
 // usage maps each key to the sorted module-relative paths of the files
 // that use it. Calls with computed messages (i18n.T(name)) are returned
@@ -101,12 +102,34 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string, usage m
 				} else {
 					dynamic = append(dynamic, pos)
 				}
+			case "Platform":
+				mac, macOK := lit(0)
+				windows, windowsOK := lit(1)
+				if macOK && windowsOK {
+					add(mac)
+					add(windows)
+				} else {
+					dynamic = append(dynamic, pos)
+				}
 			case "N":
 				one, ok1 := lit(1)
 				other, ok2 := lit(2)
 				if ok1 && ok2 {
 					add(one)
 					add(other)
+				} else {
+					dynamic = append(dynamic, pos)
+				}
+			case "PlatformN":
+				macOne, macOneOK := lit(1)
+				macOther, macOtherOK := lit(2)
+				windowsOne, windowsOneOK := lit(3)
+				windowsOther, windowsOtherOK := lit(4)
+				if macOneOK && macOtherOK && windowsOneOK && windowsOtherOK {
+					add(macOne)
+					add(macOther)
+					add(windowsOne)
+					add(windowsOther)
 				} else {
 					dynamic = append(dynamic, pos)
 				}

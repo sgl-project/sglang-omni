@@ -38,7 +38,7 @@ func CheckEndpoint(provider, raw string, secure ...string) (*url.URL, error) {
 		}
 	}
 	if !ok {
-		return nil, Errorf(provider, KindConfig, "endpoint must use %s (plain %s only on this Mac): %s",
+		return nil, Errorf(provider, KindConfig, "endpoint must use %s (plain %s only for a local server): %s",
 			strings.Join(secure, " or "), u.Scheme, SanitizeEndpoint(raw))
 	}
 	return u, nil

@@ -54,7 +54,7 @@ func TestHistoryCLIUnavailable(t *testing.T) {
 		if code != exitUnavailable || out.Len() != 0 {
 			t.Errorf("%v: code %d, out %q", args, code, out.String())
 		}
-		for _, s := range []string{"not running", "Settings → Privacy"} {
+		for _, s := range []string{"not running", "Settings → Privacy", platformText("Let programs on this Mac read the history")} {
 			if !strings.Contains(errOut.String(), s) {
 				t.Errorf("%v: stderr %q has no %q", args, errOut.String(), s)
 			}
