@@ -282,6 +282,8 @@ var windowsHotkeyExpectation = strings.NewReplacer(
 	"⌃⌥Space", "Ctrl Alt Space",
 	"⌃⌥V", "Ctrl Alt V",
 	"⌃⌘V", "Ctrl Win V",
+	"⌃⇧⌘K", "Ctrl Shift Win K",
+	"⌃⌥K", "Ctrl Alt K",
 	"⌘Space", "Win Space",
 	"macOS uses these keys", "Windows uses these keys",
 	"macOS asks for the microphone", "Windows asks for the microphone",

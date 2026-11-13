@@ -238,12 +238,12 @@ func TestSloganHint(t *testing.T) {
 		{nil, "Add a shortcut to start[]", "先设置一个快捷键[]"},
 	} {
 		i18n.SetLocale("en")
-		if got := join(tc.h); got != tc.en {
-			t.Errorf("en %+v: %q, want %q", tc.h, got, tc.en)
+		if got := join(tc.h); got != platformText(tc.en) {
+			t.Errorf("en %+v: %q, want %q", tc.h, got, platformText(tc.en))
 		}
 		i18n.SetLocale("zh-Hans")
-		if got := join(tc.h); got != tc.zh {
-			t.Errorf("zh %+v: %q, want %q", tc.h, got, tc.zh)
+		if got := join(tc.h); got != platformText(tc.zh) {
+			t.Errorf("zh %+v: %q, want %q", tc.h, got, platformText(tc.zh))
 		}
 	}
 	i18n.SetLocale("en")
