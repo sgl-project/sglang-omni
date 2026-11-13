@@ -79,3 +79,42 @@ func TestLLMWait(t *testing.T) {
 		t.Errorf("read back %+v %v", back.Models, err)
 	}
 }
+
+// TestFasterOn (#3873): the Faster transcription switch decides whether a
+// speech model uses its draft, which must be installed; a model never
+// switched (older documents) uses an installed draft, as 2.0.2 did. The
+// switch survives a save and a read, and a clone does not share it.
+func TestFasterOn(t *testing.T) {
+	m := Models{Faster: map[string]bool{"on": true, "off": false}}
+	for _, c := range []struct {
+		id        string
+		installed bool
+		want      bool
+	}{
+		{"never", true, true}, {"never", false, false},
+		{"on", true, true}, {"on", false, false},
+		{"off", true, false}, {"off", false, false},
+	} {
+		if got := m.FasterOn(c.id, c.installed); got != c.want {
+			t.Errorf("%s, installed %v: %v", c.id, c.installed, got)
+		}
+	}
+	if !(Models{}).FasterOn("x", true) {
+		t.Error("no switches at all: an installed draft is off")
+	}
+	s := Defaults()
+	s.Models.Faster = map[string]bool{"asr.fast": false}
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Migrate(data)
+	if on, set := back.Models.Faster["asr.fast"]; err != nil || !set || on {
+		t.Errorf("read back %+v %v", back.Models, err)
+	}
+	c := clone(back)
+	c.Models.Faster["asr.fast"] = true
+	if back.Models.Faster["asr.fast"] {
+		t.Error("a clone shares the switches")
+	}
+}

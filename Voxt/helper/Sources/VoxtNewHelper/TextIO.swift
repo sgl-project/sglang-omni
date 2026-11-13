@@ -124,8 +124,10 @@ final class TextIO: @unchecked Sendable {
                 }
                 steps.append("marker=empty")
             }
-            if let r, r.length == 0 {
-                // A caret and no selection: ⌘C would copy nothing, or a whole line.
+            var settable = DarwinBoolean(false)
+            AXUIElementIsAttributeSettable(e, kAXValueAttribute as CFString, &settable)
+            if SelectionRead.endsAtCaret(range: r.map { TextRange(location: $0.location, length: $0.length) },
+                                         editable: settable.boolValue || inEditableRegion(e)) {
                 steps.append("caret-only")
                 return done(nil, SelectionVia.none)
             }
@@ -141,6 +143,8 @@ final class TextIO: @unchecked Sendable {
     /// ⌘C, wait for the clipboard to change, read it, put the old one back.
     private func copySelection(timeoutMs: Double) async -> (text: String?, note: String) {
         let (snap, c0) = await onMain { (Clipboard.snapshot(NSPasteboard.general), NSPasteboard.general.changeCount) }
+        // Keys the user still holds (Control of a Control+C shortcut), for the log: the app may see them with ⌘C.
+        let held = flags(CGEventSource.flagsState(.hidSystemState))
         postKey(UInt16(kVK_ANSI_C), flags: .maskCommand)
         let deadline = monotonicMs() + timeoutMs
         var changed = false
@@ -151,14 +155,14 @@ final class TextIO: @unchecked Sendable {
             }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        guard changed else { return (nil, "copy: clipboard unchanged") }
+        guard changed else { return (nil, "copy: clipboard unchanged" + held) }
         let text = await onMain { () -> String? in
             let pb = NSPasteboard.general
             let s = pb.string(forType: .string)
             Clipboard.restore(pb, snap)
             return s
         }
-        return (text?.isEmpty == false ? text : nil, "copy: changed")
+        return (text?.isEmpty == false ? text : nil, "copy: changed" + held)
     }
 
     func paste(_ p: PasteParams) async throws -> PasteResult {
@@ -367,6 +371,13 @@ final class TextIO: @unchecked Sendable {
         guard IsSecureEventInputEnabled() || pid != 0 else { return nil }
         if pid > 0, let a = NSRunningApplication(processIdentifier: pid_t(pid)) { return FrontApps.describe(a) }
         return App(pid: pid, bundleId: nil, name: nil)
+    }
+
+    /// The modifiers in f besides ⌘, as " held=control+shift"; "" for none.
+    private func flags(_ f: CGEventFlags) -> String {
+        let names = [(CGEventFlags.maskControl, "control"), (.maskAlternate, "option"), (.maskShift, "shift"), (.maskSecondaryFn, "fn")]
+            .filter { f.contains($0.0) }.map(\.1)
+        return names.isEmpty ? "" : " held=" + names.joined(separator: "+")
     }
 
     private func flags(_ modifiers: [String]) -> CGEventFlags {

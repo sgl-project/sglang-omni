@@ -9,7 +9,6 @@
 #include <utility>
 
 #include "common/audio.h"
-#include "qwen3_asr/qwen3_audio.h"
 
 namespace ming3_audio {
 namespace mx = mlx::core;
@@ -433,8 +432,8 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
   } else {
   }
   const auto &request = prepared.request;
-  const auto mel = mx::transpose(
-      qwen3_asr::LogMel(request.samples, qwen3_asr::AudioLayout::kReference));
+  const auto mel = mx::transpose(omni_common::LogMel(
+      request.samples, omni_common::FinalStftFrame::kDropped));
   const auto audio = Encode(mel);
   const auto prompt_ids =
       mx::array(prepared.prompt_ids.data(),

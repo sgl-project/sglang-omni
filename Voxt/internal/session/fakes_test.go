@@ -148,7 +148,7 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 			if f.failAt > 0 && n == f.failAt {
 				return proto.CaptureResult{}, f.failErr
 			}
-			if f.maxFrame > 0 && n == f.maxFrame {
+			if (f.maxFrame > 0 && n == f.maxFrame) || (p.MaxSeconds > 0 && float64(n) >= p.MaxSeconds*10) { // 100 ms frames
 				return proto.CaptureResult{Reason: proto.CaptureMaxSeconds, Frames: n}, nil
 			}
 		}
@@ -348,6 +348,7 @@ type fakeFile struct {
 	audio  []byte // the last request's audio
 	lang   string // the last request's language hint
 	prompt string // the last request's prompt
+	most   int    // the last request's MaxBytes
 }
 
 func (f *fakeFile) Caps() asr.Caps { return asr.Caps{File: true, Prompt: true} }
@@ -357,7 +358,7 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 	f.calls++
 	f.bytes = len(req.Audio)
 	f.audio = req.Audio
-	f.lang, f.prompt = req.Lang, req.Prompt
+	f.lang, f.prompt, f.most = req.Lang, req.Prompt, req.MaxBytes
 	f.mu.Unlock()
 	if f.hang {
 		<-ctx.Done()
@@ -410,7 +411,11 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		}
 		for i := 0; i < len(rs); i += n {
 			if f.pause > 0 {
-				time.Sleep(f.pause)
+				select {
+				case <-time.After(f.pause):
+				case <-ctx.Done(): // a real service's stream ends with the request
+					return llm.Response{}, ctx.Err()
+				}
 			}
 			req.OnDelta(string(rs[i:min(i+n, len(rs))]))
 		}
@@ -568,6 +573,7 @@ var errHelperForTest = core.ErrHelper
 type fakeSelector struct {
 	text     string
 	copyText string
+	steps    []string
 	err      error
 	delay    time.Duration
 
@@ -595,7 +601,7 @@ func (f *fakeSelector) Selection(ctx context.Context, p proto.SelectionParams) (
 	case f.copyText != "" && p.AllowCopy:
 		return proto.SelectionResult{Text: f.copyText, Via: proto.ViaCopy, MS: 40}, nil
 	}
-	return proto.SelectionResult{Via: proto.ViaNone, MS: 1}, nil
+	return proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: f.steps}, nil
 }
 
 func (f *fakeSelector) params() []proto.SelectionParams {

@@ -277,28 +277,15 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 			placeholder = i18n.T("For example: write numbers as digits; keep English product names as they are; end every sentence with a full stop.")
 		}
 		matches := findFolded(u.prompt, u.find)
+		f := &u.finder
+		moved := f.advance(len(matches))
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-			find := searchField(c, p+"-find", &u.find, i18n.T("Find in the prompt"), px(t, 320))
+			find := f.field(c, p+"-find", &u.find, i18n.T("Find in the prompt"), px(t, 320))
 			if u.findFocus {
 				u.findFocus = false
 				find.Focus()
 			}
-			if find.Changed() {
-				u.found = 0
-			}
-			if find.Submitted() && len(matches) > 0 {
-				u.found = u.found%len(matches) + 1
-				u.findSelect = true
-			}
-			switch {
-			case strings.TrimSpace(u.find) == "":
-			case len(matches) == 0:
-				caption(c, i18n.T("Not found")).SingleLine().Shrink(0)
-			case u.found > 0:
-				caption(c, i18n.T("%d of %d", u.found, len(matches))).SingleLine().Shrink(0)
-			default:
-				caption(c, i18n.N(len(matches), "%d match", "%d matches", len(matches))).SingleLine().Shrink(0)
-			}
+			f.count(c, u.find, len(matches))
 		})
 		// As high as the rules, however long: a long prompt reads down the
 		// page, which scrolls to the caret and to what Find selects (MyGo
@@ -307,16 +294,17 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 		if len(matches) > 0 {
 			ranges := make([]ui.TextRange, len(matches))
 			for i, m := range matches {
-				ranges[i] = ui.TextRange{Start: m[0], End: m[1], Color: k.Accent, Weight: 600}
-				if i == u.found-1 {
-					ranges[i].Weight = 800
+				// A text area's runs take no ground: the current match is
+				// heavier, and selected below.
+				ranges[i] = ui.TextRange{Start: m[0], End: m[1], Color: k.Danger, Weight: 700}
+				if i == f.cur-1 {
+					ranges[i].Weight = 900
 				}
 			}
 			in.TextRanges(ranges...)
 		}
-		if u.findSelect && u.found > 0 && u.found <= len(matches) {
-			u.findSelect = false
-			in.SetTextSelection(matches[u.found-1][0], matches[u.found-1][1])
+		if moved {
+			in.SetTextSelection(matches[f.cur-1][0], matches[f.cur-1][1])
 		}
 		if in.Changed() {
 			u.promptDirty = true
