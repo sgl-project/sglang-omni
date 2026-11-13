@@ -167,6 +167,7 @@ func hubProxy(t *testing.T, hubURL, user string) (*httptest.Server, func() []str
 // every file through the system's proxy (a proxy in front of the fake
 // Hub); "direct" never uses it.
 func TestDownloadThroughProxy(t *testing.T) {
+	skipWindowsModelLibrary(t)
 	e := newEnv(t, testCatalog(), Options{})
 	proxy, requests := hubProxy(t, e.hub.URL, "")
 	var logged []string
@@ -196,6 +197,7 @@ func TestDownloadThroughProxy(t *testing.T) {
 // download fails, with an error that names no password; with them every
 // request of the download carries them and it installs.
 func TestDownloadThroughAuthProxy(t *testing.T) {
+	skipWindowsModelLibrary(t)
 	const password = "Pr0xy-pass-5521"
 	e := newEnv(t, testCatalog(), Options{})
 	proxy, requests := hubProxy(t, e.hub.URL, "alice:"+password)
