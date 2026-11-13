@@ -27,6 +27,7 @@ func TestPillThinkingLevel(t *testing.T) {
 		lines, top bool
 	}{{"en", false, false}, {"zh-Hans", false, true}, {"en", true, true}, {"zh-Hans", true, false}} {
 		a, _, _ := newTestApp(t)
+		a.measureHook = nil // the view measures its texts, as on the Mac: a guess may be narrower than Linux's fonts
 		a.updateSettings(func(s *settings.Settings) {
 			s.Overlay.LiveLines, s.General.Language = c.lines, c.lang
 			s.Providers.LLM = []settings.Provider{{ID: "zhipu"}}
