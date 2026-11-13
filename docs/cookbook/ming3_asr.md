@@ -147,3 +147,7 @@ data: [DONE]
 ```
 
 The first stable text is emitted immediately; later updates use a 50 ms interval (`--thinker.factory.stream_emit_interval_seconds`). Completion flushes pending text, the language header is removed, and concatenated deltas equal the done event's `text`. When `max_new_tokens` is reached, `transcript.text.done` includes `"finish_reason":"length"` and the partial transcript.
+
+## KDA diagonal anchor
+
+The CUDA thinker applies the KDA diagonal anchor fix from [sglang#48745](https://github.com/sgl-project/sglang/pull/48745) while it is absent from the pinned dependency. The patch aligns the unfused gate normalization anchor with the fused path and is installed before model construction and CUDA Graph capture.
