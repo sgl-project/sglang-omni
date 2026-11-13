@@ -50,6 +50,8 @@ agree on it with a maintainer first.
 
 `qwen3_asr_server` and `qwen3_asr_transcribe` take `--draft-model-path DIR` (and `--draft-bits 4|6|8` to quantize the draft at load). The Qwen3-ASR target then verifies a DFlash draft's block of proposals each step and keeps its own greedy transcript; the parity tool reports `verify_rounds` per clip. The draft is a Speculators-layout DFlash checkpoint (`aux_hidden_state_layer_ids`, `block_size`, `mask_token_id`, `transformer_layer_config`; weights `fc`, `hidden_norm`, `layers.*`, `norm`, `lm_head`, `d2t`) checked against the target at load: hidden size, the layers it reads (in order), the `fc`, `lm_head` and `d2t` shapes, `d2t` landing inside the target's vocabulary, and a causal block; one that does not fit is refused at load. A request that sets `repetition_penalty` decodes without the draft.
 
+If the verify rounds of a request commit fewer than 2 tokens a round on average, the request decodes the rest of its tokens without the draft. The runtime checks this average every 32 rounds. `verify_rounds` counts only the rounds before the change.
+
 | Target | Draft | Golden |
 | --- | --- | --- |
 | `mlx-community/Qwen3-ASR-0.6B-4bit` | `wilsonzheng0327/Qwen3-ASR-0.6B-dflash` | `ci/golden/qwen3-asr-0.6b-4bit-dflash.json` |
@@ -58,7 +60,7 @@ agree on it with a maintainer first.
 
 The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned in `ci/model_pins.json`. A draft for another target is one pin and one golden whose request names it under `draft_model_path`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
 
-`moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
+`moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks. Each audio chunk has its own average.
 
 ## Rule 2: Contribution requirements
 

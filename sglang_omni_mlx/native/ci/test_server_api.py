@@ -24,6 +24,7 @@ import pytest
 from websockets.sync.client import connect
 
 from sglang_omni_mlx.native.ci.long_audio_client import stream_recording
+from sglang_omni_mlx.native.ci.long_audio_corpus import build_recording, load_clips
 
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 DATA_ROOT = os.environ.get("CI_DATA_ROOT")
@@ -252,6 +253,52 @@ def test_a_draft_for_another_target_fails_at_load() -> None:
     assert failed.ready["event"] == "failed"
     assert "hidden size 2048" in failed.ready["reason"]
     assert failed.process.wait(timeout=10) == 1
+
+
+@pytest.mark.parametrize(
+    ("language", "seconds", "falls_back"),
+    [("zh", 300, False), ("en", 900, True)],
+)
+def test_a_draft_under_two_tokens_a_round_decodes_the_rest_plainly(
+    tmp_path: Path, language: str, seconds: int, falls_back: bool
+) -> None:
+    # note (Xinhao Tan): on an M4 Pro the draft committed 1.4 tokens a round
+    # over the first 32 rounds of the 900 s recording and 4.0 over those of the
+    # 300 s recording.
+    recording = tmp_path / "recording.wav"
+    build_recording(
+        load_clips(Path(DATA_ROOT) / "corpus" / "v1", language),
+        seconds,
+        0,
+        recording,
+    )
+    result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "qwen3_asr_transcribe"),
+            "--model-path",
+            str(model_directory()),
+            "--draft-model-path",
+            str(model_directory(DRAFT_REPO)),
+            "--layout",
+            "voxt_swift",
+            "--language",
+            language,
+            "--max-new-tokens",
+            "256",
+            "--stop-at-end-of-text",
+            "--stop-on-token-loop",
+            str(recording),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    output = json.loads(result.stdout)
+    assert output["generated_token_count"] == 256
+    assert output["finish_reason"] == "length"
+    if falls_back:
+        assert output["verify_rounds"] == 32
+    else:
+        assert output["verify_rounds"] > 32
 
 
 def test_plain_request_returns_json_text(server: Server) -> None:
