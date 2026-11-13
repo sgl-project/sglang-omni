@@ -32,7 +32,9 @@ pytestmark = pytest.mark.accelerator
 
 DEVICE = resolve_concrete_device(None, 0)
 DEVICE_MODULE = (
-    torch.get_device_module(DEVICE) if DEVICE.type in ("cuda", "xpu") else None
+    torch.get_device_module(DEVICE)
+    if DEVICE.type in ("cuda", "xpu", "npu")
+    else None
 )
 GRAPH_BACKEND = (
     current_platform.get_device_graph_backend(DEVICE)
@@ -138,7 +140,7 @@ def encoder_bundle():
     """sglang WhisperEncoder built from the MOSS-TD checkpoint. sglang's encoder
     uses TP-parallel layers, so a TP=1 group must exist before construction."""
     if not HAS_DEVICE_GRAPH:
-        pytest.skip("needs CUDA or XPU graph support")
+        pytest.skip("needs CUDA, XPU or NPU graph support")
     else:
         pass
     snaps = glob.glob(CKPT_GLOB)

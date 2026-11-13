@@ -30,6 +30,7 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
 from sglang_omni.preprocessing.audio import decode_audio_bytes
 from sglang_omni.scheduling import bootstrap, engine_factory, sglang_backend
 from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
     CudaGraphConfig,
     build_generation_batch_overrides,
 )
@@ -180,6 +181,23 @@ def test_moss_transcribe_diarize_preserves_explicit_omp_default(
 
     # The written entry wins over whatever the derivation would produce.
     assert config.resolved_env_defaults()["OMP_NUM_THREADS"] == "3"
+
+
+def test_per_stream_queue_default_is_npu_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sglang_omni.models.moss_transcribe_diarize import config as config_module
+
+    config = config_module.MossTranscribeDiarizePipelineConfig(model_path="dummy")
+
+    monkeypatch.setattr(config_module.current_platform, "is_npu", lambda: True)
+    assert config.resolved_env_defaults()["PER_STREAM_QUEUE"] == "1"
+
+    overridden = config_module.MossTranscribeDiarizePipelineConfig(
+        model_path="dummy", env_defaults={"PER_STREAM_QUEUE": "0"}
+    )
+    assert overridden.resolved_env_defaults()["PER_STREAM_QUEUE"] == "0"
+
+    monkeypatch.setattr(config_module.current_platform, "is_npu", lambda: False)
+    assert "PER_STREAM_QUEUE" not in config.resolved_env_defaults()
 
 
 def test_compile_encoder_sets_runner_and_warms_each_bucket(
@@ -334,6 +352,11 @@ def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
 
     monkeypatch.setattr(
         platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
+    # These tests exercise the CUDA eager factory path. Keep the NPU-only
+    # startup validation out of it so the suite behaves the same on any host.
+    monkeypatch.setattr(
+        platforms.current_platform, "is_npu", lambda: False, raising=False
     )
 
     processor = SimpleNamespace(
@@ -658,6 +681,7 @@ def test_torch_compile_is_turned_off_only_under_the_draft(
 ) -> None:
     """On SGLang 0.5.23 compile made the draft about four times slower at concurrency 1, while it still speeds up decode without a draft."""
     monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(engine_builder.current_platform, "is_npu", lambda: False)
     write_speculators_config(tmp_path)
     overrides: dict[str, object] = {"enable_torch_compile": True}
     if with_draft:
@@ -674,6 +698,72 @@ def test_torch_compile_is_turned_off_only_under_the_draft(
         builder.draft_checkpoint.cleanup()
     else:
         pass
+
+
+def test_torch_compile_is_off_on_npu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Compile cannot trace the fused NPU QKV path, so it aborts decode graphs."""
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: False)
+    monkeypatch.setattr(engine_builder.current_platform, "is_npu", lambda: True)
+    overrides: dict[str, object] = {"enable_torch_compile": True}
+
+    make_moss_engine_builder().adjust_overrides(overrides)
+
+    assert overrides["enable_torch_compile"] is False
+
+
+@pytest.mark.parametrize(
+    ("is_npu", "decode_graph", "max_bs", "per_stream_queue", "is_valid"),
+    [
+        (True, True, 16, "1", True),
+        (True, True, 16, None, False),
+        (True, True, 16, "0", False),
+        (True, True, 1, None, True),
+        (True, False, 16, None, True),
+        (False, True, 16, None, True),
+    ],
+)
+def test_multirow_decode_graph_requires_per_stream_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    is_npu: bool,
+    decode_graph: bool,
+    max_bs: int,
+    per_stream_queue: str | None,
+    is_valid: bool,
+) -> None:
+    """A shared Host queue lets an update overlap a replay and hangs the scheduler."""
+    from sglang.srt.arg_groups import model_override_base
+
+    if per_stream_queue is None:
+        monkeypatch.delenv("PER_STREAM_QUEUE", raising=False)
+    else:
+        monkeypatch.setenv("PER_STREAM_QUEUE", per_stream_queue)
+    monkeypatch.setattr(engine_builder.current_platform, "is_npu", lambda: is_npu)
+    monkeypatch.setattr(model_override_base, "resolved_view", lambda args: args)
+    monkeypatch.setattr(
+        engine_builder.AsrEngineBuilder,
+        "validate_before_infrastructure",
+        lambda self, server_args: None,
+    )
+    server_args = SimpleNamespace(
+        disable_cuda_graph=False,
+        cuda_graph_config=SimpleNamespace(
+            decode=SimpleNamespace(
+                backend=(
+                    CudaGraphBackend.FULL
+                    if decode_graph
+                    else CudaGraphBackend.DISABLED
+                ),
+                max_bs=max_bs,
+            )
+        ),
+    )
+    builder = make_moss_engine_builder()
+
+    if is_valid:
+        builder.validate_before_infrastructure(server_args)
+    else:
+        with pytest.raises(ValueError, match="PER_STREAM_QUEUE"):
+            builder.validate_before_infrastructure(server_args)
 
 
 @pytest.mark.parametrize(
