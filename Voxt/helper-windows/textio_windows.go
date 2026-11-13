@@ -43,6 +43,25 @@ func (server *helperServer) serveTextIO(message proto.Message) {
 			return
 		}
 		server.result(message.ID, result)
+	case proto.MethodTextRead:
+		var params proto.ReadParams
+		if err := message.DecodeParams(&params); err != nil {
+			server.fail(message.ID, proto.CodeBadRequest, "Bad params: %v", err)
+			return
+		}
+		var result proto.ReadResult
+		var readErr error
+		if !server.automation.call(func(automation *comObject) {
+			result, readErr = readFocusedText(automation, params)
+		}) {
+			server.fail(message.ID, proto.CodeInternal, "The UI Automation thread stopped")
+			return
+		}
+		if readErr != nil {
+			server.fail(message.ID, proto.CodeInternal, "Could not read the focused text: %v", readErr)
+			return
+		}
+		server.result(message.ID, result)
 	case proto.MethodTextPaste:
 		var params proto.PasteParams
 		if err := message.DecodeParams(&params); err != nil {
