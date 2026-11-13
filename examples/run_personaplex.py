@@ -32,7 +32,6 @@ from sglang_omni.client.types import GenerateRequest, SamplingParams
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.personaplex.config import PersonaPlexPipelineConfig
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
-from sglang_omni.proto.request import EXPLICIT_GENERATION_PARAMS_KEY
 
 OUTPUT_SAMPLE_RATE = 24_000
 
@@ -101,15 +100,6 @@ def extra_params(args: argparse.Namespace) -> dict[str, str | int | float]:
     return params
 
 
-def _explicit_fields(args: argparse.Namespace) -> list[str]:
-    fields = []
-    if args.greedy or args.temperature is not None:
-        fields.append("temperature")
-    if args.top_k is not None:
-        fields.append("top_k")
-    return fields
-
-
 async def run(args: argparse.Namespace) -> int:
 
     config = PersonaPlexPipelineConfig(model_path=args.model_path)
@@ -128,13 +118,8 @@ async def run(args: argparse.Namespace) -> int:
         request = GenerateRequest(
             model=config.name,
             prompt={"audio_path": args.audio},
-            sampling=(
-                SamplingParams(temperature=temperature)
-                if temperature is not None
-                else SamplingParams()
-            ),
+            sampling=SamplingParams(temperature=temperature),
             extra_params=extra_params(args),
-            metadata={EXPLICIT_GENERATION_PARAMS_KEY: _explicit_fields(args)},
             output_modalities=["text", "audio"],
             stream=False,
         )

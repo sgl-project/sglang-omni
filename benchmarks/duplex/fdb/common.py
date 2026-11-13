@@ -2,7 +2,7 @@
 """Pinned inputs and settings shared by every FDB v1.5 and v1.0 step.
 
 Settings come from environment variables; see the Settings table in
-docs/developer_reference/full_duplex_bench.md.
+docs/developer_reference/full_duplex_guide.md.
 """
 
 from __future__ import annotations
@@ -17,13 +17,14 @@ import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import BinaryIO, Literal
 
 from pydantic import JsonValue
 
 from benchmarks.duplex.client import MAX_TIMEOUT_S
+from benchmarks.duplex.fdb.engines import ENGINES, Engine
 from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -34,11 +35,6 @@ PARAKEET_REPO_ID = "nvidia/parakeet-tdt-0.6b-v2"
 PARAKEET_FILENAME = "parakeet-tdt-0.6b-v2.nemo"
 PARAKEET_REVISION = "ae9ad07059c7c739ffaf932226a8fe64ae2620b0"
 PARAKEET_SHA256 = "d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c"
-
-MODEL_ID = "openbmb/MiniCPM-o-4_5"
-DEFAULT_MODEL_REVISION = "503e754207c94da6bb26850b4469f367c9ea3582"
-RECORD_PROFILE = "minicpmo-native-pr2377"
-ENGINE_LABEL = "minicpmo"
 
 JudgeName = Literal["qwen", "gpt"]
 JUDGE_NAMES: tuple[JudgeName, ...] = ("qwen", "gpt")
@@ -54,13 +50,21 @@ JUDGE_NCCL_PORT_OFFSET = 1
 NCCL_PORT_END = NCCL_PORT_BASE + NCCL_PORT_SPAN
 # note (luojiaxuan): v1.0 artifacts of a repeat live under repeat-N/v10/.
 V10_DIR = "v10"
+# note (jeffro): generate writes the engine a run records here, and the later
+# steps of the run read it back instead of ENGINE.
+ENGINE_FILE = "engine.txt"
+DEFAULT_ENGINE = "minicpmo"
+# note (luojiaxuan): the per-reply listening metrics of a repeat live under
+# repeat-N/listening/.
+LISTENING_DIR = "listening"
 
 
 @dataclass(frozen=True)
 class Settings:
     fdb_work: Path
+    engine: Engine
     scoring_venv: Path
-    model_revision: str
+    model_revision: str | None
     model_path: Path
     server_port: int
     judge: JudgeName
@@ -129,6 +133,10 @@ class Settings:
         return self.scoring_venv / "bin" / "python"
 
     @property
+    def aligner_python(self) -> Path:
+        return self.fdb_work / "aligner-venv" / "bin" / "python"
+
+    @property
     def run_root(self) -> Path:
         return self.fdb_work / "runs" / self.run_name
 
@@ -145,8 +153,12 @@ class Settings:
             "SCORING_PYTHON": str(self.scoring_python),
             "PARAKEET_NEMO": str(self.parakeet_nemo),
             "PARAKEET_SHA256": PARAKEET_SHA256,
-            "MODEL_ID": MODEL_ID,
-            "MODEL_REVISION": self.model_revision,
+            "MODEL_ID": self.engine.model_id,
+            **(
+                {}
+                if self.model_revision is None
+                else {"MODEL_REVISION": self.model_revision}
+            ),
             "REALTIME_URL": self.realtime_url,
             "SESSION_TIMEOUT_S": self.session_timeout_s,
             "V10_SESSION_TIMEOUT_S": self.v10_session_timeout_s,
@@ -154,10 +166,10 @@ class Settings:
             "JUDGE_CONFIG": str(self.judge_dir / "judge-config.json"),
         }
 
-    def apply_job_isolation(self) -> None:
-        """Give this GPU its own compile and dynamic-module caches.
+    def cache_env(self) -> dict[str, str]:
+        """This GPU's own compile and dynamic-module caches, created on first use.
 
-        Two jobs writing one Triton, Inductor, DeepGEMM, CUDA, NeMo or
+        Two processes writing one Triton, Inductor, DeepGEMM, CUDA, NeMo or
         Transformers dynamic-module directory corrupt it.
         """
         cache_root = self.fdb_work / "cache" / f"gpu-{self.gpu}"
@@ -169,9 +181,20 @@ class Settings:
             "HF_MODULES_CACHE": cache_root / "hf-modules",
             "NEMO_CACHE_DIR": cache_root / "nemo",
         }
-        for name, path in assignments.items():
+        for path in assignments.values():
             path.mkdir(parents=True, exist_ok=True)
-            os.environ[name] = str(path)
+        return {name: str(path) for name, path in assignments.items()}
+
+    def apply_job_isolation(self) -> None:
+        os.environ.update(self.cache_env())
+
+    def on_gpu(self, gpu: str) -> Settings:
+        """The same job with its model server on another GPU and that GPU's port."""
+        return replace(
+            self,
+            gpu=gpu,
+            server_port=derived_port("SERVER_PORT", DEFAULT_SERVER_PORT, gpu),
+        )
 
 
 def env_text(name: str, default: str) -> str:
@@ -200,34 +223,43 @@ def session_timeout(name: str, default: str) -> str:
     return text
 
 
-def resolve_visible_gpu() -> str:
-    """The one GPU this job uses.
+def visible_devices() -> tuple[str, ...]:
+    """The GPU indices ``CUDA_VISIBLE_DEVICES`` lists, which must be set."""
+    visible = os.environ["CUDA_VISIBLE_DEVICES"].strip()
+    if not visible:
+        raise SystemExit("ERROR: CUDA_VISIBLE_DEVICES is empty.")
+    else:
+        pass
+    devices = tuple(part.strip() for part in visible.split(","))
+    if not all(device.isdigit() for device in devices) or len(set(devices)) != len(
+        devices
+    ):
+        raise SystemExit(
+            "ERROR: CUDA_VISIBLE_DEVICES must list distinct numeric GPU indices "
+            f"(got {visible!r})."
+        )
+    else:
+        pass
+    return devices
 
-    ``CUDA_VISIBLE_DEVICES`` wins, so each terminal can export a different
-    index and the default ``GPU=0`` does not put every job on card 0.
-    ``GPU`` is used only when ``CUDA_VISIBLE_DEVICES`` is unset.
+
+def resolve_visible_gpu() -> str:
+    """The job GPU: it runs generate's one model server unless --gpus lists
+    more, runs asr and judge, and names the ports and caches.
+
+    ``CUDA_VISIBLE_DEVICES`` wins, so each terminal can export its own
+    indices; the job GPU is the first one. ``GPU`` is used only when
+    ``CUDA_VISIBLE_DEVICES`` is unset.
     """
     if "CUDA_VISIBLE_DEVICES" in os.environ:
-        visible = os.environ["CUDA_VISIBLE_DEVICES"].strip()
-        if not visible:
-            raise SystemExit("ERROR: CUDA_VISIBLE_DEVICES is empty.")
-        else:
-            pass
-        devices = [part.strip() for part in visible.split(",") if part.strip()]
-        if len(devices) != 1:
-            raise SystemExit(
-                "ERROR: set CUDA_VISIBLE_DEVICES to exactly one GPU index "
-                f"(got {visible!r})."
-            )
-        else:
-            pass
-        gpu = devices[0]
+        gpu = visible_devices()[0]
         explicit_gpu = os.environ.get("GPU")
         if explicit_gpu is not None and explicit_gpu.strip() not in {"", gpu}:
             raise SystemExit(
                 "ERROR: GPU and CUDA_VISIBLE_DEVICES disagree "
-                f"(GPU={explicit_gpu!r}, CUDA_VISIBLE_DEVICES={visible!r}). "
-                "Unset GPU, or set it to the same index."
+                f"(GPU={explicit_gpu!r}, "
+                f"CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']!r}). "
+                "Unset GPU, or set it to the first index."
             )
         else:
             pass
@@ -261,9 +293,31 @@ def reject_nccl_range(name: str, port: int) -> None:
         pass
 
 
+def resolve_engine(run_root: Path) -> Engine:
+    """The engine the run recorded, else ENGINE, else the default; an ENGINE
+    that differs from the recorded one stops the step."""
+    requested = os.environ.get("ENGINE") or None
+    engine_file = run_root / ENGINE_FILE
+    recorded = engine_file.read_text().strip() if engine_file.is_file() else None
+    if requested is not None and requested not in ENGINES:
+        raise SystemExit(
+            f"ERROR: ENGINE must be one of {', '.join(ENGINES)}, got '{requested}'."
+        )
+    elif recorded is not None and requested is not None and requested != recorded:
+        raise SystemExit(
+            f"ERROR: {run_root} was recorded with ENGINE={recorded}, not {requested}; "
+            "unset ENGINE or use another --run-name."
+        )
+    elif recorded is not None:
+        return ENGINES[recorded]
+    else:
+        return ENGINES[requested or DEFAULT_ENGINE]
+
+
 def load_settings(run_name: str) -> Settings:
     """Machine settings from environment variables; the run name comes from the CLI."""
     fdb_work = env_path("FDB_WORK", Path.home() / "fdb")
+    engine = resolve_engine(fdb_work / "runs" / run_name)
     judge = env_text("JUDGE", "qwen")
     if judge not in JUDGE_NAMES:
         raise SystemExit(f"ERROR: JUDGE must be qwen or gpt, got '{judge}'.")
@@ -281,9 +335,12 @@ def load_settings(run_name: str) -> Settings:
     reject_nccl_range("judge NCCL port", judge_port + JUDGE_NCCL_PORT_OFFSET)
     return Settings(
         fdb_work=fdb_work,
+        engine=engine,
         scoring_venv=env_path("SCORING_VENV", fdb_work / "scoring-venv"),
-        model_revision=env_text("MODEL_REVISION", DEFAULT_MODEL_REVISION),
-        model_path=env_path("MODEL_PATH", fdb_work / "models" / "MiniCPM-o-4_5"),
+        model_revision=os.environ.get("MODEL_REVISION") or engine.model_revision,
+        model_path=env_path(
+            "MODEL_PATH", fdb_work / "models" / engine.model_id.split("/")[-1]
+        ),
         server_port=server_port,
         judge=judge,
         judge_model_path=env_path(
@@ -422,6 +479,17 @@ def v10_command(settings: Settings, phase: str, *arguments: str) -> list[str]:
         str(settings.scoring_python),
         "-m",
         "benchmarks.eval.benchmark_duplex_v10",
+        phase,
+        *arguments,
+    ]
+
+
+def listening_command(python: Path, phase: str, *arguments: str) -> list[str]:
+    """A benchmark_duplex_listening phase, run with the given interpreter."""
+    return [
+        str(python),
+        "-m",
+        "benchmarks.eval.benchmark_duplex_listening",
         phase,
         *arguments,
     ]

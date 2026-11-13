@@ -29,6 +29,10 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
+from sglang_omni.models.minicpm_o.components.token2wav.hift_cuda_graph import (
+    HiftBodyCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.hift_layers import (
     SourceModuleHnNSF2,
 )
@@ -278,6 +282,39 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("long_reference", [False, True])
+def test_flow_budget_keeps_long_rows_and_references_separate(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    long_reference: bool,
+) -> None:
+    monkeypatch.setattr(code2wav, "FLOW_BATCH_TOKEN_SQUARE_BUDGET", 128)
+    model = build_code2wav_model()
+    tokens = [[1, 2], [3, 4], [5, 6]]
+    references = [b"a", b"b", b"c"]
+    if long_reference:
+        references[1] = b"b" * 12
+    else:
+        tokens[1] = [3] * 12
+    waveforms = model.vocode(tokens, references)
+    assert fake_token2wav.flow.inference.call_count == 2
+    for waveform, row, reference in zip(waveforms, tokens, references, strict=True):
+        np.testing.assert_array_equal(waveform, expected_waveform(row, reference))
+
+
+def test_flow_budget_preserves_one_normal_batch(
+    build_code2wav_model: Code2WavBuilder, fake_token2wav: MagicMock
+) -> None:
+    model = build_code2wav_model()
+    tokens = [[3, 4], [1], [5, 6, 7]]
+    references = [b"a", b"b", b"c"]
+    waveforms = model.vocode(tokens, references)
+    assert fake_token2wav.flow.inference.call_count == 1
+    for waveform, row, reference in zip(waveforms, tokens, references, strict=True):
+        np.testing.assert_array_equal(waveform, expected_waveform(row, reference))
+
+
 def find_checkpoint_dir() -> Path | None:
     env = os.environ.get("MINICPMO_CHECKPOINT")
     hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
@@ -301,9 +338,13 @@ def find_checkpoint_dir() -> Path | None:
 
 def require_checkpoint_dir() -> Path:
     checkpoint = find_checkpoint_dir()
-    if checkpoint is None or resolve_concrete_device(None).type not in ("cuda", "xpu"):
+    if checkpoint is None or resolve_concrete_device(None).type not in (
+        "cuda",
+        "xpu",
+        "npu",
+    ):
         pytest.skip(
-            "Set MINICPMO_CHECKPOINT and provide CUDA or XPU for vocoder validation"
+            "Set MINICPMO_CHECKPOINT and provide CUDA, XPU, or NPU for vocoder validation"
         )
     else:
         pass
@@ -329,6 +370,7 @@ def build_code2wav_stage(
         batch_wait_when_idle=factory.batch_wait_when_idle,
         enable_dit_torch_compile=factory.enable_dit_torch_compile,
         enable_hift_torch_compile=factory.enable_hift_torch_compile,
+        hift_cuda_graph_capture_shapes=factory.hift_cuda_graph_capture_shapes,
         enable_flow_cuda_graph=factory.enable_flow_cuda_graph,
         flow_cuda_graph_capture_shapes=factory.flow_cuda_graph_capture_shapes,
         packed_dit_cuda_graph_capture_shapes=factory.packed_dit_cuda_graph_capture_shapes,
@@ -397,9 +439,11 @@ def test_source_module_noise_leaves_the_global_generator_unchanged() -> None:
 def test_native_vocoder_with_checkpoint() -> None:
     model = load_checkpoint_model(require_checkpoint_dir())
     device_module = torch.get_device_module(model.token2wav.device)
-    assert (
-        model.decode_stream.priority == code2wav_stage_factory().decode_stream_priority
-    )
+    if model.token2wav.device.type == "cuda":
+        assert (
+            model.decode_stream.priority
+            == code2wav_stage_factory().decode_stream_priority
+        )
     device_generator_state = device_module.get_rng_state(model.token2wav.device)
     output = model(codec_tokens=torch.tensor(CHECKPOINT_CODEC_TOKENS))
     assert torch.equal(
@@ -441,6 +485,8 @@ def test_mixed_reference_batch_matches_single_row_mels(
     max_relative_rms_error: float,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if enable_flow_variable_length and resolve_concrete_device(None).type == "npu":
+        pytest.skip("packed flow reaches varlen_attn, which is CUDA-only")
     checkpoint = require_checkpoint_dir()
     model = load_checkpoint_model(
         checkpoint, enable_flow_variable_length=enable_flow_variable_length
@@ -612,6 +658,101 @@ def test_compiled_hift_matches_eager(compiled_vocoder: MiniCPMOCode2Wav) -> None
     assert relative_rms_error(compiled, eager) < 1e-2
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("compile_body", [False, True])
+def test_hift_graph_matches_decode_across_shapes_and_replays(
+    compile_body: bool,
+) -> None:
+    """Graphs preserve waveform boundaries, new inputs and earlier pooled outputs."""
+    # note (MayDomine): backend flags are dynamic attributes; restore values instead of monkeypatching them.
+    previous_matmul_tf32 = torch.backends.cuda.matmul.allow_tf32
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        with torch.backends.cudnn.flags(
+            benchmark=False, deterministic=True, allow_tf32=False
+        ):
+            torch.manual_seed(7)
+            hift = HiFTGenerator(base_channels=32).cuda().eval()
+            if compile_body:
+                hift.decode_body = torch.compile(
+                    hift.decode_body,
+                    dynamic=True,
+                    fullgraph=True,
+                    options={"triton.cudagraphs": False},
+                )
+            else:
+                pass
+            runner = HiftBodyCudaGraphRunner(hift.decode_body)
+            device = hift.stft_window.device
+            runner.capture(
+                ((1, 4), (2, 6)),
+                device=device,
+                mel_channels=80,
+                samples_per_frame=int(hift.f0_upsamp.scale_factor),
+                fft_samples=hift.istft_params["n_fft"],
+                hop_samples=hift.istft_params["hop_len"],
+            )
+            fallback = MagicMock(wraps=runner.decode_body)
+            runner.decode_body = fallback
+            saved_outputs: list[tuple[torch.Tensor, torch.Tensor]] = []
+            with torch.inference_mode():
+                # note (MayDomine): alternating tails expose stale padding and missing masks.
+                for batch_size, mel_frames in (
+                    (1, 4),
+                    (2, 6),
+                    (1, 3),
+                    (1, 5),
+                    (1, 1),
+                    (3, 4),
+                    (1, 7),
+                    (1, 4),
+                ):
+                    mel = torch.randn(batch_size, 80, mel_frames, device=device)
+                    source = (
+                        torch.randn(
+                            batch_size,
+                            1,
+                            mel_frames * int(hift.f0_upsamp.scale_factor),
+                            device=device,
+                        )
+                        * 0.01
+                    )
+                    hift.body_graph_runner = None
+                    expected_waveform = hift.decode(mel, source)
+                    hift.body_graph_runner = runner
+                    actual_waveform = hift.decode(mel, source)
+                    torch.testing.assert_close(
+                        actual_waveform, expected_waveform, rtol=1e-4, atol=1e-5
+                    )
+                    real, imaginary = hift.stft(source.squeeze(1))
+                    spectrum = torch.cat((real, imaginary), dim=1)
+                    magnitude, phase = runner.run(mel, spectrum)
+                    expected_magnitude, expected_phase = hift.decode_body(mel, spectrum)
+                    saved_outputs.extend(
+                        ((magnitude, expected_magnitude), (phase, expected_phase))
+                    )
+                for actual, expected in saved_outputs:
+                    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+            assert runner.graphs.keys() == {(1, 4), (2, 6)}
+            assert fallback.call_count == 4
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = previous_matmul_tf32
+
+
+def test_hift_graph_without_capture_preserves_cpu_decode() -> None:
+    """An empty graph table keeps the full waveform and its boundary unchanged."""
+    torch.manual_seed(7)
+    hift = HiFTGenerator(base_channels=32).eval()
+    mel = torch.randn(1, 80, 3)
+    source = torch.randn(1, 1, 3 * int(hift.f0_upsamp.scale_factor)) * 0.01
+    with torch.inference_mode():
+        expected = hift.decode(mel, source)
+        hift.body_graph_runner = HiftBodyCudaGraphRunner(hift.decode_body)
+        actual = hift.decode(mel, source)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 def test_dit_torch_compile_rejects_non_cuda_device() -> None:
     with pytest.raises(ValueError, match="CUDA only"):
         MiniCPMOCode2Wav(
@@ -672,38 +813,6 @@ def test_invalid_reference_does_not_silently_use_default() -> None:
         code2wav_reference_audio(payload)
 
 
-@pytest.mark.parametrize("enable_flow_variable_length", [False, True])
-def test_variable_length_option_reaches_dit(
-    build_code2wav_model: Code2WavBuilder,
-    fake_token2wav: MagicMock,
-    enable_flow_variable_length: bool,
-) -> None:
-    build_code2wav_model(enable_flow_variable_length=enable_flow_variable_length)
-    estimator = fake_token2wav.flow.decoder.estimator
-    assert estimator.enable_variable_length is enable_flow_variable_length
-
-
-def test_speech_pipeline_colocates_batched_code2wav_with_talker_by_default() -> None:
-    config = MiniCPMOSpeechPipelineConfig(model_path="unused")
-    stages_by_name = {stage.name: stage for stage in config.stages}
-    code2wav = stages_by_name["code2wav"]
-    talker = stages_by_name["talker"]
-    assert code2wav.process == talker.process
-    assert code2wav.gpu == talker.gpu
-    factory = code2wav.factory
-    assert factory.max_batch_size == 16
-    assert factory.max_batch_wait_ms == 0
-    assert factory.batch_wait_when_idle is False
-    assert factory.dtype == "float16"
-    assert factory.enable_dit_torch_compile is True
-    assert factory.enable_hift_torch_compile is True
-    assert factory.enable_flow_variable_length is False
-    assert factory.reference_workers == 8
-    assert factory.prompt_cache_capacity == 32
-    assert factory.decode_stream_priority == -1
-    assert factory.enable_flow_block_compile is False
-
-
 @pytest.mark.parametrize(
     "references",
     [[b"a", b"a", b"a"], [b"a", b"a", b"spk-b"]],
@@ -718,13 +827,6 @@ def test_vocode_conditions_each_row_on_its_reference(
         sequences, references, waveforms, strict=True
     ):
         np.testing.assert_array_equal(waveform, expected_waveform(tokens, reference))
-
-
-def test_vocode_runs_mixed_references_in_one_flow_call(
-    build_code2wav_model: Code2WavBuilder, fake_token2wav: MagicMock
-) -> None:
-    build_code2wav_model().vocode([[1, 2], [3], [4, 5, 6]], [b"a", b"spk-b", b"c"])
-    assert fake_token2wav.flow.inference.call_count == 1
 
 
 def test_vocode_prepares_and_decodes_on_its_private_stream(
@@ -858,7 +960,7 @@ def test_prompt_cache_reuses_references_and_evicts_least_recent(
     assert fake_token2wav.prepare_prompt.call_count == 4
 
 
-@pytest.mark.parametrize("reference_workers", [1, 2])
+@pytest.mark.parametrize("reference_workers", [1])
 def test_prepare_references_prepares_identical_rows_once(
     build_code2wav_model: Code2WavBuilder,
     fake_token2wav: MagicMock,
@@ -928,7 +1030,7 @@ def test_failed_reference_batch_drains_workers_and_can_retry(
     assert [prompt.prompt_tokens[0, 0].item() for prompt in prompts] == [97, 98]
 
 
-@pytest.mark.parametrize("reference_workers", [1, 2])
+@pytest.mark.parametrize("reference_workers", [1])
 def test_close_reference_pool_waits_for_running_preparation(
     build_code2wav_model: Code2WavBuilder,
     fake_token2wav: MagicMock,

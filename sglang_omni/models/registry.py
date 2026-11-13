@@ -28,6 +28,24 @@ def iter_config_architectures(config_cls: Type[PipelineConfig]) -> list[str]:
     return architectures
 
 
+def resolve_variant(variant: Type[PipelineConfig] | str) -> Type[PipelineConfig]:
+    """Return the config class of a Variants entry.
+
+    An entry is a config class, or a "module:Class" path that is imported
+    only when that variant is selected, so a variant with modules of its own
+    adds nothing to other models' imports.
+    """
+    if isinstance(variant, str):
+        module_name, _, class_name = variant.partition(":")
+        return getattr(importlib.import_module(module_name), class_name)
+    else:
+        return variant
+
+
+def variant_name(variant: Type[PipelineConfig] | str) -> str:
+    return variant.rpartition(":")[2] if isinstance(variant, str) else variant.__name__
+
+
 @lru_cache()
 def import_pipeline_configs(
     package_name: str, config_path: str, strict: bool = False
@@ -148,9 +166,9 @@ class PipelineConfigRegistry:
                 pass
             config_module = importlib.import_module(config_cls.__module__)
             variants = getattr(config_module, "Variants", {})
-            for variant_cls in variants.values():
-                if variant_cls.__name__ == name:
-                    return variant_cls
+            for variant in variants.values():
+                if variant_name(variant) == name:
+                    return resolve_variant(variant)
                 else:
                     pass
         raise ValueError(

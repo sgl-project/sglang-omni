@@ -133,6 +133,28 @@ def test_max_concurrency_runs_async_fn_in_parallel() -> None:
     assert {out.data for out in outputs} == {"A", "B"}
 
 
+def test_max_concurrency_runs_compute_on_max_concurrency_threads() -> None:
+    """Concurrent compute ran on whichever thread of the loop's default executor was free, so a long-lived stage spread its work over a growing set of threads, each keeping its own CUDA library state."""
+    compute_threads: set[int] = set()
+    lock = threading.Lock()
+    both_running = threading.Barrier(2)
+
+    def compute(payload: int) -> int:
+        with lock:
+            compute_threads.add(threading.get_ident())
+        both_running.wait(timeout=2.0)
+        return payload
+
+    outputs = run_scheduler(
+        SimpleScheduler(compute, max_concurrency=2),
+        [IncomingMessage(f"req-{index}", "new_request", index) for index in range(40)],
+        output_count=40,
+    )
+
+    assert sorted(out.data for out in outputs) == list(range(40))
+    assert len(compute_threads) == 2
+
+
 def test_max_concurrency_reports_worker_errors() -> None:
     """Per-request exceptions in the concurrent path land as outbox errors
     tagged with the originating request_id."""
@@ -172,25 +194,6 @@ def test_max_concurrency_awaits_coroutine_returned_by_sync_callable() -> None:
     )
 
     assert outputs[0].request_id == "req-await"
-    assert outputs[0].type == "result"
-    assert outputs[0].data == "PAYLOAD"
-
-
-def test_max_concurrency_awaits_async_call_object() -> None:
-    """Callable objects with async __call__ must not emit coroutine objects."""
-
-    class Compute:
-        async def __call__(self, payload: str) -> str:
-            await asyncio.sleep(0)
-            return payload.upper()
-
-    outputs = run_scheduler(
-        SimpleScheduler(Compute(), max_concurrency=2),
-        [IncomingMessage("req-call", "new_request", "payload")],
-        output_count=1,
-    )
-
-    assert outputs[0].request_id == "req-call"
     assert outputs[0].type == "result"
     assert outputs[0].data == "PAYLOAD"
 

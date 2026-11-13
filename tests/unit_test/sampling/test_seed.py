@@ -6,13 +6,8 @@ from __future__ import annotations
 from sglang_omni.sampling.seed import (
     SAMPLING_SEED_MASK,
     derive_sampling_seed,
-    new_random_sampling_seed,
     resolve_row_seed,
 )
-
-
-def test_new_random_sampling_seed_in_int32_range():
-    assert 0 <= new_random_sampling_seed() <= SAMPLING_SEED_MASK
 
 
 def test_resolve_row_seed_modes():

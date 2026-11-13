@@ -253,8 +253,8 @@ def initialize_decoder_runtime(
             dist_init_addr=address,
             dist_timeout=dist_timeout,
         )
-        runtime.published = True
         args_module.set_global_server_args(args)
+        runtime.published = True
         runtime.world_started = True
         ps.init_distributed_environment(
             world_size=1,

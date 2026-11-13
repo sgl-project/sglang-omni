@@ -123,6 +123,13 @@ class MossTTSSGLangRequestData(ARRequestData):
     audio_length: int = 0
     delayed_length: int = _INF_DELAY
     is_audio: bool = False
+    # note (rsi): launch-side step counter; under lookahead decode the committed
+    # generation_steps lags the launched step by one.
+    sampling_steps: int = 0
+    # Step that emits audio_end, known once the delay countdown starts; the
+    # step after it samples the full text vocabulary. Derived from output_rows.
+    audio_end_step: int | None = None
+    audio_end_scanned_rows: int = 0
     engine_start_s: float = 0.0
 
 
@@ -355,12 +362,6 @@ def build_generation_kwargs(
     *,
     tts_params: Mapping[str, object],
 ) -> dict[str, int | float]:
-    explicit_generation_params = tts_params.get("explicit_generation_params")
-    if isinstance(explicit_generation_params, (list, tuple, set)):
-        explicit_fields = {str(field) for field in explicit_generation_params}
-    else:
-        explicit_fields = set()
-
     raw_max_new_tokens = params.get("max_new_tokens")
     if raw_max_new_tokens is None:
         max_new_tokens = MOSS_TTS_DEFAULT_MAX_NEW_TOKENS
@@ -385,25 +386,22 @@ def build_generation_kwargs(
         "audio_repetition_penalty": AUDIO_REPETITION_PENALTY,
     }
 
-    if "temperature" in explicit_fields and params.get("temperature") is not None:
+    if params.get("temperature") is not None:
         generation_kwargs["text_temperature"] = float(params["temperature"])
         generation_kwargs["audio_temperature"] = float(params["temperature"])
     else:
         pass
-    if "top_p" in explicit_fields and params.get("top_p") is not None:
+    if params.get("top_p") is not None:
         generation_kwargs["text_top_p"] = float(params["top_p"])
         generation_kwargs["audio_top_p"] = float(params["top_p"])
     else:
         pass
-    if "top_k" in explicit_fields and params.get("top_k") is not None:
+    if params.get("top_k") is not None:
         generation_kwargs["text_top_k"] = int(params["top_k"])
         generation_kwargs["audio_top_k"] = int(params["top_k"])
     else:
         pass
-    if (
-        "repetition_penalty" in explicit_fields
-        and params.get("repetition_penalty") is not None
-    ):
+    if params.get("repetition_penalty") is not None:
         generation_kwargs["audio_repetition_penalty"] = float(
             params["repetition_penalty"]
         )

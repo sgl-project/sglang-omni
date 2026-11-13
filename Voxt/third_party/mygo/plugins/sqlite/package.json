@@ -1,0 +1,42 @@
+{
+  "name": "@mygo-plugins/sqlite",
+  "version": "0.5.5",
+  "description": "Parameterized SQLite queries and transactions for MyGo desktop apps",
+  "keywords": [
+    "mygo",
+    "desktop",
+    "sqlite",
+    "go",
+    "zig"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/egoist/mygo.git",
+    "directory": "plugins/sqlite"
+  },
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun run ../build.ts",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "mygo-runtime": "^0.5.5"
+  },
+  "devDependencies": {
+    "mygo-runtime": "^0.5.5"
+  }
+}

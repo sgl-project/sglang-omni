@@ -110,8 +110,8 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
                     )
                 else:
                     pass
-                prefix_len = len(data.req.prefix_indices)
-                req_len = int(data.req.extend_range.length)
+                prefix_len = data.req.prefix_len
+                req_len = data.req.extend_len
                 assert prefix_len == 0, "dots.tts radix prefix reuse is disabled"
                 prompt_len = embeddings.size(1)
                 generated_count = req_len - prompt_len
@@ -229,7 +229,7 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
         last_hidden: list[torch.Tensor] = []
         for request in requests:
             data: DotsTTSSGLangRequestData = request.data
-            length = int(data.req.extend_range.length)
+            length = data.req.extend_len
             request_hidden = hidden[offset : offset + length].unsqueeze(0)
             if request_hidden.size(1) != length:
                 raise RuntimeError("dots.tts prefill hidden rows are incomplete")

@@ -21,6 +21,7 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.models.minicpm_o.components.tts_runtime import CODEC_CHUNK_SIZE
 from sglang_omni.models.minicpm_o.talker_session import TalkerUnitRequestData
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
@@ -41,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 # note (MayDomine): the checkpoint penalizes only the most recent 16 codec tokens.
 REP_PENALTY_WINDOW = 16
+# note (wenyao): The talker samples its codec EOS within a few steps of every full chunk whether or not text is left, so a multi-chunk request masks it there.
+CHUNK_BOUNDARY_EOS_MASK_STEPS = 5
 
 
 @dataclass(kw_only=True)
@@ -285,6 +288,8 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         backend = current_platform.get_device_graph_backend(self.device)
         if backend is None:
             reason = f"{self.device.type} records no model-owned graph"
+        elif self.device.type == "npu":
+            reason = "NPU sampling uses boolean indexing that cannot be graph captured"
         elif current_sglang_sampling_backend() != "pytorch":
             reason = "the sampling graph needs the pytorch sampling backend"
         elif decode_graphs is None:
@@ -324,12 +329,23 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
     ) -> None:
         """Prepare request embeddings; schedule_batch follows the runner interface."""
         parts: list[torch.Tensor] = []
-        for sched_req in requests:
+        # note (ratish): a row's prefix and extend length live on the batch; a decode
+        # tail mixed into a prefill batch keeps Req.prefix_len at its last prefill.
+        for sched_req, prefix_len, extend_len in zip(
+            requests,
+            forward_batch.extend_prefix_lens_cpu,
+            forward_batch.extend_seq_lens_cpu,
+            strict=True,
+        ):
             data = sched_req.data
             if isinstance(data, TalkerUnitRequestData):
                 parts.append(
                     session_prefill_rows(
-                        data, self.model.emb_code, self.model.emb_code.weight.device
+                        data,
+                        self.model.emb_code,
+                        self.model.emb_code.weight.device,
+                        prefix_len=prefix_len,
+                        extend_len=extend_len,
                     )
                 )
                 continue
@@ -343,8 +359,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             else:
                 pass
             req = data.req
-            prefix_len = len(req.prefix_indices)
-            end = prefix_len + int(req.extend_range.length)
+            end = prefix_len + extend_len
             prompt_len = int(tensor.shape[0])
             if prefix_len < prompt_len:
                 parts.append(tensor[prefix_len : min(end, prompt_len)])
@@ -460,6 +475,18 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2:
             return
+        else:
+            pass
+        boundary_rows = [
+            row_idx
+            for row_idx, sched_req in enumerate(requests)
+            if sched_req.data.talker_model_inputs.get("masks_chunk_boundary_eos", False)
+            and len(sched_req.data.req.output_ids) >= CODEC_CHUNK_SIZE
+            and len(sched_req.data.req.output_ids) % CODEC_CHUNK_SIZE
+            < CHUNK_BOUNDARY_EOS_MASK_STEPS
+        ]
+        if boundary_rows:
+            logits[boundary_rows, self.model.codec_eos_id] = float("-inf")
         else:
             pass
         vocab = logits.shape[1]

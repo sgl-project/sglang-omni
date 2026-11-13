@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Verify immutable audio windows, lifecycle diagnostics and input integrity."""
-import base64
 import hashlib
 import json
 import shutil
 import tempfile
 import unittest
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -19,145 +17,16 @@ from benchmarks.duplex import reference_audio
 from benchmarks.duplex.reference_capture import TraceFormat
 from benchmarks.duplex.reference_export import export_runs
 from benchmarks.eval.benchmark_duplex_reference import main
+from tests.unit_test.fixtures.duplex_fakes import (
+    SAMPLE_RATE,
+    TRACE_ORIGIN_S,
+    encode_audio,
+    make_constant_pcm,
+    make_input_pcm,
+    make_session_trace,
+)
 
-SAMPLE_RATE = 16000
-TRACE_ORIGIN_S = 1000.0
 VariantName = Literal["overlap", "clean"]
-TraceDirection = Literal["send", "receive", "error"]
-
-
-def make_input_pcm(sample_count: int) -> bytes:
-    generator = np.random.default_rng(sample_count)
-    return generator.integers(-3000, 3000, sample_count, dtype="<i2").tobytes()
-
-
-def encode_audio(audio: bytes) -> str:
-    return base64.b64encode(audio).decode()
-
-
-def make_constant_pcm(
-    duration_s: float, sample_rate: int, amplitude: int = 1000
-) -> bytes:
-    return np.full(round(duration_s * sample_rate), amplitude, "<i2").tobytes()
-
-
-def make_session_trace(
-    input_pcm: bytes,
-    *,
-    audio_deltas: Sequence[tuple[float, bytes | str]] = (),
-    output_sample_rate: int = SAMPLE_RATE,
-    server_error_offsets_s: Sequence[float] = (),
-    client_error_offsets_s: Sequence[float] = (),
-    close_offset_s: float | Literal[False] | None = None,
-    append_delays_s: dict[int, float] | None = None,
-    omit_last_append: bool = False,
-    corrupted_append_index: int | None = None,
-    created_response_ids: Sequence[str] = ("r1",),
-    completed_response_ids: Sequence[str] = (),
-) -> str:
-    """Records in time order; deltas are (elapsed_s, bytes or raw base64 string)."""
-    input_samples = np.frombuffer(input_pcm, "<i2")
-    window_s = len(input_samples) / SAMPLE_RATE
-    rows: list[tuple[float, TraceDirection, dict[str, JsonValue]]] = []
-    append_delays_s = append_delays_s or {}
-    rows.append(
-        (
-            TRACE_ORIGIN_S - 0.01,
-            "receive",
-            {
-                "type": "session.updated",
-                "session": {
-                    "audio": {
-                        "output": {
-                            "format": {"type": "audio/pcm", "rate": output_sample_rate}
-                        }
-                    }
-                },
-            },
-        )
-    )
-    frame_indexes = range(-(-len(input_samples) // 1280))
-    for index in frame_indexes:
-        if omit_last_append and index == frame_indexes[-1]:
-            continue
-        else:
-            pass
-        input_chunk = input_samples[index * 1280 : (index + 1) * 1280]
-        audio_payload = (
-            input_chunk.tobytes()
-            if corrupted_append_index != index
-            else (input_chunk + 1).tobytes()
-        )
-        event = {
-            "type": "input_audio_buffer.append",
-            "event_id": f"a{index}",
-            "audio": encode_audio(audio_payload),
-            "sglang": {"seq": index, "t_start_ms": index * 1280 / SAMPLE_RATE * 1000},
-        }
-        rows.append(
-            (
-                TRACE_ORIGIN_S + index * 0.08 + append_delays_s.get(index, 0.0),
-                "send",
-                event,
-            )
-        )
-    for response_id in created_response_ids:
-        rows.append(
-            (
-                TRACE_ORIGIN_S + 0.01,
-                "receive",
-                {"type": "response.created", "response": {"id": response_id}},
-            )
-        )
-    for elapsed_s, audio_payload in audio_deltas:
-        event = {
-            "type": "response.output_audio.delta",
-            "response_id": "r1",
-            "delta": (
-                audio_payload
-                if isinstance(audio_payload, str)
-                else encode_audio(audio_payload)
-            ),
-        }
-        rows.append((TRACE_ORIGIN_S + elapsed_s, "receive", event))
-    for response_id in completed_response_ids:
-        rows.append(
-            (
-                TRACE_ORIGIN_S + window_s + 0.3,
-                "receive",
-                {
-                    "type": "response.done",
-                    "response": {"id": response_id, "status": "completed"},
-                },
-            )
-        )
-    for elapsed_s in server_error_offsets_s:
-        rows.append(
-            (
-                TRACE_ORIGIN_S + elapsed_s,
-                "receive",
-                {"type": "error", "error": {"message": "boom"}},
-            )
-        )
-    for elapsed_s in client_error_offsets_s:
-        rows.append(
-            (TRACE_ORIGIN_S + elapsed_s, "error", {"message": "client failure"})
-        )
-    if close_offset_s is None:
-        close_offset_s = window_s + 0.6
-    else:
-        pass
-    if close_offset_s is not False:
-        rows.append(
-            (TRACE_ORIGIN_S + close_offset_s, "receive", {"type": "session.closed"})
-        )
-    else:
-        pass
-    rows.sort(key=lambda row: row[0])
-    return "".join(
-        json.dumps({"direction": direction, "time_s": time_s, "event": event}) + "\n"
-        for time_s, direction, event in rows
-    )
 
 
 def make_send_receipts(
@@ -304,6 +173,67 @@ class WindowEligibility(AudioFixture):
             self.assertFalse(record["window"]["valid"])
             self.assertIn(expect, " ".join(record["window"]["reasons"]))
             self.assertIsNone(out)
+
+    def test_rejection_recovery_requires_correlated_retry_before_audio(self) -> None:
+        """An uncorrelated rejection or late retry ack used to retain the export window."""
+        for scenario in ("recovered", "missing_error_id", "wrong_ack", "late_ack"):
+            with self.subTest(scenario=scenario):
+                records = list(
+                    map(json.loads, make_session_trace(self.pcm).splitlines())
+                )
+                acknowledgment = records[0]
+                acknowledgment["event"]["client_event_id"] = (
+                    "unknown" if scenario == "wrong_ack" else "retry"
+                )
+                if scenario == "late_ack":
+                    acknowledgment["time_s"] = TRACE_ORIGIN_S + 0.001
+                else:
+                    pass
+                error = {"code": "admission_rejected", "event_id": "initial"}
+                if scenario == "missing_error_id":
+                    error.pop("event_id")
+                else:
+                    pass
+                records.extend(
+                    [
+                        {
+                            "direction": "send",
+                            "time_s": TRACE_ORIGIN_S - 0.04,
+                            "event": {"type": "session.update", "event_id": "initial"},
+                        },
+                        {
+                            "direction": "receive",
+                            "time_s": TRACE_ORIGIN_S - 0.03,
+                            "event": {
+                                "type": "error",
+                                "sglang": {"fatal": False},
+                                "error": error,
+                            },
+                        },
+                        {
+                            "direction": "send",
+                            "time_s": TRACE_ORIGIN_S - 0.02,
+                            "event": {"type": "session.update", "event_id": "retry"},
+                        },
+                    ]
+                )
+                trace = "".join(
+                    json.dumps(record) + "\n"
+                    for record in sorted(records, key=lambda record: record["time_s"])
+                )
+                record, _, audio = self.analyze(self.pcm, trace)
+                if scenario == "recovered":
+                    self.assertTrue(
+                        record["window"]["valid"], record["window"]["reasons"]
+                    )
+                    self.assertIsNotNone(audio)
+                    self.assertIn(
+                        "admission_rejected",
+                        json.dumps(record["lifecycle"]["protocol_anomalies"]),
+                    )
+                else:
+                    self.assertFalse(record["window"]["valid"])
+                    self.assertIsNone(audio)
 
     def test_liveness_after_window_must_be_proven(self) -> None:
         record, _, _ = self.analyze(
@@ -589,6 +519,15 @@ class ReferenceExport(AudioFixture):
 
         output = self.root / "export"
         result = export_runs([run], output, "sglang")
+
+        self.assertEqual(
+            result["builder_sha256"]["oracle_models.py"],
+            hashlib.sha256(
+                Path(reference_audio.__file__)
+                .with_name("oracle_models.py")
+                .read_bytes()
+            ).hexdigest(),
+        )
 
         self.assertEqual(result["counts"]["eligible_variants"], 2)
         for variant in result["samples"][0]["variants"].values():

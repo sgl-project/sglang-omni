@@ -19,6 +19,10 @@ DEFAULT_SPEECH_STATE_BYTES_PER_SESSION = 2 << 30
 THINKER_CONTEXT_LENGTH = 8192
 THINKER_GPU_MEMORY_FRACTION = 0.52
 TALKER_CONTEXT_LENGTH = 4096
+# note (Junnan Li): One vocoder forward with the chunk graphs costs about this much before its width adds to it.
+FORWARD_FLOOR_MS = 45
+# note (wenyao): The thinker writes text faster than the talker speaks it, so a turn the model ends can still owe speech; at most this many more units speak it.
+MAX_DRAIN_UNITS = 3
 
 
 def stages() -> list[StageConfig]:
@@ -108,16 +112,44 @@ class MiniCPMODuplexVision(BaseModel):
 
 
 class MiniCPMODuplexSpeech(BaseModel):
-    """Vocoder settings of the speech stage; the defaults are the checkpoint's own duplex loop."""
+    """Vocoder settings of the speech stage; the defaults follow the reference demo's streaming decode."""
 
     model_config = ConfigDict(extra="forbid")
 
     dtype: Literal["float32", "float16", "bfloat16"] = "float32"
     enable_dit_torch_compile: bool = False
-    n_timesteps: int = Field(default=10, ge=1)
+    enable_hift_torch_compile: bool = False
+    n_timesteps: int = Field(default=5, ge=1)
+    enable_chunk_cuda_graph: bool = True
+    "Replay the flow's chunk loop from CUDA graphs captured at startup; false decodes every chunk eagerly."
+    # note (Junnan Li): Units that wait for another session's unit wait at most half the forward that unit would otherwise run alone.
+    gather_window_ms: float = Field(default=FORWARD_FLOOR_MS / 2, ge=0)
+    "How long an idle speech stage waits for other sessions' units to decode them together; 0 decodes what is ready."
 
 
 DEFAULT_SPEECH_SETTINGS = MiniCPMODuplexSpeech()
+
+
+class MiniCPMODuplexWindow(BaseModel):
+    """The checkpoint's DuplexWindowConfig for thinker history; of its modes, off and basic are served."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sliding_window_mode: Literal["off", "basic"] = "basic"
+    basic_window_high_tokens: int = Field(default=8000, ge=1)
+    basic_window_low_tokens: int = Field(default=6000, ge=1)
+
+    @model_validator(mode="after")
+    def check_watermarks(self) -> "MiniCPMODuplexWindow":
+        if self.basic_window_low_tokens >= self.basic_window_high_tokens:
+            raise ValueError(
+                "window.basic_window_low_tokens must be below window.basic_window_high_tokens"
+            )
+        else:
+            return self
+
+
+DEFAULT_WINDOW_SETTINGS = MiniCPMODuplexWindow()
 
 
 class MiniCPMODuplexPipelineConfig(PipelineConfig):
@@ -129,12 +161,15 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
     model_path: str
     reference_audio: str | None = None
     max_sessions: int = Field(default=DEFAULT_MAX_SESSIONS, ge=1)
+    batch_sessions: bool = True
+    "Perception and speech run one unit of every ready session in one call; false runs each session's unit in a call of its own."
     speech_state_bytes_per_session: int = Field(
         default=DEFAULT_SPEECH_STATE_BYTES_PER_SESSION, ge=1
     )
     sampling: MiniCPMODuplexSampling = Field(default_factory=MiniCPMODuplexSampling)
     vision: MiniCPMODuplexVision = Field(default_factory=MiniCPMODuplexVision)
     speech: MiniCPMODuplexSpeech = Field(default_factory=MiniCPMODuplexSpeech)
+    window: MiniCPMODuplexWindow = Field(default_factory=MiniCPMODuplexWindow)
     entry_stage: str = "perception"
     stages: list[StageConfig] = Field(default_factory=stages)
 
@@ -151,6 +186,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
             kwargs: dict[str, JsonValue] = {
                 "reference_audio": self.reference_audio,
                 "max_open_sessions": self.max_sessions,
+                "batch_sessions": self.batch_sessions,
             }
             if stage_name == "speech":
                 kwargs["max_state_bytes_per_session"] = (
@@ -160,12 +196,20 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 kwargs["enable_dit_torch_compile"] = (
                     self.speech.enable_dit_torch_compile
                 )
+                kwargs["enable_hift_torch_compile"] = (
+                    self.speech.enable_hift_torch_compile
+                )
                 kwargs["n_timesteps"] = self.speech.n_timesteps
+                kwargs["enable_chunk_cuda_graph"] = self.speech.enable_chunk_cuda_graph
+                kwargs["gather_window_ms"] = self.speech.gather_window_ms
             else:
                 pass
             return kwargs
         elif stage_name == "thinker":
-            kwargs = {"server_args_overrides": {"max_running_requests": request_slots}}
+            kwargs = {
+                "server_args_overrides": {"max_running_requests": request_slots},
+                **self.window.model_dump(),
+            }
             stage = self.stage_named(stage_name)
             # note (Junnan Li): A thinker memory size the deployment writes wins; a fraction counts as written when it differs from the default.
             if (

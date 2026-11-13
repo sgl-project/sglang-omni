@@ -1,3 +1,5 @@
+"""MiniCPM-o profile: protocol checks, 24 kHz reconstruction, capture and replay."""
+
 import asyncio
 import base64
 import copy
@@ -16,8 +18,7 @@ from benchmarks.duplex.oracle import evaluate_trace
 from benchmarks.duplex.v15_audio import reconstruct_output
 from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.duplex.v15_transcribe import transcribe_run
-from tests.unit_test.benchmarks.test_duplex_oracle import GRANTED
-from tests.unit_test.benchmarks.test_duplex_v15_runner import write_dataset
+from tests.unit_test.fixtures.duplex_fakes import GRANTED, write_dataset
 
 MINICPMO = "minicpmo-native-pr2377"
 

@@ -1,0 +1,12 @@
+{"to":"helper","msg":{"id":"c2","method":"permissions.status"}}
+{"to":"app","msg":{"id":"c2","result":{"microphone":"notDetermined","accessibility":false,"speechRecognition":"notDetermined"}}}
+{"to":"helper","msg":{"id":"c3","method":"permissions.request","params":{"permission":"microphone"}}}
+{"to":"app","msg":{"id":"c3","result":{"microphone":"granted","accessibility":false,"speechRecognition":"notDetermined"}}}
+{"to":"helper","msg":{"id":"c4","method":"permissions.request","params":{"permission":"accessibility"}}}
+{"to":"app","msg":{"id":"c4","result":{"microphone":"granted","accessibility":false,"speechRecognition":"notDetermined"}}}
+{"to":"helper","msg":{"id":"c5","method":"permissions.request","params":{"permission":"camera"}}}
+{"to":"app","msg":{"id":"c5","error":{"code":"bad_request","message":"Unknown permission camera"}}}
+{"to":"helper","msg":{"id":"c6","method":"permissions.request","params":{"permission":"speechRecognition"}}}
+{"to":"app","msg":{"id":"c6","result":{"microphone":"granted","accessibility":false,"speechRecognition":"granted"}}}
+{"to":"helper","msg":{"id":"c7","method":"permissions.request","params":{"permission":"screenRecording"}}}
+{"to":"app","msg":{"id":"c7","result":{"microphone":"granted","accessibility":false,"speechRecognition":"granted","screenRecording":true}}}

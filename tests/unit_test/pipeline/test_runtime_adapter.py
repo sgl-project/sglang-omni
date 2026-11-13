@@ -164,15 +164,6 @@ def test_free_form_keys_reach_a_factory_that_takes_kwargs() -> None:
     assert args["lookahead"] == 9
 
 
-def test_scheduler_keys_pass_under_their_own_names() -> None:
-    stage = make_stage(factory_path=FACTORY, factory={"encoder_mem_reserve": 0.1})
-    config = PipelineConfig(model_path="dummy-model", stages=[stage])
-
-    args = resolve_stage_factory_args(stage, config)
-
-    assert args["encoder_mem_reserve"] == 0.1
-
-
 def test_rank_gpu_id_can_be_supplied_by_launch_planner() -> None:
     stage = make_stage(gpu=0)
     config = PipelineConfig(model_path="dummy-model", stages=[stage])

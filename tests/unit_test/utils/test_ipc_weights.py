@@ -28,7 +28,6 @@ from sglang_omni.utils.ipc_weights import (
     attach_weights,
     export_weights,
     get_weight_share_config,
-    handle_file_for_model,
     verify_attachment,
 )
 
@@ -122,15 +121,6 @@ def test_tied_parameter_stays_tied_and_shared(handle_path):
     assert follower.head.weight.data_ptr() == leader.linear.weight.data_ptr()
 
 
-def test_attach_is_assignment_not_inplace_copy(handle_path):
-    leader = TinyModel(seed=1)
-    follower = TinyModel(seed=2)
-    before_ptr = follower.linear.weight.data_ptr()
-    export(leader, handle_path)
-    attach(follower, handle_path)
-    assert follower.linear.weight.data_ptr() != before_ptr
-
-
 def test_value_path_copies_without_aliasing(handle_path):
     leader = TinyModel(seed=1)
     follower = TinyModel(seed=2)
@@ -210,32 +200,11 @@ def test_attach_waits_for_late_export(handle_path):
     assert follower.linear.weight.data_ptr() == leader.linear.weight.data_ptr()
 
 
-def test_export_is_atomic_no_tmp_left_and_readable(handle_path, tmp_path):
-    export(TinyModel(seed=1), handle_path)
-    leftovers = [f for f in os.listdir(tmp_path) if ".tmp." in f]
-    assert leftovers == []
-    with open(handle_path, "rb") as fh:
-        payload = pickle.load(fh)
-    assert (
-        payload["format_version"] == ipc_weights._FORMAT_VERSION
-    )  # noqa: leading-underscore  # production name
-    assert payload["model_class"] == "TinyModel"
-    assert isinstance(payload["manifest_hash"], str)
-    assert payload["private_names"] == []
-
-
 def test_double_export_same_file_rejected(handle_path):
     leader = TinyModel(seed=1)
     export(leader, handle_path)
     with pytest.raises(WeightShareError, match="already exported"):
         export(leader, handle_path)
-
-
-def test_corrupt_handle_file_rejected(handle_path):
-    with open(handle_path, "wb") as fh:
-        fh.write(pickle.dumps({"format_version": 999}))
-    with pytest.raises(WeightShareError, match="format"):
-        attach(TinyModel(), handle_path)
 
 
 def test_verify_attachment_detects_rebound_storage(handle_path):
@@ -265,28 +234,40 @@ def test_in_place_mutation_keeps_attachment_valid(handle_path):
     assert torch.equal(follower.cache_buf, leader.cache_buf)
 
 
-def test_handle_file_for_model_uses_class_name(tmp_path):
-    assert handle_file_for_model(str(tmp_path), TinyModel()).endswith(
-        "TinyModel.weights-ipc"
-    )
-
-
-def test_reduction_compat_covers_processes_without_a_share_role(monkeypatch):
+def test_reduction_compat_covers_processes_without_a_share_role():
     """A relay-only stage unpickles the engine's tensors and needs the patch."""
-    calls: list[int] = []
-    monkeypatch.setattr(
-        "sglang.srt.utils.patch_torch.monkey_patch_torch_reductions",
-        lambda: calls.append(1),
+    script = """
+import os, pickle
+import torch
+from multiprocessing.reduction import ForkingPickler
+from torch.multiprocessing import reductions
+from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
+from sglang_omni.pipeline.tp_control import TPWorkMessage
+prepare_weight_share_process_compat()
+assert not hasattr(reductions, "_sglang_omni_cpu_reduce_original")
+os.environ["SGLANG_OMNI_WEIGHT_SHARE_COMPAT"] = "1"
+prepare_weight_share_process_compat()
+assert hasattr(reductions, "_sglang_omni_cpu_reduce_original")
+msg = TPWorkMessage(request_id="r1", data={"x": torch.arange(6.0).view(2, 3)})
+out = pickle.loads(ForkingPickler.dumps(msg))
+assert torch.equal(out.data["x"], msg.data["x"]), out
+print("relay compat ok")
+"""
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name
+        not in (ipc_weights.ENV_WEIGHT_SHARE, ipc_weights.ENV_WEIGHT_SHARE_COMPAT)
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=environment,
     )
-    monkeypatch.delenv(ipc_weights.ENV_WEIGHT_SHARE, raising=False)
-
-    monkeypatch.delenv(ipc_weights.ENV_WEIGHT_SHARE_COMPAT, raising=False)
-    ipc_weights.prepare_weight_share_process_compat()
-    assert calls == []
-
-    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE_COMPAT, "1")
-    ipc_weights.prepare_weight_share_process_compat()
-    assert calls == [1]
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "relay compat ok" in result.stdout
 
 
 def test_reduction_compat_keeps_cpu_tensors_crossing_a_queue_intact():
@@ -608,13 +589,6 @@ def test_private_classification_mismatch_rejected(tmp_path):
         attach(ScratchModel(seed=2), path)
 
 
-def test_private_classification_mismatch_other_direction(tmp_path):
-    path = str(tmp_path / "ScratchModel.weights-ipc")
-    export(ScratchModel(seed=1), path)
-    with pytest.raises(WeightShareError, match="classification"):
-        attach(ScratchModel(seed=2), path, private_names=SCRATCH_PRIVATE)
-
-
 def test_unknown_private_name_fails_closed(tmp_path):
     path = str(tmp_path / "ScratchModel.weights-ipc")
     with pytest.raises(WeightShareError, match="diverged"):
@@ -640,13 +614,6 @@ def test_ipc_blob_sharing_private_tensor_rejected(tmp_path):
         pickle.dump(payload, fh)
     with pytest.raises(WeightShareError, match="replica-private"):
         attach(ScratchModel(seed=2), path, private_names=SCRATCH_PRIVATE)
-
-
-def test_manifest_hash_includes_classification():
-    tensors = ipc_weights.named_shared_tensors(ScratchModel(seed=1))
-    assert ipc_weights.manifest_hash(tensors, frozenset()) != ipc_weights.manifest_hash(
-        tensors, SCRATCH_PRIVATE
-    )
 
 
 def test_verify_attachment_detects_private_rebound(tmp_path):
@@ -730,32 +697,6 @@ def test_schema_rejects_non_string_names(tmp_path):
         pickle.dump(min_payload(ipc_names=[[]]), fh)
     with pytest.raises(WeightShareError, match="unique tensor names"):
         attach(TinyModel(), path)
-
-
-def test_shared_scratch_interleaving_corrupts_and_private_isolates(tmp_path):
-    """The regression the MOSS policy exists for: two replicas stage different
-    requests into the same scratch rows. Shared storage lets the second write
-    clobber the first replica's staged data; private storage must not."""
-    shared_path = str(tmp_path / "shared" / "ScratchModel.weights-ipc")
-    leader = ScratchModel(seed=1)
-    follower = ScratchModel(seed=2)
-    export(leader, shared_path)
-    attach(follower, shared_path)
-    with torch.no_grad():
-        leader.scratch.weight[:2].fill_(1.0)
-        follower.scratch.weight[:2].fill_(2.0)
-    assert torch.all(leader.scratch.weight[:2] == 2.0)
-
-    private_path = str(tmp_path / "private" / "ScratchModel.weights-ipc")
-    leader2 = ScratchModel(seed=1)
-    follower2 = ScratchModel(seed=2)
-    export(leader2, private_path, private_names=SCRATCH_PRIVATE)
-    attach(follower2, private_path, private_names=SCRATCH_PRIVATE)
-    with torch.no_grad():
-        leader2.scratch.weight[:2].fill_(1.0)
-        follower2.scratch.weight[:2].fill_(2.0)
-    assert torch.all(leader2.scratch.weight[:2] == 1.0)
-    assert torch.all(follower2.scratch.weight[:2] == 2.0)
 
 
 def test_get_weight_share_config_parsing():

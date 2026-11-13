@@ -157,17 +157,12 @@ def _fetch_worker_snapshot(host: str, port: int) -> dict | None:
     """Best-effort read of per-worker router dispatch counters."""
     with requests.Session() as session:
         session.trust_env = False
-        for path in ("/diagnostics", "/workers"):
-            try:
-                response = session.get(f"http://{host}:{port}{path}", timeout=10)
-                response.raise_for_status()
-                payload = response.json()
-                if path == "/diagnostics":
-                    return _normalize_rust_worker_snapshot(payload)
-                return payload
-            except (requests.RequestException, ValueError, TypeError):
-                continue
-    return None
+        try:
+            response = session.get(f"http://{host}:{port}/diagnostics", timeout=10)
+            response.raise_for_status()
+            return _normalize_rust_worker_snapshot(response.json())
+        except (requests.RequestException, ValueError, TypeError):
+            return None
 
 
 def _normalize_rust_worker_snapshot(snapshot: dict) -> dict:
@@ -224,6 +219,7 @@ async def run_asr_seedtts_once(
     warmup: int = 0,
     disable_tqdm: bool = True,
     stream: bool = False,
+    fallback_percentage: int = 0,
 ) -> dict:
     """Run one SeedTTS ASR benchmark pass and return WER/speed/worker metrics."""
     before = _fetch_worker_snapshot(host, port)
@@ -237,6 +233,7 @@ async def run_asr_seedtts_once(
         warmup=warmup,
         disable_tqdm=disable_tqdm,
         stream=stream,
+        fallback_percentage=fallback_percentage,
     )
     after = _fetch_worker_snapshot(host, port)
     benchmark_result = build_asr_eval_results(
@@ -286,6 +283,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
             lang=args.lang,
             concurrency=concurrency,
             stream=args.stream,
+            fallback_percentage=getattr(args, "fallback_percentage", 0),
         )
     finally:
         resources = (
@@ -300,6 +298,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
     summary = benchmark_result["summary"]
     speed = benchmark_result["speed"]
     has_evaluated_samples = summary["evaluated"] > 0
+    has_transcribed_samples = speed["evaluated"] > 0
     has_rtf = speed["rtf_p95"] is not None
     result = {
         "concurrency": concurrency,
@@ -307,6 +306,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "evaluated": summary["evaluated"],
         "total": summary["total_samples"],
         "skipped": summary["skipped"],
+        "failed": speed["failed_requests"],
         "corpus_wer": summary["corpus_wer"] if has_evaluated_samples else None,
         "per_sample_wer_max": (
             summary["wer_per_sample_max"] if has_evaluated_samples else None
@@ -314,12 +314,14 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
         "wall_clock_s": benchmark_result["wall_clock_s"],
         "throughput_samples_per_s": speed["throughput_samples_per_s"],
         "rtfx": speed["rtfx"],
-        "latency_mean_s": (speed["latency_mean_s"] if has_evaluated_samples else None),
-        "latency_median_s": (
-            speed["latency_median_s"] if has_evaluated_samples else None
+        "latency_mean_s": (
+            speed["latency_mean_s"] if has_transcribed_samples else None
         ),
-        "latency_p95_s": (speed["latency_p95_s"] if has_evaluated_samples else None),
-        "latency_p99_s": (speed["latency_p99_s"] if has_evaluated_samples else None),
+        "latency_median_s": (
+            speed["latency_median_s"] if has_transcribed_samples else None
+        ),
+        "latency_p95_s": (speed["latency_p95_s"] if has_transcribed_samples else None),
+        "latency_p99_s": (speed["latency_p99_s"] if has_transcribed_samples else None),
         "rtf_mean": speed["rtf_mean"] if has_rtf else None,
         "rtf_p95": speed["rtf_p95"],
         "worker": benchmark_result["worker"],
@@ -394,6 +396,7 @@ def _aggregate(repeats: list[dict]) -> dict:
         "evaluated": evaluated,
         "total": total_requests,
         "skipped": skipped,
+        "failed": sum(repeat["failed"] for repeat in repeats),
         "corpus_wer": _stat("corpus_wer"),
         "per_sample_wer_max": _stat("per_sample_wer_max"),
         "wall_clock_s": _stat("wall_clock_s"),
@@ -702,8 +705,27 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Limit samples (0 = full SeedTTS set; 1088 for EN).",
     )
+    parser.add_argument(
+        "--fallback-percentage",
+        type=int,
+        default=0,
+        help="Percentage of clips sent with repetition_penalty=1.2 to exercise plain fallback.",
+    )
+    parser.add_argument(
+        "--unique-audio",
+        action="store_true",
+        help=(
+            "Send each reference clip once, as its first row; --max-samples then "
+            "counts clips. SeedTTS lists a prompt clip once per target text, back "
+            "to back (EN 1088 rows, 666 clips; ZH 2020 rows, 1010 clips), so "
+            "without this flag concurrency 2 sends both copies together."
+        ),
+    )
     add_common_args(parser, default_output="asr_seedtts_results.json")
-    return finalize_args(parser.parse_args())
+    args = parser.parse_args()
+    if not 0 <= args.fallback_percentage <= 100:
+        parser.error("--fallback-percentage must be between 0 and 100")
+    return finalize_args(args)
 
 
 async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
@@ -739,6 +761,7 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
                 lang=args.lang,
                 concurrency=concurrency,
                 stream=args.stream,
+                fallback_percentage=getattr(args, "fallback_percentage", 0),
             )
         repeats: list[dict] = []
         for repeat in range(1, args.repeats + 1):
@@ -798,6 +821,7 @@ def main() -> None:
         max_samples=max_samples,
         split=args.lang,
         revision=dataset_revision,
+        unique_audio=args.unique_audio,
     )
     if not samples:
         raise RuntimeError(f"No SeedTTS samples loaded from {args.meta!r}")
@@ -841,10 +865,12 @@ def main() -> None:
             "declared_model_revision": model_revision,
             "dataset_revision": dataset_revision,
             "num_samples": len(samples),
+            "unique_audio": args.unique_audio,
             "concurrencies": concurrencies,
             "repeats": args.repeats,
             "warmup": args.warmup,
             "stream": args.stream,
+            "fallback_percentage": args.fallback_percentage,
             "declared_server": server_config,
             "resource_monitor": {
                 "enabled": not args.disable_resource_monitor,
@@ -865,6 +891,7 @@ def main() -> None:
             "server": collect_server_identity(f"http://{args.host}:{args.port}"),
         }
     output_path = os.path.abspath(args.output)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as handle:
         json.dump(payload, handle, indent=2)
     print(f"\nWrote results to {output_path}")
