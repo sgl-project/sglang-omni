@@ -67,6 +67,7 @@ def test_moe_expert_projections_return_rank_partials(
         thinker, "MergedColumnParallelLinear", Mock(return_value=nn.Identity())
     )
     monkeypatch.setattr(thinker, "RowParallelLinear", down_projection)
+    monkeypatch.setattr(thinker, "TopK", Mock(return_value=nn.Identity()))
     config = PretrainedConfig(
         num_experts=4,
         num_experts_per_tok=2,
