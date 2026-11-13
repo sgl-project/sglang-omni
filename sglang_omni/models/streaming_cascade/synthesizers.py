@@ -222,13 +222,9 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
     async def follow_language(
         self, deltas: AsyncIterator[TimedChunk]
     ) -> AsyncIterator[TimedChunk]:
-        """The reply's deltas, recording the user language they carry."""
+        """The reply's deltas, recording the user language they carry; a delta without one means the dialog knows none for this reply, such as after its configured language is cleared."""
         async for chunk in deltas:
-            language = chunk_language(chunk)
-            if language is not None:
-                self.session_language = language
-            else:
-                pass
+            self.session_language = chunk_language(chunk)
             yield chunk
 
     async def speak(
