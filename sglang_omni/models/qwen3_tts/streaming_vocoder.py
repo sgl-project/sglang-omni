@@ -2911,6 +2911,19 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
 
+    def can_decode_on_tail_graphs(
+        self, fresh_frames: int, reference_frames: int, emit_frames: int
+    ) -> bool:
+        """Whether the tail graphs decode this first decode: every frame before its emitted ones is a reference frame, and its width lies in their captured range."""
+        tail_runner = self.initial_tail_decode_graphs
+        return (
+            tail_runner is not None
+            and tail_runner.enabled
+            and reference_frames == fresh_frames - emit_frames > 0
+            and emit_frames == tail_runner.emit_frames
+            and tail_runner.tail_frames <= fresh_frames <= tail_runner.fresh_frames[-1]
+        )
+
     def build_whole_request(
         self, request_id: str, payload: StagePayload, final_state: Qwen3TTSState
     ) -> Qwen3TTSWholeRequest:
@@ -2925,9 +2938,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         next_frame = 0
         tail_frames = 0
         if (
-            reference_frames
-            and tail_runner is not None
-            and tail_runner.enabled
+            tail_runner is not None
             and frames - reference_frames >= tail_runner.emit_frames
         ):
             # note (ratish): as a stream's first decode, it starts at the first frame its emitted
@@ -2939,12 +2950,12 @@ class Qwen3TTSStreamingVocoderScheduler(
                     tail_runner.emit_frames
                 ),
             )
-            if (
-                reference_frames + tail_runner.emit_frames - start
-                >= tail_runner.tail_frames
+            first_decode_frames = reference_frames + tail_runner.emit_frames - start
+            if self.can_decode_on_tail_graphs(
+                first_decode_frames, reference_frames - start, tail_runner.emit_frames
             ):
                 next_frame = start
-                tail_frames = reference_frames + tail_runner.emit_frames - start
+                tail_frames = first_decode_frames
             else:
                 pass
         else:
@@ -3239,17 +3250,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         other_entries: list[tuple[str, Qwen3TTSStreamState, IncrementalDecodePlan]] = []
         for entry in planned_incremental:
             plan = entry[2]
-            emit_frames = plan.generated_frames - plan.emitted_generated_frames
-            # note (ratish): a cold first chunk whose frames before the emitted ones are
-            # all reference frames; the tail graphs decode it without that audio.
-            if (
-                tail_runner is not None
-                and tail_runner.enabled
-                and plan.reference_trim_frames == plan.fresh_frames - emit_frames > 0
-                and emit_frames == tail_runner.emit_frames
-                and tail_runner.tail_frames
-                <= plan.fresh_frames
-                <= tail_runner.fresh_frames[-1]
+            if self.can_decode_on_tail_graphs(
+                plan.fresh_frames,
+                plan.reference_trim_frames,
+                plan.generated_frames - plan.emitted_generated_frames,
             ):
                 tail_entries.append(entry)
             else:
