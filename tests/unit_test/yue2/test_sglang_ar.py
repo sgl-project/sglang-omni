@@ -391,6 +391,20 @@ def test_finished_score_starts_the_audio_request(builder: Yue2RequestBuilder) ->
     scheduler.enqueue_built_request.assert_not_called()
 
 
+def test_rejected_request_is_logged_without_a_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    scheduler = object.__new__(Yue2Scheduler)
+    for error in (ValueError("YuE2 request: style is required"), RuntimeError("bug")):
+        try:
+            raise error
+        except Exception as raised:
+            scheduler.log_request_builder_failure("song", raised)
+    rejected, failed = caplog.records[-2:]
+    assert rejected.exc_info is None and "style is required" in rejected.getMessage()
+    assert failed.exc_info is not None
+
+
 def test_internal_request_ids_map_to_the_client_request() -> None:
     assert public_request_id("song-abc") == public_request_id("song-cfg") == "song"
     assert public_request_id("song") == "song"
