@@ -62,7 +62,7 @@ from sglang_omni.proto import (
     StreamMessage,
     SubmitMessage,
 )
-from sglang_omni.proto.messages import StreamChunkBatchMessage
+from sglang_omni.proto.messages import UMM_PROGRESS_NONCE, StreamChunkBatchMessage
 from sglang_omni.proto.request import RoutedPayloads
 from sglang_omni.proto.session import SessionOperation, find_session_operation
 from sglang_omni.relay.base import Relay
@@ -605,6 +605,15 @@ class Stage:
         task.add_done_callback(self.receive_tasks.discard)
         task.add_done_callback(lambda done: self.on_background_task_done(done, label))
 
+    def should_drop_stream_chunk(
+        self, request_id: str, metadata: dict[str, object] | None
+    ) -> bool:
+        return request_id in self.aborted or (
+            metadata is not None
+            and UMM_PROGRESS_NONCE in metadata
+            and request_id not in self.active_requests
+        )
+
     def schedule_stream_chunk_batch(self, msg: StreamChunkBatchMessage) -> None:
         """Route each chunk now, or behind its own request's unfinished receive work."""
         try:
@@ -624,13 +633,13 @@ class Stage:
             return
         for chunk in chunks:
             request_id = chunk.request_id
-            self.record_replica_bindings(
-                request_id, msg.replica_bindings.get(request_id)
-            )
-            if request_id in self.aborted:
+            if self.should_drop_stream_chunk(request_id, chunk.metadata):
                 continue
             else:
                 pass
+            self.record_replica_bindings(
+                request_id, msg.replica_bindings.get(request_id)
+            )
             self.active_requests.add(request_id)
             lane = (request_id, msg.from_stage)
             # note (ratish): a lane with no unfinished receive work holds nothing this chunk must follow, so it goes straight to the scheduler.
@@ -833,7 +842,7 @@ class Stage:
     ) -> None:
         for chunk in chunks:
             request_id = chunk.request_id
-            if request_id in self.aborted:
+            if self.should_drop_stream_chunk(request_id, chunk.metadata):
                 continue
             else:
                 pass

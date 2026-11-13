@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,10 +15,12 @@ from sglang_omni.client.types import (
     GenerateRequest,
     UMMGenerateChunk,
     UMMSegment,
+    UMMSegmentDelta,
 )
 from sglang_omni.native_generation.stage import data_url
 from sglang_omni.pipeline.umm import UMMRequestError
 from sglang_omni.proto import CompleteMessage, StreamMessage
+from sglang_omni.proto.request import OmniRequest
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import generate_stream
 
@@ -55,10 +58,23 @@ def final_result(streamed: bool) -> dict[str, object]:
     }
 
 
+TEXT_PROGRESS: list[dict[str, object]] = [
+    {
+        "type": "segment_delta",
+        "execution_id": "execution",
+        "segment_index": 0,
+        "kind": "text",
+        "data": text,
+    }
+    for text in ("Draw", "ing")
+]
+
+
 class Coordinator:
-    def __init__(self):
+    def __init__(self, *, include_progress: bool = False) -> None:
+        self.include_progress = include_progress
         self.closed = False
-        self.submitted = []
+        self.submitted: list[str] = []
 
     def health(self):
         return {"running": True}
@@ -67,16 +83,24 @@ class Coordinator:
         self.submitted.append(request_id)
         return final_result(streamed=False)
 
-    async def stream(self, request_id, request):
+    async def stream(
+        self, request_id: str, request: OmniRequest
+    ) -> AsyncIterator[StreamMessage | CompleteMessage]:
         self.submitted.append(request_id)
         try:
-            for segment in SEGMENTS:
+            updates = (
+                [("text", update) for update in TEXT_PROGRESS]
+                if self.include_progress
+                else []
+            )
+            updates.extend((segment.kind, segment.to_dict()) for segment in SEGMENTS)
+            for chunk_index, (modality, update) in enumerate(updates):
                 yield StreamMessage(
                     request_id,
                     "output",
-                    segment.to_dict(),
-                    modality=segment.kind,
-                    chunk_id=segment.segment_index,
+                    update,
+                    modality=modality,
+                    chunk_id=chunk_index,
                 )
             yield CompleteMessage(
                 request_id, "output", True, result=final_result(streamed=True)
@@ -148,6 +172,29 @@ def test_generate_sse_preserves_segment_order_and_explicit_final_snapshot():
     assert events[-1] == "data: [DONE]"
 
 
+def test_generate_sse_streams_text_progress_before_the_completed_segment() -> None:
+    response = umm_app(Coordinator(include_progress=True)).post(
+        "/generate", json={"prompt": "Draw then describe", "stream": True}
+    )
+    assert response.status_code == 200
+    *events, done = response.text.strip().split("\n\n")
+    assert done == "data: [DONE]"
+    assert [event.splitlines()[0] for event in events] == [
+        "event: segment_delta",
+        "event: segment_delta",
+        "event: segment",
+        "event: segment",
+        "event: segment",
+        "event: complete",
+    ]
+    assert [json.loads(event.splitlines()[1][6:]) for event in events[:3]] == [
+        *TEXT_PROGRESS,
+        SEGMENTS[0].to_dict(),
+    ]
+    complete = json.loads(events[-1].splitlines()[1][6:])
+    assert complete["segments"] == final_result(streamed=True)["segments"]
+
+
 @pytest.mark.parametrize("interleaved", [True, False])
 def test_only_interleaved_pipelines_stream_generate(interleaved):
     coordinator = Coordinator()
@@ -185,6 +232,33 @@ def test_chat_sse_exposes_media_segment_without_duplicate_text(stop):
         s.to_dict() for s in SEGMENTS
     ]
     assert "".join(d.get("content", "") for d in deltas) == "Drawing.Finished."
+    assert messages[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_chat_sse_progress_leaves_ordinary_content_unduplicated() -> None:
+    response = umm_app(Coordinator(include_progress=True)).post(
+        "/v1/chat/completions",
+        json={
+            "model": "cosmos3",
+            "messages": [{"role": "user", "content": "Draw then describe"}],
+            "stream": True,
+        },
+    )
+    assert response.status_code == 200
+    messages = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    deltas = [message["choices"][0]["delta"] for message in messages]
+    assert [delta["segment_delta"] for delta in deltas if "segment_delta" in delta] == (
+        TEXT_PROGRESS
+    )
+    assert all("content" not in delta for delta in deltas if "segment_delta" in delta)
+    assert [delta["segment"] for delta in deltas if "segment" in delta] == [
+        segment.to_dict() for segment in SEGMENTS
+    ]
+    assert "".join(delta.get("content", "") for delta in deltas) == "Drawing.Finished."
     assert messages[-1]["choices"][0]["finish_reason"] == "stop"
 
 
@@ -255,6 +329,21 @@ async def test_completion_keeps_ordered_segments_with_their_data(stream):
     assert result.text == "Drawing.Finished."
 
 
+@pytest.mark.asyncio
+async def test_completion_uses_the_full_text_and_segments_when_progress_streams() -> (
+    None
+):
+    client = Client(Coordinator(include_progress=True))
+    request = GenerateRequest(prompt="Draw then describe", stream=True)
+    streamed = [chunk.to_dict() async for chunk in client.generate(request, "r")]
+    assert [
+        chunk["segment_delta"] for chunk in streamed if "segment_delta" in chunk
+    ] == (TEXT_PROGRESS)
+    result = await client.completion(request, request_id="r")
+    assert result.segments == SEGMENTS
+    assert result.text == "Drawing.Finished."
+
+
 class TextCoordinator(Coordinator):
     async def submit(self, request_id, request):
         return {"text": "hello", "finish_reason": "stop"}
@@ -300,3 +389,11 @@ def test_untagged_result_segments_keep_the_generic_result_path():
     )
     assert chunk.text == "hello"
     assert not isinstance(chunk, UMMGenerateChunk)
+
+
+@pytest.mark.parametrize("raw_delta", ["not-a-dict", {**TEXT_PROGRESS[0], "data": ""}])
+def test_segment_delta_from_dict_rejects_invalid_or_empty_payloads(
+    raw_delta: object,
+) -> None:
+    with pytest.raises(ValueError, match="Invalid UMM segment delta"):
+        UMMSegmentDelta.from_dict(raw_delta)

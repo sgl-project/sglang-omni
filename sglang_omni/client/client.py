@@ -36,6 +36,7 @@ from sglang_omni.client.types import (
     UMMCompletionStreamChunk,
     UMMGenerateChunk,
     UMMSegment,
+    UMMSegmentDelta,
     UsageInfo,
 )
 from sglang_omni.pipeline.coordinator import Coordinator, CoordinatorHealth
@@ -427,7 +428,9 @@ class Client:
                 )
                 if isinstance(chunk, UMMGenerateChunk):
                     stream_chunk = UMMCompletionStreamChunk(
-                        **vars(stream_chunk), segment=chunk.segment
+                        **vars(stream_chunk),
+                        segment=chunk.segment,
+                        segment_delta=chunk.segment_delta,
                     )
                 else:
                     pass
@@ -909,6 +912,15 @@ class Client:
         if isinstance(data, dict):
             if data.get("type") == "segment":
                 return umm_segment_chunk(chunk, data)
+            elif data.get("type") == "segment_delta":
+                segment_delta = UMMSegmentDelta.from_dict(data)
+                return UMMGenerateChunk(
+                    request_id=request_id,
+                    index=segment_delta.segment_index,
+                    stage_id=chunk.stage_id,
+                    stage_name=chunk.stage_name,
+                    segment_delta=segment_delta,
+                )
             else:
                 pass
             text = data.get("text")

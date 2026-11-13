@@ -7,6 +7,8 @@ import asyncio
 import json
 import pickle
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -17,7 +19,8 @@ from sglang_omni.comm.data_ref import DataRef
 from sglang_omni.config.schema import FactoryArgs
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
-from sglang_omni.pipeline.stage.stream_queue import StreamQueue
+from sglang_omni.pipeline.stage.runtime import Stage
+from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.pipeline.umm import (
     CONTEXT_KEY,
     CONTINUATION_METADATA_KEY,
@@ -27,19 +30,24 @@ from sglang_omni.pipeline.umm import (
     STREAM_DONE_FN_PATH,
     ContextRef,
     Continuation,
+    UMMContext,
     UMMController,
     UMMDispatch,
     UMMLimits,
     UMMOutput,
+    UMMOutputRelay,
     UMMPipelineConfig,
     UMMStep,
+    UMMTextDelta,
     create_umm_controller,
     create_umm_output_stage,
     route_umm,
+    umm_phase_progress,
     umm_stream_done_targets,
 )
-from sglang_omni.proto import DataAckMessage, DataReadyMessage
-from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.proto import DataAckMessage, DataReadyMessage, SubmitMessage
+from sglang_omni.proto.messages import StreamChunkBatchMessage
+from sglang_omni.proto.request import OmniRequest, RoutedPayloads, StagePayload
 from sglang_omni.proto.session import SESSION_METADATA_KEY
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.scheduling.message import IncomingMessage
@@ -202,6 +210,27 @@ class ParallelAdapter(Recorder):
             return UMMStep(outputs=(UMMOutput("image", result["media"]),))
 
 
+class ProgressAdapter(Recorder):
+    def __init__(self, model_path: str = "model") -> None:
+        super().__init__()
+        self.model_path = model_path
+
+    def start(self, context: UMMContext) -> UMMStep:
+        request = OmniRequest(context.request.inputs, {"model": self.model_path})
+        return UMMStep("reason", request)
+
+    def progress(
+        self, context: UMMContext, phase: str, progress_item: str
+    ) -> tuple[UMMTextDelta, ...]:
+        return (UMMTextDelta(progress_item),)
+
+    def advance(self, context: UMMContext, phase: str, result: object) -> UMMStep:
+        if result is None:
+            return UMMStep()
+        else:
+            return UMMStep(outputs=(UMMOutput("text", result),))
+
+
 def reasoner(decisions):
     script = iter(decisions)
 
@@ -269,6 +298,45 @@ def drain(controller):
     while not controller.outbox.empty():
         messages.append(controller.outbox.get_nowait())
     return messages
+
+
+@contextmanager
+def serve_progress_controller(controller: UMMController) -> Iterator[None]:
+    worker = threading.Thread(target=controller.start)
+    worker.start()
+    try:
+        yield
+    finally:
+        controller.stop()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+
+
+def start_progress_request(
+    controller: UMMController, request_id: str = "req", *, stream: bool = True
+) -> StagePayload:
+    controller.inbox.put(
+        IncomingMessage(request_id, "new_request", initial(request_id, stream=stream))
+    )
+    dispatch = controller.outbox.get(timeout=2)
+    assert dispatch.type == "result" and dispatch.request_id == request_id
+    assert isinstance(dispatch.data, RoutedPayloads)
+    return dispatch.data.payloads["reasoner"]
+
+
+def queue_phase_progress(
+    controller: UMMController,
+    dispatched: StagePayload,
+    chunk_id: int,
+    progress_text: str,
+    *,
+    stage_name: str = "reasoner",
+) -> None:
+    progress = umm_phase_progress(dispatched, progress_text)
+    stream_item = StreamItem(chunk_id, progress.data, stage_name, progress.metadata)
+    controller.inbox.put(
+        IncomingMessage(dispatched.request_id, "stream_chunk", stream_item)
+    )
 
 
 SPLIT = (
@@ -366,6 +434,171 @@ def test_stale_duplicate_forged_and_lost_continuations_never_advance():
     assert adapter.closed == ["failed"] and not controller.contexts
     with pytest.raises(RuntimeError, match="inactive request"):
         controller.advance(reply(second, {"media": {"url": "late"}}))
+
+
+def test_phase_progress_ignores_stale_duplicate_and_aborted_chunks() -> None:
+    adapter = ProgressAdapter()
+    controller = make_controller(adapter, streaming_phase_stages=("reasoner",))
+    with serve_progress_controller(controller):
+        dispatched = start_progress_request(controller)
+        continuation = dispatched.request.metadata[CONTINUATION_METADATA_KEY]
+        forged_request = replace(
+            dispatched.request,
+            metadata={CONTINUATION_METADATA_KEY: replace(continuation, nonce="stale")},
+        )
+        forged_dispatch = replace(dispatched, request=forged_request)
+        queue_phase_progress(controller, forged_dispatch, 0, "stale")
+        queue_phase_progress(controller, dispatched, 0, "wrong", stage_name="generator")
+        queue_phase_progress(controller, dispatched, 0, "Draw")
+        assert controller.outbox.get(timeout=2).data["data"] == "Draw"
+        queue_phase_progress(controller, dispatched, 0, "duplicate")
+        queue_phase_progress(controller, dispatched, 1, "ing")
+        assert controller.outbox.get(timeout=2).data["data"] == "ing"
+
+        controller.abort("req")
+        queue_phase_progress(controller, dispatched, 2, "late")
+        controller.inbox.put(
+            IncomingMessage("req", "new_request", reply(dispatched, "late-result"))
+        )
+        start_progress_request(controller, "other")
+        assert controller.outbox.empty()
+
+    assert adapter.closed == ["aborted", "shutdown"]
+
+
+def test_phase_progress_resets_chunk_ids_for_the_next_turn_on_the_same_stage() -> None:
+    class TwoTurnProgressAdapter(ProgressAdapter):
+        def advance(self, context: UMMContext, phase: str, result: object) -> UMMStep:
+            if result == "First":
+                return UMMStep(
+                    "reason",
+                    OmniRequest(context.request.inputs, {"model": self.model_path}),
+                    outputs=(UMMOutput("text", result),),
+                )
+            else:
+                return UMMStep(outputs=(UMMOutput("text", result),))
+
+    adapter = TwoTurnProgressAdapter()
+    controller = make_controller(adapter, streaming_phase_stages=("reasoner",))
+    with serve_progress_controller(controller):
+        first = start_progress_request(controller)
+        queue_phase_progress(controller, first, 0, "Fir")
+        assert controller.outbox.get(timeout=2).data["data"] == "Fir"
+        queue_phase_progress(controller, first, 1, "st")
+        assert controller.outbox.get(timeout=2).data["data"] == "st"
+
+        controller.inbox.put(
+            IncomingMessage("req", "new_request", reply(first, "First"))
+        )
+        segment = controller.outbox.get(timeout=2)
+        dispatch = controller.outbox.get(timeout=2)
+        assert segment.type == "stream" and segment.data["data"] == "First"
+        assert dispatch.type == "result" and isinstance(dispatch.data, RoutedPayloads)
+        second = dispatch.data.payloads["reasoner"]
+
+        queue_phase_progress(controller, second, 0, "Sec")
+        delta = controller.outbox.get(timeout=2)
+        assert delta.type == "stream"
+        assert delta.data["segment_index"] == 1
+        assert delta.data["data"] == "Sec"
+
+        controller.inbox.put(
+            IncomingMessage("req", "new_request", reply(second, "Second"))
+        )
+        second_segment = controller.outbox.get(timeout=2)
+        final_result = controller.outbox.get(timeout=2)
+        assert (
+            second_segment.type == "stream" and second_segment.data["data"] == "Second"
+        )
+        assert final_result.type == "result"
+        assert controller.outbox.empty()
+
+    assert adapter.closed == ["completed"]
+
+
+def test_phase_progress_counts_utf8_bytes_before_publication() -> None:
+    adapter = ProgressAdapter()
+    controller = make_controller(
+        adapter,
+        streaming_phase_stages=("reasoner",),
+        limits=limits(max_retained_bytes=5),
+    )
+    with serve_progress_controller(controller):
+        dispatched = start_progress_request(controller)
+        queue_phase_progress(controller, dispatched, 0, "éé")
+        assert controller.outbox.get(timeout=2).data["data"] == "éé"
+        queue_phase_progress(controller, dispatched, 1, "é")
+        failure = controller.outbox.get(timeout=2)
+        assert failure.type == "error" and "max_retained_bytes=5" in str(failure.data)
+        assert controller.outbox.empty()
+
+    assert adapter.closed == ["failed"]
+
+
+def test_phase_progress_can_publish_a_complete_segment_within_the_limit() -> None:
+    class CompleteProgressAdapter(ProgressAdapter):
+        def progress(
+            self, context: UMMContext, phase: str, progress_item: str
+        ) -> tuple[UMMOutput, ...]:
+            return (UMMOutput("text", progress_item),)
+
+    adapter = CompleteProgressAdapter()
+    controller = make_controller(
+        adapter, streaming_phase_stages=("reasoner",), limits=limits(max_outputs=1)
+    )
+    with serve_progress_controller(controller):
+        dispatched = start_progress_request(controller)
+        queue_phase_progress(controller, dispatched, 0, "Plan.")
+        segment = controller.outbox.get(timeout=2)
+        assert segment.type == "stream"
+        assert segment.data["type"] == "segment"
+        assert segment.data["data"] == "Plan."
+        controller.inbox.put(
+            IncomingMessage("req", "new_request", reply(dispatched, "One more."))
+        )
+        failure = controller.outbox.get(timeout=2)
+        assert failure.type == "error" and "max_outputs=1" in str(failure.data)
+        assert controller.outbox.empty()
+
+    assert adapter.closed == ["failed"]
+
+
+@pytest.mark.parametrize("completed_text", ["Drawing", "different", None])
+def test_buffered_progress_keeps_only_the_matching_complete_text(
+    completed_text: str | None,
+) -> None:
+    adapter = ProgressAdapter()
+    controller = make_controller(adapter, streaming_phase_stages=("reasoner",))
+    with serve_progress_controller(controller):
+        dispatched = start_progress_request(controller, stream=False)
+        assert dispatched.request.params["stream"] is True
+        queue_phase_progress(controller, dispatched, 0, "Draw")
+        controller.inbox.put(
+            IncomingMessage("req", "new_request", reply(dispatched, completed_text))
+        )
+        result = controller.outbox.get(timeout=2)
+        assert controller.outbox.empty()
+
+    if completed_text == "Drawing":
+        assert result.type == "result"
+        assert isinstance(result.data, StagePayload)
+        assert [segment["data"] for segment in result.data.data["segments"]] == [
+            "Drawing"
+        ]
+        assert adapter.closed == ["completed"]
+    else:
+        expected_error = (
+            "unfinished streamed text"
+            if completed_text is None
+            else "complete the streamed text"
+        )
+        assert result.type == "error" and expected_error in str(result.data)
+        assert adapter.closed == ["failed"]
+
+
+def test_streaming_phase_requires_adapter_progress_callback() -> None:
+    with pytest.raises((TypeError, ValueError), match="progress"):
+        make_controller(OneCallAdapter(), streaming_phase_stages=("reasoner",))
 
 
 def test_abort_while_waiting_or_mid_transition_closes_once_and_publishes_nothing():
@@ -597,7 +830,58 @@ def umm_stages(**changes):
         ),
         ({"orchestrator": {"stream_to": ["reasoner"]}}, "stream_to must be"),
         ({"generator": {"next": "output"}}, "whose next is"),
-        ({"generator": {"stream_to": ["output"]}}, "generator.stream_to must be"),
+        (
+            {"generator": {"stream_to": ["output"]}},
+            "generator.*stream_to.*orchestrator",
+        ),
+        (
+            {
+                "generator": {
+                    "stream_to": ["orchestrator"],
+                    "stream_done_to_fn": ROUTE_FN_PATH,
+                }
+            },
+            "stream_done_to_fn",
+        ),
+        (
+            {
+                "orchestrator": {
+                    "factory": FactoryArgs(
+                        adapter=f"{__name__}.split_adapter",
+                        phases=SPLIT_PHASES,
+                        **{**BOUNDS, "max_active": 4},
+                    )
+                },
+                "generator": {"stream_to": ["orchestrator"]},
+            },
+            "generator.*progress",
+        ),
+        (
+            {
+                "orchestrator": {
+                    "factory": FactoryArgs(
+                        adapter=f"{__name__}.SplitAdapter",
+                        phases=SPLIT_PHASES,
+                        **{**BOUNDS, "max_active": 4},
+                    )
+                },
+                "generator": {"stream_to": ["orchestrator"]},
+            },
+            "generator.*progress",
+        ),
+        (
+            {
+                "orchestrator": {
+                    "factory": FactoryArgs(
+                        adapter=f"{__name__}.ProgressAdapter",
+                        phases=SPLIT_PHASES,
+                        **{**BOUNDS, "max_active": 4},
+                    )
+                },
+                "generator": {"stream_to": ["orchestrator"]},
+            },
+            None,
+        ),
         ({"output": {"process": "elsewhere"}}, "share a process"),
         (
             {
@@ -616,7 +900,11 @@ def umm_stages(**changes):
         "phase-to-output",
         "no-relay",
         "phase-skips-controller",
-        "phase-streams",
+        "phase-stream-skips-controller",
+        "phase-stream-custom-done-fn",
+        "phase-stream-factory-function",
+        "phase-stream-no-progress-class",
+        "phase-stream-valid",
         "split",
         "boolean-bound",
     ],
@@ -632,41 +920,81 @@ def test_pipeline_config_accepts_only_the_umm_wiring(changes, message):
     if message is None:
         config = build()
         assert config.entry_stage_admission_limit() == 4
-        assert config.stage_factory_kwargs("orchestrator") == {
-            "output_stage": "output",
-            "stage_name": "orchestrator",
-        }
+        controller_kwargs = config.stage_factory_kwargs("orchestrator")
+        assert controller_kwargs["output_stage"] == "output"
+        assert controller_kwargs["stage_name"] == "orchestrator"
+        has_streaming = bool(changes.get("generator", {}).get("stream_to"))
+        expected_streaming = ("generator",) if has_streaming else ()
+        assert controller_kwargs["streaming_phase_stages"] == expected_streaming
+        if has_streaming:
+            assert (
+                config.stage_named("generator").stream_done_to_fn == STREAM_DONE_FN_PATH
+            )
+            rebuilt = UMMPipelineConfig.model_validate(config.model_dump())
+            assert (
+                rebuilt.stage_named("generator").stream_done_to_fn
+                == STREAM_DONE_FN_PATH
+            )
+        else:
+            pass
     else:
         with pytest.raises(ValueError, match=message):
             build()
 
 
-async def settle(stages):
-    pending = [
-        item.task
-        for obj in stages.values()
-        for item in obj.comm.pending.values()
-        if item.task is not None
-    ]
-    if pending:
+async def settle(stages: dict[str, Stage]) -> None:
+    while True:
+        pending = [
+            task
+            for obj in stages.values()
+            for task in (
+                *(
+                    item.task
+                    for item in obj.comm.pending.values()
+                    if item.task is not None
+                ),
+                *obj.receive_tasks,
+            )
+            if not task.done()
+        ]
+        if not pending:
+            return
+        else:
+            pass
         await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
-    else:
-        pass
 
 
-def real_stages(controller, relay, *, reasoner_script, generator_script):
-    stages = {}
-    crossed = []
+def real_stages(
+    controller: UMMController,
+    relay: UMMOutputRelay,
+    *,
+    reasoner_script: list[dict[str, object]],
+    generator_script: list[dict[str, object] | None],
+    streaming_reasoner: bool = False,
+) -> tuple[dict[str, Stage], list[tuple[str, str, bool]]]:
+    stages: dict[str, Stage] = {}
+    crossed: list[tuple[str, str, bool]] = []
 
     class Bridge(RecordingStageControlPlane):
-        async def send_to_stage(self, target, endpoint, msg):
+        async def send_to_stage(self, target: str, endpoint: str, msg: object) -> None:
             await super().send_to_stage(target, endpoint, msg)
             received_message = deserialize_message(serialize_message(msg))
             if isinstance(received_message, DataAckMessage):
                 stages[target].comm.ack_transfer(received_message)
                 return
+            elif isinstance(received_message, StreamChunkBatchMessage):
+                stages[target].schedule_stream_chunk_batch(received_message)
+                return
             else:
                 assert isinstance(received_message, DataReadyMessage)
+            if received_message.chunk_id is not None:
+                await stages[target].on_stream_chunk(received_message)
+                return
+            elif received_message.is_done:
+                await stages[target].on_stream_signal(received_message)
+                return
+            else:
+                pass
             ref = DataRef.from_dict(received_message.data_ref)
             assert ref.header is not None
             header = pickle.loads(ref.header)
@@ -690,6 +1018,10 @@ def real_stages(controller, relay, *, reasoner_script, generator_script):
         same_process_targets={"output"},
         **local,
     )
+    if streaming_reasoner:
+        stages["orchestrator"].stream_queue = StreamQueue()
+    else:
+        pass
     stages["output"] = make_stage(
         name="output",
         endpoints=endpoints,
@@ -712,9 +1044,28 @@ def real_stages(controller, relay, *, reasoner_script, generator_script):
             endpoints=endpoints,
             control_plane=Bridge(),
             relay=ShmRelay(name, device="cpu", credits=1),
+            stream_targets=(
+                ["orchestrator"] if streaming_reasoner and name == "reasoner" else None
+            ),
+            get_stream_done_targets=(
+                umm_stream_done_targets
+                if streaming_reasoner and name == "reasoner"
+                else None
+            ),
         )
         stages[name].script = script
     return stages, crossed
+
+
+async def drain_stage_outbox(stage_runtime: Stage, *, message_count: int = 0) -> None:
+    outbox = stage_runtime.scheduler.outbox
+    messages = [
+        await asyncio.to_thread(outbox.get, True, 2) for _ in range(message_count)
+    ]
+    for message in messages:
+        outbox.put(message)
+    stage_runtime.end_outbox_drain()
+    await asyncio.wait_for(stage_runtime.drain_outbox_external(), 2)
 
 
 def start_relay():
@@ -749,8 +1100,7 @@ async def run_real_stages(stages, controller, rid="req"):
     async def orchestrate():
         item = controller.inbox.get_nowait().data
         controller.emit_result(rid, controller.advance(item), controller.outbox)
-        stages["orchestrator"].end_outbox_drain()
-        await asyncio.wait_for(stages["orchestrator"].drain_outbox_external(), 2)
+        await drain_stage_outbox(stages["orchestrator"])
         await settle(stages)
 
     await orchestrate()
@@ -770,12 +1120,154 @@ async def run_real_stages(stages, controller, rid="req"):
             await orchestrate()
     output = stages["output"]
     for _ in range(200):
-        output.end_outbox_drain()
-        await asyncio.wait_for(output.drain_outbox_external(), 2)
+        await drain_stage_outbox(output)
         if output.control_plane.completions:
             break
         else:
             await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_phase_progress_crosses_the_stage_boundary_before_its_result() -> None:
+    class TwoPhaseProgressAdapter(ProgressAdapter):
+        def advance(self, context: UMMContext, phase: str, result: object) -> UMMStep:
+            if phase == "reason":
+                return UMMStep(
+                    "generate",
+                    OmniRequest({"prompt": "a cat"}),
+                    outputs=(UMMOutput("text", result),),
+                )
+            else:
+                return UMMStep(outputs=(UMMOutput("image", result),))
+
+    controller = make_controller(
+        TwoPhaseProgressAdapter(), streaming_phase_stages=("reasoner",)
+    )
+    relay, relay_thread = start_relay()
+    stages, _ = real_stages(
+        controller,
+        relay,
+        reasoner_script=[],
+        generator_script=[],
+        streaming_reasoner=True,
+    )
+    orchestrator = stages["orchestrator"]
+    reasoner_stage = stages["reasoner"]
+    generator_stage = stages["generator"]
+    output = stages["output"]
+    try:
+        with serve_progress_controller(controller):
+            await orchestrator.on_submit(
+                SubmitMessage(
+                    "req",
+                    initial(stream=True),
+                    replica_bindings={"reasoner": 0},
+                )
+            )
+            await drain_stage_outbox(orchestrator, message_count=1)
+            await settle(stages)
+            phase_request = reasoner_stage.scheduler.inbox.get_nowait().data
+            assert phase_request.request.params["stream"] is True
+
+            for fragment in ("Draw", "ing"):
+                reasoner_stage.scheduler.outbox.put(
+                    umm_phase_progress(phase_request, fragment)
+                )
+            await drain_stage_outbox(reasoner_stage)
+            await settle(stages)
+            await drain_stage_outbox(orchestrator, message_count=2)
+            await drain_stage_outbox(output, message_count=2)
+            progress_events = [
+                call.args[0].chunk
+                for call in output.control_plane.send_stream.await_args_list
+            ]
+            assert len(progress_events) == 2
+            assert output.control_plane.completions == []
+
+            await reasoner_stage.route_result("req", reply(phase_request, "Drawing."))
+            await settle(stages)
+            await drain_stage_outbox(orchestrator, message_count=2)
+            await settle(stages)
+            await drain_stage_outbox(output, message_count=1)
+            generate_request = generator_stage.scheduler.inbox.get_nowait().data
+            assert generate_request.request.params["stream"] is False
+
+            # Late Turn 1 progress during Turn 2 must not cancel or fail the request.
+            reasoner_stage.active_requests.add("req")
+            reasoner_stage.replica_bindings["req"] = {"reasoner": 0}
+            reasoner_stage.scheduler.outbox.put(
+                umm_phase_progress(phase_request, "late-turn1")
+            )
+            await drain_stage_outbox(reasoner_stage)
+            await settle(stages)
+            reasoner_stage.clear_request_state("req")
+            assert "req" in orchestrator.active_requests
+            assert "req" not in orchestrator.aborted
+            assert orchestrator.control_plane.completions == []
+            assert output.control_plane.completions == []
+
+            await generator_stage.route_result(
+                "req", reply(generate_request, {"url": "cat"})
+            )
+            await settle(stages)
+            await drain_stage_outbox(orchestrator, message_count=2)
+            await settle(stages)
+            await drain_stage_outbox(output, message_count=2)
+            (*_, text_event, image_event) = (
+                output.control_plane.send_stream.await_args_list
+            )
+            (completion,) = output.control_plane.completions
+            assert completion.success
+            assert not orchestrator.active_requests
+            assert not orchestrator.replica_bindings
+            assert not orchestrator.stream_queue.has("req")
+            execution_id = completion.result["execution_id"]
+            text_identity = {
+                "execution_id": execution_id,
+                "segment_index": 0,
+                "kind": "text",
+            }
+            image_identity = {
+                "execution_id": execution_id,
+                "segment_index": 1,
+                "kind": "image",
+            }
+            assert progress_events == [
+                {"type": "segment_delta", **text_identity, "data": "Draw"},
+                {"type": "segment_delta", **text_identity, "data": "ing"},
+            ]
+            assert text_event.args[0].chunk == {
+                "type": "segment",
+                **text_identity,
+                "data": "Drawing.",
+            }
+            assert image_event.args[0].chunk == {
+                "type": "segment",
+                **image_identity,
+                "data": {"url": "cat"},
+            }
+            assert completion.result["segments"] == [
+                {"type": "segment", **text_identity},
+                {"type": "segment", **image_identity},
+            ]
+
+            # Late progress after completion must not rebuild state or fail.
+            reasoner_stage.active_requests.add("req")
+            reasoner_stage.replica_bindings["req"] = {"reasoner": 0}
+            reasoner_stage.scheduler.outbox.put(
+                umm_phase_progress(phase_request, "after-complete")
+            )
+            await drain_stage_outbox(reasoner_stage)
+            await settle(stages)
+            reasoner_stage.clear_request_state("req")
+            assert not orchestrator.active_requests
+            assert not orchestrator.replica_bindings
+            assert not orchestrator.stream_queue.has("req")
+            assert orchestrator.control_plane.completions == []
+            assert len(output.control_plane.completions) == 1
+            assert controller.outbox.empty()
+    finally:
+        await stop_real_stages(stages, controller, relay, relay_thread)
 
 
 @pytest.mark.asyncio

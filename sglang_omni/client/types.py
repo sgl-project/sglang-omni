@@ -293,6 +293,41 @@ class UMMSegment:
 
 
 @dataclass
+class UMMSegmentDelta:
+    """A text fragment for the next accepted segment."""
+
+    execution_id: str
+    segment_index: int
+    data: str
+
+    @classmethod
+    def from_dict(cls, value: object) -> UMMSegmentDelta:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"type", "execution_id", "segment_index", "kind", "data"}
+            or value["type"] != "segment_delta"
+            or value["kind"] != "text"
+            or not isinstance(value["execution_id"], str)
+            or type(value["segment_index"]) is not int
+            or value["segment_index"] < 0
+            or not isinstance(value["data"], str)
+            or not value["data"]
+        ):
+            raise ValueError(f"Invalid UMM segment delta {value!r:.200}")
+        else:
+            return cls(value["execution_id"], value["segment_index"], value["data"])
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "type": "segment_delta",
+            "execution_id": self.execution_id,
+            "segment_index": self.segment_index,
+            "kind": "text",
+            "data": self.data,
+        }
+
+
+@dataclass
 class UMMGenerateChunk(GenerateChunk):
     """A chunk of an interleaved (UMM) request.
 
@@ -302,6 +337,7 @@ class UMMGenerateChunk(GenerateChunk):
 
     segment: UMMSegment | None = None
     segments: list[UMMSegment] | None = None
+    segment_delta: UMMSegmentDelta | None = None
 
     def to_dict(self) -> dict[str, object]:
         result = super().to_dict()
@@ -311,6 +347,10 @@ class UMMGenerateChunk(GenerateChunk):
             pass
         if self.segments is not None:
             result["segments"] = [segment.to_dict() for segment in self.segments]
+        else:
+            pass
+        if self.segment_delta is not None:
+            result["segment_delta"] = self.segment_delta.to_dict()
         else:
             pass
         return result
@@ -398,6 +438,7 @@ class UMMCompletionStreamChunk(CompletionStreamChunk):
     """A streamed chunk of an interleaved (UMM) request with its segment."""
 
     segment: UMMSegment | None = None
+    segment_delta: UMMSegmentDelta | None = None
 
 
 @dataclass

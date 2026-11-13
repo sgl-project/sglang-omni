@@ -22,10 +22,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import ClassVar, Literal, Protocol, TypeAlias, runtime_checkable
 
+import torch
+
 from sglang_omni.admission import QueueFullError
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.proto.messages import UMM_PROGRESS_NONCE
 from sglang_omni.proto.request import OmniRequest, RoutedPayloads, StagePayload
 from sglang_omni.proto.session import SESSION_METADATA_KEY
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
@@ -43,6 +46,7 @@ CONTINUATION_METADATA_KEY = "omni_continuation"
 # A phase result reports context it produced under this data key, and the
 # consuming phase finds it under this request metadata key.
 CONTEXT_KEY = "umm_context"
+MAX_UMM_PROGRESS_BYTES = 16 * 1024
 CONTROLLER_FACTORY_PATH = f"{__name__}.create_umm_controller"
 OUTPUT_FACTORY_PATH = f"{__name__}.create_umm_output_stage"
 ROUTE_FN_PATH = f"{__name__}.route_umm"
@@ -81,6 +85,13 @@ class ContextRef:
 class UMMOutput:
     kind: str
     data: JSONValue
+
+
+@dataclass(frozen=True)
+class UMMTextDelta:
+    """Append text to the next segment before its complete UMMOutput."""
+
+    text: str
 
 
 @dataclass(frozen=True)
@@ -161,9 +172,11 @@ class UMMContext:
     remaining_dispatches: int
     outputs: list[dict[str, JSONValue]] = field(default_factory=list)
     output_bytes: int = 0
+    pending_text_bytes: bytearray = field(default_factory=bytearray)
     produced: ContextRef | None = None
     # The continuation of the phase each stage runs for this request.
     expected: dict[str, Continuation] = field(default_factory=dict)
+    last_progress_chunk_id: dict[str, int] = field(default_factory=dict)
     busy: bool = False
     closed: CloseReason | None = None
     shedding: bool = False
@@ -201,6 +214,36 @@ class UMMAdapter(Protocol):
     def usage(self, context: UMMContext) -> int: ...
 
     def close(self, context: UMMContext, reason: CloseReason) -> None: ...
+
+
+@runtime_checkable
+class UMMProgressAdapter(UMMAdapter, Protocol):
+    def progress(
+        self, context: UMMContext, phase: str, progress_item: JSONValue
+    ) -> tuple[UMMOutput | UMMTextDelta, ...]: ...
+
+
+def umm_phase_progress(
+    payload: StagePayload, progress_item: JSONValue
+) -> OutgoingMessage:
+    """Publish one progress item from a phase's dispatched payload."""
+    continuation = payload.request.metadata.get(CONTINUATION_METADATA_KEY)
+    if not isinstance(continuation, Continuation) or continuation.phase is None:
+        raise ValueError("UMM progress requires a phase continuation")
+    else:
+        pass
+    encoded = json.dumps(progress_item, ensure_ascii=False, allow_nan=False).encode(
+        "utf-8"
+    )
+    if len(encoded) > MAX_UMM_PROGRESS_BYTES:
+        raise ValueError(f"UMM progress chunk exceeds {MAX_UMM_PROGRESS_BYTES} bytes")
+    else:
+        return OutgoingMessage(
+            payload.request_id,
+            "stream",
+            torch.frombuffer(bytearray(encoded), dtype=torch.uint8),
+            metadata={UMM_PROGRESS_NONCE: continuation.nonce},
+        )
 
 
 class MonotonicClock(Protocol):
@@ -250,6 +293,7 @@ class UMMController(
         output_stage: str,
         stage_name: str = "orchestrator",
         clock: MonotonicClock = time.monotonic,
+        streaming_phase_stages: tuple[str, ...] = (),
     ) -> None:
         if not phases or not all(
             isinstance(phase, str) and isinstance(stage, str)
@@ -259,6 +303,17 @@ class UMMController(
         else:
             pass
         self.adapter = adapter
+        self.progress_adapter: UMMProgressAdapter | None
+        if not streaming_phase_stages:
+            self.progress_adapter = None
+        elif isinstance(adapter, UMMProgressAdapter) and callable(adapter.progress):
+            self.progress_adapter = adapter
+        else:
+            raise TypeError(
+                f"UMM streaming phase stages {sorted(streaming_phase_stages)} "
+                "require an adapter with a progress callback"
+            )
+        self.streaming_phase_stages = frozenset(streaming_phase_stages)
         self.limits = limits
         self.phases = dict(phases)
         self.output_stage = output_stage
@@ -364,19 +419,33 @@ class UMMController(
                 pass
         return None if earliest == math.inf else earliest - now
 
-    def next_message(self) -> IncomingMessage | None:
+    def next_message(self) -> IncomingMessage:
         while True:
             wait = self.expire()
             if wait is None or self.pending_messages:
-                return super().next_message()
+                message = super().next_message()
             else:
-                pass
-            # The earliest deadline bounds the wait, so the sweep fails that
-            # request on time whether or not the scheduler loop polls. Waits
-            # stop at the longest timeout the platform accepts.
-            try:
-                return self.inbox.get(timeout=min(wait, threading.TIMEOUT_MAX))
-            except queue.Empty:
+                try:
+                    message = self.inbox.get(timeout=min(wait, threading.TIMEOUT_MAX))
+                except queue.Empty:
+                    continue
+            if message.type != "stream_chunk" or not self.streaming_phase_stages:
+                return message
+            elif self.running and not self.is_aborted(message.request_id):
+                try:
+                    assert isinstance(
+                        message.data, StreamItem
+                    ), "stages deliver StreamItem chunks"
+                    self.transition(message.request_id, message.data)
+                except Exception as exc:
+                    if not self.is_aborted(message.request_id):
+                        logger.exception(
+                            f"UMM progress transition failed for {message.request_id}"
+                        )
+                        self.emit_error(message.request_id, exc, self.outbox)
+                    else:
+                        pass
+            else:
                 pass
 
     def stop(self) -> None:
@@ -419,38 +488,56 @@ class UMMController(
 
     def advance(self, payload: StagePayload) -> StagePayload | RoutedPayloads | None:
         try:
-            return self.transition(payload)
+            return self.transition(payload.request_id, payload)
         except (QueueFullError, UMMRequestError) as exc:
             # Rejections of client requests are expected and need no traceback.
             self.emit_error(payload.request_id, exc, self.outbox)
             return None
 
-    def transition(self, payload: StagePayload) -> StagePayload | RoutedPayloads | None:
-        request_id = payload.request_id
-        token = payload.request.metadata.get(CONTINUATION_METADATA_KEY)
-        if not isinstance(token, Continuation):
-            token = None
-        else:
-            pass
+    def transition(
+        self, request_id: str, payload: StagePayload | StreamItem
+    ) -> StagePayload | RoutedPayloads | None:
         phase = None
         lost = False
         with self.lock:
             context = self.contexts.get(request_id)
-            if context is None and token is None:
-                context = self.admit(payload)
-            elif context is None:
-                raise RuntimeError(
-                    f"UMM result for inactive request {request_id} was discarded"
-                )
-            elif token is None:
-                self.contexts.pop(request_id)
-                lost = True
-            elif token != context.expected.get(token.stage):
-                # A duplicate or stale continuation never advances the request.
-                return None
+            if isinstance(payload, StreamItem):
+                token = context.expected.get(payload.from_stage) if context else None
+                if (
+                    token is None
+                    or payload.from_stage not in self.streaming_phase_stages
+                    or payload.metadata is None
+                    or token.nonce != payload.metadata.get(UMM_PROGRESS_NONCE)
+                    or payload.chunk_id
+                    <= context.last_progress_chunk_id.get(payload.from_stage, -1)
+                ):
+                    return None
+                else:
+                    phase = token.phase
+                    context.last_progress_chunk_id[payload.from_stage] = (
+                        payload.chunk_id
+                    )
             else:
-                phase = token.phase
-                del context.expected[token.stage]
+                metadata_token = payload.request.metadata.get(CONTINUATION_METADATA_KEY)
+                token = (
+                    metadata_token if isinstance(metadata_token, Continuation) else None
+                )
+                if context is None and token is None:
+                    context = self.admit(payload)
+                elif context is None:
+                    raise RuntimeError(
+                        f"UMM result for inactive request {request_id} was discarded"
+                    )
+                elif token is None:
+                    self.contexts.pop(request_id)
+                    lost = True
+                elif token != context.expected.get(token.stage):
+                    return None
+                else:
+                    phase = token.phase
+                    context.expected.pop(token.stage)
+                    context.last_progress_chunk_id.pop(token.stage, None)
+            assert context is not None
             if not lost:
                 context.busy = True
             else:
@@ -465,17 +552,36 @@ class UMMController(
             pass
         try:
             self.check_deadline(context)
-            if phase is None:
-                step = self.adapter.start(context)
-            else:
-                data = payload.data
-                context.produced = (
-                    data.get(CONTEXT_KEY) if isinstance(data, Mapping) else None
+            if isinstance(payload, StreamItem):
+                assert phase is not None and self.progress_adapter is not None
+                if (
+                    not isinstance(payload.data, torch.Tensor)
+                    or payload.data.dtype != torch.uint8
+                    or payload.data.ndim != 1
+                    or payload.data.device.type != "cpu"
+                    or payload.data.numel() > MAX_UMM_PROGRESS_BYTES
+                ):
+                    raise ValueError("Invalid UMM progress chunk")
+                else:
+                    pass
+                progress_item = json.loads(
+                    payload.data.numpy().tobytes().decode("utf-8")
                 )
-                step = self.adapter.advance(context, phase, data)
-            result, added, started = self.apply(
-                request_id, context, step, client=phase is None
-            )
+                outputs = self.progress_adapter.progress(context, phase, progress_item)
+                added = self.accept_outputs(context, outputs, client=False)
+                result, started = None, {}
+            else:
+                if phase is None:
+                    step = self.adapter.start(context)
+                else:
+                    data = payload.data
+                    context.produced = (
+                        data.get(CONTEXT_KEY) if isinstance(data, Mapping) else None
+                    )
+                    step = self.adapter.advance(context, phase, data)
+                result, added, started = self.apply(
+                    request_id, context, step, client=phase is None
+                )
             self.check_deadline(context)
         except BaseException as exc:
             with self.lock:
@@ -524,6 +630,88 @@ class UMMController(
             pass
         return result
 
+    def accept_outputs(
+        self,
+        context: UMMContext,
+        outputs: tuple[UMMOutput | UMMTextDelta, ...],
+        *,
+        client: bool,
+    ) -> list[dict[str, JSONValue]]:
+        limits = self.limits
+        state_bytes = self.adapter.usage(context)
+        if type(state_bytes) is not int or state_bytes < 0:
+            raise TypeError("UMM adapter usage must return a byte count")
+        else:
+            pass
+        added: list[dict[str, JSONValue]] = []
+        completed: list[dict[str, JSONValue]] = []
+        output_bytes = context.output_bytes
+        pending_text_bytes = context.pending_text_bytes
+        pending_fragments: list[bytes] = []
+        for output in outputs:
+            segment_index = len(context.outputs) + len(completed)
+            is_text_delta = isinstance(output, UMMTextDelta)
+            if is_text_delta and not output.text:
+                continue
+            elif segment_index >= limits.max_outputs:
+                raise self.budget_error(
+                    "max_outputs", limits.max_outputs, client=client
+                )
+            else:
+                pass
+            if is_text_delta:
+                pending_fragments.append(output.text.encode("utf-8"))
+                segment_type, kind, data = "segment_delta", "text", output.text
+            elif isinstance(output, UMMOutput):
+                if pending_text_bytes or pending_fragments:
+                    complete_text_bytes = (
+                        output.data.encode("utf-8")
+                        if output.kind == "text" and isinstance(output.data, str)
+                        else b""
+                    )
+                    if not complete_text_bytes.startswith(
+                        pending_text_bytes
+                    ) or not complete_text_bytes.startswith(
+                        b"".join(pending_fragments), len(pending_text_bytes)
+                    ):
+                        raise ValueError(
+                            "The next UMM segment must complete the streamed text"
+                        )
+                    else:
+                        pass
+                    output_bytes += len(complete_text_bytes)
+                    pending_text_bytes = bytearray()
+                    pending_fragments.clear()
+                else:
+                    output_bytes += encoded_bytes(output)
+                segment_type, kind, data = "segment", output.kind, output.data
+            else:
+                raise TypeError("UMM outputs must be UMMOutput or UMMTextDelta")
+            segment = {
+                "type": segment_type,
+                "execution_id": context.execution_id,
+                "segment_index": segment_index,
+                "kind": kind,
+                "data": data,
+            }
+            added.append(segment)
+            if not is_text_delta:
+                completed.append(segment)
+            else:
+                pass
+        pending_bytes = len(pending_text_bytes) + sum(map(len, pending_fragments))
+        if output_bytes + pending_bytes + state_bytes > limits.max_retained_bytes:
+            raise self.budget_error(
+                "max_retained_bytes", limits.max_retained_bytes, client=client
+            )
+        else:
+            context.outputs.extend(completed)
+            context.output_bytes = output_bytes
+            for fragment in pending_fragments:
+                pending_text_bytes.extend(fragment)
+            context.pending_text_bytes = pending_text_bytes
+            return added
+
     def apply(
         self, request_id: str, context: UMMContext, step: UMMStep, *, client: bool
     ) -> tuple[
@@ -541,20 +729,6 @@ class UMMController(
             raise RuntimeError(
                 f"UMM adapter left context from stage {context.produced.owner!r} "
                 "unconsumed. Pass it to the next phase so its owner releases it"
-            )
-        elif len(context.outputs) + len(step.outputs) > limits.max_outputs:
-            raise self.budget_error("max_outputs", limits.max_outputs, client=client)
-        else:
-            pass
-        retained = context.output_bytes + sum(
-            encoded_bytes(output) for output in step.outputs
-        )
-        state_bytes = self.adapter.usage(context)
-        if type(state_bytes) is not int or state_bytes < 0:
-            raise TypeError("UMM adapter usage must return a byte count")
-        elif retained + state_bytes > limits.max_retained_bytes:
-            raise self.budget_error(
-                "max_retained_bytes", limits.max_retained_bytes, client=client
             )
         elif step.phase is None and (
             step.request is not None or step.context is not None
@@ -592,23 +766,16 @@ class UMMController(
                 )
             else:
                 stages.append(self.phases[dispatch.phase])
-        added: list[dict[str, JSONValue]] = [
-            {
-                "type": "segment",
-                "execution_id": context.execution_id,
-                "segment_index": len(context.outputs) + offset,
-                "kind": output.kind,
-                "data": output.data,
-            }
-            for offset, output in enumerate(step.outputs)
-        ]
-        context.outputs.extend(added)
-        context.output_bytes = retained
+        added = self.accept_outputs(context, step.outputs, client=client)
         context.produced = None
         if not dispatches and context.expected:
             # The request waits for the results of its running phases.
             return None, added, {}
         elif not dispatches:
+            if context.pending_text_bytes:
+                raise ValueError("UMM request completed with unfinished streamed text")
+            else:
+                pass
             streamed = bool(context.request.params.get("stream", False))
             continuation = Continuation(
                 execution_id=context.execution_id,
@@ -664,15 +831,21 @@ class UMMController(
                 metadata[CONTEXT_KEY] = dispatch.context
             else:
                 pass
-            # Phases never stream. The controller publishes accepted outputs.
             request = replace(
                 dispatch.request,
-                params={**dispatch.request.params, "stream": False},
+                params={
+                    **dispatch.request.params,
+                    "stream": stage in self.streaming_phase_stages,
+                },
                 metadata=metadata,
             )
             payloads[stage] = StagePayload(request_id, request, request.inputs)
             started[stage] = continuation
-        if len(payloads) == 1 and not context.expected:
+        if (
+            len(payloads) == 1
+            and not context.expected
+            and not self.streaming_phase_stages
+        ):
             (result,) = payloads.values()
         else:
             # One routing pass sends every payload with the request's replica
@@ -746,6 +919,7 @@ def create_umm_controller(
     max_retained_bytes: int,
     timeout_s: float,
     stage_name: str = "orchestrator",
+    streaming_phase_stages: tuple[str, ...] = (),
 ) -> UMMController:
     """Build the controller around the adapter of the model being served.
 
@@ -775,6 +949,7 @@ def create_umm_controller(
         phases=phases,
         output_stage=output_stage,
         stage_name=stage_name,
+        streaming_phase_stages=streaming_phase_stages,
     )
 
 
@@ -810,12 +985,7 @@ def umm_stream_done_targets(request_id: str, payload: StagePayload) -> None:
 class UMMPipelineConfig(PipelineConfig):
     """Base of pipelines whose entry stage is a UMM controller.
 
-    The controller stage uses create_umm_controller, route_fn route_umm,
-    stream_done_to_fn umm_stream_done_targets, stream_to the output stage,
-    and next naming the output stage and every phase stage, whose own next is
-    the controller and which streams nowhere. The output stage is terminal,
-    uses create_umm_output_stage, accepts streams before its payload, and
-    shares the controller's process.
+    The controller stage uses create_umm_controller, route_fn route_umm, stream_done_to_fn umm_stream_done_targets, stream_to the output stage, and next naming the output stage and every phase stage, whose own next is the controller and can stream progress to it. The output stage is terminal, uses create_umm_output_stage, accepts streams before its payload, and shares the controller's process.
     """
 
     umm_controller_stage: ClassVar[str] = "orchestrator"
@@ -827,11 +997,23 @@ class UMMPipelineConfig(PipelineConfig):
         # Segments reach the output stage as local objects.
         return frozenset({(cls.umm_controller_stage, cls.umm_output_stage)})
 
+    def streaming_phase_stage_names(self, phase_stage_names: set[str]) -> list[str]:
+        return sorted(
+            stage.name
+            for stage in self.stages
+            if stage.name in phase_stage_names and stage.stream_to
+        )
+
     def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, object]:
         if stage_name == type(self).umm_controller_stage:
+            controller = self.stage_named(stage_name)
+            phases = resolve_stage_typed_kwargs(controller)["phases"]
             return {
                 "output_stage": type(self).umm_output_stage,
                 "stage_name": stage_name,
+                "streaming_phase_stages": tuple(
+                    self.streaming_phase_stage_names(set(phases.values()))
+                ),
             }
         else:
             return super().stage_factory_kwargs(stage_name)
@@ -860,9 +1042,7 @@ class UMMPipelineConfig(PipelineConfig):
         phases = factory_args.get("phases")
         phase_targets = list(phases.values()) if isinstance(phases, Mapping) else []
         phase_stages = {name for name in phase_targets if isinstance(name, str)}
-        streaming_phase_stages = sorted(
-            name for name in phase_stages if name in stages and stages[name].stream_to
-        )
+        streaming_phase_stages = self.streaming_phase_stage_names(phase_stages)
         if isinstance(controller.next, list):
             next_stages = set(controller.next)
         else:
@@ -909,11 +1089,24 @@ class UMMPipelineConfig(PipelineConfig):
                     "factory.phases",
                 ),
                 (
-                    not streaming_phase_stages,
-                    ", ".join(
-                        f"stages.{name}.stream_to" for name in streaming_phase_stages
-                    )
-                    + " must be empty, since the controller streams accepted outputs",
+                    all(
+                        stages[name].stream_to == [controller_name]
+                        for name in streaming_phase_stages
+                    ),
+                    f"UMM phase stages {streaming_phase_stages} must set stream_to to "
+                    f"[{controller_name!r}] to stream progress",
+                ),
+                (
+                    all(
+                        stages[name].stream_done_to_fn in (None, STREAM_DONE_FN_PATH)
+                        for name in streaming_phase_stages
+                    ),
+                    f"UMM phase stages {streaming_phase_stages} must leave "
+                    f"stream_done_to_fn unset or set it to {STREAM_DONE_FN_PATH}",
+                ),
+                (
+                    "streaming_phase_stages" not in factory_args,
+                    f"{prefix}.factory.streaming_phase_stages is derived from stream_to",
                 ),
                 (
                     factory_args.get("output_stage", output_name) == output_name,
@@ -931,5 +1124,21 @@ class UMMPipelineConfig(PipelineConfig):
         ] + [f"{prefix}.factory.{problem}" for problem in limit_problems(factory_args)]
         if problems:
             raise ValueError("Invalid UMM pipeline. " + ". ".join(problems))
+        elif streaming_phase_stages:
+            adapter_path = factory_args.get("adapter")
+            adapter_factory = (
+                import_string(adapter_path) if isinstance(adapter_path, str) else None
+            )
+            if not isinstance(adapter_factory, type) or not callable(
+                getattr(adapter_factory, "progress", None)
+            ):
+                raise ValueError(
+                    f"UMM streaming phase stages {streaming_phase_stages} require "
+                    f"{prefix}.factory.adapter to be an adapter class exposing a "
+                    "progress callback"
+                )
+            else:
+                for name in streaming_phase_stages:
+                    stages[name].stream_done_to_fn = STREAM_DONE_FN_PATH
         else:
             pass

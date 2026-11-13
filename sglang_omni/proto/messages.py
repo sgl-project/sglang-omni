@@ -37,6 +37,9 @@ class DirectCudaIpcStreamChunkRef(DirectCudaIpcStreamChunkOptionalFields):
     tensor_bytes: bytes
 
 
+UMM_PROGRESS_NONCE = "umm_progress_nonce"
+
+
 StageDataRef: TypeAlias = DirectCudaIpcPayloadRef | DirectCudaIpcStreamChunkRef
 
 

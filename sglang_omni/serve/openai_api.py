@@ -1281,10 +1281,11 @@ async def chat_stream_events(
                 pass
 
             delta = ChatCompletionStreamDelta()
-            segment = (
-                chunk.segment if isinstance(chunk, UMMCompletionStreamChunk) else None
-            )
-            emit = segment is not None
+            if isinstance(chunk, UMMCompletionStreamChunk):
+                segment, segment_delta = chunk.segment, chunk.segment_delta
+            else:
+                segment, segment_delta = None, None
+            emit = segment is not None or segment_delta is not None
 
             # Send role on first chunk
             if not role_sent:
@@ -1342,6 +1343,8 @@ async def chat_stream_events(
                 choice.setdefault("finish_reason", None)
             if segment is not None:
                 data["choices"][0]["delta"]["segment"] = segment.to_dict()
+            elif segment_delta is not None:
+                data["choices"][0]["delta"]["segment_delta"] = segment_delta.to_dict()
             else:
                 pass
             yield f"data: {json.dumps(data)}\n\n"
@@ -1601,8 +1604,7 @@ async def generate_stream(
 ) -> AsyncIterator[str]:
     """Stream an interleaved request as SSE.
 
-    Each accepted segment is one segment event with its data. The complete
-    event lists every segment by reference and carries the finish reason.
+    A text segment may send segment_delta events before its segment event. The complete event lists accepted segments by reference and carries the finish reason.
     """
     stream = client.generate(request, request_id=request_id)
     try:
@@ -1612,6 +1614,8 @@ async def generate_stream(
                     raise TypeError("Streaming /generate serves interleaved results")
                 elif chunk.segment is not None:
                     event, data = "segment", chunk.segment.to_dict()
+                elif chunk.segment_delta is not None:
+                    event, data = "segment_delta", chunk.segment_delta.to_dict()
                 elif chunk.finish_reason is not None:
                     # Segment events already carried each segment's data.
                     refs = [

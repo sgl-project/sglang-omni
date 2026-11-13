@@ -168,19 +168,11 @@ and closes with reason `expired`.
 
 A step can also list phases in `dispatches` to run them at once, at most one per stage of a request. A step that starts no phase waits while others run, and `advance` reports each result as it returns, so an adapter whose phases finish out of order holds its outputs to publish them in model order.
 
-A pipeline config subclasses `UMMPipelineConfig` and declares an
-`orchestrator` stage (factory `create_umm_controller`, route_fn `route_umm`,
-stream_done_to_fn `umm_stream_done_targets`, `stream_to` and `next` naming
-`output`), an `output` stage in the same process (factory
-`create_umm_output_stage`, terminal, accepting streams before its payload),
-and the phase stages, each routing back to `orchestrator` without a
-`stream_to`. The orchestrator's factory arguments set the adapter factory
-path, the phase map, and the required bounds: `max_dispatches`,
-`max_outputs`, `max_active` (which also caps the coordinator, never above the
-running+queued capacity of an engine phase stage), `max_retained_bytes`, and
-`timeout_s`. The config rejects any other wiring, and a missing or
-non-positive bound, at load time. Accepted segments stream to the client in
-order through the output stage when the request streams.
+A pipeline config subclasses `UMMPipelineConfig` and declares an `orchestrator` stage (factory `create_umm_controller`, route_fn `route_umm`, stream_done_to_fn `umm_stream_done_targets`, `stream_to` and `next` naming `output`), an `output` stage in the same process (factory `create_umm_output_stage`, terminal, accepting streams before its payload), and the phase stages, each routing back to `orchestrator`. The orchestrator's factory arguments set the adapter factory path, the phase map, and the required bounds: `max_dispatches`, `max_outputs`, `max_active` (which also caps the coordinator, never above the running+queued capacity of an engine phase stage), `max_retained_bytes`, and `timeout_s`. The config rejects any other wiring, and a missing or non-positive bound, at load time. Accepted segments stream to the client in order through the output stage when the request streams.
+
+A phase can opt into progress with `stream_to: [orchestrator]`. Configure an adapter class exposing `progress(context, phase, progress_item)`. Use a phase scheduler that emits `umm_phase_progress` messages with the original dispatched payload when it receives `stream=True`. Each JSON progress item can carry up to 16 KiB of encoded data. Return large media in the normal phase result. Progress may accept `UMMOutput` segments and emit non-empty `UMMTextDelta` fragments. Only `start` and `advance` dispatch phases.
+
+Fragments append to the next segment index. Complete that text segment with an `UMMOutput` containing the full text before accepting later segments, including outputs of parallel phases. The incomplete segment uses one output slot, and its UTF-8 bytes count against `max_retained_bytes` until the full segment replaces them. Buffered requests return the complete segments. Streaming `/generate` emits `segment_delta` SSE events and chat completions carry the same object in `choices[].delta.segment_delta`, each carrying non-empty text in `data`. Each complete segment still arrives through the existing `segment` event or field. Clients that render the fragments can replace them with the full segment at the same index.
 
 ### Code2WavScheduler
 
