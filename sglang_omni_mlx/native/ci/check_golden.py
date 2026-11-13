@@ -103,9 +103,13 @@ def transcribe(
         str(runtime_bin / "qwen3_asr_transcribe"),
         "--model-path", str(model_directory),
         "--layout", request["layout"],
-        "--language", request["language"],
         "--max-new-tokens", str(request["max_new_tokens"]),
     ]  # fmt: skip
+    language = request.get("language")
+    if language is not None:
+        command += ["--language", language]
+    else:
+        pass
     if draft_directory is not None:
         command += ["--draft-model-path", str(draft_directory)]
     else:
@@ -234,13 +238,34 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--outputs", type=Path)
     parser.add_argument("--import", dest="import_path", type=Path)
+    parser.add_argument(
+        "--automatic-language",
+        action="store_true",
+        help="Evaluate Qwen3-ASR without a language hint against corpus reference texts.",
+    )
     arguments = parser.parse_args()
 
     golden = json.loads(arguments.golden.read_text())
+    if arguments.automatic_language:
+        if arguments.write or arguments.import_path:
+            parser.error(
+                "--automatic-language cannot be combined with --write or --import"
+            )
+        elif golden.get("kind") is not None or "tool" in golden:
+            parser.error("--automatic-language requires a native Qwen3-ASR golden")
+        else:
+            golden["request"].pop("language", None)
+    else:
+        pass
+    print(f"Golden: {arguments.golden.name}")
     if arguments.import_path:
         outputs = json.loads(arguments.import_path.read_text())
         if outputs["model"] != golden["model"]:
             raise SystemExit(f"{arguments.import_path} is not {golden['model']}")
+        elif "request" in outputs and outputs["request"] != golden.get("request", {}):
+            raise SystemExit(
+                f"{arguments.import_path} was recorded with a different request"
+            )
         else:
             pass
         if golden.get("kind") == "minimax_music3":
@@ -326,10 +351,16 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
 
     if arguments.outputs:
         arguments.outputs.mkdir(parents=True, exist_ok=True)
-        (arguments.outputs / arguments.golden.name).write_text(
+        output_name = (
+            f"{arguments.golden.stem}-auto.json"
+            if arguments.automatic_language
+            else arguments.golden.name
+        )
+        (arguments.outputs / output_name).write_text(
             json.dumps(
                 {
                     "model": golden["model"],
+                    "request": golden.get("request", {}),
                     "device": device,
                     "metrics": metrics,
                     "clips": results,
@@ -348,7 +379,25 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         return
     else:
         pass
-    if golden.get("kind") in SPEECH_SYNTHESIZERS:
+    if arguments.automatic_language:
+        failures = (
+            ["transcribed clips do not match the corpus manifest"]
+            if results.keys() != manifest.keys()
+            else []
+        )
+        report(
+            [
+                f"### {golden['model']} on {device} (automatic language)",
+                "",
+                f"Corpus clips: {len(results)}/{len(manifest)}",
+                "",
+                "| Metric | Error rate |",
+                "|---|---|",
+                *(f"| {name} | {value:.3%} |" for name, value in metrics.items()),
+            ],
+            failures,
+        )
+    elif golden.get("kind") in SPEECH_SYNTHESIZERS:
         report(*speech_golden.check(golden, device, results))
     elif golden.get("kind") == "cosyvoice3":
         report(*cosyvoice3_golden.check(golden, device, results))
