@@ -16,6 +16,7 @@ from typing import Literal
 import pytest
 import torch
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+from sglang.srt.mem_cache.prefill_budget import PrefillBudget
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 try:
@@ -472,6 +473,17 @@ def test_scheduler_admits_only_the_owning_cfg_pair(
     )
     scheduler = MiniMaxMusic3Scheduler.__new__(MiniMaxMusic3Scheduler)
     scheduler.max_prefill_tokens = 100
+    scheduler.page_size = 1
+    scheduler.tree_cache = SimpleNamespace(
+        supports_mamba=lambda: False, evictable_size=lambda: 0
+    )
+    allocator = SimpleNamespace(
+        page_size=1,
+        available_size=lambda: 1000,
+        request_slot_reserve=lambda **kwargs: 0,
+    )
+    allocator.create_prefill_budget = lambda cache: PrefillBudget(allocator, cache)
+    scheduler.token_to_kv_pool_allocator = allocator
     monkeypatch.setattr(scheduler, "get_num_allocatable_reqs", lambda count: 4)
     queue = [
         Req(
