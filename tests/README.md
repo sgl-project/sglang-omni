@@ -809,6 +809,13 @@ that happened to contain an older version of the test.
   - code-predictor CUDA-graph bit-identity, capture-failure fallback, top-k
     ladder masking, and enablement gating (env, `disable_cuda_graph`, TP).
 
+- `unit_test/csm_tts/`: CSM-1B unit tests:
+  - pipeline / registry / example-YAML contracts
+  - sampling sentinels, empty-input rejection
+  - request-builder extra_key and frame-budget clamp
+  - sampler EOS, last-token gather, prefill rids
+  - optional GPU cosine parity vs HuggingFace (`@pytest.mark.accelerator`)
+
 - `unit_test/higgs_tts/`: Higgs TTS unit tests:
   - OmniScheduler-backed AR stage factory wiring
   - upstream Transformers codec binding and bundled-config state-dict structure

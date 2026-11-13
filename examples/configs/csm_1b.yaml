@@ -1,0 +1,18 @@
+# Sesame CSM-1B. Pipeline: preprocessing → audio_encoder → tts_engine → vocoder.
+config_cls: CsmTtsPipelineConfig
+model_path: eustlb/csm-1b
+
+stages:
+  tts_engine:
+    factory:
+      max_new_tokens: 125
+      enable_async_decode: false
+    engine:
+      max_running_requests: 4
+      disable_cuda_graph: true
+      disable_radix_cache: true
+  vocoder:
+    factory:
+      dtype: float32
+      stream_stride: 13
+      stream_followup_stride: 6
