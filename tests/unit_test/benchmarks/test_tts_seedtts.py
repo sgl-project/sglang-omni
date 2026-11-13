@@ -332,6 +332,141 @@ async def test_slow_outcomes_do_not_occupy_generation_connections() -> None:
             await server.cleanup()
 
 
+@pytest.mark.parametrize(
+    "headers, sample_rate, channels",
+    [
+        ({"X-Audio-Sample-Rate": "16000", "X-Audio-Channels": "2"}, 16000, 2),
+        (
+            {
+                "X-Sample-Rate": "16000",
+                "X-Channels": "2",
+                "X-Audio-Sample-Rate": "48000",
+                "X-Audio-Channels": "1",
+            },
+            16000,
+            2,
+        ),
+        ({"X-Sample-Rate": "16000", "X-Audio-Channels": "2"}, 16000, 2),
+        ({}, 24000, 1),
+    ],
+)
+@pytest.mark.asyncio
+async def test_raw_stream_selects_audio_and_uses_model_native_format(
+    tmp_path: Path, headers: dict[str, str], sample_rate: int, channels: int
+) -> None:
+    pcm_bytes = b"\x01\x00" * sample_rate * channels
+
+    async def speech(request: web.Request) -> web.StreamResponse:
+        payload = await request.json()
+        if (
+            payload.get("stream_format") != "audio"
+            or payload.get("response_format") != "pcm"
+        ):
+            return web.Response(body=b"data: {}\n\n", content_type="text/event-stream")
+        else:
+            response = web.StreamResponse(
+                headers={"Content-Type": "audio/pcm", **headers}
+            )
+            await response.prepare(request)
+            midpoint = len(pcm_bytes) // 2
+            await response.write(pcm_bytes[:midpoint])
+            await response.write(pcm_bytes[midpoint:])
+            await response.write_eof()
+            return response
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/speech", speech)
+    server = web.AppRunner(application)
+    await server.setup()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.setblocking(False)
+        api_url = f"http://127.0.0.1:{listener.getsockname()[1]}/v1/audio/speech"
+        await web.SockSite(server, listener).start()
+        try:
+            runner = BenchmarkRunner(
+                RunConfig(max_concurrency=1, warmup=0, disable_tqdm=True)
+            )
+            results = await runner.run(
+                [SEEDTTS_SAMPLE],
+                make_tts_send_fn(
+                    "tts",
+                    api_url,
+                    stream=True,
+                    no_ref_audio=True,
+                    save_audio_dir=str(tmp_path),
+                ),
+            )
+            result = results[0]
+            assert result.is_success, result.error
+            assert result.audio_duration_s == pytest.approx(1.0)
+            with wave.open(result.wav_path, "rb") as audio:
+                assert audio.getframerate() == sample_rate
+                assert audio.getnchannels() == channels
+                assert audio.getsampwidth() == 2
+                assert audio.getnframes() == sample_rate
+                assert audio.readframes(sample_rate) == pcm_bytes
+        finally:
+            await server.cleanup()
+
+
+@pytest.mark.parametrize(
+    "headers, content_type",
+    [
+        ({"X-Audio-Sample-Rate": "0"}, "audio/pcm"),
+        ({"X-Audio-Channels": "0"}, "audio/pcm"),
+        ({"X-Audio-Sample-Rate": "broken"}, "audio/pcm"),
+        (
+            {"X-Sample-Rate": "0", "X-Audio-Sample-Rate": "16000"},
+            "audio/pcm",
+        ),
+        ({}, "text/event-stream"),
+        ({}, "audio/wav"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_raw_stream_rejects_invalid_metadata_and_unsupported_transport(
+    tmp_path: Path,
+    headers: dict[str, str],
+    content_type: str,
+) -> None:
+    async def speech(request: web.Request) -> web.Response:
+        return web.Response(
+            body=b"\x01\x00" * 24000,
+            content_type=content_type,
+            headers=headers,
+        )
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/speech", speech)
+    server = web.AppRunner(application)
+    await server.setup()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.setblocking(False)
+        api_url = f"http://127.0.0.1:{listener.getsockname()[1]}/v1/audio/speech"
+        await web.SockSite(server, listener).start()
+        try:
+            runner = BenchmarkRunner(
+                RunConfig(max_concurrency=1, warmup=0, disable_tqdm=True)
+            )
+            results = await runner.run(
+                [SEEDTTS_SAMPLE],
+                make_tts_send_fn(
+                    "tts",
+                    api_url,
+                    stream=True,
+                    no_ref_audio=True,
+                    save_audio_dir=str(tmp_path),
+                ),
+            )
+            assert not results[0].is_success
+            assert results[0].audio_duration_s == 0.0
+            assert list(tmp_path.iterdir()) == []
+        finally:
+            await server.cleanup()
+
+
 def test_wer_fanout_preserves_all_twenty_samples_at_long_audio_admission_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
