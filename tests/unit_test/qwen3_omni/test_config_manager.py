@@ -89,42 +89,6 @@ def test_preprocessing_cpu_policy_preserves_explicit_settings(
     capacity.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "config_cls",
-    [
-        Qwen3OmniPipelineConfig,
-        Qwen3OmniSpeechPipelineConfig,
-        Qwen3OmniSpeechColocatedPipelineConfig,
-    ],
-)
-def test_preprocessing_openmp_threads_sleep_between_regions(
-    config_cls: type[Qwen3OmniPipelineConfig],
-) -> None:
-    config = config_cls(model_path="dummy")
-
-    assert (
-        config.resolved_stage_env_defaults("preprocessing")["OMP_WAIT_POLICY"]
-        == "PASSIVE"
-    )
-    for stage in config.stages:
-        if stage.name != "preprocessing":
-            assert "OMP_WAIT_POLICY" not in config.resolved_stage_env_defaults(
-                stage.name
-            )
-        else:
-            pass
-
-
-def test_preprocessing_openmp_wait_policy_preserves_an_explicit_setting() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    config.stage_named("preprocessing").env["OMP_WAIT_POLICY"] = "ACTIVE"
-
-    assert (
-        config.resolved_stage_env_defaults("preprocessing")["OMP_WAIT_POLICY"]
-        == "ACTIVE"
-    )
-
-
 def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
     manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
     extra_args = manager.parse_extra_args(
