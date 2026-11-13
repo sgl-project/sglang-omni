@@ -1,0 +1,158 @@
+{
+  "schema": "actnow.models.pins/1",
+  "updated": "2026-10-19",
+  "pins": [
+    {
+      "repo": "mlx-community/Qwen3-ASR-0.6B-4bit",
+      "revision": "313d850181767edf09f00a9c289becca70e58cd0",
+      "family": "qwen3-asr",
+      "quant": "4bit",
+      "role": "asr",
+      "bytes": 712781279,
+      "apps": ["audiosmith", "dicta", "voxtnew", "act"]
+    },
+    {
+      "repo": "mlx-community/Qwen3-ASR-1.7B-8bit",
+      "revision": "a8379a2e2f9e313c9292cdf1af4055ab56d50d55",
+      "family": "qwen3-asr",
+      "quant": "8bit",
+      "role": "asr",
+      "apps": ["voxtnew"]
+    },
+    {
+      "repo": "mlx-community/whisper-large-v3-turbo-4bit",
+      "revision": "0f058d38170d183f9fdee07908f5b515d91793a8",
+      "family": "whisper",
+      "quant": "4bit",
+      "role": "asr",
+      "bytes": 468669937,
+      "apps": ["audiosmith", "dicta"],
+      "aux": [{ "repo": "openai/whisper-large-v3", "revision": "06f233fe06e710322aca913c1bc4249a0d71fce1" }]
+    },
+    {
+      "repo": "mlx-community/whisper-large-v3-turbo",
+      "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+      "family": "whisper",
+      "quant": "fp16",
+      "role": "asr",
+      "apps": ["voxtnew"],
+      "aux": [{ "repo": "openai/whisper-large-v3", "revision": "06f233fe06e710322aca913c1bc4249a0d71fce1" }],
+      "note": "Not quantised: a different model from whisper-large-v3-turbo-4bit (spec §7.2)."
+    },
+    {
+      "repo": "mlx-community/Qwen3-ForcedAligner-0.6B-4bit",
+      "revision": "2f652af86ae0c73fe189b9429225c908ce4bf020",
+      "family": "qwen3-forced-aligner",
+      "quant": "4bit",
+      "role": "align",
+      "bytes": 975857419,
+      "apps": ["audiosmith", "dicta", "act"]
+    },
+    {
+      "repo": "mlx-community/silero-vad",
+      "revision": "7bc17f22d3c0451bd3a6cd71e759b009271ff49a",
+      "family": "silero-vad",
+      "role": "vad",
+      "bytes": 2182124,
+      "apps": ["audiosmith", "dicta"]
+    },
+    {
+      "repo": "mlx-community/silero-vad-v6",
+      "revision": "2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06",
+      "family": "silero-vad",
+      "role": "vad",
+      "apps": ["voxtnew"],
+      "note": "2 MB; allowed beside mlx-community/silero-vad (spec §7.11)."
+    },
+    {
+      "repo": "mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16",
+      "revision": "e23e6404bd9859e93edbf94a740eb1c7fc58f12e",
+      "family": "sortformer",
+      "quant": "fp16",
+      "role": "diarize",
+      "bytes": 236114032,
+      "apps": ["audiosmith", "dicta"]
+    },
+    {
+      "repo": "mlx-community/DeepFilterNet-mlx",
+      "revision": "220d5dfb7266352272d74c2a7d2025c59e07b391",
+      "family": "deepfilternet",
+      "role": "enhance",
+      "bytes": 8683568,
+      "files": ["v3/*"],
+      "apps": ["audiosmith", "dicta"]
+    },
+    {
+      "repo": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+      "revision": "50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b",
+      "family": "qwen3",
+      "quant": "4bit",
+      "role": "llm",
+      "bytes": 2278969697,
+      "apps": ["audiosmith", "dicta"]
+    },
+    {
+      "repo": "mlx-community/gemma-4-e4b-it-4bit",
+      "revision": "475b9088d29754a3379866cf5aeb6b41acd313c2",
+      "family": "gemma4",
+      "quant": "4bit",
+      "role": "llm",
+      "bytes": 5179239349,
+      "apps": ["dicta", "act"],
+      "note": "Dicta's default LLM; AudioSmith removed it from its catalogue and must not clean it up while Dicta claims it."
+    },
+    {
+      "repo": "mlx-community/gemma-4-e2b-it-4bit",
+      "revision": "238767527555cb75a05732a84dff5d6ba0dd6809",
+      "family": "gemma4",
+      "quant": "4bit",
+      "role": "llm",
+      "bytes": 3583086498,
+      "apps": ["dicta"]
+    },
+    {
+      "repo": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+      "revision": "6cb5bdfd0bf15f484881fb9f1ab6d7c840fddde9",
+      "family": "qwen3.5",
+      "quant": "4bit",
+      "role": "llm",
+      "apps": ["voxtnew"]
+    },
+    {
+      "repo": "mlx-community/Qwen3.5-2B-4bit",
+      "revision": "674aaa7240b91e8012fcad5d791b7dfe5ba90207",
+      "family": "qwen3.5",
+      "quant": "4bit",
+      "role": "llm",
+      "apps": ["voxtnew", "act"]
+    },
+    {
+      "repo": "tencent/Hy-MT2-1.8B-GGUF",
+      "revision": "a0c709d9fac510f2c807aa3af52872340dc37a4a",
+      "family": "hy-mt2",
+      "quant": "Q4_K_M",
+      "role": "llm",
+      "files": ["Hy-MT2-1.8B-Q4_K_M.gguf"],
+      "apps": ["voxtnew"]
+    },
+    {
+      "repo": "vanch007/mlx-MOSS-Transcribe-Diarize-8bit",
+      "revision": "7210aef739be6b9e068fba9b1d60369ec053655b",
+      "family": "moss-transcribe-diarize",
+      "quant": "8bit",
+      "role": "asr",
+      "bytes": 1269855425,
+      "apps": ["audiosmith", "dicta"]
+    },
+    {
+      "repo": "mlx-community/embeddinggemma-2-8bit",
+      "revision": "7505ef2f8ddef45efef6d060865f27989b3c9cec",
+      "family": "embeddinggemma2",
+      "quant": "8bit",
+      "role": "embed",
+      "bytes": 1266419318,
+      "apps": ["act"],
+      "note": "Act's search by meaning; another app adding semantic search can reuse it without a download."
+    }
+  ]
+}

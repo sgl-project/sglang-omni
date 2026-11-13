@@ -1,0 +1,11 @@
+{
+  "schema": "actnow.models.licences/1",
+  "accepted": [
+    {
+      "repo": "mlx-community/OmniVoice-bf16",
+      "licence": "CC-BY-NC-4.0",
+      "by": "dev.hehehai.audiosmith",
+      "at": "2026-10-20T08:00:00Z"
+    }
+  ]
+}

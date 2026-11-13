@@ -1,0 +1,22 @@
+{
+  "schema": "actnow.models.claims/1",
+  "app": "audiosmith",
+  "bundleId": "dev.hehehai.audiosmith",
+  "updated": "2026-10-20T08:00:00Z",
+  "root": "/Users/u/.cache/huggingface/hub",
+  "claims": [
+    {
+      "repo": "openai/whisper-large-v3",
+      "revision": "06f233fe06e710322aca913c1bc4249a0d71fce1",
+      "model": "whisper-large-v3-turbo-4bit",
+      "models": ["whisper-large-v3-4bit", "whisper-large-v3-turbo-4bit"],
+      "family": "whisper",
+      "role": "asr",
+      "bytes": 2841203,
+      "files": null,
+      "aux": true,
+      "since": "2026-10-20T08:00:00Z",
+      "origin": "downloaded"
+    }
+  ]
+}

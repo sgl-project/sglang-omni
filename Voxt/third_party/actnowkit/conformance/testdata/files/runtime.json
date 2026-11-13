@@ -1,0 +1,16 @@
+{
+  "schema": "actnow.runtime/1",
+  "bundleId": "dev.hehehai.dicta",
+  "pid": 5678,
+  "updated": "2026-10-20T08:00:00Z",
+  "budgetBytes": 15032385536,
+  "loaded": [
+    {
+      "repo": "mlx-community/Qwen3-ASR-0.6B-4bit",
+      "revision": "313d850181767edf09f00a9c289becca70e58cd0",
+      "worker": "listen",
+      "bytes": 1900000000,
+      "idleSince": null
+    }
+  ]
+}
