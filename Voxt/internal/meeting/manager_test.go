@@ -99,9 +99,11 @@ func TestStartPauseResumeFinish(t *testing.T) {
 
 func TestSecondStartBusy(t *testing.T) {
 	m, ctx, _, _ := testManager(t, nil, nil, false)
-	if _, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording}); err != nil {
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = m.Finish(ctx, id) })
 	if _, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording}); !errors.Is(err, meeting.ErrBusy) {
 		t.Fatalf("want busy, got %v", err)
 	}
