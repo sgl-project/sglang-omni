@@ -21,7 +21,7 @@ func (a *app) obLanguageGuide(c *ui.Context, kind store.Kind, prefix string) {
 	setUp := func() {
 		if ui.Button(c.Key(prefix+"-llm-setup"), i18n.T("Set up a language model")).Clicked() {
 			a.showMainWindow()
-			a.navigate(remotePath)
+			a.obLeave(remotePath) // onboarding.go: the page offers the way back
 		}
 	}
 	var detail string
