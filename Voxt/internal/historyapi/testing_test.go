@@ -18,8 +18,8 @@ type fakeHistory struct {
 	store.History
 	mu   sync.Mutex
 	list []store.Entry
-	// afterPage runs after each List (a deletion between pages).
-	afterPage func(f *fakeHistory)
+	// afterPage runs after each List (a deletion or cancellation between pages).
+	afterPage func(context.Context, *fakeHistory)
 }
 
 func (f *fakeHistory) selected(q store.HistoryQuery) []store.Entry {
@@ -60,7 +60,10 @@ func (f *fakeHistory) List(ctx context.Context, q store.HistoryQuery) ([]store.E
 		out = out[:q.Limit]
 	}
 	if f.afterPage != nil {
-		f.afterPage(f)
+		f.afterPage(ctx, f)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

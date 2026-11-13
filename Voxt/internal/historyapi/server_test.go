@@ -106,7 +106,7 @@ func TestWalkKeepsPlaceAfterDelete(t *testing.T) {
 		f.list = append(f.list, doneEntry(i))
 	}
 	once := sync.Once{}
-	f.afterPage = func(f *fakeHistory) {
+	f.afterPage = func(_ context.Context, f *fakeHistory) {
 		once.Do(func() {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -127,6 +127,14 @@ func TestCancelMidStream(t *testing.T) {
 	for i := range PageSize + 5 {
 		f.list = append(f.list, doneEntry(i))
 	}
+	// The second page stays in flight until cancellation, however fast the first is sent.
+	pages := 0
+	f.afterPage = func(ctx context.Context, _ *fakeHistory) {
+		pages++
+		if pages == 2 {
+			<-ctx.Done()
+		}
+	}
 	var mu sync.Mutex
 	var reads []Read
 	path, cancel := startServer(t, &Server{History: f, Audit: func(r Read) { mu.Lock(); reads = append(reads, r); mu.Unlock() }})
@@ -136,7 +144,6 @@ func TestCancelMidStream(t *testing.T) {
 	_, err := Export(path, Request{Since: 1}, func(Row) error {
 		if n == 0 {
 			close(first)
-			time.Sleep(50 * time.Millisecond) // let the cancel land
 		}
 		n++
 		return nil

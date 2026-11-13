@@ -33,20 +33,19 @@ func TestSessionMutesOutput(t *testing.T) {
 	// answer, which this request withholds meanwhile.
 	const releaseBound = 2 * time.Second
 	for _, tc := range []struct {
-		name, opts string
-		setup      func(t *testing.T) (func(*settings.Settings), *fakeLocal)
-		events     []string
-		end        session.State
+		name, opts, event, stop string
+		setup                   func(t *testing.T) (func(*settings.Settings), *fakeLocal)
+		end                     session.State
 	}{
-		{name: "transcribe, whole recording", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(2000, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
+		{name: "transcribe, whole recording", event: hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), stop: "transcribe/0", end: session.Done},
 		{name: "transcribe, stream", setup: func(t *testing.T) (func(*settings.Settings), *fakeLocal) {
 			return func(s *settings.Settings) {
 				s.Features.Transcribe.Enhance = false
 			}, &fakeLocal{ASRP: fakeStreamer{final: "你好，VoxtNew"}}
-		}, events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(2000, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
-		{name: "translate by voice", events: []string{hotkeyLine(0, "translate/0", proto.PhaseTrigger), hotkeyLine(2000, "translate/0", proto.PhaseTrigger)}, end: session.Done},
-		{name: "rewrite", opts: "readonly", events: []string{hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(2000, "rewrite/0", proto.PhaseTrigger)}, end: session.Done},
-		{name: "cancelled", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(2000, proto.HotkeyCancel, proto.PhaseTrigger)}, end: session.Cancelled},
+		}, event: hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), stop: "transcribe/0", end: session.Done},
+		{name: "translate by voice", event: hotkeyLine(0, "translate/0", proto.PhaseTrigger), stop: "translate/0", end: session.Done},
+		{name: "rewrite", opts: "readonly", event: hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), stop: "rewrite/0", end: session.Done},
+		{name: "cancelled", event: hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), stop: proto.HotkeyCancel, end: session.Cancelled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "output.json")
@@ -71,7 +70,7 @@ func TestSessionMutesOutput(t *testing.T) {
 			if tc.setup != nil {
 				set, svc = tc.setup(t)
 			}
-			opts := helpertest.Opt("out", state) + "," + script(t, tc.events...)
+			opts := helpertest.Opt("out", state) + "," + script(t, tc.event)
 			if tc.opts != "" {
 				opts = tc.opts + "," + opts
 			}
@@ -84,6 +83,9 @@ func TestSessionMutesOutput(t *testing.T) {
 			if !seen {
 				t.Fatalf("not muted while recording (%s)", a.sess.State)
 			}
+			// A scripted stop can overtake the start cue and its posts under load.
+			front := helpertest.Apps["com.tinyspeck.slackmacgap"]
+			a.hotkeyFired(proto.HotkeyEventParams{Binding: tc.stop, Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
 			if a.sess.State != tc.end {
 				t.Fatalf("end %s %+v", a.sess.State, a.sess.Problem)
@@ -103,7 +105,6 @@ func TestSessionMutesOutput(t *testing.T) {
 				return
 			}
 			// The answer card's follow-up records with the output muted too.
-			front := helpertest.Apps["com.tinyspeck.slackmacgap"]
 			a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 			a.pump("the follow-up muted", func() bool { return a.sess.State == session.Recording && muted() })
 			time.Sleep(300 * time.Millisecond)

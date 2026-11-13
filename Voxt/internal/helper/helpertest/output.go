@@ -69,8 +69,8 @@ func LoadOutputSystem(path string) *OutputSystem {
 		json.Unmarshal(data, s)
 	}
 	s.path = path
-	if err != nil {
-		s.saveLocked() // reading writes nothing: another process may be writing
+	if os.IsNotExist(err) {
+		s.saveLocked()
 	}
 	return s
 }
