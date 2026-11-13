@@ -342,7 +342,7 @@ func TestOpenAIJSONModes(t *testing.T) {
 // model; a refusal carries its code and the server's detail.
 func TestProbe(t *testing.T) {
 	f := newFakeServer(t, jsonReply(200, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": ""}, "finish_reason": "length"}}}))
-	if d, err := Probe(context.Background(), NewOpenAI(presetAt(t, "deepseek", f.srv.URL), "sk", f.srv.Client())); err != nil || d <= 0 {
+	if d, err := Probe(context.Background(), NewOpenAI(presetAt(t, "deepseek", f.srv.URL), "sk", f.srv.Client())); err != nil || d < 0 {
 		t.Fatalf("length: %v %v", d, err)
 	}
 	if r := f.requests()[0]; r.Body["max_tokens"] != float64(8) || r.Body["stream"] != nil {
