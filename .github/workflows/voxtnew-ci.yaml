@@ -140,3 +140,38 @@ jobs:
 
       - name: Vendored MyGo is MyGo with the patches
         run: scripts/vendor-mygo.sh --check
+
+  windows:
+    # The same Go suite natively on Windows: the build-tagged shims and the
+    # tests' fake-tool PATH for Git Bash rot the day a change breaks them
+    # without this job. windows-latest brings Git Bash (the script tests
+    # drive it as on a dev machine) and CJK fonts (the overlay's ink checks
+    # measure Chinese text with the system fonts).
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      # Same prebuilt SQLite library as the Linux job, the windows-amd64
+      # build of it, checked against the plugin's manifest.
+      - name: SQLite library for the MyGo plugin
+        shell: bash
+        run: |
+          read -r url sum < <(jq -r '.libraries[0].files["windows-amd64"] | "\(.url) \(.sha256)"' "third_party/mygo/plugins/sqlite/mygo-plugin.json")
+          lib="$RUNNER_TEMP/libmygo-sqlite3.dll"
+          curl -fsSL --retry 3 -o "$lib" "$url"
+          echo "$sum  $lib" | sha256sum -c -
+          echo "MYGO_SQLITE_LIBRARY=$lib" >> "$GITHUB_ENV"
+
+      - name: Go tests
+        shell: bash
+        run: CGO_ENABLED=0 go test -count=1 -timeout 20m ./...
+
+      - name: go vet
+        shell: bash
+        run: go vet ./...
