@@ -129,6 +129,7 @@ func TestGuideAlternativeNoDownloadButton(t *testing.T) {
 // TestGuideReuseUnchanged: with the recommended model on this Mac the
 // reuse card's Use them stays the step's primary button.
 func TestGuideReuseUnchanged(t *testing.T) {
+	skipWindowsActNow(t)
 	asked := countingHub(t)
 	a, tt := obTester(t)
 	reopenModels(a)
@@ -151,6 +152,7 @@ func TestGuideReuseUnchanged(t *testing.T) {
 // card, whose Use them is primary: the speech model's Download stays in
 // the body, and once it is claimed the footer offers the download.
 func TestGuideOnlyVADOnThisMac(t *testing.T) {
+	skipWindowsActNow(t)
 	countingHub(t)
 	a, tt := obTester(t)
 	reopenModels(a)

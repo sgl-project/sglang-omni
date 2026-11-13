@@ -113,6 +113,7 @@ func TestModelsInOnePlace(t *testing.T) {
 // another disk, which would be copied before the window opens) is left to
 // its app, and models.root is written all the same.
 func TestGatherSkipsLibraries(t *testing.T) {
+	skipWindowsActNow(t)
 	a, _, _ := newTestApp(t)
 	ctx := context.Background()
 	old := &fammodels.Store{Family: a.fam.Dir(), Hub: fammodels.DefaultHubIn(a.fam.Dir()), BundleID: audioSmithID, AppID: "audiosmith"}
