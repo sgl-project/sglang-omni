@@ -45,11 +45,14 @@ func energy(pcm []byte) int64 {
 }
 
 // TranscribeInPieces transcribes a PCM recording whose WAV upload would
-// pass maxWAV bytes: it splits it with SplitPCM, sends the pieces one by
+// pass maxWAV bytes (or req.MaxBytes, when smaller): it splits it with SplitPCM, sends the pieces one by
 // one through one, and joins their text. Smaller recordings and other
 // formats go to one as they are.
 func TranscribeInPieces(ctx context.Context, req FileRequest, maxWAV int, one func(context.Context, FileRequest) (Result, error)) (Result, error) {
 	const header = 44
+	if req.MaxBytes > header && req.MaxBytes < maxWAV {
+		maxWAV = req.MaxBytes
+	}
 	if req.Format != "pcm" || header+len(req.Audio) <= maxWAV {
 		return one(ctx, req)
 	}

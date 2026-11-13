@@ -222,3 +222,47 @@ func TestSessionSounds(t *testing.T) {
 		t.Errorf("sounds off: %q", cues)
 	}
 }
+
+// TestAudioLimits: Settings → Audio shows the upload size and recording
+// length limits (0 by default: the service's own, none) and saves what
+// the arrows and typing set; minutes are kept as seconds; a value over
+// the range is ignored (#3840).
+func TestAudioLimits(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate("/settings/audio")
+	frames(tt)
+	if r, ok := tt.Find("Upload size limit"); ok {
+		tt.Scroll(windowWidth/2, 1200, 0, r.Y-600)
+		frames(tt)
+	}
+	for _, s := range []string{"Upload size limit", "Recording length limit"} {
+		if !tt.HasText(s) {
+			t.Fatalf("no %q on the page: %q", s, firstTexts(tt))
+		}
+	}
+	set := func(label string, typed string) {
+		t.Helper()
+		if err := tt.Click(label); err != nil {
+			t.Fatal(err)
+		}
+		frames(tt)
+		tt.Key(0, ui.KeyUp)
+		frames(tt)
+		tt.Type(typed)
+		frames(tt)
+	}
+	set("Upload size limit in MB", "2") // 0 → 1 → "12"
+	if got := a.settings.Get().Audio.UploadMB; got != 12 {
+		t.Errorf("upload limit %d MB; want 12", got)
+	}
+	set("Recording length limit in minutes", "0") // 0 → 5 → "50"
+	if got := a.settings.Get().Audio.MaxSeconds; got != 50*60 {
+		t.Errorf("length limit %d s; want 3000", got)
+	}
+	tt.Type("0") // "500": over 240 minutes, ignored
+	frames(tt)
+	if got := a.settings.Get().Audio.MaxSeconds; got != 50*60 {
+		t.Errorf("after 500 minutes typed: %d s; want 3000 kept", got)
+	}
+}

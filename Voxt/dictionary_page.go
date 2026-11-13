@@ -78,6 +78,9 @@ type dictView struct {
 	tab          int
 	notes        speechContextState
 	notesFeature int
+	// notesQuery and notesFind are the view's search (find_marks.go).
+	notesQuery string
+	notesFind  finder
 	// all are the terms of the last read without a search, for the
 	// example's glossary.
 	all []store.Term
