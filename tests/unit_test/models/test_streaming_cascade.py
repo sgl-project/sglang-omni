@@ -2651,7 +2651,7 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
 async def synthesized(
     spec: dict, deltas: list[TimedChunk]
 ) -> tuple[list[dict], list[TimedChunk]]:
-    """The speech requests and the outputs of a synthesizer speaking the deltas of turn 1, one second of audio per request."""
+    """The speech requests and the outputs of one synthesizer speaking the deltas, whose last turn it closes, one second of audio per request."""
     bodies = []
 
     def answer(request: httpx.Request) -> httpx.Response:
@@ -2662,14 +2662,16 @@ async def synthesized(
 
     tts = build({"kind": "openai_speech", **HTTP_SERVICE, **spec})
     tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
-    outputs = await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    outputs = await drain(
+        tts, [*deltas, control_chunk(TURN_DONE, turn=deltas[-1].turn)]
+    )
     return bodies, outputs
 
 
 async def spoken_requests(
     spec: dict, deltas: list[TimedChunk]
 ) -> list[tuple[str, str]]:
-    """The language tag and the input of each sentence the synthesizer speaks for the deltas of turn 1."""
+    """The language tag and the input of each sentence one synthesizer speaks for the deltas."""
     bodies, _ = await synthesized(spec, deltas)
     return [(body["language"], body["input"]) for body in bodies]
 
@@ -2699,6 +2701,45 @@ async def test_a_clear_utterance_uses_its_recognized_language_for_speech():
     assert await spoken_requests({"language": "auto"}, deltas) == [
         ("French", "Il fait 25 degrés aujourd’hui.")
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "utterances, tags",
+    [
+        ([("嗯。", "Chinese")], ["French", "English"]),
+        (
+            [("¿Qué tiempo hace hoy?", "Spanish"), ("嗯。", "Chinese")],
+            ["Spanish", "French", "Spanish"],
+        ),
+    ],
+)
+async def test_clearing_the_dialog_language_reaches_the_synthesizer(utterances, tags):
+    """A short turn with dialog.language="French" left the synthesizer on French, so after the client cleared dialog.language the reply to the next short turn was still spoken as French instead of in the language the recognizer last heard, or by the English fallback when it heard none."""
+    dialog = build({"kind": "dialog", "language": "French"})
+    inputs = []
+    for turn, (text, language) in enumerate(utterances, 1):
+        inputs += [
+            transcript_chunk(text, True, language),
+            text_chunk("Bien.", turn),
+            control_chunk(TURN_DONE, turn=turn),
+            control_chunk(COMMIT),
+        ]
+    outputs = await drain(dialog, inputs)
+    cleared = build({"kind": "dialog"})
+    cleared.adopt(dialog)
+    prompt_chunks = [o for o in outputs if o.format == MESSAGES]
+    prompt_chunks += cleared.respond(len(utterances) + 1, "Okay.", "English")[1:]
+    replies = ["Bien."] * len(utterances) + ["Hello there."]
+    deltas = []
+    for chunk, reply in zip(prompt_chunks, replies):
+        deltas += [
+            text_chunk(reply, chunk.turn, chunk.payload.get("language")),
+            control_chunk(TURN_DONE, turn=chunk.turn),
+        ]
+    assert await spoken_requests({"language": "auto"}, deltas[:-1]) == list(
+        zip(tags, replies)
+    )
 
 
 @pytest.mark.asyncio
