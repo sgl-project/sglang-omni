@@ -21,10 +21,13 @@ GLOB_TOKEN_PATTERN = re.compile(r"\[[!]?\]?[^]]*\]|\*\*|\*|\?|.")
 LITERAL_DIRECTIVE_NAMES = {"code", "code-block", "sourcecode", "parsed-literal", "raw"}
 TOCTREE_EXEMPTIONS = {
     "README.md": "Repository overview, separate from the published manual.",
+    "cookbook/qwen3_tts/benchmarks.md": "Linked from the Qwen3-TTS cookbook; intentionally omitted from sidebar navigation.",
+    "cookbook/qwen3_tts/platforms.md": "Linked from the Qwen3-TTS cookbook; intentionally omitted from sidebar navigation.",
+    "cookbook/qwen3_tts/reference.md": "Linked from the Qwen3-TTS cookbook; intentionally omitted from sidebar navigation.",
+    "cookbook/qwen3_tts/tuning.md": "Linked from the Qwen3-TTS cookbook; intentionally omitted from sidebar navigation.",
     "design/gpu_radix_hash.md": "Internal design note, outside the user manual.",
     "design/refactor_rfc.md": "Internal refactoring proposal, outside the user manual.",
-    "developer_reference/mlx.md": "Excluded redirect; the published page is mlx/index.md.",
-    "get_started/apiserver_quickstart.md": "Linked from other pages, outside the sidebar.",
+    "developer_reference/mlx.md": "Excluded redirect; the published page is developer_reference/mlx/index.md.",
     "basic_usage/python_router.md": "Retained until the Python router is removed separately.",
 }
 TEXT_PRESENTATION_SELECTOR = "\ufe0e"

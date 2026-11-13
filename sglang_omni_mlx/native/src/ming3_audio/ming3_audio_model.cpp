@@ -9,7 +9,6 @@
 #include <utility>
 
 #include "common/audio.h"
-#include "qwen3_asr/qwen3_audio.h"
 
 namespace ming3_audio {
 namespace mx = mlx::core;
@@ -360,29 +359,8 @@ mx::array Model::Moe(const mx::array &hidden, const std::string &prefix) const {
         mx::multiply(mx::astype(omni_common::Silu(gate), hidden.dtype()), up),
         "down_proj");
   };
-  const auto restored = [&] {
-    // Note (XXXXRT666): A decode token's experts are all distinct, so sorting
-    // leaves gather_mm nothing to group.
-    if (tokens > 1) {
-      const auto flat_indices = mx::reshape(indices, {-1});
-      const auto order = mx::argsort(flat_indices);
-      const auto token_indices =
-          mx::floor_divide(order, mx::array(selected_experts, mx::uint32));
-      const auto expanded = mx::expand_dims(
-          mx::take(mx::reshape(hidden, {tokens, width}), token_indices, 0), 1);
-      const auto routed =
-          run_experts(expanded, mx::take(flat_indices, order, 0), true);
-      const auto inverse_order = mx::put_along_axis(
-          mx::zeros(order.shape(), mx::uint32), order,
-          mx::arange(tokens * selected_experts, mx::uint32), 0);
-      return mx::reshape(mx::take(routed, inverse_order, 0),
-                         {tokens, selected_experts, width});
-    } else {
-      return mx::squeeze(run_experts(mx::reshape(hidden, {tokens, 1, 1, width}),
-                                     indices, false),
-                         -2);
-    }
-  }();
+  const auto restored = omni_common::RouteToExperts(
+      mx::reshape(hidden, {tokens, width}), indices, run_experts);
   const auto output =
       mx::astype(mx::sum(mx::multiply(mx::astype(restored, mx::float32),
                                       mx::expand_dims(routing, -1)),
@@ -454,8 +432,8 @@ ChatResult Model::Generate(const PreparedChatRequest &prepared,
   } else {
   }
   const auto &request = prepared.request;
-  const auto mel = mx::transpose(
-      qwen3_asr::LogMel(request.samples, qwen3_asr::AudioLayout::kReference));
+  const auto mel = mx::transpose(omni_common::LogMel(
+      request.samples, omni_common::FinalStftFrame::kDropped));
   const auto audio = Encode(mel);
   const auto prompt_ids =
       mx::array(prepared.prompt_ids.data(),

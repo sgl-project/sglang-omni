@@ -28,16 +28,21 @@ public enum Method {
     public static let captureDevices = "capture.devices"
     public static let captureStart = "capture.start"
     public static let captureStop = "capture.stop"
+    public static let captureSystem = "capture.system"
     public static let hotkeyConfigure = "hotkey.configure"
     public static let hotkeyStatus = "hotkey.status"
+    public static let hotkeyRecord = "hotkey.record"
+    public static let hotkeyCancelRecord = "hotkey.cancelRecord"
     public static let appFrontmost = "app.frontmost"
     public static let textFocus = "textio.focus"
     public static let textSelection = "textio.selection"
     public static let textPaste = "textio.paste"
+    public static let textRead = "textio.read"
     public static let appList = "app.list"
     public static let appConfigure = "app.configure"
     public static let appIcons = "app.icons"
     public static let browserURL = "browser.url"
+    public static let screenWindow = "screen.window"
     public static let outputWatch = "output.watch"
     public static let outputMute = "output.mute"
     public static let outputRelease = "output.release"
@@ -61,9 +66,9 @@ public enum Method {
     /// Every request, in the order hello lists them.
     public static let requests = [
         hello, shutdown, jobCancel, permissionsStatus, permissionsRequest,
-        captureDevices, captureStart, captureStop, hotkeyConfigure, hotkeyStatus,
-        appFrontmost, appList, appConfigure, appIcons, textFocus, textSelection, textPaste,
-        browserURL, outputWatch, outputMute, outputRelease, outputRecover, speechRecognize, speechAudio,
+        captureDevices, captureStart, captureStop, captureSystem, hotkeyConfigure, hotkeyStatus, hotkeyRecord, hotkeyCancelRecord,
+        appFrontmost, appList, appConfigure, appIcons, textFocus, textSelection, textPaste, textRead,
+        browserURL, screenWindow, outputWatch, outputMute, outputRelease, outputRecover, speechRecognize, speechAudio,
     ]
     public static let notifications = [
         captureStarted, captureLevel, capturePCM, captureRestarted, hotkeyEvent, hotkeyState, appActivated,
@@ -71,7 +76,7 @@ public enum Method {
     ]
 
     /// Long-running, cancellable requests (job.cancel; notifications name them in "job").
-    public static func isJob(_ method: String) -> Bool { method == captureStart || method == speechRecognize }
+    public static func isJob(_ method: String) -> Bool { method == captureStart || method == captureSystem || method == speechRecognize }
 }
 
 public enum Code {

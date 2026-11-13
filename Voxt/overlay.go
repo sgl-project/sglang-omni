@@ -16,15 +16,16 @@ package main
 //	           scrolled to its newest words, the start fading out at the
 //	           left edge (Voxt's)
 //	working    the same pill with a five-dot loader in the waveform's
-//	           place: recognising, cleaning up, translating, writing,
-//	           inserting
+//	           place: recognising, cleaning up, translating, writing
 //	notice     an error (or a warning) in the waveform's place: an icon and
 //	           one line, for 5 s; a click opens where to fix it
 //	answer     the answer card (overlay_card.go, Voxt's): 440 wide, as
 //	           high as its text up to Voxt's 220 for it; the result that
 //	           was not inserted, its actions in the header
 //
-// Nothing shows after an insert: the pill fades out (100 ms). Every
+// Nothing shows while the result is inserted, nor after: the pill fades
+// out (100 ms) as the result goes in, and a result that could not go in
+// comes back in the answer card. Every
 // action is a shortcut: the feature's shortcut stops, the cancel shortcut cancels,
 // releasing a long press stops.
 //
@@ -90,11 +91,19 @@ type overlayState struct {
 		// area is the work area of the display it shows on, chosen when
 		// it appears (the display under the pointer); a resize stays there.
 		area mygo.Rectangle
+		// dragged is how far the user moved the window from its anchored
+		// place by dragging the face (the card's background, a notice, the
+		// live text in lines; overlayDragged): the face keeps it as it grows, until the
+		// overlay hides.
+		dragged struct{ x, y int }
 		// style is the material's shape last given to the window.
 		style mygo.VibrancyStyle
-		// passThrough: the window lets the pointer through (recording and
-		// working: nothing in it takes a click).
+		// passThrough: the window lets the pointer through (the small pill,
+		// recording and working: nothing in it takes a click), but not the
+		// face with live text in lines: it drags, and the wheel scrolls it.
 		passThrough bool
+		// lines is the scroll of the live text in lines (liveLines).
+		lines linesScroll
 		// reveal: the window was just shown transparent; the next build of
 		// its view (the new face's) makes it opaque, so that no frame of
 		// the last face shows.
@@ -115,6 +124,9 @@ type overlayState struct {
 		cardScrollKey string
 		bubbleCopied  string
 		bubbleSeq     int
+		// stream is how much of the draft streaming into it the card
+		// shows (overlay_stream.go).
+		stream streamReveal
 		// lang is the card's language menu (overlay_lang.go).
 		lang langMenuState
 	}
@@ -150,9 +162,9 @@ func (a *app) later(d time.Duration, fn func()) {
 // stays in the pill until it ends, its answer one line under the row as
 // the model writes it (Voxt's: the card comes with the result; 10-15:
 // the answer streaming into a card of its own width was one more way to
-// show text, and the card grew line by line); a session that ended shows
-// nothing of its own: not the insert, which the text in place says. A session that ended
-// shows nothing of its own: not the insert, which the text in place says.
+// show text, and the card grew line by line). From the moment its result
+// is inserted a session shows nothing of its own: the text in place says
+// it, and the preview of the speech it came from would only cover it.
 func (a *app) overlayModeNow() overlayMode {
 	s := a.sess
 	live := s.State.Live() && !s.Try
@@ -160,8 +172,10 @@ func (a *app) overlayModeNow() overlayMode {
 	switch {
 	case card && a.answer.inserting:
 		return ovHidden // Insert pastes: the card comes back if it could not (Voxt's)
-	case card:
+	case card, live && a.writingAnswer():
 		return ovAnswer
+	case live && s.State == session.Delivering:
+		return ovHidden
 	case live && s.State == session.Recording:
 		return ovRecording
 	case live:
@@ -185,6 +199,7 @@ func (a *app) overlayModeNow() overlayMode {
 // shows again is first transparent, until its view built the new face
 // (reveal): no frame of the last face shows.
 func (a *app) overlaySync() {
+	a.paceDraft() // overlay_stream.go
 	mode := a.overlayModeNow()
 	was := a.ov.shown
 	if mode == ovHidden {
@@ -192,17 +207,18 @@ func (a *app) overlaySync() {
 		// it again.
 		a.ov.mode, a.ov.shown = mode, false
 		a.ov.live.id, a.ov.live.w = "", 0
+		a.ov.dragged.x, a.ov.dragged.y = 0, 0
 		if was {
 			a.overlayFadeOut()
 		}
 		a.syncLangMenu()
 		return
 	}
-	w, h := a.overlayFace(mode)
 	if !was {
 		a.ov.area = a.overlayArea()
 	}
-	frame := layout.Frame(a.ov.area, a.prefs.Overlay, w, h)
+	w, h := a.overlayFace(mode)
+	frame := a.overlayFrame(w, h)
 	moved := frame != a.ov.frame
 	a.ov.mode, a.ov.w, a.ov.h, a.ov.frame = mode, w, h, frame
 	a.ov.shown = true
@@ -211,22 +227,19 @@ func (a *app) overlaySync() {
 	if a.ov.epoch.IsZero() {
 		a.ov.epoch = time.Now()
 	}
-	pass := mode == ovRecording || mode == ovWorking
 	defer a.syncLangMenu() // overlay_lang.go: the language menu follows the card
 	if !a.overlayNative() {
-		a.ov.passThrough = pass
+		a.syncPassThrough()
 		return // tests: the state is enough
 	}
 	if a.ov.win == nil {
 		opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, hudContent(a.overlayView))
 		opts.Vibrancy = mygo.VibrancyHUD
 		a.ov.win = mygo.NewWindow(opts)
+		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })
 		a.ov.passThrough = false
 	}
-	if pass != a.ov.passThrough {
-		a.ov.passThrough = pass
-		a.ov.win.SetIgnoreMouseEvents(pass)
-	}
+	a.syncPassThrough()
 	if !was {
 		a.ov.win.SetOpacity(0)
 		a.ov.reveal = true
@@ -244,6 +257,45 @@ func (a *app) overlaySync() {
 	a.ov.win.Invalidate()
 	if !was {
 		showFloating(a.ov.win, frame.X, frame.Y)
+	}
+}
+
+// overlayFrame is the window's frame for a face of w × h: its anchored
+// place (layout.Frame), moved as far as the user dragged it, the face
+// kept in the work area.
+func (a *app) overlayFrame(w, h int) mygo.Rectangle {
+	f, wa := layout.Frame(a.ov.area, a.prefs.Overlay, w, h), a.ov.area
+	f.X = min(max(f.X+a.ov.dragged.x, wa.X-layout.Pad), wa.X+wa.Width-f.Width+layout.Pad)
+	f.Y = min(max(f.Y+a.ov.dragged.y, wa.Y-layout.Pad), wa.Y+wa.Height-f.Height+layout.Pad)
+	return f
+}
+
+// overlayDragged keeps where the user dragged the window to, as its
+// offset from the anchored place. The window's own moves
+// (SetContentBounds) are to a.ov.frame and change nothing.
+func (a *app) overlayDragged() {
+	b := a.ov.win.ContentBounds()
+	if !a.ov.shown || b.X == a.ov.frame.X && b.Y == a.ov.frame.Y {
+		return
+	}
+	f := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
+	a.ov.dragged.x, a.ov.dragged.y = b.X-f.X, b.Y-f.Y
+	a.ov.frame.X, a.ov.frame.Y = b.X, b.Y
+	a.syncLangMenu() // overlay_lang.go: the language menu stays by the card
+}
+
+// syncPassThrough lets the pointer through the small pill (recording,
+// working: nothing in it takes a click, but Use transcript), but not through the face with
+// live text in lines (Overlay.LiveLines): it is dragged as the card is,
+// and the wheel scrolls its text.
+func (a *app) syncPassThrough() {
+	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking && !canSkip(a.sess, ovWorking)) && !a.prefs.Overlay.LiveLines
+	if pass == a.ov.passThrough {
+		return
+	}
+	a.ov.passThrough = pass
+	if a.ov.win != nil {
+		a.ov.win.SetIgnoreMouseEvents(pass)
 	}
 }
 
@@ -331,10 +383,11 @@ func (a *app) overlayRestyle() {
 		return
 	}
 	w, h := a.overlayFace(a.ov.mode)
-	frame := layout.Frame(a.ov.area, a.prefs.Overlay, w, h)
+	frame := a.overlayFrame(w, h)
 	moved := frame != a.ov.frame
 	a.ov.w, a.ov.h, a.ov.frame = w, h, frame
 	a.syncLangMenu()
+	a.syncPassThrough()
 	if a.ov.win == nil {
 		return
 	}

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"strings"
@@ -28,7 +29,7 @@ var answerSchema = func() *llm.Schema {
 func (r *run) writeInput(raw, selection string) compose.Input {
 	in := compose.Input{
 		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages,
-		Glossary: r.glossary(), Scene: r.composeScene(), // the group decides whether it applies to the feature (appctx)
+		Glossary: r.glossary(), Dictionary: PromptDictionary(r.settings), Scene: r.composeScene(), // the group decides whether it applies to the feature (appctx)
 	}
 	switch r.req.Kind {
 	case store.KindTranslate:
@@ -63,24 +64,34 @@ func (r *run) write(raw, selection string) {
 		r.endWriteFailed(&Problem{Code: ProblemNoLLM, Err: errors.New("no language model is ready")}, false)
 		return
 	}
+	if kind == store.KindTranslate && strings.TrimSpace(r.req.TargetLanguage) == "" {
+		r.target = TranslateInto(r.target, MainLanguage(r.settings, cfg.Locale()), cmp.Or(selection, raw))
+	}
 	in := r.writeInput(raw, selection)
-	var o finishOpts
-	switch kind {
-	case store.KindTranslate:
-		o.replace = selection != ""
-		if r.settings.Features.Translate.ShowCard {
-			o.card = deliver.ReasonCard
-		}
-	case store.KindRewrite:
-		// Every answer goes to the answer card, which inserts it (or
-		// replaces the selection) when asked, and takes follow-ups (Voxt's:
-		// a Rewrite result always shows in the card).
+	// The feature's card switch: on, the answer waits in the answer card,
+	// which inserts it (or replaces the selection) when asked and, for
+	// Rewrite, takes follow-ups; off, it goes in at once. A follow-up stays
+	// in the card, where its conversation is.
+	o := finishOpts{replace: selection != ""}
+	if r.settings.Features.ShowsCard(string(kind)) {
 		o.card = deliver.ReasonCard
 	}
 	if r.req.Card {
 		o.card = deliver.ReasonCard
 	}
-	r.m.update(r, func(s *Snapshot) { s.State, s.Selection, s.Card = Composing, selection, o.card != "" && !r.req.Try })
+	if len(r.req.Previous) > 0 {
+		o.card = deliver.ReasonCard
+	}
+	// Translate's speech can go in as said, when the model is skipped or
+	// too slow (#3821); Rewrite's is an instruction, a selection is
+	// already there.
+	keepSpeech := kind == store.KindTranslate && selection == "" && raw != ""
+	r.m.update(r, func(s *Snapshot) {
+		s.State, s.Selection, s.Card, s.CanSkip = Composing, selection, o.card != "" && !r.req.Try, keepSpeech
+		if kind == store.KindTranslate {
+			s.TargetLanguage = r.target
+		}
+	})
 
 	// Can it replace the selection? If not, the answer streams into the
 	// card at once. Other answers go where the user is typing when they
@@ -101,8 +112,8 @@ func (r *run) write(raw, selection string) {
 		source = selection
 	}
 	llmStart := r.now()
-	res, profile, truncated, err := r.ask(in)
-	if err == nil && kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && r.ctx.Err() == nil {
+	res, profile, truncated, err := r.askOrFallback(in)
+	if err == nil && kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && r.ctx.Err() == nil && !r.stopped.Load() {
 		r.logf("warning", "the translation looks untranslated: asking again, strictly")
 		r.m.update(r, func(s *Snapshot) { s.Retried, s.Draft = true, "" })
 		in.Strict = true
@@ -118,6 +129,24 @@ func (r *run) write(raw, selection string) {
 		return
 	}
 	r.m.update(r, func(s *Snapshot) { s.Profile, s.Timings.LLM = profile, llmTime })
+	switch {
+	case r.skipped.Load():
+		r.logf("info", "the language model was skipped after %v: the speech goes on as recognised", llmTime.Round(time.Millisecond))
+		r.finish(Done, nil, raw, o)
+		return
+	case err != nil && r.stopped.Load():
+		// The user stopped it: the card keeps the answer so far, nothing
+		// goes over the selection or in unseen.
+		s := r.m.Current()
+		r.logf("info", "the answer was stopped after %v: the card keeps %s", llmTime.Round(time.Millisecond), r.logText(s.Draft))
+		o.card = deliver.ReasonCard
+		r.finish(Done, nil, s.Draft, o)
+		return
+	case err != nil && keepSpeech && TimedOut(err):
+		r.logf("warning", "language model %s (model %s) did not answer in %v, the speech goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
+		r.finish(Done, &Problem{Code: ProblemLLM, Err: err, Degraded: true}, raw, o)
+		return
+	}
 	if err != nil {
 		r.logf("warning", "language model %s (model %s) failed after %v: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
 		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: err}, true)
@@ -129,7 +158,7 @@ func (r *run) write(raw, selection string) {
 			r.finish(Done, &Problem{Code: ProblemNoSpeech}, "", finishOpts{})
 			return
 		}
-		r.endWriteFailed(&Problem{Code: ProblemEmpty, Err: errors.New("the language model answered nothing")}, true)
+		r.endWriteFailed(&Problem{Code: ProblemEmpty, Err: errors.New("the language model returned an empty answer")}, true)
 		return
 	}
 	r.m.update(r, func(s *Snapshot) { s.Title, s.Draft = res.Title, res.Content })
@@ -143,6 +172,22 @@ func (r *run) write(raw, selection string) {
 		r.m.update(r, func(s *Snapshot) { s.Card = !r.req.Try })
 	}
 	r.finish(Done, problem, res.Content, o)
+}
+
+// askOrFallback asks the language model and, when it fails, the
+// fallback model once, which then is the session's model: later
+// requests, the snapshot and the history entry use it.
+func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, error) {
+	res, profile, truncated, err := r.ask(in)
+	// A used-up plan is the user's to manage: moving to another paid
+	// service without asking would spend it unseen.
+	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || llm.Code(err) == llm.CodeUsageLimit {
+		return res, profile, truncated, err
+	}
+	r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, err, r.svc.FallbackInfo.ID, r.svc.FallbackInfo.Model)
+	r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, r.svc.FallbackInfo, nil
+	r.m.update(r, func(s *Snapshot) { s.LLM, s.Draft = r.svc.LLMInfo, "" })
+	return r.ask(in)
 }
 
 // ask sends one request and streams its answer into the snapshot. It
@@ -180,7 +225,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
 	req := llm.Request{
-		Messages: msgs, Skill: skill,
+		Messages: msgs, Skill: skill, Thinking: r.req.Thinking,
 		OnDelta: func(d string) {
 			buf.WriteString(d)
 			publish(false)
@@ -189,21 +234,16 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	if in.Answer {
 		req.Format, req.Schema = llm.FormatJSON, answerSchema
 	}
-	if in.Task == compose.Translate {
-		// For a model that builds its own prompt and takes no clean-up
-		// rules (Hy-MT2): speech without its fillers (docs/eval.md).
-		text := in.Text
-		if !in.Selected {
-			text = compose.StripFillers(text)
-		}
-		req.Translate = &llm.TranslateHint{Text: text, Target: in.TargetLanguage}
+	chars := utf8.RuneCountInString(in.Text + in.Instruction)
+	for _, t := range in.Previous { // note (luojiaxuan): a follow-up sends the earlier turns again, read before the first token
+		chars += utf8.RuneCountInString(t.Instruction + t.Selection + t.Answer.Title + t.Answer.Content)
 	}
-	resp, err := r.llmChat(cfg.llmDeadlines(req, utf8.RuneCountInString(in.Text+in.Instruction), cfg.WriteTimeout))
+	resp, err := r.llmChat(cfg.llmDeadlines(req, chars, r.llmFloor(cfg.WriteTimeout)))
+	if buf.Len() > 0 {
+		publish(true) // all of it: a stopped answer keeps the words since the last publish too
+	}
 	if err != nil {
 		return compose.Answer{}, out.Profile(), false, err
-	}
-	if buf.Len() > 0 {
-		publish(true)
 	}
 	truncated := resp.FinishReason == llm.FinishLength
 	if in.Answer {

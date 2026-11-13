@@ -8,11 +8,81 @@ Install SGLang-Omni by following [Installation](../get_started/installation.md).
 
 The checkpoint contains the thinker shards and a complete `talker/` directory. Serving needs two GPUs. `--thinker.tp_size 2` places the thinker on both visible devices. The audio encoder uses GPU 0, and speech synthesis uses GPU 1.
 
+Download the checkpoint once into a local directory. Run the commands below from the same working directory so every stage uses the same weights, tokenizer and audio configuration.
+
+```bash
+hf download inclusionAI/Ming-3.0-audio-flash \
+  --revision db94e0de19f6d05adc0413c255a28eb480cd1fae \
+  --local-dir inclusionAI/Ming-3.0-audio-flash
+```
+
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
   --model-path inclusionAI/Ming-3.0-audio-flash \
   --thinker.tp_size 2
 ```
+
+## MTP decoding
+
+Multi-token prediction (MTP) can accelerate transcription and audio-chat text generation using the prediction layer included in the checkpoint. MTP is off by default. Enable it with:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+  --model-path inclusionAI/Ming-3.0-audio-flash \
+  --thinker.tp_size 2 \
+  --thinker.engine.revision db94e0de19f6d05adc0413c255a28eb480cd1fae \
+  --thinker.engine.speculative_algorithm NEXTN
+```
+
+MTP uses additional GPU memory. Speedup depends on the workload and output length. Standalone speech synthesis is unaffected.
+
+Usage notes:
+
+- To disable MTP in a config that enables it, add `--thinker.engine.disable_speculative_decoding true`.
+- MTP uses synchronous decoding (`--thinker.factory.enable_async_decode false`, the default).
+- Keep `speculative_eagle_topk=1` and `repetition_penalty=1`. Prefix caching and chunked prefill are unavailable for this model.
+
+For MTP acceptance statistics, set `return_spec_tokens_details=true` on chat or transcription requests and read `sglext.spec_tokens_details` in the JSON response.
+
+## DFlash decoding
+
+The thinker can also verify tokens proposed by the DFlash draft [`wilsonzheng0327/Ming-3.0-audio-flash-dflash`](https://huggingface.co/wilsonzheng0327/Ming-3.0-audio-flash-dflash), which was trained on English and Chinese transcription and proposes 15 tokens per step. Use it for a server that mainly transcribes; for audio chat, use MTP. The draft is off by default. Enable it with:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+  --model-path inclusionAI/Ming-3.0-audio-flash \
+  --thinker.tp_size 2 \
+  --thinker.engine.speculative_algorithm DFLASH \
+  --thinker.engine.speculative_draft_model_path wilsonzheng0327/Ming-3.0-audio-flash-dflash \
+  --thinker.engine.speculative_num_draft_tokens 16
+```
+
+Speed against the same server without a draft, on two H200s with SGLang 0.5.23, greedy decoding, the thinker's CUDA graphs on and the default 8 running requests. Transcription uses held-out English and Chinese FLEURS, LibriSpeech, VoxPopuli and YODAS2 clips that the draft never saw. Audio questions are MMSU questions with a 512-token budget, which the model answers with an explanation. Audio chat asks what other held-out clips are about:
+
+| Workload, 1 at a time / 8 at a time | No draft | MTP | DFlash |
+|---|---:|---:|---:|
+| Transcription | 2.62 / 8.46 clips/s | 1.33x / 1.21x | 1.64x / 1.46x |
+| Audio questions, about 130-token answers | 136 / 529 tokens/s | 1.58x / 1.25x | 0.67x / 0.63x |
+| Audio chat in English, about 34-token answers | 98 / 284 tokens/s | 1.30x / 1.20x | 0.98x / 0.98x |
+| Audio chat in Chinese, about 29-token answers | 89 / 253 tokens/s | 1.26x / 1.16x | 0.96x / 0.90x |
+
+The draft accepts about 6.8 tokens per step on transcripts but only 1.3-2.5 on chat answers, so it slows chat down; MTP accepts 2.4-2.8 on every workload. Each server takes one algorithm, so pick the one that matches most of its traffic.
+
+More running requests on two GPUs, transcribing held-out clips with the load equal to `max_running_requests`:
+
+| Running requests | No draft | MTP | DFlash |
+|---|---:|---:|---:|
+| 8 | 8.46 clips/s | 10.24 (1.21x) | 12.36 (1.46x) |
+| 16 | 10.59 clips/s | 13.36 (1.26x) | Does not start |
+| 32 | 13.46 clips/s | 16.63 (1.24x) | Does not start |
+| 64 | 16.40 clips/s | Does not start | Does not start |
+
+Usage notes:
+
+- Verifying on the Kimi delta attention layers keeps one state per proposed token per running request, about 4.9 GB per GPU for the draft at 8 requests. Where a table says the server does not start, it stops at startup with `Loaded weights leave no GPU memory for the KV cache`, and raising `mem_fraction_static` does not help.
+- On four GPUs (`--thinker.tp_size 4`) the draft starts with 32 running requests and served 18.33 held-out clips/s, against 16.13 with MTP and 13.96 without a draft at the same cap.
+- SeedTTS English WER is 1.227% and Chinese CER 0.747% with the draft, against 1.219% and 0.741% without it. One at a time, MTP output is identical to the server without a draft; the draft's is identical on 81 of 84 held-out transcripts and differs more on long answers. At 8 at a time, both agree with the server without a draft on 263-264 of 280 transcripts, because greedy decoding on this thinker depends on the batch.
+- The draft decodes synchronously. Keep `repetition_penalty=1`. The draft rejects a request `seed` when sampling; greedy and one-token requests still accept a seed. Standalone speech synthesis is unaffected.
 
 ## Transcription
 
