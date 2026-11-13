@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -80,8 +81,17 @@ func (s *OutputSystem) saveLocked() {
 	}
 	data, _ := json.Marshal(s)
 	tmp := s.path + ".tmp"
-	if os.WriteFile(tmp, data, 0o644) == nil {
-		os.Rename(tmp, s.path)
+	for attempt := 0; ; attempt++ {
+		if os.WriteFile(tmp, data, 0o644) == nil {
+			if err := os.Rename(tmp, s.path); err == nil {
+				return
+			}
+		}
+		if runtime.GOOS != "windows" || attempt == 99 {
+			return
+		}
+		// A reader can briefly hold the old file open on Windows.
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
