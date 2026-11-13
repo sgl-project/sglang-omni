@@ -48,6 +48,7 @@ from sglang_omni.proto.streams import (
     SESSION_INPUT_SAMPLE_RATE_HZ,
     TRUNCATE,
     AudioPort,
+    PluginPort,
     SessionPorts,
     published_audio_port,
 )
@@ -313,6 +314,17 @@ class ComponentGraphConfig(BaseModel):
                 ports.extend(AudioPort(format, rate) for format in audio)
         return ports
 
+    def published_plugin_ports(self) -> tuple[PluginPort, ...]:
+        """The port of each published format a node's kind declares as a plugin port."""
+        return tuple(
+            dict.fromkeys(
+                port
+                for name, formats in self.publish.items()
+                for port in COMPONENTS.kind(self.node(name).component.kind).plugin_ports
+                if port.format in formats
+            )
+        )
+
     def check_turn_roles(self) -> None:
         enders = sorted(
             name
@@ -505,6 +517,7 @@ class ComponentGraphConfig(BaseModel):
             sampling_parameters=(
                 tuple(SAMPLING_FIELDS) if "sampling" in hot_settings else ()
             ),
+            plugin_output=self.published_plugin_ports(),
         )
 
 
@@ -646,6 +659,13 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
             publish={
                 name: tuple(formats) for name, formats in self.session_publish.items()
             },
+            plugin_formats=frozenset(
+                port.format
+                for name, node in self.session_nodes.items()
+                if node.kind is not None
+                for port in COMPONENTS.kind(node.kind).plugin_ports
+                if port.format in self.session_publish.get(name, ())
+            ),
         )
 
     def component_graph(self) -> ComponentGraphConfig:

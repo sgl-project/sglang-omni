@@ -81,6 +81,13 @@ def pacer() -> DeliveryPacer:
     return DeliveryPacer(LEAD_MS, asyncio.Event())
 
 
+@pytest.fixture
+def plugin_pacer() -> DeliveryPacer:
+    return DeliveryPacer(
+        LEAD_MS, asyncio.Event(), frozenset({"smplx_motion", "image_asset"})
+    )
+
+
 def offer_reply(
     pacer: DeliveryPacer, count: int, *, first: int = 0, turn: int = 1, done=True
 ) -> None:
@@ -135,6 +142,64 @@ def test_audio_that_comes_after_its_turn_started_leaves_within_the_lead_of_its_f
     pacer.offer(audio(2200, turn=2), 3300)
     second = pacer.release(103.4)
     assert sum(item.duration_ms for item, _ in second) == LEAD_MS
+
+
+def motion(t_start_ms: float, turn: int = 1) -> OutputChunk:
+    """An 80 ms chunk of a plugin media format, as a model package would publish it."""
+    return output(t_start_ms, 80, b"pose", "smplx_motion", modality="motion", turn=turn)
+
+
+def test_declared_plugin_media_waits_for_the_horizon_and_only_audio_is_cut(
+    plugin_pacer,
+):
+    pacer = plugin_pacer
+    pacer.offer(control("turn.started"), 10)
+    pacer.offer(motion(0), 20)
+    pacer.offer(output(0, 0, {"url": "a.png"}, "image_asset", modality="image"), 20)
+    pacer.offer(motion(240), 20)
+    pacer.offer(audio(200), 3300)
+    pacer.offer(motion(320), 20)
+    pacer.offer(control("turn.done", 400), 10)
+    released = pacer.release(100.0)
+    assert labels(released) == [
+        "turn.started",
+        "smplx_motion",
+        "image_asset",
+        "smplx_motion",
+        "pcm16",
+    ]
+    assert [item.duration_ms for item, _ in released[1:4:2]] == [80, 80]
+    head = released[-1][0]
+    assert (head.t_start_ms, head.duration_ms, len(head.payload)) == (200, 50, 1600)
+    assert labels(list(pacer.items)) == ["pcm16", "smplx_motion", "turn.done"]
+    for item, _ in released:
+        pacer.sent(item)
+    assert pacer.delivered_ms(1) == 50
+    assert labels(pacer.release(100.1)) == ["pcm16", "smplx_motion"]
+    assert labels(list(pacer.items)) == ["turn.done"]
+    assert pacer.release(100.35) == []
+    assert labels(pacer.release(100.4)) == ["turn.done"]
+    assert not pacer.items
+
+
+def test_a_chunk_of_no_declared_plugin_format_passes_on_arrival(plugin_pacer):
+    """A native duplex model's reply chunk, whose adapter reads it per input unit, is no plugin format: holding it past its unit's input_done would drop it."""
+    pacer = plugin_pacer
+    pacer.offer(control("turn.started"), 10)
+    pacer.offer(output(0, 1000, {"pcm": b""}, None, modality="voice"), 20)
+    pacer.offer(output(1000, 1000, {"pcm": b""}, None, modality="voice"), 20)
+    pacer.offer(audio(0), 3300)
+    pacer.offer(audio(400), 3300)
+    pacer.offer(output(400, 1000, b"frame", "video_frame", modality="video"), 20)
+    released = pacer.release(100.0)
+    assert [item.modality for item, _ in released] == [
+        "control",
+        "voice",
+        "voice",
+        "audio",
+        "video",
+    ]
+    assert [item.t_start_ms for item, _ in pacer.items] == [400]
 
 
 def test_a_turns_done_waits_until_the_client_has_played_its_audio(pacer):
@@ -256,6 +321,23 @@ async def test_the_pacer_wakes_when_the_held_audio_may_leave():
     assert 0.03 <= waited_s < 0.5
     (slice_,) = pacer.release(loop.time())
     assert slice_[0].t_start_ms == 50 and slice_[0].duration_ms >= 40
+
+
+@pytest.mark.asyncio
+async def test_the_pacer_wakes_when_the_turn_s_audio_and_plugin_media_have_played():
+    pacer = DeliveryPacer(50, asyncio.Event(), frozenset({"smplx_motion"}))
+    loop = asyncio.get_running_loop()
+    pacer.offer(control("turn.started"), 10)
+    pacer.offer(output(0, 20, bytes(640), "pcm16"), 700)
+    pacer.offer(output(0, 60, b"pose", "smplx_motion", modality="motion"), 20)
+    pacer.offer(control("turn.done", 60), 10)
+    started_at = loop.time()
+    released = pacer.release(started_at)
+    assert labels(released) == ["turn.started", "pcm16", "smplx_motion"]
+    await asyncio.wait_for(pacer.wait(), 1)
+    waited_s = loop.time() - started_at
+    assert 0.05 <= waited_s < 0.5
+    assert labels(pacer.release(loop.time())) == ["turn.done"]
 
 
 async def receive_reply(outputs) -> list[tuple[OutputChunk, float]]:
@@ -436,6 +518,47 @@ async def test_a_graph_reply_whose_audio_comes_late_is_paced_from_its_first_audi
         outputs = coordinator.session_outputs(identity)
         await coordinator.append_session(identity, chunk(0))
         assert_paced(await receive_reply(outputs), 1500)
+        await wait_for_turn_done_returned(events)
+        await outputs.aclose()
+        await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)
+
+
+@pytest.mark.asyncio
+async def test_a_graph_node_publishing_plugin_media_paces_it_whole_and_ends_the_turn_after_it(
+    tmp_path,
+):
+    async with pipeline(tmp_path) as (coordinator, events, _):
+        coordinator.session_route = None
+        coordinator.session_graph = SessionGraph(
+            nodes={"model": SessionNode(stages=("source", "sink"), inputs=("input",))},
+            publish={"model": ("smplx_motion", "session")},
+            plugin_formats=frozenset({"smplx_motion"}),
+        )
+        coordinator.max_output_lead_ms = LEAD_MS
+        identity = await coordinator.open_session(
+            OmniRequest(
+                None,
+                {
+                    "emit_reply_ms": 1000,
+                    "emit_reply_modality": "motion",
+                    "emit_reply_format": "smplx_motion",
+                },
+            )
+        )
+        outputs = coordinator.session_outputs(identity)
+        await coordinator.append_session(identity, chunk(0))
+        received = await receive_reply(outputs)
+        media = [(item, at) for item, at in received if item.modality == "motion"]
+        first, first_at = media[0]
+        assert [item.duration_ms for item, _ in media] == [100] * 10
+        assert all(
+            item.t_start_ms - first.t_start_ms <= (at - first_at) * 1000 + LEAD_MS + 50
+            for item, at in media
+        )
+        assert media[-1][1] - first_at >= (900 - LEAD_MS) / 1000 - 0.1
+        done, done_at = received[-1]
+        assert control_type(done) == "turn.done"
+        assert done_at - first_at >= (1000 - LEAD_MS) / 1000 - 0.1
         await wait_for_turn_done_returned(events)
         await outputs.aclose()
         await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)

@@ -1,9 +1,10 @@
 """Typed runtime lifecycle and command results, projected by the transport."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sglang_omni.serve.realtime.schema import (
     GrantedCapabilities,
+    PluginPorts,
     SessionConfiguration,
     SessionType,
     TailPolicy,
@@ -15,6 +16,7 @@ class Created:
     session_id: str
     model: str
     session_type: SessionType = "realtime"
+    plugin_ports: PluginPorts = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,7 @@ class Updated:
     granted: GrantedCapabilities
     client_event_id: str
     config: SessionConfiguration | None = None
+    plugin_ports: PluginPorts = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
