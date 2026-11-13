@@ -56,9 +56,19 @@ func (server *helperServer) serveCaptureDevices(message proto.Message) {
 
 func (server *helperServer) startCapture(message proto.Message) {
 	var params proto.CaptureParams
-	if err := message.DecodeParams(&params); err != nil {
-		server.fail(message.ID, proto.CodeBadRequest, "Bad params: %v", err)
-		return
+	switch message.Method {
+	case proto.MethodCaptureStart:
+		if err := message.DecodeParams(&params); err != nil {
+			server.fail(message.ID, proto.CodeBadRequest, "Bad params: %v", err)
+			return
+		}
+	case proto.MethodCaptureSystem:
+		var systemParams proto.SystemParams
+		if err := message.DecodeParams(&systemParams); err != nil {
+			server.fail(message.ID, proto.CodeBadRequest, "Bad params: %v", err)
+			return
+		}
+		params = systemCaptureParams(systemParams)
 	}
 	if params.SampleRate < 0 || params.FrameMS < 0 || params.LevelHz < 0 || params.MaxSeconds < 0 {
 		server.fail(message.ID, proto.CodeBadRequest, "Capture rates, durations and limits cannot be negative")
@@ -81,7 +91,7 @@ func (server *helperServer) startCapture(message proto.Message) {
 	if params.LevelHz > 0 {
 		levelInterval = time.Second / time.Duration(params.LevelHz)
 	}
-	job, jobErr := server.registerJob(message.ID, proto.MethodCaptureStart)
+	job, jobErr := server.registerJob(message.ID, message.Method)
 	if jobErr != nil {
 		server.send(proto.NewError(message.ID, jobErr))
 		return
@@ -109,7 +119,7 @@ func (server *helperServer) stopCapture(message proto.Message) {
 	server.jobsMu.Lock()
 	job := server.jobs[params.Job]
 	server.jobsMu.Unlock()
-	if job == nil || job.method != proto.MethodCaptureStart {
+	if job == nil || job.method != proto.MethodCaptureStart && job.method != proto.MethodCaptureSystem {
 		server.result(message.ID, proto.CaptureStopResult{Stopped: false})
 		return
 	}
@@ -122,7 +132,11 @@ func (session *captureSession) run() {
 	cpuStart := processCPUSeconds()
 	var reason string
 	var runErr *proto.Error
-	if path := os.Getenv("VOXTNEW_HELPER_CAPTURE_FILE"); path != "" {
+	path := os.Getenv("VOXTNEW_HELPER_CAPTURE_FILE")
+	if session.job.method == proto.MethodCaptureSystem {
+		path = os.Getenv("VOXTNEW_HELPER_SYSTEM_FILE")
+	}
+	if path != "" {
 		fmt.Fprintln(os.Stderr, "capture input is a test file")
 		reason, runErr = session.runFile(path)
 	} else {
@@ -130,7 +144,11 @@ func (session *captureSession) run() {
 		if err := windows.CoInitializeEx(0, windows.COINIT_MULTITHREADED); err != nil {
 			runErr = proto.Errorf(proto.CodeInternal, "Could not initialize WASAPI: %v", err)
 		} else {
-			reason, runErr = session.runMicrophone()
+			if session.job.method == proto.MethodCaptureSystem {
+				reason, runErr = session.runSystem()
+			} else {
+				reason, runErr = session.runMicrophone()
+			}
 			windows.CoUninitialize()
 		}
 		runtime.UnlockOSThread()
@@ -231,7 +249,12 @@ func (session *captureSession) runFile(path string) (string, *proto.Error) {
 		return "", proto.Errorf(proto.CodeInternal, "Could not read capture file: %v", err)
 	}
 	name := filepath.Base(path)
-	session.startSource(proto.CaptureDevice{ID: "file:" + name, Name: name, Channels: format.channels, SampleRate: format.sampleRate})
+	device := proto.CaptureDevice{ID: "file:" + name, Name: name, Channels: format.channels, SampleRate: format.sampleRate}
+	if session.job.method == proto.MethodCaptureSystem {
+		device.Name = ""
+		device.Channels = 1
+	}
+	session.startSource(device)
 	speed := 1.0
 	if value := os.Getenv("VOXTNEW_HELPER_CAPTURE_SPEED"); value != "" {
 		parsed, parseErr := strconv.ParseFloat(value, 64)
