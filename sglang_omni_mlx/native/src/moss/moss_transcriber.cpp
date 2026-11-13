@@ -10,6 +10,7 @@
 #include <regex>
 
 #include "common/audio.h"
+#include "common/audio_chunks.h"
 #include "common/text.h"
 #include "nlohmann/json.hpp"
 
@@ -125,30 +126,8 @@ std::vector<AudioChunk> SplitAudio(const std::vector<float> &samples,
     const int search_end = std::min(total_samples, end_sample + search_samples);
     int cut_sample = end_sample;
     if (search_end - search_start > energy_window_samples) {
-      const int energy_count =
-          search_end - search_start - energy_window_samples + 1;
-      const float inverse_window =
-          1.0f / static_cast<float>(energy_window_samples);
-      float window_sum = 0.0f;
-      for (int i = 0; i < energy_window_samples; ++i) {
-        const float value = samples[search_start + i];
-        window_sum += value * value;
-      }
-      float min_energy = window_sum * inverse_window;
-      int min_index = 0;
-      for (int i = 1; i < energy_count; ++i) {
-        const float old_value = samples[search_start + i - 1];
-        const float new_value =
-            samples[search_start + i + energy_window_samples - 1];
-        window_sum += new_value * new_value - old_value * old_value;
-        const float energy = window_sum * inverse_window;
-        if (energy < min_energy) {
-          min_energy = energy;
-          min_index = i;
-        } else {
-        }
-      }
-      cut_sample = search_start + min_index + energy_window_samples / 2;
+      cut_sample = static_cast<int>(omni_common::QuietestAudioPosition(
+          samples, search_start, search_end, energy_window_samples));
     } else {
     }
     cut_sample = std::max(cut_sample, start_sample + sample_rate);

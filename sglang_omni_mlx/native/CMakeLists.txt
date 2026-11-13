@@ -69,7 +69,8 @@ set_source_files_properties(src/common/npz.cpp src/common/reference_audio.cpp
 # cosyvoice3.
 set_source_files_properties(src/common/campplus.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
-# Note (Mengwei Liu): energy cuts retain Cohere's separate float operations.
+# Note (Mengwei Liu): energy cuts retain Cohere's and MOSS's separate float
+# operations.
 set_source_files_properties(src/common/audio_chunks.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 

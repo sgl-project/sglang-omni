@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "common/audio.h"
+#include "common/audio_chunks.h"
 #include "common/swift_port.h"
 #include "nlohmann/json.hpp"
 

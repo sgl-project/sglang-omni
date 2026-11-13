@@ -8,6 +8,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
+#include "common/audio_chunks.h"
 #include "common/swift_port.h"
 #include "common/text.h"
 
@@ -411,7 +412,7 @@ ParakeetTranscriber::Transcribe(const std::vector<float> &samples,
                static_cast<size_t>(kChunkOverlapSeconds * sample_rate));
   std::vector<std::pair<size_t, size_t>> chunks;
   if (whole_recording) {
-    chunks = omni_common::EnergyCutChunks(
+    chunks = omni_common::BoundedEnergyCutChunks(
         samples, chunk_samples,
         static_cast<size_t>(kChunkSearchSeconds * sample_rate),
         static_cast<size_t>(kChunkEnergyWindowSeconds * sample_rate),

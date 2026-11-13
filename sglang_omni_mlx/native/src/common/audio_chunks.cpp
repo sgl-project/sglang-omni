@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "common/audio.h"
+#include "common/audio_chunks.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -40,9 +40,9 @@ size_t QuietestAudioPosition(const std::vector<float> &samples,
 }
 
 std::vector<std::pair<size_t, size_t>>
-EnergyCutChunks(const std::vector<float> &samples, size_t max_chunk_samples,
-                size_t search_samples, size_t window_samples,
-                size_t min_tail_samples) {
+BoundedEnergyCutChunks(const std::vector<float> &samples,
+                       size_t max_chunk_samples, size_t search_samples,
+                       size_t window_samples, size_t min_tail_samples) {
   if (window_samples == 0 || window_samples > search_samples ||
       search_samples > max_chunk_samples ||
       min_tail_samples > max_chunk_samples / 2) {
