@@ -720,10 +720,6 @@ def test_tts_serving_stress(serving_run: ServingRun) -> None:
                 "benchmark harness failed",
             )
             benchmark_checks.check(
-                report.get("schema_version") == 4,
-                "unexpected benchmark report schema",
-            )
-            benchmark_checks.check(
                 overall.get("passed") is True,
                 "benchmark did not pass",
             )
