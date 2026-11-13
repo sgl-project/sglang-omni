@@ -605,6 +605,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dflash-speculative-decoding">DFlash speculative decoding</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#per-request-plain-fallback">Per-request plain fallback</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu">Ascend NPU</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
@@ -767,6 +768,15 @@ for results measured on an earlier release.</p>
 </div>
 <p>This option requires synchronous DFlash on one CUDA GPU, with prefill CUDA graphs, mixed chunks, and DP attention disabled. Decode CUDA graphs and radix caching can stay enabled. Both paths share the target model and KV pool, and each path caches its prefixes separately.</p>
 <p>When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.</p>
+</section>
+<section id="ascend-npu">
+<h3>Ascend NPU<a class="headerlink" href="#ascend-npu" title="Link to this heading">#</a></h3>
+<p>NPU DFlash supports only greedy decoding (<code class="docutils literal notranslate"><span class="pre">temperature=0</span></code>). Requests with a nonzero temperature are rejected because NPU verification uses argmax. For one Ascend device, use the BF16 eager example below. It uses the same pinned draft as the CUDA example and explicitly sets <code class="docutils literal notranslate"><span class="pre">enable_async_decode:</span> <span class="pre">false</span></code> to retain the validated greedy, synchronous NPU configuration. Follow the <a class="reference internal" href="../other_platforms/installation_npu.html"><span class="std std-doc">NPU installation guide</span></a> for runtime setup and <a class="reference internal" href="../other_platforms/installation_npu.html#qwen3-asr-graph-execution"><span class="std std-ref">graph queue requirements</span></a>.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/configs/qwen3_asr_1_7b_dflash_npu.yaml<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>To enable draft and target verification decode graphs, select <code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_asr_1_7b_dflash_npu_graph.yaml</span></code> instead. Its request buckets are one and two; prefill and encoder remain eager, and Torch Compile stays disabled. Keep <code class="docutils literal notranslate"><span class="pre">SGLANG_DFLASH_EAGER_DRAFT_SAMPLER</span></code> unset or <code class="docutils literal notranslate"><span class="pre">0</span></code> to capture the reduced-vocabulary draft head. These buckets describe the validated example, not a platform concurrency limit or an optimal performance setting.</p>
+<p>Both NPU examples explicitly select <code class="docutils literal notranslate"><span class="pre">ascend</span></code> for target and draft attention. Direct factory callers must supply the same engine overrides and <code class="docutils literal notranslate"><span class="pre">enable_encoder_cuda_graph=False</span></code>. Keep effective <code class="docutils literal notranslate"><span class="pre">context_length</span></code>, including the audio/text prefix and verification reserve, within the pinned causal draft’s 32768-token attention window; a larger output budget or context override can exceed it. For offline serving, pass local snapshots with <code class="docutils literal notranslate"><span class="pre">--model-path</span></code> and <code class="docutils literal notranslate"><span class="pre">--asr.engine.speculative_draft_model_path</span></code>. Overlap, realtime, TP&gt;1, quantization and longer contexts remain outside this validation.</p>
 </section>
 </section>
 <section id="transcribe-audio">
@@ -1260,6 +1270,7 @@ beyond <code class="docutils literal notranslate"><span class="pre">repetition_p
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dflash-speculative-decoding">DFlash speculative decoding</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#per-request-plain-fallback">Per-request plain fallback</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu">Ascend NPU</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
