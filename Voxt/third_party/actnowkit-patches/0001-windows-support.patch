@@ -1,0 +1,1252 @@
+diff --git a/conformance/check.go b/conformance/check.go
+index 31ea4375..8af544f2 100644
+--- a/conformance/check.go
++++ b/conformance/check.go
+@@ -7,6 +7,7 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"regexp"
++	"runtime"
+ 	"strings"
+ 	"time"
+ 
+@@ -181,13 +182,13 @@ func Check(d family.Dir, hub string, sys registry.System) []Problem {
+ 			return nil
+ 		}
+ 		if de.IsDir() {
+-			if fi.Mode().Perm()&0o077 != 0 {
++			if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+ 				add("warning", p, "directory mode %04o, want 0700", fi.Mode().Perm())
+ 			}
+ 			return nil
+ 		}
+ 		name := de.Name()
+-		if fi.Mode().Perm()&0o077 != 0 {
++		if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+ 			add("warning", p, "file mode %04o, want 0600", fi.Mode().Perm())
+ 		}
+ 		if strings.HasPrefix(name, ".") && strings.Contains(name, ".tmp-") && time.Since(fi.ModTime()) > time.Hour {
+diff --git a/conformance/conformance_test.go b/conformance/conformance_test.go
+index 6cd3d217..241000a0 100644
+--- a/conformance/conformance_test.go
++++ b/conformance/conformance_test.go
+@@ -150,7 +150,11 @@ func TestCheck(t *testing.T) {
+ 	os.WriteFile(filepath.Join(fx.Family.Root, "secret.txt"), []byte("sk-0123456789abcdefghijklmnop"), 0o600)
+ 	problems := Check(fx.Family, fx.Hub, FixtureSystem{})
+ 	text := fmt.Sprint(problems)
+-	for _, want := range []string{"settings.json", "../x", "0644", "secret"} {
++	wants := []string{"settings.json", "../x", "secret"}
++	if runtime.GOOS != "windows" {
++		wants = append(wants, "0644")
++	}
++	for _, want := range wants {
+ 		if !strings.Contains(text, want) {
+ 			t.Errorf("no problem mentions %q: %v", want, problems)
+ 		}
+diff --git a/conformance/fixture.go b/conformance/fixture.go
+index 40244bf0..2dbb5dd6 100644
+--- a/conformance/fixture.go
++++ b/conformance/fixture.go
+@@ -151,7 +151,9 @@ func (fx *Fixture) Install(r Repo) {
+ 		must(fx.T, os.MkdirAll(filepath.Dir(link), 0o755))
+ 		os.Remove(link)
+ 		target := strings.Repeat("../", strings.Count(f.Path, "/")+2) + "blobs/" + f.BlobID()
+-		must(fx.T, os.Symlink(target, link))
++		if err := os.Symlink(target, link); err != nil {
++			must(fx.T, os.Link(blob, link))
++		}
+ 	}
+ 	must(fx.T, os.MkdirAll(filepath.Join(dir, "refs"), 0o755))
+ 	must(fx.T, os.WriteFile(filepath.Join(dir, "refs", "main"), []byte(r.Ref.Revision), 0o644))
+diff --git a/family/atomic.go b/family/atomic.go
+index 96a5a77f..c0607f52 100644
+--- a/family/atomic.go
++++ b/family/atomic.go
+@@ -6,6 +6,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"time"
+ )
+@@ -23,7 +24,7 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	if err := os.Rename(tmp, path); err != nil {
++	if err := renameFile(tmp, path); err != nil {
+ 		os.Remove(tmp)
+ 		return err
+ 	}
+@@ -31,6 +32,16 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+ 	return nil
+ }
+ 
++func renameFile(oldPath, newPath string) error {
++	for attempt := 0; ; attempt++ {
++		err := os.Rename(oldPath, newPath)
++		if err == nil || runtime.GOOS != "windows" || attempt == 99 {
++			return err
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++}
++
+ // writeTemp writes data to a new temporary file beside path and returns
+ // its name.
+ func writeTemp(path string, data []byte, perm os.FileMode) (string, error) {
+diff --git a/family/family_test.go b/family/family_test.go
+index 784730ea..22372005 100644
+--- a/family/family_test.go
++++ b/family/family_test.go
+@@ -6,6 +6,7 @@ import (
+ 	"errors"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"sync"
+ 	"testing"
+@@ -147,7 +148,9 @@ func TestWriteFileAtomicAndTemps(t *testing.T) {
+ 		t.Errorf("%q", b)
+ 	}
+ 	st, _ := os.Stat(p)
+-	if st.Mode().Perm() != 0o600 {
++	if runtime.GOOS == "windows" {
++		t.Log("skipping the Unix permission-bit assertion on Windows")
++	} else if st.Mode().Perm() != 0o600 {
+ 		t.Errorf("perm %v", st.Mode())
+ 	}
+ 	stale := filepath.Join(dir, "sub", ".f.json.tmp-1-abc")
+diff --git a/family/jsonfile.go b/family/jsonfile.go
+index c0d4463d..997b13c5 100644
+--- a/family/jsonfile.go
++++ b/family/jsonfile.go
+@@ -90,7 +90,7 @@ func Load(path, kind string, major int, v any) error {
+ // ReadLimited reads a file of at most MaxFileSize bytes; a bigger one is a
+ // *CorruptError.
+ func ReadLimited(path string) ([]byte, error) {
+-	f, err := os.Open(path)
++	f, err := openForLimitedRead(path)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/family/jsonfile_other.go b/family/jsonfile_other.go
+new file mode 100644
+index 00000000..4f0e5286
+--- /dev/null
++++ b/family/jsonfile_other.go
+@@ -0,0 +1,7 @@
++//go:build !windows
++
++package family
++
++import "os"
++
++func openForLimitedRead(path string) (*os.File, error) { return os.Open(path) }
+diff --git a/family/jsonfile_windows.go b/family/jsonfile_windows.go
+new file mode 100644
+index 00000000..ddef2eac
+--- /dev/null
++++ b/family/jsonfile_windows.go
+@@ -0,0 +1,23 @@
++//go:build windows
++
++package family
++
++import (
++	"os"
++
++	"golang.org/x/sys/windows"
++)
++
++func openForLimitedRead(path string) (*os.File, error) {
++	name, err := windows.UTF16PtrFromString(path)
++	if err != nil {
++		return nil, err
++	}
++	handle, err := windows.CreateFile(name, windows.GENERIC_READ,
++		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
++		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
++	if err != nil {
++		return nil, err
++	}
++	return os.NewFile(uintptr(handle), path), nil
++}
+diff --git a/family/lock_other.go b/family/lock_other.go
+index 30f1272a..2e32b542 100644
+--- a/family/lock_other.go
++++ b/family/lock_other.go
+@@ -1,4 +1,4 @@
+-//go:build !unix
++//go:build !unix && !windows
+ 
+ package family
+ 
+diff --git a/family/lock_windows.go b/family/lock_windows.go
+new file mode 100644
+index 00000000..1f683ce6
+--- /dev/null
++++ b/family/lock_windows.go
+@@ -0,0 +1,83 @@
++//go:build windows
++
++package family
++
++import (
++	"errors"
++	"os"
++	"sync"
++
++	"golang.org/x/sys/windows"
++)
++
++type lockHandle struct {
++	path string
++	mode LockMode
++}
++
++var lockModes = struct {
++	sync.Mutex
++	modes map[uintptr]lockHandle
++}{modes: map[uintptr]lockHandle{}}
++
++func flock(f *os.File, mode LockMode, wait bool) error {
++	flags := uint32(0)
++	if mode == Exclusive {
++		flags = windows.LOCKFILE_EXCLUSIVE_LOCK
++	}
++	if !wait {
++		flags |= windows.LOCKFILE_FAIL_IMMEDIATELY
++	}
++	_ = funlock(f) // Convert drops the old lock before changing its mode.
++	lockModes.Lock()
++	for handle, held := range lockModes.modes {
++		if handle != f.Fd() && held.path == f.Name() && (held.mode == Exclusive || mode == Exclusive) {
++			lockModes.Unlock()
++			return ErrLocked
++		}
++	}
++	lockModes.modes[f.Fd()] = lockHandle{path: f.Name(), mode: mode}
++	lockModes.Unlock()
++	overlapped := new(windows.Overlapped)
++	if err := windows.LockFileEx(windows.Handle(f.Fd()), flags, 0, 1, 0, overlapped); err != nil {
++		lockModes.Lock()
++		delete(lockModes.modes, f.Fd())
++		lockModes.Unlock()
++		if errors.Is(err, windows.ERROR_LOCK_VIOLATION) || errors.Is(err, windows.ERROR_IO_PENDING) {
++			return ErrLocked
++		}
++		return &os.PathError{Op: "flock", Path: f.Name(), Err: err}
++	}
++	return nil
++}
++
++func funlock(f *os.File) error {
++	lockModes.Lock()
++	delete(lockModes.modes, f.Fd())
++	lockModes.Unlock()
++	err := windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, new(windows.Overlapped))
++	if errors.Is(err, windows.ERROR_NOT_LOCKED) {
++		return nil
++	}
++	return err
++}
++
++// ProcessAlive reports whether a process with this pid exists (it may be
++// another user's). Pids are reused: use it only to ignore stale hints
++// (lock owners, runtime files), never as proof an app runs.
++func ProcessAlive(pid int) bool {
++	if pid <= 0 {
++		return false
++	}
++	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
++	if err != nil {
++		return !errors.Is(err, windows.ERROR_INVALID_PARAMETER)
++	}
++	defer windows.CloseHandle(handle)
++	var exitCode uint32
++	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
++		return true
++	}
++	const stillActive = 259
++	return exitCode == stillActive
++}
+diff --git a/go.mod b/go.mod
+index 4ae2526c..2f23fab0 100644
+--- a/go.mod
++++ b/go.mod
+@@ -2,4 +2,7 @@ module github.com/hehehai/actnowkit
+ 
+ go 1.27.1
+ 
+-require github.com/ebitengine/purego v0.11.1
++require (
++	github.com/ebitengine/purego v0.11.1
++	golang.org/x/sys v0.50.0
++)
+diff --git a/go.sum b/go.sum
+index 4ca215bf..54623702 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,2 +1,4 @@
+ github.com/ebitengine/purego v0.11.1 h1:2zpWRSQNVKN4eKsKO9eM1ILDgWfYMY9GwqRmK6XeQ/0=
+ github.com/ebitengine/purego v0.11.1/go.mod h1:DCHPP08djqhNSoTfImcnHYQRZmd0qhakvrozqaEYhGQ=
++golang.org/x/sys v0.50.0 h1:dkKZEFTEKaLr1sjhs0WiKqoi8Jj5nHbS3Njmx1UoMJs=
++golang.org/x/sys v0.50.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
+diff --git a/hfhub/cache_files.go b/hfhub/cache_files.go
+index ebca1619..0465107f 100644
+--- a/hfhub/cache_files.go
++++ b/hfhub/cache_files.go
+@@ -13,7 +13,9 @@ import (
+ 	"io"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
++	"time"
+ )
+ 
+ // checkBlob hashes a file: sha256 for LFS files, the git blob id for others.
+@@ -85,7 +87,17 @@ func writeAtomic(path string, data []byte) error {
+ 		os.Remove(tmp.Name())
+ 		return err
+ 	}
+-	return os.Rename(tmp.Name(), path)
++	for attempt := 0; ; attempt++ {
++		err := os.Rename(tmp.Name(), path)
++		if err == nil {
++			return nil
++		}
++		if runtime.GOOS != "windows" || attempt == 99 {
++			os.Remove(tmp.Name())
++			return err
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
+ }
+ 
+ // linkSnapshot makes snapshots/<commit>/<path> → ../../blobs/<blob> for
+@@ -113,7 +125,7 @@ func linkSnapshot(repoDir, commit string, files []remoteFile) error {
+ 			continue
+ 		}
+ 		os.Remove(link)
+-		if err := os.Symlink(target, link); err != nil {
++		if err := linkOrCopy(target, link, filepath.Join(repoDir, "blobs", f.blob)); err != nil {
+ 			return err
+ 		}
+ 	}
+@@ -122,3 +134,30 @@ func linkSnapshot(repoDir, commit string, files []remoteFile) error {
+ 	}
+ 	return nil
+ }
++
++func linkOrCopy(target, link, blob string) error {
++	if err := os.Symlink(target, link); err == nil {
++		return nil
++	}
++	if err := os.Link(blob, link); err == nil {
++		return nil
++	}
++	in, err := os.Open(blob)
++	if err != nil {
++		return err
++	}
++	defer in.Close()
++	info, err := in.Stat()
++	if err != nil {
++		return err
++	}
++	out, err := os.OpenFile(link, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
++	if err != nil {
++		return err
++	}
++	_, err = io.Copy(out, in)
++	if closeErr := out.Close(); err == nil {
++		err = closeErr
++	}
++	return err
++}
+diff --git a/hfhub/client_test.go b/hfhub/client_test.go
+index 143f178e..1da37f64 100644
+--- a/hfhub/client_test.go
++++ b/hfhub/client_test.go
+@@ -14,6 +14,7 @@ import (
+ 	"net/http/httptest"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"slices"
+ 	"strings"
+ 	"sync"
+@@ -300,9 +301,21 @@ func checkSnapshot(t *testing.T, c *Client, h *fakeHub) {
+ 		if err != nil || !bytes.Equal(got, want) {
+ 			t.Errorf("%s: %d bytes, %v", path, len(got), err)
+ 		}
+-		link, _ := os.Readlink(filepath.Join(l.Snapshot, filepath.FromSlash(path)))
+-		if !strings.HasPrefix(link, "../") || filepath.IsAbs(link) {
+-			t.Errorf("%s links to %q, want a relative link", path, link)
++		if runtime.GOOS == "windows" {
++			blob := filepath.Join(RepoDir(c.opts.CacheDir, testRepo), "blobs", sha(want))
++			if !h.lfs[path] {
++				blob = filepath.Join(RepoDir(c.opts.CacheDir, testRepo), "blobs", gitBlobID(want))
++			}
++			linkInfo, err := os.Stat(filepath.Join(l.Snapshot, filepath.FromSlash(path)))
++			blobInfo, blobErr := os.Stat(blob)
++			if err != nil || blobErr != nil || !os.SameFile(linkInfo, blobInfo) {
++				t.Errorf("%s does not resolve to its blob", path)
++			}
++		} else {
++			link, _ := os.Readlink(filepath.Join(l.Snapshot, filepath.FromSlash(path)))
++			if !strings.HasPrefix(link, "../") || filepath.IsAbs(link) {
++				t.Errorf("%s links to %q, want a relative link", path, link)
++			}
+ 		}
+ 	}
+ 	ref, err := os.ReadFile(filepath.Join(RepoDir(c.opts.CacheDir, testRepo), "refs", "main"))
+@@ -548,10 +561,19 @@ func TestDelete(t *testing.T) {
+ 	// Another snapshot (an older revision) shares config.json's blob and
+ 	// keeps it.
+ 	l, _ := c.Status(ctx, e)
+-	shared, _ := os.Readlink(filepath.Join(l.Snapshot, "config.json"))
++	shared, _ := models.ResolveBlob(RepoDir(c.opts.CacheDir, testRepo), filepath.Join(l.Snapshot, "config.json"))
+ 	old := filepath.Join(repo, "snapshots", strings.Repeat("f", 40))
+ 	os.MkdirAll(old, 0o755)
+-	os.Symlink(shared, filepath.Join(old, "config.json"))
++	if runtime.GOOS == "windows" {
++		if err := os.Link(filepath.Join(l.Snapshot, "config.json"), filepath.Join(old, "config.json")); err != nil {
++			t.Fatal(err)
++		}
++	} else {
++		shared, _ = os.Readlink(filepath.Join(l.Snapshot, "config.json"))
++		if err := os.Symlink(shared, filepath.Join(old, "config.json")); err != nil {
++			t.Fatal(err)
++		}
++	}
+ 	// The engine's copy of the repo stays while a snapshot does…
+ 	cp := EngineCopy(c.opts.CacheDir, testRepo)
+ 	os.MkdirAll(cp, 0o755)
+@@ -752,12 +774,24 @@ func TestStatusOfOtherToolsCache(t *testing.T) {
+ 	os.MkdirAll(filepath.Join(repo, "refs"), 0o755)
+ 	os.WriteFile(filepath.Join(repo, "refs", "main"), []byte(testCommit), 0o644)
+ 	os.WriteFile(filepath.Join(repo, "blobs", "abc"), []byte("{}"), 0o644)
+-	os.Symlink("../../blobs/abc", filepath.Join(repo, "snapshots", testCommit, "config.json"))
++	if runtime.GOOS == "windows" {
++		if err := os.Link(filepath.Join(repo, "blobs", "abc"), filepath.Join(repo, "snapshots", testCommit, "config.json")); err != nil {
++			t.Fatal(err)
++		}
++	} else if err := os.Symlink("../../blobs/abc", filepath.Join(repo, "snapshots", testCommit, "config.json")); err != nil {
++		t.Fatal(err)
++	}
+ 	if l, _ := Status(dir, e); l.State != Partial {
+ 		t.Errorf("config only: %+v", l)
+ 	}
+ 	os.WriteFile(filepath.Join(repo, "blobs", "w"), []byte("weights"), 0o644)
+-	os.Symlink("../../blobs/w", filepath.Join(repo, "snapshots", testCommit, "model.safetensors"))
++	if runtime.GOOS == "windows" {
++		if err := os.Link(filepath.Join(repo, "blobs", "w"), filepath.Join(repo, "snapshots", testCommit, "model.safetensors")); err != nil {
++			t.Fatal(err)
++		}
++	} else if err := os.Symlink("../../blobs/w", filepath.Join(repo, "snapshots", testCommit, "model.safetensors")); err != nil {
++		t.Fatal(err)
++	}
+ 	if l, _ := Status(dir, e); l.State != Downloaded || l.Bytes != 9 {
+ 		t.Errorf("with weights: %+v", l)
+ 	}
+diff --git a/hfhub/disk_other.go b/hfhub/disk_other.go
+index c564d115..b3854dcb 100644
+--- a/hfhub/disk_other.go
++++ b/hfhub/disk_other.go
+@@ -1,4 +1,4 @@
+-//go:build !(darwin || linux)
++//go:build !(darwin || linux || windows)
+ 
+ package hfhub
+ 
+diff --git a/hfhub/disk_windows.go b/hfhub/disk_windows.go
+new file mode 100644
+index 00000000..129f1d62
+--- /dev/null
++++ b/hfhub/disk_windows.go
+@@ -0,0 +1,31 @@
++//go:build windows
++
++package hfhub
++
++import (
++	"os"
++	"path/filepath"
++
++	"golang.org/x/sys/windows"
++)
++
++// freeBytes is the space available to the user on the volume of dir (or
++// of its nearest existing parent), -1 when unknown.
++func freeBytes(dir string) int64 {
++	for {
++		path, err := windows.UTF16PtrFromString(dir)
++		if err == nil {
++			var available, total, free uint64
++			if err := windows.GetDiskFreeSpaceEx(path, &available, &total, &free); err == nil {
++				return int64(available)
++			} else if !os.IsNotExist(err) {
++				return -1
++			}
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return -1
++		}
++		dir = parent
++	}
++}
+diff --git a/hfhub/download.go b/hfhub/download.go
+index ff192ede..e268ee53 100644
+--- a/hfhub/download.go
++++ b/hfhub/download.go
+@@ -11,6 +11,7 @@ import (
+ 	"net/http"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"sync"
+ 	"sync/atomic"
+@@ -621,13 +622,28 @@ func (c *Client) finishFile(ctx context.Context, fs *fileState) error {
+ 		return err
+ 	}
+ 	if !ok {
++		if err := fs.f.Close(); err != nil {
++			return err
++		}
+ 		os.Remove(fs.path)
+ 		os.Remove(fs.path + ".parts")
+ 		return fmt.Errorf("%s: %w", fs.Path, ErrChecksum)
+ 	}
++	if err := fs.f.Close(); err != nil {
++		return err
++	}
+ 	if err := os.Rename(fs.path, strings.TrimSuffix(fs.path, ".incomplete")); err != nil {
+ 		return err
+ 	}
+-	os.Remove(fs.path + ".parts")
++	for attempt := 0; ; attempt++ {
++		err := os.Remove(fs.path + ".parts")
++		if err == nil || os.IsNotExist(err) {
++			break
++		}
++		if runtime.GOOS != "windows" || attempt == 99 {
++			break
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
+ 	return nil
+ }
+diff --git a/hfhub/family_test.go b/hfhub/family_test.go
+index cbf435da..468d150d 100644
+--- a/hfhub/family_test.go
++++ b/hfhub/family_test.go
+@@ -80,7 +80,7 @@ func wait(t *testing.T, what string, ch <-chan struct{}) {
+ 	select {
+ 	case <-ch:
+ 	case <-time.After(10 * time.Second):
+-		t.Fatalf("timed out waiting for %s", what)
++		panic("timed out waiting for " + what)
+ 	}
+ }
+ 
+@@ -113,7 +113,7 @@ func TestFamilyConcurrentDownload(t *testing.T) {
+ 
+ 	var mu sync.Mutex
+ 	var waitingFor []string
+-	sawDicta := make(chan struct{})
++	sawDicta := make(chan struct{}, 1)
+ 	var once sync.Once
+ 	errB := make(chan error, 1)
+ 	go func() {
+@@ -125,7 +125,7 @@ func TestFamilyConcurrentDownload(t *testing.T) {
+ 			waitingFor = append(waitingFor, p.WaitingFor)
+ 			mu.Unlock()
+ 			if p.WaitingFor == bidDicta {
+-				once.Do(func() { close(sawDicta) })
++				once.Do(func() { sawDicta <- struct{}{} })
+ 			}
+ 		})
+ 	}()
+@@ -372,7 +372,7 @@ func TestFamilyVerifyRepair(t *testing.T) {
+ 	defer w.Close()
+ 
+ 	l, _ := ca.Status(ctx, e)
+-	blob, _ := filepath.EvalSymlinks(filepath.Join(l.Snapshot, "model.safetensors"))
++	blob, _ := models.ResolveBlob(RepoDir(env.hub, testRepo), filepath.Join(l.Snapshot, "model.safetensors"))
+ 	data, _ := os.ReadFile(blob)
+ 	data[100] ^= 1
+ 	os.WriteFile(blob, data, 0o644)
+diff --git a/hfhub/hub_test.go b/hfhub/hub_test.go
+index 744442a0..2d449ddb 100644
+--- a/hfhub/hub_test.go
++++ b/hfhub/hub_test.go
+@@ -20,7 +20,7 @@ func TestCacheDir(t *testing.T) {
+ 	if got := CacheDir(); got != filepath.Join(fam, "models", "hub") {
+ 		t.Errorf("CacheDir %q", got)
+ 	}
+-	if got := RepoDir("/cache", "mlx-community/Kokoro-82M-bf16"); got != "/cache/models--mlx-community--Kokoro-82M-bf16" {
++	if got := RepoDir("/cache", "mlx-community/Kokoro-82M-bf16"); got != filepath.Join("/cache", "models--mlx-community--Kokoro-82M-bf16") {
+ 		t.Errorf("RepoDir %q", got)
+ 	}
+ }
+@@ -94,7 +94,7 @@ func TestResolveToken(t *testing.T) {
+ 
+ 	t.Setenv("HF_TOKEN_PATH", "")
+ 	t.Setenv("HF_HOME", "/data/hf")
+-	if TokenFile() != "/data/hf/token" {
++	if TokenFile() != filepath.Join("/data/hf", "token") {
+ 		t.Errorf("TokenFile %q", TokenFile())
+ 	}
+ 	if MaskToken("hf_abcdefghijkl") != "hf_…ijkl" || MaskToken("short") != "•••••" {
+diff --git a/hfhub/local.go b/hfhub/local.go
+index eb06df88..8b6afd83 100644
+--- a/hfhub/local.go
++++ b/hfhub/local.go
+@@ -191,7 +191,7 @@ func (c *Client) verifyOne(ctx context.Context, e Entry, removed *bool) ([]strin
+ 	snap := filepath.Join(repoDir, "snapshots", commit)
+ 	for _, f := range files {
+ 		link := filepath.Join(snap, filepath.FromSlash(f.Path))
+-		blob, err := filepath.EvalSymlinks(link)
++		blob, err := models.ResolveBlob(repoDir, link)
+ 		if err != nil {
+ 			bad = append(bad, f.Path)
+ 			continue
+diff --git a/internal/darwin/xattr.go b/internal/darwin/xattr.go
+index 72a3f6b6..768454b9 100644
+--- a/internal/darwin/xattr.go
++++ b/internal/darwin/xattr.go
+@@ -15,7 +15,6 @@ func errno() syscall.Errno {
+ 	return syscall.EIO
+ }
+ 
+-
+ // SetXattr sets an extended attribute of path (following symlinks).
+ func SetXattr(path, name string, value []byte) error {
+ 	if err := loadLibSystem(); err != nil {
+diff --git a/models/decide.go b/models/decide.go
+index 23220eab..9c1c4a24 100644
+--- a/models/decide.go
++++ b/models/decide.go
+@@ -270,21 +270,33 @@ func (s *Store) DeleteModel(ctx context.Context, ref Ref, model string, scope Sc
+ 	return s.Delete(ctx, ref, scope)
+ }
+ 
++type snapshotBlob struct {
++	sizeBytes     int64
++	snapshotLinks uint32
++}
++
+ // snapshotBlobs maps the blobs a snapshot links (absolute paths) to their
+-// sizes.
+-func snapshotBlobs(snap string) map[string]int64 {
+-	out := map[string]int64{}
++// sizes and the snapshot entries hard-linked to them.
++func snapshotBlobs(snap string) map[string]snapshotBlob {
++	out := map[string]snapshotBlob{}
++	repoDir := filepath.Dir(filepath.Dir(snap))
+ 	_ = filepath.WalkDir(snap, func(p string, d fs.DirEntry, err error) error {
+ 		if err != nil || d.IsDir() {
+ 			return nil
+ 		}
+-		target, err := filepath.EvalSymlinks(p)
++		target, err := ResolveBlob(repoDir, p)
++		if err != nil {
++			return nil
++		}
++		targetInfo, err := os.Stat(target)
+ 		if err != nil {
+ 			return nil
+ 		}
+-		if fi, err := os.Stat(target); err == nil {
+-			out[target] = fi.Size()
++		blob := snapshotBlob{sizeBytes: targetInfo.Size(), snapshotLinks: out[target].snapshotLinks}
++		if linkInfo, err := os.Stat(p); err == nil && os.SameFile(targetInfo, linkInfo) {
++			blob.snapshotLinks++
+ 		}
++		out[target] = blob
+ 		return nil
+ 	})
+ 	return out
+@@ -302,9 +314,9 @@ func usedBlobNames(repoDir, skip string) (used map[string]bool, others int) {
+ 		}
+ 		others++
+ 		_ = filepath.WalkDir(filepath.Join(snaps, e.Name()), func(p string, d fs.DirEntry, err error) error {
+-			if err == nil && d.Type()&fs.ModeSymlink != 0 {
+-				if t, err := os.Readlink(p); err == nil {
+-					used[filepath.Base(t)] = true
++			if err == nil && !d.IsDir() {
++				if target, err := ResolveBlob(repoDir, p); err == nil {
++					used[filepath.Base(target)] = true
+ 				}
+ 			}
+ 			return nil
+@@ -318,13 +330,14 @@ func freeable(hub string, ref Ref) (int64, bool) {
+ 	repoDir := RepoDir(hub, ref.Repo)
+ 	used, others := usedBlobNames(repoDir, ref.Revision)
+ 	var n int64
+-	for p, size := range snapshotBlobs(SnapshotDir(hub, ref)) {
+-		if fi, err := os.Stat(p); err == nil && linkedElsewhere(fi) {
+-			continue // an imported blob the Hugging Face cache still holds
++	for p, blob := range snapshotBlobs(SnapshotDir(hub, ref)) {
++		if used[filepath.Base(p)] {
++			continue
+ 		}
+-		if !used[filepath.Base(p)] {
+-			n += size
++		if fi, err := os.Stat(p); err == nil && linkedElsewhere(p, fi, blob.snapshotLinks) {
++			continue // an imported blob the Hugging Face cache still holds
+ 		}
++		n += blob.sizeBytes
+ 	}
+ 	return n, others == 0
+ }
+@@ -400,7 +413,8 @@ func removeSize(p string) int64 {
+ 	if err != nil {
+ 		return 0
+ 	}
+-	if os.Remove(p) != nil || linkedElsewhere(fi) {
++	linked := linkedElsewhere(p, fi, 0)
++	if os.Remove(p) != nil || linked {
+ 		return 0
+ 	}
+ 	return fi.Size()
+@@ -442,7 +456,7 @@ func (s *Store) Orphans() ([]Orphan, error) {
+ 			for p, n := range snapshotBlobs(SnapshotDir(s.Hub, c.Ref())) {
+ 				if !seen[p] {
+ 					seen[p] = true
+-					o.Bytes += n
++					o.Bytes += n.sizeBytes
+ 				}
+ 			}
+ 		}
+@@ -545,9 +559,9 @@ func (s *Store) Usage() (Usage, error) {
+ 			}
+ 			seen[p] = true
+ 			if d.InUse() {
+-				u.Shared += n
++				u.Shared += n.sizeBytes
+ 			} else {
+-				u.Mine += n
++				u.Mine += n.sizeBytes
+ 			}
+ 		}
+ 	}
+diff --git a/models/disk_other.go b/models/disk_other.go
+index 22517e3d..9fb01a7c 100644
+--- a/models/disk_other.go
++++ b/models/disk_other.go
+@@ -1,4 +1,4 @@
+-//go:build !(darwin || linux)
++//go:build !(darwin || linux || windows)
+ 
+ package models
+ 
+@@ -6,4 +6,4 @@ import "os"
+ 
+ func freeSpace(string) int64 { return -1 }
+ 
+-func linkedElsewhere(os.FileInfo) bool { return false }
++func linkedElsewhere(string, os.FileInfo, uint32) bool { return false }
+diff --git a/models/disk_unix.go b/models/disk_unix.go
+index 8f4c2ba9..548550bd 100644
+--- a/models/disk_unix.go
++++ b/models/disk_unix.go
+@@ -28,7 +28,7 @@ func freeSpace(dir string) int64 {
+ 
+ // linkedElsewhere reports a file with other hard links (an imported blob
+ // still in the Hugging Face cache): removing this name frees nothing.
+-func linkedElsewhere(fi os.FileInfo) bool {
++func linkedElsewhere(_ string, fi os.FileInfo, _ uint32) bool {
+ 	st, ok := fi.Sys().(*syscall.Stat_t)
+ 	return ok && st.Nlink > 1
+ }
+diff --git a/models/disk_windows.go b/models/disk_windows.go
+new file mode 100644
+index 00000000..7c4ce844
+--- /dev/null
++++ b/models/disk_windows.go
+@@ -0,0 +1,47 @@
++//go:build windows
++
++package models
++
++import (
++	"os"
++	"path/filepath"
++	"syscall"
++
++	"golang.org/x/sys/windows"
++)
++
++// freeSpace is the space available to the user on dir's volume (or its
++// nearest existing parent's), -1 when unknown.
++func freeSpace(dir string) int64 {
++	for {
++		path, err := windows.UTF16PtrFromString(dir)
++		if err == nil {
++			var available, total, free uint64
++			if err := windows.GetDiskFreeSpaceEx(path, &available, &total, &free); err == nil {
++				return int64(available)
++			} else if !os.IsNotExist(err) {
++				return -1
++			}
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return -1
++		}
++		dir = parent
++	}
++}
++
++// linkedElsewhere reports a file with hard links beyond its own name and
++// the snapshot entries that resolve to it.
++func linkedElsewhere(path string, _ os.FileInfo, snapshotLinks uint32) bool {
++	file, err := os.Open(path)
++	if err != nil {
++		return false
++	}
++	defer file.Close()
++	var info syscall.ByHandleFileInformation
++	if err := syscall.GetFileInformationByHandle(syscall.Handle(file.Fd()), &info); err != nil {
++		return false
++	}
++	return info.NumberOfLinks > snapshotLinks+1
++}
+diff --git a/models/import.go b/models/import.go
+index 9e5121ce..75057e6a 100644
+--- a/models/import.go
++++ b/models/import.go
+@@ -439,7 +439,14 @@ func linkFiles(dir string, files []srcFile, fresh bool) error {
+ 			}
+ 			_ = os.Remove(link)
+ 		}
+-		if err := os.Symlink(target, link); err != nil {
++		if err := os.Symlink(target, link); err == nil {
++			continue
++		}
++		blob := filepath.Join(dir, "..", "..", "blobs", f.blob)
++		if err := os.Link(blob, link); err == nil {
++			continue
++		}
++		if err := copyBlob(blob, link, f.size); err != nil {
+ 			return err
+ 		}
+ 	}
+diff --git a/models/models_test.go b/models/models_test.go
+index 16f34612..ba134738 100644
+--- a/models/models_test.go
++++ b/models/models_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"errors"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"slices"
+ 	"strconv"
+ 	"strings"
+@@ -41,7 +42,11 @@ func snap(t *testing.T, hub, repo, rev string, files map[string]string) {
+ 		link := filepath.Join(dir, "snapshots", rev, filepath.FromSlash(p))
+ 		os.MkdirAll(filepath.Dir(link), 0o755)
+ 		target := strings.Repeat("../", strings.Count(p, "/")+2) + "blobs/" + blob
+-		if err := os.Symlink(target, link); err != nil {
++		if runtime.GOOS == "windows" {
++			if err := os.Link(bp, link); err != nil {
++				t.Fatal(err)
++			}
++		} else if err := os.Symlink(target, link); err != nil {
+ 			t.Fatal(err)
+ 		}
+ 	}
+@@ -94,25 +99,27 @@ func TestResolveHub(t *testing.T) {
+ 	if h, src := EnvHub(); h != "/cache" || src != FromEnvHub {
+ 		t.Errorf("EnvHub %s %s", h, src)
+ 	}
+-	if h, src := ResolveHub(false, "/fam", "/own/"); h != "/own" || src != FromApp {
++	own := filepath.Clean("/own")
++	familyRoot := filepath.Clean("/fam")
++	if h, src := ResolveHub(false, familyRoot, own+string(filepath.Separator)); h != own || src != FromApp {
+ 		t.Errorf("%s %s", h, src)
+ 	}
+-	if h, src := ResolveHub(true, "/fam", "/own"); h != "/fam" || src != FromFamily {
++	if h, src := ResolveHub(true, familyRoot, own); h != familyRoot || src != FromFamily {
+ 		t.Errorf("%s %s", h, src)
+ 	}
+ }
+ 
+ func TestPaths(t *testing.T) {
+-	if got := RepoDir("/h", repoA); got != "/h/models--mlx-community--Qwen3-ASR-0.6B-4bit" {
++	if got := RepoDir("/h", repoA); got != filepath.Join("/h", "models--mlx-community--Qwen3-ASR-0.6B-4bit") {
+ 		t.Error(got)
+ 	}
+-	if got := BlobLockFile("/h", repoA, "abc"); got != "/h/.locks/models--mlx-community--Qwen3-ASR-0.6B-4bit/abc.lock" {
++	if got := BlobLockFile("/h", repoA, "abc"); got != filepath.Join("/h", ".locks", "models--mlx-community--Qwen3-ASR-0.6B-4bit", "abc.lock") {
+ 		t.Error(got)
+ 	}
+-	if got := RepoLockFile("/h", repoA); got != "/h/.locks/models--mlx-community--Qwen3-ASR-0.6B-4bit/actnow-repo.lock" {
++	if got := RepoLockFile("/h", repoA); got != filepath.Join("/h", ".locks", "models--mlx-community--Qwen3-ASR-0.6B-4bit", "actnow-repo.lock") {
+ 		t.Error(got)
+ 	}
+-	if got := EngineCopy("/h", repoA); got != "/h/mlx-audio/mlx-community_Qwen3-ASR-0.6B-4bit" {
++	if got := EngineCopy("/h", repoA); got != filepath.Join("/h", "mlx-audio", "mlx-community_Qwen3-ASR-0.6B-4bit") {
+ 		t.Error(got)
+ 	}
+ 	for _, bad := range []string{"", "a", "a/b/c", "../x", "a/..", "a/.b/../c", "/abs", "a/b c"} {
+diff --git a/models/resolve_blob.go b/models/resolve_blob.go
+new file mode 100644
+index 00000000..d17c6833
+--- /dev/null
++++ b/models/resolve_blob.go
+@@ -0,0 +1,69 @@
++package models
++
++import (
++	"crypto/sha1"
++	"crypto/sha256"
++	"encoding/hex"
++	"fmt"
++	"io"
++	"os"
++	"path/filepath"
++)
++
++// ResolveBlob returns the blob that a snapshot entry resolves to, whether the entry is a symlink, a hard link, or a copy.
++func ResolveBlob(repoDir, link string) (string, error) {
++	target, err := filepath.EvalSymlinks(link)
++	if err != nil {
++		return "", err
++	}
++	blobsDir := filepath.Join(repoDir, "blobs")
++	if filepath.Dir(target) == blobsDir {
++		return target, nil
++	}
++	info, err := os.Stat(target)
++	if err != nil {
++		return "", err
++	}
++	entries, err := os.ReadDir(blobsDir)
++	if err != nil {
++		return "", err
++	}
++	for _, entry := range entries {
++		if entry.IsDir() {
++			continue
++		}
++		candidate := filepath.Join(blobsDir, entry.Name())
++		candidateInfo, err := os.Stat(candidate)
++		if err == nil && os.SameFile(info, candidateInfo) {
++			return candidate, nil
++		}
++	}
++	lfsID, gitID, err := blobIDs(target, info.Size())
++	if err != nil {
++		return "", err
++	}
++	for _, entry := range entries {
++		if entry.IsDir() {
++			continue
++		}
++		if name := entry.Name(); name == lfsID || name == gitID {
++			return filepath.Join(blobsDir, name), nil
++		}
++	}
++	return "", fmt.Errorf("models: no blob for %s in %s", link, blobsDir)
++}
++
++func blobIDs(path string, size int64) (string, string, error) {
++	file, err := os.Open(path)
++	if err != nil {
++		return "", "", err
++	}
++	defer file.Close()
++	lfsHash := sha256.New()
++	gitHash := sha1.New()
++	fmt.Fprintf(gitHash, "blob %d\x00", size)
++	if _, err := io.Copy(io.MultiWriter(lfsHash, gitHash), file); err != nil {
++		return "", "", err
++	}
++	return hex.EncodeToString(lfsHash.Sum(nil)), hex.EncodeToString(gitHash.Sum(nil)), nil
++}
+diff --git a/models/status.go b/models/status.go
+index 86c22459..54706302 100644
+--- a/models/status.go
++++ b/models/status.go
+@@ -91,13 +91,15 @@ func Check(hub string, c Claim) Status {
+ 		present[rel] = true
+ 		if want, ok := c.Sizes[rel]; ok && want > 0 && fi.Size() != want {
+ 			st.Damaged = append(st.Damaged, rel)
+-		} else if t, err := os.Readlink(p); err == nil && recorded != nil {
+-			if want, ok := recorded[filepath.Base(t)]; ok && fi.Size() != want {
++		} else if target, err := ResolveBlob(repoDir, p); err != nil {
++			st.Missing = append(st.Missing, rel)
++		} else if recorded != nil {
++			if want, ok := recorded[filepath.Base(target)]; ok && fi.Size() != want {
+ 				st.Damaged = append(st.Damaged, rel)
+ 			}
+ 		}
+ 		key := p
+-		if target, err := filepath.EvalSymlinks(p); err == nil {
++		if target, err := ResolveBlob(repoDir, p); err == nil {
+ 			key = target
+ 		}
+ 		if !seen[key] {
+diff --git a/models/v08_test.go b/models/v08_test.go
+index 4fbe8296..c5474117 100644
+--- a/models/v08_test.go
++++ b/models/v08_test.go
+@@ -4,20 +4,11 @@ import (
+ 	"context"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+-	"syscall"
+ 	"testing"
+ )
+ 
+-func inode(t *testing.T, p string) uint64 {
+-	t.Helper()
+-	fi, err := os.Stat(p)
+-	if err != nil {
+-		t.Fatal(err)
+-	}
+-	return fi.Sys().(*syscall.Stat_t).Ino
+-}
+-
+ // A3: a truncated blob is not "installed".
+ func TestCheckSizes(t *testing.T) {
+ 	e := newEnv(t)
+@@ -26,7 +17,10 @@ func TestCheckSizes(t *testing.T) {
+ 	if st := Check(e.hub, c); st.State != Installed {
+ 		t.Fatalf("before %+v", st)
+ 	}
+-	weights, _ := filepath.EvalSymlinks(filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors"))
++	weights, err := ResolveBlob(RepoDir(e.hub, repoA), filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors"))
++	if err != nil {
++		t.Fatal(err)
++	}
+ 	// Without recorded sizes, only the catalogue's size tells.
+ 	os.Truncate(weights, 100)
+ 	if st := Check(e.hub, c); st.State != Installed {
+@@ -151,11 +145,21 @@ func TestImport(t *testing.T) {
+ 	// Hard links: same inode, the source untouched.
+ 	a := filepath.Join(SnapshotDir(e.hub, Ref{repoA, revA}), "model.safetensors")
+ 	b := filepath.Join(SnapshotDir(old, Ref{repoA, revA}), "model.safetensors")
+-	if inode(t, a) != inode(t, b) {
++	aInfo, err := os.Stat(a)
++	if err != nil {
++		t.Fatal(err)
++	}
++	bInfo, err := os.Stat(b)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !os.SameFile(aInfo, bInfo) {
+ 		t.Fatal("not hard-linked")
+ 	}
+-	if l, _ := os.Readlink(a); !strings.HasPrefix(l, "../../blobs/") {
+-		t.Fatalf("link %q", l)
++	if runtime.GOOS != "windows" {
++		if l, _ := os.Readlink(a); !strings.HasPrefix(l, "../../blobs/") {
++			t.Fatalf("link %q", l)
++		}
+ 	}
+ 	if data, _ := os.ReadFile(filepath.Join(RepoDir(e.hub, repoA), "refs", "main")); string(data) != revA {
+ 		t.Fatalf("refs/main %q", data)
+diff --git a/registry/discover.go b/registry/discover.go
+index febff64e..bbfc30b9 100644
+--- a/registry/discover.go
++++ b/registry/discover.go
+@@ -174,12 +174,16 @@ func BundlePath() string {
+ }
+ 
+ func bundleOf(exe string) string {
+-	for dir := filepath.Dir(exe); dir != "/" && dir != "." && dir != ""; dir = filepath.Dir(dir) {
++	for dir := filepath.Dir(exe); ; {
+ 		if strings.HasSuffix(dir, ".app") {
+ 			return dir
+ 		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return ""
++		}
++		dir = parent
+ 	}
+-	return ""
+ }
+ 
+ // TeamID is the Team ID of the running app's signature ("" when ad hoc
+diff --git a/registry/registry_test.go b/registry/registry_test.go
+index b034f4e6..3db9b03d 100644
+--- a/registry/registry_test.go
++++ b/registry/registry_test.go
+@@ -201,7 +201,8 @@ func TestDiscover(t *testing.T) {
+ }
+ 
+ func TestBundleOf(t *testing.T) {
+-	if got := bundleOf("/Applications/Dicta.app/Contents/MacOS/Dicta"); got != "/Applications/Dicta.app" {
++	exe := filepath.Join("/Applications", "Dicta.app", "Contents", "MacOS", "Dicta")
++	if got := bundleOf(exe); got != filepath.Join("/Applications", "Dicta.app") {
+ 		t.Error(got)
+ 	}
+ 	if got := bundleOf("/usr/local/bin/tool"); got != "" {
+diff --git a/runtime/memory_other.go b/runtime/memory_other.go
+index 31a1bbf0..e7097f9d 100644
+--- a/runtime/memory_other.go
++++ b/runtime/memory_other.go
+@@ -1,4 +1,4 @@
+-//go:build !darwin
++//go:build !darwin && !windows
+ 
+ package runtime
+ 
+diff --git a/runtime/memory_windows.go b/runtime/memory_windows.go
+new file mode 100644
+index 00000000..8d569f8f
+--- /dev/null
++++ b/runtime/memory_windows.go
+@@ -0,0 +1,33 @@
++//go:build windows
++
++package runtime
++
++import (
++	"unsafe"
++
++	"golang.org/x/sys/windows"
++)
++
++var globalMemoryStatusEx = windows.NewLazySystemDLL("kernel32.dll").NewProc("GlobalMemoryStatusEx")
++
++type memoryStatusEx struct {
++	sizeBytes                uint32
++	memoryLoadPercent        uint32
++	totalPhysicalBytes       uint64
++	availablePhysicalBytes   uint64
++	totalPageFileBytes       uint64
++	availablePageFileBytes   uint64
++	totalVirtualBytes        uint64
++	availableVirtualBytes    uint64
++	availableExtendedVirtualBytes uint64
++}
++
++func physicalMemory() uint64 {
++	status := memoryStatusEx{}
++	status.sizeBytes = uint32(unsafe.Sizeof(status))
++	result, _, _ := globalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&status)))
++	if result == 0 {
++		return 0
++	}
++	return status.totalPhysicalBytes
++}
+diff --git a/runtime/proc_other.go b/runtime/proc_other.go
+index 52796133..f1ba4660 100644
+--- a/runtime/proc_other.go
++++ b/runtime/proc_other.go
+@@ -1,4 +1,4 @@
+-//go:build !darwin
++//go:build !darwin && !windows
+ 
+ package runtime
+ 
+diff --git a/runtime/proc_windows.go b/runtime/proc_windows.go
+new file mode 100644
+index 00000000..c761cd8a
+--- /dev/null
++++ b/runtime/proc_windows.go
+@@ -0,0 +1,34 @@
++//go:build windows
++
++package runtime
++
++import (
++	"time"
++
++	"golang.org/x/sys/windows"
++)
++
++var getTickCount64 = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetTickCount64")
++
++const maximumProcessPathLength = 32768
++
++// procExe is the executable of a running process; "" when unknown.
++func procExe(pid int) string {
++	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
++	if err != nil {
++		return ""
++	}
++	defer windows.CloseHandle(handle)
++	buffer := make([]uint16, maximumProcessPathLength)
++	size := uint32(len(buffer))
++	if err := windows.QueryFullProcessImageName(handle, 0, &buffer[0], &size); err != nil {
++		return ""
++	}
++	return windows.UTF16ToString(buffer[:size])
++}
++
++// bootTime is when the system started; zero when unknown.
++func bootTime() time.Time {
++	uptimeMilliseconds, _, _ := getTickCount64.Call()
++	return time.Now().Add(-time.Duration(uptimeMilliseconds) * time.Millisecond)
++}
+diff --git a/settings/settings_test.go b/settings/settings_test.go
+index 6f30720b..8fd957cf 100644
+--- a/settings/settings_test.go
++++ b/settings/settings_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"errors"
+ 	"os"
++	"path/filepath"
+ 	"strings"
+ 	"sync"
+ 	"testing"
+@@ -12,6 +13,7 @@ import (
+ )
+ 
+ func TestNormalize(t *testing.T) {
++	modelRoot := filepath.Join(t.TempDir(), "hub")
+ 	ok := map[string][2]string{
+ 		"lang":    {KeyLanguage, "zh-Hans"},
+ 		"sys":     {KeyLanguage, ""},
+@@ -21,7 +23,7 @@ func TestNormalize(t *testing.T) {
+ 		"socks":   {KeyProxy, "socks5://127.0.0.1:7897"},
+ 		"ep":      {KeyHFEndpoints, "mirror"},
+ 		"urls":    {KeyHFEndpoints, "https://a.example/ https://b.example"},
+-		"root":    {KeyModelsRoot, "/Volumes/X/hub/"},
++		"root":    {KeyModelsRoot, modelRoot + string(filepath.Separator)},
+ 		"default": {KeyModelsRoot, ""},
+ 	}
+ 	for name, kv := range ok {
+@@ -32,7 +34,7 @@ func TestNormalize(t *testing.T) {
+ 	if v, _ := Normalize(KeyHFEndpoints, "https://a.example/ https://b.example"); v != "https://a.example https://b.example" {
+ 		t.Error(v)
+ 	}
+-	if v, _ := Normalize(KeyModelsRoot, "/Volumes/X/hub/"); v != "/Volumes/X/hub" {
++	if v, _ := Normalize(KeyModelsRoot, modelRoot+string(filepath.Separator)); v != modelRoot {
+ 		t.Error(v)
+ 	}
+ 	bad := [][2]string{{KeyLanguage, "zh_CN"}, {KeyProxy, "127.0.0.1:7897"}, {KeyProxy, "ftp://x"}, {KeyHFEndpoints, "x y"}, {KeyModelsRoot, "rel/path"}, {"other.key", "x"}}
+@@ -127,13 +129,14 @@ func TestEffectiveAndFollow(t *testing.T) {
+ 
+ func TestMigrate(t *testing.T) {
+ 	d := family.At(t.TempDir())
++	modelRoot := filepath.Join(t.TempDir(), "Models", "hub")
+ 	ctx := context.Background()
+ 	// AudioSmith first: a custom proxy and model folder, default language.
+ 	out, err := Migrate(ctx, d, "dev.hehehai.audiosmith", map[string]Local{
+ 		KeyLanguage:    {Value: "", IsDefault: true},
+ 		KeyProxy:       {Value: "http://127.0.0.1:7897"},
+ 		KeyHFEndpoints: {Value: "auto", IsDefault: true},
+-		KeyModelsRoot:  {Value: "/Volumes/Models/hub"},
++		KeyModelsRoot:  {Value: modelRoot},
+ 	})
+ 	if err != nil {
+ 		t.Fatal(err)
