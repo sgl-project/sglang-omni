@@ -36,9 +36,11 @@ else:
 _M = TypeVar("_M")
 _MAX_HTTP_REDIRECTS = 5
 
+MEDIA_WORKERS = 8
+
 # Global thread pool for CPU-bound tasks (decoding/resampling)
 global_thread_pool = ThreadPoolExecutor(
-    max_workers=8,
+    max_workers=MEDIA_WORKERS,
     thread_name_prefix="media-decode",
     initializer=name_native_thread,
 )

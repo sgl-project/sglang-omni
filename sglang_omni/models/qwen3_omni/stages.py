@@ -8,10 +8,14 @@ Each factory returns either:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 import torch
@@ -26,7 +30,10 @@ from sglang_omni.models.qwen3_omni.components.image_encoder import (
     ImageEncoderOutput,
     Qwen3OmniImageEncoder,
 )
-from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPreprocessor
+from sglang_omni.models.qwen3_omni.components.preprocessor import (
+    Qwen3OmniPreprocessor,
+    request_has_video,
+)
 from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     StreamingDetokenizeScheduler,
     create_streaming_detokenize_scheduler,
@@ -46,6 +53,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.sglang_backend import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
@@ -53,10 +61,10 @@ from sglang_omni.scheduling.sglang_backend import (
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
-from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.cpu import automatic_video_decode_threads
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 from sglang_omni.utils.misc import avail_gpu_mem
+from sglang_omni.utils.process import name_native_thread
 
 if TYPE_CHECKING:
 
@@ -1000,21 +1008,62 @@ def batch_audio_encoder_payloads(
 # ---------------------------------------------------------------------------
 
 
+class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
+    """Run requests in arrival order on the scheduler thread, except that a request with video gets a thread of its own, so its long decode holds up no request behind it."""
+
+    def __init__(
+        self,
+        preprocessor: Qwen3OmniPreprocessor,
+        video_executor: ThreadPoolExecutor,
+    ) -> None:
+        super().__init__(
+            preprocessor,
+            shutdown_callback=partial(
+                video_executor.shutdown, wait=False, cancel_futures=True
+            ),
+        )
+        self.video_executor = video_executor
+
+    def run_single(self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop) -> None:
+        if request_has_video(msg.data):
+            self.video_executor.submit(copy_context().run, self.run_video_request, msg)
+        else:
+            super().run_single(msg, loop)
+
+    def run_video_request(self, msg: IncomingMessage) -> None:
+        if self.consume_if_aborted(msg.request_id):
+            return
+        else:
+            pass
+        try:
+            result = self.run_compute_in_thread(msg.data)
+        except BaseException as exc:
+            if self.consume_if_aborted(msg.request_id):
+                return
+            else:
+                pass
+            logger.exception(f"Preprocessing failed for {msg.request_id}")
+            self.emit_error(msg.request_id, exc, self.outbox)
+            return
+        if self.consume_if_aborted(msg.request_id):
+            return
+        else:
+            pass
+        self.emit_result(msg.request_id, result, self.outbox)
+
+
 def create_preprocessing_executor(
     model_path: str,
     *,
+    max_concurrency: int,
     max_seq_len: int | None = None,
-    max_concurrency: int = 1,
     video_fps: float | None = None,
     video_max_frames: int | None = None,
     video_min_pixels: int | None = None,
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
     video_decode_threads: int | None = None,
-) -> (
-    SimpleScheduler[StagePayload, StagePayload]
-    | ThreadedSimpleScheduler[StagePayload, StagePayload]
-):
+) -> SimpleScheduler[StagePayload, StagePayload]:
     if video_decode_threads is None:
         video_decode_threads = automatic_video_decode_threads(max(max_concurrency, 1))
     else:
@@ -1030,22 +1079,18 @@ def create_preprocessing_executor(
         video_decode_threads=video_decode_threads,
     )
 
-    async def _preprocess(payload: StagePayload) -> StagePayload:
-        return await preprocessor(payload)
-
-    # Note (wenyao): threaded dispatch deepens thinker batches, and greedy bf16 MoE
-    # answers shift with batch composition (Video-MME CI flipped); serial by default.
     if max_concurrency <= 1:
-        from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-
-        return SimpleScheduler[StagePayload, StagePayload](_preprocess)
+        return SimpleScheduler[StagePayload, StagePayload](preprocessor)
     else:
         pass
 
-    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
-
-    return ThreadedSimpleScheduler[StagePayload, StagePayload](
-        _preprocess, max_concurrency=max_concurrency
+    return PreprocessingScheduler(
+        preprocessor,
+        ThreadPoolExecutor(
+            max_workers=max_concurrency,
+            thread_name_prefix="preprocessing-video",
+            initializer=name_native_thread,
+        ),
     )
 
 

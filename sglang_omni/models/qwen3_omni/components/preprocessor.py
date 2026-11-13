@@ -166,6 +166,26 @@ def with_content_media(content_urls: list[str], top_level: object) -> object:
         return list(content_urls)
 
 
+def request_has_video(payload: StagePayload) -> bool:
+    """Whether the request names a video; a malformed one is left for the preprocessor to reject."""
+    inputs = payload.request.inputs
+    if isinstance(inputs, list):
+        inputs = {"messages": inputs}
+    elif not isinstance(inputs, dict):
+        return False
+    else:
+        pass
+    if inputs.get("videos") or inputs.get("video"):
+        return True
+    else:
+        pass
+    try:
+        _, content_media = split_content_parts(inputs.get("messages", []))
+    except ValueError:
+        return False
+    return bool(content_media.videos)
+
+
 # Special-token attributes the HF Qwen3OmniMoeProcessor reads off the tokenizer.
 _QWEN3_OMNI_SPECIAL_TOKEN_KEYS = (
     "image_token",

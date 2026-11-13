@@ -20,6 +20,7 @@ from sglang_omni.config import (
 from sglang_omni.config.session_audio import AudioSessionPipelineConfig, StageGroup
 from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS
 from sglang_omni.platforms import current_platform
+from sglang_omni.preprocessing.resource_connector import MEDIA_WORKERS
 from sglang_omni.proto.session import GRAPH_INPUT
 from sglang_omni.proto.streams import IMAGE, SessionPorts
 from sglang_omni.serve.protocol import ChatCompletionRequest, ChatMessage
@@ -72,7 +73,8 @@ def preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageC
         name="preprocessing",
         process=process,
         factory_path=f"{_PKG}.stages.create_preprocessing_executor",
-        factory=FactoryArgs(),
+        # note (ratish): one video thread per media worker, since a further video would only wait for a worker to decode it.
+        factory=FactoryArgs(max_concurrency=MEDIA_WORKERS),
         next=next_stages,
         route_fn=route_fn,
         project_payload={
@@ -387,10 +389,17 @@ class Qwen3OmniBasePipelineConfig(PipelineConfig):
     )
 
     def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
-        """Keep CPU-sensitive preprocessing parallel unless OMP is configured."""
+        """Split the CPUs over preprocessing's video threads unless OMP is configured."""
         env_defaults = super().resolved_stage_env_defaults(stage_name)
-        if stage_name == "preprocessing" and "OMP_NUM_THREADS" not in env_defaults:
-            env_defaults["OMP_NUM_THREADS"] = str(effective_cpu_count())
+        if stage_name != "preprocessing":
+            return env_defaults
+        else:
+            pass
+        if "OMP_NUM_THREADS" not in env_defaults:
+            video_threads = self.stage_named(stage_name).factory.max_concurrency
+            env_defaults["OMP_NUM_THREADS"] = str(
+                max(effective_cpu_count() // video_threads, 1)
+            )
         else:
             pass
         return env_defaults
