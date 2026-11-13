@@ -34,6 +34,8 @@ PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
 PCM16_BYTES_PER_SAMPLE = 2
 # Note (Mengwei Liu): cancellation is observed within the current bounded model chunk.
 PARAKEET_CANCEL_TIMEOUT_SECONDS = 2.0
+# Note (XXXXRT666): decoding this much audio takes several cancel timeouts, so only a cancel ends it in time.
+DISCONNECT_AUDIO_SECONDS = 1800
 
 
 @pytest.fixture(scope="module")
@@ -75,7 +77,7 @@ def test_parakeet_final_request_returns_text_and_sentences(
     )
     assert response.status == 200
     result = response.json()
-    assert result["text"].strip()
+    assert result["text"] == "Surely you are not thinking of going off there."
     [segment] = result["segments"]
     assert segment["text"].strip() == result["text"]
     assert 0 <= segment["start"] < segment["end"] <= 3.1
@@ -231,7 +233,7 @@ def test_parakeet_disconnected_final_stops_and_recovers(
     """A disconnected final request must release its worker for the next request."""
     with wave.open(io.BytesIO(corpus_wav("0344_en_long"))) as source:
         pcm_bytes = source.readframes(source.getnframes())
-    audio_sample_count = 600 * VOXT_SAMPLE_RATE
+    audio_sample_count = DISCONNECT_AUDIO_SECONDS * VOXT_SAMPLE_RATE
     pcm_bytes = (pcm_bytes * (audio_sample_count * 2 // len(pcm_bytes) + 1))[
         : audio_sample_count * 2
     ]
@@ -264,10 +266,10 @@ def test_parakeet_disconnected_final_stops_and_recovers(
 def test_parakeet_merges_overlapping_chunks_into_sentences(
     parakeet_server: SupervisedServer,
 ) -> None:
-    # Note (Dayuxiaoshui): explicit windows overlap by one second on this 64-second clip.
+    # Note (Dayuxiaoshui): 5 s windows that overlap by 1 s, as Voxt's Swift path decodes them.
     response: HttpResponse = parakeet_server.post_form(
         {
-            "chunk_duration": "20",
+            "chunk_duration": "5",
             "stream": "true",
             "include_generation_metadata": "true",
         },
@@ -275,10 +277,12 @@ def test_parakeet_merges_overlapping_chunks_into_sentences(
     )
     assert response.status == 200
     done = json.loads(sse_payloads(response.body)[0])
-    assert done["text"].strip()
+    assert done["text"].startswith(
+        "In every way they sought to undermine the authority"
+    )
     assert done["generation_metadata"]["finish_reason"] == "stop"
     response = parakeet_server.post_form(
-        {"chunk_duration": "20"}, corpus_wav("0344_en_long")
+        {"chunk_duration": "5"}, corpus_wav("0344_en_long")
     )
     assert response.status == 200
     segments = response.json()["segments"]
