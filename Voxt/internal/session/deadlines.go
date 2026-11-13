@@ -42,6 +42,7 @@ func TimedOut(err error) bool {
 // llmChat runs req within its deadlines, until SkipLLM; an error says
 // which one passed.
 func (r *run) llmChat(req llm.Request) (llm.Response, error) {
+	r.usedLLM = true
 	ctx, cancel := context.WithTimeout(r.llmCtx, req.Timeout)
 	defer cancel()
 	resp, err := r.svc.LLM.Chat(ctx, req)
@@ -52,7 +53,8 @@ func (r *run) llmChat(req llm.Request) (llm.Response, error) {
 	switch {
 	case errors.As(err, &e) && e.Params["wait"] == llm.WaitStall:
 		err = fmt.Errorf("no new token for %v after %s pieces: %w", req.StallTimeout, e.Params["deltas"], err)
-	case ctx.Err() == context.DeadlineExceeded:
+	case ctx.Err() == context.DeadlineExceeded,
+		llm.Code(err) == llm.CodeTimeout && e.Params["wait"] == "" && errors.Is(err, context.DeadlineExceeded):
 		err = fmt.Errorf("no answer within %v: %w", req.Timeout.Round(time.Second/10), err)
 	}
 	return resp, err
