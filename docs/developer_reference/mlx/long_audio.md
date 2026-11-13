@@ -26,17 +26,17 @@ The benchmark reads the dedicated server's macOS physical footprint, the kernel'
 
 ## Parakeet final transcription
 
-Parakeet's automatic whole-recording mode (omit chunk_duration, or use 1199 or more) keeps audio up to 30 seconds whole and splits longer audio at the quietest 100 ms in the last five seconds before that limit. The ranges are consecutive, without overlap or discarded samples. If the last range would contain less than 10 seconds, the preceding quiet search moves earlier to reserve useful tail context. This follows the low-energy boundary selection used by Cohere Transcribe and MOSS, but unlike their bidirectional searches it never exceeds the cap. It requires no VAD checkpoint.
+Parakeet's automatic mode (omit chunk_duration, or use 1199 or more, as Voxt does) keeps audio up to 30 seconds whole and splits longer audio at the quietest 100 ms in the last five seconds before that limit. The ranges are consecutive, without overlap or discarded samples; if the last range would contain less than 10 seconds, the preceding search moves earlier to keep useful tail context. Unlike the bidirectional searches of Cohere Transcribe and MOSS, a cut never exceeds the cap. It requires no VAD checkpoint.
 
-A chunk can still produce no tokens or stop while speech continues, including in the Python MLX reference. Automatic decoding retries a trailing unrecognized span of at least three seconds when its mean-square amplitude is at least 1e-5 (about -50 dBFS RMS). The first retry includes one second of recognized context, or 250 ms of leading silence for an entirely blank chunk; a second retry varies the padding up to 500 ms. Matching overlap tokens merges recovered text. Padding is limited to spare capacity in the 30-second input budget: every encoder input remains at most 30 seconds and no retry discards the source tail. There are at most two additional decodes per chunk, with cancellation checked between decodes and decoder steps.
+A chunk can still produce no tokens or stop while speech continues, including in the Python MLX reference. When an unrecognized tail of at least three seconds has a mean-square amplitude of at least 1e-5 (about -50 dBFS RMS), automatic decoding retries it at most twice: first from one second before the last recognized token, or with 250 ms of leading silence for an entirely blank chunk, then with more padding. Padding only uses spare room in the 30-second input, so no retry discards the source tail, and an attempt whose input would repeat the previous decode, such as on a full 30-second blank chunk, is skipped. Recovered text merges on matching overlap tokens; a failed retry keeps the existing text.
 
-The energy threshold is a retry gate, not a voice detector or a completeness guarantee. Noise can trigger it. It does not detect internal gaps followed by later recognized words, missing leading speech, tails shorter than three seconds or speech below the energy threshold. A full 30-second blank input has no spare padding capacity, so recovery can repeat the original decode; nearly full inputs can also limit the variation between attempts. Failed retries retain the existing text; successful retries can revise the one-second overlap. Check deletion spans as well as WER, and retain headroom for the bounded extra work.
+The energy threshold is a retry gate, not a voice detector or a completeness guarantee. Noise can trigger it, and it does not detect internal gaps, missing leading speech, tails shorter than three seconds or speech below the threshold. Check deletion runs as well as WER.
 
-Explicit chunk_duration values from 2 to 300 seconds retain fixed windows with one-second overlap and token alignment/merging. These are compatibility and diagnostic settings, not the recommended final-transcription policy: short mid-speech windows can decode to blanks, and long explicit windows consume substantially more memory. The HTTP stream field selects SSE transport, not the internal chunking algorithm or incremental recognition.
+Explicit chunk_duration values from 2 to 300 seconds keep fixed windows with one-second overlap and token merging, without recovery. They are compatibility and diagnostic settings: short windows can decode mid-speech blanks, and long ones use substantially more memory. The HTTP stream field selects SSE transport, not the chunking.
 
-The Parakeet process limits MLX's freed-buffer cache to 256 MiB for both server and CLI. This is not a total memory limit: weights, active encoder arrays, the uploaded audio and queued requests also consume memory. The CLI clears its cache between files, like Qwen3-ASR, and reports peak_active_bytes, active_bytes and cache_bytes. These MLX counters exclude some process allocations; use the benchmark's kernel physical footprint to assess a smaller Mac. Avoid unbounded request concurrency, and keep headroom for macOS and other applications. A measured footprint on a larger Mac is not a guarantee against OOM on every smaller Mac.
+The server and CLI cap MLX's freed-buffer cache at 256 MiB. This is not a total memory limit: weights, active encoder arrays, the uploaded audio and queued requests come on top. The CLI clears its cache between files and reports peak_active_bytes, active_bytes and cache_bytes; these MLX counters exclude some process allocations, so use the benchmark's kernel footprint to assess a smaller Mac.
 
-Provision mlx-community/parakeet-tdt-0.6b-v3 with ci/provision_models.py, then run the same guarded benchmark (Parakeet v3 has no Chinese or realtime endpoint):
+Provision mlx-community/parakeet-tdt-0.6b-v3 with ci/provision_models.py, then run the guarded benchmark. Parakeet v3 has no Chinese or realtime endpoint, so the benchmark defaults it to English and requires --mode http:
 
 ```bash
 python -m sglang_omni_mlx.native.ci.benchmark_long_audio \
@@ -44,37 +44,18 @@ python -m sglang_omni_mlx.native.ci.benchmark_long_audio \
   --data-root "$CI_DATA_ROOT" \
   --model-kind parakeet --model mlx-community/parakeet-tdt-0.6b-v3 \
   --output "$PARAKEET_RESULTS_DIRECTORY" \
-  --mode http --languages en --minutes 1 5 15 30 --max-footprint-gib 3
+  --mode http --minutes 1 5 15 30 --max-footprint-gib 3
 ```
 
-This deliberately sends each whole recording in one request, exercising the server's internal bounded splitting and recovery. Do not add --chunk-seconds when measuring that path. The guard records startup, transcription and recovery and fails if the sampled kernel peak exceeds the supplied budget; it does not impose a hard allocator limit. Compare the same seed and frozen corpus before and after a policy change.
+This sends each whole recording in one request, exercising the server's own splitting and recovery; do not add --chunk-seconds when measuring that path. Compare the same seed and frozen corpus before and after a policy change.
 
-The original parakeet-tdt-0.6b-v3.json golden explicitly requests five-second overlapping windows to retain its recorded Swift parity outputs. The separate parakeet-tdt-0.6b-v3-final.json golden requests automatic mode and records the changed final policy. Preserve that distinction rather than replacing the old outputs or weakening their tolerance. API regressions are in ci/test_parakeet_api.py; checkpoint-free boundary and coverage tests are in native/tests/audio_chunk_test.cpp and run in Mac CI.
+The parakeet-tdt-0.6b-v3.json golden requests five-second overlapping windows to keep its recorded Swift parity outputs, and parakeet-tdt-0.6b-v3-final.json requests automatic mode. Keep that distinction rather than replacing the old outputs or widening their tolerance. API regressions are in ci/test_parakeet_api.py; checkpoint-free boundary and coverage tests are in native/tests/audio_chunk_test.cpp and run in Mac CI.
 
 ### Validated configuration
 
-Measured on Apple M4 Max with 64 GiB unified memory, macOS 27.0.1 and the pinned MLX/MLX Metal 0.32.3 runtime. The checkpoint is the revision and file hashes in ci/model_pins.json. English WER on the frozen 392-clip corpus changed from 23.844% with the original five-second policy to 2.548% with automatic pause-aligned chunks and bounded recovery. The 64 short English clips were unchanged; medium clips improved from 20.214% to 2.009% and long clips from 31.851% to 2.752%. Explicit five-second decoding matched the original binary on all 392 outputs on this chip. Chinese and mixed-language metrics remain poor because this checkpoint does not support Chinese. Recovery changed two unsupported-Chinese noisy clips from blank output to unrelated English text; silence and synthetic-noise clips remained empty. Do not use recovery as a language or speech detector.
+Measured on Apple M4 Max with 64 GiB, macOS 27.0.1, MLX 0.32.3 and the checkpoint pinned in ci/model_pins.json. English WER on the frozen 392-clip corpus fell from 23.844% with the original five-second policy to 2.548% in automatic mode: short clips were unchanged, medium clips went from 20.214% to 2.009% and long clips from 31.851% to 2.752%. The Python reference (mlx-audio 0.5.9) gives 23.128% with the same five-second windows, so the loss comes from the policy rather than the port. Explicit five-second decoding matched the original binary on all 392 clips. Chinese and mixed-language metrics remain poor because this checkpoint does not support Chinese.
 
-The Python reference is mlx-audio 0.5.9 with MLX/MLX Metal 0.32.3, using the same BF16 checkpoint at revision ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15 and SHA-256 hashes in ci/model_pins.json. A separate same-policy comparison used explicit five-second windows with one-second overlap on all 392 clips (147 English, 173 Chinese, 64 mixed and eight non-speech):
-
-| Implementation and policy | English WER | Chinese CER | Mixed MER |
-| --- | ---: | ---: | ---: |
-| Python reference, explicit five seconds | 23.128% | 99.975% | 89.717% |
-| Native, explicit five seconds | 23.844% | 99.938% | 89.460% |
-| Native, automatic final policy | 2.548% | 99.988% | 88.689% |
-
-Python and native explicit-five-second text matched on 217/392 clips after stripping outer whitespace. That is distinct from the 392/392 native-before/native-after compatibility check. The Python front end casts waveform samples to BF16; native preserves float32 waveform arithmetic for Swift compatibility. This is a known arithmetic difference, not a complete localization of every differing transcript. Automatic mode intentionally changes policy, so its row is an accuracy comparison rather than a Python parity claim. Chinese remains unsupported in every row.
-
-A single-process matched performance pass on the same 80 English medium/long clips (1,920.645 seconds of audio), with five-second windows and one-second overlap, gave:
-
-| Implementation | Constructor load | Summed decode time | Realtime factor | Peak kernel footprint |
-| --- | ---: | ---: | ---: | ---: |
-| Python reference | 0.052 s | 18.448 s | 0.00961 | 2.19 GiB |
-| Native explicit five seconds | 0.149 s | 14.637 s | 0.00762 | 2.01 GiB |
-
-Both clear the MLX cache between files; native also sets its 256 MiB cache cap while Python retains the default. Constructor load excludes interpreter imports and can leave lazy work to the first decode. Python decode includes file I/O; the native timer starts after reading the WAV bytes. Peak footprint comes from macOS time -l and includes process startup. These single passes describe this configuration, not an isolated kernel-speed or cold-start guarantee.
-
-The guarded automatic-policy command above, with the default seed 2888, gave the following matched-input comparison. Peak footprint includes startup and warmup, is the kernel process footprint (not MLX active memory or RSS), and uses GiB (2^30 bytes).
+The guarded command above, with the default seed 2888, gave the following. Peak footprint is the kernel process footprint in GiB (2^30 bytes), including startup and warmup.
 
 | Requested recording | Original five-second WER | Automatic final WER | Longest deletion run, original / final | Automatic peak footprint | Request time / realtime factor |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -83,11 +64,7 @@ The guarded automatic-policy command above, with the default seed 2888, gave the
 | 15 minutes | 40.75% | 2.88% | 62 / 5 words | 2.33 GiB | 3.427 s / 0.00380 |
 | 30 minutes | 38.97% | 2.62% | 62 / 5 words | 2.48 GiB | 6.705 s / 0.00372 |
 
-Review of the earlier 30-second policy without recovery found 41- and 86-word deletion runs, despite aggregate WER of 7.66% and 5.43% on the 15- and 30-minute inputs. With the same input hashes, bounded recovery reduced total deleted reference words from 134 to 12 and from 156 to 15; the longest run is five words in each revised case. The API suite reconstructs the two failing windows from frozen corpus clips and also checks 30.25-, 31- and 32-second short-tail recordings over JSON and SSE. These measurements do not establish complete speech coverage.
-
-All four automatic cases passed the 3 GiB sampled guard, exited normally and reproduced the warmup transcript after the long request. A separate persistent-server run also completed 73 queued clip requests and recovered after a disconnected request under the same guard. The earlier CLI's 73-file invocation kept its measured freed-buffer cache below 256 MiB; the 256 MiB allocator setting and per-file cache clearing are unchanged. The source recording length changes the clip composition and cut positions, so WER is not monotonic in duration. These figures do not measure natural meetings, every supported language or worst-case acoustic content.
-
-No physical 8 GiB Mac or system-wide low-memory-pressure test was performed. The 30-second encoder cap and cache bound avoid the prior unbounded CLI buffer retention, but cannot guarantee that an arbitrary upload, explicit 300-second window, concurrent queue or other applications will fit a smaller Mac. Use automatic mode, bounded client concurrency and the guarded benchmark on the target machine rather than inferring an OOM guarantee from this larger host.
+Before recovery, 30-second chunks alone left 41- and 86-word deletion runs on the 15- and 30-minute inputs despite 7.66% and 5.43% WER; recovery cut their deleted reference words from 134 to 12 and from 156 to 15. All four cases stayed under the 3 GiB guard, exited normally and reproduced the warmup transcript. These synthetic concatenations do not measure natural meetings, and no 8 GiB Mac or system-wide memory-pressure test was run, so measure on the target machine rather than inferring an OOM guarantee.
 
 ## Input and scoring
 
