@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -960,6 +961,32 @@ def test_speech_websocket_stream_exception_aborts_active_request() -> None:
         assert session.active_request_id is None
 
     asyncio.run(run())
+
+
+def test_speech_websocket_buffered_failure_prevents_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed buffered sentence must report its error before any audio is sent."""
+    client_impl = StreamingSpeechClient()
+    monkeypatch.setattr(
+        client_impl, "speech", AsyncMock(side_effect=RuntimeError("model failed"))
+    )
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(session_config(response_format="wav", stream_audio=False))
+        assert websocket.receive_json()["type"] == "session.configured"
+        websocket.send_json({"type": "input.text", "text": "Hello."})
+        error = websocket.receive_json()
+        done = websocket.receive_json()
+
+    assert error == {
+        "type": "error",
+        "message": "model failed",
+        "error_type": "server_error",
+    }
+    assert done["type"] == "audio.done"
+    assert done["error"] is True
 
 
 def test_speech_websocket_context_rejection_is_bad_request() -> None:

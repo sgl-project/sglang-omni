@@ -5111,8 +5111,11 @@ def test_distributed_weight_update_routes_forward_to_client() -> None:
     ]
 
 
+@pytest.mark.parametrize("error_class", [ClientError, RuntimeError])
 @pytest.mark.parametrize("stream", [False, True])
-def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None:
+def test_speech_empty_generation_error_allows_next_request(
+    stream: bool, error_class: type[ClientError] | type[RuntimeError]
+) -> None:
     message = "MOSS-TTS Local generated no audio frames. Please retry the request."
 
     class FailOnceClient(SuccessfulSpeechClient):
@@ -5121,14 +5124,14 @@ def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None
         async def generate(self, request, request_id=None):
             if not self.failed:
                 self.failed = True
-                raise RuntimeError(message)
+                raise error_class(message)
             async for chunk in super().generate(request, request_id):
                 yield chunk
 
         async def speech(self, request, **kwargs):
             if not self.failed:
                 self.failed = True
-                raise ClientError(message)
+                raise error_class(message)
             return await super().speech(request, **kwargs)
 
         async def abort(self, request_id):
@@ -5147,3 +5150,40 @@ def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None
     response = client.post("/v1/audio/speech", json=body)
     assert response.status_code == 200
     assert response.content
+
+
+def test_raw_audio_generation_failure_interrupts_stream() -> None:
+    """A pipeline failure after partial audio must interrupt the raw audio transfer."""
+
+    async def drive() -> None:
+        speech_client = ScriptedStreamingSpeechClient(
+            [
+                GenerateChunk(
+                    request_id="req-1",
+                    modality="audio",
+                    audio_data=[0.0, 0.1],
+                    sample_rate=24000,
+                ),
+                RuntimeError("vocoder failed"),
+            ]
+        )
+        speech_stream_outcomes = SpeechStreamOutcomes(max_entries=8)
+        response = await speech_audio_response(
+            request=ConnectedRequest(),
+            client=speech_client,
+            gen_req=GenerateRequest(model="tts", prompt="hello", stream=True),
+            request_id="req-1",
+            speed=1.0,
+            speech_stream_outcomes=speech_stream_outcomes,
+            enable_speech_sse_named_events=False,
+            return_spec_tokens_details=False,
+        )
+        body = response.body_iterator
+        assert await anext(body) == encode_pcm([0.0, 0.1], 24000)
+        with pytest.raises(RuntimeError, match="vocoder failed"):
+            await anext(body)
+        assert speech_client.aborted == ["req-1"]
+        assert speech_client.closed is True
+        assert speech_stream_outcomes.get("req-1") is None
+
+    asyncio.run(drive())

@@ -2051,6 +2051,14 @@ def apply_sglang_qwen3_tts_result(
     payload: StagePayload,
     data: Qwen3TTSSGLangRequestData,
 ) -> StagePayload:
+    finish_reason = qwen3_tts_finish_reason(data)
+    if finish_reason == "length":
+        raise RuntimeError(
+            "Qwen3-TTS reached max_new_tokens without emitting codec EOS; "
+            "the generated audio is incomplete."
+        )
+    else:
+        pass
     code_parts: list[torch.Tensor] = []
     if data.ref_code is not None and data.ref_code_len:
         code_parts.append(data.ref_code.to(dtype=torch.long))
@@ -2079,7 +2087,7 @@ def apply_sglang_qwen3_tts_result(
         "completion_tokens": len(data.output_codes),
         "engine_time_s": time.perf_counter() - data.engine_start_s,
         "sample_rate": 24000,
-        "finish_reason": qwen3_tts_finish_reason(data),
+        "finish_reason": finish_reason,
     }
     if data.speech_input_tokens is not None:
         result["speech_input_tokens"] = data.speech_input_tokens

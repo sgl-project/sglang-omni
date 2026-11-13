@@ -586,11 +586,19 @@ def test_batch_speech_isolates_runtime_failures_and_preserves_order() -> None:
     )
 
     assert response.status_code == 200
-    results = response.json()["results"]
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (2, 1)
+    results = body["results"]
     assert [item["index"] for item in results] == [0, 1, 2]
     assert [item["status"] for item in results] == ["success", "error", "success"]
     assert all("success" not in item for item in results)
-    assert results[1]["error"]["type"] == "server_error"
+    assert "audio_data" not in results[1]
+    assert results[1]["error"] == {
+        "message": "model failed",
+        "type": "server_error",
+        "param": None,
+        "code": None,
+    }
     assert set(client_impl.requests) == {"slow", "fail", "fast"}
 
 
