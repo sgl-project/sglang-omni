@@ -13,7 +13,7 @@ import (
 // Translate's and Rewrite's requests; Automatic keeps the session's own.
 func TestLLMWaitSetting(t *testing.T) {
 	for _, kind := range []store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
-		for _, wait := range []string{settings.WaitAuto, settings.Wait5Min} {
+		for wait, want := range map[string]time.Duration{settings.WaitAuto: 0, settings.Wait5Min: 5 * time.Minute, "20m": 20 * time.Minute} { // 20m: a custom wait (#3941)
 			t.Run(string(kind)+"/"+wait, func(t *testing.T) {
 				model := &fakeLLM{text: "Hello."}
 				h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
@@ -33,7 +33,7 @@ func TestLLMWaitSetting(t *testing.T) {
 					t.Fatal("no request")
 				}
 				got := reqs[0].Timeout
-				if wait == settings.Wait5Min && got != 5*time.Minute || wait == settings.WaitAuto && got >= 5*time.Minute {
+				if want > 0 && got != want || want == 0 && got >= 5*time.Minute {
 					t.Errorf("deadline %v with %q", got, wait)
 				}
 			})
