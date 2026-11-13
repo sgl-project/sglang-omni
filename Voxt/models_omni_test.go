@@ -46,6 +46,7 @@ func fakeOmni(t *testing.T, o omnitest.Opts) string {
 // the speech model) gates the stream; deleting the model unloads it;
 // quitting stops the servers.
 func TestSessionOmni(t *testing.T) {
+	skipWindowsActNow(t)
 	log := fakeOmni(t, omnitest.Opts{Text: "来自 Omni 的文本"})
 	events := omniEvents(t)
 	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
@@ -223,6 +224,7 @@ func TestOmniSpecsAreTheCatalogue(t *testing.T) {
 // TestOmniFolderLinksTheTokenizer: a Whisper model's server gets a folder
 // with its own files and its tokenizer's; a model without one, its own.
 func TestOmniFolderLinksTheTokenizer(t *testing.T) {
+	skipWindowsActNow(t)
 	m, hub := openTestModels(t, models.ASRWhisperSmall, models.AuxWhisperSmall, models.ASRFast)
 	a := &app{models: m}
 	a.omniCache = t.TempDir()

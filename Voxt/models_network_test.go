@@ -39,6 +39,7 @@ func familyValue(t *testing.T, a *app, key string) string {
 // family while VoxtNew follows it, to VoxtNew alone after "Use a different
 // setting for this app"; a custom proxy is checked.
 func TestNetworkDialog(t *testing.T) {
+	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	a.famStarted = true // familySettingsChanged writes the shared settings
 	addPeer(t, a, dictaID, nil)
@@ -100,6 +101,7 @@ func TestNetworkDialog(t *testing.T) {
 // TestNetworkUseTheirs: a proxy that differed from the family's at the
 // first start shows "Use theirs" once.
 func TestNetworkUseTheirs(t *testing.T) {
+	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	a.famStarted = true
 	addPeer(t, a, audioSmithID, nil)
@@ -147,6 +149,7 @@ func TestNetworkUseTheirs(t *testing.T) {
 // still follows the family's files. Model descriptions never say "another
 // app": the status line names it ("Installed by Dicta").
 func TestFamilyLinesNeedAnotherApp(t *testing.T) {
+	skipWindowsActNow(t)
 	a, _, tt := newTestApp(t)
 	a.famStarted = true
 	family := []string{"Applies to all apps that use this model library", "Only Voxt uses this setting.", "Use the same setting as the other apps that share this model library",

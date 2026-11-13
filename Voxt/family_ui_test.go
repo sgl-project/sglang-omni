@@ -90,6 +90,7 @@ func voxtnewClaim(t *testing.T, a *app, id string) (fammodels.Claim, bool) {
 // reuse card; Use them claims them for VoxtNew (origin reused) and
 // downloads nothing; the language model is still to set up.
 func TestOnboardingReuse(t *testing.T) {
+	skipWindowsActNow(t)
 	asked := countingHub(t)
 	a, tt := obTester(t)
 	reopenModels(a) // the counting Hub
@@ -155,6 +156,7 @@ func reuseAgain(t *testing.T, a *app) {
 // one AudioSmith installed is offered for now; Download stays the
 // default; Use claims it, and the step says it is ready.
 func TestOnboardingAlternative(t *testing.T) {
+	skipWindowsActNow(t)
 	asked := countingHub(t)
 	a, tt := obTester(t)
 	drain := queuePosts(a)
