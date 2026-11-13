@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import AbstractContextManager, nullcontext
 from typing import Literal
 
 import torch
@@ -25,6 +26,7 @@ from sglang_omni.models.llada2_uni.components.transport import (
     VelocityModel,
     sample_velocity,
 )
+from sglang_omni.models.llada2_uni.serial_offload import get_offload_coordinator
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.utils.device import resolve_concrete_device
 
@@ -121,6 +123,7 @@ class LLaDA2ImageDecoder:
         *,
         backend: DecoderBackend = "diffusers",
         runtime: DecoderRuntimeHandle | None = None,
+        enable_serial_offload: bool = False,
     ) -> None:
         if backend not in {"diffusers", "sglang"}:
             raise ValueError(f"Unsupported image decoder backend: {backend!r}")
@@ -140,6 +143,18 @@ class LLaDA2ImageDecoder:
         self.device = resolve_concrete_device(
             requested_device.type, requested_device.index
         )
+        if enable_serial_offload and (
+            backend != "diffusers" or self.device.type != "cuda"
+        ):
+            raise ValueError(
+                "LLaDA2-Uni serial offload requires the CUDA diffusers decoder"
+            )
+        else:
+            pass
+        self.offload_coordinator = (
+            get_offload_coordinator(self.device) if enable_serial_offload else None
+        )
+        self.load_device = torch.device("cpu") if enable_serial_offload else self.device
         self.dtype = dtype
         self.runtime = runtime
         if runtime is not None:
@@ -159,6 +174,14 @@ class LLaDA2ImageDecoder:
         self.diff_model_mode: DecoderMode | None = None
         self.vae: AutoencoderKL | None = None
         self.diff_config: DecoderConfig | None = None
+
+    def component_context(
+        self, module: torch.nn.Module, label: str
+    ) -> AbstractContextManager[None]:
+        if self.offload_coordinator is None:
+            return nullcontext()
+        else:
+            return self.offload_coordinator.use_module(module, label)
 
     @staticmethod
     def validate_settings(
@@ -189,10 +212,10 @@ class LLaDA2ImageDecoder:
             self.model_path, "image_tokenizer", "sigvq_embedding.pt"
         )
         sigvq = SigVQ(vocab_size=16384, inner_dim=4096).to(
-            self.device, dtype=self.dtype
+            self.load_device, dtype=self.dtype
         )
         sigvq.load_state_dict(
-            torch.load(sigvq_path, map_location=self.device, weights_only=True)
+            torch.load(sigvq_path, map_location=self.load_device, weights_only=True)
         )
         self.sigvq = sigvq.eval()
         logger.info(f"SigVQ loaded from {sigvq_path}")
@@ -233,7 +256,7 @@ class LLaDA2ImageDecoder:
         model = ZImageTransformer2DModelWrapper(
             decoder_dir=decoder_dir,
             cfg=config,
-            device=self.device,
+            device=self.load_device,
             dtype=self.dtype,
             backend=self.backend,
             runtime=self.runtime,
@@ -251,7 +274,7 @@ class LLaDA2ImageDecoder:
         vae_dir = os.path.join(self.model_path, "vae")
         self.vae = (
             AutoencoderKL.from_pretrained(vae_dir, torch_dtype=self.dtype)
-            .to(self.device)
+            .to(self.load_device)
             .eval()
         )
         logger.info(f"VAE loaded from {vae_dir}")
@@ -298,50 +321,57 @@ class LLaDA2ImageDecoder:
         image_height = h * 16 * output_resolution_multiplier
         image_width = w * 16 * output_resolution_multiplier
         self.ensure_sigvq()
-        token_grid = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
-        upsampled_tokens = (
-            F.interpolate(token_grid, scale_factor=2, mode="nearest").long().view(1, -1)
-        )
-        positive_caption_features = [
-            self.sigvq(upsampled_tokens).squeeze(0).contiguous()
-        ]
-        negative_caption_features = [torch.zeros_like(positive_caption_features[0])]
+        with self.component_context(self.sigvq, "sigvq"):
+            token_grid = (
+                torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+            )
+            upsampled_tokens = (
+                F.interpolate(token_grid, scale_factor=2, mode="nearest")
+                .long()
+                .view(1, -1)
+            )
+            positive_caption_features = [
+                self.sigvq(upsampled_tokens).squeeze(0).contiguous()
+            ]
+            negative_caption_features = [torch.zeros_like(positive_caption_features[0])]
 
         self.ensure_diff_model(mode)
-        decoder_config = self.diff_config
-        noise_shape = [1, 16, 1, 2 * (image_height // 16), 2 * (image_width // 16)]
-        if seed is not None:
-            generator = torch.Generator(device=self.device).manual_seed(int(seed))
-            initial_latents = torch.randn(
-                noise_shape, device=self.device, generator=generator
+        with self.component_context(self.diff_model, "semantic_decoder"):
+            decoder_config = self.diff_config
+            noise_shape = [1, 16, 1, 2 * (image_height // 16), 2 * (image_width // 16)]
+            if seed is not None:
+                generator = torch.Generator(device=self.device).manual_seed(int(seed))
+                initial_latents = torch.randn(
+                    noise_shape, device=self.device, generator=generator
+                )
+            else:
+                generator = None
+                initial_latents = torch.randn(noise_shape, device=self.device)
+            velocity_model = create_decoder_model_fn(
+                self.diff_model,
+                positive_caption_features,
+                negative_caption_features,
+                cfg_scale=0.0 if mode == "decoder-turbo" else 1.0,
+                patch_size=decoder_config.get("all_patch_size", (2,))[0],
+                f_patch_size=decoder_config.get("all_f_patch_size", (1,))[0],
+                dtype=self.dtype,
             )
-        else:
-            generator = None
-            initial_latents = torch.randn(noise_shape, device=self.device)
-        velocity_model = create_decoder_model_fn(
-            self.diff_model,
-            positive_caption_features,
-            negative_caption_features,
-            cfg_scale=0.0 if mode == "decoder-turbo" else 1.0,
-            patch_size=decoder_config.get("all_patch_size", (2,))[0],
-            f_patch_size=decoder_config.get("all_f_patch_size", (1,))[0],
-            dtype=self.dtype,
-        )
 
-        samples = sample_velocity(
-            initial_latents,
-            velocity_model,
-            num_steps=steps,
-            turbo=mode == "decoder-turbo",
-            generator=generator,
-        ).squeeze(2)
+            samples = sample_velocity(
+                initial_latents,
+                velocity_model,
+                num_steps=steps,
+                turbo=mode == "decoder-turbo",
+                generator=generator,
+            ).squeeze(2)
 
         self.ensure_vae()
-        vae_latents = samples.to(self.dtype)
-        vae_latents = (
-            vae_latents / self.vae.config.scaling_factor
-        ) + self.vae.config.shift_factor
-        pixels = ((self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2).clamp_(
-            0, 1
-        )
-        return to_pil_image(pixels[0].float())
+        with self.component_context(self.vae, "vae"):
+            vae_latents = samples.to(self.dtype)
+            vae_latents = (
+                vae_latents / self.vae.config.scaling_factor
+            ) + self.vae.config.shift_factor
+            pixels = (
+                (self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2
+            ).clamp_(0, 1)
+            return to_pil_image(pixels[0].float())

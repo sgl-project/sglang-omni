@@ -14,6 +14,10 @@ import typer
 from sglang_omni.cli.serve import apply_stage_offload_cli_overrides
 from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+from sglang_omni.models.llada2_uni.config import (
+    LLaDA2UniInterleavedPipelineConfig,
+    LLaDA2UniOmniPipelineConfig,
+)
 from sglang_omni.models.minimax_music3.config import (
     MiniMaxMusic3DualGPUPipelineConfig,
     MiniMaxMusic3SingleGPUPipelineConfig,
@@ -80,6 +84,27 @@ def test_unsupported_pipeline_is_rejected() -> None:
 
     with pytest.raises(typer.BadParameter, match="not supported"):
         apply_stage_offload_cli_overrides(config, stage_offload_components="ar,dit")
+
+
+def test_llada_single_image_offload_cli() -> None:
+    config = LLaDA2UniOmniPipelineConfig(model_path="unused")
+    result = apply_stage_offload_cli_overrides(
+        config, stage_offload_components=" Thinker, Decoder, VAE "
+    )
+    stages = [
+        result.stage_named(name)
+        for name in ("thinker", "image_encoder", "image_decode")
+    ]
+    assert len({stage.process for stage in stages}) == 1
+    assert all(stage.factory.enable_serial_offload for stage in stages)
+
+
+def test_llada_interleaved_offload_cli_is_rejected() -> None:
+    config = LLaDA2UniInterleavedPipelineConfig(model_path="unused")
+    with pytest.raises(typer.BadParameter, match="not supported"):
+        apply_stage_offload_cli_overrides(
+            config, stage_offload_components="thinker,decoder,vae"
+        )
 
 
 def test_mismatched_gpu_placement_is_rejected() -> None:

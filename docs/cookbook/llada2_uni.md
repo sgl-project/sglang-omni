@@ -39,6 +39,57 @@ generation settings. CUDA Graph execution is controlled separately.
 
 ## Image Generation and Editing
 
+### Optional CUDA stage offload
+
+The single-image `omni` pipeline supports an opt-in serial GPU residency mode:
+
+```bash
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --stage-offload-components thinker,decoder,vae
+```
+
+This mode colocates the image encoder, thinker, and image decoder in one process on one GPU. The image encoder and decoder components load onto CPU; the thinker loads alone on GPU, then releases its weights before serving begins. During requests, an exclusive residency lock covers each complete encoder, thinker CFG group, SigVQ, diffusion sampling, or VAE phase. Each phase releases its weights before another phase can restore them. Concurrent submissions queue for GPU access; no request owns the lock while its payload is in transit between stages. The normal resident path is unchanged when the flag is absent.
+
+The thinker uses `torch_memory_saver==0.0.10` with CPU weight backup to preserve tensor addresses. The launcher supplies its CUDA allocator preload library to the worker. The decoder uses whole-module CPU transfers and requires the `diffusers` backend. Both normal and turbo decoding are supported. CUDA graphs, `torch.compile`, and overlap scheduling are disabled for the offloaded thinker. Tensor parallelism, multiple process replicas, the `text` variant, and interleaved generation are outside this mode's scope.
+
+KV cache, runtime workspaces, and intermediate tensors remain on GPU. Host memory must accommodate the thinker weight backup and CPU decoder components; this mode does not make a thinker that cannot fit by itself load successfully. Transfers add latency, and logs report `restore_seconds` and `release_seconds` for each component. Cancellation waits for the active compute phase to retire before releasing its weights; it never moves weights from a concurrent abort callback. A failed residency transfer stops further compute in this mode and requires a worker restart.
+
+Full-checkpoint HTTP validation on one NVIDIA RTX PRO 6000 Blackwell Server Edition (96 GB) passed generation and editing with both normal and turbo decoding. Each server completed 15 requests: three repetitions of each task/decoder combination, two concurrent submissions, and a fresh request after disconnecting an active request. All 15 resident/offload image pairs were pixel-identical (MAE 0). Both servers logged the cancelled request's abort and successfully completed the next request. The offload log contained 68 matched restore/release pairs with no overlapping component ownership. These are correctness checks on one workload, not a dataset-wide image-quality evaluation.
+
+The comparison used BF16, TP=1, 1024×1024 outputs, seed 42, 32 dLLM steps, T2I guidance 4.0, and editing guidance 4.0/1.5. Turbo used eight decoder iterations; normal used 50 time points (49 Euler intervals). Both servers used a fixed 16,384-token KV capacity, synchronous eager execution, and eight CPU threads per worker. The runtime was PyTorch 2.14.1+cu130, SGLang 0.5.23, sglang-kernel 0.4.10, FlashInfer 0.7.2, Diffusers 0.37.0, and torch_memory_saver 0.0.10. FlashInfer kernels were compiled before the measured runs.
+
+| Measurement | Resident | Serial offload |
+|---|---:|---:|
+| Active peak GPU memory | 54.43 GiB | 33.49 GiB |
+| Startup peak GPU memory | 35.67 GiB | 32.89 GiB |
+| GPU memory after final request, server still running | 53.80 GiB | 2.88 GiB |
+| Peak server process-tree RSS sum | 35.31 GiB | 56.89 GiB |
+| Startup to HTTP readiness, without request warmup | 49.17 s | 58.19 s |
+
+| Workload | Resident warm latency | Offload warm latency | Resident / offload throughput |
+|---|---:|---:|---:|
+| Turbo generation | 31.89 s | 59.27 s | 1.882 / 1.012 images/min |
+| Turbo editing | 19.64 s | 45.60 s | 3.055 / 1.316 images/min |
+| Normal generation | 97.22 s | 122.91 s | 0.617 / 0.488 images/min |
+| Normal editing | 84.28 s | 110.92 s | 0.712 / 0.541 images/min |
+
+Offload reduced the active sampled GPU peak by 38.5%, with higher host memory and latency. Warm latency is the median of the last two of three sequential requests; throughput uses those same requests. Two simultaneous generation/editing submissions completed in 49.46 s resident and 101.80 s offloaded. The fresh request sent immediately after cancellation took 33.31 s and 69.47 s, respectively, including any wait for the cancelled compute phase to retire. These small samples do not establish production tail latency. Median thinker restore/release times were 2.81/11.18 s; semantic decoder restore/release times were 4.69/5.50 s.
+
+GPU figures are device-used memory sampled through NVML every 50 ms on an otherwise idle GPU, including contexts and allocator reservations; brief spikes can be missed. Host memory is the server process-tree RSS sum sampled every 200 ms, which can count shared mappings more than once. The fixed KV capacity is essential to the comparison: these measurements do not describe the default automatically sized KV cache. Use the following settings on both servers, adding the offload flag only for the offloaded run:
+
+```bash
+OMP_NUM_THREADS=8 sgl-omni serve --model-path "$MODEL_PATH" --port 8000 \
+  --skip-server-warmup \
+  --thinker.engine.enable_torch_compile false \
+  --thinker.engine.disable_cuda_graph true \
+  --thinker.engine.disable_overlap_schedule true \
+  --thinker.engine.mem_fraction_static 0.60 \
+  --thinker.engine.max_total_tokens 16384 \
+  --thinker.engine.max_running_requests 8
+```
+
+### Requests
+
 Use `POST /v1/images/generations` for T2I and `POST /v1/images/edits` for
 editing. These routes use SGLang Diffusion's image request and response
 schemas while executing Omni's Thinker and selected image decoder backend.
