@@ -28,6 +28,7 @@ const (
 	textPatternGetSelection      = 5
 	textPatternDocumentRange     = 7
 	textRangeClone               = 3
+	textRangeCompareEndpoints    = 5
 	textRangeGetText             = 12
 	textRangeMoveEndpointByRange = 15
 	arrayLength                  = 3
