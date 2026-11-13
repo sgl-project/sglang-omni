@@ -6,6 +6,8 @@
 #include <limits>
 #include <stdexcept>
 
+#include "common/transcription.h"
+
 namespace voxtral_tts {
 
 namespace mx = mlx::core;
@@ -111,7 +113,7 @@ VoxtralTtsModel::VoxtralTtsModel(const std::filesystem::path &model_directory,
   mx::eval(loaded);
 }
 
-qwen3_asr::FinishReason VoxtralTtsModel::Generate(
+omni_common::FinishReason VoxtralTtsModel::Generate(
     const std::vector<int> &prompt_ids, const std::string &voice,
     int max_frames, const std::atomic<bool> &cancel,
     const std::function<void(const mx::array &)> &on_frame) const {
@@ -149,13 +151,13 @@ qwen3_asr::FinishReason VoxtralTtsModel::Generate(
   mx::array hidden = LastHidden(prompt_embeddings, caches);
   for (int frame = 0; frame < max_frames; ++frame) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::TranscriptionCancelled();
     } else {
     }
     const mx::array codes = PredictFrame(hidden);
     mx::eval(codes);
     if (codes.data<int32_t>()[0] == kEndOfAudioCode) {
-      return qwen3_asr::FinishReason::kStop;
+      return omni_common::FinishReason::kStop;
     } else {
     }
     if (frame + 1 < max_frames) {
@@ -167,7 +169,7 @@ qwen3_asr::FinishReason VoxtralTtsModel::Generate(
     }
     on_frame(codes);
   }
-  return qwen3_asr::FinishReason::kLength;
+  return omni_common::FinishReason::kLength;
 }
 
 mx::array

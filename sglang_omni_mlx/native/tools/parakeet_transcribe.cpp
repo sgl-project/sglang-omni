@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 #include "parakeet/parakeet_transcriber.h"
 
@@ -62,15 +63,15 @@ int main(int argc, char **argv) {
     bytes << stream.rdbuf();
     mlx::core::reset_peak_memory();
     const auto started = std::chrono::steady_clock::now();
-    const qwen3_asr::TranscriptionResult result = transcriber.Transcribe(
+    const omni_common::TranscriptionResult result = transcriber.Transcribe(
         omni_common::DecodeWav(bytes.str()), options, cancel);
     const nlohmann::json line = {
         {"file", file},
         {"text", result.text},
         {"language", nlohmann::json()},
         {"generated_token_count", result.generated_token_count},
-        {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
-        {"segments", qwen3_asr::SpeakerSegmentsJson(result.segments)},
+        {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
+        {"segments", omni_common::SpeakerSegmentsJson(result.segments)},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
                         .count()},

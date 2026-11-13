@@ -10,6 +10,7 @@
 #include "common/audio.h"
 #include "common/audio_chunks.h"
 #include "common/swift_port.h"
+#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 
 namespace cohere_transcribe {
@@ -146,7 +147,7 @@ CohereTranscriber::TranscribeChunk(const std::vector<float> &samples,
   std::vector<int> generated_ids;
   for (int step = 0;; ++step) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::TranscriptionCancelled();
     } else if (step == token_budget) {
       result.reached_token_limit = true;
       break;
@@ -174,7 +175,7 @@ CohereTranscriber::TranscribeChunk(const std::vector<float> &samples,
   return result;
 }
 
-qwen3_asr::TranscriptionResult
+omni_common::TranscriptionResult
 CohereTranscriber::Transcribe(const std::vector<float> &samples,
                               const CohereOptions &options,
                               const std::atomic<bool> &cancel) const {
@@ -202,11 +203,11 @@ CohereTranscriber::Transcribe(const std::vector<float> &samples,
   const size_t min_chunk_samples =
       static_cast<size_t>(options.min_chunk_duration_seconds *
                           static_cast<float>(omni_common::kSampleRate));
-  qwen3_asr::TranscriptionResult result;
+  omni_common::TranscriptionResult result;
   // Note (khazic): the language actually decoded: an unknown one decodes as
   // English.
   result.language = language;
-  result.finish_reason = qwen3_asr::FinishReason::kStop;
+  result.finish_reason = omni_common::FinishReason::kStop;
   const bool cuts_at_speech = options.voice_activity_detector != nullptr;
   const std::vector<std::pair<size_t, size_t>> chunks =
       cuts_at_speech
@@ -233,7 +234,7 @@ CohereTranscriber::Transcribe(const std::vector<float> &samples,
         std::max(0, remaining_tokens - chunk_result.generated_token_count);
     result.generated_token_count += chunk_result.generated_token_count;
     if (chunk_result.reached_token_limit) {
-      result.finish_reason = qwen3_asr::FinishReason::kLength;
+      result.finish_reason = omni_common::FinishReason::kLength;
     } else {
     }
     if (!chunk_result.text.empty()) {

@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include "common/transcription.h"
 #include "qwen3_asr/worker.h"
 
 namespace mx = mlx::core;
@@ -84,7 +85,7 @@ void VerifyCancelledWorker(const std::filesystem::path &directory,
   auto resume_future = resume.get_future().share();
   std::promise<std::exception_ptr> cancelled;
   auto cancelled_future = cancelled.get_future();
-  std::promise<qwen3_asr::TranscriptionResult> next;
+  std::promise<omni_common::TranscriptionResult> next;
   auto next_future = next.get_future();
   std::unique_ptr<drama::ExpertCache> cache;
   std::unique_ptr<omni_common::Checkpoint> checkpoint;
@@ -110,10 +111,10 @@ void VerifyCancelledWorker(const std::filesystem::path &directory,
             mx::broadcast_to(mx::arange(17, mx::uint32), {1, 256, 17}),
             mx::full({1, 256, 17}, 1.0f / 17), kPrefix, *checkpoint,
             &cancelled);
-        return qwen3_asr::TranscriptionResult{};
+        return omni_common::TranscriptionResult{};
       },
       cancel,
-      [&](std::optional<qwen3_asr::TranscriptionResult>,
+      [&](std::optional<omni_common::TranscriptionResult>,
           std::exception_ptr error) { cancelled.set_value(error); });
   Require(reading_future.wait_for(std::chrono::seconds(5)) ==
               std::future_status::ready,
@@ -128,12 +129,12 @@ void VerifyCancelledWorker(const std::filesystem::path &directory,
             mx::ones({1, 1, 1}), kPrefix, *checkpoint, &cancelled);
         Require(mx::all(mx::isfinite(output)).item<bool>(),
                 "queued request could not reuse cache after cancellation");
-        qwen3_asr::TranscriptionResult result;
+        omni_common::TranscriptionResult result;
         result.text = "next request finished";
         return result;
       },
       qwen3_asr::NewCancelFlag(),
-      [&](std::optional<qwen3_asr::TranscriptionResult> result,
+      [&](std::optional<omni_common::TranscriptionResult> result,
           std::exception_ptr error) {
         if (error) {
           next.set_exception(error);
@@ -151,7 +152,7 @@ void VerifyCancelledWorker(const std::filesystem::path &directory,
   bool rejected = false;
   try {
     std::rethrow_exception(error);
-  } catch (const qwen3_asr::TranscriptionCancelled &) {
+  } catch (const omni_common::TranscriptionCancelled &) {
     rejected = true;
   }
   Require(rejected && next_future.get().text == "next request finished",
@@ -174,7 +175,7 @@ void VerifyAlreadyCancelled(const std::filesystem::path &directory,
   try {
     cache.Routed(loaded.at("input"), mx::zeros({1, 1, 1}, mx::uint32),
                  mx::ones({1, 1, 1}), kPrefix, checkpoint, &cancel);
-  } catch (const qwen3_asr::TranscriptionCancelled &) {
+  } catch (const omni_common::TranscriptionCancelled &) {
     rejected = true;
   }
   Require(rejected && reader->payload_bytes == 0 && cache.misses() == 0 &&

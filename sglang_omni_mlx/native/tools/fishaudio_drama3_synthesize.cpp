@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/transcription.h"
 #include "fishaudio_drama3/fishaudio_drama3_model.h"
 #include "fishaudio_drama3/fishaudio_drama3_prompt.h"
 #include "fishaudio_drama3/fishaudio_drama3_text.h"
@@ -279,7 +280,7 @@ int Run(int argc, char **argv) {
   const nlohmann::json line = {
       {"frame_count", frame_codes.size()},
       {"prompt_row_count", result.prompt_row_count},
-      {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
+      {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
       {"seconds", seconds},
       {"first_audio_seconds", first_audio_seconds.value_or(seconds)},
       {"audio_seconds", audio_seconds},

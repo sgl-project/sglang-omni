@@ -6,6 +6,8 @@
 #include <limits>
 #include <stdexcept>
 
+#include "common/transcription.h"
+
 namespace fish_s2_pro {
 
 namespace mx = mlx::core;
@@ -384,7 +386,7 @@ int FishS2ProModel::SampleSemanticToken(const float *candidate_logits,
                                      : semantic_begin_id_ + candidate;
 }
 
-qwen3_asr::FinishReason FishS2ProModel::Generate(
+omni_common::FinishReason FishS2ProModel::Generate(
     const SpeechPrompt &prompt, int max_frames, const SamplingOptions &sampling,
     const std::atomic<bool> &cancel,
     const std::function<void(const mx::array &)> &on_frame) const {
@@ -444,14 +446,14 @@ qwen3_asr::FinishReason FishS2ProModel::Generate(
   std::vector<int> history;
   for (int frame = 0; frame < frame_limit; ++frame) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::TranscriptionCancelled();
     } else {
     }
     mx::eval(candidate_logits);
     const int token = SampleSemanticToken(candidate_logits.data<float>(),
                                           history, frame, sampling);
     if (token == im_end_id_) {
-      return qwen3_asr::FinishReason::kStop;
+      return omni_common::FinishReason::kStop;
     } else {
     }
     history.push_back(token);
@@ -480,7 +482,7 @@ qwen3_asr::FinishReason FishS2ProModel::Generate(
     mx::eval(frame_codes);
     on_frame(frame_codes);
   }
-  return qwen3_asr::FinishReason::kLength;
+  return omni_common::FinishReason::kLength;
 }
 
 } // namespace fish_s2_pro

@@ -10,6 +10,7 @@
 
 #include "common/audio.h"
 #include "common/text.h"
+#include "common/transcription.h"
 
 namespace sensevoice {
 
@@ -289,16 +290,16 @@ SenseVoiceTranscriber::TranscribePass(const std::vector<float> &samples,
   return pass;
 }
 
-qwen3_asr::TranscriptionResult
+omni_common::TranscriptionResult
 SenseVoiceTranscriber::Transcribe(const std::vector<float> &samples,
                                   const SenseVoiceOptions &options,
                                   const std::atomic<bool> &cancel) const {
   const int language_id = LanguageQueryId(options.language);
   const double sample_rate = model_.config().sample_rate;
-  qwen3_asr::TranscriptionResult result;
-  result.finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::TranscriptionResult result;
+  result.finish_reason = omni_common::FinishReason::kStop;
   const auto add_segment = [&](const Pass &pass, size_t start, size_t end) {
-    qwen3_asr::SpeakerSegment segment;
+    omni_common::SpeakerSegment segment;
     segment.start_seconds = static_cast<double>(start) / sample_rate;
     segment.end_seconds = static_cast<double>(end) / sample_rate;
     segment.text = pass.text;
@@ -310,7 +311,7 @@ SenseVoiceTranscriber::Transcribe(const std::vector<float> &samples,
   };
   if (options.voice_activity_detector == nullptr) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::TranscriptionCancelled();
     } else {
     }
     const Pass pass = TranscribePass(samples, language_id, options.use_itn);
@@ -337,7 +338,7 @@ SenseVoiceTranscriber::Transcribe(const std::vector<float> &samples,
     for (const auto &[chunk_start, chunk_end] :
          SplitRange(start, end, max_samples, overlap_samples)) {
       if (cancel.load()) {
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::TranscriptionCancelled();
       } else {
       }
       const Pass pass =

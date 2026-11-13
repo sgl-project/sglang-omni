@@ -19,6 +19,7 @@
 #include "cohere/cohere_transcriber.h"
 #include "common/audio.h"
 #include "common/form.h"
+#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 #include "silero_vad/speech_segments.h"
 
@@ -109,7 +110,7 @@ int main(int argc, char **argv) {
                          ? nlohmann::json(*result.language)
                          : nlohmann::json()},
         {"generated_token_count", result.generated_token_count},
-        {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
+        {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
                         .count()},

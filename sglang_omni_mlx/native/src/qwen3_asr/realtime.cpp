@@ -7,6 +7,7 @@
 
 #include "common/audio.h"
 #include "common/text.h"
+#include "common/transcription.h"
 
 namespace qwen3_asr {
 
@@ -14,6 +15,8 @@ using omni_common::CodePoints;
 using omni_common::DecodeBase64;
 using omni_common::IsUnicodeSpace;
 using omni_common::StripUnicodeWhitespace;
+using omni_common::TranscriptionCancelled;
+using omni_common::TranscriptionResult;
 
 namespace {
 

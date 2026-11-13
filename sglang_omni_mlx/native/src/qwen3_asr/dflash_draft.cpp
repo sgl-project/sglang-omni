@@ -11,10 +11,12 @@
 #include <utility>
 #include <vector>
 
+#include "common/transcription.h"
 #include "qwen3_asr/draft_backoff.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 
 namespace qwen3_asr {
+
+using omni_common::TranscriptionCancelled;
 
 namespace mx = mlx::core;
 

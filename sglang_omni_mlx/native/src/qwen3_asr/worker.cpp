@@ -3,7 +3,12 @@
 
 #include <algorithm>
 
+#include "common/transcription.h"
+
 namespace qwen3_asr {
+
+using omni_common::TranscriptionCancelled;
+using omni_common::TranscriptionResult;
 
 TranscriptionWorker::TranscriptionWorker(
     std::function<void()> load, std::function<void()> release_idle_memory,

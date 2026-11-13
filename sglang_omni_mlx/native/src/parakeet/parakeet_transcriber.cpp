@@ -8,9 +8,11 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
+#include "common/audio.h"
 #include "common/audio_chunks.h"
 #include "common/swift_port.h"
 #include "common/text.h"
+#include "common/transcription.h"
 
 namespace parakeet {
 
@@ -279,7 +281,7 @@ std::vector<AlignedToken>
 ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
                                  const std::atomic<bool> &cancel) const {
   if (cancel.load()) {
-    throw qwen3_asr::TranscriptionCancelled();
+    throw omni_common::TranscriptionCancelled();
   } else {
   }
   const ParakeetConfig &config = model_.config();
@@ -293,7 +295,7 @@ ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
   std::vector<AlignedToken> tokens;
   for (int frame = 0; frame < frame_count;) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::TranscriptionCancelled();
     } else {
     }
     const DecoderStep step = model_.Decode(
@@ -424,7 +426,7 @@ std::vector<AlignedToken> ParakeetTranscriber::DecodeWithBlankTailRecovery(
   return tokens;
 }
 
-qwen3_asr::TranscriptionResult
+omni_common::TranscriptionResult
 ParakeetTranscriber::Transcribe(const std::vector<float> &samples,
                                 const ParakeetOptions &options,
                                 const std::atomic<bool> &cancel) const {
@@ -479,13 +481,13 @@ ParakeetTranscriber::Transcribe(const std::vector<float> &samples,
     }
   }
 
-  qwen3_asr::TranscriptionResult result;
-  result.finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::TranscriptionResult result;
+  result.finish_reason = omni_common::FinishReason::kStop;
   result.generated_token_count = static_cast<int>(tokens.size());
   std::string text;
   for (const Sentence &sentence : TokensToSentences(tokens)) {
     text += sentence.text;
-    qwen3_asr::SpeakerSegment segment;
+    omni_common::SpeakerSegment segment;
     segment.start_seconds = sentence.tokens.front().start_seconds;
     segment.end_seconds = sentence.tokens.back().end_seconds();
     segment.text = sentence.text;

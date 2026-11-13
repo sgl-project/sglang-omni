@@ -18,15 +18,15 @@
 #include <vector>
 
 #include "common/http.h"
+#include "common/transcription.h"
 #include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 
 namespace speech_service {
 
 using omni_server::Json;
 
 struct SpeechResult {
-  qwen3_asr::FinishReason finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::FinishReason finish_reason = omni_common::FinishReason::kStop;
   size_t prompt_token_count = 0;
   int completion_token_count = 0;
 };
