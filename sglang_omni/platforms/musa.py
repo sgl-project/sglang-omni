@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 else:
     pass
 
+
 class MUSAOmniPlatform(CUDAOmniPlatform):
     _enum = PlatformEnum.MUSA
     device_name = "musa"
