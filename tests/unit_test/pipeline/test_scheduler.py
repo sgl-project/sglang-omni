@@ -49,7 +49,11 @@ from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
-from sglang_omni.admission import ContextExhaustedError, QueueFullError
+from sglang_omni.admission import (
+    ContextExhaustedError,
+    QueueFullError,
+    SessionCapacityExhaustedError,
+)
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
@@ -1125,6 +1129,51 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     assert capacity_checks == [
         (session_request, {"session_capacity_checked": True, "decode_path": "plain"})
     ]
+
+
+@pytest.mark.parametrize(
+    "capacity_message",
+    [
+        "session KV capacity exhausted",
+        "session request-to-token slots exhausted "
+        "(one slot kept for a session that already holds KV)",
+    ],
+)
+def test_enqueue_built_request_reports_a_full_session_capacity_as_overload(
+    monkeypatch, capacity_message: str
+) -> None:
+    scheduler, _, aborts = enqueue_limit_scheduler(monkeypatch)
+    released: list[str] = []
+    session_request = admission_req("req-append", [1, 2, 3])
+
+    def create_session_request(payload, request_data) -> None:
+        request_data.req = session_request
+
+    scheduler.session_bridge = SimpleNamespace(
+        units_by_request_id={"req-append": SimpleNamespace(is_enqueued=False)},
+        create_session_request=create_session_request,
+        check_session_capacity=lambda request_id: capacity_message,
+        release_append_unit=released.append,
+    )
+
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id="req-append"),
+        False,
+        SimpleNamespace(
+            req=admission_req("req-append", []), enforce_request_limits=False
+        ),
+    )
+
+    reject = scheduler.outbox.get_nowait()
+    assert reject.type == "error"
+    assert isinstance(reject.data, SessionCapacityExhaustedError)
+    assert str(reject.data) == f"session_capacity_exhausted: {capacity_message}"
+    assert SessionCapacityExhaustedError.matches(RuntimeError(str(reject.data)))
+    assert not ContextExhaustedError.matches(RuntimeError(str(reject.data)))
+    assert released == ["req-append"]
+    assert aborts == ["req-append"]
+    assert scheduler.waiting_queue == []
 
 
 def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (

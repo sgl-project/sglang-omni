@@ -12,7 +12,11 @@ from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from dataclasses import replace
 
-from sglang_omni.admission import ContextExhaustedError, QueueFullError
+from sglang_omni.admission import (
+    ContextExhaustedError,
+    QueueFullError,
+    SessionCapacityExhaustedError,
+)
 from sglang_omni.profiler.duplex_events import (
     SessionUnitReadyObservation,
     capture_session_unit_ready,
@@ -701,6 +705,8 @@ class SessionRuntime:
         except Exception as exc:
             if ContextExhaustedError.matches(exc):
                 code = ContextExhaustedError.CODE
+            elif SessionCapacityExhaustedError.matches(exc):
+                code = SessionCapacityExhaustedError.CODE
             else:
                 code = failure_code(exc)
             logger.error(
