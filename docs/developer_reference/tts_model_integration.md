@@ -125,13 +125,11 @@ request builder turns it into whatever the AR scheduler needs.
 
 Two things are easy to get wrong at this boundary:
 
-- **Endpoint defaults silently override model defaults.** The HTTP layer fills
-  in a single set of sampling defaults (currently the S2-Pro values). For any
-  other model, those values look exactly like the user explicitly asking for
-  them. Pass an `explicit_generation_params` list (or equivalent) through the
-  request and have your request builder distinguish "user set this" from "the
-  endpoint filled it in". The same trick is needed for any field where the
-  endpoint has an opinion.
+- **Model defaults belong in the request builder.** The HTTP layer passes only
+  the sampling fields the caller set, so a field missing from the request
+  params is one the caller left unset. Read each field with your model's
+  default, for example `params.get("temperature", 0.7)`, and treat a present
+  value as the caller's choice.
 - **Input is heterogeneous.** TTS clients send text under several names
   (`input`, `text`, sometimes a chat-style structure) and references under
   several shapes (`ref_audio` + `ref_text`, or a `references[]` list).

@@ -37,15 +37,6 @@ def as_non_empty_string(value: object, field: str) -> str:
     return value
 
 
-def explicit_params(tts_params: Mapping[str, object]) -> set[str]:
-    raw = tts_params.get("explicit_generation_params", [])
-    if isinstance(raw, (list, tuple, set)):
-        return {str(x) for x in raw}
-    else:
-        pass
-    return set()
-
-
 def parse_seed(value: object) -> int:
     if value is None:
         return 0
@@ -132,7 +123,9 @@ def build_ttm_state(payload: StagePayload) -> MiniMaxMusic3State:
     )
 
     params = request.params or {}
-    unsupported = explicit_params(tts_params) & _UNSUPPORTED_SAMPLING_PARAMS
+    unsupported = {
+        field for field in _UNSUPPORTED_SAMPLING_PARAMS if params.get(field) is not None
+    }
     if unsupported:
         raise ValueError(
             "MiniMax Music 3 does not support sampling parameters: "

@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SeedTTS benchmark entry-point: model profiles, server lifecycle, WER filter."""
+"""SeedTTS benchmark entry-point: model profiles, server lifecycle, WER filter, CLI
+configuration, concurrency sweeps and sustained overshoot."""
 
 import asyncio
+import base64
+import io
 import json
+import os
 import socket
 import sys
 import threading
+import wave
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,13 +25,29 @@ from benchmarks.benchmarker.data import FinishReason
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.eval import benchmark_tts_seedtts as tts
-from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
+from benchmarks.eval.benchmark_tts_seedtts import (
+    TtsSeedttsBenchmarkConfig,
+    _build_arg_parser,
+    _build_results_config,
+    _config_from_args,
+    _parse_concurrencies,
+    _validate_args,
+    plan_sustained_overshoot,
+    run_tts_concurrency_sweep,
+    run_tts_sustained_overshoot,
+)
+from benchmarks.metrics.wer import (
+    SampleOutput,
+    calculate_asr_speed_metrics,
+    calculate_wer_metrics,
+)
 from benchmarks.tasks import asr
 from benchmarks.tasks.tts import (
     _build_tts_payload,
     make_tts_send_fn,
     stream_outcome_collector,
 )
+from sglang_omni.admission import QueueFullError
 from tests.utils import QWEN3_ASR_WER_CONCURRENCY, assert_wer_partitioned
 
 SEEDTTS_SAMPLE = SampleInput(
@@ -170,7 +191,8 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
     "model, max_new_tokens",
     [
         ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
-        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", 2048),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", None),
+        ("tencent/AuK-Flash", None),
     ],
 )
 def test_max_new_tokens_default_applies_without_cli(model, max_new_tokens):
@@ -369,3 +391,472 @@ def test_wer_fanout_preserves_all_twenty_samples_at_long_audio_admission_cap(
     assert result["summary"]["skipped"] == 0
     assert_wer_partitioned(result, max_wer_below_50_corpus=0, max_n_above_50=0)
     assert asr.DEFAULT_ASR_TRANSCRIBE_CONCURRENCY == 32
+
+
+def config_from_cli(*args: str) -> TtsSeedttsBenchmarkConfig:
+    parser = _build_arg_parser()
+    parsed = parser.parse_args(list(args))
+    _validate_args(parser, parsed)
+    return _config_from_args(parsed)
+
+
+def test_seedtts_benchmark_batch_args_default_to_64() -> None:
+    config = config_from_cli()
+
+    assert config.max_running_requests == 64
+    assert config.cuda_graph_max_bs == 64
+    assert config.max_queued_requests is None
+
+    results_config = _build_results_config(
+        config,
+        base_url="http://localhost:8000",
+    )
+    assert results_config["max_running_requests"] == 64
+    assert results_config["cuda_graph_max_bs"] == 64
+    assert results_config["max_queued_requests"] is None
+
+
+def test_seedtts_benchmark_batch_args_are_independent() -> None:
+    config = config_from_cli(
+        "--max-running-requests",
+        "32",
+        "--cuda-graph-max-bs",
+        "128",
+        "--max-queued-requests",
+        "16",
+    )
+
+    assert config.max_running_requests == 32
+    assert config.cuda_graph_max_bs == 128
+    assert config.max_queued_requests == 16
+
+    results_config = _build_results_config(
+        config,
+        base_url="http://localhost:8000",
+    )
+    assert results_config["max_running_requests"] == 32
+    assert results_config["cuda_graph_max_bs"] == 128
+    assert results_config["max_queued_requests"] == 16
+
+
+@pytest.mark.parametrize(
+    "arguments, expected",
+    [
+        ([], False),
+        (["--stream"], True),
+        (["--stream", "--no-collect-stream-outcomes"], False),
+    ],
+)
+def test_outcome_collection_control_is_preserved_in_results(
+    arguments: list[str],
+    expected: bool,
+) -> None:
+    config = config_from_cli(*arguments)
+    results_config = _build_results_config(config, base_url="http://localhost:8000")
+    assert results_config["collect_stream_outcomes"] is expected
+
+
+def test_seedtts_benchmark_records_quantization() -> None:
+    config = config_from_cli("--quantization", "fp8")
+    assert config.quantization == "fp8"
+    results_config = _build_results_config(config, base_url="http://localhost:8000")
+    assert results_config["quantization"] == "fp8"
+
+
+def test_seedtts_benchmark_quantization_defaults_to_none() -> None:
+    config = config_from_cli()
+    assert config.quantization is None
+    results_config = _build_results_config(config, base_url="http://localhost:8000")
+    assert results_config["quantization"] is None
+
+
+def test_results_config_records_sampling_and_omits_fingerprint() -> None:
+    config = config_from_cli(
+        "--temperature",
+        "0.2",
+        "--top-p",
+        "0.9",
+        "--top-k",
+        "10",
+        "--repetition-penalty",
+        "1.1",
+        "--seed",
+        "3",
+    )
+    results_config = _build_results_config(config, base_url="http://localhost:8000")
+    assert results_config["temperature"] == 0.2
+    assert results_config["top_p"] == 0.9
+    assert results_config["top_k"] == 10
+    assert results_config["repetition_penalty"] == 1.1
+    assert results_config["seed"] == 3
+    assert "environment_fingerprint" not in results_config
+
+    unset = _build_results_config(config_from_cli(), base_url="http://localhost:8000")
+    assert unset["temperature"] is None
+    assert unset["top_p"] is None
+    assert unset["top_k"] is None
+    assert unset["repetition_penalty"] is None
+    assert unset["seed"] is None
+
+
+@pytest.mark.parametrize(
+    "model, max_new_tokens",
+    [
+        ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", None),
+    ],
+)
+def test_results_config_records_the_resolved_max_new_tokens(
+    model: str, max_new_tokens: int | None
+) -> None:
+    results_config = _build_results_config(
+        config_from_cli("--model", model), base_url="http://localhost:8000"
+    )
+    assert results_config["max_new_tokens"] == max_new_tokens
+
+
+def test_results_config_includes_fingerprint_when_set() -> None:
+    config = config_from_cli()
+    config.environment_fingerprint = {"client": {"git": {}}, "server": {"url": "u"}}
+    results_config = _build_results_config(config, base_url="http://localhost:8000")
+    assert results_config["environment_fingerprint"]["server"]["url"] == "u"
+
+
+def test_parse_concurrencies() -> None:
+    assert _parse_concurrencies("16,32,48,64") == [16, 32, 48, 64]
+
+
+def test_plan_sustained_overshoot() -> None:
+    plan = plan_sustained_overshoot(
+        max_running_requests=32,
+        max_queued_requests=16,
+        duration_s=10,
+    )
+    assert plan.capacity == 48
+    assert plan.concurrency == 0
+    assert plan.request_rate == 96
+    assert plan.request_count == 960
+    assert plan.overshoot_ratio == 2.0
+    with pytest.raises(ValueError, match="request_rate > admission capacity"):
+        plan_sustained_overshoot(
+            max_running_requests=32,
+            max_queued_requests=16,
+            duration_s=10,
+            request_rate=48,
+        )
+
+
+def make_sample(sample_id: str) -> SampleInput:
+    return SampleInput(
+        sample_id=sample_id, ref_text="r", ref_audio="r.wav", target_text="t"
+    )
+
+
+def stub_seedtts_benchmark(monkeypatch, run_fn, *, samples=None) -> None:
+    monkeypatch.setattr(
+        "benchmarks.eval.benchmark_tts_seedtts.run_tts_seedtts_benchmark",
+        run_fn,
+    )
+    monkeypatch.setattr(
+        "benchmarks.eval.benchmark_tts_seedtts.print_speed_summary",
+        lambda *args, **kwargs: None,
+    )
+    if samples is not None:
+        monkeypatch.setattr(
+            "benchmarks.eval.benchmark_tts_seedtts._load_benchmark_samples",
+            lambda config: samples,
+        )
+
+
+@pytest.mark.parametrize(
+    "argv, needle",
+    [
+        (
+            [
+                "--generate-only",
+                "--sustained-overshoot",
+                "--max-running-requests",
+                "32",
+            ],
+            "max-queued-requests",
+        ),
+        (
+            [
+                "--generate-only",
+                "--sustained-overshoot",
+                "--max-queued-requests",
+                "16",
+                "--concurrencies",
+                "16,32",
+            ],
+            "cannot be combined",
+        ),
+        (["--repeats", "3"], "require --generate-only"),
+        (["--generate-only", "--repeats", "0"], "must be positive"),
+    ],
+)
+def test_cli_rejects_invalid_overshoot(
+    capsys: pytest.CaptureFixture[str], argv: list[str], needle: str
+) -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    with pytest.raises(SystemExit) as exc:
+        _validate_args(parser, args)
+    assert exc.value.code == 2
+    assert needle in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_concurrency_sweep_writes_per_point_output_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen_output_dirs: list[str] = []
+
+    async def fake_run(config: TtsSeedttsBenchmarkConfig, **_kwargs) -> dict:
+        seen_output_dirs.append(config.output_dir)
+        Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+        (Path(config.output_dir) / "speed_results.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        return {
+            "summary": {
+                "completed_requests": 1,
+                "failed_requests": 0,
+                "latency_p95_s": 0.1,
+                "audio_ttfp_p95_s": 0.05,
+            }
+        }
+
+    stub_seedtts_benchmark(monkeypatch, fake_run)
+
+    config = config_from_cli("--output-dir", str(tmp_path))
+    payload = await run_tts_concurrency_sweep(config, [16, 32])
+    expected = [str(tmp_path / "c16"), str(tmp_path / "c32")]
+    assert seen_output_dirs == expected
+    assert [row["per_repeat"][0]["output_dir"] for row in payload["rows"]] == expected
+    assert [row["repeats"] for row in payload["rows"]] == [1, 1]
+    assert payload["rows"][0]["latency_p95_s"] == {
+        "mean": 0.1,
+        "min": 0.1,
+        "max": 0.1,
+        "n": 1,
+    }
+    assert (tmp_path / "c16" / "speed_results.json").is_file()
+    assert (tmp_path / "c32" / "speed_results.json").is_file()
+    assert payload["repeats"] == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrency_sweep_repeats_aggregate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_run(config: TtsSeedttsBenchmarkConfig, **_kwargs) -> dict:
+        Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+        latency = 3.0 if config.output_dir.endswith("_r2") else 1.0
+        return {
+            "summary": {
+                "completed_requests": 1,
+                "failed_requests": 0,
+                "latency_p95_s": latency,
+                "throughput_qps": 4.0,
+            }
+        }
+
+    stub_seedtts_benchmark(monkeypatch, fake_run)
+    config = config_from_cli("--output-dir", str(tmp_path), "--generate-only")
+    payload = await run_tts_concurrency_sweep(config, [16], repeats=2)
+    row = payload["rows"][0]
+    assert [item["output_dir"] for item in row["per_repeat"]] == [
+        str(tmp_path / "c16_r1"),
+        str(tmp_path / "c16_r2"),
+    ]
+    assert row["latency_p95_s"] == {"mean": 2.0, "min": 1.0, "max": 3.0, "n": 2}
+    assert row["throughput_qps"] == {"mean": 4.0, "min": 4.0, "max": 4.0, "n": 2}
+    assert row["latency_mean_s"]["n"] == 0
+    assert [item["repeat"] for item in row["per_repeat"]] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_concurrency_sweep_rejects_non_positive_repeats(tmp_path: Path) -> None:
+    config = config_from_cli("--output-dir", str(tmp_path))
+    with pytest.raises(ValueError, match="repeats must be positive"):
+        await run_tts_concurrency_sweep(config, [1], repeats=0)
+
+
+@pytest.mark.asyncio
+async def test_sustained_overshoot_uses_open_loop_and_unique_output_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[TtsSeedttsBenchmarkConfig] = []
+    seen_samples: list[list[str]] = []
+
+    async def fake_run(config: TtsSeedttsBenchmarkConfig, **kwargs) -> dict:
+        seen.append(config)
+        seen_samples.append([sample.sample_id for sample in kwargs["samples"]])
+        Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+        return {
+            "summary": {
+                "completed_requests": 1,
+                "failed_requests": 1,
+                "latency_p95_s": 0.4,
+                "audio_ttfp_p95_s": 0.05,
+            },
+            "per_request": [
+                {
+                    "is_success": True,
+                    "error": None,
+                    "audio_ttfp_s": 0.05,
+                    "latency_s": 0.4,
+                },
+                {
+                    "is_success": False,
+                    "error": f"HTTP 503: {QueueFullError.MESSAGE}",
+                    "audio_ttfp_s": None,
+                    "latency_s": 0.01,
+                },
+                {
+                    "is_success": False,
+                    "error": "HTTP 500: boom",
+                    "audio_ttfp_s": None,
+                    "latency_s": 1.0,
+                },
+            ],
+            "config": {"concurrency": config.concurrency},
+        }
+
+    stub_seedtts_benchmark(monkeypatch, fake_run, samples=[make_sample("s0")])
+
+    payload = await run_tts_sustained_overshoot(
+        config_from_cli(
+            "--output-dir",
+            str(tmp_path),
+            "--generate-only",
+            "--sustained-overshoot",
+            "--max-running-requests",
+            "32",
+            "--max-queued-requests",
+            "16",
+            "--overshoot-duration-s",
+            "1",
+            "--request-rate",
+            "64",
+        )
+    )
+
+    assert seen[0].concurrency == 0
+    assert seen[0].request_rate == 64
+    assert seen[0].output_dir == str(tmp_path / "overshoot")
+    assert payload["outcomes"] == {
+        "total_requests": 3,
+        "success": 1,
+        "queue_full": 1,
+        "other_failed": 1,
+        "success_ttfa_p95_s": 0.05,
+        "queue_full_latency_p95_s": 0.01,
+    }
+    assert len(set(seen_samples[0])) == 64
+    assert (tmp_path / "overshoot" / "sustained_overshoot.json").is_file()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="libproc is macOS only")
+@pytest.mark.asyncio
+async def test_native_server_run_inlines_references_and_samples_its_tree(
+    tmp_path: Path,
+) -> None:
+    """A native server reads ref_audio only as a data URI, and its stage
+    workers' memory must count toward the peak."""
+    reference = tmp_path / "ref.wav"
+    reference.write_bytes(b"RIFF-reference")
+    received: list[dict[str, object]] = []
+
+    async def speech(request: web.Request) -> web.Response:
+        received.append(await request.json())
+        audio = io.BytesIO()
+        with wave.open(audio, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(24000)
+            writer.writeframes(bytes(4800))
+        return web.Response(body=audio.getvalue(), content_type="audio/wav")
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/speech", speech)
+    server = web.AppRunner(application)
+    await server.setup()
+    # A child of this process stands in for a server's stage worker.
+    worker = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)"
+    )
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.setblocking(False)
+        await web.SockSite(server, listener).start()
+        try:
+            config = config_from_cli(
+                "--model",
+                "tencent/AuK-Flash",
+                "--base-url",
+                f"http://127.0.0.1:{listener.getsockname()[1]}",
+                "--use-existing-server",
+                "--generate-only",
+                "--inline-ref-audio",
+                "--server-pid",
+                str(os.getpid()),
+                "--warmup",
+                "0",
+                "--disable-tqdm",
+                "--output-dir",
+                str(tmp_path / "results"),
+            )
+            await tts.run_tts_seedtts_benchmark(
+                config,
+                samples=[
+                    SampleInput(
+                        sample_id="sample-1",
+                        ref_text="reference",
+                        ref_audio=str(reference),
+                        target_text="hello world",
+                    )
+                ],
+            )
+        finally:
+            worker.kill()
+            await worker.wait()
+            await server.cleanup()
+    assert received[0]["ref_audio"] == "data:audio/wav;base64," + base64.b64encode(
+        b"RIFF-reference"
+    ).decode("ascii")
+    assert "max_new_tokens" not in received[0]
+    memory = json.loads((tmp_path / "results" / "memory.json").read_text())
+    sampled_processes = {
+        process["process_id"]
+        for sample in memory["samples"]
+        for process in sample["processes"]
+    }
+    assert {os.getpid(), worker.pid} <= sampled_processes
+    assert memory["peak_physical_footprint_bytes"] > 0
+
+
+def test_asr_speed_counts_scored_and_unscorable_transcriptions() -> None:
+    """Scored and unscorable transcriptions both contribute to speed, unlike request failures."""
+    outputs = [
+        SampleOutput(
+            is_transcribed=True,
+            is_success=True,
+            asr_latency_s=0.25,
+            audio_duration_s=1.0,
+        ),
+        SampleOutput(is_transcribed=True, asr_latency_s=0.75, audio_duration_s=3.0),
+        SampleOutput(error="Transcription failed", asr_latency_s=9.0),
+    ]
+    speed = calculate_asr_speed_metrics(outputs, wall_time_s=2.0)
+    wer = calculate_wer_metrics(outputs, "en")
+    assert speed["evaluated"] == 2
+    assert speed["failed_requests"] == 1
+    assert speed["asr_throughput_samples_per_s"] == 1.0
+    assert speed["asr_latency_mean_s"] == 0.5
+    assert speed["asr_latency_p95_s"] == pytest.approx(0.725)
+    assert speed["asr_audio_processed_s"] == 4.0
+    assert speed["asr_rtf_mean"] == 0.25
+    assert wer["evaluated"] == 1
+    assert wer["skipped"] == 2

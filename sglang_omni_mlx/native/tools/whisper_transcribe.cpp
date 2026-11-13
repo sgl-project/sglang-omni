@@ -13,9 +13,9 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
+#include "common/audio.h"
 #include "nlohmann/json.hpp"
-#include "whisper_transcriber.h"
+#include "whisper/whisper_transcriber.h"
 
 int main(int argc, char **argv) {
   std::string model_path;
@@ -60,7 +60,7 @@ int main(int argc, char **argv) {
     bytes << stream.rdbuf();
     const auto started = std::chrono::steady_clock::now();
     const auto result = transcriber.Transcribe(
-        qwen3_asr::DecodeWav(bytes.str()), options, cancel);
+        omni_common::DecodeWav(bytes.str()), options, cancel);
     const nlohmann::json line = {
         {"file", file},
         {"text", result.text},

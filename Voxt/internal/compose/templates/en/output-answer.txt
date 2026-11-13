@@ -1,0 +1,1 @@
+Output: a JSON object with two strings: "title", a short name for the text (at most eight words, in the text's language), and "content", the text itself, ready to insert (plain text; line breaks as needed). Nothing outside the object.

@@ -17,6 +17,7 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     load_moss_audio_vocoder,
     resolve_moss_audio_dtype,
 )
+from sglang_omni.models.moss_tts.config import resolve_vocoder_cuda_graph
 from sglang_omni.models.moss_tts.hf_loading import (
     MossLoadedProcessor,
     MossLocalReferences,
@@ -25,7 +26,6 @@ from sglang_omni.models.moss_tts.hf_loading import (
     moss_transformers_processor_compat,
 )
 from sglang_omni.models.moss_tts.reference_encoder import MossReferenceEncoder
-from sglang_omni.models.moss_tts_local.config import resolve_vocoder_cuda_graph
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )

@@ -10,6 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 
+from sglang_omni.models.nemotron_voicechat.duplex_config import (
+    NemotronVoiceChatDuplexPipelineConfig,
+)
 from sglang_omni.models.nemotron_voicechat.realtime import VoiceChatOutput, deployment
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import (
@@ -19,6 +22,7 @@ from sglang_omni.proto.session import (
     TimedChunk,
 )
 from sglang_omni.serve.openai_api import create_app
+from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.output import ResponseFinished, ResponseStarted
 from sglang_omni.serve.realtime.schema import JsonObject, JsonValue
 
@@ -34,17 +38,23 @@ class RecordingSessionClient:
         self,
         request: OmniRequest,
         *,
-        stages: list[str],
+        stages: list[str] | None = None,
+        graph: object | None = None,
         limits: SessionLimits,
         session_id: str,
     ) -> SessionIdentity:
-        assert stages == ["perception", "thinker", "talker", "code2wav"]
+        assert stages is None and graph is None
         self.identity = SessionIdentity(session_id)
         self.output_queue = asyncio.Queue()
         return self.identity
 
     async def append_session(
-        self, identity: SessionIdentity, chunk: TimedChunk
+        self,
+        identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
     ) -> None:
         assert identity == self.identity
         self.chunks.append(chunk)
@@ -81,6 +91,40 @@ class RecordingSessionClient:
         await self.output_queue.put(None)
 
 
+def test_realtime_connection_capacity_follows_pipeline_sessions() -> None:
+    config = NemotronVoiceChatDuplexPipelineConfig(model_path="unused", max_sessions=3)
+    assert deployment(RecordingSessionClient(), config).max_connections == 3
+
+
+def single_session_deployment(
+    client: RecordingSessionClient,
+) -> RealtimeDeployment:
+    return deployment(
+        client, NemotronVoiceChatDuplexPipelineConfig(model_path="unused")
+    )
+
+
+def test_warmup_sends_three_silent_units_and_closes_its_session() -> None:
+    client = RecordingSessionClient()
+    asyncio.run(single_session_deployment(client).warmup(30))
+    assert [chunk.payload for chunk in client.chunks if chunk.payload] == [
+        bytes(2560)
+    ] * 3
+    assert client.chunks[-1].eos
+    assert client.closed_sessions == 1
+
+
+class FailingCloseClient(RecordingSessionClient):
+    async def close_session(self, identity: SessionIdentity) -> None:
+        await super().close_session(identity)
+        raise RuntimeError("session cleanup failed")
+
+
+def test_warmup_fails_when_its_session_cleanup_fails() -> None:
+    with pytest.raises(RuntimeError, match="session cleanup failed"):
+        asyncio.run(single_session_deployment(FailingCloseClient()).warmup(30))
+
+
 def send_event(
     websocket: WebSocketTestSession, event_type: str, **fields: JsonValue
 ) -> None:
@@ -110,7 +154,9 @@ def append_audio(
 def test_native_websocket_partial_tail_continuation_and_close() -> None:
     client = RecordingSessionClient()
     app = create_app(
-        client, model_name="nemotron-voicechat", realtime_deployment=deployment(client)
+        client,
+        model_name="nemotron-voicechat",
+        realtime_deployment=single_session_deployment(client),
     )
     with TestClient(app).websocket_connect("/v1/realtime") as websocket:
         receive_until(websocket, "session.created")
@@ -119,6 +165,8 @@ def test_native_websocket_partial_tail_continuation_and_close() -> None:
         )
         update = receive_until(websocket, "session.updated")[-1]
         assert update["session"]["audio"]["output"]["format"]["rate"] == 22050
+        # Note (ruoyu): The adapter answers response.cancel with not_supported, so a page must treat its stop button as a local mute.
+        assert update["session"]["sglang"]["granted"]["supports_cancel"] is False
         append_audio(websocket, 0, 640, 0)
         receive_until(websocket, "sglang.input_audio.accepted")
         assert client.chunks == []
@@ -142,7 +190,9 @@ def test_native_websocket_partial_tail_continuation_and_close() -> None:
 def test_native_websocket_disconnect_releases_session() -> None:
     client = RecordingSessionClient()
     app = create_app(
-        client, model_name="nemotron-voicechat", realtime_deployment=deployment(client)
+        client,
+        model_name="nemotron-voicechat",
+        realtime_deployment=single_session_deployment(client),
     )
     with TestClient(app).websocket_connect("/v1/realtime") as websocket:
         receive_until(websocket, "session.created")
@@ -154,7 +204,9 @@ def test_native_websocket_disconnect_releases_session() -> None:
 def test_native_websocket_reconnect_accepts_audio_after_session_close() -> None:
     client = RecordingSessionClient()
     application = create_app(
-        client, model_name="nemotron-voicechat", realtime_deployment=deployment(client)
+        client,
+        model_name="nemotron-voicechat",
+        realtime_deployment=single_session_deployment(client),
     )
     with TestClient(application) as http_client:
         for conversation_index in range(3):

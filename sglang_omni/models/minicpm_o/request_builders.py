@@ -125,11 +125,11 @@ def build_sglang_thinker_request(
     request_id: str | None = None,
 ) -> SGLangARRequestData:
     """Build a thinker request with sampling parameters and media embeddings."""
-    from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     from sglang_omni.scheduling.sglang_backend.request_data import (
         SGLangARRequestData,
+        ThinkerRequest,
         validate_prompt_token_ids,
     )
 
@@ -151,7 +151,7 @@ def build_sglang_thinker_request(
     max_new_tokens = (
         1 if known_tts_output_ids is not None else params.get("max_new_tokens", 2048)
     )
-    temperature = params.get("temperature", 0.0)
+    temperature = params.get("temperature", 1.0)
     thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
     length_penalty = thinker_params.get("length_penalty", 1.0)
     if not 0.0 < length_penalty:
@@ -184,7 +184,7 @@ def build_sglang_thinker_request(
         )
     else:
         pass
-    req = Req(
+    req = ThinkerRequest(
         rid=request_id or "req-0",
         origin_input_text="",
         origin_input_ids=input_ids.tolist(),
@@ -244,6 +244,10 @@ def apply_thinker_result(
         pass
     if result.weight_version is not None:
         thinker_out["weight_version"] = result.weight_version
+    else:
+        pass
+    if result.spec_tokens_details is not None:
+        thinker_out["spec_tokens_details"] = result.spec_tokens_details
     else:
         pass
     if result.output_token_logprobs is not None:

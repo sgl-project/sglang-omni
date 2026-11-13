@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from sglang_omni.profiler.views import (
+    assess_completeness,
     build_report,
     hop_breakdown,
     reconstruct_timelines,
@@ -21,6 +22,30 @@ def write_events(path: Path, events: list[dict]) -> None:
         for ev in events:
             fp.write(json.dumps(ev))
             fp.write("\n")
+
+
+def write_status(path: Path, *, complete: bool, reasons: list[str]) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "complete": complete,
+                "completeness_scope": "event_storage",
+                "incomplete_reasons": reasons,
+                "accepted_events": 0,
+                "processed_events": 0,
+                "written_events": 0,
+                "unwritten_events": 0,
+                "dropped_events": 0,
+                "metadata_snapshot_failures": 0,
+                "metadata_truncations": 0,
+                "serialization_failures": 0,
+                "event_file_open_failures": 0,
+                "write_failures": 0,
+                "finalization_failures": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def make_ev(request_id, stage, name, ts, **md):
@@ -68,7 +93,13 @@ def test_reconstruct_timelines_sorts_per_request(tmp_path: Path) -> None:
 def test_timeline_merges_multiple_files(tmp_path: Path) -> None:
     file_a = tmp_path / "events_coordinator_1.jsonl"
     file_b = tmp_path / "events_encoder_2.jsonl"
-    write_events(file_a, [make_ev("r1", "coordinator", "request_admission", 100)])
+    write_events(
+        file_a,
+        [
+            make_ev("r1", "coordinator", "request_admission", 100),
+            make_ev("r1", "coordinator", "request_complete", 300),
+        ],
+    )
     write_events(
         file_b,
         [
@@ -81,7 +112,11 @@ def test_timeline_merges_multiple_files(tmp_path: Path) -> None:
     tls = reconstruct_timelines(tmp_path)
     assert "r1" in tls
     names = [e["event_name"] for e in tls["r1"].events]
-    assert names == ["request_admission", "stage_input_received"]
+    assert names == [
+        "request_admission",
+        "stage_input_received",
+        "request_complete",
+    ]
 
 
 def test_iter_events_skips_malformed_lines(tmp_path: Path) -> None:
@@ -193,7 +228,7 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
             "r1",
             "talker",
             "stage_stream_chunk_received",
-            1_000_000,
+            1_500_000,
             from_stage="thinker",
             chunk_id=0,
         ),
@@ -201,7 +236,7 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
             "r1",
             "talker",
             "stage_stream_chunk_received",
-            1_500_000,
+            1_000_000,
             from_stage="thinker",
             chunk_id=1,
         ),
@@ -214,6 +249,7 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
     assert r.dst_stage == "talker"
     assert r.kind == "stream_chunk"
     assert r.count == 2
+    assert abs(r.max_ms - 1.5) < 1e-9
 
 
 def test_hop_breakdown_pairs_terminal_stream_chunks_to_coordinator(
@@ -420,3 +456,94 @@ def test_build_report_returns_all_three_views(tmp_path: Path) -> None:
     assert any(
         r["src"] == "encoder" and r["dst"] == "thinker" for r in rep["hop_breakdown"]
     )
+
+
+def test_missing_status_sidecar_is_unknown_and_not_complete(tmp_path: Path) -> None:
+    event_path = tmp_path / f"events_coordinator_{os.getpid()}.jsonl"
+    write_events(event_path, [make_ev("r1", "coordinator", "event", 1)])
+
+    completeness = assess_completeness(tmp_path)
+
+    assert completeness["state"] == "unknown"
+    assert completeness["complete"] is False
+    assert completeness["expected_status_files"] == 1
+    assert completeness["found_status_files"] == 0
+    assert "missing_status_sidecar" in completeness["incomplete_reasons"]
+
+
+def test_incomplete_status_sidecar_propagates_to_report(tmp_path: Path) -> None:
+    event_path = tmp_path / f"events_coordinator_{os.getpid()}.jsonl"
+    write_events(event_path, [make_ev("r1", "coordinator", "event", 1)])
+    write_status(
+        tmp_path / f"run_status_{os.getpid()}.json",
+        complete=False,
+        reasons=["producer_buffer_overflow"],
+    )
+
+    report = build_report(tmp_path)
+
+    assert report["completeness"]["state"] == "incomplete"
+    assert report["completeness"]["complete"] is False
+    assert report["completeness"]["incomplete_reasons"] == ["producer_buffer_overflow"]
+
+
+def test_complete_status_sidecar_allows_complete_report(tmp_path: Path) -> None:
+    event_path = tmp_path / f"events_coordinator_{os.getpid()}.jsonl"
+    write_events(event_path, [make_ev("r1", "coordinator", "event", 1)])
+    write_status(
+        tmp_path / f"run_status_{os.getpid()}.json",
+        complete=True,
+        reasons=[],
+    )
+
+    report = build_report(tmp_path)
+
+    assert report["completeness"]["state"] == "complete"
+    assert report["completeness"]["complete"] is True
+
+
+def test_status_without_event_file_prevents_complete_report(tmp_path: Path) -> None:
+    process_a_pid = os.getpid()
+    process_b_pid = process_a_pid + 1
+    write_events(
+        tmp_path / f"events_coordinator_{process_a_pid}.jsonl",
+        [make_ev("r1", "coordinator", "event", 1)],
+    )
+    write_status(
+        tmp_path / f"run_status_{process_a_pid}.json",
+        complete=True,
+        reasons=[],
+    )
+    write_status(
+        tmp_path / f"run_status_{process_b_pid}.json",
+        complete=False,
+        reasons=["producer_buffer_overflow"],
+    )
+
+    completeness = assess_completeness(tmp_path)
+
+    assert completeness["state"] == "incomplete"
+    assert completeness["complete"] is False
+    assert completeness["expected_status_files"] == 2
+    assert completeness["found_status_files"] == 2
+    assert "status_without_event_file" in completeness["incomplete_reasons"]
+    assert "producer_buffer_overflow" in completeness["incomplete_reasons"]
+
+
+def test_inconsistent_complete_status_is_not_accepted(tmp_path: Path) -> None:
+    event_path = tmp_path / f"events_coordinator_{os.getpid()}.jsonl"
+    write_events(event_path, [make_ev("r1", "coordinator", "event", 1)])
+    write_status(
+        tmp_path / f"run_status_{os.getpid()}.json",
+        complete=True,
+        reasons=[],
+    )
+    status_path = tmp_path / f"run_status_{os.getpid()}.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["dropped_events"] = 1
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+    completeness = assess_completeness(tmp_path)
+
+    assert completeness["state"] == "incomplete"
+    assert completeness["complete"] is False

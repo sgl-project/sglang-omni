@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.rocm import RocmDeviceMixin
 
-from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.interface import (
+    OmniPlatform,
+    RMSNormKernel,
+    build_cuda_compatible_stage_process_env,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -32,47 +36,11 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
         spec: StageLaunchConfig,
         env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
-        if spec.tp_size <= 1:
-            return {}
-        else:
-            pass
-
-        source_env = env if env is not None else os.environ
-        hip_visible = source_env.get("HIP_VISIBLE_DEVICES")
-        visibility_var = (
-            "HIP_VISIBLE_DEVICES" if hip_visible else "CUDA_VISIBLE_DEVICES"
+        return build_cuda_compatible_stage_process_env(
+            spec,
+            env,
+            "HIP_VISIBLE_DEVICES",
         )
-        original_visible = source_env.get(visibility_var)
-        if spec.gpu_id is None:
-            raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
-        else:
-            pass
-        if original_visible:
-            visible_devices = [item.strip() for item in original_visible.split(",")]
-            if spec.gpu_id >= len(visible_devices):
-                raise ValueError(
-                    f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
-                    f"but {visibility_var} only exposes {visible_devices}"
-                )
-            else:
-                pass
-            mapped_gpu = visible_devices[spec.gpu_id]
-        else:
-            mapped_gpu = str(spec.gpu_id)
-
-        env_updates = {
-            "CUDA_VISIBLE_DEVICES": mapped_gpu,
-            "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
-            "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
-        }
-        if hip_visible:
-            # Note (zijiecode): the HIP runtime prefers HIP_VISIBLE_DEVICES over the
-            # CUDA alias, so the child must be narrowed through it; the alias
-            # is kept for the startup lock and SGLang's physical-device helpers.
-            env_updates["HIP_VISIBLE_DEVICES"] = mapped_gpu
-        else:
-            pass
-        return env_updates
 
     def get_intra_node_transport(self):
         from sglang_omni.comm.data_ref import TransportKind
@@ -83,6 +51,18 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
         # sgl-kernel's AOT op is CUDA-only, while the native QK-norm + RoPE
         # path works through PyTorch's HIP backend.
         return None
+
+    def get_rmsnorm(self) -> RMSNormKernel:
+        from aiter import rmsnorm2d_fwd
+
+        def aiter_rmsnorm(
+            hidden_states: torch.Tensor, weight: torch.Tensor, variance_epsilon: float
+        ) -> torch.Tensor:
+            normalized = torch.empty_like(hidden_states)
+            rmsnorm2d_fwd(normalized, hidden_states, weight, variance_epsilon)
+            return normalized
+
+        return aiter_rmsnorm
 
     def apply_model_worker_backend_policy(
         self,

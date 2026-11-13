@@ -9,7 +9,11 @@ import math
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
+    AttentionState,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.dit import (
+    Attention,
     CausalConvBlock,
     ConvBlockState,
     DiT,
@@ -214,3 +218,24 @@ def test_variable_length_stays_padded_off_cuda(
         model.enable_variable_length = False
         padded = model(noisy_mel, mask, mu, timesteps, speaker_embeddings, cond)
     torch.testing.assert_close(variable_length, padded)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_streaming_attention_keeps_its_key_value_history_in_the_flow_dtype(
+    dtype: torch.dtype,
+) -> None:
+    torch.manual_seed(0)
+    attention = Attention(dim=64, num_heads=2, head_dim=32, qk_norm=True)
+    attention = attention.to("cuda", dtype).eval()
+    first_chunk, second_chunk = torch.randn(1, 6, 64, device="cuda", dtype=dtype).split(
+        3, dim=1
+    )
+
+    with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
+        _, state = attention(first_chunk, None, state=AttentionState())
+        _, state = attention(second_chunk, None, state=state)
+
+    assert state.history.dtype == dtype, "the streaming history keeps the flow dtype"
+    assert state.history.shape[2] == 6, "the history holds both chunks"

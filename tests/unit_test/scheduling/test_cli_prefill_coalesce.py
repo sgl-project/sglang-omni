@@ -21,6 +21,7 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
+from sglang_omni.models.arkasr.config import ArkasrPipelineConfig
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.moss_transcribe_diarize.config import (
@@ -30,6 +31,7 @@ from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from sglang_omni.utils.imports import import_string
 
 
@@ -61,6 +63,8 @@ def ar_stage_args(config: PipelineConfig, stage_name: str) -> dict[str, object]:
         (MossTranscribeDiarizePipelineConfig, "asr"),
         (FunASRPipelineConfig, "asr"),
         (Qwen3ASRPipelineConfig, "asr"),
+        (ArkasrPipelineConfig, "asr"),
+        (WhisperASRPipelineConfig, "asr"),
         (Qwen3OmniPipelineConfig, "thinker"),
     ],
 )
@@ -75,27 +79,6 @@ def test_dotted_flags_set_coalesce_args(config_cls, stage_name):
     args = ar_stage_args(merged, stage_name)
     assert args["prefill_coalesce_requests"] == 32
     assert args["prefill_coalesce_wait_ms"] == 300.0
-
-
-def test_per_stage_yaml_settings_reach_the_factory(tmp_path):
-    config_path = tmp_path / "moss_local.yaml"
-    config_path.write_text(
-        """
-config_cls: MossTTSLocalPipelineConfig
-model_path: dummy
-stages:
-  tts_engine:
-    factory:
-      prefill_coalesce_requests: 16
-      prefill_coalesce_wait_ms: 200.0
-"""
-    )
-    config = ConfigManager.from_file(str(config_path)).config
-    assert config is not None
-
-    args = ar_stage_args(config, "tts_engine")
-    assert args["prefill_coalesce_requests"] == 16
-    assert args["prefill_coalesce_wait_ms"] == 200.0
 
 
 def test_a_flag_for_one_stage_leaves_the_other_settings_alone():

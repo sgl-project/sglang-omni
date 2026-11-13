@@ -23,7 +23,7 @@ from benchmarks.duplex.reference_core import JUDGE_MAX_ATTEMPTS, V10_REFERENCE_F
 from benchmarks.duplex.reference_source import verify_reference
 from benchmarks.duplex.v10_dataset import SUBSET_TASKS
 from benchmarks.eval.benchmark_duplex_v10 import main
-from tests.unit_test.benchmarks.test_duplex_reference_audio import (
+from tests.unit_test.fixtures.duplex_fakes import (
     make_constant_pcm,
     make_input_pcm,
     make_session_trace,
@@ -231,6 +231,9 @@ def test_export_writes_reference_layout_and_manifest(tmp_path: Path) -> None:
         INPUT_SAMPLES,
     )
     manifest = json.loads((tree / "manifest.json").read_text())
+    assert manifest["builder_sha256"]["oracle_models.py"] == sha256_bytes(
+        Path(reference_v10.__file__).with_name("oracle_models.py").read_bytes()
+    )
     rows = {row["sample_id"]: row for row in manifest["samples"]}
     assert rows["synthetic_user_interruption/1"]["eligible"] is True
     assert rows["synthetic_user_interruption/1"]["files"]["output.wav"] == (

@@ -96,8 +96,8 @@ def add_protocol_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--turn-detection",
         type=turn_detection_argument,
-        help="JSON turn_detection object for session.update; legacy-protocol "
-        "profiles require it and native ones reject it",
+        help="JSON turn_detection object for session.update; legacy-protocol and "
+        "turn-based profiles require it and native ones reject it",
     )
     parser.add_argument(
         "--legacy-tail",
@@ -299,20 +299,24 @@ def replay_run(run_dir: Path) -> dict[str, JsonValue]:
                     errors.append("sent audio contains invalid base64")
             else:
                 pass
-        if sent_digest.hexdigest() != manifest.input.sha256:
-            errors.append("sent audio does not match persisted input PCM")
-        else:
-            pass
         verdict = evaluate_trace(
             trace_records,
             profile=manifest.profile,
             max_admission_attempts=admission_retries,
         )
+        if (
+            verdict["failure_kind"] != "admission_rejected"
+            and sent_digest.hexdigest() != manifest.input.sha256
+        ):
+            errors.append("sent audio does not match persisted input PCM")
+        else:
+            pass
         cases.append(
             {
                 "id": case_record.id,
                 "scenario": case_record.scenario,
                 "status": "fail" if errors else verdict["status"],
+                "failure_kind": "runtime" if errors else verdict["failure_kind"],
                 "violations": [*verdict["violations"], *errors],
                 "coverage": verdict["coverage"],
                 "metrics": verdict["metrics"],

@@ -29,7 +29,7 @@ Last verified: 2026-04-26
 
 Accuracy
 
-| Model      | Config                | accuracy | correct | failed | mc_fallback | Source                                                              |
+| Model      | Config                | accuracy | correct | failed | unparseable | Source                                                              |
 | ---------- | --------------------- | -------- | ------- | ------ | ----------- | ------------------------------------------------------------------- |
 | Qwen3-Omni | thinker-only, ci-50, c=8 | 66.00%   | 33/50   | 0      | 0           | PR #411 [H200, c=8, max_tokens=256] |
 | Qwen3-Omni | thinker-talker, ci-50, c=8 | 64.00%   | 32/50   | 0      | 0           | PR #411 [H200, c=8, max_tokens=256] |
@@ -57,7 +57,7 @@ Local v1 Pipeline Result (this workspace, 2026-05-01)
 
 Accuracy
 
-| Model      | Config                   | accuracy | correct | failed | mc_fallback | Source                                               |
+| Model      | Config                   | accuracy | correct | failed | unparseable | Source                                               |
 | ---------- | ------------------------ | -------- | ------- | ------ | ----------- | ---------------------------------------------------- |
 | Qwen3-Omni | thinker-only, ci-50, c=8 | 68.00%   | 34/50   | 0      | 0           | local v1 sweep [H200, ci-50, c=8, max_tokens=256]   |
 
