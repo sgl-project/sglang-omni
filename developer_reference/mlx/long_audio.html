@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Qwen3-ASR long-recording measurements &#8212; SGLang</title>
+    <title>ASR long-recording measurements &#8212; SGLang</title>
   
   
   
@@ -345,7 +345,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../main.html">Architecture</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../contribution_guide.html">Contribution Guide</a></li>
 <li class="toctree-l1 current active has-children"><a class="reference internal" href="index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
-<li class="toctree-l2 current active"><a class="current reference internal" href="#">Qwen3-ASR long-recording measurements</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">ASR long-recording measurements</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../apiserver_design.html">API Server Design</a></li>
@@ -587,7 +587,7 @@
               
 
 <div id="jb-print-docs-body" class="onlyprint">
-    <h1>Qwen3-ASR long-recording measurements</h1>
+    <h1>ASR long-recording measurements</h1>
     <!-- Table of contents -->
     <div id="print-main-content">
         <div id="jb-print-toc">
@@ -598,6 +598,10 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#run">Run</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#parakeet-final-transcription">Parakeet final transcription</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#validated-configuration">Validated configuration</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#input-and-scoring">Input and scoring</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#interpret-results">Interpret results</a></li>
 </ul>
@@ -611,9 +615,9 @@
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section class="tex2jax_ignore mathjax_ignore" id="qwen3-asr-long-recording-measurements">
-<h1>Qwen3-ASR long-recording measurements<a class="headerlink" href="#qwen3-asr-long-recording-measurements" title="Link to this heading">#</a></h1>
-<p>The opt-in benchmark measures the native Qwen3-ASR server through HTTP or its realtime WebSocket. It reports transcription quality alongside memory and elapsed time.</p>
+  <section class="tex2jax_ignore mathjax_ignore" id="asr-long-recording-measurements">
+<h1>ASR long-recording measurements<a class="headerlink" href="#asr-long-recording-measurements" title="Link to this heading">#</a></h1>
+<p>The opt-in benchmark measures native Qwen3-ASR through HTTP or its realtime WebSocket, and Parakeet through HTTP. It reports transcription quality alongside memory and elapsed time.</p>
 <section id="run">
 <h2>Run<a class="headerlink" href="#run" title="Link to this heading">#</a></h2>
 <p>Build the native runtime with sglang_omni_mlx/native/scripts/build_runtime.sh, install ci/requirements.lock into a Python 3.12 environment, and provision the frozen corpus and Qwen3-ASR-0.6B-4bit using ci/provision.py. Then run this from the repository root:</p>
@@ -627,24 +631,92 @@
 </pre></div>
 </div>
 <p>–output must be a new directory. Flags after – go to the server and are recorded in metadata.json. Voxt starts the server with –cache-limit-mb 512, so pass that flag to measure what the app runs; without it the server’s default 2 GiB limit applies. This command paces 210 minutes of audio live. A speed greater than one is an accelerated input stress measurement: refresh decodes may be coalesced, and its accuracy and finalization latency are not equivalent to live dictation.</p>
-<p>Use –mode http separately for HTTP requests. Alone it sends one whole-file request with the server’s default budget of 10 tokens per audio second. This is a maximum-length stress measurement, not what Voxt sends: a repetition loop runs until that budget, so the time, memory and error rate of such a run depend on the budget. Start with five minutes before testing longer whole-file requests. Add –chunk-seconds 30 to send whole clips in requests of at most 30 seconds, each with the budget of a Voxt Final (28 tokens per audio second plus 64, within 256 to 8192). This is close to the 20 to 45 second pieces Voxt sends during a long recording, except that the cuts fall on clip boundaries instead of detected pauses.</p>
+<p>For Qwen3-ASR, use –mode http separately for HTTP requests. Alone it sends one whole-file request with the server’s default budget of 10 tokens per audio second. This is a maximum-length stress measurement, not what Voxt sends: a repetition loop runs until that budget, so the time, memory and error rate of such a run depend on the budget. Start with five minutes before testing longer whole-file requests. Add –chunk-seconds 30 to send whole clips in requests of at most 30 seconds, each with the budget of a Voxt Final (28 tokens per audio second plus 64, within 256 to 8192). This is close to the 20 to 45 second pieces Voxt sends during a long recording, except that the cuts fall on clip boundaries instead of detected pauses.</p>
 <p>Each case starts a dedicated server, warms it with a short clip, sends the long recording and transcribes the warmup clip again. The post-session transcript must match warmup exactly. Disconnection is covered by test_a_disconnected_stream_stops_its_decode in ci/test_server_api.py.</p>
 <p>The benchmark reads the dedicated server’s macOS physical footprint, the kernel’s record of its peak footprint and its resident memory every 250 ms. By default it kills only that server once the peak exceeds 8 GiB; change –max-footprint-gib explicitly to test another budget. If the sampler cannot read or record measurements, it stops that server rather than silently running without the guard. This is a soft guard, not a hard memory limit: a large allocation can exceed the threshold before the next read. Do not rely on it to prevent system memory pressure.</p>
+</section>
+<section id="parakeet-final-transcription">
+<h2>Parakeet final transcription<a class="headerlink" href="#parakeet-final-transcription" title="Link to this heading">#</a></h2>
+<p>Parakeet’s automatic mode (omit chunk_duration, or use 1199 or more, as Voxt does) keeps audio up to 30 seconds whole and splits longer audio at the quietest 100 ms in the last five seconds before that limit. The ranges are consecutive, without overlap or discarded samples; if the last range would contain less than 10 seconds, the preceding search moves earlier to keep useful tail context. Unlike the bidirectional searches of Cohere Transcribe and MOSS, a cut never exceeds the cap. It requires no VAD checkpoint.</p>
+<p>A chunk can still produce no tokens or stop while speech continues, including in the Python MLX reference. When an unrecognized tail of at least three seconds has a mean-square amplitude of at least 1e-5 (about -50 dBFS RMS), automatic decoding retries it at most twice: first from one second before the last recognized token, or with 250 ms of leading silence for an entirely blank chunk, then with more padding. Padding only uses spare room in the 30-second input, so no retry discards the source tail, and an attempt whose input would repeat the previous decode, such as on a full 30-second blank chunk, is skipped. Recovered text merges on matching overlap tokens; a failed retry keeps the existing text.</p>
+<p>The energy threshold is a retry gate, not a voice detector or a completeness guarantee. Noise can trigger it, and it does not detect internal gaps, missing leading speech, tails shorter than three seconds or speech below the threshold. Check deletion runs as well as WER.</p>
+<p>Explicit chunk_duration values from 2 to 300 seconds keep fixed windows with one-second overlap and token merging, without recovery. They are compatibility and diagnostic settings: short windows can decode mid-speech blanks, and long ones use substantially more memory. The HTTP stream field selects SSE transport, not the chunking.</p>
+<p>The server and CLI cap MLX’s freed-buffer cache at 256 MiB. This is not a total memory limit: weights, active encoder arrays, the uploaded audio and queued requests come on top. The CLI clears its cache between files and reports peak_active_bytes, active_bytes and cache_bytes; these MLX counters exclude some process allocations, so use the benchmark’s kernel footprint to assess a smaller Mac.</p>
+<p>Provision mlx-community/parakeet-tdt-0.6b-v3 with ci/provision_models.py, then run the guarded benchmark. Parakeet v3 has no Chinese or realtime endpoint, so the benchmark defaults it to English and requires –mode http:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni_mlx.native.ci.benchmark_long_audio<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--runtime-bin<span class="w"> </span><span class="s2">"</span><span class="nv">$NATIVE_RUNTIME_BIN</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data-root<span class="w"> </span><span class="s2">"</span><span class="nv">$CI_DATA_ROOT</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-kind<span class="w"> </span>parakeet<span class="w"> </span>--model<span class="w"> </span>mlx-community/parakeet-tdt-0.6b-v3<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span><span class="s2">"</span><span class="nv">$PARAKEET_RESULTS_DIRECTORY</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mode<span class="w"> </span>http<span class="w"> </span>--minutes<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="m">5</span><span class="w"> </span><span class="m">15</span><span class="w"> </span><span class="m">30</span><span class="w"> </span>--max-footprint-gib<span class="w"> </span><span class="m">3</span>
+</pre></div>
+</div>
+<p>This sends each whole recording in one request, exercising the server’s own splitting and recovery; do not add –chunk-seconds when measuring that path. Compare the same seed and frozen corpus before and after a policy change.</p>
+<p>The parakeet-tdt-0.6b-v3.json golden requests five-second overlapping windows to keep its recorded Swift parity outputs, and parakeet-tdt-0.6b-v3-final.json requests automatic mode. Keep that distinction rather than replacing the old outputs or widening their tolerance. API regressions are in ci/test_parakeet_api.py; checkpoint-free boundary and coverage tests are in native/tests/audio_chunk_test.cpp and run in Mac CI.</p>
+<section id="validated-configuration">
+<h3>Validated configuration<a class="headerlink" href="#validated-configuration" title="Link to this heading">#</a></h3>
+<p>Measured on Apple M4 Max with 64 GiB, macOS 27.0.1, MLX 0.32.3 and the checkpoint pinned in ci/model_pins.json. English WER on the frozen 392-clip corpus fell from 23.844% with the original five-second policy to 2.548% in automatic mode: short clips were unchanged, medium clips went from 20.214% to 2.009% and long clips from 31.851% to 2.752%. The Python reference (mlx-audio 0.5.9) gives 23.128% with the same five-second windows, so the loss comes from the policy rather than the port. Explicit five-second decoding matched the original binary on all 392 clips. Chinese and mixed-language metrics remain poor because this checkpoint does not support Chinese.</p>
+<p>The guarded command above, with the default seed 2888, gave the following. Peak footprint is the kernel process footprint in GiB (2^30 bytes), including startup and warmup.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Requested recording</p></th>
+<th class="head text-right"><p>Original five-second WER</p></th>
+<th class="head text-right"><p>Automatic final WER</p></th>
+<th class="head text-right"><p>Longest deletion run, original / final</p></th>
+<th class="head text-right"><p>Automatic peak footprint</p></th>
+<th class="head text-right"><p>Request time / realtime factor</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1 minute</p></td>
+<td class="text-right"><p>16.23%</p></td>
+<td class="text-right"><p>2.09%</p></td>
+<td class="text-right"><p>9 / 0 words</p></td>
+<td class="text-right"><p>2.05 GiB</p></td>
+<td class="text-right"><p>0.338 s / 0.00482</p></td>
+</tr>
+<tr class="row-odd"><td><p>5 minutes</p></td>
+<td class="text-right"><p>23.23%</p></td>
+<td class="text-right"><p>2.73%</p></td>
+<td class="text-right"><p>21 / 1 words</p></td>
+<td class="text-right"><p>2.17 GiB</p></td>
+<td class="text-right"><p>1.220 s / 0.00405</p></td>
+</tr>
+<tr class="row-even"><td><p>15 minutes</p></td>
+<td class="text-right"><p>40.75%</p></td>
+<td class="text-right"><p>2.88%</p></td>
+<td class="text-right"><p>62 / 5 words</p></td>
+<td class="text-right"><p>2.33 GiB</p></td>
+<td class="text-right"><p>3.427 s / 0.00380</p></td>
+</tr>
+<tr class="row-odd"><td><p>30 minutes</p></td>
+<td class="text-right"><p>38.97%</p></td>
+<td class="text-right"><p>2.62%</p></td>
+<td class="text-right"><p>62 / 5 words</p></td>
+<td class="text-right"><p>2.48 GiB</p></td>
+<td class="text-right"><p>6.705 s / 0.00372</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Before recovery, 30-second chunks alone left 41- and 86-word deletion runs on the 15- and 30-minute inputs despite 7.66% and 5.43% WER; recovery cut their deleted reference words from 134 to 12 and from 156 to 15. All four cases stayed under the 3 GiB guard, exited normally and reproduced the warmup transcript. These synthetic concatenations do not measure natural meetings, and no 8 GiB Mac or system-wide memory-pressure test was run, so measure on the target machine rather than inferring an OOM guarantee.</p>
+</section>
 </section>
 <section id="input-and-scoring">
 <h2>Input and scoring<a class="headerlink" href="#input-and-scoring" title="Link to this heading">#</a></h2>
 <p>The recording concatenates complete short and medium clips of one language from the frozen corpus. A seeded permutation uses every clip before reusing the pool. Longer recordings necessarily reuse clips; the manifest records their order and the recording’s hash. These are synthetic concatenations, not natural hour-long meetings.</p>
-<p>HTTP requests explicitly use the voxt_swift audio layout and both stopping flags. Realtime sessions use the server’s own defaults for layout and stopping rules, which can differ between revisions. Do not treat HTTP versus realtime scores as a controlled same-layout comparison. Voxt shows realtime text only as a preview and inserts the text of its HTTP requests, so realtime error rates are not what the app inserts. This tool does not calculate an isolated-short-clip baseline or directly measure natural continuous meetings; differences across durations also include changing clip composition and boundary effects.</p>
+<p>The benchmark sends HTTP fields for the voxt_swift audio layout and both stopping flags. These control Qwen3-ASR; Parakeet ignores them and uses its own decoding policy. Qwen3-ASR realtime sessions use the server’s own defaults for layout and stopping rules, which can differ between revisions. Do not treat Qwen3-ASR HTTP versus realtime scores as a controlled same-layout comparison. Voxt shows realtime text only as a preview and inserts the text of its HTTP requests, so realtime error rates are not what the app inserts. This tool does not calculate an isolated-short-clip baseline or directly measure natural continuous meetings; differences across durations also include changing clip composition and boundary effects.</p>
 <p>The final clip is kept whole, so actual duration is at least the requested duration and may exceed it by one clip. Every reference word remains aligned with audio actually sent. The same seed gives nested recording prefixes across durations. English WER and Chinese CER count the tokens of ci/transcript_tokens.py, which the golden checker also uses, so Chinese keeps embedded Latin words as units. Both missing tails and repeated text count as errors.</p>
+<p>Each score also reports deleted_reference_tokens and longest_deleted_reference_token_run from the same optimal Levenshtein edit alignment as the error count. The former counts deleted reference tokens; the latter is the longest run of adjacent reference positions marked as deletions, not elapsed seconds. Units match reference_tokens: English words, or Chinese characters with embedded Latin words counted as single tokens by ci/transcript_tokens.py. Substitutions are errors but not deletions; retained or substituted reference tokens break a deletion run. Repeated text can admit more than one optimal alignment, so these counts describe the alignment chosen by RapidFuzz rather than timestamp-based speech coverage.</p>
 </section>
 <section id="interpret-results">
 <h2>Interpret results<a class="headerlink" href="#interpret-results" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p>metadata.json records hardware, OS, source revision, working-tree state, executable hash, checkpoint file hashes, benchmark dependency versions, HTTP request fields, realtime defaults and the memory guard. The MLX version loaded by the separate native server is not discovered automatically; record it independently.</p></li>
-<li><p>Each input manifest records the exact source sequence and expected transcript. Each result stores the hypothesis, error numerator and denominator, timing, memory, the recovery observation and server_exit_code. An exit before shutdown, a nonzero exit during shutdown or a shutdown timeout marks the case as failed. Realtime runs also save timestamped protocol events.</p></li>
+<li><p>Each input manifest records the exact source sequence and expected transcript. Each result stores the hypothesis, error numerator and denominator, deleted_reference_tokens, longest_deleted_reference_token_run, timing, memory, the recovery observation and server_exit_code. An exit before shutdown, a nonzero exit during shutdown or a shutdown timeout marks the case as failed. Realtime runs also save timestamped protocol events.</p></li>
 <li><p>The memory trace spans startup, warmup, the long session and recovery. Compare equivalent phases; an encoder allocation or stored transcript is not by itself a leak. The warm baseline, post-session and post-recovery values separate those phases. peak_footprint_bytes is the kernel’s exact peak at the end of the session. It only grows, so it also covers startup and warmup, and it equals warmup_peak_footprint_bytes when the session set no new peak.</p></li>
 <li><p>HTTP results include real_time_factor, the request wall time divided by audio duration: a 6-second request for 60 seconds of audio has a factor of 0.1. In realtime mode, wall time includes the time spent sending audio at the selected speed, while the server may process audio concurrently. Finalization time is the wait from sending the last audio frame to receiving the completed transcript; it can include processing audio that accumulated earlier.</p></li>
-<li><p>A measured status means the protocol, scoring and recovery completed. Review the error rate, generated-token finish reason and memory trace.</p></li>
+<li><p>A measured status means the protocol, scoring and recovery completed. Review the error rate, deletion count, longest deletion run, generated-token finish reason and memory trace. A low aggregate error rate can still hide a long missing span. The table above includes the deletion fields; the original hypotheses were rescored with the same alignment code used for the revised run.</p></li>
 </ul>
 <p>Compare before/after builds with identical weights, MLX version, input hashes, pacing and hardware. Keep existing API tests and corpus goldens as correctness gates; this benchmark is an opt-in measurement, not a timing-sensitive unit-test gate. Its own tests are in native/tests/test_long_audio_benchmark.py and run against the stub server.</p>
 </section>
@@ -698,6 +770,10 @@
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#run">Run</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#parakeet-final-transcription">Parakeet final transcription</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#validated-configuration">Validated configuration</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#input-and-scoring">Input and scoring</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#interpret-results">Interpret results</a></li>
 </ul>
