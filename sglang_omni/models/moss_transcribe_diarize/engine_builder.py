@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Callable
 
@@ -184,6 +185,32 @@ class MossTranscribeDiarizeEngineBuilder(
             "dtype": dtype,
         }
 
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        """Reject runtime settings that deadlock the scheduler after the first batch."""
+        if current_platform.is_npu():
+            from sglang.srt.arg_groups.model_override_base import resolved_view
+
+            cfg = resolved_view(server_args)
+            decode_max_bs = int(cfg.cuda_graph_config.decode.max_bs or 0)
+            # A shared Host task queue lets a multi-row decode replay overlap the
+            # graph update that rebinds KV lengths; the scheduler then waits on
+            # both until the request times out. Fail at startup instead of after
+            # the first batch, where the log only carries internal graph symbols.
+            if (
+                cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED
+                and decode_max_bs > 1
+                and os.environ.get("PER_STREAM_QUEUE") != "1"
+            ):
+                raise ValueError(
+                    "MOSS-Transcribe-Diarize needs PER_STREAM_QUEUE=1 before starting "
+                    "the server when NPU decode graphs run with cuda_graph_max_bs > 1; "
+                    "with a shared Host queue a graph update that rebinds KV lengths "
+                    "overlaps a replay and deadlocks the scheduler"
+                )
+        else:
+            pass
+        super().validate_before_infrastructure(server_args)
+
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         # note (Dayuxiaoshui): context_length is an explicit server-args
         # parameter, so consume the operator override before the shared builder
@@ -207,6 +234,15 @@ class MossTranscribeDiarizeEngineBuilder(
                     **prefill_config,
                 },
             }
+        else:
+            pass
+
+        if current_platform.is_npu():
+            # torch.compile cannot trace the fused QKV RMSNorm+RoPE path: it
+            # queries the triton driver while dynamo traces the decoder, which
+            # aborts decode graph capture. Eager decode keeps graph replay and
+            # only leaves that path outside the compiled region.
+            overrides["enable_torch_compile"] = False
         else:
             pass
 

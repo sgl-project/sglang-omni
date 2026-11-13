@@ -146,6 +146,10 @@ SGLang selects the XPUGraph backend on XPU. The B60 validation uses
 `mem_fraction_static=0.70` to leave enough memory for all eight encoder graph
 buckets; `0.80` leaves too little graph-capture headroom on a 24 GB card.
 
+**Ascend NPU**
+
+See [Installation — NPU](../other_platforms/installation_npu.md#moss-transcribe-diarize) for the launch command, graph backend behavior, and the required `PER_STREAM_QUEUE` setting.
+
 Before it reports ready, the server transcribes one second of audio, at most 8
 tokens. `/health` returns 503 with status `starting` until that request has
 finished, so the one-time kernel builds of the transcription path happen before
