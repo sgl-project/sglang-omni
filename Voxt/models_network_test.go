@@ -211,6 +211,7 @@ func TestFamilyLinesNeedAnotherApp(t *testing.T) {
 // the logs; a new host drops the old host's item, Automatic keeps them
 // for later, and a restart reads them again.
 func TestProxyAuth(t *testing.T) {
+	skipWindowsActNow(t)
 	const password = "Vx-proxy-pw-90417"
 	keys := &memKeys{m: map[string]string{}}
 	useKeys(t, keys)
