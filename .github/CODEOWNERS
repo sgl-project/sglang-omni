@@ -1,5 +1,7 @@
 .github @FrankLeeeee
 /docker @FrankLeeeee
+/docs/developer_reference/mlx @XXXXRT666
+/docs/developer_reference/mlx.md @XXXXRT666
 /examples @FrankLeeeee @sleepcoo
 /sglang_omni/config @FrankLeeeee
 /sglang_omni/engines @shuaills @ocss884 @FlamingoPg @sleepcoo
@@ -11,3 +13,4 @@
 /sglang_omni/proto @FrankLeeeee
 /sglang_omni/relay @sleepcoo
 /sglang_omni/serve @shuaills
+/sglang_omni_mlx @XXXXRT666
