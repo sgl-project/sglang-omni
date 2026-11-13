@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,10 @@ func exportAll(t *testing.T, path string, req Request) []Row {
 // TestServeFileMode: Listen makes the socket 0600, and replaces a stale
 // one left by a crash.
 func TestServeFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// TODO(W4): Cover the named-pipe listener's access controls on Windows.
+		t.Skip("Unix socket file modes are not supported on Windows")
+	}
 	path := filepath.Join(t.TempDir(), SocketName)
 	stale, err := net.Listen("unix", path)
 	if err != nil {

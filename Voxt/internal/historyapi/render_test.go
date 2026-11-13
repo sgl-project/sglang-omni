@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -65,8 +66,13 @@ func TestWriteFile(t *testing.T) {
 		t.Fatalf("%d %v", n, err)
 	}
 	fi, err := os.Stat(dst)
-	if err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("%v %v", fi, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Log("skipping the mode 0600 assertion: Windows does not expose Unix permission bits")
+	} else if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", fi.Mode())
 	}
 	data, _ := os.ReadFile(dst)
 	if s := string(data); !strings.Contains(s, "final text") || strings.Contains(s, "selected-secret") {
