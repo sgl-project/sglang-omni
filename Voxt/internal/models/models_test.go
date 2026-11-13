@@ -17,6 +17,9 @@ func TestCatalog(t *testing.T) {
 	seen := map[string]bool{}
 	defaults := map[Kind]int{}
 	hexRE := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	if !slices.EqualFunc(slices.Collect(All()), Catalog(), func(a, b Model) bool { return a.ID == b.ID }) {
+		t.Error("All is not Catalog's models in Catalog's order")
+	}
 	for _, m := range Catalog() {
 		if seen[m.ID] {
 			t.Errorf("%s twice", m.ID)
