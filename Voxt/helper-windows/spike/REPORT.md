@@ -28,6 +28,8 @@ Task Scheduler warns that 00:00 is in the past, but the explicit `/Run` starts t
 
 Across four Notepad insert runs, the change was visible on the first sample, between 27.6 ms and 30.4 ms. The probe does not claim that the console paste succeeded or failed: UIA provided no evidence either way, which is exactly why `unknown` is safer than `unchanged` there.
 
+An independent verification run on 2026-11-14 reproduced these outcomes on the same Windows build and Go version: Notepad changed on the first sample at 27.2 ms (all five signals), its no-input control was `unchanged` at 1009.9 ms, and the console was `unknown` at 1015.3 ms after 40 unchanged readings. Both clipboard restores returned `restored=true`, `taken=false`.
+
 The final run restored the original clipboard after both targets (`restored=true`, `taken=false`). An earlier run returned `CLIPBRD_E_CANT_CLOSE` (`0x800401d4`) from `OleSetClipboard`; bounded retries while processing sent messages fixed it. A helper must not simply sleep through clipboard-manager contention: the other process may be waiting for this thread to service a delayed-rendering message.
 
 ## Recommended Windows mapping for `check`
