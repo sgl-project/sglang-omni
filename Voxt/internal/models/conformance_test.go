@@ -19,6 +19,7 @@ import (
 )
 
 func TestFamilyConformance(t *testing.T) {
+	skipWindowsModelLibrary(t)
 	newApp := func(t testing.TB, fx *conformance.Fixture, bundleID string) any {
 		return &adapter{fx: fx, bundleID: bundleID}
 	}
