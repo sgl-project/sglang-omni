@@ -4566,6 +4566,41 @@ def test_qwen3_tts_vocoder_warms_graphs_before_serving_start(
         scheduler.stop()
 
 
+def test_qwen3_tts_vocoder_workers_have_distinct_native_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_names = {"tts-voc-init", "tts-voc-fup-0", "tts-voc-fup-1"}
+    worker_names: Queue[tuple[str, str]] = Queue()
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(), device="cpu", async_decode=True
+    )
+    activate_worker = scheduler.activate_decode_worker
+
+    def record_worker_name(stream: torch.Stream | None) -> None:
+        activate_worker(stream)
+        worker = threading.current_thread()
+        if sys.platform == "linux":
+            native_name = (
+                Path(f"/proc/self/task/{worker.native_id}/comm").read_text().strip()
+            )
+        else:
+            native_name = worker.name
+        worker_names.put((worker.name, native_name))
+
+    monkeypatch.setattr(scheduler, "activate_decode_worker", record_worker_name)
+
+    scheduler.on_serving_start()
+    try:
+        observed_names = [
+            worker_names.get(timeout=5.0) for _ in range(len(expected_names))
+        ]
+    finally:
+        scheduler.stop()
+
+    assert {name for name, _ in observed_names} == expected_names
+    assert {native_name for _, native_name in observed_names} == expected_names
+
+
 def test_qwen3_tts_deterministic_streaming_vocoder_decodes_each_plan_at_b1() -> None:
     """Match each streaming row to its independent batch-one decode."""
     tokenizer = FakeQwen3TTSSpeechTokenizer()

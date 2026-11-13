@@ -16,7 +16,8 @@
 //
 // The fake serves every method of package proto, so whole sessions run on
 // Linux: capture.start plays a 440 Hz tone, or a recording (pcm=), in real
-// time as capture.pcm frames and capture.level; hotkey.configure installs
+// time as capture.pcm frames and capture.level, and capture.system the
+// same beside it (system=); hotkey.configure installs
 // a pretend tap and can play a script of notifications (events=, press=);
 // textio.* read a scripted selection and log what they paste (paste-log=);
 // textio.read reads a scripted field (read=) and logs its calls (read-log=);
@@ -47,6 +48,9 @@ package helpertest
 //	frame-ms=N       a capture.pcm frame (and level) every N ms of wall time (default 100)
 //	pcm=PATH         capture.pcm plays this WAV (16-bit mono, any rate) or raw
 //	                 PCM16 at the requested rate, then silence
+//	system=PATH      capture.system plays this recording, as pcm= (without it a tone)
+//	no-system        an older helper: no capture.system in hello, method_not_found
+//	lost-all         when the "lost" input goes, every other input goes too
 //	events=PATH      once the tap is installed, play a script: JSON lines
 //	                 {"afterMs":N,"method":"hotkey.event","params":{…}}, any notification;
 //	                 an app.activated line also brings its app to the front (the user moved on)
@@ -54,6 +58,8 @@ package helpertest
 //	front=BUNDLE     the app in front (default com.tinyspeck.slackmacgap, Slack, pid 812)
 //	selection=TEXT   textio.selection reads TEXT through Accessibility
 //	copy-selection=TEXT  textio.selection reads TEXT only with allowCopy (via copy)
+//	selection-file=PATH  textio.selection reads PATH's text at each call ("" or no
+//	                 file: nothing selected): the user selects something else
 //	readonly[=BUNDLE]  textio.focus: the focused element is not editable (of BUNDLE only)
 //	focus=none       textio.focus: nothing is focused (Finder's desktop)
 //	focus=secure     textio.focus: a password field (AXSecureTextField)
@@ -83,10 +89,16 @@ package helpertest
 //	                 with audio (speech.partial), in SpeechLangs only; without it
 //	                 speech.* are method_not_found, as in an older helper
 //	speech-perm=STATE  Speech Recognition, as mic=
+//	no-screen        no Screen Recording until permissions.request asks for it:
+//	                 screen.window fails with permission_denied (else it answers
+//	                 Shot(pid) for any pid but 0)
 //
 // A capture.start whose first device is "crash" exits 3 after its first
 // frame; one whose first device is "gone" fails with device_unavailable;
-// "lost" ends the recording with deviceLost after its third frame.
+// "lost" (LostInput) goes away after its third frame: the recording moves to
+// the next listed device the fake knows, else the default input
+// (capture.restarted, deviceLost), and goes on; with lost-all every input
+// goes with it and the recording ends with deviceLost.
 
 import (
 	"bufio"
@@ -144,6 +156,10 @@ func Devices() []proto.CaptureDevice {
 	}
 }
 
+// LostInput is the "lost" device: a USB microphone that is unplugged
+// during the recording.
+var LostInput = proto.CaptureDevice{ID: "lost", Name: "USB Microphone", Channels: 1, SampleRate: 48000, Transport: "usb"}
+
 // Apps are the apps the fake knows, by bundle id (front=).
 var Apps = map[string]proto.App{
 	"com.tinyspeck.slackmacgap":  {PID: 812, BundleID: "com.tinyspeck.slackmacgap", Name: "Slack"},
@@ -189,13 +205,14 @@ type fake struct {
 	mic        string
 	speechPerm string
 	trusted    bool
+	screen     bool // Screen Recording
 	bindings   int
 	installed  bool
 	scripted   bool // the events= script and press= ran
 	hkActive   bool
 	hkCancel   bool                     // hotkey.configure's cancel is set (the tap installs for it alone too)
 	manual     []string                 // app.configure's manualAccessibility
-	running    map[string]bool          // capture jobs
+	running    map[string]string        // capture jobs: their method (one of each at a time)
 	cancel     map[string]bool          // asked to stop by job.cancel
 	stop       map[string]chan struct{} // closed by capture.stop
 	finished   map[string]chan struct{}
@@ -218,14 +235,17 @@ func Run(optString string) {
 			opts[k] = v
 		}
 	}
-	f := &fake{opts: opts, out: bufio.NewWriter(os.Stdout), start: time.Now(), mic: proto.PermGranted, speechPerm: proto.PermGranted, trusted: true,
-		running: map[string]bool{}, cancel: map[string]bool{},
+	f := &fake{opts: opts, out: bufio.NewWriter(os.Stdout), start: time.Now(), mic: proto.PermGranted, speechPerm: proto.PermGranted, trusted: true, screen: true,
+		running: map[string]string{}, cancel: map[string]bool{},
 		stop: map[string]chan struct{}{}, finished: map[string]chan struct{}{}, speech: map[string]*speechJob{}}
 	if v, ok := opts["mic"]; ok {
 		f.mic = v
 	}
 	if v, ok := opts["speech-perm"]; ok {
 		f.speechPerm = v
+	}
+	if f.has("no-screen") {
+		f.screen = false
 	}
 	if f.has("deny-mic") {
 		f.mic = proto.PermDenied
@@ -362,7 +382,7 @@ func (f *fake) serve(m proto.Message) {
 			return
 		}
 		f.mu.Lock()
-		running := f.running[p.Job]
+		_, running := f.running[p.Job]
 		if running && !f.has("hang-cancel") {
 			f.cancel[p.Job] = true
 		}
@@ -389,6 +409,10 @@ func (f *fake) serve(m proto.Message) {
 			}
 			f.mu.Unlock()
 		case proto.PermissionAccessibility:
+		case proto.PermissionScreenRecording:
+			f.mu.Lock()
+			f.screen = true
+			f.mu.Unlock()
 		case proto.PermissionSpeechRecognition:
 			f.mu.Lock()
 			if f.speechPerm == proto.PermNotDetermined {
@@ -402,7 +426,11 @@ func (f *fake) serve(m proto.Message) {
 		f.result(m.ID, f.permissions())
 	case proto.MethodCaptureDevices:
 		f.result(m.ID, proto.DevicesResult{Devices: Devices()})
-	case proto.MethodCaptureStart:
+	case proto.MethodCaptureStart, proto.MethodCaptureSystem:
+		if m.Method == proto.MethodCaptureSystem && f.has("no-system") {
+			f.fail(m.ID, proto.CodeMethodNotFound, "Unknown method %s", m.Method)
+			return
+		}
 		f.startCapture(m)
 	case proto.MethodCaptureStop:
 		f.captureStop(m)
@@ -410,6 +438,10 @@ func (f *fake) serve(m proto.Message) {
 		f.hotkeys(m)
 	case proto.MethodHotkeyStatus:
 		f.result(m.ID, f.hotkeyStatus())
+	case proto.MethodHotkeyRecord:
+		f.hotkeyRecord(m)
+	case proto.MethodHotkeyCancelRecord:
+		f.result(m.ID, proto.Empty{})
 	case proto.MethodAppFrontmost:
 		f.result(m.ID, f.front())
 	case proto.MethodTextFocus, proto.MethodTextSelection, proto.MethodTextPaste, proto.MethodTextRead:
@@ -459,6 +491,20 @@ func (f *fake) serve(m proto.Message) {
 		}
 		slices.SortFunc(apps, func(x, y proto.AppInfo) int { return strings.Compare(strings.ToLower(x.Name), strings.ToLower(y.Name)) })
 		f.result(m.ID, proto.AppListResult{Apps: apps})
+	case proto.MethodScreenWindow:
+		var p proto.ScreenWindowParams
+		m.DecodeParams(&p)
+		f.mu.Lock()
+		allowed := f.screen
+		f.mu.Unlock()
+		switch {
+		case !allowed:
+			f.failData(m.ID, proto.CodePermissionDenied, map[string]string{"permission": proto.PermissionScreenRecording}, "Voxt may not record the screen")
+		case p.PID == 0:
+			f.result(m.ID, proto.ScreenWindowResult{})
+		default:
+			f.result(m.ID, proto.ScreenWindowResult{JPEG: Shot(p.PID)})
+		}
 	case proto.MethodAppIcons:
 		var p proto.AppIconsParams
 		m.DecodeParams(&p)
@@ -498,7 +544,7 @@ func (f *fake) serve(m proto.Message) {
 func (f *fake) permissions() proto.PermissionsResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return proto.PermissionsResult{Microphone: f.mic, Accessibility: f.trusted, SpeechRecognition: f.speechPerm}
+	return proto.PermissionsResult{Microphone: f.mic, Accessibility: f.trusted, SpeechRecognition: f.speechPerm, ScreenRecording: f.screen}
 }
 
 func (f *fake) handleHello(m proto.Message) {
@@ -515,6 +561,9 @@ func (f *fake) handleHello(m proto.Message) {
 		Device: proto.Device{Name: "Fake Mac", OS: "test"}}
 	if f.has("no-output") {
 		res.Methods = oldMethods()
+	}
+	if f.has("no-system") {
+		res.Methods = slices.DeleteFunc(res.Methods, func(m string) bool { return m == proto.MethodCaptureSystem })
 	}
 	if f.has("speech") {
 		res.Methods = append(res.Methods, proto.MethodSpeechRecognize, proto.MethodSpeechAudio)

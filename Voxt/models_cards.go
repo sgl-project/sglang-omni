@@ -12,6 +12,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 
@@ -33,16 +34,16 @@ import (
 
 func (a *app) modelsPage(c *ui.Context) {
 	t := c.Theme()
-	pageHeader(c, i18n.T("Speech models"), func() {
+	columnPageHeader(c, i18n.T("Speech models"), func() {
 		if ghostButton(c.Key("models-network"), i18n.T("Network…")).Tooltip(i18n.T("How model downloads reach Hugging Face")).Clicked() {
 			a.openNetwork()
 		}
 	})
 	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
-			caption(c, i18n.T("A speech model turns what you say into text: every feature needs one to work by voice. Those on this Mac keep your audio here; a remote service gets your recording only when you choose it. Language models are on the Language models page."))
+		pageColumn(c).Gap(px(t, sp3)).Children(func() {
+			a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
 			sectionTitle(c, i18n.T("On this Mac"))
-			caption(c, i18n.T("Free, and your audio stays here: download a model once, then it runs on this Mac."))
+			caption(c, i18n.T("Free, and your audio stays on this Mac."))
 			a.modelCards(c, models.ASR)
 			if !a.modelHidden(dictation.ModelID) {
 				a.dictationCard(c)
@@ -50,7 +51,7 @@ func (a *app) modelsPage(c *ui.Context) {
 			a.providerCards(c, local.ASR) // remote_page.go
 			a.speechContextSection(c)     // models_context.go
 			if a.anyModelShown(models.LLM) {
-				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt 2.0 ran these on this Mac; Voxt now uses the language models of the Language models page. Delete them to free the space: another app that uses one keeps it."))
+				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt no longer uses these. Delete them to free up space."))
 				a.modelCards(c, models.LLM)
 			}
 			a.hiddenModelCards(c)
@@ -62,13 +63,72 @@ func (a *app) modelsPage(c *ui.Context) {
 	a.providerDialogView(c) // remote_dialog.go
 }
 
-// modelCards are kind's models of the catalogue that the page shows,
-// but the hidden ones.
+// modelCards groups visible speech models by family and shows the other
+// visible models in individual cards.
 func (a *app) modelCards(c *ui.Context, kind models.Kind) {
+	var families []string
+	byFamily := map[string][]models.Model{}
 	for _, m := range models.Catalog() {
-		if m.Kind == kind && a.modelShown(m) && !a.modelHidden(m.ID) {
-			a.modelCard(c, m)
+		if m.Kind != kind || !a.modelShown(m) || a.modelHidden(m.ID) {
+			continue
 		}
+		if kind != models.ASR {
+			a.modelCard(c, m)
+			continue
+		}
+		if byFamily[m.Family] == nil {
+			families = append(families, m.Family)
+		}
+		byFamily[m.Family] = append(byFamily[m.Family], m)
+	}
+	for _, f := range families {
+		if list := byFamily[f]; len(list) > 1 {
+			a.familyCard(c, list)
+		} else {
+			a.modelCard(c, list[0])
+		}
+	}
+}
+
+// familyCard is one family's speech models, as Voxt 1.x grouped its list:
+// the family's name, how many of its models there are and are installed,
+// the languages they know, then a row per model.
+func (a *app) familyCard(c *ui.Context, list []models.Model) {
+	t := c.Theme()
+	k := tok(t)
+	installed := 0
+	for _, m := range list {
+		if a.modelStatus[m.ID].Installed {
+			installed++
+		}
+	}
+	count := i18n.N(len(list), "%d model", "%d models", len(list))
+	if installed > 0 {
+		count += " · " + i18n.T("%d installed", installed)
+	}
+	card(c.Key("family-" + list[0].Family)).Children(func() {
+		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
+			ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
+			ui.Text(c, uitext.FamilyName(list[0].Family)).FontWeight(600)
+			caption(c, count)
+		})
+		modelLanguages(c, list[0].ID)
+		for _, m := range list {
+			ui.Box(c.Key("line-" + m.ID)).Height(1).Background(k.Line).Shrink(0)
+			ui.Column(c.Key("model-" + m.ID)).Gap(px(t, sp3)).Children(func() { a.modelRow(c, m, false) })
+		}
+	})
+}
+
+// modelLanguages is the line saying which languages model id knows
+// (nothing when it says none).
+func modelLanguages(c *ui.Context, id string) {
+	t := c.Theme()
+	if l := uitext.ModelLanguages(id); l != "" {
+		ui.Row(c).Gap(px(t, 4)).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, icons.Global.Linear).Size(px(t, 14), px(t, 14)).TextColor(tok(t).Text2).Shrink(0)
+			caption(c, l).MinWidth(0)
+		})
 	}
 }
 
@@ -100,7 +160,6 @@ func (a *app) hiddenModelCards(c *ui.Context) {
 		return
 	}
 	collapsible(c.Key("models-hidden"), i18n.T("Hidden models"), &a.modelHiddenOpen, func() { caption(c, strconv.Itoa(len(ids))) }, func() {
-		caption(c, i18n.T("The features' menus leave these models out. Show puts one back."))
 		for _, id := range ids {
 			if id == dictation.ModelID {
 				a.dictationCard(c)
@@ -119,14 +178,14 @@ func (a *app) hideButton(c *ui.Context, id string) {
 	}
 	name := uitext.ModelName(id)
 	if slices.Contains(a.prefs.Models.Hidden, id) {
-		if ghostButton(c.Key("show"), i18n.T("Show")).Label(i18n.T("Show %s", name)).Tooltip(i18n.T("Offer it in the features' menus again")).Clicked() {
+		if ghostButton(c.Key("show"), i18n.T("Show")).Label(i18n.T("Show %s", name)).Tooltip(i18n.T("Show it in the features' menus again")).Clicked() {
 			a.updateSettings(func(s *settings.Settings) {
 				s.Models.Hidden = slices.DeleteFunc(slices.Clone(s.Models.Hidden), func(h string) bool { return h == id })
 			})
 		}
 		return
 	}
-	if ghostButton(c.Key("hide"), i18n.T("Hide")).Label(i18n.T("Hide %s", name)).Tooltip(i18n.T("Leave it out of the features' menus")).Clicked() {
+	if ghostButton(c.Key("hide"), i18n.T("Hide")).Label(i18n.T("Hide %s", name)).Tooltip(i18n.T("Hide it from the features' menus")).Clicked() {
 		a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = append(slices.Clone(s.Models.Hidden), id) })
 	}
 }
@@ -151,9 +210,9 @@ func (a *app) modelTags(m models.Model) []string {
 	tags := uitext.ModelTags(m.ID)
 	if spec, ok := omni.Lookup(m.ID); ok && len(spec.Languages) > 0 {
 		if slices.Contains(spec.Languages, lang.Canonical(session.MainLanguage(a.prefs, i18n.Locale()))) {
-			tags = append(tags, i18n.T("Supports main language"))
+			tags = append(tags, i18n.T("Supports your main language"))
 		} else {
-			tags = append(tags, i18n.T("Lacks main language"))
+			tags = append(tags, i18n.T("Does not support your main language"))
 		}
 	}
 	return tags
@@ -184,12 +243,14 @@ func (a *app) dictationCard(c *ui.Context) {
 	k := tok(t)
 	card(c.Key("model-" + dictation.ModelID)).Children(func() {
 		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
-			ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
 			// modelCard's order: the name, "Built-in" where a size would be and
 			// where it is used, what it is good at, then the labels at the foot.
 			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
 				ui.Column(c).Gap(px(t, 2)).Children(func() {
-					ui.Text(c, uitext.ModelName(dictation.ModelID)).FontWeight(600)
+					ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+						ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
+						ui.Text(c, uitext.ModelName(dictation.ModelID)).FontWeight(600)
+					})
 					meta := i18n.T("Built-in") // nothing to download
 					if used := a.usedBy(local.ASR, dictation.ModelID); used != "" {
 						meta += " · " + used
@@ -212,9 +273,15 @@ func (a *app) dictationCard(c *ui.Context) {
 	})
 }
 
-// modelCard is one model: what it is good at, its languages, its size
-// and state, and what can be done with it.
+// modelCard is one model in a card of its own.
 func (a *app) modelCard(c *ui.Context, m models.Model) {
+	card(c.Key("model-" + m.ID)).Children(func() { a.modelRow(c, m, true) })
+}
+
+// modelRow is one model: its name, size and uses, what it is good at, its
+// languages (alone: in a card of its own, else its family's card says
+// them), its labels, and what can be done with it.
+func (a *app) modelRow(c *ui.Context, m models.Model, alone bool) {
 	t := c.Theme()
 	k := tok(t)
 	st := a.modelStatus[m.ID]
@@ -222,81 +289,142 @@ func (a *app) modelCard(c *ui.Context, m models.Model) {
 	if m.Kind == models.LLM {
 		ic = icons.ChatRoundLine
 	}
-	card(c.Key("model-" + m.ID)).Children(func() {
-		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
-			ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
-			// Voxt 1.x's order: the name, then its size and where it is used,
-			// then what it is good at, then the small labels at the foot.
-			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
-				size, family := modelSizeText(m, st), modelFamilyText(m, st)
-				if st.Downloading && st.WaitingFor != "" { // "Downloading in AudioSmith… 43%" says it all
-					size, family = family, ""
-				}
-				ui.Column(c).Gap(px(t, 2)).Children(func() {
-					ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-						ui.Text(c, uitext.ModelName(m.ID)).FontWeight(600)
-						if m.Default && !m.Retired {
-							tagChip(c, i18n.T("Default"))
-						}
-						if st.Installed {
-							statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
-						}
-					})
-					ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-						meta := size
-						if used := a.usedBy(local.Kind(m.Kind), m.ID); used != "" {
-							meta += " · " + used
-						}
-						caption(c, meta)
-						if mem, ok := a.modelMem[m.ID]; ok && st.Installed { // models_memory.go
-							ui.Row(c.Key("loaded")).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-								statusDot(c, k.Accent)
-								caption(c, modelMemText(mem))
-							})
-						}
-					})
-					if family != "" {
-						caption(c.Key("family"), family)
+	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
+		// Voxt 1.x's order: the name, then its size and where it is used,
+		// then what it is good at, then the small labels at the foot.
+		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
+			size, family := modelSizeText(m, st), modelFamilyText(m, st)
+			if st.Downloading && st.WaitingFor != "" { // "Downloading in AudioSmith… 43%" says it all
+				size, family = family, ""
+			}
+			ui.Column(c).Gap(px(t, 2)).Children(func() {
+				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+					if alone { // beside the name, as familyCard's header, so the text lines up with a family's (#3854)
+						ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
+					}
+					ui.Text(c, uitext.ModelName(m.ID)).FontWeight(600)
+					if m.Default && !m.Retired {
+						tagChip(c, i18n.T("Default"))
+					}
+					if st.Installed {
+						statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
 					}
 				})
-				ui.Text(c, uitext.ModelAbout(m.ID))
-				if l := uitext.ModelLanguages(m.ID); l != "" {
-					ui.Row(c).Gap(px(t, 4)).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, icons.Global.Linear).Size(px(t, 14), px(t, 14)).TextColor(k.Text2).Shrink(0)
-						caption(c, l).MinWidth(0)
-					})
-				}
-				if tags := a.modelTags(m); len(tags) > 0 && !m.Retired {
-					ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
-						for _, tag := range tags {
-							tagChip(c, tag)
-						}
-					})
+				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+					meta := size
+					if used := a.usedBy(local.Kind(m.Kind), m.ID); used != "" {
+						meta += " · " + used
+					}
+					caption(c, meta)
+					if mem, ok := a.modelMem[m.ID]; ok && st.Installed { // models_memory.go
+						ui.Row(c.Key("loaded")).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
+							statusDot(c, k.Accent)
+							caption(c, modelMemText(mem))
+						})
+					}
+				})
+				if family != "" {
+					caption(c.Key("family"), family)
 				}
 			})
-			ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() {
-				if m.Kind == models.ASR {
-					a.hideButton(c, m.ID)
-				}
-				a.modelActions(c, m, st)
-			})
-		})
-		if st.Downloading {
-			frac := 0.0
-			if st.Total > 0 {
-				frac = float64(st.Done) / float64(st.Total)
+			ui.Text(c, uitext.ModelAbout(m.ID))
+			if alone {
+				modelLanguages(c, m.ID)
 			}
-			ui.Progress(c, frac).Label(i18n.T("Downloading %s", uitext.ModelName(m.ID)))
-		}
-		if st.Err != nil && !st.Downloading {
-			msg, more := uitext.DownloadErrorText(st.Err)
-			notice(c, "model-err", noticeError, msg, more, func() {
-				if ui.Button(c.Key("retry"), i18n.T("Try again")).Clicked() {
-					a.downloadModel(m.ID)
-				}
-			}, nil)
-		}
+			if tags := a.modelTags(m); len(tags) > 0 && !m.Retired {
+				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
+					for _, tag := range tags {
+						tagChip(c, tag)
+					}
+				})
+			}
+		})
+		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() {
+			if m.Kind == models.ASR {
+				a.hideButton(c, m.ID)
+			}
+			a.modelActions(c, m, st)
+		})
 	})
+	a.modelProgress(c, "model-err", m, st)
+	// The draft's row stays while the draft is on disk or coming, its
+	// model deleted first: it can still be cancelled or deleted.
+	ds := a.modelStatus[m.Draft]
+	if m.Draft != "" && (st.Installed || ds.Installed || ds.OnDisk || ds.Downloading || ds.Done > 0) {
+		a.draftRow(c, m)
+	}
+}
+
+// modelProgress is a model's download bar while it downloads, and the
+// notice of a failed download (key names the notice).
+func (a *app) modelProgress(c *ui.Context, key string, m models.Model, st models.Status) {
+	if st.Downloading {
+		frac := 0.0
+		if st.Total > 0 {
+			frac = float64(st.Done) / float64(st.Total)
+		}
+		ui.Progress(c, frac).Label(i18n.T("Downloading %s", uitext.ModelName(m.ID)))
+	}
+	if st.Err != nil && !st.Downloading {
+		msg, more := uitext.DownloadErrorText(st.Err)
+		notice(c, key, noticeError, msg, more, func() {
+			if ui.Button(c.Key("retry"), i18n.T("Try again")).Clicked() {
+				a.downloadModel(m.ID)
+			}
+		}, nil)
+	}
+}
+
+// draftRow is speech model m's Faster transcription on its card: a
+// switch for its speculative draft (models.Model.Draft), a small model
+// that proposes several tokens a step for the speech model to check, so
+// that it decodes faster. The switch decides whether the model's server
+// takes the draft at its next start (models_omni.go); on without the
+// draft, the row offers its download, and a draft on disk can be deleted
+// with the switch off. Deleting it stops that server first.
+func (a *app) draftRow(c *ui.Context, m models.Model) {
+	t := c.Theme()
+	k := tok(t)
+	d, _ := models.Lookup(m.Draft)
+	st := a.modelStatus[m.Draft]
+	on, set := a.prefs.Models.Faster[m.ID] // the switch; never switched: settings.Models.FasterOn
+	if !set {
+		on = st.Installed
+	}
+	ui.Row(c.Key("draft")).Gap(px(t, sp3)).AlignItems(ui.Start).Margin(px(t, sp2), 0, 0, px(t, 32)).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+				ui.Text(c, i18n.T("Faster transcription")).FontWeight(600)
+				infoTip(c.Key("how"), i18n.T("Uses speculative decoding: a small draft model (%s) proposes several words at a time, and the speech model checks them. It needs the draft downloaded.", uitext.HumanBytes(d.Size())))
+				if st.Installed {
+					statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
+				}
+			})
+			if on && !st.Installed && !st.Downloading {
+				caption(c.Key("needs"), i18n.T("Download the draft model to use this."))
+			}
+			caption(c.Key("size"), modelSizeText(d, st))
+		})
+		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).AlignItems(ui.Center).Children(func() {
+			if on || st.Installed || st.OnDisk || st.Downloading || st.Done > 0 {
+				a.modelActions(c, d, st)
+			}
+			if ui.Switch(c.Key("faster"), &on).Label(i18n.T("Faster transcription for %s", uitext.ModelName(m.ID))).Changed() {
+				v := on
+				a.updateSettings(func(s *settings.Settings) {
+					f := maps.Clone(s.Models.Faster)
+					if f == nil {
+						f = map[string]bool{}
+					}
+					f[m.ID] = v
+					s.Models.Faster = f
+				})
+			}
+		})
+	})
+	if st.Downloading || st.Err != nil { // under the draft row's text
+		ui.Column(c.Key("draft-progress")).Margin(0, 0, 0, px(t, 32)).Children(func() { a.modelProgress(c, "draft-err", d, st) })
+	}
 }
 
 // modelSizeText is a model's size, or how much of it came.
@@ -379,7 +507,7 @@ func (a *app) modelActions(c *ui.Context, m models.Model, st models.Status) {
 			a.askDeleteModel(m.ID) // models_delete.go
 		}
 	case m.Retired:
-		if st.Done > 0 && ghostButton(c.Key("discard"), i18n.T("Delete")).Label(i18n.T("Delete what was downloaded of %s", name)).Clicked() {
+		if st.Done > 0 && ghostButton(c.Key("discard"), i18n.T("Delete")).Label(i18n.T("Delete the partial download of %s", name)).Clicked() {
 			a.deleteModel(m.ID, fammodels.ThisApp)
 		}
 	case m.Borrowed || st.OnDisk:
@@ -390,7 +518,7 @@ func (a *app) modelActions(c *ui.Context, m models.Model, st models.Status) {
 		}
 	default:
 		elsewhere := st.Elsewhere != ""
-		if st.Done > 0 && !elsewhere && ghostButton(c.Key("discard"), i18n.T("Delete")).Label(i18n.T("Delete what was downloaded of %s", name)).Clicked() {
+		if st.Done > 0 && !elsewhere && ghostButton(c.Key("discard"), i18n.T("Delete")).Label(i18n.T("Delete the partial download of %s", name)).Clicked() {
 			a.deleteModel(m.ID, fammodels.ThisApp)
 		}
 		label := i18n.T("Download")

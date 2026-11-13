@@ -12,7 +12,7 @@ VoxtNew ships a few curated models with parameters we tune, so their quality is 
 | `zh-plain` | 1 | Chinese without either | 今天的天气很好，我们下午去公园散步，晚上一起吃饭吧。 |
 | `en` | 5 | English, two with fillers and corrections | Let's ship the release on Friday, no wait, on Thursday morning. |
 | `mix` | 4 | Chinese with English words | 我们的服务用 Kubernetes 部署，CPU 占用太高了，需要 scale out。 |
-| `dict` | 5 | the dictionary's terms (made-up product names, jargon) | VoxtNew 的新版本用 MLX 在本地跑语音模型。 |
+| `dict` | 5 | the dictionary's terms (made-up product names, jargon) | VoxtNew 的新版本用 MLX 在本地跑语音识别模型。 |
 | `dict2` | 9 | the user's own terms (Voxt, Omni, SGLang), people's names (陈喆, 韩煜, 周芷若, 欧阳明远), a term at the end of the sentence, the terms said as a list, and a sentence ending in a filler (#24) | 我们用 Omni。 |
 | `long` | 2 | 95 s (13 Chinese and mixed clips) and 104 s (14 clips, starting in English), 0.8 s of silence between clips | |
 
@@ -52,6 +52,8 @@ MAC_DIR=code/VoxtNew-xyz scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HO
 … VOXTNEW_EVAL_QUICK=1 …
 # some clips only
 … VOXTNEW_EVAL_ONLY=dict-1,dict-5 …
+# a speech model's draft (asr.accurate.draft, asr.fast.draft) in $HUB is used, as the app does; the log says so.
+# A library without the drafts (symlinks to the other models' folders) in ACTNOW_FAMILY_DIR compares.
 ```
 
 The tests are:
@@ -128,6 +130,8 @@ Transcribe's clean-up of each clip's words, as said, with the user's main langua
 |---|---|---|
 | zh-Hans | 呃，帮我把那个周报，嗯，发给小王，不对，是发给小李，今天下班前。 | 帮我把周报发给小李，今天下班前。 |
 | en | Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? | Can you send the weekly report to Anna before 5? |
+
+Since 11-09 (#3644 FB27, rambling left in) each example also repeats a phrase, which the answer keeps once: "…before five? I need it before five, I really, I really need it before five." → "…before 5? I really need it before 5." and "…今天下班前。今天下班前一定要发，就是说，今天下班前一定要发出去。" → "…今天下班前。今天下班前一定要发出去。" The results below are the earlier example's; this one has not been through the eval.
 
 ### Transcribe, 20 short clips
 
@@ -311,6 +315,15 @@ The decode times are per request over both ways of each run.
   - The error rate held or improved: no word was dropped on the 286 s clip, against 5 before. The whole Final was faster too.
   - A dictation recognised in pieces (3.7a) was already in requests of 20–45 s.
 - **Result:** a 5-minute dictation peaks at about 3.7–3.9 GB, against 9.7–10.3 GB before: the 2.35 GB of weights, the 512 MB cache, and one request's activations.
+
+### The draft at 8 bits (11-11, #3874)
+
+Voxt starts a speech model that has its DFlash draft with `--draft-bits 8` (`internal/omni/process.go`). The draft only proposes tokens and the speech model checks each one, so the draft's precision can change speed but should not change text. Measured on the Voxt 2.0.3 runtime (Apple M5 Max, 36 GB, macOS 27.0.1), against the bf16 draft, with the speech models and drafts at the catalogue's commits:
+
+- **Text, Voxt's eval set**: the 29 clips and one 192 s clip of all of them in a row, each without and with the eval dictionary as the prompt, 3 rounds, one server per precision: identical in 180 of 180 requests on 0.6B (4bit) and 180 of 180 on 1.7B (8bit).
+- **Text, 448 clips** (XXXXRT/qwen3-asr-test-corpus, 113 min, 11-09): identical in 448 of 448 on both models, with NAX on and off, on both runtimes measured then.
+- **Time**, the eval set's 60 requests per round, median of 3 rounds, the two servers alternating which goes first: 0.6B 5.74 → 5.69 s (−1%), 1.7B 11.17 → 10.93 s (−2%); rounds within 1% of each other. On the 448 clips 8-bit was 0–6% faster.
+- **Memory**, the server with Voxt's flags (`--cache-limit-mb 512`) after the 192 s clip, 2 runs: 0.6B 1235 → 1112 MB, 1.7B 3356–3361 → 3050–3097 MB; the peak during it fell 90–170 MB (0.6B) and 320–550 MB (1.7B).
 
 ### Spoken Translate with Hy-MT2 (`llm.translate`)
 
@@ -529,9 +542,9 @@ Each session took about 6.5 s end to end, cold starts included: ASR 0.7–1.0 s 
 |---|---|---|---|
 | App enhancement | `en-3`, Slack in front: the group "Casual chat: write everything in lowercase letters, with no period at the end." (`transcribe:cleanup+scene`) | Please remind me to call the dentist tomorrow at nine in the morning. | please remind me to call the dentist tomorrow at 9 in the morning |
 | | the same in TextEdit: no group (`transcribe:cleanup`) | (the same) | Please remind me to call the dentist tomorrow at 9 in the morning. |
-| Dictionary | `dict-1`, the dictionary on | VoxtNew的新版本用MLX在本地跑语音模型。 | VoxtNew 的新版本用 MLX 在本地跑语音模型。 |
-| | the terms not sent to the speech model (glossary only) | Vox Tunew的新版本用MLX在本地跑语音模型。 | **VoxtNew** 的新版本用 MLX 在本地跑语音模型。 |
-| | the dictionary off | Vox Tunew的新版本用MLX在本地跑语音模型。 | Vox Tunew 的新版本用 MLX 在本地跑语音模型。 |
+| Dictionary | `dict-1`, the dictionary on | VoxtNew的新版本用MLX在本地跑语音识别模型。 | VoxtNew 的新版本用 MLX 在本地跑语音识别模型。 |
+| | the terms not sent to the speech model (glossary only) | Vox Tunew的新版本用MLX在本地跑语音识别模型。 | **VoxtNew** 的新版本用 MLX 在本地跑语音识别模型。 |
+| | the dictionary off | Vox Tunew的新版本用MLX在本地跑语音识别模型。 | Vox Tunew 的新版本用 MLX 在本地跑语音识别模型。 |
 | Dictionary alias (M3b) | `dict-5`, Auralink with the alias "Or Link", no speech hints, the clean-up off | Or Link and Voxnu share the same prompt composer. | **Auralink** and Voxnu share the same prompt composer. |
 
 These sessions are sensitive to load. While two other threads ran their models on mac-air (swap 14–17 of 18 GB), the alias session failed twice: the speech model wrote "I'm not sure." and "I'm not a good person." for the whole `dict-5` recording, its usual output on near-silence. It passed 3 of 3 on a quieter Mac. Once, the glossary-only session heard "Vox Tunio" and `llm.balanced` left it.

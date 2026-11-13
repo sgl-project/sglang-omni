@@ -8,6 +8,7 @@
 //	       + [Cleanup]       basic clean-up of speech recognition
 //	       + [Structure]     lists and paragraphs (Transcribe only), or Form: keep it as said
 //	       + Task            the feature's rules, then the user's addition to them
+//	       + [Dictionary]    the user's personal dictionary (Markdown notes), the same for every request
 //	       + [Scene]         app enhancement: the app and the group's rules (M5)
 //	       + [Glossary]      the dictionary's terms (a dictionary of up to GlossaryAllUpTo), or the rule for a <glossary> block
 //	       + Output contract only the final text
@@ -102,6 +103,10 @@ type Input struct {
 	TaskPrompt string
 	// Scene is the matched app enhancement group; nil for none.
 	Scene *Scene
+	// Dictionary is the user's personal dictionary, Markdown notes
+	// (settings.Dictionary.Notes) that follow the task's rules, before
+	// anything that changes per request; "" for none.
+	Dictionary string
 	// Glossary are the dictionary's enabled terms (Build keeps the ones
 	// that fit: all of a small dictionary, of a large one those found in
 	// Text).
@@ -154,6 +159,9 @@ type Output struct {
 	// GlossaryAllUpTo terms (the terms the text mentions), which opens
 	// User; "" for none (a smaller dictionary's is in System).
 	Glossary string
+	// Dictionary is the personal dictionary's layer of System (the notes
+	// in <dictionary> tags), "" for none: for the Dictionary page's example.
+	Dictionary string
 	// Language is the template set used (English, Chinese).
 	Language string
 	// Layers names the layers in the system prompt, in order; Profile
@@ -170,7 +178,7 @@ func (o Output) Profile() string {
 	var caps []string
 	for _, l := range rest {
 		switch l {
-		case "selection", "cleanup", "structure", "strict", "custom", "scene", "glossary", "answer", "followup":
+		case "selection", "cleanup", "structure", "strict", "custom", "dictionary", "scene", "glossary", "answer", "followup":
 			caps = append(caps, l)
 		}
 	}
@@ -260,13 +268,14 @@ func Build(in Input) (Output, error) {
 		return Render(template(set, name), vars, x)
 	}
 
+	if full := strings.TrimSpace(in.TaskPrompt); full != "" {
+		return buildFullPrompt(in, set, vars, flags, full)
+	}
+
 	add(string(in.Task), render("role-"+string(in.Task), nil))
 	switch in.Task {
 	case Transcribe:
 		add("input", render("input-speech", nil))
-		if in.Cleanup {
-			add("cleanup", render("cleanup", nil))
-		}
 		if in.Structure {
 			add("structure", render("structure", nil))
 		} else {
@@ -278,9 +287,6 @@ func Build(in Input) (Output, error) {
 			add("selection", render("input-selection", nil))
 		} else {
 			add("input", render("input-speech", nil))
-			if in.Cleanup {
-				add("cleanup", render("cleanup", nil))
-			}
 			add("form", render("form", nil))
 		}
 		add("task", render("task-translate", nil))
@@ -293,9 +299,6 @@ func Build(in Input) (Output, error) {
 			layer = "selection"
 		}
 		add(layer, render("input-rewrite", nil))
-		if in.Cleanup {
-			add("cleanup", render("cleanup-instruction", nil))
-		}
 		if selected {
 			add("task", render("task-rewrite", nil))
 		} else {
@@ -305,9 +308,7 @@ func Build(in Input) (Output, error) {
 			add("followup", render("followup", nil))
 		}
 	}
-	if p := strings.TrimSpace(in.TaskPrompt); p != "" {
-		add("custom", render("custom", map[string]string{"TASK_PROMPT": Render(p, vars, nil)}))
-	}
+	dictionary := addDictionary(in, add)
 	if s := in.Scene; s != nil && strings.TrimSpace(s.AppName) != "" {
 		add("scene", render("scene", map[string]string{"SCENE_PROMPT": Render(strings.TrimSpace(s.Prompt), vars, nil)}))
 	}
@@ -333,7 +334,7 @@ func Build(in Input) (Output, error) {
 	default:
 		add("output", render("output-"+string(in.Task), nil))
 	}
-	out.System, out.Layers = strings.Join(parts, "\n\n"), layers
+	out.System, out.Layers, out.Dictionary = strings.Join(parts, "\n\n"), layers, dictionary
 	if in.Task == Rewrite {
 		for _, t := range in.Previous {
 			out.History = append(out.History,

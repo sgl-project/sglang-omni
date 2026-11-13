@@ -58,15 +58,18 @@ type Decision struct {
 //   - Idle: a tap or double tap of a feature's binding starts it; a long
 //     press starts it on "down" and its "up" stops it; PasteLast pastes;
 //     Note starts a note (Decision.Feature Note).
-//   - Recording: any feature's binding stops (the "common stop"): a tap
-//     fires at once while active; the "up" of the long press that started
-//     the session stops it, other "up"s do nothing. The cancel shortcut
-//     cancels.
+//   - Recording: the shortcut that started the session fixed its mode; any
+//     feature's binding only stops (the "common stop"), never switches
+//     mode. A tap fires at once while active; the "up" of the long press
+//     that started the session stops it, other "up"s do nothing. Cancel
+//     cancels. With Strict shortcuts on (strict is the session's feature),
+//     only that feature's bindings stop; another feature's do nothing.
 //   - Busy: the cancel shortcut cancels; everything else waits.
 //
 // holdBinding is the binding whose long press started the session ("":
-// none).
-func Route(e proto.HotkeyEventParams, phase Phase, holdBinding string) Decision {
+// none); strict is the feature that started it with Strict shortcuts on
+// ("": off).
+func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string) Decision {
 	if e.Binding == proto.HotkeyCancel {
 		if phase != Idle {
 			return Decision{Action: Cancel}
@@ -92,6 +95,9 @@ func Route(e proto.HotkeyEventParams, phase Phase, holdBinding string) Decision 
 			return Decision{Action: Start, Feature: feature, Hold: true}
 		}
 	case Recording:
+		if strict != "" && feature != strict {
+			return Decision{}
+		}
 		switch e.Phase {
 		case proto.PhaseTrigger, proto.PhaseDown:
 			return Decision{Action: Stop}

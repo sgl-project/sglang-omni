@@ -36,6 +36,12 @@ import (
 //	muteState         mute_link.go    the system's output, muted while recording
 //	updateState       updates.go      the updater, an update installed while running
 //	notesState        notes_page.go   the Notes page
+//	learnState        learn_link.go   the watch that learns from the user's corrections
+//	historyAccessState history_access.go  other programs reading the history
+//	transcribeSocketState transcribe_socket.go  `Voxt transcribe`'s socket
+//	meetingState        meeting_link.go meetings (dev builds)
+//	meetingOverlayState meeting_overlay.go the meeting floating window
+//	meetingsState       meetings_page.go the Meetings page (dev builds)
 //
 // Add fields to your area's struct, not here.
 type app struct {
@@ -57,6 +63,7 @@ type app struct {
 	modelsState
 	memoryState
 	omniState
+	llmDbg llmDebugUI // llm_debug.go
 	remoteState
 	sessionState
 	overlayState
@@ -73,6 +80,13 @@ type app struct {
 	muteState
 	updateState
 	notesState
+	announcementsState
+	learnState
+	historyAccessState
+	transcribeSocketState
+	meetingState
+	meetingOverlayState
+	meetingsState
 }
 
 func newApp(lib *library, h *helperHost) *app {
@@ -86,6 +100,7 @@ func newApp(lib *library, h *helperHost) *app {
 	a.openAppEnhancement()  // appenhance.go
 	a.openAudio()           // settings_audio.go
 	a.openHistorySettings() // history_settings_ops.go: the recordings folder, the clean-up
+	a.openDictionary()      // dictionary_suggest.go: the suggestions, for the sidebar's count
 	return a
 }
 
@@ -120,8 +135,14 @@ func (a *app) toast(msg string) {
 // quit releases what the app holds; it runs in App.OnQuit, before the
 // library closes.
 func (a *app) quit() {
+	a.closeHistoryAccess() // history_access.go: the socket goes first
+	a.closeTranscribeSocket()
+	if a.stopLearning != nil {
+		a.stopLearning() // learn_link.go: no read goes to a helper that stopped
+	}
 	a.closeSessions() // session_link.go
 	a.closeOverlay()  // overlay.go
+	a.destroyMeetingOverlay()
 	a.closeTray()
 	a.closeMute() // mute_link.go: the output back before the helper goes
 	a.stopHelper()
