@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -266,5 +268,38 @@ func TestNoSpeech(t *testing.T) {
 	}
 	if res.Text != "" || res.Model != "step-asr" || r.calls != 1 {
 		t.Errorf("result %+v after %d calls", res, r.calls)
+	}
+}
+
+// TestLongRecordingInPieces: a 15-minute recording (over 25 MB as WAV)
+// goes up in two uploads under the limit, cut in its pause, and the
+// text comes back joined (#3840).
+func TestLongRecordingInPieces(t *testing.T) {
+	pcm := make([]byte, 15*60*asr.BytesPerSecond)
+	for i := range pcm {
+		pcm[i] = 0x40 // loud enough, everywhere but the pause
+	}
+	pause := 12 * 60 * asr.BytesPerSecond
+	clear(pcm[pause : pause+asr.BytesPerSecond])
+	r := &recorder{status: []int{200, 200}, answers: []string{`{"text":"First half."}`, `{"text":"后半段。"}`}}
+	c := newClient(t, serve(t, r), asr.Config{})
+	res, err := c.Transcribe(context.Background(), asr.FileRequest{Audio: pcm, Format: "pcm", SampleRate: asr.SampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "First half.后半段。" || res.Model != DefaultModel {
+		t.Errorf("result %+v", res)
+	}
+	var sizes []int
+	for _, m := range regexp.MustCompile(`, (\d+) bytes; wav 16000 Hz 1 ch (\d+) PCM`).FindAllStringSubmatch(r.log.String(), -1) {
+		n, _ := strconv.Atoi(m[1])
+		if n > MaxBytes {
+			t.Errorf("upload of %d bytes, over %d", n, MaxBytes)
+		}
+		p, _ := strconv.Atoi(m[2])
+		sizes = append(sizes, p)
+	}
+	if len(sizes) != 2 || sizes[0]+sizes[1] != len(pcm) || sizes[0] <= pause || sizes[0] >= pause+asr.BytesPerSecond {
+		t.Errorf("pieces %v of %d bytes; want two, cut in the pause at %d", sizes, len(pcm), pause)
 	}
 }

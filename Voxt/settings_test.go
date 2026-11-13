@@ -77,6 +77,9 @@ func TestShortcutsSettings(t *testing.T) {
 	if !has(tt, "None") {
 		t.Error("a feature without shortcut")
 	}
+	// The Strict shortcuts row above the table pushes this row near the
+	// bottom; with taller fonts (Linux CI) it is below the window.
+	scrollToText(tt, "Paste the last result ⌃⌥V")
 	click(t, tt, "Paste the last result ⌃⌥V")
 	if a.settingsOpen || a.shownPath() != "/transcribe" {
 		t.Fatalf("row click: %v %s", a.settingsOpen, a.shownPath())
@@ -90,7 +93,8 @@ func TestShortcutsSettings(t *testing.T) {
 
 // TestStrictShortcutsSetting: Settings → Shortcuts has the Strict
 // shortcuts switch, off by default, with its line in English and Chinese;
-// it saves, and settings search finds it (#3823).
+// it shows without scrolling at the default and the smallest window size
+// (#3916); it saves, and settings search finds it (#3823).
 func TestStrictShortcutsSetting(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/shortcuts")
@@ -98,7 +102,18 @@ func TestStrictShortcutsSetting(t *testing.T) {
 	if !has(tt, "Strict shortcuts") || !has(tt, about) || a.settings.Get().Features.StrictShortcuts {
 		t.Fatalf("section: %q", firstTexts(tt))
 	}
-	scrollToText(tt, "Strict shortcuts") // under the table
+	inView := func(what, title string) {
+		t.Helper()
+		for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}} {
+			tt.SetSize(size[0], size[1])
+			frames(tt)
+			if r, ok := tt.Find(title); !ok || r.Y+r.H > float32(size[1]) {
+				t.Errorf("%s, %dx%d: Strict shortcuts needs a scroll: %v %v", what, size[0], size[1], r, ok)
+			}
+		}
+		tt.SetSize(windowWidth, windowHeight)
+	}
+	inView("English", "Strict shortcuts")
 	if err := tt.ClickControl("Strict shortcuts"); err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +132,12 @@ func TestStrictShortcutsSetting(t *testing.T) {
 	if !has(tt, "快捷键严格模式") || !has(tt, "录音时，只有开始录音的那个快捷键能停止它。关闭时，任何功能的快捷键都能停止录音。") {
 		t.Errorf("zh-Hans: %q", firstTexts(tt))
 	}
+	inView("zh-Hans", "快捷键严格模式")
+	a.applyShortcutPreset(settings.PresetFn) // its warnings go under the preset, above the switch
+	if !has(tt, "Auralink 也用 fn，它运行时，两个 App 都会响应这些键。") {
+		t.Errorf("fn preset's warning: %q", firstTexts(tt))
+	}
+	inView("zh-Hans, fn preset", "快捷键严格模式")
 }
 
 // TestShortcutPreset: a preset gives its keys to the shortcuts the user

@@ -132,4 +132,13 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_revision="db94e0de19f6d05adc0413c255a28eb480cd1fae",
         license="mit",
     ),
+    PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-audio-flash",
+        stage="thinker",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/Ming-3.0-audio-flash-dflash",
+        draft_model_revision="0286123b6ce56a691b37fba0220d1e979f08ffff",
+        engine_settings={"speculative_num_draft_tokens": 16},
+        license="mit",
+    ),
 )

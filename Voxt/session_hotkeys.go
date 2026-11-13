@@ -70,8 +70,13 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			a.closeAnswer()
 			return
 		case a.followUp != "" && a.followUp == a.answer.id:
-			// A follow-up: the cancel shortcut cancels it, the card stays (Voxt's).
-			a.cancelSession()
+			// A follow-up: the cancel shortcut cancels it, the card stays (Voxt's);
+			// its answer streaming, it stops there and the card keeps it (#3886).
+			if a.sess.CanStop() {
+				a.stopLLM()
+			} else {
+				a.cancelSession()
+			}
 			return
 		}
 	}
@@ -118,6 +123,10 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	case hotkey.Stop:
 		a.stopSession()
 	case hotkey.Cancel:
+		if a.writingAnswer() {
+			a.stopLLM() // the writing card's Stop: the answer so far stays (#3886)
+			return
+		}
 		if a.sess.State == session.Composing && a.sess.CanSkip {
 			a.skipLLM() // the preview's Use transcript (#3821)
 			return
