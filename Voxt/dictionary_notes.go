@@ -63,8 +63,29 @@ func (a *app) notesView(c *ui.Context) {
 			if off {
 				notice(c, "dict-notes-off", noticeInfo, i18n.T("The dictionary is off, so the personal dictionary is not sent."), "", nil, nil)
 			}
+			d := &a.dv
+			matches := findFolded(n.text, d.notesQuery)
+			moved := d.notesFind.advance(len(matches))
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+				d.notesFind.field(c, "dict-notes-find", &d.notesQuery, i18n.T("Find in the personal dictionary"), px(t, 320)).Label(i18n.T("Search personal dictionary"))
+				d.notesFind.count(c, d.notesQuery, len(matches))
+			})
 			// As high as its text, however long (llm_debug.go): one scroll bar, the page's.
 			in := ui.TextArea(c.Key("dict-notes"), &n.text).Label(i18n.T("Personal dictionary in Markdown")).Placeholder(notesPlaceholder()).Lines(8, math.MaxInt32)
+			if len(matches) > 0 {
+				ranges := make([]ui.TextRange, len(matches))
+				for i, m := range matches {
+					// As Find in the prompt (feature_prompts.go): the current match heavier, and selected.
+					ranges[i] = ui.TextRange{Start: m[0], End: m[1], Color: tok(t).Danger, Weight: 700}
+					if i == d.notesFind.cur-1 {
+						ranges[i].Weight = 900
+					}
+				}
+				in.TextRanges(ranges...)
+			}
+			if moved {
+				in.SetTextSelection(matches[d.notesFind.cur-1][0], matches[d.notesFind.cur-1][1])
+			}
 			a.autosave(in, n, a.saveNotes)
 			a.notesExample(c)
 		})

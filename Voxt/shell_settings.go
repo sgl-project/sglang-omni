@@ -54,6 +54,8 @@ type settingsForm struct {
 	liveResult      bool        // Audio.LiveResult
 	cleanSound      bool        // !Audio.Clean.Off
 	muteOutput      bool        // Audio.MuteOn()
+	uploadMB        float64     // Audio.UploadMB
+	maxMinutes      float64     // Audio.MaxSeconds, in minutes
 	sidebar         int         // automatic, names and icons, icons only (settings_appearance.go)
 	ovStyle         overlayForm // settings_overlay.go
 
@@ -243,6 +245,7 @@ func (a *app) loadSettingsForm() {
 	f.liveResult = s.Audio.LiveResult
 	f.cleanSound = !s.Audio.Clean.Off
 	f.muteOutput = s.Audio.MuteOn()
+	f.uploadMB, f.maxMinutes = float64(s.Audio.UploadMB), float64(s.Audio.MaxSeconds)/60
 	f.sidebar = sidebarChoice(s.Appearance)
 	a.loadOverlayForm() // settings_overlay.go
 }
