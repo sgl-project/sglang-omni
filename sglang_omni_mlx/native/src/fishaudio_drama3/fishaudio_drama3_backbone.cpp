@@ -17,17 +17,6 @@ constexpr const char *kBackbone = "backbone.model";
 // Expert gathers sort their rows once a call routes this many.
 constexpr int kSortedExpertRows = 64;
 
-std::vector<mx::array> SwigluGraph(const std::vector<mx::array> &inputs) {
-  const mx::array &gate = inputs[0];
-  return {mx::multiply(mx::multiply(gate, mx::sigmoid(gate)), inputs[1])};
-}
-
-// silu(gate) * x, fused into one kernel.
-mx::array Swiglu(const mx::array &gate, const mx::array &x) {
-  static const auto compiled = mx::compile(SwigluGraph, true);
-  return compiled({gate, x})[0];
-}
-
 std::vector<mx::array>
 PreciseSwigluGraph(const std::vector<mx::array> &inputs) {
   const mx::array gate = mx::astype(inputs[1], mx::float32);
@@ -207,7 +196,8 @@ mx::array Drama3Model::AttentionLayer(const mx::array &x,
 }
 
 mx::array Drama3Model::MixtureOfExperts(const mx::array &x,
-                                        const std::string &prefix) const {
+                                        const std::string &prefix,
+                                        const std::atomic<bool> &cancel) const {
   const mx::array gates = mx::softmax(checkpoint_.Linear(x, prefix + ".gate"),
                                       std::vector<int>{-1}, true);
   const mx::array experts =
@@ -216,49 +206,54 @@ mx::array Drama3Model::MixtureOfExperts(const mx::array &x,
   mx::array scores = mx::take_along_axis(gates, experts, -1);
   scores = mx::divide(scores, mx::sum(scores, -1, true));
 
-  // Rows [..., 1, 1, dim] per token, each gathered by its experts; once
-  // enough rows route, they are sorted by expert so weights stream in order.
-  const std::string switch_prefix = prefix + ".switch_mlp";
-  const bool is_sorted = experts.size() >= kSortedExpertRows;
-  mx::array rows = mx::expand_dims(x, {-2, -3});
-  mx::array expert_ids = experts;
-  std::optional<mx::array> inverse_order;
-  if (is_sorted) {
-    const mx::array flat_experts = mx::flatten(experts);
-    const mx::array order = mx::argsort(flat_experts);
-    inverse_order = mx::argsort(order);
-    rows = mx::take(
-        mx::flatten(rows, 0, -3),
-        mx::floor_divide(order, mx::array(experts_per_token_, order.dtype())),
-        0);
-    expert_ids = mx::take(flat_experts, order);
+  mx::array combined = x;
+  if (expert_cache_) {
+    combined = expert_cache_->Routed(x, experts, scores, prefix + ".switch_mlp",
+                                     checkpoint_, &cancel);
   } else {
+    // Rows [..., 1, 1, dim] per token, each gathered by its experts; once
+    // enough rows route, they are sorted by expert so weights stream in order.
+    const std::string switch_prefix = prefix + ".switch_mlp";
+    const bool is_sorted = experts.size() >= kSortedExpertRows;
+    mx::array rows = mx::expand_dims(x, {-2, -3});
+    mx::array expert_ids = experts;
+    std::optional<mx::array> inverse_order;
+    if (is_sorted) {
+      const mx::array flat_experts = mx::flatten(experts);
+      const mx::array order = mx::argsort(flat_experts);
+      inverse_order = mx::argsort(order);
+      rows = mx::take(
+          mx::flatten(rows, 0, -3),
+          mx::floor_divide(order, mx::array(experts_per_token_, order.dtype())),
+          0);
+      expert_ids = mx::take(flat_experts, order);
+    } else {
+    }
+    const auto expert_linear = [&](const mx::array &input,
+                                   const std::string &name) {
+      const std::string weight_prefix = switch_prefix + "." + name;
+      const omni_common::QuantizationConfig &quantization =
+          checkpoint_.Quantization(weight_prefix);
+      return mx::gather_qmm(
+          input, checkpoint_.Weight(weight_prefix + ".weight"),
+          checkpoint_.Weight(weight_prefix + ".scales"),
+          checkpoint_.Weight(weight_prefix + ".biases"), std::nullopt,
+          expert_ids, true, quantization.group_size, quantization.bits,
+          quantization.mode, std::nullopt, is_sorted);
+    };
+    const mx::array up = expert_linear(rows, "up_proj");
+    const mx::array gate = expert_linear(rows, "gate_proj");
+    mx::array routed = expert_linear(Swiglu(gate, up), "down_proj");
+    if (is_sorted) {
+      mx::Shape unsorted_shape = experts.shape();
+      unsorted_shape.push_back(routed.shape(-2));
+      unsorted_shape.push_back(routed.shape(-1));
+      routed = mx::reshape(mx::take(routed, *inverse_order, 0), unsorted_shape);
+    } else {
+    }
+    routed = mx::squeeze(routed, -2);
+    combined = mx::sum(mx::multiply(routed, mx::expand_dims(scores, -1)), -2);
   }
-  const auto expert_linear = [&](const mx::array &input,
-                                 const std::string &name) {
-    const std::string weight_prefix = switch_prefix + "." + name;
-    const omni_common::QuantizationConfig &quantization =
-        checkpoint_.Quantization(weight_prefix);
-    return mx::gather_qmm(input, checkpoint_.Weight(weight_prefix + ".weight"),
-                          checkpoint_.Weight(weight_prefix + ".scales"),
-                          checkpoint_.Weight(weight_prefix + ".biases"),
-                          std::nullopt, expert_ids, true,
-                          quantization.group_size, quantization.bits,
-                          quantization.mode, std::nullopt, is_sorted);
-  };
-  const mx::array up = expert_linear(rows, "up_proj");
-  const mx::array gate = expert_linear(rows, "gate_proj");
-  mx::array routed = expert_linear(Swiglu(gate, up), "down_proj");
-  if (is_sorted) {
-    mx::Shape unsorted_shape = experts.shape();
-    unsorted_shape.push_back(routed.shape(-2));
-    unsorted_shape.push_back(routed.shape(-1));
-    routed = mx::reshape(mx::take(routed, *inverse_order, 0), unsorted_shape);
-  } else {
-  }
-  routed = mx::squeeze(routed, -2);
-  const mx::array combined =
-      mx::sum(mx::multiply(routed, mx::expand_dims(scores, -1)), -2);
 
   const std::string shared_prefix = prefix + ".shared_expert";
   const mx::array shared = checkpoint_.Linear(
@@ -272,7 +267,8 @@ mx::array Drama3Model::MixtureOfExperts(const mx::array &x,
 }
 
 mx::array Drama3Model::Backbone(const mx::array &embeddings,
-                                std::vector<LayerCache> &caches) const {
+                                std::vector<LayerCache> &caches,
+                                const std::atomic<bool> &cancel) const {
   mx::array hidden = embeddings;
   for (int layer = 0; layer < layer_count_; ++layer) {
     const std::string prefix =
@@ -290,7 +286,7 @@ mx::array Drama3Model::Backbone(const mx::array &embeddings,
         residual, MixtureOfExperts(
                       Fp32Norm(residual, prefix + ".post_attention_layernorm",
                                rms_norm_eps_),
-                      prefix + ".mlp"));
+                      prefix + ".mlp", cancel));
   }
   return Fp32Norm(hidden, std::string(kBackbone) + ".norm", rms_norm_eps_);
 }

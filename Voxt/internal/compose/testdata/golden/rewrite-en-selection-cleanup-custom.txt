@@ -1,0 +1,13 @@
+# profile: custom
+# layers: custom
+
+Write like  people do; no emoji.
+
+---- user ----
+<instruction>
+um make it shorter no wait more formal and as a list
+</instruction>
+
+<selected_text>
+hey team, aura link 0.1 is basically done, docs r ready, tests still running, ship friday?
+</selected_text>

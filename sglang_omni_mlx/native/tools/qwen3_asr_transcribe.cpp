@@ -119,7 +119,8 @@ int main(int argc, char **argv) {
     const std::vector<float> samples = omni_common::DecodeWav(bytes.str());
     for (int round = 0; round < 3; ++round) {
       const auto t0 = Clock::now();
-      mx::array mel = qwen3_asr::LogMel(samples, AudioLayout::kVoxtSwift);
+      mx::array mel =
+          omni_common::LogMel(samples, omni_common::FinalStftFrame::kKept);
       mx::eval(mel);
       const auto t1 = Clock::now();
       mx::array encoded = model.EncodeAudio(mel, AudioLayout::kVoxtSwift);

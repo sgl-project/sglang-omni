@@ -58,11 +58,13 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
         vocab_size,
         request_id,
         capture_prompt_hidden_states,
+        speaks,
     ):
         return SimpleNamespace(
             req=SimpleNamespace(
                 origin_input_ids=pipeline_state.prompt["input_ids"].tolist()
             ),
+            speaks=speaks,
             output_ids=[],
             stage_payload=None,
             finish_reason=None,
@@ -75,7 +77,7 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
         lambda ids, inputs, config: (torch.zeros(3, len(ids), dtype=torch.long), 0),
     )
     config = SimpleNamespace(image_token_id=100, video_token_id=101, audio_token_id=102)
-    result = QwenThinkerSessionAdapter(tokenizer, 200, config)
+    result = QwenThinkerSessionAdapter(tokenizer, 200, config, speech_enabled=True)
     result.outbox = queue.Queue()
     result.open(IDENTITY, OmniRequest(None))
     return result
@@ -190,6 +192,26 @@ def test_an_interrupted_turn_is_refilled_with_what_was_heard(
     finish(adapter, third, [70, END])
     fourth = adapter.build(IDENTITY, unit_chunk(4), payload(4, [9]))
     assert fourth.req.origin_input_ids == [NEWLINE, 9]
+
+
+@pytest.mark.parametrize(
+    ("speech_enabled", "output_modalities", "speaks"),
+    [
+        pytest.param(True, None, True, id="spoken"),
+        pytest.param(True, ["text"], False, id="text_only_request"),
+        pytest.param(False, None, False, id="text_only_deployment"),
+    ],
+)
+def test_a_unit_bounds_its_thinker_by_speech_only_when_it_speaks(
+    adapter: QwenThinkerSessionAdapter,
+    speech_enabled: bool,
+    output_modalities: list[str] | None,
+    speaks: bool,
+) -> None:
+    adapter.speech_enabled = speech_enabled
+    unit = payload(1, [5])
+    unit.request.metadata = {"output_modalities": output_modalities}
+    assert adapter.build(IDENTITY, unit_chunk(1), unit).speaks is speaks
 
 
 def test_without_truncate_the_whole_generated_reply_stays(

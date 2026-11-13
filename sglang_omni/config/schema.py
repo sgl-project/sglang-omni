@@ -21,6 +21,7 @@ from sglang_omni.proto.session import (
     SessionGraph,
     SessionNode,
 )
+from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY
 
 if TYPE_CHECKING:
     from sglang_omni.serve.realtime.transcription_session import StreamingASRStrategy
@@ -206,16 +207,18 @@ class EngineArgs(BaseModel):
             pass
 
     def overrides(self) -> dict[str, object]:
-        """Return the keys set on this block, declared and free-form alike.
+        """Return the server args this block sends, declared and free-form alike.
 
         A declared key left at ``None`` means "not set" and is omitted, so
         SGLang's own defaults stay in charge; free-form keys are always
         included because writing one is itself the intent. With
         disable_speculative_decoding set, the speculative_* keys are left out
-        whichever source wrote them.
+        whichever source wrote them. A separate draft pinned in the draft registry gets
+        its pinned revision when this block has no speculative_draft_model_revision
+        key, so a revision the block sets, None included, still wins.
         """
         extra = self.model_extra or {}
-        return {
+        overrides = {
             key: value
             for key, value in self.model_dump().items()
             if (value is not None or key in extra)
@@ -224,6 +227,24 @@ class EngineArgs(BaseModel):
                 self.disable_speculative_decoding and key.startswith("speculative_")
             )
         }
+        draft_model_path = overrides.get("speculative_draft_model_path")
+        pinned_revision = next(
+            (
+                draft.draft_model_revision
+                for draft in DRAFT_REGISTRY
+                if draft.draft_model_path == draft_model_path
+                and draft.draft_model_path != draft.model_path
+            ),
+            None,
+        )
+        if (
+            pinned_revision is not None
+            and "speculative_draft_model_revision" not in overrides
+        ):
+            overrides["speculative_draft_model_revision"] = pinned_revision
+        else:
+            pass
+        return overrides
 
 
 class FactoryArgs(BaseModel):
@@ -247,6 +268,7 @@ class FactoryArgs(BaseModel):
     max_batch_size: int | None = Field(default=None, ge=1)
     max_batch_wait_ms: float | None = Field(default=None, ge=0)
     enable_async_decode: bool | None = None
+    enable_plain_fallback: bool | None = None
     async_decode_min_batch_size: int | None = Field(default=None, ge=1)
     prefill_coalesce_requests: int | None = Field(default=None, ge=0)
     prefill_coalesce_wait_ms: float | None = Field(default=None, gt=0)
