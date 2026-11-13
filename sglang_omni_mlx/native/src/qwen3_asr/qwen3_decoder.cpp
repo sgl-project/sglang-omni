@@ -176,8 +176,49 @@ std::string Qwen3Decoder::Name(const std::string &suffix) const {
   return prefix_.empty() ? suffix : prefix_ + "." + suffix;
 }
 
+void Qwen3Decoder::PackDenseGateUp() {
+  std::vector<mx::array> packed;
+  for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
+    const std::string prefix =
+        Name("layers." + std::to_string(layer) + ".mlp.");
+    const std::string gate = prefix + "gate_proj";
+    const std::string up = prefix + "up_proj";
+    if (checkpoint_.Has(gate + ".scales") || checkpoint_.Has(up + ".scales") ||
+        checkpoint_.Has(gate + ".bias") || checkpoint_.Has(up + ".bias")) {
+      return;
+    } else {
+    }
+    packed.push_back(mx::concatenate({checkpoint_.Weight(gate + ".weight"),
+                                      checkpoint_.Weight(up + ".weight")},
+                                     0));
+  }
+  mx::eval(packed);
+  gate_up_weights_ = std::move(packed);
+}
+
 mx::array Qwen3Decoder::EmbedTokens(const mx::array &ids) const {
   return checkpoint_.Embed(ids, Name("embed_tokens"));
+}
+
+void Qwen3Decoder::CacheRotary(int token_count, mx::Dtype dtype) {
+  std::map<std::pair<int, int>, RotaryInputs> prepared;
+  std::vector<mx::array> buffers;
+  const auto prepare = [&](int length, int offset) {
+    RotaryInputs rotary = Rotary(length, offset, dtype);
+    buffers.push_back(rotary.cosines);
+    buffers.push_back(rotary.sines);
+    if (rotary.mask) {
+      buffers.push_back(*rotary.mask);
+    } else {
+    }
+    prepared.emplace(std::pair{length, offset}, std::move(rotary));
+  };
+  prepare(2, 0);
+  for (int offset = 2; offset < token_count; ++offset) {
+    prepare(1, offset);
+  }
+  mx::eval(buffers);
+  cached_rotary_inputs_ = std::move(prepared);
 }
 
 mx::array Qwen3Decoder::Layer(const mx::array &x, int layer, KVCache &cache,
@@ -219,13 +260,20 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer, KVCache &cache,
                             prefix + ".self_attn.o_proj"));
   const mx::array mlp_input =
       checkpoint_.RmsNorm(hidden, prefix + ".post_attention_layernorm", eps);
-  return mx::add(
-      hidden,
-      checkpoint_.Linear(
-          mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                           mlp_input, prefix + ".mlp.gate_proj")),
-                       checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
-          prefix + ".mlp.down_proj"));
+  const mx::array activated = [&] {
+    if (gate_up_weights_.empty()) {
+      return mx::multiply(
+          omni_common::Silu(
+              checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj")),
+          checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj"));
+    } else {
+      const auto halves = mx::split(
+          mx::matmul(mlp_input, mx::transpose(gate_up_weights_[layer])), 2, -1);
+      return mx::multiply(omni_common::Silu(halves[0]), halves[1]);
+    }
+  }();
+  return mx::add(hidden,
+                 checkpoint_.Linear(activated, prefix + ".mlp.down_proj"));
 }
 
 mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
@@ -302,6 +350,12 @@ mx::array Qwen3Decoder::LastLogits(const mx::array &hidden_states) const {
 
 Qwen3Decoder::RotaryInputs Qwen3Decoder::Rotary(int length, int offset,
                                                 mx::Dtype dtype) const {
+  const auto found = cached_rotary_inputs_.find({length, offset});
+  if (found != cached_rotary_inputs_.end() &&
+      found->second.cosines.dtype() == dtype) {
+    return found->second;
+  } else {
+  }
   const int head_dim = config_.head_dim;
   const mx::array inverse_frequencies = mx::divide(
       mx::array(1.0f),
