@@ -1,3 +1,4 @@
+import asyncio
 import io
 
 import numpy as np
@@ -10,6 +11,8 @@ from sglang_omni.client.audio import (
     resample_linear,
     to_numpy,
 )
+from sglang_omni.client.types import GenerateRequest
+from tests.unit_test.fixtures.speech_fakes import FixedSpeechClient
 
 
 def stereo_test_signal() -> tuple[np.ndarray, int]:
@@ -259,3 +262,117 @@ def test_encode_audio_mp3_resampling():
         assert encoded_bytes.startswith(b"ID3")
     except ImportError:
         assert encoded_bytes.startswith(b"RIFF")
+
+
+def test_output_sample_rate_filters_aliases() -> None:
+    """Downsampling must remove frequencies above the output Nyquist frequency."""
+    source_sample_rate = 24000
+    output_sample_rate = 8000
+    seconds = np.arange(source_sample_rate, dtype=np.float32) / source_sample_rate
+    audio = 0.2 * np.sin(2 * np.pi * 1000 * seconds)
+    audio += 0.2 * np.sin(2 * np.pi * 10000 * seconds)
+    encoded, _ = encode_audio(
+        audio,
+        response_format="pcm",
+        sample_rate=source_sample_rate,
+        output_sample_rate=output_sample_rate,
+    )
+    samples = np.frombuffer(encoded, dtype="<i2").astype(np.float32) / 32768
+    assert samples.size == output_sample_rate
+    assert dominant_frequency(samples, output_sample_rate) == pytest.approx(1000, abs=3)
+    interior = samples[output_sample_rate // 10 : -output_sample_rate // 10]
+    assert np.sqrt(np.mean(interior**2)) == pytest.approx(0.2 / np.sqrt(2), abs=0.003)
+
+
+def test_output_sample_rate_preserves_stereo() -> None:
+    """Resampling must preserve channel orientation and each channel's pitch."""
+    audio, source_sample_rate = stereo_test_signal()
+    output_sample_rate = 16000
+    encoded, _ = encode_audio(
+        audio,
+        response_format="wav",
+        sample_rate=source_sample_rate,
+        output_sample_rate=output_sample_rate,
+    )
+    actual_sample_rate, decoded = decode_audio(encoded)
+    assert actual_sample_rate == output_sample_rate
+    assert decoded.shape == (2, output_sample_rate // 2)
+    assert_stereo_content(decoded, actual_sample_rate)
+
+
+@pytest.mark.parametrize(
+    ("response_format", "output_sample_rate"),
+    [("wav", 12345), ("flac", 12345), ("mp3", 44100), ("aac", 22050), ("opus", 48000)],
+)
+def test_encode_audio_honors_custom_output_sample_rate(
+    response_format: str, output_sample_rate: int
+) -> None:
+    """Encoded audio must actually decode at the requested rate, including arbitrary WAV/FLAC rates."""
+    source_sample_rate = 24000
+    seconds = np.arange(source_sample_rate, dtype=np.float32) / source_sample_rate
+    audio = 0.25 * np.sin(2 * np.pi * 1000 * seconds)
+    encoded, mime_type = encode_audio(
+        audio,
+        response_format=response_format,
+        sample_rate=source_sample_rate,
+        output_sample_rate=output_sample_rate,
+        allow_format_fallback=False,
+    )
+    decoded_sample_rate, decoded = decode_audio(encoded)
+    assert mime_type == FORMAT_MIME_TYPES[response_format]
+    assert decoded_sample_rate == output_sample_rate
+    assert dominant_frequency(
+        decoded.reshape(-1), decoded_sample_rate
+    ) == pytest.approx(1000, abs=3)
+
+
+@pytest.mark.parametrize(
+    ("response_format", "output_sample_rate"),
+    [("wav", 0), ("wav", True), ("mp3", 12345), ("opus", 24000)],
+)
+def test_encode_audio_rejects_invalid_output_sample_rate(
+    response_format: str, output_sample_rate: int | bool
+) -> None:
+    """Direct Python encoding must reject invalid rates without relying on HTTP validation."""
+    with pytest.raises(ValueError, match="sample_rate"):
+        encode_audio(
+            np.zeros(2400, dtype=np.float32),
+            response_format=response_format,
+            output_sample_rate=output_sample_rate,
+        )
+
+
+@pytest.mark.parametrize(
+    (
+        "response_format",
+        "source_sample_rate",
+        "output_sample_rate",
+        "expected_sample_rate",
+    ),
+    [
+        ("mp3", 96000, None, 48000),
+        ("aac", 20000, None, 22050),
+        ("opus", 24000, None, 48000),
+    ],
+)
+def test_speech_sample_rate_metadata_matches_encoded_audio(
+    response_format: str,
+    source_sample_rate: int,
+    output_sample_rate: int | None,
+    expected_sample_rate: int,
+) -> None:
+    """Speech metadata must describe the codec output instead of an incompatible model rate."""
+    speech_client = FixedSpeechClient(
+        np.zeros(source_sample_rate // 2, dtype=np.float32), source_sample_rate
+    )
+    result = asyncio.run(
+        speech_client.speech(
+            GenerateRequest(prompt="Hello."),
+            request_id="encoded-sample-rate",
+            response_format=response_format,
+            output_sample_rate=output_sample_rate,
+            allow_format_fallback=False,
+        )
+    )
+    decoded_sample_rate, _ = decode_audio(result.audio_bytes)
+    assert result.sample_rate == decoded_sample_rate == expected_sample_rate

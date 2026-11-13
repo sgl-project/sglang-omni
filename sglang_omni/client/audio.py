@@ -16,6 +16,7 @@ import struct
 from functools import cache
 
 import numpy as np
+import soxr
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +72,34 @@ PYAV_ENCODE_CONFIGS = {
             32000,
             44100,
             48000,
-            64000,
-            88200,
-            96000,
         },
     },
 }
+
+
+def audio_output_sample_rate_error(
+    response_format: str, output_sample_rate: int | None
+) -> str | None:
+    """Explain why an encoder cannot honor the requested output rate."""
+    if output_sample_rate is None:
+        return None
+    elif (
+        isinstance(output_sample_rate, bool)
+        or not isinstance(output_sample_rate, int)
+        or output_sample_rate <= 0
+    ):
+        return "sample_rate must be a positive integer"
+    elif response_format == "opus" and output_sample_rate != 48000:
+        return "sample_rate must be 48000 for Opus output"
+    elif (
+        response_format in PYAV_ENCODE_CONFIGS
+        and output_sample_rate
+        not in PYAV_ENCODE_CONFIGS[response_format]["valid_rates"]
+    ):
+        supported_rates = sorted(PYAV_ENCODE_CONFIGS[response_format]["valid_rates"])
+        return f"sample_rate for {response_format} must be one of: {supported_rates}"
+    else:
+        return None
 
 
 @cache
@@ -370,6 +393,7 @@ def encode_audio(
     *,
     response_format: str = "wav",
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    output_sample_rate: int | None = None,
     speed: float = 1.0,
     allow_format_fallback: bool = True,
 ) -> tuple[bytes, str]:
@@ -379,6 +403,7 @@ def encode_audio(
         audio: Raw audio data (numpy, torch tensor, list, bytes)
         response_format: Target format (wav, mp3, flac, opus, aac, pcm)
         sample_rate: Audio sample rate in Hz
+        output_sample_rate: Requested encoded sample rate in Hz
         speed: Speed adjustment factor (1.0 = normal)
         allow_format_fallback: If True, return WAV when a compressed encoder is
             unavailable or the format is unknown. If False, raise ValueError.
@@ -387,6 +412,11 @@ def encode_audio(
         (encoded_bytes, mime_type)
     """
     fmt = response_format.lower().strip()
+    sample_rate_error = audio_output_sample_rate_error(fmt, output_sample_rate)
+    if sample_rate_error is not None:
+        raise ValueError(sample_rate_error)
+    else:
+        pass
     arr = to_numpy(audio)
 
     if arr.ndim > 1:
@@ -417,6 +447,12 @@ def encode_audio(
             sample_rate = adjusted[0][1]
         else:
             arr, sample_rate = apply_speed(arr, speed, sample_rate)
+    else:
+        pass
+
+    if output_sample_rate is not None and output_sample_rate != sample_rate:
+        arr = soxr.resample(arr.T, sample_rate, output_sample_rate).T
+        sample_rate = output_sample_rate
     else:
         pass
 

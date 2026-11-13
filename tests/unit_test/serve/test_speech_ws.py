@@ -6,11 +6,13 @@ import asyncio
 import json
 from typing import Any
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.client import GenerateChunk
+from sglang_omni.client.audio import encode_audio
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import SpeechResult
 from sglang_omni.config import CustomVoiceConfig
@@ -27,6 +29,7 @@ from sglang_omni.serve.speech_ws import (
     MAX_TEXT_MESSAGE_BYTES,
     SpeechWebSocketSession,
 )
+from tests.unit_test.fixtures.speech_fakes import FixedSpeechClient
 
 CONTEXT_LENGTH_ERROR = (
     "Requested token count exceeds the model's maximum context length"
@@ -58,6 +61,7 @@ class StreamingSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -100,6 +104,7 @@ class BlockingSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -124,6 +129,7 @@ class ReleasableSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -229,6 +235,7 @@ class CompletedSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -1222,3 +1229,44 @@ def test_speech_websocket_disconnect_watch_aborts_on_buffered_byte_cap(
 async def wait_for_buffered_receive(session: SpeechWebSocketSession) -> None:
     while not session.buffered_receive_messages:
         await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize(
+    ("sample_rate", "stream_audio"),
+    [(8000, False), (44100, True)],
+)
+def test_speech_websocket_resamples_audio_and_reports_output_rate(
+    sample_rate: int, stream_audio: bool
+) -> None:
+    """WebSocket audio metadata and payload must use the requested rate in both modes."""
+    audio = np.linspace(-0.5, 0.5, 24001, dtype=np.float32)
+    speech_client = FixedSpeechClient(audio)
+    client = TestClient(create_app(speech_client, model_name="tts"))
+    audio_bytes = bytearray()
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(
+            session_config(
+                response_format="pcm",
+                stream_audio=stream_audio,
+                sample_rate=sample_rate,
+            )
+        )
+        assert websocket.receive_json()["type"] == "session.configured"
+        websocket.send_json({"type": "input.text", "text": "Hello."})
+        start = websocket.receive_json()
+        assert start["type"] == "audio.start"
+        assert start["sample_rate"] == sample_rate
+        while True:
+            message = websocket.receive()
+            if "bytes" in message:
+                audio_bytes.extend(message["bytes"])
+            else:
+                done = json.loads(message["text"])
+                assert done["type"] == "audio.done" and done["error"] is False
+                assert done["total_bytes"] == len(audio_bytes)
+                break
+    expected_pcm, _ = encode_audio(
+        audio, response_format="pcm", output_sample_rate=sample_rate
+    )
+    assert audio_bytes == expected_pcm
+    assert len(audio_bytes) == round(audio.size * sample_rate / 24000) * 2

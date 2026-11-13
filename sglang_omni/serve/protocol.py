@@ -472,6 +472,7 @@ class CreateSpeechRequest(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "wav"
+    sample_rate: int | None = Field(default=None, gt=0, strict=True)
     speed: float = 1.0
     stream: bool = False
     stream_format: Literal["audio", "sse"] = "audio"
@@ -522,6 +523,7 @@ class SpeechBatchItem(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: object = None
+    sample_rate: object = None
     speed: object = None
     stream: object = None
     task_type: object = None
@@ -561,6 +563,7 @@ class CreateSpeechBatchRequest(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "wav"
+    sample_rate: int | None = Field(default=None, gt=0, strict=True)
     speed: float = 1.0
     stream: bool = False
     task_type: str | None = None
@@ -596,6 +599,7 @@ class SpeechBatchResult(BaseModel):
     audio_data: str | None = None
     format: str | None = None
     media_type: str | None = None
+    sample_rate: int | None = None
     finish_reason: str | None = None
     error: dict[str, object] | None = None
 
@@ -641,6 +645,7 @@ class SpeechStreamSessionConfig(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "pcm"
+    sample_rate: int | None = Field(default=None, gt=0, strict=True)
     speed: float = 1.0
     stream_audio: bool = False
     split_granularity: str = "sentence"

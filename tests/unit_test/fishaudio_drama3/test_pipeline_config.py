@@ -204,6 +204,7 @@ def test_every_supported_speech_field_is_accepted() -> None:
             "input": "hello",
             "voice": "default",
             "response_format": "pcm",
+            "sample_rate": 16000,
             "speed": 1.0,
             "stream": True,
             "stream_format": "sse",
