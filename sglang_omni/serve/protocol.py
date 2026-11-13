@@ -500,6 +500,9 @@ class CreateSpeechRequest(BaseModel):
     epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    prepend_silence: bool | None = None
+    condition_buckets: dict[str, int | None] | None = None
+    condition_values: dict[str, float | None] | None = None
 
     # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, object]] | None = None
@@ -540,6 +543,9 @@ class SpeechBatchItem(BaseModel):
     epsilon_cutoff: object = None
     repetition_penalty: object = None
     seed: object = None
+    prepend_silence: object = None
+    condition_buckets: object = None
+    condition_values: object = None
     stage_params: object = None
 
 
@@ -576,6 +582,9 @@ class CreateSpeechBatchRequest(BaseModel):
     epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    prepend_silence: bool | None = None
+    condition_buckets: dict[str, int | None] | None = None
+    condition_values: dict[str, float | None] | None = None
     stage_params: dict[str, dict[str, object]] | None = None
 
 
@@ -592,7 +601,7 @@ class SpeechBatchResult(BaseModel):
 
 
 class SpeechStreamOutcome(BaseModel):
-    """Terminal state of a finished raw PCM speech stream."""
+    """Terminal state of a finished speech audio stream."""
 
     request_id: str
     finish_reason: str
@@ -654,6 +663,9 @@ class SpeechStreamSessionConfig(BaseModel):
     epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    prepend_silence: bool | None = None
+    condition_buckets: dict[str, int | None] | None = None
+    condition_values: dict[str, float | None] | None = None
     stage_params: dict[str, dict[str, object]] | None = None
 
 

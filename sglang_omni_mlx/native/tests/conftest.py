@@ -47,3 +47,23 @@ def speech_server(
     server = SupervisedServer(stub_server_binary, "stub_speech", model_directory)
     yield server
     server.stop()
+
+
+@pytest.fixture(scope="module")
+def ming_speech_server(
+    stub_server_binary: Path, model_directory: Path
+) -> Iterator[SupervisedServer]:
+    server = SupervisedServer(stub_server_binary, "stub_ming_tts", model_directory)
+    yield server
+    server.stop()
+
+
+@pytest.fixture(scope="module")
+def chat_server(
+    stub_server_binary: Path, model_directory: Path
+) -> Iterator[SupervisedServer]:
+    server = SupervisedServer(stub_server_binary, "stub_chat", model_directory)
+    try:
+        yield server
+    finally:
+        server.stop()
