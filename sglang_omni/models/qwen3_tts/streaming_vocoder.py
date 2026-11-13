@@ -1143,13 +1143,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             in_place_frames=in_place_frames,
         )
         logger.info(
-            "Qwen3-TTS incremental Codec state: %d stream slots and %d for whole requests, %.2f MiB a slot, %.1f MiB total (%s, %s)",
-            arena.num_slots,
-            len(arena.reserved_slots),
-            arena.bytes_per_slot / (1024 * 1024),
-            arena.total_bytes / (1024 * 1024),
-            self.device,
-            dtype,
+            f"Qwen3-TTS incremental Codec state: {arena.num_slots} stream slots and {len(arena.reserved_slots)} for whole requests, {arena.bytes_per_slot / (1024 * 1024):.2f} MiB a slot, {arena.total_bytes / (1024 * 1024):.1f} MiB total ({self.device}, {dtype})"
         )
         return arena
 
