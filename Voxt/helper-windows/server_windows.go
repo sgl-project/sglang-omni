@@ -82,6 +82,7 @@ func implementedMethods() []string {
 		proto.MethodAppConfigure,
 		proto.MethodAppList,
 		proto.MethodAppIcons,
+		proto.MethodBrowserURL,
 		proto.MethodCaptureDevices,
 		proto.MethodCaptureStart,
 		proto.MethodCaptureStop,
@@ -249,6 +250,8 @@ func (server *helperServer) serve(message proto.Message) {
 		server.result(message.ID, app)
 	case proto.MethodAppConfigure, proto.MethodAppList, proto.MethodAppIcons:
 		server.serveApps(message)
+	case proto.MethodBrowserURL:
+		server.serveBrowserURL(message)
 	case proto.MethodCaptureDevices:
 		server.serveCaptureDevices(message)
 	case proto.MethodCaptureStart, proto.MethodCaptureSystem:

@@ -181,9 +181,10 @@ const (
 // ---- browser.url ----
 
 // BrowserURLParams asks for the front tab's URL of a browser, read
-// through Accessibility only (no AppleScript, no Automation consent): the
-// web area that holds the focus, the focused window's AXDocument, then the
-// first web area's AXURL. PID picks the process (the hotkey's front);
+// through Accessibility only (AX on macOS, UIA on Windows; no AppleScript,
+// no Automation consent): the web area that holds the focus, the focused
+// window's AXDocument, then the first web area's AXURL on macOS, or the
+// window's address bar on Windows. PID picks the process (the hotkey's front);
 // else BundleID's first running one; neither: the app in front.
 type BrowserURLParams struct {
 	BundleID string `json:"bundleId,omitempty"`
@@ -209,7 +210,7 @@ type BrowserURLResult struct {
 // How a URL was read.
 const (
 	URLViaAXFocus    = "ax-focus"    // the AXURL of the web area around the focused element
-	URLViaAXDocument = "ax-document" // the focused window's AXDocument
+	URLViaAXDocument = "ax-document" // the focused window's AXDocument on macOS, its UIA address bar on Windows
 	URLViaAXWebURL   = "ax-weburl"   // the AXURL of the window's first web area
 	URLViaNone       = "none"
 )

@@ -13,33 +13,39 @@ import (
 )
 
 const (
-	comRelease                   = 2
-	automationCompareElements    = 3
-	automationFocusedElement     = 8
-	elementCurrentPatternAs      = 14
-	elementCurrentProcessID      = 20
-	elementCurrentControlType    = 21
-	elementCurrentIsPassword     = 35
-	elementCurrentFramework      = 40
-	patternValue                 = 10002
-	patternText                  = 10014
-	valuePatternCurrentValue     = 4
-	valuePatternCurrentReadOnly  = 5
-	textPatternGetSelection      = 5
-	textPatternDocumentRange     = 7
-	textRangeClone               = 3
-	textRangeCompareEndpoints    = 5
-	textRangeGetText             = 12
-	textRangeMoveEndpointByRange = 15
-	arrayLength                  = 3
-	arrayElement                 = 4
-	textPatternEndpointStart     = 0
-	textPatternEndpointEnd       = 1
-	clipboardCantOpen            = 0x800401d0
-	clipboardCantClose           = 0x800401d4
-	peekSentMessage              = 0x00400000
-	queueSendMessage             = 0x0040
-	maxFieldTextUnits            = 200000
+	comRelease                    = 2
+	automationCompareElements     = 3
+	automationElementFromHandle   = 6
+	automationFocusedElement      = 8
+	automationCreateTrueCondition = 21
+	elementFindAll                = 6
+	elementCurrentPatternAs       = 14
+	elementCurrentProcessID       = 20
+	elementCurrentControlType     = 21
+	elementCurrentName            = 23
+	elementCurrentAutomationID    = 24
+	elementCurrentIsPassword      = 35
+	elementCurrentFramework       = 40
+	patternValue                  = 10002
+	patternText                   = 10014
+	valuePatternCurrentValue      = 4
+	valuePatternCurrentReadOnly   = 5
+	textPatternGetSelection       = 5
+	textPatternDocumentRange      = 7
+	textRangeClone                = 3
+	textRangeCompareEndpoints     = 5
+	textRangeGetText              = 12
+	textRangeMoveEndpointByRange  = 15
+	arrayLength                   = 3
+	arrayElement                  = 4
+	textPatternEndpointStart      = 0
+	textPatternEndpointEnd        = 1
+	treeScopeDescendants          = 4
+	clipboardCantOpen             = 0x800401d0
+	clipboardCantClose            = 0x800401d4
+	peekSentMessage               = 0x00400000
+	queueSendMessage              = 0x0040
+	maxFieldTextUnits             = 200000
 )
 
 var (
