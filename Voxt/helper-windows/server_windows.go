@@ -79,6 +79,7 @@ func implementedMethods() []string {
 		proto.MethodPermissionsStatus,
 		proto.MethodPermissionsRequest,
 		proto.MethodAppFrontmost,
+		proto.MethodAppConfigure,
 		proto.MethodAppList,
 		proto.MethodAppIcons,
 		proto.MethodCaptureDevices,
@@ -246,7 +247,7 @@ func (server *helperServer) serve(message proto.Message) {
 			return
 		}
 		server.result(message.ID, app)
-	case proto.MethodAppList, proto.MethodAppIcons:
+	case proto.MethodAppConfigure, proto.MethodAppList, proto.MethodAppIcons:
 		server.serveApps(message)
 	case proto.MethodCaptureDevices:
 		server.serveCaptureDevices(message)

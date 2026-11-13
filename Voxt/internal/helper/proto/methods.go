@@ -39,7 +39,7 @@ const (
 	MethodTextRead      = "textio.read"      // request: a range of the focused element's text in an app in front
 
 	MethodAppList      = "app.list"      // request: running (and installed) apps, to pick from
-	MethodAppConfigure = "app.configure" // request: which apps get AXManualAccessibility as they come to the front
+	MethodAppConfigure = "app.configure" // request: which macOS apps get AXManualAccessibility; a documented no-op on Windows
 	MethodAppIcons     = "app.icons"     // request: apps' icons as PNG, for the lists that name apps
 
 	MethodBrowserURL = "browser.url" // request: the front tab's URL of a browser (Accessibility only)
