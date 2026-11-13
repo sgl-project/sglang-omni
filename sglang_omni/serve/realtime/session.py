@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
 import json
 import uuid
@@ -28,6 +29,7 @@ from sglang_omni.serve.realtime.events import (
     make_event,
     parse_conversation_client_event,
 )
+from sglang_omni.serve.realtime.g711 import G711StreamDecoder
 from sglang_omni.serve.realtime.turn_detector import TurnDetector, build_turn_detector
 
 DEFAULT_INSTRUCTIONS = (
@@ -132,6 +134,7 @@ class RealtimeSession:
         )
 
         self.audio_buffer = RealtimeAudioBuffer(source_sr=16000, target_sr=16000)
+        self.input_decoder: G711StreamDecoder | None = None
         self.conversation: list[ConversationItem] = []
         self.closed = False
 
@@ -242,7 +245,22 @@ class RealtimeSession:
             return
         else:
             pass
-        assert candidate.input_audio_format == "pcm16", "Only pcm16 is supported"
+        input_format_changed = (
+            candidate.input_audio_format != self.session_object.input_audio_format
+        )
+        if input_format_changed and (
+            not self.audio_buffer.is_empty() or self.utterance_item_id is not None
+        ):
+            await self.send_error(
+                "invalid_request_error",
+                "session_active",
+                "Input audio format cannot change while audio is buffered.",
+            )
+            return
+        elif input_format_changed:
+            self.input_decoder = None
+        else:
+            pass
         if "output_audio_format" in update and candidate.output_audio_format != "pcm16":
             await self.send_error(
                 "invalid_request_error",
@@ -435,7 +453,28 @@ class RealtimeSession:
         return merged
 
     async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
-        decoded_len = self.audio_buffer.append_b64(event.audio)
+        pcm = base64.b64decode(event.audio, validate=False)
+        input_audio_format = self.session_object.input_audio_format
+        if input_audio_format == "pcm16":
+            if len(pcm) % 2:
+                await self.send_error(
+                    "invalid_request_error",
+                    "invalid_audio",
+                    "PCM16 audio must contain complete 16-bit samples.",
+                )
+                return
+            else:
+                pass
+        else:
+            if (
+                self.input_decoder is None
+                or self.input_decoder.audio_format != input_audio_format
+            ):
+                self.input_decoder = G711StreamDecoder(input_audio_format)
+            else:
+                pass
+            pcm = self.input_decoder.decode(pcm)
+        decoded_len = self.audio_buffer.append_bytes(pcm)
         new_bytes = self.audio_buffer.tail(decoded_len)
         emits = await asyncio.to_thread(self.vad.process, new_bytes)
         for emit in emits:
@@ -494,6 +533,7 @@ class RealtimeSession:
         self.buffer_origin_samples += discarded
         self.vad_origin_samples = self.buffer_origin_samples
         self.audio_buffer.clear()
+        self.input_decoder = None
         self.utterance_start_byte = None
         self.utterance_item_id = None
         self.vad.reset()
