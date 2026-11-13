@@ -4,7 +4,6 @@
 import torch
 from torch.nn import functional as F
 
-from sglang_omni.models.yue2.cuda_graph import CapturedGraph
 from sglang_omni.models.yue2.layers import TokenCache
 from sglang_omni.models.yue2.model import Yue2Model
 from sglang_omni.models.yue2.request import (
@@ -102,62 +101,16 @@ class AcousticChunk:
             )
         return model.llm2vae(hidden_states)[0, 1:-1]
 
-    def solve(
-        self, steps: int, cancelled: CancellationCheck, *, cuda_graph: bool = False
-    ) -> torch.Tensor:
+    def solve(self, steps: int, cancelled: CancellationCheck) -> torch.Tensor:
         latent = self.noise.to(device=self.device, dtype=self.dtype)
         step_size = 1.0 / steps
-        graph = None
-        if cuda_graph:
-            graph = CapturedGraph(self.device)
-            graph_latent = latent.clone()
-            graph_time = torch.zeros((), device=self.device, dtype=self.dtype)
-            stream = graph.stream
-            stream.wait_stream(torch.cuda.current_stream(self.device))
-            with torch.cuda.stream(stream):
-                for _ in range(3):
-                    self.predict_velocity(graph_latent, graph_time)
-            torch.cuda.current_stream(self.device).wait_stream(stream)
-            check_cancelled(cancelled)
-            with torch.cuda.graph(graph.graph, stream=stream):
-                graph_velocity = self.predict_velocity(graph_latent, graph_time)
-            raw_times = (
-                torch.tensor(
-                    [
-                        time
-                        for step in range(steps)
-                        for time in (
-                            1.0 - step * step_size,
-                            1.0 - step * step_size - step_size / 2,
-                        )
-                    ],
-                    dtype=torch.float64,
-                )
-                .logit()
-                .clamp(-20, 20)
-                .to(device=self.device, dtype=self.dtype)
-            )
-        else:
-            pass
         for step in range(steps):
             check_cancelled(cancelled)
             time = 1.0 - step * step_size
-            if graph is None:
-                velocity = self.velocity(latent, time)
-            else:
-                graph_latent.copy_(latent)
-                graph_time.copy_(raw_times[2 * step])
-                graph.replay()
-                velocity = graph_velocity
+            velocity = self.velocity(latent, time)
             midpoint = latent - velocity * (step_size / 2)
             check_cancelled(cancelled)
-            if graph is None:
-                velocity = self.velocity(midpoint, time - step_size / 2)
-            else:
-                graph_latent.copy_(midpoint)
-                graph_time.copy_(raw_times[2 * step + 1])
-                graph.replay()
-                velocity = graph_velocity
+            velocity = self.velocity(midpoint, time - step_size / 2)
             latent = latent - velocity * step_size
         return latent.float().cpu()
 
@@ -170,8 +123,6 @@ def synthesize_latents(
     seed: int,
     steps: int,
     cancelled: CancellationCheck,
-    *,
-    cuda_graph: bool = False,
 ) -> torch.Tensor:
     chunk_frames = (model.config.max_position_embeddings - len(prefix) - 3) // 2
     if not codec_tokens:
@@ -197,7 +148,7 @@ def synthesize_latents(
         ]
         chunk = AcousticChunk(model, conditioning, noise[start:end])
         try:
-            chunks.append(chunk.solve(steps, cancelled, cuda_graph=cuda_graph))
+            chunks.append(chunk.solve(steps, cancelled))
         finally:
             chunk.cache.clear()
     latents = torch.cat(chunks)

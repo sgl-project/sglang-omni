@@ -44,15 +44,12 @@ def runtime(request: pytest.FixtureRequest) -> Yue2Runtime:
         torch.device("cuda:0"),
         vae_core_frames=1024,
         vae_halo_frames=16,
-        nar_cuda_graph=bool(request.param),
         fuse_projections=bool(request.param),
         fused_kernels=request.param == "fused",
     )
 
 
-def test_acoustic_graph_preserves_solver_and_abort_recovery(
-    runtime: Yue2Runtime,
-) -> None:
+def test_acoustic_solver_recovers_after_abort(runtime: Yue2Runtime) -> None:
     prefix, codecs = [1, 2, 3], list(range(64))
     expected = synthesize_latents(runtime.model, prefix, codecs, 42, 7, lambda: False)
     polls = 0
@@ -63,12 +60,8 @@ def test_acoustic_graph_preserves_solver_and_abort_recovery(
         return polls >= 5
 
     with pytest.raises(InterruptedError):
-        synthesize_latents(
-            runtime.model, prefix, codecs, 42, 7, cancelled, cuda_graph=True
-        )
-    actual = synthesize_latents(
-        runtime.model, prefix, codecs, 42, 7, lambda: False, cuda_graph=True
-    )
+        synthesize_latents(runtime.model, prefix, codecs, 42, 7, cancelled)
+    actual = synthesize_latents(runtime.model, prefix, codecs, 42, 7, lambda: False)
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 

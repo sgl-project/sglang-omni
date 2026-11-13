@@ -29,7 +29,6 @@ def shared_weights_directory() -> str:
 
 
 class Yue2AcousticFactoryArgs(FactoryArgs):
-    nar_cuda_graph: bool = False
     fuse_projections: bool = False
     fused_kernels: bool = False
     vae_path: str = "m-a-p/YuE2-Vae"

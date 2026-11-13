@@ -56,13 +56,11 @@ class Yue2Runtime:
         *,
         vae_core_frames: int,
         vae_halo_frames: int,
-        nar_cuda_graph: bool = False,
         fuse_projections: bool = False,
         fused_kernels: bool = False,
         ar_weights: tuple[str, str] | None = None,
     ) -> None:
         self.model = model
-        self.nar_cuda_graph = nar_cuda_graph
         self.fuse_projections = fuse_projections
         self.fused_kernels = fused_kernels
         # note (ruiling): the AR stage may still be loading, so its weights are attached on the first song.
@@ -114,7 +112,6 @@ class Yue2Runtime:
         *,
         vae_core_frames: int,
         vae_halo_frames: int,
-        nar_cuda_graph: bool = False,
         fuse_projections: bool = False,
         fused_kernels: bool = False,
         shared_weights_dir: str | None = None,
@@ -157,7 +154,6 @@ class Yue2Runtime:
             vae,
             vae_core_frames=vae_core_frames,
             vae_halo_frames=vae_halo_frames,
-            nar_cuda_graph=nar_cuda_graph,
             fuse_projections=fuse_projections,
             fused_kernels=fused_kernels,
             ar_weights=(
@@ -188,7 +184,6 @@ class Yue2Runtime:
             seed,
             ode_steps,
             cancelled,
-            cuda_graph=self.nar_cuda_graph,
         )
         # note (ruiling): flow matching and decoding cache blocks the other cannot reuse.
         torch.cuda.empty_cache()
