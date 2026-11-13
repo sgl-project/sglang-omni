@@ -10,6 +10,7 @@ import pytest
 import torch
 
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler_module
+from sglang_omni.model_runner.base import rank_shared_unseeded_sampling_seed
 from sglang_omni.models.fishaudio_s2_pro.model_runner import (
     FishS2ProModelRunner,
     collect_s2pro_step_outputs,
@@ -19,6 +20,7 @@ from sglang_omni.models.fishaudio_s2_pro.request_builders import (
     make_tts_scheduler_adapters,
 )
 from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
+from sglang_omni.sampling.seed import resolve_row_seed
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.types import SchedulerRequest
 from tests.unit_test.fixtures.fish_fakes import (
@@ -234,6 +236,7 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
         dtype=torch.long,
     )
     second.semantic_history_count = 2
+    first.seed = 17
 
     runner = object.__new__(FishS2ProModelRunner)
 
@@ -259,14 +262,11 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([10, 11]))
 
-    runner.before_prefill(
-        forward_batch,
-        None,
-        [
-            SchedulerRequest(request_id="req-first", data=first),
-            SchedulerRequest(request_id="req-second", data=second),
-        ],
-    )
+    requests = [
+        SchedulerRequest(request_id="req-first", data=first),
+        SchedulerRequest(request_id="req-second", data=second),
+    ]
+    runner.before_prefill(forward_batch, None, requests)
 
     assert hasattr(forward_batch, "input_embeds")
     assert torch.equal(runner.model.prev_tokens[0], torch.zeros(4, dtype=torch.long))
@@ -288,6 +288,10 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
     )
     assert torch.allclose(runner.model.ras_temperature, torch.tensor([0.35, 0.25]))
     assert torch.allclose(runner.model.ras_top_p, torch.tensor([0.45, 0.95]))
+    assert runner.model.sampling_seeds.tolist() == [
+        resolve_row_seed(17),
+        resolve_row_seed(rank_shared_unseeded_sampling_seed(requests[1], 1)),
+    ]
 
 
 def test_fish_s2pro_setup_vq_decode_allocates_sampling_state() -> None:
