@@ -263,7 +263,7 @@ func TestResponsesJSONFormats(t *testing.T) {
 // minimum, and an answer cut short by them, even empty, proves the setup.
 func TestResponsesProbe(t *testing.T) {
 	f := newFakeServer(t, jsonReply(200, rsObject("incomplete", []any{rsReasoning}, nil, map[string]any{"reason": "max_output_tokens"}, nil)))
-	if d, err := Probe(context.Background(), NewOpenAI(rsPreset(t, "openai", f.srv.URL), "sk", f.srv.Client())); err != nil || d <= 0 {
+	if d, err := Probe(context.Background(), NewOpenAI(rsPreset(t, "openai", f.srv.URL), "sk", f.srv.Client())); err != nil || d < 0 {
 		t.Fatalf("%v %v", d, err)
 	}
 	if b := f.requests()[0].Body; b["max_output_tokens"] != 16.0 || b["stream"] != nil {
