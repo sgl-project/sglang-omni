@@ -21,7 +21,7 @@ from sglang_omni.mps.manager import (
     MpsLease,
     MpsManager,
 )
-from sglang_omni.mps.state import MpsGpuPaths
+from sglang_omni.mps.state import PRIVILEGED_SOCKET_NAME, MpsGpuPaths
 
 
 class FakeControlClient:
@@ -195,6 +195,26 @@ def test_first_owner_uses_native_pid_file_and_returns_one_lease(short_root):
     assert owner_marker(manager).read_text() == "active\n"
     assert daemon_pid_file(manager.paths).read_text() == str(client.daemon_pid)
     assert not (manager.paths.state_dir / "manifest").exists()
+
+
+@pytest.mark.parametrize("socket_bytes", [107, 108])
+def test_acquire_refuses_a_root_whose_privileged_socket_reaches_sun_path(
+    short_root: Path, socket_bytes: int
+) -> None:
+    base_socket = (
+        MpsGpuPaths(state_root=short_root, gpu_uuid=GPU_UUID).pipe_dir
+        / PRIVILEGED_SOCKET_NAME
+    )
+    root = short_root / ("x" * (socket_bytes - len(str(base_socket).encode()) - 1))
+    paths = MpsGpuPaths(state_root=root, gpu_uuid=GPU_UUID)
+    assert len(str(paths.pipe_dir / PRIVILEGED_SOCKET_NAME).encode()) == socket_bytes
+    client = FakeControlClient()
+
+    with pytest.raises(ValueError, match="sun_path"):
+        make_manager(root, client).acquire({"worker": "owner-worker"})
+
+    assert not client.daemons, "no daemon starts when a socket path cannot fit"
+    assert not paths.state_dir.exists()
 
 
 def test_second_owner_joins_only_when_every_existing_lease_is_held(short_root):
