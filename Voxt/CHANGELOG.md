@@ -28,6 +28,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **System dictation keeps recognized text when stopping**: an empty result from macOS no longer clears the live transcript and causes Voxt to report no speech.
 - **Rewrite reads text selected on a web page or in a PDF** (#3835): with a whole page selected with ⌘A in Chrome, or a page of a PDF selected in Acrobat, Rewrite sent the language model only your instruction, and the model answered that no text was given. Voxt took the empty selection that these apps report to Accessibility for no selection at all and did not try copying. It now copies the selection there (and puts your clipboard back), as it already did in apps that report nothing. In a text field, a caret with nothing selected still sends no text.
 - **No more Voxt 1.x announcements, and none in another language**: Voxt reads the announcements of Voxt 1.x's server, which still lists its 1.13 announcement of meetings and notes, in Chinese. Every new Voxt 2 user saw it as a card in the sidebar, in the English UI too, although Voxt 2's release builds have no meetings or notes. Voxt now shows only announcements for Voxt 2, and Chinese ones only in the Chinese UI. If the card is still there, dismiss it: it does not come back.
 - **The answer card no longer jumps while a fast model writes a long answer** (#3836): when the language model wrote quickly (a fast remote model writing a long Rewrite answer), the card grew by a few lines on every chunk, several times a second. The card now shows the answer at a steady pace, a little behind the model, and grows about four lines at a time. The whole answer shows as soon as the model finishes, without waiting for the pace to catch up. A follow-up's answer streams the same way.
@@ -76,6 +77,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **系统听写停止后保留已识别文字**：macOS 返回空结果时，不再清空实时转录并提示没有声音。
 - **改写能读到网页和 PDF 里选中的文字**（#3835）：在 Chrome 里用 ⌘A 全选一个网页，或在 Acrobat 里选中 PDF 的一页，改写只把你说的指令发给语言模型，模型回答说没有收到文字。原因是这些应用通过辅助功能报告了一个空的选区，Voxt 当成什么都没选，也没有再试复制。现在 Voxt 会在这些地方复制选中的文字（之后把剪贴板还原），和在什么都不报告的应用里一样。在输入框里只有光标、没有选中文字时，仍然不发送文字。
 - **不再显示 Voxt 1.x 的公告，也不显示别的语言的公告**：Voxt 读的是 Voxt 1.x 服务器上的公告，那里还挂着 1.13 介绍会议和笔记的中文公告。每个新装 Voxt 2 的用户都会在侧边栏看到这张卡片，英文界面也一样，可 Voxt 2 正式版没有会议和笔记。现在只显示写给 Voxt 2 的公告，中文公告只在中文界面显示。卡片还在的话点 × 关掉，不会再出现。
 - **快速模型写长回答时，答案卡片不再跳动**（#3836）：模型出字很快时（比如快速的远程模型写一段长的改写回答），卡片每收到一段文字就往下长几行，一秒跳好几次。现在卡片以稳定的速度逐字显示回答，略落后于模型，每次长四行左右。模型一写完，整段回答马上全部显示，不用等动画。追问的回答也一样。
