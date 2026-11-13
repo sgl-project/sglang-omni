@@ -236,7 +236,11 @@ def summarize(samples: list[StressSamples]) -> StressSummary:
         ),
         (
             "every capacity probe fully admitted",
-            None if first.max_connections is None else probes_denied > 0,
+            (
+                None
+                if first.max_connections is None
+                else any(cycle.capacity_recovery_ms is None for cycle in cycles)
+            ),
         ),
         ("final probe session completed", not is_final_probe_completed),
         (

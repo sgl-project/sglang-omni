@@ -295,6 +295,7 @@ def stress_samples(
     outcome: SessionOutcome = COMPLETED_SESSION,
     overflow_probe: CapacityProbe | None = None,
     server_timeout_s: float | None = None,
+    max_connections: int | None = None,
 ) -> StressSamples:
     return StressSamples(
         scenario=scenario,
@@ -309,7 +310,7 @@ def stress_samples(
         drop_point="none",
         drop_style="abort",
         server_timeout_s=server_timeout_s,
-        max_connections=None,
+        max_connections=max_connections,
         has_debug_route=True,
         server_pid=None,
         baseline=ServerSnapshot(
@@ -367,6 +368,10 @@ def test_summary_targets_name_leftover_sessions_and_rss_growth() -> None:
 @pytest.mark.parametrize(
     ("samples", "unmet_target"),
     [
+        (
+            stress_samples(0, [100.0], max_connections=4),
+            "every capacity probe fully admitted",
+        ),
         (
             stress_samples(
                 0,
@@ -426,5 +431,5 @@ def test_summary_targets_name_leftover_sessions_and_rss_growth() -> None:
 def test_each_scenario_fails_the_target_named_after_its_own_fault(
     samples: StressSamples, unmet_target: str
 ) -> None:
-    """An over-admitted connection, an early timeout, a reconnect never admitted, a late output and a reply that outran its cancel each fail one target."""
+    """A cap never probed back in full, an over-admitted connection, an early timeout, a reconnect never admitted, a late output and a reply that outran its cancel each fail one target."""
     assert summarize([samples]).unmet_targets == [unmet_target]

@@ -181,7 +181,8 @@ async def run_cycle(
             probe = await probe_capacity(
                 settings.url, settings.max_connections, settings.cleanup_wait_s
             )
-            if probe.denied == 0:
+            # note (Yi Zhao): a probe whose connects failed on the client host admitted fewer than the cap without one denial; that is not a recovered server.
+            if probe.admitted == settings.max_connections:
                 capacity_recovery_ms = (probe_started_s - last_ended_s) * MS_PER_SECOND
             elif time.perf_counter() >= deadline_s:
                 break
