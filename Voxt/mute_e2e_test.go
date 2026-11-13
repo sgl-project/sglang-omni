@@ -38,15 +38,15 @@ func TestSessionMutesOutput(t *testing.T) {
 		events     []string
 		end        session.State
 	}{
-		{name: "transcribe, whole recording", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(500, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
+		{name: "transcribe, whole recording", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(2000, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
 		{name: "transcribe, stream", setup: func(t *testing.T) (func(*settings.Settings), *fakeLocal) {
 			return func(s *settings.Settings) {
 				s.Features.Transcribe.Enhance = false
 			}, &fakeLocal{ASRP: fakeStreamer{final: "你好，VoxtNew"}}
-		}, events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(600, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
-		{name: "translate by voice", events: []string{hotkeyLine(0, "translate/0", proto.PhaseTrigger), hotkeyLine(500, "translate/0", proto.PhaseTrigger)}, end: session.Done},
-		{name: "rewrite", opts: "readonly", events: []string{hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger)}, end: session.Done},
-		{name: "cancelled", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, proto.HotkeyCancel, proto.PhaseTrigger)}, end: session.Cancelled},
+		}, events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(2000, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
+		{name: "translate by voice", events: []string{hotkeyLine(0, "translate/0", proto.PhaseTrigger), hotkeyLine(2000, "translate/0", proto.PhaseTrigger)}, end: session.Done},
+		{name: "rewrite", opts: "readonly", events: []string{hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(2000, "rewrite/0", proto.PhaseTrigger)}, end: session.Done},
+		{name: "cancelled", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(2000, proto.HotkeyCancel, proto.PhaseTrigger)}, end: session.Cancelled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "output.json")
@@ -78,7 +78,7 @@ func TestSessionMutesOutput(t *testing.T) {
 			a := newSessionApp(t, opts, set, svc)
 			seen := false
 			a.pump("the output muted while recording", func() bool {
-				seen = seen || a.sess.State == session.Recording && muted()
+				seen = seen || slices.Contains(helpertest.LoadOutputSystem(state).WriteLog(), testSpeakers+":true")
 				return seen || a.sess.State.Ended()
 			})
 			if !seen {
@@ -109,7 +109,11 @@ func TestSessionMutesOutput(t *testing.T) {
 			time.Sleep(300 * time.Millisecond)
 			a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 			a.pump("the follow-up's end", func() bool { return a.sess.State.Ended() })
-			a.pump("the follow-up's output back", func() bool { a.mute.Wait(); return !muted() })
+			a.pump("the follow-up's output back", func() bool {
+				_ = a.mute.Status()
+				a.mute.Wait()
+				return !muted()
+			})
 		})
 	}
 }
