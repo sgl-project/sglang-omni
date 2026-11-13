@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
+import numpy as np
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -20,7 +21,7 @@ from starlette.types import Message
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
-from sglang_omni.client.audio import encode_pcm
+from sglang_omni.client.audio import encode_audio, encode_pcm
 from sglang_omni.client.client import StreamedStopTrimmer, extract_inputs
 from sglang_omni.client.types import GenerateRequest, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
@@ -51,6 +52,7 @@ from sglang_omni.serve.transcriptions import (
     build_transcription_generate_request,
 )
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
+from tests.unit_test.fixtures.speech_fakes import FixedSpeechClient
 
 MODEL_FAMILIES = {"qwen3-omni": "code2wav"}
 
@@ -228,6 +230,7 @@ class SuccessfulSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ):
@@ -282,6 +285,7 @@ class FailingSpeechGenerateClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ):
@@ -417,6 +421,7 @@ class BlockingNonStreamingSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ):
@@ -2027,6 +2032,7 @@ def test_raw_audio_send_failure_aborts_inner_speech_stream(
             gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
             request_id="req-1",
             speed=1.0,
+            output_sample_rate=None,
             response_format=response_format,
             speech_stream_outcomes=speech_stream_outcomes,
             stream_format="audio",
@@ -2072,6 +2078,7 @@ def test_raw_pcm_response_disconnect_before_first_chunk_aborts_request() -> None
                 gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
                 request_id="req-1",
                 speed=1.0,
+                output_sample_rate=None,
                 speech_stream_outcomes=SpeechStreamOutcomes(max_entries=8),
                 stream_format="audio",
                 enable_speech_sse_named_events=False,
@@ -2096,6 +2103,7 @@ def test_sse_speech_response_close_aborts_inner_speech_stream() -> None:
             gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
             request_id="req-1",
             speed=1.0,
+            output_sample_rate=None,
             stream_format="sse",
             response_format="pcm",
             speech_stream_outcomes=SpeechStreamOutcomes(max_entries=8),
@@ -2620,6 +2628,7 @@ def test_speech_response_disconnect_aborts_active_request() -> None:
                 request_id="req-1",
                 response_format="wav",
                 speed=1.0,
+                output_sample_rate=None,
             )
         )
         await client.started.wait()
@@ -5139,3 +5148,96 @@ def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None
     response = client.post("/v1/audio/speech", json=body)
     assert response.status_code == 200
     assert response.content
+
+
+@pytest.mark.parametrize(
+    ("output_sample_rate", "transport", "response_format", "sample_count"),
+    [
+        (None, "buffered", "wav", 24001),
+        (24000, "audio", "pcm", 24001),
+        (8000, "buffered", "pcm", 24001),
+        (8000, "audio", "wav", 24001),
+        (8000, "sse", "pcm", 24001),
+        (44100, "buffered", "wav", 24001),
+        (44100, "audio", "pcm", 24001),
+        (44100, "sse", "wav", 24001),
+        (8000, "audio", "pcm", 24),
+        (8000, "sse", "wav", 24),
+    ],
+)
+def test_speech_output_sample_rate_matches_buffered_and_streamed_audio(
+    output_sample_rate: int | None,
+    transport: Literal["buffered", "audio", "sse"],
+    response_format: Literal["pcm", "wav"],
+    sample_count: int,
+) -> None:
+    """Chunk boundaries and cumulative terminal audio must not change the resampled output."""
+    audio = np.linspace(-0.5, 0.5, sample_count, dtype=np.float32)
+    speech_client = FixedSpeechClient(audio)
+    client = TestClient(create_app(speech_client, model_name="tts"))
+    payload = {
+        "input": "Hello.",
+        "response_format": response_format,
+        "sample_rate": output_sample_rate,
+        "stream": transport != "buffered",
+        "stream_format": "sse" if transport == "sse" else "audio",
+    }
+    response = client.post("/v1/audio/speech", json=payload)
+    sample_rate = output_sample_rate or 24000
+    assert response.status_code == 200, response.text
+    assert response.headers["x-sample-rate"] == str(sample_rate)
+    expected_pcm, _ = encode_audio(
+        audio, response_format="pcm", output_sample_rate=output_sample_rate
+    )
+    if transport == "sse":
+        events = parse_speech_sse_events(response.text, False)
+        assert events[-1]["type"] == "speech.audio.done"
+        assert events[-1]["duration"] == round(len(expected_pcm) / (2 * sample_rate), 3)
+        audio_bytes = b"".join(
+            base64.b64decode(event["audio"]) for event in events[:-1]
+        )
+    else:
+        audio_bytes = response.content
+    if response_format == "wav":
+        assert audio_bytes[:4] == b"RIFF"
+        assert struct.unpack("<I", audio_bytes[24:28]) == (sample_rate,)
+        audio_bytes = audio_bytes[44:]
+    else:
+        pass
+    assert audio_bytes == expected_pcm
+    assert len(audio_bytes) == round(sample_count * sample_rate / 24000) * 2
+
+
+@pytest.mark.parametrize("sample_rate", [0, "16000", True])
+def test_speech_rejects_invalid_output_sample_rate_before_generation(
+    sample_rate: int | str | bool,
+) -> None:
+    speech_client = FixedSpeechClient(np.zeros(2400, dtype=np.float32))
+    client = TestClient(create_app(speech_client, model_name="tts"))
+    response = client.post(
+        "/v1/audio/speech", json={"input": "Hello.", "sample_rate": sample_rate}
+    )
+    assert response.status_code == 400
+    assert speech_client.requests == []
+
+
+def test_resampled_stream_rate_change_fails_before_first_output() -> None:
+    """A source-rate change while the resampler still buffers audio must fail the request, not flush or record success."""
+    first = GenerateChunk(
+        request_id="resampled-error", audio_data=[0.1] * 24, sample_rate=24000
+    )
+    terminal = GenerateChunk(
+        request_id="resampled-error", audio_data=[0.1] * 24, sample_rate=16000
+    )
+    speech_client = ScriptedStreamingSpeechClient([first, terminal])
+    app = create_app(speech_client, model_name="tts")
+    client = TestClient(app)
+    response = client.post(
+        "/v1/audio/speech",
+        json={"input": "Hello.", "stream": True, "sample_rate": 8000},
+    )
+    assert response.status_code == 500
+    assert response.json()["error"]["type"] == "server_error"
+    assert speech_client.closed is True
+    assert len(speech_client.aborted) == 1
+    assert app.state.speech_stream_outcomes.get(speech_client.aborted[0]) is None

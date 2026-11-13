@@ -1332,3 +1332,31 @@ def test_reference_list_rejects_outside_allowlist_bare_path(tmp_path: Path) -> N
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "references.audio_path"
+
+
+def test_output_sample_rate_stays_in_serving_layer() -> None:
+    """Output resampling must not change the model's generation parameters."""
+    service = SpeechRequestValidator(default_model="tts")
+    request = service.parse_request({"input": "Hello.", "sample_rate": 16000})
+    generate_request = service.build_generate_request(request)
+    assert "sample_rate" not in generate_request.metadata["tts_params"]
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize(
+    ("response_format", "sample_rate"),
+    [("opus", 8000), ("mp3", 12345), ("mp3", 96000)],
+)
+def test_speech_rejects_unsupported_encoder_sample_rates(
+    batch: bool, response_format: str, sample_rate: int
+) -> None:
+    """Unsupported encoder rates must fail before model generation instead of changing the requested rate."""
+    service = SpeechRequestValidator(default_model="tts")
+    payload = {"response_format": response_format, "sample_rate": sample_rate}
+    with pytest.raises(SpeechAPIError) as error:
+        if batch:
+            service.parse_batch_request({**payload, "items": [{"input": "Hello."}]})
+        else:
+            service.parse_request({**payload, "input": "Hello."})
+    assert error.value.status_code == 400
+    assert error.value.param == "sample_rate"

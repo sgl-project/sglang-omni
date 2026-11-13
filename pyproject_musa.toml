@@ -43,6 +43,7 @@ dependencies = [
     "qwen-vl-utils==0.0.11",
     "numba==0.65.1",
     "librosa>=0.11.0",
+    "soxr>=0.3.7",
     "pandas",
     "tabulate",
     "typer>=0.9.0",

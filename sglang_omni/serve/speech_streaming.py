@@ -9,9 +9,12 @@ import json
 import logging
 import struct
 from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import dataclass, field
 from typing import Literal
 
 import anyio
+import numpy as np
+import soxr
 
 from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
@@ -50,33 +53,70 @@ def create_streaming_wav_header(sample_rate: int) -> bytes:
     )
 
 
-def speech_pcm_chunk_bytes(
-    chunk: GenerateChunk,
-    *,
-    emitted_samples: int,
-    speed: float,
-) -> tuple[bytes | None, int, int]:
-    sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
-    audio_data, emitted_samples = select_audio_delta(
-        chunk.audio_data,
-        emitted_samples=emitted_samples,
-        is_terminal=chunk.finish_reason is not None,
-    )
-    if audio_data is None:
-        return None, emitted_samples, sample_rate
-    else:
-        pass
+@dataclass(kw_only=True)
+class SpeechAudioStream:
+    """Encode mono PCM while preserving resampling state across audio chunks."""
 
-    if speed != 1.0:
-        audio_data, sample_rate = apply_speed(audio_data, speed, sample_rate)
-    else:
-        pass
-    audio_bytes = encode_pcm(audio_data, sample_rate)
-    if not audio_bytes:
-        return None, emitted_samples, sample_rate
-    else:
-        pass
-    return audio_bytes, emitted_samples, sample_rate
+    output_sample_rate: int | None
+    speed: float
+    emitted_samples: int = field(default=0, init=False)
+    source_sample_rate: int | None = field(default=None, init=False)
+    resampler: soxr.ResampleStream | None = field(default=None, init=False)
+    is_finished: bool = field(default=False, init=False)
+
+    @property
+    def sample_rate(self) -> int:
+        return self.output_sample_rate or self.source_sample_rate or DEFAULT_SAMPLE_RATE
+
+    def push(self, chunk: GenerateChunk) -> bytes | None:
+        assert not self.is_finished
+        source_sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
+        assert source_sample_rate > 0
+        if self.source_sample_rate is None:
+            self.source_sample_rate = source_sample_rate
+            if self.sample_rate != source_sample_rate:
+                self.resampler = soxr.ResampleStream(
+                    source_sample_rate, self.sample_rate, num_channels=1
+                )
+            else:
+                pass
+        elif source_sample_rate != self.source_sample_rate:
+            raise RuntimeError(
+                f"Speech stream sample rate changed from {self.source_sample_rate} to {source_sample_rate}"
+            )
+        else:
+            pass
+        audio, self.emitted_samples = select_audio_delta(
+            chunk.audio_data,
+            emitted_samples=self.emitted_samples,
+            is_terminal=chunk.finish_reason is not None,
+        )
+        if audio is None:
+            return None
+        else:
+            pass
+        if self.speed != 1.0:
+            audio, _ = apply_speed(audio, self.speed, source_sample_rate)
+        else:
+            pass
+        if self.resampler is not None:
+            audio = self.resampler.resample_chunk(audio)
+        else:
+            pass
+        return encode_pcm(audio, self.sample_rate) or None
+
+    def finish(self) -> bytes | None:
+        if self.is_finished:
+            return None
+        else:
+            self.is_finished = True
+        if self.resampler is None:
+            return None
+        else:
+            audio = self.resampler.resample_chunk(
+                np.empty(0, dtype=np.float32), last=True
+            )
+            return encode_pcm(audio, self.sample_rate) or None
 
 
 def create_speech_sse_response(

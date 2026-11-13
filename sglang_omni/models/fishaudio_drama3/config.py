@@ -118,6 +118,7 @@ class Drama3PipelineConfig(PipelineConfig):
             "input",
             "voice",
             "response_format",
+            "sample_rate",
             "speed",
             "stream",
             "stream_format",

@@ -693,6 +693,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `input` | string | (required) | Text to synthesize |
 | `voice` | string | `"default"` | Preset or uploaded voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus`. Explicit values override the default in every mode. HTTP streaming accepts only `wav` or `pcm` |
+| `sample_rate` | int | `null` | Positive output sample rate in Hz, for example `8000`, `16000`, `22050`, `44100`, or `48000`. Omit it to preserve the model's native rate. WAV and PCM accept custom rates; compressed formats require a rate supported by their encoder. Explicit Opus output rates must be `48000` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw WAV streaming by default. Set `response_format="pcm"` for raw PCM, or `stream_format="sse"` for SSE events |
 | `stream_format` | string | `"audio"` | Streaming transport: `audio` returns raw WAV or PCM bytes when streaming is enabled; `sse` enables SSE even when `stream` is omitted or false. SSE uses data-only `message` events by default. The server startup flag `--enable-speech-sse-named-events` selects the framing and error type shown in the [SSE Event Framing table](#sse-event-framing) |
@@ -715,6 +716,8 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `repetition_penalty` | float | `null` | Repetition penalty |
 | `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
 | `return_spec_tokens_details` | bool | `false` | With a speculative draft, return this request's acceptance statistics: `X-SGLang-Omni-Spec-*` headers on buffered audio, `sglext.spec_tokens_details` on `speech.audio.done` and on the raw audio outcome |
+
+Batch defaults, individual batch items, and WebSocket session configuration also accept `sample_rate`. WAV headers, HTTP `X-Sample-Rate`, batch result `sample_rate`, and WebSocket `audio.start.sample_rate` report the output rate. Unsupported encoder rates return HTTP 400 instead of silently choosing a nearby rate.
 
 Invalid speech requests return an OpenAI-style error envelope. For example, streaming with `response_format="mp3"` or `"flac"` returns HTTP 400:
 
