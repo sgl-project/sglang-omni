@@ -23,7 +23,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-
 // permissionsState is what the section last read.
 type permissionsState struct {
 	permSys permission.System

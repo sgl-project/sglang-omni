@@ -15,8 +15,8 @@ func (windowsSys) RequestMicrophone(done func(bool)) {
 	go done(true)
 }
 func (windowsSys) AccessibilityTrusted() bool { return true }
-func (windowsSys) PromptAccessibility()        {}
-func (windowsSys) SpeechRecognition() State    { return Granted }
+func (windowsSys) PromptAccessibility()       {}
+func (windowsSys) SpeechRecognition() State   { return Granted }
 func (windowsSys) RequestSpeechRecognition(done func(bool)) {
 	go done(true)
 }
