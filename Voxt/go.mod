@@ -21,3 +21,5 @@ require (
 )
 
 replace github.com/egoist/mygo => ./third_party/mygo
+
+replace github.com/hehehai/actnowkit => ./third_party/actnowkit

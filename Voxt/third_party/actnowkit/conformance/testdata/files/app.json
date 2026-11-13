@@ -1,0 +1,44 @@
+{
+  "schema": "actnow.app/1",
+  "app": "audiosmith",
+  "bundleId": "dev.hehehai.audiosmith",
+  "variant": "release",
+  "name": "AudioSmith",
+  "version": "0.4.0-beta.5",
+  "channel": "beta",
+  "path": "/Applications/AudioSmith.app",
+  "teamId": "779M533DL5",
+  "specVersion": 1,
+  "updated": "2026-10-20T08:00:00Z",
+  "pid": 4321,
+  "urlScheme": "audiosmith",
+  "links": {
+    "models": "audiosmith://models",
+    "shortcuts": "audiosmith://settings/dictation",
+    "network": "audiosmith://settings/network"
+  },
+  "dataDir": "/Users/u/Library/Application Support/AudioSmith",
+  "capabilities": ["models.hf", "asr.local", "tts.local", "llm.local", "dictation", "api.local"],
+  "models": { "root": "/Users/u/.cache/huggingface/hub" },
+  "shortcuts": [
+    {
+      "id": "dictation",
+      "title": "Dictation",
+      "keys": "Shift+Command+Space",
+      "trigger": "press",
+      "enabled": true,
+      "mechanism": "carbon",
+      "exclusive": false
+    }
+  ],
+  "services": [
+    {
+      "id": "audiosmith.api",
+      "kind": "openai-audio",
+      "url": "http://127.0.0.1:3901/v1",
+      "endpoints": ["/audio/transcriptions", "/audio/speech", "/models"],
+      "auth": { "type": "bearer", "keychain": { "service": "AudioSmith", "account": "api.key" } },
+      "portFile": "/Users/u/Library/Application Support/AudioSmith/api.json"
+    }
+  ]
+}

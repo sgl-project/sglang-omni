@@ -1,0 +1,11 @@
+{
+  "schema": "actnow.settings/1",
+  "rev": 99,
+  "updated": "2026-10-20T08:00:00Z",
+  "updatedBy": "dev.hehehai.voxtnew",
+  "general": { "language": "zh-Hans", "theme": "dark" },
+  "network": { "proxy": "direct", "hfEndpoints": "mirror", "timeoutSeconds": 30 },
+  "models": { "root": "" },
+  "speech": { "mainLanguage": "zh", "otherLanguages": ["en"] },
+  "experimental": { "anything": [1, 2, 3] }
+}
