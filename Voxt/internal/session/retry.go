@@ -56,7 +56,7 @@ func (m *Manager) Retry(ctx context.Context, req RetryRequest) (store.Entry, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	r := &run{m: m, id: e.ID, req: StartRequest{Kind: e.Kind}, settings: cfg.Settings(), ctx: ctx, cancel: cancel,
+	r := &run{m: m, id: e.ID, req: StartRequest{Kind: e.Kind}, settings: cfg.Settings(), ctx: ctx, cancel: cancel, llmCtx: ctx,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(), target: e.TargetLang}
 	r.pcm.append(pcm)
 	r.retryScene(e)
@@ -122,7 +122,7 @@ func (r *run) retryScene(e store.Entry) {
 // first error (e as far as it got).
 func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, error) {
 	cfg := r.m.cfg
-	svc, err := cfg.Resolve(r.ctx, e.Kind, r.settings)
+	svc, err := cfg.Resolve(r.ctx, e.Kind, r.settings, true)
 	if err != nil {
 		return e, err
 	}
@@ -151,7 +151,7 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	e.SentMS = asr.Duration(upload, asr.SampleRate).Milliseconds()
 	r.asrLimit = cfg.asrLimit(asr.Duration(pcm, asr.SampleRate))
 	actx, acancel := context.WithTimeout(r.ctx, r.asrLimit)
-	res, err := ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext()})
+	res, err := ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), MaxBytes: r.settings.Audio.UploadMB << 20})
 	if err != nil && actx.Err() != nil {
 		err = r.ctxErr(actx)
 	}

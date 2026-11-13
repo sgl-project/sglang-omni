@@ -58,6 +58,8 @@ package helpertest
 //	front=BUNDLE     the app in front (default com.tinyspeck.slackmacgap, Slack, pid 812)
 //	selection=TEXT   textio.selection reads TEXT through Accessibility
 //	copy-selection=TEXT  textio.selection reads TEXT only with allowCopy (via copy)
+//	selection-file=PATH  textio.selection reads PATH's text at each call ("" or no
+//	                 file: nothing selected): the user selects something else
 //	readonly[=BUNDLE]  textio.focus: the focused element is not editable (of BUNDLE only)
 //	focus=none       textio.focus: nothing is focused (Finder's desktop)
 //	focus=secure     textio.focus: a password field (AXSecureTextField)
@@ -87,6 +89,9 @@ package helpertest
 //	                 with audio (speech.partial), in SpeechLangs only; without it
 //	                 speech.* are method_not_found, as in an older helper
 //	speech-perm=STATE  Speech Recognition, as mic=
+//	no-screen        no Screen Recording until permissions.request asks for it:
+//	                 screen.window fails with permission_denied (else it answers
+//	                 Shot(pid) for any pid but 0)
 //
 // A capture.start whose first device is "crash" exits 3 after its first
 // frame; one whose first device is "gone" fails with device_unavailable;
@@ -200,6 +205,7 @@ type fake struct {
 	mic        string
 	speechPerm string
 	trusted    bool
+	screen     bool // Screen Recording
 	bindings   int
 	installed  bool
 	scripted   bool // the events= script and press= ran
@@ -229,7 +235,7 @@ func Run(optString string) {
 			opts[k] = v
 		}
 	}
-	f := &fake{opts: opts, out: bufio.NewWriter(os.Stdout), start: time.Now(), mic: proto.PermGranted, speechPerm: proto.PermGranted, trusted: true,
+	f := &fake{opts: opts, out: bufio.NewWriter(os.Stdout), start: time.Now(), mic: proto.PermGranted, speechPerm: proto.PermGranted, trusted: true, screen: true,
 		running: map[string]string{}, cancel: map[string]bool{},
 		stop: map[string]chan struct{}{}, finished: map[string]chan struct{}{}, speech: map[string]*speechJob{}}
 	if v, ok := opts["mic"]; ok {
@@ -237,6 +243,9 @@ func Run(optString string) {
 	}
 	if v, ok := opts["speech-perm"]; ok {
 		f.speechPerm = v
+	}
+	if f.has("no-screen") {
+		f.screen = false
 	}
 	if f.has("deny-mic") {
 		f.mic = proto.PermDenied
@@ -400,6 +409,10 @@ func (f *fake) serve(m proto.Message) {
 			}
 			f.mu.Unlock()
 		case proto.PermissionAccessibility:
+		case proto.PermissionScreenRecording:
+			f.mu.Lock()
+			f.screen = true
+			f.mu.Unlock()
 		case proto.PermissionSpeechRecognition:
 			f.mu.Lock()
 			if f.speechPerm == proto.PermNotDetermined {
@@ -478,6 +491,20 @@ func (f *fake) serve(m proto.Message) {
 		}
 		slices.SortFunc(apps, func(x, y proto.AppInfo) int { return strings.Compare(strings.ToLower(x.Name), strings.ToLower(y.Name)) })
 		f.result(m.ID, proto.AppListResult{Apps: apps})
+	case proto.MethodScreenWindow:
+		var p proto.ScreenWindowParams
+		m.DecodeParams(&p)
+		f.mu.Lock()
+		allowed := f.screen
+		f.mu.Unlock()
+		switch {
+		case !allowed:
+			f.failData(m.ID, proto.CodePermissionDenied, map[string]string{"permission": proto.PermissionScreenRecording}, "Voxt may not record the screen")
+		case p.PID == 0:
+			f.result(m.ID, proto.ScreenWindowResult{})
+		default:
+			f.result(m.ID, proto.ScreenWindowResult{JPEG: Shot(p.PID)})
+		}
 	case proto.MethodAppIcons:
 		var p proto.AppIconsParams
 		m.DecodeParams(&p)
@@ -517,7 +544,7 @@ func (f *fake) serve(m proto.Message) {
 func (f *fake) permissions() proto.PermissionsResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return proto.PermissionsResult{Microphone: f.mic, Accessibility: f.trusted, SpeechRecognition: f.speechPerm}
+	return proto.PermissionsResult{Microphone: f.mic, Accessibility: f.trusted, SpeechRecognition: f.speechPerm, ScreenRecording: f.screen}
 }
 
 func (f *fake) handleHello(m proto.Message) {

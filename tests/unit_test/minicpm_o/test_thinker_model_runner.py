@@ -276,9 +276,15 @@ def committed_rows(runner: MiniCPMOThinkerModelRunner, request_id: str) -> torch
     return torch.stack(runner.pending_hidden[request_id])
 
 
-def speculative_request(request_id: str, *, speaks: bool = True) -> SimpleNamespace:
+def speculative_request(
+    request_id: str,
+    *,
+    speaks: bool = True,
+    inflight_middle_chunks: int = 0,
+) -> SimpleNamespace:
     return SimpleNamespace(
         rid=request_id,
+        inflight_middle_chunks=inflight_middle_chunks,
         omni_data=SimpleNamespace(
             stage_payload=SimpleNamespace(
                 data={},
@@ -317,10 +323,53 @@ def test_committed_verify_tokens_take_the_leading_rows_of_their_request_block() 
     ), "a request with no committed tokens gets no rows"
 
 
+def test_overlapped_steps_and_retraction_keep_speculative_hidden_fifo_aligned() -> None:
+    """Overlapped speculative steps queue per-request blocks in FIFO order and drop unconsumed blocks on retraction."""
+    assert MiniCPMOThinkerModelRunner.supports_speculative_async_decode is True
+    num_draft_tokens = 3
+    first_step_rows = torch.arange(
+        2 * num_draft_tokens * 2, dtype=torch.float32
+    ).reshape(-1, 2)
+    second_step_rows = first_step_rows + 100.0
+    hidden_rows = torch.zeros(16, 2)
+    runner = speculative_runner(hidden_rows, None)
+    batch = SimpleNamespace(reqs=[speculative_request("a"), speculative_request("b")])
+
+    for step_rows in (first_step_rows, second_step_rows):
+        hidden_rows[: len(step_rows)] = step_rows
+        runner.after_speculative_step(
+            batch, is_prefill=False, num_draft_tokens=num_draft_tokens
+        )
+    hidden_rows.zero_()
+
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id="a"), [PLAIN_TOKEN_ID, OTHER_TOKEN_ID]
+    )
+    runner.on_speculative_tokens(SimpleNamespace(request_id="b"), [PLAIN_TOKEN_ID])
+    runner.on_request_retracted("b")
+    runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [THIRD_TOKEN_ID])
+    runner.on_speculative_tokens(SimpleNamespace(request_id="b"), [OTHER_TOKEN_ID])
+
+    torch.testing.assert_close(
+        committed_rows(runner, "a"),
+        torch.cat([first_step_rows[0:2], second_step_rows[0:1]], dim=0),
+    )
+    torch.testing.assert_close(committed_rows(runner, "b"), first_step_rows[3:4])
+    assert not runner.speculative_hidden_queue
+
+
 def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
     extend_lens = [2, 3]
     prefill_hidden_rows = torch.arange(16 * 2, dtype=torch.float32).reshape(16, 2)
     runner = speculative_runner(torch.zeros(16, 2), prefill_hidden_rows)
+    runner.after_speculative_step(
+        SimpleNamespace(
+            reqs=[speculative_request("a", inflight_middle_chunks=1)], extend_lens=[2]
+        ),
+        is_prefill=True,
+        num_draft_tokens=4,
+    )
+    assert not runner.speculative_hidden_queue
     batch = SimpleNamespace(
         reqs=[speculative_request(request_id) for request_id in ("a", "b")],
         extend_lens=extend_lens,

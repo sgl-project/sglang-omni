@@ -18,6 +18,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -31,6 +32,7 @@ func (a *app) remotePage(c *ui.Context) {
 		pageColumn(c).Gap(px(t, sp4)).Children(func() {
 			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
 			caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
+			a.llmWaitRow(c) // llm_wait.go; above the cards, seen without scrolling (#3821)
 			a.providerCards(c, local.LLM)
 			if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
 				a.navigate(llmDebugPath)
@@ -266,12 +268,15 @@ func testStatus(c *ui.Context, tr providerTest, long bool) {
 		statusMark(c, icons.CheckCircle, k.Success, text).Shrink(1).Tooltip(text)
 	default:
 		msg, _ := uitext.ModelErrorText(tr.res.Err)
+		if long && llm.Code(tr.res.Err) == llm.CodeNoKey {
+			msg = i18n.T("Paste the service's API key above, then test again.") // the dialog has the key's field
+		}
 		tip := msg + "\n\n" + tr.detail
 		if !long {
 			statusMark(c, icons.CloseCircle, k.Danger, i18n.T("Failed")).Shrink(0).Tooltip(tip)
 			return
 		}
 		statusMark(c, icons.CloseCircle, k.Danger, msg).Shrink(1).Tooltip(tip)
-		infoTip(c, tr.detail).Shrink(0)
+		infoTip(c, tip).Shrink(0) // the reason is cut beside the button: the ⓘ tells all of it
 	}
 }

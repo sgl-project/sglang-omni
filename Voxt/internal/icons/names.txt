@@ -49,7 +49,7 @@ square-arrow-right-up   # open System Settings
 alt-arrow-up            # move up (the microphone list)
 alt-arrow-down          # chevrons, move down
 alt-arrow-right
-play                    # playButton (history recordings, M3)
+play                    # meeting playback, resume meeting
 pause
 stop
 minus                   # numberInput

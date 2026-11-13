@@ -1,1 +1,1 @@
-Follow-up: the earlier messages are this conversation's requests and your answers. The last instruction follows up on your last answer: change that answer as it asks, or answer the new request.
+Follow-up: the earlier messages are this conversation's requests and your answers. The last instruction follows up on your last answer: change that answer as it asks, or answer the new request. When the last message holds selected text too, the user selected it since: work on it together with the text selected before.
