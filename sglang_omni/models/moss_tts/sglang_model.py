@@ -26,7 +26,7 @@ from sglang.srt.model_executor.forward_batch_info import (
     PPProxyTensors,
 )
 from sglang.srt.model_loader.weight_utils import default_weight_loader
-from sglang.srt.models.qwen3 import Qwen3Model
+from sglang.srt.models.qwen3 import Qwen3Attention, Qwen3Model
 from sglang.srt.runtime_context import get_parallel, get_schedule
 from sglang.srt.utils import add_prefix
 from transformers import PretrainedConfig, Qwen3Config
@@ -43,6 +43,10 @@ from sglang_omni.models.moss_tts.sampler import (
 from sglang_omni.models.moss_tts.sampling_cuda_graph import (
     MossTTSDelayMixedSamplingCudaGraphRunner,
     MossTTSDelaySamplingCudaGraphRunner,
+)
+from sglang_omni.models.moss_tts.sampling_npu import (
+    moss_hash_shift_constants,
+    multinomial_with_seed_npu,
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.sampler_compile import (
@@ -63,6 +67,25 @@ class ChannelLogitsList(list[torch.Tensor | None]):
     tensor the audio entries are views of, so consumers can skip re-stacking."""
 
     fused_audio: torch.Tensor | None = None
+
+
+class MossNPUAttention(Qwen3Attention):
+    """Use staged Q/K normalization and RoPE with the original parameters."""
+
+    def __init__(self, attention: Qwen3Attention) -> None:
+        torch.nn.Module.__init__(self)
+        self.__dict__.update(
+            (name, value.copy() if isinstance(value, (dict, set)) else value)
+            for name, value in vars(attention).items()
+        )
+
+    def forward_prepare_npu(
+        self,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        forward_batch: ForwardBatch,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self.forward_prepare_native(positions, hidden_states)
 
 
 def as_qwen3_config(
@@ -145,6 +168,12 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
         )
+        if current_platform.is_npu():
+            for layer_id in range(self.model.start_layer, self.model.end_layer):
+                layer = self.model.layers[layer_id]
+                layer.self_attn = MossNPUAttention(layer.self_attn)
+        else:
+            pass
 
         self.lm_heads = torch.nn.ModuleList()
         if self.pp_group.is_last_rank:
@@ -721,7 +750,11 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         return matches_graph_profile(data)
 
     def sampling_graph_support_reason(self) -> str | None:
-        if not (current_platform.is_cuda() or current_platform.is_musa()):
+        if not (
+            current_platform.is_cuda()
+            or current_platform.is_musa()
+            or current_platform.is_npu()
+        ):
             return f"{self.device.type.upper()} graph is unavailable"
         else:
             pass
@@ -804,11 +837,19 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             return
         else:
             pass
+        if current_platform.is_npu():
+            moss_hash_shift_constants(self.device)
+        else:
+            pass
         runner = MossTTSDelaySamplingCudaGraphRunner.capture(
             model=self,
             capture_bs=buckets,
             disable_padding=disable_padding,
         )
+        if current_platform.is_npu() and set(runner.graphs) != set(buckets):
+            raise RuntimeError("MOSS-TTS NPU sampling graph capture is incomplete")
+        else:
+            pass
         if not runner.graphs:
             logger.warning(
                 "MOSS-TTS Delay sampling CUDA graph captured no buckets; "
@@ -824,6 +865,12 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             capture_bs=buckets,
             disable_padding=disable_padding,
         )
+        if current_platform.is_npu() and set(mixed_runner.graphs) != set(buckets):
+            raise RuntimeError(
+                "MOSS-TTS NPU mixed sampling graph capture is incomplete"
+            )
+        else:
+            pass
         self.mixed_sampling_graph_runner = mixed_runner if mixed_runner.graphs else None
 
     def sampling_graph_available(
@@ -904,15 +951,26 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         return hidden_states[last_index]
 
     def precompile_kernels_after_loading(self) -> None:
-        """Compile the seeded draw every request's eager text step reaches, on float32
-        scores."""
-        compile_sampler_functions(
-            SamplerCompileForms(
-                device=self.device,
-                vocab_size=int(self.config.vocab_size_list[0]),
-                seeded_log_probability_dtype=torch.float32,
+        """Warm the seeded sampler used by this device's default requests."""
+        if current_platform.is_npu():
+            for request_count in (1, 2):
+                multinomial_with_seed_npu(
+                    torch.zeros(
+                        (request_count, int(self.config.vocab_size_list[0])),
+                        dtype=torch.float32,
+                        device=self.device,
+                    ),
+                    torch.zeros(request_count, dtype=torch.long, device=self.device),
+                    torch.zeros(request_count, dtype=torch.long, device=self.device),
+                )
+        else:
+            compile_sampler_functions(
+                SamplerCompileForms(
+                    device=self.device,
+                    vocab_size=int(self.config.vocab_size_list[0]),
+                    seeded_log_probability_dtype=torch.float32,
+                )
             )
-        )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         stacked_params_mapping = [

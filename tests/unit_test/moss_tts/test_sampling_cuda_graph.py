@@ -26,11 +26,32 @@ from sglang_omni.models.moss_tts.sampling_cuda_graph import (
     MossTTSDelaySamplingCudaGraphRunner,
 )
 from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
 
 INT64_MAX = torch.iinfo(torch.int64).max
 MOSS_DELAY_N_VQ = 32
 MOSS_DELAY_AUDIO_VOCAB = 1025
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA is required"
+            ),
+        ),
+        pytest.param(
+            "npu",
+            marks=pytest.mark.skipif(
+                not current_platform.is_npu(), reason="Ascend NPU is required"
+            ),
+        ),
+    ]
+)
+def graph_device(request: pytest.FixtureRequest) -> torch.device:
+    return torch.device(request.param)
 
 
 def make_config(*, n_vq: int = 2, audio_vocab: int = 5) -> SimpleNamespace:
@@ -259,7 +280,10 @@ def test_sampling_cuda_graph_setup_failure_uses_eager(
     monkeypatch.setattr(torch.cuda, "device", lambda _device: nullcontext())
     monkeypatch.setattr(torch.cuda, "synchronize", lambda *args, **kwargs: None)
 
+    allocations: list[int] = []
+
     def fail_static_input_allocation(self, max_bs):
+        allocations.append(max_bs)
         del self, max_bs
         raise torch.OutOfMemoryError("synthetic static-input OOM")
 
@@ -274,9 +298,38 @@ def test_sampling_cuda_graph_setup_failure_uses_eager(
         capture_bs=(1,),
     )
 
+    assert allocations == [1]
     assert runner.graphs == {}
     assert runner.inputs is None
     assert not runner.can_replay(1)
+
+
+@pytest.mark.parametrize("missing_graph", ["audio", "mixed"])
+def test_npu_sampling_graph_setup_rejects_missing_buckets(
+    missing_graph: Literal["audio", "mixed"],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(current_platform, "is_npu", lambda: True)
+    graph_buckets = {1: object(), 2: object()}
+    monkeypatch.setattr(
+        MossTTSDelaySamplingCudaGraphRunner,
+        "capture",
+        lambda **kwargs: SimpleNamespace(
+            graphs={1: object()} if missing_graph == "audio" else graph_buckets
+        ),
+    )
+    monkeypatch.setattr(
+        MossTTSDelayMixedSamplingCudaGraphRunner,
+        "capture",
+        lambda **kwargs: SimpleNamespace(graphs={1: object()}),
+    )
+    model = SimpleNamespace(
+        device=torch.device("cpu"), sampling_graph_support_reason=lambda: None
+    )
+    with pytest.raises(
+        RuntimeError, match="NPU .*sampling graph capture is incomplete"
+    ):
+        MossTTSDelaySGLangModel.init_sampling_graphs(model, [1, 2])
 
 
 class CudaGraphModel:
@@ -331,9 +384,10 @@ def request_data(
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
-    device = torch.device("cuda")
+def test_fixed_shape_sampling_matches_current_compacted_eager(
+    graph_device: torch.device,
+) -> None:
+    device = graph_device
     config = make_config(
         n_vq=MOSS_DELAY_N_VQ,
         audio_vocab=MOSS_DELAY_AUDIO_VOCAB,
@@ -400,16 +454,17 @@ def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
         torch.stack(channel_logits[1:], dim=1),
         graph_batch,
     )
-    torch.cuda.synchronize()
+    torch.get_device_module(device).synchronize()
 
     assert torch.equal(eager_rows, fixed.rows)
     assert torch.equal(eager_state, fixed.next_delay_state)
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
-    device = torch.device("cuda")
+def test_sampling_cuda_graph_replay_matches_fixed_shape_eager(
+    graph_device: torch.device,
+) -> None:
+    device = graph_device
     model = CudaGraphModel(device)
     runner = MossTTSDelaySamplingCudaGraphRunner.capture(
         model=model,
@@ -420,7 +475,16 @@ def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
     assert runner.can_replay(2)
 
     generator = torch.Generator(device=device).manual_seed(20260722)
-    for replay_index, batch_size in enumerate((2, 1, 2)):
+    delay_states = [
+        [1, INT64_MAX, 1],
+        [17, INT64_MAX, 1],
+        [MOSS_DELAY_N_VQ + 1, INT64_MAX, 1],
+        [MOSS_DELAY_N_VQ + 1, 0, 1],
+        [MOSS_DELAY_N_VQ + 1, MOSS_DELAY_N_VQ - 1, 1],
+        [MOSS_DELAY_N_VQ + 1, MOSS_DELAY_N_VQ, 1],
+        [0, INT64_MAX, 0],
+    ]
+    for replay_index, batch_size in enumerate((2, 1, 2, 2, 2)):
         control_logits = torch.randn(
             batch_size,
             2,
@@ -438,7 +502,10 @@ def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
         )
         batch = DelayGraphBatch(
             delay_state=torch.tensor(
-                [[MOSS_DELAY_N_VQ + 1, INT64_MAX, 1]] * batch_size,
+                [
+                    delay_states[(replay_index * 2 + index) % len(delay_states)]
+                    for index in range(batch_size)
+                ],
                 device=device,
             ),
             seeds=torch.arange(batch_size, device=device, dtype=torch.long)
@@ -461,7 +528,7 @@ def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
         )
         actual_rows = actual.rows.clone()
         actual_state = actual.next_delay_state.clone()
-        torch.cuda.synchronize()
+        torch.get_device_module(device).synchronize()
 
         assert torch.equal(expected.rows, actual_rows)
         assert torch.equal(expected.next_delay_state, actual_state)
@@ -577,12 +644,12 @@ def test_lookahead_resolve_preserves_owned_rows_and_skips_dropped_requests() -> 
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize("ties", [False, True])
 def test_mixed_sampling_graph_matches_eager_at_text_audio_boundaries(
     ties: bool,
+    graph_device: torch.device,
 ) -> None:
-    device = torch.device("cuda")
+    device = graph_device
     config = make_config(n_vq=32, audio_vocab=1025)
     config.vocab_size_list[0] = 128
     sampler = MossTTSDelayMixedGraphSampler(config).to(device)
