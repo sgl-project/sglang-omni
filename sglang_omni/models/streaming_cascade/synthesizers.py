@@ -31,6 +31,7 @@ from sglang_omni.proto.streams import (
     REPLY_SENTENCE,
     TEXT_DELTA,
     TURN_DONE,
+    WAIT_REPLY,
     chunk_language,
     control_type,
 )
@@ -118,7 +119,10 @@ class TurnSpeaker(Replier):
 
         async def handle(chunk: TimedChunk, replies: Replies) -> None:
             nonlocal deltas
-            if chunk.format == TEXT_DELTA and chunk.turn in replies.interrupted:
+            if chunk.format == TEXT_DELTA and (
+                chunk.turn in replies.interrupted
+                or chunk.payload.get("text") == WAIT_REPLY
+            ):
                 # Note (Junnan Li): The generator may emit a few deltas after the interrupt before it stops.
                 pass
             elif chunk.format == TEXT_DELTA:
