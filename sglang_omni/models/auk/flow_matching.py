@@ -71,6 +71,137 @@ def build_time_grid(
     return t
 
 
+class AuKTimeModulationCache:
+    """Precomputed modulation for one fixed grid and unchanged inference weights."""
+
+    @torch.no_grad()
+    def __init__(
+        self,
+        transformer: AuKDit,
+        *,
+        steps: int,
+        cfg_strength: float,
+        sway_sampling_coef: float | None,
+        t_grid: Sequence[float] | None,
+        batch_sizes: Sequence[int],
+    ) -> None:
+        self.transformer = transformer
+        self.recipe = (
+            steps,
+            cfg_strength >= 1e-5,
+            sway_sampling_coef,
+            None if t_grid is None else tuple(t_grid),
+        )
+        self.device = next(transformer.parameters()).device
+        self.dtype = transformer.dtype
+        self.timesteps = build_time_grid(
+            steps, sway_sampling_coef, t_grid, self.device
+        )[:-1].contiguous()
+        if not bool(torch.isfinite(self.timesteps).all()) or not bool(
+            (self.timesteps[1:] > self.timesteps[:-1]).all()
+        ):
+            raise ValueError(
+                "AuK modulation precompute requires increasing finite timesteps"
+            )
+        else:
+            pass
+        norms = [
+            normalization
+            for block in transformer.transformer_blocks
+            for normalization in (block.attn_norm_c, block.attn_norm_x)
+        ] + [block.attn_norm for block in transformer.single_transformer_blocks]
+        norms.append(transformer.norm_out)
+        parameters = self.modulation_parameters(transformer)
+        self.parameters = parameters
+        self.parameter_versions = tuple(
+            parameter._version for parameter in parameters
+        )  # noqa: leading-underscore  # torch mutation counter
+        self.tables: dict[int, torch.Tensor] = {}
+        modulation_width = max(
+            normalization.linear.out_features for normalization in norms
+        )
+        with torch.autocast(self.device.type, enabled=False):
+            for batch_size in sorted(set(batch_sizes)):
+                if batch_size < 1:
+                    raise ValueError("AuK modulation batch sizes must be positive")
+                else:
+                    pass
+                rows = batch_size * (2 if self.recipe[1] else 1)
+                table = torch.zeros(
+                    self.timesteps.numel(),
+                    len(norms),
+                    rows,
+                    modulation_width,
+                    device=self.device,
+                    dtype=self.dtype,
+                )
+                for index, timestep in enumerate(self.timesteps):
+                    # note (BBuf): preserve each projection's original GEMM row count and rounding.
+                    embedding = transformer.time_embed(timestep.repeat(batch_size))
+                    if self.recipe[1]:
+                        embedding = torch.cat((embedding, embedding), dim=0)
+                    else:
+                        pass
+                    for layer, normalization in enumerate(norms):
+                        table[
+                            index, layer, :, : normalization.linear.out_features
+                        ].copy_(normalization.linear(normalization.silu(embedding)))
+                self.tables[batch_size] = table
+
+    @staticmethod
+    def modulation_parameters(transformer: AuKDit) -> tuple[nn.Parameter, ...]:
+        normalizations = [
+            normalization
+            for block in transformer.transformer_blocks
+            for normalization in (block.attn_norm_c, block.attn_norm_x)
+        ] + [block.attn_norm for block in transformer.single_transformer_blocks]
+        normalizations.append(transformer.norm_out)
+        return tuple(transformer.time_embed.parameters()) + tuple(
+            parameter
+            for normalization in normalizations
+            for parameter in normalization.linear.parameters()
+        )
+
+    def table_for(
+        self,
+        transformer: AuKDit,
+        *,
+        batch_size: int,
+        steps: int,
+        cfg_strength: float,
+        sway_sampling_coef: float | None,
+        t_grid: Sequence[float] | None,
+    ) -> torch.Tensor | None:
+        recipe = (
+            steps,
+            cfg_strength >= 1e-5,
+            sway_sampling_coef,
+            None if t_grid is None else tuple(t_grid),
+        )
+        if (
+            transformer is not self.transformer
+            or transformer.training
+            or torch.is_grad_enabled()
+            or torch.is_autocast_enabled(self.device.type)
+            or transformer.dtype != self.dtype
+            or next(transformer.parameters()).device != self.device
+            or recipe != self.recipe
+            or any(
+                current is not original
+                or current._version
+                != version  # noqa: leading-underscore  # torch mutation counter
+                for current, original, version in zip(
+                    self.modulation_parameters(transformer),
+                    self.parameters,
+                    self.parameter_versions,
+                )
+            )
+        ):
+            return None
+        else:
+            return self.tables.get(batch_size)
+
+
 @dataclass
 class AuKSampleItem:
     conditioning: torch.Tensor
@@ -102,6 +233,7 @@ class AuKFlowMatching(nn.Module):
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
         step_graph: AuKStepCudaGraphRunner | None = None,
+        time_modulation_cache: AuKTimeModulationCache | None = None,
     ) -> torch.Tensor:
         return self.sample_batch(
             [item],
@@ -110,6 +242,7 @@ class AuKFlowMatching(nn.Module):
             sway_sampling_coef=sway_sampling_coef,
             t_grid=t_grid,
             step_graph=step_graph,
+            time_modulation_cache=time_modulation_cache,
         )[0]
 
     @torch.no_grad()
@@ -122,6 +255,7 @@ class AuKFlowMatching(nn.Module):
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
         step_graph: AuKStepCudaGraphRunner | None = None,
+        time_modulation_cache: AuKTimeModulationCache | None = None,
     ) -> list[torch.Tensor]:
         """Integrate the velocity field for a batch of requests.
 
@@ -237,8 +371,30 @@ class AuKFlowMatching(nn.Module):
             joint_positions=joint_positions,
         )
 
+        modulation_table = None
+        if time_modulation_cache is not None:
+            modulation_table = time_modulation_cache.table_for(
+                self.transformer,
+                batch_size=len(items),
+                steps=steps,
+                cfg_strength=cfg_strength,
+                sway_sampling_coef=sway_sampling_coef,
+                t_grid=t_grid,
+            )
+        else:
+            pass
+
         def step(inputs, t, x):
             kwargs = dict(inputs, x=x.to(weight_dtype), time=t)
+            if modulation_table is not None:
+                timestep_index = torch.searchsorted(
+                    time_modulation_cache.timesteps, t.reshape(1)
+                )
+                kwargs["time_modulations"] = torch.index_select(
+                    modulation_table, 0, timestep_index
+                )[0]
+            else:
+                pass
             if cfg_strength < 1e-5:
                 return self.transformer(
                     **kwargs, drop_audio_cond=False, drop_text=False
@@ -252,7 +408,16 @@ class AuKFlowMatching(nn.Module):
         t = build_time_grid(steps, sway_sampling_coef, t_grid, device=device)
         fn = None
         if padding is not None:
-            fn = step_graph.bind(step, inputs, x=y0, time=t[0], baked=(cfg_strength,))
+            fn = step_graph.bind(
+                step,
+                inputs,
+                x=y0,
+                time=t[0],
+                baked=(
+                    cfg_strength,
+                    id(modulation_table) if modulation_table is not None else 0,
+                ),
+            )
         else:
             pass
         try:
