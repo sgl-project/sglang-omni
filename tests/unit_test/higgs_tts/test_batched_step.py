@@ -158,6 +158,34 @@ def test_reset_row_compiles_once_and_respects_last_codes_stride() -> None:
         pool.reset_row(pool.max_batch_size)
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
+def test_reset_row_uses_pool_device_and_preserves_callers_device() -> None:
+    """A pool on a non-current GPU must reset without accessing another GPU's pointers."""
+    with torch.cuda.device(0):
+        pool = HiggsBatchedSamplerState(3, N, device="cuda:1")
+        fill_sampler_pool(pool)
+        before = {
+            name: tensor.clone()
+            for name, tensor in vars(pool).items()
+            if isinstance(tensor, torch.Tensor)
+        }
+
+        pool.reset_row(1)
+
+        assert torch.cuda.current_device() == 0
+        assert pool.delay_count[1].item() == 0
+        assert pool.eoc_countdown[1].item() == -1
+        assert not pool.generation_done[1].item()
+        assert torch.equal(pool.last_codes[1], torch.zeros_like(pool.last_codes[1]))
+        assert pool.seeds[1].item() == NO_SEED
+        assert pool.step_count[1].item() == 0
+        for name, original in before.items():
+            actual = getattr(pool, name)
+            assert torch.equal(actual[0], original[0])
+            assert torch.equal(actual[2], original[2])
+
+
 # ---------------------------------------------------------------------------
 # Parity: delay window
 # ---------------------------------------------------------------------------
