@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -69,15 +70,19 @@ echo metal > "$1/bin/mlx.metallib"
 	if err != nil || !bytes.Equal(copied, server) {
 		t.Fatalf("silero_vad_server is not a copy of qwen3_asr_server: %v", err)
 	}
-	if fi, err := os.Stat(silero); err != nil || fi.Mode()&0o111 == 0 {
-		t.Fatalf("silero_vad_server is not executable: %v", fi.Mode())
+	if runtime.GOOS == "windows" {
+		t.Log("skipping executable mode-bit assertions: Windows does not expose Unix permission bits")
+	} else {
+		if fi, err := os.Stat(silero); err != nil || fi.Mode()&0o111 == 0 {
+			t.Fatalf("silero_vad_server is not executable: %v", fi.Mode())
+		}
+		for _, s := range others {
+			if fi, err := os.Stat(filepath.Join(out, "bin", s)); err != nil || fi.Mode()&0o111 == 0 {
+				t.Errorf("%s is not staged: %v", s, err)
+			}
+		}
 	}
 	if len(others) < 6 {
 		t.Fatalf("the specs name %v", others)
-	}
-	for _, s := range others {
-		if fi, err := os.Stat(filepath.Join(out, "bin", s)); err != nil || fi.Mode()&0o111 == 0 {
-			t.Errorf("%s is not staged: %v", s, err)
-		}
 	}
 }

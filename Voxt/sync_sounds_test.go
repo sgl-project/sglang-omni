@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -95,7 +96,11 @@ mkdir -p "$last" && echo '{}' > "$last/catalog.json"
 				t.Fatalf("sync-sounds.sh: err=%v, want success=%v\n%s", err, testCase.wantSuccess, output)
 			}
 			goLog, _ := os.ReadFile(goLogPath)
-			if testCase.wantSuccess && !strings.Contains(string(goLog), "-from\n"+library+"\n") {
+			fromLibrary := library
+			if !testCase.userDir && runtime.GOOS == "windows" {
+				fromLibrary = filepath.Dir(library) + "/actnow-sounds"
+			}
+			if testCase.wantSuccess && !strings.Contains(string(goLog), "-from\n"+fromLibrary+"\n") {
 				t.Fatalf("did not copy from %s; go got:\n%s", library, goLog)
 			}
 			if !testCase.wantSuccess && !strings.Contains(string(output), "catalog.json") {
