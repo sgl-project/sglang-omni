@@ -105,6 +105,14 @@ func keyGlyph(k string) string {
 	return k
 }
 
+// SystemName is the operating system's name in user-facing guidance.
+func SystemName() string {
+	if runtime.GOOS == "windows" {
+		return i18n.T("Windows")
+	}
+	return i18n.T("macOS")
+}
+
 // ParseErrorText says why typed keys do not parse.
 func ParseErrorText(err error) string {
 	switch {
@@ -147,7 +155,7 @@ func HotkeyProblemText(p hotkey.Problem) string {
 	case hotkey.ProblemConflict:
 		return i18n.T("%s has the same keys and trigger, so only one of them works.", FeatureTitle(p.Other))
 	case hotkey.ProblemSystem:
-		return i18n.T("macOS uses these keys for %s.", systemShortcutName(p.System))
+		return i18n.T("%s uses these keys for %s.", SystemName(), systemShortcutName(p.System))
 	case hotkey.ProblemBareKey:
 		return i18n.T("A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.")
 	}

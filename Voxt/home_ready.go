@@ -55,7 +55,7 @@ func (a *app) readinessList() []readiness {
 		out = append(out, readiness{key: "home-mic", title: i18n.T("Microphone"), ok: true, text: i18n.T("Allowed")})
 	case a.perms.mic == permission.NotDetermined:
 		out = append(out, readiness{key: "home-mic", title: i18n.T("Microphone"), kind: noticeInfo,
-			text: i18n.T("macOS asks for the microphone the first time you record."), action: i18n.T("Ask now"),
+			text: i18n.T("%s asks for the microphone the first time you record.", uitext.SystemName()), action: i18n.T("Ask now"),
 			fix: func() { a.askPermission(proto.PermissionMicrophone, nil) }})
 	default:
 		out = append(out, readiness{key: "home-mic", title: i18n.T("Microphone"), kind: noticeError,
@@ -68,7 +68,7 @@ func (a *app) readinessList() []readiness {
 		out = append(out, readiness{key: "home-access", title: i18n.T("Accessibility"), ok: true, text: i18n.T("Allowed")})
 	default:
 		out = append(out, readiness{key: "home-access", title: i18n.T("Accessibility"), kind: noticeWarn,
-			text: i18n.T("Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work."), action: i18n.T("Open Permissions"), fix: openPerms})
+			text: i18n.T("Without Accessibility access, results are copied for you to paste, and shortcuts such as %s do not work.", uitext.HotkeyText("RightOption")), action: i18n.T("Open Permissions"), fix: openPerms})
 	}
 	// The shortcut.
 	out = append(out, a.shortcutReadiness())

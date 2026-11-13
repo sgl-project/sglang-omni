@@ -41,7 +41,7 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 	caption(c, i18n.T("Click a shortcut to change it on its feature's page."))
 	if !a.hotkeys.Installed {
 		notice(c, "sc-no-tap", noticeWarn,
-			i18n.T("Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."),
+			i18n.T("Without Accessibility, only shortcuts like %s work. fn, single modifiers, double taps and long presses need it.", uitext.HotkeyText("Control+Option+Space")),
 			"", func() {
 				if ui.Button(c.Key("sc-open-perms"), i18n.T("Open Permissions")).Clicked() {
 					a.navigate("/settings/permissions")
