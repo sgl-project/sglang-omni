@@ -104,6 +104,7 @@ final class Server: @unchecked Sendable {
     let front: FrontApps
     let capture: CaptureManager
     let hotkeys: HotkeyTap
+    let keyRecorder: HotkeyRecorder
     let textio: TextIO
     let output: Output
     let speech: SpeechJobs
@@ -119,6 +120,7 @@ final class Server: @unchecked Sendable {
         front = FrontApps(out: out)
         capture = CaptureManager(out: out)
         hotkeys = HotkeyTap(out: out, front: front)
+        keyRecorder = HotkeyRecorder()
         textio = TextIO(front: front)
         output = Output(out: out)
         speech = SpeechJobs(out: out)
@@ -184,6 +186,15 @@ final class Server: @unchecked Sendable {
                 }
             }
             return
+        case Method.captureSystem:
+            Task {
+                do {
+                    try await capture.start(job: id, try msg.decodeParams(SystemParams.self).capture, system: true, clock: clock)
+                } catch {
+                    out.fail(id, rpcError(error))
+                }
+            }
+            return
         case Method.speechRecognize:
             Task {
                 do {
@@ -242,6 +253,12 @@ final class Server: @unchecked Sendable {
             return hotkeys.configure(try msg.decodeParams(HotkeyConfigureParams.self))
         case Method.hotkeyStatus:
             return hotkeys.status()
+        case Method.hotkeyRecord:
+            let p = try msg.decodeParams(HotkeyRecordParams.self)
+            return try await keyRecorder.record(timeoutSeconds: p.timeoutSeconds ?? 15)
+        case Method.hotkeyCancelRecord:
+            keyRecorder.cancel()
+            return Empty()
         case Method.appFrontmost:
             return await front.current()
         case Method.textFocus:
@@ -256,6 +273,8 @@ final class Server: @unchecked Sendable {
             return await AppList.list(installed: try msg.decodeParams(AppListParams.self).installed ?? false)
         case Method.appIcons:
             return try AppIcons.icons(try msg.decodeParams(AppIconsParams.self))
+        case Method.screenWindow:
+            return try await ScreenWindow.capture(try msg.decodeParams(ScreenWindowParams.self))
         case Method.appConfigure:
             front.configure(try msg.decodeParams(AppConfigureParams.self))
             return Empty()

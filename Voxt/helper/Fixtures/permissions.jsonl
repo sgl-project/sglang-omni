@@ -8,3 +8,5 @@
 {"to":"app","msg":{"id":"c5","error":{"code":"bad_request","message":"Unknown permission camera"}}}
 {"to":"helper","msg":{"id":"c6","method":"permissions.request","params":{"permission":"speechRecognition"}}}
 {"to":"app","msg":{"id":"c6","result":{"microphone":"granted","accessibility":false,"speechRecognition":"granted"}}}
+{"to":"helper","msg":{"id":"c7","method":"permissions.request","params":{"permission":"screenRecording"}}}
+{"to":"app","msg":{"id":"c7","result":{"microphone":"granted","accessibility":false,"speechRecognition":"granted","screenRecording":true}}}

@@ -130,13 +130,34 @@ func TestReleaseAppcastAssetNames(t *testing.T) {
 	}
 }
 
-func TestReleaseAppcastNotes(t *testing.T) {
-	notes := "### Added\n\n- **Remote** <models> & \"more\"\n  - Indented item  \nA paragraph.\n\n### 中文\n\n#### 新增\n\n- 远程\n"
-	want := "<h3>Added</h3>\n<ul>\n<li>**Remote** &lt;models&gt; &amp; &quot;more&quot;</li>\n<li>Indented item</li>\n</ul>\n" +
-		"<p>A paragraph.</p>\n<h3>中文</h3>\n<h4>新增</h4>\n<ul>\n<li>远程</li>\n</ul>\n"
-	out, err := runReleaseAppcast(t, notes, "notes")
-	if err != nil || out != want {
-		t.Errorf("notes: %v\n got %q\nwant %q", err, out, want)
+func TestReleaseAppcastNotesByLocale(t *testing.T) {
+	const english = "### Added\n\n- **Remote** <models> & \"more\"\n  - Indented item  \nA paragraph.\n"
+	const chinese = "\n### 中文\n\n#### 要求\n\n* **Apple 芯片**\n\n#### 变更\n\n- 远程\n"
+	const build = "\n### Build\n\nSigned.\n"
+	const generated = "\n## What's Changed\n\n### New Contributors\n\n- Unrelated PR\n"
+	const wantEnglish = "<h3>Added</h3>\n<ul>\n<li><strong>Remote</strong> &lt;models&gt; &amp; &quot;more&quot;</li>\n<li>Indented item</li>\n</ul>\n" +
+		"<p>A paragraph.</p>\n<h3>Build</h3>\n<p>Signed.</p>"
+	const wantChinese = "<h3>要求</h3>\n<ul>\n<li><strong>Apple 芯片</strong></li>\n</ul>\n<h3>变更</h3>\n<ul>\n<li>远程</li>\n</ul>"
+	for _, test := range []struct {
+		name, notes, chineseHTML string
+	}{
+		{"bilingual", english + chinese + build + generated, wantChinese},
+		{"English only", english + build + generated, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out, err := runReleaseAppcast(t, test.notes, "notes-by-locale")
+			if err != nil {
+				t.Fatalf("notes-by-locale: %v", err)
+			}
+			var localized map[string]string
+			if err := json.Unmarshal([]byte(out), &localized); err != nil {
+				t.Fatalf("notes-by-locale printed %q: %v", out, err)
+			}
+			chineseHTML, hasChinese := localized["zh-Hans"]
+			if localized["en"] != wantEnglish || chineseHTML != test.chineseHTML || hasChinese != (test.chineseHTML != "") {
+				t.Errorf("unexpected localized notes: %v", localized)
+			}
+		})
 	}
 }
 

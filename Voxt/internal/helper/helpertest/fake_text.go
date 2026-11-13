@@ -46,6 +46,23 @@ func (f *fake) hotkeys(m proto.Message) {
 	}
 }
 
+func (f *fake) hotkeyRecord(m proto.Message) {
+	if !f.isTrusted() {
+		f.failData(m.ID, proto.CodePermissionDenied, map[string]string{"permission": proto.PermissionAccessibility},
+			"Accessibility is required to record shortcuts")
+		return
+	}
+	if k := f.opts["record-keys"]; k != "" {
+		f.result(m.ID, proto.HotkeyRecordResult{Keys: k})
+		return
+	}
+	if f.has("record-timeout") {
+		f.fail(m.ID, proto.CodeTimeout, "Recording timed out")
+		return
+	}
+	f.result(m.ID, proto.HotkeyRecordResult{Keys: "RightOption+Space"})
+}
+
 // trust grants Accessibility (trust-after): a configured tap installs and
 // says so.
 func (f *fake) trust() {
@@ -134,7 +151,11 @@ func (f *fake) textio(m proto.Message) {
 		var p proto.SelectionParams
 		m.DecodeParams(&p)
 		res := proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: []string{"focus=AXTextArea"}}
-		if sel := f.opts["selection"]; sel != "" {
+		if path := f.opts["selection-file"]; path != "" {
+			if b, _ := os.ReadFile(path); len(b) > 0 {
+				res.Text, res.Via = string(b), proto.ViaAX
+			}
+		} else if sel := f.opts["selection"]; sel != "" {
 			res.Text, res.Via = sel, proto.ViaAX
 		} else if sel := f.opts["copy-selection"]; sel != "" && p.AllowCopy {
 			res.Text, res.Via, res.Steps = sel, proto.ViaCopy, append(res.Steps, "copy: changed")

@@ -11,9 +11,7 @@ package main
 // Ranks: one primaryButton per view (the core action, in ink); ui.Button
 // for the other actions that need a label (secondary: grey face); ghost
 // buttons for quiet actions in toolbars and lists; iconButton, with its
-// tooltip, wherever an icon says enough; and the rest in moreMenu. The
-// round ink playButton plays a recording; playToggle is the small play
-// icon of a row in a list.
+// tooltip, wherever an icon says enough; and the rest in moreMenu.
 //
 // Notes: banner is a line of state on the subtle fill with any icon;
 // notice is a banner by kind (info, done, warning, error) with an ⓘ for

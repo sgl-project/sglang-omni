@@ -4,14 +4,21 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import threading
 import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from neucodec import NeuCodec
+else:
+    pass
 
 from sglang_omni.models.audar_tts.payload_types import AudarTTSState
 from sglang_omni.models.audar_tts.protocol import (
@@ -20,6 +27,7 @@ from sglang_omni.models.audar_tts.protocol import (
     parse_speech_codes,
 )
 from sglang_omni.models.audar_tts.request_builders import build_audar_state
+from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 from sglang_omni.proto import StagePayload
@@ -34,11 +42,6 @@ from sglang_omni.scheduling.reference_encoder import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
-if TYPE_CHECKING:
-    from neucodec import NeuCodec
-else:
-    pass
-
 DEFAULT_GGUF_FILENAME = "Audar-TTS-V1-Turbo-Q4_K_M.gguf"
 DEFAULT_CODEC_MODEL = "neuphonic/neucodec"
 REFERENCE_SAMPLE_RATE = 16000
@@ -46,6 +49,48 @@ OUTPUT_SAMPLE_RATE = 24000
 MIN_REFERENCE_SECONDS = 5.0
 MAX_REFERENCE_SECONDS = 15.0
 XPU_WARMUP_PROMPT_TOKENS = 256  # measured on Arc Pro B60
+logger = logging.getLogger(__name__)
+_AUDAR_TTS_EXTRA_ERROR = "Audar-TTS requires the 'audar-tts' optional dependencies"
+llama_cpp: ModuleType | None = None
+llama_cpp_ggml: ModuleType | None = None
+
+
+def load_neucodec() -> type[NeuCodec]:
+    try:
+        from neucodec import NeuCodec
+    except ImportError as exc:
+        raise RuntimeError(_AUDAR_TTS_EXTRA_ERROR) from exc
+    else:
+        pass
+    return NeuCodec
+
+
+def load_llama_cpp() -> ModuleType:
+    global llama_cpp
+    if llama_cpp is None:
+        try:
+            import llama_cpp
+        except ImportError as exc:
+            raise RuntimeError(_AUDAR_TTS_EXTRA_ERROR) from exc
+        else:
+            pass
+    else:
+        pass
+    return llama_cpp
+
+
+def load_llama_cpp_ggml() -> ModuleType:
+    global llama_cpp_ggml
+    if llama_cpp_ggml is None:
+        try:
+            from llama_cpp import _ggml as llama_cpp_ggml
+        except ImportError as exc:
+            raise RuntimeError(_AUDAR_TTS_EXTRA_ERROR) from exc
+        else:
+            pass
+    else:
+        pass
+    return llama_cpp_ggml
 
 
 @dataclass(frozen=True)
@@ -56,13 +101,8 @@ class ReferenceInput:
 
 
 @lru_cache(maxsize=None)
-def load_codec(model: str, revision: str, device: str) -> "NeuCodec":
-    try:
-        from neucodec import NeuCodec
-    except ImportError as exc:
-        raise RuntimeError(
-            "Audar-TTS requires the 'audar-tts' optional dependencies"
-        ) from exc
+def load_codec(model: str, revision: str, device: str) -> NeuCodec:
+    NeuCodec = load_neucodec()
     return NeuCodec.from_pretrained(model, revision=revision).eval().to(device)
 
 
@@ -134,7 +174,7 @@ def load_reference_waveform(item: ReferenceInput) -> torch.Tensor:
 
 
 def encode_reference(
-    codec: "NeuCodec", device: str, item: ReferenceInput
+    codec: NeuCodec, device: str, item: ReferenceInput
 ) -> torch.Tensor:
     waveform = load_reference_waveform(item).to(device)
     with torch.inference_mode():
@@ -157,7 +197,7 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
     def __init__(
         self,
         *,
-        codec: "NeuCodec",
+        codec: NeuCodec,
         device: str,
         codec_model: str,
         codec_revision: str,
@@ -255,6 +295,12 @@ def resolve_gguf(model_path: str, filename: str, revision: str) -> str:
     return hf_hub_download(repo_id=model_path, filename=filename, revision=revision)
 
 
+def has_llama_cpp_backend(name: str) -> bool:
+    libggml = load_llama_cpp_ggml().libggml
+    libggml.ggml_backend_reg_by_name.restype = ctypes.c_void_p
+    return libggml.ggml_backend_reg_by_name(name.encode()) is not None
+
+
 def create_tts_engine_executor(
     model_path: str,
     *,
@@ -265,26 +311,17 @@ def create_tts_engine_executor(
     n_ctx: int = 4096,
     n_gpu_layers: int = -1,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    try:
-        from llama_cpp import LLAMA_SPLIT_MODE_NONE, Llama
-    except ImportError as exc:
-        raise RuntimeError(
-            "Audar-TTS requires the 'audar-tts' optional dependencies"
-        ) from exc
-
     from sglang_omni.utils.device import resolve_concrete_device
 
+    llama_cpp = load_llama_cpp()
     concrete_device = resolve_concrete_device(device, gpu_id)
-    if concrete_device.type not in ("cpu", "cuda", "xpu"):
+    if concrete_device.type not in ("cpu", "cuda", "xpu", "musa"):
         raise ValueError(
-            "Audar-TTS llama.cpp engine runs on cuda, xpu or cpu only; resolved "
+            "Audar-TTS llama.cpp engine runs on cuda, xpu, musa or cpu only; resolved "
             f"device={concrete_device}"
         )
     elif concrete_device.type == "xpu":
-        from llama_cpp._ggml import libggml
-
-        libggml.ggml_backend_reg_by_name.restype = ctypes.c_void_p
-        if libggml.ggml_backend_reg_by_name(b"SYCL") is None:
+        if not has_llama_cpp_backend("SYCL"):
             raise RuntimeError(
                 "Audar-TTS on xpu needs llama-cpp-python built with GGML_SYCL=ON"
             )
@@ -292,22 +329,37 @@ def create_tts_engine_executor(
             pass
     else:
         pass
-    main_gpu = 0 if concrete_device.type == "cpu" else concrete_device.index
-    if concrete_device.type == "cpu":
+    use_cpu_backend = concrete_device.type == "cpu"
+    if current_platform.is_musa() and not use_cpu_backend:
+        use_cpu_backend = not has_llama_cpp_backend("MUSA")
+        if use_cpu_backend:
+            logger.warning("llama.cpp MUSA backend not detected; falling back to CPU.")
+        else:
+            pass
+    else:
+        pass
+    main_gpu = 0 if use_cpu_backend else concrete_device.index
+    if use_cpu_backend:
         # note (lennox): the n_gpu_layers default of -1 offloads every layer, so
-        # a cpu resolution would still run on GPU 0 without this.
+        # a CPU-backed resolution would still run on GPU 0 without this.
         n_gpu_layers = 0
     else:
         pass
     model_file = resolve_gguf(model_path, gguf_filename, model_revision)
-    llm = Llama(
-        model_path=model_file,
-        n_ctx=n_ctx,
-        n_gpu_layers=n_gpu_layers,
-        split_mode=LLAMA_SPLIT_MODE_NONE,
-        main_gpu=main_gpu,
-        verbose=False,
-    )
+    llama_kwargs: dict[str, object] = {
+        "model_path": model_file,
+        "n_ctx": n_ctx,
+        "n_gpu_layers": n_gpu_layers,
+        "split_mode": llama_cpp.LLAMA_SPLIT_MODE_NONE,
+        "main_gpu": main_gpu,
+        "verbose": False,
+    }
+    if current_platform.is_musa() and not use_cpu_backend:
+        # MUSA llama.cpp aborts for physical batches above 8 tokens.
+        llama_kwargs["n_ubatch"] = 8
+    else:
+        pass
+    llm = llama_cpp.Llama(**llama_kwargs)
     stop_tokens = llm.tokenize(
         TARGET_CODES_END.encode("utf-8"), add_bos=False, special=True
     )

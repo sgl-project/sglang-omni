@@ -65,6 +65,7 @@ public enum PermissionName {
     public static let microphone = "microphone"
     public static let accessibility = "accessibility"
     public static let speechRecognition = "speechRecognition"
+    public static let screenRecording = "screenRecording"
 }
 
 public struct PermissionsResult: Codable, Sendable {
@@ -73,11 +74,14 @@ public struct PermissionsResult: Codable, Sendable {
     public var accessibility: Bool
     /// As microphone; nil from a helper without it (Go's omitempty).
     public var speechRecognition: String?
+    /// Screen Recording (screen.window); nil while not allowed (Go's omitempty).
+    public var screenRecording: Bool?
 
-    public init(microphone: String, accessibility: Bool, speechRecognition: String) {
+    public init(microphone: String, accessibility: Bool, speechRecognition: String, screenRecording: Bool = false) {
         self.microphone = microphone
         self.accessibility = accessibility
         self.speechRecognition = speechRecognition
+        self.screenRecording = screenRecording ? true : nil
     }
 }
 
@@ -186,12 +190,15 @@ public struct RestartedParams: Codable, Sendable {
     public var reason: String
     public var attempt: Int
     public var device: String
+    /// The device's name; nil for capture.system, which never names the output.
+    public var deviceName: String?
 
-    public init(job: String, reason: String, attempt: Int, device: String) {
+    public init(job: String, reason: String, attempt: Int, device: String, deviceName: String? = nil) {
         self.job = job
         self.reason = reason
         self.attempt = attempt
         self.device = device
+        self.deviceName = deviceName
     }
 }
 
@@ -287,6 +294,16 @@ public struct HotkeyStatus: Codable, Sendable {
         self.maxCallbackMicros = maxCallbackMicros
         self.error = error
     }
+}
+
+public struct HotkeyRecordParams: Codable, Sendable {
+    public var timeoutSeconds: Double?
+    public init(timeoutSeconds: Double? = nil) { self.timeoutSeconds = timeoutSeconds }
+}
+
+public struct HotkeyRecordResult: Codable, Sendable {
+    public var keys: String
+    public init(keys: String) { self.keys = keys }
 }
 
 public struct HotkeyEventParams: Codable, Sendable {
@@ -612,6 +629,33 @@ public struct AppIcon: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: screen.window
+
+public struct ScreenWindowParams: Codable, Sendable {
+    public var pid: Int
+    /// The picture's longer side in pixels: screenMaxSide when nil or 0, at most screenMaxSide.
+    public var maxSide: Int?
+
+    public init(pid: Int, maxSide: Int? = nil) {
+        self.pid = pid
+        self.maxSide = maxSide
+    }
+}
+
+public struct ScreenWindowResult: Codable, Sendable {
+    /// A JPEG; base64 on the wire. nil: the app has no window on screen.
+    public var jpeg: Data?
+    public init(jpeg: Data? = nil) { self.jpeg = jpeg }
+}
+
+public let screenMaxSide = 1600
+
+/// The longer side screen.window draws for a request's maxSide.
+public func screenSide(_ maxSide: Int?) -> Int {
+    guard let n = maxSide, n > 0 else { return screenMaxSide }
+    return min(n, screenMaxSide)
+}
+
 // MARK: output.*
 
 /// An output device; uid is its identity (the id may change).
@@ -713,7 +757,10 @@ public enum WireTypes {
         case Method.permissionsRequest: PermissionsRequestParams.self
         case Method.captureStart: CaptureParams.self
         case Method.captureStop: CaptureStopParams.self
+        case Method.captureSystem: SystemParams.self
         case Method.hotkeyConfigure: HotkeyConfigureParams.self
+        case Method.hotkeyRecord: HotkeyRecordParams.self
+        case Method.hotkeyCancelRecord: Empty.self
         case Method.textSelection: SelectionParams.self
         case Method.textPaste: PasteParams.self
         case Method.textRead: ReadParams.self
@@ -721,6 +768,7 @@ public enum WireTypes {
         case Method.appList: AppListParams.self
         case Method.appConfigure: AppConfigureParams.self
         case Method.appIcons: AppIconsParams.self
+        case Method.screenWindow: ScreenWindowParams.self
         case Method.outputWatch: OutputWatchParams.self
         case Method.outputMute: OutputMuteParams.self
         case Method.outputRelease: OutputReleaseParams.self
@@ -751,9 +799,11 @@ public enum WireTypes {
         case Method.jobCancel: CancelResult.self
         case Method.permissionsStatus, Method.permissionsRequest: PermissionsResult.self
         case Method.captureDevices: DevicesResult.self
-        case Method.captureStart: CaptureResult.self
+        case Method.captureStart, Method.captureSystem: CaptureResult.self
         case Method.captureStop: CaptureStopResult.self
         case Method.hotkeyConfigure, Method.hotkeyStatus: HotkeyStatus.self
+        case Method.hotkeyRecord: HotkeyRecordResult.self
+        case Method.hotkeyCancelRecord: Empty.self
         case Method.appFrontmost: App.self
         case Method.textFocus: FocusResult.self
         case Method.textSelection: SelectionResult.self
@@ -762,6 +812,7 @@ public enum WireTypes {
         case Method.browserURL: BrowserURLResult.self
         case Method.appList: AppListResult.self
         case Method.appIcons: AppIconsResult.self
+        case Method.screenWindow: ScreenWindowResult.self
         case Method.outputWatch: OutputState.self
         case Method.outputMute: OutputMuteResult.self
         case Method.outputRelease: OutputReleaseResult.self

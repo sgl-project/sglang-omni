@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -38,8 +41,8 @@ const legacySetupsJSON = `[
 // Doubao at its 2.0 address with its App ID and token, Aliyun at its
 // Singapore address with a model this app has, StepFun at its own SSE
 // address with a model this app lacks, a local Whisper server, Doubao's
-// file recognition (https://, which this app's streaming client cannot
-// use) as a second Doubao, and a service never set up.
+// flash file recognition as a second Doubao (one setup per service: the
+// first comes over), and a service never set up.
 const legacySpeechJSON = `[
  {"providerID": "doubaoASR", "model": "volc.bigasr.sauc.duration", "endpoint": "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
   "storedCredentialPresence": {"apiKey": false, "appID": true, "accessToken": true}, "doubaoDictionaryMode": "requestScoped"},
@@ -102,13 +105,15 @@ func TestParseLegacySettings(t *testing.T) {
 		t.Fatalf("setups %s", got)
 	}
 	o := by["openai"]
+	// OpenAI got only what the previous Voxt sent it: no temperature, and
+	// no effort for a model it did not take one for.
 	if g := o.Generation; o.Endpoint != "https://inference.example.com/v1" || o.Model != "kimi-k3" || *g.MaxOutputTokens != 131072 ||
-		g.Temperature == nil || *g.Temperature != 0 || g.Thinking != llm.ThinkEffort || g.ThinkingEffort != "none" || g.Verbosity != "" {
+		g.Temperature != nil || g.Thinking != "" || g.ThinkingEffort != "" || g.Verbosity != "" {
 		t.Errorf("openai %+v", o)
 	}
 	ol := by["ollama"]
 	if g := ol.Generation; ol.Endpoint != "http://192.168.1.20:11434/v1" || g.KeepAlive != "10m" || g.Thinking != llm.ThinkOff ||
-		g.ResponseFormat != llm.ResponseJSONSchema || g.JSONSchema != `{"type": "object"}` || g.OptionsJSON != `{"num_ctx": 8192}` {
+		g.ResponseFormat != llm.ResponseJSONSchema || g.JSONSchema != `{"type": "object"}` || !strings.Contains(g.ExtraBodyJSON, `"num_ctx": 8192`) {
 		t.Errorf("ollama %+v", ol)
 	}
 	for _, id := range []string{"deepseek", "omlx"} {
@@ -116,14 +121,14 @@ func TestParseLegacySettings(t *testing.T) {
 			t.Errorf("%s at %q, want the preset's address", id, by[id].Endpoint)
 		}
 	}
-	if g := by["gemini"].Endpoint; g != "https://example.com/v1beta/openai" || strings.Join(l.checkLLM, ",") != "gemini" {
-		t.Errorf("a custom Gemini address %q, to check %v", g, l.checkLLM)
+	if g := by["gemini"].Endpoint; g != "https://example.com/v1beta/openai" || strings.Join(l.checkLLM, ",") != "ollama,gemini" {
+		t.Errorf("a custom Gemini address %q, to check %v (the Ollama on another Mac is plain http)", g, l.checkLLM)
 	}
 	if u := by["omlx"].Generation.IncludeUsage; u == nil || *u {
 		t.Errorf("oMLX usage %v, want off as the previous Voxt had it", u)
 	}
-	if l.featureLLM != [3]string{"openai", "", ""} || l.featureSpeech != [3]string{"doubao", "", ""} {
-		t.Errorf("features' setups %q, speech %q", l.featureLLM, l.featureSpeech)
+	if l.featureLLM != [3]string{"openai", "", ""} || l.featureSpeech != [3]string{"doubao", "", ""} || l.featureLocal != [3]string{"", models.ASRFast, ""} {
+		t.Errorf("features' setups %q, speech %q, local speech %q", l.featureLLM, l.featureSpeech, l.featureLocal)
 	}
 	if l.prompts != [3]string{"Keep my English terms.", "", ""} {
 		t.Errorf("prompts %q", l.prompts)
@@ -146,6 +151,37 @@ func TestParseLegacySettings(t *testing.T) {
 // StepFun's address went to OpenAI, with the StepFun key the user pastes.
 // An address of a service's own API this app does not speak stays, to
 // check, instead of becoming the preset's.
+func TestLegacyApplyGeneral(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/plutil"); err != nil {
+		t.Skip("no plutil: the previous Voxt's preferences are read on macOS only")
+	}
+	lib := t.TempDir()
+	prefs := filepath.Join(lib, "Preferences", legacyBundleID+".plist")
+	if err := os.MkdirAll(filepath.Dir(prefs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(prefs, []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>showInDock</key><false/></dict></plist>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	voxtDir := filepath.Join(lib, "Application Support", "Voxt")
+	if err := os.MkdirAll(voxtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := settings.Defaults()
+	if !legacyApplyGeneral(voxtDir, &s) || !s.General.HideDock || !s.General.MenuBar {
+		t.Fatalf("hide dock: %+v", s.General)
+	}
+	if err := os.WriteFile(prefs, []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>showInDock</key><true/></dict></plist>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s = settings.Defaults()
+	if !legacyApplyGeneral(voxtDir, &s) || s.General.HideDock {
+		t.Fatalf("show dock: %+v", s.General)
+	}
+}
+
 func TestLegacyEndpoint(t *testing.T) {
 	for _, c := range []struct {
 		service, endpoint, want string
@@ -190,14 +226,15 @@ func TestParseLegacySpeech(t *testing.T) {
 	}
 	speech := func(id string) providers.Speech { sp, _ := providers.LookupSpeech(id); return sp }
 	for _, c := range []struct {
-		service, id, endpoint, want string
-		check                       bool
+		service, id, model, endpoint, want string
+		check                              bool
 	}{
-		{"openAIWhisper", "openai", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", false},
-		{"doubaoASR", "doubao", "https://doubao-proxy.example.com/asr", "https://doubao-proxy.example.com/asr", true},
-		{"stepFunASR", providers.StepFunASR, "https://step.example.com/v1/audio/asr/sse", "https://step.example.com/v1/audio/transcriptions", true},
+		{"openAIWhisper", "openai", "", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", false},
+		{"doubaoASR", "doubao", "", "https://doubao-proxy.example.com/asr", "https://doubao-proxy.example.com/asr", true},
+		{"doubaoASR", "doubao", "volc.bigasr.auc_turbo", "https://doubao-proxy.example.com/flash", "https://doubao-proxy.example.com/flash", false},
+		{"stepFunASR", providers.StepFunASR, "", "https://step.example.com/v1/audio/asr/sse", "https://step.example.com/v1/audio/transcriptions", true},
 	} {
-		if got, check := legacySpeechEndpoint(c.service, speech(c.id), c.endpoint); got != c.want || check != c.check {
+		if got, check := legacySpeechEndpoint(c.service, speech(c.id), c.model, c.endpoint); got != c.want || check != c.check {
 			t.Errorf("%s at %s: %q, check %v; want %q, %v", c.service, c.endpoint, got, check, c.want, c.check)
 		}
 	}
@@ -220,7 +257,7 @@ func TestLegacySettingsApply(t *testing.T) {
 	s.Providers.LLM = []settings.Provider{{ID: "openai", Model: "mine"}}
 	s.Providers.ASR = []settings.Provider{{ID: "aliyun", Model: "fun-asr-realtime"}}
 	s.Features.Transcribe.Prompt = "My rules."
-	llmAdded, speechAdded, prompts := l.apply(&s)
+	llmAdded, speechAdded, prompts := l.apply(&s, "")
 	ids := func(ps []settings.Provider) string {
 		var out []string
 		for _, p := range ps {
@@ -237,13 +274,17 @@ func TestLegacySettingsApply(t *testing.T) {
 	if s.Features.Transcribe.Prompt != "My rules." || s.Features.Transcribe.LLM != "openai" || prompts != 1 || s.Dictionary.SpeechContext != "Leo works on LLM serving." {
 		t.Errorf("prompts %d, transcribe %+v, speech context %q", prompts, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext)
 	}
+	if s.Features.Translate.ASR != models.ASRFast { // Voxt 1.x's local Qwen3-ASR 0.6B
+		t.Errorf("translate %+v", s.Features.Translate.Feature)
+	}
 }
 
 // The import reads those settings from the previous Voxt's binary
 // preferences beside its database (plutil), and says what came over.
 func TestImportLegacySettings(t *testing.T) {
-	if _, err := os.Stat("/usr/bin/plutil"); err != nil {
-		t.Skip("no plutil: the previous Voxt's preferences are read on macOS only")
+	if _, err := os.Stat(legacyPlutil); err != nil {
+		fakeLegacyPlutil(t, map[string]string{"remoteLLMProviderConfigurations": legacySetupsJSON, "remoteASRProviderConfigurations": legacySpeechJSON,
+			"featureSettings": legacyFeaturesJSON(t, ""), "mlxLocalASRTuningSettings": legacyTuningJSON, "showInDock": "false"})
 	}
 	lib := copyFixture(t, "real")
 	var plist bytes.Buffer
@@ -253,6 +294,7 @@ func TestImportLegacySettings(t *testing.T) {
 		{"remoteASRProviderConfigurations", legacySpeechJSON},
 		{"featureSettings", legacyFeaturesJSON(t, "")},
 		{"mlxLocalASRTuningSettings", legacyTuningJSON},
+		{"showInDock", "false"},
 	} {
 		plist.WriteString("<key>" + kv[0] + "</key><string>")
 		xml.EscapeText(&plist, []byte(kv[1]))
@@ -270,12 +312,117 @@ func TestImportLegacySettings(t *testing.T) {
 	a.importLegacyFrom(lib)
 	s := a.lib.settings.Get()
 	if len(s.Providers.LLM) != 5 || s.Providers.LLM[0].Endpoint != "https://inference.example.com/v1" || len(s.Providers.ASR) != 4 || s.Features.Transcribe.ASR != "doubao" ||
-		s.Features.Transcribe.Prompt != "Keep my English terms." || s.Dictionary.SpeechContext != "Leo works on LLM serving." {
-		t.Fatalf("settings: setups %+v, transcribe %+v, speech context %q (message %q)", s.Providers.LLM, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext, a.ob.legacyMsg)
+		s.Features.Transcribe.Prompt != "Keep my English terms." || s.Dictionary.SpeechContext != "Leo works on LLM serving." ||
+		!s.General.HideDock || !s.General.MenuBar {
+		t.Fatalf("settings: setups %+v, transcribe %+v, speech context %q general %+v (report %q)", s.Providers.LLM, s.Features.Transcribe.Feature, s.Dictionary.SpeechContext, s.General, a.ob.legacy.text())
 	}
-	for _, want := range []string{"5 language model services came over", "4 speech services came over", "on their pages", "2 prompts came over"} {
-		if !strings.Contains(a.ob.legacyMsg, want) {
-			t.Errorf("message %q lacks %q", a.ob.legacyMsg, want)
+	r := a.ob.legacy
+	for _, want := range []string{"5 language model services", "4 speech services", "2 prompts"} {
+		if !slices.Contains(r.imported, want) {
+			t.Errorf("imported %q lacks %q", r.imported, want)
 		}
+	}
+	// The services' keys stay behind: those that need one are to
+	// complete (not oMLX or the Whisper server on this Mac); so are the
+	// setups to check (the Ollama on another Mac's address never connects).
+	var todo []string
+	for _, d := range r.todo {
+		todo = append(todo, string(d.kind)+"/"+d.id)
+	}
+	for _, want := range []string{"llm/openai", "llm/deepseek", "llm/gemini", "asr/doubao", "asr/stepfun"} {
+		if !slices.Contains(todo, want) {
+			t.Errorf("to do %v lacks %s", todo, want)
+		}
+	}
+	if !slices.Contains(todo, "llm/ollama") || slices.Contains(todo, "llm/omlx") || !strings.Contains(r.text(), "Check ") || !strings.Contains(r.text(), "Change the address of Ollama") {
+		t.Errorf("to do %v (%q)", todo, r.text())
+	}
+}
+
+// TestLegacyAPIFormat: an OpenAI setup comes over on the API the previous
+// Voxt used for it; its automatic, also what a setup saved before the
+// option meant, is Responses at OpenAI's own address only.
+func TestLegacyAPIFormat(t *testing.T) {
+	const own, other = "https://api.openai.com/v1", "https://inference.example.com/v1"
+	for _, c := range []struct {
+		provider, format, endpoint, want string
+	}{
+		{"openAI", "responses", other, llm.APIResponses},
+		{"openAI", "chatCompletions", own, ""},
+		{"openAI", "automatic", own, llm.APIResponses},
+		{"openAI", "automatic", "", llm.APIResponses},
+		{"openAI", "automatic", other, ""},
+		{"openAI", "", own, llm.APIResponses},
+		{"deepseek", "responses", "", ""},
+	} {
+		raw, _ := json.Marshal(map[string]any{"providerID": c.provider, "model": "m", "endpoint": c.endpoint, "openAIAPIFormat": c.format})
+		var s legacyLLMSetup
+		if err := json.Unmarshal(raw, &s); err != nil {
+			t.Fatal(err)
+		}
+		if p, _, ok := s.provider(); !ok || p.APIFormat != c.want {
+			t.Errorf("%+v: %q (ok %v)", c, p.APIFormat, ok)
+		}
+	}
+}
+
+// Who imported before 2.0.2 with Show in Dock off in Voxt 1.x gets it at
+// the next start, once: turned back on, the Dock stays (#3788). Who
+// imported since read it then, and may have changed the switch since.
+func TestLegacyDockAtStart(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/plutil"); err != nil {
+		t.Skip("no plutil: the previous Voxt's preferences are read on macOS only")
+	}
+	home := t.TempDir()
+	lib := filepath.Join(home, "Library", "Containers", legacyBundleID, "Data", "Library")
+	voxtDir := filepath.Join(lib, "Application Support", "Voxt")
+	prefs := filepath.Join(lib, "Preferences", legacyBundleID+".plist")
+	for _, d := range []string{voxtDir, filepath.Dir(prefs)} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(voxtDir, "voxt.sqlite"), []byte("SQLite format 3\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(prefs, []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>showInDock</key><false/></dict></plist>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VOXTNEW_LEGACY_HOME", home)
+	ctx := context.Background()
+	start := func(dir string, done bool) *app {
+		a, _, tt := newTestAppIn(t, dir)
+		a.prefs.Setup.Done = done
+		a.prefs.General.MenuBar = false
+		a.legacyDockAtStart()
+		frames(tt)
+		return a
+	}
+
+	dir := testDir(t)
+	if a := start(dir, false); a.prefs.General.HideDock { // the setup guide's import reads it
+		t.Fatal("out of the Dock before the setup guide is done")
+	} else {
+		a.quit()
+	}
+	a := start(dir, true)
+	if g := a.prefs.General; !g.HideDock || !g.MenuBar {
+		t.Fatalf("set up before 2.0.2: %+v", g)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.HideDock = false })
+	a.quit()
+	if b := start(dir, true); b.prefs.General.HideDock {
+		t.Error("the Dock switch turned back on did not stay")
+	}
+
+	dir = testDir(t)
+	c, _, _ := newTestAppIn(t, dir)
+	if err := c.lib.store.Documents().Put(ctx, legacyEnhanceSettled, []byte("true")); err != nil {
+		t.Fatal(err)
+	}
+	c.quit()
+	if d := start(dir, true); d.prefs.General.HideDock {
+		t.Error("imported since 2.0.2: the switch changed again")
 	}
 }
