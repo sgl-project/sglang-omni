@@ -2316,6 +2316,7 @@ def talker_seed_self(
     device = device or torch.device("cpu")
     fake = SimpleNamespace(
         repetition_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
+        mask_set_value=torch.ones((), dtype=torch.bool, device=device),
         suppress_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
         suppress_token_cache={},
         suppress_token_ids_by_request={},
@@ -2605,6 +2606,46 @@ def test_talker_prepare_decode_buffers_cuda_matches_fresh_rebuild() -> None:
         "suppress_mask",
     ):
         torch.testing.assert_close(getattr(fake, name), getattr(fresh, name))
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="stream synchronization requires CUDA"
+)
+def test_talker_prepare_decode_buffers_do_not_synchronize() -> None:
+    """Writing the repetition and suppress masks waited for every queued kernel of the talker's step."""
+    device = torch.device("cuda")
+    fake = talker_seed_self(device=device)
+    requests = [
+        talker_prep_req("a", penalty=1.5, output_ids=[2], suppress=[3]),
+        talker_prep_req("b", penalty=1.5, output_ids=[4], suppress=[1]),
+    ]
+    Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+    fake.sampled_token_ids[:2] = torch.tensor([5, 6], device=device)
+    requests[0].data.req.output_ids.append(5)
+    requests[1].data.req.output_ids.append(6)
+    rebuilt = [
+        talker_prep_req("c", penalty=1.25, output_ids=[1, 7], suppress=[3]),
+        talker_prep_req("d", penalty=1.0, output_ids=[2], suppress=[1]),
+    ]
+    torch.cuda.synchronize(device)
+
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+        reused_mask = fake.repetition_mask[:2].clone()
+        Qwen3OmniTalker.prepare_decode_buffers(fake, rebuilt)
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
+
+    expected = torch.zeros(2, 8, dtype=torch.bool)
+    expected[0, [2, 5]] = True
+    expected[1, [4, 6]] = True
+    assert torch.equal(reused_mask.cpu(), expected)
+    fresh = talker_seed_self(device=device)
+    Qwen3OmniTalker.prepare_decode_buffers(fresh, rebuilt)
+    torch.testing.assert_close(fake.repetition_mask, fresh.repetition_mask)
+    torch.testing.assert_close(fake.suppress_mask, fresh.suppress_mask)
 
 
 def test_talker_prepare_decode_buffers_rebuild_triggers() -> None:
