@@ -19,6 +19,7 @@ const (
 	roleConsole                  = 0
 	storageRead                  = 0
 	audClientShareModeShared     = 0
+	audClientStreamLoopback      = 0x00020000
 	audClientStreamEventCallback = 0x00040000
 	audClientBufferSilent        = 0x2
 	propertyVariantLPWSTR        = 31
@@ -281,6 +282,30 @@ func openWasapiStream(deviceID string) (*wasapiStream, proto.CaptureDevice, erro
 	if err != nil {
 		return nil, proto.CaptureDevice{}, err
 	}
+	return openWasapiStreamOnDevice(device, 0)
+}
+
+func openWasapiLoopbackStream() (*wasapiStream, proto.CaptureDevice, error) {
+	enumerator, err := newMMDeviceEnumerator()
+	if err != nil {
+		return nil, proto.CaptureDevice{}, err
+	}
+	defer enumerator.release()
+	device, err := enumerator.output(mmDeviceDefaultEndpoint, dataFlowRender, roleConsole)
+	if err != nil {
+		return nil, proto.CaptureDevice{}, err
+	}
+	stream, details, err := openWasapiStreamOnDevice(device, audClientStreamLoopback)
+	if err != nil {
+		return nil, proto.CaptureDevice{}, err
+	}
+	details.Name = ""
+	details.Channels = 1
+	details.Default = true
+	return stream, details, nil
+}
+
+func openWasapiStreamOnDevice(device *comObject, streamFlags uintptr) (*wasapiStream, proto.CaptureDevice, error) {
 	stream := &wasapiStream{device: device}
 	opened := false
 	defer func() {
@@ -305,7 +330,7 @@ func openWasapiStream(deviceID string) (*wasapiStream, proto.CaptureDevice, erro
 	format := parseWaveFormat(formatAddress)
 	result := client.call(audioClientInitialize,
 		audClientShareModeShared,
-		audClientStreamEventCallback,
+		audClientStreamEventCallback|streamFlags,
 		0,
 		0,
 		uintptr(unsafe.Pointer(formatAddress)),

@@ -84,6 +84,7 @@ func implementedMethods() []string {
 		proto.MethodCaptureDevices,
 		proto.MethodCaptureStart,
 		proto.MethodCaptureStop,
+		proto.MethodCaptureSystem,
 		proto.MethodHotkeyConfigure,
 		proto.MethodHotkeyStatus,
 		proto.MethodOutputWatch,
@@ -247,7 +248,7 @@ func (server *helperServer) serve(message proto.Message) {
 		server.serveApps(message)
 	case proto.MethodCaptureDevices:
 		server.serveCaptureDevices(message)
-	case proto.MethodCaptureStart:
+	case proto.MethodCaptureStart, proto.MethodCaptureSystem:
 		server.startCapture(message)
 	case proto.MethodCaptureStop:
 		server.stopCapture(message)
@@ -346,7 +347,7 @@ func (server *helperServer) registerJob(id, method string) (*helperJob, *proto.E
 	if _, running := server.jobs[id]; running {
 		return nil, proto.Errorf(proto.CodeBusy, "Job %s is running already", id)
 	}
-	if method == proto.MethodCaptureStart {
+	if method == proto.MethodCaptureStart || method == proto.MethodCaptureSystem {
 		for _, running := range server.jobs {
 			if running.method == method {
 				return nil, proto.Errorf(proto.CodeBusy, "A recording is running already")
