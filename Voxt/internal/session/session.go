@@ -329,6 +329,11 @@ type Config struct {
 	// screen.window; nil without a picture) for the language model, when
 	// the settings send one (Privacy.SendWindow). Nil: never.
 	Window func(ctx context.Context, pid int) ([]byte, error)
+	// ClipboardImage reads the picture on the clipboard as a JPEG (the
+	// helper's clipboard.image; nil without one) for Rewrite's language
+	// model, when the settings send it (Privacy.SendClipboardImage).
+	// Nil: never.
+	ClipboardImage func(ctx context.Context) ([]byte, error)
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History

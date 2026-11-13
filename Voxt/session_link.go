@@ -164,6 +164,14 @@ func (a *app) openSessions() {
 			}
 			return r.JPEG, err
 		},
+		ClipboardImage: func(ctx context.Context) ([]byte, error) {
+			var r proto.ClipboardImageResult
+			raw, err := sup.Call(ctx, "", proto.MethodClipboardImage, proto.ClipboardImageParams{}, nil)
+			if err == nil {
+				err = json.Unmarshal(raw, &r)
+			}
+			return r.JPEG, err
+		},
 		Resolve: resolver(lm),
 		History: lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {

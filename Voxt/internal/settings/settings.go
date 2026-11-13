@@ -108,6 +108,10 @@ type Privacy struct {
 	// the language model, with the text (session/window.go); off by
 	// default.
 	SendWindow bool `json:"sendWindow,omitempty"`
+	// SendClipboardImage sends the picture on the clipboard with
+	// Rewrite's text to the language model (session/window.go); off by
+	// default.
+	SendClipboardImage bool `json:"sendClipboardImage,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.

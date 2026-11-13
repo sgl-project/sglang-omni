@@ -73,6 +73,9 @@ type run struct {
 	// shot is the picture of the target's window for the language model
 	// (window.go); nil: none.
 	shot func() []byte
+	// clip is the picture on the clipboard for Rewrite's language model
+	// (window.go), read before the selection; nil: none.
+	clip []byte
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
@@ -185,7 +188,10 @@ func (r *run) main() {
 		r.m.update(r, func(s *Snapshot) { s.State = Recording })
 	case kind == store.KindRewrite && r.canSelect():
 		selDone = make(chan string, 1)
-		go func() { selDone <- r.readSelection() }()
+		go func() {
+			r.readClipboardImage() // first: reading the selection may ⌘C over the clipboard
+			selDone <- r.readSelection()
+		}()
 	}
 
 	raw, ok := r.listen()

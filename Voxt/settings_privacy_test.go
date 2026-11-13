@@ -33,3 +33,25 @@ func TestPrivacySendWindow(t *testing.T) {
 		t.Errorf("off: setting %v, asked %v", a.settings.Get().Privacy.SendWindow, fs.asked)
 	}
 }
+
+// TestPrivacySendClipboardImage: sending the copied image with Rewrite is
+// off by default; the switch saves it, asks for no permission, and its
+// note says what goes and what does not.
+func TestPrivacySendClipboardImage(t *testing.T) {
+	a, fs, tt := newTestApp(t)
+	if a.settings.Get().Privacy.SendClipboardImage {
+		t.Fatal("on by default")
+	}
+	openPrivacy(t, a, tt)
+	if !has(tt, "Copied text, and copied files that are not images, are not sent") {
+		t.Fatalf("no explanation: %q", firstTexts(tt))
+	}
+	click(t, tt, "Send the copied image with Rewrite")
+	if !a.settings.Get().Privacy.SendClipboardImage || len(fs.asked) != 0 {
+		t.Fatalf("on: setting %v, asked %v", a.settings.Get().Privacy.SendClipboardImage, fs.asked)
+	}
+	click(t, tt, "Send the copied image with Rewrite")
+	if a.settings.Get().Privacy.SendClipboardImage {
+		t.Error("off: still on")
+	}
+}
