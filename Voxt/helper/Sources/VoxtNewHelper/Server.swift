@@ -275,6 +275,8 @@ final class Server: @unchecked Sendable {
             return try AppIcons.icons(try msg.decodeParams(AppIconsParams.self))
         case Method.screenWindow:
             return try await ScreenWindow.capture(try msg.decodeParams(ScreenWindowParams.self))
+        case Method.clipboardImage:
+            return await ClipboardImage.read(try msg.decodeParams(ClipboardImageParams.self))
         case Method.appConfigure:
             front.configure(try msg.decodeParams(AppConfigureParams.self))
             return Empty()
