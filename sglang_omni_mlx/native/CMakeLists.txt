@@ -68,7 +68,8 @@ add_library(common STATIC
   src/common/npz.cpp
   src/common/reference_audio.cpp
   src/common/text.cpp
-  src/common/tokenizer.cpp)
+  src/common/tokenizer.cpp
+  src/common/transcription.cpp)
 target_include_directories(common PUBLIC src)
 target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-static
   "-framework CoreFoundation" PRIVATE yaml-cpp::yaml-cpp)
@@ -163,7 +164,7 @@ add_library(swift_port STATIC src/common/swift_port.cpp)
 target_include_directories(swift_port PUBLIC src)
 target_link_libraries(swift_port PUBLIC mlx)
 add_library(whisper_asr STATIC src/whisper/whisper_model.cpp src/whisper/whisper_transcriber.cpp)
-target_link_libraries(whisper_asr PUBLIC qwen3_asr swift_port)
+target_link_libraries(whisper_asr PUBLIC common swift_port)
 # Note (khazic): CPU float math rounds each operation, as Swift does: no fused multiply-add.
 target_compile_options(swift_port PRIVATE -Wall -Wextra -ffp-contract=off)
 target_compile_options(whisper_asr PRIVATE -Wall -Wextra -ffp-contract=off)
@@ -226,7 +227,7 @@ install(TARGETS nemotron_asr_server nemotron_transcribe RUNTIME DESTINATION bin)
 # Note (Dayuxiaoshui): Parakeet TDT: parakeet_server, with qwen3_asr_server's API without
 # realtime, and its parity tool; the front end is Sortformer's NeMo log-mel.
 add_library(parakeet_asr STATIC src/parakeet/parakeet_model.cpp src/parakeet/parakeet_transcriber.cpp)
-target_link_libraries(parakeet_asr PUBLIC qwen3_asr sortformer swift_port)
+target_link_libraries(parakeet_asr PUBLIC common sortformer swift_port)
 target_compile_options(parakeet_asr PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(parakeet_server src/parakeet/parakeet_server.cpp)
 target_link_libraries(parakeet_server PRIVATE parakeet_asr asr_service)
@@ -240,7 +241,7 @@ install(TARGETS parakeet_server parakeet_transcribe RUNTIME DESTINATION bin)
 # Note (Dayuxiaoshui): SenseVoice Small: sensevoice_server, with qwen3_asr_server's API
 # without realtime, and its parity tool; Silero VAD cuts long audio at speech.
 add_library(sensevoice_asr STATIC src/sensevoice/sensevoice_model.cpp src/sensevoice/sensevoice_transcriber.cpp)
-target_link_libraries(sensevoice_asr PUBLIC qwen3_asr swift_port silero_vad)
+target_link_libraries(sensevoice_asr PUBLIC common swift_port silero_vad)
 target_compile_options(sensevoice_asr PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(sensevoice_server src/sensevoice/sensevoice_server.cpp)
 target_link_libraries(sensevoice_server PRIVATE sensevoice_asr asr_service)

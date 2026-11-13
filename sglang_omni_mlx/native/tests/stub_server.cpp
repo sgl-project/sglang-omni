@@ -32,6 +32,7 @@
 
 #include "common/http.h"
 #include "common/service.h"
+#include "common/transcription.h"
 #include "ming3_audio/ming3_audio_service.h"
 #include "ming_tts/ming_tts_request.h"
 #include "qwen3_asr/asr_service.h"
@@ -102,14 +103,14 @@ public:
         while (!cancel.load()) {
           std::this_thread::sleep_for(kBlockPollInterval);
         }
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::TranscriptionCancelled();
       } else {
       }
-      qwen3_asr::TranscriptionResult result;
+      omni_common::TranscriptionResult result;
       result.text = std::to_string(sample_count);
       result.language = language;
       result.generated_token_count = max_new_tokens;
-      result.finish_reason = qwen3_asr::FinishReason::kStop;
+      result.finish_reason = omni_common::FinishReason::kStop;
       if (outcome == "segments") {
         result.segments.push_back({.start_seconds = 0.5,
                                    .end_seconds = 1.5,
@@ -171,11 +172,11 @@ protected:
           context.check_deadline();
           std::this_thread::sleep_for(kBlockPollInterval);
         }
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::TranscriptionCancelled();
       } else {
       }
       speech_service::SpeechResult result;
-      result.finish_reason = qwen3_asr::FinishReason::kStop;
+      result.finish_reason = omni_common::FinishReason::kStop;
       result.completion_token_count = chunk_count;
       return result;
     };

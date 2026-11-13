@@ -12,8 +12,8 @@
 #include <vector>
 
 #include "common/layers.h"
+#include "common/transcription.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "qwen3_asr/qwen3_decoder.h"
 #include "voxtral_tts/voxtral_tts_codec.h"
 #include "voxtral_tts/voxtral_tts_tokenizer.h"
@@ -31,7 +31,7 @@ public:
   // SpeechTokenizer::EncodeSpeechRequest in voice, passing each frame's
   // evaluated int32 codes [1 + acoustic codebooks] to on_frame. Stops at the
   // end-of-audio code; throws TranscriptionCancelled once cancel is set.
-  qwen3_asr::FinishReason
+  omni_common::FinishReason
   Generate(const std::vector<int> &prompt_ids, const std::string &voice,
            int max_frames, const std::atomic<bool> &cancel,
            const std::function<void(const mlx::core::array &)> &on_frame) const;

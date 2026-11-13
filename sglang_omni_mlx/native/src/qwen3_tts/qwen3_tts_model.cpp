@@ -9,6 +9,8 @@
 #include <set>
 #include <stdexcept>
 
+#include "common/transcription.h"
+
 namespace qwen3_tts {
 
 namespace mx = mlx::core;
@@ -343,7 +345,7 @@ mx::array Qwen3TtsModel::EmbedFrame(const mx::array &codes) const {
   return embedding;
 }
 
-qwen3_asr::FinishReason Qwen3TtsModel::Generate(
+omni_common::FinishReason Qwen3TtsModel::Generate(
     const SpeechPrompt &prompt, const SamplingConfig &sampling, int max_frames,
     const std::atomic<bool> &cancel,
     const std::function<void(const mx::array &)> &on_frame) const {
@@ -421,7 +423,7 @@ qwen3_asr::FinishReason Qwen3TtsModel::Generate(
   std::vector<qwen3_asr::KVCache> caches = talker_.NewCaches();
   for (int frame = 0; frame < max_frames; ++frame) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::TranscriptionCancelled();
     } else {
     }
     const mx::array hidden = checkpoint_.RmsNorm(
@@ -436,7 +438,7 @@ qwen3_asr::FinishReason Qwen3TtsModel::Generate(
     mx::eval(first_code);
     const int first_code_id = static_cast<int>(first_code.item<int32_t>());
     if (first_code_id == codec_eos_id_) {
-      return qwen3_asr::FinishReason::kStop;
+      return omni_common::FinishReason::kStop;
     } else {
     }
     history.push_back(first_code_id);
@@ -456,7 +458,7 @@ qwen3_asr::FinishReason Qwen3TtsModel::Generate(
     }
     on_frame(frame_codes);
   }
-  return qwen3_asr::FinishReason::kLength;
+  return omni_common::FinishReason::kLength;
 }
 
 } // namespace qwen3_tts

@@ -15,6 +15,7 @@
 #include "common/audio.h"
 #include "common/http.h"
 #include "common/text.h"
+#include "common/transcription.h"
 
 namespace speech_service {
 
@@ -46,7 +47,7 @@ std::string NewRequestId() {
 
 // Thrown by a generation that reaches its request's deadline; a cancellation,
 // so it is never logged as a failure.
-class DeadlineReached : public qwen3_asr::TranscriptionCancelled {};
+class DeadlineReached : public omni_common::TranscriptionCancelled {};
 
 // Whether error is a generation stopping at its request's deadline.
 bool ReachedDeadline(std::exception_ptr error) {
@@ -66,7 +67,7 @@ bool ReachedDeadline(std::exception_ptr error) {
 void LogFailure(std::exception_ptr error) {
   try {
     std::rethrow_exception(error);
-  } catch (const qwen3_asr::TranscriptionCancelled &) {
+  } catch (const omni_common::TranscriptionCancelled &) {
   } catch (const std::exception &failure) {
     // Note (Minyi Tang): only the exception type is logged, never the text.
     std::cerr << "speech generation failed: " << typeid(failure).name() << "\n";
@@ -261,10 +262,10 @@ int SpeechServedModel::Speak(
             synthesize(SpeechContext{cancelled, send, check_deadline});
         std::lock_guard<std::mutex> lock(channel->mutex);
         channel->result = result;
-        return qwen3_asr::TranscriptionResult{};
+        return omni_common::TranscriptionResult{};
       },
       cancel,
-      [this, channel](std::optional<qwen3_asr::TranscriptionResult>,
+      [this, channel](std::optional<omni_common::TranscriptionResult>,
                       std::exception_ptr error) {
         // Note (Minyi Tang): the slot frees before the response can end, so
         // a client's next request is never refused for its previous one.
@@ -400,7 +401,7 @@ int SpeechServedModel::Speak(
          {"meta_info",
           {{"finish_reason",
             {{"type",
-              qwen3_asr::FinishReasonName(channel->result.finish_reason)}}},
+              omni_common::FinishReasonName(channel->result.finish_reason)}}},
            {"prompt_tokens", prompt_tokens},
            {"completion_tokens", completion_tokens}}}});
   } else {
@@ -416,8 +417,8 @@ int SpeechServedModel::Speak(
       "X-SGLang-Omni-Total-Tokens: %zu\r\nConnection: close\r\n\r\n",
       job.response_format.c_str(), audio.size(), job.response_format.c_str(),
       request_id.c_str(),
-      qwen3_asr::FinishReasonName(channel->result.finish_reason), prompt_tokens,
-      completion_tokens, prompt_tokens, completion_tokens,
+      omni_common::FinishReasonName(channel->result.finish_reason),
+      prompt_tokens, completion_tokens, prompt_tokens, completion_tokens,
       prompt_tokens + completion_tokens);
   mg_write(connection, audio.data(), audio.size());
   return 200;

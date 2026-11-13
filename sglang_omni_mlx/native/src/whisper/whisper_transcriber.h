@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "common/tokenizer.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/transcription.h"
 #include "whisper/whisper_model.h"
 
 namespace whisper {
@@ -34,7 +34,7 @@ public:
   // vocab.json, merges.txt, tokenizer_config.json and generation_config.json.
   explicit WhisperTranscriber(const std::filesystem::path &model_directory);
 
-  qwen3_asr::TranscriptionResult
+  omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const WhisperOptions &options,
              const std::atomic<bool> &cancel) const;
 

@@ -9,9 +9,11 @@
 #include <utility>
 #include <vector>
 
-#include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/transcription.h"
 
 namespace qwen3_asr {
+
+using omni_common::TranscriptionCancelled;
 
 namespace mx = mlx::core;
 

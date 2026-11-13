@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_tts/qwen3_tts_model.h"
 
@@ -105,7 +106,7 @@ int main(int argc, char **argv) {
     samples.insert(samples.end(), delta.begin(), delta.end());
   };
   const std::atomic<bool> cancel(false);
-  const qwen3_asr::FinishReason finish_reason = model.Generate(
+  const omni_common::FinishReason finish_reason = model.Generate(
       prompt, sampling, max_frames, cancel, [&](const mlx::core::array &codes) {
         const int32_t *values = codes.data<int32_t>();
         frame_codes.push_back(
@@ -131,7 +132,7 @@ int main(int argc, char **argv) {
   const nlohmann::json line = {
       {"prompt_token_count", model.PromptLength(prompt)},
       {"frame_count", frame_codes.size()},
-      {"finish_reason", qwen3_asr::FinishReasonName(finish_reason)},
+      {"finish_reason", omni_common::FinishReasonName(finish_reason)},
       {"seconds", seconds},
       {"first_audio_seconds", first_audio_seconds.value_or(seconds)},
       {"audio_seconds", audio_seconds},

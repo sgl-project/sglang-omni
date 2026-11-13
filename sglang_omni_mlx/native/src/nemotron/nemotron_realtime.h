@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "common/transcription.h"
 #include "nemotron/nemotron_transcriber.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/realtime.h"
@@ -50,7 +51,7 @@ private:
   // A failed decode leaves the stream half advanced, so nothing decodes after.
   bool failed_ = false;
   std::string shown_text_;
-  qwen3_asr::TranscriptionResult final_result_;
+  omni_common::TranscriptionResult final_result_;
 };
 
 } // namespace nemotron

@@ -48,14 +48,14 @@
 #include "common/audio.h"
 #include "common/http.h"
 #include "common/text.h"
+#include "common/transcription.h"
 #include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "qwen3_tts/qwen3_tts_model.h"
 
 namespace {
 
+using omni_common::TranscriptionResult;
 using omni_server::Json;
-using qwen3_asr::TranscriptionResult;
 
 constexpr const char *kDefaultSpeaker = "vivian";
 constexpr size_t kMaxInputCharacters = 4096;
@@ -619,7 +619,7 @@ bool ClientLeft(int client_socket) {
 
 // Thrown by a generation that reaches its request's deadline; a cancellation,
 // so it is never logged as a failure.
-class DeadlineReached : public qwen3_asr::TranscriptionCancelled {};
+class DeadlineReached : public omni_common::TranscriptionCancelled {};
 
 // Whether error is a generation stopping at its request's deadline.
 bool ReachedDeadline(std::exception_ptr error) {
@@ -639,7 +639,7 @@ bool ReachedDeadline(std::exception_ptr error) {
 void LogFailure(std::exception_ptr error) {
   try {
     std::rethrow_exception(error);
-  } catch (const qwen3_asr::TranscriptionCancelled &) {
+  } catch (const omni_common::TranscriptionCancelled &) {
   } catch (const std::exception &failure) {
     // Note (Minyi Tang): only the exception type is logged, never the text.
     std::cerr << "speech generation failed: " << typeid(failure).name() << "\n";
@@ -870,7 +870,7 @@ private:
         "X-SGLang-Omni-Total-Tokens: %zu\r\nConnection: close\r\n\r\n",
         request.response_format.c_str(), audio.size(),
         request.response_format.c_str(), request_id.c_str(),
-        qwen3_asr::FinishReasonName(channel->result.finish_reason),
+        omni_common::FinishReasonName(channel->result.finish_reason),
         prompt_tokens, completion_tokens, prompt_tokens, completion_tokens,
         prompt_tokens + completion_tokens);
     mg_write(connection, audio.data(), audio.size());
@@ -938,14 +938,14 @@ private:
       // Note (Minyi Tang): CUDA answers no audio output with an error.
       throw std::runtime_error("Qwen3-TTS generated no audio codes");
     } else if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::TranscriptionCancelled();
     } else if (std::chrono::steady_clock::now() >= deadline) {
       throw DeadlineReached();
     } else {
     }
     std::vector<float> remaining = stream.Finish();
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::TranscriptionCancelled();
     } else if (std::chrono::steady_clock::now() >= deadline) {
       throw DeadlineReached();
     } else if (!request.stream && remaining.empty()) {

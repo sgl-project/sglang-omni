@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/transcription.h"
 #include "cosyvoice3/cosyvoice3_model.h"
 #include "nlohmann/json.hpp"
 
@@ -219,7 +220,7 @@ int main(int argc, char **argv) {
   const nlohmann::json line = {
       {"text_token_count", prompt_text_ids.size()},
       {"speech_token_count", generated.speech_tokens.size()},
-      {"finish_reason", qwen3_asr::FinishReasonName(generated.finish_reason)},
+      {"finish_reason", omni_common::FinishReasonName(generated.finish_reason)},
       {"load_seconds", load_seconds},
       {"reference_seconds", reference_seconds},
       {"token_seconds", tokens_seconds},
