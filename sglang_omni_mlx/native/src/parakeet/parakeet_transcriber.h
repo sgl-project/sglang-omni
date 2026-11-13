@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Parakeet TDT transcription as Voxt's Swift path runs it: the audio decoded
-// in overlapping chunks, each with greedy TDT decoding, the chunks' tokens
-// merged on their overlap, and the tokens grouped into timed sentences.
+// Parakeet TDT transcription with greedy decoding and timed sentences.
 #pragma once
 
 #include <atomic>
@@ -15,9 +13,11 @@
 namespace parakeet {
 
 struct ParakeetOptions {
-  // The chunk length Voxt asks for; the Swift port decodes 5 s chunks for
-  // 1199 s or more and at least 0.5 s otherwise, each overlapping the last
-  // by 1 s.
+  // Whole-recording mode (1199 s or more) cuts at quiet boundaries within a
+  // 30 s limit, reserving at least 10 s for the final tail when split.
+  // Recovery padding uses only spare encoder capacity; no source is dropped.
+  // Automatic decoding retries audible blank tails at most twice. Explicit
+  // lengths use fixed windows with 1 s overlap and no recovery.
   double chunk_duration_seconds = 1200.0;
 };
 
@@ -47,6 +47,10 @@ private:
   // The tokens greedy TDT decoding emits on one chunk, in sentence order.
   std::vector<AlignedToken> DecodeChunk(const std::vector<float> &samples,
                                         const std::atomic<bool> &cancel) const;
+
+  std::vector<AlignedToken>
+  DecodeFinalChunk(const std::vector<float> &samples,
+                   const std::atomic<bool> &cancel) const;
 
   ParakeetModel model_;
   std::vector<std::string> token_texts_;

@@ -2,9 +2,11 @@
 // Shared WAV decoding, mel filters, Whisper features and silence detection.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "mlx/mlx.h"
@@ -27,6 +29,23 @@ std::vector<float> DecodeWav(std::string_view wav_bytes,
 std::string Pcm16Bytes(const std::vector<float> &samples);
 // A mono 16-bit WAV file around PCM bytes.
 std::string WavBytes(const std::string &pcm, int sample_rate);
+
+// Center of the earliest quietest complete window in [start_sample,
+// end_sample). Throws std::invalid_argument for invalid bounds or a window that
+// does not fit.
+size_t QuietestAudioPosition(const std::vector<float> &samples,
+                             size_t start_sample, size_t end_sample,
+                             size_t window_samples);
+
+// Consecutive ranges no longer than max_chunk_samples, cut at a quiet window
+// in the last search_samples before each limit; short audio stays whole.
+// When split, reserve at least min_tail_samples for the final range by moving
+// the preceding search earlier. Requires min_tail_samples <= max_chunk_samples
+// / 2 and 0 < window_samples <= search_samples <= max_chunk_samples.
+std::vector<std::pair<size_t, size_t>>
+EnergyCutChunks(const std::vector<float> &samples, size_t max_chunk_samples,
+                size_t search_samples, size_t window_samples,
+                size_t min_tail_samples = 0);
 
 // Slaney-scale, Slaney-normalized filters [frequency_bins, mel_bins], built in
 // float32 in the same order as Voxt's Swift front end.

@@ -6,8 +6,9 @@
 //   parakeet_server --model-path DIR [--model-name NAME] [--host H] [--port P]
 //   parakeet_server --supervised --model-kind parakeet --model-directory DIR
 //
-// Request fields beside the audio: chunk_duration (the chunk length Voxt
-// asks for, in seconds), stream and include_generation_metadata. Segments
+// Request fields beside the audio: chunk_duration (fixed windows in seconds,
+// or 1199 or more for automatic pause-aligned chunks), stream and
+// include_generation_metadata. Segments
 // are the transcript's timed sentences.
 #include <memory>
 #include <stdexcept>
@@ -19,7 +20,7 @@ namespace {
 
 // Note (Jiaxin Deng): chunks overlap by 1 s, so a shorter request advances a
 // sample at a time, and the encoder's attention grows with the square of a
-// longer one; 1199 s or more asks for 5 s chunks.
+// longer one; automatic mode bounds chunks to 30 s at quiet boundaries.
 constexpr double kMinChunkDurationSeconds = 2.0;
 constexpr double kMaxChunkDurationSeconds = 300.0;
 constexpr double kWholeRecordingChunkDurationSeconds = 1199.0;
