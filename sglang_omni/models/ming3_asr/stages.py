@@ -54,7 +54,10 @@ class Ming3ASRConfig(Ming3AudioConfig):
         text_config: dict[str, JsonValue] | None = None,
         **kwargs: JsonValue,
     ) -> None:
-        super().__init__(text_config, **kwargs)
+        fields = dict(text_config or {})
+        # note (wirybeaver): ASR normalizes selected expert probabilities even when the checkpoint omits this flag.
+        fields.setdefault("norm_topk_prob", True)
+        super().__init__(fields, **kwargs)
 
 
 def load_checkpoint_config(model_path: str) -> dict[str, JsonValue]:
