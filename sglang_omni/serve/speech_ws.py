@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Mapping
 
+import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 from starlette.types import Message
@@ -20,7 +22,9 @@ from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
     apply_speed,
     encode_pcm,
+    encode_wav,
     select_audio_delta,
+    to_numpy,
 )
 from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechStreamSessionConfig
 from sglang_omni.serve.speech_errors import (
@@ -56,6 +60,7 @@ MAX_BUFFERED_RECEIVE_BYTES_DURING_GENERATION = (
 SENTENCE_BOUNDARIES = frozenset(".!?。！？")
 CLAUSE_BOUNDARIES = frozenset(".!?。！？,，;；")
 SUPPORTED_SPLIT_GRANULARITIES = frozenset({"sentence", "clause"})
+CARRY_REFERENCE_FORMATS = frozenset({"pcm", "wav"})
 SESSION_CONFIG_ENVELOPE_KEYS = frozenset({"type", "session"})
 
 
@@ -96,6 +101,7 @@ class SpeechWebSocketSession:
         self.buffered_receive_messages: deque[Message] = deque()
         self.buffered_receive_message_bytes = 0
         self.config_prepared_request: PreparedSpeechRequest | None = None
+        self.previous_reference_descriptors: list[SpeechReferenceDescriptor] = []
 
     async def run(self) -> None:
         try:
@@ -293,6 +299,17 @@ class SpeechWebSocketSession:
             )
         else:
             pass
+        if (
+            config.carry_previous_audio
+            and config.response_format.lower() not in CARRY_REFERENCE_FORMATS
+        ):
+            supported = ", ".join(sorted(CARRY_REFERENCE_FORMATS))
+            raise bad_request(
+                f"carry_previous_audio=true requires response_format in: {supported}",
+                param="response_format",
+            )
+        else:
+            pass
         prepared = await asyncio.to_thread(
             self.speech_service.prepare_generation_request,
             self.speech_request_from_config(config, "probe"),
@@ -380,13 +397,15 @@ class SpeechWebSocketSession:
         gen_req = self.speech_service.build_generate_request(
             request,
             validate=False,
-            reference_descriptors=self.config_reference_descriptors(),
+            reference_descriptors=self.current_reference_descriptors(),
             uploaded_voice=self.config_uploaded_voice(),
         )
         emitted_samples = 0
         total_bytes = 0
         chunk_count = 0
         started = False
+        sample_rate = DEFAULT_SAMPLE_RATE
+        pcm_pieces: list[np.ndarray] = []
         async for chunk in self.client.generate(gen_req, request_id=request_id):
             if chunk.audio_data is None:
                 continue
@@ -406,6 +425,10 @@ class SpeechWebSocketSession:
                 audio_data, sample_rate = apply_speed(
                     audio_data, self.config.speed, sample_rate
                 )
+            else:
+                pass
+            if self.config.carry_previous_audio:
+                pcm_pieces.append(audio_data)
             else:
                 pass
             audio_bytes = encode_pcm(audio_data, sample_rate)
@@ -430,6 +453,12 @@ class SpeechWebSocketSession:
             raise ClientError("No audio output generated from the pipeline.")
         else:
             pass
+        if self.config.carry_previous_audio:
+            self.store_previous_audio(
+                sentence, encode_wav(np.concatenate(pcm_pieces), sample_rate)
+            )
+        else:
+            pass
         return total_bytes
 
     async def send_sentence_audio(
@@ -444,7 +473,7 @@ class SpeechWebSocketSession:
         gen_req = self.speech_service.build_generate_request(
             request,
             validate=False,
-            reference_descriptors=self.config_reference_descriptors(),
+            reference_descriptors=self.current_reference_descriptors(),
             uploaded_voice=self.config_uploaded_voice(),
         )
         result = await self.client.speech(
@@ -465,6 +494,20 @@ class SpeechWebSocketSession:
             sample_rate=result.sample_rate or DEFAULT_SAMPLE_RATE,
         )
         await self.send_audio_frame(result.audio_bytes)
+        if self.config.carry_previous_audio:
+            self.store_previous_audio(
+                sentence,
+                (
+                    result.audio_bytes
+                    if request.response_format == "wav"
+                    else encode_wav(
+                        to_numpy(result.audio_bytes),
+                        result.sample_rate or DEFAULT_SAMPLE_RATE,
+                    )
+                ),
+            )
+        else:
+            pass
         return len(result.audio_bytes)
 
     def speech_request_from_config(
@@ -490,7 +533,7 @@ class SpeechWebSocketSession:
         config = config or self.config
         assert config is not None
         payload = config.model_dump(
-            exclude={"stream_audio", "split_granularity"},
+            exclude={"stream_audio", "split_granularity", "carry_previous_audio"},
             exclude_none=True,
         )
         payload["input"] = sentence
@@ -503,6 +546,24 @@ class SpeechWebSocketSession:
         else:
             pass
         return self.config_prepared_request.reference_descriptors
+
+    def current_reference_descriptors(self) -> list[SpeechReferenceDescriptor]:
+        return (
+            self.previous_reference_descriptors or self.config_reference_descriptors()
+        )
+
+    def store_previous_audio(self, sentence: str, wav_bytes: bytes) -> None:
+        if not self.config_reference_descriptors():
+            return
+        else:
+            pass
+        self.previous_reference_descriptors = [
+            {
+                "data": base64.b64encode(wav_bytes).decode("ascii"),
+                "media_type": "audio/wav",
+                "text": sentence,
+            }
+        ]
 
     def config_uploaded_voice(self) -> UploadedVoiceReference | None:
         if self.config_prepared_request is None:
@@ -758,16 +819,17 @@ def speech_error_from_exception(exc: Exception) -> SpeechAPIError:
 
 
 def validate_raw_session_fields(payload: Mapping[str, object]) -> None:
-    if "stream_audio" in payload and payload["stream_audio"] is not None:
-        if not isinstance(payload["stream_audio"], bool):
-            raise bad_request(
-                "stream_audio must be a boolean",
-                param="stream_audio",
-            )
+    for field_name in ("stream_audio", "carry_previous_audio"):
+        if field_name in payload and payload[field_name] is not None:
+            if not isinstance(payload[field_name], bool):
+                raise bad_request(
+                    f"{field_name} must be a boolean",
+                    param=field_name,
+                )
+            else:
+                pass
         else:
             pass
-    else:
-        pass
     if "split_granularity" in payload and payload["split_granularity"] is not None:
         if not isinstance(payload["split_granularity"], str):
             raise bad_request(
