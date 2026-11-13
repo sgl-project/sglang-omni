@@ -64,6 +64,10 @@ type helperServer struct {
 
 	events     *windowsEventLoop
 	automation *automationThread
+	hotkeys    *windowsHotkeys
+
+	frontMu    sync.RWMutex
+	frontCache proto.App
 }
 
 func implementedMethods() []string {
@@ -77,6 +81,8 @@ func implementedMethods() []string {
 		proto.MethodCaptureDevices,
 		proto.MethodCaptureStart,
 		proto.MethodCaptureStop,
+		proto.MethodHotkeyConfigure,
+		proto.MethodHotkeyStatus,
 		proto.MethodTextFocus,
 		proto.MethodTextPaste,
 	}
@@ -101,6 +107,7 @@ func runHelper() error {
 	}
 	server.automation = automation
 	defer automation.close()
+	server.hotkeys = newWindowsHotkeys(server)
 
 	messages := make(chan proto.Message)
 	readErrors := make(chan error, 1)
@@ -231,6 +238,20 @@ func (server *helperServer) serve(message proto.Message) {
 		server.startCapture(message)
 	case proto.MethodCaptureStop:
 		server.stopCapture(message)
+	case proto.MethodHotkeyConfigure:
+		var params proto.HotkeyConfigureParams
+		if err := message.DecodeParams(&params); err != nil {
+			server.fail(message.ID, proto.CodeBadRequest, "Bad params: %v", err)
+			return
+		}
+		status, err := server.hotkeys.configure(params)
+		if err != nil {
+			server.fail(message.ID, proto.CodeBadRequest, "Bad hotkey configuration: %v", err)
+			return
+		}
+		server.result(message.ID, status)
+	case proto.MethodHotkeyStatus:
+		server.result(message.ID, server.hotkeys.status())
 	case proto.MethodTextFocus, proto.MethodTextPaste:
 		server.serveTextIO(message)
 	default:
@@ -284,7 +305,24 @@ func (server *helperServer) foregroundChanged(windowHandle uintptr) {
 	if err != nil || app.PID == os.Getpid() {
 		return
 	}
+	server.frontMu.Lock()
+	server.frontCache = app
+	server.frontMu.Unlock()
 	server.notify(proto.MethodAppActivated, app)
+}
+
+func (server *helperServer) cachedFront() proto.App {
+	server.frontMu.RLock()
+	front := server.frontCache
+	server.frontMu.RUnlock()
+	if front.PID != 0 {
+		return front
+	}
+	front, err := frontmostApp()
+	if err == nil {
+		return front
+	}
+	return proto.App{}
 }
 
 func (server *helperServer) registerJob(id, method string) (*helperJob, *proto.Error) {
