@@ -64,6 +64,7 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.utils.cpu import automatic_video_decode_threads
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 from sglang_omni.utils.misc import avail_gpu_mem
+from sglang_omni.utils.process import name_native_thread
 
 if TYPE_CHECKING:
 
@@ -1086,7 +1087,9 @@ def create_preprocessing_executor(
     return PreprocessingScheduler(
         preprocessor,
         ThreadPoolExecutor(
-            max_workers=max_concurrency, thread_name_prefix="preprocessing-video"
+            max_workers=max_concurrency,
+            thread_name_prefix="preprocessing-video",
+            initializer=name_native_thread,
         ),
     )
 
