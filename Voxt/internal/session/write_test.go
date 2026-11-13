@@ -526,6 +526,24 @@ func TestTranslateFallback(t *testing.T) {
 	}
 }
 
+func TestHistoryKeepsLLMWithFrozenClock(t *testing.T) {
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	h := newHarness(t, &fakeFile{text: "x"}, &fakeLLM{text: "早上好"}, func(c *Config, _ *settings.Settings) {
+		c.Select = &fakeSelector{text: "Good morning"}
+		c.Now = func() time.Time { return now }
+	})
+	if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack}); err != nil {
+		t.Fatal(err)
+	}
+	end := h.rec.wait(t)
+	if end.Timings.LLM != 0 {
+		t.Fatalf("the frozen clock advanced: %v", end.Timings.LLM)
+	}
+	if entries := h.hist.all(); len(entries) != 1 || entries[0].LLMProvider != "deepseek" || entries[0].LLMModel != "deepseek-chat" {
+		t.Errorf("entries %+v", entries)
+	}
+}
+
 func TestTranslateTarget(t *testing.T) {
 	s := settings.Defaults()
 	for _, tc := range []struct {

@@ -17,10 +17,16 @@ import (
 )
 
 func TestFamilyConformance(t *testing.T) {
-	conformance.Run(t, func(t testing.TB, fx *conformance.Fixture, bundleID string) any {
+	newApp := func(t testing.TB, fx *conformance.Fixture, bundleID string) any {
 		f := Open(Config{BundleID: bundleID, Version: "0.1.0", Dir: fx.Family, Hub: fx.Hub, System: conformance.FixtureSystem{}, Logf: t.Logf}, settings.Defaults())
 		return &adapter{fx: fx, f: f, prefs: settings.Defaults()}
-	})
+	}
+	for _, scenario := range conformance.Scenarios {
+		t.Run(scenario.Name, func(t *testing.T) {
+			fx := conformance.New(t)
+			scenario.Run(t, fx, newApp)
+		})
+	}
 }
 
 type adapter struct {

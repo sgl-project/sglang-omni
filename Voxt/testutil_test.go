@@ -269,6 +269,35 @@ func requireCJKFont(t *testing.T) {
 	}
 }
 
+func shellWithFakeBin(shell, dir string, args ...string) *exec.Cmd {
+	if runtime.GOOS != "windows" {
+		cmd := exec.Command(shell, args...)
+		cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		return cmd
+	}
+	path := filepath.ToSlash(dir)
+	volume := filepath.VolumeName(path)
+	if len(volume) >= 2 && volume[1] == ':' {
+		path = "/" + strings.ToLower(volume[:1]) + strings.TrimPrefix(path, volume)
+	}
+	if len(args) > 0 && args[0] == "-c" {
+		cmd := exec.Command(shell, "-c", "PATH="+path+":$PATH; bash -s")
+		cmd.Stdin = strings.NewReader(args[1])
+		cmd.Env = os.Environ()
+		return cmd
+	}
+	command := "PATH=" + path + ":$PATH; "
+	for i, arg := range args {
+		if i > 0 {
+			command += " "
+		}
+		command += "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+	}
+	cmd := exec.Command(shell, "-c", command)
+	cmd.Env = os.Environ()
+	return cmd
+}
+
 // frames runs the tester a few frames, so state set in one shows.
 func frames(tt *ui.Tester) {
 	for range 3 {
@@ -276,9 +305,41 @@ func frames(tt *ui.Tester) {
 	}
 }
 
+var windowsHotkeyExpectation = strings.NewReplacer(
+	"Right ⌥ ⇧", "Right Alt Shift",
+	"⌃ Right ⌥", "Ctrl Right Alt",
+	"⌃⌥Space", "Ctrl Alt Space",
+	"⌃⌥V", "Ctrl Alt V",
+	"⌃⌘V", "Ctrl Win V",
+	"⌃⇧⌘K", "Ctrl Shift Win K",
+	"⌃⌥K", "Ctrl Alt K",
+	"⌘Space", "Win Space",
+	"macOS uses these keys", "Windows uses these keys",
+	"macOS asks for the microphone", "Windows asks for the microphone",
+	"⇧⌘K", "Shift Win K",
+	"Right ⌥", "Right Alt",
+	"Right ⌘", "Right Win",
+	"⌥Tab", "Alt Tab",
+	"⌥Space", "Alt Space",
+	"⌥ Mouse button 4", "Alt Mouse button 4",
+	"⌥⇧", "Alt Shift",
+	"fn ⇧", "fn Shift",
+	"fn ⌃", "fn Ctrl",
+	"右 ⌘", "右 Win",
+	"⌥空格", "Alt 空格",
+)
+
+func platformText(text string) string {
+	if runtime.GOOS == "windows" {
+		return windowsHotkeyExpectation.Replace(text)
+	}
+	return text
+}
+
 // click clicks a label and runs the frames after it.
 func click(t *testing.T, tt *ui.Tester, label string) {
 	t.Helper()
+	label = platformText(label)
 	frames(tt)
 	if err := tt.Click(label); err != nil {
 		t.Fatalf("click %q: %v (texts: %q)", label, err, firstTexts(tt))
@@ -293,18 +354,21 @@ func firstTexts(tt *ui.Tester) []string {
 
 // has reports whether the view shows s.
 func has(tt *ui.Tester, s string) bool {
+	s = platformText(s)
 	frames(tt)
 	return tt.HasText(s) || slices.Contains(tt.Texts(), s)
 }
 
 // hasExact reports whether the view shows a text that is s.
 func hasExact(tt *ui.Tester, s string) bool {
+	s = platformText(s)
 	frames(tt)
 	return slices.Contains(tt.Texts(), s)
 }
 
 // hasPrefix reports whether a text on screen starts with s.
 func hasPrefix(tt *ui.Tester, s string) bool {
+	s = platformText(s)
 	for _, x := range tt.Texts() {
 		if strings.HasPrefix(x, s) {
 			return true

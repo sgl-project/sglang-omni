@@ -41,9 +41,14 @@ func Find(resources string) string {
 		}
 		return p
 	}
+	name := BinName
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
 	for _, p := range []string{
-		filepath.Join(resources, "helper", BinName),
-		filepath.Join(resources, runtime.GOOS+"-"+runtime.GOARCH, "helper", BinName),
+		filepath.Join(resources, "helper", name),
+		filepath.Join(resources, runtime.GOOS+"-"+runtime.GOARCH, "helper", name),
+		filepath.Join(exeDir(), name),
 	} {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			if abs, err := filepath.Abs(p); err == nil {
@@ -53,6 +58,15 @@ func Find(resources string) string {
 		}
 	}
 	return ""
+}
+
+// exeDir is the directory of the running executable, for the unpackaged
+// (go build) layout where the helper sits beside the app.
+func exeDir() string {
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Dir(exe)
+	}
+	return "."
 }
 
 // State is where the helper process is in its life.

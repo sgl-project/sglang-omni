@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
@@ -56,9 +57,15 @@ func SeedModel(hub string, m models.Model) error {
 			return err
 		}
 		os.Remove(link)
-		target := strings.Repeat("../", strings.Count(f.Path, "/")+2) + "blobs/" + f.SHA256
-		if err := os.Symlink(target, link); err != nil {
-			return err
+		if runtime.GOOS == "windows" {
+			if err := os.Link(blob, link); err != nil {
+				return err
+			}
+		} else {
+			target := strings.Repeat("../", strings.Count(f.Path, "/")+2) + "blobs/" + f.SHA256
+			if err := os.Symlink(target, link); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

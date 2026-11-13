@@ -1,0 +1,7 @@
+{
+  "schema": "actnow.models.claims/2",
+  "app": "dicta",
+  "bundleId": "dev.hehehai.dicta",
+  "root": "/Users/u/.cache/huggingface/hub",
+  "claims": [{ "repo": "mlx-community/silero-vad", "revision": "7bc17f22d3c0451bd3a6cd71e759b009271ff49a" }]
+}

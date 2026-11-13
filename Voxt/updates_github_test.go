@@ -433,6 +433,7 @@ func TestReleaseAbout(t *testing.T) {
 	if !hasPrefix(tt, "Last checked") || has(tt, "Not checked yet.") {
 		t.Errorf("last check: %q", firstTexts(tt))
 	}
+	see(t, tt, "Check for updates automatically")
 	click(t, tt, "Check for updates automatically")
 	if !a.settings.Get().Updates.NoAutoCheck {
 		t.Error("the switch did not turn the check off")

@@ -9,8 +9,8 @@ package main
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -55,8 +55,8 @@ echo metal > "$1/bin/mlx.metallib"
 	write(filepath.Join(fakeBin, "uv"), "#!/bin/sh\nexit 0\n")
 	write(filepath.Join(fakeBin, "codesign"), "#!/bin/sh\nexit 0\n")
 	out := filepath.Join(root, "staged")
-	cmd := exec.Command("bash", filepath.Join(root, "scripts/build-omni.sh"), "--out", out)
-	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"), "OMNI_NATIVE="+native)
+	cmd := shellWithFakeBin("bash", fakeBin, filepath.Join(root, "scripts/build-omni.sh"), "--out", out)
+	cmd.Env = append(cmd.Env, "OMNI_NATIVE="+native)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build-omni.sh failed: %v\n%s", err, output)
 	}
@@ -69,15 +69,19 @@ echo metal > "$1/bin/mlx.metallib"
 	if err != nil || !bytes.Equal(copied, server) {
 		t.Fatalf("silero_vad_server is not a copy of qwen3_asr_server: %v", err)
 	}
-	if fi, err := os.Stat(silero); err != nil || fi.Mode()&0o111 == 0 {
-		t.Fatalf("silero_vad_server is not executable: %v", fi.Mode())
+	if runtime.GOOS == "windows" {
+		t.Log("skipping executable mode-bit assertions: Windows does not expose Unix permission bits")
+	} else {
+		if fi, err := os.Stat(silero); err != nil || fi.Mode()&0o111 == 0 {
+			t.Fatalf("silero_vad_server is not executable: %v", fi.Mode())
+		}
+		for _, s := range others {
+			if fi, err := os.Stat(filepath.Join(out, "bin", s)); err != nil || fi.Mode()&0o111 == 0 {
+				t.Errorf("%s is not staged: %v", s, err)
+			}
+		}
 	}
 	if len(others) < 6 {
 		t.Fatalf("the specs name %v", others)
-	}
-	for _, s := range others {
-		if fi, err := os.Stat(filepath.Join(out, "bin", s)); err != nil || fi.Mode()&0o111 == 0 {
-			t.Errorf("%s is not staged: %v", s, err)
-		}
 	}
 }

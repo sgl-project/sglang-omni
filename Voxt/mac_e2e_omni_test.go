@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 // The real speech models on a Mac (VOXTNEW_MAC_E2E=1, the runtime in

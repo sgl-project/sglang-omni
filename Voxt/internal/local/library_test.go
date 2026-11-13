@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -89,7 +90,7 @@ func TestLibrary(t *testing.T) {
 	if len(opened) != 1 || opened[0] != want[0] {
 		t.Errorf("opened %q, want %q", opened, want)
 	}
-	if !strings.Contains(want[0], "/models--mlx-community--Qwen3-ASR-0.6B-4bit/snapshots/313d850181767edf09f00a9c289becca70e58cd0") {
+	if !strings.Contains(filepath.ToSlash(want[0]), "/models--mlx-community--Qwen3-ASR-0.6B-4bit/snapshots/313d850181767edf09f00a9c289becca70e58cd0") {
 		t.Errorf("snapshot %s", want[0])
 	}
 	if lib.Dir(models.VADSilero) != snapshot(hub, models.VADSilero) || lib.Dir(models.ASRAccurate) != "" {

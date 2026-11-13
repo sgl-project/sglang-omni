@@ -56,7 +56,8 @@ func TestSidebarAndShortcuts(t *testing.T) {
 	}
 	// Settings, the System section's last item, opens the dialog over the
 	// page, and is the chosen item while it shows.
-	click(t, tt, "Settings")
+	tt.Key(ui.Cmd, ui.KeyComma)
+	frames(tt)
 	if !a.settingsOpen || a.shownPath() != "/settings/general" || a.router.Path() != "/app-enhancement" || a.nav != settingsPath {
 		t.Fatalf("settings: %v %s over %s, chosen %s", a.settingsOpen, a.shownPath(), a.router.Path(), a.nav)
 	}

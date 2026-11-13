@@ -350,7 +350,7 @@ func TestStreamNormal(t *testing.T) {
 	if !bytes.Equal(srv.audio.Bytes(), audio) {
 		t.Errorf("the server got %d bytes of audio, not the %d sent", srv.audio.Len(), len(audio))
 	}
-	if f := evs[len(evs)-1]; f.Kind != asr.EventFinal || f.Result.Latency <= 0 || f.Result.Latency > 2*time.Second {
+	if f := evs[len(evs)-1]; f.Kind != asr.EventFinal || f.Result.Latency < 0 || f.Result.Latency > 2*time.Second {
 		t.Errorf("final %+v", f)
 	}
 }

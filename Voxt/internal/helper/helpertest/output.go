@@ -16,11 +16,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -81,8 +81,17 @@ func (s *OutputSystem) saveLocked() {
 	}
 	data, _ := json.Marshal(s)
 	tmp := s.path + ".tmp"
-	if os.WriteFile(tmp, data, 0o644) == nil {
-		os.Rename(tmp, s.path)
+	for attempt := 0; ; attempt++ {
+		if os.WriteFile(tmp, data, 0o644) == nil {
+			if err := os.Rename(tmp, s.path); err == nil {
+				return
+			}
+		}
+		if runtime.GOOS != "windows" || attempt == 99 {
+			return
+		}
+		// A reader can briefly hold the old file open on Windows.
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -250,8 +259,7 @@ func (h *OutputHelper) alive(pid int) bool {
 	if h.Alive != nil {
 		return h.Alive(pid)
 	}
-	p, err := os.FindProcess(pid)
-	return err == nil && p.Signal(syscall.Signal(0)) == nil
+	return processAlive(pid)
 }
 
 // Claims are the devices it muted.

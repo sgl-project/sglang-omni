@@ -20,19 +20,10 @@ func TestVADServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	withCopy := func(c *Config) {
-		bin := t.TempDir()
-		for _, name := range []string{"qwen3_asr_server", "silero_vad_server"} {
-			if err := os.Symlink(exe, filepath.Join(bin, name)); err != nil {
-				t.Fatal(err)
-			}
-		}
-		c.Binary = filepath.Join(bin, "qwen3_asr_server")
-	}
 	for _, c := range []struct {
 		tune func(*Config)
 		want string
-	}{{withCopy, "silero_vad_server"}, {nil, filepath.Base(exe)}} {
+	}{{withServers(t, "silero_vad_server"), "silero_vad_server"}, {nil, filepath.Base(exe)}} {
 		f := newFake(t, omnitest.Opts{}, c.tune)
 		v, err := NewVAD(f.rt, f.model(VADSilero))
 		if err != nil {

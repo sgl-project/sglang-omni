@@ -221,12 +221,19 @@ func TestTranscribeHotkeyConflicts(t *testing.T) {
 func TestTranscribePasteLast(t *testing.T) {
 	a, tt := trTester(t)
 	click(t, tt, "Keys to paste the last result")
-	click(t, tt, "Off")
+	tt.Key(0, ui.KeyHome)
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
 	if k := a.lib.settings.Get().Features.PasteLast.Keys; k != "" {
 		t.Fatalf("paste-last %q", k)
 	}
 	click(t, tt, "Keys to paste the last result")
-	click(t, tt, "Right ⌘")
+	tt.Key(0, ui.KeyHome)
+	for range 4 {
+		tt.Key(0, ui.KeyDown)
+	}
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
 	if k := a.lib.settings.Get().Features.PasteLast; k.Keys != "RightCommand" || k.Trigger != settings.TriggerTap {
 		t.Fatalf("paste-last %+v", k)
 	}

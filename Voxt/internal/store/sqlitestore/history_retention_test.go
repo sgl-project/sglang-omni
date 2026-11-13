@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -147,14 +148,10 @@ func TestPruneByCount(t *testing.T) {
 	}
 }
 
-// TestDeleteAudioKeepsWhatStays: a recording that cannot be deleted (on
-// an external folder that went read-only) keeps its entry naming it, and
-// DeleteAudio says so. It used to clear every entry first, so such a file
-// stayed on disk with nothing pointing to it.
+// TestDeleteAudioKeepsWhatStays: a recording that cannot be deleted keeps
+// its entry naming it, and DeleteAudio says so. It used to clear every
+// entry first, so such a file stayed on disk with nothing pointing to it.
 func TestDeleteAudioKeepsWhatStays(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root deletes a read-only folder's files")
-	}
 	s := openTest(t, t.TempDir())
 	h := s.History()
 	locked := filepath.Join(t.TempDir(), "Recordings")
@@ -168,10 +165,21 @@ func TestDeleteAudioKeepsWhatStays(t *testing.T) {
 		e.Audio = id + ".wav"
 		h.Put(ctx, e)
 	}
-	if err := os.Chmod(locked, 0o500); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		file, err := os.Open(filepath.Join(locked, "a.wav"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { file.Close() })
+	} else {
+		if os.Geteuid() == 0 {
+			t.Skip("root deletes a read-only folder's files")
+		}
+		if err := os.Chmod(locked, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(locked, 0o755) })
 	}
-	t.Cleanup(func() { os.Chmod(locked, 0o755) })
 	n, err := h.DeleteAudio(ctx)
 	if err == nil {
 		t.Errorf("deleted %d, no error", n)

@@ -17,7 +17,6 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -102,7 +101,7 @@ func (s *Session) listen() (net.Listener, int, error) {
 		if err == nil {
 			return l, port, nil
 		}
-		if !errors.Is(err, syscall.EADDRINUSE) {
+		if !errors.Is(err, errAddrInUse) {
 			return nil, 0, &Error{Kind: KindNetwork, Err: err}
 		}
 		last = port

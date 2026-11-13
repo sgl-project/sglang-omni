@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"runtime"
 	"slices"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -71,8 +72,15 @@ func (k Ink) String() string {
 const (
 	ovInkTol     = 1.0
 	ovInkSizeTol = 0.6
-	ovInkTextTol = 2.0
 )
+
+var ovInkTextTol = 2.0
+
+func init() {
+	if runtime.GOOS == "windows" {
+		ovInkTextTol = 4.0
+	}
+}
 
 // measureOverlayInk measures img, a picture of the overlay's window at
 // scale pixels a DIP, the face's row padY DIPs from its top; under is

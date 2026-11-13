@@ -1,0 +1,12 @@
+{
+  "schema": "actnow.models.removed/1",
+  "removed": [
+    {
+      "repo": "mlx-community/gemma-4-e4b-it-4bit",
+      "revision": "475b9088d29754a3379866cf5aeb6b41acd313c2",
+      "removedBy": "dev.hehehai.dicta",
+      "at": "2026-10-20T08:00:00Z",
+      "root": "/Users/u/.cache/huggingface/hub"
+    }
+  ]
+}

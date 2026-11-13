@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -99,10 +100,18 @@ func TestEraseStopsWhenRecordingsStay(t *testing.T) {
 	if err := h.Put(context.Background(), store.Entry{ID: "e1", Kind: store.KindTranscribe, CreatedAt: time.Now(), Result: "x", Audio: "e1.wav"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(locked, 0o500); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		recording, err := os.Open(filepath.Join(locked, "e1.wav"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { recording.Close() })
+	} else {
+		if err := os.Chmod(locked, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(locked, 0o755) })
 	}
-	t.Cleanup(func() { os.Chmod(locked, 0o755) })
 	relaunched := false
 	old := appRelaunch
 	appRelaunch = func() { relaunched = true }

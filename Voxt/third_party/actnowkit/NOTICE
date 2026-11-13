@@ -1,0 +1,23 @@
+actnowkit
+Copyright 2026 ActNow (https://actnow.dev). Licensed under the Apache License
+2.0 (LICENSE).
+
+Package hfhub derives from Dicta's internal/hub, which was ported from
+AudioSmith's internal/hub at version 0.3.0 (commit f171c86), when AudioSmith
+was released under the Apache License 2.0 (as it was up to and including
+version 0.4.0-beta.1). The copyright holder, hehehai, releases that code in
+actnowkit under the Apache License 2.0. Changes made to it in later
+AudioSmith versions, which are under the GNU AGPL version 3, come into
+actnowkit only when the copyright holder contributes them here under the
+Apache License 2.0.
+  Portions Copyright 2026 the AudioSmith authors.
+
+Third-party material
+====================
+
+actnowkit links with:
+
+purego (github.com/ebitengine/purego)
+  Copyright 2022 The Ebitengine Authors. Licensed under the Apache License 2.0.
+  Used on macOS to call libSystem, Foundation, AppKit and the Security
+  framework without cgo.

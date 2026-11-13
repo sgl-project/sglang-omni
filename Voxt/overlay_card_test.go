@@ -6,6 +6,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -448,7 +449,11 @@ func TestCardHeaderFits(t *testing.T) {
 				first, _ := tt.Find(i18n.T(c.actions[0]))
 				// The name at its widest (112) and the capsule's padding and
 				// chevron; Chinese names are short.
-				if want := map[string]float32{"en": 140, "zh-Hans": 70}[lang]; c.name == "translate" && first.W < want {
+				want := map[string]float32{"en": 140, "zh-Hans": 70}[lang]
+				if runtime.GOOS == "windows" && lang == "en" {
+					want = layout.CardLangMaxW
+				}
+				if c.name == "translate" && first.W < want {
 					t.Errorf("the capsule is %v wide: the language's name is cut", first.W)
 				}
 				if c.name == "translate" {

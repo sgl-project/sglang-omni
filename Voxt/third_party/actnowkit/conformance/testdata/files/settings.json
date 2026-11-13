@@ -1,0 +1,9 @@
+{
+  "schema": "actnow.settings/1",
+  "rev": 12,
+  "updated": "2026-10-20T08:00:00Z",
+  "updatedBy": "dev.hehehai.dicta",
+  "general": { "language": "" },
+  "network": { "proxy": "", "hfEndpoints": "auto" },
+  "models": { "root": "" }
+}

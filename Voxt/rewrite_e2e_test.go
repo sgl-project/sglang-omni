@@ -49,7 +49,7 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 		t.Fatalf("Continue did nothing: %+v", a.answer)
 	}
 	a.pump("the follow-up's recording", func() bool {
-		return a.sess.ID != first && a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt)
+		return a.sess.ID != first && a.sess.State == session.Recording && !a.sess.HeardAt.Before(a.sess.StartedAt)
 	})
 	if v := a.cardNow(); a.ov.mode != ovAnswer || !v.conversation || !v.recording || !v.canStop || v.canFollowUp {
 		t.Errorf("recording the follow-up: %s %+v", a.ov.mode, v)

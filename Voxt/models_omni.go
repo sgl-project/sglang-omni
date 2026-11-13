@@ -175,7 +175,13 @@ func (a *app) omniFolder(id, dir string) (string, error) {
 	have, _ := os.ReadDir(out)
 	same := len(have) == len(links)
 	for _, f := range have {
-		if target, err := os.Readlink(filepath.Join(out, f.Name())); err != nil || target != links[f.Name()] {
+		outPath, target := filepath.Join(out, f.Name()), links[f.Name()]
+		if linked, err := os.Readlink(outPath); err == nil && linked == target {
+			continue
+		}
+		outInfo, outErr := os.Stat(outPath)
+		targetInfo, targetErr := os.Stat(target)
+		if outErr != nil || targetErr != nil || !os.SameFile(outInfo, targetInfo) {
 			same = false
 		}
 	}
@@ -189,7 +195,14 @@ func (a *app) omniFolder(id, dir string) (string, error) {
 		return "", err
 	}
 	for name, target := range links {
-		if err := os.Symlink(target, filepath.Join(out, name)); err != nil {
+		outPath := filepath.Join(out, name)
+		if err := os.Symlink(target, outPath); err == nil {
+			continue
+		}
+		if err := os.Link(target, outPath); err == nil {
+			continue
+		}
+		if err := copyFile(target, outPath); err != nil {
 			return "", err
 		}
 	}

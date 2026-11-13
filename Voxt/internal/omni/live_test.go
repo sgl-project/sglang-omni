@@ -2,9 +2,9 @@ package omni
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -321,9 +321,14 @@ func TestLiveServerDies(t *testing.T) {
 	pcm := tone(2500*time.Millisecond, 0.3)
 	sendAll(t, st, pcm)
 	pid := f.records("launch")[0].PID
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	p, err := os.FindProcess(pid)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Release()
 	f.waitLogged(t, "exited unexpectedly")
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)

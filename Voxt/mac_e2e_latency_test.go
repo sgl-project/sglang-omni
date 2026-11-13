@@ -1,3 +1,5 @@
+//go:build darwin
+
 package main
 
 // The first transcription's start, timed on a Mac through the app itself

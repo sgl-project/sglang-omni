@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -114,8 +113,6 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	}
 	t.Fatalf("timed out: %s", what)
 }
-
-func gone(pid int) bool { return syscall.Kill(pid, 0) != nil }
 
 // unloads makes c send the id of each model whose process exited
 // (resident.Unloaded) on the channel it returns.

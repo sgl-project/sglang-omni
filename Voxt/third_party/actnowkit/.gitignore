@@ -1,0 +1,7 @@
+/dist/
+*.test
+*.out
+.DS_Store
+
+# go build ./cmd/actnow-conformance output
+/actnow-conformance

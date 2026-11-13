@@ -164,7 +164,10 @@ func TestShortcutPreset(t *testing.T) {
 	if !hasExact(tt, "Custom") {
 		t.Errorf("Custom when one shortcut is yours: %q", tt.Texts())
 	}
-	click(t, tt, "fn (Auralink's keys)")
+	tt.Key(0, ui.KeyHome)
+	tt.Key(0, ui.KeyDown)
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
 	f := a.settings.Get().Features
 	if f.Transcribe.Hotkeys[0].Keys != "Fn" || f.Translate.Hotkeys[0].Keys != "Fn+Shift" ||
 		f.PasteLast.Keys != "Control+Command+V" || f.Rewrite.Hotkeys[0].Keys != "RightCommand" {
@@ -188,7 +191,9 @@ func TestShortcutPreset(t *testing.T) {
 	if n := countText(tt, "Custom"); n != 2 { // the select's and its item's
 		t.Errorf("Custom shows %d times with the list open: %q", n, tt.Texts())
 	}
-	click(t, tt, "Right ⌥ (default)")
+	tt.Key(0, ui.KeyHome)
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
 	if !has(tt, "You changed every shortcut yourself, so the preset leaves them as they are.") || a.settings.Get().Features.PasteLast.Keys != "F6" {
 		t.Errorf("nothing to change: %q, %+v", tt.Texts(), a.settings.Get().Features.PasteLast)
 	}

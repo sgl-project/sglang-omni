@@ -361,6 +361,7 @@ func TestOnboardingComesBack(t *testing.T) {
 	a, tt := obTester(t)
 	click(t, tt, "Get started")
 	click(t, tt, "Continue")
+	scrollToText(tt, "Set up a language model")
 	click(t, tt, "Set up a language model")
 	if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide is paused at the Models step.") {
 		t.Fatalf("left: open %v, %s, %q", a.ob.open, a.shownPath(), tt.Texts())

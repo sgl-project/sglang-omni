@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // seedAged puts transcriptions days old (one a day: "aged-<days>"), each
@@ -204,7 +205,7 @@ func TestHistoryRecordingsFolder(t *testing.T) {
 	if n, _ := os.ReadDir(def); len(n) != 0 {
 		t.Errorf("left %d", len(n))
 	}
-	if !has(tt, "Moved 2 recordings to "+ext) && !slices.ContainsFunc(a.toasts, func(s string) bool { return s == "Moved 2 recordings to "+ext }) {
+	if !has(tt, "Moved 2 recordings to "+uitext.ShortPath(ext)) && !slices.ContainsFunc(a.toasts, func(s string) bool { return s == "Moved 2 recordings to "+uitext.ShortPath(ext) }) {
 		t.Errorf("toast %q", a.toasts)
 	}
 	if !has(tt, "Use default") {
@@ -221,7 +222,7 @@ func TestHistoryRecordingsFolder(t *testing.T) {
 	}
 	b.navigate("/history")
 	frames(tt)
-	if !hasPrefix(tt, ext+" is not available") {
+	if !hasPrefix(tt, uitext.ShortPath(ext)+" is not available") {
 		t.Errorf("no notice: %q", firstTexts(tt))
 	}
 	// It comes back: opening the dialog finds it.

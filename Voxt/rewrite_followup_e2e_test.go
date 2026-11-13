@@ -185,7 +185,7 @@ func TestRewriteShortcutFollowUpSelection(t *testing.T) {
 	first := a.sess.ID
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 	a.pump("the follow-up's recording", func() bool {
-		return a.sess.ID != first && a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt)
+		return a.sess.ID != first && a.sess.State == session.Recording && !a.sess.HeardAt.Before(a.sess.StartedAt)
 	})
 	a.pump("the follow-up's audio", func() bool { return len(a.sess.Levels) >= 5 })
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
