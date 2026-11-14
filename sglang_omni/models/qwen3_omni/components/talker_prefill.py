@@ -219,10 +219,16 @@ class TalkerPrefillBuilder:
                 .tolist()
             ), "the thinker's prompt hidden rows are not the prompt's multimodal rows"
             if captured_positions:
+                hidden_rows = prompt_chunk.data
+                # note (ratish): rows relayed through shared memory arrive on the CPU, where a pageable copy waits for the device.
+                if hidden_rows.is_cpu:
+                    hidden_rows = host_tensor_to_device(hidden_rows, self.device)
+                else:
+                    pass
                 prompt_hidden.index_copy_(
                     0,
                     async_h2d(captured_positions, dtype=torch.long, device=self.device),
-                    prompt_chunk.data.to(prompt_hidden),
+                    hidden_rows.to(prompt_hidden),
                 )
             else:
                 pass
