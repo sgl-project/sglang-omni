@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Greedy speculation must preserve output across rejection, EOS and budgets."""
+"""Greedy speculation must preserve output across rejection, EOS, budgets and a detected language."""
 
 from __future__ import annotations
 
@@ -240,3 +240,43 @@ def test_immediate_eos(
         assert row["text"] == ""
         assert row["generated_token_count"] == 0
         assert row["finish_reason"] == "stop"
+
+
+def test_an_omitted_language_is_detected(
+    runtime_bin: Path, checkpoints: tuple[Path, Path, Path], audio: Path
+) -> None:
+    """A missing or unknown language decodes as the detected one does when requested, with or without the draft."""
+    target, draft, _ = checkpoints
+    generation = json.loads((target / "generation_config.json").read_text())
+    generation["lang_to_id"] = {"<|en|>": 26, "<|zh|>": 27}
+    generation["task_to_id"] = {"transcribe": 28}
+    generation["suppress_tokens"] = [26, 27, 28, 29, 31]
+    (target / "generation_config.json").write_text(json.dumps(generation))
+    command = [
+        str(runtime_bin / "whisper_transcribe"),
+        "--model-path",
+        str(target),
+        "--max-new-tokens",
+        "7",
+    ]
+
+    def transcribe(flags: list[str]) -> dict[str, str | int]:
+        row = json.loads(
+            subprocess.check_output([*command, *flags, str(audio)], text=True)
+        )
+        return {
+            field: row[field]
+            for field in ("text", "language", "generated_token_count", "finish_reason")
+        }
+
+    detected = transcribe([])
+    assert detected["language"] in ("en", "zh")
+    other = "zh" if detected["language"] == "en" else "en"
+    assert transcribe(["--language", other])["language"] == other
+    for draft_flags in ([], ["--draft-model-path", str(draft)]):
+        for language_flags in (
+            [],
+            ["--language", "unknown"],
+            ["--language", str(detected["language"])],
+        ):
+            assert transcribe([*draft_flags, *language_flags]) == detected
