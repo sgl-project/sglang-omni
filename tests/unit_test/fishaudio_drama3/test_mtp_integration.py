@@ -925,6 +925,7 @@ def set_up_mocked_model(
     model.audio_decoder.main_token_candidate_ids = torch.arange(codebook_size + 1)
     model.audio_decoder.sampling_step = torch.zeros((), dtype=torch.int64)
     model.audio_decoder.sampler = None
+    model.audio_decoder.fused_frame_embeddings = False
     model.audio_decoder.fused_layers_unsupported_reason.return_value = (
         fused_layers_reason
     )
@@ -1055,7 +1056,8 @@ def test_setup_model_picks_the_codebook_sampler_and_logs_why(
             True,
             None,
             f"Drama 3 tower fused layers: on for passes up to {MAX_FUSED_ROWS} rows "
-            f"({', '.join(FUSED_KERNELS)})",
+            f"({', '.join(FUSED_KERNELS)}); fused frame embeddings and decode-row "
+            f"staging: off",
         ),
     ],
 )

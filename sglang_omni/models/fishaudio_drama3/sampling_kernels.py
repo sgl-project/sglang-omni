@@ -79,6 +79,7 @@ if HAS_TRITON:
         top_p_pointer: tl.tensor,
         step_pointer: tl.tensor,
         sampled_codes_pointer: tl.tensor,
+        sampled_codes_row_stride: tl.tensor,
         seed: tl.tensor,
         stream_id: tl.tensor,
         CODEBOOK_SIZE: tl.constexpr,
@@ -89,6 +90,7 @@ if HAS_TRITON:
         TAIL_WIDTH: tl.constexpr,
         MINIMUM_TEMPERATURE: tl.constexpr,
         KEEP_TOP_P_CROSSING_TOKEN: tl.constexpr,
+        TOP_K_LIMIT: tl.constexpr,
     ) -> None:
         row = tl.program_id(0)
         columns = tl.arange(0, BLOCK_WIDTH)
@@ -119,6 +121,11 @@ if HAS_TRITON:
             SELECTED,
             False,
         )
+        top_k = tl.load(top_k_pointer + row)
+        if TOP_K_LIMIT > 0:
+            top_k = tl.minimum(top_k, TOP_K_LIMIT)
+        else:
+            pass
         sampled_code = draw_candidate(
             main_keys,
             main_weights,
@@ -127,7 +134,7 @@ if HAS_TRITON:
             row_maximum,
             weight_sum,
             top_keys,
-            tl.load(top_k_pointer + row),
+            top_k,
             tl.load(top_p_pointer + row),
             seed,
             tl.load(step_pointer),
@@ -137,7 +144,10 @@ if HAS_TRITON:
             KEY_BITS,
             KEEP_TOP_P_CROSSING_TOKEN,
         )
-        tl.store(sampled_codes_pointer + row, sampled_code.to(tl.int64))
+        tl.store(
+            sampled_codes_pointer + row * sampled_codes_row_stride,
+            sampled_code.to(tl.int64),
+        )
 
     @triton.jit
     def semantic_kernel(
@@ -151,9 +161,14 @@ if HAS_TRITON:
         top_p_pointer: tl.tensor,
         step_pointer: tl.tensor,
         main_tokens_pointer: tl.tensor,
+        main_tokens_row_stride: tl.tensor,
         codebook_zero_pointer: tl.tensor,
+        codebook_zero_row_stride: tl.tensor,
+        label_is_semantic_pointer: tl.tensor,
         seed: tl.tensor,
         semantic_begin_id: tl.tensor,
+        semantic_end_id: tl.tensor,
+        HAS_LABEL_OUTPUT: tl.constexpr,
         CANDIDATE_COUNT: tl.constexpr,
         MAIN_WIDTH: tl.constexpr,
         TAIL_WIDTH: tl.constexpr,
@@ -280,13 +295,20 @@ if HAS_TRITON:
             first_token < semantic_begin_id + CODEBOOK_SIZE
         )
         main_token = tl.where(is_repeat & is_semantic, ras_token, first_token)
-        tl.store(main_tokens_pointer + row, main_token)
+        tl.store(main_tokens_pointer + row * main_tokens_row_stride, main_token)
         tl.store(
-            codebook_zero_pointer + row,
+            codebook_zero_pointer + row * codebook_zero_row_stride,
             tl.minimum(
                 tl.maximum(main_token - semantic_begin_id, 0), CODEBOOK_SIZE - 1
             ),
         )
+        if HAS_LABEL_OUTPUT:
+            tl.store(
+                label_is_semantic_pointer + row,
+                (main_token >= semantic_begin_id) & (main_token <= semantic_end_id),
+            )
+        else:
+            pass
 
 else:
     pass
@@ -348,11 +370,20 @@ def sample_codebook_head(
     minimum_temperature: float,
     *,
     keep_top_p_crossing_token: bool = False,
+    top_k_limit: int | None = None,
+    out: torch.Tensor | None = None,
 ) -> torch.Tensor:
+    """One code per row. top_k_limit caps each row's top_k inside the kernel; out
+    may be a strided int64 column, such as one codebook of a frame buffer."""
     row_count, codebook_size = logits.shape
     assert logits.stride(1) == 1
+    assert top_k_limit is None or top_k_limit > 0
     index_bits = (codebook_size - 1).bit_length()
-    sampled_codes = torch.empty(row_count, dtype=torch.int64, device=logits.device)
+    if out is None:
+        sampled_codes = torch.empty(row_count, dtype=torch.int64, device=logits.device)
+    else:
+        assert out.dtype == torch.int64 and tuple(out.shape) == (row_count,)
+        sampled_codes = out
     codebook_head_kernel[(row_count,)](
         logits,
         logits.stride(0),
@@ -361,6 +392,7 @@ def sample_codebook_head(
         top_p.float().contiguous(),
         sampler.step,
         sampled_codes,
+        sampled_codes.stride(0),
         sampler.seed,
         stream_id,
         CODEBOOK_SIZE=codebook_size,
@@ -371,6 +403,7 @@ def sample_codebook_head(
         TAIL_WIDTH=TAIL_BLOCK_WIDTH,
         MINIMUM_TEMPERATURE=minimum_temperature,
         KEEP_TOP_P_CROSSING_TOKEN=keep_top_p_crossing_token,
+        TOP_K_LIMIT=0 if top_k_limit is None else top_k_limit,
         num_warps=SAMPLER_WARPS,
     )
     return sampled_codes
@@ -391,15 +424,36 @@ def sample_semantic_candidates(
     ras_temperature: float,
     ras_top_k: int,
     ras_top_p: float,
+    main_tokens_out: torch.Tensor | None = None,
+    codebook_zero_out: torch.Tensor | None = None,
+    label_is_semantic_out: torch.Tensor | None = None,
+    semantic_end_id: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Main tokens and codebook-0 codes, optionally written into strided int64
+    columns; label_is_semantic_out, a bool row vector, then takes whether each main
+    token lies in [semantic_begin_id, semantic_end_id]."""
     row_count = semantic_logits.shape[0]
     candidate_count = candidate_token_ids.shape[0]
     assert semantic_logits.stride(1) == 1 and previous_main_tokens.stride(1) == 1
-    index_bits = (candidate_count - 1).bit_length()
-    main_tokens = torch.empty(
-        row_count, dtype=torch.int64, device=semantic_logits.device
+    assert label_is_semantic_out is None or (
+        semantic_end_id is not None
+        and label_is_semantic_out.dtype == torch.bool
+        and tuple(label_is_semantic_out.shape) == (row_count,)
+        and label_is_semantic_out.is_contiguous()
     )
-    codebook_zero = torch.empty_like(main_tokens)
+    index_bits = (candidate_count - 1).bit_length()
+    main_tokens = (
+        torch.empty(row_count, dtype=torch.int64, device=semantic_logits.device)
+        if main_tokens_out is None
+        else main_tokens_out
+    )
+    codebook_zero = (
+        torch.empty_like(main_tokens)
+        if codebook_zero_out is None
+        else codebook_zero_out
+    )
+    for column in (main_tokens, codebook_zero):
+        assert column.dtype == torch.int64 and tuple(column.shape) == (row_count,)
     semantic_kernel[(row_count,)](
         semantic_logits,
         semantic_logits.stride(0),
@@ -411,9 +465,14 @@ def sample_semantic_candidates(
         top_p.float().contiguous(),
         sampler.step,
         main_tokens,
+        main_tokens.stride(0),
         codebook_zero,
+        codebook_zero.stride(0),
+        main_tokens if label_is_semantic_out is None else label_is_semantic_out,
         sampler.seed,
         semantic_begin_id,
+        semantic_begin_id if semantic_end_id is None else semantic_end_id,
+        HAS_LABEL_OUTPUT=label_is_semantic_out is not None,
         CANDIDATE_COUNT=candidate_count,
         MAIN_WIDTH=main_block_width(candidate_count),
         TAIL_WIDTH=TAIL_BLOCK_WIDTH,

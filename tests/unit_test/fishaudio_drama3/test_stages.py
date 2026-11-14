@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
 
 import pytest
@@ -19,7 +20,10 @@ from sglang_omni.models.fishaudio_drama3.config import (
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
-from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
+from sglang_omni.models.fishaudio_drama3.vocoder import (
+    Drama3IncrementalVocoderScheduler,
+    Drama3VocoderScheduler,
+)
 from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from tests.unit_test.fishaudio_drama3.test_prompt import (
@@ -403,6 +407,10 @@ def cpu_vocoder(factory_args: Drama3VocoderFactoryArgs) -> Drama3VocoderSchedule
         window_cuda_graphs=factory_args.window_cuda_graphs,
         decode_dtype=factory_args.decode_dtype,
         max_new_tokens=DEFAULT_MAX_NEW_TOKENS_CAP,
+        stream_decode=factory_args.stream_decode,
+        max_stream_batch_size=factory_args.max_stream_batch_size,
+        stream_slot_count=factory_args.stream_slot_count,
+        decode_step_message_budget=factory_args.decode_step_message_budget,
     )
 
 
@@ -492,4 +500,145 @@ def test_a_share_that_cannot_hold_one_longest_request_is_refused() -> None:
             num_codebooks=4,
             total_gpu_memory_fraction=0.01,
             max_new_tokens=10**9,
+        )
+
+
+@pytest.mark.parametrize(
+    ("stream_decode", "decode_dtype", "device", "fa3_supported", "expected"),
+    [
+        ("incremental", "float16", "cuda", True, True),
+        ("incremental", "float16", "cuda", False, False),
+        ("incremental", "float16", "cpu", True, False),
+        ("incremental", "float32", "cuda", True, False),
+        ("overlap", "float16", "cuda", True, False),
+    ],
+)
+def test_incremental_decode_requires_cuda_fp16_and_fa3(
+    stream_decode: str,
+    decode_dtype: str,
+    device: str,
+    fa3_supported: bool,
+    expected: bool,
+) -> None:
+    assert (
+        stages.incremental_decode_enabled(
+            stream_decode=stream_decode,
+            decode_dtype=decode_dtype,
+            device=torch.device(device),
+            fa3_supported=fa3_supported,
+        )
+        is expected
+    )
+
+
+def test_fa3_probe_is_disabled_without_a_cuda_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(stages, "cuda_compute_capability", lambda device: None)
+
+    assert stages.fa3_available(torch.device("cuda")) is False
+    assert stages.fa3_available(torch.device("cpu")) is False
+
+
+def test_fa3_probe_reads_the_capability_of_the_requested_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probed: list[torch.device] = []
+    monkeypatch.setattr(
+        stages,
+        "cuda_compute_capability",
+        lambda device: probed.append(device) or (9, 0),
+    )
+    monkeypatch.setattr(stages, "cuda_runtime_version", lambda: (12, 2))
+
+    assert stages.fa3_available(torch.device("cuda", 1)) is False
+    assert probed == [torch.device("cuda", 1)]
+
+
+def test_fa3_probe_rejects_a_card_outside_sm_8_and_9(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    versions: list[str] = []
+    monkeypatch.setattr(stages, "cuda_compute_capability", lambda device: (10, 0))
+    monkeypatch.setattr(
+        stages,
+        "cuda_runtime_version",
+        lambda: versions.append("probe") or (13, 0),
+    )
+
+    assert stages.fa3_available(torch.device("cuda")) is False
+    assert versions == []
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        (None, False),
+        ((12, 2), False),
+        ((12, 3), True),
+        ((12, 10), True),
+        ((13, 0), True),
+    ],
+)
+def test_fa3_probe_requires_cuda_12_3_or_newer(
+    monkeypatch: pytest.MonkeyPatch,
+    version: tuple[int, ...] | None,
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(stages, "cuda_compute_capability", lambda device: (9, 0))
+    monkeypatch.setattr(stages, "cuda_runtime_version", lambda: version)
+
+    assert stages.fa3_available(torch.device("cuda")) is expected
+
+
+def test_incremental_decoding_falls_back_to_overlap_without_fa3(
+    codec_loads: CodecLoads, tmp_path: Path
+) -> None:
+    codec_file = tmp_path / "codec.pth"
+    codec_file.write_bytes(b"")
+
+    vocoder = cpu_vocoder(
+        Drama3VocoderFactoryArgs(codec_path=str(codec_file)).model_copy(
+            update={"window_cuda_graphs": False, "decode_dtype": "float32"}
+        )
+    )
+
+    assert isinstance(vocoder, Drama3VocoderScheduler)
+    assert not isinstance(vocoder, Drama3IncrementalVocoderScheduler)
+    assert vocoder.decode_window == vocoder.codec.from_indices
+
+
+@pytest.mark.accelerator
+def test_the_default_share_holds_one_longest_request_with_incremental_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = torch.device("cuda")
+    held_bytes = int(6.39 * 2**30)
+    total_bytes = 80 * 2**30
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda *args, **kwargs: SimpleNamespace(total_memory=total_bytes),
+    )
+    monkeypatch.setattr(
+        torch.cuda, "memory_reserved", lambda *args, **kwargs: held_bytes
+    )
+    decode = bytes_per_frame_decoder(2_114_154)
+
+    frames = stages.measure_max_padded_frames_per_decode(
+        decode,
+        device=device,
+        num_codebooks=10,
+        total_gpu_memory_fraction=0.15,
+        max_new_tokens=2048,
+    )
+    assert frames >= 2048
+
+    with pytest.raises(ValueError, match="--vocoder.gpu_memory_fraction"):
+        stages.measure_max_padded_frames_per_decode(
+            decode,
+            device=device,
+            num_codebooks=10,
+            total_gpu_memory_fraction=0.10,
+            max_new_tokens=2048,
         )

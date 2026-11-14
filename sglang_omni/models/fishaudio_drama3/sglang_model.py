@@ -226,7 +226,7 @@ class Drama3ForCausalLM(nn.Module):
             hidden_states, logits_output = self.backbone_logits(
                 input_ids, positions, forward_batch, frames
             )
-            sampled_frames = self.audio_decoder.decode_step(
+            self.audio_decoder.decode_step(
                 logits_output.next_token_logits,
                 hidden_states,
                 positions,
@@ -237,8 +237,8 @@ class Drama3ForCausalLM(nn.Module):
                 decode_buffers.top_p[:row_count],
                 PagedTowerAttention(self.tower_attention, forward_batch),
                 decode_buffers.epsilon_cutoff[:row_count],
+                out=decode_buffers.sampled_frames[:row_count],
             )
-            decode_buffers.sampled_frames[:row_count].copy_(sampled_frames)
             return logits_output
 
     def forward_extend(
@@ -354,8 +354,8 @@ class Drama3ForCausalLM(nn.Module):
         frames: torch.Tensor,
     ) -> tuple[torch.Tensor, LogitsProcessorOutput]:
         """Final-norm hidden states of every row, and the logits SGLang keeps."""
-        input_embeds = self.audio_decoder.embed_backbone(
-            frames, self.model.embed_tokens(frames[:, 0])
+        input_embeds = self.audio_decoder.backbone_input(
+            frames, self.model.embed_tokens
         )
         hidden_states = self.model(
             input_ids, positions, forward_batch, input_embeds=input_embeds
