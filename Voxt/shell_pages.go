@@ -56,8 +56,12 @@ const settingsPath = "/settings"
 var shortcutPages = []string{"/home", "/history", "/transcribe", "/translate", "/rewrite", "/app-enhancement"}
 
 // pageHidden reports whether path is the page of a feature the user hid
-// (settings.Features.Hidden, whose ids are the pages' paths).
+// (settings.Features.Hidden, whose ids are the pages' paths) or a
+// dev-only page in a release build.
 func (a *app) pageHidden(path string) bool {
+	if path == "/meetings" && !a.meetingEnabled() {
+		return true
+	}
 	return a.prefs.Features.IsHidden(strings.TrimPrefix(path, "/"))
 }
 

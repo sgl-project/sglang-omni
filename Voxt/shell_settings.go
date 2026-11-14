@@ -35,25 +35,29 @@ type settingsState struct {
 type settingsForm struct {
 	systemLocale string // mygo.App.Locale(), read when the window opens
 
-	language     string // label
-	mainLanguage string // label
-	theme        int
-	scale        int
-	reduceMotion bool
-	menuBar      bool
-	dock         bool
-	copyResult   bool
-	closeToTray  bool
-	openAtLogin  bool
-	keepHistory  bool
-	keepAudio    bool
-	logText      bool
-	skipSilence  bool        // !Audio.VAD.Off
-	liveResult   bool        // Audio.LiveResult
-	cleanSound   bool        // !Audio.Clean.Off
-	muteOutput   bool        // Audio.MuteOn()
-	sidebar      int         // automatic, names and icons, icons only (settings_appearance.go)
-	ovStyle      overlayForm // settings_overlay.go
+	language        string // label
+	mainLanguage    string // label
+	theme           int
+	scale           int
+	reduceMotion    bool
+	menuBar         bool
+	dock            bool
+	copyResult      bool
+	strictShortcuts bool // Features.StrictShortcuts
+	closeToTray     bool
+	openAtLogin     bool
+	keepHistory     bool
+	keepAudio       bool
+	logText         bool
+	sendWindow      bool
+	skipSilence     bool        // !Audio.VAD.Off
+	liveResult      bool        // Audio.LiveResult
+	cleanSound      bool        // !Audio.Clean.Off
+	muteOutput      bool        // Audio.MuteOn()
+	uploadMB        float64     // Audio.UploadMB
+	maxMinutes      float64     // Audio.MaxSeconds, in minutes
+	sidebar         int         // automatic, names and icons, icons only (settings_appearance.go)
+	ovStyle         overlayForm // settings_overlay.go
 
 	historyAccess, historySelection bool // history_access.go
 
@@ -63,6 +67,8 @@ type settingsForm struct {
 	loginIs     bool
 	search      string
 	searchFocus bool
+	find        finder // Return steps through the matches (find_marks.go)
+	findN       int    // the matches in the names the section showed last
 }
 
 // settingsSection is a section of the settings dialog.
@@ -165,6 +171,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.Overlay != new.Overlay {
 		a.overlayRestyle() // overlay.go
 	}
+	if old.Features.Transcribe.ASR != new.Features.Transcribe.ASR {
+		a.warmSpeech() // models_omni.go: the new model loads before its first session
+	}
 	if old.Models.KeepLoaded != new.Models.KeepLoaded {
 		a.applyKeepLoaded(new.Models) // models_keep.go
 	}
@@ -228,12 +237,15 @@ func (a *app) loadSettingsForm() {
 	f.reduceMotion = s.Appearance.ReduceMotion
 	f.menuBar, f.closeToTray, f.openAtLogin = s.General.MenuBar, s.General.CloseToTray, s.General.LaunchAtLogin
 	f.dock, f.copyResult = !s.General.HideDock, s.General.CopyResult
+	f.strictShortcuts = s.Features.StrictShortcuts
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
+	f.sendWindow = s.Privacy.SendWindow
 	f.historyAccess, f.historySelection = s.Privacy.HistoryAccess, s.Privacy.HistorySelection
 	f.skipSilence = !s.Audio.VAD.Off
 	f.liveResult = s.Audio.LiveResult
 	f.cleanSound = !s.Audio.Clean.Off
 	f.muteOutput = s.Audio.MuteOn()
+	f.uploadMB, f.maxMinutes = float64(s.Audio.UploadMB), float64(s.Audio.MaxSeconds)/60
 	f.sidebar = sidebarChoice(s.Appearance)
 	a.loadOverlayForm() // settings_overlay.go
 }
@@ -353,9 +365,14 @@ func (a *app) settingsDialog(c *ui.Context) {
 						}
 					}
 					f := &a.settingsForm
+					fq := strings.TrimSpace(f.search)
+					moved := f.find.advance(f.findN)
 					ui.Row(c).Height(px(t, 52)).Shrink(0).AlignItems(ui.Center).Padding(0, px(t, sp3), 0, px(t, sp6)).Gap(px(t, sp2)).Children(func() {
 						ui.Text(c, title).FontSize(px(t, fsSection)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
-						sf := searchField(c, "settings-search", &f.search, i18n.T("Find in settings"), px(t, 240))
+						sf := f.find.field(c, "settings-search", &f.search, i18n.T("Find in settings"), px(t, 240))
+						if f.findN > 0 { // none: a row found by a hidden tip or its English name
+							f.find.count(c, fq, f.findN)
+						}
 						if f.searchFocus {
 							f.searchFocus = false
 							sf.Focus()
@@ -364,18 +381,26 @@ func (a *app) settingsDialog(c *ui.Context) {
 							a.settingsOpen = false
 						}
 					})
+					// The section's name matching shows it whole; else its rows that match.
 					query := f.search
-					if query != "" && !settingsTextMatches(query, title, sectionEn) {
-						ui.Column(c).Padding(px(t, sp6)).Children(func() {
-							caption(c, i18n.T("Nothing in this section matches your search."))
-						})
-						return
+					if settingsTextMatches(query, title, sectionEn) {
+						query = ""
 					}
 					ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
 						ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, settingsContentMaxW)).Children(func() {
-							settingsSearchQuery = query
-							a.settingsSection(c, r)
-							settingsSearchQuery = ""
+							settingsSearchQuery, settingsSearchHits = query, 0
+							settingsFind.query, settingsFind.n, settingsFind.cur, settingsFind.reveal = fq, 0, f.find.cur, moved
+							body := ui.Column(c).Gap(px(t, sp4))
+							body.Children(func() { a.settingsSection(c, r) })
+							settingsSearchQuery, settingsFind.query = "", ""
+							if settingsFind.n != f.findN {
+								f.findN = settingsFind.n
+								c.AnimationFrame() // the count over the section shows it
+							}
+							if query != "" && settingsSearchHits == 0 { // its other parts (lists, cards) do not match either
+								body.Invisible().Height(0)
+								caption(c, i18n.T("Nothing in this section matches your search."))
+							}
 						})
 					})
 				}).Grow(1).MinHeight(0)

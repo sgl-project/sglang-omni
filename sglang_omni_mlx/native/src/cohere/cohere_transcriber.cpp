@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "common/audio.h"
+#include "common/audio_chunks.h"
 #include "common/swift_port.h"
 #include "nlohmann/json.hpp"
 
@@ -79,30 +80,8 @@ EnergyCutChunks(const std::vector<float> &samples, float chunk_seconds) {
     const size_t search_end = std::min(total, end + search);
     size_t cut = end;
     if (search_end - search_start > energy_window) {
-      const size_t energy_count = search_end - search_start - energy_window + 1;
-      const float inverse_window = 1.0f / static_cast<float>(energy_window);
-      float window_sum = 0.0f;
-      for (size_t i = 0; i < energy_window; ++i) {
-        const float square =
-            samples[search_start + i] * samples[search_start + i];
-        window_sum += square;
-      }
-      float minimum_energy = window_sum * inverse_window;
-      size_t minimum_index = 0;
-      for (size_t i = 1; i < energy_count; ++i) {
-        const float leaving = samples[search_start + i - 1];
-        const float entering = samples[search_start + i + energy_window - 1];
-        const float entering_square = entering * entering;
-        const float leaving_square = leaving * leaving;
-        window_sum += entering_square - leaving_square;
-        const float energy = window_sum * inverse_window;
-        if (energy < minimum_energy) {
-          minimum_energy = energy;
-          minimum_index = i;
-        } else {
-        }
-      }
-      cut = search_start + minimum_index + energy_window / 2;
+      cut = omni_common::QuietestAudioPosition(samples, search_start,
+                                               search_end, energy_window);
     } else {
     }
     cut = std::max(cut, start + static_cast<size_t>(omni_common::kSampleRate));

@@ -12,6 +12,8 @@ on:
   pull_request:
     paths:
       - "Voxt/**"
+      - "README.md"
+      - "docs/get_started/voxt.md"
       - ".github/workflows/voxtnew-ci.yaml"
   push:
     branches: [main]

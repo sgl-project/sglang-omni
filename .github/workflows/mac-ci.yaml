@@ -133,7 +133,7 @@ jobs:
           key: voxt-native-ccache-${{ env.DEVELOPER_DIR }}-${{ github.run_id }}
           restore-keys: voxt-native-ccache-${{ env.DEVELOPER_DIR }}-
 
-      - name: Build the runtime and the stub server
+      - name: Build the runtime and checkpoint-free tests
         env:
           CCACHE_DIR: ${{ runner.temp }}/ccache
           CMAKE_C_COMPILER_LAUNCHER: ccache
@@ -141,7 +141,8 @@ jobs:
         run: |
           ccache --zero-stats > /dev/null
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
-          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server
+          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server audio_chunk_test ming3_mtp_probe
+          "$RUNNER_TEMP/runtime-build/cmake/audio_chunk_test"
           ccache --show-stats
 
       - name: Set up the test Python
@@ -152,6 +153,7 @@ jobs:
       - name: Protocol and startup tests
         env:
           NATIVE_STUB_SERVER: ${{ runner.temp }}/runtime-build/cmake/stub_server
+          NATIVE_MING3_MTP_PROBE: ${{ runner.temp }}/runtime-build/cmake/ming3_mtp_probe
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
         run: |
           "$RUNNER_TEMP/test-venv/bin/python" -m pytest -q sglang_omni_mlx/native/tests

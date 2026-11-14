@@ -86,7 +86,11 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		cardWave(c, v, a.overlayMotion(), a.overlayPhase())
 		ui.Spacer(c)
 	} else {
-		ui.Text(c, v.title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		if !v.langCapsule() {
+			// A translation's capsule names it: with Continue beside it, a
+			// long language name left no room for the title (#3897).
+			ui.Text(c, v.title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		}
 		if v.busy {
 			// Voxt's spinner: an arc turning once in 0.9 s, 88 %.
 			busy := i18n.T("Translating…")
@@ -98,21 +102,22 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		}
 		ui.Box(c).Grow(1).MinWidth(0) // Voxt's Spacer(minLength: 12): the gap
 	}
-	if v.kind == store.KindTranslate && v.failed == nil {
+	if v.langCapsule() {
 		a.cardLanguage(c, v)
 	}
 	switch {
+	case v.canStopAnswer:
+		if cardCapsule(c.Key("ov-card-stop-answer"), i18n.T("Stop"), i18n.T("Stop writing and keep the text so far")) {
+			a.closeLangMenu()
+			a.stopLLM()
+		}
 	case v.canStop:
 		if cardCapsule(c.Key("ov-card-stop"), i18n.T("Done"), i18n.T("Stop recording the follow-up")) {
 			a.closeLangMenu()
 			a.stopSession()
 		}
 	case v.canFollowUp:
-		tip := i18n.T("Follow up by voice")
-		if v.follow != "" {
-			tip = i18n.T("Follow up by voice (%s)", v.follow)
-		}
-		if cardCapsule(c.Key("ov-card-continue"), i18n.T("Continue"), tip) {
+		if cardCapsule(c.Key("ov-card-continue"), i18n.T("Continue"), continueTip(v.follow)) {
 			a.closeLangMenu()
 			a.followUpAnswer("")
 		}
@@ -121,6 +126,9 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.closeLangMenu()
 			a.retryAnswer("")
 		}
+	}
+	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking"), thinkText(v.think), icons.Tuning2, v.canThink) {
+		a.toggleThinkMenu()
 	}
 	if v.failed == nil {
 		tip := i18n.T("Insert into %s", cmpOr(v.target, i18n.T("the app")))
@@ -145,6 +153,15 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 	}
 }
 
+// continueTip is Continue's tip, with the Rewrite shortcut's glyphs
+// keys: it also takes the text selected now (#3816).
+func continueTip(keys string) string {
+	if keys == "" {
+		return i18n.T("Follow up by voice. Text you select first goes with it.")
+	}
+	return i18n.T("Follow up by voice (%s). Text you select first goes with it.", keys)
+}
+
 // ovCardIconA is how opaque the card's icon is: Voxt's microphone over a
 // conversation at 92 %, its answer icon whole (its bubble is dim itself).
 func ovCardIconA(v cardView) float32 {
@@ -153,6 +170,9 @@ func ovCardIconA(v cardView) float32 {
 	}
 	return 1
 }
+
+// langCapsule says whether the header shows Translate's language capsule.
+func (v cardView) langCapsule() bool { return v.kind == store.KindTranslate && v.failed == nil }
 
 // cardSpinning says whether the card shows a spinner (it turns).
 func (v cardView) spinning() bool { return !v.conversation && v.busy }
@@ -205,7 +225,7 @@ func cardCapsule(c *ui.Context, label, tip string) bool {
 // (overlay_lang.go), where another translates the card's text again,
 // into the card.
 func (a *app) cardLanguage(c *ui.Context, v cardView) {
-	open := a.answer.langOpen && v.canLang
+	open := a.answer.langOpen && !a.answer.thinkMenu && v.canLang
 	b := ui.ButtonBase(c.Key("ov-card-lang")).Height(layout.CardBtn).Padding(0, 10-layout.Border).Radius(layout.CardBtn / 2).Shrink(0).
 		Label(i18n.T("Translate into")).Disabled(!v.canLang).Checked(open)
 	line, bg := ui.RGBA(255, 255, 255, 0.12), ui.RGBA(255, 255, 255, 0.08)
@@ -344,6 +364,9 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			if !b.live {
 				t.Selectable()
 			}
+			if b.quote.text != "" {
+				a.cardQuoteView(c, b)
+			}
 			if hover {
 				copied := a.ov.bubbleCopied == b.text.text
 				label, ic := i18n.T("Copy"), icons.Copy
@@ -363,6 +386,33 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			}
 		})
 	})
+}
+
+// cardQuoteView is a follow-up's text selected since, under its
+// instruction (#3816): dimmer, its start aligned, Show all when cut.
+func (a *app) cardQuoteView(c *ui.Context, b cardBlock) {
+	ui.Text(c, b.quote.text).FontSize(b.quote.size).TextColor(ui.RGBA(255, 255, 255, 0.64)).Width(b.quote.wrap).Selectable()
+	if !b.cut {
+		return
+	}
+	label := i18n.T("Show all")
+	if b.open {
+		label = i18n.T("Show less")
+	}
+	if ui.ButtonBase(c.Key("quote")).Height(quoteToggleH).Label(label).Children(func() {
+		ui.Text(c, label).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.78)).SingleLine()
+	}).Clicked() {
+		a.toggleQuote(b.turn)
+	}
+}
+
+// toggleQuote shows a follow-up's selection whole, or short again.
+func (a *app) toggleQuote(turn int) {
+	if a.answer.quotesOpen == nil {
+		a.answer.quotesOpen = map[int]bool{}
+	}
+	a.answer.quotesOpen[turn] = !a.answer.quotesOpen[turn]
+	a.overlaySync()
 }
 
 // bubbleMark is how long a bubble's Copy shows its mark (Voxt's).

@@ -33,7 +33,9 @@ type harness struct {
 	llm        LLM
 	fallback   LLM // Translate's fallback model (nil: none)
 	resolveErr error
-	logs       []string
+	// speech is Resolve's speech argument, call by call.
+	speech []bool
+	logs   []string
 	// vadModel is the voice activity model the services have (nil: none).
 	vadModel vad.Model
 }
@@ -45,13 +47,17 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 	s.Dictionary.Enabled = true
 	cfg := Config{
 		Audio: h.audio, Text: h.text, History: h.hist,
-		Resolve: func(ctx context.Context, kind Kind, _ settings.Settings) (Services, error) {
+		Resolve: func(ctx context.Context, kind Kind, _ settings.Settings, speech bool) (Services, error) {
 			h.mu.Lock()
 			defer h.mu.Unlock()
+			h.speech = append(h.speech, speech)
 			if h.resolveErr != nil {
 				return Services{}, h.resolveErr
 			}
-			svc := Services{ASR: h.asr, ASRInfo: Model{ID: "doubao", Name: "Doubao", Model: "seed"}, VAD: h.vadModel}
+			var svc Services
+			if speech {
+				svc = Services{ASR: h.asr, ASRInfo: Model{ID: "doubao", Name: "Doubao", Model: "seed"}, VAD: h.vadModel}
+			}
 			if h.llm != nil {
 				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat"}
 			}
@@ -213,7 +219,7 @@ func TestPipeline(t *testing.T) {
 					t.Errorf("pasted %q, %+v", pastes, end)
 				}
 			case tc.card:
-				if len(pastes) != 0 || !end.Card || end.Inserted || end.Delivery != deliver.ReasonNotEditable {
+				if len(pastes) != 0 || end.Card || end.Inserted || end.Delivery != deliver.ReasonNotEditable {
 					t.Errorf("card: pasted %q, %+v", pastes, end)
 				}
 			default:
@@ -262,7 +268,7 @@ func TestPipeline(t *testing.T) {
 			e := entries[0]
 			wantDelivery := "insert"
 			if tc.card {
-				wantDelivery = "card"
+				wantDelivery = "" // card off: not inserted, the app copies it
 			}
 			if e.ID != id || e.Kind != store.KindTranscribe || e.Status != store.StatusDone || e.RawText != "hello aura link" || e.Result != tc.result ||
 				e.AppBundle != slack.BundleID || e.AppName != "Slack" || e.ASRProvider != "doubao" || e.Delivery != wantDelivery || e.Audio != "" {
@@ -516,6 +522,14 @@ func TestBusyTryShortAndMore(t *testing.T) {
 		end := h.rec.wait(t)
 		if end.State != Done || end.Result != "long" || end.StoppedAt.IsZero() {
 			t.Errorf("end %+v", end)
+		}
+		// A podcast is dictated whole: no maxSeconds goes to capture.start,
+		// the recording runs until Stop (Voxt stopped one at 10:00).
+		h.audio.mu.Lock()
+		p := h.audio.params
+		h.audio.mu.Unlock()
+		if len(p) != 1 || p[0].MaxSeconds != 0 {
+			t.Errorf("params %+v", p)
 		}
 	})
 	t.Run("a stop that does not stop", func(t *testing.T) {

@@ -166,7 +166,7 @@ func (a *app) navRail(c *ui.Context) {
 						ui.Box(c).Height(1).Width(px(t, 20)).Background(k.Line).Margin(px(t, 3), 0)
 					}
 					for _, p := range g.pages {
-						if a.navPageVisible(p.path) && !a.pageHidden(p.path) {
+						if !a.pageHidden(p.path) {
 							a.railItem(c, p.path, p.icon, pageTitle(p.path))
 						}
 					}
@@ -270,7 +270,7 @@ func (a *app) sidebar(c *ui.Context) {
 			for _, g := range navGroups {
 				items := func() {
 					for _, p := range g.pages {
-						if !a.navPageVisible(p.path) || a.pageHidden(p.path) {
+						if a.pageHidden(p.path) {
 							continue
 						}
 						sel := p.path == a.nav

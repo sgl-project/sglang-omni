@@ -195,3 +195,22 @@ func TestLiveStreamContinuityOnRotate(t *testing.T) {
 		t.Fatalf("audio bytes: sent %d got %d", len(sent), len(got))
 	}
 }
+
+// TestLiveRotateStartsFreshText: a new stream's text is all new, even when it
+// starts like the old stream's committed text.
+func TestLiveRotateStartsFreshText(t *testing.T) {
+	old := &liveFakeStream{events: make(chan asr.Event), done: true}
+	close(old.events)
+	live := Live{Clock: time.Now, Streamer: &liveFakeStreamer{}, stream: old}
+	live.committer.Partial("今天下午开会")
+	if _, ok := live.committer.Tick(time.Second, silenceFinalizeLive); !ok {
+		t.Fatal("expected commit")
+	}
+	if err := live.rotate(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	live.committer.Partial("今天晚上")
+	if g := live.LiveText(); g != "今天晚上" {
+		t.Fatalf("live after rotate %q", g)
+	}
+}
