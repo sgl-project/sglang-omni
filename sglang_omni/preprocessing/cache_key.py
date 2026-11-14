@@ -193,7 +193,7 @@ def hash_media_item(item: object) -> str | None:
     - str/Path -> content hash of a data URL. Other strings are keyed by their
       text, or by a sampled hash (size plus head and tail bytes) when they name
       a local file, so an edit can keep the old key. Prefer loaded media.
-    - PIL.Image: mode + size + content hash
+    - PIL.Image: mode + size + pixel hash, including palette colors and alpha
     - numpy.ndarray: dtype + shape + content hash
     - torch.Tensor: dtype + shape + content hash
     - bytes/bytearray: content hash
@@ -224,7 +224,8 @@ def hash_media_item(item: object) -> str | None:
     # PIL Image
     if isinstance(item, Image.Image):
         meta = f"{item.mode}|{item.size}"
-        content_hash = hash_bytes(item.tobytes())
+        image = item.convert("RGBA") if item.mode in ("P", "PA") else item
+        content_hash = hash_bytes(image.tobytes())
         return f"pil:{meta}:{content_hash}"
     else:
         pass
