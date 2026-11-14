@@ -8,7 +8,7 @@ ARSessionBridge checks that SGLang put exactly the expected history ahead of the
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -98,6 +98,34 @@ def retained_history_length(native_session: Session) -> int:
         return native_session.committed_origin_len + len(
             last_request.output_ids[: last_request.sampling_params.max_new_tokens]
         )
+
+
+def read_retained_keys(
+    rows: SessionRows,
+    kv_cache: LayerKVCache,
+    kv: RetainedKV,
+    start: int,
+    end: int,
+    layer_stride: int,
+    shift_key_positions: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+) -> Iterator[torch.Tensor]:
+    """Float32 keys of session positions [start, end) rotated back to position zero, one [tokens, kv heads, head dim] tensor per layer_stride-th layer."""
+    slots = rows.req_to_token_pool.req_to_token[kv.req_pool_idx, start:end].to(
+        torch.int64
+    )
+    positions = torch.arange(start, end, device=slots.device)
+    for layer_id in range(
+        kv_cache.start_layer, kv_cache.start_layer + kv_cache.layer_num, layer_stride
+    ):
+        key_buffer = kv_cache.get_key_buffer(layer_id)
+        # note (0xtoward): index_select has no float8 kernel, so FP8 rows are read as bytes.
+        key_rows = (
+            key_buffer.view(torch.uint8)
+            if key_buffer.dtype.itemsize == 1
+            else key_buffer
+        )
+        keys = key_rows.index_select(0, slots).view(key_buffer.dtype)
+        yield shift_key_positions(keys.to(torch.float32), positions)
 
 
 def cut_token_ids(native_session: Session, cut: HistoryCut) -> None:
