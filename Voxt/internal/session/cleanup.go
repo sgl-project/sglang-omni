@@ -94,7 +94,7 @@ func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) 
 	var failed error
 	for i, p := range parts {
 		draft := newDrafter(r, parts[:i+1], answers)
-		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, OnDelta: draft.add}
+		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, InputChars: utf8.RuneCountInString(text), OnDelta: draft.add}
 		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
 		switch {
 		case r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():

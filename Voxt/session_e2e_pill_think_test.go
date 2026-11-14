@@ -35,7 +35,7 @@ func TestPillThinkingLevel(t *testing.T) {
 				s.Overlay.Position = "top"
 			}
 		})
-		label := thinkText(long)
+		label := askAgainText(long)
 		snap(a, session.Snapshot{Kind: store.KindTranscribe, State: session.Composing, CanSkip: true, LLM: session.Model{ID: "zhipu"}, Thinking: long, Partial: "so the release moves to thursday"})
 		tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 		frames(tt)
@@ -79,7 +79,7 @@ func TestPillThinkingLevel(t *testing.T) {
 		} {
 			snap(a, s)
 			frames(tt)
-			if has(tt, i18n.T("Thinking")) {
+			if has(tt, askAgainText(nil)) {
 				t.Errorf("%s: %s on %s shows the capsule", c.lang, s.Kind, s.LLM.ID)
 			}
 		}

@@ -70,7 +70,7 @@ func (a *app) pillThinks(mode overlayMode) bool {
 }
 
 // pillThinkText is the pill's thinking capsule as it draws (cardCapsule's).
-func pillThinkText(t *llm.Thinking) ovSized { return ovSized{thinkText(t), 11, 600, 0} }
+func pillThinkText(t *llm.Thinking) ovSized { return ovSized{askAgainText(t), 11, 600, 0} }
 
 // menuThinkLevels are the thinking menu's levels: the pill's or the card's.
 func (a *app) menuThinkLevels() []*llm.Thinking {
@@ -95,12 +95,22 @@ func thinkLevelTitle(t *llm.Thinking) string {
 	return i18n.T("%d tokens", t.Budget)
 }
 
-// thinkText is level t as the button's tip says it.
+// thinkText is level t as a message says it.
 func thinkText(t *llm.Thinking) string {
 	if t == nil {
 		return i18n.T("Thinking")
 	}
 	return i18n.T("Thinking: %s", thinkLevelTitle(t))
+}
+
+// askAgainText is level t as the card button's tip and the pill's
+// capsule say it: picking a level stops this answer and asks again
+// (#3951).
+func askAgainText(t *llm.Thinking) string {
+	if t == nil {
+		return i18n.T("Ask again: Thinking…")
+	}
+	return i18n.T("Ask again: Thinking (%s)", thinkLevelTitle(t))
 }
 
 // sameThinking says whether a and b are the same level.
