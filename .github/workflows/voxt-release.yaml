@@ -7,8 +7,7 @@ name: Voxt Release
 # scripts/release-verify.sh, and uploaded with the app's ZIP (for Voxt 1.x's
 # in-app update and Homebrew, voxt-appcast.yaml) and their SHA-256 to a draft
 # release whose notes are the version's section of Voxt/CHANGELOG.md. Apple
-# silicon only; the Windows package below is amd64. The nightly from main
-# (voxt-nightly.yaml, version
+# silicon only. The nightly from main (voxt-nightly.yaml, version
 # X.Y.Z-nightly.YYYYMMDD) and the beta of each Voxt change merged into main
 # (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N), or either run by hand
 # from any branch, are signed and notarized the same way and keep their
@@ -16,12 +15,7 @@ name: Voxt Release
 # release's update uses. A beta takes the Omni runtime from the cache when
 # one was built from the same sources. Any other run (a pull request that
 # changes the release, or this workflow by hand) builds the same app ad
-# hoc, unsigned, and keeps its disk image the same way. After the macOS job,
-# a Windows job builds the native helper and an unsigned NSIS installer. A
-# release also gets a signed windows-amd64 update archive and manifest when
-# the update channel's public and private keys are configured; its assets go
-# into the draft the macOS job already made. Voxt/docs/windows-packaging.md
-# describes the installer, the opt-in GitHub Releases feed, and SmartScreen.
+# hoc, unsigned, and keeps its disk image the same way.
 
 on:
   push:
@@ -298,138 +292,3 @@ jobs:
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --latest \
             --title "Voxt v$VERSION" --notes-file "$notes" "$ARTIFACTS_DIR"/*
-
-  windows-release:
-    name: Voxt Windows package
-    needs: release
-    runs-on: windows-latest
-    timeout-minutes: 60
-    environment: ${{ startsWith(github.ref, 'refs/tags/voxt-v') && 'voxt-release' || '' }}
-    permissions:
-      contents: write
-    env:
-      IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/voxt-v') }}
-      IS_NIGHTLY: ${{ inputs.nightly == true }}
-      IS_BETA: ${{ inputs.beta == true }}
-      GIT_TERMINAL_PROMPT: "0"
-    defaults:
-      run:
-        shell: bash
-        working-directory: Voxt
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: Voxt/go.mod
-          cache-dependency-path: Voxt/go.sum
-
-      - name: Resolve the version
-        run: |
-          set -euo pipefail
-          if [[ "$IS_RELEASE" == "true" ]]; then
-            version="${GITHUB_REF_NAME#voxt-v}"
-          elif [[ "$IS_NIGHTLY" == "true" ]]; then
-            version="$(go run ./internal/tools/windowsrelease version mygo.json)-nightly.$(date -u +%Y%m%d)"
-          elif [[ "$IS_BETA" == "true" ]]; then
-            version="$(go run ./internal/tools/windowsrelease version mygo.json)-beta.$(date -u +%Y%m%d).$GITHUB_RUN_NUMBER"
-          else
-            version="$(go run ./internal/tools/windowsrelease version mygo.json)"
-          fi
-          if [[ "$IS_RELEASE" == "true" || "$IS_NIGHTLY" == "true" || "$IS_BETA" == "true" ]]; then
-            go run ./internal/tools/windowsrelease set-version mygo.json "$version"
-          else
-            :
-          fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "Voxt $version for windows/amd64, release: $IS_RELEASE"
-
-      - name: Configure the optional update channel
-        env:
-          WINDOWS_UPDATE_PUBLIC_KEY: ${{ vars.VOXTNEW_WINDOWS_UPDATE_PUBLIC_KEY }}
-          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          echo "WINDOWS_UPDATES=false" >> "$GITHUB_ENV"
-          if [[ "$IS_RELEASE" != "true" ]]; then
-            exit 0
-          fi
-          if [[ -z "$WINDOWS_UPDATE_PUBLIC_KEY" && -z "$MYGO_UPDATER_PRIVATE_KEY" ]]; then
-            echo "::warning::No Windows update key pair: building without an update feed or manifest"
-            exit 0
-          fi
-          if [[ -z "$WINDOWS_UPDATE_PUBLIC_KEY" || -z "$MYGO_UPDATER_PRIVATE_KEY" ]]; then
-            echo "::error::Windows updates need both VOXTNEW_WINDOWS_UPDATE_PUBLIC_KEY and MYGO_UPDATER_PRIVATE_KEY"
-            exit 1
-          fi
-          key="$RUNNER_TEMP/voxtnew-windows-update.key"
-          umask 077
-          printf '%s' "$MYGO_UPDATER_PRIVATE_KEY" > "$key"
-          notes="$RUNNER_TEMP/voxtnew-windows-update-notes.md"
-          section="$(awk -v v="$VERSION" '/^## /{f = index($0, "[" v "]") || $2 == v; next} f' CHANGELOG.md)"
-          if [[ -z "${section//[[:space:]]/}" ]]; then
-            section="$(awk '/^## /{f = index($0, "[Unreleased]") > 0; next} f' CHANGELOG.md)"
-          else
-            :
-          fi
-          {
-            printf '## %s\n\n' "$VERSION"
-            printf '%s\n' "$section"
-          } > "$notes"
-          go run ./internal/tools/windowsrelease configure-updates mygo.json "$WINDOWS_UPDATE_PUBLIC_KEY" "$key" "$notes"
-          echo "WINDOWS_UPDATES=true" >> "$GITHUB_ENV"
-
-      - name: Build the app, helper and NSIS installer
-        run: scripts/build-windows.sh
-
-      - name: Remove the update private key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/voxtnew-windows-update.key"
-
-      - name: Collect the installer and optional update files
-        env:
-          WINDOWS_UPDATE_PUBLIC_KEY: ${{ vars.VOXTNEW_WINDOWS_UPDATE_PUBLIC_KEY }}
-        run: |
-          set -euo pipefail
-          setup="build/windows-amd64/Voxt Setup $VERSION amd64.exe"
-          if [[ ! -f "$setup" ]]; then
-            echo "::error::No NSIS installer at Voxt/$setup"
-            exit 1
-          fi
-          test -f build/windows-amd64/Voxt.exe
-          test -f build/windows-amd64/voxtnew-helper.exe
-          out="$RUNNER_TEMP/windows-artifacts"
-          mkdir -p "$out"
-          installer="Voxt-$VERSION-windows-amd64-setup.exe"
-          cp "$setup" "$out/$installer"
-          (cd "$out" && sha256sum "$installer" > "$installer.sha256")
-          if [[ "$WINDOWS_UPDATES" == "true" ]]; then
-            archive="voxt-$VERSION-windows-amd64.tar.gz"
-            manifest="update-windows-amd64.json"
-            test -f "build/windows-amd64/$archive"
-            go run ./internal/tools/windowsrelease check-manifest "build/windows-amd64/$manifest" "build/windows-amd64/$archive" \
-              "$VERSION" "https://github.com/sgl-project/sglang-omni/releases/download/voxt-v$VERSION/$archive" "$WINDOWS_UPDATE_PUBLIC_KEY"
-            cp "build/windows-amd64/$archive" "build/windows-amd64/$manifest" "$out/"
-            (cd "$out" && sha256sum "$archive" > "$archive.sha256")
-          else
-            :
-          fi
-          echo "ARTIFACTS_DIR=$out" >> "$GITHUB_ENV"
-          ls -l "$out"
-
-      - name: Keep the Windows installer
-        if: env.IS_RELEASE != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Voxt-${{ env.VERSION }}-windows-amd64-unsigned
-          path: ${{ env.ARTIFACTS_DIR }}
-          retention-days: 14
-
-      - name: Add Windows assets to the draft release
-        if: env.IS_RELEASE == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" "$ARTIFACTS_DIR"/* --clobber
