@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Drama 3 model runner: stages each forward's frames and collects sampled frames.
+"""Drama 3 model runner: stages each prefill's frames and collects sampled frames.
 
 Everything runs inside the model's forward, behind SGLang's own forward path,
 so the deferred clear of reused linear-attention state slots always happens.
-Decode steps go through the model's fixed buffers, which a decode CUDA graph reads.
+A decode forward gathers and publishes its rows of the model's state pool itself,
+inside the decode CUDA graph, so the runner only collects its frames.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from sglang_omni.model_runner.request_id_prefill_cuda_graph_runner import (
     RequestIdPrefillCudaGraphRunner,
 )
 from sglang_omni.models.fishaudio_drama3.decode_state import (
-    Drama3DecodeStatePool,
+    extend_frame_history,
     extend_frame_rows,
     ras_window,
     request_data_of,
@@ -33,7 +34,9 @@ from sglang_omni.models.fishaudio_drama3.decode_state import (
 )
 from sglang_omni.models.fishaudio_drama3.model_inputs import (
     Drama3DecodeBuffers,
+    Drama3DecodeStatePool,
     Drama3StepInputs,
+    next_frame_labels,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
@@ -56,8 +59,8 @@ __all__ = [
 
 
 class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
-    """Hands each forward its frames, RAS windows and sampling knobs, then appends
-    the frame the model sampled for every request."""
+    """Hands each prefill its frames, RAS windows and sampling knobs and seeds its
+    requests' state rows, then appends the frame the model sampled for every request."""
 
     model: Drama3ForCausalLM
 
@@ -75,6 +78,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         prefill_graph_runner = sglang_runner.prefill_cuda_graph_runner
         decode_graph_runner = sglang_runner.decode_cuda_graph_runner
         decode_buffers = model.decode_buffers
+        state_pool = model.state_pool
         if not isinstance(attention_backend, HybridLinearAttnBackend):
             raise RuntimeError(
                 f"Drama 3 needs the hybrid linear-attention backend; got "
@@ -106,6 +110,11 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
                 "the Drama 3 decode buffers need a row for every request slot and "
                 "every captured decode batch size"
             )
+        elif state_pool is None or state_pool.frames.shape[0] != request_pool.size + 1:
+            raise RuntimeError(
+                "the Drama 3 decode state pool needs a row for every request slot "
+                "and the padding slot 0"
+            )
         elif not (
             isinstance(kv_pool, HybridLinearKVPool)
             and set(kv_pool.full_attention_layer_id_mapping)
@@ -127,21 +136,14 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             pass
         self.decode_buffers: Drama3DecodeBuffers = decode_buffers
         self.request_slot_count = request_pool.size
-        self.state_pool = Drama3DecodeStatePool.allocate(
-            request_slot_count=request_pool.size,
-            frame_width=decode_buffers.frames.shape[1],
-            device=self.device,
-        )
-        self.row_launch_key: tuple[int, ...] | None = None
-        self.row_upload_buffers: list[torch.Tensor] = []
-        self.row_upload_slot = 0
+        self.state_pool: Drama3DecodeStatePool = state_pool
         self.prefill_inputs: Drama3StepInputs | None = None
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         return True
 
-    def state_rows(self, batch_request_data: list[Drama3RequestData]) -> list[int]:
-        rows = []
+    def check_state_rows(self, batch_request_data: list[Drama3RequestData]) -> None:
+        """Every request holds a state row; the forward reads it by req_pool_indices."""
         for request_data in batch_request_data:
             request = request_data.req
             assert request is not None
@@ -151,63 +153,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
                     f"{request.rid}: request slot {row} has no state row"
                 )
             else:
-                rows.append(row)
-        return rows
-
-    def gather_decode_rows(self, batch_request_data: list[Drama3RequestData]) -> None:
-        state_pool = self.state_pool
-        rows = self.state_rows(batch_request_data)
-        row_count = len(rows)
-        row_launch_key = tuple(rows)
-        if row_launch_key != self.row_launch_key:
-            host_rows = self.pinned_pingpong(
-                "row_upload_buffers",
-                "row_upload_slot",
-                (row_count,),
-                torch.int64,
-                realloc_on_grow=True,
-            )
-            host_rows.numpy()[:row_count] = rows
-            state_pool.row_indices[:row_count].copy_(
-                host_rows[:row_count], non_blocking=True
-            )
-            self.row_launch_key = row_launch_key
-        else:
-            pass
-        row_indices = state_pool.row_indices[:row_count]
-        buffers = self.decode_buffers
-        torch.index_select(
-            state_pool.frames, 0, row_indices, out=buffers.frames[:row_count]
-        )
-        torch.index_select(
-            state_pool.ras_windows, 0, row_indices, out=buffers.ras_windows[:row_count]
-        )
-        torch.index_select(
-            state_pool.temperature, 0, row_indices, out=buffers.temperature[:row_count]
-        )
-        torch.index_select(
-            state_pool.top_k, 0, row_indices, out=buffers.top_k[:row_count]
-        )
-        torch.index_select(
-            state_pool.top_p, 0, row_indices, out=buffers.top_p[:row_count]
-        )
-        torch.index_select(
-            state_pool.epsilon_cutoff,
-            0,
-            row_indices,
-            out=buffers.epsilon_cutoff[:row_count],
-        )
-
-    def publish_decode_frames(self, row_count: int) -> torch.Tensor:
-        state_pool = self.state_pool
-        row_indices = state_pool.row_indices[:row_count]
-        frames = self.decode_buffers.sampled_frames[:row_count].clone()
-        ras_windows = state_pool.ras_windows.index_select(0, row_indices)
-        state_pool.frames.index_copy_(0, row_indices, frames)
-        state_pool.ras_windows.index_copy_(
-            0, row_indices, torch.cat((ras_windows[:, 1:], frames[:, :1]), dim=1)
-        )
-        return frames
+                pass
 
     def initialize_state_rows(
         self,
@@ -264,40 +210,55 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             self.prefill_inputs = None
             raise
 
+    def pinned(self, host: torch.Tensor) -> torch.Tensor:
+        """Pinned, so a non_blocking copy needs no host sync; the caching host
+        allocator keeps the block reserved until the copy lands."""
+        if self.device.type == "cuda":
+            return host.pin_memory()
+        else:
+            return host
+
     def stage_step(
-        self, requests: list[SchedulerRequest], frame_rows: list[list[int]]
+        self,
+        requests: list[SchedulerRequest],
+        frames: torch.Tensor,
+        next_frames: torch.Tensor,
     ) -> Drama3StepInputs:
         request_data = [request_data_of(request) for request in requests]
+
+        def staged(host: torch.Tensor) -> torch.Tensor:
+            return self.pinned(host).to(self.device, non_blocking=True)
+
         step_inputs = Drama3StepInputs(
             request_ids=request_ids_of(request_data),
-            frames=torch.tensor(frame_rows, dtype=torch.int64, device=self.device),
-            ras_windows=torch.tensor(
-                [ras_window(data.frame_rows) for data in request_data],
-                dtype=torch.int64,
-                device=self.device,
+            frames=staged(frames),
+            next_frames=staged(next_frames),
+            ras_windows=staged(
+                torch.tensor(
+                    [ras_window(data.frame_rows) for data in request_data],
+                    dtype=torch.int64,
+                )
             ),
-            temperature=torch.tensor(
-                [data.temperature for data in request_data],
-                dtype=torch.float32,
-                device=self.device,
+            temperature=staged(
+                torch.tensor(
+                    [data.temperature for data in request_data], dtype=torch.float32
+                )
             ),
-            top_k=torch.tensor(
-                [data.top_k for data in request_data],
-                dtype=torch.int64,
-                device=self.device,
+            top_k=staged(
+                torch.tensor([data.top_k for data in request_data], dtype=torch.int64)
             ),
-            top_p=torch.tensor(
-                [data.top_p for data in request_data],
-                dtype=torch.float32,
-                device=self.device,
+            top_p=staged(
+                torch.tensor([data.top_p for data in request_data], dtype=torch.float32)
             ),
         )
         self.decode_buffers.epsilon_cutoff[: len(request_data)].copy_(
-            torch.tensor(
-                [data.epsilon_cutoff for data in request_data],
-                dtype=torch.float32,
-                device=self.device,
-            )
+            self.pinned(
+                torch.tensor(
+                    [data.epsilon_cutoff for data in request_data],
+                    dtype=torch.float32,
+                )
+            ),
+            non_blocking=True,
         )
         self.model.step_exchange.stage(step_inputs)
         return step_inputs
@@ -308,13 +269,18 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        """Stage every request's whole frame history; the batch arguments are the
-        interface contract."""
+        """Stage every request's whole frame history and the next-frame labels on
+        the host; the batch arguments are the interface contract."""
         self.prefill_inputs = None
-        frame_rows: list[list[int]] = []
-        for request in requests:
-            frame_rows.extend(extend_frame_rows(request_data_of(request)))
-        self.prefill_inputs = self.stage_step(requests, frame_rows)
+        histories = [
+            extend_frame_history(request_data_of(request)) for request in requests
+        ]
+        frames = torch.cat(histories)
+        last_rows = torch.tensor([len(history) for history in histories]).cumsum(0) - 1
+        next_frames = next_frame_labels(
+            frames, last_rows, self.model.config.eos_token_id
+        )
+        self.prefill_inputs = self.stage_step(requests, frames, next_frames)
 
     def cleanup_prefill(
         self,
@@ -333,8 +299,8 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         *,
         is_lookahead: bool = False,
     ) -> None:
-        """Stage every request's newest frame into the decode buffers, in batch
-        order; the other arguments are the interface contract."""
+        """Check the batch the forward gathers its rows for; the other arguments are
+        the interface contract."""
         batch_request_data = [request_data_of(request) for request in requests]
         request_ids = request_ids_of(batch_request_data)
         if forward_batch is None or forward_batch.rids != request_ids:
@@ -343,7 +309,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
                 f"{None if forward_batch is None else forward_batch.rids}"
             )
         else:
-            self.gather_decode_rows(batch_request_data)
+            self.check_state_rows(batch_request_data)
 
     def collect_frames(
         self,
@@ -378,7 +344,9 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         requests: list[SchedulerRequest],
     ) -> None:
         """Collect the next frames; the batch arguments are the interface contract."""
-        self.collect_frames(result, requests, self.publish_decode_frames(len(requests)))
+        # note (Wenyao Gao): the clone keeps next_token_ids valid past the next forward.
+        frames = self.decode_buffers.sampled_frames[: len(requests)].clone()
+        self.collect_frames(result, requests, frames)
 
     def post_decode_launch(
         self,
@@ -386,11 +354,14 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         forward_batch: ForwardBatch | None,
         requests: list[SchedulerRequest],
     ) -> torch.Tensor | None:
+        """Stage the frames for resolve. next_token_ids may view the decode buffers:
+        its only device reader, the token relay, copies it before the next forward,
+        and resolve replaces it with the host copy."""
         if not requests:
             return None
         else:
             row_count = len(requests)
-            frames = self.publish_decode_frames(row_count)
+            frames = self.decode_buffers.sampled_frames[:row_count]
             host_frames = self.next_host_staging(tuple(frames.shape), frames.dtype)
             host_frames[:row_count].copy_(frames, non_blocking=True)
             result.next_token_ids = frames[:, 0]
@@ -408,15 +379,12 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             return
         else:
             frames = launch_buf[: len(requests)]
-            kept_rows = []
-            for row, request in enumerate(requests):
-                sglang_request = request_data_of(request).req
+            for request, frame_row in zip(requests, frames.tolist(), strict=True):
+                request_data = request_data_of(request)
+                sglang_request = request_data.req
                 assert sglang_request is not None
                 if sglang_request.finished() or self.req_is_retracted(sglang_request):
                     pass
                 else:
-                    kept_rows.append(row)
-            self.collect_frames(
-                result, [requests[row] for row in kept_rows], frames[kept_rows]
-            )
+                    request_data.frame_rows.append(frame_row)
             result.next_token_ids = frames[:, 0]

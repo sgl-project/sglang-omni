@@ -23,6 +23,7 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
 )
+from sglang.srt.layers.attention.linear.gdn_backend import GDNAttnBackend
 from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
@@ -48,6 +49,7 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
 )
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
+from sglang_omni.models.fishaudio_drama3.model_inputs import next_frame_labels
 from sglang_omni.models.fishaudio_drama3.model_runner import (
     Drama3DecodeStatePool,
     Drama3ModelRunner,
@@ -75,7 +77,6 @@ from sglang_omni.models.fishaudio_drama3.sglang_model import (
     Drama3StepInputs,
     Drama3TowerPrefill,
     StepExchange,
-    next_frame_labels,
 )
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     FUSED_KERNELS,
@@ -703,6 +704,7 @@ def step_inputs(
     return Drama3StepInputs(
         request_ids=request_ids,
         frames=torch.full((row_count, FRAME_WIDTH), marker),
+        next_frames=torch.full((row_count, FRAME_WIDTH), marker),
         ras_windows=torch.full((request_count, 16), EMPTY_RAS_SLOT),
         temperature=torch.ones(request_count),
         top_k=torch.ones(request_count, dtype=torch.int64),
@@ -758,12 +760,6 @@ def test_a_failed_step_never_feeds_the_next_step_of_the_same_requests() -> None:
     exchange.clear()
     with pytest.raises(RuntimeError, match="staged no inputs"):
         exchange.take_inputs(["a"], 1)
-
-
-def buffer_addresses(buffers: Drama3DecodeBuffers) -> list[int]:
-    return [
-        getattr(buffers, field.name).data_ptr() for field in dataclasses.fields(buffers)
-    ]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1101,7 +1097,9 @@ def first_frame_graph_setup(
         first_frame_cuda_graph_max_requests=first_frame_cuda_graph_max_requests,
     )
     sglang_runner = Mock(spec=SGLModelRunner)
-    sglang_runner.attn_backend = Mock(spec=HybridLinearAttnBackend)
+    attention_backend = Mock(spec=HybridLinearAttnBackend)
+    attention_backend.linear_attn_backend = Mock(spec=GDNAttnBackend)
+    sglang_runner.attn_backend = attention_backend
     sglang_runner.decode_cuda_graph_runner = (
         None
         if decode_graph_max_batch_size is None
@@ -1247,11 +1245,15 @@ def forward_output() -> sglang_model_runner.ModelRunnerOutput:
 
 
 class FakeDecodeForward:
-    """Stands in for the GPU forward behind the model worker: reads the batch rows
-    of the decode buffers, then writes the next frames, or writes junk and fails."""
+    """Stands in for the GPU forward behind the model worker: gathers the batch rows
+    of the state pool into the decode buffers and reads them, then writes and
+    publishes the next frames, or writes junk and fails."""
 
-    def __init__(self, buffers: Drama3DecodeBuffers) -> None:
+    def __init__(
+        self, buffers: Drama3DecodeBuffers, state_pool: Drama3DecodeStatePool
+    ) -> None:
         self.buffers = buffers
+        self.state_pool = state_pool
         self.reads: list[StagedRows] = []
         self.next_frames: list[list[int]] = []
         self.error: RuntimeError | None = None
@@ -1261,6 +1263,8 @@ class FakeDecodeForward:
         self, forward_batch: ForwardBatch
     ) -> sglang_model_runner.ModelRunnerOutput:
         row_count = len(forward_batch.rids)
+        request_slots = forward_batch.req_pool_indices
+        self.state_pool.gather(request_slots, self.buffers)
         self.reads.append(staged_rows(self.buffers, row_count))
         if self.overwrites_ras_windows:
             self.buffers.ras_windows[:row_count].fill_(EMPTY_RAS_SLOT)
@@ -1270,9 +1274,9 @@ class FakeDecodeForward:
             self.buffers.sampled_frames[:row_count].fill_(JUNK_TOKEN_ID)
             raise self.error
         else:
-            self.buffers.sampled_frames[:row_count].copy_(
-                torch.tensor(self.next_frames)
-            )
+            next_frames = torch.tensor(self.next_frames)
+            self.buffers.sampled_frames[:row_count].copy_(next_frames)
+            self.state_pool.publish(request_slots, next_frames)
             return forward_output()
 
 
@@ -1312,18 +1316,21 @@ class SuppliedBatchRunner(Drama3ModelRunner):
         forward_batch.rids = scheduler_output.request_ids
         forward_batch.forward_mode = schedule_batch.forward_mode
         is_prefill = schedule_batch.forward_mode.is_extend()
-        if is_prefill:
-            request_slots = []
-            extend_row_count = 0
-            for request in scheduler_output.requests:
-                sglang_request = request_data_of(request).req
-                assert sglang_request is not None
+        request_slots = []
+        extend_row_count = 0
+        for request in scheduler_output.requests:
+            sglang_request = request_data_of(request).req
+            assert sglang_request is not None
+            request_slot = sglang_request.kv.req_pool_idx
+            # note (Wenyao Gao): an unseated request carries a slot no pool row has.
+            request_slots.append(-1 if request_slot is None else request_slot)
+            if is_prefill:
                 assert sglang_request.extend_end is not None
-                request_slots.append(sglang_request.kv.req_pool_idx)
                 extend_row_count += sglang_request.extend_len
-            forward_batch.req_pool_indices = torch.tensor(
-                request_slots, dtype=torch.int64
-            )
+            else:
+                pass
+        forward_batch.req_pool_indices = torch.tensor(request_slots, dtype=torch.int64)
+        if is_prefill:
             forward_batch.extend_num_tokens = extend_row_count
         else:
             pass
@@ -1350,10 +1357,16 @@ def decode_runner(row_count: int) -> DecodeRunner:
     buffers = Drama3DecodeBuffers.allocate(
         row_count=row_count, frame_width=FRAME_WIDTH, device=torch.device("cpu")
     )
+    state_pool = Drama3DecodeStatePool.allocate(
+        request_slot_count=row_count,
+        frame_width=FRAME_WIDTH,
+        device=torch.device("cpu"),
+    )
     model = Mock(spec=Drama3ForCausalLM)
     model.config = config
     model.step_exchange = StepExchange()
     model.decode_buffers = buffers
+    model.state_pool = state_pool
     attention_backend = Mock(spec=HybridLinearAttnBackend)
     attention_backend.full_attn_backend = Mock(spec=TritonAttnBackend)
     kv_pool = Mock(spec=HybridLinearKVPool)
@@ -1366,7 +1379,7 @@ def decode_runner(row_count: int) -> DecodeRunner:
         layer_id: index for index, layer_id in enumerate(text_config.linear_layer_ids)
     }
     request_pool.size = row_count
-    forward = FakeDecodeForward(buffers)
+    forward = FakeDecodeForward(buffers, state_pool)
     prefill = FakePrefillForward(model.step_exchange)
 
     def model_forward(
@@ -1395,7 +1408,6 @@ def decode_runner(row_count: int) -> DecodeRunner:
     # A host without an accelerator has no platform device to resolve.
     with patch.object(current_platform, "get_device", return_value=torch.device("cpu")):
         runner = SuppliedBatchRunner(worker, SGLangOutputProcessor())
-    runner.row_upload_buffers = unpinned_buffer_pair((row_count,))
     runner.host_staging_buffers = unpinned_buffer_pair((row_count, FRAME_WIDTH))
     execution_bridge = Mock(spec=SGLangExecutionBridge)
     execution_bridge.forward_context.side_effect = (
@@ -1533,34 +1545,6 @@ def decoding_scheduler_requests(
     return requests
 
 
-def test_decode_gathers_rows_in_place_as_the_batch_shrinks_and_grows() -> None:
-    decode = decode_runner(row_count=4)
-    buffers = decode.runner.decode_buffers
-    addresses = buffer_addresses(buffers)
-    requests = decoding_scheduler_requests(decode, [3, 4, 5, 2])
-    batch_request_data = [request_data_of(request) for request in requests]
-
-    expected = history_staged_rows(batch_request_data[:3])
-    decode.forward.next_frames = [[90 + index, 4, 3, 2, 1] for index in range(3)]
-    decode_step(decode.runner, requests[:3])
-    assert decode.forward.reads[-1] == expected
-    third_row = (buffers.frames[2].clone(), buffers.ras_windows[2].clone())
-
-    expected = history_staged_rows(batch_request_data[:2])
-    decode.forward.next_frames = [[94 + index, 1, 2, 3, 4] for index in range(2)]
-    decode_step(decode.runner, requests[:2])
-    assert decode.forward.reads[-1] == expected
-    # Rows past a smaller batch keep earlier valid inputs for padded graph rows.
-    assert torch.equal(buffers.frames[2], third_row[0])
-    assert torch.equal(buffers.ras_windows[2], third_row[1])
-
-    expected = history_staged_rows(batch_request_data)
-    decode.forward.next_frames = [[84 + index, 2, 2, 2, 2] for index in range(4)]
-    decode_step(decode.runner, requests)
-    assert decode.forward.reads[-1] == expected
-    assert buffer_addresses(buffers) == addresses
-
-
 @pytest.mark.parametrize("is_lookahead", [False, True], ids=["sync", "lookahead"])
 def test_a_failed_decode_forward_collects_nothing_and_the_next_step_restages(
     is_lookahead: bool,
@@ -1684,83 +1668,6 @@ def test_a_lookahead_resolve_skips_rows_finished_or_retracted_since_launch() -> 
         generation_steps[3] + 1,
     ]
     assert streamed_message_counts() == [1, 0, 0, 0]
-
-
-def test_row_indices_upload_only_when_the_batch_order_or_slots_change() -> None:
-    decode = decode_runner(row_count=4)
-    runner = decode.runner
-    first, second, third = decoding_scheduler_requests(decode, [3, 4, 2])
-    newcomer = prompted_request(frame_rows_of([3], seed=12)[0], "request-new", 3)
-    upload_counts: list[int] = []
-    with patch.object(
-        runner, "pinned_pingpong", wraps=runner.pinned_pingpong
-    ) as pinned_pingpong:
-
-        def decode_and_count_uploads(batch: list[SchedulerRequest]) -> None:
-            expected = history_staged_rows(
-                [request_data_of(request) for request in batch]
-            )
-            decode.forward.next_frames = [
-                [84 + index, 1, 2, 3, 4] for index in range(len(batch))
-            ]
-            decode_step(runner, batch)
-            assert decode.forward.reads[-1] == expected
-            upload_counts.append(
-                sum(
-                    called.args[0] == "row_upload_buffers"
-                    for called in pinned_pingpong.call_args_list
-                )
-            )
-
-        for batch in (
-            [first, second, third],
-            [first, second, third],
-            [third, first, second],
-            [third, first],
-            [third, first],
-        ):
-            decode_and_count_uploads(batch)
-        retracted_request = request_data_of(first).req
-        assert retracted_request is not None
-        retracted_request.is_retracted = True
-        prefill_step(decode, [newcomer], [1], [[86, 2, 2, 2, 2]])
-        prefill_step(decode, [first], [4], [[87, 3, 3, 3, 3]])
-        decode_and_count_uploads([third, first])
-
-    assert upload_counts == [1, 1, 2, 3, 3, 4]
-
-
-def test_a_new_request_in_the_same_slots_keeps_the_uploaded_row_indices() -> None:
-    decode = decode_runner(row_count=4)
-    runner = decode.runner
-    first, second = decoding_scheduler_requests(decode, [3, 4])
-    newcomer = prompted_request(frame_rows_of([3], seed=12)[0], "request-new", 3)
-    upload_counts: list[int] = []
-    with patch.object(
-        runner, "pinned_pingpong", wraps=runner.pinned_pingpong
-    ) as pinned_pingpong:
-
-        def decode_and_count_uploads(batch: list[SchedulerRequest]) -> None:
-            expected = history_staged_rows(
-                [request_data_of(request) for request in batch]
-            )
-            decode.forward.next_frames = [
-                [84 + index, 1, 2, 3, 4] for index in range(len(batch))
-            ]
-            decode_step(runner, batch)
-            assert decode.forward.reads[-1] == expected
-            upload_counts.append(
-                sum(
-                    called.args[0] == "row_upload_buffers"
-                    for called in pinned_pingpong.call_args_list
-                )
-            )
-
-        decode_and_count_uploads([first, second])
-        prefill_step(decode, [newcomer], [1], [[86, 2, 2, 2, 2]])
-        decode_and_count_uploads([newcomer, second])
-
-    assert upload_counts == [1, 1]
 
 
 def test_the_first_decode_after_a_prefill_reads_what_the_history_gives() -> None:
@@ -2136,6 +2043,82 @@ def test_next_frame_labels_pair_rows_within_each_request() -> None:
         placeholder,
     ]
     assert torch.equal(frames, original)
+
+
+def prefill_staging_runner(device: torch.device) -> Drama3ModelRunner:
+    runner = Drama3ModelRunner.__new__(Drama3ModelRunner)
+    runner.device = device
+    runner.model = SimpleNamespace(
+        config=SimpleNamespace(eos_token_id=EOS_TOKEN_ID), step_exchange=StepExchange()
+    )
+    runner.decode_buffers = Drama3DecodeBuffers.allocate(
+        row_count=4, frame_width=FRAME_WIDTH, device=device
+    )
+    runner.prefill_inputs = None
+    return runner
+
+
+def test_prefill_staging_pairs_each_row_with_its_requests_next_frame() -> None:
+    """before_prefill hands the model every request's history and, per row, the
+    next frame of the same request with the eos placeholder on each last row,
+    so a request boundary never leaks its neighbour's first frame as a label."""
+    rows_a, rows_b = frame_rows_of([3, 2], seed=6)
+    requests = []
+    for request_id, rows in (("a", rows_a), ("b", rows_b)):
+        data = built_request(rows, request_id)
+        admitted_for_prefill(data, 0, len(rows))
+        requests.append(SchedulerRequest(request_id=request_id, data=data))
+    runner = prefill_staging_runner(torch.device("cpu"))
+
+    runner.before_prefill(None, SimpleNamespace(), requests)
+
+    staged = runner.model.step_exchange.take_inputs(["a", "b"], 5)
+    placeholder = [EOS_TOKEN_ID] + [0] * (FRAME_WIDTH - 1)
+    assert staged.frames.tolist() == rows_a + rows_b
+    assert staged.next_frames.tolist() == (
+        rows_a[1:] + [placeholder] + rows_b[1:] + [placeholder]
+    )
+    assert staged.ras_windows.tolist() == [ras_window(rows_a), ras_window(rows_b)]
+
+
+@pytest.mark.accelerator
+def test_prefill_staging_keeps_each_steps_copies_apart_without_a_sync() -> None:
+    """Two prefills staged back to back, with the stream still busy and no host
+    sync between them, each reach the device with their own frames, labels and
+    knobs."""
+    if not torch.cuda.is_available():
+        pytest.skip("stages onto a CUDA device")
+    else:
+        pass
+    rows_a = frame_rows_of([3], seed=7)[0]
+    rows_b = frame_rows_of([3], seed=8)[0]
+    assert rows_a != rows_b
+    requests = {}
+    for knob_index, (request_id, rows) in enumerate((("a", rows_a), ("b", rows_b))):
+        request = prompted_request(rows, request_id, knob_index)
+        admitted_for_prefill(request_data_of(request), 0, len(rows))
+        requests[request_id] = request
+    runner = prefill_staging_runner(torch.device("cuda"))
+    exchange = runner.model.step_exchange
+
+    torch.cuda._sleep(
+        2_000_000_000
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    runner.before_prefill(None, SimpleNamespace(), [requests["a"]])
+    first = exchange.take_inputs(["a"], 3)
+    runner.before_prefill(None, SimpleNamespace(), [requests["b"]])
+    second = exchange.take_inputs(["b"], 3)
+    torch.cuda.synchronize()
+
+    placeholder = [EOS_TOKEN_ID] + [0] * (FRAME_WIDTH - 1)
+    assert first.frames.tolist() == rows_a
+    assert second.frames.tolist() == rows_b
+    assert first.next_frames.tolist() == rows_a[1:] + [placeholder]
+    assert second.next_frames.tolist() == rows_b[1:] + [placeholder]
+    assert first.ras_windows.tolist() == [ras_window(rows_a)]
+    assert second.ras_windows.tolist() == [ras_window(rows_b)]
+    assert (first.temperature.tolist(), first.top_k.tolist()) == ([0.5], [1])
+    assert (second.temperature.tolist(), second.top_k.tolist()) == ([0.75], [2])
 
 
 def tower_cache(attention: DenseAttention) -> dict[tuple[int, str, int], torch.Tensor]:

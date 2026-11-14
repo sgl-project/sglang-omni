@@ -39,6 +39,7 @@ from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     norm_gate_up_silu,
     norm_qkv_rope_store,
 )
+from sglang_omni.models.fishaudio_drama3.tower_tiles import fused_block_m
 from sglang_omni.models.fishaudio_drama3.weights import load_audio_decoder_weights
 from sglang_omni.platforms import current_platform
 from tests.unit_test.fishaudio_drama3.graph_fixtures import bits
@@ -969,6 +970,15 @@ def test_only_decode_passes_take_the_fused_layers(forward_mode: ForwardMode) -> 
         attention.mode = ForwardMode.DECODE
         run_tower_step(decoder, attention, step)
         assert forward_layer.call_count == len(tower_layers(decoder))
+
+
+def test_a_pass_takes_the_smallest_row_tile_that_covers_it() -> None:
+    assert [fused_block_m(row_count) for row_count in (1, 16, 17, 32)] == [
+        16,
+        16,
+        32,
+        32,
+    ]
 
 
 @accelerator

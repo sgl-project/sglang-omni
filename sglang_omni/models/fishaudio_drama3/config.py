@@ -26,6 +26,7 @@ DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP = (10, 12, 32)
 DEFAULT_STREAM_FOLLOWUP_STRIDE = 64
 DEFAULT_FIRST_FRAME_CUDA_GRAPHS = True
 DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS = 16
+DEFAULT_GDN_PREFILL_CUDA_GRAPHS = True
 DEFAULT_TRITON_SAMPLING = True
 # Under reference sampling, what replaces a main-token first draw that repeats one of
 # the last 16 main tokens: the most probable candidate, or a draw at 1.0 / 0.95 / 30.
@@ -71,6 +72,7 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     first_frame_cuda_graph_max_requests: int = Field(
         default=DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS, ge=1
     )
+    gdn_prefill_cuda_graphs: bool = DEFAULT_GDN_PREFILL_CUDA_GRAPHS
     triton_sampling: bool = DEFAULT_TRITON_SAMPLING
     # None: the factory's default (off, and the argmax fallback).
     reference_sampling: bool | None = None
