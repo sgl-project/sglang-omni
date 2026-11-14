@@ -156,19 +156,46 @@ func TestRethink(t *testing.T) {
 			t.Errorf("pasted %q", p)
 		}
 	})
-	t.Run("translate", func(t *testing.T) {
+	// Translate's and Rewrite's preview take the same menu (#3957): the
+	// answer under way stops, only the new one goes in.
+	for _, tc := range []struct {
+		name string
+		kind store.Kind
+		sel  Selector
+	}{
+		{"translate", store.KindTranslate, &fakeSelector{}},
+		{"rewrite", store.KindRewrite, &fakeSelector{text: "the selected text"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "你好。", hang: true, hangOn: 1}
+			h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, _ *settings.Settings) { c.Select = tc.sel })
+			id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.speak(id, 3)
+			h.rec.waitFor(t, "the first answer", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+			h.m.Rethink(id, off)
+			end := h.rec.wait(t)
+			if end.State != Done || end.Problem != nil || end.Result != "你好。" || end.Thinking == nil || *end.Thinking != *off {
+				t.Errorf("end %s %+v %q %+v", end.State, end.Problem, end.Result, end.Thinking)
+			}
+			if r := model.requests(); len(r) != 2 || r[0].Thinking != nil || r[1].Thinking == nil || *r[1].Thinking != *off {
+				t.Errorf("requests %d: %+v", len(r), r)
+			}
+		})
+	}
+	t.Run("after stop", func(t *testing.T) {
 		model := &fakeLLM{hang: true}
-		h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, _ *settings.Settings) { c.Select = &fakeSelector{} })
-		id, _ := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack})
+		h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, _ *settings.Settings) { c.Select = &fakeSelector{text: "the selected text"} })
+		id, _ := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
 		h.speak(id, 3)
 		h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing && s.Draft != "" })
+		h.m.StopLLM(id)
 		h.m.Rethink(id, off)
-		time.Sleep(50 * time.Millisecond)
-		if s := h.m.Current(); s.State != Composing || s.Thinking != nil || len(model.requests()) != 1 {
-			t.Errorf("Rethink moved Translate: %s %+v, %d requests", s.State, s.Thinking, len(model.requests()))
+		if end := h.rec.wait(t); end.State != Done || end.Thinking != nil || len(model.requests()) != 1 {
+			t.Errorf("Rethink after Stop asked again: %s %+v, %d requests", end.State, end.Thinking, len(model.requests()))
 		}
-		h.m.Cancel(id)
-		h.rec.wait(t)
 	})
 }
 

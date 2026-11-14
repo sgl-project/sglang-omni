@@ -95,8 +95,8 @@
 - **起点**：听写打开了语言模型整理，所用服务支持思考设置（比如 OpenAI、DeepSeek、智谱）。
 - **操作**：说一段话，停止录音，浮窗显示“整理中”时点“用识别原文”后面的“思考”，在浮窗里选“关闭”。
 - **应看到**：按钮上写着当前强度；选完后浮窗关上，模型用这个强度把同样的话重新整理，只插入一次结果；语言模型页里这个服务的“思考”设置不变。
-- **边界**：浮窗开着时按取消键先关浮窗，再按才是用识别原文；重选后仍可点“用识别原文”；翻译、改写和不支持思考设置的服务没有这个按钮；中英文界面按钮都在浮窗内。
-- **覆盖**：`TestPillThinkingLevel`、`TestPillThinkingLevelEndToEnd`；`internal/session` 的 `TestRethink`；截图 `overlay-composing-think*`。
+- **边界**：浮窗开着时按取消键先关浮窗，再按才是用识别原文；重选后仍可点“用识别原文”；翻译、改写处理中也有同一个按钮（#3957），改写的小窗能点；不支持思考设置的服务没有这个按钮；菜单第一行写服务设置的强度（如“高（默认）”），不写“按设置”，语言模型页改了设置菜单跟着变；中英文界面按钮都在浮窗内。
+- **覆盖**：`TestPillThinkingLevel`、`TestPillThinkingLevelEndToEnd`、`TestThinkingDefaultNamed`；`internal/session` 的 `TestRethink`；截图 `overlay-composing-think*`。
 
 ## S12. 回答写到一半停下来
 

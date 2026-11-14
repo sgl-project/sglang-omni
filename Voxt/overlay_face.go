@@ -59,7 +59,7 @@ func (a *app) overlayView(c *ui.Context) {
 			faceStyle(ui.Column(c.Key("ov-face")), o, a.ov.mode, a.ov.h).DragWindow().Children(func() {
 				think := ""
 				if a.pillThinks(a.ov.mode) {
-					think = askAgainText(a.sess.Thinking)
+					think = a.pillThinkText().text
 				}
 				skip, thinkClicked := overlayPill(c, a.pillSession(), a.ov.mode, look, think) // mute_link.go: the output's note
 				if skip {
