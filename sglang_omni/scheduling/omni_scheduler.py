@@ -127,6 +127,7 @@ from sglang_omni.scheduling.types import (
     SpecTokensDetailsDict,
     StreamOutputBuilder,
 )
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils.process import terminate_gpu_worker
 
 logger = logging.getLogger(__name__)
@@ -1457,7 +1458,7 @@ class OmniScheduler(Generic[RequestDataT]):
             try:
                 req_data = self.run_request_builder(payload, active_stage)
             except Exception as exc:
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self.log_request_builder_failure(req_id, exc)
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
@@ -1480,6 +1481,15 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         self.drain_request_build_results()
         self.drain_request_admission_results()
+
+    def log_request_builder_failure(self, request_id: str, error: Exception) -> None:
+        if is_bad_request_error(error):
+            # note (ruiling): the caller already gets this message with a 400, so the traceback is noise.
+            logger.warning(
+                f"OmniScheduler: request builder rejected {request_id}: {error}"
+            )
+        else:
+            logger.exception(f"OmniScheduler: request builder failed for {request_id}")
 
     def request_build_queue_fits_workers(self) -> bool:
         """True when pending+backlog still fits in the request-build pool.
@@ -1702,7 +1712,7 @@ class OmniScheduler(Generic[RequestDataT]):
                         continue
                     else:
                         pass
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self.log_request_builder_failure(req_id, exc)
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
