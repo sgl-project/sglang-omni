@@ -39,6 +39,12 @@ enum class FinalStftFrame { kDropped, kKept };
 // Whisper-style log-mel in float32 on MLX, [mel_bins, frames].
 mlx::core::array LogMel(const std::vector<float> &samples,
                         FinalStftFrame final_frame);
+// LogMel's two steps: the log10 mel power before the floor, [frames, mel_bins],
+// then the floor below max_log_mel and the scaling, [mel_bins, frames].
+mlx::core::array RawLogMel(const std::vector<float> &samples,
+                           FinalStftFrame final_frame);
+mlx::core::array ApplyFloor(const mlx::core::array &raw_log_mel,
+                            const mlx::core::array &max_log_mel);
 
 // Whisper's fixed 30 s encoder window.
 inline constexpr int kWhisperWindowSampleCount = 30 * kSampleRate;
