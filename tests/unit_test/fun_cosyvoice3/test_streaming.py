@@ -13,6 +13,7 @@ import torch
 from sglang_omni.models.fun_cosyvoice3 import stages, streaming_vocoder
 from sglang_omni.models.fun_cosyvoice3.model_runner import FunCosyVoice3ModelRunner
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
+from sglang_omni.models.fun_cosyvoice3.prefix_cache import PrefixCacheRow
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3SGLangRequestData,
 )
@@ -655,6 +656,46 @@ def test_a_final_launched_behind_its_hop_leaves_after_it_with_its_result_last(
     assert log == ["launch 1", "launch 2", "read 1", "read 2"]
     assert estimator_calls(flow)[-1]["streaming"] is False
     assert "req-a" not in scheduler.stream_states
+
+
+@pytest.mark.parametrize(
+    "maximum_frames,expected_ids",
+    [(200, ["req-a", "req-b"]), (199, ["req-a"]), (99, ["req-a"])],
+)
+def test_first_hop_batches_respect_graph_coverage_without_starving_a_row(
+    maximum_frames: int, expected_ids: list[str]
+) -> None:
+    """Uncached prompt frames can push a first-hop batch onto the eager path."""
+    _, scheduler = make_scheduler(max_batch_size=8)
+    scheduler.vocoder.flow.prefix_cuda_graph_runner = SimpleNamespace(
+        tier_frames=[maximum_frames]
+    )
+    for request_id in ("req-a", "req-b", "req-c"):
+        scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
+        scheduler.ingest_stream_item(request_id, item(list(range(28))))
+    selected = scheduler.select_step_participants()
+    assert [request_id for request_id, _ in selected] == expected_ids
+    assert set(scheduler.stream_states) == {"req-a", "req-b", "req-c"}
+
+
+def test_graph_coverage_counts_only_new_frames_and_preserves_playback_priority() -> (
+    None
+):
+    """A cached follow-up retains priority and shares its frame budget with first audio."""
+    _, scheduler = make_scheduler(max_batch_size=8)
+    scheduler.vocoder.flow.prefix_cuda_graph_runner = SimpleNamespace(tier_frames=[150])
+    for request_id in ("req-first", "req-followup"):
+        scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
+        scheduler.ingest_stream_item(request_id, item(list(range(53))))
+    state = scheduler.stream_states["req-followup"]
+    state.token_offset = 25
+    state.first_emit_at = scheduler.clock()
+    state.flow_cache = (
+        PrefixCacheRow(committed_frames=100),
+        PrefixCacheRow(committed_frames=100),
+    )
+    selected = scheduler.select_step_participants()
+    assert [request_id for request_id, _ in selected] == ["req-followup", "req-first"]
 
 
 def test_a_stream_whose_first_hop_is_in_flight_ranks_started(

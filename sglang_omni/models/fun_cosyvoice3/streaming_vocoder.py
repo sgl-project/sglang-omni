@@ -745,7 +745,34 @@ class FunCosyVoice3StreamingVocoderScheduler(
                     for request_id, state in ranked
                     if state.next_decode() == head_decode
                 ]
-                return peers[: self.max_batch_size]
+                peers = peers[: self.max_batch_size]
+                graph_runner = self.vocoder.flow.prefix_cuda_graph_runner
+                if head_decode != "causal_window" or graph_runner is None:
+                    return peers
+                else:
+                    selected: list[tuple[str, CosyVoice3StreamState]] = []
+                    batch_new_frames = 0
+                    for request_id, state in peers:
+                        assert state.prompt_token is not None
+                        total_frames = (
+                            state.prompt_token.shape[1]
+                            + state.token_offset
+                            + state.hop_len
+                        ) * self.vocoder.flow.token_mel_ratio
+                        committed_frames = (
+                            state.flow_cache[0].committed_frames
+                            if state.flow_cache is not None
+                            else 0
+                        )
+                        new_frames = total_frames - committed_frames
+                        if selected and (
+                            batch_new_frames + new_frames > graph_runner.tier_frames[-1]
+                        ):
+                            break
+                        else:
+                            selected.append((request_id, state))
+                            batch_new_frames += new_frames
+                    return selected
 
     def launch_step(
         self, participants: list[tuple[str, CosyVoice3StreamState]]
