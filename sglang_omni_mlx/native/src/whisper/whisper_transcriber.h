@@ -17,6 +17,10 @@
 
 namespace whisper {
 
+// Draft proposals per round unless a flag sets them; the M5 Pro corpus runs
+// used 7.
+inline constexpr int kDefaultDraftSteps = 7;
+
 struct WhisperOptions {
   // An ISO code or an English language name; blank or unknown detects the
   // language from the first window for multilingual checkpoints.
@@ -32,7 +36,11 @@ class WhisperTranscriber {
 public:
   // Reads the checkpoint and the tokenizer files Voxt places beside it:
   // vocab.json, merges.txt, tokenizer_config.json and generation_config.json.
-  explicit WhisperTranscriber(const std::filesystem::path &model_directory);
+  // With a draft directory, greedy decoding verifies draft_steps proposals of
+  // that distil decoder per round.
+  WhisperTranscriber(const std::filesystem::path &model_directory,
+                     const std::filesystem::path &draft_directory,
+                     int draft_steps);
 
   qwen3_asr::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const WhisperOptions &options,
@@ -43,6 +51,9 @@ private:
     std::string text;
     int generated_token_count = 0;
     bool reached_token_limit = false;
+    int verify_round_count = 0;
+    int proposed_draft_token_count = 0;
+    int accepted_draft_token_count = 0;
   };
 
   // The code of the language token a language names, when there is one.
@@ -50,12 +61,27 @@ private:
   // Text of generated ids: special and timestamp ids dropped, byte-level
   // decoded, tokenization spaces cleaned up.
   std::string DecodeText(const std::vector<int> &token_ids) const;
+  // Logits [length, vocabulary] to the next token ids [length], from the
+  // suppressed logits: sampled at a positive temperature, else the most likely.
+  mlx::core::array NextToken(mlx::core::array logits, bool first_step,
+                             float temperature) const;
   WindowResult TranscribeWindow(const mlx::core::array &encoder_states,
                                 const std::vector<int> &prompt_ids,
                                 int max_new_tokens, float temperature,
                                 const std::atomic<bool> &cancel) const;
+  // Greedy decoding with the draft after the prompt the caches hold and the
+  // first token after it: each round the target verifies the draft's
+  // proposals and keeps the agreeing ones plus its own next token.
+  WindowResult DecodeWithDraft(const mlx::core::array &encoder_states,
+                               const mlx::core::array &prompt,
+                               const mlx::core::array &first_token,
+                               std::vector<DecoderLayerCache> &caches,
+                               int max_new_tokens,
+                               const std::atomic<bool> &cancel) const;
 
   WhisperModel model_;
+  std::optional<WhisperModel> draft_;
+  int draft_steps_;
   omni_common::Tokenizer tokenizer_;
   bool clean_up_tokenization_spaces_ = true;
   bool is_multilingual_ = false;

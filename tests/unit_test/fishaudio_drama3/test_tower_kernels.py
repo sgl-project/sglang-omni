@@ -1153,6 +1153,22 @@ def test_the_resolver_needs_triton(
     assert reason == "Triton is not installed"
 
 
+def test_tensor_parallel_ranks_keep_the_module_path() -> None:
+    """The fused kernels add each rank's o_proj partial into the residual before
+    the all-reduce sums the ranks, so a split tower must not take them."""
+    with torch.device("meta"):
+        decoder = AudioDecoder(FishOmniConfig(**CHECKPOINT_CONFIG), tp_size=2)
+
+    reason = decoder.fused_layers_unsupported_reason(
+        kv_pool=Mock(spec=HybridLinearKVPool),
+        tower_layer_ids=[],
+        context_length=FIRST_POSITION,
+        device=torch.device("cpu"),
+    )
+
+    assert reason == "the tower layers are split across 2 tensor-parallel ranks"
+
+
 def resolver_reason_with_compute_capability(
     monkeypatch: pytest.MonkeyPatch, compute_capability: tuple[int, int]
 ) -> str | None:

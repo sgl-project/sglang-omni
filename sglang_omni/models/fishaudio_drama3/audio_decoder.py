@@ -64,9 +64,13 @@ class AudioDecoder(nn.Module):
     is the main token's offset in the semantic band.
     """
 
-    def __init__(self, config: FishOmniConfig) -> None:
+    def __init__(
+        self, config: FishOmniConfig, *, tp_rank: int = 0, tp_size: int = 1
+    ) -> None:
         super().__init__()
         decoder_config = config.audio_decoder_config
+        self.tp_rank: int = tp_rank
+        self.tp_size: int = tp_size
         self.semantic_begin_id = config.semantic_start_token_id
         self.semantic_end_id = config.semantic_end_token_id
         self.codebook_size = decoder_config.vocab_size
@@ -84,11 +88,11 @@ class AudioDecoder(nn.Module):
             persistent=False,
         )
         self.shared_layers = nn.ModuleList(
-            DecoderLayer(decoder_config, rotary_embedding)
+            DecoderLayer(decoder_config, rotary_embedding, tp_size)
             for _ in range(decoder_config.shared_enrichment_layers)
         )
         self.residual_layers = nn.ModuleList(
-            DecoderLayer(decoder_config, rotary_embedding)
+            DecoderLayer(decoder_config, rotary_embedding, tp_size)
             for _ in range(self.num_codebooks - 1)
         )
         self.codebook_heads = nn.ModuleList(
@@ -123,21 +127,28 @@ class AudioDecoder(nn.Module):
         context_length: int,
         device: torch.device,
     ) -> str | None:
-        attention = self.shared_layers[0].self_attn
-        return fused_tower_layers_unsupported_reason(
-            layers=[
-                layer.tower_layer_weights()
-                for layer in (*self.shared_layers, *self.residual_layers)
-            ],
-            head_count=attention.head_count,
-            kv_head_count=attention.kv_head_count,
-            rotary_dim=attention.rotary_embedding.rotary_dim,
-            rotary_cos_sin=attention.rotary_embedding.cos_sin_cache,
-            context_length=context_length,
-            kv_pool=kv_pool,
-            tower_layer_ids=tower_layer_ids,
-            device=device,
-        )
+        if self.tp_size > 1:
+            # The fused kernels add each rank's partial sums into the residual unreduced.
+            return (
+                f"the tower layers are split across {self.tp_size} tensor-parallel "
+                f"ranks"
+            )
+        else:
+            attention = self.shared_layers[0].self_attn
+            return fused_tower_layers_unsupported_reason(
+                layers=[
+                    layer.tower_layer_weights()
+                    for layer in (*self.shared_layers, *self.residual_layers)
+                ],
+                head_count=attention.head_count,
+                kv_head_count=attention.kv_head_count,
+                rotary_dim=attention.rotary_embedding.rotary_dim,
+                rotary_cos_sin=attention.rotary_embedding.cos_sin_cache,
+                context_length=context_length,
+                kv_pool=kv_pool,
+                tower_layer_ids=tower_layer_ids,
+                device=device,
+            )
 
     def enable_fused_layers(self, device: torch.device) -> None:
         layer = self.shared_layers[0]

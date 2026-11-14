@@ -1,10 +1,10 @@
 // Package asr is the shape of VoxtNew's speech recognition, which the
 // session uses: a speech model (a Provider) is a file transcriber that
 // takes a finished recording, a streamer that recognises while the user
-// speaks, or both. The speech models are local (internal/local: the Omni
-// native MLX servers of sglang_omni_mlx/native, over loopback HTTP and
-// WebSockets, in internal/omni); this package has their types, errors and
-// audio helpers only.
+// speaks, or both. The local speech models are internal/local's (the
+// Omni native MLX servers of sglang_omni_mlx/native, in internal/omni);
+// the remote speech services' clients are this package's subpackages
+// (openai, doubao, aliyun, gemini, mimo), set up by internal/providers.
 //
 // Audio is what the helper records: 16-bit little-endian PCM, mono, at
 // 16 kHz (SampleRate), sent in frames of about 100 ms. File transcribers
@@ -13,13 +13,18 @@
 // Everything here is goroutine-safe and blocks: call it off the main
 // thread. Errors are *Error values with a Kind (config, server, network,
 // protocol, audio, cancelled…) that the UI maps to a message and a way
-// forward.
+// forward; they never carry a key.
+//
+// A remote service's endpoint must be https:// or wss:// unless its host
+// is loopback (CheckEndpoint), and its WebSockets go through the proxy of
+// the client it was given (WSClient).
 //
 // Imports: core.
 package asr
 
 import (
 	"context"
+	"net/http"
 	"time"
 )
 
@@ -37,9 +42,10 @@ type Caps struct {
 	// of words to favour (hot words), the dictionary's terms.
 	Prompt bool
 	Hints  bool
-	// MaxBytes bounds a recording's size (0: no bound known); MaxDuration
-	// a recording (0: none known). Longer recordings fail with KindAudio
-	// before anything is sent.
+	// MaxBytes bounds one upload (0: no bound known); MaxDuration a
+	// recording (0: none known). A PCM recording over MaxBytes goes in
+	// pieces (TranscribeInPieces); others fail with KindAudio before
+	// anything is sent.
 	MaxBytes    int64
 	MaxDuration time.Duration
 }
@@ -63,6 +69,10 @@ type FileRequest struct {
 	// Speech models without Caps.Hints fold the hints into the prompt.
 	Hints  []string
 	Prompt string
+	// MaxBytes, when over 0 and under the service's own upload limit,
+	// caps each upload instead (Settings → Audio, #3840): a longer PCM
+	// recording goes in smaller pieces (TranscribeInPieces).
+	MaxBytes int
 }
 
 // Result is a finished transcription.
@@ -86,6 +96,10 @@ type StreamRequest struct {
 	Lang       string // a language hint, "" detects
 	Hints      []string
 	Prompt     string
+	// LiveResult asks for the live text as the result, without a second
+	// pass over the whole recording at Finish, where the model makes one
+	// (settings.Audio.LiveResult); the others ignore it.
+	LiveResult bool
 }
 
 // Streamer opens recognition streams.
@@ -157,4 +171,20 @@ type Event struct {
 	// Result is the final event's details (Text repeats there).
 	Result Result
 	Err    error // EventError
+}
+
+// Config is what every remote service's New takes: the user's setup of it
+// (settings.Provider) with its key from the Keychain.
+type Config struct {
+	// Endpoint overrides the service's default URL ("": the default).
+	Endpoint string
+	// Model is the model (Doubao: the resource id); "": the default.
+	Model string
+	// Key is the API key (Doubao: the Access Token). AppID is Doubao's
+	// App ID.
+	Key   string
+	AppID string
+	// HTTPClient is the client requests go through, with the app's proxy
+	// (nil: a direct one); WebSockets use its proxy (WSClient).
+	HTTPClient *http.Client
 }

@@ -31,6 +31,8 @@ type overlayForm struct {
 	position                int // 0 bottom, 1 top
 	opacity, radius, margin float64
 	showTime                bool
+	liveText                bool
+	liveLayout              int // 0 one line, 1 lines (Overlay.LiveLines)
 	// saveAt is when the last change waits to be saved (zero: saved).
 	saveAt time.Time
 }
@@ -58,6 +60,11 @@ func (a *app) loadOverlayForm() {
 		f.position = 1
 	}
 	f.opacity, f.radius, f.margin, f.showTime = o.Opacity, o.Radius, o.Margin, o.ShowTime
+	f.liveText = !o.HideLiveText
+	f.liveLayout = 0
+	if o.LiveLines {
+		f.liveLayout = 1
+	}
 }
 
 // overlayEdited applies the controls: at once to the overlay and the
@@ -70,6 +77,9 @@ func (a *app) overlayEdited() {
 		Radius:   math.Round(f.radius),
 		Margin:   math.Round(f.margin),
 		ShowTime: f.showTime,
+
+		HideLiveText: !f.liveText,
+		LiveLines:    f.liveLayout == 1,
 	}
 	a.prefs.Overlay = o
 	a.overlayRestyle() // overlay.go
@@ -108,17 +118,27 @@ func (a *app) overlaySettings(c *ui.Context) {
 			a.overlayEdited()
 		}
 	})
-	settingRow(c, "ov-margin", i18n.T("Distance from the edge"), i18n.T("From the bottom or the top of the screen, above the Dock and below the menu bar."), func() {
+	settingRow(c, "ov-margin", i18n.T("Distance from the edge"), "", func() {
 		slider("ov-margin-slider", i18n.T("Distance from the edge"), &f.margin, 0, ovMaxMargin, 4, fmt.Sprintf("%.0f", f.margin))
 	})
-	settingRow(c, "ov-opacity", i18n.T("Opacity"), i18n.T("Of the dark face over the blurred desktop: lower lets more of what is behind show through."), func() {
+	settingRow(c, "ov-opacity", i18n.T("Opacity"), "", func() {
 		slider("ov-opacity-slider", i18n.T("Opacity"), &f.opacity, 0.5, 1, 0.05, fmt.Sprintf("%.0f%%", f.opacity*100))
 	})
-	settingRow(c, "ov-radius", i18n.T("Corner radius"), i18n.T("The answer card takes the same corners."), func() {
+	settingRow(c, "ov-radius", i18n.T("Corner radius"), "", func() {
 		slider("ov-radius-slider", i18n.T("Corner radius"), &f.radius, 0, ovMaxRadius, 1, fmt.Sprintf("%.0f", f.radius))
 	})
-	settingRow(c, "ov-time", i18n.T("Show the recording time"), i18n.T("Off, the overlay shows only the feature's icon and the waveform."), func() {
-		if ui.Switch(c.Key("ov-time-switch"), &f.showTime).Label(i18n.T("Show the recording time")).Changed() {
+	settingRow(c, "ov-time", i18n.T("Show recording time"), "", func() {
+		if ui.Switch(c.Key("ov-time-switch"), &f.showTime).Label(i18n.T("Show recording time")).Changed() {
+			a.overlayEdited()
+		}
+	})
+	settingRow(c, "ov-live", i18n.T("Show live text"), "", func() {
+		if ui.Switch(c.Key("ov-live-switch"), &f.liveText).Label(i18n.T("Show live text")).Changed() {
+			a.overlayEdited()
+		}
+	})
+	settingRow(c, "ov-lines", i18n.T("Live text layout"), "", func() {
+		if ui.Segmented(c.Key("ov-lines-seg"), &f.liveLayout, i18n.T("One line"), i18n.T("Lines")).Label(i18n.T("Live text layout")).Disabled(!f.liveText).Changed() {
 			a.overlayEdited()
 		}
 	})
@@ -159,17 +179,18 @@ const (
 // overlayPreview is the overlay's pill as it draws, at its size, in its
 // dark theme, over a desktop picture that shows through it blurred (the
 // desktop does, on the Mac), after Voxt's preview: where the settings put
-// it (the bottom or the top, the distance from the edge to scale with the
-// card), as opaque, as round, with the time when it shows it. A change
-// shows at once.
+// it (the bottom or the top, the distance from the edge to scale with
+// its half of the card), as opaque, as round, with the time when it
+// shows it. A change shows at once.
 func (a *app) overlayPreview(c *ui.Context) {
 	t := c.Theme()
 	o := a.prefs.Overlay
-	w := layout.RowWidth(o.ShowTime, 0) + 2*layout.PillPadX
+	s := previewSession()
 	cardH := px(t, ovPreviewH)
 	// The distance from the edge, from none to ovMaxMargin, across the
-	// card's room.
-	room := max(cardH-layout.PillH-2*px(t, ovPreviewInset), 0)
+	// room in the pill's half of the card: at the largest the pill still
+	// shows on its side (#3785).
+	room := max(cardH/2-layout.PillH-px(t, ovPreviewInset), 0)
 	off := px(t, ovPreviewInset) + room*float32(min(max(o.Margin, 0), ovMaxMargin)/ovMaxMargin)
 	radius := faceRadius(o, ovRecording, layout.PillH)
 	ui.Box(c.Key("ov-preview")).FillWidth().MinWidth(0).Height(cardH).Shrink(0).Radius(px(t, ovPreviewRadius)).Clip().
@@ -185,13 +206,18 @@ func (a *app) overlayPreview(c *ui.Context) {
 		}
 		place.Children(func() {
 			c.SetTheme(overlayTheme())
+			row, _ := recordingPillRow(s, true, o.ShowTime, 0, func(k ovSized) (float32, bool) {
+				width, _ := c.MeasureText(k.wrap, k.span())
+				return width, true
+			})
+			w := row + 2*layout.PillPadX
 			ui.Box(c.Key("ov-preview-pill")).Size(float32(w), layout.PillH).Shrink(0).Children(func() {
 				// The blur of what is under it, then the face, positioned
 				// too to paint over the blur.
 				ui.Box(c).Absolute().Fill().Radius(radius).Material(glass.Blur{Radius: 8})
 				face := ui.Column(c.Key("ov-preview-face")).Absolute().Left(0).Top(0).Right(0).Bottom(0)
 				faceStyle(face, o, ovRecording, layout.PillH).Children(func() {
-					overlayPill(c, previewSession(), ovRecording, pillLook{time: o.ShowTime, w: w})
+					overlayPill(c, s, ovRecording, pillLook{time: o.ShowTime, w: w}, "")
 				})
 			})
 			c.SetTheme(t)

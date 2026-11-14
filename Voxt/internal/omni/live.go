@@ -34,8 +34,8 @@ type live struct {
 	req    asr.StreamRequest
 	ctx    context.Context // Open's: it bounds the whole stream
 	cancel context.CancelFunc
-	conn   *websocket.Conn
-	out    chan []byte // messages for the socket's writer
+	conn   *websocket.Conn // nil: a model without a realtime API (the batch preview)
+	out    chan []byte     // messages for the socket's writer
 
 	// language and bias are the Final's: the model's language hint ("":
 	// it detects) and the context bias.
@@ -43,62 +43,84 @@ type live struct {
 	bias     bias
 
 	mu        sync.Mutex
-	audio     []byte  // everything sent, for the Final
-	queued    int     // bytes of audio in out
-	previewed int     // bytes of audio written to the socket
-	preview   bool    // the socket still takes audio
-	pc        *pieces // a long recording's pieces (pieces.go), nil when the model has none
+	audio     []byte        // everything sent, for the Final
+	queued    int           // bytes of audio in out
+	previewed int           // bytes of audio written to the socket (the batch preview: in its last text)
+	preview   bool          // the socket still takes audio
+	tick      chan struct{} // new audio for the batch preview (cap 1), nil with a socket
+	pc        *pieces       // a long recording's pieces (pieces.go), nil when the model has none
 	finished  bool
 	ended     bool // the last event was sent (or Close): events is closed
 	events    chan asr.Event
 	asm       assembler
 	once      sync.Once // release
+	// completed takes the server's whole text at transcription.completed
+	// (LiveResult, live_result.go); readDone closes when read returns.
+	completed chan string
+	readDone  chan struct{}
 }
 
-// openLive connects the realtime socket and starts the session; it
-// returns once the server accepted it.
+// openLive starts the session: it connects the realtime socket and
+// returns once the server accepted it, or, for a model without one, starts
+// the batch preview (preview.go).
 func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*live, error) {
-	ep := l.endpoint()
-	u := url.URL{Scheme: "ws", Host: ep.host + ":" + strconv.Itoa(ep.port), Path: "/v1/realtime",
-		RawQuery: url.Values{"intent": {"transcription"}, "model": {ep.model}}.Encode()}
-	dctx, dcancel := context.WithTimeout(ctx, asr.ConnectTimeout)
-	defer dcancel()
-	conn, _, err := websocket.Dial(dctx, u.String(), &websocket.DialOptions{HTTPClient: loopback})
-	if err != nil {
-		return nil, asr.NetError(dctx, Provider, err)
-	}
-	conn.SetReadLimit(1 << 20)
-	session := map[string]any{"input_audio_format": "pcm16", "turn_detection": nil}
 	hint := a.spec.languageHint(req.Lang)
-	a.rt.logf("info", "%s: live session with language hint %q", a.spec.ID, hint)
-	if hint != "" {
-		session["language"] = hint
-	}
-	if err := writeJSON(dctx, conn, map[string]any{"type": "session.update", "session": session}); err != nil {
-		conn.CloseNow()
-		return nil, asr.NetError(dctx, Provider, err)
-	}
-	for {
-		ev, err := readEvent(dctx, conn)
+	var conn *websocket.Conn
+	if a.spec.ASR.Realtime {
+		ep := l.endpoint()
+		u := url.URL{Scheme: "ws", Host: ep.host + ":" + strconv.Itoa(ep.port), Path: "/v1/realtime",
+			RawQuery: url.Values{"intent": {"transcription"}, "model": {ep.model}}.Encode()}
+		dctx, dcancel := context.WithTimeout(ctx, asr.ConnectTimeout)
+		defer dcancel()
+		c, _, err := websocket.Dial(dctx, u.String(), &websocket.DialOptions{HTTPClient: loopback})
 		if err != nil {
+			return nil, asr.NetError(dctx, Provider, err)
+		}
+		conn = c
+		conn.SetReadLimit(1 << 20)
+		session := map[string]any{"input_audio_format": "pcm16", "turn_detection": nil}
+		a.rt.logf("info", "%s: live session with language hint %q", a.spec.ID, hint)
+		if hint != "" {
+			session["language"] = hint
+		}
+		if p := a.spec.ASR.Instruction; p != "" {
+			session["prompt"] = p
+		}
+		if err := writeJSON(dctx, conn, map[string]any{"type": "session.update", "session": session}); err != nil {
 			conn.CloseNow()
 			return nil, asr.NetError(dctx, Provider, err)
 		}
-		if ev.Type == "transcription_session.updated" {
-			break
+		for {
+			ev, err := readEvent(dctx, conn)
+			if err != nil {
+				conn.CloseNow()
+				return nil, asr.NetError(dctx, Provider, err)
+			}
+			if ev.Type == "transcription_session.updated" {
+				break
+			}
+			if ev.Type == "error" {
+				conn.CloseNow()
+				return nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Code: ev.code(), Detail: "the live session was refused"}
+			}
 		}
-		if ev.Type == "error" {
-			conn.CloseNow()
-			return nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Code: ev.code(), Detail: "the live session was refused"}
-		}
+	} else {
+		a.rt.logf("info", "%s: live session with language hint %q, previewed by Final requests", a.spec.ID, hint)
 	}
 	sctx, cancel := context.WithCancel(ctx)
 	s := &live{a: a, l: l, req: req, ctx: sctx, cancel: cancel, conn: conn,
 		language: hint, bias: a.spec.ASR.contextBias(req.Hints, req.Prompt),
-		out: make(chan []byte, 1024), preview: true, events: make(chan asr.Event, eventBuffer)}
-	go s.write()
-	go s.read()
-	if a.spec.ASR.PiecesAfter > 0 {
+		out: make(chan []byte, 1024), preview: conn != nil, events: make(chan asr.Event, eventBuffer),
+		completed: make(chan string, 1), readDone: make(chan struct{})}
+	if conn != nil {
+		go s.write()
+		go s.read()
+	} else {
+		s.tick = make(chan struct{}, 1)
+		go s.previewBatch()
+	}
+	// With LiveResult the socket's text is the result: no Final to shorten.
+	if a.spec.ASR.PiecesAfter > 0 && !(req.LiveResult && conn != nil) {
 		s.pc = &pieces{wake: make(chan struct{}, 1), exited: make(chan struct{})}
 		go s.recognisePieces(s.language, s.bias)
 	}
@@ -111,7 +133,9 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 			// Open's context ended the stream before Finish.
 			s.end(asr.Event{Kind: asr.EventError, Err: asr.NetError(ctx, Provider, ctx.Err())})
 		}
-		conn.CloseNow()
+		if conn != nil {
+			conn.CloseNow()
+		}
 	}()
 	return s, nil
 }
@@ -166,9 +190,13 @@ func (s *live) Send(pcm []byte) error {
 		return &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "the stream has ended"}
 	}
 	s.audio = append(s.audio, pcm...)
+	var pieceWake chan struct{} // nil channels are never ready: skipped
 	if s.pc != nil {
+		pieceWake = s.pc.wake
+	}
+	for _, wake := range []chan struct{}{s.tick, pieceWake} {
 		select {
-		case s.pc.wake <- struct{}{}:
+		case wake <- struct{}{}:
 		default:
 		}
 	}
@@ -232,8 +260,10 @@ func audioBytes(msg []byte) int {
 	return base64.StdEncoding.DecodedLen(len(m.Audio))
 }
 
-// read turns the socket's segments into partials.
+// read turns the socket's segments into partials, and passes the whole
+// text of transcription.completed to finishLive.
 func (s *live) read() {
+	defer close(s.readDone)
 	for {
 		ev, err := readEvent(s.ctx, s.conn)
 		if err != nil {
@@ -245,6 +275,9 @@ func (s *live) read() {
 			return
 		}
 		switch ev.Type {
+		case "transcription.completed":
+			s.completed <- ev.Text
+			return
 		case "transcription.segment":
 			s.mu.Lock()
 			text, ok := s.asm.apply(ev.Index, ev.Segment, ev.Text, ev.Final)
@@ -264,54 +297,77 @@ func (s *live) read() {
 
 // Finish ends the audio: the preview's socket closes and the Final runs
 // on everything sent (on what the pieces left, after the piece on its
-// way); its result is the last event.
+// way); its result is the last event. With LiveResult, while the preview
+// still has all the audio, the socket's own text is the result instead
+// (finishLive).
 func (s *live) Finish() error {
 	s.mu.Lock()
 	if s.finished || s.ended {
 		s.mu.Unlock()
 		return nil
 	}
-	s.finished, s.preview = true, false
+	s.finished = true
 	pcm := s.audio
+	if s.req.LiveResult && s.preview {
+		s.mu.Unlock()
+		go s.finishLive(pcm)
+		return nil
+	}
+	s.preview = false
 	s.mu.Unlock()
-	go func() {
-		s.conn.CloseNow()
-		start := time.Now()
-		language := s.language
-		var texts []string
-		done, busy := 0, time.Duration(0)
-		if pc := s.pc; pc != nil {
-			select {
-			case pc.wake <- struct{}{}:
-			default:
-			}
-			<-pc.exited
-			s.mu.Lock()
-			done, texts, busy = pc.done, slices.Clone(pc.texts), pc.busy
-			if pc.language != "" {
-				language = pc.language
-			}
-			s.mu.Unlock()
-		}
-		text := ""
-		var err error
-		if tail := pcm[done:]; len(tail) > 0 {
-			text, language, err = s.a.final(s.ctx, s.l, tail, language, s.bias)
-		}
-		took := time.Since(start)
-		s.logFinal(pcm, done, len(texts), busy, took, err)
-		if err != nil {
-			if s.ctx.Err() != nil {
-				err = asr.NetError(s.ctx, Provider, s.ctx.Err())
-			}
-			s.end(asr.Event{Kind: asr.EventError, Err: err})
-			return
-		}
-		text = joinParts(append(texts, text))
-		res := asr.Result{Text: text, Lang: language, Duration: asr.Duration(pcm, sampleRate), Model: s.a.spec.ID, Latency: took}
-		s.end(asr.Event{Kind: asr.EventFinal, Text: text, Result: res})
-	}()
+	go s.finalPass(pcm)
 	return nil
+}
+
+// finalPass recognises pcm, the whole recording, once more (what the
+// pieces left of it) and ends the stream with the result.
+func (s *live) finalPass(pcm []byte) {
+	if s.conn != nil {
+		s.conn.CloseNow()
+	}
+	start := time.Now()
+	language := s.language
+	var texts []string
+	done, busy := 0, time.Duration(0)
+	if pc := s.pc; pc != nil {
+		select {
+		case pc.wake <- struct{}{}:
+		default:
+		}
+		<-pc.exited
+		s.mu.Lock()
+		done, texts, busy = pc.done, slices.Clone(pc.texts), pc.busy
+		if pc.language != "" {
+			language = pc.language
+		}
+		s.mu.Unlock()
+	}
+	text := ""
+	var err error
+	if tail := pcm[done:]; len(tail) > 0 {
+		hint := language
+		text, language, err = s.a.final(s.ctx, s.l, tail, hint, s.bias)
+		if err != nil && s.ctx.Err() == nil && !s.l.p.alive() {
+			// The server died under the recording (a crash, memory pressure): the audio is all here, so once more on a new one.
+			if l, aerr := s.a.rt.acquire(s.ctx, s.a.spec, s.a.dir, s.a.draft); aerr == nil {
+				s.a.rt.logf("warning", "%s: its server died during the session (%v): the Final runs again on a new one", s.a.spec.ID, err)
+				text, language, err = s.a.final(s.ctx, l, tail, hint, s.bias)
+				l.release()
+			}
+		}
+	}
+	took := time.Since(start)
+	s.logFinal(pcm, done, len(texts), busy, took, err)
+	if err != nil {
+		if s.ctx.Err() != nil {
+			err = asr.NetError(s.ctx, Provider, s.ctx.Err())
+		}
+		s.end(asr.Event{Kind: asr.EventError, Err: err})
+		return
+	}
+	text = joinParts(append(texts, text))
+	res := asr.Result{Text: text, Lang: language, Duration: asr.Duration(pcm, sampleRate), Model: s.a.spec.ID, Latency: took}
+	s.end(asr.Event{Kind: asr.EventFinal, Text: text, Result: res})
 }
 
 // slowFinal: a Final after Stop this long gets the Mac's memory in its

@@ -751,6 +751,10 @@ class ModelRunner(Generic[RequestDataInput]):
         """
         return None
 
+    def on_request_retracted(self, request_id: str) -> None:
+        """Hook when a request is retracted and requeued."""
+        return None
+
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Request ids whose ``generation_steps`` must NOT advance this step.
 

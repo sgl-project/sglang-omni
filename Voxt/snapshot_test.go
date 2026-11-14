@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/png"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -90,11 +94,34 @@ func snapshotsMain(t *testing.T, out string) {
 			}
 			save("page-" + name)
 		}
+		// The Language models page's foot, with the way to the prompt debug
+		// page, and that page (llm_debug.go).
+		a.navigate("/language-models")
+		scrollToText(tt, i18n.T("Try prompts on a model…"))
+		save("page-language-models-debug")
+		a.navigate(llmDebugPath)
+		save("page-llm-debug")
+		// Set up: the prompt, long as the saved ones are, the page around it.
+		oldLLM := a.prefs.Providers.LLM
+		a.updateSettings(func(s *settings.Settings) {
+			s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: "http://127.0.0.1:1/v1", Model: "mock-model"}}
+		})
+		acct := providers.Account(local.LLM, llm.Custom)
+		if a.keyMasks == nil {
+			a.keyMasks = map[string]string{}
+		}
+		a.keyMasks[acct] = "sk-…123"
+		frames(tt)
+		save("page-llm-debug-ready")
+		delete(a.keyMasks, acct)
+		a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = oldLLM })
 		snapshotHistoryDetail(a, save)   // history_page_test.go
 		historySettingsShots(a, save)    // history_settings_test.go
+		historyAccessShots(a, tt, save)  // history_access_test.go
 		transcribeShots(a, tt, save)     // the Try area's states (feature_page_test.go)
 		appEnhanceShots(a, fs, tt, save) // appenhance_page_test.go
-		dictShots(t, a, save)            // dictionary_page_test.go
+		dictShots(t, a, tt, save)        // dictionary_page_test.go
+		speechShots(a, tt, save)         // remote_speech_e2e_test.go
 		// The settings dialog, section by section.
 		a.updateSettings(func(s *settings.Settings) {
 			s.General.OtherLanguages = []string{"zh", "en", "ja"} // the main language's is not shown
@@ -111,6 +138,11 @@ func snapshotsMain(t *testing.T, out string) {
 				a.sys = &sysInfo{OS: "macOS 26.7", Chip: "Apple M2", Memory: 16 << 30, Cores: 8, Arch: "arm64"}
 			}
 			save("settings-" + s.id)
+			if s.id == "general" { // Find in settings, by a row's English name (#3788)
+				a.settingsForm.search = "Dock"
+				save("settings-general-search-dock")
+				a.settingsForm.search = ""
+			}
 			if s.id == "about" { // Updates, under the fold (updates.go)
 				scrollToText(tt, i18n.T("Updates"))
 				save("settings-about-updates")
@@ -125,25 +157,26 @@ func snapshotsMain(t *testing.T, out string) {
 				save("settings-about-beta-off")
 				a.prefs.Updates.Beta = nil
 				a.version = ver
-				// The self-check: both runtimes in the app, no model yet
+				// The self-check: the speech runtime in the app, no model yet
 				// (settings_about_models.go).
-				oldOmni, oldLLM := omniLocate, llmLocate
+				oldOmni := omniLocate
 				omniLocate = func() (string, error) { return "VoxtNew.app/Contents/Resources/omni/bin/qwen3_asr_server", nil }
-				llmLocate = func() string { return "VoxtNew.app/Contents/Resources/llm/voxtnew-llm" }
 				a.runSelfCheck()
-				omniLocate, llmLocate = oldOmni, oldLLM
+				omniLocate = oldOmni
 				scrollToText(tt, i18n.T("Self-check"))
 				save("settings-about-check")
 				a.checks = nil
 			}
 			if s.id == "audio" { // the sounds and the output's mute, under the fold
+				w, h := snapshotSize()
+				tt.SetSize(w, 1500) // the limits, under the fold (#3840)
+				save("settings-audio-limits")
+				tt.SetSize(w, h)
 				scrollToText(tt, i18n.T("Mute system audio while recording"))
 				save("settings-audio-sounds")
-				tt.Click(i18n.T("Start sound")) // the sound picker's panel (settings_soundpicker.go)
+				tt.Click(i18n.T("macOS")) // the macOS sounds' lines (settings_soundchoice.go)
 				frames(tt)
-				save("settings-audio-sounds-menu")
-				tt.Key(0, ui.KeyEscape)
-				frames(tt)
+				save("settings-audio-sounds-macos")
 			}
 			if s.id == "overlay" { // its preview, under the controls
 				w, h := snapshotSize()
@@ -163,7 +196,11 @@ func snapshotsMain(t *testing.T, out string) {
 		a.sheetOpen = false
 		a.logsPanel = true
 		save("logs-panel")
-		a.logsPanel = false
+		a.logsQuery = "zzqx" // a filter that matches no line
+		save("logs-panel-no-match")
+		a.navigate("/logs")
+		save("page-logs-no-match")
+		a.logsQuery, a.logsPanel = "", false
 
 		// The foot of the sidebar (shell_notices.go): no notification,
 		// one, three stacked; then the rail's dot and its popover.
@@ -202,6 +239,39 @@ func snapshotsMain(t *testing.T, out string) {
 		a.bundleUpdated = false
 		a.setProblem(problemUpdate, "", nil)
 		fs.Start(context.Background())
+
+		// A release without an update feed (updates_github.go): About,
+		// the dialog's four states, the card of a background check.
+		fake := a.upd
+		srv := &ghServer{list: newerReleases}
+		a.upd = newReleaseUpdates(a.settings, srv.start(t), "2.0.3", a.checkReleasesNow)
+		a.updKnown = false
+		a.navigate("/settings/about")
+		scrollToText(tt, i18n.T("Updates"))
+		save("settings-about-releases")
+		a.settingsOpen = false
+		a.navigate("/home")
+		a.relOpen = true // checking: the answer has not come yet
+		save("release-checking")
+		a.checkForUpdates()
+		save("release-available")
+		srv.set(func(s *ghServer) { s.list = todayReleases })
+		a.checkForUpdates()
+		save("release-up-to-date")
+		srv.set(func(s *ghServer) {
+			s.status = http.StatusForbidden
+			s.header = http.Header{"X-Ratelimit-Remaining": {"0"}}
+		})
+		a.checkForUpdates()
+		save("release-failed")
+		a.relOpen = false
+		srv.set(func(s *ghServer) { s.status, s.list = 0, newerReleases })
+		a.clearNotices()
+		a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck, s.Updates.Dismissed = time.Time{}, "" })
+		a.autoCheckReleases()
+		save("sidebar-notices-release")
+		a.clearNotices()
+		a.upd, a.updKnown = fake, false
 
 		// The recording overlay, state by state (overlay_test.go).
 		overlayShots(t, a, out, suffix, run.dark)

@@ -12,6 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -25,12 +26,15 @@ func (a *app) overlayCard(c *ui.Context) {
 	}
 	bodyH := float32(max(a.ov.h-layout.CardChrome-msgH, 0))
 	// The border takes layout.Border of the padding (MyGo's border box).
-	ui.Column(c).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).Children(func() {
+	// The card moves where its background is dragged (overlayDragged): a
+	// long answer may cover what the user reads.
+	ui.Column(c).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).DragWindow().Children(func() {
 		ui.Row(c).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 			a.cardHeader(c, v)
 		})
 		ui.Box(c).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
 		a.cardBody(c, v, bodyH)
+		a.cardSizeButton(c, v)
 		if v.msg != "" {
 			ui.Row(c).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(v.msg).Children(func() {
 				ic, col := icons.InfoCircle, ovText2
@@ -42,6 +46,29 @@ func (a *app) overlayCard(c *ui.Context) {
 			})
 		}
 	})
+}
+
+// cardSizeButton steps the card through its sizes (#3644 FB41): small,
+// medium, large and back, as the feature's page does. It sits in the
+// corner under the text, where the header has no room left at 440.
+func (a *app) cardSizeButton(c *ui.Context, v cardView) {
+	step := a.prefs.Features.CardSize(string(v.kind))
+	label, icon, next := i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic, step+1
+	if next == settings.CardSizeSteps {
+		label, icon, next = i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic, 0
+	}
+	b := ui.ButtonBase(c.Key("ov-card-size")).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
+		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
+	alpha := float32(0.42)
+	if b.Hovered() {
+		alpha = 0.92
+	}
+	if b.Children(func() {
+		ui.Icon(c, icon.Linear).Size(layout.CardSizeBtnIcon, layout.CardSizeBtnIcon).TextColor(ui.RGBA(255, 255, 255, alpha))
+	}).Clicked() {
+		a.closeLangMenu()
+		a.setCardSize(string(v.kind), next)
+	}
 }
 
 // cardHeader is the card's header: what it is, then what it offers.
@@ -59,29 +86,38 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		cardWave(c, v, a.overlayMotion(), a.overlayPhase())
 		ui.Spacer(c)
 	} else {
-		ui.Text(c, v.title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		if !v.langCapsule() {
+			// A translation's capsule names it: with Continue beside it, a
+			// long language name left no room for the title (#3897).
+			ui.Text(c, v.title).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		}
 		if v.busy {
 			// Voxt's spinner: an arc turning once in 0.9 s, 88 %.
+			busy := i18n.T("Translating…")
+			if v.writing {
+				busy = i18n.T("Writing…")
+			}
 			ui.Icon(c, icons.VoxtSpinner.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.88)).Shrink(0).
-				Rotate(float32(math.Mod(a.overlayPhase()*400, 360))).Label(i18n.T("Translating…"))
+				Rotate(float32(math.Mod(a.overlayPhase()*400, 360))).Label(busy)
 		}
 		ui.Box(c).Grow(1).MinWidth(0) // Voxt's Spacer(minLength: 12): the gap
 	}
-	if v.kind == store.KindTranslate && v.failed == nil {
+	if v.langCapsule() {
 		a.cardLanguage(c, v)
 	}
 	switch {
+	case v.canStopAnswer:
+		if cardCapsule(c.Key("ov-card-stop-answer"), i18n.T("Stop"), i18n.T("Stop writing and keep the text so far")) {
+			a.closeLangMenu()
+			a.stopLLM()
+		}
 	case v.canStop:
 		if cardCapsule(c.Key("ov-card-stop"), i18n.T("Done"), i18n.T("Stop recording the follow-up")) {
 			a.closeLangMenu()
 			a.stopSession()
 		}
 	case v.canFollowUp:
-		tip := i18n.T("Follow up by voice")
-		if v.follow != "" {
-			tip = i18n.T("Follow up by voice (%s)", v.follow)
-		}
-		if cardCapsule(c.Key("ov-card-continue"), i18n.T("Continue"), tip) {
+		if cardCapsule(c.Key("ov-card-continue"), i18n.T("Continue"), continueTip(v.follow)) {
 			a.closeLangMenu()
 			a.followUpAnswer("")
 		}
@@ -90,6 +126,9 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.closeLangMenu()
 			a.retryAnswer("")
 		}
+	}
+	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking"), thinkText(v.think), icons.Tuning2, v.canThink) {
+		a.toggleThinkMenu()
 	}
 	if v.failed == nil {
 		tip := i18n.T("Insert into %s", cmpOr(v.target, i18n.T("the app")))
@@ -114,6 +153,15 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 	}
 }
 
+// continueTip is Continue's tip, with the Rewrite shortcut's glyphs
+// keys: it also takes the text selected now (#3816).
+func continueTip(keys string) string {
+	if keys == "" {
+		return i18n.T("Follow up by voice. Text you select first goes with it.")
+	}
+	return i18n.T("Follow up by voice (%s). Text you select first goes with it.", keys)
+}
+
 // ovCardIconA is how opaque the card's icon is: Voxt's microphone over a
 // conversation at 92 %, its answer icon whole (its bubble is dim itself).
 func ovCardIconA(v cardView) float32 {
@@ -122,6 +170,9 @@ func ovCardIconA(v cardView) float32 {
 	}
 	return 1
 }
+
+// langCapsule says whether the header shows Translate's language capsule.
+func (v cardView) langCapsule() bool { return v.kind == store.KindTranslate && v.failed == nil }
 
 // cardSpinning says whether the card shows a spinner (it turns).
 func (v cardView) spinning() bool { return !v.conversation && v.busy }
@@ -174,7 +225,7 @@ func cardCapsule(c *ui.Context, label, tip string) bool {
 // (overlay_lang.go), where another translates the card's text again,
 // into the card.
 func (a *app) cardLanguage(c *ui.Context, v cardView) {
-	open := a.answer.langOpen && v.canLang
+	open := a.answer.langOpen && !a.answer.thinkMenu && v.canLang
 	b := ui.ButtonBase(c.Key("ov-card-lang")).Height(layout.CardBtn).Padding(0, 10-layout.Border).Radius(layout.CardBtn / 2).Shrink(0).
 		Label(i18n.T("Translate into")).Disabled(!v.canLang).Checked(open)
 	line, bg := ui.RGBA(255, 255, 255, 0.12), ui.RGBA(255, 255, 255, 0.08)
@@ -230,20 +281,22 @@ func cardWave(c *ui.Context, v cardView, motion bool, phase float64) {
 }
 
 // cardBody is the card's text, bodyH high: it scrolls past that. A
-// conversation follows its newest turn while it shows the end.
+// conversation follows its newest turn, and a first answer its newest
+// words as the model writes them, while they show the end.
 func (a *app) cardBody(c *ui.Context, v cardView, bodyH float32) {
 	st := &a.ov.cardScroll
 	key := a.answer.id + "/" + a.sess.ID
 	if v.conversation {
 		key = a.answer.id + "/conversation"
 	}
+	follow := v.conversation || v.writing
 	if key != a.ov.cardScrollKey {
 		a.ov.cardScrollKey = key
 		st.X, st.Y = 0, 0
-		if v.conversation {
+		if follow {
 			st.Y = math.MaxFloat32
 		}
-	} else if v.conversation && st.Y >= st.MaxY-2 {
+	} else if follow && st.Y >= st.MaxY-2 {
 		st.Y = math.MaxFloat32
 	}
 	ui.Scroll(c.Key("ov-card-body")).Height(bodyH).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).TrackScroll(st).Children(func() {
@@ -277,8 +330,9 @@ func (a *app) cardBlockView(c *ui.Context, b cardBlock) {
 }
 
 // cardBubbleView is a conversation's turn (Voxt's
-// RewriteConversationBubble): 340 wide, the user's on the right; an
-// answer shows Copy under the pointer.
+// RewriteConversationBubble): 340 wide in the small card (its text's
+// wrap, and the padding), the user's on the right; an answer shows Copy
+// under the pointer.
 func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 	justify := ui.Start
 	bg, line := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08)
@@ -293,7 +347,7 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 		}
 	}
 	ui.Row(c).Justify(justify).Margin(b.gap, 0, 0, 0).Children(func() {
-		col := ui.Column(c.Key("bubble")).Width(layout.BubbleW).Shrink(0).Padding(layout.BubblePadY-layout.Border, layout.BubblePadX-layout.Border).Gap(layout.BubbleTitleGap).
+		col := ui.Column(c.Key("bubble")).Width(b.text.wrap+2*layout.BubblePadX).Shrink(0).Padding(layout.BubblePadY-layout.Border, layout.BubblePadX-layout.Border).Gap(layout.BubbleTitleGap).
 			Radius(layout.BubbleRadius).Background(bg).Border(1, line)
 		if b.user {
 			col.AlignItems(ui.End)
@@ -301,7 +355,7 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 		hover := !b.user && !b.live && col.Hovered()
 		col.Children(func() {
 			if b.title.text != "" {
-				ui.Text(c, b.title.text).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleA)).SingleLine().Ellipsis("…").MaxWidth(layout.BubbleW - 2*layout.BubblePadX)
+				ui.Text(c, b.title.text).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleA)).SingleLine().Ellipsis("…").MaxWidth(b.text.wrap)
 			}
 			t := ui.Text(c, b.text.text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textA))
 			if b.user {
@@ -309,6 +363,9 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			}
 			if !b.live {
 				t.Selectable()
+			}
+			if b.quote.text != "" {
+				a.cardQuoteView(c, b)
 			}
 			if hover {
 				copied := a.ov.bubbleCopied == b.text.text
@@ -329,6 +386,33 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			}
 		})
 	})
+}
+
+// cardQuoteView is a follow-up's text selected since, under its
+// instruction (#3816): dimmer, its start aligned, Show all when cut.
+func (a *app) cardQuoteView(c *ui.Context, b cardBlock) {
+	ui.Text(c, b.quote.text).FontSize(b.quote.size).TextColor(ui.RGBA(255, 255, 255, 0.64)).Width(b.quote.wrap).Selectable()
+	if !b.cut {
+		return
+	}
+	label := i18n.T("Show all")
+	if b.open {
+		label = i18n.T("Show less")
+	}
+	if ui.ButtonBase(c.Key("quote")).Height(quoteToggleH).Label(label).Children(func() {
+		ui.Text(c, label).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.78)).SingleLine()
+	}).Clicked() {
+		a.toggleQuote(b.turn)
+	}
+}
+
+// toggleQuote shows a follow-up's selection whole, or short again.
+func (a *app) toggleQuote(turn int) {
+	if a.answer.quotesOpen == nil {
+		a.answer.quotesOpen = map[int]bool{}
+	}
+	a.answer.quotesOpen[turn] = !a.answer.quotesOpen[turn]
+	a.overlaySync()
 }
 
 // bubbleMark is how long a bubble's Copy shows its mark (Voxt's).

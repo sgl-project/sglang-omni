@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -48,19 +49,20 @@ func New(cfg Config) *Manager {
 			*d = v
 		}
 	}
-	def(&cfg.MaxRecording, DefaultMaxRecording)
 	def(&cfg.MinRecording, DefaultMinRecording)
 	def(&cfg.ASRTimeout, DefaultASRTimeout)
 	def(&cfg.ASRPerSecond, DefaultASRPerSecond)
 	def(&cfg.AudioRetention, DefaultAudioRetention)
-	def(&cfg.LLMFirstToken, DefaultLLMFirstToken)
+	def(&cfg.LLMBase, DefaultLLMBase)
 	def(&cfg.LLMStall, DefaultLLMStall)
 	def(&cfg.LLMPerChar, DefaultLLMPerChar)
 	def(&cfg.LLMTimeout, DefaultLLMTimeout)
 	def(&cfg.WriteTimeout, DefaultWriteTimeout)
 	def(&cfg.ReadTimeout, DefaultReadTimeout)
+	def(&cfg.RewriteReadTimeout, DefaultRewriteReadTimeout)
 	def(&cfg.DeliverTime, DefaultDeliverTimeout)
 	def(&cfg.StopGrace, DefaultStopGrace)
+	def(&cfg.EndWordPause, DefaultEndWordPause)
 	def(&cfg.WaitNote, DefaultWaitNote)
 	return &Manager{cfg: cfg, snap: Snapshot{State: Idle}}
 }
@@ -119,11 +121,12 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 		m: m, id: m.cfg.NewID(), req: req, settings: m.cfg.Settings(), ctx: ctx, cancel: cancel,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
 	}
+	r.llmCtx, r.llmStop = context.WithCancel(ctx)
 	m.cur = r
 	m.rev++
 	m.snap = Snapshot{
-		Rev: m.rev, ID: r.id, Kind: req.Kind, State: r.firstState(), Try: req.Try, HoldBinding: req.HoldBinding,
-		Target: req.Target, StartedAt: at,
+		Rev: m.rev, ID: r.id, Kind: req.Kind, State: r.firstState(), Try: req.Try, Note: req.Note, HoldBinding: req.HoldBinding,
+		Target: req.Target, StartedAt: at, MaxLen: time.Duration(r.settings.Audio.MaxSeconds) * time.Second,
 	}
 	if req.Kind == store.KindTranslate {
 		r.target = TranslateTarget(r.settings, m.cfg.Locale(), req.TargetLanguage)
@@ -166,6 +169,54 @@ func (m *Manager) Cancel(id string) {
 	}
 }
 
+// SkipLLM ends session id's language model step where it is, when its
+// snapshot says it can (Snapshot.CanSkip): the recognised text goes on
+// in place of the answer (#3821). Otherwise it does nothing.
+func (m *Manager) SkipLLM(id string) {
+	m.mu.Lock()
+	r := m.cur
+	if r != nil && r.id == id && m.snap.State == Composing && m.snap.CanSkip {
+		r.skipped.Store(true)
+		r.llmStop()
+	}
+	m.mu.Unlock()
+}
+
+// StopLLM ends session id's answer where it is, when its snapshot says it
+// can (Snapshot.CanStop): the request to the model ends and the card keeps
+// the answer so far, to copy, insert or follow up (#3886).
+func (m *Manager) StopLLM(id string) {
+	m.mu.Lock()
+	r := m.cur
+	if r != nil && r.id == id && m.snap.CanStop() {
+		r.stopped.Store(true)
+		r.llmStop()
+	}
+	m.mu.Unlock()
+}
+
+// Rethink asks the language model again at thinking level t (nil: the
+// service's setting) while it cleans up session id's Transcribe text
+// (#3940, the preview's thinking menu): the request ends where it is and
+// the text is cleaned up again from the start. The service's setting
+// stays. Otherwise it does nothing.
+func (m *Manager) Rethink(id string, t *llm.Thinking) {
+	m.mu.Lock()
+	r := m.cur
+	m.mu.Unlock()
+	if r == nil || r.id != id {
+		return
+	}
+	m.update(r, func(s *Snapshot) {
+		if s.Kind != store.KindTranscribe || s.State != Composing || !s.CanSkip || r.skipped.Load() {
+			return
+		}
+		s.Thinking, r.think = t, t
+		r.rethink.Store(true)
+		r.llmStop()
+	})
+}
+
 // update changes the snapshot of run r, if r is still the current,
 // live session, and publishes it. It reports whether it did.
 func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
@@ -199,7 +250,7 @@ func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot))
 	}
 	m.snap.State = st
 	r.ended = true
-	if st == Done && m.snap.Result != "" && !m.snap.Try {
+	if st == Done && m.snap.Result != "" && !m.snap.Try && !m.snap.Note {
 		m.last = m.snap.Result
 	}
 	m.rev++

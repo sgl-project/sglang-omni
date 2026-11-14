@@ -217,6 +217,31 @@ sgl-omni serve \
 
 When the engine and the vocoder share one GPU, `--mps on` lets their processes share it through CUDA MPS (see [Same-GPU Data Parallelism with CUDA MPS](../basic_usage/mps_dp.md)). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.
 
+### Tensor Parallelism
+
+When the FP8 checkpoint does not fit one GPU, `--tts_engine.tp_size` splits the engine across 2 or 4 GPUs: SGLang shards the backbone, and each GPU holds its share of the codebook tower's attention heads and MLP width; with 4 GPUs, pairs of GPUs share each of the tower's two key/value heads, as they share the backbone's. The FP8 routed experts are stored in 128-wide blocks, so their 512-wide intermediate splits across at most 4 GPUs. On two 32 GB GPUs, such as two RTX 5090:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/drama-3 \
+  --tts_engine.tp_size 2 \
+  --tts_engine.gpu "[0, 1]" \
+  --tts_engine.gpu_memory_fraction 0.75 \
+  --preprocessing.gpu 0 \
+  --vocoder.gpu 1 \
+  --vocoder.gpu_memory_fraction 0.2
+```
+
+Each GPU then holds 18.5 GB of engine weights, and 9.7 GB with `--tts_engine.tp_size 4 --tts_engine.gpu "[0, 1, 2, 3]"`. The vocoder's default share of 0.10 is sized for an H200: on a 32 GB GPU it cannot hold one non-streaming decode of `max_new_tokens` frames, so the command raises it to 0.2. The fused codebook tower layers stay off under tensor parallelism. Table 4 compares these layouts with one H200 on the Seed-TTS English workload of Table 3, all measured with checkpoint revision `78e5ab7`; compare its rows with each other rather than with Table 3.
+
+| Setup | Latency mean | Latency p95 | RTF mean | Throughput (req/s) | WER (corpus) | Samples above 50% WER |
+|---|---:|---:|---:|---:|---:|---:|
+| One H200 | 1.048 s | 1.551 s | 0.237 | 7.62 | 0.85% | 0 |
+| Two RTX 5090, tensor parallel | 1.255 s | 1.876 s | 0.283 | 6.37 | 0.90% | 0 |
+| Four RTX 5090, tensor parallel | 1.403 s | 2.081 s | 0.316 | 5.69 | 0.87% | 0 |
+
+*Table 4. Drama 3 FP8 checkpoint on Seed-TTS English, non-streaming requests at concurrency 8.*
+
 ### High Concurrency
 
 The defaults run at most 16 requests at a time on the engine and give it 0.70 of the GPU's memory. For more streams at once, raise the request cap; the measurements below also raise the engine's share:
@@ -300,7 +325,7 @@ stages:
       decode_dtype: float32
 ```
 
-Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:
+Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference, under tensor parallelism, or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:
 
 ```text
 Drama 3 codebook sampling: PyTorch, untested GPU sm_120
@@ -351,6 +376,20 @@ The server reads the request fields the CUDA server reads and refuses the same u
 | Streaming | `"stream": true` with `"response_format": "pcm"` | The same, with audio every 7 frames (0.33 s) |
 
 `fishaudio_drama3_synthesize` runs one request from the command line and prints its timings; with `--codes-output` it also writes the first chunk's prompt ids and every frame's codes, for parity checks.
+
+### Optional native expert offload
+
+Both native binaries accept `--expert-offload 2gib`. Without it, the existing resident loading and execution path is unchanged. Offload removes routed backbone experts before checkpoint evaluation and loads one expert's packed up/gate/down weights, scales and biases on demand. Router, shared experts, attention and tower weights stay resident; the codec loads separately.
+
+The model owns one serial LRU cache with a 2,147,483,648-byte limit on live packed expert arrays, including a pending load. A pinned expert cannot be evicted; every expert computation completes before its lease is released. Prefill groups selected rows by expert and processes groups serially without changing top-k ids or scores. Small groups may repeat rows to preserve MLX 0.32.3's sorted gather kernel; repeated outputs are discarded. This path prioritizes correctness over throughput and may perform many file reads.
+
+For N input rows and top-k K, one expert group processes at most max(N, 16) rows. Per-expert result batches hold at most (N*K + 15*E) hidden-width rows before assembly, where E is the number of selected experts. Assembly additionally uses tensors shaped up to [N, K, hidden] and a final [N, hidden] result; backend workspace has no separate byte limit. Padding outputs and operation graphs are released after the final weighted sum is evaluated. Cached expert arrays remain until LRU eviction, explicit release before non-streaming codec decoding, or model destruction. During offloaded codec decoding only, the native runtime sets a target of min(the caller’s existing limit, 256 MiB) for MLX idle allocator buffers and clears old idle buffers, then restores the caller's previous cache limit on return or exception. This process-wide setting relies on the native server worker and CLI serializing MLX execution; concurrent embedded MLX jobs need their own coordination. It does not alter the 2 GiB expert capacity or AR-phase allocator limit. The idle-buffer target is soft and does not cap active tensors, workspace, process memory, or the operating system's page cache.
+
+The limit is not a process or GPU memory cap. Resident model weights, output tensors, current operation workspace, MLX allocator reuse and CPU/GPU copies, and the operating system's file cache are separate. No duplicate host payload cache is retained. Packed weights remain U32; F16/BF16/F32 quantization scales and biases retain their original dtype. Unquantized expert weights are unsupported by this offload path.
+
+`fishaudio_drama3_experts_test` is an explicit CMake target; pass a disposable fixture directory as its only argument. It generates small safetensors files and checks actual MLX loading, excluded payload reads, cache limits, pinning, eviction, failed reads, and resident/cached quantized execution. These fixtures do not establish complete checkpoint/audio parity or real-model throughput; run the checkpoint parity suite separately before relying on the option in production.
+
+`fishaudio_drama3_codec_test` is an optional local CMake target taking a checkpoint directory, saved codes JSON, output prefix, block frame count, `budget` or `resident`, and `success` or `failure`. It exercises the production codec decoder with actual weights, checks the cache target during decoding and restoration afterward, and can raise a callback exception after actual MLX evaluation. Codec-only checks do not establish full-model streaming, long-runtime, or request-cancellation behavior.
 
 ### Reference parity and performance
 

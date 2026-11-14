@@ -1,113 +1,174 @@
+<div align="center"><a name="readme-top"></a>
+
+<img src="resources/icon.png" width="128" alt="Voxt app icon">
+
 # Voxt
+
+**Speak in any app on your Mac. Voxt writes it down, translates it, or answers you.**
+
+Open-source voice input for macOS, from the [SGLang-Omni](https://github.com/sgl-project/sglang-omni) team.
 
 **English** · [简体中文](README.zh-CN.md)
 
-Voice input for macOS on **local models only**: press a shortcut in any app, speak, and the text appears where your cursor is.
+[![Latest Voxt release][release-shield]][download]
+[![macOS 15 or later, Apple silicon][macos-shield]](#requirements)
+[![Apache License 2.0][licence-shield]](LICENSE)
 
-- **转录 Transcribe**: what you say, typed where your cursor is, with live text while you speak and an optional clean-up by a language model (fillers and false starts out, punctuation in).
-- **翻译 Translate**: the selected text, or what you say, into another language.
-- **转写 Rewrite**: change the selected text by saying how ("shorter", "more formal"), or have new text written from a spoken request; follow-ups in the answer card.
-- **应用增强 App enhancement**: groups of apps and websites with their own scene prompt and a key pressed after inserting (a casual tone in chats, Return to send).
-- **词典 Dictionary**: names and jargon the speech model expects and the language model writes as you spell them.
+[![Download Voxt for Mac][download-shield]][download]
+[![Download Voxt Beta][beta-download-shield]][beta-download]
 
-With a history, the overlay, shortcuts, the menu bar, a setup guide, settings and updates.
+[Install guide][install-guide] · [Changelog](CHANGELOG.md) · [Website](https://voxt.actnow.dev) · [Report a problem][issues] · [Slack][slack]
 
-**Shortcuts** (change them on each feature's page): tap the **right Option** key to transcribe, right Option with Shift to translate, Control with right Option to rewrite; Control-Option-V pastes the last result. These keys leave fn to Auralink, so the two run side by side.
+https://github.com/user-attachments/assets/8faf2c9b-a500-4d62-befc-0a82086883c1
 
-**Updates**: this version does not update itself; a new version is installed by hand.
+▶ **Watch the Voxt 2.0 launch video**: [English](https://youtu.be/ktJRE7AB2mU) · [中文](https://youtu.be/mOwWavTSXu0)
 
-> **Status: 2.0.0**. Every feature above works on the local models; see [CHANGELOG.md](CHANGELOG.md).
+</div>
 
-## What runs on your Mac
+## Voxt 2.0 is here
 
-Everything that hears or reads your words:
+Today we are releasing **Voxt 2.0**, and with it a new idea of what open-source voice interaction can be.
 
-- **Speech recognition** and **voice detection** run on sglang-omni's native MLX servers ([`sglang_omni_mlx/native`](../sglang_omni_mlx/native), C++, no Python), one process per model, started when needed, stopped after 10 minutes unused (Local models → Advanced changes it).
-- **Language models** run in `voxtnew-llm`, a Swift process of Voxt's own (MLX, and llama.cpp for one model), stopped after 5 minutes unused (or as Local models → Advanced says).
-- A small Swift helper does what needs Apple's frameworks: the microphone, global shortcuts, Accessibility, pasting.
+Voice input built on speech recognition plus a language model's polish. Any-to-any translation by a language model. A local AI assistant that responds to any text you select, the moment you ask out loud. Voxt 2.0 is the new entry point to interactive intelligence that we, the SGLang-Omni team, are proud of.
 
-Voxt offers a few models, tuned for it, and downloads them from Hugging Face (or a mirror) when you ask, each file checked against a pinned SHA-256:
+- **Rebuilt from Swift to Go, and faster where it hurt most.** After a very long dictation, the wait once you stop is **92% shorter** than in Voxt 1.x. Voxt 2 recognises the finished parts of a long recording while you are still speaking, instead of all of it after you stop: for a dictation of 4 min 46 s on a Mac with an M4 and 24 GB, 32.3 s became 2.6 s ([how it was measured](docs/eval.md#long-recordings-on-the-speech-model-10-17-testevallongasr)).
+- **Everything from Voxt 1.x, in one click.** Your dictionary, history, compatible speech models and service setups come over, so your habits stay as they were.
+- **Nothing you said is lost.** When recognition fails, the recording is kept and **Retry** in History recognises it again.
+- **A conversation in the answer card.** A result can wait in a floating card: keep asking follow-ups by voice, then copy or insert the answer.
+- **Your models, your data.** Speech runs on your Mac with Qwen3-ASR or MOSS-Transcribe-Diarize, served by the SGLang-Omni MLX runtime, or goes to a cloud speech API you set up. The language model is anything with an OpenAI-compatible API: SGLang MLX or Ollama on your Mac, or a service such as DeepSeek V4.1 and Kimi K3.1, the two our team uses most. Where your data goes is yours to decide.
+- **Optional DFlash acceleration for Qwen3-ASR.** **Faster transcription** adds a small draft model, and the speech model transcribes faster by speculative decoding.
+- **And more**: sign in with ChatGPT instead of pasting an API key, a fallback model for Translate, your own prompts, and History export to Markdown or JSONL.
 
-| Model | What it is good at | Download |
+Already on Voxt 1.x? See [Coming from Voxt 1.x](#coming-from-voxt-1x). Every change, version by version: [CHANGELOG.md](CHANGELOG.md).
+
+## What Voxt does
+
+Tap a shortcut in any app, speak, and tap it again. Esc cancels.
+
+### Transcribe: voice input
+
+Tap **right ⌥ Option**. What you say is typed where your cursor is. The text shows live while you speak, and a language model can polish it: fillers and false starts out, punctuation in.
+
+### Translate: any language to any language
+
+**Right ⌥** with **⇧ Shift**. The selected text, or what you say, comes back in another language: 22 target languages, by the language model you choose.
+
+### Rewrite: your AI assistant
+
+**⌃ Control** with **right ⌥**. Select any text and say what you want: "shorter", "more formal", "explain this". Or select nothing and ask for new text. The answer waits in a card, where you can follow up by voice, then copy or insert it.
+
+### Also built in
+
+- **App enhancement**: groups of apps and websites with their own prompt and a key pressed after inserting, such as a casual tone in chats and Return to send.
+- **Dictionary**: names and jargon that the speech model expects and the language model writes as you spell them. Voxt suggests new terms from your history and from the corrections you make.
+- **Notes**: tap right ⌘, speak, and Voxt saves what you said as a note instead of typing it.
+- **History**: every result, with search, **Retry** from the recording, and export.
+
+Every shortcut can be changed on its feature's page, and Settings → Shortcuts has presets: right ⌥, fn, ⌘ combinations, or the middle mouse button. ⌃⌥V pastes the last result again.
+
+## Install
+
+### New to Voxt
+
+1. **Download** [`Voxt-2.0.3-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
+
+2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit), 2.5 GB), and set up a language model for clean-up, Translate and Rewrite.
+3. **Tap the right Option key** in any app, speak, and tap it again.
+
+Step by step: [Install Voxt][install-guide].
+
+To install Beta `2.0.3-beta.20261111.38`, sign in to GitHub, download and unzip the ZIP, then open the DMG and drag **Voxt** to **Applications**. If the download does not start, select the arm64 artifact in [Voxt Beta #38][beta-run]. For newer builds, open the latest successful `main` run in [Actions → Voxt Beta][beta-workflow].
+
+### Coming from Voxt 1.x
+
+Take whichever way is easier:
+
+- **From inside Voxt 1.x**: on a Mac with Apple silicon, turn on **Beta Updates** (Settings → About) and choose **Check for Updates…**. It offers Voxt 2 together with the upgrade guide. Without Beta Updates, Voxt 1.x does not offer Voxt 2 yet.
+- **Install over it**: quit Voxt 1.x, download the newest disk image and drag Voxt to Applications. Choose **Replace** when Finder asks.
+
+Then, in Voxt 2:
+
+1. In the setup guide, click **Import from Voxt 1.x**. Your dictionary, history, the speech models you already downloaded, and your language model and speech service setups come over. Voxt 1.x's data is only read, never changed.
+2. Allow the microphone and Accessibility again: macOS sees Voxt 2 as a new app.
+3. Paste your API keys again and check your shortcuts. These two are not imported.
+
+What the import brings, with screenshots: [From Voxt 1.x to Voxt 2](docs/voxt-migration.md).
+
+### Requirements
+
+- A Mac with **Apple silicon** and **macOS 15** or later. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.
+- About 280 MB for the app, and 2.5 GB for the recommended speech model.
+- Voxt 2 tells you when a new version is out (Check for Updates…, and a daily check you can turn off in Settings → Diagnostics & About), but does not install it itself. Install a newer version the same way: from its disk image.
+
+## Your models, your data
+
+### Speech models
+
+Speech is recognised **on your Mac** by the [SGLang-Omni MLX runtime](../sglang_omni_mlx/native): native C++ on MLX, no Python. Voxt downloads a model only when you ask for it, from Hugging Face or from a mirror when Hugging Face cannot be reached, and checks every file against a pinned SHA-256. A model loads when you first dictate and unloads after 10 idle minutes.
+
+| Model | Good at | Download |
 |---|---|---|
-| Accurate speech recognition (recommended) | the most accurate; accents, dialects, names, several languages in one sentence; live text | 2.5 GB |
-| Fast speech recognition | quicker and lighter, for clear speech in a quiet place | 713 MB |
-| Balanced language model (recommended) | clean-up, translation and rewriting: the best balance of quality and speed | 3.3 GB |
-| Fast language model | answers sooner, uses less memory; short clean-ups and simple rewrites | 1.7 GB |
-| Translation model | made for translation, quick and natural; only Translate uses it | 1.1 GB |
+| **Qwen3-ASR 1.7B (8bit)**, recommended | The most accurate: accents, dialects, names, several languages in one sentence. Live text. | 2.5 GB |
+| **Qwen3-ASR 0.6B (4bit)** | Quicker and lighter, for clear speech in a quiet place. Live text. | 713 MB |
 
-Voice detection (1.2 MB) comes with the first speech model. The speech models know 30 languages and 22 Chinese dialects; the general language models are best in Chinese and English.
+- **More local models**: MOSS-Transcribe-Diarize (Chinese and English, live text), Nemotron 3.5 ASR 0.6B (28 languages, live text), Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Large v3 and Small (about 100 languages), Parakeet TDT 0.6B v3 (25 European languages), SenseVoice Small (Chinese, Cantonese, English, Japanese, Korean) and Cohere Transcribe 03-2026 (14 languages). macOS's own System dictation is there too, with nothing to download.
+- **Qwen3-ASR** knows 30 languages and 22 Chinese dialects, and uses your dictionary; the other models you download do not.
+- **Faster transcription** (DFlash): on the Qwen3-ASR 1.7B (8bit) and 0.6B (4bit) cards, turn on its switch and download a draft model (726 MB and 262 MB). It proposes several words at a time for the speech model to check. Turn the switch off and the model works as before; the draft stays on disk until you delete it.
+- **Cloud speech APIs**, if you prefer one: OpenAI Transcribe, Doubao (Volcengine), Zhipu GLM-ASR, Aliyun Bailian, StepFun, Xiaomi MiMo and Google Gemini.
 
-**Needs** a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended pair is a 5.8 GB download (all five models: 9.4 GB). While both recommended models are loaded they take about 7 GB of memory, so 16 GB of memory is comfortable; on an 8 GB Mac choose the fast models.
+### Language models
+
+Clean-up, Translate and Rewrite use the language model you set up on the Language models page, over its OpenAI-compatible API:
+
+- **On your Mac**, so the text stays here: Ollama, LM Studio, oMLX, SGLang MLX, or any other compatible server.
+- **A service**: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI and OpenRouter.
+- **ChatGPT**: sign in with your own ChatGPT plan in the browser, with no API key.
+
+Without a language model, Transcribe types the text as recognised; Translate and Rewrite need one. Each feature can use its own model and its own prompt (**Your rules**), and Translate can fall back on a second model when the first one fails.
 
 ## Privacy
 
-Audio and text never leave the Mac: recognition, clean-up, translation and rewriting all run on it. Voxt has no server of its own, no account and no analytics. It goes online for one thing only: downloading the models you choose (from Hugging Face, through the system's proxy, or hf-mirror.com when Hugging Face cannot be reached). The history, its optional recordings, the dictionary and the settings stay in `~/Library/Application Support/VoxtNew/`.
+- **Speech stays on your Mac**, unless you set up a cloud speech API for a feature: that feature's recordings then go to that service, and nowhere else.
+- **Text goes only to the language model you set up.** With a server on your Mac, it stays here. Audio is never sent to a language model.
+- **API keys stay in the macOS Keychain**, never in Voxt's settings or logs.
+- **No account and no analytics.** Voxt has no server that receives your audio or your text. Otherwise it goes online only to download the models you choose and to read Voxt's announcements, a request that sends nothing about you.
+- **Your data is in two folders**: the history, its optional recordings, the dictionary and the settings in `~/Library/Application Support/VoxtNew/`, and the models in `~/Library/Application Support/SGLang Omni/models`.
 
-## Build from source
+## Help and community
 
-Needs Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it) and, to build the app, an Apple silicon Mac with macOS 15 or later, Xcode (the helper and `voxtnew-llm`), and [uv](https://docs.astral.sh/uv/) or Python 3 for the Omni runtime's build tools (`scripts/build-omni.sh` builds `sglang_omni_mlx/native` with its pinned MLX; CMake fetches its C++ dependencies from GitHub, through the shell's `https_proxy` if needed). Run from `Voxt/`:
+- **Installing and upgrading**: [Install Voxt][install-guide] and [From Voxt 1.x to Voxt 2](docs/voxt-migration.md).
+- **Something is wrong**: Settings → About → **Report a problem** opens a GitHub issue with the diagnostics filled in. Or [open an issue][issues] with "[Voxt]" in its title.
+- **Questions and ideas**: join the SGLang [Slack][slack].
+- **For your own scripts and agents**: [read your dictation history](docs/history-access.md) from other programs on your Mac. It is off by default.
+- **Transcribe recordings and videos to subtitles**: [`Voxt transcribe`](docs/transcribe.md) turns a local audio or video file into SRT or text with your speech model.
 
-```sh
-scripts/build-helper.sh              # the Swift helper, into resources/darwin-arm64/helper/
-scripts/build-omni.sh                # the Omni runtime (speech models), into resources/darwin-arm64/omni/
-scripts/build-llm.sh                 # voxtnew-llm (language models), into resources/darwin-arm64/llm/
-go tool mygo dev                     # run with hot reload
-go tool mygo build                   # build/darwin-arm64/Voxt.app and its disk image
-```
+## For developers
 
-The helper and `voxtnew-llm` must be built before `go tool mygo build` or `mygo dev`: `mygo.json` gives both their entitlements and fails without them. Without the Omni runtime the app runs but cannot recognise speech (or point `VOXTNEW_OMNI_RUNTIME` at one built with `scripts/build-omni.sh --out DIR`; likewise `VOXTNEW_LLM` for `scripts/build-llm.sh --out DIR`).
+Voxt is a Go app on [MyGo](https://github.com/egoist/mygo), with a small Swift helper and the SGLang-Omni native runtime inside. Everything is in this folder:
 
-**The release build** is one command, on the Mac: `scripts/release.sh` builds the three, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it (2.0.0 has no update feed, so nothing to `--publish`); over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team RY2TQTYSKQ, notarises it and puts its disk image on a draft GitHub release. See [docs/release.md](docs/release.md).
+- [Build from source, sign and test](docs/development.md)
+- [How to send a change](CONTRIBUTING.md), and [the architecture](docs/architecture.md)
 
-From Linux, `scripts/mac.sh <command>` mirrors the project to a Mac (`MAC_HOST`, default `mac-air`; `MAC_DIR`, default `code/VoxtNew`) and runs the command there: `scripts/mac.sh 'scripts/build-helper.sh && scripts/build-llm.sh && go tool mygo build'`.
+## Acknowledgements
 
-<details>
-<summary>Signing during development (keeping the permissions across rebuilds)</summary>
-
-macOS keeps the Microphone and Accessibility grants for a signature. An ad hoc signed build (the default) has a new one each time the app is rebuilt, so after a rebuild macOS forgets them: the microphone turns **denied without asking again**, and Accessibility still shows on in System Settings but does not work. The helper's grants are the app's (macOS checks the helper against Voxt.app, its responsible process), so the same happens to it. Ways around it:
-
-- **Change only the helper:** keep one built app and run it with a helper outside the bundle. The helper inherits the app's grants wherever it lives, so rebuilding it costs nothing:
-  ```sh
-  scripts/build-helper.sh --out ~/voxtnew-dev
-  open --env VOXTNEW_HELPER=$HOME/voxtnew-dev/voxtnew-helper build/darwin-arm64/Voxt.app
-  ```
-- **Start over:** `tccutil reset Microphone dev.hehehai.voxtnew` (likewise `Accessibility`), then open the app and grant again. If a stale Accessibility entry stays on but does nothing, remove it with − in System Settings and grant again.
-- **Sign with a fixed identity:** an Apple Development certificate keeps the grants across rebuilds: `go tool mygo build -sign "Apple Development: …"` (or `macos.signingIdentity` in a local mygo.json; `VOXTNEW_SIGN_IDENTITY` for `scripts/build-helper.sh` and `scripts/build-llm.sh`). Over ssh, `codesign` fails with `errSecInternalComponent` until the key may be used without the GUI: once, in Terminal on the Mac, `security set-key-partition-list -S apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db`.
-
-Switching between your own builds and a release build (Developer ID) needs the same reset once ([docs/release.md](docs/release.md) §4). Downloaded models stay.
-
-</details>
-
-## Development
-
-Voxt is a Go app on [MyGo](https://github.com/egoist/mygo) (native macOS UI from Go, no cgo). Go decides; the helper and the model runtimes do what they are told, over JSON lines on stdin and stdout (the helper, `voxtnew-llm`) or loopback HTTP (the Omni servers). Everything but the Swift code is plain Go and is tested on Linux, with fakes of the helper and the runtimes. Run from `Voxt/`:
-
-```sh
-CGO_ENABLED=0 go test ./...          # everything; runs on Linux
-go tool mygo vet .                   # go vet and MyGo's UI-lifetime checks
-VOXTNEW_SNAPSHOTS=/tmp/shots go test -run TestSnapshots .   # every page as PNG, light/dark, en/zh-Hans
-cd helper && swift test              # the Swift helper (on a Mac), against the same protocol fixtures
-scripts/build-llm.sh --test          # voxtnew-llm's Swift tests (on a Mac)
-scripts/mac.sh scripts/mac-e2e.sh    # headless Mac tests: the real helper, fake models
-scripts/mac.sh scripts/mac-regress.sh   # the real models on a Mac: runtimes, eval, the packaged app
-```
-
-The store's tests use MyGo's SQLite plugin, which downloads its library once (checked against its SHA-256) or uses `MYGO_SQLITE_LIBRARY`. On Linux the overlay's pixel checks of Chinese text need a CJK font (Ubuntu: `fonts-noto-cjk`).
-
-- [docs/architecture.md](docs/architecture.md): packages, threading, the session, the runtimes, data on disk, tests.
-- [docs/plan.md](docs/plan.md): what the app is and its milestones.
-- [docs/behavior.md](docs/behavior.md): what the app does differently from the Swift Voxt ([hehehai/voxt](https://github.com/hehehai/voxt)), and why.
-- [docs/llm-models.md](docs/llm-models.md): the language models, their settings and measurements.
-- [docs/eval.md](docs/eval.md): the models' quality on an eval set, and the decisions it led to.
-- [docs/helper-protocol.md](docs/helper-protocol.md), [docs/llm-protocol.md](docs/llm-protocol.md): the helper's and `voxtnew-llm`'s protocols.
-- [docs/manual-test.md](docs/manual-test.md): the checks by hand on a Mac (in Chinese), and the automated Mac tests.
-- [docs/release.md](docs/release.md): building, signing, notarising and publishing a release; updates (in Chinese).
-- [AGENTS.md](AGENTS.md): the rules for changes (strings, threading, the protocols).
-- [CHANGELOG.md](CHANGELOG.md): changes by version. [CONTRIBUTING.md](CONTRIBUTING.md): how to send a change.
-
-Voxt takes the place of the Swift Voxt (1.x) that this repository held before 2.0.0: installing it replaces that app's Voxt.app in Applications, and the two keep their data apart. Some names inside stay VoxtNew (its Swift packages, processes, bundle id and data folders). It started as a copy of [Auralink](https://github.com/hehehai/Auralink), the same author's app on remote models, which rewrote [Voxt](https://github.com/hehehai/voxt) on Go and MyGo with [AudioSmith](https://github.com/hehehai/AudioSmith)'s interface; its local model runtimes and their request policies follow Voxt's.
+Voxt 2 takes the place of the Swift [Voxt](https://github.com/hehehai/voxt) 1.x. It started from [Auralink](https://github.com/hehehai/Auralink) by the same author, with the interface of [AudioSmith](https://github.com/hehehai/AudioSmith). Third-party code, runtimes and their licences are listed in [NOTICE](NOTICE); the models are downloaded under their own licences.
 
 ## Licence
 
-Apache License 2.0 ([LICENSE](LICENSE)), as the rest of this repository. Copyright the SGLang-Omni Team. Third-party code, runtimes and their licences are listed in [NOTICE](NOTICE); the models are downloaded under their own licences.
+Apache License 2.0 ([LICENSE](LICENSE)), as the rest of this repository. Copyright the SGLang-Omni Team.
+
+[![Back to top][back-to-top]](#readme-top)
+
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg
+[beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
+[beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
+[beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml
+[install-guide]: https://sgl-project.github.io/sglang-omni/get_started/voxt.html
+[issues]: https://github.com/sgl-project/sglang-omni/issues/new/choose
+[slack]: https://slack.sglang.io
+[release-shield]: https://img.shields.io/github/v/release/sgl-project/sglang-omni?filter=Voxt%20v%2A&display_name=release&label=latest&style=flat-square&labelColor=000000&color=3fb950&logo=github&logoColor=white
+[macos-shield]: https://img.shields.io/badge/macOS-15%2B%20%C2%B7%20Apple%20silicon-58a6ff?style=flat-square&labelColor=000000&logo=apple&logoColor=white
+[licence-shield]: https://img.shields.io/badge/licence-Apache%202.0-58a6ff?style=flat-square&labelColor=000000&logo=apache&logoColor=white
+[download-shield]: https://img.shields.io/badge/Download-Voxt%20for%20Mac-000000?style=for-the-badge&logo=apple&logoColor=white
+[beta-download-shield]: https://img.shields.io/badge/Download-Voxt%20Beta-1f6feb?style=for-the-badge&logo=github&logoColor=white
+[back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square

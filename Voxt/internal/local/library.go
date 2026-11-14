@@ -28,7 +28,11 @@ type Openers struct {
 	// Unload stops what a runtime has loaded of model id, before its
 	// files are deleted (Library.Delete); nil: nothing to stop.
 	Unload func(id string)
+	// Hold keeps meeting speech models loaded until release; nil: no-op.
+	Hold func() (release func())
 }
+
+var _ Holder = (*Library)(nil)
 
 // ErrNoRuntime: the model is installed, but this build has no runtime
 // to run it.
@@ -54,12 +58,12 @@ func NewLibrary(m *models.Manager, open Openers, name func(id string) string) *L
 }
 
 // Installed lists kind's installed models in the catalogue's order, the
-// recommended first. Memory only.
+// recommended first; never a retired one. Memory only.
 func (l *Library) Installed(kind Kind) []Model {
 	var out []Model
-	for _, m := range models.Catalog() {
-		if string(m.Kind) == string(kind) && l.models.Installed(m.ID) {
-			out = append(out, Model{Kind: kind, ID: m.ID, Name: l.name(m.ID), Features: m.Features})
+	for m := range models.All() {
+		if string(m.Kind) == string(kind) && !m.Retired && l.models.Installed(m.ID) {
+			out = append(out, Model{Kind: kind, ID: m.ID, Name: l.name(m.ID), Features: m.Features, Stream: kind == ASR && m.Runtime == models.Omni})
 		}
 	}
 	return out
@@ -78,6 +82,14 @@ func (l *Library) Delete(ctx context.Context, id string, scope fammodels.Scope) 
 // Dir is the folder of an installed model ("" when it is not), for the
 // openers' wiring (the speech runtime's VAD: models.VADSilero).
 func (l *Library) Dir(id string) string { return l.models.Dir(id) }
+
+// Hold keeps local speech models loaded for a meeting; no-op when Openers.Hold is nil.
+func (l *Library) Hold() (release func()) {
+	if l.open.Hold == nil {
+		return func() {}
+	}
+	return l.open.Hold()
+}
 
 func (l *Library) ASR(ctx context.Context, id string) (asr.Provider, Model, error) {
 	m, ok := Choose(l.Installed(ASR), id)

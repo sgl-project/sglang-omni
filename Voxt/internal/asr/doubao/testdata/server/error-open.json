@@ -1,0 +1,6 @@
+{
+  "source": "Error frame layout and code 45000001 (invalid request parameters) from Volcengine's SAUC docs (docs/6561/1354869, 'Error message from server', error code table); the JSON message is constructed. The service refuses the full client request, so Open fails.",
+  "frames": [
+    {"after": 1, "kind": "error", "code": 45000001, "payload": {"error": "[Invalid request] invalid audio.format"}}
+  ]
+}

@@ -24,7 +24,7 @@ import (
 func (a *app) openAnswer(s session.Snapshot) {
 	card := answerCard{
 		open: true, id: s.ID, kind: s.Kind, text: s.Result, title: s.Title, target: s.Target,
-		input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage,
+		input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage, llmID: s.LLM.ID,
 		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name),
 	}
 	if s.State == session.Failed {
@@ -41,10 +41,11 @@ func (a *app) openAnswer(s session.Snapshot) {
 		card.msg, _, _ = sessionProblemText(p) // read it before inserting it
 	}
 	if s.Kind == store.KindRewrite {
-		// A follow-up continues the card's conversation.
-		if a.answer.kind == store.KindRewrite && a.answer.id == a.followUp {
+		// A follow-up continues the card's conversation (a translation's
+		// too: its card turns into Rewrite's).
+		if a.followUp != "" && a.answer.id == a.followUp {
 			card.turns = append(card.turns, a.answer.turns...)
-			card.conversation = a.answer.conversation
+			card.conversation, card.quotesOpen = a.answer.conversation, a.answer.quotesOpen
 			if card.why == "" {
 				card.why = a.answer.why
 			}
@@ -64,24 +65,31 @@ func (a *app) openAnswer(s session.Snapshot) {
 	a.answer = card
 }
 
-// endRedo ends the card's translation into another language: its text
-// replaces the card's; a failure (or nothing) leaves the card as it was,
-// in the language it was, and says so under it (Voxt goes back to the
-// language without a word); a cancel just goes back.
+// endRedo ends the card's answer again, in another language or with
+// another thinking level: its text replaces the card's; a failure (or
+// nothing) leaves the card as it was, and says so under it (Voxt goes
+// back to the language without a word); a cancel just goes back.
 func (a *app) endRedo(s session.Snapshot) {
-	lang := a.answer.redoLang
-	a.answer.redo, a.answer.redoLang = "", ""
+	lang, think := a.answer.redoLang, a.answer.redoThink
+	a.answer.redo, a.answer.redoLang, a.answer.redoThink = "", "", nil
 	switch {
 	case s.State == session.Done && s.Result != "":
-		a.answer.id, a.answer.text, a.answer.lang = s.ID, s.Result, s.TargetLanguage
-		a.answer.msg, a.answer.copied = "", false
+		a.answer.id, a.answer.text, a.answer.lang, a.answer.think = s.ID, s.Result, s.TargetLanguage, think
+		a.answer.title, a.answer.msg, a.answer.copied = s.Title, "", false
+		if a.answer.kind == store.KindRewrite && len(a.answer.turns) == 1 {
+			a.answer.turns[0].Answer = compose.Answer{Title: s.Title, Content: s.Result}
+		}
 	case s.State == session.Cancelled:
 	default:
-		why := i18n.T("the language model answered nothing")
+		why := i18n.T("the language model returned an empty answer")
 		if s.Problem != nil && s.Problem.Code != session.ProblemEmpty && s.Problem.Code != session.ProblemNoSpeech {
 			why, _, _ = sessionProblemText(s.Problem)
 		}
-		a.answer.msg = i18n.T("Not translated into %s: %s", uitext.TargetLanguageLabel(lang), why)
+		if lang != a.answer.lang {
+			a.answer.msg = i18n.T("Not translated into %s: %s", uitext.TargetLanguageLabel(lang), why)
+		} else {
+			a.answer.msg = i18n.T("Not answered again (%s): %s", thinkText(think), why)
+		}
 	}
 }
 
@@ -94,28 +102,15 @@ func (a *app) retryAnswer(lang string) {
 		return
 	}
 	in := card.input
-	req := session.StartRequest{Kind: card.kind, Target: card.target, Text: &in, TargetLanguage: lang}
+	req := session.StartRequest{Kind: card.kind, Target: card.target, Text: &in, TargetLanguage: lang, Thinking: card.think}
 	if req.TargetLanguage == "" {
 		req.TargetLanguage = card.lang
 	}
 	if lang != "" && card.problem == nil {
-		// Another language for the card's text: it stays in the card,
-		// which shows its text until the new one comes (Voxt's).
-		req.Card = true
-		a.answer.msg = ""
-		if n := a.sessionBlocker(card.kind); n != nil {
-			a.answer.msg = n.text
-			return
-		}
-		id, err := a.mgr.Start(req)
-		if err == nil {
-			a.answer.redo, a.answer.redoLang = id, lang
-		}
-		a.syncHotkeys()
-		a.overlaySync()
+		a.redoAnswer(req)
 		return
 	}
-	if card.kind == store.KindRewrite && len(card.turns) > 0 && in.Selection == "" {
+	if card.kind == store.KindRewrite && len(card.turns) > 0 {
 		req.Previous = card.turns
 		if card.problem == nil {
 			return // nothing to ask again
@@ -134,14 +129,38 @@ func (a *app) retryAnswer(lang string) {
 	a.overlaySync()
 }
 
-// followUpAnswer records a follow-up to the card's Rewrite answer (the
-// Rewrite shortcut while the card shows one): the next instruction
-// rewrites that answer, in the card.
+// redoAnswer asks for the card's answer again, into req's language or
+// with its thinking level: it stays in the card, which shows its text
+// until the new one comes (Voxt's).
+func (a *app) redoAnswer(req session.StartRequest) {
+	req.Card = true
+	a.answer.msg = ""
+	if n := a.sessionBlocker(req.Kind); n != nil {
+		a.answer.msg = n.text
+		return
+	}
+	if id, err := a.mgr.Start(req); err == nil {
+		a.answer.redo, a.answer.redoLang, a.answer.redoThink = id, req.TargetLanguage, req.Thinking
+	}
+	a.syncHotkeys()
+	a.overlaySync()
+}
+
+// followUpAnswer records a follow-up to the card's Rewrite answer or
+// translation (Continue, or the Rewrite shortcut while the card shows
+// one): the next instruction rewrites that answer, in the card. A
+// translation is the conversation's first turn, its source as the
+// selection (#3897).
 func (a *app) followUpAnswer(hold string) bool {
-	card := a.answer
 	if !a.canFollowUp() {
 		return false
 	}
+	if a.answer.kind == store.KindTranslate {
+		in := a.answer.input
+		a.answer.turns = []compose.Turn{{Instruction: i18n.T("Translate into %s", uitext.TargetLanguageLabel(a.answer.lang)),
+			Selection: cmpOr(in.Selection, in.Raw), Answer: compose.Answer{Content: a.answer.text}}}
+	}
+	card := a.answer
 	a.followUp = card.id
 	if n := a.startSession(session.StartRequest{Kind: store.KindRewrite, Target: card.target, HoldBinding: hold, Previous: card.turns}); n != nil {
 		a.followUp = ""
@@ -155,16 +174,17 @@ func (a *app) followUpAnswer(hold string) bool {
 }
 
 // canFollowUp says whether the card takes a follow-up now: a Rewrite
-// answer written from an instruction, nothing running.
+// answer written from an instruction, or a translation, nothing running.
 func (a *app) canFollowUp() bool {
 	card := a.answer
-	return card.open && card.kind == store.KindRewrite && card.problem == nil && len(card.turns) > 0 && !a.sess.State.Live()
+	ok := card.kind == store.KindRewrite && len(card.turns) > 0 || card.kind == store.KindTranslate && card.text != ""
+	return card.open && ok && card.problem == nil && !a.sess.State.Live()
 }
 
 // closeAnswer closes the answer card (and cancels a follow-up, or another
 // language, on its way).
 func (a *app) closeAnswer() {
-	if a.cardSessionLive() {
+	if a.cardSessionLive() || a.writingAnswer() {
 		a.cancelSession()
 	}
 	a.answer, a.followUp = answerCard{}, ""

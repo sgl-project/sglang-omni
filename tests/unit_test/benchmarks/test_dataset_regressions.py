@@ -62,6 +62,9 @@ class FakeDataset:
     def __len__(self) -> int:
         return len(self.rows)
 
+    def __getitem__(self, column: str) -> list[str]:
+        return [row[column] for row in self.rows]
+
     def __iter__(self):
         return iter(self.rows)
 
@@ -145,6 +148,22 @@ def test_load_seedtts_samples_accepts_local_meta_lst(tmp_path: Path) -> None:
     assert samples[0].ref_text == "hello"
     assert samples[0].ref_audio == str(ref_audio)
     assert samples[0].target_text == "target one"
+
+
+def test_load_seedtts_samples_unique_audio_counts_clips_in_meta_lst(
+    tmp_path: Path,
+) -> None:
+    """SeedTTS lists a clip once per target text; unique_audio keeps each clip's first row and caps clips, not rows."""
+    meta_path = tmp_path / "meta.lst"
+    meta_path.write_text(
+        "a-1|ref a|a.wav|one\na-2|ref a|a.wav|two\nb-1|ref b|b.wav|three\nc-1|ref c|c.wav|four\n"
+    )
+
+    samples = seedtts.load_seedtts_samples(
+        str(meta_path), max_samples=2, unique_audio=True
+    )
+
+    assert [sample.sample_id for sample in samples] == ["a-1", "b-1"]
 
 
 def test_local_seedtts_source_does_not_claim_huggingface_revision(
@@ -322,20 +341,34 @@ def test_evaluation_input_fingerprint_tracks_audio_content(tmp_path: Path) -> No
     assert before != after
 
 
+@pytest.mark.parametrize(
+    ("clips", "unique_audio", "selected_indices"),
+    [
+        pytest.param(["0", "1", "2", "3", "4"], False, [0, 1], id="rows"),
+        pytest.param(["a", "a", "b", "c"], True, [0, 2], id="unique-clips"),
+    ],
+)
 def test_load_seedtts_samples_stages_only_selected_rows(
-    monkeypatch, tmp_path: Path
+    monkeypatch,
+    tmp_path: Path,
+    clips: list[str],
+    unique_audio: bool,
+    selected_indices: list[int],
 ) -> None:
+    """Only the selected rows are staged, so the last row's missing audio never fails the load; under unique_audio, max_samples counts clips."""
     seedtts._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
     rows = [
         {
             "sample_id": f"sample-{idx}",
-            "ref_text": f"ref-{idx}",
-            "ref_audio_path": f"audio/{idx}.wav",
+            "ref_text": f"ref-{clip}",
+            "ref_audio_path": f"audio/{clip}.wav",
             "target_text": f"target-{idx}",
-            "ref_audio": {"bytes": f"audio-{idx}".encode()},
+            "ref_audio": {
+                "bytes": f"audio-{clip}".encode() if idx < len(clips) - 1 else b""
+            },
         }
-        for idx in range(5)
+        for idx, clip in enumerate(clips)
     ]
     dataset = FakeDataset(rows)
     stage_dir = tmp_path / "seedtts_stage"
@@ -362,16 +395,16 @@ def test_load_seedtts_samples_stages_only_selected_rows(
         "zhaochenyang20/seed-tts-eval-arrow",
         max_samples=2,
         split="en",
+        unique_audio=unique_audio,
     )
 
-    assert dataset.selected_indices == [0, 1]
-    assert [sample.sample_id for sample in samples] == ["sample-0", "sample-1"]
+    assert dataset.selected_indices == selected_indices
+    assert [sample.sample_id for sample in samples] == [
+        f"sample-{idx}" for idx in selected_indices
+    ]
     assert sorted(
         path.relative_to(stage_dir).as_posix() for path in stage_dir.rglob("*.wav")
-    ) == [
-        "audio/0.wav",
-        "audio/1.wav",
-    ]
+    ) == [f"audio/{clips[idx]}.wav" for idx in selected_indices]
 
     seedtts._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 

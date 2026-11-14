@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -24,10 +25,6 @@ func (a *app) helperReady() bool {
 	return a.hstatus.State == helper.Ready
 }
 
-// transcribeBlocker checks, without I/O, what a Transcribe session
-// needs (sessionBlocker).
-func (a *app) transcribeBlocker() *sessionNotice { return a.sessionBlocker(store.KindTranscribe) }
-
 // sessionBlocker checks, without I/O, what a session of kind needs: a
 // running helper, a speech model (Transcribe, Rewrite: Translate may
 // translate a selection without one) and a language model (Translate,
@@ -37,16 +34,38 @@ func (a *app) sessionBlocker(kind store.Kind) *sessionNotice {
 		return &sessionNotice{text: i18n.T("The helper is not running."), action: actionHelper}
 	}
 	if kind != store.KindTranslate {
+		if n := a.speechWaits(kind); n != nil {
+			return n
+		}
 		if _, ok := a.featureModel(local.ASR, string(kind)); !ok {
 			return &sessionNotice{text: i18n.T("No speech model is installed."), action: actionModels}
 		}
 	}
 	if kind != store.KindTranscribe {
 		if _, ok := a.featureModel(local.LLM, string(kind)); !ok {
-			return &sessionNotice{text: i18n.T("No language model is installed."), action: actionModels}
+			return &sessionNotice{text: i18n.T("No language model is set up."), action: actionLanguage}
 		}
 	}
 	return nil
+}
+
+// speechWaits is the notice that a session of kind waits for the
+// recommended speech model, still downloading, nil when it does not: it
+// would otherwise fall back on System dictation (another permission,
+// perhaps a language it lacks) or on nothing. A model of the feature's
+// own, a remote service or System dictation chosen by the user go on.
+func (a *app) speechWaits(kind store.Kind) *sessionNotice {
+	if featureOf(a.prefs, string(kind)).ASR == dictation.ModelID {
+		return nil
+	}
+	if m, ok := a.featureModel(local.ASR, string(kind)); ok && m.ID != dictation.ModelID {
+		return nil
+	}
+	st := a.modelStatus[a.obSpeech()]
+	if !st.Downloading {
+		return nil
+	}
+	return &sessionNotice{text: i18n.T("The speech model is still downloading (%d%%).", downloadPercent(st)), action: actionModels}
 }
 
 // startTranscribe starts a Transcribe session (startSession).
@@ -77,6 +96,9 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 		}
 		return "", n
 	}
+	if n := a.speechWaits(req.Kind); n != nil { // Translate: only when it comes to speech
+		req.SpeechWait = n.text
+	}
 	if len(req.Previous) == 0 {
 		a.answer = answerCard{}
 	}
@@ -104,6 +126,22 @@ func (a *app) stopSession() {
 func (a *app) cancelSession() {
 	if a.mgr != nil && a.sess.State.Live() {
 		a.mgr.Cancel(a.sess.ID)
+	}
+}
+
+// skipLLM inserts the recognised text of the live session in place of
+// the language model's answer (session.Manager's SkipLLM).
+func (a *app) skipLLM() {
+	if a.mgr != nil {
+		a.mgr.SkipLLM(a.sess.ID)
+	}
+}
+
+// stopLLM ends the answer streaming into the card where it is; the card
+// keeps it (session.Manager's StopLLM).
+func (a *app) stopLLM() {
+	if a.mgr != nil {
+		a.mgr.StopLLM(a.sess.ID)
 	}
 }
 

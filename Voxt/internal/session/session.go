@@ -38,6 +38,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
@@ -84,8 +85,11 @@ func (s State) Ended() bool { return s == Done || s == Cancelled || s == Failed 
 
 // Problem codes.
 const (
-	// ProblemNoASR: no speech model is ready (Local models).
+	// ProblemNoASR: no speech model is ready (Speech models).
 	ProblemNoASR = "noASR"
+	// ProblemSpeechWait: the speech model is still downloading
+	// (StartRequest.SpeechWait, which Err says).
+	ProblemSpeechWait = "speechWait"
 	// ProblemMicrophone: macOS refused the microphone.
 	ProblemMicrophone = "microphone"
 	// ProblemDevice: no input gave audio.
@@ -106,7 +110,7 @@ const (
 	// is cancelled quietly).
 	ProblemTooShort = "tooShort"
 	// ProblemNoLLM: Translate and Rewrite need a language model, and none
-	// is ready (Local models).
+	// is ready (Speech models).
 	ProblemNoLLM = "noLLM"
 	// ProblemEmpty: the language model answered nothing (Translate,
 	// Rewrite).
@@ -155,6 +159,9 @@ type Snapshot struct {
 	State State
 	// Try: started from a page's Try area, the result stays there.
 	Try bool
+	// Note: started by the note shortcut (StartRequest.Note); the result
+	// went to Config.Notes, or to the card when saving it failed.
+	Note bool
 	// HoldBinding is the binding whose long press started the session
 	// (its release stops it); "" for none.
 	HoldBinding string
@@ -163,6 +170,11 @@ type Snapshot struct {
 	// StartedAt: the shortcut; HeardAt: the first audio (zero until then:
 	// the user's first words are not heard yet); StoppedAt: Stop.
 	StartedAt, HeardAt, StoppedAt time.Time
+	// MaxLen is the length a recording stops at (Audio.MaxSeconds; 0:
+	// none); UploadLen how long a recording gets before it is past the
+	// speech model's upload limit and goes in pieces (0: none applies).
+	// The pill warns as either nears (#3840).
+	MaxLen, UploadLen time.Duration
 	// Levels are the last Bars input levels, 0–1, oldest first.
 	Levels []float64
 	// Waiting is what the session still waits for, once it waited
@@ -170,9 +182,11 @@ type Snapshot struct {
 	// or the speech model, still starting. The pill says so.
 	Waiting Wait
 	// Device is the input that records, FellBack whether it was not the
-	// first choice.
+	// first choice. Switched counts the times the input went away and
+	// another took over (Device names it); the pill says so.
 	Device   string
 	FellBack bool
+	Switched int
 	// Partial is a streaming speech model's text so far; Raw the final
 	// recognised text (Rewrite's spoken instruction); Result what is
 	// delivered.
@@ -189,16 +203,22 @@ type Snapshot struct {
 	// Retried: Translate asked again, strictly (the first answer looked
 	// untranslated).
 	Retried bool
+	// CanSkip: while Composing, SkipLLM inserts the recognised text in
+	// place of the model's answer (Transcribe, and Translate of speech).
+	CanSkip bool
+	// Thinking is the thinking level chosen for Transcribe's clean-up in
+	// the preview (Manager.Rethink); nil: the service's setting.
+	Thinking *llm.Thinking
 	// Inserted: the result was pasted; Card: it shows in the answer card
 	// (Delivery says why it was not inserted). While the model writes,
 	// Card says the answer streams into the card.
 	Inserted bool
 	Card     bool
 	Delivery deliver.Reason
-	// InsertedInto is the app the result was pasted into: Target, or the
-	// app the user went to and focused a text field in. Target stays the
-	// app the scene was chosen for (the history's app).
-	InsertedInto proto.App
+	// Landing says where the result was pasted (nil: not inserted): the
+	// app, Target or the app the user went to and focused a text field
+	// in. Target stays the app the scene was chosen for (the history's app).
+	Landing *deliver.Landing
 	// Scene is the app enhancement group the session falls in (scene.go);
 	// nil until it is decided.
 	Scene *appctx.Match
@@ -215,6 +235,12 @@ type Snapshot struct {
 	// Recording: the session's history entry keeps its recording (the
 	// settings', or for a while because recognition failed: Retry).
 	Recording bool
+}
+
+// CanStop says whether StopLLM can end the answer streaming into the
+// answer card where it is, keeping what the model wrote so far (#3886).
+func (s Snapshot) CanStop() bool {
+	return s.State == Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // Elapsed is how long the recording has run (from the first audio), at
@@ -265,6 +291,10 @@ type Services struct {
 	// LLM is nil when the feature has no language model ready.
 	LLM     LLM
 	LLMInfo Model
+	// Fallback is Translate's fallback model, asked once when LLM fails;
+	// nil: none.
+	Fallback     LLM
+	FallbackInfo Model
 	// VAD is the voice activity model (Silero) that finds the speech in
 	// the recording; nil: the energy detector of internal/vad does, as it
 	// does when the model fails (vad_model.go).
@@ -272,9 +302,11 @@ type Services struct {
 }
 
 // Resolver opens the models a session of kind uses with settings s; it
-// may block (it may start a runtime). A model that is not ready is nil
+// may block (it may start a runtime). speech false: the session hears
+// nothing (a selection to translate, a typed text), so no speech model
+// is opened and ASR stays nil (#3838). A model that is not ready is nil
 // in Services (an error wrapping ErrNoASR works too).
-type Resolver func(ctx context.Context, kind Kind, s settings.Settings) (Services, error)
+type Resolver func(ctx context.Context, kind Kind, s settings.Settings, speech bool) (Services, error)
 
 // ErrNoASR: no speech model is ready.
 var ErrNoASR = errors.New("session: no speech model is ready")
@@ -296,10 +328,22 @@ type Config struct {
 	// Select reads the selection (nil: Translate and Rewrite never see
 	// one).
 	Select Selector
+	// Window takes a JPEG of app pid's front window (the helper's
+	// screen.window; nil without a picture) for the language model, when
+	// the settings send one (Privacy.SendWindow). Nil: never.
+	Window func(ctx context.Context, pid int) ([]byte, error)
+	// ClipboardImage reads the picture on the clipboard as a JPEG (the
+	// helper's clipboard.image; nil without one) for Rewrite's language
+	// model, when the settings send it (Privacy.SendClipboardImage).
+	// Nil: never.
+	ClipboardImage func(ctx context.Context) ([]byte, error)
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History
 	Glossary func(ctx context.Context) ([]store.Term, error)
+	// Notes keeps the results of note sessions (nil: they show in the
+	// card, with a problem).
+	Notes store.Notes
 	// Settings returns the current settings (memory only); Locale the UI
 	// language, for a main language left to follow it.
 	Settings func() settings.Settings
@@ -322,7 +366,6 @@ type Config struct {
 	NewID func() string
 
 	// Limits (0: the defaults).
-	MaxRecording time.Duration // DefaultMaxRecording
 	MinRecording time.Duration // DefaultMinRecording
 	// Recognition after Stop gets ASRTimeout plus ASRPerSecond per second
 	// of the recording (asrLimit): a local model that stopped answering is
@@ -335,19 +378,25 @@ type Config struct {
 	// recognition failed (or found no text) when the settings keep no
 	// recordings: for Retry (DefaultAudioRetention).
 	AudioRetention time.Duration
-	// A language model's request ends when it makes no progress
-	// (behavior.md 5.5, llmDeadlines): no first token within
-	// LLMFirstToken (plus llmPrefillPerChar per character of its input),
-	// no next one within LLMStall; and in all after LLMPerChar per
-	// character, at least LLMTimeout for a piece of Transcribe's clean-up
-	// and WriteTimeout for Translate's and Rewrite's answer.
-	LLMFirstToken time.Duration // DefaultLLMFirstToken
-	LLMStall      time.Duration // DefaultLLMStall
-	LLMPerChar    time.Duration // DefaultLLMPerChar
-	LLMTimeout    time.Duration // DefaultLLMTimeout
-	WriteTimeout  time.Duration // DefaultWriteTimeout
-	ReadTimeout   time.Duration // reading the selection; DefaultReadTimeout
-	DeliverTime   time.Duration // DefaultDeliverTimeout
+	// A language model's request ends when its answer, once it streams,
+	// stops for LLMStall, or after LLMBase plus LLMPerChar (and
+	// llmPrefillPerChar) per character of its input, at least
+	// LLMTimeout for a piece of Transcribe's clean-up and WriteTimeout
+	// for Translate's and Rewrite's answer (behavior.md 5.5,
+	// llmDeadlines).
+	LLMBase      time.Duration // DefaultLLMBase
+	LLMStall     time.Duration // DefaultLLMStall
+	LLMPerChar   time.Duration // DefaultLLMPerChar
+	LLMTimeout   time.Duration // DefaultLLMTimeout
+	WriteTimeout time.Duration // DefaultWriteTimeout
+	ReadTimeout  time.Duration // reading the selection; DefaultReadTimeout
+	// RewriteReadTimeout is Rewrite's: it reads the selection while the
+	// user speaks, so a long one (a page of a web editor read through
+	// Accessibility's text markers) may take longer without delaying
+	// anything (DefaultRewriteReadTimeout). Translate reads it before it
+	// knows whether to record.
+	RewriteReadTimeout time.Duration
+	DeliverTime        time.Duration // DefaultDeliverTimeout
 	// WaitNote is how long a recording waits for the microphone or the
 	// speech model before Snapshot.Waiting says so (DefaultWaitNote).
 	WaitNote time.Duration
@@ -355,24 +404,33 @@ type Config struct {
 	// discarding the capture job (a capture.stop that raced its start);
 	// DefaultStopGrace.
 	StopGrace time.Duration
+	// EndWordPause is how long the live text must end with the end word
+	// (settings.Features.EndWord) before the recording stops;
+	// DefaultEndWordPause.
+	EndWordPause time.Duration
 }
 
 // Defaults of Config's limits.
 const (
-	DefaultMaxRecording   = 10 * time.Minute
 	DefaultMinRecording   = 300 * time.Millisecond
 	DefaultASRTimeout     = 60 * time.Second
 	DefaultASRPerSecond   = time.Second
 	DefaultAudioRetention = 7 * 24 * time.Hour
-	DefaultLLMFirstToken  = 15 * time.Second
+	DefaultLLMBase        = 15 * time.Second
 	DefaultLLMStall       = 5 * time.Second
 	DefaultLLMPerChar     = 100 * time.Millisecond
 	DefaultLLMTimeout     = 20 * time.Second
 	DefaultWriteTimeout   = 60 * time.Second
 	DefaultReadTimeout    = 1500 * time.Millisecond
-	DefaultDeliverTimeout = 5 * time.Second
-	DefaultStopGrace      = 3 * time.Second
-	DefaultWaitNote       = 400 * time.Millisecond
+	// DefaultRewriteReadTimeout and rewriteCopyMS: a long selection's
+	// read, and its ⌘C landing on the clipboard (the helper's default
+	// 300 ms), in Rewrite (#3644: long selections failed).
+	DefaultRewriteReadTimeout = 6 * time.Second
+	rewriteCopyMS             = 1500
+	DefaultDeliverTimeout     = 5 * time.Second
+	DefaultStopGrace          = 3 * time.Second
+	DefaultWaitNote           = 400 * time.Millisecond
+	DefaultEndWordPause       = time.Second // Voxt 1.x's silence after the end word
 )
 
 // StartRequest starts a session.
@@ -386,6 +444,10 @@ type StartRequest struct {
 	// Try: from a page's Try area; nothing is inserted and nothing kept
 	// (and no selection is read).
 	Try bool
+	// Note: a Transcribe session whose result is saved as a note
+	// (Config.Notes), not inserted; like a try, it keeps no history entry
+	// (Voxt 1.x's note sessions).
+	Note bool
 	// At is when the shortcut fired (zero: now).
 	At time.Time
 	// Text starts Translate or Rewrite with its input, without recording
@@ -394,6 +456,10 @@ type StartRequest struct {
 	Text *TextInput
 	// TargetLanguage overrides Translate's target ("": the settings').
 	TargetLanguage string
+	// Thinking overrides the language model's thinking for Translate's
+	// and Rewrite's answer (the answer card's thinking menu); nil: the
+	// service's setting.
+	Thinking *llm.Thinking
 	// Card keeps the answer in the answer card, never inserted: the
 	// card's text into another language (Voxt's language menu replaces
 	// the card's answer).
@@ -401,6 +467,10 @@ type StartRequest struct {
 	// Previous are a Rewrite conversation's earlier turns: the session is
 	// a follow-up to the answer card.
 	Previous []compose.Turn
+	// SpeechWait, when set, ends the session with these words instead of
+	// recording: the speech model it should use is still downloading.
+	// Translating a selection needs none and goes on.
+	SpeechWait string
 }
 
 // TextInput is a session's input given at Start.

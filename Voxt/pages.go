@@ -2,8 +2,9 @@ package main
 
 // The pages of the sidebar: Home (home_page.go), History
 // (history_page.go), Transcribe, Translate and Rewrite
-// (feature_page.go), App enhancement (appenhance_page.go), Local models
-// (models_page.go), Dictionary (dictionary_page.go) and Logs
+// (feature_page.go), App enhancement (appenhance_page.go), Speech models
+// (models_page.go), Language models (remote_page.go), Dictionary
+// (dictionary_page.go) and Logs
 // (shell_logs.go). Permissions is a section of the settings dialog
 // (permissions.go).
 
@@ -23,6 +24,11 @@ func (a *app) pages(c *ui.Context) {
 				return
 			}
 		}
+		if r.Match(llmDebugPath) {
+			r.Title(i18n.T("Language model debug"))
+			a.llmDebugPage(c) // llm_debug.go
+			return
+		}
 		r.Title(i18n.T("Not found"))
 		a.notFoundPage(c, r.Path())
 	}).Grow(1).MinHeight(0)
@@ -41,6 +47,10 @@ func (a *app) pageShown(path string) {
 		a.aeShown() // appenhance_page.go
 	case "/dictionary":
 		a.dictShown() // dictionary_page.go
+	case "/notes":
+		a.loadNotes() // notes_page.go
+	case "/meetings":
+		a.loadMeetings() // meetings_page.go
 	case modelsPath:
 		a.modelsShown() // models_memory.go
 	}
@@ -57,6 +67,9 @@ func (a *app) page(c *ui.Context, p navPage) {
 		return
 	case modelsPath:
 		a.modelsPage(c) // models_page.go
+		return
+	case remotePath:
+		a.remotePage(c) // remote_page.go
 		return
 	case "/transcribe":
 		a.transcribePage(c) // feature_page.go
@@ -75,6 +88,12 @@ func (a *app) page(c *ui.Context, p navPage) {
 		return
 	case "/dictionary":
 		a.dictionaryPage(c) // dictionary_page.go
+		return
+	case "/meetings":
+		a.meetingsPage(c) // meetings_page.go
+		return
+	case "/notes":
+		a.notesPage(c) // notes_page.go
 		return
 	}
 	pageHeader(c, pageTitle(p.path), nil)
