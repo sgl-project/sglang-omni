@@ -141,6 +141,7 @@ Without a language model, Transcribe types the text as recognised; Translate and
 - **Questions and ideas**: join the SGLang [Slack][slack].
 - **For your own scripts and agents**: [read your dictation history](docs/history-access.md) from other programs on your Mac. It is off by default.
 - **Transcribe recordings and videos to subtitles**: [`Voxt transcribe`](docs/transcribe.md) turns a local audio or video file into SRT or text with your speech model.
+- **Import dictionary terms from a script**: [`Voxt dictionary import`](docs/dictionary-import.md) merges a CSV, text or Voxt 1.x file into your dictionary, as Dictionary → Import… does, with `--dry-run` to see the counts first.
 
 ## For developers
 
