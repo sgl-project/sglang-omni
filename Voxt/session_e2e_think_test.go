@@ -94,7 +94,7 @@ func TestCardThinkingLevel(t *testing.T) {
 	if body := chat.requests()[1]; body["thinking"] != low || chatMessages(body)[len(chatMessages(body))-1][1] != "<input>\n周四见\n</input>" {
 		t.Errorf("second request %v", body)
 	}
-	if tip := thinkText(a.cardNow().think); tip != "Thinking: Low" {
+	if tip := askAgainText(a.cardNow().think); tip != "Ask again: Thinking (Low)" {
 		t.Errorf("tip %q", tip)
 	}
 	if a.prefs.Providers.LLM[0].Generation.Thinking != "" {
