@@ -416,14 +416,33 @@ def test_qwen3_asr_torch_mps_profile_overrides_typed_torch_compile_default() -> 
     assert overrides["enable_torch_compile"] is False
 
 
-def test_qwen3_asr_torch_mps_keeps_requests_greedy_only(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("device", "has_draft", "greedy_only"),
+    [
+        ("mps", False, True),
+        ("npu", True, True),
+        ("npu", False, False),
+        ("cuda", True, False),
+        ("cuda", False, False),
+    ],
+)
+def test_qwen3_asr_adapter_sampling_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    device: str,
+    has_draft: bool,
+    greedy_only: bool,
+) -> None:
     builder = make_engine_builder()
-    builder.device = "mps"
+    builder.device = "mps" if device == "mps" else None
+    builder.draft_checkpoint = Mock() if has_draft else None
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_npu", lambda: device == "npu"
+    )
     monkeypatch.setattr(
         request_builders, "make_qwen3_asr_scheduler_adapters", lambda **kwargs: kwargs
     )
 
-    assert builder.make_adapters(object())["greedy_only"] is True
+    assert builder.make_adapters(object())["greedy_only"] is greedy_only
 
 
 def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
@@ -707,6 +726,37 @@ def test_qwen3_asr_stage_import_without_dflash() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("platform", "tp_size", "algorithm", "message"),
+    [
+        ("cpu", 1, "DFLASH", "one CUDA GPU or Ascend NPU"),
+        ("mps", 1, "DFLASH", "one CUDA GPU or Ascend NPU"),
+        ("cuda", 2, "DFLASH", "one CUDA GPU or Ascend NPU"),
+        ("npu", 2, "DFLASH", "one CUDA GPU or Ascend NPU"),
+        ("npu", 1, "EAGLE3", "supports DFLASH only"),
+    ],
+)
+def test_qwen3_asr_dflash_rejects_unsupported_runtime_before_loading_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    tp_size: int,
+    algorithm: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_cuda", lambda: platform == "cuda"
+    )
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_npu", lambda: platform == "npu"
+    )
+    builder = make_engine_builder()
+    with pytest.raises(ValueError, match=message):
+        builder.adjust_overrides(
+            {"speculative_algorithm": algorithm, "tp_size": tp_size}
+        )
+    assert builder.draft_checkpoint is None
+
+
 def write_dflash_checkpoint(directory: Path, *, non_causal: bool) -> None:
     source_config = {
         "speculators_model_type": "dflash",
@@ -726,17 +776,26 @@ def write_dflash_checkpoint(directory: Path, *, non_causal: bool) -> None:
     (directory / "model.safetensors").touch()
 
 
+@pytest.mark.parametrize("platform", ["cuda", "npu"])
 @pytest.mark.parametrize("non_causal", [False, True])
 def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, non_causal: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, non_causal: bool, platform: str
 ) -> None:
     """DFlash must run speculative overlap by default and release its temporary checkpoint after both successful and failed builds."""
     # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
     from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
     recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
-    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_cuda", lambda: platform == "cuda"
+    )
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_npu", lambda: platform == "npu"
+    )
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
+    monkeypatch.setenv("PER_STREAM_QUEUE", "1")
+    monkeypatch.setenv("TASK_QUEUE_ENABLE", "1")
+    monkeypatch.delenv("ASCEND_LAUNCH_BLOCKING", raising=False)
     write_dflash_checkpoint(tmp_path, non_causal=non_causal)
 
     infra_kwargs = Qwen3ASREngineBuilder.infra_kwargs
@@ -782,7 +841,7 @@ def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
     assert recorded.infra_kwargs[-1]["enable_async_decode"] is True
     assert scheduler.enable_async_decode is True
     assert scheduler.async_prefill is False
-    assert recorded.adapter_kwargs["greedy_only"] is False
+    assert recorded.adapter_kwargs["greedy_only"] is (platform == "npu")
     assert recorded.build_kwargs["enable_mixed_chunk"] is False
     assert recorded.build_kwargs["disable_overlap_schedule"] is False
     assert not recorded.build_kwargs.get("disable_cuda_graph", False)
@@ -810,12 +869,18 @@ def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
     assert not Path(recorded.build_kwargs["speculative_draft_model_path"]).exists()
 
 
+@pytest.mark.parametrize("platform", ["cuda", "npu"])
 @pytest.mark.parametrize("with_draft", [False, True])
 def test_qwen3_asr_async_decode_false_turns_speculative_overlap_off(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, with_draft: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, with_draft: bool, platform: str
 ) -> None:
     """Async decode false must schedule synchronously with or without a draft, and under a draft the worker must get the synchronous verify loop."""
-    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_cuda", lambda: platform == "cuda"
+    )
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_npu", lambda: platform == "npu"
+    )
     monkeypatch.setattr(
         request_builders,
         "make_qwen3_asr_stream_output_builder",

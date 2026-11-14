@@ -15,6 +15,7 @@
 [![Apache License 2.0][licence-shield]](LICENSE)
 
 [![下载 Voxt][download-shield]][download]
+[![下载 Voxt Beta][beta-download-shield]][beta-download]
 
 [安装指南][install-guide] · [更新日志](CHANGELOG.md) · [官网](https://voxt.actnow.dev) · [反馈问题][issues] · [Slack][slack]
 
@@ -69,12 +70,14 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 ### 第一次用 Voxt
 
-1. **下载**：从 [Voxt v2.0.3 发布页][download]下载 `Voxt-2.0.3-arm64.dmg`，打开后把 **Voxt** 拖进“应用程序”。
+1. **下载** [`Voxt-2.0.3-arm64.dmg`][download]，打开后把 **Voxt** 拖进“应用程序”。
 
 2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（Qwen3-ASR 1.7B (8bit)，2.5 GB），再配置一个语言模型用于整理、翻译和改写。
 3. 在任意 App 里**单按右 Option**，说话，再按一下。
 
 分步说明：[Install Voxt][install-guide]。
+
+安装 Beta `2.0.3-beta.20261111.38` 时，先登录 GitHub，下载并解压 ZIP，然后打开 DMG，把 **Voxt** 拖进“应用程序”。如果直链未开始下载，请到 [Voxt Beta #38][beta-run] 的 Artifacts 下载 arm64 安装包。要找更新的 Beta，请打开 [Actions → Voxt Beta][beta-workflow] 中 `main` 分支最新一次成功的运行。
 
 ### 从 Voxt 1.x 升级
 
@@ -110,7 +113,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 - **更多本地模型**：MOSS-Transcribe-Diarize（中文和英语，实时显示文字）、Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）、Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo / Large v3 / Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）和 Cohere Transcribe 03-2026（14 种语言）。macOS 自带的系统听写也可以用，无需下载。
 - **Qwen3-ASR** 支持 30 种语言和 22 种中文方言，并且会用到你的词典；其他可下载的模型不用词典。
-- **转录加速**（DFlash）：在 Qwen3-ASR 1.7B (8bit) 和 0.6B (4bit) 的卡片上下载一个草稿模型（726 MB 和 262 MB），它每步先提出几个词，再由语音识别模型校验。删掉它，模型照常工作。
+- **转录加速**（DFlash）：在 Qwen3-ASR 1.7B (8bit) 和 0.6B (4bit) 的卡片上打开开关并下载一个草稿模型（726 MB 和 262 MB），它每步先提出几个词，再由语音识别模型校验。关掉开关，模型照常工作；草稿留在磁盘上，直到你删除它。
 - **云端语音 API**，如果你更想用：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼、阶跃星辰、小米 MiMo 和 Google Gemini。
 
 ### 语言模型
@@ -137,6 +140,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 - **遇到问题**：“设置 → 诊断与关于 → 反馈问题”会打开一个已填好诊断信息的 GitHub issue；也可以直接[提 issue][issues]，标题带上“[Voxt]”。
 - **提问和建议**：加入 SGLang 的 [Slack][slack]。
 - **给你自己的脚本和 agent**：让这台 Mac 上的其他程序[读取听写历史](docs/history-access.md)，默认关闭。
+- **把录音和视频转成字幕**：[`Voxt transcribe`](docs/transcribe.md) 用你的语音识别模型把本地音频或视频文件转成 SRT 或纯文本。
 
 ## 开发者
 
@@ -155,7 +159,10 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 
 [![回到顶部][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg
+[beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
+[beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
+[beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml
 [install-guide]: https://sgl-project.github.io/sglang-omni/get_started/voxt.html
 [issues]: https://github.com/sgl-project/sglang-omni/issues/new/choose
 [slack]: https://slack.sglang.io
@@ -163,4 +170,5 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 [macos-shield]: https://img.shields.io/badge/macOS-15%2B%20%C2%B7%20Apple%20silicon-58a6ff?style=flat-square&labelColor=000000&logo=apple&logoColor=white
 [licence-shield]: https://img.shields.io/badge/licence-Apache%202.0-58a6ff?style=flat-square&labelColor=000000&logo=apache&logoColor=white
 [download-shield]: https://img.shields.io/badge/Download-Voxt%20for%20Mac-000000?style=for-the-badge&logo=apple&logoColor=white
+[beta-download-shield]: https://img.shields.io/badge/Download-Voxt%20Beta-1f6feb?style=for-the-badge&logo=github&logoColor=white
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square

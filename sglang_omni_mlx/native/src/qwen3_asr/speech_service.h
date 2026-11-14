@@ -4,7 +4,8 @@
 // runs at a time and a few more may wait; the rest get 503. A request not done
 // by its deadline is cancelled, with 504 or an early end to its stream, and so
 // is a request whose client disconnects. A body over the model's limit gets
-// 413.
+// 413. A model may serve /generate the same way, answered with JSON around a
+// base64 file.
 #pragma once
 
 #include <atomic>
@@ -46,6 +47,9 @@ struct SpeechJob {
   std::optional<std::string> model;
   std::string response_format;
   bool stream = false;
+  // Answers with the /generate JSON body, its audio a base64 file in
+  // response_format, instead of the file itself.
+  bool is_generate_response = false;
   std::function<SpeechResult(const SpeechContext &)> synthesize;
 };
 
@@ -78,10 +82,14 @@ protected:
   // to answer with 400.
   virtual SpeechJob ParseSpeech(const Json &body) = 0;
   virtual int SampleRate() const = 0;
+  // Answers a request to a route the model's AddHandlers adds, with the
+  // admission, deadline and errors of /v1/audio/speech; parse reads its body
+  // in place of ParseSpeech.
+  int Speak(mg_connection *connection,
+            const std::function<SpeechJob(const Json &)> &parse);
 
 private:
   static int HandleSpeech(mg_connection *connection, void *data);
-  int Speak(mg_connection *connection);
 
   const size_t max_request_body_bytes_;
   const int max_queued_requests_;

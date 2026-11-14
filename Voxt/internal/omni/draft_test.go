@@ -14,7 +14,8 @@ import (
 )
 
 // TestDraft: a speech model with a draft passes its folder to the server
-// after the model's flags; the same model without one is another server.
+// after the model's flags, to run at 8 bits; the same model without one
+// is another server.
 func TestDraft(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, nil)
 	draft := filepath.Join(f.dir, "draft")
@@ -26,7 +27,7 @@ func TestDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	launches := f.records("launch")
-	if len(launches) != 1 || !strings.HasSuffix(strings.Join(launches[0].Args, " "), "--draft-model-path "+draft) {
+	if len(launches) != 1 || !strings.HasSuffix(strings.Join(launches[0].Args, " "), "--draft-model-path "+draft+" --draft-bits 8") {
 		t.Fatalf("launches %+v", launches)
 	}
 	if _, err := f.asr(t, ASRFast).Transcribe(context.Background(), req); err != nil {

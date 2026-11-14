@@ -124,6 +124,9 @@ type overlayState struct {
 		cardScrollKey string
 		bubbleCopied  string
 		bubbleSeq     int
+		// stream is how much of the draft streaming into it the card
+		// shows (overlay_stream.go).
+		stream streamReveal
 		// lang is the card's language menu (overlay_lang.go).
 		lang langMenuState
 	}
@@ -196,6 +199,7 @@ func (a *app) overlayModeNow() overlayMode {
 // shows again is first transparent, until its view built the new face
 // (reveal): no frame of the last face shows.
 func (a *app) overlaySync() {
+	a.paceDraft() // overlay_stream.go
 	mode := a.overlayModeNow()
 	was := a.ov.shown
 	if mode == ovHidden {

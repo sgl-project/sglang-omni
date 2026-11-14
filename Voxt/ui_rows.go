@@ -34,10 +34,10 @@ func settingRowNoteTip(c *ui.Context, key, title, tip, note string, control func
 	ui.Row(c.Key(key)).Wrap().GapX(px(t, sp4)).GapY(px(t, 6)).AlignItems(ui.Center).MinHeight(px(t, 32)).Children(func() {
 		ui.Column(c).Grow(1).Basis(px(t, 200)).MinWidth(px(t, 140)).Gap(px(t, 2)).Children(func() {
 			if tip == "" {
-				ui.Text(c, title)
+				settingsName(c, title)
 			} else {
 				ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, title).MinWidth(0)
+					settingsName(c, title).MinWidth(0)
 					infoTip(c, tip)
 				})
 			}
@@ -60,7 +60,7 @@ func sectionTitle(c *ui.Context, title string) {
 
 func sectionTitleText(c *ui.Context, title string) ui.Element {
 	t := c.Theme()
-	return ui.Text(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text2)
+	return settingsName(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text2)
 }
 
 // sectionTitleTip is sectionTitle with a ⓘ beside it: the margin goes on

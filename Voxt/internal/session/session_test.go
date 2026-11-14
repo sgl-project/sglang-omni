@@ -33,7 +33,9 @@ type harness struct {
 	llm        LLM
 	fallback   LLM // Translate's fallback model (nil: none)
 	resolveErr error
-	logs       []string
+	// speech is Resolve's speech argument, call by call.
+	speech []bool
+	logs   []string
 	// vadModel is the voice activity model the services have (nil: none).
 	vadModel vad.Model
 }
@@ -45,13 +47,17 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 	s.Dictionary.Enabled = true
 	cfg := Config{
 		Audio: h.audio, Text: h.text, History: h.hist,
-		Resolve: func(ctx context.Context, kind Kind, _ settings.Settings) (Services, error) {
+		Resolve: func(ctx context.Context, kind Kind, _ settings.Settings, speech bool) (Services, error) {
 			h.mu.Lock()
 			defer h.mu.Unlock()
+			h.speech = append(h.speech, speech)
 			if h.resolveErr != nil {
 				return Services{}, h.resolveErr
 			}
-			svc := Services{ASR: h.asr, ASRInfo: Model{ID: "doubao", Name: "Doubao", Model: "seed"}, VAD: h.vadModel}
+			var svc Services
+			if speech {
+				svc = Services{ASR: h.asr, ASRInfo: Model{ID: "doubao", Name: "Doubao", Model: "seed"}, VAD: h.vadModel}
+			}
 			if h.llm != nil {
 				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat"}
 			}

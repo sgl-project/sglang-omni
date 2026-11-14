@@ -5,7 +5,8 @@ package main
 // can tell the user that a newer version is out. releaseUpdates is the
 // updateService of such a build (main.go): it reads GitHub's releases of
 // the repository and keeps the newest voxt-vX.Y.Z (and voxt-vX.Y.Z-beta.N
-// while Beta updates is on) that is not a draft. The request carries
+// or Voxt Beta's voxt-vX.Y.Z-beta.YYYYMMDD.N while Beta updates is on)
+// that is not a draft. The request carries
 // User-Agent Voxt/<version> and the ETag of the last answer, nothing
 // else, through the proxy the downloads use.
 //
@@ -79,15 +80,16 @@ var openExternal = func(u string) { go mygo.Shell.OpenExternal(u) }
 var errRateLimited = errors.New("GitHub's rate limit reached")
 
 var (
-	releaseTag     = regexp.MustCompile(`^voxt-v(\d+\.\d+\.\d+(?:-beta\.\d+)?)$`)
-	releaseVersion = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$`)
+	releaseTag     = regexp.MustCompile(`^voxt-v(\d+\.\d+\.\d+(?:-beta\.\d+(?:\.\d+)?)?)$`)
+	releaseVersion = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+)(?:\.(\d+))?)?$`)
 )
 
-// version is X.Y.Z or X.Y.Z-beta.N as numbers: major, minor, patch, 1 for
-// a release (0 a beta, which comes before its release), the beta's N.
-type version [5]int
+// version is X.Y.Z, X.Y.Z-beta.N or Voxt Beta's X.Y.Z-beta.YYYYMMDD.N as
+// numbers: major, minor, patch, 1 for a release (0 a beta, which comes
+// before its release), the beta's numbers.
+type version [6]int
 
-// parseVersion reads X.Y.Z or X.Y.Z-beta.N.
+// parseVersion reads X.Y.Z, X.Y.Z-beta.N or X.Y.Z-beta.YYYYMMDD.N.
 func parseVersion(s string) (version, bool) {
 	m := releaseVersion.FindStringSubmatch(s)
 	if m == nil {
@@ -99,9 +101,9 @@ func parseVersion(s string) (version, bool) {
 	}
 	if m[4] == "" {
 		v[3] = 1
-	} else {
-		v[4], _ = strconv.Atoi(m[4])
 	}
+	v[4], _ = strconv.Atoi(m[4])
+	v[5], _ = strconv.Atoi(m[5])
 	return v, true
 }
 

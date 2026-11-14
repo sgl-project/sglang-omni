@@ -71,7 +71,7 @@ func responsesBody(b, extra map[string]any) map[string]any {
 	input := make([]oaMessage, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Role == string(System) {
-			system = append(system, m.Content)
+			system = append(system, m.Content.(string))
 		} else {
 			input = append(input, m)
 		}
