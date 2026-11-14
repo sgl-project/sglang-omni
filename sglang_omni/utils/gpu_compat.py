@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
 import os
+import shutil
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
 
@@ -21,6 +23,14 @@ logger = logging.getLogger(__name__)
 
 _FLASHINFER_USE_CUDA_NORM = "FLASHINFER_USE_CUDA_NORM"
 _FLASHINFER_CUDA_ARCH_LIST = "FLASHINFER_CUDA_ARCH_LIST"
+
+PIP_CUDA_BUCKET_PREFIX = "cu"
+SYSTEM_CUDA_HOME_DIRECTORY = Path("/usr/local/cuda")
+DRIVER_LIBRARY_PATHS = (
+    "/usr/lib/wsl/lib/libcuda.so",
+    "/usr/lib/x86_64-linux-gnu/libcuda.so",
+    "/usr/lib/aarch64-linux-gnu/libcuda.so",
+)
 
 _GPU_ARCHITECTURES = {
     89: "ada",
@@ -207,12 +217,144 @@ def apply_torch_compile_cache_env(
     return target_env["TORCHINDUCTOR_CACHE_DIR"]
 
 
+def find_pip_cuda_toolkit(search_roots: Sequence[Path] | None = None) -> Path | None:
+    """Return the CUDA toolkit that the nvidia pip wheels install.
+
+    The pinned stack installs one bucket such as site-packages/nvidia/cu13 that
+    carries the compiler, the headers, and the libraries.
+    """
+    if search_roots is not None:
+        package_roots = list(search_roots)
+    else:
+        specification = importlib.util.find_spec("nvidia")
+        if specification is None or specification.submodule_search_locations is None:
+            return None
+        else:
+            pass
+        package_roots = [
+            Path(location).parent
+            for location in specification.submodule_search_locations
+        ]
+    buckets = sorted(
+        (
+            bucket
+            for package_root in package_roots
+            for bucket in (package_root / "nvidia").glob(f"{PIP_CUDA_BUCKET_PREFIX}*")
+            if (bucket / "bin" / "nvcc").is_file()
+        ),
+        key=lambda bucket: bucket.name,
+        reverse=True,
+    )
+    if buckets:
+        return buckets[0]
+    else:
+        pass
+    return None
+
+
+def find_driver_library(
+    search_directories: Sequence[Path] | None = None,
+) -> Path | None:
+    """Return a libcuda library the linker can resolve, if this host has one."""
+    if search_directories is not None:
+        candidates = list(search_directories)
+    else:
+        candidates = [Path(path) for path in DRIVER_LIBRARY_PATHS]
+        for directory in sorted(Path("/usr/lib").glob("*")):
+            candidates.extend(sorted(directory.glob("libcuda.so*")))
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def link_entry(source: Path, link: Path) -> None:
+    """Point link at source, replacing a previous entry.
+
+    Stage processes derive the same root concurrently, so an already correct
+    link is left alone and a replacement is a rename.
+    """
+    if link.is_symlink() and os.readlink(link) == str(source):
+        return
+    else:
+        pass
+    pending_link = link.with_name(f"{link.name}.{os.getpid()}.pending")
+    if pending_link.is_symlink() or pending_link.exists():
+        pending_link.unlink()
+    else:
+        pass
+    pending_link.symlink_to(source)
+    os.replace(pending_link, link)
+
+
+def build_pip_cuda_home(toolkit_directory: Path, home_directory: Path) -> Path | None:
+    """Mirror a pip toolkit as a system-toolkit-shaped CUDA root.
+
+    FlashInfer and the sglang JIT link against cuda_home/lib64 and
+    cuda_home/lib64/stubs, which the wheels do not provide.
+    """
+    driver_library = find_driver_library()
+    if driver_library is None:
+        logger.warning(
+            f"Cannot link against {toolkit_directory}: no libcuda library found"
+        )
+        return None
+    else:
+        pass
+    home_directory.mkdir(parents=True, exist_ok=True)
+    for entry in ("bin", "include", "nvvm", "cccl"):
+        entry_directory = toolkit_directory / entry
+        if entry_directory.is_dir():
+            link_entry(entry_directory, home_directory / entry)
+        else:
+            pass
+    library_directory = home_directory / "lib64"
+    stub_directory = library_directory / "stubs"
+    stub_directory.mkdir(parents=True, exist_ok=True)
+    for library in sorted((toolkit_directory / "lib").iterdir()):
+        link_entry(library, library_directory / library.name)
+        if ".so." in library.name:
+            unversioned_name = f"{library.name.split('.so.')[0]}.so"
+            link_entry(library, library_directory / unversioned_name)
+        else:
+            pass
+    link_entry(driver_library, stub_directory / "libcuda.so")
+    link_entry(driver_library, library_directory / "libcuda.so")
+    return home_directory
+
+
+def derive_pip_cuda_home(env: Mapping[str, str]) -> Path | None:
+    """Derive a CUDA root from the nvidia pip wheels when no toolkit is installed.
+
+    JIT builds resolve nvcc from CUDA_HOME, then PATH, then /usr/local/cuda.
+    """
+    if env.get("CUDA_HOME") is not None or env.get("CUDA_PATH") is not None:
+        return None
+    else:
+        pass
+    if shutil.which("nvcc") is not None or SYSTEM_CUDA_HOME_DIRECTORY.exists():
+        return None
+    else:
+        pass
+    toolkit_directory = find_pip_cuda_toolkit()
+    if toolkit_directory is None:
+        return None
+    else:
+        pass
+    home_directory = (
+        Path.home() / ".cache" / "sglang-omni" / f"cuda-home-{toolkit_directory.name}"
+    )
+    return build_pip_cuda_home(toolkit_directory, home_directory)
+
+
 def apply_gpu_compat_env_defaults(
     env: MutableMapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Apply GPU compatibility env overrides to the current process."""
     target_env = os.environ if env is None else env
     overrides = get_gpu_compat_env_defaults(target_env)
+    pip_cuda_home = derive_pip_cuda_home(target_env)
+    if pip_cuda_home is not None:
+        overrides["CUDA_HOME"] = str(pip_cuda_home)
+    else:
+        pass
     for key, value in overrides.items():
         target_env[key] = value
         logger.info(f"Applied GPU compatibility env override: {key}={value}")
