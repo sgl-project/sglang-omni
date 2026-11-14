@@ -130,7 +130,8 @@ if [[ "$v" != "$version" ]]; then
   exit 1
 fi
 notes="$(awk -v v="$version" '/^## /{f = index($0, "[" v "]") || $2 == v; next} f' CHANGELOG.md)"
-if [[ -z "${notes//[[:space:]]/}" ]]; then
+# Note (Akazaakane): Bash 3.2 repeatedly scans the remaining UTF-8 text during global substitution.
+if [[ ! "$notes" =~ [^[:space:]] ]]; then
   if ((PUBLISH)); then
     echo "CHANGELOG.md has no section for $version" >&2
     exit 1
