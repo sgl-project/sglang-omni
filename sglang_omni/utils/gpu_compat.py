@@ -30,7 +30,6 @@ DRIVER_LIBRARY_PATHS = (
     "/usr/lib/wsl/lib/libcuda.so",
     "/usr/lib/x86_64-linux-gnu/libcuda.so",
     "/usr/lib/aarch64-linux-gnu/libcuda.so",
-    "/usr/local/cuda/lib64/stubs/libcuda.so",
 )
 
 _GPU_ARCHITECTURES = {
@@ -267,19 +266,29 @@ def find_driver_library(
 
 
 def link_entry(source: Path, link: Path) -> None:
-    """Point link at source, replacing a previous entry."""
-    if link.is_symlink() or link.exists():
-        link.unlink()
+    """Point link at source, replacing a previous entry.
+
+    Stage processes derive the same root concurrently, so an already correct
+    link is left alone and a replacement is a rename.
+    """
+    if link.is_symlink() and os.readlink(link) == str(source):
+        return
     else:
         pass
-    link.symlink_to(source)
+    pending_link = link.with_name(f"{link.name}.{os.getpid()}.pending")
+    if pending_link.is_symlink() or pending_link.exists():
+        pending_link.unlink()
+    else:
+        pass
+    pending_link.symlink_to(source)
+    os.replace(pending_link, link)
 
 
 def build_pip_cuda_home(toolkit_directory: Path, home_directory: Path) -> Path | None:
     """Mirror a pip toolkit as a system-toolkit-shaped CUDA root.
 
-    FlashInfer and the sglang JIT both link against cuda_home/lib64 and
-    cuda_home/lib64/stubs, while the wheels install lib without a driver stub.
+    FlashInfer and the sglang JIT link against cuda_home/lib64 and
+    cuda_home/lib64/stubs, which the wheels do not provide.
     """
     driver_library = find_driver_library()
     if driver_library is None:
@@ -314,8 +323,7 @@ def build_pip_cuda_home(toolkit_directory: Path, home_directory: Path) -> Path |
 def derive_pip_cuda_home(env: Mapping[str, str]) -> Path | None:
     """Derive a CUDA root from the nvidia pip wheels when no toolkit is installed.
 
-    JIT builds resolve nvcc from CUDA_HOME, then PATH, then /usr/local/cuda, so
-    a wheel-provided toolkit is invisible to them without this override.
+    JIT builds resolve nvcc from CUDA_HOME, then PATH, then /usr/local/cuda.
     """
     if env.get("CUDA_HOME") is not None or env.get("CUDA_PATH") is not None:
         return None

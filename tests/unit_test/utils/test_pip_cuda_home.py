@@ -55,6 +55,34 @@ def test_find_driver_library_returns_none_without_library(tmp_path) -> None:
 
 
 @posix_only
+def test_link_entry_is_idempotent(tmp_path) -> None:
+    source = tmp_path / "libcudart.so.13"
+    source.write_text("")
+    link = tmp_path / "libcudart.so"
+
+    gpu_compat.link_entry(source, link)
+    gpu_compat.link_entry(source, link)
+
+    assert link.is_symlink()
+    assert link.readlink() == source
+
+
+@posix_only
+def test_link_entry_replaces_a_stale_target(tmp_path) -> None:
+    previous = tmp_path / "previous" / "libcudart.so.12"
+    previous.parent.mkdir()
+    previous.write_text("")
+    source = tmp_path / "libcudart.so.13"
+    source.write_text("")
+    link = tmp_path / "libcudart.so"
+    link.symlink_to(previous)
+
+    gpu_compat.link_entry(source, link)
+
+    assert link.readlink() == source
+
+
+@posix_only
 def test_build_pip_cuda_home_creates_system_layout(tmp_path, monkeypatch) -> None:
     toolkit_directory = make_toolkit(
         tmp_path / "site-packages" / "nvidia" / "cu13", with_nvcc=True
