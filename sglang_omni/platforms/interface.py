@@ -215,6 +215,10 @@ class OmniPlatform(DeviceMixin):
         """Check if current platform captures PersonaPlex's Mimi decode graphs."""
         return self.enable_codec_decode_graph()
 
+    def enable_ming3_tts_prefill_graph(self) -> bool:
+        """Check if current platform captures Ming 3 TTS dense prefill graphs."""
+        return True
+
     def enable_talker_graph(self) -> bool:
         return True
 
