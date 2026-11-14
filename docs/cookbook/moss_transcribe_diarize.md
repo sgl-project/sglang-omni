@@ -230,11 +230,13 @@ sgl-omni serve \
 - **Transcripts.** The target verifies every proposed token, so accuracy stays at the target's level, but the text is not byte-identical to a run without the draft: MOSS-TD has many near-tied decisions, mostly timestamp hundredths, which any numeric change, including batching, can flip.
 - **Context.** The duration-scaled budget leaves room for the few tokens each step reserves. An explicit `max_new_tokens` that leaves no such room is rejected instead of clamped.
 - **Capacity.** The draft's KV shares the pool, so one H100 80GB at `mem_fraction_static=0.80` holds about 480k tokens instead of 570k. Long audio at high concurrency fills it, and the scheduler then retracts requests and finishes them later: every `aishell4_long` file still completed at concurrency 16 and 32.
-- **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes each verify step about four times slower. Without a draft it stays on.
+- **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes each verify step about four times slower. Without a draft it stays on, and pays its autotuning cost at startup, so the drafted server becomes ready sooner: medians of 20 launches on one H100 80GB are 40 s with the draft against 75 s without it.
 - **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
-- **Scheduling.** Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap each verify round with host work, which is faster at every load below. Async prefill stays off under the draft. Setting `enable_mixed_chunk` is rejected.
+- **Scheduling.** Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap each verify round with host work, which raises throughput at every load below. It stays opt-in because it also delays the first streamed token at moderate concurrency on short clips, by more than the synchronous draft does: see the streaming table below. Running small decode batches synchronously and overlapping the larger ones is tracked in #2941. Async prefill stays off under the draft. Setting `enable_mixed_chunk` is rejected.
 
-Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (`python -m benchmarks.eval.speculative_sweep`):
+Note that `asr.factory.enable_async_decode` is unset by default, and on sglang-omni 0.2.0 `adjust_overrides` in [`engine_builder.py`](https://github.com/sgl-project/sglang-omni/blob/main/sglang_omni/models/moss_transcribe_diarize/engine_builder.py) resolves it to on without a draft and off with one; sglang-omni then maps it to SGLang's `disable_overlap_schedule`. So **the baseline below is a server without a draft and with overlap on**, and the two drafted modes differ only in that flag.
+
+Gain over the baseline, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (`python -m benchmarks.eval.speculative_sweep`):
 
 | Dataset | Scheduling | Concurrency 1 | 4 | 16 | 64 |
 |---|---|---:|---:|---:|---:|
@@ -245,7 +247,29 @@ Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the d
 | `googletime` | Synchronous | 2.97x | 4.14x | 4.27x | |
 | `googletime` | Overlapped | 3.73x | 4.68x | 4.57x | |
 
-Neither mode is slower than the server without a draft at any load measured, and CER and DER do not change.
+Gain over the baseline, the same sweep on one H100 with SGLang 0.5.23:
+
+| Dataset | Scheduling | Concurrency 1 | 4 | 16 | 64 |
+|---|---|---:|---:|---:|---:|
+| `movies800times` | Synchronous | 1.62x | 1.51x | 1.30x | 1.13x |
+| `movies800times` | Overlapped | 1.93x | 1.85x | 1.62x | 1.23x |
+| `aishell4_long` | Synchronous | 2.53x | 3.27x | 3.49x | |
+| `aishell4_long` | Overlapped | 3.14x | 3.72x | 3.82x | |
+| `googletime` | Synchronous | 2.98x | 4.15x | 3.90x | |
+| `googletime` | Overlapped | 3.56x | 4.60x | 4.17x | |
+
+Neither mode is worse than the baseline in throughput or p95 latency at any load measured, and CER and DER do not change. **Streamed first output is the exception.** Change against that same baseline, H100:
+
+| Dataset | Scheduling | Concurrency 1 | 4 | 16 | 64 |
+|---|---|---:|---:|---:|---:|
+| `movies800times` | Synchronous | -4.0% | +6.8% | +7.9% | -2.5% |
+| `movies800times` | Overlapped | +4.3% | +9.6% | +14.0% | +4.6% |
+| `aishell4_long` | Synchronous | -6.0% | -1.5% | +138.6% | |
+| `aishell4_long` | Overlapped | -2.5% | -6.6% | +120.5% | |
+| `googletime` | Synchronous | -0.9% | -2.2% | -36.5% | |
+| `googletime` | Overlapped | +16.1% | -0.4% | -40.1% | |
+
+On short clips both modes cost over 5% of first-output p95 at concurrency 4 and 16, and overlap costs more than the synchronous draft; H200 shows the same shape, 8% and 13% synchronous against 17% and 24% overlapped. On long audio first output is unchanged except at concurrency 16 on `aishell4_long`, where it more than doubles in both modes. The pool is full there, but `googletime` fills it harder and its first output improves, so saturation alone does not account for it; #2941 tracks it. `googletime` overlapped at concurrency 1 has varied by an order of magnitude between runs of one configuration, since one repeat per leg leaves that p95 on few samples.
 
 ### Per-request plain fallback
 
