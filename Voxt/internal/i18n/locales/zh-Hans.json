@@ -1037,6 +1037,8 @@
   "The recordings were not moved: %v": "录音没有移动：%v",
   "The remote model's address is not allowed. Use https://, or http:// for an address on this Mac.": "远程模型的地址不能用，请用 https://，或者指向本机的 http://。",
   "The remote service does not have this model.": "远程服务没有这个模型。",
+  "Nothing answers at the remote model's address. Check the address on the Language models page.": "远程模型的地址没有响应。请到“语言模型”页检查地址。",
+  "The server does not have this model. It has: %s": "服务器上没有这个模型。它有的模型：%s",
   "The remote service refused the API key.": "远程服务拒绝了这个 API Key。",
   "The remote service refused the request. It may be busy, the account may be out of credit, or the model is not enabled for it.": "远程服务拒绝了请求，可能是服务繁忙、账户余额不足，或者这个账户没有开通这个模型。",
   "The same keys as shortcut %d.": "和快捷键 %d 的按键相同。",

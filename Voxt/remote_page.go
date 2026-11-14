@@ -268,6 +268,12 @@ func testStatus(c *ui.Context, tr providerTest, long bool) {
 		statusMark(c, icons.CheckCircle, k.Success, text).Shrink(1).Tooltip(text)
 	default:
 		msg, _ := uitext.ModelErrorText(tr.res.Err)
+		if m := tr.res.Models; len(m) > 0 {
+			if len(m) > 8 {
+				m = append(m[:8:8], "…")
+			}
+			msg = i18n.T("The server does not have this model. It has: %s", strings.Join(m, ", "))
+		}
 		if long && llm.Code(tr.res.Err) == llm.CodeNoKey {
 			msg = i18n.T("Paste the service's API key above, then test again.") // the dialog has the key's field
 		}
