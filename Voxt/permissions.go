@@ -194,7 +194,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 		}
 	})
 	sectionTitle(c, i18n.T("Optional"))
-	settingRow(c, "perm-system-audio", i18n.T("System audio recording (for meetings)"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
+	settingRow(c, "perm-system-audio", i18n.T("System audio recording"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
 		if ghostButton(c.Key("perm-system-audio-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
 			a.askPermission(proto.PermissionSystemAudio, nil)
 		}

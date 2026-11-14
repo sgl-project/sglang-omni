@@ -399,7 +399,7 @@ func TestPermissionsMeetingSystemAudio(t *testing.T) {
 	}
 	a.navigate("/settings/permissions")
 	frames(tt)
-	if !has(tt, "System audio recording (for meetings)") {
+	if !hasExact(tt, "System audio recording") { // one line in English, so its ⓘ sits beside it
 		t.Errorf("permissions: %q", firstTexts(tt))
 	}
 	click(t, tt, "Ask")

@@ -1451,7 +1451,7 @@
   "Small": "小",
   "Large": "大",
   "The shortcut's keys, lit on a Mac keyboard": "Mac 键盘上亮起的快捷键",
-  "System audio recording (for meetings)": "系统音频录制（会议用）",
+  "System audio recording": "系统音频录制",
   "Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio.": "让 Voxt 在会议中录制其他 App 播放的声音。第一次在会议里录系统音频时，macOS 会询问你。",
   "Meetings": "会议",
   "Start meeting": "开始会议",
