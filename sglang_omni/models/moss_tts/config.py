@@ -15,6 +15,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
 _PKG = "sglang_omni.models.moss_tts"
@@ -123,7 +124,11 @@ def stages(*, colocated: bool) -> list[StageConfig]:
             ),
             engine=(
                 EngineArgs(
-                    cuda_graph_backend_prefill=CudaGraphBackend.BREAKABLE,
+                    cuda_graph_backend_prefill=(
+                        CudaGraphBackend.DISABLED
+                        if current_platform.is_musa()
+                        else CudaGraphBackend.BREAKABLE
+                    ),
                     cuda_graph_bs_prefill=list(
                         range(1, COLOCATED_PREFILL_CUDA_GRAPH_MAX_TOKENS + 1)
                     ),
