@@ -30,10 +30,12 @@ from benchmarks.eval.speculative_workloads import (
 )
 from benchmarks.metrics.speculative import (
     AccuracyMetric,
+    DecodeBatchLine,
     Leg,
     LoadMeasurement,
     ServerLogStats,
     compare,
+    read_decode_batches,
     read_server_log,
     render,
 )
@@ -73,6 +75,80 @@ def test_server_log_gives_the_pool_usage_retractions_acceptance_and_cached_share
         accept_length_mean=None,
         cached_prompt_token_share=pytest.approx(68 / 138),
     )
+
+
+BASELINE_DECODE_LOG = """\
+2026-11-02 18:59:10,100 [INFO] sglang.srt.managers.scheduler_components.metrics_reporter: Decode batch, #running-req: 14, #token: 425966, token usage: 8.80, cuda graph: True, gen throughput (token/s): 2000.00, #queue-req: 2
+2026-11-02 18:59:12,100 [INFO] sglang.srt.managers.scheduler_components.metrics_reporter: Decode batch, #running-req: 14, #token: 431312, token usage: 8.90, cuda graph: False, gen throughput (token/s): 2200.00, #queue-req: 2
+2026-11-02 18:59:14,100 [INFO] sglang.srt.managers.scheduler_components.metrics_reporter: Decode batch, #running-req: 1, #token: 908, token usage: 8.00, cuda graph: True, gen throughput (token/s): 100.00, #queue-req: 0
+"""
+
+
+def test_decode_parser_reads_a_server_log_without_a_draft() -> None:
+    """A no-draft decode line has no accept length."""
+    batches = read_decode_batches(BASELINE_DECODE_LOG)
+
+    assert [batch.running_requests for batch in batches] == [14, 14, 1]
+    assert [batch.accept_length for batch in batches] == [None] * 3
+    assert [batch.used_cuda_graph for batch in batches] == [True, False, True]
+    assert [batch.gen_throughput_tokens_per_s for batch in batches] == [
+        2000.0,
+        2200.0,
+        100.0,
+    ]
+
+
+def test_decode_logs_are_bucketed_by_running_batch_size_and_reported() -> None:
+    """Batch size must select decode throughput rows, including their boundary sizes."""
+    log = "\n".join(
+        f"Decode batch, #running-req: {size}, #token: 100, token usage: 0.5, "
+        f"accept len: {size / 10:.1f}, cuda graph: {size % 2 == 0}, "
+        f"gen throughput (token/s): {size * 10:.1f}"
+        for size in (1, 2, 4, 5, 8, 9, 16, 17, 32, 33, 64)
+    )
+    parsed_batches = read_decode_batches(log)
+    baseline_leg = leg("baseline", None, [load(1, 10, 1)])
+    draft_leg = leg("draft", 5, [load(1, 20, 1)])
+    baseline_leg.decode_batches = [
+        DecodeBatchLine(
+            running_requests=batch.running_requests,
+            accept_length=None,
+            used_cuda_graph=batch.used_cuda_graph,
+            gen_throughput_tokens_per_s=batch.gen_throughput_tokens_per_s,
+        )
+        for batch in parsed_batches
+    ]
+    draft_leg.decode_batches = parsed_batches
+    legs = [baseline_leg, draft_leg]
+
+    comparison = compare(legs, k_gain=1.2)
+    summary = render(comparison, legs, title="draft")
+
+    assert [
+        (row.lowest_running_requests, row.highest_running_requests)
+        for row in comparison.decode_rows
+    ] == [(1, 1), (2, 4), (5, 8), (9, 16), (17, 32), (33, 64)]
+    assert [row.baseline_lines for row in comparison.decode_rows] == [1, 2, 2, 2, 2, 2]
+    assert [row.draft_lines for row in comparison.decode_rows] == [1, 2, 2, 2, 2, 2]
+    assert comparison.decode_rows[
+        1
+    ].baseline_gen_throughput_tokens_per_s == pytest.approx(30)
+    assert comparison.decode_rows[1].decode_gain == pytest.approx(1)
+    assert comparison.decode_rows[1].draft_accept_length == pytest.approx(0.3)
+    assert "| Running | Lines, no draft | Lines, draft |" in summary
+    assert "| 2-4 | 2 | 2 | 30.0 | 30.0 | 1.00x | 0.30 |" in summary
+
+
+def test_decode_parser_reads_sglang_speculative_metrics() -> None:
+    batches = read_decode_batches(DRAFT_SERVER_LOG)
+
+    assert [batch.running_requests for batch in batches] == [14, 14]
+    assert [batch.accept_length for batch in batches] == [5.26, 4.83]
+    assert [batch.used_cuda_graph for batch in batches] == [True, True]
+    assert [batch.gen_throughput_tokens_per_s for batch in batches] == [
+        220.06,
+        3111.62,
+    ]
 
 
 def load(

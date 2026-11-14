@@ -22,6 +22,11 @@ RETRACTION_PATTERN = re.compile(r"#retracted_reqs: (\d+)")
 ACCEPT_LENGTH_PATTERN = re.compile(r"accept len: ([0-9.]+)")
 PREFILL_TOKENS_PATTERN = re.compile(r"#new-token: (\d+), #cached-token: (\d+)")
 ROADMAP_CONCURRENCIES = (1, 4, 8, 16, 32, 64)
+DECODE_BATCH_PATTERN = re.compile(
+    r"Decode batch, #running-req: (\d+),.*cuda graph: (True|False), gen throughput \(token/s\): ([0-9.]+)"
+)
+# Inclusive (lowest, highest) numbers of requests running in one decode batch.
+RUNNING_REQUEST_RANGES = ((1, 1), (2, 4), (5, 8), (9, 16), (17, 32), (33, 64))
 
 
 @dataclass(kw_only=True)
@@ -49,12 +54,35 @@ class ServerLogStats:
 
 
 @dataclass(kw_only=True)
+class DecodeBatchLine:
+    running_requests: int
+    accept_length: float | None
+    used_cuda_graph: bool
+    gen_throughput_tokens_per_s: float
+
+
+@dataclass(kw_only=True)
 class Leg:
     name: str
     side: Side
     startup_s: float
     server: ServerLogStats
     loads: list[LoadMeasurement]
+    decode_batches: list[DecodeBatchLine] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
+class DecodeRow:
+    lowest_running_requests: int
+    highest_running_requests: int
+    baseline_lines: int
+    draft_lines: int
+    baseline_gen_throughput_tokens_per_s: float | None
+    draft_gen_throughput_tokens_per_s: float | None
+    decode_gain: float | None
+    draft_accept_length: float | None
+    baseline_cuda_graph_share: float | None
+    draft_cuda_graph_share: float | None
 
 
 @dataclass(kw_only=True)
@@ -88,10 +116,15 @@ class Comparison:
     incomplete_concurrencies: list[int]
     accept_length_mean: float | None
     accuracy_metrics: list[AccuracyMetric]
+    decode_rows: list[DecodeRow]
 
 
 def mean_or_none(values: list[float]) -> float | None:
     return statistics.mean(values) if values else None
+
+
+def median_or_none(values: list[float]) -> float | None:
+    return statistics.median(values) if values else None
 
 
 def mean_ratio(draft_values: list[float], baseline_values: list[float]) -> float | None:
@@ -129,6 +162,84 @@ def read_server_log(text: str) -> ServerLogStats:
             else None
         ),
     )
+
+
+def read_decode_batches(text: str) -> list[DecodeBatchLine]:
+    batches: list[DecodeBatchLine] = []
+    for line in text.splitlines():
+        decode_batch = DECODE_BATCH_PATTERN.search(line)
+        if decode_batch:
+            running_requests, used_cuda_graph, gen_throughput = decode_batch.groups()
+            accept_length = ACCEPT_LENGTH_PATTERN.search(line)
+            batches.append(
+                DecodeBatchLine(
+                    running_requests=int(running_requests),
+                    accept_length=(
+                        float(accept_length.group(1)) if accept_length else None
+                    ),
+                    used_cuda_graph=used_cuda_graph == "True",
+                    gen_throughput_tokens_per_s=float(gen_throughput),
+                )
+            )
+        else:
+            pass
+    return batches
+
+
+def cuda_graph_share(batches: list[DecodeBatchLine]) -> float | None:
+    return (
+        sum(batch.used_cuda_graph for batch in batches) / len(batches)
+        if batches
+        else None
+    )
+
+
+def decode_rows(legs: list[Leg]) -> list[DecodeRow]:
+    rows: list[DecodeRow] = []
+    for lowest_running_requests, highest_running_requests in RUNNING_REQUEST_RANGES:
+        batches = {
+            side: [
+                batch
+                for leg in legs
+                if leg.side == side
+                for batch in leg.decode_batches
+                if lowest_running_requests
+                <= batch.running_requests
+                <= highest_running_requests
+            ]
+            for side in ("baseline", "draft")
+        }
+        baseline_throughput = median_or_none(
+            [batch.gen_throughput_tokens_per_s for batch in batches["baseline"]]
+        )
+        draft_throughput = median_or_none(
+            [batch.gen_throughput_tokens_per_s for batch in batches["draft"]]
+        )
+        rows.append(
+            DecodeRow(
+                lowest_running_requests=lowest_running_requests,
+                highest_running_requests=highest_running_requests,
+                baseline_lines=len(batches["baseline"]),
+                draft_lines=len(batches["draft"]),
+                baseline_gen_throughput_tokens_per_s=baseline_throughput,
+                draft_gen_throughput_tokens_per_s=draft_throughput,
+                decode_gain=(
+                    draft_throughput / baseline_throughput
+                    if draft_throughput is not None and baseline_throughput
+                    else None
+                ),
+                draft_accept_length=mean_or_none(
+                    [
+                        batch.accept_length
+                        for batch in batches["draft"]
+                        if batch.accept_length is not None
+                    ]
+                ),
+                baseline_cuda_graph_share=cuda_graph_share(batches["baseline"]),
+                draft_cuda_graph_share=cuda_graph_share(batches["draft"]),
+            )
+        )
+    return rows
 
 
 def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
@@ -228,6 +339,7 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
             ]
         ),
         accuracy_metrics=accuracy_metrics,
+        decode_rows=decode_rows(legs),
     )
 
 
@@ -373,6 +485,24 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
             f"| {leg.name} | {leg.startup_s:.1f} | {number(leg.server.kv_pool_tokens, 0)} "
             f"| {number(leg.server.token_usage_peak, 2)} | {leg.server.retracted_requests} "
             f"| {number(leg.server.accept_length_mean, 2)} | {number(max(peaks, default=None), 0)} |"
+        )
+    lines += [
+        "",
+        "Decode phase by requests running in one batch: the median generation throughput each side logged, so the gain leaves out the encoder, prefill and idle time that the throughput gain above includes.",
+        "",
+        "| Running | Lines, no draft | Lines, draft | Tokens/s, no draft | Tokens/s, draft | Decode gain | Accept len | CUDA graph, no draft | CUDA graph, draft |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for decode_row in comparison.decode_rows:
+        lines.append(
+            f"| {decode_row.lowest_running_requests}-{decode_row.highest_running_requests} "
+            f"| {decode_row.baseline_lines} | {decode_row.draft_lines} "
+            f"| {number(decode_row.baseline_gen_throughput_tokens_per_s, 1)} "
+            f"| {number(decode_row.draft_gen_throughput_tokens_per_s, 1)} "
+            f"| {number(decode_row.decode_gain, 2, 'x')} "
+            f"| {number(decode_row.draft_accept_length, 2)} "
+            f"| {percent(decode_row.baseline_cuda_graph_share)} "
+            f"| {percent(decode_row.draft_cuda_graph_share)} |"
         )
     rows_by_concurrency = {row.concurrency: row for row in comparison.rows}
     roadmap_cells = []
