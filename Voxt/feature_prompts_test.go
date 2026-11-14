@@ -287,6 +287,16 @@ func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
 			t.Fatalf("composed %q, %v", out.System, err)
 		}
 	}
+	// Typed but not saved yet (the field saves 800 ms after the last key):
+	// the button keeps it.
+	u.prompt, u.promptDirty = "Into English.", true
+	a.savePrompt(hotkey.Translate)
+	u.prompt, u.promptDirty = "Into English. Keep it short.", true
+	frames(tt)
+	click(t, tt, "Add {{TARGET_LANGUAGE}} to the prompt")
+	if saved := a.lib.settings.Get().Features.Translate.Prompt; saved != "Into English. Keep it short.\n\nTranslate the text into {{TARGET_LANGUAGE}}." {
+		t.Fatalf("typed text lost: %q", saved)
+	}
 	click(t, tt, "Your rules")
 	click(t, tt, "Reset to default prompt")
 	if has(tt, warning) {

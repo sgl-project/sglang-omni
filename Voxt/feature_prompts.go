@@ -63,8 +63,8 @@ func (a *app) translateSettings(c *ui.Context) {
 	if own := promptOf(a.prefs, hotkey.Translate); own != "" && !strings.Contains(own, targetVar) {
 		notice(c, "tl-no-target", noticeWarn, i18n.T("Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing."), "", func() {
 			if ui.Button(c.Key("tl-add-target"), i18n.T("Add {{TARGET_LANGUAGE}} to the prompt")).Clicked() {
-				u := a.fui(hotkey.Translate)
-				u.prompt = strings.TrimRight(own, "\n") + "\n\n" + i18n.T("Translate the text into {{TARGET_LANGUAGE}}.")
+				u := a.fui(hotkey.Translate) // its text: what was typed since the last save too
+				u.prompt = strings.TrimRight(u.prompt, "\n") + "\n\n" + i18n.T("Translate the text into {{TARGET_LANGUAGE}}.")
 				a.savePrompt(hotkey.Translate)
 			}
 		}, nil)
