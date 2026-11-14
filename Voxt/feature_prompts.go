@@ -35,6 +35,7 @@ func (a *app) translateSettings(c *ui.Context) {
 	u := a.fui(hotkey.Translate)
 	f := &a.prefs.Features.Translate
 	sectionTitle(c, i18n.T("Translation"))
+	caption(c, i18n.T("How Translate works: speech recognition writes what you said in your own language, then the language model translates it into the target language with the prompt in Your rules. A prompt of your own replaces the built-in one and gets the target language only where it says {{TARGET_LANGUAGE}}. Selected text already in the target language goes into your main language instead."))
 	opts := []string{i18n.T("Automatic (now: %s)", uitext.TargetLanguageLabel(session.TranslateTarget(settings.Settings{General: a.prefs.General}, i18n.Locale(), "")))}
 	for _, code := range compose.TargetLanguages {
 		opts = append(opts, uitext.TargetLanguageLabel(code))
@@ -47,9 +48,9 @@ func (a *app) translateSettings(c *ui.Context) {
 		opts = append(opts, cur)
 	}
 	u.lang = cur // the settings say; a choice saves at once
-	settingRow(c, "tl-target", i18n.T("Translate into"),
-		i18n.T("Automatic is English, or Chinese when your main language is English."), func() {
-			if ui.Select(c.Key("tl-target-sel"), &u.lang, opts).Label(i18n.T("Target language")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Changed() {
+	settingRow(c, "tl-target", i18n.T("Target language"),
+		i18n.T("The language model translates into this. Speech recognition writes what you said in your own language. Automatic is English, or Chinese when your main language is English."), func() {
+			if ui.Select(c.Key("tl-target-sel"), &u.lang, opts).Label(i18n.T("Target language for Translate")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Changed() {
 				code := ""
 				if j := slices.Index(opts, u.lang); j > 0 && j <= len(compose.TargetLanguages) {
 					code = compose.TargetLanguages[j-1]
@@ -57,6 +58,17 @@ func (a *app) translateSettings(c *ui.Context) {
 				a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Target = code })
 			}
 		})
+	// A prompt of its own replaces the built-in one (compose.buildFullPrompt):
+	// without the variable, "into English" in it wins over the menu.
+	if own := promptOf(a.prefs, hotkey.Translate); own != "" && !strings.Contains(own, targetVar) {
+		notice(c, "tl-no-target", noticeWarn, i18n.T("Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing."), "", func() {
+			if ui.Button(c.Key("tl-add-target"), i18n.T("Add {{TARGET_LANGUAGE}} to the prompt")).Clicked() {
+				u := a.fui(hotkey.Translate) // its text: what was typed since the last save too
+				u.prompt = strings.TrimRight(u.prompt, "\n") + "\n\n" + i18n.T("Translate the text into {{TARGET_LANGUAGE}}.")
+				a.savePrompt(hotkey.Translate)
+			}
+		}, nil)
+	}
 	settingRow(c, "tl-cleanup", i18n.T("Basic clean-up"),
 		i18n.T("Cleans up what you say before translating it. Selected text is translated as it is."), func() {
 			if ui.Switch(c.Key("tl-cleanup-switch"), &f.Cleanup).Label(i18n.T("Basic clean-up")).Changed() {
@@ -161,15 +173,22 @@ func promptOf(s settings.Settings, feature string) string {
 	return featureOf(s, feature).Prompt
 }
 
-// promptBuiltin is the built-in system prompt before user overrides.
+// targetVar is the variable that takes Translate's target language.
+const targetVar = "{{TARGET_LANGUAGE}}"
+
+// promptBuiltin is the built-in system prompt before user overrides, the
+// target language left as {{TARGET_LANGUAGE}}: the rules field starts
+// from it, and a prompt edited from it keeps following the menu.
 func (a *app) promptBuiltin(feature string) string {
 	u := a.fui(feature)
 	was := u.prompt
 	wasDirty := u.promptDirty
 	u.prompt = ""
 	u.promptDirty = false
-	out, err := a.composedPreview(feature)
+	in := a.previewInput(feature)
 	u.prompt, u.promptDirty = was, wasDirty
+	in.KeepTarget = true
+	out, err := compose.Build(in)
 	if err != nil {
 		return ""
 	}
@@ -364,6 +383,11 @@ func rewriteSample() (instruction, selection string) {
 // composedPreview is the request a session would send with the settings
 // and the rules as typed, for the sample text.
 func (a *app) composedPreview(feature string) (compose.Output, error) {
+	return compose.Build(a.previewInput(feature))
+}
+
+// previewInput is composedPreview's input.
+func (a *app) previewInput(feature string) compose.Input {
 	g := a.prefs.General
 	in := compose.Input{
 		TaskPrompt: a.fui(feature).prompt, MainLanguage: session.MainLanguage(a.prefs, i18n.Locale()), OtherLanguages: g.OtherLanguages,
@@ -380,7 +404,7 @@ func (a *app) composedPreview(feature string) (compose.Output, error) {
 		f := a.prefs.Features.Transcribe
 		in.Task, in.Cleanup, in.Structure, in.Text = compose.Transcribe, f.Cleanup, f.Structure, trySample()
 	}
-	return compose.Build(in)
+	return in
 }
 
 func (a *app) previewBody(c *ui.Context, feature string) {

@@ -29,6 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Translate's menu says Target language, and the page says when your prompt ignores it** (#3956): the menu on the Translate page is now labeled Target language, and the page explains how Translate works: speech recognition writes what you said in your own language, and the language model translates it into the target language. A prompt of your own in Your rules replaces the built-in one, so it gets the menu's language only where it says {{TARGET_LANGUAGE}}. When it does not, the page warns that the menu does nothing and has a button that adds the variable. The rules field now starts from the built-in prompt with {{TARGET_LANGUAGE}} in it, not the language's name, so a prompt you edit from it keeps following the menu.
 - **Wait for the language model takes your own number of minutes** (#3941): besides Automatic, 1, 2, 5 and 10 minutes, the setting on the Language models page has Custom…, which shows a minutes field. Type or step any whole number from 1 to 60, and Voxt waits at least that long for Transcribe, Translate and Rewrite, as with the presets. A number outside 1 to 60 is not saved. Settings saved before keep their wait.
 - **Faster transcription is a switch** (#3873): on a speech model's card in Speech models, Faster transcription now has a switch, and its ⓘ says it needs a draft model and how large it is. The switch decides whether the model uses the draft. Downloading the draft no longer turns it on, and turning it off keeps the draft on disk without using it. With the switch on and no draft, the card asks you to download it. If you downloaded the draft in 2.0.2 or 2.0.3, the switch starts on.
 - **The speech model loads before the first dictation**: Voxt now loads Transcribe's on-device speech model when it starts and when you choose another one, instead of at the first press of the shortcut. The first live text after a launch or a change of model no longer waits for the load (0.2 to 0.5 s on an M-series Mac with 36 GB, longer on a busy Mac or one with less memory). The model leaves memory after 10 idle minutes, as before.
@@ -90,6 +91,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **翻译页的菜单叫“目标语言”，提示词不认这个菜单时页面会提醒**（#3956）：翻译页的菜单改名为“目标语言”，页面上说明翻译怎么做：语音识别按你说的语言写下文字，语言模型再把它翻译成目标语言。“你的规则”里你自己的提示词会替换内置的那一份，只有写了 {{TARGET_LANGUAGE}} 的地方才用菜单选的语言。没写时，页面提醒这个菜单不起作用，并给一个按钮把变量加进去。规则输入框现在从带 {{TARGET_LANGUAGE}} 的内置提示词开始，不再写成具体语言名，在它基础上改出来的提示词仍然跟着菜单走。
 - **“等待语言模型”可以自己填分钟数**（#3941）：语言模型页的这个设置除了自动、1、2、5、10 分钟，多了“自定义…”，选它后旁边出现分钟数输入框。填或点加减到 1 到 60 之间的整数，转录、翻译、改写就至少等这么久，和预设一样。超出 1 到 60 的数不保存。以前存的设置照旧。
 - **转录加速改成开关**（#3873）：语音识别模型页里，模型卡片上的“转录加速”现在是一个开关，旁边的 ⓘ 说明它需要一个草稿模型以及草稿有多大。开关决定模型用不用草稿：下载草稿不会再自动打开它，关掉开关时草稿留在磁盘上但不用。开关打开而还没有草稿时，卡片会提示下载。在 2.0.2 或 2.0.3 里下载过草稿的，开关一开始是开着的。
 - **语音识别模型在第一次听写前就加载好**：Voxt 启动时、换语音识别模型时就加载转录用的本地模型，不再等到第一次按快捷键。启动后和换模型后的第一次实时文字不用再等加载（36 GB 的 M 系列 Mac 上是 0.2 到 0.5 秒，机器忙或内存小时更久）。模型空闲 10 分钟后照旧从内存卸载。
