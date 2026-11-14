@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.layers.quantization.compressed_tensors.utils import should_ignore_layer
 from sglang.srt.platforms.xpu import XpuDeviceMixin
 
 from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
+from sglang_omni.quantization import is_pack_quantized, resolve_quant_config
+from sglang_omni.utils.misc import model_config_has_moe
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +27,68 @@ if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
 else:
     pass
+
+
+def target_matches(value: str, target: str, check_contains: bool) -> bool:
+    """SGLang's compressed-tensors target test: a re: regex, else substring or equality."""
+    if target.startswith("re:"):
+        return re.match(target[3:], value) is not None
+    elif check_contains:
+        return target.lower() in value.lower()
+    else:
+        return target == value
+
+
+def expert_config_group(
+    quant_dict: dict[str, object], expert_name: str
+) -> dict[str, object] | None:
+    """The config group SGLang's MoE lookup applies to an expert, or None if none matches."""
+    group_by_target: dict[str, dict[str, object]] = {}
+    for group in (quant_dict.get("config_groups") or {}).values():
+        for target in group.get("targets") or []:
+            group_by_target[target] = group
+    # note (siju-samuel): Linear stands in for FusedMoE only when no group targets FusedMoE.
+    if "Linear" in group_by_target and "FusedMoE" not in group_by_target:
+        group_by_target["FusedMoE"] = group_by_target["Linear"]
+    else:
+        pass
+    for value, check_contains in ((expert_name, False), ("FusedMoE", True)):
+        for target, group in group_by_target.items():
+            if target_matches(value, target, check_contains):
+                return group
+            else:
+                pass
+    return None
+
+
+def is_weight_only_int_group(group: dict[str, object]) -> bool:
+    """SGLang's WNA16 test: static int weights by channel or group, activations unquantized."""
+    weights = group.get("weights") or {}
+    return (
+        group.get("input_activations") is None
+        and weights.get("type") == "int"
+        and weights.get("strategy") in ("channel", "group")
+        and not weights.get("dynamic")
+    )
+
+
+def stage_has_weight_only_packed_experts(
+    quant_dict: dict[str, object], num_hidden_layers: int
+) -> bool:
+    """True when some MoE layer's experts take SGLang's weight-only WNA16 scheme."""
+    ignored = quant_dict.get("ignore") or []
+    for index in range(num_hidden_layers):
+        expert = f"model.layers.{index}.mlp.experts.0.gate_proj"
+        if should_ignore_layer(expert, ignore=ignored):
+            continue
+        else:
+            pass
+        group = expert_config_group(quant_dict, expert)
+        if group is not None and is_weight_only_int_group(group):
+            return True
+        else:
+            pass
+    return False
 
 
 class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
@@ -115,15 +182,43 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
 
         cfg = resolved_view(server_args)
         moe_runner_backend = cfg.moe_runner_backend
-        if model_arch_override in (
+        is_qwen3_omni_arch = model_arch_override in (
             "Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM",
-        ) and moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
+        )
+        if is_qwen3_omni_arch and moe_runner_backend in (
+            "flashinfer_cutlass",
+            "cutlass",
+        ):
             raise ValueError(
                 f"Qwen3-Omni on Intel XPU cannot use "
                 f"moe_runner_backend={moe_runner_backend!r}; the CUTLASS "
                 "MoE runners are CUDA-only. Leave the backend as 'auto' or pass "
                 "'triton'."
+            )
+        else:
+            pass
+
+        # note (siju-samuel): Marlin has no XPU kernel, so only a stage with weight-only packed experts needs Triton.
+        quant_dict = resolve_quant_config(model_config.hf_config)
+        if (
+            is_qwen3_omni_arch
+            and moe_runner_backend == "auto"
+            and model_config_has_moe(model_config)
+            and is_pack_quantized(quant_dict)
+            and stage_has_weight_only_packed_experts(
+                quant_dict, model_config.num_hidden_layers
+            )
+        ):
+            override_server_args(
+                server_args,
+                "sglang-omni-xpu-backend-policy",
+                moe_runner_backend="triton",
+            )
+            logger.info(
+                "Intel XPU: selected moe_runner_backend=triton for the "
+                "group-packed weight-only checkpoint; the default Marlin "
+                "runner for this scheme is CUDA-only"
             )
         else:
             pass

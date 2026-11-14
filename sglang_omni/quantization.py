@@ -10,7 +10,10 @@ custom weight loaders.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Callable
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     import torch
@@ -23,6 +26,8 @@ else:
 WeightPreprocessor = Callable[[str, "torch.Tensor"], "torch.Tensor"]
 
 _QUANT_METADATA_KEYS: tuple[str, ...] = ("quantization_config", "compression_config")
+# compressed-tensors marks a regex ignore or targets entry with this prefix.
+IGNORE_REGEX_MARKER = "re:"
 _NESTED_QUANT_CONFIG_ATTRS: tuple[str, ...] = (
     "text_config",
     "thinker_config",
@@ -38,6 +43,7 @@ __all__ = [
     "resolve_quant_config",
     "quant_method_name",
     "is_fp8_block_quant",
+    "is_pack_quantized",
     "convert_fp8_weight_scale_inv",
     "get_weight_preprocessor",
     "needs_quant_config_normalization",
@@ -192,7 +198,16 @@ def needs_quant_config_normalization(
 ) -> bool:
     """True when the checkpoint's method uses stage-local per-block quant names."""
     method = quant_method_name(quant_dict)
-    return method == "auto-round"
+    return method in ("auto-round", "compressed-tensors")
+
+
+def is_pack_quantized(quant_dict: dict[str, object] | None) -> bool:
+    """True for a compressed-tensors checkpoint in the group-packed serialization format."""
+    if quant_method_name(quant_dict) != "compressed-tensors":
+        return False
+    else:
+        pass
+    return quant_dict.get("format") == "pack-quantized"
 
 
 def strip_stage_prefix(pattern: str, plain_prefix: str, escaped_prefix: str) -> str:
@@ -275,6 +290,154 @@ def normalize_block_name_to_quantize(
     return True
 
 
+def split_top_level_alternatives(pattern: str) -> list[str]:
+    """Split a regex on its top-level alternation, skipping escapes, groups and classes."""
+    branches: list[str] = []
+    start = 0
+    depth = 0
+    escaped = False
+    in_class = False
+    class_body_start = 0
+    for index, char in enumerate(pattern):
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif in_class:
+            # note (siju-samuel): a ] right after [ or [^ is a literal member, not the close.
+            if char == "]" and index != class_body_start:
+                in_class = False
+            else:
+                pass
+        elif char == "[":
+            in_class = True
+            class_body_start = index + (2 if pattern.startswith("^", index + 1) else 1)
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "|" and depth == 0:
+            branches.append(pattern[start:index])
+            start = index + 1
+        else:
+            pass
+    branches.append(pattern[start:])
+    return branches
+
+
+def strip_leading_stage_prefix(
+    branch: str, stage_prefix: str, escaped_prefix: str
+) -> str | None:
+    """Drop a stage prefix from the front of one alternative, or return None.
+
+    re.match anchors each alternative, so only a leading prefix can be removed exactly.
+    """
+    anchor = "^" if branch.startswith("^") else ""
+    rest = branch[len(anchor) :]
+    wildcard = ".*" if rest.startswith(".*") else ""
+    rest = rest[len(wildcard) :]
+    for form in (escaped_prefix, stage_prefix):
+        if not rest.startswith(form):
+            continue
+        else:
+            pass
+        remainder = rest[len(form) :]
+        # note (siju-samuel): in thinker.* the dot belongs to the quantifier, so there is no prefix.
+        if remainder[:1] in ("*", "+", "?", "{"):
+            continue
+        else:
+            pass
+        # note (siju-samuel): ^, \A and lookbehinds would see the start of the name instead of the prefix.
+        if any(token in remainder for token in ("^", "\\A", "(?<")):
+            continue
+        else:
+            pass
+        return anchor + remainder
+    return None
+
+
+def normalize_ignore_regex(
+    pattern: str, stage_prefix: str, escaped_prefix: str
+) -> str | None:
+    """Translate a regex ignore pattern onto stage-local module names.
+
+    Returns None while any part of the pattern still names the stage.
+    """
+    stage_name = stage_prefix.rstrip(".")
+    if "#" in pattern:
+        # note (siju-samuel): a verbose-mode comment can hide parentheses and |, so it is never split.
+        return None if stage_name in pattern else pattern
+    else:
+        pass
+    translated: list[str] = []
+    for branch in split_top_level_alternatives(pattern):
+        stripped = strip_leading_stage_prefix(branch, stage_prefix, escaped_prefix)
+        candidate = branch if stripped is None else stripped
+        if stage_name in candidate:
+            return None
+        else:
+            pass
+        translated.append(candidate)
+    return "|".join(translated)
+
+
+def normalize_ignore_entry(
+    entry: object, stage_prefix: str, escaped_prefix: str
+) -> object:
+    """Strip the stage prefix from one compressed-tensors ignore entry, plain or regex."""
+    if not isinstance(entry, str):
+        return entry
+    else:
+        pass
+    if not entry.startswith(IGNORE_REGEX_MARKER):
+        if entry.startswith(stage_prefix):
+            return entry[len(stage_prefix) :]
+        else:
+            return entry
+    else:
+        pass
+
+    pattern = entry[len(IGNORE_REGEX_MARKER) :]
+    stage_name = stage_prefix.rstrip(".")
+    rewritten = normalize_ignore_regex(pattern, stage_prefix, escaped_prefix)
+    if rewritten is None:
+        logger.warning(
+            f"compressed-tensors ignore entry {entry!r} refers to the "
+            f"{stage_name!r} stage somewhere this code will not rewrite, so it "
+            "is left as written and will not match stage-local module names. "
+            "Put the stage prefix at the front of each alternative with an "
+            f"escaped separator, e.g. 're:{stage_name}\\..*'."
+        )
+        return entry
+    else:
+        pass
+    return IGNORE_REGEX_MARKER + rewritten
+
+
+def normalize_ignore_list(quant_config: dict[str, object], stage_prefix: str) -> bool:
+    """Strip the stage prefix from every entry of a compressed-tensors ignore list.
+
+    An unstripped entry stops matching stage-local names, so its module gets a quantized scheme.
+    """
+    ignored = quant_config.get("ignore")
+    if not isinstance(ignored, list) or not ignored:
+        return False
+    else:
+        pass
+
+    escaped_prefix = stage_prefix.replace(".", r"\.")
+    normalized = [
+        normalize_ignore_entry(entry, stage_prefix, escaped_prefix) for entry in ignored
+    ]
+    if normalized == ignored:
+        return False
+    else:
+        pass
+
+    quant_config["ignore"] = normalized
+    return True
+
+
 def load_writable_quant_config(
     hf_config: PretrainedConfig,
 ) -> tuple[object, str, dict[str, object], bool] | None:
@@ -347,7 +510,8 @@ def normalize_quant_config(model_config: ModelConfig) -> None:
 
     blocks_changed = normalize_block_name_to_quantize(quant_config, stage_prefix)
     extra_changed = normalize_extra_config_keys(quant_config, stage_prefix)
-    if not (blocks_changed or extra_changed):
+    ignore_changed = normalize_ignore_list(quant_config, stage_prefix)
+    if not (blocks_changed or extra_changed or ignore_changed):
         return
     else:
         pass
