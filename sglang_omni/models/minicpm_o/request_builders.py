@@ -49,7 +49,6 @@ class EncoderRequestData:
     model_inputs: dict[str, object]
     cache_key: str | None = None
     skip_result: dict[str, torch.Tensor] | None = None
-    cached_result: dict[str, torch.Tensor] | None = None
 
 
 def build_encoder_request(
@@ -70,7 +69,8 @@ def build_encoder_request(
     return EncoderRequestData(
         model_inputs=model_inputs,
         cache_key=str(cache_key) if cache_key is not None else None,
-        cached_result=cached_result if isinstance(cached_result, dict) else None,
+        # A result resolved during preprocessing bypasses the forward the same way.
+        skip_result=cached_result if isinstance(cached_result, dict) else None,
     )
 
 

@@ -144,9 +144,6 @@ def create_encoder_executor(
         )
         if request.skip_result is not None:
             encoder_out = request.skip_result
-        elif request.cached_result is not None:
-            # Preprocessing already resolved this hit, so it cannot be evicted from under us.
-            encoder_out = request.cached_result
         elif cached is not None:
             encoder_out = cached
         else:

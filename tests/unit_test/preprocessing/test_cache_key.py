@@ -143,6 +143,18 @@ def test_hash_media_item_keys_content_not_mutable_addresses() -> None:
     assert first != cache_key.hash_media_item("data:image/png,content-b")
 
 
+def test_hash_media_item_keys_frame_lists_by_content() -> None:
+    # A video given as a Python list of frames must key every frame.
+    first = cache_key.hash_media_item([torch.zeros(2, 3, 4, 5), torch.ones(2, 3, 4, 5)])
+    second = cache_key.hash_media_item(
+        [torch.zeros(2, 3, 4, 5), torch.zeros(2, 3, 4, 5)]
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first != second
+
+
 @pytest.mark.parametrize(
     "tensor",
     [

@@ -30,6 +30,7 @@ from sglang_omni.models.minicpm_o.components.audio_encoder import (
 from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
 from sglang_omni.models.minicpm_o.prompt_frontend import (
+    FrameSize,
     video_frame_sizes,
     video_to_images,
 )
@@ -1210,15 +1211,14 @@ def test_metadata_only_processor_matches_the_pixel_processor(
 ) -> None:
     """A cache hit must reproduce the pixel run's text inputs without pixel work."""
     pixels = np.random.default_rng(17).integers(0, 256, (672, 1120, 3), dtype=np.uint8)
-    frames = (
-        video_to_images(
+    if as_video:
+        frames = video_to_images(
             torch.from_numpy(
                 np.stack([pixels, np.flip(pixels, axis=1).copy()])
             ).permute(0, 3, 1, 2)
         )
-        if as_video
-        else [Image.fromarray(pixels)]
-    )
+    else:
+        frames = [Image.fromarray(pixels)]
     options = (
         {"max_slice_nums": 1, "use_image_id": False}
         if as_video
@@ -1238,19 +1238,22 @@ def test_metadata_only_processor_matches_the_pixel_processor(
         lambda *args, **kwargs: checkpoint_processor,
     )
 
+    warm_frames = (
+        [FrameSize(width=frame.width, height=frame.height) for frame in frames]
+        if as_video
+        else frames
+    )
     cold = preprocessor.processor(
         prompt,
         images=[frames],
         audios=None,
-        do_pad=False,
         return_tensors="pt",
         **options,
     )
     warm = preprocessor.processor_without_pixels()(
         prompt,
-        images=[frames],
+        images=[warm_frames],
         audios=None,
-        do_pad=False,
         return_tensors="pt",
         **options,
     )

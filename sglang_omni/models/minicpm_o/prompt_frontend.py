@@ -41,25 +41,37 @@ class FrameSize:
         return self.width, self.height
 
 
+def video_pixel_layout(video: object) -> tuple[int, int, int, int, bool] | None:
+    """Return (frames, channels, height, width, channels_first) for pixel tensors."""
+    if not isinstance(video, (torch.Tensor, np.ndarray)):
+        return None
+    else:
+        pass
+    shape = tuple(int(dimension) for dimension in video.shape)
+    if len(shape) != 4:
+        raise ValueError(
+            f"MiniCPM-o video inputs must have shape (T, C, H, W), got {shape}"
+        )
+    elif shape[1] in (1, 3, 4):
+        return shape[0], shape[1], shape[2], shape[3], True
+    elif shape[-1] in (1, 3, 4):
+        return shape[0], shape[-1], shape[1], shape[2], False
+    else:
+        raise ValueError(
+            f"MiniCPM-o video frames must have 1, 3, or 4 channels, got {shape}"
+        )
+
+
 def video_frame_sizes(video: object) -> list[tuple[int, int]]:
     """Report each frame's (width, height) without converting its pixels."""
-    if isinstance(video, list) and all(
+    pixel_layout = video_pixel_layout(video)
+    if pixel_layout is not None:
+        frames, _, height, width, _ = pixel_layout
+        return [(width, height)] * frames
+    elif isinstance(video, list) and all(
         isinstance(frame, Image.Image) for frame in video
     ):
         return [frame.size for frame in video]
-    elif isinstance(video, (torch.Tensor, np.ndarray)):
-        shape = tuple(int(dimension) for dimension in video.shape)
-        if len(shape) != 4:
-            raise ValueError(f"MiniCPM-o video input must be (T, C, H, W), got {shape}")
-        elif shape[1] in (1, 3, 4):
-            frame_height, frame_width = shape[2], shape[3]
-        elif shape[-1] in (1, 3, 4):
-            frame_height, frame_width = shape[1], shape[2]
-        else:
-            raise ValueError(
-                f"MiniCPM-o video frames must have 1, 3, or 4 channels, got {shape}"
-            )
-        return [(frame_width, frame_height)] * shape[0]
     else:
         raise ValueError(
             "MiniCPM-o video inputs must be frame images or a pixel tensor"
@@ -68,26 +80,22 @@ def video_frame_sizes(video: object) -> list[tuple[int, int]]:
 
 def video_to_images(video: object) -> list[Image.Image]:
     """Convert normalized video pixels to RGB frames."""
-    if isinstance(video, list) and all(
-        isinstance(frame, Image.Image) for frame in video
-    ):
-        return [frame.convert("RGB") for frame in video]
-    elif isinstance(video, (torch.Tensor, np.ndarray)):
-        frame_tensor = torch.as_tensor(video)
+    pixel_layout = video_pixel_layout(video)
+    if pixel_layout is None:
+        if isinstance(video, list) and all(
+            isinstance(frame, Image.Image) for frame in video
+        ):
+            return [frame.convert("RGB") for frame in video]
+        else:
+            raise ValueError(
+                "MiniCPM-o video inputs must be frame images or a pixel tensor"
+            )
     else:
-        raise ValueError(
-            "MiniCPM-o video inputs must be frame images or a pixel tensor"
-        )
-    if frame_tensor.ndim != 4:
-        raise ValueError(
-            f"MiniCPM-o video inputs must have shape (T, C, H, W), got {tuple(frame_tensor.shape)}"
-        )
-    elif frame_tensor.shape[1] in (1, 3, 4):
+        pass
+    channels_first = pixel_layout[4]
+    frame_tensor = torch.as_tensor(video)
+    if channels_first:
         frame_tensor = frame_tensor.permute(0, 2, 3, 1)
-    elif frame_tensor.shape[-1] not in (1, 3, 4):
-        raise ValueError(
-            f"MiniCPM-o video frames must have 1, 3, or 4 channels, got {tuple(frame_tensor.shape)}"
-        )
     else:
         pass
     frame_tensor = frame_tensor.detach().cpu()

@@ -235,8 +235,16 @@ def project_preprocessing_to_encoder(
     pixel_values = (
         stage_inputs.get("pixel_values") if isinstance(stage_inputs, dict) else None
     )
+    cached_result = (
+        stage_inputs.get("cached_result") if isinstance(stage_inputs, dict) else None
+    )
     if stage_name == IMAGE_STAGE and isinstance(pixel_values, list):
         encoder_inputs[stage_name]["pixel_values"] = list(pixel_values)
+    else:
+        pass
+    if stage_name == IMAGE_STAGE and isinstance(cached_result, dict):
+        # Sharing the container disables local handoff; copy it per request.
+        encoder_inputs[stage_name]["cached_result"] = dict(cached_result)
     else:
         pass
     projected = MiniCPMOPipelineState(encoder_inputs=encoder_inputs)

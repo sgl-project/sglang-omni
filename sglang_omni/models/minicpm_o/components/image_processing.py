@@ -53,6 +53,33 @@ class SizedImage(Protocol):
     size: tuple[int, int]
 
 
+def normalize_image_batches(
+    images: SizedImage | list[SizedImage] | list[list[SizedImage]] | None,
+) -> list[list[SizedImage]]:
+    """Normalize the checkpoint processor's image argument into image batches."""
+    if images is None:
+        return [[]]
+    elif isinstance(images, (list, tuple)):
+        if images and isinstance(images[0], (list, tuple)):
+            return [list(image_batch) for image_batch in images]
+        else:
+            pass
+        return [list(images)]
+    else:
+        return [[images]]
+
+
+def processor_slice_limit(
+    geometry: SliceGeometry, max_slice_nums: int | None, return_tensors: str
+) -> int:
+    """Validate the tensor format and resolve the checkpoint's slice limit."""
+    if return_tensors != "pt":
+        raise ValueError("MiniCPM-o image preprocessing requires return_tensors='pt'")
+    else:
+        pass
+    return geometry.max_slice_nums if max_slice_nums is None else max_slice_nums
+
+
 class ImageFeatures(TypedDict):
     pixel_values: list[list[torch.Tensor]]
     image_sizes: list[list[tuple[int, int]]]
@@ -131,23 +158,8 @@ class MetadataOnlyImageProcessor:
         do_pad is retained for the checkpoint processor contract.
         """
         geometry = self.geometry
-        if return_tensors != "pt":
-            raise ValueError(
-                "MiniCPM-o image preprocessing requires return_tensors='pt'"
-            )
-        else:
-            pass
-        slice_limit = (
-            geometry.max_slice_nums if max_slice_nums is None else max_slice_nums
-        )
-        if images is None:
-            image_batches = [[]]
-        elif isinstance(images, list) and images and isinstance(images[0], list):
-            image_batches = images
-        elif isinstance(images, list):
-            image_batches = [images]
-        else:
-            image_batches = [[images]]
+        slice_limit = processor_slice_limit(geometry, max_slice_nums, return_tensors)
+        image_batches = normalize_image_batches(images)
         size_batches: list[list[tuple[int, int]]] = []
         target_batches: list[torch.Tensor] = []
         for image_batch in image_batches:
@@ -303,23 +315,12 @@ class CUDAImageProcessor:
     ) -> ImageFeatures:
         """Pack slices; do_pad is retained for the checkpoint processor contract."""
         geometry = self.geometry
-        if return_tensors != "pt":
-            raise ValueError("CUDA image preprocessing requires return_tensors='pt'")
-        else:
-            pass
+        slice_limit = processor_slice_limit(geometry, max_slice_nums, return_tensors)
         pixel_batches: list[list[torch.Tensor]] = []
         size_batches: list[list[tuple[int, int]]] = []
         target_batches: list[torch.Tensor] = []
         device = self.device
-        slice_limit = (
-            geometry.max_slice_nums if max_slice_nums is None else max_slice_nums
-        )
-        if isinstance(images, Image.Image):
-            image_batches = [[images]]
-        elif images and isinstance(images[0], Image.Image):
-            image_batches = [images]
-        else:
-            image_batches = images or [[]]
+        image_batches = normalize_image_batches(images)
         for image_batch in image_batches:
             packed_slices: list[torch.Tensor] = []
             target_sizes: list[tuple[int, int]] = []

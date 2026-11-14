@@ -68,4 +68,4 @@ def test_build_encoder_request_keeps_cached_result_out_of_model_inputs() -> None
     request = build_encoder_request(state, stage_name=STAGE_NAME)
 
     assert request.model_inputs == {}
-    assert request.cached_result is not None
+    assert request.skip_result is not None

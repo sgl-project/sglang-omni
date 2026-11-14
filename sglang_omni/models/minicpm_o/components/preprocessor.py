@@ -534,15 +534,6 @@ class MiniCPMOPreprocessor:
         encoder_inputs: dict[str, ImageEncoderInputs | AudioEncoderInputs] = {}
         if images:
             image_bound = first_batch_item(processed["image_bound"])
-            # note (MayDomine): slice order must match the placeholder bound order.
-            pixel_values = [
-                slice_tensor
-                for per_image in processed["pixel_values"][0]
-                for slice_tensor in (
-                    per_image if isinstance(per_image, list) else [per_image]
-                )
-            ]
-            target_image_sizes = first_batch_item(processed["tgt_sizes"])
             modality_inputs["image"] = {
                 "bounds": image_bound,
                 "cache_key": image_cache_key,
@@ -554,6 +545,15 @@ class MiniCPMOPreprocessor:
                     "cached_result": cached_image_output,
                 }
             else:
+                # note (MayDomine): slice order must match the placeholder bound order.
+                pixel_values = [
+                    slice_tensor
+                    for per_image in processed["pixel_values"][0]
+                    for slice_tensor in (
+                        per_image if isinstance(per_image, list) else [per_image]
+                    )
+                ]
+                target_image_sizes = first_batch_item(processed["tgt_sizes"])
                 encoder_inputs["image_encoder"] = {
                     "pixel_values": pixel_values,
                     "tgt_sizes": target_image_sizes,
