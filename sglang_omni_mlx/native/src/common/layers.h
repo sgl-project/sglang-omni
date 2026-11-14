@@ -55,6 +55,9 @@ public:
   // An embedding table used as the output projection.
   mlx::core::array TiedProjection(const mlx::core::array &x,
                                   const std::string &prefix) const;
+  // Quantizes the Linear (or embedding) weight at prefix in place, so Linear,
+  // Embed and TiedProjection read the quantized weight and its scales.
+  void QuantizeLinear(const std::string &prefix, int group_size, int bits);
 
 private:
   WeightMap weights_;

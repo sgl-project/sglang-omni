@@ -86,6 +86,28 @@ set_source_files_properties(src/common/campplus.cpp
 set_source_files_properties(src/common/audio_chunks.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
+# Haru: a full-duplex spoken dialogue model (Qwen3.5 backbone + VibeVoice
+# codec + MeanFlow head). The configuration lands first; the model follows.
+add_library(haru STATIC
+  src/haru/haru_config.cpp
+  src/haru/haru_model.cpp
+  src/haru/haru_codec.cpp
+  src/haru/haru_head.cpp
+  src/haru/haru_session.cpp
+  src/haru/haru_audio.cpp
+  src/haru/haru_realtime.cpp)
+target_include_directories(haru PUBLIC src)
+# KVCache comes from qwen3_asr, which in turn links common; the reference
+# preparation resamples through audio_resample.
+target_link_libraries(haru PUBLIC qwen3_asr audio_resample)
+target_compile_options(haru PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
+
+add_executable(haru_session_probe tools/haru_session_probe.cpp)
+target_link_libraries(haru_session_probe PRIVATE haru)
+
+add_executable(haru_server src/haru/haru_server.cpp)
+target_link_libraries(haru_server PRIVATE haru asr_service)
+
 add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp
   src/qwen3_asr/qwen3_asr_model.cpp

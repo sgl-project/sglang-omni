@@ -180,4 +180,22 @@ std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text) {
   return bytes;
 }
 
+std::string EncodeBase64(const std::vector<uint8_t> &bytes) {
+  static const char kAlphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve((bytes.size() + 2) / 3 * 4);
+  for (size_t i = 0; i < bytes.size(); i += 3) {
+    const uint32_t n =
+        (static_cast<uint32_t>(bytes[i]) << 16) |
+        (i + 1 < bytes.size() ? static_cast<uint32_t>(bytes[i + 1]) << 8 : 0) |
+        (i + 2 < bytes.size() ? static_cast<uint32_t>(bytes[i + 2]) : 0);
+    out.push_back(kAlphabet[(n >> 18) & 0x3F]);
+    out.push_back(kAlphabet[(n >> 12) & 0x3F]);
+    out.push_back(i + 1 < bytes.size() ? kAlphabet[(n >> 6) & 0x3F] : '=');
+    out.push_back(i + 2 < bytes.size() ? kAlphabet[n & 0x3F] : '=');
+  }
+  return out;
+}
+
 } // namespace omni_common

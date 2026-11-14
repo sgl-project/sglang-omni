@@ -26,5 +26,7 @@ bool IsTokenLoop(const std::vector<int> &output_ids);
 std::vector<int> CollapseTokenLoop(const std::vector<int> &output_ids);
 // The bytes of base64 text; none when its padding is invalid.
 std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text);
+// The base64 of bytes, with padding.
+std::string EncodeBase64(const std::vector<uint8_t> &bytes);
 
 } // namespace omni_common

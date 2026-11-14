@@ -310,6 +310,17 @@ mx::array Checkpoint::TiedProjection(const mx::array &x,
   }
 }
 
+void Checkpoint::QuantizeLinear(const std::string &prefix, int group_size,
+                                int bits) {
+  const std::vector<mx::array> quantized =
+      mx::quantize(Weight(prefix + ".weight"), group_size, bits);
+  weights_.insert_or_assign(prefix + ".weight", quantized[0]);
+  weights_.insert_or_assign(prefix + ".scales", quantized[1]);
+  weights_.insert_or_assign(prefix + ".biases", quantized[2]);
+  quantization_by_prefix_.insert_or_assign(
+      prefix, QuantizationConfig{group_size, bits, "affine"});
+}
+
 mx::array RelativeShift(const mx::array &scores) {
   const int batch = scores.shape(0);
   const int heads = scores.shape(1);

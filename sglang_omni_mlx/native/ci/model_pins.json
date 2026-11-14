@@ -242,5 +242,14 @@
       "model.safetensors": "bf31b4e5fb713a565750e120ebadd54de245eb1214e46d14fc5108f1e79171a1",
       "codec.safetensors": "c2096e27a1bb69a05151ccb502649a88744712270d9b029a68a3c9305f2b1edf"
     }
+  },
+  "higurashi-ai/Haru-4B": {
+    "revision": "8d6e83bcd3701a76fc27a764965665da1df7da78",
+    "files": {
+      "config.json": "ff29b2dab25780d33fe1ea8efc3d1364d31e7bef95b0b08514b935305ba2f427",
+      "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "tokenizer_config.json": "7df4f800f74978c0ede927b5938f137ec112f872059adf76ddb9918f3281668a",
+      "model.safetensors": "ad2c3534ef6bd88525e22e5da3ac4fb739368406bf3b1c852cbafbade647c0fa"
+    }
   }
 }

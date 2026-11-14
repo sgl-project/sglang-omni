@@ -27,6 +27,7 @@ SERVED_KINDS = {
     "music3_server": ("minimax_music3",),
     "ming3_audio_server": ("ming3_audio",),
     "ming_tts_server": ("ming_tts",),
+    "haru_server": ("haru",),
 }
 SYSTEM_LIBRARY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
@@ -146,6 +147,7 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("ming3_audio_server", ("--speculative-algorithm", "EAGLE3"), "--speculative-algorithm must be NEXTN"),
         ("fish_s2_pro_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
         ("fish_s2_pro_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
+        ("haru_server", ("--quantize", "4"), "--quantize must be 0 or 8"),
     ],
 )  # fmt: skip
 def test_invalid_server_flags_exit_before_the_load(

@@ -1,0 +1,25 @@
+{
+  "model": "higurashi-ai/Haru-4B",
+  "kind": "haru",
+  "tool": "haru_session_probe",
+  "cases": {
+    "seed42": {
+      "seed": 42
+    }
+  },
+  "devices": {
+    "Apple M4": {
+      "metrics": {},
+      "clips": {
+        "seed42": {
+          "tokens": [
+            40,
+            1683,
+            424,
+            579
+          ]
+        }
+      }
+    }
+  }
+}

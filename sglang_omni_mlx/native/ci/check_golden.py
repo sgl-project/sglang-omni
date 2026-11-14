@@ -28,6 +28,7 @@ TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]
 import cosyvoice3_golden
 import fish_s2_pro_golden
 import fishaudio_drama3_golden
+import haru_golden
 import music3_golden
 import qwen3_tts_golden
 import sortformer_golden
@@ -311,6 +312,16 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
             arguments.runtime_bin, arguments.data_root, golden, chip()
         )
         metrics = {}
+    elif golden.get("kind") == "haru":
+        results = {
+            case_id: haru_golden.synthesize(
+                arguments.runtime_bin,
+                model_directory(arguments.data_root, golden["model"]),
+                case,
+            )
+            for case_id, case in golden["cases"].items()
+        }
+        metrics = {}
     else:
         results = transcribe_corpus(
             arguments.runtime_bin, arguments.data_root, golden, manifest
@@ -350,6 +361,8 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         pass
     if golden.get("kind") in SPEECH_SYNTHESIZERS:
         report(*speech_golden.check(golden, device, results))
+    elif golden.get("kind") == "haru":
+        report(*haru_golden.check(golden, device, results))
     elif golden.get("kind") == "cosyvoice3":
         report(*cosyvoice3_golden.check(golden, device, results))
     else:
