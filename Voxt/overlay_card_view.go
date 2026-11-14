@@ -127,7 +127,7 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.retryAnswer("")
 		}
 	}
-	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking"), thinkText(v.think), icons.Tuning2, v.canThink) {
+	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking level"), askAgainText(v.think, a.llmGeneration(a.answer.llmID)), icons.Tuning2, v.canThink) {
 		a.toggleThinkMenu()
 	}
 	if v.failed == nil {

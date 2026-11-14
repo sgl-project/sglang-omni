@@ -101,6 +101,9 @@ type Input struct {
 	// TaskPrompt is the user's addition to the task's rules
 	// (settings.Feature.Prompt); "" for none.
 	TaskPrompt string
+	// KeepTarget leaves {{TARGET_LANGUAGE}} as written, for the built-in
+	// prompt the feature page lets the user edit.
+	KeepTarget bool
 	// Scene is the matched app enhancement group; nil for none.
 	Scene *Scene
 	// Dictionary is the user's personal dictionary, Markdown notes
@@ -240,6 +243,9 @@ func Build(in Input) (Output, error) {
 	}
 	set := TemplateSet(in.MainLanguage)
 	vars := Variables(in, set)
+	if in.KeepTarget {
+		vars["TARGET_LANGUAGE"] = "{{TARGET_LANGUAGE}}"
+	}
 	var parts, layers []string
 	add := func(layer, text string) {
 		text = strings.TrimSpace(text)

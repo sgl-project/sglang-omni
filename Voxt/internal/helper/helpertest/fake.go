@@ -409,7 +409,7 @@ func (f *fake) serve(m proto.Message) {
 				f.mic = proto.PermGranted
 			}
 			f.mu.Unlock()
-		case proto.PermissionAccessibility:
+		case proto.PermissionAccessibility, proto.PermissionSystemAudio:
 		case proto.PermissionScreenRecording:
 			f.mu.Lock()
 			f.screen = true

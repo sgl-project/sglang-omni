@@ -51,10 +51,15 @@ func (a *app) llmWaitRow(c *ui.Context) {
 			}
 		}
 		if a.llmWaitCustom {
-			if numberInput(c.Key("llm-wait-min"), &a.llmWaitMin, 1, settings.WaitMaxMinutes, 1, numOpts{Label: i18n.T("Wait for the language model in minutes")}) {
+			over := false
+			if numberInput(c.Key("llm-wait-min"), &a.llmWaitMin, 1, settings.WaitMaxMinutes, 1, numOpts{Label: i18n.T("Wait for the language model in minutes"), Over: &over}) {
 				save(settings.WaitMinutes(int(a.llmWaitMin)))
 			}
-			caption(c, i18n.T("min"))
+			if over { // typed past the most: say so rather than drop it silently (#3955)
+				caption(c, i18n.T("At most %d minutes", settings.WaitMaxMinutes))
+			} else {
+				caption(c, i18n.T("min (%d–%d)", 1, settings.WaitMaxMinutes))
+			}
 		}
 	})
 }

@@ -194,7 +194,7 @@ func (a *app) langMenuView(c *ui.Context) {
 	cur := a.cardNow().lang
 	label := i18n.T("Translate into")
 	if a.answer.thinkMenu {
-		label = i18n.T("Thinking")
+		label = i18n.T("Ask again with thinking level")
 	}
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
 		ui.Column(c.Key("ov-lang-face")).Fill().Radius(ovLangRadius).Background(ui.RGBA(30, 30, 34, 0.98)).

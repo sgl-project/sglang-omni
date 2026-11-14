@@ -55,7 +55,8 @@ func TestLLMWaitRow(t *testing.T) {
 
 // TestLLMWaitCustom (#3941): Custom… on the wait select opens a minutes
 // field; what is typed in 1..60 is saved as that many minutes, and a value
-// outside is ignored. A custom wait saved elsewhere opens on Custom… with
+// outside is ignored, and the field says its range and, over it, the most
+// (#3955). A custom wait saved elsewhere opens on Custom… with
 // its minutes, also in Chinese; a preset closes the field again.
 func TestLLMWaitCustom(t *testing.T) {
 	t.Cleanup(func() { i18n.SetLocale("en") })
@@ -65,7 +66,7 @@ func TestLLMWaitCustom(t *testing.T) {
 	const field = "Wait for the language model in minutes"
 	click(t, tt, "Automatic")
 	click(t, tt, "Custom…")
-	if got := a.settings.Get().Models.LLMWait; got != "1m" || !tt.HasText("min") {
+	if got := a.settings.Get().Models.LLMWait; got != "1m" || !hasExact(tt, "min (1–60)") {
 		t.Fatalf("Custom… from Automatic saved %q; texts %q", got, firstTexts(tt))
 	}
 	if err := tt.Click(field); err != nil {
@@ -84,13 +85,21 @@ func TestLLMWaitCustom(t *testing.T) {
 	if got := a.settings.Get().Models.LLMWait; got != "20m" {
 		t.Errorf("typed 200: saved %q", got)
 	}
+	if !hasExact(tt, "At most 60 minutes") || hasExact(tt, "min (1–60)") {
+		t.Errorf("typed 200: texts %q", firstTexts(tt))
+	}
+	tt.Key(0, ui.KeyBackspace) // "20" again
+	frames(tt)
+	if hasExact(tt, "At most 60 minutes") || !hasExact(tt, "min (1–60)") {
+		t.Errorf("back to 20: texts %q", firstTexts(tt))
+	}
 	if d := a.settings.Get().Models.LLMWaitFor(); d != 20*time.Minute {
 		t.Errorf("wait %v", d)
 	}
 
 	a.updateSettings(func(s *settings.Settings) { s.Models.LLMWait = "45m"; s.General.Language = "zh-Hans" })
 	frames(tt)
-	if !hasExact(tt, "自定义…") || a.llmWaitMin != 45 {
+	if !hasExact(tt, "自定义…") || a.llmWaitMin != 45 || !hasExact(tt, "分钟（1–60）") {
 		t.Errorf("a custom wait made elsewhere, in Chinese: %v %q", a.llmWaitMin, firstTexts(tt))
 	}
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "en" })

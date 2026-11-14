@@ -28,7 +28,7 @@ func TestTranslatePage(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for _, s := range []string{
 		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed, so only selected text can be translated.",
-		"No language model is set up. Set one up to translate.", "Translation", "Translate into", "Automatic (now: Simplified Chinese)",
+		"No language model is set up. Set one up to translate.", "Translation", "Target language", "Automatic (now: Simplified Chinese)",
 		"Basic clean-up", "Show the result in a card", "Your rules", "Try it",
 	} {
 		if !has(tt, s) {
@@ -46,12 +46,12 @@ func TestTranslatePage(t *testing.T) {
 	if a.lib.settings.Get().Features.Translate.Cleanup {
 		t.Error("clean-up not saved")
 	}
-	click(t, tt, "Target language")
+	click(t, tt, "Target language for Translate")
 	click(t, tt, "Japanese")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "ja" {
 		t.Errorf("target %q", got)
 	}
-	click(t, tt, "Target language")
+	click(t, tt, "Target language for Translate")
 	click(t, tt, "Automatic (now: Simplified Chinese)")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "" {
 		t.Errorf("target %q", got)

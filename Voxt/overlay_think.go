@@ -9,6 +9,8 @@ package main
 // list shows in the language menu's window (overlay_lang.go).
 
 import (
+	"slices"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
@@ -50,12 +52,27 @@ func thinkLevels(p settings.Provider) []*llm.Thinking {
 // llmThinkLevels are the levels of language model service id (none: it
 // is not set up any more, or takes none).
 func (a *app) llmThinkLevels(id string) []*llm.Thinking {
-	for _, p := range a.prefs.Providers.LLM {
-		if p.ID == id {
-			return thinkLevels(p)
-		}
+	if p, ok := a.llmService(id); ok {
+		return thinkLevels(p)
 	}
 	return nil
+}
+
+// llmService is language model service id's setup.
+func (a *app) llmService(id string) (settings.Provider, bool) {
+	for _, p := range a.prefs.Providers.LLM {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return settings.Provider{}, false
+}
+
+// llmGeneration is service id's request settings: the levels' menu names
+// its Thinking as the default (#3957).
+func (a *app) llmGeneration(id string) settings.Generation {
+	p, _ := a.llmService(id)
+	return p.Generation
 }
 
 // cardThinkLevels are the levels of the service that wrote the card's
@@ -63,14 +80,19 @@ func (a *app) llmThinkLevels(id string) []*llm.Thinking {
 func (a *app) cardThinkLevels() []*llm.Thinking { return a.llmThinkLevels(a.answer.llmID) }
 
 // pillThinks: the working pill in mode offers the thinking levels
-// (#3940): Transcribe's clean-up runs (Use transcript shows) on a
-// service that takes them.
+// (#3940): the language model works on Transcribe's text, or on
+// Translate's or Rewrite's answer (#3957), with a service that takes
+// them.
 func (a *app) pillThinks(mode overlayMode) bool {
-	return canSkip(a.sess, mode) && a.sess.Kind == store.KindTranscribe && len(a.llmThinkLevels(a.sess.LLM.ID)) > 1
+	s := a.sess
+	return mode == ovWorking && s.State == session.Composing && slices.Contains([]store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite}, s.Kind) &&
+		len(a.llmThinkLevels(s.LLM.ID)) > 1
 }
 
 // pillThinkText is the pill's thinking capsule as it draws (cardCapsule's).
-func pillThinkText(t *llm.Thinking) ovSized { return ovSized{thinkText(t), 11, 600, 0} }
+func (a *app) pillThinkText() ovSized {
+	return ovSized{askAgainText(a.sess.Thinking, a.llmGeneration(a.sess.LLM.ID)), 11, 600, 0}
+}
 
 // menuThinkLevels are the thinking menu's levels: the pill's or the card's.
 func (a *app) menuThinkLevels() []*llm.Thinking {
@@ -80,11 +102,29 @@ func (a *app) menuThinkLevels() []*llm.Thinking {
 	return a.cardThinkLevels()
 }
 
-// thinkLevelTitle is a level's row in the menu.
-func thinkLevelTitle(t *llm.Thinking) string {
+// settingLevel is the level service setting g asks with; nil: Default
+// (Voxt's: thinking off where the service can turn it off).
+func settingLevel(g settings.Generation) *llm.Thinking {
+	switch {
+	case g.Thinking == llm.ThinkOff, g.Thinking == llm.ThinkOn:
+		return &llm.Thinking{Mode: g.Thinking}
+	case g.Thinking == llm.ThinkEffort && g.ThinkingEffort != "":
+		return &llm.Thinking{Mode: g.Thinking, Effort: g.ThinkingEffort}
+	case g.Thinking == llm.ThinkBudget && g.ThinkingBudget > 0:
+		return &llm.Thinking{Mode: g.Thinking, Budget: g.ThinkingBudget}
+	}
+	return nil
+}
+
+// thinkLevelTitle is a level's row in the menu of a service set to g:
+// nil, its setting, names that level, "High (default)" (#3957).
+func thinkLevelTitle(t *llm.Thinking, g settings.Generation) string {
 	switch {
 	case t == nil:
-		return i18n.T("As in settings")
+		if d := settingLevel(g); d != nil {
+			return i18n.T("%s (default)", thinkLevelTitle(d, g))
+		}
+		return i18n.T("Default")
 	case t.Mode == llm.ThinkOff:
 		return i18n.T("Off")
 	case t.Mode == llm.ThinkOn:
@@ -95,12 +135,19 @@ func thinkLevelTitle(t *llm.Thinking) string {
 	return i18n.T("%d tokens", t.Budget)
 }
 
-// thinkText is level t as the button's tip says it.
-func thinkText(t *llm.Thinking) string {
-	if t == nil {
-		return i18n.T("Thinking")
+// thinkText is level t of a service set to g as a message says it.
+func thinkText(t *llm.Thinking, g settings.Generation) string {
+	return i18n.T("Thinking: %s", thinkLevelTitle(t, g))
+}
+
+// askAgainText is level t as the card button's tip and the pill's
+// capsule say it: picking a level stops this answer and asks again
+// (#3951).
+func askAgainText(t *llm.Thinking, g settings.Generation) string {
+	if d := settingLevel(g); t == nil && d != nil {
+		return i18n.T("Ask again: Thinking (%s, default)", thinkLevelTitle(d, g))
 	}
-	return i18n.T("Thinking: %s", thinkLevelTitle(t))
+	return i18n.T("Ask again: Thinking (%s)", thinkLevelTitle(t, g))
 }
 
 // sameThinking says whether a and b are the same level.
@@ -126,12 +173,13 @@ func (a *app) togglePillThinkMenu() {
 
 // thinkMenuView is the thinking menu's rows.
 func (a *app) thinkMenuView(c *ui.Context) {
-	cur := a.cardNow().think
+	cur, id := a.cardNow().think, a.answer.llmID
 	if a.answer.pillMenu {
-		cur = a.sess.Thinking
+		cur, id = a.sess.Thinking, a.sess.LLM.ID
 	}
+	g := a.llmGeneration(id)
 	for i, t := range a.menuThinkLevels() {
-		if menuRow(c.Key(i), thinkLevelTitle(t), sameThinking(t, cur)) {
+		if menuRow(c.Key(i), thinkLevelTitle(t, g), sameThinking(t, cur)) {
 			a.chooseThinking(t)
 		}
 	}

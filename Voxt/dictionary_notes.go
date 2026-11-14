@@ -178,7 +178,9 @@ func (a *app) notesExample(c *ui.Context) {
 	ui.Column(c.Key("dict-notes-example")).Gap(px(t, sp2)).Children(func() {
 		promptCard(c, "dict-ex-system", i18n.T("System prompt"), system)
 		promptCard(c, "dict-ex-dict", "+ "+i18n.T("Personal dictionary"), dict)
-		promptCard(c, "dict-ex-input", "+ "+i18n.T("Your input (the selected text)"), or(userInput))
+		if in.Task == compose.Rewrite { // only Rewrite sends a selection
+			promptCard(c, "dict-ex-input", "+ "+i18n.T("Your input (the selected text)"), or(userInput))
+		}
 		promptCard(c, "dict-ex-speech", "+ "+i18n.T("Speech recognition text"), or(speech))
 		sectionTitle(c, "= "+i18n.T("What the language model receives"))
 		for i, m := range ex.msgs {
