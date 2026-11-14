@@ -223,3 +223,73 @@ func TestRulesFind(t *testing.T) {
 		t.Errorf("matches %v", got)
 	}
 }
+
+// TestTranslateBuiltinPromptKeepsTarget: the rules field starts from the
+// built-in prompt with {{TARGET_LANGUAGE}} in it, so a prompt edited from
+// it follows the menu. It had the language's name written in (#3956): the
+// edited prompt kept translating into it whatever the menu said.
+func TestTranslateBuiltinPromptKeepsTarget(t *testing.T) {
+	a, tt := pageTester(t, "/translate")
+	builtin := a.promptBuiltin(hotkey.Translate)
+	if !strings.Contains(builtin, targetVar) || strings.Contains(builtin, "Simplified Chinese") {
+		t.Fatalf("built-in prompt %q", builtin)
+	}
+	u := a.fui(hotkey.Translate)
+	u.prompt, u.promptDirty = builtin+"\nUse British spelling.", true
+	a.savePrompt(hotkey.Translate)
+	click(t, tt, "Target language for Translate")
+	click(t, tt, "Japanese")
+	out, err := a.composedPreview(hotkey.Translate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.System, "into Japanese") || strings.Contains(out.System, "{{") {
+		t.Fatalf("edited prompt does not follow the menu: %q", out.System)
+	}
+	if has(tt, "Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing.") {
+		t.Error("warning for a prompt that uses the variable")
+	}
+}
+
+// TestTranslateWarnsPromptIgnoresTarget: a prompt of one's own without
+// {{TARGET_LANGUAGE}} ("into English", in English or Chinese) gets a
+// warning on the page and a button that adds it; none for the built-in
+// prompt (#3956).
+func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
+	const warning = "Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing."
+	a, tt := pageTester(t, "/translate")
+	for _, s := range []string{"Target language", "The language model translates into this. Speech recognition writes what you said in your own language. Automatic is English, or Chinese when your main language is English."} {
+		if !has(tt, s) {
+			t.Errorf("no %q", s)
+		}
+	}
+	if has(tt, warning) {
+		t.Fatal("warning with the built-in prompt")
+	}
+	u := a.fui(hotkey.Translate)
+	for _, own := range []string{"Translate Chinese into English.\n\n", "把中文翻译成英语。"} {
+		u.prompt, u.promptDirty = own, true
+		a.savePrompt(hotkey.Translate)
+		frames(tt)
+		if !has(tt, warning) {
+			t.Fatalf("no warning for %q", own)
+		}
+		click(t, tt, "Add {{TARGET_LANGUAGE}} to the prompt")
+		saved := a.lib.settings.Get().Features.Translate.Prompt
+		if want := strings.TrimRight(own, "\n") + "\n\nTranslate the text into {{TARGET_LANGUAGE}}."; saved != want {
+			t.Fatalf("saved %q, want %q", saved, want)
+		}
+		if has(tt, warning) {
+			t.Fatalf("warning after adding the variable to %q", own)
+		}
+		out, err := a.composedPreview(hotkey.Translate)
+		if err != nil || !strings.Contains(out.System, "into Simplified Chinese.") {
+			t.Fatalf("composed %q, %v", out.System, err)
+		}
+	}
+	click(t, tt, "Your rules")
+	click(t, tt, "Reset to default prompt")
+	if has(tt, warning) {
+		t.Error("warning after the reset")
+	}
+}
