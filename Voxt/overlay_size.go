@@ -41,6 +41,11 @@ func (a *app) overlaySize(mode overlayMode) (w, h int, exact bool) {
 			row += layout.Gap + 2*10 + int(math.Ceil(float64(w))) // cardCapsule's padding
 			exact = exact && ok
 		}
+		if a.pillThinks(mode) {
+			w, ok := a.ovTextWidth(pillThinkText(a.sess.Thinking))
+			row += layout.Gap + 2*10 + int(math.Ceil(float64(w)))
+			exact = exact && ok
+		}
 		text, hint := pillLine(a.pillSession())
 		if a.prefs.Overlay.LiveLines {
 			// Wide from the start, before any text: the face does not jump
@@ -179,6 +184,9 @@ func (a *app) overlayTexts() []ovSized {
 		}
 		if canSkip(a.sess, a.ov.mode) {
 			out = append(out, skipText())
+		}
+		if a.pillThinks(a.ov.mode) {
+			out = append(out, pillThinkText(a.sess.Thinking))
 		}
 		if text, hint := pillLine(a.pillSession()); text != "" && a.prefs.Overlay.LiveLines && !hint {
 			out = append(out, liveLinesKey(text))

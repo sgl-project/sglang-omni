@@ -656,6 +656,20 @@ public func screenSide(_ maxSide: Int?) -> Int {
     return min(n, screenMaxSide)
 }
 
+// MARK: clipboard.image
+
+public struct ClipboardImageParams: Codable, Sendable {
+    /// The picture's longer side in pixels: screenMaxSide when nil or 0, at most screenMaxSide.
+    public var maxSide: Int?
+    public init(maxSide: Int? = nil) { self.maxSide = maxSide }
+}
+
+public struct ClipboardImageResult: Codable, Sendable {
+    /// A JPEG; base64 on the wire. nil: the clipboard holds no picture to send.
+    public var jpeg: Data?
+    public init(jpeg: Data? = nil) { self.jpeg = jpeg }
+}
+
 // MARK: output.*
 
 /// An output device; uid is its identity (the id may change).
@@ -769,6 +783,7 @@ public enum WireTypes {
         case Method.appConfigure: AppConfigureParams.self
         case Method.appIcons: AppIconsParams.self
         case Method.screenWindow: ScreenWindowParams.self
+        case Method.clipboardImage: ClipboardImageParams.self
         case Method.outputWatch: OutputWatchParams.self
         case Method.outputMute: OutputMuteParams.self
         case Method.outputRelease: OutputReleaseParams.self
@@ -813,6 +828,7 @@ public enum WireTypes {
         case Method.appList: AppListResult.self
         case Method.appIcons: AppIconsResult.self
         case Method.screenWindow: ScreenWindowResult.self
+        case Method.clipboardImage: ClipboardImageResult.self
         case Method.outputWatch: OutputState.self
         case Method.outputMute: OutputMuteResult.self
         case Method.outputRelease: OutputReleaseResult.self

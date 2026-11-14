@@ -658,9 +658,10 @@ func (s *System) Layout(p Params) *Layout {
 	p.Style.Lang = strings.Clone(p.Style.Lang)
 	c := s.layout(p)
 	c.bytes = layoutBytes(c)
-	// A large paragraph still lays out correctly; keeping it would evict
-	// all the ordinary labels and lines of other windows.
-	if c.bytes <= maxLayoutBytes {
+	// A paragraph over the ordinary budget (a long document) is kept while
+	// frames use it, as overLayoutBudget lets recent layouts be; else every
+	// frame shapes it again. Only one over the hard limit is not kept.
+	if c.bytes <= maxLiveLayoutBytes {
 		for s.oldest != nil && (s.overLayoutBudget(c.bytes) || len(s.layouts) >= maxLayouts) {
 			s.removeLayout(s.oldest)
 		}

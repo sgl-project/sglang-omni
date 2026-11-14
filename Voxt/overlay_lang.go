@@ -49,6 +49,9 @@ type langMenuState struct {
 // langMenuWanted says whether the menu shows: the card shows, offers
 // another language (or thinking level), and the capsule opened it.
 func (a *app) langMenuWanted() bool {
+	if a.answer.pillMenu {
+		return a.answer.langOpen && a.ov.shown && a.pillThinks(a.ov.mode)
+	}
 	v := a.cardNow()
 	return a.answer.langOpen && a.ov.shown && a.ov.mode == ovAnswer && (a.answer.thinkMenu && v.canThink || !a.answer.thinkMenu && v.canLang)
 }
@@ -87,18 +90,31 @@ func thinkMenuFrame(lang mygo.Rectangle, top bool, n int) mygo.Rectangle {
 	return lang
 }
 
+// pillMenuFrame is the working pill's thinking menu's frame for the
+// pill's window frame pill: n rows, its right edge under the pill's (the
+// capsule ends the row), above the pill or, at the top, under it.
+func pillMenuFrame(pill mygo.Rectangle, top bool, n int) mygo.Rectangle {
+	h := min(n*ovLangRowH+2*ovLangPad, ovLangMaxH)
+	x := pill.X + pill.Width - layout.Pad - ovLangW
+	y := pill.Y + layout.Pad - ovLangGap - h
+	if top {
+		y = pill.Y + pill.Height - layout.Pad + ovLangGap
+	}
+	return mygo.Rectangle{X: x - layout.Pad, Y: y - layout.Pad, Width: ovLangW + 2*layout.Pad, Height: h + 2*layout.Pad}
+}
+
 // toggleLangMenu opens or closes the language menu (the capsule); it
 // takes the thinking menu's place.
 func (a *app) toggleLangMenu() {
 	a.answer.langOpen = !a.answer.langOpen || a.answer.thinkMenu
-	a.answer.thinkMenu = false
+	a.answer.thinkMenu, a.answer.pillMenu = false, false
 	a.syncLangMenu()
 }
 
 // closeLangMenu closes the language (or thinking) menu, if it shows.
 func (a *app) closeLangMenu() {
 	if a.answer.langOpen {
-		a.answer.langOpen, a.answer.thinkMenu = false, false
+		a.answer.langOpen, a.answer.thinkMenu, a.answer.pillMenu = false, false, false
 		a.syncLangMenu()
 	}
 }
@@ -108,8 +124,8 @@ func (a *app) closeLangMenu() {
 func (a *app) syncLangMenu() {
 	m := &a.ov.lang
 	if !a.langMenuWanted() {
-		if !a.ov.shown || a.ov.mode != ovAnswer {
-			a.answer.langOpen, a.answer.thinkMenu = false, false
+		if !a.ov.shown || a.ov.mode != ovAnswer || a.answer.pillMenu {
+			a.answer.langOpen, a.answer.thinkMenu, a.answer.pillMenu = false, false, false
 		}
 		if m.shown {
 			m.shown = false
@@ -120,7 +136,9 @@ func (a *app) syncLangMenu() {
 		return
 	}
 	frame := langMenuFrame(a.ov.frame, a.prefs.Overlay.Position == "top")
-	if a.answer.thinkMenu {
+	if a.answer.pillMenu {
+		frame = pillMenuFrame(a.ov.frame, a.prefs.Overlay.Position == "top", len(a.menuThinkLevels()))
+	} else if a.answer.thinkMenu {
 		frame = thinkMenuFrame(frame, a.prefs.Overlay.Position == "top", len(a.cardThinkLevels()))
 	} else if a.cardNow().thinks {
 		frame.X -= layout.CardBtn + layout.CardHeadGap // the thinking button sits between the capsule and Insert

@@ -376,6 +376,7 @@ type fakeLLM struct {
 	err    error
 	failOn int
 	hang   bool
+	hangOn int // with hang: only the hangOn-th request hangs (0: all)
 	chunk  int
 	pause  time.Duration
 	finish string // the response's FinishReason
@@ -392,8 +393,9 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		text = f.texts[min(len(f.reqs), len(f.texts))-1]
 	}
 	failed := f.err != nil && (f.failOn == 0 || f.failOn == len(f.reqs))
+	hang := f.hang && (f.hangOn == 0 || f.hangOn == len(f.reqs))
 	f.mu.Unlock()
-	if f.hang {
+	if hang {
 		if req.OnDelta != nil {
 			req.OnDelta("Half an ans")
 		}
