@@ -5,6 +5,7 @@ package main
 // a connection test before saving, and Remove.
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"strings"
@@ -30,7 +31,8 @@ type providerDialog struct {
 	err, errMore       string // a save or check error
 	saving, removeKey  bool
 	test               providerTest
-	gen                genForm // a language model's generation settings (remote_generation.go)
+	gen                genForm  // a language model's generation settings (remote_generation.go)
+	served             []string // the models the server says it has (listModels); nil: the preset's list
 	// was is the setup the dialog opened with: a click beside the dialog,
 	// or Escape, does not close it while the form differs (unsaved).
 	was settings.Provider
@@ -60,6 +62,73 @@ func (a *app) openProviderDialog(kind local.Kind, id string) {
 	if acct := providers.Account(kind, id); !a.keyRead(acct) {
 		a.loadKeyMasks([]string{acct})
 	}
+	a.listModels()
+}
+
+// listModels asks a language model server on this Mac (Ollama, LM Studio,
+// oMLX, a custom one) which models it has, for the Model menu: the
+// preset's names may not be installed (#3950). With no answer the menu is
+// the preset's.
+func (a *app) listModels() {
+	d := &a.provDlg
+	if d.kind != local.LLM || !lookupService(d.kind, d.id).keyOptional {
+		return
+	}
+	p, acct := d.setup(), providers.Account(d.kind, d.id)
+	typed, remove, kr, client := strings.TrimSpace(d.key), d.removeKey, a.keys, a.remoteHTTP.Load()
+	a.async(func() {
+		key := typed
+		if key == "" && !remove {
+			key, _ = kr.Get(acct)
+		}
+		models, err := runListModels(context.Background(), p, key, client)
+		a.post(func() {
+			if !a.provDlg.open || providers.Account(a.provDlg.kind, a.provDlg.id) != acct || a.provDlg.setup().Endpoint != p.Endpoint {
+				return // closed, or an answer for an address since changed
+			}
+			if err != nil || len(models) == 0 {
+				a.provDlg.served = nil // back to the preset's list, not another address's
+				return
+			}
+			a.provDlg.offer(models)
+		})
+	})
+}
+
+// runListModels is providers.Models; tests swap it.
+var runListModels = providers.Models
+
+// offer puts the server's models in the Model menu. A typed model ID the
+// server has becomes its menu item; a new, untouched setup whose default
+// the server lacks takes the server's first model.
+func (d *providerDialog) offer(models []string) {
+	untouched := !d.exists && !d.unsaved()
+	d.served = models
+	cur := d.model
+	if cur == otherModel() {
+		cur = strings.TrimSpace(d.customModel)
+	}
+	switch {
+	case slices.Contains(models, cur):
+		d.model, d.customModel = cur, ""
+	case untouched:
+		d.model, d.customModel = models[0], ""
+		d.was = d.setup()
+	}
+}
+
+// modelOptions is the Model menu: the server's models when it listed
+// them, else the preset's, then the setup's own model if neither has it,
+// then Other.
+func (d *providerDialog) modelOptions(preset []string) []string {
+	opts := slices.Clone(preset)
+	if d.served != nil {
+		opts = slices.Clone(d.served)
+	}
+	if d.model != otherModel() && d.model != "" && !slices.Contains(opts, d.model) {
+		opts = append(opts, d.model)
+	}
+	return append(opts, otherModel())
 }
 
 // keyRead says whether account's key was read (its mask may be "").
@@ -174,8 +243,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 			})
 		}
 		fieldInfo(c, i18n.T("Model"), "", func() {
-			opts := append(slices.Clone(sv.models), otherModel())
-			ui.Select(c.Key("remote-model"), &d.model, opts).Label(i18n.T("Model")).Width(px(t, 320))
+			ui.Select(c.Key("remote-model"), &d.model, d.modelOptions(sv.models)).Label(i18n.T("Model")).Width(px(t, 320))
 			if d.model == otherModel() {
 				ui.TextInput(c.Key("remote-model-custom"), &d.customModel).Placeholder(i18n.T("Model ID")).Label(i18n.T("Model ID"))
 			}
@@ -267,6 +335,7 @@ func (a *app) testDialog() {
 		}
 		return kr.Get(acct)
 	})
+	a.listModels() // the address may have changed since the menu was filled
 }
 
 // saveProviderDialog checks the form, saves the key (when one was typed
