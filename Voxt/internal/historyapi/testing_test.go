@@ -2,6 +2,7 @@ package historyapi
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -80,11 +81,23 @@ func entryID(i int) string {
 	return "e" + string(rune('a'+i/676)) + string(rune('a'+i/26%26)) + string(rune('a'+i%26))
 }
 
+// socketPath avoids t.TempDir(), whose path holds the test's name and can
+// overflow the 104-byte socket path limit on macOS.
+func socketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "vx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, SocketName)
+}
+
 // startServer serves f on a socket in a new folder; the returned stop
 // waits for it to end.
 func startServer(t *testing.T, s *Server) (path string, cancel func()) {
 	t.Helper()
-	path = filepath.Join(t.TempDir(), SocketName)
+	path = socketPath(t)
 	ln, err := Listen(path)
 	if err != nil {
 		t.Fatal(err)

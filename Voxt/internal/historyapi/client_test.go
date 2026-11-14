@@ -21,7 +21,7 @@ func TestUnavailable(t *testing.T) {
 
 // TestNoEndLine: a reply that stops short is interrupted, not success.
 func TestNoEndLine(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.sock")
+	path := socketPath(t)
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
