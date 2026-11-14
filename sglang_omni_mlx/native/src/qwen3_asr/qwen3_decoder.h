@@ -15,6 +15,8 @@
 
 namespace qwen3_asr {
 
+inline constexpr int kDefaultKvCacheStepTokens = 256;
+
 struct Qwen3DecoderConfig {
   int num_hidden_layers = 0;
   int num_attention_heads = 0;
@@ -52,11 +54,10 @@ public:
   std::pair<mlx::core::array, mlx::core::array> Filled() const;
 
 private:
-  static constexpr int kDefaultStepTokens = 256;
   std::optional<mlx::core::array> keys_;
   std::optional<mlx::core::array> values_;
   int offset_ = 0;
-  int step_tokens_ = kDefaultStepTokens;
+  int step_tokens_ = kDefaultKvCacheStepTokens;
 };
 
 // Key/value cache for sequences decoded in lockstep. Rows are left-padded to

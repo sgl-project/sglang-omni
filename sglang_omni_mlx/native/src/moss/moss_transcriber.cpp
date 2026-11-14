@@ -10,6 +10,7 @@
 #include <regex>
 
 #include "common/audio.h"
+#include "common/audio_chunks.h"
 #include "common/text.h"
 #include "nlohmann/json.hpp"
 
@@ -22,6 +23,7 @@ using omni_common::kSampleRate;
 using omni_common::kWhisperWindowSampleCount;
 using omni_common::StripUnicodeWhitespace;
 using omni_common::WhisperWindowFeatures;
+using qwen3_asr::DraftStatistics;
 using qwen3_asr::FinishReason;
 using qwen3_asr::KVCache;
 using qwen3_asr::SpeakerSegment;
@@ -125,30 +127,8 @@ std::vector<AudioChunk> SplitAudio(const std::vector<float> &samples,
     const int search_end = std::min(total_samples, end_sample + search_samples);
     int cut_sample = end_sample;
     if (search_end - search_start > energy_window_samples) {
-      const int energy_count =
-          search_end - search_start - energy_window_samples + 1;
-      const float inverse_window =
-          1.0f / static_cast<float>(energy_window_samples);
-      float window_sum = 0.0f;
-      for (int i = 0; i < energy_window_samples; ++i) {
-        const float value = samples[search_start + i];
-        window_sum += value * value;
-      }
-      float min_energy = window_sum * inverse_window;
-      int min_index = 0;
-      for (int i = 1; i < energy_count; ++i) {
-        const float old_value = samples[search_start + i - 1];
-        const float new_value =
-            samples[search_start + i + energy_window_samples - 1];
-        window_sum += new_value * new_value - old_value * old_value;
-        const float energy = window_sum * inverse_window;
-        if (energy < min_energy) {
-          min_energy = energy;
-          min_index = i;
-        } else {
-        }
-      }
-      cut_sample = search_start + min_index + energy_window_samples / 2;
+      cut_sample = static_cast<int>(omni_common::QuietestAudioPosition(
+          samples, search_start, search_end, energy_window_samples));
     } else {
     }
     cut_sample = std::max(cut_sample, start_sample + sample_rate);
@@ -416,9 +396,9 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
       return static_cast<int>(output_ids.size()) >= max_new_tokens;
     }
   };
-  int verify_round_count = 0;
+  DraftStatistics draft_statistics;
   if (draft_.has_value()) {
-    verify_round_count =
+    draft_statistics =
         draft_->Decode(model_.decoder(), embeddings, max_new_tokens,
                        kPrefillStepTokens, commit, cancel);
   } else {
@@ -468,7 +448,9 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
                     offset_seconds);
   result.generated_token_count = static_cast<int>(output_ids.size());
   result.finish_reason = finish_reason;
-  result.verify_round_count = verify_round_count;
+  result.verify_round_count = draft_statistics.verify_round_count;
+  result.proposed_draft_token_count = draft_statistics.proposed_token_count;
+  result.accepted_draft_token_count = draft_statistics.accepted_token_count;
   return result;
 }
 
@@ -513,6 +495,8 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
                              result.segments.end());
     combined.generated_token_count += result.generated_token_count;
     combined.verify_round_count += result.verify_round_count;
+    combined.proposed_draft_token_count += result.proposed_draft_token_count;
+    combined.accepted_draft_token_count += result.accepted_draft_token_count;
     // Note (Dayuxiaoshui): one truncated chunk cuts the whole transcript short.
     if (result.finish_reason == FinishReason::kLength) {
       combined.finish_reason = FinishReason::kLength;

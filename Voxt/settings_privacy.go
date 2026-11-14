@@ -1,7 +1,7 @@
 package main
 
 // Settings → Privacy: what leaves this Mac (text, and a screenshot of the
-// window when the user turns that on, to the language
+// window or the copied image when the user turns that on, to the language
 // model the user set up; the speech models run here; the network is also
 // for update checks and model downloads), and what VoxtNew keeps here:
 // the history, its recordings, the text in the logs.
@@ -45,6 +45,12 @@ func (a *app) privacySettings(c *ui.Context) {
 			if on {
 				a.askScreenRecording()
 			}
+		}
+	})
+	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with the selected text and what you said. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
+		if ui.Switch(c.Key("priv-copied"), &a.settingsForm.sendClipboard).Label(i18n.T("Send the copied image with Rewrite")).Changed() {
+			on := a.settingsForm.sendClipboard
+			a.updateSettings(func(s *settings.Settings) { s.Privacy.SendClipboardImage = on })
 		}
 	})
 

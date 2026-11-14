@@ -26,8 +26,9 @@ uses diffusers' ZImage backbone, SigVQ conditioning, and a VAE. This is
 LLaDA2-Uni's semantic decoder, not the LLaDA-Image text-conditioned model.
 The `text` variant retains the four-stage text-output pipeline.
 
-The CFG thinker currently uses synchronous eager execution. An explicit
-CUDA graph request is rejected until CFG graph metadata is supported.
+The CFG thinker uses synchronous execution and defaults to eager mode.
+CUDA Graph replay is available for fixed-width DLLM blocks, including
+multi-way CFG and tensor parallel execution.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
@@ -36,6 +37,25 @@ sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
 
 The cookbook explicitly disables `torch.compile` to match the validated
 generation settings. CUDA Graph execution is controlled separately.
+
+### Thinker Tensor Parallelism
+
+The Thinker defaults to eager execution with Torch expert routing. Enable TP2 and optional CUDA Graph replay with:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+  --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --thinker.process thinker --thinker.tp_size 2 --thinker.gpu '[0, 1]' \
+  --thinker.engine.disable_cuda_graph false \
+  --thinker.engine.enable_torch_compile false \
+  --thinker.engine.cuda_graph_bs '[1, 2, 3, 4]'
+```
+
+Graph batch sizes count CFG branches: two for T2I and three for editing. Prefill and blocks whose current query contains left padding stay eager. Set `disable_cuda_graph` to `true` to disable replay.
+
+To select SGLang's fused expert routing, add `--thinker.engine.json_model_override_args '{"llada2_uni_topk_backend":"sglang"}'`. The default is `"torch"`; the implementations can differ numerically, so validate accuracy when changing this option.
+
+Thinker TP workers share the same visible GPU list and select distinct local devices, allowing SGLang's custom all-reduce to initialize.
 
 ## Image Generation and Editing
 

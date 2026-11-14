@@ -13,7 +13,7 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 
 | Path | Contents |
 | --- | --- |
-| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `campplus`, `form`, `layers`, `npz`, `reference_audio`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server`, `fishaudio_drama3_server`, `fish_s2_pro_server` and `ming_tts_server` share (`speech_service`), built on `asr_service`. `ming3_audio_server` serves `/v1/chat/completions` from its own service in `src/ming3_audio/`. |
+| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `campplus`, `form`, `layers`, `npz`, `reference_audio`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server`, `fishaudio_drama3_server`, `fish_s2_pro_server`, `ming_tts_server` and `auk_server` share (`speech_service`), built on `asr_service`. `ming3_audio_server` serves `/v1/chat/completions` from its own service in `src/ming3_audio/`. |
 | `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests and the [long-recording benchmark](long_audio.md). |
 | `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
 | `Voxt/` | Voxt, the macOS app that runs the native servers. See [`Voxt/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/README.md). |
@@ -60,6 +60,10 @@ The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned
 
 `moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
 
+`whisper_server` and `whisper_transcribe` take `--draft-model-path DIR` and `--draft-steps N` (proposals per round, 7 by default). The draft is a distil Whisper decoder: each round it proposes N tokens and the target verifies them in one pass, so a greedy request keeps the target's transcript; a request with a positive `temperature` samples without the draft. The draft decodes the target's encoder states, so only its decoder is loaded, in the target's dtype, after its width, vocabulary and text positions are checked against the target. For `mlx-community/whisper-large-v3-mlx`, convert `wilsonzheng0327/Whisper-large-v3-distil-draft` (pinned in `ci/model_pins.json`) with `python ci/convert_whisper_draft.py HF_DIRECTORY NATIVE_DIRECTORY`. The CLI reports `verify_rounds`, `proposed_draft_token_count` and `accepted_draft_token_count` per file.
+
+A drafted request that sets `include_generation_metadata` also gets `verify_round_count`, `proposed_draft_token_count` and `accepted_draft_token_count` in its done event's `generation_metadata`, for every server above; the target's own token each round counts in neither token count.
+
 ## Rule 2: Contribution requirements
 
 **Placement and reuse**
@@ -71,7 +75,7 @@ The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned
   (`common`, `swift_port`, `silero_vad`, `sortformer`, `fish_dac`). Shared code goes in
   `src/common/`, not in another model's directory or library. Include project
   headers by their path under `src/`, e.g. `#include "common/layers.h"`.
-- Shared audio, checkpoint/layer, tokenizer and multipart APIs use the `omni_common` namespace and the `common` library. HTTP helpers use `omni_server` and the `common_http` library; neither library depends on a model. Qwen3-ASR audio layouts, log-mel extraction and encoder token counts belong to `qwen3_asr/qwen3_audio.h`. Shared decoder and ASR serving types still live under `qwen3_asr/`; their extraction is separate from the common primitive APIs.
+- Shared audio, checkpoint/layer, tokenizer and multipart APIs use the `omni_common` namespace and the `common` library. HTTP helpers use `omni_server` and the `common_http` library; neither library depends on a model. Whisper-style log-mel extraction is `omni_common::LogMel` in `common/audio.h`; Qwen3-ASR audio layouts and encoder token counts belong to `qwen3_asr/qwen3_audio.h`. Shared decoder and ASR serving types still live under `qwen3_asr/`; their extraction is separate from the common primitive APIs.
 - Reuse `layers`, `swift_port`, the Sortformer front end, the Silero VAD
   port and the Fish DAC. If your code duplicates something on `main`, move it into the shared
   file in the same PR.

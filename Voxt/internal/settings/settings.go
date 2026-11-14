@@ -108,6 +108,10 @@ type Privacy struct {
 	// the language model, with the text (session/window.go); off by
 	// default.
 	SendWindow bool `json:"sendWindow,omitempty"`
+	// SendClipboardImage sends the picture on the clipboard with
+	// Rewrite's text to the language model (session/window.go); off by
+	// default.
+	SendClipboardImage bool `json:"sendClipboardImage,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.
@@ -148,6 +152,14 @@ type Audio struct {
 	// whole recording once more (the Final), so the text comes sooner and
 	// is a little less accurate (#3644 FB7). Off: the Final runs.
 	LiveResult bool `json:"liveResult,omitempty"`
+	// UploadMB caps each upload to a speech service that takes the whole
+	// recording and splits long ones (OpenAI, Doubao): pieces of at most
+	// this many MB (1 MB = 2^20 bytes). 0, or more than the service's own
+	// limit: the service's (25 MB, 100 MB). MaxSeconds stops a recording
+	// at this length, as Stop does (0: no limit). Settings → Audio shows
+	// it in minutes; the overlay warns as either limit nears (#3840).
+	UploadMB   int `json:"uploadMB,omitempty"`
+	MaxSeconds int `json:"maxSeconds,omitempty"`
 }
 
 // MuteOn reports whether recordings mute the system's output: the user's

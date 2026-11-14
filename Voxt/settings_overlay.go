@@ -217,7 +217,7 @@ func (a *app) overlayPreview(c *ui.Context) {
 				ui.Box(c).Absolute().Fill().Radius(radius).Material(glass.Blur{Radius: 8})
 				face := ui.Column(c.Key("ov-preview-face")).Absolute().Left(0).Top(0).Right(0).Bottom(0)
 				faceStyle(face, o, ovRecording, layout.PillH).Children(func() {
-					overlayPill(c, s, ovRecording, pillLook{time: o.ShowTime, w: w})
+					overlayPill(c, s, ovRecording, pillLook{time: o.ShowTime, w: w}, "")
 				})
 			})
 			c.SetTheme(t)

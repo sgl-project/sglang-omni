@@ -168,17 +168,15 @@ func snapshotsMain(t *testing.T, out string) {
 				a.checks = nil
 			}
 			if s.id == "audio" { // the sounds and the output's mute, under the fold
+				w, h := snapshotSize()
+				tt.SetSize(w, 1500) // the limits, under the fold (#3840)
+				save("settings-audio-limits")
+				tt.SetSize(w, h)
 				scrollToText(tt, i18n.T("Mute system audio while recording"))
 				save("settings-audio-sounds")
 				tt.Click(i18n.T("macOS")) // the macOS sounds' lines (settings_soundchoice.go)
 				frames(tt)
 				save("settings-audio-sounds-macos")
-			}
-			if s.id == "shortcuts" { // Strict shortcuts, under the table: a taller window shows it
-				w, h := snapshotSize()
-				tt.SetSize(w, 780)
-				save("settings-shortcuts-strict")
-				tt.SetSize(w, h)
 			}
 			if s.id == "overlay" { // its preview, under the controls
 				w, h := snapshotSize()

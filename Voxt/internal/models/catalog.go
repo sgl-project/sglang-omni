@@ -20,6 +20,11 @@
 // Imports: nothing internal (actnowkit's hfhub and models).
 package models
 
+import (
+	"iter"
+	"slices"
+)
+
 // Kind is what a model does.
 type Kind string
 
@@ -158,6 +163,10 @@ func Catalog() []Model {
 	copy(out, catalog)
 	return out
 }
+
+// All is every model in Catalog's order, without Catalog's copy: for
+// read-only loops that run every frame.
+func All() iter.Seq[Model] { return slices.Values(catalog) }
 
 // Lookup is the model of id.
 func Lookup(id string) (Model, bool) {

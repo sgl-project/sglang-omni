@@ -60,8 +60,11 @@ struct TranscriptionResult {
   FinishReason finish_reason = FinishReason::kLength;
   // Timestamped speaker segments, for models that produce them.
   std::vector<SpeakerSegment> segments;
-  // Rounds of draft verification; 0 when decoding without a draft.
+  // Rounds of draft verification, and the draft proposals the target checked
+  // and accepted; all 0 when decoding without a draft.
   int verify_round_count = 0;
+  int proposed_draft_token_count = 0;
+  int accepted_draft_token_count = 0;
 };
 
 class TranscriptionCancelled : public std::runtime_error {
@@ -131,11 +134,11 @@ private:
   bool IsStopToken(int token_id, const TranscriptionOptions &options) const;
   // The result for a finished output; a stop on a token loop keeps one copy
   // of the looping unit.
-  TranscriptionResult FinishedResult(const std::vector<int> &output_ids,
-                                     const TranscriptionOptions &options,
-                                     FinishReason finish_reason,
-                                     bool stopped_on_token_loop,
-                                     int verify_round_count = 0) const;
+  TranscriptionResult
+  FinishedResult(const std::vector<int> &output_ids,
+                 const TranscriptionOptions &options,
+                 FinishReason finish_reason, bool stopped_on_token_loop,
+                 const DraftStatistics &draft_statistics = {}) const;
 
   struct BatchRow;
   // Prefills every request; one that fails is reported finished with its

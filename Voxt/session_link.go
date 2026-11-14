@@ -30,6 +30,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -100,6 +101,14 @@ type answerCard struct {
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).
 	redo, redoLang string
+	// llmID is the language model service that answered (its settings'
+	// Provider.ID); think the thinking level the answer was asked with,
+	// nil the service's; redoThink the redo's; thinkMenu: the card's menu
+	// (langOpen) lists the thinking levels, not the languages; pillMenu:
+	// the working pill's (#3940), not the card's.
+	llmID               string
+	think, redoThink    *llm.Thinking
+	thinkMenu, pillMenu bool
 	// copied: Copy's mark shows (2 s, Voxt's); copySeq numbers the
 	// copies, so that a copy's timer clears only its own mark.
 	copied  bool
@@ -151,6 +160,14 @@ func (a *app) openSessions() {
 		Window: func(ctx context.Context, pid int) ([]byte, error) {
 			var r proto.ScreenWindowResult
 			raw, err := sup.Call(ctx, "", proto.MethodScreenWindow, proto.ScreenWindowParams{PID: pid}, nil)
+			if err == nil {
+				err = json.Unmarshal(raw, &r)
+			}
+			return r.JPEG, err
+		},
+		ClipboardImage: func(ctx context.Context) ([]byte, error) {
+			var r proto.ClipboardImageResult
+			raw, err := sup.Call(ctx, "", proto.MethodClipboardImage, proto.ClipboardImageParams{}, nil)
 			if err == nil {
 				err = json.Unmarshal(raw, &r)
 			}

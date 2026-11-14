@@ -160,8 +160,8 @@ BatchedKVCache::Append(const mx::array &keys, const mx::array &values) {
   if (end_ + 1 > capacity()) {
     const auto grown = [](const mx::array &heads) {
       return mx::concatenate(
-          {heads, mx::zeros({heads.shape(0), heads.shape(1), kKvCacheStepTokens,
-                             heads.shape(3)},
+          {heads, mx::zeros({heads.shape(0), heads.shape(1),
+                             kDefaultKvCacheStepTokens, heads.shape(3)},
                             heads.dtype())},
           2);
     };

@@ -9,18 +9,16 @@ import (
 
 // jobAnchor maps helper PCM offsets to meeting elapsed time (pause-aware).
 type jobAnchor struct {
-	job          string
-	at           time.Duration
-	bytesAtStart int64
+	job string
+	at  time.Duration
 }
 
 // Timeline maps capture job byte offsets to elapsed meeting audio time.
 type Timeline struct {
 	mu sync.Mutex
 
-	activeJob   map[Source]string
-	anchors     map[Source][]jobAnchor
-	meetingBase time.Duration // elapsed audio time at last wall event
+	activeJob map[Source]string
+	anchors   map[Source][]jobAnchor
 
 	pauseActive bool
 	pauseStart  time.Time
@@ -46,7 +44,7 @@ func (t *Timeline) Begin(src Source, job string, at time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.activeJob[src] = job
-	t.anchors[src] = append(t.anchors[src], jobAnchor{job: job, at: at, bytesAtStart: 0})
+	t.anchors[src] = append(t.anchors[src], jobAnchor{job: job, at: at})
 }
 
 // At converts a PCM byte offset in job to meeting elapsed time.
@@ -55,13 +53,12 @@ func (t *Timeline) At(src Source, job string, offsetBytes int64) time.Duration {
 	defer t.mu.Unlock()
 	anchor := t.findAnchor(src, job)
 	if anchor == nil {
-		return t.meetingBase
+		return 0
 	}
-	samples := offsetBytes - anchor.bytesAtStart
-	if samples < 0 {
-		samples = 0
+	if offsetBytes < 0 {
+		offsetBytes = 0
 	}
-	return anchor.at + time.Duration(samples)*time.Second/asr.BytesPerSecond
+	return anchor.at + time.Duration(offsetBytes)*time.Second/asr.BytesPerSecond
 }
 
 // Elapsed is wall time minus pauses while not idle.
@@ -106,13 +103,6 @@ func (t *Timeline) NoteResume() {
 	t.pauseTotal += t.now().Sub(t.pauseStart)
 	t.pauseActive = false
 	t.pauseStart = time.Time{}
-}
-
-// MeetingAt records that meeting elapsed time reached at (wall event).
-func (t *Timeline) MeetingAt(at time.Duration) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.meetingBase = at
 }
 
 func (t *Timeline) findAnchor(src Source, job string) *jobAnchor {
