@@ -64,7 +64,11 @@ from sglang_omni.proto import (
 )
 from sglang_omni.proto.messages import StreamChunkBatchMessage
 from sglang_omni.proto.request import RoutedPayloads
-from sglang_omni.proto.session import SessionOperation, find_session_operation
+from sglang_omni.proto.session import (
+    SessionIdentityDict,
+    SessionOperation,
+    find_session_operation,
+)
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import (
     IncomingMessage,
@@ -670,6 +674,7 @@ class Stage:
             request_id=chunk.request_id,
             from_stage=from_stage,
             chunk_id=chunk.chunk_id,
+            session_sampling_identity=chunk.session_sampling_identity,
         )
         _comm_trace(
             "comm_stream_read",
@@ -744,6 +749,19 @@ class Stage:
         else:
             pass
         self.record_replica_bindings(request_id, msg.replica_bindings)
+        payload = msg.data
+        recorder = _get_recorder()
+        if recorder.is_runtime_active():
+            request_metadata = (
+                payload.request.metadata if isinstance(payload, StagePayload) else None
+            )
+            recorder.record_request_admission(
+                request_id,
+                request_metadata,
+                stage_name=self.name,
+            )
+        else:
+            pass
         self.active_requests.add(request_id)
         if self.stream_queue is not None and not self.stream_queue.has(request_id):
             self.stream_queue.open(request_id)
@@ -756,7 +774,6 @@ class Stage:
             metadata={"from_stage": "coordinator", "kind": "submit"},
         )
 
-        payload = msg.data  # StagePayload from coordinator
         await self.execute(payload)
 
     async def on_data_ready(
@@ -849,6 +866,7 @@ class Stage:
                 request_id=request_id,
                 from_stage=from_stage,
                 chunk_id=chunk.chunk_id,
+                session_sampling_identity=chunk.session_sampling_identity,
             )
             await self.route_stream_item_or_fail(request_id, item)
 
@@ -877,6 +895,15 @@ class Stage:
     ) -> None:
         if request_id in self.aborted:
             return
+        else:
+            pass
+        recorder = _get_recorder()
+        if recorder.is_runtime_active():
+            recorder.record_request_admission(
+                request_id,
+                payload.request.metadata,
+                stage_name=self.name,
+            )
         else:
             pass
         self.active_requests.add(request_id)
@@ -948,6 +975,7 @@ class Stage:
                 request_id=msg.request_id,
                 from_stage=msg.from_stage,
                 chunk_id=msg.chunk_id,
+                session_sampling_identity=msg.session_sampling_identity,
             )
             # This branch never reaches CommEngine.read_stream_chunk, so it
             # emits the read event itself. Without it the held-byte accounting
@@ -1004,6 +1032,7 @@ class Stage:
             request_id=msg.request_id,
             from_stage=msg.from_stage,
             chunk_id=msg.chunk_id,
+            session_sampling_identity=msg.session_sampling_identity,
         )
         await self.route_stream_item_or_fail(request_id, item)
 
@@ -1013,13 +1042,41 @@ class Stage:
         request_id: str,
         from_stage: str,
         chunk_id: int | None,
+        session_sampling_identity: SessionIdentityDict | None = None,
     ) -> None:
+        sampling_session_identity = None
+        if session_sampling_identity is not None:
+            sampling_session_identity = (
+                session_sampling_identity["id"],
+                session_sampling_identity["open_index"],
+            )
+            _get_recorder().register_session_sampling_context(
+                request_id,
+                sampling_session_identity,
+                stage_name=self.name,
+            )
+        else:
+            pass
         _emit_event(
             request_id=request_id,
             stage=self.name,
             event_name="stage_stream_chunk_received",
             metadata={"from_stage": from_stage, "chunk_id": chunk_id},
+            sampling_session_identity=sampling_session_identity,
         )
+
+    @staticmethod
+    def stream_session_sampling_identity(
+        request_id: str,
+    ) -> SessionIdentityDict | None:
+        session_identity = _get_recorder().session_sampling_identity_for_request(
+            request_id
+        )
+        if session_identity is None:
+            return None
+        else:
+            pass
+        return {"id": session_identity[0], "open_index": session_identity[1]}
 
     async def route_stream_item_or_fail(
         self, request_id: str, item: StreamItem
@@ -2271,6 +2328,7 @@ class Stage:
             data=data,
             metadata=metadata,
             replica_bindings=self.replica_bindings.get(request_id),
+            session_sampling_identity=self.stream_session_sampling_identity(request_id),
         )
 
     async def send_local_stream_chunks(
@@ -2337,7 +2395,11 @@ class Stage:
             bytes=data.nbytes,
         )
         return stage_io.BatchedStreamChunk(
-            request_id=request_id, chunk_id=chunk_id, data=data, metadata=metadata
+            request_id=request_id,
+            chunk_id=chunk_id,
+            data=data,
+            metadata=metadata,
+            session_sampling_identity=self.stream_session_sampling_identity(request_id),
         )
 
     async def send_stream_chunk_batch(
@@ -2384,6 +2446,7 @@ class Stage:
         else:
             pass
         chunk_id = self.number_stream_chunk(request_id, target, metadata)
+        session_sampling_identity = self.stream_session_sampling_identity(request_id)
         endpoint = self.endpoints[target]
         chunk_modality = (
             metadata.get("modality") if isinstance(metadata, dict) else None
@@ -2432,6 +2495,7 @@ class Stage:
                     data_ref=direct_ref,
                     chunk_id=chunk_id,
                     replica_bindings=self.replica_bindings.get(request_id),
+                    session_sampling_identity=session_sampling_identity,
                 ),
             )
             return
@@ -2461,6 +2525,7 @@ class Stage:
             metadata=metadata,
             transport=transport_kind,
             replica_bindings=self.replica_bindings.get(request_id),
+            session_sampling_identity=session_sampling_identity,
         )
 
     async def send_stream_signal_to_target(
@@ -2617,6 +2682,11 @@ class Stage:
         self.nonlocal_stream_targets.pop(request_id, None)
         if not keep_replica_bindings:
             self.replica_bindings.pop(request_id, None)
+            recorder = _get_recorder()
+            if recorder.is_runtime_active():
+                recorder.clear_request_sampling(request_id, stage_name=self.name)
+            else:
+                pass
         else:
             pass
 
@@ -2690,7 +2760,7 @@ class Stage:
 
     def on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
-        if msg.enable_torch and not TorchProfiler.is_active():
+        if msg.enable_torch and msg.mode != "runtime" and not TorchProfiler.is_active():
             base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
             template = f"{base_tpl}_pid{os.getpid()}"
             prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
@@ -2708,6 +2778,10 @@ class Stage:
                     event_dir=msg.event_dir,
                     stage=self.name,
                     event_buffer_capacity=msg.event_buffer_capacity,
+                    mode=msg.mode,
+                    sampling_unit=msg.sampling_unit,
+                    sample_rate=msg.sample_rate,
+                    max_event_file_bytes=msg.max_event_file_bytes,
                 )
             except Exception:
                 logger.warning(
