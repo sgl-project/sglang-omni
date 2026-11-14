@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,34 +16,54 @@ from dac.nn.layers import Snake1d
 
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
+    add_bias,
     snake_channels_last_kernel,
 )
-from sglang_omni.models.fishaudio_drama3.config import Drama3VocoderFactoryArgs
+from sglang_omni.models.fishaudio_drama3.codec_transformer import CodecTransformer
+from sglang_omni.models.fishaudio_drama3.config import (
+    DEFAULT_CODEC_PATH,
+    Drama3VocoderFactoryArgs,
+)
 from sglang_omni.models.fishaudio_drama3.request_builders import (
     Drama3FrameStreamer,
     Drama3GenerationResult,
     Drama3RequestData,
 )
+from sglang_omni.models.fishaudio_drama3.stages import resolve_codec_directory
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
+    crossfade_frames,
+    discarded_frames,
+    flush_window_shapes,
     frames_in_complete_windows,
+    stream_window_discards,
     stream_window_lengths,
+    utterance_graph_lengths,
 )
-from sglang_omni.models.fishaudio_drama3.vocoder import (
-    Drama3VocoderScheduler,
+from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
+from sglang_omni.models.fishaudio_drama3.window_graphs import (
+    WindowBatchDecoder,
     WindowGraphDecoder,
+    window_graph_keys,
 )
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
+    DAC,
     CausalConvNet,
     DecoderBlock,
     ResidualUnit,
 )
+from sglang_omni.models.fishaudio_s2_pro.stages import load_codec
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.profiler import event_recorder
 from sglang_omni.proto.request import OmniRequest, StagePayload
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.utils.channels_last_conv import (
+    channels_last_conv1d,
+    channels_last_conv_transpose1d,
+)
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
+from tests.unit_test.fixtures.accelerator import require_cuda
 from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
     CublasFlagSetter,
     cublas_flags,
@@ -95,11 +116,13 @@ def numbered_frames(frame_count: int) -> torch.Tensor:
 
 
 def vocoder_with(
-    codec: FrameNumberCodec,
+    codec: FrameNumberCodec | DAC,
     decode_window: WindowDecoder | None = None,
     *,
+    device: str = "cpu",
     factory_args: Drama3VocoderFactoryArgs | None = None,
     max_padded_frames_per_decode: int | None = None,
+    window_batch_decoder: WindowBatchDecoder | None = None,
 ) -> Drama3VocoderScheduler:
     """The vocoder with the configured windows."""
     window_kwargs = (factory_args or Drama3VocoderFactoryArgs()).model_dump(
@@ -115,18 +138,23 @@ def vocoder_with(
     )
     return Drama3VocoderScheduler(
         codec,
-        device="cpu",
+        device=device,
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
+        window_batch_decoder=window_batch_decoder,
         **window_kwargs,
     )
 
 
 def final_payload(
-    frames: torch.Tensor, *, is_streaming: bool, finish_reason: str = "length"
+    frames: torch.Tensor,
+    *,
+    is_streaming: bool,
+    finish_reason: str = "length",
+    request_id: str = "request-a",
 ) -> StagePayload:
     return StagePayload(
-        request_id="request-a",
+        request_id=request_id,
         request=OmniRequest(inputs="hello", params={"stream": is_streaming}),
         data=Drama3GenerationResult(
             frames=frames,
@@ -134,6 +162,25 @@ def final_payload(
             finish_reason=finish_reason,
         ),
     )
+
+
+def chunk_message(
+    request_id: str, chunk_id: int, frames: torch.Tensor
+) -> IncomingMessage:
+    """The engine's stream chunk carrying [frames, 1 + num_codebooks] rows."""
+    return IncomingMessage(
+        request_id=request_id,
+        type="stream_chunk",
+        data=StreamItem(chunk_id=chunk_id, data=frames.T, from_stage="tts_engine"),
+    )
+
+
+def final_audio(result: StagePayload) -> np.ndarray:
+    """The non-streaming audio as the client decodes it: float32 bytes plus shape."""
+    assert isinstance(result.data, dict)
+    assert result.data["audio_waveform_dtype"] == "float32"
+    samples = np.frombuffer(result.data["audio_waveform"], dtype=np.float32)
+    return samples.reshape(result.data["audio_waveform_shape"])
 
 
 def drained(vocoder: Drama3VocoderScheduler) -> list[OutgoingMessage]:
@@ -175,23 +222,31 @@ def streamed(
     codec: FrameNumberCodec | None = None,
     decode_window: WindowDecoder | None = None,
     factory_args: Drama3VocoderFactoryArgs | None = None,
+    window_batch_decoder: WindowBatchDecoder | None = None,
 ) -> tuple[FrameNumberCodec, list[OutgoingMessage]]:
     """Stream chunks of the given sizes, then hand over the final payload with all
-    total_frame_count frames and signal the end of the stream."""
+    total_frame_count frames and signal the end of the stream. With a window batch
+    decoder the chunks queue first, so one drain coalesces them."""
     codec = FrameNumberCodec() if codec is None else codec
-    vocoder = vocoder_with(codec, decode_window, factory_args=factory_args)
+    vocoder = vocoder_with(
+        codec,
+        decode_window,
+        factory_args=factory_args,
+        window_batch_decoder=window_batch_decoder,
+    )
     frames = numbered_frames(total_frame_count)
     start = 0
     for chunk_id, frame_count in enumerate(chunk_frame_counts):
-        vocoder.handle_stream_chunk(
-            "request-a",
-            StreamItem(
-                chunk_id=chunk_id,
-                data=frames[start : start + frame_count].T,
-                from_stage="tts_engine",
-            ),
+        message = chunk_message(
+            "request-a", chunk_id, frames[start : start + frame_count]
         )
+        if window_batch_decoder is None:
+            vocoder.handle_stream_chunk("request-a", message.data)
+        else:
+            vocoder.inbox.put(message)
         start += frame_count
+    while not vocoder.inbox.empty():
+        vocoder.handle_message(vocoder.get_batch_message(), None)
     payload = final_payload(frames, is_streaming=True)
     if is_done_first:
         vocoder.handle_stream_done("request-a")
@@ -339,6 +394,120 @@ def test_the_stream_window_lengths_follow_the_window_config(
     )
 
 
+@pytest.mark.parametrize(
+    ("max_frames", "graph_lengths"),
+    [
+        pytest.param(20, (8, 16, 20), id="ends-at-the-cap"),
+        pytest.param(0, (), id="off"),
+    ],
+)
+def test_utterance_graph_lengths_cover_every_frame_count_up_to_the_cap(
+    max_frames: int, graph_lengths: tuple[int, ...]
+) -> None:
+    assert utterance_graph_lengths(max_frames, frame_step=8) == graph_lengths
+
+
+def test_windows_with_a_discard_get_their_own_graphs_beside_the_whole_ones() -> None:
+    graph_keys = window_graph_keys(
+        (4, 14, 96),
+        (8, 16),
+        max_batch_size=2,
+        window_discards={4: 0, 14: 4, 96: 32},
+        flush_keys=[(8, 4), (16, 14), (16, 0)],
+    )
+
+    assert graph_keys[0] == (2, 96, 32)
+    assert set(graph_keys) == {
+        *((1, graph_length, 0) for graph_length in (4, 8, 14, 16, 96)),
+        (1, 14, 4),
+        (1, 96, 32),
+        (1, 8, 4),
+        (1, 16, 14),
+        (2, 4, 0),
+        (2, 14, 4),
+        (2, 96, 32),
+    }
+
+
+class RecordingBatchDecoder:
+    """Decodes same-length windows together with the frame-number codec, zeroes the
+    discarded frames' audio as a graph that skips them leaves it, and records each
+    decode's window count and (frames, discard)."""
+
+    def __init__(self, codec: FrameNumberCodec) -> None:
+        self.codec = codec
+        self.window_counts: list[int] = []
+        self.shapes: list[tuple[int, int]] = []
+
+    def decode_windows(
+        self, codebook_codes: list[torch.Tensor], discard_frames: int = 0
+    ) -> list[torch.Tensor]:
+        self.window_counts.append(len(codebook_codes))
+        self.shapes.append((int(codebook_codes[0].shape[-1]), discard_frames))
+        audio = self.codec.from_indices(torch.stack(codebook_codes))
+        audio[..., : discard_frames * SAMPLES_PER_FRAME] = 0
+        return list(audio.split(1))
+
+    def __call__(self, indices: torch.Tensor) -> torch.Tensor:
+        return torch.cat(self.decode_windows(list(indices)))
+
+
+# (frames, discarded frames) of each decode of a 214-frame stream.
+SHAPES_TO_214 = [(4, 0), (14, 4), (26, 14), (58, 26), (96, 32), (96, 32), (60, 32)]
+
+
+@pytest.mark.parametrize(
+    ("stream_crossfade_samples", "expected_shapes"),
+    [
+        pytest.param(0, SHAPES_TO_214, id="no-crossfade"),
+        pytest.param(
+            40,
+            [(4, 0), (14, 0), (26, 4), (58, 16), (96, 22), (96, 22), (60, 22)],
+            id="crossfade-keeps-ten-frames",
+        ),
+    ],
+)
+def test_the_stream_never_reads_the_frames_a_window_skips(
+    stream_crossfade_samples: int, expected_shapes: list[tuple[int, int]]
+) -> None:
+    decoder = RecordingBatchDecoder(FrameNumberCodec())
+    factory_args = Drama3VocoderFactoryArgs(
+        stream_crossfade_samples=stream_crossfade_samples
+    )
+    _, messages = streamed(
+        214,
+        [1] * 214,
+        is_done_first=False,
+        factory_args=factory_args,
+        window_batch_decoder=decoder,
+    )
+
+    assert decoder.shapes == expected_shapes
+    np.testing.assert_allclose(
+        streamed_audio(messages),
+        np.repeat(np.arange(214, dtype=np.float32), SAMPLES_PER_FRAME),
+        rtol=1e-6,
+    )
+    # note (Wenyao Gao): a shape the factory captures no graph for would decode its
+    # whole window instead, and nothing else would show it.
+    window_schedule = factory_args.model_dump(
+        include={
+            "stream_stride",
+            "stream_followup_stride_ramp",
+            "stream_followup_stride",
+            "stream_overlap_tokens",
+        }
+    )
+    kept_frames = crossfade_frames(stream_crossfade_samples, SAMPLES_PER_FRAME)
+    assert set(expected_shapes) <= {
+        (frame_count, discarded_frames(overlap_frames, kept_frames))
+        for frame_count, overlap_frames in (
+            *stream_window_discards(**window_schedule).items(),
+            *flush_window_shapes(**window_schedule),
+        )
+    }
+
+
 def test_every_streamed_window_decodes_through_the_given_window_decoder() -> None:
     codec = FrameNumberCodec()
     decoded_frame_counts: list[int] = []
@@ -358,6 +527,102 @@ def test_every_streamed_window_decodes_through_the_given_window_decoder() -> Non
     )
 
 
+def test_coalesced_chunks_vocode_each_request_like_one_chunk_at_a_time() -> None:
+    """Requests start out of phase, so a drained group holds several windows of one
+    request, windows of different lengths, and same-length windows of several
+    requests."""
+    frame_counts = {"request-a": 214, "request-b": 150, "request-c": 131}
+    start_steps = {"request-a": 0, "request-b": 64, "request-c": 70}
+    frames: dict[str, torch.Tensor] = {}
+    for index, (request_id, frame_count) in enumerate(frame_counts.items()):
+        frames[request_id] = numbered_frames(frame_count)
+        frames[request_id][:, 1] += 1000 * index
+    step_count = max(
+        start_steps[request_id] + frame_counts[request_id]
+        for request_id in frame_counts
+    )
+    batch_decoder = RecordingBatchDecoder(FrameNumberCodec())
+    coalescing_vocoder = vocoder_with(
+        FrameNumberCodec(), window_batch_decoder=batch_decoder
+    )
+    one_at_a_time_vocoder = vocoder_with(FrameNumberCodec())
+
+    for step in range(step_count):
+        for request_id, request_frames in frames.items():
+            frame_index = step - start_steps[request_id]
+            if 0 <= frame_index < frame_counts[request_id]:
+                frame = request_frames[frame_index : frame_index + 1]
+                message = chunk_message(request_id, frame_index, frame)
+                coalescing_vocoder.inbox.put(message)
+                one_at_a_time_vocoder.handle_stream_chunk(request_id, message.data)
+            else:
+                pass
+        if step % 16 == 15 or step == step_count - 1:
+            coalescing_vocoder.handle_message(
+                coalescing_vocoder.get_batch_message(), None
+            )
+            assert coalescing_vocoder.inbox.empty()
+        else:
+            pass
+    for vocoder in (coalescing_vocoder, one_at_a_time_vocoder):
+        for request_id in frame_counts:
+            vocoder.handle_streaming_new_request(
+                request_id,
+                final_payload(
+                    frames[request_id], is_streaming=True, request_id=request_id
+                ),
+            )
+            vocoder.handle_stream_done(request_id)
+    coalesced_messages = drained(coalescing_vocoder)
+    one_at_a_time_messages = drained(one_at_a_time_vocoder)
+
+    assert max(batch_decoder.window_counts) > 1
+    for index, request_id in enumerate(frame_counts):
+        request_messages = [
+            message
+            for message in coalesced_messages
+            if message.request_id == request_id
+        ]
+        assert [(message.type, message.data) for message in request_messages] == [
+            (message.type, message.data)
+            for message in one_at_a_time_messages
+            if message.request_id == request_id
+        ]
+        np.testing.assert_array_equal(
+            streamed_audio(request_messages),
+            np.repeat(
+                np.arange(frame_counts[request_id], dtype=np.float32) + 1000 * index,
+                SAMPLES_PER_FRAME,
+            ),
+        )
+
+
+def test_a_failed_window_decode_reports_no_error_for_a_request_aborted_during_it() -> (
+    None
+):
+    """A client that went away while its window decoded with others got an error
+    message when that decode failed."""
+
+    def abort_then_fail(
+        codebook_codes: list[torch.Tensor], discard_frames: int = 0
+    ) -> list[torch.Tensor]:
+        vocoder.record_aborted_request_id("request-b")
+        raise RuntimeError("decode failed")
+
+    vocoder = vocoder_with(
+        FrameNumberCodec(),
+        window_batch_decoder=SimpleNamespace(decode_windows=abort_then_fail),
+    )
+    for request_id in ("request-a", "request-b"):
+        vocoder.inbox.put(chunk_message(request_id, 0, numbered_frames(4)))
+
+    vocoder.handle_message(vocoder.get_batch_message(), None)
+
+    assert [(message.request_id, message.type) for message in drained(vocoder)] == [
+        ("request-a", "error")
+    ]
+
+
 @pytest.mark.accelerator
 def test_window_graphs_decode_every_window_length_like_eager() -> None:
     if not torch.cuda.is_available():
@@ -369,11 +634,14 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
         1, NUM_CODEBOOKS + 1, dtype=torch.float32, device=device
     )
 
-    def causal_decode(indices: torch.Tensor) -> torch.Tensor:
+    def causal_decode(
+        indices: torch.Tensor, *, keep_from_frame: int = 0
+    ) -> torch.Tensor:
         frame_values = (indices.float() * codebook_weights[:, None]).sum(
             dim=1, keepdim=True
         )
-        return frame_values.cumsum(dim=-1).repeat_interleave(SAMPLES_PER_FRAME, dim=-1)
+        audio = frame_values.cumsum(dim=-1).repeat_interleave(SAMPLES_PER_FRAME, dim=-1)
+        return audio[..., keep_from_frame * SAMPLES_PER_FRAME :]
 
     decoder = WindowGraphDecoder(
         causal_decode,
@@ -381,8 +649,11 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
         frame_length=SAMPLES_PER_FRAME,
         device=device,
         window_lengths=(10, 20, 32, 64, 96),
+        max_batch_size=3,
+        window_discards={64: 32, 96: 32},
+        flush_shapes=[(35, 32), (33, 32)],
     )
-    codes = torch.randint(0, 100, (2, NUM_CODEBOOKS, 100), device=device)
+    codes = torch.randint(0, 100, (3, NUM_CODEBOOKS, 100), device=device)
 
     replay_results: list[tuple[torch.Tensor, torch.Tensor]] = []
     for frame_count in (96, 7, 10, 11, 64, 95, 97):
@@ -391,6 +662,33 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
     for decoded_audio, expected_audio in replay_results:
         assert torch.equal(decoded_audio, expected_audio)
     assert torch.equal(decoder(codes[:, :, :20]), causal_decode(codes[:, :, :20]))
+    for frame_count, discard_frames in ((96, 32), (35, 32), (20, 10)):
+        window = codes[:1, :, :frame_count]
+        decoded_audio = decoder(window, discard_frames=discard_frames)
+        skipped_samples = discard_frames * SAMPLES_PER_FRAME
+        assert torch.equal(
+            decoded_audio[..., skipped_samples:],
+            causal_decode(window)[..., skipped_samples:],
+        )
+    # note (Wenyao Gao): replay the batched graphs whatever the startup timing
+    # enabled.
+    decoder.batch_sizes = {64: (3, 2), 96: (2,)}
+    for frame_count, window_count, discard_frames in (
+        (64, 3, 0),
+        (64, 2, 32),
+        (96, 3, 32),
+    ):
+        windows = [codes[row, :, :frame_count] for row in range(window_count)]
+        skipped_samples = discard_frames * SAMPLES_PER_FRAME
+        for window, decoded_audio in zip(
+            windows,
+            decoder.decode_windows(windows, discard_frames=discard_frames),
+            strict=True,
+        ):
+            assert torch.equal(
+                decoded_audio[..., skipped_samples:],
+                causal_decode(window[None])[..., skipped_samples:],
+            )
 
 
 def test_the_final_result_counts_prompt_rows_and_audio_frames() -> None:
@@ -456,11 +754,9 @@ def test_a_non_streaming_batch_decodes_once() -> None:
         results, [5, 7], ["stop", "length"], strict=True
     ):
         assert isinstance(result.data, dict)
-        assert (
-            result.data["audio_data"]
-            == np.repeat(
-                np.arange(frame_count, dtype=np.float32), SAMPLES_PER_FRAME
-            ).tolist()
+        np.testing.assert_array_equal(
+            final_audio(result),
+            np.repeat(np.arange(frame_count, dtype=np.float32), SAMPLES_PER_FRAME),
         )
         assert result.data["usage"] == {
             "prompt_tokens": PROMPT_ROW_COUNT,
@@ -488,14 +784,15 @@ def test_a_non_streaming_batch_decodes_through_the_given_window_decoder() -> Non
     )
 
     assert decoded_shapes == [(2, NUM_CODEBOOKS, 7)]
-    assert [len(result.data["audio_data"]) for result in results] == [
+    assert [final_audio(result).size for result in results] == [
         5 * SAMPLES_PER_FRAME,
         7 * SAMPLES_PER_FRAME,
     ]
 
 
 class CpuSnakeDecoder(ChannelsLastDecoder):
-    """Runs the real sequence and convolution paths with a CPU Snake boundary."""
+    """Runs the real sequence and convolution paths with the snake and residual-add
+    kernels replaced by their CPU formulas."""
 
     def snake(
         self,
@@ -503,10 +800,25 @@ class CpuSnakeDecoder(ChannelsLastDecoder):
         hidden_states: torch.Tensor,
         pad_left: int = 0,
         pad_right: int = 0,
+        *,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self.snake_padding.append((pad_left, pad_right))
-        activated = module(hidden_states.transpose(1, 2)).transpose(1, 2).contiguous()
+        activated = (
+            module(add_bias(hidden_states, bias).transpose(1, 2))
+            .transpose(1, 2)
+            .contiguous()
+        )
         return F.pad(activated, (0, 0, pad_left, pad_right))
+
+    def residual_add(
+        self,
+        hidden_states: torch.Tensor,
+        hidden_bias: torch.Tensor | None,
+        residual: torch.Tensor,
+        residual_bias: torch.Tensor | None,
+    ) -> torch.Tensor:
+        return add_bias(hidden_states, hidden_bias) + add_bias(residual, residual_bias)
 
 
 @pytest.mark.parametrize("context", ["sequence", "residual", "block", "decoder"])
@@ -543,7 +855,7 @@ def test_snake_padding_preserves_real_decoder_sequences(
         else:
             activation = torch.randn(2, frame_count + 5, 8)[:, :frame_count]
             expected = sequence(activation.transpose(1, 2)).transpose(1, 2)
-            actual = decoder.apply_sequence(sequence, activation)
+            actual = add_bias(*decoder.apply_sequence(sequence, activation))
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
     assert any(left > 0 for left, _ in decoder.snake_padding)
     if context == "sequence":
@@ -572,7 +884,7 @@ def test_prepadded_causal_conv_keeps_original_length(
         actual = decoder.causal_conv(module, padded, original_frame_count=frame_count)
         fallback = decoder.causal_conv(module, activation)
     assert actual.shape == (2, frame_count, 4)
-    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(actual + module.conv.bias, expected)
     assert torch.equal(actual, fallback)
 
 
@@ -620,6 +932,7 @@ def test_fused_snake_padding_is_bitwise_equal_to_snake_then_pad(
             activation,
             alpha,
             inverse_alpha,
+            alpha,
             target,
             rows,
             frame_count,
@@ -655,6 +968,7 @@ def test_snake_new_lengths_reuse_the_compiled_kernel(dtype: torch.dtype) -> None
             activation,
             alpha,
             inverse_alpha,
+            alpha,
             output,
             rows,
             frame_count,
@@ -692,6 +1006,7 @@ def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
         activation,
         alpha,
         inverse_alpha,
+        alpha,
         output,
         3 * 125,
         125,
@@ -705,6 +1020,133 @@ def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
         alpha.double() * activation.double()
     ).pow(2)
     torch.testing.assert_close(output, exact.to(dtype))
+
+
+@pytest.mark.accelerator
+def test_the_snake_folds_a_conv_bias_bitwise_like_a_separate_add() -> None:
+    require_cuda()
+    generator = torch.Generator(device="cuda").manual_seed(11)
+    channel_count = 96
+    snake = Snake1d(channel_count).cuda()
+    snake.alpha.data = (
+        torch.rand(1, channel_count, 1, generator=generator, device="cuda") * 4 + 0.05
+    )
+    decoder = ChannelsLastDecoder.__new__(ChannelsLastDecoder)
+    alpha = snake.alpha.detach().float().reshape(-1).contiguous()
+    decoder.snake_alphas = {id(snake): (alpha, (alpha + 1e-9).reciprocal())}
+    activation = torch.randn(
+        (3, 77, channel_count), generator=generator, device="cuda"
+    ).to(torch.float16)
+    bias = (torch.randn(channel_count, generator=generator, device="cuda") * 3).to(
+        torch.float16
+    )
+
+    folded = decoder.snake(snake, activation, 6, 2, bias=bias)
+    separate = decoder.snake(snake, activation + bias, 6, 2)
+
+    assert torch.equal(folded.view(torch.uint8), separate.view(torch.uint8))
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    ("hidden_bias", "residual_bias"), [(True, True), (False, True)]
+)
+def test_the_residual_add_folds_both_biases_bitwise_like_separate_adds(
+    hidden_bias: bool, residual_bias: bool
+) -> None:
+    require_cuda()
+    generator = torch.Generator(device="cuda").manual_seed(12)
+    channel_count = 96
+    decoder = ChannelsLastDecoder.__new__(ChannelsLastDecoder)
+    # note (Wenyao Gao): the residual is shorter than the activation it adds to, as
+    # after a conv.
+    hidden_states = torch.randn(
+        (3, 130, channel_count), generator=generator, device="cuda"
+    ).to(torch.float16)
+    residual = torch.randn(
+        (3, 125, channel_count), generator=generator, device="cuda"
+    ).to(torch.float16)
+    biases = [
+        (
+            (torch.randn(channel_count, generator=generator, device="cuda") * 3).to(
+                torch.float16
+            )
+            if has_bias
+            else None
+        )
+        for has_bias in (hidden_bias, residual_bias)
+    ]
+
+    fused = decoder.residual_add(hidden_states[:, :125], biases[0], residual, biases[1])
+    expected = add_bias(hidden_states[:, :125], biases[0]) + add_bias(
+        residual, biases[1]
+    )
+
+    assert torch.equal(fused.view(torch.uint8), expected.view(torch.uint8))
+
+
+@pytest.mark.accelerator
+def test_graph_replays_of_the_decoder_keep_the_bits_of_convs_adding_their_own_bias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    require_cuda()
+    decoders = []
+    for _ in range(2):
+        codec = tiny_codec().cuda()
+        codec.fold_weight_norm()
+        decoders.append(ChannelsLastDecoder(codec, dtype=torch.float16))
+    folding, reference = decoders
+    # note (Wenyao Gao): in the reference every conv adds its own bias inside its
+    # cuDNN call, no bias is left pending and the residual is a plain add.
+    reference.conv_biases = dict.fromkeys(reference.conv_biases)
+    reference.residual_add = lambda hidden_states, _, residual, __: (
+        hidden_states + residual
+    )
+
+    def with_own_bias(conv_function):
+        def conv(hidden_states, module, weight, bias, *other_arguments):
+            assert bias is None
+            return conv_function(
+                hidden_states, module, weight, module.bias, *other_arguments
+            )
+
+        return conv
+
+    # note (Wenyao Gao): batch-1 windows replay their CUDA graph, the 96-frame one
+    # twice; the batch of 3 decodes eagerly.
+    graphed = WindowGraphDecoder(
+        folding,
+        num_codebooks=NUM_CODEBOOKS,
+        frame_length=int(folding.codec.frame_length),
+        device=torch.device("cuda"),
+        window_lengths=(26, 96),
+    )
+    generator = torch.Generator(device="cuda").manual_seed(13)
+    for batch_size, frame_count in ((1, 26), (1, 96), (1, 96), (3, 26)):
+        codes = torch.randint(
+            0,
+            16,
+            (batch_size, NUM_CODEBOOKS, frame_count),
+            generator=generator,
+            device="cuda",
+        )
+        with torch.no_grad():
+            decoded = graphed(codes.clone())
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    "sglang_omni.models.fishaudio_drama3.channels_last_decoder."
+                    "channels_last_conv1d",
+                    with_own_bias(channels_last_conv1d),
+                )
+                patch.setattr(
+                    "sglang_omni.models.fishaudio_drama3.channels_last_decoder."
+                    "channels_last_conv_transpose1d",
+                    with_own_bias(channels_last_conv_transpose1d),
+                )
+                expected = reference(codes.clone())
+
+        assert decoded.shape == expected.shape
+        assert torch.equal(decoded.view(torch.int16), expected.view(torch.int16))
 
 
 @pytest.mark.accelerator
@@ -740,6 +1182,112 @@ def test_the_channels_last_decoder_decodes_like_the_codec(
     assert decoded.shape == expected.shape
     torch.testing.assert_close(
         decoded.float(), expected, rtol=tolerance, atol=tolerance
+    )
+
+
+@pytest.fixture(scope="module")
+def float16_codec() -> DAC:
+    """The real codec with its quantizer in float16, as the vocoder runs it."""
+    require_cuda()
+    codec = load_codec(resolve_codec_directory(DEFAULT_CODEC_PATH), "cuda")
+    codec.fold_weight_norm()
+    codec.quantizer.to(torch.float16)
+    return codec
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    ("batch_size", "frame_count"),
+    [(4, 96), (1, 220)],
+    ids=["4x96", "1x220-beyond-the-128-frame-window"],
+)
+def test_the_fused_post_module_decodes_like_the_codec_in_float16(
+    float16_codec: DAC, batch_size: int, frame_count: int
+) -> None:
+    quantizer = float16_codec.quantizer
+    module = quantizer.post_module
+    torch.manual_seed(frame_count)
+    codes = torch.randint(0, 1024, (batch_size, 10, frame_count), device="cuda")
+    with torch.no_grad():
+        latent = quantizer.semantic_quantizer.from_codes(codes[:, :1])[0]
+        latent = latent + quantizer.quantizer.from_codes(codes[:, 1:])[0]
+        expected = module(latent.clone())
+
+    actual = CodecTransformer(module)(latent.clone())
+
+    assert actual.dtype == torch.float16
+    torch.testing.assert_close(actual.float(), expected.float(), rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.accelerator
+def test_the_decoder_tail_fuses_snake_conv_and_tanh_like_the_modules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    require_cuda()
+    torch.manual_seed(1)
+    tail = torch.nn.Sequential(
+        Snake1d(96), CausalConvNet(96, 1, kernel_size=7), torch.nn.Tanh()
+    ).cuda()
+    with torch.no_grad():
+        tail[0].alpha.uniform_(0.1, 4.0)
+    codec = tiny_codec().cuda()
+    codec.fold_weight_norm()
+    codec.decoder.model = tail
+    decoder = ChannelsLastDecoder(codec, dtype=torch.float16)
+    frame_count = 2048 * 3 + 7
+    activation = torch.randn(
+        3, frame_count + 5, 96, device="cuda", dtype=torch.float16
+    )[:, :frame_count]
+
+    with torch.no_grad():
+        expected = tail(activation.transpose(1, 2).contiguous()).transpose(1, 2)
+        separate = torch.tanh(
+            decoder.causal_conv(
+                tail[1],
+                decoder.snake(tail[0], activation, tail[1].padding, 0),
+                original_frame_count=frame_count,
+            )
+            + tail[1].conv.bias
+        )
+        monkeypatch.setattr(
+            decoder, "causal_conv", lambda *_: pytest.fail("the tail used cuDNN")
+        )
+        fused, pending_bias = decoder.apply_sequence(tail, activation)
+
+    assert pending_bias is None
+    assert fused.dtype == torch.float16
+    # note (Wenyao Gao): one half ulp from the cuDNN path, within the fp16 modules'
+    # own rounding.
+    torch.testing.assert_close(fused.float(), separate.float(), rtol=0, atol=5e-4)
+    torch.testing.assert_close(fused.float(), expected.float(), rtol=0, atol=4e-3)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("keep_from_frame", [1, 8])
+def test_decoding_from_a_frame_on_matches_that_suffix_of_the_whole_decode(
+    monkeypatch: pytest.MonkeyPatch, keep_from_frame: int
+) -> None:
+    """The conv stack starts at the kept frames minus its receptive field, so the
+    kept audio sees the same inputs as in a whole-window decode."""
+    require_cuda()
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    codec = tiny_codec().cuda()
+    codec.fold_weight_norm()
+    decoder = ChannelsLastDecoder(codec, dtype=torch.float16)
+    codes = torch.randint(0, 16, (2, 10, 24), device="cuda")
+    frame_length = int(codec.frame_length)
+
+    with torch.no_grad():
+        whole = decoder(codes.clone())
+        suffix = decoder(codes.clone(), keep_from_frame=keep_from_frame)
+
+    assert decoder.conv_margin_hops == 20
+    assert suffix.shape == whole[..., keep_from_frame * frame_length :].shape
+    torch.testing.assert_close(
+        suffix.float(),
+        whole[..., keep_from_frame * frame_length :].float(),
+        rtol=2e-3,
+        atol=2e-3,
     )
 
 
@@ -991,12 +1539,76 @@ def test_non_streaming_batch_preserves_request_audio_with_bounded_padding(
             np.arange(frame_count, dtype=np.float32) + request_index * 100,
             SAMPLES_PER_FRAME,
         )
-        np.testing.assert_array_equal(result.data["audio_data"], expected_samples)
+        np.testing.assert_array_equal(final_audio(result), expected_samples)
     assert all(
         codes.shape[0] == 1
         or codes.shape[0] * codes.shape[-1] <= max_padded_frames_per_decode
         for codes in codec.decoded_codes
     )
+
+
+# note (Wenyao Gao): two seconds or more of an H100's clock, far longer than serving
+# takes to start its first decode.
+IN_FLIGHT_SLEEP_CYCLES = 4_000_000_000
+
+
+def served_audio(vocoder: Drama3VocoderScheduler, request_id: str) -> np.ndarray:
+    """The audio of one non-streaming request served on the vocoder's own thread."""
+    thread = threading.Thread(target=vocoder.start, daemon=True)
+    thread.start()
+    try:
+        vocoder.inbox.put(
+            IncomingMessage(
+                request_id=request_id,
+                type="new_request",
+                data=final_payload(
+                    numbered_frames(120), is_streaming=False, request_id=request_id
+                ),
+            )
+        )
+        result = vocoder.outbox.get(timeout=30.0)
+    finally:
+        vocoder.stop()
+        thread.join(timeout=5.0)
+    assert result.type == "result", result.data
+    return final_audio(result.data)
+
+
+@pytest.mark.accelerator
+def test_serving_starts_after_the_default_streams_in_flight_work() -> None:
+    """Construction writes the codec weights on the default stream and serving runs on
+    the decode stream; serving must start after that work, or its first decodes read
+    weights not yet written."""
+    require_cuda()
+    codec = tiny_codec().cuda()
+    codec.fold_weight_norm()
+    window_graph_decoder = WindowGraphDecoder(
+        ChannelsLastDecoder(codec, dtype=torch.float16),
+        num_codebooks=NUM_CODEBOOKS,
+        frame_length=int(codec.frame_length),
+        device=torch.device("cuda"),
+        window_lengths=(120,),
+    )
+    vocoder = vocoder_with(codec, window_graph_decoder, device="cuda")
+    expected = served_audio(vocoder, "expected")
+    parameters = list(codec.parameters())
+    written = [parameter.detach().clone() for parameter in parameters]
+    with torch.no_grad():
+        for parameter in parameters:
+            parameter.zero_()
+    torch.cuda.synchronize()
+    assert not np.array_equal(
+        served_audio(vocoder, "zeroed"), expected
+    ), "serving reads the codec weights"
+
+    torch.cuda._sleep(IN_FLIGHT_SLEEP_CYCLES)  # noqa: leading-underscore  # torch API
+    with torch.no_grad():
+        for parameter, written_parameter in zip(parameters, written, strict=True):
+            parameter.copy_(written_parameter)
+    in_flight = served_audio(vocoder, "in-flight")
+    torch.cuda.synchronize()
+
+    np.testing.assert_array_equal(in_flight, expected)
 
 
 FIRST_CHUNK_WINDOWS = [
@@ -1013,6 +1625,7 @@ FIRST_CHUNK_WINDOWS = [
         "chunk_frame_counts",
         "is_done_first",
         "crossfade_samples",
+        "is_batched",
         "windows",
     ),
     [
@@ -1021,6 +1634,7 @@ FIRST_CHUNK_WINDOWS = [
             [64, 86],
             False,
             0,
+            False,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
             id="payload-before-done",
         ),
@@ -1029,6 +1643,7 @@ FIRST_CHUNK_WINDOWS = [
             [64, 86],
             True,
             0,
+            False,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
             id="done-before-payload",
         ),
@@ -1037,6 +1652,7 @@ FIRST_CHUNK_WINDOWS = [
             [64, 58],
             False,
             0,
+            False,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96)],
             id="ends-on-a-window",
         ),
@@ -1045,6 +1661,7 @@ FIRST_CHUNK_WINDOWS = [
             [64],
             False,
             0,
+            False,
             FIRST_CHUNK_WINDOWS + [(4, -1, 0, 64, 96), (5, -1, 1, 28, 60)],
             id="window-only-in-the-final-result",
         ),
@@ -1053,8 +1670,18 @@ FIRST_CHUNK_WINDOWS = [
             [64, 86],
             False,
             40,
+            False,
             FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
             id="crossfade-tail-not-yet-sent",
+        ),
+        pytest.param(
+            150,
+            [64, 86],
+            False,
+            0,
+            True,
+            FIRST_CHUNK_WINDOWS + [(4, 1, 0, 64, 96), (5, -1, 1, 28, 60)],
+            id="coalesced-chunks-through-the-window-batch-decoder",
         ),
     ],
 )
@@ -1064,6 +1691,7 @@ def test_every_decoded_window_records_its_decode(
     chunk_frame_counts: list[int],
     is_done_first: bool,
     crossfade_samples: int,
+    is_batched: bool,
     windows: list[tuple[int, int, int, int, int]],
 ) -> None:
     path = event_recorder.get_recorder().start("drama3", str(tmp_path), "vocoder")
@@ -1074,6 +1702,9 @@ def test_every_decoded_window_records_its_decode(
             is_done_first=is_done_first,
             factory_args=Drama3VocoderFactoryArgs(
                 stream_crossfade_samples=crossfade_samples
+            ),
+            window_batch_decoder=(
+                RecordingBatchDecoder(FrameNumberCodec()) if is_batched else None
             ),
         )
     finally:

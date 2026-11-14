@@ -39,11 +39,16 @@ from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuild
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
-from sglang_omni.models.fishaudio_drama3.stream_windows import stream_window_lengths
-from sglang_omni.models.fishaudio_drama3.vocoder import (
-    Drama3VocoderScheduler,
-    WindowGraphDecoder,
+from sglang_omni.models.fishaudio_drama3.stream_windows import (
+    crossfade_frames,
+    discarded_frames,
+    flush_window_shapes,
+    stream_window_discards,
+    stream_window_lengths,
+    utterance_graph_lengths,
 )
+from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
+from sglang_omni.models.fishaudio_drama3.window_graphs import WindowGraphDecoder
 from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceEncodeHook,
     load_codec,
@@ -61,6 +66,9 @@ CODEC_FILE_NAME = "codec.pth"
 REFERENCE_ENCODE_WARMUP_SECONDS = 1.0
 MEMORY_PROBE_ROW_COUNT = 2
 MEMORY_PROBE_FRAME_COUNT = 128
+# note (Wenyao Gao): spacing of the non-streaming graph lengths, so a request
+# pads at most 7 frames.
+UTTERANCE_GRAPH_FRAME_STEP = 8
 # A hub codec names a full commit, so preprocessing and the vocoder load one file.
 HUB_CODEC_PATTERN = re.compile(
     r"(?P<repo_id>[^@\s]+/[^@\s]+)@(?P<revision>[0-9a-f]{40})"
@@ -253,12 +261,13 @@ def measure_max_padded_frames_per_decode(
     max_padded_frames_per_decode = (share_bytes - held_bytes) // bytes_per_padded_frame
     if max_padded_frames_per_decode < max_new_tokens:
         raise ValueError(
-            f"the vocoder's GPU memory share of {share_bytes / 2**30:.2f} GiB holds "
-            f"{held_bytes / 2**30:.2f} GiB of codec weights and CUDA graphs and "
+            f"the vocoder process's GPU memory share of {share_bytes / 2**30:.2f} GiB "
+            f"holds {held_bytes / 2**30:.2f} GiB of weights and CUDA graphs and "
             f"leaves room for {max_padded_frames_per_decode} padded frames per "
             f"decode, fewer than one request of max_new_tokens={max_new_tokens} "
             f"frames; raise --vocoder.gpu_memory_fraction or lower "
-            f"--tts_engine.factory.max_new_tokens"
+            f"--tts_engine.factory.max_new_tokens or "
+            f"--vocoder.factory.non_streaming_cuda_graph_max_frames"
         )
     else:
         pass
@@ -284,9 +293,12 @@ def create_vocoder_executor(
     max_batch_size: int,
     max_batch_wait_ms: int,
     window_cuda_graphs: bool,
+    non_streaming_cuda_graph_max_frames: int,
+    stream_window_batch_size: int,
     decode_dtype: Literal["float32", "float16"],
     max_new_tokens: int,
     total_gpu_memory_fraction: float | None = None,
+    process_total_gpu_memory_fraction: float | None = None,
 ) -> Drama3VocoderScheduler:
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     torch_device = torch.device(resolved_device)
@@ -301,20 +313,54 @@ def create_vocoder_executor(
     else:
         decode = codec.from_indices
     if window_cuda_graphs:
-        decode_window: WindowDecoder = WindowGraphDecoder(
+        window_schedule = {
+            "stream_stride": stream_stride,
+            "stream_followup_stride_ramp": stream_followup_stride_ramp,
+            "stream_followup_stride": stream_followup_stride,
+            "stream_overlap_tokens": stream_overlap_tokens,
+        }
+        # note (Wenyao Gao): only the channels-last decoder takes keep_from_frame.
+        skips_discarded_frames = isinstance(decode, ChannelsLastDecoder)
+        kept_frames = crossfade_frames(
+            stream_crossfade_samples, int(codec.frame_length)
+        )
+        window_graph_decoder = WindowGraphDecoder(
             decode,
             num_codebooks=num_codebooks,
             frame_length=int(codec.frame_length),
             device=torch_device,
-            window_lengths=stream_window_lengths(
-                stream_stride=stream_stride,
-                stream_followup_stride_ramp=stream_followup_stride_ramp,
-                stream_followup_stride=stream_followup_stride,
-                stream_overlap_tokens=stream_overlap_tokens,
+            window_lengths=stream_window_lengths(**window_schedule),
+            utterance_lengths=utterance_graph_lengths(
+                min(non_streaming_cuda_graph_max_frames, max_new_tokens),
+                frame_step=UTTERANCE_GRAPH_FRAME_STEP,
+            ),
+            max_batch_size=stream_window_batch_size,
+            window_discards=(
+                {
+                    window_length: discarded_frames(overlap_frames, kept_frames)
+                    for window_length, overlap_frames in stream_window_discards(
+                        **window_schedule
+                    ).items()
+                }
+                if skips_discarded_frames
+                else None
+            ),
+            flush_shapes=(
+                {
+                    (frame_count, discarded_frames(overlap_frames, kept_frames))
+                    for frame_count, overlap_frames in flush_window_shapes(
+                        **window_schedule
+                    )
+                }
+                if skips_discarded_frames
+                else ()
             ),
         )
+        decode_window: WindowDecoder = window_graph_decoder
+        window_batch_decoder: WindowGraphDecoder | None = window_graph_decoder
     else:
         decode_window = decode
+        window_batch_decoder = None
     if torch_device.type == "cpu":
         max_padded_frames_per_decode = None
     else:
@@ -322,7 +368,14 @@ def create_vocoder_executor(
             decode,
             device=torch_device,
             num_codebooks=num_codebooks,
-            total_gpu_memory_fraction=total_gpu_memory_fraction,
+            # note (Wenyao Gao): memory_reserved counts every stage loaded into this
+            # process, so the share it is held against is the process's, not the
+            # vocoder's alone.
+            total_gpu_memory_fraction=(
+                process_total_gpu_memory_fraction
+                if process_total_gpu_memory_fraction is not None
+                else total_gpu_memory_fraction
+            ),
             max_new_tokens=max_new_tokens,
         )
     return Drama3VocoderScheduler(
@@ -337,4 +390,5 @@ def create_vocoder_executor(
         max_batch_wait_ms=max_batch_wait_ms,
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
+        window_batch_decoder=window_batch_decoder,
     )

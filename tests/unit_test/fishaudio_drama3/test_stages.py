@@ -36,7 +36,14 @@ from tests.unit_test.fishaudio_drama3.test_speech_request import (
     refused,
     toy_config,
 )
-from tests.unit_test.fishaudio_drama3.test_vocoder import FrameNumberCodec
+from tests.unit_test.fishaudio_drama3.test_vocoder import (
+    SHAPES_TO_214,
+    FrameNumberCodec,
+    RecordingBatchDecoder,
+    chunk_message,
+    final_payload,
+    numbered_frames,
+)
 
 COMMIT = "1de9996b6be38b745688de084d87a5633f714e4e"
 
@@ -401,6 +408,10 @@ def cpu_vocoder(factory_args: Drama3VocoderFactoryArgs) -> Drama3VocoderSchedule
         max_batch_size=factory_args.max_batch_size,
         max_batch_wait_ms=factory_args.max_batch_wait_ms,
         window_cuda_graphs=factory_args.window_cuda_graphs,
+        non_streaming_cuda_graph_max_frames=(
+            factory_args.non_streaming_cuda_graph_max_frames
+        ),
+        stream_window_batch_size=factory_args.stream_window_batch_size,
         decode_dtype=factory_args.decode_dtype,
         max_new_tokens=DEFAULT_MAX_NEW_TOKENS_CAP,
     )
@@ -430,7 +441,7 @@ def test_the_vocoder_factory_loads_the_codec_on_its_device_with_the_windows(
         vocoder.stream_overlap_tokens,
         vocoder.stream_crossfade_samples,
         vocoder.max_batch_size,
-    ) == (4, (10, 12, 32), 64, 32, 0, 8)
+    ) == (4, (10, 12, 32), 64, 32, 0, 1)
     assert vocoder.max_padded_frames_per_decode is None
 
 
@@ -446,6 +457,40 @@ def test_window_cuda_graphs_on_a_cpu_device_are_refused(
                 update={"decode_dtype": "float32"}
             )
         )
+
+
+class ChannelsLastStandIn:
+    """Stands in for ChannelsLastDecoder, which needs Triton and the real codec."""
+
+    def __init__(self, codec: FrameNumberCodec, *, dtype: torch.dtype) -> None:
+        self.codec = codec
+
+
+def test_stream_windows_skip_their_discarded_frames_at_window_batch_size_one(
+    codec_loads: CodecLoads, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With stream_window_batch_size 1 every window but a stream's last decoded
+    whole, discarded frames included."""
+    codec_file = tmp_path / "codec.pth"
+    codec_file.write_bytes(b"")
+    decoder = RecordingBatchDecoder(FrameNumberCodec())
+    monkeypatch.setattr(stages, "ChannelsLastDecoder", ChannelsLastStandIn)
+    monkeypatch.setattr(
+        stages, "WindowGraphDecoder", lambda decode, **graph_shapes: decoder
+    )
+    vocoder = cpu_vocoder(
+        Drama3VocoderFactoryArgs(codec_path=str(codec_file), stream_window_batch_size=1)
+    )
+    frames = numbered_frames(214)
+
+    vocoder.inbox.put(chunk_message("request-a", 0, frames))
+    vocoder.handle_message(vocoder.get_batch_message(), None)
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("request-a")
+
+    assert decoder.shapes == SHAPES_TO_214
 
 
 def bytes_per_frame_decoder(bytes_per_frame: int) -> WindowDecoder:
