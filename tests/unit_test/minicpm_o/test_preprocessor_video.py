@@ -45,6 +45,7 @@ from sglang_omni.preprocessing.video import load_video_path
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.minicpm_o.test_preprocessor_prompt import (
     CHAT_TEMPLATE,
     ProcessorOutput,
@@ -684,6 +685,14 @@ def test_video_frame_sizes_match_converted_images(layout: str) -> None:
         video = np.zeros((2, 5, 7, 3), dtype=np.uint8)
 
     assert video_frame_sizes(video) == [frame.size for frame in video_to_images(video)]
+
+
+def test_malformed_video_error_is_classified_as_bad_request() -> None:
+    """The OpenAI error mapper only sees the text this path raises."""
+    with pytest.raises(ValueError) as raised:
+        video_frame_sizes(torch.zeros(3, 64, 64))
+
+    assert is_bad_request_error(str(raised.value))
 
 
 def test_warm_image_cache_skips_pixel_construction(

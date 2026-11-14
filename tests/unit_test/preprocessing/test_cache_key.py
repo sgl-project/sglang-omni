@@ -155,6 +155,17 @@ def test_hash_media_item_keys_frame_lists_by_content() -> None:
     assert first != second
 
 
+def test_hash_media_item_skips_frame_lists_it_cannot_key() -> None:
+    # No key means the caller bypasses the cache; a partial key would stale-hit.
+    assert cache_key.hash_media_item([]) is None
+    assert (
+        cache_key.hash_media_item(
+            [torch.zeros(2, 3, 4, 5), "https://example.com/frame.png"]
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     "tensor",
     [
