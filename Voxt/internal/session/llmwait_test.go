@@ -171,3 +171,34 @@ func TestRethink(t *testing.T) {
 		h.rec.wait(t)
 	})
 }
+
+// TestInputChars (#3951): each request says how long the user's input
+// is, for the service's "Off for short inputs": Transcribe's text, and
+// Translate's selection.
+func TestInputChars(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind store.Kind
+		sel  Selector
+		want int
+	}{
+		{"transcribe", store.KindTranscribe, nil, len("hello VoxtNew")},
+		{"translate a selection", store.KindTranslate, &fakeSelector{text: "Voxt translates the selected text"}, len("Voxt translates the selected text")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "好的。"}
+			h := newHarness(t, &fakeFile{text: "hello aura link"}, model, func(c *Config, _ *settings.Settings) { c.Select = tc.sel })
+			id, err := h.m.Start(StartRequest{Kind: tc.kind, Target: slack})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.sel == nil {
+				h.speak(id, 3)
+			}
+			h.rec.wait(t)
+			if r := model.requests(); len(r) != 1 || r[0].InputChars != tc.want {
+				t.Fatalf("requests %+v; want one with InputChars %d", r, tc.want)
+			}
+		})
+	}
+}
