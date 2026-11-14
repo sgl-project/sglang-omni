@@ -30,6 +30,7 @@ from sglang.srt.managers.schedule_batch import MultimodalDataItem, MultimodalInp
 from sglang.srt.utils import create_device_stream, device_stream_context
 from transformers import WhisperFeatureExtractor
 
+from sglang_omni.models.qwen3_asr.audio_lengths import qwen3_asr_num_audio_tokens
 from sglang_omni.scheduling.pre_lm_encoder import (
     PreLMEncoderService,
     QueueEntry,
@@ -481,7 +482,108 @@ class Qwen3ASRPreLMEncoderService(
                     yield
 
     def encode_batch(self, items: list[MultimodalDataItem]) -> torch.Tensor:
-        return self.model.get_audio_feature(items)
+        """Encode only the audio windows that no cached entry covers."""
+        if not any(
+            item.model_specific_data.get("reuse_encoder_windows") for item in items
+        ):
+            return self.model.get_audio_feature(items)
+        else:
+            pass
+
+        window_frames = self.model.audio_tower.n_window_infer
+        chunk_frames = self.model.audio_tower.n_window * 2
+        window_tokens = qwen3_asr_num_audio_tokens(window_frames)
+
+        audio_embeddings: list[list[torch.Tensor]] = []
+        pending: list[tuple[int, MultimodalDataItem, list[str]]] = []
+
+        for audio_index, audio_item in enumerate(items):
+            cached_windows: list[torch.Tensor] = []
+            window_keys: list[str] = []
+
+            if audio_item.model_specific_data.get("reuse_encoder_windows"):
+                mel_features = audio_item.feature
+                frame_count = int(audio_item.feature_attention_mask.sum())
+
+                for start_frame in range(
+                    0, frame_count - window_frames + 1, window_frames
+                ):
+                    window = (
+                        mel_features[:, :, start_frame : start_frame + window_frames]
+                        .to(dtype=self.dtype)
+                        .contiguous()
+                    )
+                    digest = hashlib.blake2b(
+                        window.view(torch.uint8).numpy(), digest_size=32
+                    ).hexdigest()
+                    window_keys.append(f"{self.namespace}:window:{digest}")
+
+                for window_key in window_keys:
+                    cached_window = self.cache.get(window_key)
+                    if cached_window is not None:
+                        cached_windows.append(cached_window.to(self.device))
+                    else:
+                        break
+
+                tail_start = len(cached_windows) * window_frames
+                # Retract one window when tail < 100 frames to preserve 2D convolution padding.
+                if cached_windows and 0 < frame_count - tail_start < chunk_frames:
+                    cached_windows.pop()
+                    tail_start -= window_frames
+                else:
+                    pass
+
+                if tail_start < frame_count:
+                    pending.append(
+                        (
+                            audio_index,
+                            MultimodalDataItem(
+                                modality=audio_item.modality,
+                                feature=mel_features[:, :, tail_start:frame_count],
+                                model_specific_data={
+                                    "feature_attention_mask": (
+                                        audio_item.feature_attention_mask[
+                                            :, tail_start:frame_count
+                                        ]
+                                    ),
+                                    "num_audio_tokens": qwen3_asr_num_audio_tokens(
+                                        frame_count - tail_start
+                                    ),
+                                },
+                            ),
+                            window_keys[len(cached_windows) :],
+                        )
+                    )
+                else:
+                    pass
+            else:
+                pending.append((audio_index, audio_item, []))
+
+            audio_embeddings.append(cached_windows)
+
+        if pending:
+            pending_audio = [audio_item for _, audio_item, _ in pending]
+            pending_embeddings = (
+                self.model.get_audio_feature(pending_audio)
+                .flatten(end_dim=-2)
+                .split([audio_item.num_audio_tokens for audio_item in pending_audio])
+            )
+            for (audio_index, _, uncached_keys), embedding in zip(
+                pending, pending_embeddings
+            ):
+                for window_index, window_key in enumerate(uncached_keys):
+                    start_token = window_index * window_tokens
+                    self.cache.put(
+                        window_key, embedding[start_token : start_token + window_tokens]
+                    )
+                audio_embeddings[audio_index].append(embedding)
+        else:
+            pass
+
+        return torch.cat(
+            [embedding for embeddings in audio_embeddings for embedding in embeddings],
+            dim=0,
+        )
 
     def split_embeddings(
         self,
