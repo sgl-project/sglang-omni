@@ -267,7 +267,26 @@ class Drama3PipelineConfig(PipelineConfig):
             }
         elif stage_name == "vocoder":
             stateful_decode = self.uses_stateful_codec()
-            capacity = engine_factory.max_running_requests
+            engine_stage = self.stage_named("tts_engine")
+            assert isinstance(engine_stage, Drama3EngineStageConfig)
+            engine_overrides = (
+                engine_stage.engine.overrides()
+                if engine_stage.engine is not None
+                else {}
+            )
+            capacity = engine_overrides.get(
+                "max_running_requests", engine_factory.max_running_requests
+            )
+            if (
+                not isinstance(capacity, int)
+                or isinstance(capacity, bool)
+                or capacity < 1
+            ):
+                raise ValueError(
+                    "tts_engine max_running_requests must be a positive integer"
+                )
+            else:
+                pass
             optimized_default = stateful_decode
             return {
                 "max_new_tokens": engine_factory.max_new_tokens,
@@ -280,11 +299,6 @@ class Drama3PipelineConfig(PipelineConfig):
             }
         else:
             return {}
-
-    def abort_cleanup_stages(self) -> tuple[str, ...]:
-        vocoder_factory = self.stage_named("vocoder").factory
-        assert isinstance(vocoder_factory, Drama3VocoderFactoryArgs)
-        return ("vocoder",) if self.uses_stateful_codec() else ()
 
     def supports_uploaded_voice_references(self) -> bool:
         return True

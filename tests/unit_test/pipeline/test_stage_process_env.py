@@ -278,6 +278,25 @@ def test_tp_process_env_turns_nccl_nvls_off() -> None:
     assert env["NCCL_NVLS_ENABLE"] == "0"
 
 
+@pytest.mark.parametrize("gpu_id", [0, 1])
+def test_tp_shared_visibility_preserves_rank_device(
+    monkeypatch: pytest.MonkeyPatch, gpu_id: int
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,3")
+    monkeypatch.delenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", raising=False)
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+    spec = tp_spec(gpu_id=gpu_id)
+    spec.env_defaults = {"SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "false"}
+
+    with patched_spawn_env(worker_spec(spec)):
+        stage_workers.prepare_accelerator_environment(spec, stage_workers.logger)
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "2,3"
+        assert os.environ["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "false"
+        assert spec.gpu_id == gpu_id
+
+    assert "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS" not in os.environ
+
+
 def test_tp_process_env_leaves_an_operator_nvls_value_alone() -> None:
     env = cuda_platform.get_stage_process_env(
         tp_spec(gpu_id=0), {"NCCL_NVLS_ENABLE": "1"}
@@ -985,6 +1004,63 @@ def test_stage_process_exits_when_its_parent_died_before_it_started(
 
     assert (tmp_path / "exited").exists()
     assert not (tmp_path / "built").exists()
+
+
+def test_stage_process_waits_for_recorder_before_normal_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class ActiveRecorder:
+        active: bool = True
+
+        def deactivate(self) -> None:
+            self.active = False
+            calls.append("deactivate")
+
+        def wait_for_finalizations(self, timeout_seconds: float | None = None) -> bool:
+            assert self.active is False
+            assert timeout_seconds == stage_workers.DEFAULT_FINALIZATION_TIMEOUT_SECONDS
+            calls.append("wait")
+            return True
+
+    recorder = ActiveRecorder()
+
+    def run_process(
+        process_spec: StageWorkerProcessSpec,
+        ready_event: object,
+        log: logging.Logger,
+        startup_error_channel: object | None = None,
+    ) -> None:
+        del process_spec, ready_event, log, startup_error_channel
+        calls.append("stages_stopped")
+
+    def exit_without_teardown(exit_code: int) -> None:
+        assert exit_code == 0
+        assert calls == ["stages_stopped", "deactivate", "wait"]
+        calls.append("exit")
+
+    monkeypatch.setattr(stage_workers, "kill_itself_when_parent_died", lambda: None)
+    monkeypatch.setattr(stage_workers.multiprocessing, "parent_process", lambda: None)
+    monkeypatch.setattr(stage_workers, "configure_dependency_loggers", lambda: None)
+    monkeypatch.setattr(
+        stage_workers, "prepare_accelerator_environment", lambda *_: None
+    )
+    monkeypatch.setattr(stage_workers, "apply_gpu_compat_env_defaults", lambda: None)
+    monkeypatch.setattr(
+        stage_workers, "prepare_weight_share_process_compat", lambda: None
+    )
+    monkeypatch.setattr(stage_workers, "get_recorder", lambda: recorder)
+    monkeypatch.setattr(stage_workers, "run_process", run_process)
+    monkeypatch.setattr(stage_workers, "exit_without_teardown", exit_without_teardown)
+
+    process_spec = StageWorkerProcessSpec(
+        process_name="worker",
+        stage_specs=[StageLaunchConfig(stage_name="worker")],
+    )
+    stage_workers.stage_process_main(process_spec, None)
+
+    assert calls == ["stages_stopped", "deactivate", "wait", "exit"]
 
 
 # note (Richard Wang): run_process stands in for a stage that stopped or was

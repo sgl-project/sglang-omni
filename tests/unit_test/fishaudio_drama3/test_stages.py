@@ -285,6 +285,12 @@ def test_the_engine_factory_hands_its_knobs_to_the_builder(
             builder.enable_async_decode,
             builder.async_decode_min_batch_size,
         ) == (4096, 4, 1024, 512, True, 3)
+        resolved_overrides: dict[str, object] = {}
+        builder.adjust_overrides(resolved_overrides)
+        assert (builder.infra_kwargs(), resolved_overrides["tp_size"]) == (
+            {"tp_rank": 1, "nccl_port": 29500},
+            2,
+        )
         return "engine"
 
     monkeypatch.setattr(Drama3EngineBuilder, "build", build)
@@ -299,6 +305,9 @@ def test_the_engine_factory_hands_its_knobs_to_the_builder(
         server_args_overrides={"mem_fraction_static": 0.5},
         enable_async_decode=True,
         async_decode_min_batch_size=3,
+        tp_rank=1,
+        tp_size=2,
+        nccl_port=29500,
     )
 
     assert engine == "engine"

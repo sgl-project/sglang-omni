@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import multiprocessing
 import pickle
 import threading
 import time
@@ -24,14 +23,13 @@ from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
-from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
 from sglang_omni.proto import (
     DataReadyMessage,
     ShutdownMessage,
     StagePayload,
     SubmitMessage,
 )
-from sglang_omni.proto.messages import AbortMessage
+from sglang_omni.proto.messages import StreamChunkBatchMessage
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
     SessionIdentity,
@@ -181,9 +179,9 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
         stream_msg = next(
             msg
             for target, _, msg in control_plane.sent_to_stage
-            if target == "talker" and msg.chunk_id == 0
+            if target == "talker" and isinstance(msg, StreamChunkBatchMessage)
         )
-        assert stream_msg.chunk_id == 0
+        assert stream_msg.chunk_ids == [0]
 
         stage_obj.stream_queue = StreamQueue()
         stage_obj.stream_queue.open("req-1")
@@ -468,6 +466,7 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         scheduler.pending_request_admissions = {}
         scheduler.shutdown_lock = threading.Lock()
         scheduler.shutdown_callback = None
+        scheduler.async_d2h_worker = None
 
         def run_loop() -> None:
             entered.set()
@@ -518,6 +517,7 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
         scheduler.pending_request_admissions = {}
         scheduler.shutdown_lock = threading.Lock()
         scheduler.shutdown_callback = None
+        scheduler.async_d2h_worker = None
 
         def run_loop() -> None:
             entered.set()
@@ -546,6 +546,64 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
             release.set()
             if stage_obj.scheduler_thread is not None:
                 await asyncio.to_thread(stage_obj.scheduler_thread.join, 1.0)
+
+    asyncio.run(run())
+
+
+def test_spec_stage_stop_retains_communication_until_inflight_work_drains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid speculative drain used to hard-exit when the local join timeout elapsed."""
+
+    async def run() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        joining = threading.Event()
+        drained = threading.Event()
+        join_timeouts: list[float | None] = []
+        scheduler = FakeScheduler()
+        scheduler.enable_overlap = True
+
+        def forward() -> None:
+            entered.set()
+            release.wait()
+            drained.set()
+
+        scheduler.start = forward
+        relay = FakeRelay()
+        stage = make_stage(scheduler=scheduler, relay=relay)
+        monkeypatch.setattr(stage_runtime_module, "_SCHEDULER_THREAD_JOIN_TIMEOUT_S", 0)
+        monkeypatch.setattr(
+            stage_runtime_module,
+            "terminate_gpu_worker",
+            Mock(side_effect=RuntimeError("unexpected hard exit")),
+            raising=False,
+        )
+        await stage.start()
+        assert await asyncio.to_thread(entered.wait, 2)
+        thread = stage.scheduler_thread
+        original_join = thread.join
+
+        def join(timeout: float | None = None) -> None:
+            join_timeouts.append(timeout)
+            joining.set()
+            original_join(timeout)
+
+        monkeypatch.setattr(thread, "join", join)
+        stopping = asyncio.create_task(stage.stop())
+        try:
+            assert await asyncio.to_thread(joining.wait, 2)
+            assert join_timeouts == [None]
+            assert not stopping.done()
+            assert not stage.control_plane.closed
+            assert not relay.closed
+            assert not drained.is_set()
+        finally:
+            release.set()
+            await asyncio.wait_for(stopping, 2)
+        assert drained.is_set()
+        assert not thread.is_alive()
+        assert stage.control_plane.closed and relay.closed
 
     asyncio.run(run())
 
@@ -2016,175 +2074,5 @@ def test_session_route_rejects_a_stream_edge_off_the_route() -> None:
         )
         assert [msg.success for msg in control_plane.completions] == [False]
         assert "linear payload edges" in control_plane.completions[0].error
-
-    asyncio.run(run())
-
-
-def test_abort_confirmation_follows_scheduler_cleanup() -> None:
-    """An abort confirmation must not precede scheduler resource cleanup."""
-
-    async def run() -> None:
-        control = RecordingStageControlPlane()
-        scheduler = FakeScheduler()
-        stage_obj = make_stage(
-            name="vocoder", scheduler=scheduler, control_plane=control
-        )
-        stage_obj.running = True
-        original_abort = scheduler.abort
-
-        def cleanup(request_id: str) -> None:
-            assert control.completions == []
-            original_abort(request_id)
-            stage_obj.running = False
-
-        scheduler.abort = cleanup
-        message = AbortMessage("old", cleanup_token="generation-1")
-        await control.abort_inbox.put(deserialize_message(serialize_message(message)))
-        await stage_obj.abort_listener()
-        assert scheduler.aborted == ["old"]
-        assert len(control.completions) == 1
-        confirmation = deserialize_message(serialize_message(control.completions[0]))
-        assert confirmation.cleanup_token == "generation-1"
-        assert confirmation.from_stage == "vocoder"
-
-    asyncio.run(run())
-
-
-@pytest.mark.parametrize("second_cleanup_token", [None, "generation-2"])
-def test_tp_followers_keep_processing_token_bearing_aborts(
-    second_cleanup_token: str | None,
-) -> None:
-    async def run() -> None:
-        process_context = multiprocessing.get_context("spawn")
-        work_queue = process_context.Queue()
-        abort_queue = process_context.Queue()
-        leader_control = RecordingStageControlPlane()
-        follower_control = TPFollowerControlPlane(
-            stage_name="tts_engine",
-            work_queue=work_queue,
-            abort_queue=abort_queue,
-        )
-        leader_scheduler = FakeScheduler()
-        follower_scheduler = FakeScheduler()
-        leader = make_stage(
-            name="tts_engine",
-            role="leader",
-            tp_size=2,
-            control_plane=leader_control,
-            scheduler=leader_scheduler,
-            tp_fanout=TPLeaderFanout(
-                "tts_engine",
-                follower_work_queues=[work_queue],
-                follower_abort_queues=[abort_queue],
-            ),
-        )
-        follower = make_stage(
-            name="tts_engine",
-            role="follower",
-            tp_rank=1,
-            tp_size=2,
-            control_plane=follower_control,
-            scheduler=follower_scheduler,
-        )
-        leader.running = follower.running = True
-        leader_abort = leader_scheduler.abort
-        follower_abort = follower_scheduler.abort
-
-        def cleanup_leader(request_id: str) -> None:
-            leader_abort(request_id)
-            if request_id == "second":
-                leader.running = False
-            else:
-                pass
-
-        def cleanup_follower(request_id: str) -> None:
-            follower_abort(request_id)
-            if request_id == "second":
-                follower.running = False
-            else:
-                pass
-
-        leader_scheduler.abort = cleanup_leader
-        follower_scheduler.abort = cleanup_follower
-        await leader_control.abort_inbox.put(
-            AbortMessage("first", cleanup_token="generation-1")
-        )
-        await leader_control.abort_inbox.put(
-            AbortMessage("second", cleanup_token=second_cleanup_token)
-        )
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(leader.abort_listener(), follower.abort_listener()),
-                timeout=3.0,
-            )
-            assert (
-                leader_scheduler.aborted
-                == follower_scheduler.aborted
-                == [
-                    "first",
-                    "second",
-                ]
-            )
-            assert [
-                message.cleanup_token for message in leader_control.completions
-            ] == [
-                token
-                for token in ("generation-1", second_cleanup_token)
-                if token is not None
-            ]
-        finally:
-            follower_control.close()
-            work_queue.close()
-            abort_queue.close()
-            work_queue.join_thread()
-            abort_queue.join_thread()
-
-    asyncio.run(run())
-
-
-def test_failed_abort_cleanup_stops_stage_and_surfaces_error() -> None:
-    async def run() -> None:
-        control = CloseAwareControlPlane()
-        scheduler = FakeScheduler()
-        stage = make_stage(name="vocoder", scheduler=scheduler, control_plane=control)
-
-        def fail_cleanup(request_id: str) -> None:
-            raise RuntimeError(f"cleanup failed for {request_id}")
-
-        scheduler.abort = fail_cleanup
-        await control.abort_inbox.put(AbortMessage("old", cleanup_token="generation-1"))
-        with pytest.raises(RuntimeError, match="cleanup failed for old"):
-            await asyncio.wait_for(stage.run(), timeout=2.0)
-        assert scheduler.stopped
-        assert control.closed
-        assert control.completions == []
-
-    asyncio.run(run())
-
-
-def test_failed_abort_cleanup_never_confirms_release() -> None:
-    """A failed scheduler cleanup must leave the admission owner unconfirmed."""
-
-    async def run() -> None:
-        control = RecordingStageControlPlane()
-        scheduler = FakeScheduler()
-        stage_obj = make_stage(
-            name="vocoder", scheduler=scheduler, control_plane=control
-        )
-        stage_obj.running = True
-
-        def fail_cleanup(request_id: str) -> None:
-            raise RuntimeError(f"cleanup failed for {request_id}")
-
-        scheduler.abort = fail_cleanup
-        await control.abort_inbox.put(AbortMessage("old", cleanup_token="generation-1"))
-        abort_task = asyncio.create_task(stage_obj.abort_listener())
-        with pytest.raises(RuntimeError, match="cleanup failed for old"):
-            await abort_task
-        stage_obj.on_background_task_done(abort_task, "abort listener")
-        assert not stage_obj.running
-        assert isinstance(stage_obj.background_task_error, RuntimeError)
-        assert control.completions == []
-        assert "old" in stage_obj.aborted
 
     asyncio.run(run())

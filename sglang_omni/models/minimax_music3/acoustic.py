@@ -22,7 +22,6 @@ from sglang_omni.models.minimax_music3.serial_offload import (
 )
 from sglang_omni.models.minimax_music3.weight_cache import checkpoint_identity
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -148,25 +147,9 @@ class MiniMaxMusic3AcousticDecoder:
         cache_dit_max_continuous_cached_steps: int = 1,
         serial_offload: bool = False,
     ) -> None:
-        if not (
-            current_platform.is_cuda()
-            or current_platform.is_musa()
-            or current_platform.is_xpu()
-        ):
-            raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires CUDA/MUSA/XPU backend"
-            )
-        else:
-            pass
         torch.backends.cudnn.enabled = False
         torch.backends.cuda.enable_cudnn_sdp(False)
         self.device = torch.device(device)
-        if self.device.type not in ("cuda", "musa", "xpu"):
-            raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA/XPU device"
-            )
-        else:
-            pass
         self.dtype = resolve_acoustic_dtype(dtype)
         if self.dtype is torch.float32:
             # note (chenyang): TF32 keeps float32's range with a 10-bit mantissa

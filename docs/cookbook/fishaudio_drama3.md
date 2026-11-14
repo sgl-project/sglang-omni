@@ -217,6 +217,31 @@ sgl-omni serve \
 
 When the engine and the vocoder share one GPU, `--mps on` lets their processes share it through CUDA MPS (see [Same-GPU Data Parallelism with CUDA MPS](../basic_usage/mps_dp.md)). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.
 
+### Tensor Parallelism
+
+When the FP8 checkpoint does not fit one GPU, `--tts_engine.tp_size` splits the engine across 2 or 4 GPUs: SGLang shards the backbone, and each GPU holds its share of the codebook tower's attention heads and MLP width; with 4 GPUs, pairs of GPUs share each of the tower's two key/value heads, as they share the backbone's. The FP8 routed experts are stored in 128-wide blocks, so their 512-wide intermediate splits across at most 4 GPUs. On two 32 GB GPUs, such as two RTX 5090:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/drama-3 \
+  --tts_engine.tp_size 2 \
+  --tts_engine.gpu "[0, 1]" \
+  --tts_engine.gpu_memory_fraction 0.75 \
+  --preprocessing.gpu 0 \
+  --vocoder.gpu 1 \
+  --vocoder.gpu_memory_fraction 0.2
+```
+
+Each GPU then holds 18.5 GB of engine weights, and 9.7 GB with `--tts_engine.tp_size 4 --tts_engine.gpu "[0, 1, 2, 3]"`. The vocoder's default share of 0.10 is sized for an H200: on a 32 GB GPU it cannot hold one non-streaming decode of `max_new_tokens` frames, so the command raises it to 0.2. The fused codebook tower layers stay off under tensor parallelism. Table 4 compares these layouts with one H200 on the Seed-TTS English workload of Table 3, all measured with checkpoint revision `78e5ab7`; compare its rows with each other rather than with Table 3.
+
+| Setup | Latency mean | Latency p95 | RTF mean | Throughput (req/s) | WER (corpus) | Samples above 50% WER |
+|---|---:|---:|---:|---:|---:|---:|
+| One H200 | 1.048 s | 1.551 s | 0.237 | 7.62 | 0.85% | 0 |
+| Two RTX 5090, tensor parallel | 1.255 s | 1.876 s | 0.283 | 6.37 | 0.90% | 0 |
+| Four RTX 5090, tensor parallel | 1.403 s | 2.081 s | 0.316 | 5.69 | 0.87% | 0 |
+
+*Table 4. Drama 3 FP8 checkpoint on Seed-TTS English, non-streaming requests at concurrency 8.*
+
 ### High Concurrency
 
 The defaults run at most 16 requests at a time on the engine and give it 0.70 of the GPU's memory. For more streams at once, raise the request cap; the measurements below also raise the engine's share:
@@ -300,13 +325,99 @@ stages:
       decode_dtype: float32
 ```
 
-Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:
+Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference, under tensor parallelism, or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:
 
 ```text
 Drama 3 codebook sampling: PyTorch, untested GPU sm_120
 Drama 3 tower fused layers: off, untested GPU sm_120
 ```
 
+
+## Apple Silicon: native MLX
+
+The standalone `fishaudio_drama3_server` runs entirely in C++ on MLX under `sglang_omni_mlx/native/` and serves `/v1/audio/speech` with the CUDA server's request fields; reference audio is sent as base64 WAV (see the table below). It serves two community MLX conversions of `fishaudio/drama-3`, made by mlx-audio's `fish_drama3/convert.py` from the official FP8 checkpoint:
+
+| Checkpoint | Routed experts | Other projections | On disk | Peak MLX memory, mlx-audio | Unified memory |
+|---|---|---|---:|---:|---:|
+| `mlx-community/fish-audio-drama-3-4bit` | 4-bit | 8-bit | 24 GB | 28.7 GB | 48 GB or more |
+| `mlx-community/fish-audio-drama-3-8bit` | 8-bit | bf16 | 42 GB | 47.1 GB | 64 GB or more |
+
+Both quantize with MLX affine groups of 64 and keep the embeddings in bf16, the norm gains and the codec in fp32; the 8-bit checkpoint quantizes only the routed experts. The 4-bit checkpoint peaks above the GPU working set of a 32 or 36 GB Mac; the 8-bit one fits the 55.7 GB working set of a 64 GB Mac, with nothing else holding much memory. Both were measured on a 64 GB Mac. Download a pinned checkpoint, then build with the native runtime's MLX 0.32.3 toolchain:
+
+```bash
+python sglang_omni_mlx/native/ci/provision_models.py "$DRAMA3_DATA" \
+  --model mlx-community/fish-audio-drama-3-4bit
+sglang_omni_mlx/native/scripts/build_runtime.sh "$DRAMA3_RUNTIME" "$DRAMA3_BUILD"
+"$DRAMA3_RUNTIME/bin/fishaudio_drama3_server" \
+  --model-path "$DRAMA3_DATA/models/mlx-community_fish-audio-drama-3-4bit" \
+  --model-name fishaudio/drama-3 --port 8000
+```
+
+Set `DRAMA3_DATA`, `DRAMA3_RUNTIME` and `DRAMA3_BUILD` to separate local directories; for the 8-bit checkpoint, replace `4bit` with `8bit` in both commands. Serving needs neither Python nor SGLang's CUDA package. Voice cloning sends the reference clip, a mono 44.1 kHz WAV, as base64:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d "{\"input\": \"Get the trust fund to the bank early.\",
+       \"references\": [{\"data\": \"$(base64 < reference_44k.wav | tr -d '\n')\",
+                       \"text\": \"We asked over twenty different people, and they all said it was his.\"}]}" \
+  --output output_voice_cloning.wav
+```
+
+The server reads the request fields the CUDA server reads and refuses the same unsupported ones (`seed` included). Where they differ:
+
+| | CUDA server | Native MLX server |
+|---|---|---|
+| Reference audio | A path, URL or base64 data in any format the server decodes, resampled to 44.1 kHz; up to 60 s each by default | Base64 mono 44.1 kHz PCM16 or float32 WAV, as `references[i].data`, a `data:` URL in `references[i].audio`, or `ref_audio` with `ref_text`; paths and remote URLs are refused |
+| References | Any number, within the prompt row limit (`max_prompt_rows`) | Up to 4, together at most 30 s (646 frames of `vq_codes`) and 1024 transcript characters |
+| Voices | `default` (or `speaker`) or an uploaded voice | `default` (or `speaker`) only |
+| Long input | One prompt; `max_new_tokens` defaults to the remaining context, up to 2048 frames | Split into chunks of about 300 bytes, each seeing the first and the previous chunk; `max_new_tokens` (default 1024, at most 4096) caps each chunk; `input` holds at most 4096 characters |
+| Requests | Batched | One at a time; `--max-queued-requests` more may wait (2 by default), the rest get 503; a request not done `--request-timeout-s` seconds after it arrives (600 by default) gets 504, and a disconnected client's request is cancelled |
+| Streaming | `"stream": true` with `"response_format": "pcm"` | The same, with audio every 7 frames (0.33 s) |
+
+`fishaudio_drama3_synthesize` runs one request from the command line and prints its timings; with `--codes-output` it also writes the first chunk's prompt ids and every frame's codes, for parity checks.
+
+### Optional native expert offload
+
+Both native binaries accept `--expert-offload 2gib`. Without it, the existing resident loading and execution path is unchanged. Offload removes routed backbone experts before checkpoint evaluation and loads one expert's packed up/gate/down weights, scales and biases on demand. Router, shared experts, attention and tower weights stay resident; the codec loads separately.
+
+The model owns one serial LRU cache with a 2,147,483,648-byte limit on live packed expert arrays, including a pending load. A pinned expert cannot be evicted; every expert computation completes before its lease is released. Prefill groups selected rows by expert and processes groups serially without changing top-k ids or scores. Small groups may repeat rows to preserve MLX 0.32.3's sorted gather kernel; repeated outputs are discarded. This path prioritizes correctness over throughput and may perform many file reads.
+
+For N input rows and top-k K, one expert group processes at most max(N, 16) rows. Per-expert result batches hold at most (N*K + 15*E) hidden-width rows before assembly, where E is the number of selected experts. Assembly additionally uses tensors shaped up to [N, K, hidden] and a final [N, hidden] result; backend workspace has no separate byte limit. Padding outputs and operation graphs are released after the final weighted sum is evaluated. Cached expert arrays remain until LRU eviction, explicit release before non-streaming codec decoding, or model destruction. During offloaded codec decoding only, the native runtime sets a target of min(the caller’s existing limit, 256 MiB) for MLX idle allocator buffers and clears old idle buffers, then restores the caller's previous cache limit on return or exception. This process-wide setting relies on the native server worker and CLI serializing MLX execution; concurrent embedded MLX jobs need their own coordination. It does not alter the 2 GiB expert capacity or AR-phase allocator limit. The idle-buffer target is soft and does not cap active tensors, workspace, process memory, or the operating system's page cache.
+
+The limit is not a process or GPU memory cap. Resident model weights, output tensors, current operation workspace, MLX allocator reuse and CPU/GPU copies, and the operating system's file cache are separate. No duplicate host payload cache is retained. Packed weights remain U32; F16/BF16/F32 quantization scales and biases retain their original dtype. Unquantized expert weights are unsupported by this offload path.
+
+`fishaudio_drama3_experts_test` is an explicit CMake target; pass a disposable fixture directory as its only argument. It generates small safetensors files and checks actual MLX loading, excluded payload reads, cache limits, pinning, eviction, failed reads, and resident/cached quantized execution. These fixtures do not establish complete checkpoint/audio parity or real-model throughput; run the checkpoint parity suite separately before relying on the option in production.
+
+`fishaudio_drama3_codec_test` is an optional local CMake target taking a checkpoint directory, saved codes JSON, output prefix, block frame count, `budget` or `resident`, and `success` or `failure`. It exercises the production codec decoder with actual weights, checks the cache target during decoding and restoration afterward, and can raise a callback exception after actual MLX evaluation. Codec-only checks do not establish full-model streaming, long-runtime, or request-cancellation behavior.
+
+### Reference parity and performance
+
+The numerical reference is mlx-audio 0.6.2 (`f6d5da9`: `mlx_audio/tts/models/fish_drama3` and `mlx_audio/codec/models/fish_s1_dac`) on the same checkpoint and MLX 0.32.3; `native/licenses/fishaudio_drama3-MIT.txt` holds its license. The native runtime runs the gated delta rule on MLX's `mx::fast::gated_delta_update`, where mlx-audio runs its own Metal kernel, and the two round their bf16 outputs differently. With mlx-audio's gated delta step on the same MLX primitive and the same seed (given to `fishaudio_drama3_synthesize`), the native runtime samples the same codes and decodes the same PCM16 samples on every seeded test request.
+
+Measured on an Apple M4 Max (64 GB), warm, in ABBA order (native, reference, reference, native). The server takes no seed, so each side ran each request three times; the table gives each round's median real-time factor (generation time over audio duration) and the median time to the first streamed audio. Native times include the HTTP request and PCM encoding. The 4-bit checkpoint:
+
+| Request | Real-time factor, native | Real-time factor, mlx-audio 0.6.2 | First streamed audio, native | First streamed audio, mlx-audio |
+|---|---:|---:|---:|---:|
+| English, no reference | 0.376 / 0.377 | 0.372 / 0.372 | 0.18 s | 0.18 s |
+| English, cloned voice | 0.375 / 0.373 | 0.375 / 0.372 | 0.18 s | 0.18 s |
+| Chinese, cloned voice | 0.367 / 0.370 | 0.366 / 0.366 | 0.18 s | 0.18 s |
+| Two speakers, cloned voice | 0.371 / 0.373 | 0.368 / 0.369 | 0.19 s | 0.18 s |
+| 26 s passage, two chunks | 0.374 / 0.371 | 0.369 / 0.377 | 0.22 s | 0.22 s |
+
+Loading takes 4.1 s native and 4.5 s for the reference, from a warm file cache. Peak MLX memory (`mx.get_peak_memory()`) is 28.2 GB native on the passage and 28.7 GB in the reference; the server's process footprint stays near 32 GB under mixed load, against 23 GB idle.
+
+The 8-bit checkpoint, measured the same way:
+
+| Request | Real-time factor, native | Real-time factor, mlx-audio 0.6.2 | First streamed audio, native | First streamed audio, mlx-audio |
+|---|---:|---:|---:|---:|
+| English, no reference | 0.513 / 0.513 | 0.513 / 0.514 | 0.25 s | 0.25 s |
+| English, cloned voice | 0.507 / 0.506 | 0.510 / 0.506 | 0.25 s | 0.25 s |
+| Chinese, cloned voice | 0.500 / 0.499 | 0.502 / 0.501 | 0.25 s | 0.25 s |
+| Two speakers, cloned voice | 0.504 / 0.500 | 0.508 / 0.505 | 0.26 s | 0.26 s |
+| 26 s passage, two chunks | 0.496 / 0.495 | 0.498 / 0.497 | 0.30 s | 0.30 s |
+
+Loading takes 6.4 to 6.8 s native and 6.9 to 7.2 s for the reference. Peak MLX memory is 47.1 GB in the reference, and the server's process footprint reaches 48 GB. Its routed experts are twice the size of the 4-bit ones and its other projections are bf16, and it runs about 1.35 times slower.
 
 ## Links
 
@@ -318,4 +429,4 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 
 ## Incremental streaming codec
 
-The stateful codec retains per-request convolution and attention history and supports GEMM upsampling, folded codebooks, Snake/history fusion and precision-preserving compiled attention. The feature is disabled by default. Set --vocoder.factory.stateful_decode true to enable it, with individual optimization flags overridable. Slots are bounded by the engine factory running limit but do not impose a new HTTP admission cap: streams that cannot acquire a slot use the existing window decoder until completion. Explicit engine admission limits remain unchanged. Fixed routing, single replicas, a dedicated TP1 vocoder process and zero crossfade are required. Startup compiles only hot attention shapes while retaining graph execution for tails; enabling the feature still has compilation/capture cost. The measured hardware is H100. See [the selected codec benchmark report](../benchmarks/drama3_codec_selected_codec.md) for topology, memory/admission requirements, portable configuration, measured high-concurrency gains and first-audio/quality tradeoffs.
+The incremental codec is opt-in: set `--vocoder.factory.stateful_decode true` to reuse per-request convolution and attention history. GEMM upsampling, folded codebooks, Snake/history fusion and compiled attention follow this setting unless individually overridden. Slot capacity follows `tts_engine.engine.max_running_requests` when set, otherwise `tts_engine.factory.max_running_requests`; it does not add an HTTP admission limit. Streams that cannot acquire a slot use window decoding for their entire lifetime. Fixed routing, single replicas, a dedicated TP1 vocoder process and zero crossfade are required. Enabling the feature adds state memory and compilation/capture startup cost. It targets sustained concurrent workloads, especially shared-GPU deployments; benefits with a dedicated vocoder GPU are workload-dependent.

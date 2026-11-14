@@ -8,7 +8,6 @@ from typing import ClassVar
 import pytest
 from pydantic import ValidationError
 
-from sglang_omni.config.admission import resolve_coordinator_max_in_flight
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import ProcessConfig
@@ -17,6 +16,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_CODEC_PATH,
     Drama3PipelineConfig,
 )
+from sglang_omni.pipeline.mp_runner import resolve_coordinator_max_in_flight
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
@@ -305,18 +305,21 @@ def test_stateful_rejects_replicas_without_changing_stateless(
         Drama3PipelineConfig.model_validate(config)
 
 
-def test_stateful_capacity_follows_engine_not_vocoder_batch() -> None:
+@pytest.mark.parametrize("factory_limit,engine_limit", [(16, 64), (64, 16)])
+def test_stateful_capacity_follows_engine_not_vocoder_batch(
+    factory_limit: int, engine_limit: int
+) -> None:
     config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
         [
-            ("tts_engine.factory.max_running_requests", "32"),
-            ("tts_engine.engine.max_running_requests", "16"),
+            ("tts_engine.factory.max_running_requests", str(factory_limit)),
+            ("tts_engine.engine.max_running_requests", str(engine_limit)),
             ("tts_engine.engine.max_queued_requests", "64"),
             ("vocoder.factory.max_batch_size", "2"),
             ("vocoder.factory.window_cuda_graphs", "false"),
             ("vocoder.factory.stateful_decode", "true"),
         ]
     )
-    assert launch_kwargs(config, "vocoder")["stateful_max_streams"] == 32
+    assert launch_kwargs(config, "vocoder")["stateful_max_streams"] == engine_limit
     assert launch_kwargs(config, "vocoder")["stateful_decode"] is True
     assert "stateful_decode" not in launch_kwargs(config, "tts_engine")
     logical_process_plan, _ = compile_logical_processes(config)
@@ -324,7 +327,7 @@ def test_stateful_capacity_follows_engine_not_vocoder_batch() -> None:
         resolve_coordinator_max_in_flight(
             config, logical_process_plan=logical_process_plan
         )
-        == 80
+        == engine_limit + 64
     )
 
 
@@ -348,19 +351,6 @@ def test_unsupported_stateful_configuration_rejected(
         )
 
 
-def test_abort_cleanup_confirmation_is_enabled_only_for_stateful_codec() -> None:
-    config = Drama3PipelineConfig(model_path="checkpoint")
-    assert config.abort_cleanup_stages() == ()
-    stateful = ConfigManager(config).merge_config(
-        [
-            ("vocoder.factory.stateful_decode", "true"),
-            ("tts_engine.engine.max_running_requests", "1"),
-            ("tts_engine.engine.max_queued_requests", "0"),
-        ]
-    )
-    assert stateful.abort_cleanup_stages() == ("vocoder",)
-
-
 @pytest.mark.parametrize("decode_dtype", ["float16", "float32"])
 def test_stateful_is_opt_in_without_changing_default_admission(
     decode_dtype: str,
@@ -370,7 +360,6 @@ def test_stateful_is_opt_in_without_changing_default_admission(
     )
     assert not launch_kwargs(config, "vocoder")["stateful_decode"]
     assert config.entry_stage_admission_limit() is None
-    assert config.abort_cleanup_stages() == ()
     explicit = ConfigManager(config).merge_config(
         [("vocoder.factory.stateful_decode", "true")]
     )
@@ -387,7 +376,6 @@ def test_stateful_is_opt_in_without_changing_default_admission(
     )
     assert kwargs["stateful_max_streams"] == 16
     assert explicit.entry_stage_admission_limit() is None
-    assert explicit.abort_cleanup_stages() == ("vocoder",)
     rebuilt = Drama3PipelineConfig.model_validate(explicit.model_dump())
     assert launch_kwargs(rebuilt, "vocoder") == kwargs
 
@@ -410,7 +398,6 @@ def test_default_window_codec_preserves_existing_placements(
     )
     assert not launch_kwargs(config, "vocoder")["stateful_decode"]
     assert config.entry_stage_admission_limit() is None
-    assert config.abort_cleanup_stages() == ()
 
 
 def test_default_window_codec_preserves_dynamic_routing() -> None:
@@ -421,7 +408,6 @@ def test_default_window_codec_preserves_dynamic_routing() -> None:
     config = Drama3PipelineConfig.model_validate(document)
     assert not launch_kwargs(config, "vocoder")["stateful_decode"]
     assert config.entry_stage_admission_limit() is None
-    assert config.abort_cleanup_stages() == ()
 
 
 def test_reference_sampling_reaches_the_engine_only_when_set() -> None:

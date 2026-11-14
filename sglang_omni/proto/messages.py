@@ -37,15 +37,7 @@ class DirectCudaIpcStreamChunkRef(DirectCudaIpcStreamChunkOptionalFields):
     tensor_bytes: bytes
 
 
-class InlineStreamChunkRef(TypedDict):
-    _type: Literal["InlineStreamChunk"]
-    version: Literal[1]
-    payload: bytes
-
-
-StageDataRef: TypeAlias = (
-    DirectCudaIpcPayloadRef | DirectCudaIpcStreamChunkRef | InlineStreamChunkRef
-)
+StageDataRef: TypeAlias = DirectCudaIpcPayloadRef | DirectCudaIpcStreamChunkRef
 
 
 @dataclass
@@ -167,6 +159,79 @@ class DataReadyMessage:
         )
 
 
+@dataclass
+class StreamChunkBatchMessage:
+    """Small CPU stream chunks of many requests for one target stage.
+
+    Index i of every list describes chunk i, and pickled_metadata is the pickled list of every chunk's metadata.
+    """
+
+    from_stage: str
+    to_stage: str
+    request_ids: list[str]
+    chunk_ids: list[int]
+    dtypes: list[str]
+    shapes: list[list[int]]
+    tensor_bytes: list[bytes]
+    pickled_metadata: bytes
+    replica_bindings: dict[str, dict[str, int]]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "type": "stream_chunk_batch",
+            "from_stage": self.from_stage,
+            "to_stage": self.to_stage,
+            "request_ids": self.request_ids,
+            "chunk_ids": self.chunk_ids,
+            "dtypes": self.dtypes,
+            "shapes": self.shapes,
+            "tensor_bytes": self.tensor_bytes,
+            "pickled_metadata": self.pickled_metadata,
+            "replica_bindings": self.replica_bindings,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, object]) -> "StreamChunkBatchMessage":
+        columns = [
+            d.get(name)
+            for name in ("request_ids", "chunk_ids", "dtypes", "shapes", "tensor_bytes")
+        ]
+        if not all(type(column) is list for column in columns):
+            raise TypeError("stream chunk batch columns must be lists")
+        else:
+            pass
+        if len({len(column) for column in columns}) != 1:
+            raise ValueError("stream chunk batch columns must have one length")
+        else:
+            pass
+        request_ids, chunk_ids, dtypes, shapes, tensor_bytes = columns
+        for request_id in request_ids:
+            require_str(request_id, "request_id")
+        for chunk_id in chunk_ids:
+            require_non_negative_int(chunk_id, "chunk_id")
+        pickled_metadata = d.get("pickled_metadata")
+        if type(pickled_metadata) is not bytes:
+            raise TypeError("stream chunk batch pickled_metadata must be bytes")
+        else:
+            pass
+        replica_bindings = d.get("replica_bindings")
+        if type(replica_bindings) is not dict:
+            raise TypeError("stream chunk batch replica_bindings must be dict")
+        else:
+            pass
+        return cls(
+            from_stage=require_str(d.get("from_stage"), "from_stage"),
+            to_stage=require_str(d.get("to_stage"), "to_stage"),
+            request_ids=request_ids,
+            chunk_ids=chunk_ids,
+            dtypes=dtypes,
+            shapes=shapes,
+            tensor_bytes=tensor_bytes,
+            pickled_metadata=pickled_metadata,
+            replica_bindings=replica_bindings,
+        )
+
+
 class DataAckMessage(msgspec.Struct):
     """Receiver completion for one data-plane object."""
 
@@ -237,18 +302,13 @@ class AbortMessage:
     """Broadcast abort signal to all stages."""
 
     request_id: str
-    cleanup_token: str | None = None
 
-    def to_dict(self) -> dict[str, str | None]:
-        return {
-            "type": "abort",
-            "request_id": self.request_id,
-            "cleanup_token": self.cleanup_token,
-        }
+    def to_dict(self) -> dict[str, str]:
+        return {"type": "abort", "request_id": self.request_id}
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "AbortMessage":
-        return cls(request_id=d["request_id"], cleanup_token=d.get("cleanup_token"))
+        return cls(request_id=d["request_id"])
 
 
 @dataclass
@@ -260,7 +320,6 @@ class CompleteMessage:
     success: bool
     result: object = None
     error: str | None = None
-    cleanup_token: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -270,7 +329,6 @@ class CompleteMessage:
             "success": self.success,
             "result": self.result,
             "error": self.error,
-            "cleanup_token": self.cleanup_token,
         }
 
     @classmethod
@@ -281,7 +339,6 @@ class CompleteMessage:
             success=d["success"],
             result=d.get("result"),
             error=d.get("error"),
-            cleanup_token=d.get("cleanup_token"),
         )
 
 
@@ -393,23 +450,37 @@ class ProfilerStartMessage:
     trace_path_template: str  # e.g. "/tmp/profiles/{run_id}/{stage}/trace"
     event_dir: str | None = None  # Per-stage JSONL event sink dir for request profiling
     enable_torch: bool = True  # When False, only request-level events are captured
+    event_buffer_capacity: int | None = None
 
-    def to_dict(self) -> dict[str, str | bool | None]:
-        return {
+    def to_dict(self) -> dict[str, str | bool | int | None]:
+        message: dict[str, str | bool | int | None] = {
             "type": "profiler_start",
             "run_id": self.run_id,
             "trace_path_template": self.trace_path_template,
             "event_dir": self.event_dir,
             "enable_torch": self.enable_torch,
         }
+        if self.event_buffer_capacity is not None:
+            message["event_buffer_capacity"] = self.event_buffer_capacity
+        else:
+            pass
+        return message
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "ProfilerStartMessage":
+        event_buffer_capacity = d.get("event_buffer_capacity")
+        if event_buffer_capacity is not None and (
+            type(event_buffer_capacity) is not int or event_buffer_capacity <= 0
+        ):
+            raise TypeError("event_buffer_capacity must be a positive integer")
+        else:
+            pass
         return cls(
             run_id=d["run_id"],
             trace_path_template=d["trace_path_template"],
             event_dir=d.get("event_dir"),
             enable_torch=bool(d.get("enable_torch", True)),
+            event_buffer_capacity=event_buffer_capacity,
         )
 
 
@@ -462,6 +533,7 @@ def parse_message(
     | AdminResultMessage
     | DataAckMessage
     | DataReadyMessage
+    | StreamChunkBatchMessage
     | KVTransferPrepareMessage
     | KVTransferReadyMessage
     | AbortMessage
@@ -477,6 +549,8 @@ def parse_message(
     msg_type = d.get("type")
     if msg_type == "data_ready":
         return DataReadyMessage.from_dict(d)
+    elif msg_type == "stream_chunk_batch":
+        return StreamChunkBatchMessage.from_dict(d)
     elif msg_type == "data_ack":
         return DataAckMessage.from_dict(d)
     elif msg_type == "kv_transfer_prepare":
