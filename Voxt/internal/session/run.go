@@ -40,7 +40,8 @@ type run struct {
 	skipped atomic.Bool
 	stopped atomic.Bool
 	rethink atomic.Bool
-	// think is the level Rethink chose (guarded by m.mu).
+	// think is the level the requests ask with: StartRequest.Thinking,
+	// then Rethink's (guarded by m.mu).
 	think *llm.Thinking
 	stop  chan struct{}
 	// recorded is closed once listen's recording loop has the capture's
