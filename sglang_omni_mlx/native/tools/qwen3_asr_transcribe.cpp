@@ -66,6 +66,8 @@ int main(int argc, char **argv) {
       encode_lines = value();
     } else if (argument == "--profile") {
       profile = true;
+    } else if (argument == "--cache-limit-bytes") {
+      mlx::core::set_cache_limit(std::stoull(value()));
     } else if (argument == "--dump-mel-filters") {
       dump_mel_filters = value();
     } else {
@@ -117,7 +119,8 @@ int main(int argc, char **argv) {
     const std::vector<float> samples = omni_common::DecodeWav(bytes.str());
     for (int round = 0; round < 3; ++round) {
       const auto t0 = Clock::now();
-      mx::array mel = qwen3_asr::LogMel(samples, AudioLayout::kVoxtSwift);
+      mx::array mel =
+          omni_common::LogMel(samples, omni_common::FinalStftFrame::kKept);
       mx::eval(mel);
       const auto t1 = Clock::now();
       mx::array encoded = model.EncodeAudio(mel, AudioLayout::kVoxtSwift);
@@ -172,6 +175,7 @@ int main(int argc, char **argv) {
     std::ifstream stream(file, std::ios::binary);
     std::ostringstream bytes;
     bytes << stream.rdbuf();
+    mlx::core::reset_peak_memory();
     const auto started = std::chrono::steady_clock::now();
     const auto result = transcriber.Transcribe(
         omni_common::DecodeWav(bytes.str()), options, cancel);
@@ -187,6 +191,9 @@ int main(int argc, char **argv) {
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
                         .count()},
+        {"peak_active_bytes", mlx::core::get_peak_memory()},
+        {"active_bytes", mlx::core::get_active_memory()},
+        {"cache_bytes", mlx::core::get_cache_memory()},
     };
     std::cout << line.dump() << std::endl;
     // Note (Jiaxin Deng): as the server does between requests; buffers of one

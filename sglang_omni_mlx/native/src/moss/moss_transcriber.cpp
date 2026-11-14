@@ -10,6 +10,7 @@
 #include <regex>
 
 #include "common/audio.h"
+#include "common/audio_chunks.h"
 #include "common/text.h"
 #include "nlohmann/json.hpp"
 
@@ -125,30 +126,8 @@ std::vector<AudioChunk> SplitAudio(const std::vector<float> &samples,
     const int search_end = std::min(total_samples, end_sample + search_samples);
     int cut_sample = end_sample;
     if (search_end - search_start > energy_window_samples) {
-      const int energy_count =
-          search_end - search_start - energy_window_samples + 1;
-      const float inverse_window =
-          1.0f / static_cast<float>(energy_window_samples);
-      float window_sum = 0.0f;
-      for (int i = 0; i < energy_window_samples; ++i) {
-        const float value = samples[search_start + i];
-        window_sum += value * value;
-      }
-      float min_energy = window_sum * inverse_window;
-      int min_index = 0;
-      for (int i = 1; i < energy_count; ++i) {
-        const float old_value = samples[search_start + i - 1];
-        const float new_value =
-            samples[search_start + i + energy_window_samples - 1];
-        window_sum += new_value * new_value - old_value * old_value;
-        const float energy = window_sum * inverse_window;
-        if (energy < min_energy) {
-          min_energy = energy;
-          min_index = i;
-        } else {
-        }
-      }
-      cut_sample = search_start + min_index + energy_window_samples / 2;
+      cut_sample = static_cast<int>(omni_common::QuietestAudioPosition(
+          samples, search_start, search_end, energy_window_samples));
     } else {
     }
     cut_sample = std::max(cut_sample, start_sample + sample_rate);
@@ -228,8 +207,15 @@ void ValidatePrompt(const std::optional<std::string> &prompt) {
   }
 }
 
-MossTranscriber::MossTranscriber(const std::filesystem::path &model_directory)
+MossTranscriber::MossTranscriber(const std::filesystem::path &model_directory,
+                                 const std::filesystem::path &draft_directory,
+                                 int draft_quantization_bits)
     : model_(model_directory), tokenizer_(model_directory) {
+  if (!draft_directory.empty()) {
+    draft_.emplace(draft_directory, draft_quantization_bits,
+                   model_.decoder().config());
+  } else {
+  }
   for (char digit = '0'; digit <= '9'; ++digit) {
     const std::vector<int> ids = tokenizer_.Encode(std::string(1, digit));
     if (ids.size() != 1) {
@@ -389,57 +375,67 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
   const mx::array embeddings = mx::expand_dims(mx::concatenate(pieces, 0), 0);
   mx::eval(embeddings);
 
-  // Note (Dayuxiaoshui): the last prompt token stays out of the chunked
-  // prefill, so its forward pass also gives the first logits.
-  std::vector<KVCache> caches = model_.decoder().NewCaches();
-  int processed = 0;
-  while (prompt_length - processed > 1) {
-    if (cancel.load()) {
-      throw TranscriptionCancelled();
-    } else {
-    }
-    const int step =
-        std::min(kPrefillStepTokens, prompt_length - processed - 1);
-    mx::eval(model_.decoder().Forward(
-        mx::slice(embeddings, {0, processed, 0}, {1, processed + step, hidden}),
-        caches));
-    processed += step;
-  }
-  mx::array next_token =
-      mx::argmax(model_.decoder().LastLogits(model_.decoder().Forward(
-          mx::slice(embeddings, {0, processed, 0}, {1, prompt_length, hidden}),
-          caches)));
-  mx::async_eval({next_token});
-
   const auto is_end = [&](int token_id) {
     return token_id == im_end_id_ ||
            (options.stop_at_end_of_text && token_id == end_of_text_id_);
   };
   std::vector<int> output_ids;
   FinishReason finish_reason = FinishReason::kLength;
-  while (static_cast<int>(output_ids.size()) < max_new_tokens) {
-    if (cancel.load()) {
-      throw TranscriptionCancelled();
-    } else {
-    }
-    const mx::array token = next_token;
-    // Note (Dayuxiaoshui): queue the next step before reading this token, so
-    // the GPU decodes while the stop rules are checked.
-    next_token =
-        mx::argmax(model_.decoder().LastLogits(model_.decoder().Forward(
-            model_.decoder().EmbedTokens(mx::reshape(token, {1, 1})), caches)));
-    mx::async_eval({next_token});
-    const int token_id = static_cast<int>(token.item<uint32_t>());
+  const auto commit = [&](int token_id) {
     if (is_end(token_id)) {
       finish_reason = FinishReason::kStop;
-      break;
+      return true;
     } else {
     }
     output_ids.push_back(token_id);
     if (options.stop_on_token_loop && IsTokenLoop(output_ids)) {
       finish_reason = FinishReason::kStop;
-      break;
+      return true;
     } else {
+      return static_cast<int>(output_ids.size()) >= max_new_tokens;
+    }
+  };
+  int verify_round_count = 0;
+  if (draft_.has_value()) {
+    verify_round_count =
+        draft_->Decode(model_.decoder(), embeddings, max_new_tokens,
+                       kPrefillStepTokens, commit, cancel);
+  } else {
+    // Note (Dayuxiaoshui): the last prompt token stays out of the chunked
+    // prefill, so its forward pass also gives the first logits.
+    std::vector<KVCache> caches = model_.decoder().NewCaches();
+    int processed = 0;
+    while (prompt_length - processed > 1) {
+      if (cancel.load()) {
+        throw TranscriptionCancelled();
+      } else {
+      }
+      const int step =
+          std::min(kPrefillStepTokens, prompt_length - processed - 1);
+      mx::eval(
+          model_.decoder().Forward(mx::slice(embeddings, {0, processed, 0},
+                                             {1, processed + step, hidden}),
+                                   caches));
+      processed += step;
+    }
+    mx::array next_token = mx::argmax(model_.decoder().LastLogits(
+        model_.decoder().Forward(mx::slice(embeddings, {0, processed, 0},
+                                           {1, prompt_length, hidden}),
+                                 caches)));
+    mx::async_eval({next_token});
+    bool finished = false;
+    while (!finished) {
+      if (cancel.load()) {
+        throw TranscriptionCancelled();
+      } else {
+      }
+      const mx::array token = next_token;
+      next_token =
+          mx::argmax(model_.decoder().LastLogits(model_.decoder().Forward(
+              model_.decoder().EmbedTokens(mx::reshape(token, {1, 1})),
+              caches)));
+      mx::async_eval({next_token});
+      finished = commit(static_cast<int>(token.item<uint32_t>()));
     }
   }
   const std::string raw_text =
@@ -451,6 +447,7 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
                     offset_seconds);
   result.generated_token_count = static_cast<int>(output_ids.size());
   result.finish_reason = finish_reason;
+  result.verify_round_count = verify_round_count;
   return result;
 }
 
@@ -494,6 +491,7 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
     combined.segments.insert(combined.segments.end(), result.segments.begin(),
                              result.segments.end());
     combined.generated_token_count += result.generated_token_count;
+    combined.verify_round_count += result.verify_round_count;
     // Note (Dayuxiaoshui): one truncated chunk cuts the whole transcript short.
     if (result.finish_reason == FinishReason::kLength) {
       combined.finish_reason = FinishReason::kLength;

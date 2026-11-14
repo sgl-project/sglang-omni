@@ -20,6 +20,10 @@ from sglang_omni.models.ming3_asr.preprocessing import (
     TranscriptionState,
     extract_transcript,
 )
+from sglang_omni.models.ming3_asr.text_streaming import (
+    Ming3ASRRequestData,
+    Ming3ASRStreamOutputBuilder,
+)
 from sglang_omni.modules.ming_audio.audio_encoder import (
     AudioEncoderConfig,
     Ming3AudioEncoder,
@@ -33,7 +37,6 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
-from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     build_sglang_server_args,
 )
@@ -51,7 +54,10 @@ class Ming3ASRConfig(Ming3AudioConfig):
         text_config: dict[str, JsonValue] | None = None,
         **kwargs: JsonValue,
     ) -> None:
-        super().__init__(text_config, **kwargs)
+        fields = dict(text_config or {})
+        # note (wirybeaver): ASR normalizes selected expert probabilities even when the checkpoint omits this flag.
+        fields.setdefault("norm_topk_prob", True)
+        super().__init__(fields, **kwargs)
 
 
 def load_checkpoint_config(model_path: str) -> dict[str, JsonValue]:
@@ -75,6 +81,7 @@ def create_thinker_executor(
     *,
     max_seq_len: int,
     max_new_tokens: int,
+    stream_emit_interval_seconds: float,
     pre_lm_max_batch_size: int,
     pre_lm_max_batch_wait_ms: int,
     request_build_max_workers: int,
@@ -86,7 +93,7 @@ def create_thinker_executor(
     nccl_port: int | None = None,
     server_args_overrides: dict[str, JsonValue] | None = None,
     total_gpu_memory_fraction: float | None = None,
-) -> OmniScheduler:
+) -> OmniScheduler[Ming3ASRRequestData]:
     if tp_size != 1:
         raise ValueError(f"Ming ASR thinker supports tp_size 1, got {tp_size}")
     else:
@@ -146,7 +153,7 @@ def create_thinker_executor(
         max_batch_wait_ms=pre_lm_max_batch_wait_ms,
     )
 
-    def build_request(payload: StagePayload) -> SGLangARRequestData:
+    def build_request(payload: StagePayload) -> Ming3ASRRequestData:
         state: TranscriptionState = payload.data
         if state["features"]:
             state["audio_embeddings"] = encoder_service.encode(state["features"])
@@ -172,7 +179,7 @@ def create_thinker_executor(
             vocab_size=model_config.vocab_size,
             eos_token_ids={end_token_id},
         )
-        return SGLangARRequestData(
+        return Ming3ASRRequestData(
             input_ids=state["input_ids"],
             req=request,
             model_inputs={
@@ -183,13 +190,19 @@ def create_thinker_executor(
             temperature=sampling.temperature,
             output_ids=request.output_ids,
             stage_payload=payload,
+            language=parameters.get("language"),
         )
 
-    def build_result(request: SGLangARRequestData) -> StagePayload:
+    def build_result(request: Ming3ASRRequestData) -> StagePayload:
         payload = request.stage_payload
-        generated_text = tokenizer.decode(request.output_ids, skip_special_tokens=True)
+        generated_text = tokenizer.decode(
+            request.output_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
         payload.data = {
-            "text": extract_transcript(generated_text),
+            "text": extract_transcript(generated_text, language=request.language),
+            "finish_reason": request.finish_reason,
             "usage": {
                 "prompt_tokens": len(request.input_ids),
                 "completion_tokens": len(request.output_ids),
@@ -210,4 +223,7 @@ def create_thinker_executor(
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
         shutdown_callback=encoder_service.close,
+        stream_output_builder=Ming3ASRStreamOutputBuilder(
+            tokenizer, interval_seconds=stream_emit_interval_seconds
+        ),
     )

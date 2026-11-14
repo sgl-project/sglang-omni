@@ -58,16 +58,6 @@ mx::array Mish(const mx::array &x) {
                       mx::tanh(mx::logaddexp(x, mx::array(0.0f, x.dtype()))));
 }
 
-mx::array TanhGelu(const mx::array &x) {
-  const mx::Dtype dtype = x.dtype();
-  const mx::array cubic = mx::power(x, mx::array(3.0f, dtype));
-  const mx::array inner =
-      mx::multiply(Scalar(std::sqrt(2.0 / M_PI), dtype),
-                   mx::add(x, mx::multiply(Scalar(0.044715, dtype), cubic)));
-  return mx::multiply(mx::multiply(Scalar(0.5, dtype), x),
-                      mx::add(Scalar(1.0, dtype), mx::tanh(inner)));
-}
-
 // Interleaved rotation of the first 64 channels, as the DiT applies rotary
 // embeddings before it splits heads.
 mx::array Rotate(const mx::array &x, const mx::array &cos,
@@ -336,8 +326,8 @@ mx::array Flow::Block(const mx::array &x, const mx::array &timestep_embedding,
       x, mx::multiply(mx::expand_dims(modulation[2], 1),
                       checkpoint_.Linear(attended, prefix + "attn.to_out_0")));
   const mx::array feed_forward =
-      checkpoint_.Linear(TanhGelu(checkpoint_.Linear(modulate(hidden, 3, 4),
-                                                     prefix + "ff.ff_0_0")),
+      checkpoint_.Linear(omni_common::TanhGelu(checkpoint_.Linear(
+                             modulate(hidden, 3, 4), prefix + "ff.ff_0_0")),
                          prefix + "ff.ff_2");
   return mx::add(hidden,
                  mx::multiply(mx::expand_dims(modulation[5], 1), feed_forward));

@@ -21,6 +21,7 @@ from sglang_omni.proto.session import (
     SessionGraph,
     SessionNode,
 )
+from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY
 
 if TYPE_CHECKING:
     from sglang_omni.serve.realtime.transcription_session import StreamingASRStrategy
@@ -174,7 +175,13 @@ class EngineArgs(BaseModel):
         default=None,
         description="Authoritative KV pool size in bytes, per rank; accepts an int or an exact binary-size string such as 2GiB. Consumed by the omni KV configurator, never forwarded to SGLang ServerArgs.",
     )
-    NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset({"kv_cache_bytes"})
+    disable_speculative_decoding: bool | None = Field(
+        default=None,
+        description="When true, every speculative_* key in this block is left out of server_args_overrides, so the stage runs without the draft set by the model defaults or a config file. Never forwarded to SGLang ServerArgs.",
+    )
+    NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"kv_cache_bytes", "disable_speculative_decoding"}
+    )
 
     @field_validator("kv_cache_bytes", mode="before")
     @classmethod
@@ -200,18 +207,44 @@ class EngineArgs(BaseModel):
             pass
 
     def overrides(self) -> dict[str, object]:
-        """Return the keys set on this block, declared and free-form alike.
+        """Return the server args this block sends, declared and free-form alike.
 
         A declared key left at ``None`` means "not set" and is omitted, so
         SGLang's own defaults stay in charge; free-form keys are always
-        included because writing one is itself the intent.
+        included because writing one is itself the intent. With
+        disable_speculative_decoding set, the speculative_* keys are left out
+        whichever source wrote them. A separate draft pinned in the draft registry gets
+        its pinned revision when this block has no speculative_draft_model_revision
+        key, so a revision the block sets, None included, still wins.
         """
         extra = self.model_extra or {}
-        return {
+        overrides = {
             key: value
             for key, value in self.model_dump().items()
-            if (value is not None or key in extra) and key not in self.NON_SERVER_KEYS
+            if (value is not None or key in extra)
+            and key not in self.NON_SERVER_KEYS
+            and not (
+                self.disable_speculative_decoding and key.startswith("speculative_")
+            )
         }
+        draft_model_path = overrides.get("speculative_draft_model_path")
+        pinned_revision = next(
+            (
+                draft.draft_model_revision
+                for draft in DRAFT_REGISTRY
+                if draft.draft_model_path == draft_model_path
+                and draft.draft_model_path != draft.model_path
+            ),
+            None,
+        )
+        if (
+            pinned_revision is not None
+            and "speculative_draft_model_revision" not in overrides
+        ):
+            overrides["speculative_draft_model_revision"] = pinned_revision
+        else:
+            pass
+        return overrides
 
 
 class FactoryArgs(BaseModel):
@@ -235,6 +268,7 @@ class FactoryArgs(BaseModel):
     max_batch_size: int | None = Field(default=None, ge=1)
     max_batch_wait_ms: float | None = Field(default=None, ge=0)
     enable_async_decode: bool | None = None
+    enable_plain_fallback: bool | None = None
     async_decode_min_batch_size: int | None = Field(default=None, ge=1)
     prefill_coalesce_requests: int | None = Field(default=None, ge=0)
     prefill_coalesce_wait_ms: float | None = Field(default=None, gt=0)
