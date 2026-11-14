@@ -143,7 +143,12 @@ func (a *app) openPrivacy(c *ui.Context, url string) {
 }
 
 // permissionsSettings is the Permissions section of the settings dialog.
-func (a *app) permissionsSettings(c *ui.Context) {
+// The dialog is too narrow for a row's status and buttons beside its name,
+// so they go under it on every row, not only on rows that happen to wrap.
+func (a *app) permissionsSettings(c *ui.Context) { a.permissionRows(c, settingRowUnder) }
+
+// permissionRows lists the permissions, each a row made by row.
+func (a *app) permissionRows(c *ui.Context, row func(c *ui.Context, key, title, desc string, control func())) {
 	t := c.Theme()
 	if !a.perms.checked {
 		a.recheckPermissions()
@@ -165,7 +170,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 	sectionTitle(c, i18n.T("Required"))
 
 	micText, micOK := uitext.PermissionText(a.perms.mic)
-	settingRow(c, "perm-mic", i18n.T("Microphone"), "", func() {
+	row(c, "perm-mic", i18n.T("Microphone"), "", func() {
 		badge(micText, micOK)
 		if a.perms.mic == permission.NotDetermined {
 			if ghostButton(c.Key("perm-mic-ask"), i18n.T("Ask")).Clicked() {
@@ -182,7 +187,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 	if accOK {
 		accText = i18n.T("Allowed")
 	}
-	settingRow(c, "perm-access", i18n.T("Accessibility"), i18n.T("Lets Voxt type results, read the selected text and the browser tab's address, and use single keys like Right ⌥ as shortcuts."), func() {
+	row(c, "perm-access", i18n.T("Accessibility"), i18n.T("Lets Voxt type results, read the selected text and the browser tab's address, and use single keys like Right ⌥ as shortcuts."), func() {
 		badge(accText, accOK)
 		if !accOK {
 			if ghostButton(c.Key("perm-access-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
@@ -194,7 +199,9 @@ func (a *app) permissionsSettings(c *ui.Context) {
 		}
 	})
 	sectionTitle(c, i18n.T("Optional"))
-	settingRow(c, "perm-system-audio", i18n.T("System audio recording"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
+	row(c, "perm-system-audio", i18n.T("System audio recording"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
+		// macOS has no public read for this permission.
+		statusMark(c, icons.InfoCircle, tok(t).Text2, i18n.T("Unknown")).Tooltip(i18n.T("macOS does not let apps read this permission. Check it in System Settings."))
 		if ghostButton(c.Key("perm-system-audio-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
 			a.askPermission(proto.PermissionSystemAudio, nil)
 		}
@@ -203,7 +210,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 		}
 	})
 	speechText, speechOK := uitext.PermissionText(a.perms.speech)
-	settingRow(c, "perm-speech", i18n.T("Speech Recognition"), i18n.T("Needed only for System dictation."), func() {
+	row(c, "perm-speech", i18n.T("Speech Recognition"), i18n.T("Needed only for System dictation."), func() {
 		badge(speechText, speechOK)
 		if a.perms.speech == permission.NotDetermined {
 			if ghostButton(c.Key("perm-speech-ask"), i18n.T("Ask")).Clicked() {

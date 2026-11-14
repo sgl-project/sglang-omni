@@ -402,6 +402,14 @@ func TestPermissionsMeetingSystemAudio(t *testing.T) {
 	if !hasExact(tt, "System audio recording") { // one line in English, so its ⓘ sits beside it
 		t.Errorf("permissions: %q", firstTexts(tt))
 	}
+	// Its status and Ask sit under the name, as on the other rows, not at
+	// the far right of the name's line.
+	name, _ := tt.Find("System audio recording")
+	status, _ := tt.Find("Unknown")
+	ask, _ := tt.Find("Ask")
+	if status.Y < name.Y+name.H || status.X > name.X+30 || ask.Y > status.Y+2 || ask.Y < status.Y-2 {
+		t.Errorf("name at %v, status at %v, Ask at %v: want status and Ask under the name", name, status, ask)
+	}
 	click(t, tt, "Ask")
 	if !slices.Equal(fs.asked, []string{proto.PermissionSystemAudio}) {
 		t.Errorf("asked %v", fs.asked)
