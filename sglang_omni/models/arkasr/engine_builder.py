@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
@@ -160,6 +162,33 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         self.audio_token_id = int(getattr(hf_config, "audio_token_id", 151663))
         encoder_token_count = self.feature_extractor.nb_max_frames // 2
         self.context_length = encoder_token_count + self.max_new_tokens + 8
+
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        """Reject incompatible runtime settings before allocating engine resources."""
+        cfg = resolved_view(server_args)
+        # NPU pre-LM graphs need independent Host queues so a blocked stream does not stall submission on another stream. See the Host queue guidance in docs/other_platforms/installation_npu.md.
+        if (
+            current_platform.is_npu()
+            and self.enable_pre_lm_encoder
+            and (
+                self.enable_encoder_cuda_graph
+                or cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED
+                or cfg.cuda_graph_config.prefill.backend != CudaGraphBackend.DISABLED
+            )
+            and (
+                os.environ.get("PER_STREAM_QUEUE") != "1"
+                or os.environ.get("TASK_QUEUE_ENABLE", "1") != "1"
+                or os.environ.get("ASCEND_LAUNCH_BLOCKING") == "1"
+            )
+        ):
+            raise ValueError(
+                "ARK-ASR NPU pre-LM graphs require PER_STREAM_QUEUE=1, "
+                "TASK_QUEUE_ENABLE unset or 1, and ASCEND_LAUNCH_BLOCKING unset or 0 "
+                "before starting the server"
+            )
+        else:
+            pass
+        super().validate_before_infrastructure(server_args)
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         defaults: GenerationDefaults = {

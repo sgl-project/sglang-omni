@@ -6,7 +6,7 @@ multimodal embedding construction on the LM forward path, so every admission
 stalls the running decode batch for the whole audio-encoder forward on the
 scheduler thread and the default stream. This service mirrors the shared
 pre-LM encoder pattern (Qwen3-ASR / Fun-ASR): complete audio-encoder execution
-happens at request-build time on a dedicated worker thread and CUDA stream, and
+happens at request-build time on a dedicated worker thread and device stream, and
 the request is admitted with ``MultimodalDataItem.precomputed_embeddings``
 already attached.
 
@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, TypeGuard
 
 import torch
 from sglang.srt.managers.schedule_batch import MultimodalDataItem, MultimodalInputFormat
+from sglang.srt.utils import create_device_stream, device_stream_context
 from transformers import WhisperFeatureExtractor
 
 from sglang_omni.scheduling.pre_lm_encoder import (
@@ -154,8 +155,8 @@ class ArkasrPreLMEncoderService(
         self.dtype = reference.dtype
         self.hidden_size = text_hidden_size(model)
         self.stream = (
-            torch.cuda.Stream(device=self.device)
-            if self.device.type == "cuda"
+            create_device_stream(self.device)
+            if self.device.type in {"cuda", "npu"}
             else None
         )
         self.cache = StageOutputCache(
@@ -440,12 +441,13 @@ class ArkasrPreLMEncoderService(
         self, item: MultimodalDataItem, embedding: torch.Tensor
     ) -> None:
         embedding = embedding.to(self.device, non_blocking=True)
-        if self.stream is not None and embedding.is_cuda:
+        if self.stream is not None:
             # the batch path allocates on the private stream while the LM
             # consumes on the default stream; register the consumer so the
             # allocator cannot recycle the block for a later batch while LM
             # reads are still queued.
-            embedding.record_stream(torch.cuda.default_stream(self.device))
+            device_module = torch.get_device_module(embedding.device)
+            embedding.record_stream(device_module.default_stream(embedding.device))
         else:
             pass
         item.precomputed_embeddings = embedding
@@ -496,7 +498,7 @@ class ArkasrPreLMEncoderService(
             if self.stream is None:
                 yield
             else:
-                with torch.cuda.stream(self.stream):
+                with device_stream_context(self.stream):
                     yield
 
     def encode_batch(self, items: list[MultimodalDataItem]) -> torch.Tensor:
@@ -631,10 +633,13 @@ class ArkasrPreLMEncoderService(
         else:
             pass
         try:
-            with torch.cuda.device(self.device):
-                torch.cuda.empty_cache()
+            device_module = torch.get_device_module(self.device)
+            with device_module.device(self.device):
+                device_module.empty_cache()
         except Exception:
-            logger.warning("ARK-ASR CUDA cache cleanup failed after OOM", exc_info=True)
+            logger.warning(
+                "ARK-ASR device cache cleanup failed after OOM", exc_info=True
+            )
 
     def on_batch_start(
         self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]

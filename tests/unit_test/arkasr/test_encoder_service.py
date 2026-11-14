@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
+import queue
 import threading
 import time
 from collections.abc import Iterator
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import torch
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 
+import sglang_omni.models.arkasr.encoder_service as encoder_service
 from sglang_omni.models.arkasr.encoder_service import (
     ArkasrPreLMEncoderService,
     build_cache_namespace,
@@ -208,11 +212,32 @@ def test_bounded_queue_applies_backpressure_and_records_saturation() -> None:
     futures.append(service.submit_item(make_item(2, 3)))
     submitted: list[concurrent.futures.Future[torch.Tensor]] = []
 
-    thread = threading.Thread(
-        target=lambda: submitted.append(service.submit_item(make_item(3, 3)))
-    )
+    # note: the queue holds item 2 and the worker is parked on item 1's
+    # gate, so it is deterministically full. A wall-clock window cannot
+    # prove the submit thread reached the bounded-queue retry loop (under
+    # load it can be descheduled right after start), so instrument
+    # put_nowait and wait for the first real queue.Full collision: once
+    # it fires, the submit is deterministically blocked until the gate
+    # opens.
+    full_hits = threading.Event()
+    original_put_nowait = service.queue.put_nowait
+
+    def counting_put_nowait(entry):  # noqa: ANN001, ANN202
+        try:
+            original_put_nowait(entry)
+        except queue.Full:
+            if not full_hits.is_set():
+                full_hits.set()
+            raise
+
+    service.queue.put_nowait = counting_put_nowait
+
+    def submit_third() -> None:
+        submitted.append(service.submit_item(make_item(3, 3)))
+
+    thread = threading.Thread(target=submit_third)
     thread.start()
-    time.sleep(0.02)
+    assert full_hits.wait(timeout=5)
     assert thread.is_alive()
 
     gate.set()
@@ -237,18 +262,54 @@ def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(ArkasrPreLMEncoderService)
-    service.stream = object()
-
-    def fail_stream(stream):  # noqa: ANN001, ANN202
-        raise RuntimeError("stream context failed")
-
-    monkeypatch.setattr(torch.cuda, "stream", fail_stream)
+    service.stream = SimpleNamespace(device=SimpleNamespace(type="npu"))
+    device_module = MagicMock()
+    device_module.stream.side_effect = RuntimeError("stream context failed")
+    monkeypatch.setattr(torch, "get_device_module", lambda _device=None: device_module)
 
     assert not torch.is_inference_mode_enabled()
     with pytest.raises(RuntimeError, match="stream context failed"):
         with service.batch_context():
             pass
     assert not torch.is_inference_mode_enabled()
+    device_module.stream.assert_called_once_with(service.stream)
+
+
+def test_npu_service_streams_and_records_the_embedding_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    npu_device = SimpleNamespace(type="npu")
+    reference = SimpleNamespace(device=npu_device, dtype=torch.float32)
+    model = SimpleNamespace(
+        audio_encoder=SimpleNamespace(parameters=lambda: iter((reference,))),
+        config=SimpleNamespace(hidden_size=HIDDEN_SIZE),
+    )
+    private_stream = object()
+    monkeypatch.setattr(
+        encoder_service,
+        "create_device_stream",
+        lambda device: private_stream if device is npu_device else None,
+    )
+
+    service = make_service(model)
+
+    assert service.stream is private_stream
+
+    embedding = MagicMock()
+    embedding.device = npu_device
+    embedding.to.return_value = embedding
+    consumer_stream = object()
+    device_module = SimpleNamespace(
+        default_stream=MagicMock(return_value=consumer_stream)
+    )
+    monkeypatch.setattr(torch, "get_device_module", lambda _device=None: device_module)
+    item = make_item(7, 3)
+
+    service.attach_embedding(item, embedding)
+
+    device_module.default_stream.assert_called_once_with(npu_device)
+    embedding.record_stream.assert_called_once_with(consumer_stream)
+    assert item.precomputed_embeddings is embedding
 
 
 def test_cache_hit_skips_reencode() -> None:
@@ -396,9 +457,11 @@ def test_oom_failure_detaches_traceback_and_recovers(
     model.fail_oom = True
     service = make_service(model)
     empty_cache_calls: list[bool] = []
-    monkeypatch.setattr(
-        torch.cuda, "empty_cache", lambda: empty_cache_calls.append(True)
+    device_module = SimpleNamespace(
+        device=contextlib.nullcontext,
+        empty_cache=lambda: empty_cache_calls.append(True),
     )
+    monkeypatch.setattr(torch, "get_device_module", lambda _device=None: device_module)
 
     with pytest.raises(torch.OutOfMemoryError, match="encoder OOM") as excinfo:
         service.encode_item(make_item(77, 3))
@@ -408,6 +471,7 @@ def test_oom_failure_detaches_traceback_and_recovers(
     assert excinfo.value.__cause__ is None
     assert excinfo.value.__context__ is None
     assert service.stats()["failed"] == 1
+    assert empty_cache_calls == [True]
 
     model.fail_oom = False
     item = make_item(77, 3)

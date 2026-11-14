@@ -3,6 +3,7 @@
 
 import inspect
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,6 +34,7 @@ from sglang_omni.models.arkasr.request_builders import build_suppressed_token_id
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
 
@@ -82,6 +84,116 @@ def test_arkasr_config_registered():
     assert ArkasrPipelineConfig.generation_sglang_role_to_stage() == {
         "generation": "asr"
     }
+
+
+@pytest.mark.parametrize(
+    ("is_npu", "configured_env_defaults", "expected_env_defaults"),
+    [
+        (True, {}, {"PER_STREAM_QUEUE": "1"}),
+        (False, {}, {}),
+        (True, {"PER_STREAM_QUEUE": "0"}, {"PER_STREAM_QUEUE": "0"}),
+    ],
+)
+def test_per_stream_queue_env_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    is_npu: bool,
+    configured_env_defaults: dict[str, str],
+    expected_env_defaults: dict[str, str],
+) -> None:
+    monkeypatch.setattr(arkasr_builder.current_platform, "is_npu", lambda: is_npu)
+    config = ArkasrPipelineConfig(
+        model_path="test", env_defaults=configured_env_defaults
+    )
+
+    assert config.resolved_env_defaults() == expected_env_defaults
+    assert config.env_defaults == configured_env_defaults
+
+
+@pytest.mark.parametrize(
+    (
+        "is_npu",
+        "enable_pre_lm_encoder",
+        "enable_encoder_cuda_graph",
+        "enable_decode_graph",
+        "enable_prefill_graph",
+        "disable_cuda_graph",
+        "per_stream_queue",
+        "task_queue_enable",
+        "launch_blocking",
+        "is_valid",
+    ),
+    [
+        (True, True, True, True, False, False, "1", "1", "0", True),
+        (True, True, False, True, False, False, None, None, None, False),
+        (True, True, True, True, False, False, "0", "1", "0", False),
+        (True, True, True, True, False, False, "1", "0", "0", False),
+        (True, True, True, True, False, False, "1", "1", "1", False),
+        (True, True, False, False, False, True, None, None, None, True),
+        (False, True, True, True, False, False, None, None, None, True),
+        (True, False, True, True, False, False, None, None, None, True),
+        (True, True, False, False, True, False, "1", "0", None, False),
+        (True, True, False, True, False, True, "1", "0", None, False),
+    ],
+)
+def test_npu_graph_startup_requires_per_stream_queues(
+    monkeypatch: pytest.MonkeyPatch,
+    is_npu: bool,
+    enable_pre_lm_encoder: bool,
+    enable_encoder_cuda_graph: bool,
+    enable_decode_graph: bool,
+    enable_prefill_graph: bool,
+    disable_cuda_graph: bool,
+    per_stream_queue: str | None,
+    task_queue_enable: str | None,
+    launch_blocking: str | None,
+    is_valid: bool,
+) -> None:
+    for name, value in (
+        ("PER_STREAM_QUEUE", per_stream_queue),
+        ("TASK_QUEUE_ENABLE", task_queue_enable),
+        ("ASCEND_LAUNCH_BLOCKING", launch_blocking),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    monkeypatch.setattr(arkasr_builder.current_platform, "is_npu", lambda: is_npu)
+    monkeypatch.setattr(
+        arkasr_builder.AsrEngineBuilder,
+        "validate_before_infrastructure",
+        lambda self, server_args: None,
+    )
+    builder = object.__new__(arkasr_builder.ArkasrEngineBuilder)
+    builder.enable_pre_lm_encoder = enable_pre_lm_encoder
+    builder.enable_encoder_cuda_graph = enable_encoder_cuda_graph
+    server_args = SimpleNamespace(
+        disable_cuda_graph=disable_cuda_graph,
+        cuda_graph_config=SimpleNamespace(
+            decode=SimpleNamespace(
+                backend=(
+                    CudaGraphBackend.FULL
+                    if enable_decode_graph
+                    else CudaGraphBackend.DISABLED
+                ),
+                bs=[1],
+            ),
+            prefill=SimpleNamespace(
+                backend=(
+                    CudaGraphBackend.BREAKABLE
+                    if enable_prefill_graph
+                    else CudaGraphBackend.DISABLED
+                ),
+            ),
+        ),
+    )
+    expectation = (
+        nullcontext()
+        if is_valid
+        else pytest.raises(ValueError, match="PER_STREAM_QUEUE")
+    )
+
+    with expectation:
+        builder.validate_before_infrastructure(server_args)
 
 
 def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
@@ -252,6 +364,8 @@ def stub_arkasr_engine_build(
                 prefill_bs = sglang_prefill_ladder(prefill_max_bs)
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
+                # note: the resolved production config always carries a decode backend.
+                backend=overrides.get("cuda_graph_backend", "disabled"),
                 max_bs=overrides["cuda_graph_max_bs"],
                 bs=overrides["cuda_graph_bs"],
             ),

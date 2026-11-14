@@ -235,6 +235,19 @@ This path was validated on a MacBook Air with an M4 and 16 GB of unified
 memory using the official checkpoint and `tests/data/query_to_cars.wav`. The
 server returned the expected transcript through `/v1/audio/transcriptions`.
 
+## Ascend NPU
+
+ARK-ASR-3B runs on Ascend 910 with the provided NPU configuration:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --config examples/configs/arkasr_npu.yaml \
+  --port 8000
+```
+
+See the [NPU installation guide](../other_platforms/installation_npu.md) for environment setup.
+
 ## Marker-Token Suppression
 
 The stock checkpoint ships no `bad_words_ids`, so plain `skip_special_tokens=True`
