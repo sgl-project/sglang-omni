@@ -355,99 +355,104 @@ def test_nonempty_final_returns_owned_exact_audio_and_release_preserves_peer(
 @pytest.mark.parametrize("optimized", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_cuda_exact_graphs_match_native_with_slot_reuse_and_owned_output(
-    monkeypatch: pytest.MonkeyPatch,
     optimized: bool,
     dtype: torch.dtype,
 ) -> None:
-    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
-    codec = tiny_fishaudio_codec().cuda().to(dtype=dtype)
-    backend = StatefulDACDecoder(
-        codec,
-        dtype=dtype,
-        capacity=2,
-        gemm_upsample=optimized,
-        folded_codebooks=optimized,
-        fuse_snake_history=optimized,
-        compile_attention=optimized,
-    )
-    decoder = StatefulGraphDecoder(backend, compiled_frame_counts=(10, 12, 32, 64))
-    tolerance = 0.02 if dtype == torch.float16 else 1e-4
-    assert backend.waveform_decoder is not None
-    states = [decoder.create_state(slot_index) for slot_index in range(2)]
-    inputs = [
-        torch.randint(0, 16, (1, backend.num_codebooks, 193), device="cuda")
-        for _ in states
-    ]
-    expected = [codec.from_indices(codes.clone()).float() for codes in inputs]
-    outputs: list[list[torch.Tensor]] = [[], []]
-    snapshots: list[tuple[torch.Tensor, torch.Tensor]] = []
-    position = 0
-    for frame_count in (1, 63, 64, 64, 1):
-        for slot_index in (1, 0):
-            audio = decoder.decode_delta(
-                inputs[slot_index][..., position : position + frame_count],
-                states[slot_index],
-                is_final=position + frame_count == 193,
+    original_cudnn_allow_tf32 = torch.backends.cudnn.allow_tf32
+    original_matmul_allow_tf32 = torch.backends.cuda.matmul.allow_tf32
+    try:
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+        codec = tiny_fishaudio_codec().cuda().to(dtype=dtype)
+        backend = StatefulDACDecoder(
+            codec,
+            dtype=dtype,
+            capacity=2,
+            gemm_upsample=optimized,
+            folded_codebooks=optimized,
+            fuse_snake_history=optimized,
+            compile_attention=optimized,
+        )
+        decoder = StatefulGraphDecoder(backend, compiled_frame_counts=(10, 12, 32, 64))
+        tolerance = 0.02 if dtype == torch.float16 else 1e-4
+        assert backend.waveform_decoder is not None
+        states = [decoder.create_state(slot_index) for slot_index in range(2)]
+        inputs = [
+            torch.randint(0, 16, (1, backend.num_codebooks, 193), device="cuda")
+            for _ in states
+        ]
+        expected = [codec.from_indices(codes.clone()).float() for codes in inputs]
+        outputs: list[list[torch.Tensor]] = [[], []]
+        snapshots: list[tuple[torch.Tensor, torch.Tensor]] = []
+        position = 0
+        for frame_count in (1, 63, 64, 64, 1):
+            for slot_index in (1, 0):
+                audio = decoder.decode_delta(
+                    inputs[slot_index][..., position : position + frame_count],
+                    states[slot_index],
+                    is_final=position + frame_count == 193,
+                )
+                outputs[slot_index].append(audio)
+                snapshots.append((audio, audio.clone()))
+            position += frame_count
+        for slot_index in (0, 1):
+            torch.testing.assert_close(
+                torch.cat(outputs[slot_index], dim=-1).float(),
+                expected[slot_index],
+                atol=tolerance,
+                rtol=tolerance,
             )
-            outputs[slot_index].append(audio)
-            snapshots.append((audio, audio.clone()))
-        position += frame_count
-    for slot_index in (0, 1):
+        decoder.release_state(states[0])
+        replacement = decoder.create_state(0)
+        cold_codes = inputs[0][..., :10]
         torch.testing.assert_close(
-            torch.cat(outputs[slot_index], dim=-1).float(),
-            expected[slot_index],
+            decoder.decode_delta(cold_codes, replacement).float(),
+            codec.from_indices(cold_codes.clone()).float(),
             atol=tolerance,
             rtol=tolerance,
         )
-    decoder.release_state(states[0])
-    replacement = decoder.create_state(0)
-    cold_codes = inputs[0][..., :10]
-    torch.testing.assert_close(
-        decoder.decode_delta(cold_codes, replacement).float(),
-        codec.from_indices(cold_codes.clone()).float(),
-        atol=tolerance,
-        rtol=tolerance,
-    )
-    decoder.release_state(replacement)
-    decoder.release_state(states[1])
-    factory = Drama3VocoderFactoryArgs()
-    scheduler = Drama3VocoderScheduler(
-        codec,
-        device="cuda",
-        stream_stride=factory.stream_stride,
-        stream_followup_stride_ramp=factory.stream_followup_stride_ramp,
-        stream_followup_stride=factory.stream_followup_stride,
-        stream_overlap_tokens=factory.stream_overlap_tokens,
-        stream_crossfade_samples=0,
-        max_batch_size=1,
-        max_batch_wait_ms=0,
-        stateful_decoder=decoder,
-        stateful_max_streams=2,
-    )
-    long_state = decoder.create_state()
-    scheduler.request_slots["long-window"] = long_state
-    scheduler.stream_states["long-window"] = StreamVocoderState(
-        codes=[torch.cat((inputs[0][:, :1], inputs[0]), dim=1)[0]],
-        total_tokens=193,
-    )
-    chunk = scheduler.decode_stream_delta("long-window", is_final=True)
-    assert chunk is not None
-    torch.testing.assert_close(
-        torch.from_numpy(
-            np.frombuffer(chunk["audio_waveform"], dtype=np.float32).copy()
-        ),
-        expected[0][0, 0].cpu(),
-        atol=tolerance,
-        rtol=tolerance,
-    )
-    assert long_state.processed_frames == 193
-    assert long_state.is_final
-    scheduler.clear_stream_state("long-window")
-    for audio, snapshot in snapshots:
-        torch.testing.assert_close(audio, snapshot)
-    with pytest.raises(ValueError, match="stale"):
-        decoder.release_state(states[0])
+        decoder.release_state(replacement)
+        decoder.release_state(states[1])
+        factory = Drama3VocoderFactoryArgs()
+        scheduler = Drama3VocoderScheduler(
+            codec,
+            device="cuda",
+            stream_stride=factory.stream_stride,
+            stream_followup_stride_ramp=factory.stream_followup_stride_ramp,
+            stream_followup_stride=factory.stream_followup_stride,
+            stream_overlap_tokens=factory.stream_overlap_tokens,
+            stream_crossfade_samples=0,
+            max_batch_size=1,
+            max_batch_wait_ms=0,
+            stateful_decoder=decoder,
+            stateful_max_streams=2,
+        )
+        long_state = decoder.create_state()
+        scheduler.request_slots["long-window"] = long_state
+        scheduler.stream_states["long-window"] = StreamVocoderState(
+            codes=[torch.cat((inputs[0][:, :1], inputs[0]), dim=1)[0]],
+            total_tokens=193,
+        )
+        chunk = scheduler.decode_stream_delta("long-window", is_final=True)
+        assert chunk is not None
+        torch.testing.assert_close(
+            torch.from_numpy(
+                np.frombuffer(chunk["audio_waveform"], dtype=np.float32).copy()
+            ),
+            expected[0][0, 0].cpu(),
+            atol=tolerance,
+            rtol=tolerance,
+        )
+        assert long_state.processed_frames == 193
+        assert long_state.is_final
+        scheduler.clear_stream_state("long-window")
+        for audio, snapshot in snapshots:
+            torch.testing.assert_close(audio, snapshot)
+        with pytest.raises(ValueError, match="stale"):
+            decoder.release_state(states[0])
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = original_matmul_allow_tf32
+        torch.backends.cudnn.allow_tf32 = original_cudnn_allow_tf32
 
 
 def test_cpu_without_boundary_rejects_capture_before_cuda_calls() -> None:
