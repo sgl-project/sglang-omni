@@ -21,6 +21,7 @@ from sglang.srt.runtime_context import get_schedule
 from transformers import PretrainedConfig
 
 from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
+from sglang_omni.models.zonos2.fused_norm import add_rms_norm, rms_norm
 from sglang_omni.models.zonos2.hf_config import Zonos2Config
 from sglang_omni.models.zonos2.radix_hash import poly_row_hash
 from sglang_omni.models.zonos2.sampler import sample_tts
@@ -72,8 +73,8 @@ class Zonos2Attention(nn.Module):
         q = F.linear(x, self.wq).view(t, self.nq, self.hd)
         k = F.linear(x, self.wkv[0]).view(t, self.nkv, self.hd)
         v = F.linear(x, self.wkv[1]).view(t, self.nkv, self.hd)
-        q = F.rms_norm(q, (self.hd,), None, _QK_NORM_EPS) * self.temp.abs().to(q.dtype)
-        k = F.rms_norm(k, (self.hd,), None, _QK_NORM_EPS)
+        q = rms_norm(q, None, _QK_NORM_EPS) * self.temp.abs().to(q.dtype)
+        k = rms_norm(k, None, _QK_NORM_EPS)
         q = q.reshape(t, self.nq * self.hd)
         k = k.reshape(t, self.nkv * self.hd)
         v = v.reshape(t, self.nkv * self.hd)
@@ -126,16 +127,17 @@ class Zonos2SonicRouter(nn.Module):
     ) -> Tuple[StandardTopKOutput, torch.Tensor]:
         h = self.down_proj(h)
         if self.use_eda and router_states is not None:
-            h = h + router_states * self.router_states_scale
+            h, rs_next = add_rms_norm(
+                router_states * self.router_states_scale, h, self.rmsnorm_eda, self.eps
+            )
         else:
-            pass
-        rs_next = h.clone()
-        h = F.rms_norm(h, (h.shape[-1],), self.rmsnorm_eda, self.eps)
+            rs_next = h.clone()
+            h = rms_norm(h, self.rmsnorm_eda, self.eps)
         logits = self.router_mlp_4(
             F.gelu(self.router_mlp_2(F.gelu(self.router_mlp_0(h))))
         )
         probs = torch.softmax(logits.float(), dim=-1)
-        scores = probs + self.bias_sign * self.balancing_biases.float()
+        scores = torch.add(probs, self.balancing_biases.float(), alpha=self.bias_sign)
         _, ids = torch.topk(scores, self.top_k, dim=-1)
         weights = torch.gather(probs, -1, ids)
         topk = StandardTopKOutput(
@@ -192,13 +194,11 @@ class Zonos2DecoderLayer(nn.Module):
     def forward(self, x, residual, router_states, positions, forward_batch):
         if residual is None:
             residual = x
-            h = F.rms_norm(x, (x.shape[-1],), self.attention_norm, self.eps)
+            h = rms_norm(x, self.attention_norm, self.eps)
         else:
-            residual = x + residual
-            h = F.rms_norm(residual, (x.shape[-1],), self.attention_norm, self.eps)
+            h, residual = add_rms_norm(x, residual, self.attention_norm, self.eps)
         h = self.attention(h, positions, forward_batch)
-        residual = h + residual
-        h = F.rms_norm(residual, (h.shape[-1],), self.ffn_norm, self.eps)
+        h, residual = add_rms_norm(h, residual, self.ffn_norm, self.eps)
         if self.is_moe:
             h, router_states = self.feed_forward(h, router_states)
         else:
@@ -339,7 +339,7 @@ class Zonos2SGLangModel(nn.Module):
         else:
             pass
         x = input_embeds
-        x = F.rms_norm(x, (x.shape[-1],), None, self.emb_norm_eps)
+        x = rms_norm(x, None, self.emb_norm_eps)
 
         residual = None
         router_states = None
@@ -347,9 +347,7 @@ class Zonos2SGLangModel(nn.Module):
             x, residual, router_states = layer(
                 x, residual, router_states, positions, forward_batch
             )
-        hidden = F.rms_norm(
-            x + residual, (x.shape[-1],), self.out_norm, self.emb_norm_eps
-        )
+        hidden = rms_norm(x + residual, self.out_norm, self.emb_norm_eps)
         return LogitsProcessorOutput(
             next_token_logits=hidden.new_empty((hidden.shape[0], 1)),
             hidden_states=hidden,

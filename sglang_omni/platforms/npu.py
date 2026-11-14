@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING
 import torch
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
-from sglang_omni.platforms.interface import OmniPlatform, RMSNormKernel
+from sglang_omni.platforms.interface import (
+    OmniPlatform,
+    RMSNormAddKernel,
+    RMSNormKernel,
+)
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
@@ -42,6 +46,22 @@ class NPUOmniPlatform(OmniPlatform):
 
         return npu_rmsnorm
 
+    def get_add_rmsnorm(self) -> RMSNormAddKernel:
+        import torch_npu
+
+        def npu_add_rmsnorm(
+            hidden_states: torch.Tensor,
+            residual: torch.Tensor,
+            weight: torch.Tensor,
+            variance_epsilon: float,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            normalized, _, residual_sum = torch_npu.npu_add_rms_norm(
+                hidden_states, residual, weight, variance_epsilon
+            )
+            return normalized, residual_sum
+
+        return npu_add_rmsnorm
+
     def enable_mimi_decode_graph(self) -> bool:
         """Capture PersonaPlex's Mimi streaming decode in NPU graphs."""
         return True
@@ -50,6 +70,17 @@ class NPUOmniPlatform(OmniPlatform):
         return True
 
     def enable_tts_vocoder_fast_path(self) -> bool:
+        return False
+
+    def supports_fp8_moe(self) -> bool:
+        """No fp8 expert kernel is registered for the SoCs this backend targets,
+        so serving MoE in fp8 fails while loading the weights."""
+        return False
+
+    def enable_zonos2_torch_compile(self) -> bool:
+        """The torch_npu inductor backend cannot compile ZONOS2's graphs, so
+        enabling compile would abort startup; the decode NPU graph still carries
+        the backbone launches."""
         return False
 
     def supports_torchaudio_resample(self) -> bool:
