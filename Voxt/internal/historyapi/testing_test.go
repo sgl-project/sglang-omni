@@ -81,11 +81,8 @@ func entryID(i int) string {
 	return "e" + string(rune('a'+i/676)) + string(rune('a'+i/26%26)) + string(rune('a'+i%26))
 }
 
-// socketPath is a path for a Unix socket in a new folder under $TMPDIR
-// that is removed when the test ends. A socket's path must fit in
-// sun_path: 104 bytes on macOS, the terminating NUL included.
-// t.TempDir() puts the test's name in the path, so a long test name
-// overflows it ("bind: invalid argument").
+// socketPath avoids t.TempDir(), whose path holds the test's name and can
+// overflow the 104-byte socket path limit on macOS.
 func socketPath(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "vx")
