@@ -18,6 +18,24 @@ func settingRow(c *ui.Context, key, title, desc string, control func()) {
 	formRow(c, key, title, desc, control)
 }
 
+// settingRowUnder is settingRow with its control under the name, where
+// formRow puts it when the two do not fit on a line.
+func settingRowUnder(c *ui.Context, key, title, desc string, control func()) {
+	if !settingsSearchShows(title, desc) {
+		return
+	}
+	t := c.Theme()
+	ui.Column(c.Key(key)).Gap(px(t, 6)).MinHeight(px(t, 32)).Children(func() {
+		ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
+			settingsName(c, title).MinWidth(0)
+			if desc != "" {
+				infoTip(c, desc)
+			}
+		})
+		ui.Row(c).Wrap().Gap(px(t, sp2)).AlignItems(ui.Center).Children(control)
+	})
+}
+
 // settingRowNote is a setting whose description is a state to read at
 // once (a path, what is missing, a version): it shows under the name.
 func settingRowNote(c *ui.Context, key, title, note string, control func()) {
