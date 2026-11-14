@@ -6,6 +6,7 @@ import asyncio
 import collections
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -13,10 +14,12 @@ import torch
 from sglang.srt.utils.hf_transformers_utils import get_config
 
 from sglang_omni.models.voxtral_tts.acoustic_transformer import (
+    AudioSpecialTokens,
     FlowMatchingAudioTransformer,
 )
 from sglang_omni.models.voxtral_tts.audio_tokenizer import VoxtralTTSAudioTokenizer
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
+from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
 from sglang_omni.models.voxtral_tts.pipeline import stages
 from sglang_omni.models.voxtral_tts.pipeline.engine_builder import (
     VOXTRAL_CONFIG_PARSER,
@@ -43,6 +46,14 @@ def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocod
     captured: dict[str, object] = {}
 
     class FakeBuilder:
+        def __init__(
+            self, *, enable_async_decode: bool, async_decode_min_batch_size: int
+        ) -> None:
+            captured["async_decode"] = (
+                enable_async_decode,
+                async_decode_min_batch_size,
+            )
+
         def build(self, model_path, **kwargs):
             captured["build"] = (model_path, kwargs)
             return "generation"
@@ -51,6 +62,7 @@ def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocod
     generation = stages.create_generation_executor("model", gpu_id=3)
 
     assert generation == "generation"
+    assert captured["async_decode"] == (True, 1)
     assert captured["build"] == (
         "model",
         {
@@ -60,7 +72,14 @@ def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocod
         },
     )
 
-    stages.create_generation_executor("model", device="cuda:2", gpu_id=5)
+    stages.create_generation_executor(
+        "model",
+        device="cuda:2",
+        gpu_id=5,
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+    )
+    assert captured["async_decode"] == (False, 2)
     assert captured["build"] == (
         "model",
         {
@@ -465,6 +484,120 @@ def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> Non
     assert len(requests[0].data.output_codes) == 1
 
 
+def test_voxtral_async_decode_keeps_feedback_and_outputs_in_step_order() -> None:
+    """Lookahead must feed the next step once and retain only committed audio rows."""
+    eos_token_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    runner.pending_audio_codes = None
+    runner.pending_audio_embeds = None
+    runner.staging_slot = 0
+    runner.host_staging_buffers = [
+        torch.empty(3, 2, dtype=torch.long) for _ in range(2)
+    ]
+    code_batches = [
+        torch.tensor([[11, 12], [eos_token_id, 22], [31, 32]]),
+        torch.tensor([[13, 14], [23, 24], [33, 34]]),
+        torch.tensor([[15, 16]]),
+    ]
+    embedding_batches = [torch.full((3, 1, 4), float(step)) for step in (1, 2, 3)]
+    runner.model = SimpleNamespace(
+        hidden_size=4,
+        decode_input_embed_buffer=torch.zeros(3, 4),
+        run_acoustic_transformer=Mock(side_effect=code_batches),
+        audio_token_embedding=Mock(
+            side_effect=[embeddings.unsqueeze(1) for embeddings in embedding_batches]
+        ),
+    )
+    requests = [
+        SimpleNamespace(
+            request_id=request_id,
+            data=SimpleNamespace(
+                req=SimpleNamespace(
+                    finished=Mock(return_value=False), is_retracted=False
+                ),
+                output_codes=[],
+                pending_feedback_queue=collections.deque(),
+                stream=stream,
+                stream_pending_rows=[],
+            ),
+        )
+        for request_id, stream in (
+            ("active", True),
+            ("eos", False),
+            ("retracted", True),
+        )
+    ]
+    results = [
+        SimpleNamespace(
+            logits_output=SimpleNamespace(hidden_states=torch.zeros(batch_size, 4)),
+            next_token_ids=None,
+        )
+        for batch_size in (3, 3, 1)
+    ]
+
+    first_step = runner.post_decode_launch(results[0], None, requests)
+    assert all(not request.data.output_codes for request in requests)
+    runner.before_decode(None, None, requests, is_lookahead=True)
+    assert torch.equal(
+        runner.model.decode_input_embed_buffer, embedding_batches[0][:, 0]
+    )
+    assert all(not request.data.pending_feedback_queue for request in requests)
+    second_step = runner.post_decode_launch(results[1], None, requests)
+    requests[2].data.req.is_retracted = True
+    runner.post_decode_resolve(first_step, results[0], None, None, requests)
+    runner.post_process_outputs(
+        results[0],
+        SimpleNamespace(requests=requests),
+        {
+            request.request_id: RequestOutput(request.request_id, data=token_id)
+            for request, token_id in zip(requests, results[0].next_token_ids.tolist())
+        },
+    )
+    assert [row.tolist() for row in requests[0].data.output_codes] == [[11, 12]]
+    assert [row.tolist() for row in requests[0].data.stream_pending_rows] == [[11, 12]]
+    assert all(not request.data.output_codes for request in requests[1:])
+    assert len(requests[0].data.pending_feedback_queue) == 1
+    requests[1].data.req.finished.return_value = True
+
+    runner.before_decode(None, None, requests[:1], is_lookahead=True)
+    assert torch.equal(
+        runner.model.decode_input_embed_buffer[0], embedding_batches[1][0, 0]
+    )
+    third_step = runner.post_decode_launch(results[2], None, requests[:1])
+    assert [row.tolist() for row in requests[0].data.stream_pending_rows] == [[11, 12]]
+    runner.post_decode_resolve(second_step, results[1], None, None, requests)
+    runner.post_process_outputs(
+        results[1],
+        SimpleNamespace(requests=requests),
+        {
+            request.request_id: RequestOutput(request.request_id, data=token_id)
+            for request, token_id in zip(requests, results[1].next_token_ids.tolist())
+        },
+    )
+    assert [row.tolist() for row in requests[0].data.output_codes] == [
+        [11, 12],
+        [13, 14],
+    ]
+    assert all(not request.data.output_codes for request in requests[1:])
+    assert all(not request.data.pending_feedback_queue for request in requests[1:])
+    runner.post_decode_resolve(third_step, results[2], None, None, requests[:1])
+    runner.post_process_outputs(
+        results[2],
+        SimpleNamespace(requests=requests[:1]),
+        {"active": RequestOutput("active", data=15)},
+    )
+    runner.before_decode(None, None, requests[:1])
+    assert not requests[0].data.pending_feedback_queue
+    assert torch.equal(
+        runner.model.decode_input_embed_buffer[0], embedding_batches[2][0, 0]
+    )
+    assert [row.tolist() for row in requests[0].data.stream_pending_rows] == [
+        [11, 12],
+        [13, 14],
+        [15, 16],
+    ]
+
+
 def test_voxtral_decode_writes_feedback_buffer_for_standard_forward() -> None:
     from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
 
@@ -749,7 +882,17 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     from sglang_omni.platforms import current_platform
 
     monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
-    scheduler = stages.create_generation_executor("model", device="cuda", gpu_id=0)
+    scheduler = stages.create_generation_executor(
+        "model",
+        device="cuda",
+        gpu_id=0,
+        enable_async_decode=True,
+        async_decode_min_batch_size=2,
+    )
+
+    assert scheduler.enable_async_decode is True
+    assert scheduler.async_decode_min_batch_size == 2
+    assert scheduler.async_decode_resolve_before_prefill is True
 
     assert build_kwargs["disable_cuda_graph"] is False
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16]
@@ -790,7 +933,9 @@ def test_voxtral_acoustic_graphs_are_captured_only_on_cuda(
     monkeypatch.setattr(
         engine_builder, "get_decode_cuda_graph_bs", lambda server_args: [1, 2, 4]
     )
-    builder = engine_builder.VoxtralTtsEngineBuilder()
+    builder = engine_builder.VoxtralTtsEngineBuilder(
+        enable_async_decode=False, async_decode_min_batch_size=1
+    )
     builder.device = device
 
     builder.post_cuda_graph_setup(FakeModel(), SimpleNamespace())
@@ -957,7 +1102,9 @@ def test_voxtral_config_parser_builds_the_config_from_params_json(tmp_path) -> N
     (tmp_path / "params.json").write_text(
         json.dumps({"dim": 64, "n_layers": 2, "n_heads": 8, "vocab_size": 256})
     )
-    VoxtralTtsEngineBuilder().pre_infra_setup(str(tmp_path))
+    VoxtralTtsEngineBuilder(
+        enable_async_decode=False, async_decode_min_batch_size=1
+    ).pre_infra_setup(str(tmp_path))
 
     config = get_config(
         str(tmp_path),
