@@ -168,7 +168,7 @@ func (a *app) notesExample(c *ui.Context) {
 		}
 		return s
 	}
-	userInput, speech := "", in.Text
+	userInput, speech := none, in.Text
 	if in.Task == compose.Rewrite {
 		userInput, speech = in.Text, in.Instruction
 	}
