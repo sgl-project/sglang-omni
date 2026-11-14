@@ -26,6 +26,8 @@ from sglang_omni.models.streaming_cascade.recognizers import (
     OpenAITranscriptionRecognizerConfig,
     RealtimeTranscriptionRecognizer,
     RealtimeTranscriptionRecognizerConfig,
+    SpeakerTranscriptionRecognizer,
+    SpeakerTranscriptionRecognizerConfig,
     StreamingTranscriptionRecognizer,
     StreamingTranscriptionRecognizerConfig,
     probe_realtime_service,
@@ -174,6 +176,13 @@ COMPONENTS.register(
 COMPONENTS.register(
     OpenAITranscriptionRecognizerConfig,
     OpenAITranscriptionRecognizer,
+    consumes=RECOGNIZER_INPUTS,
+    produces=frozenset({TRANSCRIPT_FORMAT}),
+    probe=probe_openai_service,
+)
+COMPONENTS.register(
+    SpeakerTranscriptionRecognizerConfig,
+    SpeakerTranscriptionRecognizer,
     consumes=RECOGNIZER_INPUTS,
     produces=frozenset({TRANSCRIPT_FORMAT}),
     probe=probe_openai_service,
