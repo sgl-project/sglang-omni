@@ -2364,6 +2364,7 @@ def test_streaming_pure_swa_uses_context_instead_of_physical_kv_limit(
         ({"sampling_seed": 42}, False, False, False, "seed"),
         ({"sampling_seed": 42, "top_k": 1}, False, False, False, None),
         ({"repetition_penalty": 1.2, "max_new_tokens": 1}, False, False, False, None),
+        ({"sampling_seed": 42, "max_new_tokens": 1}, False, False, False, None),
     ],
 )
 def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(

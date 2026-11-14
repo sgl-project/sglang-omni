@@ -143,3 +143,15 @@ An EAGLE3 draft for Qwen3-8B, such as [`Tengyunw/qwen3_8b_eagle3`](https://huggi
 - **Sampling.** `length_penalty` applies to every verified token. Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner's own sampler draws its single token on the target prefill and never reaches a verify.
 - **Scheduling.** Speculative decoding runs with async decode overlap enabled, while the stage's own mixed-chunk default is turned off. An explicit `enable_mixed_chunk` is refused rather than silently turned off.
 - **Startup.** The thinker serves EAGLE3, DFlash and DSpark only, and `speculative_algorithm` and `speculative_draft_model_path` are given together. `max_seq_len` stays within the draft's own `max_position_embeddings`, so raising it for long video prompts needs a draft whose context reaches that far.
+
+## Talker speculative decoding
+
+Use a DSpark draft to propose several codec tokens per Talker step:
+
+```bash
+sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 --variant speech \
+  --talker.engine.speculative_algorithm DSPARK \
+  --talker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-talker-DSpark
+```
+
+Talker DSpark requires the PyTorch sampling backend and static verification. The verifier preserves the Talker's codec mask, sliding repetition penalty, minimum output length, temperature, top-k and top-p. Drafts use a filtered proposal distribution, and rejection sampling corrects them against the target distribution. The block size comes from the draft checkpoint. Async decode is enabled by default; set `--talker.factory.enable_async_decode false` to run the Talker synchronously. Sampled verification does not support a request seed. This path supports non-streaming speech requests, not native full-duplex sessions.
