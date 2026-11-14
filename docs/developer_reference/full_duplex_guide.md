@@ -82,6 +82,8 @@ Speech settings also accept dotted CLI flags, such as `--speech.dtype float16 --
 
 A session holds at most 8192 tokens of history, which is the model's trained context length. With the default `basic` window, once the history passes `basic_window_high_tokens` the server drops the oldest one-second units until at most `basic_window_low_tokens` tokens remain, and it drops units early when the next unit would not fit; the system prompt and the reference audio always stay. With `--window.sliding_window_mode off`, the server sends `context_exhausted` and closes the session when the history fills. A cut moves the retained KV in place, so the window needs the default bf16 or an fp8 KV cache; with an FP4 KV recipe or an HND KV layout, the server refuses to start unless the window is off.
 
+While the model listens, the thinker drafts its next second before the audio arrives and verifies the draft against the real second, so a reply starts sooner. The output is the same as without the draft, up to floating-point differences between a prefill and a decode forward; the thinker refuses to start with chunked prefill or a speculative draft worker.
+
 The realtime activity timeout closes an inactive session with `idle_timeout`; the pipeline's separate idle fallback reports `session_idle_timeout`. A session whose pending server events outgrow the server's output buffers is closed with `output_budget_exhausted`; this happens when the client stops reading events. A single response whose transcript outgrows `max_history_chars` is closed with `context_limit`.
 
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:

@@ -1468,6 +1468,12 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.abort(req_id)
                 continue
             self.admit_or_defer_built_request(payload, pending_stream_done, req_data)
+        if self.session_bridge is not None:
+            # note (bianyutong): Drafts start after this pass's inputs, so a session whose next input already arrived runs none.
+            for draft_payload, draft_request_data in self.session_bridge.start_drafts():
+                self.enqueue_built_request(draft_payload, False, draft_request_data)
+        else:
+            pass
         if (
             submitted_build
             and not self.async_prefill
@@ -1820,9 +1826,10 @@ class OmniScheduler(Generic[RequestDataT]):
             try:
                 bridge.create_session_request(payload, req_data)
             except ValueError as exc:
+                # note (bianyutong): The error goes out while the unit still exists, so a draft's error is kept inside.
+                self.emit_request_error(req_id, exc)
                 bridge.release_append_unit(req_id)
                 self.abort(req_id)
-                self.emit_request_error(req_id, exc)
                 return
             except Exception:
                 bridge.release_append_unit(req_id)
@@ -1870,7 +1877,7 @@ class OmniScheduler(Generic[RequestDataT]):
         if session_unit is not None:
             bridge = self.session_bridge
             assert bridge is not None
-            capacity_message = bridge.check_session_capacity(req_id)
+            capacity_message = bridge.check_session_capacity(req_id, req_data)
             if capacity_message is not None:
                 self.emit_request_error(req_id, ValueError(capacity_message))
                 bridge.release_append_unit(req_id)
@@ -2221,7 +2228,8 @@ class OmniScheduler(Generic[RequestDataT]):
             return None
 
     def emit_request_error(self, request_id: str, error: Exception) -> None:
-        if not self.is_entry_rank:
+        unit = self.active_session_unit(request_id)
+        if not self.is_entry_rank or (unit is not None and unit.is_draft):
             return
         else:
             pass
@@ -3165,6 +3173,8 @@ class OmniScheduler(Generic[RequestDataT]):
 
             result = None
             terminal_error = None
+            # note (bianyutong): Read before the close below drops the unit, so a draft's terminal error stays inside like its other errors.
+            session_unit = self.active_session_unit(rid)
             try:
                 if self.draft_worker is not None and (
                     not self.enable_plain_fallback or data.decode_path == "spec"
@@ -3222,13 +3232,12 @@ class OmniScheduler(Generic[RequestDataT]):
                 else:
                     pass
                 self.flush_stream_output(rid, data)
-                session_unit = self.active_session_unit(rid)
                 if session_unit is None:
                     result = self.result_adapter(data)
                 else:
                     bridge = self.session_bridge
                     assert bridge is not None
-                    result = bridge.adapter.result(session_unit.session_identity, data)
+                    result = bridge.result(session_unit, data)
             except Exception as exc:
                 terminal_error = exc
                 logger.exception(
@@ -3260,19 +3269,25 @@ class OmniScheduler(Generic[RequestDataT]):
 
             if terminal_error is not None:
                 self.first_emit_done.discard(rid)
-                self.emit_request_error(rid, terminal_error)
+                if session_unit is None or not session_unit.is_draft:
+                    self.emit_request_error(rid, terminal_error)
+                else:
+                    pass
                 continue
             else:
                 pass
 
             self.first_emit_done.discard(rid)
-            self.outbox.put(
-                OutgoingMessage(
-                    request_id=rid,
-                    type="result",
-                    data=result,
+            if result is not None:
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=rid,
+                        type="result",
+                        data=result,
+                    )
                 )
-            )
+            else:
+                pass
 
     def emit_speculative_tokens(
         self, request: Req, request_data: SGLangARRequestData
