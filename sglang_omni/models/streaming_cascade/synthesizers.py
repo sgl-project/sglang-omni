@@ -3,7 +3,11 @@
 
 import asyncio
 import re
+import shutil
+import tempfile
+import wave
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Literal
 
 import httpx
@@ -72,6 +76,13 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
     its numbers read out as words.
+
+    `reference_mode` decides what every sentence is conditioned on. `static`
+    sends the configured reference clip. `previous_segment` sends the audio of
+    the sentence before, so the next sentence continues from the speech that
+    just left the service; the first sentence falls back to the configured clip.
+    Carrying a reference costs one encode per sentence, so the modes are
+    measured against each other rather than switched by default.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -80,6 +91,8 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     voice: str = "default"
     reference_audio_path: str = ""
     reference_text: str = ""
+    reference_mode: Literal["static", "previous_segment"] = "static"
+    max_reference_seconds: float = Field(default=30.0, gt=0, le=30)
     language: str = ""
     max_sentence_words: int = Field(default=24, gt=0)
     api_key_env: str = "OPENAI_API_KEY"
@@ -154,6 +167,11 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             timeout=config.timeout_s, headers=bearer_headers(config.api_key_env)
         )
         self.session_language: str | None = None
+        # The sentence just spoken, kept for the next one's reference in `previous_segment` mode.
+        self.segment_samples: np.ndarray | None = None
+        self.segment_text: str = ""
+        self.reference_dir = Path(tempfile.mkdtemp(prefix="cascade-reference-"))
+        self.reference_paths: list[Path] = []
 
     def adopt(self, previous: StreamComponent) -> None:
         if isinstance(previous, OpenAISpeechSynthesizer):
@@ -235,19 +253,11 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 pass
         else:
             pass
-        if self.config.reference_audio_path:
-            body["references"] = [
-                {
-                    "audio_path": self.config.reference_audio_path,
-                    **(
-                        {"text": self.config.reference_text}
-                        if self.config.reference_text
-                        else {}
-                    ),
-                }
-            ]
-        else:
+        reference = self.reference_entry()
+        if reference is None:
             pass
+        else:
+            body["references"] = [reference]
         async with self.client.stream(
             "POST", f"{self.config.base_url.rstrip('/')}/audio/speech", json=body
         ) as response:
@@ -275,6 +285,65 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 else:
                     pass
 
+    def carry_reference(self, spoken: list[np.ndarray], sentence: str) -> None:
+        """Keep this sentence for the next one's reference; static mode carries nothing."""
+        if self.config.reference_mode != "previous_segment" or not spoken:
+            return
+        else:
+            pass
+        self.segment_samples = np.concatenate(spoken)
+        self.segment_text = sentence
+
+    def reference_entry(self) -> dict[str, str] | None:
+        """The reference of the sentence about to be spoken, or None when it is conditioned on nothing."""
+        if (
+            self.config.reference_mode == "previous_segment"
+            and self.segment_samples is not None
+        ):
+            return self.written_reference()
+        elif self.config.reference_audio_path:
+            return {
+                "audio_path": self.config.reference_audio_path,
+                **(
+                    {"text": self.config.reference_text}
+                    if self.config.reference_text
+                    else {}
+                ),
+            }
+        else:
+            return None
+
+    def written_reference(self) -> dict[str, str]:
+        """The carried sentence as the PCM16 WAV the speech service reads, trimmed to its own reference length."""
+        limit = int(self.config.max_reference_seconds * self.sample_rate_hz)
+        samples = (
+            self.segment_samples
+            if self.segment_samples is not None
+            else np.zeros(0, dtype="<f4")
+        )
+        path = self.reference_dir / f"reference-{len(self.reference_paths)}.wav"
+        # Note (xiaoyu-xyz): The service hands back int16 scaled by 32768, so undo the same scale to round-trip the clip.
+        pcm = np.clip(np.round(samples[-limit:] * 32768), -32768, 32767).astype("<i2")
+        with wave.open(str(path), "wb") as reference:
+            reference.setnchannels(1)
+            reference.setsampwidth(2)
+            reference.setframerate(self.sample_rate_hz)
+            reference.writeframes(pcm.tobytes())
+        self.reference_paths.append(path)
+        self.drop_stale_references()
+        entry = {"audio_path": str(path)}
+        if self.segment_text:
+            entry["text"] = self.segment_text
+        else:
+            pass
+        return entry
+
+    def drop_stale_references(self) -> None:
+        """Only the reference the running sentence reads stays on disk."""
+        while len(self.reference_paths) > 1:
+            self.reference_paths.pop(0).unlink(missing_ok=True)
+        return None
+
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter
     ) -> None:
@@ -297,9 +366,12 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             )
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
+                spoken: list[np.ndarray] = []
                 async for samples in self.speak(sentence, language):
+                    spoken.append(samples)
                     audio_ms += len(samples) * 1000 / self.sample_rate_hz
                     emit(audio_chunk(samples, self.sample_rate_hz, turn))
+                self.carry_reference(spoken, sentence)
             else:
                 pass
             text_end += len(span)
@@ -307,3 +379,4 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
 
     async def close(self) -> None:
         await self.client.aclose()
+        shutil.rmtree(self.reference_dir, ignore_errors=True)
