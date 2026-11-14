@@ -1,0 +1,20 @@
+config_cls: FireRedTTS3PipelineConfig
+model_path: CKermit/FireRedTTS3-Base
+variant: base
+
+shared:
+  - select:
+      stages: [preprocessing, talker]
+    factory:
+      n_timesteps: 10
+      max_patches: 400
+
+stages:
+  talker:
+    engine:
+      mem_fraction_static: 0.20
+      max_running_requests: 16
+  vocoder:
+    factory:
+      max_batch_size: 4
+      max_batch_wait_ms: 2

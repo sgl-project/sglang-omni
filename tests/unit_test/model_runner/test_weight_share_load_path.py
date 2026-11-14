@@ -104,6 +104,7 @@ def test_env_unset_is_stock_path(tmp_path, monkeypatch):
 
 def test_distributed_update_reports_a_receive_without_an_update_group():
     runner = bare_runner()
+    runner.model = SmallModel(fill=1.0)
     runner.weight_updater = WeightUpdater(
         tp_rank=0,
         device="cpu",

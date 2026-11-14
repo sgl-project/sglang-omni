@@ -15,6 +15,15 @@ from sglang_omni.models.model_capabilities import (
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
 EXPECTED_MODEL_CAPABILITIES = {
+    "FireRedTTS3ForConditionalGeneration": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=True,
+        supports_streaming_vocoder=True,
+        supports_cuda_graph=True,
+        supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=False,
+        supports_full_prefill_cuda_graph=False,
+    ),
     "FishOmniModel": ModelCapabilities(
         supports_reference_audio=True,
         supports_batch_vocoder=True,
