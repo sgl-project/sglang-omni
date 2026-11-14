@@ -712,7 +712,18 @@ func TestTranslateOpensNoSpeechModelItDoesNotUse(t *testing.T) {
 			}
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			if !slices.Equal(h.speech, tc.speech) {
+			// Each resolve runs in its own goroutine, so the calls land in either order.
+			got := slices.Clone(h.speech)
+			slices.SortFunc(got, func(a, b bool) int {
+				switch {
+				case a == b:
+					return 0
+				case a:
+					return 1
+				}
+				return -1
+			})
+			if !slices.Equal(got, tc.speech) {
 				t.Errorf("Resolve asked for speech %v; want %v", h.speech, tc.speech)
 			}
 			if !tc.speak && h.audio.recorded() != 0 {
