@@ -826,6 +826,7 @@ def test_top_level_video_real_processor_bounds_match_embedding_rows(
     )
     preprocessor.tokenizer = processor.tokenizer
     preprocessor.speech_enabled = False
+    preprocessor.video_decode_threads = 1
     explicit_image = Image.new("RGB", (56, 56), "green")
     question_audio = np.sin(np.arange(16000, dtype=np.float32) / 20)
     result = asyncio.run(
