@@ -103,9 +103,13 @@ def instantiate_visual(
     else:
         # note (ratish): per-image Transformers attention reaches cuDNN on Hopper, whose output changes between processes.
         packed_attention = resolve_packed_attention(torch.device(device), dtype)
+        # note (siju): the vision rotary covers the whole head dimension.
+        head_dimension = vision_config.hidden_size // vision_config.num_heads
         with no_init_weights():
             return Qwen3OmniVisionEncoder._from_config(  # noqa: leading-underscore  # Transformers construction API
                 vision_config,
-                joint_rope_kernel=current_platform.get_joint_rope_inplace_kernel(),
+                joint_rope_kernel=current_platform.get_joint_rope_inplace_kernel(
+                    rotary_dimension=head_dimension
+                ),
                 packed_attention=packed_attention,
             )

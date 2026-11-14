@@ -1,10 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for device-spec retargeting (no accelerator required)."""
+"""Unit tests for device-spec retargeting (no accelerator required) and for the
+XPU platform's copy of its RoPE kernel's capabilities (XPU only)."""
 
 from __future__ import annotations
 
+import pytest
+
 import sglang_omni.utils.device as dev
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.xpu import XPU_JOINT_ROTARY_DIMENSIONS
+
+if current_platform.is_xpu():
+    from sgl_kernel.jit import rope
+else:
+    pass
 
 
 def test_none_is_the_only_automatic_selection():
@@ -78,3 +87,16 @@ def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
     free_gb = get_available_gpu_memory("xpu", 0, distributed=False, empty_cache=False)
 
     assert free_gb == (total_bytes - allocated_bytes) / (1 << 30)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_xpu(), reason="Requires an XPU")
+def test_xpu_joint_rope_dimensions_match_the_installed_kernel() -> None:
+    """XPUOmniPlatform copies the rotary dimensions sgl_kernel's XPU RoPE
+    compiles, because the kernel keeps that list private. The XPU lane runs this
+    file, so an SGLang bump that changes the list, or renames it, fails here
+    instead of going stale.
+    """
+    kernel_dimensions = rope._SUPPORTED_XPU_ROPE_DIMS  # noqa: leading-underscore
+
+    assert tuple(kernel_dimensions) == XPU_JOINT_ROTARY_DIMENSIONS
