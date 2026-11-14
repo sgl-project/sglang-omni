@@ -111,13 +111,6 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
         else:
             pass
 
-        if not self.requests_ready_for_decode(requests):
-            raise RuntimeError(
-                "Talker decode reached model runner without ready feedback/text input"
-            )
-        else:
-            pass
-
         self.model.prepare_decode_buffers(requests)
         self.write_feedback_buffers(requests)
 
@@ -333,17 +326,17 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
         del forward_batch, schedule_batch, requests
         return False
 
-    def is_decode_batch_ready(self, schedule_batch: ScheduleBatch) -> bool:
-        if not self.feedback_enabled or not schedule_batch.forward_mode.is_decode():
-            return True
+    def ready_decode_rows(self, schedule_batch: ScheduleBatch) -> list[int]:
+        """Rows whose next decode input, the feedback row and the thinker text, has arrived."""
+        if not self.feedback_enabled:
+            return list(range(len(schedule_batch.reqs)))
         else:
             pass
-        return all(
-            self.data_has_next_decode_input(
-                getattr(req, "omni_data", None)
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            for req in schedule_batch.reqs
-        )
+        return [
+            row_index
+            for row_index, request in enumerate(schedule_batch.reqs)
+            if self.data_has_next_decode_input(request.omni_data)
+        ]
 
     def compose_prefill_embeds(
         self,
@@ -563,47 +556,20 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
         return torch.stack(rows, dim=0)
 
     def write_feedback_buffers(self, requests: list[SchedulerRequest]) -> None:
-        batch_size = len(requests)
-        if batch_size == 0:
-            return
-        else:
-            pass
-
+        """Every decode row has its next input: the scheduler excludes the rows that do not."""
         feedback_buffer = self.model.feedback_buffer
-        feedback_mask = self.model.feedback_mask
-        feedback_mask[:batch_size] = False
-
-        rows: list[int] = []
         embeds: list[torch.Tensor] = []
-        for row_idx, sched_req in enumerate(requests):
+        for sched_req in requests:
             combined = self.take_next_decode_input_embed(
                 sched_req=sched_req,
                 device=feedback_buffer.device,
                 dtype=feedback_buffer.dtype,
             )
-            if combined is None:
-                continue
-            else:
-                pass
             self.append_decode_input_history(sched_req.data, combined)
-            rows.append(row_idx)
             embeds.append(combined)
-        if not rows:
-            return
-        else:
-            pass
-        embeds_stacked = torch.stack(embeds, dim=0)
-        if len(rows) == batch_size:
-            # Note (wenyao): dense steady state: rows is exactly range(batch_size),
-            # so slice-assign and skip the per-frame pageable index H2D
-            feedback_buffer[:batch_size] = embeds_stacked
-            feedback_mask[:batch_size] = True
-            return
-        else:
-            pass
-        rows_t = torch.tensor(rows, dtype=torch.long, device=feedback_buffer.device)
-        feedback_buffer[rows_t] = embeds_stacked
-        feedback_mask[rows_t] = True
+        batch_size = len(embeds)
+        feedback_buffer[:batch_size] = torch.stack(embeds, dim=0)
+        self.model.feedback_mask[:batch_size] = True
 
     @staticmethod
     def data_has_next_decode_input(data: SGLangARRequestData | None) -> bool:
@@ -620,11 +586,6 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
         else:
             pass
         return bool(data.thinker_chunks_done and data.tts_pad_embed is not None)
-
-    def requests_ready_for_decode(self, requests: list[SchedulerRequest]) -> bool:
-        return all(
-            self.data_has_next_decode_input(sched_req.data) for sched_req in requests
-        )
 
     @staticmethod
     def pop_left(queue: TalkerInputQueue) -> torch.Tensor | None:
