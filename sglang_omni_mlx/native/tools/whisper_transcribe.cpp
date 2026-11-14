@@ -3,12 +3,13 @@
 // line each, for parity checks against Voxt's Swift backend.
 //
 //   whisper_transcribe --model-path DIR [--language L] [--max-new-tokens N]
-//     [--temperature T] a.wav...
+//     [--temperature T] [--draft-model-path DIR [--draft-steps N]] a.wav...
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -19,6 +20,8 @@
 
 int main(int argc, char **argv) {
   std::string model_path;
+  std::string draft_path;
+  std::optional<int> draft_steps;
   whisper::WhisperOptions options;
   std::vector<std::string> files;
   for (int i = 1; i < argc; ++i) {
@@ -33,6 +36,10 @@ int main(int argc, char **argv) {
     };
     if (argument == "--model-path") {
       model_path = value();
+    } else if (argument == "--draft-model-path") {
+      draft_path = value();
+    } else if (argument == "--draft-steps") {
+      draft_steps = std::stoi(value());
     } else if (argument == "--language") {
       options.language = value();
     } else if (argument == "--max-new-tokens") {
@@ -46,8 +53,18 @@ int main(int argc, char **argv) {
       files.push_back(argument);
     }
   }
+  if (draft_steps.has_value() && *draft_steps < 1) {
+    std::cerr << argv[0] << ": --draft-steps must be at least 1\n";
+    return 2;
+  } else if (draft_steps.has_value() && draft_path.empty()) {
+    std::cerr << argv[0] << ": --draft-steps needs --draft-model-path\n";
+    return 2;
+  } else {
+  }
   const auto load_started = std::chrono::steady_clock::now();
-  const whisper::WhisperTranscriber transcriber(model_path);
+  const whisper::WhisperTranscriber transcriber(
+      model_path, draft_path,
+      draft_steps.value_or(whisper::kDefaultDraftSteps));
   std::cerr << "loaded in "
             << std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                              load_started)
@@ -68,6 +85,9 @@ int main(int argc, char **argv) {
                          ? nlohmann::json(*result.language)
                          : nlohmann::json()},
         {"generated_token_count", result.generated_token_count},
+        {"verify_rounds", result.verify_round_count},
+        {"proposed_draft_token_count", result.proposed_draft_token_count},
+        {"accepted_draft_token_count", result.accepted_draft_token_count},
         {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)

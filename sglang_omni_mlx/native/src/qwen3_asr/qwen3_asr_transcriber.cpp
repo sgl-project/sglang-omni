@@ -254,13 +254,13 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
       return static_cast<int>(output_ids.size()) >= max_new_tokens;
     }
   };
-  int verify_round_count = 0;
+  DraftStatistics draft_statistics;
   // note (wilsonzheng0327): a penalty would have to be applied per block
   // position with the block's own earlier tokens; a request that asks for one
   // decodes without the draft.
   if (draft_.has_value() && options.repetition_penalty == 1.0f) {
-    verify_round_count = draft_->Decode(model_.decoder(), embeddings,
-                                        max_new_tokens, 0, commit, cancel);
+    draft_statistics = draft_->Decode(model_.decoder(), embeddings,
+                                      max_new_tokens, 0, commit, cancel);
   } else {
     std::vector<KVCache> caches = model_.NewCaches();
     const mx::array prefill_logits = model_.Decode(embeddings, caches);
@@ -297,7 +297,7 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
     }
   }
   return FinishedResult(output_ids, options, finish_reason,
-                        stopped_on_token_loop, verify_round_count);
+                        stopped_on_token_loop, draft_statistics);
 }
 
 bool Qwen3ASRTranscriber::IsStopToken(
@@ -309,7 +309,7 @@ bool Qwen3ASRTranscriber::IsStopToken(
 TranscriptionResult Qwen3ASRTranscriber::FinishedResult(
     const std::vector<int> &output_ids, const TranscriptionOptions &options,
     FinishReason finish_reason, bool stopped_on_token_loop,
-    int verify_round_count) const {
+    const DraftStatistics &draft_statistics) const {
   const bool ended_on_stop =
       !output_ids.empty() && IsStopToken(output_ids.back(), options);
   // Note (Minyi Tang): the repeats are the model feeding on its own output,
@@ -322,7 +322,9 @@ TranscriptionResult Qwen3ASRTranscriber::FinishedResult(
           static_cast<int>(output_ids.size()) - (ended_on_stop ? 1 : 0),
           finish_reason,
           {},
-          verify_round_count};
+          draft_statistics.verify_round_count,
+          draft_statistics.proposed_token_count,
+          draft_statistics.accepted_token_count};
 }
 
 struct Qwen3ASRTranscriber::BatchRow {
