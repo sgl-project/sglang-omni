@@ -448,6 +448,11 @@ set_target_properties(fish_s2_pro_server fish_s2_pro_synthesize PROPERTIES
   INSTALL_RPATH "@loader_path")
 install(TARGETS fish_s2_pro_server fish_s2_pro_synthesize RUNTIME DESTINATION bin)
 
+add_executable(kv_cache_test EXCLUDE_FROM_ALL tests/kv_cache_test.cpp)
+target_link_libraries(kv_cache_test PRIVATE qwen3_asr)
+set_target_properties(kv_cache_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 # The protocol tests' stand-in server (tests/stub_server.cpp); built only on
 # request and never installed.
 add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)

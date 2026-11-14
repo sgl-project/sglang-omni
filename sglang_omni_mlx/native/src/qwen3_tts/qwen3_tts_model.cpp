@@ -302,7 +302,8 @@ mx::array Qwen3TtsModel::PredictCodes(const mx::array &hidden,
                                       const mx::array &first_code,
                                       const SamplerConfig &sampler,
                                       mx::random::KeySequence &keys) const {
-  std::vector<qwen3_asr::KVCache> caches = code_predictor_.NewCaches();
+  std::vector<qwen3_asr::KVCache> caches =
+      code_predictor_.NewCaches(codebook_count_);
   std::vector<mx::array> codes = {first_code};
   mx::array input = mx::concatenate(
       {hidden, checkpoint_.Embed(first_code, std::string(kTalkerPrefix) +

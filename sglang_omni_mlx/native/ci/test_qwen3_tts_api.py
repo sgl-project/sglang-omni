@@ -270,6 +270,22 @@ def test_qwen3_tts_disconnect_stops_its_generation(qwen3_tts_server: Server) -> 
     wait_until_idle(qwen3_tts_server)
 
 
+def test_qwen3_tts_seeded_audio_is_unchanged_after_cancel(
+    qwen3_tts_server: Server,
+) -> None:
+    body = {"input": SENTENCE, "response_format": "pcm", "seed": 7}
+    before_status, _, before_audio = speak(qwen3_tts_server, body)
+    assert before_status == 200
+    assert before_audio
+    with open_speech_stream(qwen3_tts_server, LONG_SENTENCE) as client:
+        assert client.recv(65536)
+        assert request_states(qwen3_tts_server) == {"running": 1}
+    wait_until_idle(qwen3_tts_server)
+    after_status, _, after_audio = speak(qwen3_tts_server, body)
+    assert after_status == 200
+    assert before_audio == after_audio
+
+
 def test_qwen3_tts_disconnect_stops_a_generation_it_has_not_answered(
     qwen3_tts_server: Server,
 ) -> None:

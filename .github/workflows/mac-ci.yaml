@@ -141,7 +141,7 @@ jobs:
         run: |
           ccache --zero-stats > /dev/null
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
-          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server audio_chunk_test ming3_mtp_probe
+          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server audio_chunk_test ming3_mtp_probe kv_cache_test
           "$RUNNER_TEMP/runtime-build/cmake/audio_chunk_test"
           ccache --show-stats
 

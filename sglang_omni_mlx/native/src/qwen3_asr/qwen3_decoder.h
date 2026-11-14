@@ -15,6 +15,8 @@
 
 namespace qwen3_asr {
 
+inline constexpr int kDefaultKvCacheStepTokens = 256;
+
 struct Qwen3DecoderConfig {
   int num_hidden_layers = 0;
   int num_attention_heads = 0;
@@ -39,6 +41,8 @@ struct Qwen3DecoderConfig {
 // differ in head width, as in MLA.
 class KVCache {
 public:
+  KVCache() = default;
+  explicit KVCache(int step_tokens);
   std::pair<mlx::core::array, mlx::core::array>
   UpdateAndFetch(const mlx::core::array &keys, const mlx::core::array &values);
   // Drops the newest token_count positions; the next update overwrites them.
@@ -53,6 +57,7 @@ private:
   std::optional<mlx::core::array> keys_;
   std::optional<mlx::core::array> values_;
   int offset_ = 0;
+  int step_tokens_ = kDefaultKvCacheStepTokens;
 };
 
 // Key/value cache for sequences decoded in lockstep. Rows are left-padded to
@@ -102,6 +107,7 @@ public:
   // Logits of every position of the hidden states, [length, vocab].
   mlx::core::array Logits(const mlx::core::array &hidden_states) const;
   std::vector<KVCache> NewCaches() const;
+  std::vector<KVCache> NewCaches(int step_tokens) const;
   const Qwen3DecoderConfig &config() const { return config_; }
   // One decode step for a batch, embeddings [batch, 1, hidden]. offsets is
   // each row's true position, int32 [batch]; pads is each row's count of
