@@ -39,6 +39,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Ollama, LM Studio and oMLX: the Model menu lists the models the server has** (#3950): the menu offered the service's usual names, such as qwen3 for Ollama, which Ollama only has when you pulled `qwen3:latest`, so Test connection said "The remote service does not have this model." for a model you had installed as `qwen3:8b`. Now the dialog asks the server on this Mac for its models when it opens and on each Test connection, and the menu lists them. A new setup takes the first of them when the server lacks the usual default. When the server still lacks the chosen model, the test names the models it has. An address with no path, such as `http://localhost:11434`, now gets the service's `/v1`, and an address where nothing answers says to check the address instead of blaming the model.
 - **Set up a language model works on the setup guide's Translate and Rewrite steps** (#3917): the button opened the Language models page behind the guide, so it seemed to do nothing. The guide now steps aside, as the same button on the Models step does, and the page offers Back to the setup guide at that step.
 - **Voxt stays out of the Dock from launch** (#3918): with Settings → General → Show in the Dock off, Voxt started as an app in the Dock and left it only once it had finished launching, and its Dock icon could stay, for example after ⌘W closed the window. Voxt now starts out of the Dock, with only its menu bar icon.
 - **Rewrite reads text selected on a web page or in a PDF** (#3835): with a whole page selected with ⌘A in Chrome, or a page of a PDF selected in Acrobat, Rewrite sent the language model only your instruction, and the model answered that no text was given. Voxt took the empty selection that these apps report to Accessibility for no selection at all and did not try copying. It now copies the selection there (and puts your clipboard back), as it already did in apps that report nothing. In a text field, a caret with nothing selected still sends no text.
@@ -100,6 +101,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **Ollama、LM Studio、oMLX：“模型”菜单列出服务器上已有的模型**（#3950）：以前菜单给的是服务常用的名字，比如 Ollama 的 qwen3，但只有拉取过 `qwen3:latest` 才有这个模型，所以装的是 `qwen3:8b` 时，测试连接会说“远程服务没有这个模型”。现在对话框打开时和每次测试连接时，都会问本机服务器有哪些模型，并在菜单里列出。新的设置在服务器没有常用默认模型时，会选它的第一个模型。服务器仍然没有所选模型时，测试结果会列出它有的模型。地址没有路径时（比如 `http://localhost:11434`），会补上服务的 `/v1`；地址上没有服务响应时，提示检查地址，不再说是模型的问题。
 - **设置引导的翻译、改写两步里，“设置语言模型”按钮能用了**（#3917）：以前按钮在引导后面打开“语言模型”页，看上去没反应。现在引导会先让开，和“模型”一步的同一个按钮一样，页面顶部可以“回到设置引导”的这一步。
 - **关掉“在程序坞中显示”后，Voxt 从启动起就不进程序坞**（#3918）：以前 Voxt 先作为程序坞里的 App 启动，启动完才离开程序坞，程序坞图标有时会留下来，比如按 ⌘W 关掉窗口之后。现在 Voxt 启动时就不在程序坞里，只有菜单栏图标。
 - **改写能读到网页和 PDF 里选中的文字**（#3835）：在 Chrome 里用 ⌘A 全选一个网页，或在 Acrobat 里选中 PDF 的一页，改写只把你说的指令发给语言模型，模型回答说没有收到文字。原因是这些应用通过辅助功能报告了一个空的选区，Voxt 当成什么都没选，也没有再试复制。现在 Voxt 会在这些地方复制选中的文字（之后把剪贴板还原），和在什么都不报告的应用里一样。在输入框里只有光标、没有选中文字时，仍然不发送文字。

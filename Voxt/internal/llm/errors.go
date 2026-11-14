@@ -36,6 +36,7 @@ const (
 	CodeUnknown       = "llm.unknown_provider" // provider
 	CodeUnsupported   = "llm.unsupported"      // provider, feature
 	CodeConfig        = "llm.config"           // provider, field: bad settings
+	CodeAddress       = "llm.address"          // provider, status, detail: nothing answers at the address's API path (a plain 404)
 	CodeResponsesOnly = "llm.responses_only"   // provider, model: the model refuses chat completions
 	CodeSignIn        = "llm.sign_in"          // provider: not signed in, or the sign-in ended
 	CodeUsageLimit    = "llm.usage_limit"      // provider, detail: the signed-in plan's usage is used up
@@ -82,7 +83,7 @@ func (e *Error) Unwrap() []error {
 		out = append(out, core.ErrCancelled)
 	case CodeModelNotFound, CodeUnknown:
 		out = append(out, core.ErrNotFound)
-	case CodeBadRequest, CodeContextLength, CodeConfig, CodeInvalidJSON, CodeSchema:
+	case CodeBadRequest, CodeContextLength, CodeConfig, CodeAddress, CodeInvalidJSON, CodeSchema:
 		out = append(out, core.ErrInvalid)
 	case CodeUnsupported, CodeNoRoute:
 		out = append(out, core.ErrUnsupported)
