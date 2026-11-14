@@ -81,26 +81,26 @@ func entryID(i int) string {
 	return "e" + string(rune('a'+i/676)) + string(rune('a'+i/26%26)) + string(rune('a'+i%26))
 }
 
-// socketPath is a path for a Unix socket named name, in a new folder that
-// is removed when the test ends. A socket's path must fit in sun_path:
-// 104 bytes on macOS, the terminating NUL included. t.TempDir() puts the
-// test's name under $TMPDIR, which macOS sets to a long /var/folders/…
-// path, so a long test name overflows it ("bind: invalid argument").
-func socketPath(t *testing.T, name string) string {
+// socketPath is a path for a Unix socket in a new folder under $TMPDIR
+// that is removed when the test ends. A socket's path must fit in
+// sun_path: 104 bytes on macOS, the terminating NUL included.
+// t.TempDir() puts the test's name in the path, so a long test name
+// overflows it ("bind: invalid argument").
+func socketPath(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "vx")
+	dir, err := os.MkdirTemp("", "vx")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	return filepath.Join(dir, name)
+	return filepath.Join(dir, SocketName)
 }
 
 // startServer serves f on a socket in a new folder; the returned stop
 // waits for it to end.
 func startServer(t *testing.T, s *Server) (path string, cancel func()) {
 	t.Helper()
-	path = socketPath(t, SocketName)
+	path = socketPath(t)
 	ln, err := Listen(path)
 	if err != nil {
 		t.Fatal(err)
