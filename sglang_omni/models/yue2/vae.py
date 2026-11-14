@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
+# The Oobleck decoder and SnakeBeta equations derive from stable-audio-tools commit
+# a6ae0cdf8b2eb1567a4b42ceadddec3712d99d45 and BigVGAN, as identified by YuE2's
+# third-party notices.
 # Oobleck / SnakeBeta: Copyright (c) 2023 Stability AI; Copyright (c) 2022 NVIDIA CORPORATION.
 # MIT license notices are retained in licenses/.
 """YuE2 FP32 stereo decoder with bounded, overlapping latent tiles."""

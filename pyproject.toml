@@ -208,4 +208,4 @@ version = {attr = "sglang_omni.__version__"}
 "sglang_omni.models.minicpm_o.components.token2wav" = ["THIRD_PARTY_NOTICES.md", "licenses/*.txt"]
 "sglang_omni.models.qwen3_tts.cutedsl" = ["LICENSE"]
 "sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]
-"sglang_omni.models.yue2" = ["THIRD_PARTY_NOTICES.md", "licenses/*.txt"]
+"sglang_omni.models.yue2" = ["licenses/*.txt"]

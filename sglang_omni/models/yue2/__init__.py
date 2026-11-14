@@ -1,4 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
+# The model equations, checkpoint tensor names, text tokenizer protocol, sampling
+# arithmetic and acoustic solver are adapted from YuE2
+# (https://github.com/multimodal-art-projection/YuE) at commit
+# 1116bea76032bee5668e5f097294d082fa0b84f0, licensed under Apache-2.0.
 """YuE2 music generation."""
 
 from sglang_omni.models.model_capabilities import ModelCapabilities
