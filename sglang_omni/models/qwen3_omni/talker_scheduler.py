@@ -16,11 +16,7 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils.common import async_h2d
 from typing_extensions import Unpack
 
-from sglang_omni.models.qwen3_omni.config import (
-    ENABLE_TALKER_START_TOPOLOGY,
-    MIN_PARTIAL_START_CHUNKS,
-    TALKER_START_MIN_CHUNKS,
-)
+from sglang_omni.models.qwen3_omni.config import TALKER_START_MIN_CHUNKS
 from sglang_omni.models.qwen3_omni.payload_types import NO_SPEECH
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import StagePayload
@@ -60,7 +56,6 @@ def configure_talker_server_args(
 class QwenTalkerScheduler(OmniScheduler[SGLangARRequestData]):
     """Talker scheduler with Qwen-specific request and decode readiness."""
 
-    talker_start_topology: bool = ENABLE_TALKER_START_TOPOLOGY
     excluded_row_steps: int = 0
     excluded_batch: ScheduleBatch | None = None
 
@@ -68,36 +63,22 @@ class QwenTalkerScheduler(OmniScheduler[SGLangARRequestData]):
         self,
         *args: object,
         enable_partial_start: bool = False,
-        partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
+        partial_start_min_chunks: int = TALKER_START_MIN_CHUNKS,
         im_end_token_id: int | None = None,
-        enable_talker_start_topology: bool | None = None,
         **kwargs: Unpack[OmniSchedulerArguments[SGLangARRequestData]],
     ) -> None:
         super().__init__(*args, **kwargs)
-        if partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS:
+        if partial_start_min_chunks < TALKER_START_MIN_CHUNKS:
             raise ValueError(
-                f"partial_start_min_chunks must be >= {MIN_PARTIAL_START_CHUNKS}, got {partial_start_min_chunks}"
+                f"partial_start_min_chunks must be >= {TALKER_START_MIN_CHUNKS}, got {partial_start_min_chunks}"
             )
         else:
             pass
         self.enable_partial_start = bool(enable_partial_start)
         self.partial_start_min_chunks = int(partial_start_min_chunks)
         self.im_end_token_id = im_end_token_id
-        self.talker_start_topology = self.enable_partial_start and (
-            ENABLE_TALKER_START_TOPOLOGY
-            if enable_talker_start_topology is None
-            else bool(enable_talker_start_topology)
-        )
         self.excluded_row_steps = 0
         self.excluded_batch = None
-        if self.talker_start_topology:
-            logger.info(
-                "talker-start topology on: building at %d thinker chunk(s); later chunks gate decode per step (partial_start_min_chunks=%d applies to the legacy path only)",
-                TALKER_START_MIN_CHUNKS,
-                self.partial_start_min_chunks,
-            )
-        else:
-            pass
 
     def count_usable_prefetched_chunks(self, prefetched: list[StreamItem]) -> int:
         im_end = self.im_end_token_id
@@ -125,12 +106,10 @@ class QwenTalkerScheduler(OmniScheduler[SGLangARRequestData]):
         else:
             pass
         prefetched = getattr(payload, "prefetched_chunks", None) or []
-        usable = self.count_usable_prefetched_chunks(prefetched)
-        if self.talker_start_topology:
-            return usable >= TALKER_START_MIN_CHUNKS
-        else:
-            pass
-        return usable >= self.partial_start_min_chunks
+        return (
+            self.count_usable_prefetched_chunks(prefetched)
+            >= self.partial_start_min_chunks
+        )
 
     def complete_without_generation(
         self, payload: StagePayload, session_unit: SessionUnit | None

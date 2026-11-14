@@ -42,7 +42,6 @@ from sglang_omni.models.qwen3_omni.payload_types import NO_SPEECH
 from sglang_omni.models.qwen3_omni.request_builders import build_sglang_talker_request
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_omni.talker_scheduler import (
-    MIN_PARTIAL_START_CHUNKS,
     QwenTalkerScheduler,
     configure_talker_server_args,
 )
@@ -891,10 +890,10 @@ def test_partial_prompt_prefill_layout_invariants() -> None:
         else:
             raise AssertionError(
                 "layout invariant: build_assistant_part must fail "
-                f"below MIN_PARTIAL_START_CHUNKS (n={n})"
+                f"below the three generation-prompt rows (n={n})"
             )
 
-    for n in (MIN_PARTIAL_START_CHUNKS, 4, 5, 10):
+    for n in (3, 4, 5, 10):
         assert (
             build_assistant_part_for_n_chunks(n)["input_embeds"].shape[0] == 9
         ), f"layout invariant: at n={n} the assistant tail must be 9 rows"
@@ -924,14 +923,12 @@ def test_partial_prompt_prefill_layout_invariants() -> None:
 def fresh_partial_scheduler(
     *,
     enable_partial_start: bool = False,
-    partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
-    talker_start_topology: bool = False,
+    partial_start_min_chunks: int = TALKER_START_MIN_CHUNKS,
 ) -> QwenTalkerScheduler:
     scheduler = object.__new__(QwenTalkerScheduler)
     scheduler.enable_partial_start = enable_partial_start
     scheduler.partial_start_min_chunks = partial_start_min_chunks
     scheduler.im_end_token_id = None
-    scheduler.talker_start_topology = talker_start_topology
     return scheduler
 
 
@@ -1011,7 +1008,7 @@ def test_partial_enabled_at_threshold_returns_true_with_done_false() -> None:
 
 
 def test_partial_rejects_min_chunks_below_layout_floor(monkeypatch) -> None:
-    """partial_start_min_chunks below MIN_PARTIAL_START_CHUNKS raises ValueError."""
+    """partial_start_min_chunks below TALKER_START_MIN_CHUNKS raises ValueError."""
     monkeypatch.setattr(OmniScheduler, "__init__", lambda self, *a, **k: None)
     live = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
 
@@ -1019,7 +1016,7 @@ def test_partial_rejects_min_chunks_below_layout_floor(monkeypatch) -> None:
         QwenTalkerScheduler.__init__(
             live,
             enable_partial_start=True,
-            partial_start_min_chunks=MIN_PARTIAL_START_CHUNKS - 1,
+            partial_start_min_chunks=TALKER_START_MIN_CHUNKS - 1,
         )
 
 
@@ -1065,23 +1062,9 @@ def test_talker_prompt_tail_assembles_from_one_thinker_chunk() -> None:
     assert parts["future_text_rows"].shape[0] == 1
 
 
-def test_topology_builds_at_first_chunk() -> None:
+def test_one_chunk_start_does_not_build_from_a_lone_im_end() -> None:
     scheduler = fresh_partial_scheduler(
-        enable_partial_start=True, talker_start_topology=True
-    )
-
-    assert scheduler.is_request_build_ready(
-        make_payload(prefetched_chunks=[object()] * TALKER_START_MIN_CHUNKS),
-        pending_stream_done=False,
-    )
-    assert not scheduler.is_request_build_ready(
-        make_payload(prefetched_chunks=[]), pending_stream_done=False
-    )
-
-
-def test_topology_still_strips_a_trailing_im_end_chunk() -> None:
-    scheduler = fresh_partial_scheduler(
-        enable_partial_start=True, talker_start_topology=True
+        enable_partial_start=True, partial_start_min_chunks=TALKER_START_MIN_CHUNKS
     )
     scheduler.im_end_token_id = 13
     payload = make_payload(
@@ -1093,15 +1076,13 @@ def test_topology_still_strips_a_trailing_im_end_chunk() -> None:
     assert not scheduler.is_request_build_ready(payload, pending_stream_done=False)
 
 
-def test_topology_rechecks_deferred_payload_on_every_chunk() -> None:
-    scheduler = fresh_partial_scheduler(
-        enable_partial_start=True, talker_start_topology=True
-    )
+def test_partial_start_rechecks_deferred_payload_on_every_chunk() -> None:
+    scheduler = fresh_partial_scheduler(enable_partial_start=True)
 
     assert scheduler.should_recheck_deferred_request_on_stream_chunk("r0", object())
 
 
-def test_process_input_requests_builds_at_one_chunk_under_topology() -> None:
+def test_process_input_requests_builds_at_the_one_chunk_start() -> None:
 
     def stub_request_builder(payload: Any) -> Any:
         origin_input_ids: list[int] = [0]
@@ -1120,8 +1101,7 @@ def test_process_input_requests_builds_at_one_chunk_under_topology() -> None:
 
     scheduler = build_state_machine_scheduler(
         enable_partial_start=True,
-        partial_start_min_chunks=10,
-        talker_start_topology=True,
+        partial_start_min_chunks=TALKER_START_MIN_CHUNKS,
         request_builder_stub=stub_request_builder,
     )
     scheduler.append_stream_chunk = lambda req_data, chunk: None
@@ -1807,8 +1787,7 @@ def test_real_builder_rejects_done_path_without_chunks() -> None:
 def build_state_machine_scheduler(
     *,
     enable_partial_start: bool = False,
-    partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
-    talker_start_topology: bool = False,
+    partial_start_min_chunks: int = TALKER_START_MIN_CHUNKS,
     request_builder_stub: Any,
 ) -> QwenTalkerScheduler:
     """Construct a scheduler with just enough state for process_input_requests."""
@@ -1816,7 +1795,6 @@ def build_state_machine_scheduler(
     scheduler.enable_partial_start = enable_partial_start
     scheduler.partial_start_min_chunks = partial_start_min_chunks
     scheduler.im_end_token_id = None
-    scheduler.talker_start_topology = talker_start_topology
     scheduler.pending_stream_ingress = {}
     scheduler.completed_request_ids = {}
     scheduler.deferred_request_payloads = {}
@@ -3067,12 +3045,9 @@ def test_qwen_predictor_decode_graph_skips_outer_sglang_capture_on_rocm(
     )
 
 
-@pytest.mark.parametrize("topology", [False, True])
-def test_partial_start_off_switch_overrides_topology(monkeypatch, topology) -> None:
+def test_partial_start_off_waits_for_the_stream_to_finish(monkeypatch) -> None:
     monkeypatch.setattr(OmniScheduler, "__init__", lambda self, *a, **k: None)
-    scheduler = QwenTalkerScheduler(
-        enable_partial_start=False, enable_talker_start_topology=topology
-    )
+    scheduler = QwenTalkerScheduler(enable_partial_start=False)
     assert not scheduler.is_request_build_ready(
         make_payload(prefetched_chunks=[object()] * 10), pending_stream_done=False
     )
