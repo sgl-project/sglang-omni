@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"slices"
 	"strings"
@@ -386,13 +387,31 @@ func TestPrivacyGoesOnline(t *testing.T) {
 	}
 }
 
-// TestPermissionsMeetingSystemAudio: Optional row for meeting system audio.
+// TestPermissionsMeetingSystemAudio: Optional row for meeting system
+// audio. macOS lists Voxt under System Audio Recording only once it was
+// asked, so the row's Ask has the helper ask (#3948); without the helper
+// it asks nothing else.
 func TestPermissionsMeetingSystemAudio(t *testing.T) {
-	a, _, tt := newTestApp(t)
+	a, fs, tt := newTestApp(t)
+	// Everything else allowed, so the row's Ask is the only one.
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) {
+		return proto.PermissionsResult{Microphone: proto.PermGranted, Accessibility: true, SpeechRecognition: proto.PermGranted}, nil
+	}
 	a.navigate("/settings/permissions")
 	frames(tt)
 	if !has(tt, "System audio recording (for meetings)") {
 		t.Errorf("permissions: %q", firstTexts(tt))
+	}
+	click(t, tt, "Ask")
+	if !slices.Equal(fs.asked, []string{proto.PermissionSystemAudio}) {
+		t.Errorf("asked %v", fs.asked)
+	}
+	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailCrashed})
+	f := a.permSys.(*permission.Fake)
+	f.Mic = permission.NotDetermined
+	a.askPermission(proto.PermissionSystemAudio, nil)
+	if len(fs.asked) != 1 || f.Prompted != 0 || f.Mic != permission.NotDetermined {
+		t.Errorf("without the helper: asked %v, prompted %d, microphone %v", fs.asked, f.Prompted, f.Mic)
 	}
 }
 
