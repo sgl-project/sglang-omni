@@ -26,10 +26,11 @@ from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.runtime_context import get_schedule
+from sglang.srt.runtime_context import get_parallel, get_schedule
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -108,6 +109,11 @@ class DllmScheduler:
         self.waiting_queue: list[DllmRequest] = []
         self.staging_queue: list[DllmRequest] = []
 
+        self.tp_rank = tp_worker.tp_rank
+        self.tp_size = get_parallel().tp_size
+        self.requires_tp_work_fanout = False
+
+        # CFG tracking: cond_rid <-> uncond_rid(s)
         self.cond_to_unconds: dict[str, list[str]] = {}
         self.uncond_to_cond: dict[str, str] = {}
         self.uncond_rids: set[str] = set()
@@ -130,9 +136,21 @@ class DllmScheduler:
         with self.abort_lock:
             self.aborted_request_ids.add(request_id)
 
+    def emit_request_error(self, request_id: str, error: object) -> None:
+        """Report a request failure once while every TP rank cleans up locally."""
+        if self.tp_size == 1 or self.tp_rank == 0:
+            self.outbox.put(
+                OutgoingMessage(
+                    request_id=request_id,
+                    type="error",
+                    data=error,
+                )
+            )
+        else:
+            pass
+
     def _event_loop(self) -> None:
-        while self.running:
-            self.drain_and_purge()
+        while self.drain_and_purge():
             batch = self.schedule_next_batch()
 
             if batch is None:
@@ -157,7 +175,7 @@ class DllmScheduler:
             self.apply_results(batch, batch_result)
             self.post_step(batch)
 
-    def drain_and_purge(self) -> None:
+    def drain_and_purge(self) -> bool:
         with self.abort_lock:
             aborted = self.aborted_request_ids
             self.aborted_request_ids = set()
@@ -167,6 +185,23 @@ class DllmScheduler:
                 messages.append(self.inbox.get_nowait())
             except _queue_mod.Empty:
                 break
+        running = self.running
+        if self.tp_size > 1:
+            # note (Anmuliar): All ranks must cancel and stop at the same forward boundary.
+            group = get_parallel().tp_group
+            running, aborted, messages = broadcast_pyobj(
+                [running, aborted, messages] if self.tp_rank == 0 else [],
+                group.rank,
+                group.cpu_group,
+                src=group.ranks[0],
+            )
+        else:
+            pass
+        if not running:
+            return False
+        else:
+            pass
+        # Aborting any member of a CFG group must purge the whole group.
         aborted_groups: set[str] = set()
         for rid in aborted:
             cond_rid = self.uncond_to_cond.get(rid, rid)
@@ -187,11 +222,7 @@ class DllmScheduler:
                     logger.exception(
                         f"DllmScheduler: request builder failed for {msg.request_id}"
                     )
-                    self.outbox.put(
-                        OutgoingMessage(
-                            request_id=msg.request_id, type="error", data=exc
-                        )
-                    )
+                    self.emit_request_error(msg.request_id, exc)
                     continue
                 req = req_data.req
                 self.rid_to_req_data[req.rid] = req_data
@@ -268,6 +299,8 @@ class DllmScheduler:
             self.uncond_rids.discard(rid)
             self.orphaned_uncond_rids.discard(rid)
 
+        return True
+
     def create_uncond_companion(
         self,
         cond_req: DllmRequest,
@@ -341,13 +374,7 @@ class DllmScheduler:
             self.uncond_to_cond.pop(companion_rid, None)
             self.uncond_rids.discard(companion_rid)
             self.orphaned_uncond_rids.discard(companion_rid)
-        self.outbox.put(
-            OutgoingMessage(
-                request_id=cond_rid,
-                type="error",
-                data=error,
-            )
-        )
+        self.emit_request_error(cond_rid, error)
 
     def apply_cfg_padding_metadata(
         self,
@@ -780,15 +807,15 @@ class DllmScheduler:
                     message_type = "result"
                 except Exception as exc:
                     logger.exception(f"DLLM result adapter failed for {req.rid}")
-                    result = str(exc)
-                    message_type = "error"
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=req.rid,
-                        type=message_type,
-                        data=result,
+                    self.emit_request_error(req.rid, str(exc))
+                else:
+                    self.outbox.put(
+                        OutgoingMessage(
+                            request_id=req.rid,
+                            type=message_type,
+                            data=result,
+                        )
                     )
-                )
             else:
                 pass
 
