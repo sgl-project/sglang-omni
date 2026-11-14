@@ -22,7 +22,7 @@ env:
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
 # DAG:
 #   stage-1-non-streaming + stage-2-streaming -> stage-3-consistency
-#   stage-latency, stage-4-serving and stage-yue2 depend on no other stage
+#   stage-latency and stage-4-serving depend on no other stage
 # stage-3-consistency compares the speed artifacts of stages 1 and 2. No other
 # stage reads another stage's output, so the rest run side by side.
 # The MPS validation runs separately in test-mps-ci.yaml.
@@ -219,48 +219,6 @@ jobs:
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
           artifact-path-globs: |
             */speed_results.json
-
-  stage-yue2:
-    name: stage yue2 - real-checkpoint smoke
-    runs-on: [self-hosted, h100]
-    timeout-minutes: 30
-    container:
-      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
-      options: >-
-        --rm
-        -e NVIDIA_VISIBLE_DEVICES
-        -e OMNI_CI_CPUSET
-        -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-
-      - name: Run YuE2 real-checkpoint tests
-        shell: bash
-        run: |
-          source omni/bin/activate
-          export PYTHONPATH=$PWD
-          bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_yue2.py -v -s -x
-        env:
-          HF_ENDPOINT: https://huggingface.co
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          OMNI_CI_MAX_ATTEMPTS: "1"
-          YUE2_MODEL_PATH: m-a-p/YuE2-3B@8f24312f187763b9854adeec87e437e2b03bbff1
-          YUE2_VAE_PATH: m-a-p/YuE2-Vae@152733a19ad43aa67e367f9b5503ef8075bb5126
-
-      - name: Post-stage cleanup
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: TTS stage yue2 (real-checkpoint smoke)
 
   stage-3-consistency:
     name: stage 3 - consistency

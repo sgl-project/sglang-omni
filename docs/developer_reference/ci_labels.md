@@ -89,7 +89,6 @@ The stage label is `run-asr-ci`. A model label does not name the stage. Combine 
 | stage latency - streaming first audio | Median time to first playable audio under Poisson arrivals, with one worker alone on the GPU. Runs only when the stage uses one of the two Qwen3-TTS checkpoints. |
 | stage 3 - consistency | Checks the artifacts of stages 1 and 2: both cover all 1088 SeedTTS English samples, every streaming request finished, and streaming and non-streaming audio durations agree. |
 | stage 4 - serving stress | A mixed production workload over the REST, streaming and WebSocket endpoints through a two-worker router. This job always uses Higgs-TTS, whatever model the stage draws. |
-| stage yue2 - real-checkpoint smoke | Starts a YuE2 server on pinned checkpoints and runs `tests/test_model/test_yue2.py`: score modes, classifier-free guidance, concurrent and invalid requests, and client disconnection. This job always uses YuE2, whatever model the stage draws. |
 
 The stage label is `run-tts-ci`. A model label does not name the stage. Combine it with `run-tts-ci` to pick the model for stages 1, 2, 3 and the latency stage:
 
