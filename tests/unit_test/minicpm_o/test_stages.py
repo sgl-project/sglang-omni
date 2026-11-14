@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from sglang_omni.models.minicpm_o import stages as stages_mod
@@ -11,6 +12,8 @@ from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import (
     IMAGE_STAGE,
     project_preprocessing_to_encoder,
+    resolve_preprocessing_next_stages,
+    resolve_thinker_wait_sources,
 )
 from sglang_omni.models.minicpm_o.stages import create_encoder_executor
 from sglang_omni.proto import StagePayload
@@ -114,3 +117,41 @@ def test_projection_copies_the_cached_result_container() -> None:
 
     assert stage_inputs["cached_result"] == cached_result
     assert stage_inputs["cached_result"] is not cached_result
+
+
+@pytest.mark.parametrize(
+    "stage_inputs,expected_dispatch,expected_wait",
+    [
+        (
+            {"_active": True, "cached_result": {"image_embeds": torch.zeros(2, 3)}},
+            ["image_encoder", "thinker"],
+            ["preprocessing", "image_encoder"],
+        ),
+        (
+            {"pixel_values": [torch.zeros(3, 4, 4)], "tgt_sizes": torch.zeros(1, 2)},
+            ["image_encoder", "thinker"],
+            ["preprocessing", "image_encoder"],
+        ),
+        (
+            {"cache_key": "image-key"},
+            ["thinker"],
+            ["preprocessing"],
+        ),
+    ],
+    ids=["cache-hit", "cache-miss", "no-image"],
+)
+def test_image_branch_is_dispatched_without_pixel_values(
+    stage_inputs: dict[str, object],
+    expected_dispatch: list[str],
+    expected_wait: list[str],
+) -> None:
+    """A hit ships no pixel values, so _active has to keep the branch scheduled."""
+    payload = build_payload(stage_inputs, stage_name=IMAGE_STAGE)
+
+    assert (
+        resolve_preprocessing_next_stages("cached-image", payload) == expected_dispatch
+    )
+    assert (
+        resolve_thinker_wait_sources("cached-image", "preprocessing", payload)
+        == expected_wait
+    )
