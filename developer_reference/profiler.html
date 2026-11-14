@@ -804,6 +804,12 @@ first executable prefill / extend batch is selected.</p>
 </tbody>
 </table>
 </div>
+<p>With the incremental vocoder, windows of several streams are decoded in one
+CUDA graph replay. Every window in that group carries the whole batch decode in
+its started-to-finished span, plus its own audio-chunk serialization, not just
+one window’s GPU time. The incremental path has no overlap context, so
+<code class="docutils literal notranslate"><span class="pre">decoded_frames</span></code> equals <code class="docutils literal notranslate"><span class="pre">emitted_frames</span></code>; its last window is decoded in a group
+too and is marked <code class="docutils literal notranslate"><span class="pre">is_final=1</span></code> with <code class="docutils literal notranslate"><span class="pre">chunk_id=-1</span></code>.</p>
 <p>Read <code class="docutils literal notranslate"><span class="pre">d2h_wait_ns</span></code> narrowly. With output overlap on, the lazy codec-EOS scan
 calls <code class="docutils literal notranslate"><span class="pre">.tolist()</span></code> on the staged frame heads, which is itself a host
 synchronization point, and it runs before <code class="docutils literal notranslate"><span class="pre">code2wav_decode_start</span></code>. So
