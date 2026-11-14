@@ -236,6 +236,13 @@ class MiniCPMOPerceptionState:
         return state
 
     def close(self) -> None:
+        if (
+            self.audio_encoder_state is not None
+            and self.audio_encoder_state.row is not None
+        ):
+            self.audio_encoder.release_history_row(self.audio_encoder_state.row)
+        else:
+            pass
         self.is_open = False
         self.audio_buffer = np.zeros(0, dtype=np.float32)
         self.mel_samples = np.zeros(0, dtype=np.float32)

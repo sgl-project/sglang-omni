@@ -164,6 +164,34 @@ class MiniCPMOAudioEncoder(nn.Module):
         # note (MayDomine): stride-2 convolution yields 50 frames per second.
         self.chunk_num_frame = int(float(config.audio_chunk_length) * 50)
         self.chunk_mask_cache: tuple[int, torch.Tensor] | None = None
+        self.history_rows: torch.Tensor | None = None
+        self.free_history_rows: list[int] = []
+
+    def reserve_history_rows(self, row_count: int) -> None:
+        """Preallocate one attention-history row per session, so streaming appends in place instead of reallocating every history each unit."""
+        attention = self.apm.layers[0].self_attn
+        self.history_rows = torch.zeros(
+            (
+                len(self.apm.layers),
+                2,
+                row_count,
+                self.apm.embed_positions.num_embeddings,
+                attention.num_heads,
+                attention.head_dim,
+            ),
+            dtype=self.dtype,
+            device=self.device,
+        )
+        self.free_history_rows = list(range(row_count))
+
+    def release_history_row(self, row: int) -> None:
+        self.free_history_rows.append(row)
+
+    def release_all_history_rows(self) -> None:
+        if self.history_rows is None:
+            pass
+        else:
+            self.free_history_rows = list(range(self.history_rows.shape[2]))
 
     def cached_chunk_mask(self, size: int) -> torch.Tensor:
         if self.chunk_mask_cache is None or self.chunk_mask_cache[0] != size:
@@ -243,6 +271,10 @@ class MiniCPMOAudioEncoder(nn.Module):
         self, chunks: list[StreamingAudioChunk]
     ) -> list[tuple[torch.Tensor, AudioEncoderState]]:
         """Encode one mel chunk per session in one forward; histories are left-padded and the padding is masked."""
+        if self.history_rows is not None:
+            return self.forward_streaming_rows(chunks)
+        else:
+            pass
         first = chunks[0]
         convolution_length = (first.audio_features.shape[-1] + 1) // 2
         states: list[AudioEncoderState] = []
@@ -338,4 +370,75 @@ class MiniCPMOAudioEncoder(nn.Module):
         return [
             (embeds[row, :pooled_length], session_state)
             for row, session_state in enumerate(session_states)
+        ]
+
+    @torch.no_grad()
+    def forward_streaming_rows(
+        self, chunks: list[StreamingAudioChunk]
+    ) -> list[tuple[torch.Tensor, AudioEncoderState]]:
+        """Encode one mel chunk per session in one forward, appending to each session's history row instead of copying its history."""
+        first = chunks[0]
+        convolution_length = (first.audio_features.shape[-1] + 1) // 2
+        position_count = self.apm.embed_positions.num_embeddings
+        row_nbytes = (
+            self.history_rows[:, :, 0].numel() * self.history_rows.element_size()
+        )
+        states: list[AudioEncoderState] = []
+        for chunk in chunks:
+            state = chunk.state
+            chunk.state = None
+            if state is None:
+                state = AudioEncoderState(
+                    row=self.free_history_rows.pop(), row_nbytes=row_nbytes
+                )
+            elif state.row_length + convolution_length >= position_count:
+                logger.info(f"Resetting audio encoder KV at {state.row_length} frames")
+                state = AudioEncoderState(row=state.row, row_nbytes=row_nbytes)
+            else:
+                pass
+            states.append(state)
+        current_length = (
+            convolution_length
+            - (first.prefix_extra_frames + 1) // 2
+            - (first.suffix_extra_frames + 1) // 2
+        )
+        if current_length < self.audio_pool_step:
+            raise ValueError("streaming audio chunk is too short after context removal")
+        else:
+            pass
+        cache_lengths = torch.tensor(
+            [state.row_length for state in states], dtype=torch.int32
+        ).to(self.device, non_blocking=True)
+        cache_rows = torch.tensor(
+            [state.row for state in states], dtype=torch.int32
+        ).to(self.device, non_blocking=True)
+        positions = cache_lengths[:, None].long() + torch.arange(
+            current_length, device=self.device
+        )
+        hidden_states = self.apm.forward_rows(
+            torch.cat([chunk.audio_features for chunk in chunks]).to(
+                self.device, non_blocking=True
+            ),
+            positions,
+            self.history_rows,
+            cache_lengths,
+            cache_rows,
+            prefix_extra_frames=first.prefix_extra_frames,
+            suffix_extra_frames=first.suffix_extra_frames,
+        )
+        embeds = self.audio_projection_layer(hidden_states)
+        embeds = self.audio_avg_pooler(embeds.transpose(1, 2)).transpose(1, 2)
+        pooled_length = feature_lens_after_pooling(
+            torch.tensor([first.audio_features.shape[-1]]), self.audio_pool_step
+        ).item()
+        return [
+            (
+                embeds[row, :pooled_length],
+                AudioEncoderState(
+                    row=state.row,
+                    row_length=state.row_length + current_length,
+                    row_nbytes=row_nbytes,
+                ),
+            )
+            for row, state in enumerate(states)
         ]
