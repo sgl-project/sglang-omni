@@ -304,12 +304,12 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 			})
 		})
 		if thinks(valueOf(f.think, caps.ThinkModes, thinkTitle)) {
-			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+			fieldInfo(c, i18n.T("Off for short inputs"), "", func() {
 				ui.Switch(c.Key("gen-short"), &f.shortOff).Label(i18n.T("Off for short inputs"))
-				if f.shortOff {
-					ui.TextInput(c.Key("gen-short-under"), &f.shortUnder).Placeholder(strconv.Itoa(shortUnderDefault)).Label(i18n.T("Fewer characters than")).Width(px(t, 160))
-				}
 			})
+			if f.shortOff {
+				num("gen-short-under", i18n.T("Fewer characters than"), strconv.Itoa(shortUnderDefault), &f.shortUnder)
+			}
 		}
 	}
 	if caps.MaxOutputTokens {
