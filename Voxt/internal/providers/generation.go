@@ -110,7 +110,7 @@ func Generation(g settings.Generation) llm.Generation {
 		Seed: g.Seed, Stop: g.Stop, PresencePenalty: g.PresencePenalty, FrequencyPenalty: g.FrequencyPenalty,
 		RepetitionPenalty: g.RepetitionPenalty, Logprobs: g.Logprobs, TopLogprobs: g.TopLogprobs,
 		ResponseFormat: g.ResponseFormat, Verbosity: g.Verbosity, KeepAlive: g.KeepAlive, IncludeUsage: g.IncludeUsage,
-		Thinking: llm.Thinking{Mode: g.Thinking, Effort: g.ThinkingEffort, Budget: g.ThinkingBudget},
+		Thinking: llm.Thinking{Mode: g.Thinking, Effort: g.ThinkingEffort, Budget: g.ThinkingBudget}, ThinkOffUnder: g.ThinkingOffUnder,
 	}
 	out.JSONSchema, _ = jsonObject(g.JSONSchema)
 	out.ExtraBody, _ = jsonObject(g.ExtraBodyJSON)

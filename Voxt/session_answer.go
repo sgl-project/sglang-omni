@@ -88,7 +88,7 @@ func (a *app) endRedo(s session.Snapshot) {
 		if lang != a.answer.lang {
 			a.answer.msg = i18n.T("Not translated into %s: %s", uitext.TargetLanguageLabel(lang), why)
 		} else {
-			a.answer.msg = i18n.T("Not answered again (%s): %s", thinkText(think), why)
+			a.answer.msg = i18n.T("Not answered again (%s): %s", thinkText(think, a.llmGeneration(a.answer.llmID)), why)
 		}
 	}
 }
