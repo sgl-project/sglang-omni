@@ -258,11 +258,17 @@ mx::array Checkpoint::Linear(const mx::array &x,
     } else {
       return y;
     }
-  } else if (Has(prefix + ".bias")) {
-    return mx::addmm(Weight(prefix + ".bias"), x,
-                     mx::transpose(Weight(prefix + ".weight")));
   } else {
-    return mx::matmul(x, mx::transpose(Weight(prefix + ".weight")));
+    return Linear(x, prefix, mx::transpose(Weight(prefix + ".weight")));
+  }
+}
+
+mx::array Checkpoint::Linear(const mx::array &x, const std::string &prefix,
+                             const mx::array &transposed_weight) const {
+  if (Has(prefix + ".bias")) {
+    return mx::addmm(Weight(prefix + ".bias"), x, transposed_weight);
+  } else {
+    return mx::matmul(x, transposed_weight);
   }
 }
 
