@@ -99,6 +99,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.cache_key import PromptRowCacheKeys
 from sglang_omni.profiler.event_recorder import (
     RequestEventBuffer,
@@ -376,7 +377,10 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
         "create_sglang_tts_engine_executor"
     )
     assert config.terminal_stages == ["vocoder"]
-    assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
+    expected_gpu_map = (
+        {} if current_platform.is_cpu() else {"tts_engine": 0, "vocoder": 0}
+    )
+    assert config.gpu_placement == expected_gpu_map
     assert stages["tts_engine"].factory.device is None
     assert stages["vocoder"].factory.device is None
     assert {stage.process for stage in config.stages} == {"pipeline"}
@@ -821,7 +825,8 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
     assert overrides["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
     assert "cuda_graph_bs_prefill" not in overrides
     assert "cuda_graph_max_bs_prefill" not in overrides
-    assert overrides["disable_cuda_graph"] is False
+    assert defaults["disable_cuda_graph"] is False
+    assert overrides["disable_cuda_graph"] is defaults["disable_cuda_graph"]
 
 
 @pytest.mark.parametrize("is_npu", [False, True])
@@ -11131,9 +11136,13 @@ def test_qwen3_tts_config_loads_frontend_only_outside_engine_process(
     # A split frontend declares its own gpu, the way the documented recipe does.
     fractions = {"preprocessing": 0.05, "tts_engine": 0.75, "vocoder": 0.12}
     for index, stage in enumerate(split.stages):
-        update = {"gpu_memory_fraction": fractions[stage.name]}
+        update = {}
+        if not current_platform.is_cpu():
+            update["gpu_memory_fraction"] = fractions[stage.name]
         if stage.name == "preprocessing":
-            update.update({"process": "tts_frontend", "gpu": 0})
+            update["process"] = "tts_frontend"
+            if not current_platform.is_cpu():
+                update["gpu"] = 0
         split.stages[index] = stage.model_copy(update=update)
     assert split.preprocessing_in_own_process() is True
     assert split.stage_factory_kwargs("preprocessing") == {"load_frontend": True}
@@ -11147,9 +11156,11 @@ def test_qwen3_tts_config_loads_frontend_only_outside_engine_process(
         "vocoder": "pipeline",
     }
     placement = build_stage_placement_plan(split)
-    assert placement.gpus[0].total_gpu_memory_fraction == pytest.approx(0.92)
-    assert placement.gpus[0].missing_fraction_stage_names == ()
-
+    if current_platform.is_cpu():
+        assert placement.gpus == {}
+    else:
+        assert placement.gpus[0].total_gpu_memory_fraction == pytest.approx(0.92)
+        assert placement.gpus[0].missing_fraction_stage_names == ()
     split.enable_deterministic_inference = True
     assert split.stage_factory_kwargs("preprocessing") == {
         "load_frontend": True,
@@ -11219,6 +11230,7 @@ def test_qwen3_tts_split_preprocessing_loads_the_frontend_on_the_placed_gpu(
     assert seen["float32_encoder"] is (model_type == "base")
 
 
+@pytest.mark.skipif(current_platform.is_cpu(), reason="GPU placement test")
 def test_qwen3_tts_shared_gpu_layout_demands_no_preprocessing_fraction() -> None:
     """Sharing the engine's process, preprocessing has no GPU budget to declare.
 
