@@ -9,9 +9,17 @@ import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.xpu import XpuDeviceMixin
 
-from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
+from sglang_omni.platforms.interface import (
+    JointRopeInplaceKernel,
+    OmniPlatform,
+    TransportKind,
+)
+from sglang_omni.platforms.level_zero import is_level_zero_ipc_available
 
 logger = logging.getLogger(__name__)
+
+# note (siju): opt-in; it slowed Qwen3-Omni speech at concurrency 4, cause unknown.
+LEVEL_ZERO_IPC_ENV = "SGLANG_OMNI_XPU_LEVEL_ZERO_IPC"
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -28,6 +36,13 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
     def set_device(self, device: "torch.device | int") -> None:
         index = device.index if isinstance(device, torch.device) else int(device)
         torch.xpu.set_device(0 if index is None else index)
+
+    def get_intra_node_transport(self) -> TransportKind:
+        """Use Level-Zero IPC for GPU-to-GPU stage edges when it is opted into."""
+        if os.getenv(LEVEL_ZERO_IPC_ENV) == "1" and is_level_zero_ipc_available():
+            return TransportKind.LEVEL_ZERO_IPC
+        else:
+            return TransportKind.SHM
 
     def enable_code2wav_graph(self):
         return True
