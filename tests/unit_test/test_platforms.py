@@ -222,6 +222,44 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
             assert isinstance(backend, backend_class), platform_class.__name__
 
 
+def test_a_non_reclaiming_capture_leaves_both_caches_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.platforms.device_graph import (
+        CudaDeviceGraphBackend,
+        XpuDeviceGraphBackend,
+    )
+
+    for backend, module_name in (
+        (CudaDeviceGraphBackend(), "cuda"),
+        (XpuDeviceGraphBackend(), "xpu"),
+    ):
+        module = getattr(torch, module_name)
+        calls: list[str] = []
+
+        class FakeGraph:
+            def capture_begin(self, *args: object, **kwargs: object) -> None:
+                calls.append("capture_begin")
+
+            def capture_end(self) -> None:
+                calls.append("capture_end")
+
+        graph_attribute = "CUDAGraph" if module_name == "cuda" else "XPUGraph"
+        monkeypatch.setattr(module, graph_attribute, FakeGraph)
+        monkeypatch.setattr(
+            module, "empty_cache", lambda: calls.append("empty_cache"), raising=False
+        )
+        monkeypatch.setattr(
+            module,
+            "graph",
+            lambda **kwargs: calls.append("context_manager") or nullcontext(),
+            raising=False,
+        )
+        with backend.capture(reclaim_memory=False) as graph:
+            assert isinstance(graph, FakeGraph), module_name
+        assert calls == ["capture_begin", "capture_end"], (module_name, calls)
+
+
 def test_npu_platform_opts_only_mimi_into_decode_graphs() -> None:
     platform = NPUOmniPlatform()
     assert platform.enable_mimi_decode_graph() is True
