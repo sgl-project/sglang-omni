@@ -1,9 +1,8 @@
 package main
 
 // The memory the loaded models use, on the Speech models page: the speech
-// models' servers (internal/omni) and the language models' process
-// (internal/llmrt) are processes of their own, measured by their process
-// ids (macx.Memory: the footprint, or the resident memory when the
+// models' servers (internal/omni) are processes of their own, measured by
+// their process ids (macx.Memory: the footprint, or the resident memory when the
 // weights are mapped from their file) off the main thread, when the page
 // shows and every few seconds while it stays in front. Views read
 // a.modelMem only.
@@ -11,7 +10,6 @@ package main
 import (
 	"time"
 
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llmrt"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/macx"
 )
 
@@ -37,10 +35,6 @@ var procMemory = func(pid int) (int64, error) {
 type loadedProc struct {
 	id  string
 	pid int
-	// reported is the memory the process last reported itself (the
-	// language models' process does, after a load or a chat), for when
-	// it cannot be measured.
-	reported int64
 }
 
 // loadedModels lists the models loaded now and their processes (memory
@@ -56,16 +50,6 @@ func (a *app) loadedModels() []loadedProc {
 			out = append(out, loadedProc{id: p.ID, pid: p.PID})
 		}
 	}
-	if lrt := a.llmMade(); lrt != nil {
-		// Status, not Memory(ctx): asking the process would start its
-		// idle time again, and a page left open would keep the model
-		// loaded.
-		st := lrt.Status()
-		if st.State == llmrt.Ready && st.Model != nil {
-			out = append(out, loadedProc{id: st.Model.ID, pid: st.PID,
-				reported: max(st.Memory.FootprintBytes, st.Memory.ResidentBytes)})
-		}
-	}
 	return out
 }
 
@@ -75,8 +59,8 @@ func measureModels(ps []loadedProc) map[string]int64 {
 	out := make(map[string]int64, len(ps))
 	for _, p := range ps {
 		b, err := procMemory(p.pid)
-		if err != nil || b <= 0 {
-			b = p.reported
+		if err != nil || b < 0 {
+			b = 0 // loaded, not measured
 		}
 		out[p.id] = b
 	}

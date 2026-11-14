@@ -19,6 +19,9 @@ from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE, VOC
 
 # Pads a request's repetition window before it has that many output tokens.
 EMPTY_HISTORY_TOKEN = -1
+# note (YifanLi3): covers the stage default top_k of 20 and the SpeechSpec 15; a batch
+# with a larger top_k or a seed sorts the whole vocabulary.
+TOP_K_BOUND = 64
 # note (YifanLi3): a seeded step keys every draw by the committed length, which grows
 # each step, so no draw is reused; the salts keep the three draws of a step apart.
 DRAFT_NOISE_SEED_SALT = 0x68E31DA4
@@ -164,11 +167,13 @@ def target_probabilities(
     top_ks: torch.Tensor,
     top_ps: torch.Tensor,
     recent_tokens: torch.Tensor,
+    is_top_k_bounded: bool,
 ) -> torch.Tensor:
     """The distribution the stage samples each row's next token from.
 
     A row with top_k 1 is greedy; every other row redraws a sampled speech token found
-    in recent_tokens from the tempered distribution without it.
+    in recent_tokens from the tempered distribution without it. is_top_k_bounded
+    promises every top_k is at most TOP_K_BOUND.
     """
     logits = shape_logits(
         logits.float(),
@@ -181,9 +186,14 @@ def target_probabilities(
         1, logits.argmax(dim=-1, keepdim=True), 1.0
     )
     tempered = torch.softmax(logits / temperatures.unsqueeze(1), dim=-1)
-    sorted_probabilities, sorted_ids = tempered.sort(dim=-1, descending=True)
+    if is_top_k_bounded:
+        sorted_probabilities, sorted_ids = tempered.topk(TOP_K_BOUND, dim=-1)
+    else:
+        sorted_probabilities, sorted_ids = tempered.sort(dim=-1, descending=True)
     cumulative = sorted_probabilities.cumsum(dim=-1)
-    ranks = torch.arange(logits.shape[1], device=logits.device).unsqueeze(0)
+    ranks = torch.arange(sorted_probabilities.shape[1], device=logits.device).unsqueeze(
+        0
+    )
     kept = (ranks < top_ks.unsqueeze(1)) & (
         (cumulative - sorted_probabilities) <= top_ps.unsqueeze(1)
     )
@@ -207,39 +217,53 @@ def target_probabilities(
         & ~is_repeat
     )
     window_ids = sorted_recent.clamp_min(0)
-    tempered_double = tempered.double()
-    nucleus_double = nucleus.double()
-    window_tempered = torch.where(valid, tempered_double.gather(1, window_ids), 0.0)
-    window_nucleus = torch.where(valid, nucleus_double.gather(1, window_ids), 0.0)
-    in_window = (
-        torch.zeros_like(tempered_double).scatter_add(1, window_ids, valid.double()) > 0
+    window_tempered = torch.where(valid, tempered.gather(1, window_ids).double(), 0.0)
+    window_nucleus = torch.where(valid, nucleus.gather(1, window_ids).double(), 0.0)
+    window_slot_count = window_ids.shape[1]
+    # Each id's window slot, or -1; invalid slots write to one extra column.
+    window_slots = (
+        torch.full(
+            (window_ids.shape[0], TOTAL_VOCAB_SIZE + 1),
+            -1,
+            dtype=torch.int8,
+            device=window_ids.device,
+        )
+        .scatter(
+            1,
+            torch.where(valid, window_ids, TOTAL_VOCAB_SIZE),
+            torch.arange(window_slot_count, dtype=torch.int8, device=window_ids.device)
+            .unsqueeze(0)
+            .expand_as(window_ids),
+        )[:, :TOTAL_VOCAB_SIZE]
+        .long()
     )
+    in_window = window_slots >= 0
     # note (wilsonzheng0327): the redraw normalizes by the mass left after zeroing the
     # candidate, and keeps the candidate only when nothing is left. Summing the mass
     # outside the window directly avoids cancelling it against a near-1 candidate.
-    outside_window = torch.where(in_window, 0.0, tempered_double).sum(
-        dim=-1, keepdim=True
+    outside_window = torch.where(in_window, 0.0, tempered).sum(
+        dim=-1, keepdim=True, dtype=torch.float64
     )
     other_window_slots = ~torch.eye(
-        window_ids.shape[1], dtype=torch.bool, device=window_ids.device
+        window_slot_count, dtype=torch.bool, device=window_ids.device
     )
     remaining = outside_window + (
         window_tempered.unsqueeze(1) * other_window_slots
     ).sum(dim=-1)
     redraw_weight = torch.where(remaining > 0, window_nucleus / remaining, 0.0)
     kept_weight = torch.where(remaining > 0, 0.0, window_nucleus)
-    redrawn = torch.where(in_window, 0.0, nucleus_double) + tempered_double * (
-        redraw_weight.sum(dim=-1, keepdim=True)
+    # note (YifanLi3): a window token sums the other candidates' redraw weights, so
+    # a dominant candidate never cancels against the total; only the window is float64.
+    other_redraw_weight = (redraw_weight.unsqueeze(1) * other_window_slots).sum(dim=-1)
+    window_probabilities = window_tempered * other_redraw_weight + kept_weight
+    redrawn = torch.where(
+        in_window,
+        window_probabilities.gather(1, window_slots.clamp_min(0)).float(),
+        nucleus + (tempered.double() * redraw_weight.sum(dim=-1, keepdim=True)).float(),
     )
-    redrawn = redrawn.scatter_add(
-        1, window_ids, kept_weight - redraw_weight * window_tempered
-    )
-    return torch.where(greedy.unsqueeze(1), greedy_probabilities, redrawn.float())
+    return torch.where(greedy.unsqueeze(1), greedy_probabilities, redrawn)
 
 
-# note (wilsonzheng0327): inductor (torch 2.13) emits an invalid Triton kernel when it
-# fuses the residual draw with the gathers, so this part stays eager.
-@torch.compiler.disable
 def rejection_sample(
     *,
     target: torch.Tensor,
@@ -299,6 +323,7 @@ def exact_accept(
     recent_tokens: torch.Tensor,
     uniform_noise: torch.Tensor,
     exponential_noise: torch.Tensor,
+    is_top_k_bounded: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Verify one block per request against the stage's exact sampling.
 
@@ -338,6 +363,7 @@ def exact_accept(
         top_ks=top_ks.repeat_interleave(rows_per_request),
         top_ps=top_ps.repeat_interleave(rows_per_request),
         recent_tokens=row_recent.reshape(-1, COSYVOICE3_RAS_WINDOW_SIZE),
+        is_top_k_bounded=is_top_k_bounded,
     ).view(batch_size, rows_per_request, TOTAL_VOCAB_SIZE)
     return rejection_sample(
         target=target,
@@ -367,4 +393,5 @@ class ExactAccept(Protocol):
         recent_tokens: torch.Tensor,
         uniform_noise: torch.Tensor,
         exponential_noise: torch.Tensor,
+        is_top_k_bounded: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]: ...

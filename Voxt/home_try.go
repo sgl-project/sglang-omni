@@ -1,8 +1,8 @@
 package main
 
 // Where a try runs (home_page.go): a shortcut pressed while VoxtNew is in
-// front starts a try on the page it shows, and Home offers its Try area
-// until the first result.
+// front starts a try on the page it shows, unless the user types in one of
+// its fields, and Home offers its Try area until the first result.
 
 import (
 	"os"
@@ -28,7 +28,10 @@ const (
 
 // tryPlace decides where a shortcut of kind, pressed with target in
 // front, runs: a try when target is VoxtNew and what shows has a Try
-// area for it (the setup guide's step, Home, the feature's page).
+// area for it (the setup guide's step, Home, the feature's page), and no
+// text field of the window has the focus: then a session types into that
+// field, as in another app (Voxt 1.x; FB10, a feature's rules being
+// edited).
 func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 	if target.PID == 0 || target.PID != os.Getpid() {
 		return placeNone
@@ -39,7 +42,7 @@ func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 		}
 		return placeIgnore
 	}
-	if a.settingsOpen {
+	if a.settingsOpen || a.textFocused() {
 		return placeNone
 	}
 	switch a.router.Path() {
@@ -85,3 +88,7 @@ func (a *app) markTried() {
 		a.updateSettings(func(s *settings.Settings) { s.Setup.Tried = true })
 	}
 }
+
+// textFocused says whether the user types in a field of the main window
+// (MyGo patch 0010).
+func (a *app) textFocused() bool { return a.mainUI.TextFocused() }

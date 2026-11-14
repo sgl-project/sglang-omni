@@ -120,9 +120,9 @@ build() {
   local v="$1"
   cp "$WORK/orig/mygo.json" mygo.json
   scripts/release-config.sh --overlay "$WORK/overlay.json" >/dev/null
-  # Without the model runtimes (the updater does not care what the
-  # bundle holds): no voxtnew-llm to give its entitlements to.
-  jq --arg v "$v" '.version = $v | del(.macos.helperEntitlements["llm/voxtnew-llm"])' mygo.json >"$WORK/mygo.json" &&
+  # Without the model runtime (the updater does not care what the bundle
+  # holds).
+  jq --arg v "$v" '.version = $v' mygo.json >"$WORK/mygo.json" &&
     cat "$WORK/mygo.json" >mygo.json
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $v" helper/Support/Info.plist
   nice -n 10 scripts/build-helper.sh >/dev/null

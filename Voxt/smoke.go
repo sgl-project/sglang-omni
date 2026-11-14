@@ -4,28 +4,30 @@ package main
 // Voxt.app/Contents/MacOS/Voxt --smoke <dir>, it runs instead of the
 // app, with no window, no menu bar icon and no single-instance lock, on a
 // data folder of its own (<dir>/data; the models are the model library's,
-// $HUB): it starts the bundled helper, opens the first installed speech and
-// language models (or those VOXTNEW_SMOKE_MODELS=<asr id>,<llm id> names)
-// through the app's own Library and runtimes (the
-// bundled Omni server and voxtnew-llm), asks each for an answer (a second
-// of silence; a short chat), then quits as the app does. The script then
+// $HUB): it starts the bundled helper, opens the first installed speech
+// model (or the one VOXTNEW_SMOKE_MODELS=<asr id> names) through the app's
+// own Library and runtime (the bundled Omni server), asks it for an answer
+// (a second of silence), then quits as the app does. The script then
 // checks that nothing it started is left running. Lines starting
 // "smoke:" say what happened; the exit status is 0 when all of it worked.
+//
+// With VOXTNEW_SMOKE_LEGACY=1 it only imports the previous Voxt's data
+// into that folder, as the import card does, and prints the terms and
+// history entries there (.github/workflows/voxt-upgrade-test.yaml).
 
 import (
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 func runSmoke(dir string) int {
@@ -67,6 +69,38 @@ func runSmoke(dir string) int {
 		say("quit")
 		return code
 	}
+	if os.Getenv("VOXTNEW_SMOKE_LEGACY") == "1" {
+		legacy := legacyLibrary()
+		switch {
+		case legacy == "":
+			say("FAIL no previous Voxt on this Mac (no %s container)", legacyBundleID)
+			return quit(1)
+		case !legacyReadable(legacy):
+			// The Developer ID build must read it without the open panel.
+			say("FAIL the previous Voxt's database in %s is not readable without asking", legacy)
+			return quit(1)
+		default:
+			say("legacy readable: %s", legacyDatabase(legacy))
+		}
+		a.importLegacyFrom(legacy)
+		if !pump(time.Minute, func() bool { return !a.dv.importing }) || !a.ob.legacyDone {
+			say("FAIL the import: %s", a.ob.legacy.text())
+			return quit(1)
+		}
+		ctx := context.Background()
+		terms, err := a.lib.store.Dictionary().List(ctx, "")
+		if err != nil {
+			say("FAIL the dictionary: %v", err)
+			return quit(1)
+		}
+		entries, err := a.lib.store.History().List(ctx, store.HistoryQuery{})
+		if err != nil {
+			say("FAIL the history: %v", err)
+			return quit(1)
+		}
+		say("legacy import: %d terms, %d history entries (%s)", len(terms), len(entries), a.ob.legacy.text())
+		return quit(0)
+	}
 	a.connectHelper()
 	a.startHelper()
 	if !pump(30*time.Second, func() bool { return a.helperStatus().State == helper.Ready }) {
@@ -82,13 +116,13 @@ func runSmoke(dir string) int {
 	}
 	done := make(chan result, 1)
 	go func() {
-		asrs, llms := a.local.Installed(local.ASR), a.local.Installed(local.LLM)
-		if len(asrs) == 0 || len(llms) == 0 {
-			done <- result{err: fmt.Errorf("no speech model (%d) or language model (%d) installed in %s", len(asrs), len(llms), a.models.Hub())}
-			return
+		asrs := a.local.Installed(local.ASR)
+		if want := os.Getenv("VOXTNEW_SMOKE_MODELS"); want != "" {
+			asrs = []local.Model{{ID: want}}
 		}
-		if want, wantLLM, ok := strings.Cut(os.Getenv("VOXTNEW_SMOKE_MODELS"), ","); ok {
-			asrs, llms = []local.Model{{ID: want}}, []local.Model{{ID: wantLLM}}
+		if len(asrs) == 0 {
+			done <- result{err: fmt.Errorf("no speech model installed in %s", a.models.Hub())}
+			return
 		}
 		t0 := time.Now()
 		p, _, err := a.local.ASR(ctx, asrs[0].ID)
@@ -101,21 +135,7 @@ func runSmoke(dir string) int {
 			done <- result{err: fmt.Errorf("speech model %s: %w", asrs[0].ID, err)}
 			return
 		}
-		heard := time.Since(t0)
-		t0 = time.Now()
-		chat, _, err := a.local.LLM(ctx, llms[0].ID)
-		if err != nil {
-			done <- result{err: fmt.Errorf("language model %s: %w", llms[0].ID, err)}
-			return
-		}
-		resp, err := chat.Chat(ctx, llm.Request{Skill: llm.SkillRewrite, MaxTokens: 8,
-			Messages: []llm.Message{{Role: llm.User, Content: "Reply with the word OK."}}})
-		if err != nil {
-			done <- result{err: fmt.Errorf("language model %s: %w", llms[0].ID, err)}
-			return
-		}
-		done <- result{what: fmt.Sprintf("speech model %s answered in %v, language model %s in %v (%q)",
-			asrs[0].ID, heard.Round(time.Millisecond), llms[0].ID, time.Since(t0).Round(time.Millisecond), resp.Text)}
+		done <- result{what: fmt.Sprintf("speech model %s answered in %v", asrs[0].ID, time.Since(t0).Round(time.Millisecond))}
 	}()
 	var r result
 	deadline := time.After(4 * time.Minute)

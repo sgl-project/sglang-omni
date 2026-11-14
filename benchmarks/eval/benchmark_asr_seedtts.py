@@ -219,6 +219,7 @@ async def run_asr_seedtts_once(
     warmup: int = 0,
     disable_tqdm: bool = True,
     stream: bool = False,
+    fallback_percentage: int = 0,
 ) -> dict:
     """Run one SeedTTS ASR benchmark pass and return WER/speed/worker metrics."""
     before = _fetch_worker_snapshot(host, port)
@@ -232,6 +233,7 @@ async def run_asr_seedtts_once(
         warmup=warmup,
         disable_tqdm=disable_tqdm,
         stream=stream,
+        fallback_percentage=fallback_percentage,
     )
     after = _fetch_worker_snapshot(host, port)
     benchmark_result = build_asr_eval_results(
@@ -281,6 +283,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
             lang=args.lang,
             concurrency=concurrency,
             stream=args.stream,
+            fallback_percentage=getattr(args, "fallback_percentage", 0),
         )
     finally:
         resources = (
@@ -702,8 +705,27 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Limit samples (0 = full SeedTTS set; 1088 for EN).",
     )
+    parser.add_argument(
+        "--fallback-percentage",
+        type=int,
+        default=0,
+        help="Percentage of clips sent with repetition_penalty=1.2 to exercise plain fallback.",
+    )
+    parser.add_argument(
+        "--unique-audio",
+        action="store_true",
+        help=(
+            "Send each reference clip once, as its first row; --max-samples then "
+            "counts clips. SeedTTS lists a prompt clip once per target text, back "
+            "to back (EN 1088 rows, 666 clips; ZH 2020 rows, 1010 clips), so "
+            "without this flag concurrency 2 sends both copies together."
+        ),
+    )
     add_common_args(parser, default_output="asr_seedtts_results.json")
-    return finalize_args(parser.parse_args())
+    args = parser.parse_args()
+    if not 0 <= args.fallback_percentage <= 100:
+        parser.error("--fallback-percentage must be between 0 and 100")
+    return finalize_args(args)
 
 
 async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
@@ -739,6 +761,7 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
                 lang=args.lang,
                 concurrency=concurrency,
                 stream=args.stream,
+                fallback_percentage=getattr(args, "fallback_percentage", 0),
             )
         repeats: list[dict] = []
         for repeat in range(1, args.repeats + 1):
@@ -798,6 +821,7 @@ def main() -> None:
         max_samples=max_samples,
         split=args.lang,
         revision=dataset_revision,
+        unique_audio=args.unique_audio,
     )
     if not samples:
         raise RuntimeError(f"No SeedTTS samples loaded from {args.meta!r}")
@@ -841,10 +865,12 @@ def main() -> None:
             "declared_model_revision": model_revision,
             "dataset_revision": dataset_revision,
             "num_samples": len(samples),
+            "unique_audio": args.unique_audio,
             "concurrencies": concurrencies,
             "repeats": args.repeats,
             "warmup": args.warmup,
             "stream": args.stream,
+            "fallback_percentage": args.fallback_percentage,
             "declared_server": server_config,
             "resource_monitor": {
                 "enabled": not args.disable_resource_monitor,
@@ -865,6 +891,7 @@ def main() -> None:
             "server": collect_server_identity(f"http://{args.host}:{args.port}"),
         }
     output_path = os.path.abspath(args.output)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as handle:
         json.dump(payload, handle, indent=2)
     print(f"\nWrote results to {output_path}")

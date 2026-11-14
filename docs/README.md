@@ -30,6 +30,7 @@ PORT=8080 make serve
 - Prefer **Markdown** for cookbooks and usage guides. Use notebooks only when the example must be executed in docs CI.
 - Prefer relative links (`../get_started/installation.md`), not absolute docs URLs.
 - Match existing launch / request examples in neighboring cookbooks.
+- Put shared TTS HTTP, Python, and streaming usage in [TTS Model Usage](basic_usage/tts.md). Cookbooks should link to it and keep examples that demonstrate model-specific inputs, capabilities, or behavior.
 
 ## Documentation checks
 

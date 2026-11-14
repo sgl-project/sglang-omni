@@ -22,13 +22,6 @@ func (a *app) pageWidth(c *ui.Context) float32 {
 	return w - side
 }
 
-// panelFits says whether a side panel w wide fits beside the page while
-// the page's main column keeps 480 DIPs; when it does not, the panel
-// shows as a drawer over the page (sidePanel).
-func (a *app) panelFits(c *ui.Context, w float32) bool {
-	return a.pageWidth(c)-w >= px(c.Theme(), 480)
-}
-
 // sidePanel shows fn in a side panel w wide, at the right of the page:
 // beside the main column when inline (a hairline, then a scrolling
 // column; call it inside the page's body row), or else as a drawer over

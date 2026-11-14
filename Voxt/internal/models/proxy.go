@@ -115,12 +115,26 @@ func bypassProxy(host string, proxies SystemProxies) bool {
 // ProxyFor is the downloads' proxy rule for the family's network.proxy
 // (family spec §9.1): "" automatic, system (the environment's, then the
 // Mac's: SystemProxy); "direct", or a proxy URL, as hfhub reads them. The
-// loopback is never proxied.
-func ProxyFor(mode string, system func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
+// loopback is never proxied. user, when not nil, is the custom proxy's
+// user name and password: the Transport sends them (Proxy-Authorization,
+// or SOCKS5's own), so the URL with them must never be logged.
+func ProxyFor(mode string, user *url.Userinfo, system func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
 	if strings.TrimSpace(mode) == "" && system != nil {
 		return system
 	}
-	return hfhub.ProxyFunc(mode)
+	proxy := hfhub.ProxyFunc(mode)
+	if user == nil {
+		return proxy
+	}
+	return func(request *http.Request) (*url.URL, error) {
+		proxyURL, err := proxy(request)
+		if proxyURL == nil || err != nil {
+			return proxyURL, err
+		}
+		withUser := *proxyURL
+		withUser.User = user
+		return &withUser, nil
+	}
 }
 
 // NewHTTPClient is the downloads' HTTP client through proxy, with hfhub's

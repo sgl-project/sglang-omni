@@ -122,6 +122,18 @@ class SGLangARRequestData(ARRequestData):
     thinker_chunks_done: bool = True
 
 
+class ThinkerRequest(Req):
+    """A thinker request whose re-prefill after retraction gets back the multimodal inputs its first prefill consumed."""
+
+    omni_data: SGLangARRequestData | None
+
+    def reset_for_retract(self) -> None:
+        super().reset_for_retract()
+        assert self.omni_data is not None, "a retracted request still owns its data"
+        self.omni_model_inputs = self.omni_data.model_inputs or None
+        self._omni_consumed = None  # noqa: leading-underscore  # model runner contract
+
+
 class DllmRequest(Req):
     """SGLang request with explicit CFG grouping and padding state."""
 

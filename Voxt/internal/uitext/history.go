@@ -129,9 +129,9 @@ func SourceText(s appctx.Source, pattern string) string {
 	case appctx.SourceURL:
 		return i18n.T("by the website rule %s", pattern)
 	case appctx.SourceBrowserApp:
-		return i18n.T("as its browser")
+		return i18n.T("by the browser")
 	case appctx.SourceApp:
-		return i18n.T("as its app")
+		return i18n.T("by the app")
 	}
 	return ""
 }

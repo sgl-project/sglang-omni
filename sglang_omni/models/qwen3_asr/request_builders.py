@@ -452,6 +452,7 @@ def make_qwen3_asr_scheduler_adapters(
             temperature=temperature,
             top_p=1.0,
             stop_token_ids=[eos_token_id],
+            repetition_penalty=float(params.get("repetition_penalty", 1.0)),
         )
         sampling_params.normalize(tokenizer=None)
 

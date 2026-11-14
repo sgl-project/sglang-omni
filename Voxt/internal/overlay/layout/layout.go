@@ -64,6 +64,12 @@ const (
 	LiveMaxW   = LiveTextW + 2*LivePadX
 	LiveH      = RowH + LiveGap + LineH + 2*LivePadY
 	FadeW      = 16 // the line's left edge fades out over this, scrolled
+	// With Overlay.LiveLines: the text wraps at LinesTextW from the first
+	// word, so the face is LinesW wide, and grows by its lines up to
+	// LinesMax of them (LineH each); past that the newest show.
+	LinesTextW = 480
+	LinesW     = LinesTextW + 2*LivePadX
+	LinesMax   = 10
 	// After the waveform in the row, Gap before each, when they show:
 	// the time, and the matched group's name (SceneSize, at most
 	// SceneMaxW wide).
@@ -126,6 +132,14 @@ func LiveWidth(row int, text float32) int {
 	return max(row, line) + 2*LivePadX
 }
 
+// LinesHeight is the face's height with live text wrapped in lines
+// (Overlay.LiveLines) text DIPs high: the row, LiveGap, the lines up to
+// LinesMax of them, and the padding.
+func LinesHeight(text float32) int {
+	lines := min(int(math.Ceil(float64(text))), LinesMax*LineH)
+	return RowH + LiveGap + max(lines, LineH) + 2*LivePadY
+}
+
 // NoticeWidth fits a notice's line, text DIPs wide: the pill's padding,
 // the icon, the text, the arrow of an action; at least NoticeW, at most
 // NoticeW2.
@@ -158,7 +172,9 @@ const (
 	CardRuleTop = 12 // the header to the rule
 	CardRuleGap = 10 // the rule to the text
 	// Where the rule is.
-	CardRuleY   = CardPadTop + CardHeadH + CardRuleTop
+	CardRuleY = CardPadTop + CardHeadH + CardRuleTop
+	// CardBodyMax is the least text a card shows before it scrolls, on a
+	// work area too short to hold more (Voxt's).
 	CardBodyMax = 220
 	CardInset   = 10 // the text's right inset: the scroller's room
 	CardBodyW   = AnswerW - 2*CardPadX - CardInset
@@ -166,7 +182,8 @@ const (
 	CardChrome = CardPadTop + CardHeadH + CardRuleTop + 1 + CardRuleGap + CardPadY
 	CardMsgGap = 8
 	CardMsgH   = 16
-	// CardMaxH is the highest card: the text at its most, and a line.
+	// CardMaxH is the highest card on such a work area: CardBodyMax of
+	// text, and a line.
 	CardMaxH = CardChrome + CardBodyMax + CardMsgGap + CardMsgH
 
 	CardIcon       = 20
@@ -175,8 +192,13 @@ const (
 	CardTextWeight = 500
 	CardBtn        = 24
 	CardBtnIcon    = 15
-	CardLangMaxW   = 128 // the language's name in its capsule, at most (Voxt 92: "Simplified Chinese" did not fit)
-	CardWaveW      = 96  // a conversation's waveform
+	// The size button sits in the card's corner, in the padding under
+	// the text (CardPadY), CardSizeBtnInset from the edges.
+	CardSizeBtn      = 16
+	CardSizeBtnIcon  = 12
+	CardSizeBtnInset = 1
+	CardLangMaxW     = 128 // the language's name in its capsule, at most (Voxt 92: "Simplified Chinese" did not fit)
+	CardWaveW        = 96  // a conversation's waveform
 
 	// A conversation's bubbles.
 	BubbleW         = 340
@@ -191,6 +213,22 @@ const (
 	ProblemIcon = 16
 	ProblemGap  = 8
 )
+
+// CardSize is a size of the answer card, its width
+// (settings.Features.CardSizes); its height follows its text.
+type CardSize struct{ W int }
+
+// CardSizes are the card's sizes, by settings.Features.CardSize: small
+// (Voxt's 440), medium and large, for long answers (#3644 FB41: an
+// explained PR was hard to read in the small one).
+var CardSizes = [...]CardSize{{AnswerW}, {600}, {760}}
+
+// BodyW is the text's width in a card of size s.
+func (s CardSize) BodyW() int { return s.W - 2*CardPadX - CardInset }
+
+// BubbleW is a conversation's bubble width in a card of size s: the small
+// card's room beside a bubble, kept.
+func (s CardSize) BubbleW() int { return s.W - (AnswerW - BubbleW) }
 
 // Bars of the waveform (Voxt's): WaveW wide in all, centred in the
 // waveform's slot.

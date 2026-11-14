@@ -12,6 +12,7 @@ import (
 
 func (h *memHistory) Prune(context.Context, store.Retention) (int, error)      { return 0, nil }
 func (h *memHistory) CountPrune(context.Context, store.Retention) (int, error) { return 0, nil }
+func (h *memHistory) Count(context.Context, store.HistoryQuery) (int, error)   { return 0, nil }
 func (h *memHistory) DeleteAudio(context.Context) (int, error)                 { return 0, nil }
 func (h *memHistory) DefaultAudioDir() string                                  { return h.dir }
 func (h *memHistory) SetAudioDir(string)                                       {}

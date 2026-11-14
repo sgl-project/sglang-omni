@@ -81,6 +81,10 @@ func layoutTree(root *node, w, h float32) {
 		revealAll(root, rt.revealIDs)
 		rt.revealIDs = rt.revealIDs[:0]
 	}
+	if len(rt.revealParts) > 0 {
+		revealPartsIn(root, rt.revealParts)
+		rt.revealParts = rt.revealParts[:0]
+	}
 	if rt.late {
 		// Rows built as their lists laid out handled their input as the
 		// view's elements do, and the next frame shows what that changed;

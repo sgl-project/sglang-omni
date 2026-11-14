@@ -189,7 +189,8 @@ func (g Group) HasApp(bundleID string) bool {
 	return false
 }
 
-// ErrAutoKey: an auto key that is not one key with modifiers.
+// ErrAutoKey: an auto key that is not one key with modifiers (a mouse
+// button is not a key).
 var ErrAutoKey = errors.New("appctx: the auto key must be one key, with modifiers or not")
 
 // ParseAutoKey reads an auto key ("Return", "Command+Return",
@@ -203,7 +204,7 @@ func ParseAutoKey(keys string) ([]proto.KeyPress, error) {
 	if err != nil {
 		return nil, err
 	}
-	if c.ModifierOnly() {
+	if c.ModifierOnly() || c.Mouse() { // helper posts keys only: Mouse4's code 3 would type an f
 		return nil, ErrAutoKey
 	}
 	if _, fn := c.Mods[proto.ModFn]; fn {

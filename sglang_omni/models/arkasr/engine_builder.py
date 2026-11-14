@@ -3,12 +3,17 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import (
     AutoConfig,
     AutoTokenizer,
@@ -16,13 +21,16 @@ from transformers import (
     WhisperFeatureExtractor,
 )
 
+from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.arkasr import request_builders
 from sglang_omni.models.arkasr.encoder_service import (
     ArkasrPreLMEncoderService,
     build_cache_namespace,
 )
 from sglang_omni.models.arkasr.request_builders import ArkASRRequestData
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
     GenerationDefaults,
@@ -30,15 +38,30 @@ from sglang_omni.scheduling.engine_factory import (
 )
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.scheduling.types import DeferredAdmission
+from sglang_omni.speculative.dflash_draft import (
+    ReducedVocabularyDFlashWorker,
+    materialize_draft_checkpoint,
+)
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 if TYPE_CHECKING:
 
+    from sglang_omni.model_runner.model_worker import ModelWorker
     from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
+    from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
 else:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+class ArkasrModelRunner(ModelRunner[ArkASRRequestData]):
+    """The shared AR runner, opted into speculative overlap.
+
+    Audio embeddings enter only at prefill, so a decode round reads nothing but the tokens the previous round left on the device.
+    """
+
+    supports_speculative_async_decode: bool = True
 
 
 class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
@@ -52,7 +75,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         max_running_requests: int,
         encoder_max_batch_size: int,
         max_new_tokens: int,
-        enable_async_decode: bool,
+        enable_async_decode: bool | None,
         async_decode_min_batch_size: int,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
@@ -123,6 +146,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         self.context_length = 0
         self.model_path: str | None = None
         self.audio_encoder_service: ArkasrPreLMEncoderService | None = None
+        self.speculative_worker_class: type[BaseSpecWorker] | None = None
+        self.draft_checkpoint: TemporaryDirectory[str] | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.model_path = checkpoint_dir
@@ -160,10 +185,84 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         return defaults
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
-        if "context_length" in overrides:
+        has_context_length_override = "context_length" in overrides
+        if has_context_length_override:
             self.context_length = int(overrides.pop("context_length"))
         else:
             pass
+
+        draft_model_path = overrides.get("speculative_draft_model_path")
+        speculative_algorithm = SpeculativeAlgorithm.from_string(
+            overrides.get("speculative_algorithm")
+        )
+        if speculative_algorithm.is_none():
+            if draft_model_path is not None:
+                raise ValueError(
+                    "speculative_draft_model_path needs a speculative_algorithm"
+                )
+            else:
+                pass
+            if self.enable_async_decode is None:
+                self.enable_async_decode = True
+            else:
+                pass
+        elif not speculative_algorithm.is_dflash():
+            raise ValueError(
+                f"{self.model_name} speculative decoding supports DFLASH, "
+                f"not {speculative_algorithm.name}"
+            )
+        elif draft_model_path is None:
+            raise ValueError(
+                "speculative_algorithm=DFLASH needs speculative_draft_model_path"
+            )
+        elif not current_platform.is_cuda():
+            raise ValueError(f"{self.model_name} DFLASH needs a CUDA GPU")
+        else:
+            self.draft_checkpoint = materialize_draft_checkpoint(
+                str(draft_model_path), overrides.get("speculative_draft_model_revision")
+            )
+            overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
+            overrides["speculative_draft_model_revision"] = None
+            self.speculative_worker_class = ReducedVocabularyDFlashWorker
+            # note (wilsonzheng0327): async decode under a draft means speculative overlap, so it stays off unless the operator asks for it.
+            if self.enable_async_decode is None:
+                self.enable_async_decode = False
+            else:
+                pass
+            overrides["disable_overlap_schedule"] = not self.enable_async_decode
+            # note (wilsonzheng0327): on SGLang 0.5.23 the compiled path makes each DFlash verify step several times slower (no gain at c1 despite 6.8 accepted tokens), while decode without a draft still gains from it.
+            overrides["enable_torch_compile"] = False
+            if not has_context_length_override:
+                draft_config = json.loads(
+                    (Path(self.draft_checkpoint.name) / "config.json").read_text()
+                )
+                draft_tokens = overrides.get("speculative_num_draft_tokens")
+                if draft_tokens is None:
+                    draft_tokens = draft_config["dflash_config"]["block_size"]
+                else:
+                    pass
+                # note (Ruilin Gao): verification reserves two effective draft blocks.
+                self.context_length += 2 * int(draft_tokens)
+            else:
+                pass
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if self.speculative_worker_class is None:
+            return {}
+        else:
+            # note (wilsonzheng0327): the worker is built for overlap or for the synchronous verify loop, so the choice must reach it at construction.
+            return {
+                "supports_speculative_decoding": True,
+                "speculative_worker_class": self.speculative_worker_class,
+                "enable_async_decode": bool(self.enable_async_decode),
+            }
+
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> ArkasrModelRunner:
+        return ArkasrModelRunner(model_worker, output_proc)
 
     def customize_server_args(self, server_args: ServerArgs) -> None:
         self.context_length = int(server_args.context_length)

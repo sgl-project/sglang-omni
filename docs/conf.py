@@ -98,6 +98,7 @@ doc_redirects = {
     "developer_reference/mlx": "developer_reference/mlx/index",
     "mlx/index": "developer_reference/mlx/index",
     "mlx/long_audio": "developer_reference/mlx/long_audio",
+    "developer_reference/duplex_load_generator_pacing": "developer_reference/full_duplex_guide",
 }
 
 html_additional_pages = {
@@ -142,11 +143,12 @@ html_context = {
 }
 
 html_static_path = ["_static"]
-html_css_files = ["css/custom_log.css"]
+html_css_files = ["css/custom_log.css", "css/voxt_anim.css"]
 html_js_files = [
     "js/sidebar_company_toggle.js",
     "js/qwen3_omni_server_generator.js",
     "js/ming_omni_server_generator.js",
+    "js/voxt_anim.js",
 ]
 
 

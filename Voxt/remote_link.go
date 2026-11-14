@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/codexauth"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
@@ -43,8 +45,11 @@ type service struct {
 	models          []string
 	keyOptional     bool
 	appID           bool // Doubao: an App ID may come with the key
-	stream          bool // speech recognised while the user speaks
+	signIn          bool // signed in to, not a key (remote_chatgpt.go)
 	keyURL          string
+	// speech is a speech service's facts (which models stream); zero for
+	// a language model.
+	speech providers.Speech
 }
 
 // services are kind's remote services, in the page's order.
@@ -53,13 +58,13 @@ func services(kind local.Kind) []service {
 	if kind == local.ASR {
 		for _, p := range providers.SpeechPresets() {
 			out = append(out, service{kind: kind, id: p.ID, name: uitext.SpeechName(p.ID), endpoint: p.Endpoint, model: p.Model, models: p.Models,
-				appID: p.AppID, stream: p.Stream, keyOptional: p.KeyOptional, keyURL: p.KeyURL})
+				appID: p.AppID, keyOptional: p.KeyOptional, keyURL: p.KeyURL, speech: p})
 		}
 		return out
 	}
 	for _, p := range llm.Presets() {
 		out = append(out, service{kind: kind, id: p.ID, name: uitext.PresetName(p.ID), endpoint: p.BaseURL, model: p.DefaultModel,
-			models: p.Models, keyOptional: p.KeyOptional, keyURL: p.KeyURL})
+			models: p.Models, keyOptional: p.KeyOptional, keyURL: p.KeyURL, signIn: p.SignIn})
 	}
 	return out
 }
@@ -138,12 +143,17 @@ type remoteState struct {
 	// read by opens.
 	remoteHTTP atomic.Pointer[http.Client]
 	keys       keyring
-	// keyMasks are the saved keys' masks by account, "" for none; an
-	// account not in it was not read yet.
+	// proxyPassword is a custom proxy's password, as read or saved
+	// (models_proxy_auth.go); networkFor reads it off the main thread too.
+	proxyPassword atomic.Pointer[proxySecret]
+	// keyMasks are the saved keys' masks by account (the signed-in email
+	// for ChatGPT), "" for none; an account not in it was not read yet.
 	keyMasks map[string]string
 	// provTests are the last connection tests, by account.
 	provTests map[string]providerTest
 	provDlg   providerDialog
+	chatgpt   *codexauth.Session // remote_chatgpt.go
+	chatLogin chatgptLogin
 }
 
 // providerTest is a connection test running or done.
@@ -160,21 +170,19 @@ func (a *app) withRemote(base local.Services) local.Services {
 	a.keyMasks = map[string]string{}
 	a.provTests = map[string]providerTest{}
 	a.remote = providers.NewServices(base, setupName, a.openRemote, a.openSpeech)
-	var accounts []string
-	for _, p := range a.prefs.Providers.LLM {
-		accounts = append(accounts, providers.Account(local.LLM, p.ID))
-	}
-	for _, p := range a.prefs.Providers.ASR {
-		accounts = append(accounts, providers.Account(local.ASR, p.ID))
-	}
-	a.loadKeyMasks(accounts)
+	a.readUnreadKeys()
 	a.syncRemote()
+	a.chatgpt = a.newChatGPTSession() // remote_chatgpt.go
+	a.loadProxyPassword()             // models_proxy_auth.go
 	return a.remote
 }
 
 // openRemote opens a language model setup for a session (off the main
 // thread): its key from the Keychain, then its client.
 func (a *app) openRemote(_ context.Context, p settings.Provider) (local.Chat, error) {
+	if p.ID == providers.ChatGPT {
+		return providers.OpenSignedIn(p, providers.ChatGPTTokens(a.chatgpt), a.remoteHTTP.Load())
+	}
 	key, err := a.keys.Get(providers.Account(local.LLM, p.ID))
 	if err != nil {
 		return nil, err
@@ -218,6 +226,27 @@ func unboundedHeaders(c *http.Client) *http.Client {
 	return &http.Client{Transport: t}
 }
 
+// readUnreadKeys reads the keys of the setups whose key was not read yet:
+// all of them at the start, then those a change added (the import from
+// the previous Voxt), so that their cards and the sidebar say whether a
+// key is missing.
+func (a *app) readUnreadKeys() {
+	if a.keys == nil {
+		return // tests with local models of their own
+	}
+	var accounts []string
+	unread := func(kind local.Kind, list []settings.Provider) {
+		for _, p := range list {
+			if _, read := a.keyMasks[providers.Account(kind, p.ID)]; !read {
+				accounts = append(accounts, providers.Account(kind, p.ID))
+			}
+		}
+	}
+	unread(local.LLM, a.prefs.Providers.LLM)
+	unread(local.ASR, a.prefs.Providers.ASR)
+	a.loadKeyMasks(accounts)
+}
+
 // loadKeyMasks reads the keys of accounts from the keyring, in the
 // background, and keeps their masks.
 func (a *app) loadKeyMasks(accounts []string) {
@@ -232,7 +261,7 @@ func (a *app) loadKeyMasks(accounts []string) {
 			if err != nil {
 				v = ""
 			}
-			masks[acct] = maskKey(v)
+			masks[acct] = maskFor(acct, v)
 		}
 		a.post(func() {
 			for k, v := range masks {
@@ -241,6 +270,56 @@ func (a *app) loadKeyMasks(accounts []string) {
 			a.syncRemote()
 		})
 	})
+}
+
+// pendingSetup is the first of kind's setups that lacks what it needs
+// (its key, address or model: providers.Missing*), and what; false for
+// none. A key not read from the Keychain yet is not missing.
+func (a *app) pendingSetup(kind local.Kind) (settings.Provider, string, bool) {
+	list := a.prefs.Providers.LLM
+	if kind == local.ASR {
+		list = a.prefs.Providers.ASR
+	}
+	for _, p := range list {
+		if _, read := a.keyMasks[providers.Account(kind, p.ID)]; !read {
+			continue
+		}
+		if missing := a.setupMissing(kind, p); missing != "" {
+			return p, missing, true
+		}
+	}
+	return settings.Provider{}, "", false
+}
+
+// setupNeedsText says what kind's setup p lacks (providers.Missing*).
+func setupNeedsText(kind local.Kind, p settings.Provider, missing string) string {
+	name := lookupService(kind, p.ID).name
+	switch missing {
+	case providers.MissingKey:
+		if lookupService(kind, p.ID).signIn {
+			return i18n.T("%s needs you to sign in again.", name)
+		}
+		return i18n.T("%s needs its API key. Paste it again to use it.", name)
+	case providers.MissingEndpoint:
+		return i18n.T("%s needs its address.", name)
+	case providers.MissingAddress:
+		return i18n.T("Change the address of %s. Voxt connects only over https, or http to this Mac, and the address cannot contain a user name or password.", name)
+	}
+	return i18n.T("%s needs a model.", name)
+}
+
+// linkCompleteSetup starts the link of a card whose action opens a
+// setup's dialog: linkCompleteSetup + kind + "/" + id (not a deep link).
+const linkCompleteSetup = "action:complete-setup:"
+
+// completeSetup opens the dialog of kind's setup id on its page.
+func (a *app) completeSetup(kind local.Kind, id string) {
+	page := remotePath
+	if kind == local.ASR {
+		page = modelsPath
+	}
+	a.navigate(page)
+	a.openProviderDialog(kind, id)
 }
 
 // hasKey reports whether a key is saved for kind's setup id (as last
@@ -267,12 +346,20 @@ func (a *app) testProvider(kind local.Kind, p settings.Provider, key func() (str
 		a.provDlg.test = providerTest{running: true}
 	}
 	client, logs := a.remoteHTTP.Load(), a.logs
+	signedIn := kind == local.LLM && p.ID == providers.ChatGPT
+	var tokens llm.TokenSource
+	if signedIn {
+		tokens = providers.ChatGPTTokens(a.chatgpt)
+		key = func() (string, error) { return "", nil } // the sign-in is the session's
+	}
 	a.async(func() {
 		k, err := key()
 		res := providers.TestResult{Err: err, At: time.Now()}
 		var level, msg string
 		switch {
 		case err != nil:
+		case signedIn:
+			res = runChatGPTTest(context.Background(), p, tokens, client)
 		case kind == local.ASR:
 			res = runSpeechTest(context.Background(), p, k, client)
 		default:
@@ -301,4 +388,5 @@ func (a *app) testProvider(kind local.Kind, p settings.Provider, key func() (str
 var (
 	runProviderTest = providers.Test
 	runSpeechTest   = providers.TestSpeech
+	runChatGPTTest  = providers.TestSignedIn
 )

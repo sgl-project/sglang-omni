@@ -165,6 +165,7 @@ class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
             max_workers=1,
             initializer=self.device_module.set_device,
             initargs=(self.device,),
+            thread_name_prefix="npu-graph-update",
         )
 
     def capture_all(self) -> None:

@@ -14,10 +14,9 @@ import (
 // the models installed and loaded, and the page names no other app.
 func TestAboutModels(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	oldOmni, oldLLM := omniLocate, llmLocate
-	t.Cleanup(func() { omniLocate, llmLocate = oldOmni, oldLLM })
+	oldOmni := omniLocate
+	t.Cleanup(func() { omniLocate = oldOmni })
 	omniLocate = func() (string, error) { return "", errors.New("no runtime") }
-	llmLocate = func() string { return "" }
 	status := func() map[string]string {
 		out := map[string]string{}
 		for _, c := range a.checks {
@@ -31,7 +30,6 @@ func TestAboutModels(t *testing.T) {
 	}
 
 	omniLocate = func() (string, error) { return "/x/qwen3_asr_server", nil }
-	llmLocate = func() string { return "/x/voxtnew-llm" }
 	a.runSelfCheck()
 	if s := status(); !strings.HasPrefix(s["speech"], "warn No model installed") || !strings.HasPrefix(s["language"], "warn No model set up") {
 		t.Errorf("no models: %v", s)

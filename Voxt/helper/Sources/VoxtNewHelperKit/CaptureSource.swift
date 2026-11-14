@@ -84,6 +84,20 @@ private final class OnceFlag: @unchecked Sendable {
     }
 }
 
+// MARK: Restarts
+
+/// The inputs a restart tries in turn (nil: the default input). A
+/// recording on the default input follows the new default; one on a
+/// chosen input tries it again unless it went away (gone), then the rest
+/// of devices in the user's order, then the default input. toDefault
+/// (the watchdog's second try) goes straight to the default input.
+public func restartOrder(devices: [String], current: String?, gone: Bool, toDefault: Bool = false) -> [String?] {
+    guard let current, !toDefault else { return [nil] }
+    var order: [String?] = gone ? [] : [current]
+    for d in devices where !d.isEmpty && d != current && !order.contains(d) { order.append(d) }
+    return order + [nil]
+}
+
 // MARK: The test-only file input
 
 /// VOXTNEW_HELPER_CAPTURE_FILE (tests only): capture.start records this

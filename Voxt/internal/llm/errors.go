@@ -22,7 +22,7 @@ const (
 	CodeServer        = "llm.server"           // provider, status: 5xx
 	CodeOverloaded    = "llm.overloaded"       // provider: 529 / "overloaded"
 	CodeBadRequest    = "llm.bad_request"      // provider, status, detail
-	CodeModelNotFound = "llm.model_not_found"  // provider, model
+	CodeModelNotFound = "llm.model_not_found"  // provider, model, status, detail
 	CodeContextLength = "llm.context_length"   // provider, model: prompt too long
 	CodeFiltered      = "llm.content_filter"   // provider: refused by a safety filter
 	CodeTimeout       = "llm.timeout"          // provider, seconds; without progress also wait (WaitFirstToken, WaitStall), deltas, elapsed
@@ -36,6 +36,10 @@ const (
 	CodeUnknown       = "llm.unknown_provider" // provider
 	CodeUnsupported   = "llm.unsupported"      // provider, feature
 	CodeConfig        = "llm.config"           // provider, field: bad settings
+	CodeResponsesOnly = "llm.responses_only"   // provider, model: the model refuses chat completions
+	CodeSignIn        = "llm.sign_in"          // provider: not signed in, or the sign-in ended
+	CodeUsageLimit    = "llm.usage_limit"      // provider, detail: the signed-in plan's usage is used up
+	CodeNotEligible   = "llm.not_eligible"     // provider, detail: the account, plan or region cannot use the service
 )
 
 // Error is every error this package returns.
@@ -178,7 +182,7 @@ func HTTPError(provider, model string, status int, detail string, retryAfter tim
 		e = newErr(CodeOverloaded, "provider", provider)
 		e.Retryable = true
 	case status == 404 || (status == 400 && (strings.Contains(low, "model_not_found") || strings.Contains(low, "model not found") || strings.Contains(low, "does not exist") || strings.Contains(low, "model not exist"))):
-		e = newErr(CodeModelNotFound, "provider", provider, "model", model)
+		e = newErr(CodeModelNotFound, "provider", provider, "model", model, "status", fmt.Sprint(status), "detail", clip(detail, 300))
 	case status == 400 || status == 413 || status == 422:
 		if strings.Contains(low, "context_length") || strings.Contains(low, "context length") || strings.Contains(low, "too long") || strings.Contains(low, "maximum context") || status == 413 {
 			e = newErr(CodeContextLength, "provider", provider, "model", model)

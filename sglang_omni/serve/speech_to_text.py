@@ -74,7 +74,7 @@ async def parse_speech_to_text_form(
     language: str | None = Form(default=None),
     prompt: str | None = Form(default=None),
     response_format: str = Form(default="json"),
-    temperature: float | None = Form(default=None),
+    temperature: float | None = Form(default=None, ge=0.0),
     repetition_penalty: float | None = Form(default=None, gt=0.0, le=2.0),
     max_new_tokens: int | None = Form(default=None, ge=1),
     stream: bool = Form(default=False),

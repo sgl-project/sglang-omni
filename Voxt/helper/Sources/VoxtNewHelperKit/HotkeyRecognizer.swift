@@ -1,8 +1,9 @@
 import Foundation
 
 // The hotkey recognizer: pure logic, no CoreGraphics. The event tap feeds it
-// every keyboard event (flags, key down/up) with a timestamp and asks, at
-// once, whether to swallow the event; timers call tick(now:) at
+// every keyboard event (flags, key down/up) and mouse button press (and the
+// releases of the buttons besides the left and right ones) with a
+// timestamp and asks, at once, whether to swallow the event; timers call tick(now:) at
 // nextDeadline. Go configures the bindings (hotkey.configure) and gets
 // hotkey.event notifications; what a trigger means (start, stop, cancel) is
 // Go's business.
@@ -17,7 +18,8 @@ import Foundation
 // user holds to type or click works as usual: the shortcut just does not
 // fire. Sides are told apart by the device bits of the flags: a binding
 // for right ⌥ ignores left ⌥, so ⌥-characters typed with the left key are
-// untouched.
+// untouched. A mouse button binding (the middle button, a side button)
+// is judged like a key binding, on the button's press.
 
 /// One modifier key, with its side. fn has none.
 public enum ModKey: String, CaseIterable, Codable, Sendable {
@@ -121,26 +123,39 @@ public enum SideRule: String, Codable, Sendable {
     case any, left, right
 }
 
-/// A binding: a modifier-only chord (key == nil) or a key with modifiers.
+/// What a key or mouse binding presses besides its modifiers.
+enum Press: Hashable {
+    case key(UInt16)
+    case button(Int)
+}
+
+/// A binding: a modifier-only chord (key and button nil), a key with
+/// modifiers, or a mouse button with modifiers.
 public struct Binding: Codable, Equatable, Sendable {
     public var id: String
     /// Modifier families required, each with a side rule; others must be up.
     public var modifiers: [ModFamily: SideRule]
-    /// The non-modifier key (kVK), or nil for a modifier-only chord.
+    /// The non-modifier key (kVK), or nil.
     public var key: UInt16?
+    /// The mouse button (the events' button number: 2 is the middle one,
+    /// 3 and up the side buttons), or nil.
+    public var button: Int?
     public var behavior: Behavior
-    /// Swallow the key's events when it matches (key bindings only; the
-    /// default is true). Modifier-only chords are never swallowed except fn
-    /// with Config.swallowFn.
+    /// Swallow the key's or button's events when it matches (key and mouse
+    /// bindings only; the default is true). Modifier-only chords are never
+    /// swallowed except fn with Config.swallowFn.
     public var swallow: Bool?
 
-    public init(id: String, modifiers: [ModFamily: SideRule], key: UInt16? = nil, behavior: Behavior, swallow: Bool? = nil) {
+    public init(id: String, modifiers: [ModFamily: SideRule], key: UInt16? = nil, button: Int? = nil, behavior: Behavior, swallow: Bool? = nil) {
         self.id = id
         self.modifiers = modifiers
         self.key = key
+        self.button = button
         self.behavior = behavior
         self.swallow = swallow
     }
+
+    var press: Press? { key.map(Press.key) ?? button.map(Press.button) }
 
     /// Whether a chord (modifier keys seen) is exactly this binding's.
     public func matches(chord: Set<ModKey>) -> Bool {
@@ -160,13 +175,13 @@ public struct Binding: Codable, Equatable, Sendable {
         return true
     }
 
-    /// Whether a key event is this binding's: its key, with exactly its
-    /// modifier keys (RawFlags.pressed), sides and fn included. For the
-    /// keys in KeyCode.fnFlagged fn's flag says nothing, so fn is not
-    /// judged there: F5 and Fn+F5 are one shortcut.
-    public func matches(keyCode: UInt16, pressed: Set<ModKey>) -> Bool {
-        guard key == keyCode else { return false }
-        guard KeyCode.fnFlagged.contains(keyCode) else { return matches(chord: pressed) }
+    /// Whether a key or button press is this binding's: its key or button,
+    /// with exactly its modifier keys (RawFlags.pressed), sides and fn
+    /// included. For the keys in KeyCode.fnFlagged fn's flag says nothing,
+    /// so fn is not judged there: F5 and Fn+F5 are one shortcut.
+    func matches(_ p: Press, pressed: Set<ModKey>) -> Bool {
+        guard press == p else { return false }
+        guard case .key(let keyCode) = p, KeyCode.fnFlagged.contains(keyCode) else { return matches(chord: pressed) }
         var withoutFn = self
         withoutFn.modifiers[.fn] = nil
         return withoutFn.matches(chord: pressed.subtracting([.fn]))
@@ -233,12 +248,14 @@ public enum KeyInput: Sendable {
     case flagsChanged(keyCode: UInt16, flags: UInt64, t: Double)
     case keyDown(keyCode: UInt16, flags: UInt64, isRepeat: Bool, t: Double)
     case keyUp(keyCode: UInt16, flags: UInt64, t: Double)
-    /// A mouse button pressed: it only spoils a chord.
-    case pointer(t: Double)
+    /// A mouse button pressed (0 left, 1 right, 2 middle, 3… side
+    /// buttons): it spoils a chord, and may be a mouse binding's.
+    case mouseDown(button: Int, flags: UInt64, t: Double)
+    case mouseUp(button: Int, t: Double)
 
     var t: Double {
         switch self {
-        case .flagsChanged(_, _, let t), .keyDown(_, _, _, let t), .keyUp(_, _, let t), .pointer(let t): t
+        case .flagsChanged(_, _, let t), .keyDown(_, _, _, let t), .keyUp(_, _, let t), .mouseDown(_, _, let t), .mouseUp(_, let t): t
         }
     }
 }
@@ -260,11 +277,11 @@ public struct HotkeyRecognizer: Sendable {
     // Double tap.
     private var doubleArm: (chord: Set<ModKey>, until: Double)?
     private var pendingTap: (binding: Binding, at: Double, heldMs: Double)?
-    // Key bindings.
-    private var swallowedKeys = Set<UInt16>()
-    private var keyDownAt: [UInt16: Double] = [:]
-    private var keyLongFired: [UInt16: Binding] = [:]
-    private var keyDoubleArm: (key: UInt16, until: Double)?
+    // Key and mouse bindings.
+    private var swallowedKeys = Set<Press>()
+    private var keyDownAt: [Press: Double] = [:]
+    private var keyLongFired: [Press: Binding] = [:]
+    private var keyDoubleArm: (key: Press, until: Double)?
 
     /// Sets the config. Changing only the timings or "active" keeps a
     /// chord in progress (Go flips active as a session starts, while the
@@ -311,11 +328,14 @@ public struct HotkeyRecognizer: Sendable {
             swallow = config.swallowFn && chordBindings.contains { $0.modifiers[.fn] != nil }
         case .keyDown(let keyCode, let flags, let isRepeat, let t):
             if !pressed.isEmpty { spoiled = true; longPressDeadline = nil }
-            swallow = handleKeyDown(keyCode: keyCode, flags: flags, isRepeat: isRepeat, t: t, &out)
+            swallow = handleKeyDown(.key(keyCode), flags: flags, isRepeat: isRepeat, t: t, &out)
         case .keyUp(let keyCode, _, let t):
-            swallow = handleKeyUp(keyCode: keyCode, t: t, &out)
-        case .pointer:
+            swallow = handleKeyUp(.key(keyCode), t: t, &out)
+        case .mouseDown(let button, let flags, let t):
             if !pressed.isEmpty { spoiled = true; longPressDeadline = nil }
+            swallow = handleKeyDown(.button(button), flags: flags, isRepeat: false, t: t, &out)
+        case .mouseUp(let button, let t):
+            swallow = handleKeyUp(.button(button), t: t, &out)
         }
         return (out, swallow)
     }
@@ -339,7 +359,7 @@ public struct HotkeyRecognizer: Sendable {
     }
 
     private var chordBindings: [Binding] {
-        config.bindings.filter { $0.key == nil }.sorted { $0.specificity > $1.specificity }
+        config.bindings.filter { $0.press == nil }.sorted { $0.specificity > $1.specificity }
     }
 
     private mutating func handleFlags(keyCode: UInt16, flags: UInt64, t: Double, _ out: inout [HotkeyEvent]) -> Bool {
@@ -412,7 +432,7 @@ public struct HotkeyRecognizer: Sendable {
         // A modifier-only cancel chord fires while active, before the
         // features' taps; like every modifier-only chord it is never
         // swallowed.
-        if config.active, let c = config.cancel, c.key == nil, c.matches(chord: chord) {
+        if config.active, let c = config.cancel, c.press == nil, c.matches(chord: chord) {
             pendingTap = nil
             doubleArm = nil
             out.append(HotkeyEvent(binding: c.id, phase: .trigger, behavior: .tap, heldMs: held, t: t))
@@ -447,48 +467,50 @@ public struct HotkeyRecognizer: Sendable {
         }
     }
 
-    private var keyBindings: [Binding] { config.bindings.filter { $0.key != nil }.sorted { $0.specificity > $1.specificity } }
+    private var keyBindings: [Binding] { config.bindings.filter { $0.press != nil }.sorted { $0.specificity > $1.specificity } }
 
-    private mutating func handleKeyDown(keyCode: UInt16, flags: UInt64, isRepeat: Bool, t: Double, _ out: inout [HotkeyEvent]) -> Bool {
+    /// A key or a mouse button pressed.
+    private mutating func handleKeyDown(_ press: Press, flags: UInt64, isRepeat: Bool, t: Double, _ out: inout [HotkeyEvent]) -> Bool {
         let pressed = RawFlags.pressed(flags)
         // The cancel shortcut, only while active: its keys are swallowed
         // then, and reach the app in front at any other time.
-        if config.active, let c = config.cancel, c.matches(keyCode: keyCode, pressed: pressed) {
+        if config.active, let c = config.cancel, c.matches(press, pressed: pressed) {
             if !isRepeat { out.append(HotkeyEvent(binding: c.id, phase: .trigger, behavior: .tap, heldMs: nil, t: t)) }
-            swallowedKeys.insert(keyCode)
+            swallowedKeys.insert(press)
             return true
         }
-        guard let b = keyBindings.first(where: { $0.matches(keyCode: keyCode, pressed: pressed) }) else {
-            if swallowedKeys.contains(keyCode) { return true } // repeats of a swallowed key
+        guard let b = keyBindings.first(where: { $0.matches(press, pressed: pressed) }) else {
+            if swallowedKeys.contains(press) { return true } // repeats of a swallowed key
             return false
         }
         let swallow = b.swallow ?? true
-        if swallow { swallowedKeys.insert(keyCode) }
+        if swallow { swallowedKeys.insert(press) }
         if isRepeat { return swallow }
-        keyDownAt[keyCode] = t
+        keyDownAt[press] = t
         switch b.behavior {
         case .tap:
             out.append(HotkeyEvent(binding: b.id, phase: .trigger, behavior: .tap, heldMs: nil, t: t))
         case .longPress:
-            keyLongFired[keyCode] = b
+            keyLongFired[press] = b
             out.append(HotkeyEvent(binding: b.id, phase: .down, behavior: .longPress, heldMs: nil, t: t))
         case .doubleTap:
-            if let arm = keyDoubleArm, arm.key == keyCode, t <= arm.until {
+            if let arm = keyDoubleArm, arm.key == press, t <= arm.until {
                 keyDoubleArm = nil
                 out.append(HotkeyEvent(binding: b.id, phase: .trigger, behavior: .doubleTap, heldMs: nil, t: t))
             } else {
-                keyDoubleArm = (keyCode, t + config.doubleTapMs)
+                keyDoubleArm = (press, t + config.doubleTapMs)
             }
         }
         return swallow
     }
 
-    private mutating func handleKeyUp(keyCode: UInt16, t: Double, _ out: inout [HotkeyEvent]) -> Bool {
-        if let b = keyLongFired.removeValue(forKey: keyCode) {
-            out.append(HotkeyEvent(binding: b.id, phase: .up, behavior: .longPress, heldMs: t - (keyDownAt[keyCode] ?? t), t: t))
+    /// A key or a mouse button released.
+    private mutating func handleKeyUp(_ press: Press, t: Double, _ out: inout [HotkeyEvent]) -> Bool {
+        if let b = keyLongFired.removeValue(forKey: press) {
+            out.append(HotkeyEvent(binding: b.id, phase: .up, behavior: .longPress, heldMs: t - (keyDownAt[press] ?? t), t: t))
         }
-        keyDownAt[keyCode] = nil
+        keyDownAt[press] = nil
         // A key up is swallowed only when its key down was.
-        return swallowedKeys.remove(keyCode) != nil
+        return swallowedKeys.remove(press) != nil
     }
 }

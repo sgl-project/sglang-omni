@@ -37,12 +37,13 @@ enum Permissions {
         return SFSpeechRecognizer.authorizationStatus() == .authorized
     }
 
-    /// The Microphone, Accessibility and Speech Recognition.
+    /// The Microphone, Accessibility, Speech Recognition and Screen Recording.
     /// (CGPreflightPostEventAccess is not asked: it stays false in a
     /// process started before the grant, while posting keys works;
     /// AXIsProcessTrusted is the truth for both.)
     static func status() -> PermissionsResult {
-        PermissionsResult(microphone: microphone(), accessibility: AXIsProcessTrusted(), speechRecognition: speechRecognition())
+        PermissionsResult(microphone: microphone(), accessibility: AXIsProcessTrusted(), speechRecognition: speechRecognition(),
+                          screenRecording: CGPreflightScreenCaptureAccess())
     }
 
     /// Shows macOS's prompt, then reports: the microphone's and Speech
@@ -60,6 +61,10 @@ enum Permissions {
             _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
         case PermissionName.speechRecognition:
             _ = await askSpeechRecognition()
+        case PermissionName.screenRecording:
+            // Asks once and adds Voxt to the list in System Settings; the
+            // user grants it there.
+            _ = CGRequestScreenCaptureAccess()
         default:
             throw RPCError(Code.badRequest, "Unknown permission \(permission)")
         }

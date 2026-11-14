@@ -179,10 +179,15 @@ void SpeechServedModel::AddHandlers(mg_context *context,
 }
 
 int SpeechServedModel::HandleSpeech(mg_connection *connection, void *data) {
-  return static_cast<SpeechServedModel *>(data)->Speak(connection);
+  auto *model = static_cast<SpeechServedModel *>(data);
+  return model->Speak(connection, [model](const Json &body) {
+    return model->ParseSpeech(body);
+  });
 }
 
-int SpeechServedModel::Speak(mg_connection *connection) {
+int SpeechServedModel::Speak(
+    mg_connection *connection,
+    const std::function<SpeechJob(const Json &)> &parse) {
   if (!omni_server::IsPost(connection)) {
     return omni_server::WriteJson(connection, 405,
                                   {{"detail", "Method Not Allowed"}});
@@ -205,7 +210,7 @@ int SpeechServedModel::Speak(mg_connection *connection) {
   }
   SpeechJob job;
   try {
-    job = ParseSpeech(body);
+    job = parse(body);
   } catch (const std::invalid_argument &error) {
     return omni_server::BadRequest(connection, error.what());
   }
@@ -272,18 +277,9 @@ int SpeechServedModel::Speak(mg_connection *connection) {
         channel->error = error;
         channel->ready.notify_all();
       });
-  if (job.stream) {
-    mg_printf(connection,
-              "HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\n"
-              "X-Request-Id: %s\r\nX-SGLang-Omni-Speech-Id: %s\r\n"
-              "X-Sample-Rate: %d\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\n"
-              "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
-              request_id.c_str(), request_id.c_str(), SampleRate());
-  } else {
-  }
-
   const int client_socket = omni_server::ClientSocket(connection);
   std::vector<float> samples;
+  bool stream_started = false;
   bool timed_out = false;
   bool client_left = false;
   std::unique_lock<std::mutex> lock(channel->mutex);
@@ -315,6 +311,16 @@ int SpeechServedModel::Speak(mg_connection *connection) {
     channel->chunks.pop_front();
     lock.unlock();
     if (job.stream) {
+      if (!stream_started) {
+        mg_printf(connection,
+                  "HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\n"
+                  "X-Request-Id: %s\r\nX-SGLang-Omni-Speech-Id: %s\r\n"
+                  "X-Sample-Rate: %d\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\n"
+                  "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
+                  request_id.c_str(), request_id.c_str(), SampleRate());
+        stream_started = true;
+      } else {
+      }
       const std::string pcm = omni_common::Pcm16Bytes(chunk);
       // Note (Minyi Tang): a write fails once the peer is gone, which
       // cancels the generation that feeds it.
@@ -351,12 +357,21 @@ int SpeechServedModel::Speak(mg_connection *connection) {
     LogFailure(channel->error);
   } else {
   }
-  if (job.stream) {
+  if (stream_started) {
     return 200;
   } else if (timed_out) {
     return omni_server::WriteJson(connection, 504,
                                   {{"detail", "Speech generation timed out."}});
   } else if (channel->error) {
+    try {
+      std::rethrow_exception(channel->error);
+    } catch (const std::invalid_argument &error) {
+      return omni_server::BadRequest(connection, error.what());
+    } catch (...) {
+      return omni_server::WriteJson(connection, 500,
+                                    {{"detail", "Speech generation failed."}});
+    }
+  } else if (job.stream) {
     return omni_server::WriteJson(connection, 500,
                                   {{"detail", "Speech generation failed."}});
   } else {
@@ -368,6 +383,28 @@ int SpeechServedModel::Speak(mg_connection *connection) {
                                 : pcm;
   const size_t prompt_tokens = channel->result.prompt_token_count;
   const int completion_tokens = channel->result.completion_token_count;
+  if (job.is_generate_response) {
+    std::string base64(4 * ((audio.size() + 2) / 3) + 1, '\0');
+    size_t base64_length = base64.size();
+    mg_base64_encode(reinterpret_cast<const unsigned char *>(audio.data()),
+                     audio.size(), base64.data(), &base64_length);
+    // Note (XXXXRT666): civetweb counts the terminating NUL it writes.
+    base64.resize(base64_length - 1);
+    return omni_server::WriteJson(
+        connection, 200,
+        {{"text", ""},
+         {"audio",
+          {{"data", base64},
+           {"format", job.response_format},
+           {"sample_rate", SampleRate()}}},
+         {"meta_info",
+          {{"finish_reason",
+            {{"type",
+              qwen3_asr::FinishReasonName(channel->result.finish_reason)}}},
+           {"prompt_tokens", prompt_tokens},
+           {"completion_tokens", completion_tokens}}}});
+  } else {
+  }
   mg_printf(
       connection,
       "HTTP/1.1 200 OK\r\nContent-Type: audio/%s\r\nContent-Length: %zu\r\n"

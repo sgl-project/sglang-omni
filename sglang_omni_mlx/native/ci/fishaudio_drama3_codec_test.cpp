@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "fishaudio_drama3/fishaudio_drama3_codec.h"
+#include "fish_dac/fish_dac.h"
 
 #include <chrono>
 #include <fstream>
@@ -17,7 +17,7 @@ int main(int argc, char **argv) {
       throw std::invalid_argument("expected model, codes, output prefix, block "
                                   "frames, budget, failure");
     }
-    fishaudio_drama3::AudioCodec codec(argv[1]);
+    fish_dac::AudioCodec codec(argv[1]);
     std::ifstream input(argv[2]);
     nlohmann::json document;
     input >> document;
@@ -37,7 +37,7 @@ int main(int argc, char **argv) {
     const size_t caller_limit =
         argc == 8 ? std::stoull(argv[7]) : 192 * 1024 * 1024;
     const size_t original_limit = mx::set_cache_limit(caller_limit);
-    fishaudio_drama3::CodecStream stream(codec);
+    fish_dac::CodecStream stream(codec);
     std::vector<float> audio;
     bool caught = false;
     size_t evaluations = 0;

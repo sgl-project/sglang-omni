@@ -40,13 +40,18 @@ func TestLibrary(t *testing.T) {
 	name := func(id string) string { return "name of " + id }
 	var s Services = NewLibrary(m, Openers{}, name)
 
-	if l := s.Installed(ASR); len(l) != 1 || l[0].ID != models.ASRFast || l[0].Name != "name of asr.fast" {
+	if l := s.Installed(ASR); len(l) != 1 || l[0].ID != models.ASRFast || l[0].Name != "name of asr.fast" || !l[0].Stream {
 		t.Errorf("asr %+v", l)
 	}
 	// The local language models are retired (Voxt's are remote): on disk,
 	// they are neither offered nor opened.
 	if llms := s.Installed(LLM); len(llms) != 0 {
 		t.Fatalf("llm %+v", llms)
+	}
+	// The Models page asks this dozens of times a frame (usedBy): it reads
+	// the catalogue in place, no copy of it per call.
+	if n := testing.AllocsPerRun(10, func() { s.Installed(LLM) }); n != 0 {
+		t.Errorf("Installed(LLM) allocates %v times a call, want 0", n)
 	}
 	llms := []Model{{ID: "all"}, {ID: "translator", Features: []string{"translate"}}}
 	if got := ForFeature(llms, "rewrite"); len(got) != 1 || got[0].ID != "all" {

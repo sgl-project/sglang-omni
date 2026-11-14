@@ -386,7 +386,7 @@ SynthesisResult Drama3Model::Synthesize(
     }
   };
   profile("synthesis_begin", 0, 0);
-  CodecStream codec_stream(codec_);
+  fish_dac::CodecStream codec_stream(codec_);
   const auto decode = [&](const std::vector<mx::array> &codes, size_t begin,
                           size_t end) {
     return codec_stream.Decode(codes, begin, end, expert_cache_ != nullptr,

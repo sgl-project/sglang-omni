@@ -17,6 +17,7 @@ from sglang_omni.proto.streams import (
     CONFIGURE,
     CONTROL,
     PCM16,
+    SEMANTIC_VAD,
     SESSION_CONTROL,
     SESSION_INPUT_SAMPLE_RATE_HZ,
     SPEECH_STARTED,
@@ -58,7 +59,7 @@ DetectorFactory = Callable[[VADConfig], SpeechDetector]
 def turn_detection_config(
     config: VADConfig, settings: Mapping[str, object]
 ) -> VADConfig:
-    """`config` with the `turn_detection` fields `settings` sets."""
+    """`config` with the `turn_detection` fields `settings` sets; `silence_duration_ms` applies only to `server_vad`."""
     turn_detection = settings.get("turn_detection")
     if turn_detection is None:
         return config
@@ -71,6 +72,10 @@ def turn_detection_config(
                 field: turn_detection[field]
                 for field in TURN_DETECTION_FIELDS
                 if turn_detection.get(field) is not None
+                and not (
+                    field == "silence_duration_ms"
+                    and turn_detection.get("type") == SEMANTIC_VAD
+                )
             },
         )
 
@@ -128,9 +133,6 @@ class VADHooks(SessionHooks):
             session.detector.reset()
             session.origin_ms = None
         elif chunk_control_type == CONFIGURE:
-            session.detector.config = turn_detection_config(
-                session.detector.config, chunk.payload
-            )
             if "turn_detection" not in chunk.payload:
                 pass
             elif chunk.payload["turn_detection"] is None:
@@ -138,6 +140,13 @@ class VADHooks(SessionHooks):
                 session.detector.reset()
                 session.origin_ms = None
             else:
+                session.detector.config = turn_detection_config(
+                    replace(
+                        session.detector.config,
+                        silence_duration_ms=self.config.silence_duration_ms,
+                    ),
+                    chunk.payload,
+                )
                 session.is_enabled = True
         elif chunk.format == SESSION_CONTROL:
             pass

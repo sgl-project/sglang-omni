@@ -17,7 +17,7 @@ mygo_windows_*.syso
 /resources/darwin-arm64/omni/
 /.omni-native/
 
-# voxtnew-llm: build output, and the staged copy mygo ships
+# voxtnew-llm, gone from Voxt: what an older checkout built of it (delete it)
 /llm/.build/
 /llm/.swiftpm/
 /resources/darwin-arm64/llm/

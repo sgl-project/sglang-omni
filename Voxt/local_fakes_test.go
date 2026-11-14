@@ -3,8 +3,8 @@ package main
 // In-process local models for the app's tests (local.Services): a speech
 // model that transcribes recordings (fakeTranscriptions) or streams
 // (fakeStreamer), and a language model (fakeChat) behind llm.Client, as
-// internal/llmrt's backend is. They stand where the runtimes' processes
-// run in the app, and keep what the tests read: the chat requests in the
+// a remote service's backend is. They stand where the runtimes and the
+// services are in the app, and keep what the tests read: the chat requests in the
 // shape of an OpenAI request ({"messages": […], "stream": …}).
 
 import (
@@ -20,7 +20,7 @@ import (
 
 // The models the fakes say they are.
 var (
-	fakeASRModel = local.Model{Kind: local.ASR, ID: models.ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)"}
+	fakeASRModel = local.Model{Kind: local.ASR, ID: models.ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)", Stream: true}
 	fakeLLMModel = local.Model{Kind: local.LLM, ID: models.LLMBalanced, Name: "Qwen3.5 4B OptiQ (4bit)"}
 )
 
@@ -31,6 +31,8 @@ type fakeLocal struct {
 	Chat local.Chat
 	// MoreLLM are more language models installed (their opens get Chat).
 	MoreLLM []local.Model
+	// NoStream: its speech model gets the recording once it stops.
+	NoStream bool
 }
 
 // readyLocal is a speech model and a language model, both installed,
@@ -42,7 +44,9 @@ func readyLocal() *fakeLocal {
 func (f *fakeLocal) Installed(kind local.Kind) []local.Model {
 	switch {
 	case kind == local.ASR && f.ASRP != nil:
-		return []local.Model{fakeASRModel}
+		m := fakeASRModel
+		m.Stream = !f.NoStream
+		return []local.Model{m}
 	case kind == local.LLM && f.Chat != nil:
 		return append([]local.Model{fakeLLMModel}, f.MoreLLM...)
 	}
@@ -80,6 +84,8 @@ type fakeChat struct {
 	texts  []string
 	status int
 	delay  time.Duration
+	// stall: after the text, the stream waits for the request's end.
+	stall  bool
 	bodies []map[string]any
 	// onRequest runs as each request comes (mute_e2e_test.go: is the
 	// output back by then?).
@@ -100,7 +106,7 @@ func (f *fakeChat) Chat(ctx context.Context, req llm.Request) (llm.Response, err
 	}
 	f.mu.Lock()
 	f.bodies = append(f.bodies, requestBody(req))
-	text, status, delay := f.text, f.status, f.delay
+	text, status, delay, stall := f.text, f.status, f.delay, f.stall
 	if len(f.texts) > 0 {
 		text = f.texts[min(len(f.bodies), len(f.texts))-1]
 	}
@@ -122,6 +128,10 @@ func (f *fakeChat) Chat(ctx context.Context, req llm.Request) (llm.Response, err
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
+	if stall {
+		<-ctx.Done()
+		return llm.Response{}, &llm.Error{Code: llm.CodeCancelled, Err: ctx.Err()}
+	}
 	return llm.Response{Text: text, FinishReason: llm.FinishStop, Model: fakeLLMModel.ID,
 		Usage: llm.Usage{PromptTokens: 120, CompletionTokens: 6, TotalTokens: 126}}, nil
 }
@@ -139,8 +149,14 @@ func requestBody(req llm.Request) map[string]any {
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
 	}
+	if req.Image != nil {
+		body["image"] = req.Image
+	}
 	if req.Format == llm.FormatJSON {
 		body["response_format"] = map[string]any{"type": "json_object"}
+	}
+	if req.Thinking != nil {
+		body["thinking"] = *req.Thinking
 	}
 	return body
 }

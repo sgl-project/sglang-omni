@@ -14,6 +14,8 @@ var procLib struct {
 	once   sync.Once
 	err    error
 	rusage func(pid int32, flavor int32, buf *byte) int32
+	info   func(pid int32, flavor int32, arg uint64, buf *byte, size int32) int32
+	path   func(pid int32, buf *byte, size uint32) int32
 }
 
 // rusageInfoV0 is RUSAGE_INFO_V0; its struct rusage_info_v0 is 96 bytes:
@@ -26,7 +28,8 @@ const (
 	offFootprint = 16 + 7*8
 )
 
-func procMemory(pid int) (ProcMemory, error) {
+// loadProcLib finds libproc's functions once.
+func loadProcLib() error {
 	procLib.once.Do(func() {
 		lib, err := purego.Dlopen("/usr/lib/libSystem.B.dylib", purego.RTLD_GLOBAL|purego.RTLD_NOW)
 		if err != nil {
@@ -34,9 +37,15 @@ func procMemory(pid int) (ProcMemory, error) {
 			return
 		}
 		purego.RegisterLibFunc(&procLib.rusage, lib, "proc_pid_rusage")
+		purego.RegisterLibFunc(&procLib.info, lib, "proc_pidinfo")
+		purego.RegisterLibFunc(&procLib.path, lib, "proc_pidpath")
 	})
-	if procLib.err != nil {
-		return ProcMemory{}, procLib.err
+	return procLib.err
+}
+
+func procMemory(pid int) (ProcMemory, error) {
+	if err := loadProcLib(); err != nil {
+		return ProcMemory{}, err
 	}
 	if pid <= 0 {
 		return ProcMemory{}, fmt.Errorf("macx: no process %d", pid)

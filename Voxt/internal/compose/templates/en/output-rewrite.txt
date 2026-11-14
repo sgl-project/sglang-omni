@@ -1,1 +1,1 @@
-Output: only the new text that replaces the selection, without quotes, labels, explanations or tags.
+Output: only the new text that replaces the selection, or the answer when the instruction asks about the text, without quotes, labels, notes about what you changed, or tags.

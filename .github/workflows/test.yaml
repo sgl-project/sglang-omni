@@ -16,8 +16,8 @@ env:
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
 # Invoked by omni-ci.yaml after shared setup. The model suites start once it
-# finishes (see the DAG note in omni-ci.yaml). Any stage label runs it.
-# run-lint-only does not.
+# finishes (see the DAG note in omni-ci.yaml). Any stage label except
+# run-mac-ci runs it. run-lint-only does not.
 # Restores omni only.
 
 jobs:

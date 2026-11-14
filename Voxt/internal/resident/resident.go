@@ -1,5 +1,5 @@
-// Package resident is what a model runtime (internal/omni's servers,
-// internal/llmrt's process) says about the models it holds in memory:
+// Package resident is what a model runtime (internal/omni's servers)
+// says about the models it holds in memory:
 // one loaded, busy with a use, idle again, unloaded. The app writes them
 // into the ActNow family's runtime file (spec §11.1).
 //

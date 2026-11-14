@@ -2,7 +2,7 @@
 // catalogue may speak or understand, as embedded data. It covers
 // OmniVoice's 646 languages and Whisper's 100 (99 + Cantonese), 652 in all,
 // with English, native and Simplified Chinese names, the usual script, an
-// RTL flag, the likely region and its flag.
+// RTL flag and the likely region.
 //
 // Codes are BCP-47 primary language subtags: ISO 639-1 when one exists,
 // else ISO 639-3 (OmniVoice's convention). Lookup also accepts full tags
@@ -40,15 +40,6 @@ type Language struct {
 	zh string
 }
 
-// Flag is the flag emoji of the likely region, or "" when the region is
-// not a country (Esperanto's "001").
-func (l Language) Flag() string {
-	if len(l.Region) != 2 || l.Region[0] < 'A' || l.Region[0] > 'Z' || l.Region[1] < 'A' || l.Region[1] > 'Z' {
-		return ""
-	}
-	return string([]rune{0x1F1E6 + rune(l.Region[0]-'A'), 0x1F1E6 + rune(l.Region[1]-'A')})
-}
-
 // NameIn is the language's name for a UI in locale: the Simplified Chinese
 // name for "zh…" locales when known, else the English name.
 func (l Language) NameIn(locale string) string {
@@ -68,7 +59,6 @@ type table struct {
 	all     []Language // sorted by English name
 	byCode  map[string]int
 	aliases map[string]string
-	folded  [][]string // per row: code, iso3, aliases, names (folded)
 }
 
 var load = sync.OnceValue(func() *table {
@@ -106,24 +96,8 @@ var load = sync.OnceValue(func() *table {
 			t.aliases[l.WhisperCode] = l.Code
 		}
 	}
-	extra := map[string][]string{}
-	for a, c := range t.aliases {
-		extra[c] = append(extra[c], a)
-	}
-	t.folded = make([][]string, len(t.all))
-	for i, l := range t.all {
-		keys := []string{l.Code, l.ISO639_3}
-		keys = append(keys, extra[l.Code]...)
-		t.folded[i] = append(keys, Fold(l.Name), Fold(l.Native), Fold(l.zh))
-	}
 	return t
 })
-
-// All returns every language, sorted by English name. The slice is a copy.
-func All() []Language { return slices.Clone(load().all) }
-
-// Len is the number of languages in the table.
-func Len() int { return len(load().all) }
 
 // Canonical returns the table code for a tag or alias ("zh-Hans-CN" → "zh",
 // "cmn" → "zh", "iw" → "he", "jw" → "jv"), or "" when unknown.
@@ -155,7 +129,7 @@ func Lookup(tag string) (Language, bool) {
 	return t.all[t.byCode[c]], true
 }
 
-// Fold is the search form of s: NFD, combining marks removed, lower-case,
+// Fold is the sort key of s: NFD, combining marks removed, lower-case,
 // white space collapsed. "Français" and "francais" fold alike.
 func Fold(s string) string {
 	var b strings.Builder
@@ -177,70 +151,7 @@ func Fold(s string) string {
 	return norm.NFC.String(b.String())
 }
 
-// Search returns the languages matching query by code, alias or any name
-// (English, native, Chinese), case- and diacritic-insensitively, best
-// first: exact code, exact name, name prefix, word prefix, substring. An
-// empty query returns All().
-func Search(query string) []Language {
-	q := Fold(query)
-	if q == "" {
-		return All()
-	}
-	t := load()
-	type hit struct {
-		rank, i int
-	}
-	var hits []hit
-	for i, keys := range t.folded {
-		best := -1
-		for k, key := range keys {
-			if key == "" {
-				continue
-			}
-			isCode := k < len(keys)-3
-			r := -1
-			switch {
-			case key == q && isCode:
-				r = 0
-			case key == q:
-				r = 1
-			case isCode:
-			case strings.HasPrefix(key, q):
-				r = 2
-			case strings.Contains(key, " "+q) || strings.Contains(key, "("+q) || strings.Contains(key, "-"+q):
-				r = 3
-			case strings.Contains(key, q):
-				r = 4
-			}
-			if r >= 0 && (best < 0 || r < best) {
-				best = r
-			}
-		}
-		if best >= 0 {
-			hits = append(hits, hit{best, i})
-		}
-	}
-	slices.SortStableFunc(hits, func(a, b hit) int { return a.rank - b.rank })
-	out := make([]Language, len(hits))
-	for i, h := range hits {
-		out[i] = t.all[h.i]
-	}
-	return out
-}
-
-// OmniVoiceCodes and WhisperCodes are the codes each model takes, in the
-// model's own spelling (Whisper: "jw", "tl").
-func OmniVoiceCodes() []string {
-	var out []string
-	for _, l := range load().all {
-		if l.OmniVoice {
-			out = append(out, l.Code)
-		}
-	}
-	slices.Sort(out)
-	return out
-}
-
+// WhisperCodes are the codes Whisper takes, in its own spelling ("jw", "tl").
 func WhisperCodes() []string {
 	var out []string
 	for _, l := range load().all {
@@ -288,43 +199,4 @@ func Match(supported []string, code string) (string, bool) {
 		}
 	}
 	return macroHit, macroHit != ""
-}
-
-// Option is a language in a picker for one model.
-type Option struct {
-	Language
-	Supported bool   // the model can speak it
-	ModelCode string // what to pass to the model (see Match); "" when unsupported
-}
-
-// Annotate marks each of langs as supported or not by a model, for a
-// picker that shows unsupported languages disabled.
-func Annotate(langs []Language, supported []string) []Option {
-	out := make([]Option, len(langs))
-	for i, l := range langs {
-		mc, ok := Match(supported, l.Code)
-		out[i] = Option{Language: l, Supported: ok, ModelCode: mc}
-	}
-	return out
-}
-
-// ForModel lists the languages a model supports, one per supported code,
-// in the table's order. Codes the table does not know are skipped.
-func ForModel(supported []string) []Option {
-	t := load()
-	want := map[string]string{}
-	for _, s := range supported {
-		if c := Canonical(s); c != "" {
-			if _, dup := want[c]; !dup {
-				want[c] = s
-			}
-		}
-	}
-	var out []Option
-	for _, l := range t.all {
-		if s, ok := want[l.Code]; ok {
-			out = append(out, Option{Language: l, Supported: true, ModelCode: s})
-		}
-	}
-	return out
 }

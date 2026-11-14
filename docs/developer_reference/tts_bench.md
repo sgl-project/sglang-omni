@@ -4,6 +4,34 @@ This page runs the SeedTTS EN benchmark against four TTS models served by SGLang
 
 Every run uses `python -m benchmarks.eval.benchmark_tts_seedtts`. The client is `benchmarks/eval/benchmark_tts_seedtts.py`, and the scoring code is in `benchmarks/tasks/tts.py` and `benchmarks/metrics/`.
 
+## Speculative TTS sweep
+
+The shared speculative sweep accepts `tts-seedtts-en` and `tts-seedtts-zh`. These workloads synthesize SeedTTS target text with its reference audio, then transcribe the saved output using Qwen3-ASR-1.7B. English reports WER; Chinese reports CER through the same character-normalizing scorer used by the TTS client.
+
+After installing the model prerequisites below, run Fun-CosyVoice3 with its DSpark draft on one dedicated GPU:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.speculative_sweep \
+    --draft-config examples/configs/fun_cosyvoice3_dspark.yaml \
+    --workload tts-seedtts-zh \
+    --output-dir results/sweep/cosyvoice3_zh \
+    -- --stream
+```
+
+The defaults are concurrency `1,2,4,8,16,32,64`, three measured repeats at each concurrency, warmup and ABBA order. Each leg starts a fresh TTS server. The baseline config sets `disable_speculative_decoding: true` on every stage that the serving loader identifies as running a draft; both sides disable the drafted stage's prefix cache unless `--prefix-cache` is passed. Use a new output directory for every invocation. For a smoke test, add `--concurrencies 1,2 --repeats 1 --order AB --max-samples 8` before the `--` separator. A smoke test does not establish tail latency or full-corpus quality.
+
+Every TTS leg first generates and saves every load's audio. After all generation legs finish and the last TTS server releases the GPU, the driver starts one ASR server to score the saved loads from every leg. It uses a separate port, `--port + len(--order)`: 8704 for the default ABBA sweep, or 8702 for an AB smoke test. ASR execution is outside the TTS timing window, and its log is separate from the TTS log. `--asr-model-path` and `--asr-concurrency` before the separator configure this evaluator. Model request flags such as `--stream`, `--seed`, `--ref-format` and `--no-ref-audio` go after the separator. Routing, workload selection, concurrency and execution-phase flags are owned by the driver and cannot be overridden there.
+
+Server options cannot be passed after `--`: put `quantization`, `max_running_requests`, `max_queued_requests` and `cuda_graph_max_bs` in the `--draft-config` YAML under `stages.<stage>.engine` (`stages.tts_engine.engine` for Fun-CosyVoice3). Select that file with `--draft-config`, not a client-side `--server-config`. The sweep also rejects client-side `--server-timeout` and `--skip-gpu-cleanup`, because the driver owns server startup and cleanup; these are lifecycle controls, not engine YAML settings.
+
+The example names `yuekai/cosyvoice3_llm_dspark` and omits `speculative_draft_model_revision`. When the server builds the draft stage's engine arguments, it fills in the revision for that draft repository from `sglang_omni/speculative/draft_registry.py`. The Fun-CosyVoice3 target and the default Qwen3-ASR evaluator use model IDs without explicit revisions. For a published comparison, pin those two checkpoints separately and record all three resolved revisions along with the code and environment versions.
+
+Keep sampling and vocoder settings identical between sides. The TTS client preserves Fun-CosyVoice3's server-derived output budget unless `--max-new-tokens` is explicitly passed.
+
+The root `summary.md` and `sweep.json` compare throughput, completion latency p95, first-audio latency p95 when streaming, error rate and generation failures. The shared evaluator retains `asr_server.log` in the output root. Each leg retains `server.log`, `generate.log` and a directory per load: `c1` with one repeat, or `c1_r1`, `c1_r2`, etc. with multiple repeats. Each load keeps `speed_results.json`, `generated.json`, `audio/`, `wer_results.json` and `transcribe.log`. RTF, audio seconds per second, output duration, finish reasons, filtered error rates and severe-error counts remain in these client artifacts. Each synthesis repeat samples total memory used on the dedicated GPU during generation, including warmup. The report shows the largest observed peak in MiB across repeats and loads. If no samples are available the peak is missing. ASR transcription is outside the sampling window.
+
+Throughput for each repeat is completed requests divided by the unrounded measured wall time in `speed_results.json`. Results without a positive wall time cannot qualify for `k`. Measurements are averaged across repeats, then compared across legs, as for the ASR workloads. Generation failures remain separate from transcription failures. Missing first-output timings for a streaming load, untranscribed generated audio, or a repeat with no scored samples marks the load incomplete and excludes it from `k` and the performance checks. The Roadmap accuracy row and reported accuracy ranges use only concurrencies complete on both sides. The per-load table retains partial scores and lists the reasons for exclusion below it. Transcribed samples whose reference normalizes to empty remain scoring skips; their timings still count. Missing files, malformed records or mismatched sample coverage fail the run instead of producing a successful report. `k` is the highest complete measured concurrency with at least 1.2x throughput; it does not certify every default-on gate.
+
 ## What is Measured
 
 All four commands use the SeedTTS EN set (`zhaochenyang20/seed-tts-eval-arrow`, 1088 samples), non streaming, at concurrency 16.

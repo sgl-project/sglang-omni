@@ -259,6 +259,54 @@ Streaming playback continuity:
 
 `N/A` means that a request returned one PCM payload, so it had no inter-payload seam to score. Every scored slice has zero P95 and P99 measured playback underrun.
 
+## Apple Silicon: native MLX
+
+The standalone `ming_tts_server` serves `/v1/audio/speech` on an Apple Silicon Mac. Inference runs in C++ with the native runtime's MLX 0.32.3 toolchain, without Python, PyTorch or CUDA. It reads the official BF16 checkpoint and the pinned 4-bit conversion `mlx-community/Ming-omni-tts-16.8B-A3B-4bit`, which also quantizes the acoustic and AudioVAE linear layers; quantization is read from the checkpoint.
+
+```bash
+python sglang_omni_mlx/native/ci/provision_models.py "$MING_TTS_DATA" \
+  --model mlx-community/Ming-omni-tts-16.8B-A3B-4bit
+sglang_omni_mlx/native/scripts/build_runtime.sh "$MING_TTS_RUNTIME" "$MING_TTS_BUILD"
+"$MING_TTS_RUNTIME/bin/ming_tts_server" \
+  --model-path "$MING_TTS_DATA/models/mlx-community_Ming-omni-tts-16.8B-A3B-4bit" \
+  --model-name ming-omni-tts --port 8000
+```
+
+Set `MING_TTS_DATA`, `MING_TTS_RUNTIME` and `MING_TTS_BUILD` to separate local directories. Model provisioning uses the existing CI Python requirements and verifies the revision and hashes in `ci/model_pins.json`. For BF16, pass the directory that `hf download inclusionAI/Ming-omni-tts-16.8B-A3B` fills as `--model-path`. For Voxt's supervisor protocol, launch with `--supervised --model-kind ming_tts --model-directory DIR`: the server picks a free port and a model name unless `--port` and `--model-name` set them, reports both in a JSON `ready` event on stdout, and stops on `{"command":"shutdown"}` or when stdin closes.
+
+The requests under [Synthesizing Speech](#synthesizing-speech) work unchanged except voice cloning. The server cannot read a client's files, so the reference clip goes inline as a base64 WAV data URL in `ref_audio`, with its transcript in `ref_text`:
+
+```bash
+export MING_REFERENCE_WAV=/path/to/reference-mono.wav
+export MING_REFERENCE_TEXT='The exact words spoken in the reference clip.'
+python - <<'PY' | curl --fail-with-body http://127.0.0.1:8000/v1/audio/speech \
+  -H 'Content-Type: application/json' --data-binary @- --output cloned.wav
+import base64
+import json
+import os
+from pathlib import Path
+
+print(json.dumps({
+    "model": "ming-omni-tts",
+    "input": "Hello, this is a test of reference-conditioned speech.",
+    "ref_text": os.environ["MING_REFERENCE_TEXT"],
+    "ref_audio": "data:audio/wav;base64," + base64.b64encode(
+        Path(os.environ["MING_REFERENCE_WAV"]).read_bytes()
+    ).decode(),
+    "response_format": "wav",
+}))
+PY
+```
+
+Otherwise the server reads requests by the CUDA rules under [Known Limitations](#known-limitations). Where the two differ:
+
+| | CUDA server | Native MLX server |
+|---|---|---|
+| Reference audio | One local file in `references`, or `ref_audio` with `ref_text` | `ref_audio` with `ref_text` only, as a base64 data URL with an audio media type, such as `data:audio/wav;base64,...`, read by the CUDA server's data URL rules; `references` is refused. The WAV is mono 8/16/24/32-bit PCM or 32/64-bit float at any common rate, 0.1 to 30 seconds long, resampled from its own rate to 44.1 kHz for AudioVAE and 16 kHz for CampPlus as on CUDA |
+| CampPlus | `campplus.onnx` through ONNX Runtime | The same `campplus.onnx` weights, or the `campplus.safetensors` copy that the 4-bit checkpoint carries, run in C++ MLX. They load at startup; without either file, reference requests get 400 |
+| Requests | Batched | One at a time; `--max-queued-requests` more may wait (2 by default), the rest get 503. A request not done `--request-timeout-s` seconds after it arrives (600 by default) gets 504 or an early end to its stream, and a disconnected client's request is cancelled. Bodies over 32 MiB get 413 |
+| Streaming | Two initial patches, then four-patch groups; each group's audio waits for the next group | The same groups, but each holds back only its last latent frame, so audio starts after the first two patches |
+
 ## Known Limitations
 
 - **Serving optimizations.** Prefix/radix cache and `torch.compile` are not supported and remain

@@ -302,7 +302,7 @@ func thinkOpen(t string) (tag *[2]string, undecided bool) {
 }
 
 // StripThinking removes a leading reasoning block (thinkTags: reasoning
-// models, such as the Qwen and Gemma models voxtnew-llm runs).
+// models, such as Qwen's and Gemma's).
 func StripThinking(s string) string {
 	t := strings.TrimLeft(s, " \t\r\n")
 	tag, _ := thinkOpen(t)

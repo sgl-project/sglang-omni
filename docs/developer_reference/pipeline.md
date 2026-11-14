@@ -108,7 +108,7 @@ outside the upstream scheduler. (Overlap scheduling is explicitly unsupported:
 `OmniScheduler._event_loop_overlap` refuses to run because the
 `Req.inflight_middle_chunks` decrement would lag one iteration on that loop.)
 
-An AR stage can pair an `ARSessionAdapter` with synchronous DFlash decoding when its builder already opts into speculative decoding. This requires TP=1, unquantized static NHD KV pools with page size 1, a shared request-to-token table, and a draft using shared full-dimension Neox RoPE without draft windowing. Unsupported pool layouts, rotary variants, algorithms and overlap modes are rejected at startup. Model-specific speculative restrictions still apply.
+An AR stage can pair an `ARSessionAdapter` with synchronous DFlash decoding when its builder already opts into speculative decoding. This requires TP=1, unquantized static NHD KV pools with page size 1, a shared request-to-token table, and a draft using shared full-dimension Neox RoPE without draft windowing. Unsupported pool layouts, rotary variants, algorithms, overlap modes and plain fallback are rejected at startup. Model-specific speculative restrictions still apply.
 
 Session admission reserves space for the draft block, including other pending appends. Finished speculative turns retain the same KV prefix as plain decoding, so the final output token is recomputed after any subsequent history cut. A history cut moves and repositions both target and draft KV before releasing their shared tail slots. Completed turns, rewind, reset, cancellation and close retain the native session ownership rules; terminal session stages receive each committed token through the session adapter's stream method.
 

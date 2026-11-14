@@ -26,8 +26,8 @@ git ls-files '*.go' ':!:third_party/**' | xargs gofmt -l    # must print nothing
 go test -run TestKeyParity ./internal/i18n                   # strings and zh-Hans
 VOXTNEW_SNAPSHOTS=/tmp/shots go test -run TestSnapshots .   # every page as PNG
 cd helper && swift test                                      # the Swift helper (on a Mac)
-scripts/build-helper.sh && scripts/build-llm.sh && go tool mygo build   # build the app (on a Mac)
-scripts/release.sh                                           # the release build, runtimes inside (docs/release.md)
+scripts/build-helper.sh && go tool mygo build   # build the app (on a Mac)
+scripts/release.sh                                           # the release build, the Omni runtime inside (docs/release.md)
 ```
 
 The store's tests use MyGo's SQLite plugin, which downloads its library once (checked against its SHA-256) or uses `MYGO_SQLITE_LIBRARY`. On Linux the overlay's pixel checks of Chinese text need a CJK font (Ubuntu: `fonts-noto-cjk`). What needs permissions or a screen is checked by hand: [docs/manual-test.md](docs/manual-test.md).
@@ -39,6 +39,6 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 Voxt 在 [SGLang-Omni](https://github.com/sgl-project/sglang-omni) 仓库里，问题和 PR 都提到那里，按仓库的 Apache License 2.0 授权，不需要签贡献者协议。
 
 - **报告问题**：设置 → 诊断与关于 → 反馈问题，会打开一个已填好诊断信息的 GitHub issue；也可以手动开 [issue](https://github.com/sgl-project/sglang-omni/issues)，标题带上“[VoxtNew]”，写清发生了什么、你期望什么、复现步骤。
-- **改动**：Voxt 只做转录、翻译、转写，加上应用增强和词典，只用本地模型；远程服务、会议、文件转录、笔记不在范围内。比修 bug 更大的改动，先开 issue 讨论。
+- **改动**：Voxt 只做转录、翻译、改写，加上应用增强和词典，只用本地模型；远程服务、会议、文件转录、笔记不在范围内。比修 bug 更大的改动，先开 issue 讨论。
 - 改代码前先读 [AGENTS.md](AGENTS.md)（改动规则）和 [docs/architecture.md](docs/architecture.md)。
 - PR：一个 PR 一件事，带测试；提交信息和代码注释用英文；界面文字都经过 `i18n.T`，并在 `internal/i18n/locales/zh-Hans.json` 补中文；用户能察觉的改动在 [CHANGELOG.md](CHANGELOG.md) 的 `Unreleased` 里中英文各写一行；跑一遍上面的检查。

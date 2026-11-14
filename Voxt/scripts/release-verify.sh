@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Checks a build of VoxtNew (docs/release.md): its signatures, the
 # entitlements of the app and of the helper, the model runtimes inside
-# (every Mach-O file and framework signed, the Omni server and voxtnew-llm
-# starting from the bundle) and, for a signed build, the hardened runtime
+# (every Mach-O file and framework signed, the Omni server starting from
+# the bundle, no voxtnew-llm left) and, for a signed build, the hardened runtime
 # and the timestamps of all its code; for a notarized Developer ID build
 # also Gatekeeper's verdict, the stapled tickets and the update files.
 # scripts/release.sh runs it after `go tool mygo build`.
@@ -75,7 +75,7 @@ dmg="$(compgen -G "$dir/*.dmg" | head -1 || true)"
 ((want_dmg)) && check "a disk image" test -n "$dmg"
 
 # The code among the resources: the helper, the Omni server and MLX's
-# libraries, voxtnew-llm and llama.framework. mygo signs them one by one
+# libraries. mygo signs them one by one
 # (codesign --deep does not reach Resources), the frameworks after their
 # contents.
 code=("$app")
@@ -88,11 +88,15 @@ while IFS= read -r -d '' f; do code+=("$f"); done < <(find "$res" -type d -name 
 echo "code inside: ${#code[@]} (app, executables, libraries, frameworks)"
 if ((want_runtimes)); then
   server="$res/omni/bin/qwen3_asr_server"
-  llm="$res/llm/voxtnew-llm"
   check "the Omni runtime is inside" test -x "$server" -a -x "$res/omni/bin/silero_vad_server" -a -f "$res/omni/bin/mlx.metallib"
-  check "voxtnew-llm is inside" test -x "$llm" -a -f "$res/llm/mlx.metallib" -a -d "$res/llm/llama.framework"
+  # Voxt 1.x's other speech models' servers (internal/omni Spec.Binary).
+  for s in whisper_server parakeet_server sensevoice_server cohere_transcribe_server nemotron_asr_server moss_transcribe_diarize_server; do
+    check "the Omni runtime has $s" test -x "$res/omni/bin/$s"
+  done
   check "the Omni server starts from the app (its libraries load)" bash -c "'$server' --model-kind none 2>&1 | grep -q -- '--model-kind must be'"
-  check "voxtnew-llm starts from the app (llm.hello)" bash -c "printf '%s\\n' '{\"id\":\"1\",\"method\":\"llm.hello\",\"params\":{\"protocol\":1,\"app\":\"release-verify\"}}' | '$llm' 2>/dev/null | grep -q '\"protocol\":1'"
+  # Voxt runs no language model of its own any more: a voxtnew-llm left
+  # staged by an older checkout (resources/darwin-arm64/llm) must not ship.
+  check "no voxtnew-llm inside" test ! -e "$res/llm"
 fi
 for c in "${code[@]:1}"; do
   check "${c#"$res"/}: signed (strict)" codesign --verify --strict "$c"

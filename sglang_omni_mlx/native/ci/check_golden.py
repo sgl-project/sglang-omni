@@ -4,7 +4,8 @@
 Greedy decoding follows each Apple chip's GPU arithmetic, so a golden file keeps
 exact outputs per chip; other chips are gated on error rates within tolerance.
 Silero VAD and Sortformer golden files are checked within kernel tolerances.
-Voxtral TTS golden files hold seeded speech requests' codes, exact per chip.
+Voxtral TTS and Fish S2-Pro golden files hold seeded speech requests' codes,
+exact per chip.
 A request with draft_model_path ({"model": repo}) decodes with that DFlash draft.
 """
 
@@ -25,6 +26,7 @@ from rapidfuzz.distance import Levenshtein
 TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
 
 import cosyvoice3_golden
+import fish_s2_pro_golden
 import fishaudio_drama3_golden
 import music3_golden
 import qwen3_tts_golden
@@ -51,6 +53,7 @@ SPEECH_SYNTHESIZERS: dict[str, SpeechSynthesizer] = {
     "voxtral_tts": voxtral_golden.synthesize,
     "qwen3_tts": qwen3_tts_golden.synthesize,
     "fishaudio_drama3": fishaudio_drama3_golden.synthesize,
+    "fish_s2_pro": fish_s2_pro_golden.synthesize,
 }
 COMPARED_FIELDS = ("text", "language", "generated_token_count", "finish_reason")
 QUALITY_GROUPS = {

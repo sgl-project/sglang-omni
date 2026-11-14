@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -44,9 +47,9 @@ func TestTranscribePageRenders(t *testing.T) {
 	for _, s := range []string{
 		"Transcribe", "Shortcuts", "Right ⌥", "Tap", "Double tap", "Long press", "Add a shortcut",
 		"Paste the last result", "⌃⌥V",
-		"Models", "No speech model is installed: install one to transcribe.", "Open Speech models",
+		"Models", "No speech model is installed. Install one to transcribe.", "Open Speech models",
 		"Clean-up", "Clean up with a language model", "Basic clean-up", "Structure",
-		"Your rules", "{{USER_MAIN_LANGUAGE}}", "{{APP_NAME}}", "Show the full prompt",
+		"Your rules", "characters",
 		"Try it", "Start",
 	} {
 		if !has(tt, s) {
@@ -57,7 +60,7 @@ func TestTranscribePageRenders(t *testing.T) {
 	if !has(tt, "Open Permissions") {
 		t.Error("no Accessibility notice")
 	}
-	if _, ok := tt.Find("Works only while Voxt may use Accessibility."); !ok {
+	if _, ok := tt.Find("Works only with Accessibility access."); !ok {
 		t.Error("Right ⌥ is not marked as needing Accessibility")
 	}
 	click(t, tt, "Open Permissions")
@@ -69,6 +72,7 @@ func TestTranscribePageRenders(t *testing.T) {
 func TestTranscribeHotkeysEdit(t *testing.T) {
 	a, tt := trTester(t)
 	saved := func() []settings.Hotkey { return a.lib.settings.Get().Features.Transcribe.Hotkeys }
+	a.updateSettings(func(s *settings.Settings) { s.Features.Note = settings.Hotkey{} }) // its Right ⌘ (TestTranslatePage)
 
 	// Add one: the first preset no feature uses (Right ⌥, Right ⌥ ⇧, ⌃ Right ⌥ are taken).
 	click(t, tt, "Add a shortcut")
@@ -91,6 +95,7 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	if !a.fui(hotkey.Transcribe).rows[1].custom || a.fui(hotkey.Transcribe).rows[1].text != "RightShift" {
 		t.Fatalf("custom row %+v", a.fui(hotkey.Transcribe).rows[1])
 	}
+	click(t, tt, "Type the keys instead")
 	click(t, tt, "Custom keys of shortcut 2")
 	for range len("RightShift") {
 		tt.Key(0, ui.KeyBackspace)
@@ -131,6 +136,51 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	}
 }
 
+// TestTranscribeMouseButton: Custom… says that mouse buttons work too, also
+// when it refuses Mouse1 (the left button); a typed side button is saved,
+// shows by its name in the try card, and goes to the helper as its button
+// number.
+func TestTranscribeMouseButton(t *testing.T) {
+	const hint = "Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."
+	a, tt := trTester(t)
+	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
+		t.Fatal(err)
+	}
+	click(t, tt, "Custom…")
+	click(t, tt, "Type the keys instead")
+	if !has(tt, hint) {
+		t.Errorf("no mouse hint in %q", tt.Texts())
+	}
+	click(t, tt, "Custom keys of shortcut 1")
+	for range len(settings.DefaultTranscribe) {
+		tt.Key(0, ui.KeyBackspace)
+	}
+	tt.Type("mouse1")
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != settings.DefaultTranscribe {
+		t.Fatalf("Mouse1 saved %+v", hs)
+	}
+	if !has(tt, "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.") || !has(tt, hint) {
+		t.Errorf("Mouse1: no unknown-key warning or no mouse hint in %q", tt.Texts())
+	}
+	for range len("mouse1") {
+		tt.Key(0, ui.KeyBackspace)
+	}
+	tt.Type("mouse4")
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != "Mouse4" {
+		t.Fatalf("saved %+v", hs)
+	}
+	if b, _ := json.Marshal(a.hotkeyPlan().Bindings[0]); string(b) != `{"id":"transcribe/0","modifiers":{},"button":3,"behavior":"tap"}` {
+		t.Errorf("sent the helper %s", b)
+	}
+	if !has(tt, "Press Mouse button 4 or Start, then say a sentence or two. The result shows here and is not typed anywhere.") {
+		t.Errorf("the try card does not name the button: %q", tt.Texts())
+	}
+}
+
 func TestTranscribeTrigger(t *testing.T) {
 	a, tt := trTester(t)
 	click(t, tt, "Double tap")
@@ -155,12 +205,12 @@ func TestTranscribeHotkeyConflicts(t *testing.T) {
 		s.Features.PasteLast = settings.Hotkey{Keys: "Command+Space"}
 	})
 	for _, s := range []string{
-		"Translate has the same keys and trigger: only one of them works.",
+		"Translate has the same keys and trigger, so only one of them works.",
 		"The same keys as shortcut 1.",
 		"macOS uses these keys for Spotlight.",
-		"A key alone would be taken from every app: add ⌃, ⌥, ⇧, ⌘ or fn.",
-		"Paste the last result has the same keys and trigger: only one of them works.",
-		"Transcribe has the same keys and trigger: only one of them works.",
+		"A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.",
+		"Paste the last result has the same keys and trigger, so only one of them works.",
+		"Transcribe has the same keys and trigger, so only one of them works.",
 	} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
@@ -187,7 +237,7 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	readyModels(a)
 	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
 	frames(tt)
-	if has(tt, "No speech model is installed: install one to transcribe.") {
+	if has(tt, "No speech model is installed. Install one to transcribe.") {
 		t.Error("notice with a model installed")
 	}
 	click(t, tt, "Language model for Transcribe")
@@ -196,7 +246,7 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 		t.Errorf("LLM %q", id)
 	}
 	click(t, tt, "Language model for Transcribe")
-	click(t, tt, "Automatic: "+fakeLLMModel.Name)
+	click(t, tt, "Automatic (now: "+fakeLLMModel.Name+")")
 	if id := a.lib.settings.Get().Features.Transcribe.LLM; id != "" {
 		t.Errorf("LLM %q", id)
 	}
@@ -216,32 +266,135 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	}
 }
 
+// TestAutomaticNamesTheModelInUse: the bug was a model menu reading
+// "Automatic: X" above "X", two entries nobody could tell apart. The
+// Automatic entry says it uses X now, X is listed once, and the
+// Translate page's target language reads the same way.
+func TestAutomaticNamesTheModelInUse(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
+	check := func(path, menu, name string) {
+		t.Helper()
+		a.navigate(path)
+		click(t, tt, menu)
+		texts := tt.Texts()
+		auto := "Automatic (now: " + name + ")"
+		if !slices.Contains(texts, auto) || slices.Contains(texts, "Automatic: "+name) || strings.Count("\x00"+strings.Join(texts, "\x00")+"\x00", "\x00"+name+"\x00") != 1 {
+			t.Errorf("%s: want %q and %q once: %q", menu, auto, name, texts)
+		}
+		tt.Key(0, ui.KeyEscape)
+		frames(tt)
+	}
+	check("/transcribe", "Speech model for Transcribe", fakeASRModel.Name)
+	check("/transcribe", "Language model for Transcribe", fakeLLMModel.Name)
+	check("/translate", "Target language", "Simplified Chinese")
+}
+
+// TestTranscribeEndWord: the word that ends a recording is Off, one of
+// Voxt 1.x's words or a typed one; the row shows only while Transcribe's
+// speech model streams.
+func TestTranscribeEndWord(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	click(t, tt, "Word that ends the recording")
+	click(t, tt, "完毕")
+	if w := a.lib.settings.Get().Features.EndWord; w != "完毕" {
+		t.Fatalf("end word %q", w)
+	}
+	click(t, tt, "Word that ends the recording")
+	click(t, tt, "Custom…")
+	click(t, tt, "Your word that ends the recording")
+	tt.Type(" that's  all ")
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if w := a.lib.settings.Get().Features.EndWord; w != "that's all" {
+		t.Fatalf("typed end word %q", w)
+	}
+	click(t, tt, "Word that ends the recording")
+	click(t, tt, "Off")
+	if w := a.lib.settings.Get().Features.EndWord; w != "" {
+		t.Fatalf("end word not off: %q", w)
+	}
+	a.local.(*fakeLocal).NoStream = true
+	if slices.Contains(tt.AccessLabels(), "Word that ends the recording") {
+		t.Error("the end word shows with a speech model that does not stream")
+	}
+}
+
+// TestTranslateFallbackModel: Translate's Models section picks a
+// fallback model, None by default, among the language models set up; a
+// fallback no longer set up reads None.
+func TestTranslateFallbackModel(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	a.local.(*fakeLocal).MoreLLM = []local.Model{{Kind: local.LLM, ID: models.LLMFast, Name: "Qwen3.5 2B (4bit)"}}
+	a.navigate("/translate")
+	frames(tt)
+	if !has(tt, "Fallback model") || !has(tt, "None") || !slices.Contains(tt.AccessLabels(), "Fallback language model for Translate") {
+		t.Fatalf("no fallback row: %q", tt.AccessLabels())
+	}
+	click(t, tt, "Fallback language model for Translate")
+	click(t, tt, "Qwen3.5 2B (4bit)")
+	if id := a.lib.settings.Get().Features.Translate.Fallback; id != models.LLMFast {
+		t.Errorf("fallback %q", id)
+	}
+	click(t, tt, "Fallback language model for Translate")
+	click(t, tt, "None")
+	if id := a.lib.settings.Get().Features.Translate.Fallback; id != "" {
+		t.Errorf("fallback %q", id)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Fallback = "gone" })
+	frames(tt)
+	if !has(tt, "None") {
+		t.Errorf("a fallback not set up: %q", tt.Texts())
+	}
+}
+
+// TestTranscribeRules: Your rules start folded, saying how long they are
+// (long rules pushed the rest of the page down); open, the field saves
+// what is typed, the preview fills its variables, Reset clears it, a
+// change elsewhere shows, and long rules fill a tall field.
 func TestTranscribeRules(t *testing.T) {
 	a, tt := trTester(t)
-	click(t, tt, "Your rules for Transcribe")
+	if has(tt, "{{USER_MAIN_LANGUAGE}}") || has(tt, "Example user message") {
+		t.Fatal("Your rules are open at first")
+	}
+	click(t, tt, "Your rules")
+	click(t, tt, "System prompt for Transcribe")
 	tt.Type("Write {{USER_MAIN_LANGUAGE}} numbers as digits.")
 	frames(tt)
 	if !a.fui(hotkey.Transcribe).promptDirty {
 		t.Fatal("not dirty after typing")
 	}
 	// Leaving the field saves it.
-	click(t, tt, "Show the full prompt")
-	if p := a.lib.settings.Get().Features.Transcribe.Prompt; p != "Write {{USER_MAIN_LANGUAGE}} numbers as digits." {
+	click(t, tt, "Example user message")
+	if p := a.lib.settings.Get().Features.Transcribe.Prompt; !strings.Contains(p, "Write {{USER_MAIN_LANGUAGE}} numbers as digits.") {
 		t.Fatalf("prompt %q", p)
 	}
-	// The preview has the rules, with the variable filled in.
-	if !a.fui(hotkey.Transcribe).preview || !strings.Contains(strings.Join(tt.Texts(), "\n"), "Write English numbers as digits.") {
-		t.Errorf("preview: %q", tt.Texts())
+	// The example user message preview expands with compose output.
+	if !a.fui(hotkey.Transcribe).preview {
+		t.Errorf("preview not open")
 	}
-	click(t, tt, "Reset your rules")
-	if p := a.lib.settings.Get().Features.Transcribe.Prompt; p != "" || a.fui(hotkey.Transcribe).prompt != "" {
-		t.Fatalf("reset: %q %q", p, a.fui(hotkey.Transcribe).prompt)
+	click(t, tt, "Reset to default prompt")
+	if p := a.lib.settings.Get().Features.Transcribe.Prompt; p != "" {
+		t.Fatalf("reset settings: %q", p)
+	}
+	if strings.TrimSpace(a.fui(hotkey.Transcribe).prompt) == "" {
+		t.Fatalf("reset ui: empty prompt")
 	}
 	// A change elsewhere shows.
 	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Prompt = "Be brief." })
 	frames(tt)
-	if a.fui(hotkey.Transcribe).prompt != "Be brief." {
+	if a.fui(hotkey.Transcribe).prompt != "Be brief." || !has(tt, "9 characters") {
 		t.Errorf("not set from the settings: %q", a.fui(hotkey.Transcribe).prompt)
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Prompt = strings.Repeat("Keep every product name as it is written.\n", 400)
+	})
+	frames(tt)
+	if _, ok := tt.Find("System prompt for Transcribe"); !ok {
+		t.Error("no system prompt field")
 	}
 }
 
@@ -284,7 +437,7 @@ func trySnapshot(a *app, st session.State) session.Snapshot {
 func TestTranscribeTry(t *testing.T) {
 	a, tt := trTester(t)
 	// Nothing set up: Start says what is missing, on the page.
-	click(t, tt, "Start a try")
+	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {
 		t.Fatalf("blocked try: %+v %q", a.sess, tt.Texts())
 	}
@@ -318,7 +471,7 @@ func TestTranscribeTry(t *testing.T) {
 			t.Errorf("done: no %q in %q", s, tt.Texts())
 		}
 	}
-	click(t, tt, "Copy the result")
+	click(t, tt, "Copy result")
 	if tt.Clipboard() != "The meeting moves to Thursday at four." {
 		t.Errorf("clipboard %q", tt.Clipboard())
 	}
@@ -379,7 +532,7 @@ func TestTranscribeFullPage(t *testing.T) {
 			if feature == hotkey.Transcribe {
 				a.fui(feature).rows[1].custom = true
 			}
-			a.fui(feature).preview = true
+			a.fui(feature).rules, a.fui(feature).preview = true, true
 			s := trySnapshot(a, session.Done)
 			s.Kind = featureKind(feature)
 			switch feature {
@@ -449,6 +602,33 @@ func TestSectionTitleAdd(t *testing.T) {
 			a.aePage.sel = "g-chat"
 			tt.SetSize(size[0], 1600) // the Apps section, below the prompt
 			check("Apps", "Add apps…", i18n.T("Remove %s", "Slack"))
+		}
+	}
+}
+
+// TestFeaturePageColumns: a feature page reads in one column at any
+// window width, the answer card's section under the shortcuts (11-09: the
+// user did not want the two columns a wide window had, #3644 FB16).
+func TestFeaturePageColumns(t *testing.T) {
+	for _, c := range []struct{ w, h int }{{1600, 2400}, {windowWidth, 2400}} {
+		a, _, tt := newTestApp(t)
+		tt.SetSize(c.w, c.h)
+		for _, page := range []string{"/transcribe", "/translate", "/rewrite"} {
+			a.navigate(page)
+			frames(tt)
+			keys, ok1 := tt.Find(i18n.T("Shortcuts"))
+			card, ok2 := tt.Find(i18n.T("Answer card"))
+			if !ok1 || !ok2 {
+				t.Fatalf("%s %d wide: Shortcuts %v, Answer card %v", page, c.w, ok1, ok2)
+			}
+			if card.X > keys.X+1 || card.Y <= keys.Y {
+				t.Errorf("%s %d wide: Shortcuts at %.0f,%.0f, Answer card at %.0f,%.0f: not one column", page, c.w, keys.X, keys.Y, card.X, card.Y)
+			}
+		}
+		if dir := os.Getenv("VOXTNEW_SHOTS"); dir != "" {
+			var b bytes.Buffer
+			png.Encode(&b, tt.Image())
+			os.WriteFile(filepath.Join(dir, fmt.Sprintf("rewrite-%d.png", c.w)), b.Bytes(), 0o644)
 		}
 	}
 }

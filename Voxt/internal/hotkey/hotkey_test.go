@@ -1,6 +1,7 @@
 package hotkey
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -30,6 +31,14 @@ func TestParse(t *testing.T) {
 		{in: "F5", canon: "F5", code: 96},
 		{in: "Fn+A", canon: "Fn+A", code: 0},
 		{in: "RightCommand+Up", canon: "RightCommand+Up", code: 126},
+		{in: "Mouse3", canon: "Mouse3", code: 2},
+		{in: "option+mouse4", canon: "Option+Mouse4", code: 3},
+		{in: "Control+Command+Mouse32", canon: "Control+Command+Mouse32", code: 31},
+		{in: "Mouse1", err: ErrUnknown},
+		{in: "Mouse2", err: ErrUnknown},
+		{in: "Mouse33", err: ErrUnknown},
+		{in: "Mouse04", err: ErrUnknown},
+		{in: "Mouse4+V", err: ErrTwoKeys},
 		{in: "", err: ErrEmpty},
 		{in: "Hyper", err: ErrUnknown},
 		{in: "Control+A+B", err: ErrTwoKeys},
@@ -77,6 +86,9 @@ func TestOverlaps(t *testing.T) {
 		{"LeftCommand", "RightCommand", false},
 		{"Control+Command+V", "Command+Control+V", true},
 		{"Control+Command+V", "Control+Command+C", false},
+		{"Mouse4", "Mouse4", true},
+		{"Mouse4", "Mouse5", false},
+		{"Option+Mouse4", "Mouse4", false},
 	} {
 		if got := p(tc.a).Overlaps(p(tc.b)); got != tc.want {
 			t.Errorf("%s overlaps %s = %v", tc.a, tc.b, got)
@@ -87,10 +99,10 @@ func TestOverlaps(t *testing.T) {
 func TestBuildDefaults(t *testing.T) {
 	f := settings.Defaults().Features
 	p := Build(f, []string{Transcribe})
-	if len(p.Bindings) != 2 {
+	if len(p.Bindings) != 3 {
 		t.Fatalf("bindings %+v", p.Bindings)
 	}
-	ropt, paste := p.Bindings[0], p.Bindings[1]
+	ropt, paste, note := p.Bindings[0], p.Bindings[1], p.Bindings[2]
 	if paste.ID != PasteLast || paste.Key == nil || *paste.Key != 9 || paste.Behavior != proto.BehaviorTap || len(paste.Modifiers) != 2 ||
 		paste.Modifiers[proto.ModControl] != proto.SideAny || paste.Modifiers[proto.ModOption] != proto.SideAny {
 		t.Errorf("paste-last %+v", paste)
@@ -99,16 +111,22 @@ func TestBuildDefaults(t *testing.T) {
 	if ropt.ID != "transcribe/0" || ropt.Key != nil || ropt.Modifiers[proto.ModOption] != proto.SideRight || len(ropt.Modifiers) != 1 {
 		t.Errorf("right option %+v", ropt)
 	}
+	// The note shortcut, Voxt 1.x's right Command tapped alone, whatever
+	// features are on.
+	if note.ID != Note || note.Key != nil || note.Behavior != proto.BehaviorTap || note.Modifiers[proto.ModCommand] != proto.SideRight || len(note.Modifiers) != 1 {
+		t.Errorf("note %+v", note)
+	}
 	if len(p.Carbon) != 1 || p.Carbon[0] != (Carbon{ID: PasteLast, Accelerator: "Control+Option+V"}) {
 		t.Errorf("carbon %+v", p.Carbon)
 	}
 	// No fn in the defaults: fn and 🌐 are left alone (Auralink's).
 	cfg := p.Configure(true)
-	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 2 || cfg.DoubleTapMS != 0 {
+	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 3 || cfg.DoubleTapMS != 0 {
 		t.Errorf("configure %+v", cfg)
 	}
 	all := Build(f, Features)
-	if len(all.Bindings) != 4 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast {
+	if len(all.Bindings) != 5 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast ||
+		all.Bindings[4].ID != Note {
 		t.Errorf("all %+v", all.Bindings)
 	}
 	if got := Build(settings.Features{}, Features).Configure(false); got.Bindings == nil || len(got.Bindings) != 0 || got.SwallowFn {
@@ -140,6 +158,30 @@ func TestBuildSkipsBadAndDuplicates(t *testing.T) {
 	}
 }
 
+// TestBuildMouseButtons: a mouse button goes to the helper as its button
+// number (Mouse3, the middle button, is 2), with its modifiers and no key,
+// and never to Carbon, which has no mouse buttons.
+func TestBuildMouseButtons(t *testing.T) {
+	f := settings.Features{
+		Transcribe: settings.Transcribe{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
+			{Keys: "Mouse4", Trigger: settings.TriggerLong}, {Keys: "Option+Mouse3"},
+		}}},
+		Cancel: settings.Hotkey{Keys: "Mouse5"},
+	}
+	p := Build(f, Features)
+	if len(p.Carbon) != 0 {
+		t.Errorf("carbon %+v", p.Carbon)
+	}
+	// What hotkey.configure sends: the wire form is what the helper judges.
+	got, _ := json.Marshal(map[string]any{"bindings": p.Bindings, "cancel": p.Cancel})
+	want := `{"bindings":[{"id":"transcribe/0","modifiers":{},"button":3,"behavior":"longPress"},` +
+		`{"id":"transcribe/1","modifiers":{"option":"any"},"button":2,"behavior":"tap"}],` +
+		`"cancel":{"id":"cancel","modifiers":{},"button":4,"behavior":"tap"}}`
+	if string(got) != want {
+		t.Errorf("sent %s\nwant %s", got, want)
+	}
+}
+
 // TestBuildCancel: the cancel shortcut becomes hotkey.configure's cancel
 // (never a regular binding, so its keys are only taken while active);
 // it can be changed, turned off, and a bare key is fine for it. A clash
@@ -153,7 +195,8 @@ func TestBuildCancel(t *testing.T) {
 	}{
 		{"default escape", settings.DefaultCancel, 53, map[string]string{}},
 		{"custom key", "Control+.", 47, map[string]string{proto.ModControl: proto.SideAny}},
-		{"modifier only", "RightCommand", -1, map[string]string{proto.ModCommand: proto.SideRight}},
+		{"modifier only", "RightShift", -1, map[string]string{proto.ModShift: proto.SideRight}},
+		{"clashes with the note", settings.DefaultNote, -2, nil},
 		{"off", "", -2, nil},
 		{"does not parse", "Hyper", -2, nil},
 		{"clashes with transcribe", settings.DefaultTranscribe, -2, nil},
@@ -224,8 +267,9 @@ func TestParseID(t *testing.T) {
 		i  int
 		ok bool
 	}{
-		"transcribe/0": {"transcribe", 0, true}, "rewrite/12": {"rewrite", 12, true}, "paste-last": {PasteLast, 0, true},
-		"escape": {}, "meeting/0": {}, "transcribe/x": {}, "transcribe/-1": {},
+		"transcribe/0": {"transcribe", 0, true}, "rewrite/12": {"rewrite", 12, true}, "paste-last": {PasteLast, 0, true}, "note": {Note, 0, true},
+		"meeting/0": {Meeting, 0, true},
+		"escape":    {}, "transcribe/x": {}, "transcribe/-1": {},
 	} {
 		f, i, ok := ParseID(id)
 		if f != want.f || i != want.i || ok != want.ok {
@@ -239,6 +283,7 @@ func TestCheck(t *testing.T) {
 	f := settings.Features{
 		Transcribe: settings.Transcribe{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
 			hk("Fn", ""), hk("Fn", settings.TriggerDouble), hk("Command+Space", ""), hk("K", ""), hk("F6", ""), hk("Bad+", ""),
+			hk("Mouse4", ""),
 		}}},
 		Translate: settings.Translate{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
 			hk("Fn", settings.TriggerTap), hk("Fn", settings.TriggerLong),
@@ -247,6 +292,7 @@ func TestCheck(t *testing.T) {
 			hk("Control+Command+V", ""),
 		}}},
 		PasteLast: hk("Command+Control+V", ""),
+		Note:      hk("Fn", settings.TriggerDouble), // always a tap: Transcribe's fn tap has it
 		Cancel:    hk("Fn", ""),
 	}
 	got := map[string]Problem{}
@@ -261,6 +307,7 @@ func TestCheck(t *testing.T) {
 		"translate/0 conflict":   func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 		"translate/1 duplicate":  func(p Problem) bool { return p.Other == Translate && p.OtherIndex == 0 },
 		"paste-last/0 conflict":  func(p Problem) bool { return p.Other == Rewrite },
+		"note/0 conflict":        func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 		"cancel/0 conflict":      func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 	} {
 		p, ok := got[key]
@@ -269,7 +316,7 @@ func TestCheck(t *testing.T) {
 		}
 		delete(got, key)
 	}
-	// F6 alone is fine; Translate's fn long press is its own duplicate,
+	// F6 alone is fine, so is a mouse button; Translate's fn long press is its own duplicate,
 	// not a conflict with Transcribe's fn tap (other trigger).
 	if len(got) != 0 {
 		t.Errorf("unexpected problems %v", got)
@@ -290,6 +337,7 @@ func TestNeedsTap(t *testing.T) {
 		{settings.Hotkey{Keys: "Control+Command+V", Trigger: settings.TriggerDouble}, true},
 		{settings.Hotkey{Keys: "RightCommand+V"}, true},
 		{settings.Hotkey{Keys: "Option+Space", Trigger: settings.TriggerLong}, true},
+		{settings.Hotkey{Keys: "Control+Option+Mouse4"}, true},
 	} {
 		if got := NeedsTap(tc.h); got != tc.want {
 			t.Errorf("NeedsTap(%+v) = %v", tc.h, got)
@@ -324,10 +372,71 @@ func TestRoute(t *testing.T) {
 		{"cancel shortcut idle", ev(proto.HotkeyCancel, proto.PhaseTrigger), Idle, "", Decision{}},
 		{"paste last", ev(PasteLast, proto.PhaseTrigger), Idle, "", Decision{Action: Paste}},
 		{"paste last while recording", ev(PasteLast, proto.PhaseTrigger), Recording, "", Decision{}},
+		{"note starts", ev(Note, proto.PhaseTrigger), Idle, "", Decision{Action: Start, Feature: Note}},
+		{"note stops", ev(Note, proto.PhaseTrigger), Recording, "", Decision{Action: Stop}},
 		{"unknown binding", ev("try/x", proto.PhaseTrigger), Idle, "", Decision{}},
 	} {
-		if got := Route(tc.e, tc.phase, tc.hold); got != tc.want {
+		if got := Route(tc.e, tc.phase, tc.hold, ""); got != tc.want {
 			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestRouteStrict: with Strict shortcuts, while recording only the
+// bindings of the feature that started the session stop it (tap, double
+// tap, the release of its long press); another feature's tap, down and up
+// do nothing; Cancel and PasteLast route as in the default mode, which
+// stops on any feature's binding.
+func TestRouteStrict(t *testing.T) {
+	ev := func(binding, phase string) proto.HotkeyEventParams {
+		return proto.HotkeyEventParams{Binding: binding, Phase: phase}
+	}
+	stop := Decision{Action: Stop}
+	for _, own := range Features {
+		for _, start := range []struct{ name, hold string }{{"tap", ""}, {"double tap", ""}, {"long press", own + "/2"}} {
+			for _, other := range Features {
+				for _, tc := range []struct {
+					e                 proto.HotkeyEventParams
+					strict, defaultTo Decision
+				}{
+					{ev(other+"/0", proto.PhaseTrigger), Decision{}, stop},
+					{ev(other+"/1", proto.PhaseTrigger), Decision{}, stop},
+					{ev(other+"/3", proto.PhaseDown), Decision{}, stop},
+					{ev(other+"/2", proto.PhaseUp), Decision{}, Decision{}},
+				} {
+					if other == own {
+						tc.strict = tc.defaultTo
+						if start.hold != "" && tc.e.Binding == start.hold {
+							tc.strict, tc.defaultTo = stop, stop
+						}
+					} else if start.hold != "" && tc.e.Phase == proto.PhaseUp {
+						tc.defaultTo = Decision{} // only the hold's own release stops
+					}
+					if got := Route(tc.e, Recording, start.hold, own); got != tc.strict {
+						t.Errorf("strict, %s started by %s, %+v: %+v, want %+v", own, start.name, tc.e, got, tc.strict)
+					}
+					if got := Route(tc.e, Recording, start.hold, ""); got != tc.defaultTo {
+						t.Errorf("default, %s started by %s, %+v: %+v, want %+v", own, start.name, tc.e, got, tc.defaultTo)
+					}
+				}
+			}
+		}
+		for _, strict := range []string{own, ""} {
+			if got := Route(ev(proto.HotkeyCancel, proto.PhaseTrigger), Recording, "", strict); got != (Decision{Action: Cancel}) {
+				t.Errorf("%q: cancel %+v", strict, got)
+			}
+			if got := Route(ev(PasteLast, proto.PhaseTrigger), Recording, "", strict); got != (Decision{}) {
+				t.Errorf("%q: paste last while recording %+v", strict, got)
+			}
+			if got := Route(ev(own+"/0", proto.PhaseTrigger), Idle, "", strict); got != (Decision{Action: Start, Feature: own}) {
+				t.Errorf("%q: idle tap %+v", strict, got)
+			}
+		}
+	}
+	if got := Route(ev("transcribe/0", proto.PhaseTrigger), Recording, "", Note); got != (Decision{}) {
+		t.Errorf("strict note session, transcribe tap: %+v", got)
+	}
+	if got := Route(ev(Note, proto.PhaseTrigger), Recording, "", Note); got != stop {
+		t.Errorf("strict note session, note tap: %+v", got)
 	}
 }

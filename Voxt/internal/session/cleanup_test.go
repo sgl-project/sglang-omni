@@ -66,7 +66,7 @@ func TestLongDictation(t *testing.T) {
 			h := newHarness(t, &fakeFile{text: longZH}, c.llm, nil)
 			h.speak(h.start(), 5)
 			end := h.rec.wait(t)
-			if end.Result != c.result || end.Raw != longZH || end.Profile != "transcribe:cleanup+glossary" {
+			if end.Result != c.result || end.Raw != longZH || end.Profile != "transcribe:glossary" {
 				t.Errorf("result %q, raw %q, profile %q", end.Result, end.Raw, end.Profile)
 			}
 			if (end.Problem == nil) != (c.problem == "") || end.Problem != nil && (end.Problem.Code != c.problem || !end.Problem.Degraded) {

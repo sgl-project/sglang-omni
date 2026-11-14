@@ -19,7 +19,7 @@ from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY, PinnedDraft
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BASH_BLOCK = re.compile(r"```(?:bash|sh|shell)\n(.*?)```", re.DOTALL)
-ENGINE_DRAFT_FLAG = re.compile(r"--([\w-]+)\.engine\.(speculative_\w+)")
+ENGINE_DRAFT_FLAG = re.compile(r"--([\w-]+)\.engine\.(speculative_\w+|revision)")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -38,10 +38,16 @@ def engine_draft_keys(engine: EngineArgs | None) -> dict[str, str]:
     if engine is None:
         return {}
     else:
+        overrides = engine.overrides()
+        # Compare draft identity independently of device-specific attention backends.
         return {
             key: str(value)
-            for key, value in engine.overrides().items()
-            if key.startswith("speculative_")
+            for key, value in overrides.items()
+            if (
+                key.startswith("speculative_")
+                and key != "speculative_draft_attention_backend"
+            )
+            or (key == "revision" and overrides.get("speculative_algorithm"))
         }
 
 
@@ -156,6 +162,31 @@ def test_engine_fills_a_pinned_draft_revision_only_when_the_key_is_absent() -> N
     assert explicit.overrides()["speculative_draft_model_revision"] == "main"
     assert default_branch.overrides()["speculative_draft_model_revision"] is None
     assert "speculative_draft_model_revision" not in unpinned.overrides()
+
+
+@pytest.mark.parametrize("revision", [None, "another-revision"])
+def test_bundled_draft_does_not_override_the_target_revision(
+    revision: str | None,
+) -> None:
+    """An explicit bundled draft path must not pin a different checkpoint revision."""
+    draft = next(
+        draft for draft in DRAFT_REGISTRY if draft.model_path == draft.draft_model_path
+    )
+    overrides = EngineArgs(
+        speculative_algorithm=draft.algorithm,
+        speculative_draft_model_path=draft.model_path,
+        revision=revision,
+    ).overrides()
+    assert overrides.get("revision") == revision
+    assert "speculative_draft_model_revision" not in overrides
+
+
+def test_disabling_a_bundled_draft_preserves_the_target_revision() -> None:
+    draft = next(
+        draft for draft in DRAFT_REGISTRY if draft.model_path == draft.draft_model_path
+    )
+    engine = EngineArgs(**draft.engine_overrides(), disable_speculative_decoding=True)
+    assert engine.overrides() == {"revision": draft.draft_model_revision}
 
 
 @pytest.mark.parametrize(

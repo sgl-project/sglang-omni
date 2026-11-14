@@ -9,11 +9,15 @@
 #include <unordered_set>
 #include <utility>
 
+#include "common/reference_audio.h"
+
 namespace cosyvoice3 {
 
 namespace mx = mlx::core;
 
 namespace {
+
+const std::string kSpeakerWeightPrefix = "campplus.";
 
 constexpr int kHiddenSize = 896;
 constexpr int kIntermediateSize = 4864;
@@ -30,6 +34,10 @@ constexpr float kRopeTheta = 1000000.0f;
 constexpr size_t kRepetitionWindow = 10;
 constexpr int kMaxSilentRun = 5;
 constexpr float kGreedyTemperature = 1e-6f;
+// The longest reference the speech tokenizer takes, as on CUDA.
+constexpr double kMaxReferenceSeconds = 30.0;
+// The shortest reference the prompt mel's reflect padding takes, with margin.
+constexpr double kMinReferenceSeconds = 0.5;
 // Speech tokens of silence and breath.
 const std::unordered_set<int> kSilentTokens = {1,   2,    28,   29,   55,  248,
                                                494, 2241, 2242, 2322, 2323};
@@ -486,6 +494,65 @@ LoadSpeechTokenizer(const std::filesystem::path &directory) {
                                  nlohmann::json::object());
 }
 
+// The checkpoint's campplus.* weights, as CamPlusEncoder names them.
+omni_common::WeightMap
+SpeakerWeights(const omni_common::Checkpoint &checkpoint) {
+  omni_common::WeightMap weights;
+  // Note (Jiaxin Deng): the checkpoint stores the encoder in float16 and in
+  // MLX layout; it runs in float32, as the reference does.
+  const auto copy_weight = [&](const std::string &name) {
+    weights.insert_or_assign(
+        name, mx::astype(checkpoint.Weight(kSpeakerWeightPrefix + name),
+                         mx::float32));
+  };
+  const auto copy_batch_norm = [&](const std::string &prefix, bool affine) {
+    copy_weight(prefix + ".running_mean");
+    copy_weight(prefix + ".running_var");
+    if (affine) {
+      copy_weight(prefix + ".weight");
+      copy_weight(prefix + ".bias");
+    } else {
+    }
+  };
+  copy_weight("head.conv1.weight");
+  copy_batch_norm("head.bn1", true);
+  for (const std::string layer : {"head.layer1", "head.layer2"}) {
+    for (const std::string block : {".0", ".1"}) {
+      copy_weight(layer + block + ".conv1.weight");
+      copy_batch_norm(layer + block + ".bn1", true);
+      copy_weight(layer + block + ".conv2.weight");
+      copy_batch_norm(layer + block + ".bn2", true);
+    }
+    copy_weight(layer + ".0.shortcut.0.weight");
+    copy_batch_norm(layer + ".0.shortcut.1", true);
+  }
+  copy_weight("head.conv2.weight");
+  copy_batch_norm("head.bn2", true);
+  copy_weight("tdnn.linear.weight");
+  copy_batch_norm("tdnn.nonlinear.0", true);
+  for (int block = 0; block < 3; ++block) {
+    for (int layer = 0; layer < omni_common::kCamPlusBlockLayerCounts[block];
+         ++layer) {
+      const std::string prefix = omni_common::CamPlusLayerPrefix(block, layer);
+      copy_batch_norm(prefix + ".nonlinear1.0", true);
+      copy_weight(prefix + ".linear1.weight");
+      copy_batch_norm(prefix + ".nonlinear2.0", true);
+      copy_weight(prefix + ".cam_layer.linear_local.weight");
+      copy_weight(prefix + ".cam_layer.linear1.weight");
+      copy_weight(prefix + ".cam_layer.linear1.bias");
+      copy_weight(prefix + ".cam_layer.linear2.weight");
+      copy_weight(prefix + ".cam_layer.linear2.bias");
+    }
+    const std::string transit = "transits." + std::to_string(block);
+    copy_batch_norm(transit + ".nonlinear.0", true);
+    copy_weight(transit + ".linear.weight");
+  }
+  copy_batch_norm("out_nonlinear.0", true);
+  copy_weight("dense.linear.weight");
+  copy_batch_norm("dense.nonlinear.0", false);
+  return weights;
+}
+
 } // namespace
 
 CosyVoice3Model::CosyVoice3Model(const std::filesystem::path &model_directory)
@@ -494,7 +561,8 @@ CosyVoice3Model::CosyVoice3Model(const std::filesystem::path &model_directory)
                {kLayerCount, kAttentionHeadCount, kKeyValueHeadCount,
                 kHeadDimension, kRmsNormEpsilon, kRopeTheta, false, false}),
       tokenizer_(std::make_unique<omni_common::Tokenizer>(model_directory)),
-      flow_(checkpoint_), hift_(checkpoint_), speaker_encoder_(checkpoint_),
+      flow_(checkpoint_), hift_(checkpoint_),
+      speaker_encoder_(SpeakerWeights(checkpoint_)),
       speech_tokenizer_checkpoint_(
           LoadSpeechTokenizer(model_directory / "speech_tokenizer")),
       speech_tokenizer_(speech_tokenizer_checkpoint_) {}
@@ -781,11 +849,20 @@ mx::array CosyVoice3Model::Vocode(const std::vector<int> &speech_tokens,
 }
 
 ReferenceAudio ReadReferenceAudio(std::string_view wav_bytes) {
-  const DecodedAudio decoded = DecodeWav(wav_bytes);
+  const omni_common::DecodedAudio decoded =
+      omni_common::DecodeAnyWav(wav_bytes);
+  const double seconds =
+      static_cast<double>(decoded.samples.size()) / decoded.sample_rate;
+  if (seconds < kMinReferenceSeconds || seconds > kMaxReferenceSeconds) {
+    throw std::invalid_argument(
+        "reference audio must be between 0.5 and 30 seconds long");
+  } else {
+  }
   // Note (Jiaxin Deng): each encoder's rate is resampled from the file's, as
   // the CUDA server loads the reference once per rate.
-  return {Resample(decoded.samples, decoded.sample_rate, 16000),
-          Resample(decoded.samples, decoded.sample_rate, kSampleRate)};
+  return {
+      omni_common::Resample(decoded.samples, decoded.sample_rate, 16000),
+      omni_common::Resample(decoded.samples, decoded.sample_rate, kSampleRate)};
 }
 
 std::vector<int> TrimSilentRuns(const std::vector<int> &speech_tokens) {

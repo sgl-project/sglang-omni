@@ -30,6 +30,9 @@ type Preset struct {
 	BaseURL string `json:"baseURL"` // the API root ("…/v1"); "" for custom: the user supplies it
 	// KeyOptional: it works without a key (a server on this Mac).
 	KeyOptional bool `json:"keyOptional,omitempty"`
+	// SignIn: reached with the user's sign-in (OpenAI.WithTokens) rather
+	// than a key, by streamed requests with only the fields bareBody keeps.
+	SignIn bool `json:"signIn,omitempty"`
 	// Models are the suggested models, for the model menu (any id may be
 	// typed).
 	Models       []string          `json:"models,omitempty"`
@@ -50,6 +53,9 @@ type Preset struct {
 	// Generation is the user's request settings (ProviderConfig), not
 	// the preset's.
 	Generation Generation `json:"-"`
+	// API is the API format: "" chat completions, APIResponses; the
+	// user's ProviderConfig.API replaces it.
+	API string `json:"api,omitempty"`
 }
 
 // Custom is the preset of a server the user names (any OpenAI-compatible
@@ -91,12 +97,13 @@ type ProviderConfig struct {
 	Model   string // overrides the preset's default
 	// Generation is the user's request settings (Voxt 1.x's fields).
 	Generation Generation
+	API        string // Preset.API
 }
 
 // Resolve merges cfg over its preset and checks the address: keys go
 // over https only, plain http only to this Mac (a local server), and
-// never with a user or password in the URL. A full chat completions URL
-// is taken for its API root.
+// never with a user or password in the URL. A full chat completions or
+// Responses URL is taken for its API root.
 func (cfg ProviderConfig) Resolve() (Preset, error) {
 	p, ok := LookupPreset(cfg.ID)
 	if !ok {
@@ -109,7 +116,10 @@ func (cfg ProviderConfig) Resolve() (Preset, error) {
 		p.DefaultModel = m
 	}
 	p.Generation = cfg.Generation
-	p.BaseURL = strings.TrimSuffix(strings.TrimRight(p.BaseURL, "/"), "/chat/completions")
+	if cfg.API != "" {
+		p.API = cfg.API
+	}
+	p.BaseURL = strings.TrimSuffix(strings.TrimSuffix(strings.TrimRight(p.BaseURL, "/"), "/chat/completions"), "/responses")
 	if p.BaseURL == "" {
 		return Preset{}, newErr(CodeConfig, "provider", p.ID, "field", "baseURL")
 	}

@@ -2,8 +2,8 @@ package main
 
 // VoxtNew's runtime file in the ActNow family (internal/actnow's Runtime,
 // spec §11.1): the models the runtimes hold, from their events
-// (internal/resident: omni's servers, worker "omni"; voxtnew-llm's
-// model, worker "llm"), each with its repo, commit and memory; the
+// (internal/resident: omni's servers, worker "omni"), each with its
+// repo, commit and memory; the
 // family's memory budget before a model loads (Reserve); another app's
 // memory request unloading VoxtNew's models idle for a minute (OnUnload);
 // and the "pasting" flag around every paste through the clipboard
@@ -12,7 +12,6 @@ package main
 
 import (
 	"context"
-	"log"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -21,11 +20,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 )
 
-// Workers of the runtime file: which runtime holds a model.
-const (
-	workerOmni = "omni"
-	workerLLM  = "llm"
-)
+// workerOmni is the runtime file's worker of the speech models' servers.
+const workerOmni = "omni"
 
 // famRuntime is the runtime file, nil without a family (some tests).
 func (a *app) famRuntime() *actnow.Runtime {
@@ -111,15 +107,9 @@ func modelBytes(ev resident.Event, m models.Model) int64 {
 }
 
 // unloadIdleModel lets model id go when nothing uses it (the family's
-// memory requests): the language model's process stops when idle, a
-// speech model's server once its uses ended (never during one).
+// memory requests): a speech model's server once its uses ended (never
+// during one).
 func (a *app) unloadIdleModel(id string) {
-	if m, ok := models.Lookup(id); ok && m.Kind == models.LLM {
-		if rt := a.llmMade(); rt != nil && !rt.UnloadIdle(id) {
-			log.Printf("family: %s is in use: kept", id)
-		}
-		return
-	}
 	a.omniMu.Lock()
 	rt := a.omniRT
 	a.omniMu.Unlock()
