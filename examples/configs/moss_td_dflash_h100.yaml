@@ -1,0 +1,15 @@
+config_cls: MossTranscribeDiarizePipelineConfig
+name: moss-td-dflash-h100
+model_path: OpenMOSS-Team/MOSS-Transcribe-Diarize
+
+stages:
+  asr:
+    factory:
+      enable_async_decode: true
+    engine:
+      speculative_algorithm: DFLASH
+      speculative_draft_model_path: wilsonzheng0327/MOSS-Transcribe-Diarize-dflash
+      speculative_num_draft_tokens: 16
+      max_running_requests: 16
+      cuda_graph_max_bs: 16
+      mem_fraction_static: 0.80

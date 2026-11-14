@@ -223,6 +223,7 @@ sgl-omni serve \
   --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
   --asr.engine.speculative_algorithm DFLASH \
   --asr.engine.speculative_draft_model_path wilsonzheng0327/MOSS-Transcribe-Diarize-dflash \
+  --asr.engine.speculative_num_draft_tokens 16 \
   --port 8000
 ```
 
@@ -232,7 +233,8 @@ sgl-omni serve \
 - **Capacity.** The draft's KV shares the pool, so one H100 80GB at `mem_fraction_static=0.80` holds about 480k tokens instead of 570k. Long audio at high concurrency fills it, and the scheduler then retracts requests and finishes them later: every `aishell4_long` file still completed at concurrency 16 and 32.
 - **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes each verify step about four times slower. Without a draft it stays on.
 - **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
-- **Scheduling.** Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap each verify round with host work, which is faster at every load below. Async prefill stays off under the draft. Setting `enable_mixed_chunk` is rejected.
+- **Scheduling.** Speculative overlap is on by default. Add `--asr.factory.enable_async_decode false` to opt out; plain fallback still forces the synchronous loop. Async prefill stays off under the draft. Setting `enable_mixed_chunk` is rejected.
+- **Draft width.** The default verify block is 16 tokens, tuned on H100 with the [SpecPilot](https://github.com/StargazerX0/SpecPilot) warmup/acceptance/output-identity protocol. Override it with `--asr.engine.speculative_num_draft_tokens N`; `examples/configs/moss_td_dflash_h100.yaml` pins the measured low-latency setting.
 
 Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (`python -m benchmarks.eval.speculative_sweep`):
 
@@ -259,7 +261,7 @@ sgl-omni serve \
 
 The [Qwen3-ASR fallback restrictions](qwen3_asr.md#per-request-plain-fallback) also apply to MOSS-TD.
 
-When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.
+When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.
 
 ## Benchmarking
 
