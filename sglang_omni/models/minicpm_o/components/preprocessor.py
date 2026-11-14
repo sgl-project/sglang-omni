@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import threading
 from collections.abc import Mapping
@@ -12,7 +13,10 @@ import numpy.typing as npt
 import torch
 from transformers import AutoProcessor, AutoTokenizer, ProcessorMixin
 
-from sglang_omni.models.minicpm_o.components.image_processing import CUDAImageProcessor
+from sglang_omni.models.minicpm_o.components.image_processing import (
+    CUDAImageProcessor,
+    MetadataOnlyImageProcessor,
+)
 from sglang_omni.models.minicpm_o.payload_types import (
     AudioEncoderInputs,
     ImageEncoderInputs,
@@ -25,12 +29,14 @@ from sglang_omni.models.minicpm_o.prompt_frontend import (
     IMAGE_PLACEHOLDER as IMAGE_PLACEHOLDER,
 )
 from sglang_omni.models.minicpm_o.prompt_frontend import (
+    FrameSize,
     RenderedChat,
     first_batch_item,
     has_inline_media,
     messages_with_media_placeholders,
     normalize_message_contents,
     render_ordered_chat,
+    video_frame_sizes,
     video_to_images,
 )
 from sglang_omni.models.minicpm_o.routing import should_generate_audio_output
@@ -56,6 +62,7 @@ from sglang_omni.preprocessing.video import (
     ensure_video_list_async,
 )
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 TTS_READ_PROMPT_EN = "Please read the following text out loud in English: "
 TTS_READ_PROMPT_ZH = "请用中文朗读以下文本: "
@@ -88,6 +95,9 @@ def tts_read_prompt(text: str, language: str | None) -> str:
 
 
 class MiniCPMOPreprocessor:
+    # Shared with the image encoder stage, so a warm request can skip pixel work.
+    image_cache: StageOutputCache[dict[str, torch.Tensor]] | None = None
+
     def __init__(
         self,
         model_path: str,
@@ -95,6 +105,7 @@ class MiniCPMOPreprocessor:
         speech_enabled: bool = False,
         device: torch.device = torch.device("cpu"),
         video_decode_threads: int,
+        image_cache: StageOutputCache[dict[str, torch.Tensor]] | None = None,
     ) -> None:
         local_model_directory = str(resolve_model_path(model_path))
         self.video_decode_threads = video_decode_threads
@@ -109,6 +120,7 @@ class MiniCPMOPreprocessor:
         )
         self.speech_enabled: bool = speech_enabled
         self.device: torch.device = device
+        self.image_cache = image_cache
 
     def speech_to_text_inputs(
         self, payload: StagePayload, inputs: Mapping[str, object]
@@ -151,6 +163,14 @@ class MiniCPMOPreprocessor:
                         pass
                     self._processor = processor  # noqa: leading-underscore
                     return processor
+
+    def processor_without_pixels(self) -> ProcessorMixin:
+        """Copy the processor so a cache hit never builds the pixel values."""
+        processor = copy.copy(self.processor)
+        processor.process_image = MetadataOnlyImageProcessor(
+            self.processor.image_processor
+        )
+        return processor
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         connection = ResourceHTTPConnection()
@@ -431,21 +451,6 @@ class MiniCPMOPreprocessor:
             max_pixels=video_options.video_max_pixels,
             total_pixels=video_options.video_total_pixels,
         )
-        video_images = [frame for video in videos for frame in video_to_images(video)]
-        images.extend(video_images)
-        audios = (
-            list(rendered_chat.audios)
-            if rendered_chat is not None
-            else await ensure_audio_list_async(raw_audios, target_sr=16000)
-        )
-        audio_cache_key = compute_audio_cache_key(audios)
-        if audio_cache_key is not None and audio_turn_indices is not None:
-            audio_cache_key = (
-                f"{audio_cache_key}|parts={audio_turn_indices}|segments=v1"
-            )
-        else:
-            pass
-
         cache_keys = [
             cache_key for cache_key in (image_cache_key, video_cache_key) if cache_key
         ]
@@ -461,6 +466,35 @@ class MiniCPMOPreprocessor:
                 "video-v1" if processor_video_options else "default-v1"
             )
             image_cache_key = f"{image_cache_key}|policy={image_processing_policy}"
+        else:
+            pass
+        cached_value = (
+            self.image_cache.get(image_cache_key)
+            if self.image_cache is not None and image_cache_key is not None
+            else None
+        )
+        cached_image_output = cached_value if isinstance(cached_value, dict) else None
+        if cached_image_output is not None:
+            video_images = [
+                FrameSize(width=frame_width, height=frame_height)
+                for video in videos
+                for frame_width, frame_height in video_frame_sizes(video)
+            ]
+        else:
+            video_images = [
+                frame for video in videos for frame in video_to_images(video)
+            ]
+        images.extend(video_images)
+        audios = (
+            list(rendered_chat.audios)
+            if rendered_chat is not None
+            else await ensure_audio_list_async(raw_audios, target_sr=16000)
+        )
+        audio_cache_key = compute_audio_cache_key(audios)
+        if audio_cache_key is not None and audio_turn_indices is not None:
+            audio_cache_key = (
+                f"{audio_cache_key}|parts={audio_turn_indices}|segments=v1"
+            )
         else:
             pass
 
@@ -480,7 +514,12 @@ class MiniCPMOPreprocessor:
         )
 
         # Note (Akazaakane): Independent extraction matches per-segment placeholder rounding.
-        processed = self.processor(
+        processor = (
+            self.processor_without_pixels()
+            if cached_image_output is not None
+            else self.processor
+        )
+        processed = processor(
             prompt_text,
             images=[images] if images else None,
             audios=[audios] if audios else None,
@@ -495,24 +534,31 @@ class MiniCPMOPreprocessor:
         encoder_inputs: dict[str, ImageEncoderInputs | AudioEncoderInputs] = {}
         if images:
             image_bound = first_batch_item(processed["image_bound"])
-            # note (MayDomine): slice order must match the placeholder bound order.
-            pixel_values = [
-                slice_tensor
-                for per_image in processed["pixel_values"][0]
-                for slice_tensor in (
-                    per_image if isinstance(per_image, list) else [per_image]
-                )
-            ]
-            target_image_sizes = first_batch_item(processed["tgt_sizes"])
             modality_inputs["image"] = {
                 "bounds": image_bound,
                 "cache_key": image_cache_key,
             }
-            encoder_inputs["image_encoder"] = {
-                "pixel_values": pixel_values,
-                "tgt_sizes": target_image_sizes,
-                "cache_key": image_cache_key,
-            }
+            if cached_image_output is not None:
+                encoder_inputs["image_encoder"] = {
+                    "_active": True,
+                    "cache_key": image_cache_key,
+                    "cached_result": cached_image_output,
+                }
+            else:
+                # note (MayDomine): slice order must match the placeholder bound order.
+                pixel_values = [
+                    slice_tensor
+                    for per_image in processed["pixel_values"][0]
+                    for slice_tensor in (
+                        per_image if isinstance(per_image, list) else [per_image]
+                    )
+                ]
+                target_image_sizes = first_batch_item(processed["tgt_sizes"])
+                encoder_inputs["image_encoder"] = {
+                    "pixel_values": pixel_values,
+                    "tgt_sizes": target_image_sizes,
+                    "cache_key": image_cache_key,
+                }
         else:
             pass
         if audios:

@@ -60,12 +60,17 @@ def build_encoder_request(
     else:
         pass
     cache_key = inputs.get("cache_key")
+    cached_result = inputs.get("cached_result")
     model_inputs = {
-        k: v for k, v in inputs.items() if k not in ("cache_key", "_active")
+        k: v
+        for k, v in inputs.items()
+        if k not in ("cache_key", "_active", "cached_result")
     }
     return EncoderRequestData(
         model_inputs=model_inputs,
         cache_key=str(cache_key) if cache_key is not None else None,
+        # A result resolved during preprocessing bypasses the forward the same way.
+        skip_result=cached_result if isinstance(cached_result, dict) else None,
     )
 
 
