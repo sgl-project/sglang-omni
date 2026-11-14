@@ -1075,6 +1075,10 @@ by default) and logs:</p>
 <td><p>Decodes frames into audio in fp16.</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.decode_dtype</span> <span class="pre">float32</span></code></p></td>
 </tr>
+<tr class="row-even"><td><p>Reference encode CUDA graphs, up to 20 s</p></td>
+<td><p>Encodes each reference by replaying a CUDA graph captured for its length rounded up to a multiple of 22 codec frames (1.02 s); the longest of the 20 graphs holds 440 frames (20.43 s), and longer references encode eagerly. The encoder is causal, so the zeros after a reference feed none of its codes, but the padded encode rounds differently from an unpadded one: on H100 about 4.5% of a reference’s code elements differ in bf16 and under 0.3% in fp32. Costs startup time and preprocessing GPU memory.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.reference_encode_graph_max_seconds</span> <span class="pre">0</span></code> encodes every reference eagerly; another value moves the cap</p></td>
+</tr>
 </tbody>
 </table>
 </div>
