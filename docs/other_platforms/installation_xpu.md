@@ -657,6 +657,14 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
 The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.
 `--text-only` serves the thinker (chat) without the talker/speech stages. The text-only config normally puts every stage in the `pipeline` process, so give the TP thinker an otherwise-unused process name before enabling TP:
 
+The thinker decodes through an XPU graph only when oneCCL records the collectives issued inside the capture. torch 2.14.0+xpu pins oneCCL 2022.1.1, which drops them, so at TP>1 the thinker logs "serving decode eagerly" and decodes about 7x slower (101 vs 14.5 ms per token at TP=8). Install 2022.1.2 over the pin to get the graph:
+
+```bash
+pip install --no-deps oneccl==2022.1.2 oneccl-devel==2022.1.2
+```
+
+The automatic memory fraction leaves the TP=8 thinker no KV pool on 24 GB cards, so pin it:
+
 **Launch**
 
 ```bash
@@ -666,6 +674,7 @@ export SGLANG_OMNI_STARTUP_TIMEOUT=1800
 sgl-omni serve --model-path /path/to/Qwen3-Omni-30B-A3B-Instruct \
   --text-only --thinker.process thinker \
   --thinker.tp_size 8 --thinker.gpu "[0, 1, 2, 3, 4, 5, 6, 7]" \
+  --thinker.engine.mem_fraction_static 0.55 \
   --host 0.0.0.0 --port 8000
 ```
 
@@ -679,6 +688,16 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
 ```
 
 **Expected result:** Check `choices[0].message.content` for a text reply.
+
+Speech output runs the thinker at TP=4 on cards 0-3 and gives the talker and Code2Wav cards of their own, since a stage that shares a card with a thinker rank stalls the whole thinker. On sglang 0.5.23 the talker's decode graph does not capture on XPU (its torch sampler assigns through a boolean mask), so serve the talker eagerly until that is fixed upstream:
+
+**Launch**
+
+```bash
+sgl-omni serve --config examples/configs/qwen3_omni_speech_xpu_b60.yaml \
+  --model-path /path/to/Qwen3-Omni-30B-A3B-Instruct \
+  --talker_ar.engine.disable_cuda_graph true --host 0.0.0.0 --port 8000
+```
 
 ### MiniCPM-o 4.5 (omni chat and speech, single XPU)
 

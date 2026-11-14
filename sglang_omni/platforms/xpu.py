@@ -6,12 +6,35 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import torch
+import torch.distributed as dist
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.distributed.parallel_state import GroupCoordinator
 from sglang.srt.platforms.xpu import XpuDeviceMixin
 
 from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
 
 logger = logging.getLogger(__name__)
+
+PROBE_ROWS = 64
+
+
+def replayed_collectives_match(
+    reduced: torch.Tensor, gathered: torch.Tensor, world_size: int
+) -> bool:
+    """Whether a replayed all-reduce and all-gather both produced their expected values.
+
+    Every rank stages 10 * (its rank + 1) before the replay, so a recorded all-reduce leaves the
+    sum over ranks in every element and a recorded all-gather leaves each rank's value in its own
+    slice. A dropped collective leaves the staged fill, which neither expectation matches.
+    """
+    expected_reduced = 10 * world_size * (world_size + 1) / 2
+    expected_gathered = 10 * torch.arange(
+        1, world_size + 1, device=gathered.device, dtype=gathered.dtype
+    ).repeat_interleave(PROBE_ROWS)
+    return bool(torch.all(reduced == expected_reduced).item()) and torch.equal(
+        gathered, expected_gathered
+    )
+
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -37,6 +60,15 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         # models; torch_native makes SGLang disable both graph phases.
         return "torch_native"
 
+    def get_thinker_attention_backend(self, tp_size: int) -> str | None:
+        # Note (siju): intel_xpu decodes the 30B-A3B thinker 1.19x faster than SGLang's
+        # Triton default on B60 at TP=4. At TP=8 it stalled under 16 concurrent requests
+        # in 3 of 4 runs (GPU work never completes, no error), so TP=8 keeps Triton.
+        if tp_size <= 4:
+            return "intel_xpu"
+        else:
+            return None
+
     def get_fused_qk_norm_rope_with_cos_sin_cache(self):
         try:
             from sgl_kernel import fused_inplace_qknorm_rope
@@ -57,10 +89,6 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         return True
 
     def enable_tts_vocoder_fast_path(self) -> bool:
-        return False
-
-    def enable_thinker_decode_graph(self) -> bool:
-        # Capture leaves the scheduler thread's stream recording; host reads fail.
         return False
 
     def enable_zonos2_torch_compile(self) -> bool:
@@ -102,6 +130,46 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         # Note (siju): a host read inside a capture raises on XPU, which is what
         # the Mimi encoder's mask helper does.
         return False
+
+    def supports_async_device_to_host_copy(self) -> bool:
+        # Note (siju): on XPU a non_blocking copy into pinned memory holds the host until the
+        # stream's queued work drains, so a lookahead launch would wait for its own forward.
+        return False
+
+    def graph_capture_records_collectives(self, group: GroupCoordinator) -> bool:
+        if group.world_size == 1:
+            return True
+        else:
+            pass
+        # Note (siju): oneCCL 2022.1.1, which torch 2.14.0+xpu pins, drops an all-reduce or
+        # all-gather issued during XPU graph capture without an error, so a TP decode graph
+        # would replay stale activations. Capture both, replay, and compare on every rank.
+        device = torch.device("xpu", torch.xpu.current_device())
+        rank_value = float(group.rank_in_group + 1)
+        reduced = torch.full((PROBE_ROWS,), rank_value, device=device)
+        local = torch.full((PROBE_ROWS,), rank_value, device=device)
+        gathered = torch.zeros(group.world_size * PROBE_ROWS, device=device)
+        dist.all_reduce(reduced, group=group.device_group)
+        dist.all_gather_into_tensor(gathered, local, group=group.device_group)
+        torch.xpu.synchronize()
+        graph = torch.xpu.XPUGraph()
+        stream = torch.xpu.Stream()
+        stream.wait_stream(torch.xpu.current_stream())
+        with torch.xpu.graph(graph, stream=stream):
+            dist.all_reduce(reduced, group=group.device_group)
+            dist.all_gather_into_tensor(gathered, local, group=group.device_group)
+        reduced.fill_(10 * rank_value)
+        local.fill_(10 * rank_value)
+        gathered.zero_()
+        torch.xpu.synchronize()
+        dist.barrier(group=group.cpu_group)
+        graph.replay()
+        torch.xpu.synchronize()
+        is_recorded = torch.tensor(
+            int(replayed_collectives_match(reduced, gathered, group.world_size))
+        )
+        dist.all_reduce(is_recorded, op=dist.ReduceOp.MIN, group=group.cpu_group)
+        return bool(is_recorded.item())
 
     def apply_model_worker_backend_policy(
         self,
