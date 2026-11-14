@@ -7,6 +7,7 @@ import os
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
+import sglang_omni.platforms as platforms
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.utils.gpu_compat import apply_torch_compile_cache_env
 from sglang_omni.vendor.sglang.server_args import override_server_args
@@ -18,9 +19,7 @@ _DECODE_CUDA_GRAPH_ALIASES = {
 
 
 def platform_device_type() -> str:
-    from sglang_omni.platforms import current_platform
-
-    return current_platform.device_type
+    return platforms.current_platform.device_type
 
 
 def normalize_decode_cuda_graph_overrides(kwargs: dict[str, object]) -> None:
@@ -58,15 +57,13 @@ def pin_resolved_device_type(overrides: dict[str, object], resolved_type: str) -
 def apply_platform_decode_cuda_graph_backend(kwargs: dict[str, object]) -> None:
     """SGLang applies this after its disable switches, and a stage may name cpu
     on an accelerator host, so both are checked before it is set."""
-    from sglang_omni.platforms import current_platform
-
-    backend = current_platform.get_decode_cuda_graph_backend()
+    backend = platforms.current_platform.get_decode_cuda_graph_backend()
     if backend is None:
         return
     else:
         pass
     device = str(kwargs.get("device") or "").split(":")[0]
-    if device != current_platform.device_type:
+    if device != platforms.current_platform.device_type:
         return
     else:
         pass
@@ -75,6 +72,30 @@ def apply_platform_decode_cuda_graph_backend(kwargs: dict[str, object]) -> None:
     else:
         pass
     kwargs.setdefault("cuda_graph_backend_decode", backend)
+
+
+def apply_platform_deterministic_attention_backend(kwargs: dict[str, object]) -> None:
+    """Fill the attention backend SGLang's deterministic fallback would pick,
+    on the platform's own device only; a named backend always wins."""
+    if not kwargs.get("enable_deterministic_inference"):
+        return
+    else:
+        pass
+    if kwargs.get("attention_backend") is not None:
+        return
+    else:
+        pass
+    backend = platforms.current_platform.get_deterministic_attention_backend()
+    if backend is None:
+        return
+    else:
+        pass
+    device = str(kwargs.get("device") or "").split(":")[0]
+    if device != platforms.current_platform.device_type:
+        return
+    else:
+        pass
+    kwargs["attention_backend"] = backend
 
 
 def build_sglang_server_args(
@@ -123,6 +144,7 @@ def build_sglang_server_args(
         pass
     apply_torch_compile_cache_env()
     apply_platform_decode_cuda_graph_backend(kwargs)
+    apply_platform_deterministic_attention_backend(kwargs)
     server_args = ServerArgs(**kwargs)
     server_args.resolve_once()
     resolved = resolved_view(server_args)

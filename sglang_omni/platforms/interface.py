@@ -243,6 +243,11 @@ class OmniPlatform(DeviceMixin):
         """Default backend for all attention in encoder-decoder models, if needed."""
         return None
 
+    def get_deterministic_attention_backend(self) -> str | None:
+        """Backend for a deterministic engine that names none; None keeps
+        SGLang's own fallback."""
+        return None
+
     def supports_fp8_moe(self) -> bool:
         return True
 

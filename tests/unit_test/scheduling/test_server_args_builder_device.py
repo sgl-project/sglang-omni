@@ -206,3 +206,69 @@ def test_an_engine_that_asked_for_eager_decode_keeps_it(monkeypatch) -> None:
     # An engine naming its own backend keeps that too.
     pinned = build(monkeypatch, cuda_graph_backend_decode="disabled")
     assert pinned["cuda_graph_backend_decode"] == "disabled"
+
+
+def with_deterministic_backend(monkeypatch, backend: str | None) -> None:
+    monkeypatch.setattr(platforms.current_platform, "device_type", "xpu", raising=False)
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_deterministic_attention_backend",
+        lambda: backend,
+    )
+
+
+def test_a_deterministic_engine_gets_the_platform_attention_backend(
+    monkeypatch,
+) -> None:
+    """SGLang 0.5.23 falls back to fa3 here, which asserts on XPU."""
+    with_deterministic_backend(monkeypatch, "triton")
+
+    kwargs = build(monkeypatch, enable_deterministic_inference=True)
+
+    assert kwargs["attention_backend"] == "triton"
+
+
+def test_a_named_attention_backend_wins_over_the_platform(monkeypatch) -> None:
+    with_deterministic_backend(monkeypatch, "triton")
+
+    kwargs = build(
+        monkeypatch, enable_deterministic_inference=True, attention_backend="intel_xpu"
+    )
+
+    assert kwargs["attention_backend"] == "intel_xpu"
+
+
+def test_a_non_deterministic_engine_keeps_sglangs_default(monkeypatch) -> None:
+    with_deterministic_backend(monkeypatch, "triton")
+
+    for value in (False, None):
+        kwargs = build(monkeypatch, enable_deterministic_inference=value)
+        assert "attention_backend" not in kwargs, value
+    assert "attention_backend" not in build(monkeypatch)
+
+
+def test_a_deterministic_stage_that_named_cpu_gets_no_accelerator_backend(
+    monkeypatch,
+) -> None:
+    with_deterministic_backend(monkeypatch, "triton")
+
+    kwargs = build(monkeypatch, device="cpu", enable_deterministic_inference=True)
+
+    assert "attention_backend" not in kwargs
+
+
+def test_a_platform_with_no_deterministic_preference_leaves_kwargs_alone(
+    monkeypatch,
+) -> None:
+    """CUDA, ROCm and the rest keep SGLang's own fallback byte for byte."""
+    with_deterministic_backend(monkeypatch, None)
+    gated = build(monkeypatch, enable_deterministic_inference=True)
+
+    monkeypatch.setattr(
+        server_args_builder,
+        "apply_platform_deterministic_attention_backend",
+        lambda kwargs: None,
+    )
+    ungated = build(monkeypatch, enable_deterministic_inference=True)
+
+    assert gated == ungated
