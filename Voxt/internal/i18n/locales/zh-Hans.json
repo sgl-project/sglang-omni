@@ -184,7 +184,6 @@
   "Audio": "音频",
   "Automatic clean-up": "自动清理",
   "Automatic": "自动",
-  "Automatic is English, or Chinese when your main language is English.": "“自动”译成英语；主要语言是英语时译成中文。",
   "Automatic uses the recommended speech model and your first language model. With no speech model installed, it uses a remote speech service you set up.": "“自动”使用推荐的语音识别模型和你设置的第一个语言模型。没装语音识别模型时，会用你设置的远程语音识别服务。",
   "Automatic (now: %s)": "自动（现在用：%s）",
   "Back": "上一步",
@@ -1655,5 +1654,11 @@
   "min": "分钟",
   "The length limit stops the recording in %s": "%s 后到达时长上限，录音会停止",
   "Over the upload size limit: Voxt sends the recording in pieces": "已超过上传大小上限：Voxt 会分段发送录音",
-  "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音"
+  "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音",
+  "How Translate works: speech recognition writes what you said in your own language, then the language model translates it into the target language with the prompt in Your rules. A prompt of your own replaces the built-in one and gets the target language only where it says {{TARGET_LANGUAGE}}. Selected text already in the target language goes into your main language instead.": "翻译是这样做的：语音识别按你说的语言写下文字，再由语言模型按“你的规则”里的提示词把它翻译成目标语言。你自己的提示词会替换内置的那一份，只有写了 {{TARGET_LANGUAGE}} 的地方才会换成目标语言。选中的文字已经是目标语言时，改译成你的主要语言。",
+  "The language model translates into this. Speech recognition writes what you said in your own language. Automatic is English, or Chinese when your main language is English.": "语言模型翻译成这种语言。语音识别按你说的语言写下文字。“自动”译成英语；主要语言是英语时译成中文。",
+  "Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing.": "你的提示词里没有 {{TARGET_LANGUAGE}}，这个菜单不起作用。",
+  "Add {{TARGET_LANGUAGE}} to the prompt": "在提示词里加上 {{TARGET_LANGUAGE}}",
+  "Translate the text into {{TARGET_LANGUAGE}}.": "把文字翻译成{{TARGET_LANGUAGE}}。",
+  "Target language for Translate": "翻译的目标语言"
 }
