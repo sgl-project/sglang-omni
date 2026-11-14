@@ -7,7 +7,11 @@ from unittest.mock import Mock
 import pytest
 import tiktoken
 import torch
-from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
+from sglang.srt.managers.schedule_policy import (
+    AddReqResult,
+    PrefillAdder,
+    SchedulePolicy,
+)
 
 from sglang_omni.models.yue2.engine_builder import Yue2EngineBuilder
 from sglang_omni.models.yue2.model_runner import (
@@ -37,6 +41,10 @@ from sglang_omni.models.yue2.sglang_request_builder import (
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pipeline_state import load_state
+from sglang_omni.scheduling.stage_kv_budget import (
+    consume_stage_kv_cache_bytes,
+    stage_kv_cache_budget,
+)
 from sglang_omni.scheduling.types import SchedulerRequest
 from sglang_omni.serve.openai_errors import generation_error_status_code
 
@@ -193,6 +201,30 @@ def test_prefill_adder_admits_both_cfg_rows_or_neither(
     assert adder.tree_cache.unlock.call_count == (0 if admitted_rows else 1)
 
 
+def sort_by_priority(queue: list) -> None:
+    """Sort the queue as SGLang does on each step with priority scheduling on."""
+    SchedulePolicy._sort_by_priority_and_fcfs(  # noqa: leading-underscore  # upstream spelling
+        queue, 1
+    )
+
+
+def test_cfg_twin_is_sorted_with_its_request_under_priority_scheduling(
+    builder: Yue2RequestBuilder,
+) -> None:
+    """The twin had no priority or queue entry time, so sorting the queue raised or moved it ahead of its request."""
+    earlier = builder(payload("a", abc="X:1\nK:C\nCDEF")).req
+    guided, twin = cfg_pair(builder, "b")
+    for entry_time, req in enumerate([earlier, guided], start=1):
+        req.priority = 3
+        req.time_stats.wait_queue_entry_time = float(entry_time)
+    guided._coalesce_enqueue_t = 0.0  # noqa: leading-underscore  # upstream spelling
+    scheduler = object.__new__(Yue2Scheduler)
+    scheduler.waiting_queue = [earlier, guided]
+    scheduler.enqueue_unconditional(guided.omni_data, twin.omni_data)
+    sort_by_priority(scheduler.waiting_queue)
+    assert [req.rid for req in scheduler.waiting_queue] == ["a", "b", "b-cfg"]
+
+
 @pytest.mark.parametrize("retraction_order", [[0], [1], [0, 1], [1, 0]])
 def test_retracting_one_cfg_row_requeues_the_pair(
     builder: Yue2RequestBuilder,
@@ -285,7 +317,8 @@ def test_cfg_pair_above_the_prefill_budget_is_admitted_whole(
 def capacity_scheduler(kv_tokens: int) -> Yue2Scheduler:
     scheduler = object.__new__(Yue2Scheduler)
     scheduler.tp_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(effective_max_total_num_tokens=kv_tokens)
+        model_runner=SimpleNamespace(effective_max_total_num_tokens=kv_tokens),
+        kv_cache_bytes=None,
     )
     scheduler.page_size = 1
     scheduler.emit_request_error = Mock()
@@ -343,6 +376,49 @@ def test_score_budget_above_the_kv_cache_names_its_own_setting(
     error = capacity_scheduler(4096).kv_capacity_error(score)
     assert "abc_max_tokens" in error and "thinker" not in error
     assert capacity_scheduler(8192).kv_capacity_error(score) is None
+    byte_sized = capacity_scheduler(4096)
+    byte_sized.tp_worker.kv_cache_bytes = 1 << 30
+    assert "kv_cache_bytes" in byte_sized.kv_capacity_error(score)
+
+
+@pytest.mark.parametrize(
+    "prefill_max_requests,admitted", [(1, False), (2, True), (None, True)]
+)
+def test_guided_request_needs_a_prefill_batch_of_two_rows(
+    builder: Yue2RequestBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+    prefill_max_requests: int | None,
+    admitted: bool,
+) -> None:
+    """With prefill_max_requests=1 the twin never joined its request's batch, so guided requests waited forever."""
+    monkeypatch.setattr(
+        "sglang_omni.models.yue2.scheduler.get_schedule",
+        lambda: SimpleNamespace(prefill_max_requests=prefill_max_requests),
+    )
+    enqueued = []
+    monkeypatch.setattr(
+        OmniScheduler,
+        "enqueue_built_request",
+        lambda scheduler, payload, done, data, **kwargs: enqueued.append(data),
+    )
+    scheduler = capacity_scheduler(1 << 20)
+    scheduler.waiting_queue = []
+    # A guided request is refused at its score phase, before it generates anything.
+    guided = builder(payload("a", cfg_scale=1.5))
+    unguided = builder(payload("b", abc="X:1\nK:C\nCDEF"))
+    assert guided.phase == "abc" and unguided.cfg_uncond is None
+    for data in (guided, unguided):
+        scheduler.enqueue_built_request(data.stage_payload, False, data)
+    admitted_ids = [data.stage_payload.request_id for data in enqueued]
+    if admitted:
+        assert admitted_ids == ["a", "b"]
+        scheduler.emit_request_error.assert_not_called()
+    else:
+        assert admitted_ids == ["b"]
+        request_id, error = scheduler.emit_request_error.call_args.args
+        assert request_id == "a" and generation_error_status_code(error) == 400
+        assert "prefill_max_requests" in str(error)
+        scheduler.abort.assert_called_once_with("a")
 
 
 def test_paused_generation_requeues_cfg_rows_next_to_their_request(
@@ -368,6 +444,29 @@ def test_paused_generation_requeues_cfg_rows_next_to_their_request(
     assert [id(req) for req in paired_queue(lone_twin)] == [
         id(req) for req in lone_twin
     ]
+
+
+def test_paused_cfg_pair_is_sorted_together_under_priority_scheduling(
+    builder: Yue2RequestBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pause gave each row its own queue entry time, so sorting the queue put another request between a CFG pair."""
+    unguided = builder(payload("a", abc="X:1\nK:C\nCDEF"))
+    unguided.req.omni_data = unguided
+    guided, twin = cfg_pair(builder, "b")
+    batch_order = [guided, unguided.req, twin]
+    for entry_time, req in enumerate(batch_order, start=1):
+        req.priority = 3
+        req.time_stats.wait_queue_entry_time = float(entry_time)
+    monkeypatch.setattr(
+        OmniScheduler,
+        "retract_running_requests",
+        lambda scheduler: scheduler.waiting_queue.extend(batch_order) or 3,
+    )
+    scheduler = object.__new__(Yue2Scheduler)
+    scheduler.waiting_queue = []
+    assert scheduler.retract_running_requests() == 3
+    sort_by_priority(scheduler.waiting_queue)
+    assert [req.rid for req in scheduler.waiting_queue] == ["b", "b-cfg", "a"]
 
 
 def test_retracted_row_resumes_sampling_from_its_committed_tokens() -> None:
@@ -429,6 +528,44 @@ def test_finished_score_starts_the_audio_request(builder: Yue2RequestBuilder) ->
     scheduler.aborted_request_ids = {"song"}
     scheduler.start_audio_phase(SimpleNamespace(output_ids=[11, ABC_END]), score)
     scheduler.enqueue_built_request.assert_not_called()
+
+
+def test_finished_internal_rows_end_their_model_path(
+    builder: Yue2RequestBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finished score or twin row emitted the start of its model path and never the end."""
+    ended = []
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler._emit_model_path_end",
+        lambda request_id, status: ended.append((request_id, status)),
+    )
+    monkeypatch.setattr(
+        OmniScheduler,
+        "stream_output",
+        lambda scheduler, reqs, return_logprob=False, skip_req=None: None,
+    )
+    score = builder(payload("a"))
+    twin = builder(payload("b", cot="off")).cfg_uncond
+    rows = [
+        SimpleNamespace(
+            rid=data.req.rid,
+            omni_data=data,
+            finished_reason=None,
+            finished=lambda: True,
+        )
+        for data in (score, twin)
+    ]
+    scheduler = object.__new__(Yue2Scheduler)
+    scheduler.aborted_request_ids = set()
+    scheduler.prefill_start_done = {row.rid for row in rows}
+    # Closing a request forgets that its model path started.
+    scheduler.close_completed_request = (
+        lambda req: scheduler.prefill_start_done.discard(req.rid)
+    )
+    scheduler.start_audio_phase = Mock()
+    scheduler.stream_output(rows)
+    assert ended == [("a-abc", "success"), ("b-cfg", "success")]
+    scheduler.start_audio_phase.assert_called_once_with(rows[0], score)
 
 
 def test_rejected_request_is_logged_without_a_traceback(
@@ -498,7 +635,9 @@ def test_runner_matches_cfg_rows_after_sglang_reorders_the_batch() -> None:
         runner_request("a", guided),
     ]
     rows = sampling_rows(requests)
-    assert [(row.conditional, row.unconditional) for row in rows] == [(1, None), (2, 0)]
+    assert [
+        (row.conditional_row_index, row.unconditional_row_index) for row in rows
+    ] == [(1, None), (2, 0)]
 
 
 @pytest.mark.accelerator
@@ -550,3 +689,14 @@ def test_kv_cache_is_sized_in_tokens_unless_overridden() -> None:
     user_choice: dict[str, object] = {"max_total_tokens": 200000}
     engine_builder.adjust_overrides(user_choice)
     assert user_choice["max_total_tokens"] == 200000
+
+
+def test_kv_byte_budget_is_not_capped_in_tokens() -> None:
+    """A stage that set engine.kv_cache_bytes still got the default token cap, which shrank its pool."""
+    engine_builder = Yue2EngineBuilder(max_running_requests=16)
+    engine_builder.context_length = 24576
+    overrides: dict[str, object] = {}
+    with stage_kv_cache_budget("yue2_ar", 16 << 30):
+        engine_builder.adjust_overrides(overrides)
+        consume_stage_kv_cache_bytes()
+    assert "max_total_tokens" not in overrides

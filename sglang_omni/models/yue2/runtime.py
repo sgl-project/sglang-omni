@@ -2,8 +2,8 @@
 """YuE2 weight loading and acoustic rendering from generated semantic tokens."""
 
 import json
-from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 import torch
 from safetensors import safe_open
@@ -26,8 +26,12 @@ from sglang_omni.models.yue2.vae import VaeConfig, Yue2Vae
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 
+class TensorNameFilter(Protocol):
+    def __call__(self, name: str) -> bool: ...
+
+
 def load_weights(
-    module: nn.Module, directory: Path, *, skipped: Callable[[str], bool]
+    module: nn.Module, directory: Path, *, skipped: TensorNameFilter
 ) -> None:
     index = directory / "model.safetensors.index.json"
     if index.is_file():

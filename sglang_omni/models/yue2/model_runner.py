@@ -11,20 +11,19 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.yue2.generation import masked_scores
+from sglang_omni.models.yue2.request import SamplingConfig
+from sglang_omni.models.yue2.sglang_request_builder import Yue2ARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
-
-from .generation import masked_scores
-from .request import SamplingConfig
-from .sglang_request_builder import Yue2ARRequestData
 
 
 @dataclass(frozen=True, eq=False)
 class SamplingRow:
     """One sampled row: its conditional batch row and, under CFG, its twin's row."""
 
-    conditional: int
-    unconditional: int | None
-    data: Yue2ARRequestData
+    conditional_row_index: int
+    unconditional_row_index: int | None
+    request_data: Yue2ARRequestData
 
 
 def sampling_rows(requests: list[SchedulerRequest]) -> list[SamplingRow]:
@@ -43,7 +42,8 @@ def sampling_rows(requests: list[SchedulerRequest]) -> list[SamplingRow]:
             raise RuntimeError(
                 f"YuE2 request {request.request_id} lost its CFG row in this batch"
             )
-    if len(rows) + sum(row.unconditional is not None for row in rows) != len(requests):
+    twin_count = sum(row.unconditional_row_index is not None for row in rows)
+    if len(rows) + twin_count != len(requests):
         raise RuntimeError("YuE2 CFG row without its request in this batch")
     else:
         pass
@@ -139,17 +139,19 @@ class Yue2ModelRunner(ModelRunner[Yue2ARRequestData]):
         guided = [
             position
             for position, row in enumerate(rows)
-            if row.unconditional is not None
+            if row.unconditional_row_index is not None
         ]
         if guided:
-            conditional_rows = device_index([row.conditional for row in rows], device)
+            conditional_rows = device_index(
+                [row.conditional_row_index for row in rows], device
+            )
             guided_rows = device_index(guided, device)
             twin_rows = device_index(
-                [rows[position].unconditional for position in guided], device
+                [rows[position].unconditional_row_index for position in guided], device
             )
             scales = to_device(
                 torch.tensor(
-                    [rows[position].data.cfg_scale for position in guided],
+                    [rows[position].request_data.cfg_scale for position in guided],
                     dtype=logits.dtype,
                 ),
                 device,
@@ -165,11 +167,11 @@ class Yue2ModelRunner(ModelRunner[Yue2ARRequestData]):
 
         groups: defaultdict[tuple[str, str, bool], list[int]] = defaultdict(list)
         for position, row in enumerate(rows):
-            groups[sampling_group_key(row.data)].append(position)
+            groups[sampling_group_key(row.request_data)].append(position)
         if len(groups) == 1:
             (phase, _, legacy_off), _ = next(iter(groups.items()))
             sampled = self.sample_group(
-                combined, [row.data for row in rows], phase, legacy_off
+                combined, [row.request_data for row in rows], phase, legacy_off
             )
         else:
             sampled = torch.empty(len(rows), dtype=torch.long, device=device)
@@ -180,7 +182,7 @@ class Yue2ModelRunner(ModelRunner[Yue2ARRequestData]):
                     group_rows,
                     self.sample_group(
                         combined.index_select(0, group_rows),
-                        [rows[position].data for position in positions],
+                        [rows[position].request_data for position in positions],
                         phase,
                         legacy_off,
                     ),

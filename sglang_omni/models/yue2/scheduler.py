@@ -15,20 +15,20 @@ from sglang.srt.managers.schedule_policy import (
     AddReqResult,
     PrefillAdder,
 )
+from sglang.srt.runtime_context import get_schedule
 
-from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.message import IncomingMessage
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-
-from .model_runner import rewind_sampling
-from .request import ABC_END
-from .sglang_request_builder import (
+from sglang_omni.models.yue2.model_runner import rewind_sampling
+from sglang_omni.models.yue2.request import ABC_END
+from sglang_omni.models.yue2.sglang_request_builder import (
     Yue2ARRequestData,
     Yue2RequestBuilder,
     guidance_request_id,
     public_request_id,
     score_request_id,
 )
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 
 def request_data(req: Req) -> Yue2ARRequestData | None:
@@ -73,6 +73,15 @@ def paired_queue(queue: list[Req]) -> list[Req]:
         else:
             ordered.append(req)
     return ordered
+
+
+def copy_queue_sort_key(conditional: Req, unconditional: Req) -> None:
+    """Give the unconditional row the priority and queue entry time of its request."""
+    # note (ruiling): priority scheduling sorts the queue by these two, and SGLang sets them on each row alone.
+    unconditional.priority = conditional.priority
+    unconditional.time_stats.wait_queue_entry_time = (
+        conditional.time_stats.wait_queue_entry_time
+    )
 
 
 def prefill_token_count(req: Req) -> int:
@@ -127,9 +136,11 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
         *,
         request_admission_lock_held: bool = False,
     ) -> None:
-        capacity_error = self.kv_capacity_error(req_data)
-        if capacity_error is not None:
-            self.emit_request_error(payload.request_id, ValueError(capacity_error))
+        admission_error = self.kv_capacity_error(req_data) or self.prefill_batch_error(
+            req_data
+        )
+        if admission_error is not None:
+            self.emit_request_error(payload.request_id, ValueError(admission_error))
             self.abort(payload.request_id)
             return
         else:
@@ -178,11 +189,33 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
             # note (ruiling): SGLang checks each row alone; a CFG pair that never fits would wait forever and block the queue.
             rows_note = " for its two classifier-free guidance rows" if guided else ""
             budget = "abc_max_tokens" if req_data.phase == "abc" else "max_new_tokens"
+            pool_setting = (
+                "max_total_tokens"
+                if self.tp_worker.kv_cache_bytes is None
+                else "kv_cache_bytes"
+            )
             return (
                 f"YuE2 request: needs {required} KV cache tokens{rows_note}, above "
                 f"the {capacity}-token limit. Lower {budget} or raise "
-                "--yue2_ar.engine.max_total_tokens."
+                f"--yue2_ar.engine.{pool_setting}."
             )
+
+    @staticmethod
+    def prefill_batch_error(req_data: Yue2ARRequestData) -> str | None:
+        """Reject a guided request when one prefill batch cannot hold its two rows."""
+        assert req_data.request is not None
+        if req_data.request.guidance == 1:
+            return None
+        else:
+            prefill_max_requests = get_schedule().prefill_max_requests
+            if prefill_max_requests is None or prefill_max_requests >= 2:
+                return None
+            else:
+                # note (ruiling): SGLang ends the batch before the twin, so the pair would be withdrawn on every step and block the queue.
+                return (
+                    "YuE2 request: classifier-free guidance needs "
+                    "prefill_max_requests of at least 2"
+                )
 
     def enqueue_unconditional(
         self, req_data: Yue2ARRequestData, unconditional: Yue2ARRequestData
@@ -194,6 +227,7 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
             pass
         req = unconditional.req
         self.normalize_req_token_arrays(req)
+        copy_queue_sort_key(conditional, req)
         req._coalesce_enqueue_t = (
             conditional._coalesce_enqueue_t
         )  # noqa: leading-underscore  # upstream spelling
@@ -266,11 +300,14 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
                 emitted.append(req)
             elif not req.finished():
                 continue
-            elif data.is_cfg_uncond:
-                self.close_completed_request(req)
             else:
+                # note (ruiling): closing the request forgets that its model path started, so the end is emitted first.
+                self.emit_model_path_end_once(req.rid, status="success")
                 self.close_completed_request(req)
-                self.start_audio_phase(req, data)
+                if data.is_cfg_uncond:
+                    pass
+                else:
+                    self.start_audio_phase(req, data)
         super().stream_output(emitted, return_logprob, skip_req)
 
     def start_audio_phase(self, req: Req, data: Yue2ARRequestData) -> None:
@@ -330,7 +367,13 @@ class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
     def retract_running_requests(self) -> int:
         retracted = super().retract_running_requests()
         # note (ruiling): this path queues rows one by one in batch order, which SGLang reorders when it retracts for memory.
-        self.waiting_queue[:] = paired_queue(self.waiting_queue)
+        queue = paired_queue(self.waiting_queue)
+        for index in range(len(queue) - 1):
+            if admission_width(queue, index) == 2:
+                copy_queue_sort_key(queue[index], queue[index + 1])
+            else:
+                pass
+        self.waiting_queue[:] = queue
         return retracted
 
     def requeue_cfg_pair(

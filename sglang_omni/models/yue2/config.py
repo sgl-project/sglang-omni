@@ -9,7 +9,7 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config import (
+from sglang_omni.config.schema import (
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
@@ -53,7 +53,7 @@ class Yue2PipelineConfig(PipelineConfig):
             EngineStageConfig(
                 name="yue2_ar",
                 process="yue2_ar",
-                factory_path=f"{PACKAGE}.stages.create_ar_executor",
+                factory_path=f"{PACKAGE}.engine_builder.create_ar_executor",
                 factory=FactoryArgs(max_concurrency=16),
                 gpu=0,
                 next="yue2_acoustic",

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SGLang engine builder for the YuE2 AR stage."""
+"""SGLang engine builder and stage factory for the YuE2 AR stage."""
 
-from collections.abc import Callable
+from collections.abc import Mapping
 from pathlib import Path
 
 from sglang.srt.configs.model_config import ModelConfig
@@ -13,23 +13,28 @@ from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.proto.request import StagePayload
+from sglang_omni.models.yue2.layers import Yue2ModelConfig
+from sglang_omni.models.yue2.model_runner import Yue2ModelRunner
+from sglang_omni.models.yue2.request import Yue2Tokenizer
+from sglang_omni.models.yue2.scheduler import Yue2Scheduler
+from sglang_omni.models.yue2.sglang_model import register_yue2_config
+from sglang_omni.models.yue2.sglang_request_builder import (
+    Yue2ARRequestData,
+    Yue2RequestBuilder,
+    Yue2ResultAdapter,
+)
+from sglang_omni.models.yue2.shared_weights import export_ar_weights
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
     TtsEngineBuilder,
 )
 from sglang_omni.scheduling.generation_batch_policy import build_default_cuda_graph_bs
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-
-from .layers import Yue2ModelConfig
-from .model_runner import Yue2ModelRunner
-from .request import Yue2Tokenizer
-from .scheduler import Yue2Scheduler
-from .sglang_model import register_yue2_config
-from .sglang_request_builder import Yue2ARRequestData, Yue2RequestBuilder
-from .shared_weights import export_ar_weights
+from sglang_omni.utils.device import resolve_concrete_device
 
 DEFAULT_KV_CACHE_TOKENS = 65536
 
@@ -91,7 +96,11 @@ class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
         overrides["disable_radix_cache"] = True
         overrides["chunked_prefill_size"] = 0
         # note (ruiling): the memory fraction alone reserved about 33 GB of KV on an H100 that 4 concurrent songs fill to about 5 GB; a full-context CFG pair still fits.
-        if overrides.get("max_total_tokens") is None:
+        # note (ruiling): a stage's engine.kv_cache_bytes sizes the pool itself, and a token cap on top of it would shrink the pool.
+        if (
+            overrides.get("max_total_tokens") is None
+            and peek_stage_kv_cache_bytes() is None
+        ):
             overrides["max_total_tokens"] = max(
                 DEFAULT_KV_CACHE_TOKENS, 2 * self.context_length
             )
@@ -120,10 +129,9 @@ class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
     ) -> Yue2ModelRunner:
         return Yue2ModelRunner(model_worker, output_proc)
 
-    def make_adapters(self, model: Qwen3ForCausalLM) -> tuple[
-        Callable[[StagePayload], Yue2ARRequestData],
-        Callable[[Yue2ARRequestData], StagePayload],
-    ]:
+    def make_adapters(
+        self, model: Qwen3ForCausalLM
+    ) -> tuple[Yue2RequestBuilder, Yue2ResultAdapter]:
         del model
         builder = Yue2RequestBuilder(
             Yue2Tokenizer(Path(self.checkpoint_dir) / "qwen.tiktoken"),
@@ -143,8 +151,8 @@ class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
         server_args: ServerArgs,
         model_config: ModelConfig,
         model_runner: ModelRunner[Yue2ARRequestData],
-        request_builder: Callable[[StagePayload], Yue2ARRequestData] | None,
-        result_adapter: Callable[[Yue2ARRequestData], StagePayload] | None,
+        request_builder: Yue2RequestBuilder | None,
+        result_adapter: Yue2ResultAdapter | None,
         extra_scheduler_kwargs: SchedulerExtras[Yue2ARRequestData] | None = None,
     ) -> Yue2Scheduler:
         return Yue2Scheduler(
@@ -163,3 +171,28 @@ class Yue2EngineBuilder(TtsEngineBuilder[Yue2ARRequestData]):
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Yue2ARRequestData]:
         # note (ruiling): the scheduler launches the next decode step before it reads this step's tokens.
         return {"enable_async_decode": True}
+
+
+def create_ar_executor(
+    model_path: str,
+    *,
+    max_concurrency: int,
+    gpu_id: int | None = None,
+    device: str | None = None,
+    shared_weights_dir: str | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
+) -> OmniScheduler[Yue2ARRequestData]:
+    if resolve_concrete_device(device, gpu_id).type != "cuda":
+        raise ValueError("YuE2 serving requires a CUDA device")
+    else:
+        pass
+    builder = Yue2EngineBuilder(
+        max_running_requests=max_concurrency, shared_weights_dir=shared_weights_dir
+    )
+    return builder.build(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
+        dtype="bfloat16",
+        server_args_overrides=server_args_overrides,
+    )

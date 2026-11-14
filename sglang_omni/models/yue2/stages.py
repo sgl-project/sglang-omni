@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""YuE2 stage factories: SGLang AR engine and acoustic rendering."""
-
-from collections.abc import Mapping
+"""YuE2 acoustic stage: scheduler and factory."""
 
 import torch
 
@@ -20,31 +18,6 @@ def cuda_device(device: str | None, gpu_id: int | None) -> torch.device:
         raise ValueError("YuE2 serving requires a CUDA device")
     else:
         return resolved
-
-
-def create_ar_executor(
-    model_path: str,
-    *,
-    gpu_id: int | None = None,
-    device: str | None = None,
-    max_concurrency: int = 16,
-    shared_weights_dir: str | None = None,
-    server_args_overrides: Mapping[str, object] | None = None,
-):
-    cuda_device(device, gpu_id)
-    # note (ruiling): imported here so only the AR process loads SGLang.
-    from sglang_omni.models.yue2.engine_builder import Yue2EngineBuilder
-
-    builder = Yue2EngineBuilder(
-        max_running_requests=max_concurrency, shared_weights_dir=shared_weights_dir
-    )
-    return builder.build(
-        model_path,
-        device=device,
-        gpu_id=gpu_id,
-        dtype="bfloat16",
-        server_args_overrides=server_args_overrides,
-    )
 
 
 class Yue2AcousticScheduler(SimpleScheduler[StagePayload, StagePayload]):

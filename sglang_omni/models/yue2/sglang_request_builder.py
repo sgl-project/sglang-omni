@@ -2,19 +2,14 @@
 """YuE2 request adapters between StagePayload and SGLang requests."""
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Protocol
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
-from sglang_omni.proto.request import StagePayload
-from sglang_omni.sampling.seed import derive_sampling_seed
-from sglang_omni.scheduling.pipeline_state import store_state
-from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-
-from .payload_types import Yue2State
-from .request import (
+from sglang_omni.models.yue2.payload_types import Yue2State
+from sglang_omni.models.yue2.request import (
     ABC_END,
     MUSIC_END,
     SamplingConfig,
@@ -22,6 +17,10 @@ from .request import (
     Yue2Tokenizer,
     build_request,
 )
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.sampling.seed import derive_sampling_seed
+from sglang_omni.scheduling.pipeline_state import store_state
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 SCORE_SUFFIX = "-abc"
 GUIDANCE_SUFFIX = "-cfg"
@@ -60,6 +59,10 @@ class Yue2ARRequestData(SGLangARRequestData):
     sampling_seed: int = 0
     generated_tokens: int = 0
     recent_tokens: torch.Tensor | None = None
+
+
+class Yue2ResultAdapter(Protocol):
+    def __call__(self, request_data: Yue2ARRequestData) -> StagePayload: ...
 
 
 class Yue2RequestBuilder:
@@ -198,20 +201,22 @@ class Yue2RequestBuilder:
             "max_new_tokens": sampling.max_tokens,
         }
 
-    def result(self, data: Yue2ARRequestData) -> StagePayload:
-        assert data.request is not None and data.stage_payload is not None
-        tokens = list(data.req.output_ids)
+    def result(self, request_data: Yue2ARRequestData) -> StagePayload:
+        request = request_data.request
+        assert request is not None and request_data.stage_payload is not None
+        tokens = list(request_data.req.output_ids)
         finished = bool(tokens) and tokens[-1] == MUSIC_END
         semantic_tokens = tokens[:-1] if finished else tokens
+        truncated = request_data.abc_truncated or not finished
         state = Yue2State(
-            semantic_prefix=data.prefix,
+            semantic_prefix=request_data.prefix,
             semantic_tokens=semantic_tokens,
-            seed=data.request.seed,
-            ode_steps=data.request.options.ode_steps,
-            abc_truncated=data.abc_truncated,
+            seed=request.seed,
+            ode_steps=request.options.ode_steps,
+            abc_truncated=request_data.abc_truncated,
             semantic_truncated=not finished,
-            prompt_tokens=len(data.prefix),
+            prompt_tokens=len(request_data.prefix),
             completion_tokens=len(semantic_tokens),
-            finish_reason="length" if data.abc_truncated or not finished else "stop",
+            finish_reason="length" if truncated else "stop",
         )
-        return store_state(data.stage_payload, state)
+        return store_state(request_data.stage_payload, state)

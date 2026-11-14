@@ -11,8 +11,8 @@ import tiktoken
 import torch
 from safetensors.torch import save_file
 
-from sglang_omni.config import EngineStageConfig
 from sglang_omni.config.runtime import resolve_factory_signature_args
+from sglang_omni.config.schema import EngineStageConfig
 from sglang_omni.models.yue2.acoustic import synthesize_latents
 from sglang_omni.models.yue2.config import Yue2PipelineConfig
 from sglang_omni.models.yue2.generation import masked_scores
@@ -61,7 +61,7 @@ def model() -> Yue2Model:
         return Yue2Model(
             Yue2ModelConfig(
                 hidden_size=8,
-                num_hidden_layers=1,
+                num_hidden_layers=2,
                 num_attention_heads=2,
                 num_key_value_heads=1,
                 head_dim=4,

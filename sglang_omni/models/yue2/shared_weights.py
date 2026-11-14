@@ -6,7 +6,11 @@ from torch import nn
 
 from sglang_omni.models.yue2.layers import Yue2ModelConfig
 from sglang_omni.models.yue2.model import Yue2Model
-from sglang_omni.utils import ipc_weights
+from sglang_omni.utils.ipc_weights import (
+    LeaderLivenessMonitor,
+    follower_attach,
+    leader_export,
+)
 
 ACOUSTIC_ONLY_PREFIXES = ("llm2vae.", "vae2llm.", "time_embedder.", "latent_pos_embed.")
 ATTACH_TIMEOUT_SECONDS = 60.0
@@ -78,7 +82,7 @@ def drop_ar_weights(model: Yue2Model) -> None:
 
 
 def export_ar_weights(model: nn.Module, directory: str, checkpoint: str) -> None:
-    ipc_weights.leader_export(
+    leader_export(
         SharedBackbone(engine_tensors(model)), directory, model_path=checkpoint
     )
 
@@ -110,11 +114,11 @@ def bind_ar_weights(
 
 def attach_ar_weights(
     model: Yue2Model, directory: str, checkpoint: str, *, fused: bool
-) -> ipc_weights.LeaderLivenessMonitor:
+) -> LeaderLivenessMonitor:
     """Read the AR tensors from the AR stage's storage instead of loading them."""
     device = model.llm2vae.weight.device
     shared = SharedBackbone(placeholder_tensors(model.config, device))
-    _, monitor = ipc_weights.follower_attach(
+    _, monitor = follower_attach(
         shared, directory, timeout_s=ATTACH_TIMEOUT_SECONDS, model_path=checkpoint
     )
     bind_ar_weights(
