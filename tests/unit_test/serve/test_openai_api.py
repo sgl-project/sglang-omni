@@ -1272,6 +1272,187 @@ class TextDeltaCoordinator:
             )
 
 
+class TextThenAudioCoordinator:
+    async def submit(self, request_id: str, omni_request: OmniRequest) -> object:
+        return {"text": "cut", "finish_reason": "length"}
+
+    async def stream(
+        self, request_id: str, omni_request: OmniRequest
+    ) -> AsyncIterator[StreamMessage]:
+        yield StreamMessage(
+            request_id=request_id,
+            from_stage="decode",
+            chunk={
+                "modality": "text",
+                "text": "cut",
+                "finish_reason": "length",
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 3,
+                    "total_tokens": 103,
+                },
+            },
+            stage_name="decode",
+            modality="text",
+        )
+        yield StreamMessage(
+            request_id=request_id,
+            from_stage="vocoder",
+            chunk={
+                "modality": "audio",
+                "audio": b"\x00" * 320,
+                "finish_reason": "stop",
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 24,
+                    "total_tokens": 24,
+                },
+            },
+            stage_name="vocoder",
+            modality="audio",
+        )
+
+
+class AudioThenTextCoordinator:
+    async def submit(self, request_id: str, omni_request: OmniRequest) -> object:
+        return {"text": "cut", "finish_reason": "length"}
+
+    async def stream(
+        self, request_id: str, omni_request: OmniRequest
+    ) -> AsyncIterator[StreamMessage]:
+        yield StreamMessage(
+            request_id=request_id,
+            from_stage="vocoder",
+            chunk={
+                "modality": "audio",
+                "audio": b"\x00" * 320,
+                "finish_reason": "stop",
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 24,
+                    "total_tokens": 24,
+                },
+            },
+            stage_name="vocoder",
+            modality="audio",
+        )
+        yield StreamMessage(
+            request_id=request_id,
+            from_stage="decode",
+            chunk={"modality": "text", "text": "cut", "finish_reason": "length"},
+            stage_name="decode",
+            modality="text",
+        )
+
+
+def test_chat_stream_audio_only_keeps_audio_usage_when_decode_has_none() -> None:
+    app = create_app(Client(AudioThenTextCoordinator()), model_name="qwen3-omni")
+    body = {
+        "messages": [{"role": "user", "content": "describe"}],
+        "modalities": ["audio"],
+        "audio": {"voice": "ryan", "format": "wav"},
+        "stream": True,
+    }
+
+    response = TestClient(app).post("/v1/chat/completions", json=body)
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    usages = [event["usage"] for event in events if event.get("usage")]
+
+    assert usages[-1]["completion_tokens"] == 24
+
+
+def test_chat_stream_drops_audio_usage_when_the_text_terminal_has_none() -> None:
+    app = create_app(Client(AudioThenTextCoordinator()), model_name="aura")
+    body = {
+        "messages": [{"role": "user", "content": "describe"}],
+        "modalities": ["text", "audio"],
+        "audio": {"voice": "ryan", "format": "wav"},
+        "stream": True,
+    }
+
+    response = TestClient(app).post("/v1/chat/completions", json=body)
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    finishes = [
+        choice["finish_reason"]
+        for event in events
+        for choice in event["choices"]
+        if choice.get("finish_reason")
+    ]
+
+    assert finishes == ["length"]
+    assert [event["usage"] for event in events if event.get("usage")] == []
+
+
+def test_chat_stream_audio_only_keeps_the_audio_terminal_metadata() -> None:
+    app = create_app(Client(TextThenAudioCoordinator()), model_name="qwen3-omni")
+    body = {
+        "messages": [{"role": "user", "content": "describe"}],
+        "modalities": ["audio"],
+        "audio": {"voice": "ryan", "format": "wav"},
+        "stream": True,
+    }
+
+    response = TestClient(app).post("/v1/chat/completions", json=body)
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    finishes = [
+        choice["finish_reason"]
+        for event in events
+        for choice in event["choices"]
+        if choice.get("finish_reason")
+    ]
+    usages = [event["usage"] for event in events if event.get("usage")]
+
+    assert finishes == ["stop"]
+    assert usages[-1]["completion_tokens"] == 24
+
+
+def test_chat_stream_keeps_the_text_terminal_completion_metadata() -> None:
+    app = create_app(Client(TextThenAudioCoordinator()), model_name="aura")
+    body = {
+        "messages": [{"role": "user", "content": "describe"}],
+        "modalities": ["text", "audio"],
+        "audio": {"voice": "ryan", "format": "wav"},
+        "stream": True,
+    }
+
+    response = TestClient(app).post("/v1/chat/completions", json=body)
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    finishes = [
+        choice["finish_reason"]
+        for event in events
+        for choice in event["choices"]
+        if choice.get("finish_reason")
+    ]
+    usages = [event["usage"] for event in events if event.get("usage")]
+    audio = [
+        choice["delta"]["audio"]
+        for event in events
+        for choice in event["choices"]
+        if (choice.get("delta") or {}).get("audio")
+    ]
+
+    assert finishes == ["length"]
+    assert usages[-1]["completion_tokens"] == 3
+    assert usages[-1]["prompt_tokens"] == 100
+    assert audio
+
+
 SPEC_TOKENS_DETAILS: SpecTokensDetailsDict = {
     "spec_accept_rate": 0.5,
     "spec_accept_length": 2.5,

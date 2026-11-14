@@ -75,8 +75,8 @@ def resolve_audio_source(payload: StagePayload) -> object:
     return inputs
 
 
-def police_request_audio(source: object) -> object:
-    """Apply the server's media policy to an audio path or URL from a request.
+def police_request_media(source: object) -> object:
+    """Apply the server's media policy to a media path or URL from a request.
 
     Without a policy the source is read as before. With one, a bare path or
     file URL must sit in the allowed directory, and an http(s) URL is fetched
@@ -128,7 +128,7 @@ def prepare_audio(
 ) -> PreparedAudio:
     """Resolve, load, and fingerprint the payload's audio for one request."""
 
-    source = police_request_audio(source_resolver(payload))
+    source = police_request_media(source_resolver(payload))
     waveform = load_audio(
         source,
         source_name=source_name,
