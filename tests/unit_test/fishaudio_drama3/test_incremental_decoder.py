@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -28,6 +30,7 @@ from sglang_omni.models.fishaudio_drama3.vocoder import (
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import DAC
 from sglang_omni.models.fishaudio_s2_pro.stages import load_codec
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.profiler import event_recorder
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from tests.unit_test.fishaudio_drama3.test_vocoder import (
     NUM_CODEBOOKS,
@@ -89,6 +92,7 @@ def scheduler_with(
     stream_slot_count: int = 8,
     max_stream_frames: int = 100000,
     stream_crossfade_samples: int = 0,
+    decode_step_message_budget: int = 8,
 ) -> Drama3IncrementalVocoderScheduler:
     window_kwargs = Drama3VocoderFactoryArgs().model_dump(
         include={
@@ -109,6 +113,7 @@ def scheduler_with(
         device="cpu",
         decode_window=None,
         stream_crossfade_samples=stream_crossfade_samples,
+        decode_step_message_budget=decode_step_message_budget,
         **window_kwargs,
     )
 
@@ -117,9 +122,12 @@ def send_frames(
     scheduler: Drama3IncrementalVocoderScheduler,
     request_id: str,
     frames: torch.Tensor,
+    *,
+    chunk_id: int = 0,
 ) -> None:
     scheduler.handle_stream_chunk(
-        request_id, StreamItem(chunk_id=0, data=frames.T, from_stage="tts_engine")
+        request_id,
+        StreamItem(chunk_id=chunk_id, data=frames.T, from_stage="tts_engine"),
     )
 
 
@@ -215,6 +223,56 @@ def test_stream_frames_accepts_the_chunk_id_the_parent_scheduler_passes() -> Non
 
     assert scheduler.streams["a"].held_frame_count == 3
     assert window_decoder.decodes == []
+
+
+def test_every_incremental_window_records_its_decode(tmp_path: Path) -> None:
+    batches = (
+        [("a", 1, 0, 4), ("b", 2, 0, 4)],
+        [("a", 3, 0, 10), ("b", 4, 0, 10)],
+        [("a", -1, 1, 3), ("b", -1, 1, 3)],
+    )
+    path = event_recorder.get_recorder().start("drama3", str(tmp_path), "vocoder")
+    try:
+        window_decoder = RecordingWindowDecoder()
+        scheduler = scheduler_with(window_decoder, decode_step_message_budget=1000)
+        frames = numbered_frames(17)
+        send_frames(scheduler, "a", frames[:4], chunk_id=1)
+        send_frames(scheduler, "b", frames[:4], chunk_id=2)
+        scheduler.run_ready_step()
+        assert window_decoder.decodes[0]["frames"] == [4, 4]
+        send_frames(scheduler, "a", frames[4:14], chunk_id=3)
+        send_frames(scheduler, "b", frames[4:14], chunk_id=4)
+        finish(scheduler, "a", frames)
+        finish(scheduler, "b", frames)
+        run_until_idle(scheduler)
+        drained(scheduler)
+    finally:
+        event_recorder.get_recorder().stop(wait=True)
+
+    events = [json.loads(line) for line in Path(path).read_text().splitlines()]
+    assert [
+        (
+            event["request_id"],
+            event["event_name"].removeprefix("drama3_vocoder_window_decode_"),
+            event["metadata"]["window_index"],
+            event["metadata"]["chunk_id"],
+            event["metadata"]["is_final"],
+            event["metadata"]["emitted_frames"],
+            event["metadata"]["decoded_frames"],
+        )
+        for event in events
+    ] == [
+        (request_id, phase, window_index, chunk_id, is_final, count, count)
+        for window_index, rows in enumerate(batches)
+        for phase in ("started", "finished")
+        for request_id, chunk_id, is_final, count in rows
+    ]
+    assert [event["metadata"]["emitted_audio_s"] for event in events] == pytest.approx(
+        [
+            decoded * SAMPLES_PER_FRAME / scheduler.codec.sample_rate
+            for decoded in (0, 0, 0, 0, 4, 4, 4, 4, 14, 14, 14, 14)
+        ]
+    )
 
 
 def feed_chunks_without_draining(

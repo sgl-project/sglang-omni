@@ -404,14 +404,24 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
 
 
 @dataclass(kw_only=True)
+class QueuedIncrementalWindow:
+    codes: torch.Tensor
+    chunk_id: int
+    is_final: int
+
+
+@dataclass(kw_only=True)
 class IncrementalStream:
     arrival: int
     held: list[torch.Tensor] = field(default_factory=list)
     held_frame_count: int = 0
     received_frame_count: int = 0
     window_count: int = 0
-    windows: collections.deque[torch.Tensor] = field(default_factory=collections.deque)
+    windows: collections.deque[QueuedIncrementalWindow] = field(
+        default_factory=collections.deque
+    )
     decoded_frame_count: int = 0
+    decoded_window_count: int = 0
     slot: int | None = None
     is_done: bool = False
 
@@ -509,7 +519,6 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
         *,
         chunk_id: int = -1,
     ) -> list[OutgoingMessage]:
-        del chunk_id
         stream = self.stream_of(request_id)
         frame_count = int(frame_codes.shape[1])
         if frame_count == 0:
@@ -534,7 +543,13 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
         held = torch.cat(stream.held, dim=1)
         first_frame = 0
         while stream.held_frame_count - first_frame >= stride:
-            stream.windows.append(held[:, first_frame : first_frame + stride])
+            stream.windows.append(
+                QueuedIncrementalWindow(
+                    codes=held[:, first_frame : first_frame + stride],
+                    chunk_id=chunk_id,
+                    is_final=0,
+                )
+            )
             first_frame += stride
             stream.window_count += 1
             stride = self.stride_of_window(stream.window_count)
@@ -554,7 +569,13 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
             pass
         self.stream_frames(request_id, frames[stream.received_frame_count :].T)
         if stream.held_frame_count > 0:
-            stream.windows.append(torch.cat(stream.held, dim=1))
+            stream.windows.append(
+                QueuedIncrementalWindow(
+                    codes=torch.cat(stream.held, dim=1),
+                    chunk_id=-1,
+                    is_final=1,
+                )
+            )
             stream.held = []
             stream.held_frame_count = 0
         else:
@@ -606,11 +627,11 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
         else:
             pass
         length_of = self.window_decoder.window_length_for
-        group_length = length_of(int(ready[0][1].windows[0].shape[1]))
+        group_length = length_of(int(ready[0][1].windows[0].codes.shape[1]))
         slotless_capacity = len(self.free_slots)
         group: list[tuple[str, IncrementalStream]] = []
         for request_id, stream in ready:
-            if length_of(int(stream.windows[0].shape[1])) != group_length:
+            if length_of(int(stream.windows[0].codes.shape[1])) != group_length:
                 continue
             elif stream.slot is None and slotless_capacity == 0:
                 continue
@@ -646,6 +667,24 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
 
+    def incremental_decode_event_metadata(
+        self, stream: IncrementalStream, window: QueuedIncrementalWindow
+    ) -> dict[str, int | float]:
+        window_frames = int(window.codes.shape[1])
+        emitted_audio_s = (
+            stream.decoded_frame_count
+            * self.codec.frame_length
+            / self.codec.sample_rate
+        )
+        return {
+            "window_index": stream.decoded_window_count,
+            "chunk_id": window.chunk_id,
+            "is_final": window.is_final,
+            "emitted_frames": window_frames,
+            "decoded_frames": window_frames,
+            "emitted_audio_s": emitted_audio_s,
+        }
+
     def decode_group(self, group: list[tuple[str, IncrementalStream]]) -> None:
         new_slots: list[int] = []
         for _, stream in group:
@@ -654,7 +693,23 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
                 new_slots.append(stream.slot)
             else:
                 pass
-        windows = [stream.windows[0] for _, stream in group]
+        queued = [stream.windows[0] for _, stream in group]
+        windows = [window.codes for window in queued]
+        decode_metadata: list[dict[str, int | float]] | None = None
+        if get_recorder().is_active():
+            decode_metadata = [
+                self.incremental_decode_event_metadata(stream, window)
+                for (_, stream), window in zip(group, queued, strict=True)
+            ]
+            for (request_id, _), metadata in zip(group, decode_metadata, strict=True):
+                emit(
+                    request_id=request_id,
+                    stage=None,
+                    event_name="drama3_vocoder_window_decode_started",
+                    metadata=metadata,
+                )
+        else:
+            pass
         audio = self.window_decoder.decode(
             windows,
             [stream.slot for _, stream in group],
@@ -666,7 +721,7 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
         finished: list[str] = []
         for row, (request_id, stream) in enumerate(group):
             window = stream.windows.popleft()
-            window_frames = int(window.shape[1])
+            window_frames = int(window.codes.shape[1])
             stream.decoded_frame_count += window_frames
             self.outbox.put(
                 OutgoingMessage(
@@ -679,6 +734,16 @@ class Drama3IncrementalVocoderScheduler(Drama3VocoderScheduler):
                     metadata={"modality": "audio"},
                 )
             )
+            if decode_metadata is not None:
+                emit(
+                    request_id=request_id,
+                    stage=None,
+                    event_name="drama3_vocoder_window_decode_finished",
+                    metadata=decode_metadata[row],
+                )
+            else:
+                pass
+            stream.decoded_window_count += 1
             if stream.is_done and not stream.windows:
                 finished.append(request_id)
             else:
