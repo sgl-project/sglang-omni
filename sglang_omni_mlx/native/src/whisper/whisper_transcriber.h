@@ -22,8 +22,8 @@ namespace whisper {
 inline constexpr int kDefaultDraftSteps = 7;
 
 struct WhisperOptions {
-  // An ISO code or an English language name; blank or unknown leaves the
-  // language token out.
+  // An ISO code or an English language name; blank or unknown detects the
+  // language from the first window for multilingual checkpoints.
   std::string language;
   // Zero is the Swift port's default budget; each window keeps within the
   // text context.
@@ -65,7 +65,7 @@ private:
   // suppressed logits: sampled at a positive temperature, else the most likely.
   mlx::core::array NextToken(mlx::core::array logits, bool first_step,
                              float temperature) const;
-  WindowResult TranscribeWindow(const std::vector<float> &window_samples,
+  WindowResult TranscribeWindow(const mlx::core::array &encoder_states,
                                 const std::vector<int> &prompt_ids,
                                 int max_new_tokens, float temperature,
                                 const std::atomic<bool> &cancel) const;

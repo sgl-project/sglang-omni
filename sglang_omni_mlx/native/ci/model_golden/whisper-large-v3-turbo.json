@@ -11,7 +11,7 @@
   "none": "en"
  },
  "baseline": {
-  "source": "Original Voxt: Swift on MLX Audio (Voxt Phase 1 benchmark, in-app A0, 392/392 texts identical to native)",
+  "source": "Legacy baseline before automatic language detection: Original Voxt: Swift on MLX Audio (Voxt Phase 1 benchmark, in-app A0, 392/392 texts identical to native)",
   "wer_en": 0.06842,
   "cer_zh": 0.12247,
   "mer_mixed": 0.18081
@@ -21,11 +21,11 @@
   "min_identical": 0.8
  },
  "devices": {
-  "Apple M1 Pro": {
+  "Apple M4": {
    "metrics": {
-    "wer_en": 0.06842,
-    "cer_zh": 0.12247,
-    "mer_mixed": 0.18081
+    "wer_en": 0.06773,
+    "cer_zh": 0.12198,
+    "mer_mixed": 0.18338
    },
    "clips": {
     "0000_en_short": {
@@ -221,9 +221,9 @@
      "finish_reason": "stop"
     },
     "0032_en_short": {
-     "text": "\"'I won't tremble tomorrow,' thought the fir-tree.",
+     "text": "\"'I won't tremble to-morrow,' thought the fir-tree.",
      "language": "en",
-     "generated_token_count": 15,
+     "generated_token_count": 18,
      "finish_reason": "stop"
     },
     "0033_en_short": {
@@ -563,9 +563,9 @@
      "finish_reason": "stop"
     },
     "0089_en_mid": {
-     "text": "now for one little half hour she had been a woman talking to a boy no not even that she had been talking just talking there were no persons in the conversation just things one thing cotton",
+     "text": "now for one little half-hour she had been a woman talking to a boy no not even that she had been talking just talking there were no persons in the conversation just things one thing cotton",
      "language": "en",
-     "generated_token_count": 37,
+     "generated_token_count": 38,
      "finish_reason": "stop"
     },
     "0090_en_mid": {
@@ -653,9 +653,9 @@
      "finish_reason": "stop"
     },
     "0104_en_mid": {
-     "text": "Meanwhile, he had called upon me to make a report of the three-wire system, known in England as the Hopkinson, both Dr. John Hopkinson and Mr. Edison being independent inventors at practically the same time.",
+     "text": "meanwhile he had called upon me to make a report of the three-wire system known in england as the hopkinson both dr john hopkinson and mr edison being independent inventors at practically the same time",
      "language": "en",
-     "generated_token_count": 46,
+     "generated_token_count": 44,
      "finish_reason": "stop"
     },
     "0105_en_mid": {
@@ -671,7 +671,7 @@
      "finish_reason": "stop"
     },
     "0107_en_mid": {
-     "text": "But poor Rachel Lake had more than that stoical hypocrisy which enables the tortured spirits of her sex to lift a pale face through the flames and smile.",
+     "text": "but poor rachel lake had more than that stoical hypocrisy which enables the tortured spirits of her sex to lift a pale face through the flames and smile",
      "language": "en",
      "generated_token_count": 31,
      "finish_reason": "stop"
@@ -959,7 +959,7 @@
      "finish_reason": "stop"
     },
     "0155_zh_short": {
-     "text": "然而在这方面深耕去有点像一个国家",
+     "text": "然而在这方面深根区有点像一个国家",
      "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
@@ -1301,9 +1301,9 @@
      "finish_reason": "stop"
     },
     "0212_zh_mid": {
-     "text": "更传统的教堂常常在复活节周末的周六晚上举行复活节首页活动,会众通常在午夜终身敲响之时涌入庆典,庆祝基督的复活。",
+     "text": "更传统的教堂常常在复活节周末的周六晚上举行复活节首页活动会众通常在午夜终身敲响之时涌入庆典庆祝基督的复活",
      "language": "zh",
-     "generated_token_count": 73,
+     "generated_token_count": 70,
      "finish_reason": "stop"
     },
     "0213_zh_mid": {
@@ -1379,9 +1379,9 @@
      "finish_reason": "stop"
     },
     "0225_zh_mid": {
-     "text": "昨天上午,土耳其加吉安纳普的警察总部发生了一起汽车炸弹爆炸事件该事件导致两名警察死亡,20余人受伤",
+     "text": "昨天上午,土耳其加吉安纳普的警察总部发生了一起汽车炸弹爆炸事件,该事件导致两名警察死亡,20余人受伤。",
      "language": "zh",
-     "generated_token_count": 59,
+     "generated_token_count": 61,
      "finish_reason": "stop"
     },
     "0226_zh_mid": {
@@ -1433,9 +1433,9 @@
      "finish_reason": "stop"
     },
     "0234_zh_mid": {
-     "text": "加利福尼亚州 赵阿诺德·史瓦辛格签署了一项法案禁止向未成年人出售或出租暴力电子游戏",
+     "text": "加利福尼亚州 赵·阿诺德·史瓦辛格签署了一项法案禁止向未成年人出售或出租暴力电子游戏",
      "language": "zh",
-     "generated_token_count": 56,
+     "generated_token_count": 57,
      "finish_reason": "stop"
     },
     "0235_zh_mid": {
@@ -1523,9 +1523,9 @@
      "finish_reason": "stop"
     },
     "0249_zh_mid": {
-     "text": "国会从2005才年开始资助该扫黄倡议并规定联邦调查局FBI必须指派10名探员专门打击成人色情",
+     "text": "国会从2005财年开始资助该扫黄倡议并规定联邦调查局FBI必须指派10名探员专门打击成人色情",
      "language": "zh",
-     "generated_token_count": 58,
+     "generated_token_count": 59,
      "finish_reason": "stop"
     },
     "0250_zh_short": {
@@ -1710,385 +1710,385 @@
     },
     "0280_mixed": {
      "text": "那你现在会不会去gym打那个B球",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 12,
      "finish_reason": "stop"
     },
     "0281_mixed": {
      "text": "Self-driving方面,自動駕駛方面",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
     },
     "0282_mixed": {
-     "text": "但是如果你就是单纯的sell这个technology就是说告诉他就是我的我的self-driving这个function是perfect",
-     "language": null,
-     "generated_token_count": 26,
+     "text": "但是如果你就是单纯的sell这个technology就是说告诉他就是我的我的self driving这个function is perfect",
+     "language": "zh",
+     "generated_token_count": 24,
      "finish_reason": "stop"
     },
     "0283_mixed": {
      "text": "然后准备了一个月考完之后又用了一个月准备GMAT",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 23,
      "finish_reason": "stop"
     },
     "0284_mixed": {
-     "text": "因為,失敗是,一萬人們的失敗",
-     "language": null,
+     "text": "因為,失敗是,一萬人們會失敗",
+     "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
     },
     "0285_mixed": {
      "text": "听起来也蛮make sense我当初来",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 12,
      "finish_reason": "stop"
     },
     "0286_mixed": {
-     "text": "對,然後當時, that's the reason I know the famous player, McGrady.",
-     "language": null,
-     "generated_token_count": 20,
+     "text": "对,然后当时,that's the reason I know the famous player, McGrady",
+     "language": "zh",
+     "generated_token_count": 19,
      "finish_reason": "stop"
     },
     "0287_mixed": {
      "text": "就吃的方面还算是normal",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0288_mixed": {
      "text": "So it will work slowly and slowly and then you should",
-     "language": null,
+     "language": "en",
      "generated_token_count": 11,
      "finish_reason": "stop"
     },
     "0289_mixed": {
      "text": "聊一些你现在做什么research 方向",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 11,
      "finish_reason": "stop"
     },
     "0290_mixed": {
-     "text": "所以但是跟这个major没关系的你说的major可能是哦我接下来apply到graduate school的时候我要往cavular science我要往electrical engineering",
-     "language": null,
+     "text": "所以但是跟这个major没关系的你说的major可能是哦我接下来apply到graduate school的时候我要往caputure science我要往electrical engineering",
+     "language": "zh",
      "generated_token_count": 38,
      "finish_reason": "stop"
     },
     "0291_mixed": {
      "text": "是因為比較靈活嗎",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 7,
      "finish_reason": "stop"
     },
     "0292_mixed": {
      "text": "那我专案是那个ISMInformation Systems Management",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0293_mixed": {
      "text": "我就在那个group info 里面",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0294_mixed": {
-     "text": "個人的personalities. I want to go",
-     "language": null,
-     "generated_token_count": 9,
+     "text": "Go into personalities. Oh. I want to go...",
+     "language": "en",
+     "generated_token_count": 11,
      "finish_reason": "stop"
     },
     "0295_mixed": {
-     "text": "Ok,所以我come from 福建",
-     "language": null,
+     "text": "OK,所以我come from 福建",
+     "language": "zh",
      "generated_token_count": 9,
      "finish_reason": "stop"
     },
     "0296_mixed": {
      "text": "所以我现在主要在做Dialog System相关,就是对话系统的研究",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 24,
      "finish_reason": "stop"
     },
     "0297_mixed": {
      "text": "就是你申请那些university你不是要apply就是",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
     },
     "0298_mixed": {
      "text": "对就是那些一些basketball或者soccer对",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0299_mixed": {
      "text": "你可以邀一些你的就是female friends",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 9,
      "finish_reason": "stop"
     },
     "0300_mixed": {
      "text": "所以当时候就很",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 5,
      "finish_reason": "stop"
     },
     "0301_mixed": {
      "text": "对因为就是很经常就是我们早上上午有一个lecture刚上完然后中午去听一个lunch talk",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 28,
      "finish_reason": "stop"
     },
     "0302_mixed": {
      "text": "我們之前有聊過一個AI Robert",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0303_mixed": {
      "text": "还是做Software的方向",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0304_mixed": {
      "text": "他们之所以不用阿里配的原因就是因为他们觉得阿里配很轻易的就能",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 23,
      "finish_reason": "stop"
     },
     "0305_mixed": {
      "text": "是不会有这种意外发生的但是你换到真实的scenario又是另一回事",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 26,
      "finish_reason": "stop"
     },
     "0306_mixed": {
      "text": "那我小时候我也没有smartphone但是呢我是小时候比较早接触的那个电脑",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 26,
      "finish_reason": "stop"
     },
     "0307_mixed": {
      "text": "有那种活动或者是你去参加launch talk就会请一些比如说fin tech就是你感兴趣的fin tech然后或者是AI啊",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 37,
      "finish_reason": "stop"
     },
     "0308_mixed": {
      "text": "但我觉得3 pointer是一个非常efficient的方式去得分",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
     },
     "0309_mixed": {
-     "text": "那你有没有什么favorite food?",
-     "language": null,
-     "generated_token_count": 9,
+     "text": "那你有没有什么favorite food",
+     "language": "zh",
+     "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0310_mixed": {
      "text": "是不是像欧西亚那种语音识别",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
     },
     "0311_mixed": {
      "text": "认真的看那个协议条款就是你要他其实是要先拿到你的consent然后才就是说你统不统用门去collect你的这些data",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 44,
      "finish_reason": "stop"
     },
     "0312_mixed": {
      "text": "就是我可以就是swing properly",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 7,
      "finish_reason": "stop"
     },
     "0313_mixed": {
      "text": "and then eat for dinner, eat for lunch, eat for breakfast, and then study and go to bed.",
-     "language": null,
+     "language": "en",
      "generated_token_count": 22,
      "finish_reason": "stop"
     },
     "0314_mixed": {
-     "text": "但是像rulling或者是聚中的这种东西就比较不可能男生肯定会比女生",
-     "language": null,
-     "generated_token_count": 30,
+     "text": "但是像Running或者是聚中的这种东西就比较不可能男生肯定会比女生",
+     "language": "zh",
+     "generated_token_count": 29,
      "finish_reason": "stop"
     },
     "0315_mixed": {
      "text": "因为你不可能要你的female friends去走我们去play basketball",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
     },
     "0316_mixed": {
      "text": "大四上学期好像是反正好像是六月份的时候才开始准备IELTS",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 24,
      "finish_reason": "stop"
     },
     "0317_mixed": {
      "text": "也是英語方向為主,整個亞洲這樣看起來不是Hong Kong,就是Singapore",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 24,
      "finish_reason": "stop"
     },
     "0318_mixed": {
-     "text": "所以我的我的 parents,我的妈妈是chemistry老师,我的爸爸是history老师。",
-     "language": null,
-     "generated_token_count": 21,
+     "text": "所以我的我的 parents我的妈妈是chemistry老师and我的爸爸是history老师",
+     "language": "zh",
+     "generated_token_count": 19,
      "finish_reason": "stop"
     },
     "0319_mixed": {
      "text": "然后麦克雷迪他本身打球也是特别帅的那一种",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 22,
      "finish_reason": "stop"
     },
     "0320_mixed": {
-     "text": "Yeah,因为体力比较小",
-     "language": null,
-     "generated_token_count": 9,
+     "text": "Yeah, because the weight is less.",
+     "language": "en",
+     "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0321_mixed": {
      "text": "或者就是往software方向走",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0322_mixed": {
      "text": "我们还是不能够trust AI",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0323_mixed": {
      "text": "对,然后我们邮寄的时候我们会有分那个",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 14,
      "finish_reason": "stop"
     },
     "0324_mixed": {
      "text": "我觉得香港这样比较in between就是western还有eastern的那种",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 17,
      "finish_reason": "stop"
     },
     "0325_mixed": {
-     "text": "but for iPhone it will be more",
-     "language": null,
-     "generated_token_count": 7,
+     "text": "But for iPhone it will be more...",
+     "language": "en",
+     "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0326_mixed": {
-     "text": "其实呢,Bemington有一个就是Bemington因为Basketball的话主要是",
-     "language": null,
-     "generated_token_count": 20,
+     "text": "其实呢,Bemmington有一个就是Bemmington因为Basketball的话主要是",
+     "language": "zh",
+     "generated_token_count": 22,
      "finish_reason": "stop"
     },
     "0327_mixed": {
      "text": "我没有 mention any drawback我就告诉你我这个 function它能 work它能 work properly",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 19,
      "finish_reason": "stop"
     },
     "0328_mixed": {
      "text": "正妆然後去拍Portrait拍個人的還有幾個",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
     },
     "0329_mixed": {
-     "text": "其实也是之前做的一个project",
-     "language": null,
+     "text": "其实也是之前做了一个project",
+     "language": "zh",
      "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0330_mixed": {
      "text": "做一些油化Cleaning啊",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0331_mixed": {
      "text": "对 反正我们就只能做一些这种比较entry代表的东西",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 21,
      "finish_reason": "stop"
     },
     "0332_mixed": {
      "text": "所以你還蠻喜歡也蠻習慣HonKong Lite嗎?就是",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 22,
      "finish_reason": "stop"
     },
     "0333_mixed": {
      "text": "大多數那一周是在床上睡覺",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0334_mixed": {
      "text": "因为GPA不是一个硬性条件嘛",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 11,
      "finish_reason": "stop"
     },
     "0335_mixed": {
      "text": "作业还是能让我们有对学到的一些concepts能有一些进一步的运用",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 26,
      "finish_reason": "stop"
     },
     "0336_mixed": {
      "text": "所以我们现在开始talk about our research topics",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 9,
      "finish_reason": "stop"
     },
     "0337_mixed": {
      "text": "那这个又是另一回事那就是第三方那个take this responsibility",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 16,
      "finish_reason": "stop"
     },
     "0338_mixed": {
      "text": "就是像那些就是没有deadline的时候也不会那么strength",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
     },
     "0339_mixed": {
      "text": "就是他的任务就是说给你一个article",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 12,
      "finish_reason": "stop"
     },
     "0340_mixed": {
      "text": "第二个呢它的测试也很很复杂就是说你在测试的时候你只能 simulate 这个scenario",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 31,
      "finish_reason": "stop"
     },
     "0341_mixed": {
-     "text": "哦,那是你们刚开始不会拍那个portrait吗?",
-     "language": null,
-     "generated_token_count": 14,
+     "text": "哦 那是你们刚开始不会拍那个portrait吗",
+     "language": "zh",
+     "generated_token_count": 12,
      "finish_reason": "stop"
     },
     "0342_mixed": {
      "text": "AI可以就是很大很大程度上改善我们的生活比如说什么一些translation啊还有一些就是",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 27,
      "finish_reason": "stop"
     },
     "0343_mixed": {
      "text": "可以用mobile payments但是大多数一些奢侈品品牌或者是一些mall里面",
-     "language": null,
+     "language": "zh",
      "generated_token_count": 25,
      "finish_reason": "stop"
     },
@@ -2117,7 +2117,7 @@
      "finish_reason": "stop"
     },
     "0348_en_long": {
-     "text": "Saturday, August 15th. The sea unbroken all round. No land in sight. The horizon seems extremely distant. All my danger and sufferings were needed to strike a spark of human feeling out of him. But now that I am well, his nature has resumed its sway. You seem anxious, my uncle, I said, seeing him continually with his glass to his eye. Anxious? be, with less reason than now. I am not complaining that the rate is slow, but that the sea is so wide. We are losing time, and the fact is, I have not come all this way to take a little sail upon a pond on a raft. He called this sea a pond, and I long voyage taking a little sail. Therefore, don't talk to me about views and prospects. I take this as my answer, and I leave the professor to bite his lips with patients.",
+     "text": "Saturday, August 15th. The sea unbroken all round. No land in sight. The horizon seems extremely distant. All my danger and sufferings were needed to strike a spark of human feeling out of him. But now that I am well, his nature has resumed its sway. You seem anxious, my uncle, I said, seeing him continually with his glass to his eye. Anxious? be, with less reason than now. I am not complaining that the raid is slow, but that the sea is so wide. We are losing time, and the fact is, I have not come all this way to take a little sail upon a pond on a raft. He called this sea a pond, and I long voyage taking a little sail. Therefore, don't talk to me about views and prospects. I take this as my answer, and I leave the professor to bite his lips with patients.",
      "language": "en",
      "generated_token_count": 184,
      "finish_reason": "stop"
@@ -2135,9 +2135,9 @@
      "finish_reason": "stop"
     },
     "0351_en_long": {
-     "text": "Length of service, fourteen years, three months, and five days. He seemed born to please without being conscious of the power he possessed. It must be owned, and no one was more ready to confess it than himself, that his literary attainments were by no means of a high order. We don't spin tops, is a favorite saying, amongst artillery officers, indicating that they do not shirk their duty by frivolous pursuits. naturally idle, was very much given to spinning tops. Sometimes he would wander on foot upon the sandy shore, and sometimes he would enjoy a ride along the summit of the cliff, altogether being in no hurry at all to bring his task to an end. No cathedral, not even Burgos itself, could vie with the church at Montmartre. Ben Zouf's most ambitious desire was to induce the captain to go with him and end his days in his much-loved and so incessantly were servodac's ears besieged with descriptions of the unparalleled beauties and advantages of this eighteenth arrondissement of paris that he could scarcely hear the name of montmartre without a conscious thrill of aversion",
+     "text": "Length of service, fourteen years, three months, and five days. He seemed born to please without being conscious of the power he possessed. It must be owned, and no one was more ready to confess it than himself, that his literary attainments were by no means of a high order. We don't spin tops, is a favorite saying, amongst artillery officers, indicating that they do not shirk their duty by frivolous pursuits. naturally idle, was very much given to spinning tops. Sometimes he would wander on foot upon the sandy shore, and sometimes he would enjoy a ride along the summit of the cliff, altogether being in no hurry at all to bring his task to an end. No cathedral, not even Burgos itself, could vie with the church at Montmartre. Ben Zouf's most ambitious desire was to induce the captain to go with him and end his days in his much-loved home. and so incessantly were servodac's ears besieged with descriptions of the unparalleled beauties and advantages of this eighteenth arrondissement of paris that he could scarcely hear the name of montmartre without a conscious thrill of aversion",
      "language": "en",
-     "generated_token_count": 243,
+     "generated_token_count": 245,
      "finish_reason": "stop"
     },
     "0352_en_long": {
@@ -2207,7 +2207,7 @@
      "finish_reason": "stop"
     },
     "0363_zh_long": {
-     "text": "科学家们可以得出结论,暗物质对其他暗物质的影响方式与普动物质相同 因为地桥更薄,所以近的一面可能会有更多的阴暗部,熔岩更容易上升到地标。它会攻击任何进入水中的东西,即使像霸王龙之类的巨型恐龙也不是它的对手。 新项目的人的手段",
+     "text": "科学家们可以得出结论,暗物质对其他暗物质的影响方式与普通物质相同 因为地桥更薄,所以近的一面可能会有更多的阴暗部,熔岩更容易上升到地标。它会攻击任何进入水中的东西,即使像霸王龙之类的巨型恐龙也不是它的对手。 新项目的人的手段",
      "language": "zh",
      "generated_token_count": 124,
      "finish_reason": "stop"
@@ -2363,9 +2363,9 @@
      "finish_reason": "stop"
     },
     "0389_snr10_en": {
-     "text": "yes i need repose many things have agitated me today both in mind and body when you return to-morrow i shall no longer be the same man",
+     "text": "yes i need repose many things have agitated me to-day both in mind and body when you return to-morrow i shall no longer be the same man",
      "language": "en",
-     "generated_token_count": 32,
+     "generated_token_count": 34,
      "finish_reason": "stop"
     },
     "0390_snr10_zh": {
