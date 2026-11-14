@@ -12,4 +12,4 @@ stages:
       speculative_num_draft_tokens: 16
       max_running_requests: 16
       cuda_graph_max_bs: 16
-      mem_fraction_static: 0.80
+      mem_fraction_static: 0.84
