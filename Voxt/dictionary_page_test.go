@@ -255,6 +255,11 @@ func dictShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	a.dv.notesQuery, a.dv.notesFind = "", finder{}
 	scrollToText(tt, i18n.T("How it is used"))
 	save("page-dictionary-notes-example")
+	// The parts of Transcribe's request, with a short dictionary so they fit.
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = "" })
+	frames(tt)
+	scrollToText(tt, "+ "+i18n.T("Personal dictionary"))
+	save("page-dictionary-notes-example-parts")
 	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = longNotes(200) })
 	frames(tt)
 	scrollToText(tt, "| Term199 |")
@@ -357,6 +362,28 @@ func TestDictionaryNotes(t *testing.T) {
 	for _, want := range []string{"个人词典", "加到语言模型的提示词里", "怎么使用", "语言模型收到的内容"} {
 		if !has(tt, want) {
 			t.Errorf("no %q in %q", want, firstTexts(tt))
+		}
+	}
+}
+
+// TestDictionaryNotesExampleInputCard: How it is used shows the "Your
+// input (the selected text)" card only for Rewrite, the one feature whose
+// request carries a selection; Transcribe's and Translate's examples are
+// speech only (issue #3954). Switching back and forth keeps them apart.
+func TestDictionaryNotesExampleInputCard(t *testing.T) {
+	a, tt := dictTester(t)
+	a.loadDict()
+	frames(tt)
+	clickSegment(t, tt, "Dictionary view", dictNotesTab, 2)
+	card := "+ Your input (the selected text)"
+	for _, step := range []struct {
+		segment int
+		want    bool
+	}{{0, false}, {1, false}, {2, true}, {0, false}, {2, true}, {1, false}} {
+		clickSegment(t, tt, "Example for", step.segment, 3)
+		frames(tt)
+		if got := has(tt, card); got != step.want {
+			t.Fatalf("%s: input card shown %v, want %v: %q", notesFeatures[step.segment], got, step.want, firstTexts(tt))
 		}
 	}
 }
