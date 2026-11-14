@@ -114,6 +114,7 @@ def make_engine_builder(
     mm_attention_backend: str | None = None,
     context_length: int = 1636,
     enable_async_decode: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool | None = True,
 ) -> qwen3_asr_builder.Qwen3ASREngineBuilder:
     builder = qwen3_asr_builder.Qwen3ASREngineBuilder(
         max_running_requests=64,
@@ -132,7 +133,7 @@ def make_engine_builder(
         prefill_coalesce_wait_ms=24.0,
         prefill_coalesce_when_idle=True,
         prefill_coalesce_requires_pending_builds=True,
-        prefill_coalesce_after_builds_during_decode=True,
+        prefill_coalesce_after_builds_during_decode=prefill_coalesce_after_builds_during_decode,
         stream_emit_interval_s=0.05,
     )
     builder.context_length = context_length
@@ -464,7 +465,7 @@ def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     assert stage.factory.prefill_coalesce_wait_ms == 40
     assert stage.factory.prefill_coalesce_when_idle is True
     assert stage.factory.prefill_coalesce_requires_pending_builds is True
-    assert stage.factory.prefill_coalesce_after_builds_during_decode is True
+    assert stage.factory.prefill_coalesce_after_builds_during_decode is None
     assert stage.factory.enable_pre_lm_encoder is True
     assert stage.factory.pre_lm_cache_max_entries == 4096
     assert stage.factory.pre_lm_cache_size_bytes == 2 * 1024**3
@@ -781,7 +782,7 @@ def write_dflash_checkpoint(directory: Path, *, non_causal: bool) -> None:
 def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, non_causal: bool, platform: str
 ) -> None:
-    """DFlash must run speculative overlap by default and release its temporary checkpoint after both successful and failed builds."""
+    """DFlash must run speculative overlap by default, turn the prefill hold during decode off by default, and release its temporary checkpoint after both successful and failed builds."""
     # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
     from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
@@ -841,6 +842,7 @@ def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
     assert recorded.infra_kwargs[-1]["enable_async_decode"] is True
     assert scheduler.enable_async_decode is True
     assert scheduler.async_prefill is False
+    assert scheduler.prefill_coalesce_after_builds_during_decode is False
     assert recorded.adapter_kwargs["greedy_only"] is (platform == "npu")
     assert recorded.build_kwargs["enable_mixed_chunk"] is False
     assert recorded.build_kwargs["disable_overlap_schedule"] is False
@@ -908,6 +910,47 @@ def test_qwen3_asr_async_decode_false_turns_speculative_overlap_off(
         builder.draft_checkpoint.cleanup()
     else:
         assert builder.infra_kwargs() == {}
+
+
+@pytest.mark.parametrize("with_draft", [False, True])
+@pytest.mark.parametrize("coalesce_during_decode", [False, True])
+def test_qwen3_asr_explicit_coalesce_during_decode_reaches_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    with_draft: bool,
+    coalesce_during_decode: bool,
+) -> None:
+    """An explicit prefill_coalesce_after_builds_during_decode must reach the scheduler unchanged, with or without a draft."""
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        request_builders,
+        "make_qwen3_asr_stream_output_builder",
+        lambda **kwargs: object(),
+    )
+    write_dflash_checkpoint(tmp_path, non_causal=False)
+    builder = make_engine_builder(
+        prefill_coalesce_after_builds_during_decode=coalesce_during_decode
+    )
+    overrides: dict[str, object] = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+            "disable_cuda_graph": True,
+        }
+        if with_draft
+        else {"disable_cuda_graph": True}
+    )
+
+    builder.adjust_overrides(overrides)
+
+    assert (
+        builder.extra_scheduler_kwargs()["prefill_coalesce_after_builds_during_decode"]
+        is coalesce_during_decode
+    )
+    if with_draft:
+        builder.draft_checkpoint.cleanup()
+    else:
+        pass
 
 
 def test_qwen3_asr_cuda_runner_opts_into_speculative_overlap(
