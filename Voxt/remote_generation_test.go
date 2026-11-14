@@ -213,10 +213,16 @@ func TestThinkingOffForShortInputs(t *testing.T) {
 	if !has(tt, "Off for short inputs") || has(tt, "Fewer characters than") {
 		t.Fatalf("thinking on: %q", tt.Texts())
 	}
-	click(t, tt, "Off for short inputs")
+	if err := tt.ClickControl("Off for short inputs"); err != nil {
+		t.Fatal(err)
+	}
 	frames(tt)
 	if !d.gen.shortOff || !has(tt, "Fewer characters than") {
 		t.Fatalf("switched on: %v %q", d.gen.shortOff, tt.Texts())
+	}
+	// A visible title beside each control's accessibility name (#3958 verify).
+	if countText(tt, "Off for short inputs") != 2 || countText(tt, "Fewer characters than") != 2 {
+		t.Fatalf("no visible labels: %q", tt.Texts())
 	}
 	click(t, tt, "Save")
 	frames(tt)
