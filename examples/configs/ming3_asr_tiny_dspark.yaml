@@ -1,0 +1,3 @@
+config_cls: Ming3ASRPipelineConfig
+name: ming3-asr-tiny-dspark
+model_path: inclusionAI/Ming-3.0-asr-tiny
