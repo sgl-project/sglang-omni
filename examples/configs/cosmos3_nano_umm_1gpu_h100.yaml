@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cosmos3 Nano interleaved serving on one 80 GB H100: the Reasoner shares the generation GPU.
+config_cls: Cosmos3UMMPipelineConfig
+name: cosmos3-nano-umm-1gpu-h100
+model_path: nvidia/Cosmos3-Nano
+
+stages:
+  reasoner:
+    gpu: 0
+    gpu_memory_fraction: 0.35
+    start_after: [generation]
+    engine:
+      mem_fraction_static: 0.72
+      max_total_tokens: 32768
+  generation:
+    gpu: 0
+    gpu_memory_fraction: 0.6
+    factory:
+      server_args_overrides:
+        dit_cpu_offload: false
+        text_encoder_cpu_offload: false
+        image_encoder_cpu_offload: false
+        vae_cpu_offload: false
+        dit_layerwise_offload: false
