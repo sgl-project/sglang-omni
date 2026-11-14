@@ -124,18 +124,30 @@ func lockSnapRoot(t *testing.T) string {
 	return root
 }
 
-// testDir is t.TempDir, but in a snapshot test a directory of a fixed
+// testDir is shortTempDir, but in a snapshot test a directory of a fixed
 // name: the next of <snapRoot>/001, 002, ….
 func testDir(t *testing.T) string {
 	t.Helper()
 	if snapRun == nil {
-		return t.TempDir()
+		return shortTempDir(t)
 	}
 	snapRun.dirs++
 	dir := filepath.Join(snapRun.root, fmt.Sprintf("%03d", snapRun.dirs))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	return dir
+}
+
+// shortTempDir avoids t.TempDir(), whose path holds the test's name and can
+// overflow the 104-byte socket path limit on macOS.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "vx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
 }
 

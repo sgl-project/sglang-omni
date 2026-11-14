@@ -93,7 +93,7 @@ func TestHistoryCLIExport(t *testing.T) {
 	if err := a.lib.store.History().Put(context.Background(), store.Entry{ID: "c1", Kind: store.KindTranscribe, CreatedAt: at, Status: store.StatusDone, AppName: "Notes", RawText: "嗯 你好", Result: "你好", SourceText: "selected-secret"}); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), historyapi.SocketName)
+	path := filepath.Join(shortTempDir(t), historyapi.SocketName)
 	ln, err := historyapi.Listen(path)
 	if err != nil {
 		t.Fatal(err)
