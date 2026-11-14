@@ -452,7 +452,7 @@ private:
       if (reference.codes.empty()) {
         references.push_back(
             {reference.text,
-             model_.codec().Encode(omni_common::Resample(
+             model_.EncodeReference(omni_common::Resample(
                  reference.wav.samples, reference.wav.sample_rate,
                  fish_dac::kSampleRate))});
       } else {

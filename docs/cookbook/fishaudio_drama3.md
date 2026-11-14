@@ -377,6 +377,8 @@ The server reads the request fields the CUDA server reads and refuses the same u
 
 `fishaudio_drama3_synthesize` runs one request from the command line and prints its timings; with `--codes-output` it also writes the first chunk's prompt ids and every frame's codes, for parity checks.
 
+The DAC codec's encoding weights (about 0.8 GB resident) are loaded only to encode a reference that is not among the last four voices, and freed after it. On an Apple M5 Max (128 GB, macOS 27.2), this lowers the 4-bit server's idle footprint from 23.95 GB to 23.12 GB, and the seeded golden outputs, cloned voices included, are unchanged.
+
 ### Optional native expert offload
 
 Both native binaries accept `--expert-offload 2gib`. Without it, the existing resident loading and execution path is unchanged. Offload removes routed backbone experts before checkpoint evaluation and loads one expert's packed up/gate/down weights, scales and biases on demand. Router, shared experts, attention and tower weights stay resident; the codec loads separately.
