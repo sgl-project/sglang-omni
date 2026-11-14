@@ -26,6 +26,10 @@ from sglang_omni.models.nemotron3_5_asr.config import (
 )
 from sglang_omni.models.streaming_cascade.base import ComponentConfig
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
+from sglang_omni.models.streaming_cascade.dialog import DialogConfig
+from sglang_omni.models.streaming_cascade.synthesizers import (
+    OpenAISpeechSynthesizerConfig,
+)
 from sglang_omni.models.turn_detection.node import TURN_DETECTION_STAGE
 from sglang_omni.models.vad.node import VAD_STAGE
 from sglang_omni.proto.session import (
@@ -231,6 +235,7 @@ class ComponentGraphConfig(BaseModel):
         self.check_turn_roles()
         self.check_progress()
         self.check_delivery()
+        self.check_languages()
         return self
 
     def check_names(self) -> None:
@@ -399,6 +404,24 @@ class ComponentGraphConfig(BaseModel):
             if AUDIO_FORMATS & set(self.publish.get(other.name, ()))
             and SESSION_CONTROL in node.edges().get(other.name, frozenset())
         ]
+
+    def check_languages(self) -> None:
+        """A dialog's language is one every speech node with language="auto" takes, since that node may send it as a sentence's language tag and a tag its service does not take fails the session."""
+        for dialog in self.nodes:
+            for speaker in self.nodes:
+                if (
+                    isinstance(dialog.component, DialogConfig)
+                    and isinstance(speaker.component, OpenAISpeechSynthesizerConfig)
+                    and speaker.component.language == "auto"
+                    and dialog.component.language
+                    and dialog.component.language
+                    not in speaker.component.supported_languages
+                ):
+                    raise ValueError(
+                        f"language {dialog.component.language!r} of node {dialog.name!r} is not one of the supported_languages of node {speaker.name!r}: {list(speaker.component.supported_languages)}"
+                    )
+                else:
+                    pass
 
     def node(self, name: str) -> NodeSettings:
         return next(node for node in self.nodes if node.name == name)

@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import wave
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -1068,6 +1069,54 @@ def test_settings_merge_and_standard_names():
     ]:
         with pytest.raises(ValueError, match=message):
             settings.apply(update)
+
+
+@pytest.mark.parametrize("speech_language", ["auto", "English", ""])
+def test_a_dialog_language_is_checked_only_against_auto_speech_nodes(speech_language):
+    """Under tts.language="auto", an unsupported dialog.language was accepted at load and by configure and failed the session with 400 at Qwen3-TTS, while a fixed or empty tts.language never sends dialog.language to the speech service."""
+    nodes = yaml.safe_load(HTTP_PROFILE.read_text())["session_nodes"]
+    dialog, tts = nodes["dialog"], nodes["tts"]
+    unsupported = "supported_languages of node 'tts'"
+    load = {
+        "tts": {**tts, "language": speech_language},
+        "dialog": {**dialog, "language": "Vietnamese"},
+    }
+    update = {
+        "nodes": {
+            "tts": {"language": speech_language},
+            "dialog": {"language": "Vietnamese"},
+        }
+    }
+    settings = declared().component_graph()
+    if speech_language == "auto":
+        with pytest.raises(ValueError, match=unsupported):
+            declared(nodes=load)
+        with pytest.raises(ValueError, match=unsupported):
+            settings.apply(update)
+        chinese = settings.apply({"nodes": {"dialog": {"language": "Chinese"}}})
+        assert chinese.node("dialog").component.language == "Chinese"
+        cantonese = settings.apply(
+            {
+                "nodes": {
+                    "tts": {"supported_languages": ["Cantonese"]},
+                    "dialog": {"language": "Cantonese"},
+                }
+            }
+        )
+        assert cantonese.node("dialog").component.language == "Cantonese"
+    else:
+        loaded = declared(nodes=load).component_graph()
+        assert (
+            loaded.node("tts").component.language,
+            loaded.node("dialog").component.language,
+        ) == (speech_language, "Vietnamese")
+        configured = settings.apply(update)
+        assert (
+            configured.node("tts").component.language,
+            configured.node("dialog").component.language,
+        ) == (speech_language, "Vietnamese")
+        with pytest.raises(ValueError, match=unsupported):
+            configured.apply({"nodes": {"tts": {"language": "auto"}}})
 
 
 TEXT_ONLY = """
@@ -2536,6 +2585,71 @@ def test_a_short_switch_after_a_cut_reply_adds_both_notes():
 
 
 @pytest.mark.asyncio
+async def test_an_explicit_dialog_language_applies_only_to_short_utterances_until_cleared():
+    """A clear utterance carries its recognized language, while a short one prefers the configured language until it is cleared."""
+    dialog = build({"kind": "dialog", "language": "English"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("嗯。", True, "Chinese"),
+            text_chunk("Hi.", 1),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(COMMIT),
+            transcript_chunk("Quel temps fait-il aujourd'hui ?", True, "French"),
+            text_chunk("Il fait beau.", 2),
+            control_chunk(TURN_DONE, turn=2),
+            control_chunk(COMMIT),
+        ],
+    )
+    chunks = [o for o in outputs if o.format == MESSAGES]
+    note = SHORT_UTTERANCE_NOTE.format(language="English")
+    assert [o.payload.get("language") for o in chunks] == ["English", "French"]
+    assert [messages_of(o)[-1].content for o in chunks] == [
+        f"嗯。\n\n[{note}]",
+        "Quel temps fait-il aujourd'hui ?",
+    ]
+    cleared = build({"kind": "dialog"})
+    cleared.adopt(dialog)
+    _, chunk = cleared.respond(3, "Okay.", "English")
+    assert chunk.payload.get("language") == "French"
+    assert (
+        messages_of(chunk)[-1].content
+        == f"Okay.\n\n[{SHORT_UTTERANCE_NOTE.format(language='French')}]"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configured, tag, content",
+    [
+        (
+            "English",
+            "English",
+            f"Merci.\n\n[{SHORT_UTTERANCE_NOTE.format(language='English')}]",
+        ),
+        ("", "French", "Merci."),
+    ],
+)
+async def test_an_untagged_short_utterance_asks_for_the_configured_language(
+    configured, tag, content
+):
+    """With dialog.language set, a short utterance the recognizer named no language for was tagged with the configured language while its prompt asked for none, so a reply in the remembered language was spoken in the configured one."""
+    dialog = build({"kind": "dialog", "language": configured})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("Quel temps fait-il aujourd'hui ?", True, "French"),
+            text_chunk("Il fait beau.", 1),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("Merci.", True),
+        ],
+    )
+    chunk = [o for o in outputs if o.format == MESSAGES][-1]
+    assert chunk.payload.get("language") == tag
+    assert messages_of(chunk)[-1].content == content
+
+
+@pytest.mark.asyncio
 async def test_chat_deltas_carry_the_language_of_their_messages():
     generator = build({"kind": "openai_chat", **HTTP_SERVICE})
 
@@ -2563,7 +2677,7 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
 async def synthesized(
     spec: dict, deltas: list[TimedChunk]
 ) -> tuple[list[dict], list[TimedChunk]]:
-    """The speech requests and the outputs of a synthesizer speaking the deltas of turn 1, one second of audio per request."""
+    """The speech requests and the outputs of one synthesizer speaking the deltas, whose last turn it closes, one second of audio per request."""
     bodies = []
 
     def answer(request: httpx.Request) -> httpx.Response:
@@ -2574,20 +2688,84 @@ async def synthesized(
 
     tts = build({"kind": "openai_speech", **HTTP_SERVICE, **spec})
     tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
-    outputs = await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    outputs = await drain(
+        tts, [*deltas, control_chunk(TURN_DONE, turn=deltas[-1].turn)]
+    )
     return bodies, outputs
 
 
 async def spoken_requests(
     spec: dict, deltas: list[TimedChunk]
 ) -> list[tuple[str, str]]:
-    """The language tag and the input of each sentence the synthesizer speaks for the deltas of turn 1."""
+    """The language tag and the input of each sentence one synthesizer speaks for the deltas."""
     bodies, _ = await synthesized(spec, deltas)
     return [(body["language"], body["input"]) for body in bodies]
 
 
 async def spoken_languages(spec: dict, deltas: list[TimedChunk]) -> list[str]:
     return [language for language, _ in await spoken_requests(spec, deltas)]
+
+
+@pytest.mark.asyncio
+async def test_a_clear_utterance_uses_its_recognized_language_for_speech():
+    dialog = build({"kind": "dialog", "language": "English"})
+    _, prompt_chunk = dialog.respond(1, "Quel temps fait-il aujourd'hui ?", "French")
+    generator = build({"kind": "openai_chat", **HTTP_SERVICE})
+
+    async def complete(
+        prompt_messages: list[ChatMessage],
+    ) -> AsyncIterator[ChatDelta]:
+        assert prompt_messages[-1].content == "Quel temps fait-il aujourd'hui ?"
+        yield ChatDelta(content="Il fait 25 degrés aujourd’hui.")
+
+    generator.complete = complete
+    deltas = [
+        output
+        for output in await drain(generator, [prompt_chunk])
+        if output.format == TEXT_DELTA
+    ]
+    assert await spoken_requests({"language": "auto"}, deltas) == [
+        ("French", "Il fait 25 degrés aujourd’hui.")
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "utterances, tags",
+    [
+        ([("嗯。", "Chinese")], ["French", "English"]),
+        (
+            [("¿Qué tiempo hace hoy?", "Spanish"), ("嗯。", "Chinese")],
+            ["Spanish", "French", "Spanish"],
+        ),
+    ],
+)
+async def test_clearing_the_dialog_language_reaches_the_synthesizer(utterances, tags):
+    """A short turn with dialog.language="French" left the synthesizer on French, so after the client cleared dialog.language the reply to the next short turn was still spoken as French instead of in the language the recognizer last heard, or by the English fallback when it heard none."""
+    dialog = build({"kind": "dialog", "language": "French"})
+    inputs = []
+    for turn, (text, language) in enumerate(utterances, 1):
+        inputs += [
+            transcript_chunk(text, True, language),
+            text_chunk("Bien.", turn),
+            control_chunk(TURN_DONE, turn=turn),
+            control_chunk(COMMIT),
+        ]
+    outputs = await drain(dialog, inputs)
+    cleared = build({"kind": "dialog"})
+    cleared.adopt(dialog)
+    prompt_chunks = [o for o in outputs if o.format == MESSAGES]
+    prompt_chunks += cleared.respond(len(utterances) + 1, "Okay.", "English")[1:]
+    replies = ["Bien."] * len(utterances) + ["Hello there."]
+    deltas = []
+    for chunk, reply in zip(prompt_chunks, replies):
+        deltas += [
+            text_chunk(reply, chunk.turn, chunk.payload.get("language")),
+            control_chunk(TURN_DONE, turn=chunk.turn),
+        ]
+    assert await spoken_requests({"language": "auto"}, deltas[:-1]) == list(
+        zip(tags, replies)
+    )
 
 
 @pytest.mark.asyncio
