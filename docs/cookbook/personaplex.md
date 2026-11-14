@@ -105,6 +105,26 @@ FP8 weights are the speed option: they halve the weight memory and raise through
 
 These results cover offline requests, not full-duplex sessions. FP8 KV was tested only on H100 with FA3, and its scales are fixed at 1.0.
 
+## Catching up queued audio
+
+Set `--max-coalesced-units 4` on the session server to combine up to four already queued 80 ms units into one pipeline request. The default is 1 (disabled). The first unit stays separate; coalescing does not wait for more input or cross sessions. Original unit receipts, audio order and EOS are preserved, and the configured bound limits how much work one session submits at once.
+
+The default performance configuration can change PCM or text when session arrival timing changes, including with coalescing disabled. Greedy sampling alone does not prevent batch-dependent floating-point differences.
+
+For cross-schedule PCM and text reproducibility, use the existing SGLang deterministic inference option with a supported attention backend:
+
+```bash
+python -m sglang_omni.cli serve \
+  --model-path nvidia/personaplex-7b-v1 --variant session --enable-realtime \
+  --max-sessions 3 --max-coalesced-units 4 \
+  --lm.engine.enable_deterministic_inference true \
+  --lm.engine.attention_backend triton
+```
+
+SGLang supplies batch-invariant LM operations. In this mode the session pipeline also decodes one session at a time through Mimi: its convolution operations can change PCM rounding when the batch size changes, even with identical audio codes. Every open session retains its own decoder slot, and coalesced units keep their original frame boundaries.
+
+The default batching policy is unchanged when deterministic inference is disabled; enabling it can reduce throughput. Compare identical inputs, voice, instructions, hardware and backend, using greedy sampling or an explicit session seed for text and audio. Deterministic mode may produce different output from the default numerical path; reproducibility does not establish FDB quality parity or an 80 ms serving deadline.
+
 ## Known limitations
 
 ### All platforms
@@ -135,6 +155,18 @@ These results cover offline requests, not full-duplex sessions. FP8 KV was teste
 ```bash
 pytest tests/unit_test/personaplex/ -q
 ```
+
+The real session regression starts fresh servers with coalescing limits 1 and 4 and opts into the existing deterministic inference flag. It compares complete PCM and text across serial, concurrent and receipt-triggered joining calls, with three voices and roles, greedy and seeded sampling, then closes a call with queued audio and checks capacity reuse. Select a CUDA device with sufficient free memory and run:
+
+```bash
+PERSONAPLEX_SESSION_CHECKPOINT=/path/to/personaplex-7b-v1 \
+CUDA_VISIBLE_DEVICES=0 \
+python -m pytest tests/test_model/test_personaplex_realtime.py -v
+```
+
+The test skips without a configured checkpoint or CUDA device. `PERSONAPLEX_SESSION_STAGE_ARGS` forwards additional server flags, and `PERSONAPLEX_SESSION_STARTUP_TIMEOUT` overrides the 600-second readiness timeout. Logs, server commands and per-call PCM/events remain in pytest's temporary directory; use `--basetemp` to choose its location. This is a reproducibility and lifecycle regression, not a latency benchmark or a full CPU LM test.
+
+If the GPU cannot fit the weights under the default LM memory fraction, set `PERSONAPLEX_SESSION_STAGE_ARGS='--lm.engine.mem_fraction_static 0.5'` for this test.
 
 ### Reference parity
 

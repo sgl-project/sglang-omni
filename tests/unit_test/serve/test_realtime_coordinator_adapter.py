@@ -173,25 +173,38 @@ async def test_process_sends_timed_chunk_and_consumes_whole_unit() -> None:
     adapter = build_adapter(coordinator)
     await adapter.open("sess_1", SESSION_CONFIG, RecordingSink())
 
-    consumed = await adapter.process(
-        build_unit(2, is_eos=True, ready_timestamp_ns=123, ready_run_id="run-1")
-    )
+    consumed = [
+        await adapter.process(
+            build_unit(2, ready_timestamp_ns=123, ready_run_id="run-1")
+        ),
+        await adapter.process(
+            build_unit(6, is_eos=True, ready_timestamp_ns=456, ready_run_id="run-1")
+        ),
+    ]
     await adapter.close()
 
-    assert consumed == UNIT_SAMPLES
+    assert consumed == [UNIT_SAMPLES, UNIT_SAMPLES]
     assert coordinator.appended == [
         TimedChunk(
             "audio",
             40.0,
             20.0,
-            2,
+            0,
+            b"\1\0" * UNIT_SAMPLES,
+            format="pcm16",
+        ),
+        TimedChunk(
+            "audio",
+            120.0,
+            20.0,
+            1,
             b"\1\0" * UNIT_SAMPLES,
             format="pcm16",
             eos=True,
-        )
+        ),
     ]
-    assert coordinator.ready_timestamps_ns == [123]
-    assert coordinator.ready_run_ids == ["run-1"]
+    assert coordinator.ready_timestamps_ns == [123, 456]
+    assert coordinator.ready_run_ids == ["run-1", "run-1"]
 
 
 @pytest.mark.asyncio

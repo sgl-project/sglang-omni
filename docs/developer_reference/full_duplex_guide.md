@@ -62,6 +62,7 @@ sgl-omni config resolve --model-path openbmb/MiniCPM-o-4_5 --variant session
 | Setting | Default | Meaning |
 |---|---|---|
 | `max_sessions` | 2 | Conversations at the same time. Further connections get HTTP 503. The thinker and talker reserve GPU memory for this many full-length conversations, so raise it only as far as the GPU has room. Startup warms up perception at each batch size up to this value |
+| `max_coalesced_units` | 1 | Maximum already queued audio units combined into one request after the first unit; `1` disables coalescing, and each original unit keeps its receipt |
 | `batch_sessions` | `true` | Perception and speech handle the ready second of every conversation in one call. `false` gives each conversation's second a call of its own, one call at a time; `max_sessions`, memory and startup stay the same, and the thinker and talker still batch conversations |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
 | `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running |
