@@ -18,6 +18,7 @@ from sglang_omni.models.ming3_tts.checkpoint import (
     load_checkpoint_config,
 )
 from sglang_omni.models.ming3_tts.streaming_vocoder import Ming3StreamingVocoder
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
@@ -116,12 +117,22 @@ class DecoderGraphs:
 def create_vocoder_executor(
     model_path: str,
     *,
+    stream_capacity: int | None = None,
+    streaming_cuda_graph: bool | None = None,
     graph_latent_steps: int = 0,
     stream_chunk_steps: int = 8,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> Ming3StreamingVocoder | SimpleScheduler:
     resolved_device = resolve_concrete_device(device, gpu_id)
+    if (
+        resolved_device.type != "cpu"
+        and streaming_cuda_graph
+        and not current_platform.supports_graph_captured_fft()
+    ):
+        raise ValueError("Ming 3 TTS streaming CUDA graph requires graph-captured FFT")
+    else:
+        pass
     checkpoint = Path(resolve_checkpoint(model_path))
     configuration = load_checkpoint_config(checkpoint)
     if not is_dense_checkpoint(configuration):
@@ -182,9 +193,24 @@ def create_vocoder_executor(
     if resolved_device.type == "cpu":
         return SimpleScheduler(decode)
     else:
-        return Ming3StreamingVocoder(
+        streaming_options: dict[str, int | bool] = {}
+        if stream_capacity is not None:
+            streaming_options["stream_capacity"] = stream_capacity
+        else:
+            pass
+        if streaming_cuda_graph is not None:
+            streaming_options["streaming_cuda_graph"] = streaming_cuda_graph
+        else:
+            pass
+        scheduler = Ming3StreamingVocoder(
             decode,
             vae=vae,
             sample_rate=sample_rate,
             stream_chunk_steps=stream_chunk_steps,
+            **streaming_options,
         )
+        if streaming_cuda_graph:
+            scheduler.warmup_now()
+        else:
+            pass
+        return scheduler
