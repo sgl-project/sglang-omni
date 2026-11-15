@@ -45,6 +45,7 @@ class CodecStateStats(TypedDict, total=False):
     exhausted: int
     enabled: bool
     left_context_fallbacks: int
+    slot_waits: int
     cuda_graphs: CodecCudaGraphStats
 
 

@@ -175,6 +175,7 @@ class Qwen3TTSStreamState:
     incremental_codec_fallback: bool = False
     codec_slot: int | None = None
     codec_frame_position: int = 0
+    awaiting_codec_slot: bool = False
     suppress_bootstrap: bool = False
 
 
@@ -1051,6 +1052,11 @@ class Qwen3TTSStreamingVocoderScheduler(
             in_place_frames=in_place_frames,
         )
         self.codec_fallback_count = 0
+        self.codec_slot_wait_count = 0
+        # note (ratish): streams that found the arena full, oldest first, under state_lock; each
+        # released slot schedules the oldest live one, so a full arena delays first audio instead
+        # of moving streams to the costlier left-context decoder.
+        self.codec_slot_waiters: dict[str, Qwen3TTSStreamState] = {}
         self.codec_stats_last_log_s = time.monotonic()
         self.codec_lock = threading.Lock()
         self.codec_slots_in_flight: set[int] = set()
@@ -1311,6 +1317,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         stats = self.codec_arena.describe()
         stats["enabled"] = True
         stats["left_context_fallbacks"] = self.codec_fallback_count
+        stats["slot_waits"] = self.codec_slot_wait_count
         stats["cuda_graphs"] = {
             "cold": (
                 self.initial_incremental_decode_graphs.stats()
@@ -1337,7 +1344,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         """Log arena usage at most once per interval.
 
         Note (Qihao Liu): saturation (``active_slots`` nearing ``slots``) is the
-        only warning operators get before requests start falling back to the
+        only warning operators get before new streams start waiting for a slot
+        (``slot_waits``), or under a synchronous decoder fall back to the
         left-context decoder.
         """
         now = time.monotonic()
@@ -1848,8 +1856,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         """Plan a fresh-frame decode against the stream's arena slot.
 
         Returns ``None`` both when there is no work and when no slot could be
-        acquired; the latter also sets ``incremental_codec_fallback`` so the
-        caller falls through to the left-context planner.
+        acquired. Without a slot, an async decoder marks the stream as awaiting one;
+        a synchronous decoder sets ``incremental_codec_fallback`` so the caller falls
+        through to the left-context planner.
         """
         available_generated_frames = state.total_frames - state.ref_frames
         if available_generated_frames <= state.emitted_generated_frames:
@@ -1883,7 +1892,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         assert arena is not None
         if state.codec_slot is None:
             slot = arena.acquire()
-            if slot is None:
+            if slot is None and self.async_decode:
+                state.awaiting_codec_slot = True
+                return None
+            elif slot is None:
                 state.incremental_codec_fallback = True
                 self.codec_fallback_count += 1
                 logger.warning(
@@ -1893,6 +1905,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 return None
             else:
                 pass
+            state.awaiting_codec_slot = False
             state.codec_slot = slot
             state.codec_frame_position = 0
         else:
@@ -1973,6 +1986,30 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
         self.codec_arena.release(slot)
+        self.wake_codec_slot_waiter()
+
+    def wait_for_codec_slot(self, request_id: str, state: Qwen3TTSStreamState) -> None:
+        """Queue a stream that found the arena full; must be called under ``state_lock``."""
+        if request_id not in self.codec_slot_waiters:
+            self.codec_slot_waiters[request_id] = state
+            self.codec_slot_wait_count += 1
+        else:
+            pass
+
+    def wake_codec_slot_waiter(self) -> None:
+        """Schedule the oldest live stream waiting for a slot, now that one is free."""
+        with self.state_lock:
+            while self.codec_slot_waiters:
+                request_id = next(iter(self.codec_slot_waiters))
+                state = self.codec_slot_waiters.pop(request_id)
+                if (
+                    self.stream_states.get(request_id) is state
+                    and state.awaiting_codec_slot
+                ):
+                    self.schedule_initial(request_id, state)
+                    return
+                else:
+                    pass
 
     def mark_codec_slots_in_flight(self, slots: list[int]) -> None:
         with self.codec_lock:
@@ -1990,6 +2027,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             self.codec_slots_deferred.difference_update(releasable)
         for slot in releasable:
             self.codec_arena.release(slot)
+            self.wake_codec_slot_waiter()
 
     def release_stream_resources(
         self, request_id: str, state: Qwen3TTSStreamState
@@ -2852,6 +2890,10 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 if plan is not None:
                     return (plan, True)
+                else:
+                    pass
+                if state.awaiting_codec_slot:
+                    self.wait_for_codec_slot(request_id, state)
                 else:
                     pass
                 if self.use_incremental_path(state):
@@ -3950,10 +3992,15 @@ class Qwen3TTSStreamingVocoderScheduler(
             if (
                 self.async_decode
                 and state is not None
-                and (state.initial_pending or state.decoded_chunks)
+                and (
+                    state.initial_pending
+                    or state.decoded_chunks
+                    or state.awaiting_codec_slot
+                )
             ):
                 state.final_pending = True
-                if not state.initial_pending:
+                # note (ratish): a stream still waiting for a slot gets its first decode when one is released.
+                if state.decoded_chunks and not state.initial_pending:
                     self.schedule_followup(request_id, state)
                 else:
                     pass

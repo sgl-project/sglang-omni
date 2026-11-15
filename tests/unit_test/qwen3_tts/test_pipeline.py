@@ -4828,6 +4828,62 @@ def test_qwen3_tts_tail_miss_degrades_the_cohort_to_left_context(
     assert scheduler.codec_state_stats()["left_context_fallbacks"] == 2
 
 
+def test_qwen3_tts_full_codec_arena_holds_a_stream_until_a_slot_frees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+    scheduler.initial_worker = object()
+    arena = scheduler.codec_arena
+    held = [arena.acquire() for _ in range(arena.num_slots)]
+    waiting = admit_reference_stream(
+        scheduler,
+        "waiting",
+        torch.tensor([[10, 1], [20, 2]], dtype=torch.long),
+        ref_code_len=0,
+    )
+
+    scheduler.run_initial_batch([("waiting", waiting)])
+
+    assert scheduler.outbox.empty()
+    assert waiting.incremental_codec_fallback is False
+    assert waiting.awaiting_codec_slot is True
+    assert waiting.initial_pending is False
+    assert scheduler.codec_state_stats()["slot_waits"] == 1
+
+    owner = scheduler.create_stream_state("owner")
+    owner.codec_slot = held[0]
+    scheduler.release_codec_slot(owner)
+
+    assert scheduler.initial_queue.get_nowait() == ("waiting", waiting)
+    assert waiting.initial_pending is True
+
+
+def test_qwen3_tts_waiting_stream_keeps_async_finish_when_generation_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+    scheduler.initial_worker = object()
+    arena = scheduler.codec_arena
+    for _ in range(arena.num_slots):
+        arena.acquire()
+    waiting = admit_reference_stream(
+        scheduler,
+        "waiting",
+        torch.tensor([[10, 1], [20, 2]], dtype=torch.long),
+        ref_code_len=0,
+    )
+    scheduler.stream_payloads["waiting"] = make_payload(
+        inputs="waiting", params={"stream": True}
+    )
+    scheduler.run_initial_batch([("waiting", waiting)])
+
+    scheduler.handle_stream_done("waiting")
+
+    assert waiting.final_pending is True
+    assert scheduler.outbox.empty()
+    assert "waiting" in scheduler.stream_states
+
+
 def test_qwen3_tts_stateful_codec_uses_reference_once_then_fresh_frames(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
