@@ -39,6 +39,7 @@ from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     norm_gate_up_silu,
     norm_qkv_rope_store,
 )
+from sglang_omni.models.fishaudio_drama3.tower_tiles import fused_block_m
 from sglang_omni.models.fishaudio_drama3.weights import load_audio_decoder_weights
 from sglang_omni.platforms import current_platform
 from tests.unit_test.fishaudio_drama3.graph_fixtures import bits
@@ -971,6 +972,15 @@ def test_only_decode_passes_take_the_fused_layers(forward_mode: ForwardMode) -> 
         assert forward_layer.call_count == len(tower_layers(decoder))
 
 
+def test_a_pass_takes_the_smallest_row_tile_that_covers_it() -> None:
+    assert [fused_block_m(row_count) for row_count in (1, 16, 17, 32)] == [
+        16,
+        16,
+        32,
+        32,
+    ]
+
+
 @accelerator
 @pytest.mark.accelerator
 def test_passes_above_the_fused_rows_keep_the_plain_path_bit_for_bit() -> None:
@@ -1151,6 +1161,22 @@ def test_the_resolver_needs_triton(
         device=torch.device("cuda"),
     )
     assert reason == "Triton is not installed"
+
+
+def test_tensor_parallel_ranks_keep_the_module_path() -> None:
+    """The fused kernels add each rank's o_proj partial into the residual before
+    the all-reduce sums the ranks, so a split tower must not take them."""
+    with torch.device("meta"):
+        decoder = AudioDecoder(FishOmniConfig(**CHECKPOINT_CONFIG), tp_size=2)
+
+    reason = decoder.fused_layers_unsupported_reason(
+        kv_pool=Mock(spec=HybridLinearKVPool),
+        tower_layer_ids=[],
+        context_length=FIRST_POSITION,
+        device=torch.device("cpu"),
+    )
+
+    assert reason == "the tower layers are split across 2 tensor-parallel ranks"
 
 
 def resolver_reason_with_compute_capability(

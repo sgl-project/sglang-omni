@@ -1,6 +1,10 @@
 package settings
 
-import "time"
+import (
+	"strconv"
+	"strings"
+	"time"
+)
 
 // Models: how the local models' runtimes keep what they loaded (the Local
 // models page's Advanced section), and the models hidden from the
@@ -18,7 +22,8 @@ type Models struct {
 	// use (Voxt 1.x's hiddenModelVisibilityIDs).
 	Hidden []string `json:"hidden,omitempty"`
 	// LLMWait is how long Transcribe, Translate and Rewrite wait at least
-	// for a language model's answer: one of WaitChoices. "" (Automatic),
+	// for a language model's answer: one of WaitChoices, or another
+	// WaitMinutes the user typed (#3941). "" (Automatic),
 	// or a value VoxtNew does not know, keeps the session's own limits
 	// (internal/session's LLMTimeout and WriteTimeout), so older documents
 	// need no migration (#3821). Either way a long text gets longer.
@@ -52,20 +57,21 @@ const (
 // WaitChoices are Models.LLMWait's choices in the order the UI lists them.
 var WaitChoices = []string{WaitAuto, Wait1Min, Wait2Min, Wait5Min, Wait10Min}
 
-// LLMWaitFor is the least time LLMWait gives a language model's answer;
-// 0 for Automatic.
+// WaitMaxMinutes is the most minutes a custom LLMWait may be (#3941).
+const WaitMaxMinutes = 60
+
+// WaitMinutes is LLMWait for n minutes, the presets' form ("5m").
+func WaitMinutes(n int) string { return strconv.Itoa(n) + "m" }
+
+// LLMWaitFor is the least time LLMWait gives a language model's answer:
+// a whole number of minutes in 1..WaitMaxMinutes; 0 for Automatic.
 func (m Models) LLMWaitFor() time.Duration {
-	switch m.LLMWait {
-	case Wait1Min:
-		return time.Minute
-	case Wait2Min:
-		return 2 * time.Minute
-	case Wait5Min:
-		return 5 * time.Minute
-	case Wait10Min:
-		return 10 * time.Minute
+	s, ok := strings.CutSuffix(m.LLMWait, "m")
+	n, err := strconv.Atoi(s)
+	if !ok || err != nil || n < 1 || n > WaitMaxMinutes || WaitMinutes(n) != m.LLMWait { // WaitMinutes: no "+5m" or "05m"
+		return 0
 	}
-	return 0
+	return time.Duration(n) * time.Minute
 }
 
 // The choices of Models.KeepLoaded.

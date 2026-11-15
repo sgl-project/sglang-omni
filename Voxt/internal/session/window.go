@@ -36,3 +36,24 @@ func (r *run) shootWindow() {
 	}()
 	r.shot = sync.OnceValue(func() []byte { return <-done })
 }
+
+// readClipboardImage reads the picture on the clipboard for Rewrite's
+// language model, when the settings send it
+// (Privacy.SendClipboardImage).
+func (r *run) readClipboardImage() {
+	cfg := r.m.cfg
+	if !r.settings.Privacy.SendClipboardImage || cfg.ClipboardImage == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.ctx, windowTimeout)
+	defer cancel()
+	jpeg, err := cfg.ClipboardImage(ctx)
+	if err != nil {
+		r.logf("warning", "no picture from the clipboard: %v", err)
+		return
+	}
+	if jpeg != nil {
+		r.logf("info", "the clipboard's picture goes to the language model (%d bytes)", len(jpeg))
+	}
+	r.clip = jpeg
+}

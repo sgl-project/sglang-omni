@@ -1,7 +1,8 @@
 package main
 
-// The answer card's thinking menu (#3879): how much the language model
-// thinks for this one input. Its button lists the levels the card's
+// The answer card's thinking menu (#3879), and the working pill's while
+// Transcribe's clean-up runs (#3940): how much the language model thinks
+// for this one input. Its button lists the levels the card's
 // service takes (its Thinking setting's, providers.Capabilities); one
 // answers the card's input again with it, into the card, as the language
 // menu translates it again. The service's setting stays the default. The
@@ -14,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // thinkBudgets are the levels of a service that takes a budget, in
@@ -45,15 +47,37 @@ func thinkLevels(p settings.Provider) []*llm.Thinking {
 	return out
 }
 
-// cardThinkLevels are the levels of the service that wrote the card's
-// answer (none: it is not set up any more, or takes none).
-func (a *app) cardThinkLevels() []*llm.Thinking {
+// llmThinkLevels are the levels of language model service id (none: it
+// is not set up any more, or takes none).
+func (a *app) llmThinkLevels(id string) []*llm.Thinking {
 	for _, p := range a.prefs.Providers.LLM {
-		if p.ID == a.answer.llmID {
+		if p.ID == id {
 			return thinkLevels(p)
 		}
 	}
 	return nil
+}
+
+// cardThinkLevels are the levels of the service that wrote the card's
+// answer.
+func (a *app) cardThinkLevels() []*llm.Thinking { return a.llmThinkLevels(a.answer.llmID) }
+
+// pillThinks: the working pill in mode offers the thinking levels
+// (#3940): Transcribe's clean-up runs (Use transcript shows) on a
+// service that takes them.
+func (a *app) pillThinks(mode overlayMode) bool {
+	return canSkip(a.sess, mode) && a.sess.Kind == store.KindTranscribe && len(a.llmThinkLevels(a.sess.LLM.ID)) > 1
+}
+
+// pillThinkText is the pill's thinking capsule as it draws (cardCapsule's).
+func pillThinkText(t *llm.Thinking) ovSized { return ovSized{thinkText(t), 11, 600, 0} }
+
+// menuThinkLevels are the thinking menu's levels: the pill's or the card's.
+func (a *app) menuThinkLevels() []*llm.Thinking {
+	if a.answer.pillMenu {
+		return a.llmThinkLevels(a.sess.LLM.ID)
+	}
+	return a.cardThinkLevels()
 }
 
 // thinkLevelTitle is a level's row in the menu.
@@ -88,14 +112,25 @@ func sameThinking(a, b *llm.Thinking) bool {
 // takes the language menu's place.
 func (a *app) toggleThinkMenu() {
 	a.answer.langOpen = !(a.answer.langOpen && a.answer.thinkMenu)
-	a.answer.thinkMenu = a.answer.langOpen
+	a.answer.thinkMenu, a.answer.pillMenu = a.answer.langOpen, false
+	a.syncLangMenu()
+}
+
+// togglePillThinkMenu opens or closes the working pill's thinking menu
+// (its capsule).
+func (a *app) togglePillThinkMenu() {
+	open := !(a.answer.langOpen && a.answer.pillMenu)
+	a.answer.langOpen, a.answer.thinkMenu, a.answer.pillMenu = open, open, open
 	a.syncLangMenu()
 }
 
 // thinkMenuView is the thinking menu's rows.
 func (a *app) thinkMenuView(c *ui.Context) {
 	cur := a.cardNow().think
-	for i, t := range a.cardThinkLevels() {
+	if a.answer.pillMenu {
+		cur = a.sess.Thinking
+	}
+	for i, t := range a.menuThinkLevels() {
 		if menuRow(c.Key(i), thinkLevelTitle(t), sameThinking(t, cur)) {
 			a.chooseThinking(t)
 		}
@@ -103,9 +138,17 @@ func (a *app) thinkMenuView(c *ui.Context) {
 }
 
 // chooseThinking is a level chosen in the menu: it closes, and the card's
-// input is answered again with it (the same level: nothing).
+// input is answered again with it, or the pill's text cleaned up again
+// (session.Manager's Rethink); the same level: nothing.
 func (a *app) chooseThinking(t *llm.Thinking) {
+	pill := a.answer.pillMenu
 	a.closeLangMenu()
+	if pill {
+		if a.mgr != nil && !sameThinking(t, a.sess.Thinking) {
+			a.mgr.Rethink(a.sess.ID, t)
+		}
+		return
+	}
 	card := a.answer
 	if !a.cardNow().canThink || sameThinking(t, card.think) {
 		return

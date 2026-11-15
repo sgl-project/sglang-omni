@@ -88,7 +88,15 @@
 - **操作**：转录或语音翻译停止录音后，浮窗显示“整理中”时点“用识别原文”，或按取消键（默认 Esc）。另试：语言模型页 → “等待语言模型”选 5 分钟。
 - **应看到**：马上插入识别原文，没有警告；历史记一条成功的记录。选了等待时长后，模型慢也会等到这个时长；语音翻译超时后插入识别原文并提示“语言模型没有及时响应”。
 - **边界**：改写在处理时没有这个按钮，回答还没开始写进卡片时按取消键仍然取消整段（写进卡片后见 S12）；选区翻译也没有；没有按钮时浮窗照旧让鼠标穿过。
-- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestTranslateTimeoutKeepsSpeech`。
+- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`、`TestLLMWaitCustom`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestTranslateTimeoutKeepsSpeech`。
+
+## S11b. 听写整理时换思考强度
+
+- **起点**：听写打开了语言模型整理，所用服务支持思考设置（比如 OpenAI、DeepSeek、智谱）。
+- **操作**：说一段话，停止录音，浮窗显示“整理中”时点“用识别原文”后面的“思考”，在浮窗里选“关闭”。
+- **应看到**：按钮上写着当前强度；选完后浮窗关上，模型用这个强度把同样的话重新整理，只插入一次结果；语言模型页里这个服务的“思考”设置不变。
+- **边界**：浮窗开着时按取消键先关浮窗，再按才是用识别原文；重选后仍可点“用识别原文”；翻译、改写和不支持思考设置的服务没有这个按钮；中英文界面按钮都在浮窗内。
+- **覆盖**：`TestPillThinkingLevel`、`TestPillThinkingLevelEndToEnd`；`internal/session` 的 `TestRethink`；截图 `overlay-composing-think*`。
 
 ## S12. 回答写到一半停下来
 

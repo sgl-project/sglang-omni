@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Measure Qwen3-ASR long recordings through its public HTTP and realtime APIs."""
+"""Measure native ASR long recordings through their public APIs."""
 
 from __future__ import annotations
 
@@ -44,6 +44,8 @@ from sglang_omni_mlx.native.tests.native_server import (
 # The worker returns MLX's cache after a request, with no signal to wait for.
 MEMORY_SETTLE_SECONDS = 2
 SHUTDOWN_TIMEOUT_SECONDS = 10
+# Parakeet v3 has no Chinese.
+DEFAULT_LANGUAGES = {"qwen3_asr": ("en", "zh"), "parakeet": ("en",)}
 
 
 @dataclass(kw_only=True)
@@ -68,7 +70,7 @@ class CaseResult:
 
 
 def server_binary(arguments: argparse.Namespace) -> Path:
-    return arguments.runtime_bin.resolve() / "qwen3_asr_server"
+    return arguments.runtime_bin.resolve() / f"{arguments.model_kind}_server"
 
 
 def model_directory(arguments: argparse.Namespace) -> Path:
@@ -282,13 +284,19 @@ def main() -> None:
     parser.add_argument("--runtime-bin", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument(
+        "--model-kind", choices=("qwen3_asr", "parakeet"), default="qwen3_asr"
+    )
+    parser.add_argument(
         "--model",
         required=True,
-        help="Repository of a provisioned checkpoint, such as mlx-community/Qwen3-ASR-0.6B-4bit",
+        help="Repository ID of a checkpoint provisioned under data-root/models",
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--languages", nargs="+", choices=("en", "zh"), default=["en", "zh"]
+        "--languages",
+        nargs="+",
+        choices=("en", "zh"),
+        help="Defaults to en zh, or en for Parakeet",
     )
     parser.add_argument("--minutes", nargs="+", type=float, default=[5, 10, 30, 60])
     parser.add_argument("--mode", choices=("http", "realtime"), required=True)
@@ -322,6 +330,10 @@ def main() -> None:
         help="Server flags after --, such as -- --cache-limit-mb 512",
     )
     arguments = parser.parse_args()
+    if arguments.languages is None:
+        arguments.languages = list(DEFAULT_LANGUAGES[arguments.model_kind])
+    else:
+        pass
     if platform.system() != "Darwin":
         parser.error("Requires macOS for its process accounting")
     elif not all(
@@ -340,6 +352,12 @@ def main() -> None:
         parser.error("--chunk-seconds needs --mode http and a positive duration")
     elif arguments.mode == "http" and arguments.speed != 1:
         parser.error("--speed needs --mode realtime")
+    elif arguments.model_kind == "parakeet" and arguments.mode != "http":
+        parser.error("--model-kind parakeet requires --mode http")
+    elif arguments.model_kind == "parakeet" and any(
+        language != "en" for language in arguments.languages
+    ):
+        parser.error("--model-kind parakeet requires --languages en")
     else:
         pass
     arguments.output.mkdir(parents=True, exist_ok=False)

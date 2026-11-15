@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -174,12 +175,11 @@ func (m *Manager) Cancel(id string) {
 func (m *Manager) SkipLLM(id string) {
 	m.mu.Lock()
 	r := m.cur
-	ok := r != nil && r.id == id && m.snap.State == Composing && m.snap.CanSkip
-	m.mu.Unlock()
-	if ok {
+	if r != nil && r.id == id && m.snap.State == Composing && m.snap.CanSkip {
 		r.skipped.Store(true)
 		r.llmStop()
 	}
+	m.mu.Unlock()
 }
 
 // StopLLM ends session id's answer where it is, when its snapshot says it
@@ -188,12 +188,33 @@ func (m *Manager) SkipLLM(id string) {
 func (m *Manager) StopLLM(id string) {
 	m.mu.Lock()
 	r := m.cur
-	ok := r != nil && r.id == id && m.snap.CanStop()
-	m.mu.Unlock()
-	if ok {
+	if r != nil && r.id == id && m.snap.CanStop() {
 		r.stopped.Store(true)
 		r.llmStop()
 	}
+	m.mu.Unlock()
+}
+
+// Rethink asks the language model again at thinking level t (nil: the
+// service's setting) while it cleans up session id's Transcribe text
+// (#3940, the preview's thinking menu): the request ends where it is and
+// the text is cleaned up again from the start. The service's setting
+// stays. Otherwise it does nothing.
+func (m *Manager) Rethink(id string, t *llm.Thinking) {
+	m.mu.Lock()
+	r := m.cur
+	m.mu.Unlock()
+	if r == nil || r.id != id {
+		return
+	}
+	m.update(r, func(s *Snapshot) {
+		if s.Kind != store.KindTranscribe || s.State != Composing || !s.CanSkip || r.skipped.Load() {
+			return
+		}
+		s.Thinking, r.think = t, t
+		r.rethink.Store(true)
+		r.llmStop()
+	})
 }
 
 // update changes the snapshot of run r, if r is still the current,
