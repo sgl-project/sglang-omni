@@ -1673,5 +1673,8 @@
   "The app in front, when an App enhancement group matches it. The features that group applies to.": "最前面的 App，在它匹配某个应用增强分组时填入。用于该分组生效的功能。",
   "Your main language, from General settings. Every feature.": "你的主要语言，来自通用设置。所有功能都用到。",
   "Your other languages, from General settings. Every feature.": "你的其他语言，来自通用设置。所有功能都用到。",
-  "Your rules with the variables filled in from your settings now, for a sample input. When the personal dictionary is on, it goes right after the system prompt: see How it is used on the Dictionary page.": "用一段示例输入，把你的规则里的变量按现在的设置填好。个人词典打开时，会接在系统提示词后面，见词典页的“怎么使用”。"
+  "Your rules with the variables filled in from your settings now, for a sample input. When the personal dictionary is on, it goes right after the system prompt: see How it is used on the Dictionary page.": "用一段示例输入，把你的规则里的变量按现在的设置填好。个人词典打开时，会接在系统提示词后面，见词典页的“怎么使用”。",
+  "Correct with the language model": "用语言模型校对",
+  "Correcting the transcript with the language model…": "正在用语言模型校对转录稿…",
+  "Could not correct the transcript: %v": "无法校对转录稿：%v"
 }
