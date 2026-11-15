@@ -17,6 +17,8 @@ namespace mx = mlx::core;
 
 namespace {
 
+const std::string kSpeakerWeightPrefix = "campplus.";
+
 constexpr int kHiddenSize = 896;
 constexpr int kIntermediateSize = 4864;
 constexpr int kLayerCount = 24;
@@ -492,6 +494,65 @@ LoadSpeechTokenizer(const std::filesystem::path &directory) {
                                  nlohmann::json::object());
 }
 
+// The checkpoint's campplus.* weights, as CamPlusEncoder names them.
+omni_common::WeightMap
+SpeakerWeights(const omni_common::Checkpoint &checkpoint) {
+  omni_common::WeightMap weights;
+  // Note (Jiaxin Deng): the checkpoint stores the encoder in float16 and in
+  // MLX layout; it runs in float32, as the reference does.
+  const auto copy_weight = [&](const std::string &name) {
+    weights.insert_or_assign(
+        name, mx::astype(checkpoint.Weight(kSpeakerWeightPrefix + name),
+                         mx::float32));
+  };
+  const auto copy_batch_norm = [&](const std::string &prefix, bool affine) {
+    copy_weight(prefix + ".running_mean");
+    copy_weight(prefix + ".running_var");
+    if (affine) {
+      copy_weight(prefix + ".weight");
+      copy_weight(prefix + ".bias");
+    } else {
+    }
+  };
+  copy_weight("head.conv1.weight");
+  copy_batch_norm("head.bn1", true);
+  for (const std::string layer : {"head.layer1", "head.layer2"}) {
+    for (const std::string block : {".0", ".1"}) {
+      copy_weight(layer + block + ".conv1.weight");
+      copy_batch_norm(layer + block + ".bn1", true);
+      copy_weight(layer + block + ".conv2.weight");
+      copy_batch_norm(layer + block + ".bn2", true);
+    }
+    copy_weight(layer + ".0.shortcut.0.weight");
+    copy_batch_norm(layer + ".0.shortcut.1", true);
+  }
+  copy_weight("head.conv2.weight");
+  copy_batch_norm("head.bn2", true);
+  copy_weight("tdnn.linear.weight");
+  copy_batch_norm("tdnn.nonlinear.0", true);
+  for (int block = 0; block < 3; ++block) {
+    for (int layer = 0; layer < omni_common::kCamPlusBlockLayerCounts[block];
+         ++layer) {
+      const std::string prefix = omni_common::CamPlusLayerPrefix(block, layer);
+      copy_batch_norm(prefix + ".nonlinear1.0", true);
+      copy_weight(prefix + ".linear1.weight");
+      copy_batch_norm(prefix + ".nonlinear2.0", true);
+      copy_weight(prefix + ".cam_layer.linear_local.weight");
+      copy_weight(prefix + ".cam_layer.linear1.weight");
+      copy_weight(prefix + ".cam_layer.linear1.bias");
+      copy_weight(prefix + ".cam_layer.linear2.weight");
+      copy_weight(prefix + ".cam_layer.linear2.bias");
+    }
+    const std::string transit = "transits." + std::to_string(block);
+    copy_batch_norm(transit + ".nonlinear.0", true);
+    copy_weight(transit + ".linear.weight");
+  }
+  copy_batch_norm("out_nonlinear.0", true);
+  copy_weight("dense.linear.weight");
+  copy_batch_norm("dense.nonlinear.0", false);
+  return weights;
+}
+
 } // namespace
 
 CosyVoice3Model::CosyVoice3Model(const std::filesystem::path &model_directory)
@@ -500,7 +561,8 @@ CosyVoice3Model::CosyVoice3Model(const std::filesystem::path &model_directory)
                {kLayerCount, kAttentionHeadCount, kKeyValueHeadCount,
                 kHeadDimension, kRmsNormEpsilon, kRopeTheta, false, false}),
       tokenizer_(std::make_unique<omni_common::Tokenizer>(model_directory)),
-      flow_(checkpoint_), hift_(checkpoint_), speaker_encoder_(checkpoint_),
+      flow_(checkpoint_), hift_(checkpoint_),
+      speaker_encoder_(SpeakerWeights(checkpoint_)),
       speech_tokenizer_checkpoint_(
           LoadSpeechTokenizer(model_directory / "speech_tokenizer")),
       speech_tokenizer_(speech_tokenizer_checkpoint_) {}

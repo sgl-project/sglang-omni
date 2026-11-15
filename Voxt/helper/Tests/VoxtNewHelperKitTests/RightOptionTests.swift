@@ -100,7 +100,7 @@ final class RightOptionTests: XCTestCase {
 
     /// Right ⌥ held for an ⌥-click or ⌥-drag: no shortcut.
     func testRightOptionClickDoesNotFire() {
-        let r = run([flags(61, rOpt, 0), .pointer(t: 50), flags(61, up, 300)])
+        let r = run([flags(61, rOpt, 0), .mouseDown(button: 0, flags: rOpt, t: 50), flags(61, up, 300)])
         XCTAssertEqual(r.fired, [])
         XCTAssertEqual(r.swallowed, [])
     }

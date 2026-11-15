@@ -90,6 +90,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         max_running_requests: int,
         max_new_tokens: int,
         enable_async_decode: bool,
+        enable_plain_fallback: bool,
         async_decode_min_batch_size: int,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
@@ -102,7 +103,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         prefill_coalesce_wait_ms: float,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
-        prefill_coalesce_after_builds_during_decode: bool,
+        prefill_coalesce_after_builds_during_decode: bool | None,
         stream_emit_interval_s: float,
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 4096,
@@ -132,6 +133,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         self.draft_checkpoint: TemporaryDirectory[str] | None = None
         self.max_new_tokens = max_new_tokens
         self.enable_async_decode = enable_async_decode
+        self.enable_plain_fallback = enable_plain_fallback
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.mem_fraction_static = mem_fraction_static
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
@@ -398,8 +400,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             raise ValueError(
                 "Qwen3-ASR speculative decoding currently supports DFLASH only"
             )
-        elif not current_platform.is_cuda() or overrides.get("tp_size", 1) != 1:
-            raise ValueError("Qwen3-ASR DFlash currently requires one CUDA GPU")
+        elif (
+            not (current_platform.is_cuda() or current_platform.is_npu())
+            or overrides.get("tp_size", 1) != 1
+        ):
+            raise ValueError(
+                "Qwen3-ASR DFlash currently requires one CUDA GPU or Ascend NPU"
+            )
         else:
             # note (WilsonZheng0327): Draft modules import Triton kernels unavailable on Torch MPS hosts.
             from sglang_omni.speculative.dflash_draft import (
@@ -560,7 +567,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
-            greedy_only=self.uses_torch_mps(),
+            # NPU DFlash verification uses argmax and cannot preserve sampling.
+            greedy_only=self.uses_torch_mps()
+            or (current_platform.is_npu() and self.draft_checkpoint is not None),
         )
 
     def make_abort_callback(self) -> Callable[[str], None] | None:
@@ -594,6 +603,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Qwen3ASRRequestData]:
         use_torch_mps = self.uses_torch_mps()
         return {
+            "enable_plain_fallback": self.enable_plain_fallback,
             "stream_output_builder": request_builders.make_qwen3_asr_stream_output_builder(
                 tokenizer=self.tokenizer,
                 min_emit_interval_s=self.stream_emit_interval_s,
@@ -618,7 +628,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds
             ),
+            # note (ychu824): with a draft this defaults to off, because holding prefills during decode delayed the first text and did not raise throughput.
             "prefill_coalesce_after_builds_during_decode": (
-                self.prefill_coalesce_after_builds_during_decode
+                self.draft_checkpoint is None
+                if self.prefill_coalesce_after_builds_during_decode is None
+                else self.prefill_coalesce_after_builds_during_decode
             ),
         }

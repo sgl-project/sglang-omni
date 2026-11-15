@@ -9,6 +9,7 @@ from enum import Enum, auto
 from typing import (
     TYPE_CHECKING,
     Generic,
+    Literal,
     NotRequired,
     Protocol,
     SupportsIndex,
@@ -123,6 +124,8 @@ class ARRequestData:
     max_new_tokens: int | None = None
     enforce_request_limits: bool = False
     temperature: float = 0.0
+    decode_path: Literal["plain", "spec"] = "plain"
+    fallback_reason: str | None = None
     # note(ratish): the scheduler clears both on every request it finishes and
     # compacts the history of every request it retracts, whatever the model.
     prefill_input_embeds: "torch.Tensor | None" = None

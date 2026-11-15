@@ -91,7 +91,7 @@ func TestOpenAIChat(t *testing.T) {
 	resp, err := c.Chat(context.Background(), Request{
 		Model:       "gpt-x",
 		Messages:    []Message{{Role: System, Content: "sys"}, {Role: User, Content: "hello"}},
-		Temperature: F64(0.2), MaxTokens: 50, Stop: []string{"\n\n"},
+		Temperature: ptr(0.2), MaxTokens: 50, Stop: []string{"\n\n"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -108,6 +108,36 @@ func TestOpenAIChat(t *testing.T) {
 	}
 	if msgs := r.Body["messages"].([]any); len(msgs) != 2 || msgs[0].(map[string]any)["role"] != "system" {
 		t.Fatalf("messages %v", msgs)
+	}
+}
+
+// TestOpenAIRelaxesGeneration: a rejected temperature or top_p that came
+// from the setup's settings (or its Extra Body) is dropped too; a rejection
+// naming something the body does not carry is not retried.
+func TestOpenAIRelaxesGeneration(t *testing.T) {
+	reject := jsonReply(400, map[string]any{"error": map[string]any{"message": "Unsupported value: 'temperature' does not support 0.2"}})
+	for name, g := range map[string]Generation{
+		"temperature": {Temperature: ptr(0.2)},
+		"top_p":       {TopP: ptr(0.9)},
+		"extra body":  {ExtraBody: map[string]any{"temperature": 0.2}},
+	} {
+		f := newFakeServer(t, reject, jsonReply(200, oaText("ok")))
+		p := presetAt(t, "openai", f.srv.URL)
+		p.Generation = g
+		c := NewOpenAI(p, "k", f.srv.Client())
+		if _, err := c.Chat(context.Background(), Request{Messages: msgs("hi")}); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		rs := f.requests()
+		if len(rs) != 2 || rs[1].Body["temperature"] != nil || rs[1].Body["top_p"] != nil {
+			t.Fatalf("%s: requests %+v", name, rs)
+		}
+	}
+	// Nothing to drop: not resent.
+	f := newFakeServer(t, reject)
+	c := NewOpenAI(presetAt(t, "openai", f.srv.URL), "k", f.srv.Client())
+	if _, err := c.Chat(context.Background(), Request{Messages: msgs("hi")}); err == nil || len(f.requests()) != 1 {
+		t.Fatalf("err %v, %d requests", err, len(f.requests()))
 	}
 }
 
@@ -153,7 +183,7 @@ func TestOpenAIRelaxed(t *testing.T) {
 		sse(`data: {"choices":[{"delta":{"content":"好的"},"finish_reason":"stop"}]}`+"\n\n", "data: [DONE]\n\n"),
 	)
 	c := &Client{Backend: NewOpenAI(presetAt(t, "deepseek", f.srv.URL), "sk-ds", f.srv.Client())}
-	resp, err := c.Chat(context.Background(), Request{Messages: []Message{{Role: User, Content: "hi"}}, Temperature: F64(0.3), OnDelta: func(string) {}})
+	resp, err := c.Chat(context.Background(), Request{Messages: []Message{{Role: User, Content: "hi"}}, Temperature: ptr(0.3), OnDelta: func(string) {}})
 	if err != nil || resp.Text != "好的" || !resp.Usage.Estimated {
 		t.Fatalf("%v %+v", err, resp)
 	}

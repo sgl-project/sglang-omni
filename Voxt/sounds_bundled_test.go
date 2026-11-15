@@ -10,8 +10,9 @@ import (
 // TestBundledSounds checks the family's sounds an official build ships
 // (resources/sounds, fetched by scripts/sync-sounds.sh, not in the
 // repository): the catalogue loads, every file is there and matches its
-// SHA-256, and it has the cues' defaults and every sound meant to start or
-// stop a recording. Without the copy it is skipped.
+// SHA-256, and it has the cues' defaults, every sound of Settings → Audio's
+// pairs and every sound meant to start or stop a recording. Without the
+// copy it is skipped.
 func TestBundledSounds(t *testing.T) {
 	if _, err := os.Stat("resources/sounds/catalog.json"); err != nil {
 		t.Skip("no resources/sounds (scripts/sync-sounds.sh): a source build")
@@ -29,6 +30,13 @@ func TestBundledSounds(t *testing.T) {
 		}
 		if n := len(cat.Suggested(ev)); n < 4 {
 			t.Errorf("%s: %d suggested sounds", ev.ID, n)
+		}
+	}
+	for _, p := range soundPairs {
+		for _, id := range []string{p.start, p.stop} {
+			if _, ok := cat.Sound(id); !ok {
+				t.Errorf("pair %s: no %s", p.key, id)
+			}
 		}
 	}
 	if cat.Notice == "" {

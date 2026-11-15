@@ -56,7 +56,7 @@ func (a *adapter) Effective(_ context.Context, key string) (string, error) {
 func (a *adapter) Declare(_ context.Context, sc []shortcuts.Shortcut) error {
 	a.prefs.Features.Transcribe.Hotkeys = nil
 	a.prefs.Features.Translate.Hotkeys, a.prefs.Features.Rewrite.Hotkeys = nil, nil
-	a.prefs.Features.PasteLast = settings.Hotkey{}
+	a.prefs.Features.PasteLast, a.prefs.Features.Note = settings.Hotkey{}, settings.Hotkey{}
 	for _, s := range sc {
 		trigger := settings.TriggerTap
 		switch shortcuts.NormalizeTrigger(s.Trigger) {

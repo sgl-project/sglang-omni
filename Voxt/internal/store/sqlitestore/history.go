@@ -127,7 +127,9 @@ func (r *historyRepo) Get(ctx context.Context, id string) (store.Entry, error) {
 	return scanEntry(rows.Values[0]), nil
 }
 
-func (r *historyRepo) List(ctx context.Context, q store.HistoryQuery) ([]store.Entry, error) {
+// historyWhere is the WHERE clause of q ("" for every entry) and its
+// arguments.
+func historyWhere(q store.HistoryQuery) (string, []any) {
 	var where []string
 	var args []any
 	if s := strings.TrimSpace(q.Search); s != "" {
@@ -146,11 +148,34 @@ func (r *historyRepo) List(ctx context.Context, q store.HistoryQuery) ([]store.E
 	if q.WithAudio {
 		where = append(where, `audio != ''`)
 	}
-	sql := `SELECT ` + historyColumns + ` FROM history`
-	if len(where) > 0 {
-		sql += ` WHERE ` + strings.Join(where, ` AND `)
+	if q.Finished {
+		where, args = append(where, `status = ? AND result != ''`), append(args, string(store.StatusDone))
 	}
-	sql += ` ORDER BY created_at DESC, id DESC`
+	if !q.After.IsZero() {
+		ms := q.After.UnixMilli()
+		if q.AfterID != "" {
+			where, args = append(where, `(created_at > ? OR (created_at = ? AND id > ?))`), append(args, ms, ms, q.AfterID)
+		} else {
+			where, args = append(where, `created_at >= ?`), append(args, ms)
+		}
+	}
+	if !q.Before.IsZero() {
+		where, args = append(where, `created_at < ?`), append(args, q.Before.UnixMilli())
+	}
+	if len(where) == 0 {
+		return "", nil
+	}
+	return ` WHERE ` + strings.Join(where, ` AND `), args
+}
+
+func (r *historyRepo) List(ctx context.Context, q store.HistoryQuery) ([]store.Entry, error) {
+	where, args := historyWhere(q)
+	sql := `SELECT ` + historyColumns + ` FROM history` + where
+	if q.Oldest {
+		sql += ` ORDER BY created_at ASC, id ASC`
+	} else {
+		sql += ` ORDER BY created_at DESC, id DESC`
+	}
 	sql, args = page(sql, args, q.Limit, q.Offset)
 	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
@@ -161,6 +186,15 @@ func (r *historyRepo) List(ctx context.Context, q store.HistoryQuery) ([]store.E
 		out = append(out, scanEntry(row))
 	}
 	return out, nil
+}
+
+func (r *historyRepo) Count(ctx context.Context, q store.HistoryQuery) (int, error) {
+	where, args := historyWhere(q)
+	rows, err := r.db.Query(ctx, `SELECT COUNT(*) FROM history`+where, args...)
+	if err != nil {
+		return 0, wrap("history", err)
+	}
+	return int(asInt(rows.Values[0][0])), nil
 }
 
 // Delete removes the row, then the audio file (a missing file is fine).

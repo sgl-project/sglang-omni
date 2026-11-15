@@ -10,18 +10,20 @@
 // main thread with internal/secrets) and a hasKey function for the
 // decisions that only need to know whether one is saved.
 //
-// Imports: asr (+ openai, doubao, aliyun, gemini, mimo), llm, local,
+// Imports: asr (+ openai, doubao, aliyun, gemini, mimo), codexauth, llm, local,
 // settings.
 package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/codexauth"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -72,7 +74,7 @@ func Remove(s *settings.Settings, id string) {
 
 // Config is the llm package's configuration of a setup.
 func Config(p settings.Provider) llm.ProviderConfig {
-	return llm.ProviderConfig{ID: p.ID, BaseURL: p.Endpoint, Model: p.Model, Generation: Generation(p.Generation)}
+	return llm.ProviderConfig{ID: p.ID, BaseURL: p.Endpoint, Model: p.Model, Generation: Generation(p.Generation), API: p.APIFormat}
 }
 
 // Model is the model a setup uses: its own, else its preset's default.
@@ -89,6 +91,7 @@ const (
 	MissingKey      = "key"
 	MissingEndpoint = "endpoint"
 	MissingModel    = "model"
+	MissingAddress  = "address" // saved, but Resolve refuses it
 )
 
 // Missing says what a setup lacks before it can be used: "" when it is
@@ -102,6 +105,9 @@ func Missing(p settings.Provider, hasKey bool) string {
 		return MissingModel
 	case !hasKey && !pr.KeyOptional:
 		return MissingKey
+	}
+	if _, err := Config(p).Resolve(); err != nil {
+		return MissingAddress
 	}
 	return ""
 }
@@ -126,6 +132,53 @@ func NewLLM(p settings.Provider, key string, client *http.Client) (*llm.OpenAI, 
 		return nil, err
 	}
 	return llm.NewOpenAI(pr, key, client), nil
+}
+
+// ChatGPT is the id of the setup reached by signing in to ChatGPT.
+const ChatGPT = "codex"
+
+// ChatGPTTokens is sess as the transport's token source.
+func ChatGPTTokens(sess *codexauth.Session) llm.TokenSource {
+	return func(ctx context.Context, stale string) (llm.Credential, error) {
+		c, err := sess.Token(ctx, stale)
+		switch {
+		case errors.Is(err, codexauth.ErrSignedOut):
+			return llm.Credential{}, llm.SignInError(ChatGPT)
+		case err != nil:
+			return llm.Credential{}, err
+		}
+		return llm.Credential{Token: c.Access, AccountID: c.AccountID}, nil
+	}
+}
+
+// NewSignedIn is the backend of a setup that signs in instead of having a
+// key.
+func NewSignedIn(p settings.Provider, tokens llm.TokenSource, client *http.Client) (*llm.OpenAI, error) {
+	b, err := NewLLM(p, "", client)
+	if err != nil {
+		return nil, err
+	}
+	return b.WithTokens(tokens), nil
+}
+
+// OpenSignedIn is Open for a setup that signs in.
+func OpenSignedIn(p settings.Provider, tokens llm.TokenSource, client *http.Client) (local.Chat, error) {
+	b, err := NewSignedIn(p, tokens, client)
+	if err != nil {
+		return nil, err
+	}
+	return &llm.Client{Backend: b, Retry: llm.RetryPolicy{MaxAttempts: 2}}, nil
+}
+
+// TestSignedIn is Test for a setup that signs in.
+func TestSignedIn(ctx context.Context, p settings.Provider, tokens llm.TokenSource, client *http.Client) TestResult {
+	res := TestResult{At: time.Now()}
+	b, err := NewSignedIn(p, tokens, client)
+	if err == nil {
+		res.Latency, err = llm.Probe(ctx, b)
+	}
+	res.Err = err
+	return res
 }
 
 // Open is a setup as a session uses it: an llm.Client (two attempts,

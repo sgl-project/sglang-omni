@@ -3,19 +3,25 @@ package proto
 // ---- hotkey.* ----
 
 // HotkeyBinding is one shortcut the event tap watches: a modifier-only
-// chord (Key nil: fn, fn+⇧, right ⌘…) or a key with modifiers (⌃⌘V).
-// The helper's recognizer decides on the tap's thread, synchronously,
-// whether to swallow each key event, as macOS requires.
+// chord (Key and Button nil: fn, fn+⇧, right ⌘…), a key with modifiers
+// (⌃⌘V) or a mouse button with modifiers (none, or ⌥ and the side
+// button). The helper's recognizer decides on the tap's thread,
+// synchronously, whether to swallow each event, as macOS requires.
 type HotkeyBinding struct {
 	ID string `json:"id"` // the app's name for it: "transcribe/0"
 	// Modifiers maps each modifier family the binding needs (Mod*) to its
 	// side (Side*); families not listed must be up.
 	Modifiers map[string]string `json:"modifiers"`
 	// Key is the virtual key code (kVK_*, 0 is A) of a key binding.
-	Key      *int   `json:"key,omitempty"`
+	Key *int `json:"key,omitempty"`
+	// Button is the mouse button of a mouse binding, numbered as macOS's
+	// events number it: 2 is the middle button, 3 and up the side buttons
+	// (the left and right buttons, 0 and 1, are never bound). It is judged
+	// like a key; a binding has a Key or a Button, not both.
+	Button   *int   `json:"button,omitempty"`
 	Behavior string `json:"behavior"` // BehaviorTap | BehaviorDoubleTap | BehaviorLongPress
-	// Swallow, for a key binding, keeps its key events from the app in
-	// front (default true). Modifier-only chords are never swallowed, but
+	// Swallow, for a key or mouse binding, keeps its events from the app
+	// in front (default true). Modifier-only chords are never swallowed, but
 	// fn with HotkeyConfigureParams.SwallowFn.
 	Swallow *bool `json:"swallow,omitempty"`
 }

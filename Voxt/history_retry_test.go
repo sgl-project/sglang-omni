@@ -122,7 +122,7 @@ func TestHistoryRetryDetail(t *testing.T) {
 	row := retries()
 	a.hist.sel = histRetry
 	frames(tt)
-	if !hasPrefix(tt, "Recording kept because recognition failed; deleted after") {
+	if !hasPrefix(tt, "Recording kept until ") || !has(tt, " because recognition failed.") {
 		t.Errorf("no retention line: %q", tt.Texts())
 	}
 	if n := retries(); row == 0 || n != 2*row {

@@ -29,7 +29,7 @@ var Capabilities = []string{registry.CapModelsHF, registry.CapASRLocal, registry
 
 // Shortcuts are VoxtNew's global shortcuts as the family declares them:
 // each feature's bindings (ids "transcribe", "translate", "rewrite", a
-// second binding "transcribe.2"…) and "pasteLast", with the time each got
+// second binding "transcribe.2"…), "pasteLast" and "note", with the time each got
 // its keys (prefs.Family.KeysSince). Keys the family's notation cannot
 // write are left out.
 func Shortcuts(prefs settings.Settings) []shortcuts.Shortcut {
@@ -70,6 +70,7 @@ func Shortcuts(prefs settings.Settings) []shortcuts.Shortcut {
 	}
 	// ⌃⌥V and the like: the helper swallows the keys it pastes on.
 	add("pasteLast", "Paste last", f.PasteLast, shortcuts.Press, true)
+	add("note", "Notes", f.Note, shortcuts.Tap, false)
 	return out
 }
 

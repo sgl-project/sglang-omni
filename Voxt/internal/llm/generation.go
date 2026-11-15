@@ -25,11 +25,12 @@ type Generation struct {
 	ResponseFormat string
 	JSONSchema     map[string]any
 	Thinking       Thinking
-	Verbosity      string         // OpenAI's text verbosity: "low", "medium", "high"
-	KeepAlive      string         // Ollama's keep_alive ("5m")
-	IncludeUsage   *bool          // oMLX's stream_options.include_usage; nil: Voxt's (on)
-	Options        map[string]any // Ollama's options, merged into the body's
-	ExtraBody      map[string]any // merged into the body last: its keys win
+	Verbosity      string // OpenAI's text verbosity: "low", "medium", "high"
+	KeepAlive      string // Ollama's keep_alive ("5m")
+	IncludeUsage   *bool  // oMLX's stream_options.include_usage; nil: Voxt's (on)
+	// ExtraBody is applied to the body last as a JSON merge patch (RFC
+	// 7386): its keys win, an object merges into the body's, null removes.
+	ExtraBody map[string]any
 }
 
 // Thinking is whether, and how much, a model thinks before it answers.
@@ -114,15 +115,29 @@ func applyGeneration(b map[string]any, p Preset, model string, stream bool) {
 	if stream && g.IncludeUsage != nil && !*g.IncludeUsage {
 		delete(b, "stream_options")
 	}
-	if len(g.Options) > 0 {
-		opts, _ := b["options"].(map[string]any)
-		if opts == nil {
-			opts = map[string]any{}
+	mergePatch(b, g.ExtraBody)
+}
+
+// mergePatch applies patch to doc as a JSON merge patch (RFC 7386): an
+// object merges into a copy of the object doc holds under its key (the
+// preset's are shared), null removes the key, any other value replaces it.
+func mergePatch(doc, patch map[string]any) {
+	for k, v := range patch {
+		switch v := v.(type) {
+		case nil:
+			delete(doc, k)
+		case map[string]any:
+			sub, _ := doc[k].(map[string]any)
+			sub = maps.Clone(sub)
+			if sub == nil {
+				sub = map[string]any{}
+			}
+			mergePatch(sub, v)
+			doc[k] = sub
+		default:
+			doc[k] = v
 		}
-		maps.Copy(opts, g.Options)
-		b["options"] = opts
 	}
-	maps.Copy(b, g.ExtraBody)
 }
 
 // applyThinking writes t in the fields service id reads (Voxt 1.x's
@@ -210,6 +225,9 @@ func applyThinking(b map[string]any, id, model string, t Thinking) {
 			b["thinking"] = disabled
 		case ThinkBudget:
 			b["thinking"] = enabled(t.Budget)
+			if n, ok := b["max_tokens"].(int); ok && n <= t.Budget { // Voxt 1.x kept it above the budget
+				b["max_tokens"] = t.Budget + 1
+			}
 		}
 	case "gemini":
 		switch t.Mode {

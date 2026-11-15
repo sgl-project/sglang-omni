@@ -18,6 +18,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -65,6 +67,9 @@ type shellState struct {
 	// ("/general"), which navigate drives from "/settings/…" paths.
 	settingsOpen bool
 	setRouter    *ui.Router
+	// mainUI is the main window's services, kept by its build: read
+	// between frames (textFocused).
+	mainUI ui.Services
 
 	bus      *core.Bus
 	settings settings.Service
@@ -88,6 +93,7 @@ type shellState struct {
 	logsPanel    bool
 	logsSource   string
 	logsQuery    string
+	logsFind     finder       // Return steps through the filter's matches (find_marks.go)
 	logSel       logSelection // the lines selected (shell_logs_select.go)
 	logsHeight   float32
 	logsDirty    atomic.Bool // a redraw for new lines is on its way
@@ -149,8 +155,31 @@ func (a *app) connectShell(logDir string) {
 		a.logs.Close()
 		a.logs = logs.New(logs.Options{Dir: logDir, Bus: a.bus})
 		log.SetOutput(io.MultiWriter(os.Stderr, a.logs.Writer("app")))
+		keepCrashes(logDir)
 	}
 	mygo.App.OnOpenURL(func(u string) { a.post(func() { a.openURL(u) }) })
+}
+
+// keepCrashes has the Go runtime write a crash (a panic, a fatal error)
+// to crash.log in logDir: macOS keeps no report of a Go crash, and an app
+// opened from the Finder has no stderr to read. The crash of the run
+// before moves to crash.log.1 and the log says so. The diagnostic bundle
+// takes both (writeBundle).
+func keepCrashes(logDir string) {
+	path := filepath.Join(logDir, "crash.log")
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+		os.Rename(path, path+".1")
+		log.Printf("warning: Voxt crashed last time; what it was is in %s", path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		log.Printf("crash log: %v", err)
+		return
+	}
+	defer f.Close() // the runtime keeps its own copy
+	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
+		log.Printf("crash log: %v", err)
+	}
 }
 
 // closeShell waits for the notifications to be saved and flushes the
@@ -184,11 +213,6 @@ func (a *app) navigate(path string) {
 	a.pageShown(path) // pages.go
 }
 
-// showPage goes to a page by name ("home", "history", "logs",
-// "settings"). Other areas navigate only through it (and read
-// currentPage).
-func (a *app) showPage(name string) { a.navigate("/" + name) }
-
 // currentPage is the name of the page shown: the first part of its path.
 func (a *app) currentPage() string { return section(a.router.Path())[1:] }
 
@@ -221,9 +245,12 @@ func (a *app) openWindow() {
 		Content:        ui.View(a.view),
 		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
 	})
-	a.maybeOnboard()    // onboarding.go: the setup guide, on the first start
-	a.offerLegacy()     // legacy_import.go: the previous Voxt's data, for who set up without the guide's card
-	a.syncOpenAtLogin() // shell_settings.go
+	a.life = a.win
+	a.maybeOnboard()        // onboarding.go: the setup guide, on the first start
+	a.offerLegacy()         // legacy_import.go: the previous Voxt's data, for who set up without the guide's card
+	a.legacyModelsAtStart() // legacy_models.go: the previous Voxt's speech models this version added
+	a.legacyDockAtStart()   // legacy_settings_general.go: Voxt 1.x's Show in Dock, which 2.0.0 and 2.0.1 did not read
+	a.syncOpenAtLogin()     // shell_settings.go
 }
 
 // startHidden says whether the window waits hidden at start: opened at
@@ -233,6 +260,7 @@ func startHidden(atLogin bool, g settings.General) bool {
 }
 
 func (a *app) view(c *ui.Context) {
+	a.mainUI = c.Services()
 	a.applyTheme(c)
 	t := c.Theme()
 	if a.win == nil || a.prefs.Appearance.ReduceMotion {
@@ -265,9 +293,18 @@ func (a *app) view(c *ui.Context) {
 	a.settingsDialog(c)       // shell_settings.go
 	a.onboarding(c)           // onboarding_view.go
 	a.shortcutPromptDialog(c) // settings_shortcuts_family.go
+	a.announcementDialog(c)   // announcements.go
+	a.releaseDialog(c)        // updates_github.go
+	a.legacyReportDialog(c)   // legacy_report.go
 	a.palette(c)
 	a.shortcutSheet(c)
 	a.toastsView(c) // last: over dialogs too
+	// A shortcut field took the focus or lost it.
+	if a.keysHeard != a.keysListening {
+		a.keysListening = a.keysHeard
+		a.syncHotkeys()
+	}
+	a.keysHeard = false
 }
 
 // toastsView gives the toasts their place and look: small ink toasts in
@@ -339,7 +376,7 @@ func showFatal(err error) {
 				Message: i18n.T("Voxt cannot open its library"),
 				Detail: i18n.T("Your history, dictionary and settings are kept in a database in %s. It could not be opened: %v", dataDir, err) +
 					"\n\n" + i18n.T("If a newer Voxt created it, use that version. Nothing was changed."),
-				Buttons: []string{i18n.T("Quit"), i18n.T("Show the folder")},
+				Buttons: []string{i18n.T("Quit"), i18n.T("Show folder")},
 			})
 			if res.Button == 1 {
 				mygo.Shell.OpenPath(dataDir)

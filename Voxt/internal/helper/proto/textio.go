@@ -65,8 +65,9 @@ type PasteParams struct {
 	// KeepClipboard leaves Text on the clipboard instead of restoring.
 	KeepClipboard  bool `json:"keepClipboard,omitempty"`
 	RestoreDelayMS int  `json:"restoreDelayMs,omitempty"` // default 500
-	// TargetPID, when set, must be the app in front: otherwise nothing is
-	// pasted (Posted false, Front says who is in front). The app activates
+	// TargetPID, when set, must be the app in front or own the focused
+	// element (a non-activating panel such as Raycast's): otherwise nothing
+	// is pasted (Posted false, Front says who is in front). The app activates
 	// the target itself (macx.Activate) when it has to.
 	TargetPID int `json:"targetPid,omitempty"`
 	// Press are keys posted after ⌘V (app enhancement's auto key: Return,
@@ -142,6 +143,39 @@ const (
 	CheckInserted  = "inserted"  // the focused element changed after ⌘V
 	CheckUnchanged = "unchanged" // it did not change within VerifyMS
 	CheckUnknown   = "unknown"   // it has no value or selection to read, or another element took the focus
+)
+
+// ReadParams reads Range of the focused element's text in app PID, which
+// must be in front (dictionary learning: the field a result was pasted
+// into). The helper never reads a password field, nor while secure event
+// input is on for PID or for an app it cannot tell; it clamps Range to
+// the value and to MaxRead, then widens it to whole characters.
+type ReadParams struct {
+	PID   int       `json:"pid"`
+	Range TextRange `json:"range"` // UTF-16
+}
+
+// MaxRead is the most a textio.read covers before widening, in UTF-16 units.
+const MaxRead = 4000
+
+// ReadResult is the text read and the range it covers (after clamping
+// and widening), or Error (Read*), with nothing read.
+type ReadResult struct {
+	Text   string    `json:"text,omitempty"`
+	Range  TextRange `json:"range"`
+	Length int       `json:"length"` // UTF-16 units of the whole value
+	// Element is the focused element's identity (CFHash): another number
+	// is another field.
+	Element int    `json:"element"`
+	Error   string `json:"error,omitempty"`
+}
+
+// Why a textio.read read nothing.
+const (
+	ReadNotFront   = "not front"  // PID is not in front, or the focus is in another process
+	ReadNoFocus    = "no focus"   // nothing is focused
+	ReadSecure     = "secure"     // a password field, or secure event input on for PID or an unknown app
+	ReadUnreadable = "unreadable" // no text: no value, or a value past 200 000 characters without AXStringForRange
 )
 
 // ---- browser.url ----

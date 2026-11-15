@@ -25,6 +25,11 @@ def normalize_rope_scaling(
     else:
         pass
 
+    if "interleaved" in normalized and "mrope_interleaved" not in normalized:
+        normalized["mrope_interleaved"] = normalized["interleaved"]
+    else:
+        pass
+
     if _MROPE_ROPE_SCALING_KEYS.intersection(normalized.keys()):
         # SGLang selects MRotaryEmbedding from rope_type/type="default"
         # plus mrope_section. Passing "mrope" reaches the generic rope switch

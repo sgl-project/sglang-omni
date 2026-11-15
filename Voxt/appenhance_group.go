@@ -47,12 +47,12 @@ func (a *app) aeDetail(c *ui.Context, g appctx.Group) {
 				a.updateGroup(g.ID, func(g *appctx.Group) { g.Name = name })
 			}
 			on := g.Enabled // derived: committed in OnChange, while it holds the new value
-			ui.Switch(c.Key("ae-enabled"), &on).Label(i18n.T("Group on")).Tooltip(i18n.T("Group on")).OnChange(func() {
+			ui.Switch(c.Key("ae-enabled"), &on).Label(i18n.T("Group enabled")).Tooltip(i18n.T("Group enabled")).OnChange(func() {
 				v := on
 				a.updateGroup(g.ID, func(g *appctx.Group) { g.Enabled = v })
 			})
 			moreMenu(c.Key("ae-more"), "", func(m *ui.Menu) {
-				if m.Item(i18n.T("Delete the group…")).Chosen() {
+				if m.Item(i18n.T("Delete group…")).Chosen() {
 					p.delAsk = true
 				}
 			})
@@ -61,7 +61,7 @@ func (a *app) aeDetail(c *ui.Context, g appctx.Group) {
 		ui.Row(c).Wrap().GapX(px(t, sp4)).GapY(px(t, sp1)).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
 				caption(c, i18n.T("Applies to"))
-				infoTip(c, i18n.T("Transcribe: the scene shapes the clean-up. Rewrite: it helps read your spoken instruction. Translate: off by default, since a scene's tone rarely belongs in a translation."))
+				infoTip(c, i18n.T("Translate is off by default, since a scene's tone rarely suits a translation."))
 			})
 			for _, f := range []struct {
 				key, label string
@@ -92,8 +92,8 @@ func (a *app) aeScene(c *ui.Context, g appctx.Group) {
 	t := c.Theme()
 	k := tok(t)
 	p := &a.aePage
-	sectionTitleTip(c, i18n.T("Scene prompt"), i18n.T("Added on top of the features' basic clean-up and your rules, never instead of them: say what is special here (tone, format, names)."))
-	in := ui.TextArea(c.Key("ae-prompt"), &p.prompt).Label(i18n.T("Scene prompt of the group")).
+	sectionTitleTip(c, i18n.T("Group prompt"), i18n.T("Added on top of each feature's own rules."))
+	in := ui.TextArea(c.Key("ae-prompt"), &p.prompt).Label(i18n.T("Prompt for this group")).
 		Placeholder(i18n.T("For example: this is a team chat; keep it short and casual, no greetings or sign-offs.")).MinHeight(px(t, 88))
 	if in.Changed() {
 		v := p.prompt
@@ -124,7 +124,7 @@ func (a *app) aeApps(c *ui.Context, g appctx.Group) {
 	t := c.Theme()
 	k := tok(t)
 	p := &a.aePage
-	if sectionTitleAdd(c, "ae-add-app", i18n.T("Apps"), i18n.T("Dictating in one of these apps uses the group. A browser here covers the websites no website rule of any group matches."), i18n.T("Add apps…")) {
+	if sectionTitleAdd(c, "ae-add-app", i18n.T("Apps"), i18n.T("A browser added here covers the websites no website rule matches."), i18n.T("Add apps…")) {
 		p.appsOpen, p.appsQuery, p.bundleIn = true, "", ""
 		a.loadApps()
 	}
@@ -162,7 +162,7 @@ func (a *app) aeURLs(c *ui.Context, g appctx.Group) {
 	t := c.Theme()
 	k := tok(t)
 	p := &a.aePage
-	sectionTitleTip(c, i18n.T("Websites"), i18n.T("In a browser, the address of the tab in front is matched against these rules: a site (github.com), a part of it (github.com/acme/*), any subdomain (*.notion.so). * stands for anything. A website rule wins over the browser's own group; the most specific rule wins."))
+	sectionTitleTip(c, i18n.T("Websites"), i18n.T("Match a site (github.com), part of it (github.com/acme/*) or its subdomains (*.notion.so). A website rule wins over the browser's group."))
 	card(c.Key("ae-urls")).Gap(px(t, sp1)).Children(func() {
 		if len(g.URLs) == 0 {
 			caption(c, i18n.T("No website rules yet."))
@@ -194,7 +194,7 @@ func (a *app) aeURLs(c *ui.Context, g appctx.Group) {
 			if in.Changed() {
 				p.urlErr = ""
 			}
-			add := ui.Button(c.Key("ae-url-add"), i18n.T("Add")).Label(i18n.T("Add the website rule")).Disabled(strings.TrimSpace(p.urlIn) == "")
+			add := ui.Button(c.Key("ae-url-add"), i18n.T("Add")).Label(i18n.T("Add website rule")).Disabled(strings.TrimSpace(p.urlIn) == "")
 			if add.Clicked() || in.Submitted() {
 				a.aeAddURL(g)
 			}
@@ -232,7 +232,7 @@ func (a *app) aeAutoKey(c *ui.Context, g appctx.Group) {
 	t := c.Theme()
 	p := &a.aePage
 	sectionTitle(c, i18n.T("After inserting"))
-	settingRow(c, "ae-key", i18n.T("Press a key"), i18n.T("Pressed right after the text is inserted, as when a chat app sends with Return. Not pressed when the result shows in the answer card."), func() {
+	settingRow(c, "ae-key", i18n.T("Press a key"), i18n.T("For example, Return to send in a chat app."), func() {
 		opts := []string{i18n.T("None")}
 		byLabel := map[string]string{i18n.T("None"): ""}
 		for _, k := range autoKeys {
@@ -265,7 +265,7 @@ func (a *app) aeAutoKey(c *ui.Context, g appctx.Group) {
 		in := ui.TextInput(c.Key("ae-key-custom"), &p.keyText).Placeholder("Command+Return").Label(i18n.T("Custom key after inserting")).Font("monospace").MaxWidth(px(t, 300))
 		if in.Submitted() || in.Changed() && !in.Focused() {
 			if _, err := appctx.ParseAutoKey(p.keyText); err != nil || strings.TrimSpace(p.keyText) == "" {
-				p.keyErr = i18n.T("One key, with modifiers or not: Return, Command+Return, Tab.")
+				p.keyErr = i18n.T("Enter one key, with or without modifiers: Return, Command+Return, Tab.")
 			} else {
 				keys := appctx.CanonicalAutoKey(p.keyText)
 				p.keyErr, p.keyCustom, p.keySel = "", false, uitext.AutoKeyLabel(keys)

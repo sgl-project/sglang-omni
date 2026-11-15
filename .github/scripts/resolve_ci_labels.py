@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve the CI stages and models that pull request labels select.
 
-A stage runs only with its own stage label. run-lint-only satisfies the
+A stage runs only with its own stage label. Every stage label except
+run-mac-ci also runs PR Test on H100. run-lint-only satisfies the
 gate and runs no self-hosted job. A model label names a model, not a stage.
 It picks that model for every selected stage that accepts it, and never
 selects a stage. Higgs and MOSS labels are shared by TTS and MPS. A selected
@@ -28,6 +29,7 @@ class CiStage:
     name: str
     label: str
     workflow: str
+    runs_pr_test: bool
     preset_by_model_label: dict[str, str]
     random_presets: tuple[str, ...]
 
@@ -37,6 +39,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         name="unit_test",
         label="run-unit-test-ci-only",
         workflow=OMNI_CI_WORKFLOW,
+        runs_pr_test=True,
         preset_by_model_label={},
         random_presets=(),
     ),
@@ -44,6 +47,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         name="asr",
         label="run-asr-ci",
         workflow=OMNI_CI_WORKFLOW,
+        runs_pr_test=True,
         preset_by_model_label={
             "run-fun-asr-nano-2512": "fun",
             "run-qwen3-asr-1.7b": "qwen3",
@@ -55,6 +59,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         name="tts",
         label="run-tts-ci",
         workflow=OMNI_CI_WORKFLOW,
+        runs_pr_test=True,
         preset_by_model_label={
             HIGGS_TTS_MODEL_LABEL: "higgs",
             MOSS_TTS_MODEL_LABEL: "moss",
@@ -70,6 +75,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         name="mps",
         label="run-mps-ci",
         workflow=OMNI_CI_WORKFLOW,
+        runs_pr_test=True,
         preset_by_model_label={
             HIGGS_TTS_MODEL_LABEL: "higgs",
             MOSS_TTS_MODEL_LABEL: "moss",
@@ -80,6 +86,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         name="omni",
         label="run-omni-ci",
         workflow=OMNI_CI_WORKFLOW,
+        runs_pr_test=True,
         preset_by_model_label={
             "run-qwen3-omni-30b-a3b-instruct": "qwen3-omni",
             "run-minicpm-o-4.5": "minicpmo",
@@ -90,6 +97,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         name="full_duplex",
         label="run-native-duplex",
         workflow=OMNI_CI_WORKFLOW,
+        runs_pr_test=True,
         preset_by_model_label={},
         random_presets=(),
     ),
@@ -97,6 +105,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         name="turn_based",
         label="run-turn-based-duplex",
         workflow=OMNI_CI_WORKFLOW,
+        runs_pr_test=True,
         preset_by_model_label={},
         random_presets=(),
     ),
@@ -104,6 +113,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         name="cascaded",
         label="run-cascaded-duplex",
         workflow=OMNI_CI_WORKFLOW,
+        runs_pr_test=True,
         preset_by_model_label={},
         random_presets=(),
     ),
@@ -111,6 +121,7 @@ CI_STAGES: tuple[CiStage, ...] = (
         name="intel_cpu",
         label="run-intel-cpu-ci",
         workflow="CPU CI",
+        runs_pr_test=True,
         preset_by_model_label={},
         random_presets=(),
     ),
@@ -118,13 +129,15 @@ CI_STAGES: tuple[CiStage, ...] = (
         name="intel_xpu",
         label="run-intel-xpu-ci",
         workflow="XPU CI",
+        runs_pr_test=True,
         preset_by_model_label={},
         random_presets=(),
     ),
     CiStage(
         name="mac",
         label="run-mac-ci",
-        workflow="Voxt Mac CI",
+        workflow="Mac CI",
+        runs_pr_test=False,
         preset_by_model_label={},
         random_presets=(),
     ),
@@ -147,20 +160,22 @@ def select_stage_names(labels: frozenset[str]) -> frozenset[str]:
     return frozenset(stage.name for stage in CI_STAGES if stage.label in labels)
 
 
+def should_run_pr_test(enabled_stage_names: frozenset[str]) -> bool:
+    return any(
+        stage.runs_pr_test for stage in CI_STAGES if stage.name in enabled_stage_names
+    )
+
+
 def select_workflows(labels: frozenset[str]) -> frozenset[str]:
-    """Every selected stage also opts Omni CI in, which runs the unit tests."""
+    """A selected stage that runs PR Test also opts Omni CI in."""
     enabled_stage_names = select_stage_names(labels)
-    if enabled_stage_names:
-        return frozenset(
-            {OMNI_CI_WORKFLOW}
-            | {
-                stage.workflow
-                for stage in CI_STAGES
-                if stage.name in enabled_stage_names
-            }
-        )
+    stage_workflows = frozenset(
+        stage.workflow for stage in CI_STAGES if stage.name in enabled_stage_names
+    )
+    if should_run_pr_test(enabled_stage_names):
+        return stage_workflows | {OMNI_CI_WORKFLOW}
     else:
-        return frozenset()
+        return stage_workflows
 
 
 def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
@@ -222,7 +237,7 @@ def format_github_outputs(plan: CiPlan) -> list[str]:
             pass
     mps_preset = plan.preset_by_stage_name.get("mps", "")
     output_lines.append(f"mps_ci_config={MPS_CONFIG_BY_PRESET.get(mps_preset, '')}")
-    is_self_hosted = bool(plan.enabled_stage_names)
+    is_self_hosted = should_run_pr_test(plan.enabled_stage_names)
     output_lines.append(f"run_self_hosted={str(is_self_hosted).lower()}")
     return output_lines
 

@@ -86,6 +86,88 @@ void KVCache::Trim(int token_count) {
   offset_ -= token_count;
 }
 
+std::pair<mx::array, mx::array> KVCache::Filled() const {
+  const mx::Shape stop = {keys_->shape(0), keys_->shape(1), offset_,
+                          keys_->shape(3)};
+  return {mx::slice(*keys_, {0, 0, 0, 0}, stop),
+          mx::slice(*values_, {0, 0, 0, 0}, stop)};
+}
+
+namespace {
+
+// Left-pads each row to the longest and stacks the rows.
+mx::array StackRows(const std::vector<mx::array> &rows) {
+  int longest = 0;
+  for (const mx::array &row : rows) {
+    longest = std::max(longest, row.shape(2));
+  }
+  std::vector<mx::array> padded;
+  for (const mx::array &row : rows) {
+    const int pad = longest - row.shape(2);
+    if (pad > 0) {
+      padded.push_back(mx::concatenate(
+          {mx::zeros({1, row.shape(1), pad, row.shape(3)}, row.dtype()), row},
+          2));
+    } else {
+      padded.push_back(row);
+    }
+  }
+  return mx::concatenate(padded, 0);
+}
+
+} // namespace
+
+BatchedKVCache::BatchedKVCache(
+    const std::vector<std::pair<mx::array, mx::array>> &rows)
+    : keys_(StackRows([&] {
+        std::vector<mx::array> keys;
+        for (const auto &row : rows) {
+          keys.push_back(row.first);
+        }
+        return keys;
+      }())),
+      values_(StackRows([&] {
+        std::vector<mx::array> values;
+        for (const auto &row : rows) {
+          values.push_back(row.second);
+        }
+        return values;
+      }())) {
+  int longest = 0;
+  for (const auto &row : rows) {
+    longest = std::max(longest, row.first.shape(2));
+  }
+  end_ = longest;
+}
+
+std::pair<mx::array, mx::array>
+BatchedKVCache::Append(const mx::array &keys, const mx::array &values) {
+  // Grown a step at a time, like KVCache, so the reservation follows the
+  // tokens decoded rather than the largest budget in the batch.
+  if (end_ + 1 > capacity()) {
+    const auto grown = [](const mx::array &heads) {
+      return mx::concatenate(
+          {heads, mx::zeros({heads.shape(0), heads.shape(1), kKvCacheStepTokens,
+                             heads.shape(3)},
+                            heads.dtype())},
+          2);
+    };
+    keys_ = grown(keys_);
+    values_ = grown(values_);
+  } else {
+  }
+  const mx::Shape start = {0, 0, end_, 0};
+  const mx::Shape stop = {keys.shape(0), keys.shape(1), end_ + 1,
+                          keys.shape(3)};
+  keys_ = mx::slice_update(keys_, keys, start, stop);
+  values_ = mx::slice_update(values_, values, start, stop);
+  end_ += 1;
+  const mx::Shape fetched = {keys_.shape(0), keys_.shape(1), end_,
+                             keys_.shape(3)};
+  return {mx::slice(keys_, {0, 0, 0, 0}, fetched),
+          mx::slice(values_, {0, 0, 0, 0}, fetched)};
+}
+
 Qwen3Decoder::Qwen3Decoder(const omni_common::Checkpoint &checkpoint,
                            std::string prefix, Qwen3DecoderConfig config)
     : checkpoint_(checkpoint), prefix_(std::move(prefix)), config_(config) {}
@@ -277,6 +359,80 @@ mx::array Qwen3Decoder::Logits(const mx::array &hidden_states) const {
       checkpoint_.RmsNorm(hidden_states, Name("norm"), config_.rms_norm_eps),
       Name("embed_tokens"));
   return mx::reshape(logits, {hidden_states.shape(1), logits.shape(-1)});
+}
+
+mx::array Qwen3Decoder::BatchLayer(const mx::array &x, int layer,
+                                   BatchedKVCache &cache,
+                                   const mx::array &offsets,
+                                   const mx::array &mask) const {
+  const std::string prefix = Name("layers." + std::to_string(layer));
+  const float eps = config_.rms_norm_eps;
+  const int batch = x.shape(0);
+  const int head_count = config_.num_attention_heads;
+  const int kv_head_count = config_.num_key_value_heads;
+  const int head_dim = config_.head_dim;
+  const mx::array normed =
+      checkpoint_.RmsNorm(x, prefix + ".input_layernorm", eps);
+  mx::array queries =
+      mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.q_proj"),
+                  {batch, 1, head_count, head_dim});
+  mx::array keys =
+      mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.k_proj"),
+                  {batch, 1, kv_head_count, head_dim});
+  if (config_.has_query_key_norm) {
+    queries = checkpoint_.RmsNorm(queries, prefix + ".self_attn.q_norm", eps);
+    keys = checkpoint_.RmsNorm(keys, prefix + ".self_attn.k_norm", eps);
+  } else {
+  }
+  const mx::array values =
+      mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.v_proj"),
+                  {batch, 1, kv_head_count, head_dim});
+  queries = mx::fast::rope(mx::transpose(queries, {0, 2, 1, 3}), head_dim,
+                           config_.traditional_rope, config_.rope_theta, 1.0f,
+                           offsets);
+  keys = mx::fast::rope(mx::transpose(keys, {0, 2, 1, 3}), head_dim,
+                        config_.traditional_rope, config_.rope_theta, 1.0f,
+                        offsets);
+  auto [cached_keys, cached_values] =
+      cache.Append(keys, mx::transpose(values, {0, 2, 1, 3}));
+  const mx::array attended = mx::fast::scaled_dot_product_attention(
+      queries, cached_keys, cached_values,
+      static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
+      "array", mask);
+  const mx::array hidden = mx::add(
+      x, checkpoint_.Linear(
+             mx::reshape(mx::transpose(attended, {0, 2, 1, 3}), {batch, 1, -1}),
+             prefix + ".self_attn.o_proj"));
+  const mx::array mlp_input =
+      checkpoint_.RmsNorm(hidden, prefix + ".post_attention_layernorm", eps);
+  return mx::add(
+      hidden,
+      checkpoint_.Linear(
+          mx::multiply(omni_common::Silu(checkpoint_.Linear(
+                           mlp_input, prefix + ".mlp.gate_proj")),
+                       checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
+          prefix + ".mlp.down_proj"));
+}
+
+mx::array Qwen3Decoder::DecodeBatch(const mx::array &embeddings,
+                                    std::vector<BatchedKVCache> &caches,
+                                    const mx::array &offsets,
+                                    const mx::array &pads) const {
+  // The step appends one slot to every layer; attention covers them all, bar
+  // each row's left padding.
+  const int attended = caches[0].length() + 1;
+  const mx::array mask =
+      mx::reshape(mx::greater_equal(mx::arange(attended, mx::int32), pads),
+                  {pads.shape(0), 1, 1, attended});
+  mx::array hidden = embeddings;
+  for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
+    hidden = BatchLayer(hidden, layer, caches[layer], offsets, mask);
+  }
+  const mx::array normed =
+      checkpoint_.RmsNorm(hidden, Name("norm"), config_.rms_norm_eps);
+  const mx::array logits =
+      checkpoint_.TiedProjection(normed, Name("embed_tokens"));
+  return mx::reshape(logits, {logits.shape(0), logits.shape(-1)});
 }
 
 std::vector<KVCache> Qwen3Decoder::NewCaches() const {

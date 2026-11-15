@@ -69,17 +69,12 @@ final class HotkeyTap: @unchecked Sendable {
     private func install() {
         let ready = DispatchSemaphore(value: 0)
         let thread = Thread { [self] in
-            // Mouse presses too (not moves or scrolls: too many): they spoil
-            // a modifier chord held for an ⌥-click or ⌥-drag, and always pass.
-            let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) |
-                (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.leftMouseDown.rawValue) |
-                (1 << CGEventType.rightMouseDown.rawValue) | (1 << CGEventType.otherMouseDown.rawValue)
             let callback: CGEventTapCallBack = { _, type, event, refcon in
                 guard let refcon else { return Unmanaged.passUnretained(event) }
                 let me = Unmanaged<HotkeyTap>.fromOpaque(refcon).takeUnretainedValue()
                 return me.handle(type, event) ? nil : Unmanaged.passUnretained(event)
             }
-            guard let port = createVerifiedTap(mask: mask, callback: callback) else {
+            guard let port = createVerifiedTap(mask: HotkeyTapEvents.mask, callback: callback) else {
                 ready.signal()
                 scheduleRetry()
                 return
@@ -214,16 +209,7 @@ final class HotkeyTap: @unchecked Sendable {
             return false
         }
         let injected = InjectedEvent.isOurs(event.getIntegerValueField(.eventSourceUserData))
-        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let flags = event.flags.rawValue
-        let input: KeyInput
-        switch type {
-        case .flagsChanged: input = .flagsChanged(keyCode: keyCode, flags: flags, t: start)
-        case .keyDown: input = .keyDown(keyCode: keyCode, flags: flags, isRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0, t: start)
-        case .keyUp: input = .keyUp(keyCode: keyCode, flags: flags, t: start)
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown: input = .pointer(t: start)
-        default: return false
-        }
+        guard let input = HotkeyTapEvents.input(type, event, t: start) else { return false }
         let (fired, swallow, deadline): ([HotkeyEvent], Bool, Double?) = lock.withLock {
             events += 1
             if injected { return ([], false, nil) }

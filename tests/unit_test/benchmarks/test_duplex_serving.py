@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 from pydantic import JsonValue
 
-from benchmarks.duplex.client import SEND_RECEIPTS_FILE
+from benchmarks.duplex.client import (
+    ADMISSION_BACKOFF_S,
+    ADMISSION_RETRIES,
+    SEND_RECEIPTS_FILE,
+)
+from benchmarks.duplex.oracle import evaluate_trace
 from benchmarks.duplex.serving import score_session, serving_report, summarize_level
 from benchmarks.eval import benchmark_duplex_serving
 
@@ -22,6 +27,7 @@ PLAYBACK_RESERVE_S = 0.3
 START_S = 100.0
 INPUT_S = 2.5
 OUTPUT_SECOND = base64.b64encode(b"\x00\x00" * 24000).decode()
+REJECTION_RESPONSE_SECONDS = 0.01
 
 
 def record_session(
@@ -34,12 +40,20 @@ def record_session(
     reply_audio_s: list[float] | None = None,
     reply_created_s: float | None = None,
     is_legacy: bool = False,
+    rejected_updates: int = 0,
+    http_denied: bool = False,
+    is_admission_rejected: bool = False,
 ) -> Path:
     """Write a paced 80 ms session whose unit k completes at unit_done_s[k].
 
     A legacy reply carries no unit metadata and uses the legacy audio event name.
     """
     variant_dir.mkdir(parents=True)
+    if is_admission_rejected:
+        assert not unit_done_s and reply_audio_s is None
+        rejected_updates = ADMISSION_RETRIES + 1 - int(http_denied)
+    else:
+        pass
     packets = math.ceil(input_s * 1000 / 80)
     (variant_dir / "input.pcm").write_bytes(b"\x00\x00" * round(input_s * 16000))
     (variant_dir / SEND_RECEIPTS_FILE).write_text(
@@ -52,7 +66,7 @@ def record_session(
                         "start_s": START_S + seq * 0.08,
                         "completed_s": START_S + seq * 0.08,
                     }
-                    for seq in range(packets)
+                    for seq in range(0 if is_admission_rejected else packets)
                 ]
             }
         )
@@ -81,7 +95,52 @@ def record_session(
             },
         }
 
-    add(START_S + input_s, "send", "sglang.input_audio.end")
+    attempt_interval_s = ADMISSION_BACKOFF_S + REJECTION_RESPONSE_SECONDS
+    first_update_s = START_S - rejected_updates * attempt_interval_s
+    if http_denied:
+        add(
+            first_update_s - ADMISSION_BACKOFF_S - 2 * REJECTION_RESPONSE_SECONDS,
+            "admission",
+            "connection_denied",
+            http_status=503,
+            attempt=1,
+        )
+    else:
+        pass
+    if is_admission_rejected:
+        add(
+            first_update_s - REJECTION_RESPONSE_SECONDS,
+            "receive",
+            "session.created",
+            session={"id": "rejected_session"},
+        )
+    else:
+        pass
+    for attempt in range(rejected_updates):
+        sent_s = first_update_s + attempt * attempt_interval_s
+        add(sent_s, "send", "session.update", session={"output_modalities": ["audio"]})
+        add(
+            sent_s + REJECTION_RESPONSE_SECONDS,
+            "receive",
+            "error",
+            sglang={"fatal": False},
+            error={
+                "code": "admission_rejected",
+                "event_id": records[-1]["event"]["event_id"],
+            },
+        )
+    if is_admission_rejected:
+        close_s = records[-1]["time_s"] + REJECTION_RESPONSE_SECONDS
+        add(close_s, "send", "session.close")
+        add(
+            close_s + REJECTION_RESPONSE_SECONDS,
+            "receive",
+            "session.closed",
+            client_event_id=records[-1]["event"]["event_id"],
+            reason="client_closed",
+        )
+    else:
+        add(START_S + input_s, "send", "sglang.input_audio.end")
     for unit, done_s in enumerate(unit_done_s):
         add(
             done_s,
@@ -124,20 +183,30 @@ def record_run(
     admission_denials: int = 0,
     profile: str = PROFILE,
     reply_audio_s: list[float] | None = None,
+    rejected_updates: int = 0,
+    rejected_session_index: int | None = None,
 ) -> Path:
     """Write a complete recording whose sessions are (status, unit_done_s) pairs."""
     samples = []
     for index, (status, unit_done_s) in enumerate(sessions):
+        is_admission_rejected = index == rejected_session_index
         directory = f"samples/{index}/input"
         record_session(
             run_dir / directory,
             unit_done_s,
             reply_audio_s=reply_audio_s,
             is_legacy=profile == TURN_BASED_PROFILE,
+            rejected_updates=rejected_updates,
+            http_denied=index < admission_denials,
+            is_admission_rejected=is_admission_rejected,
         )
-        samples.append(
-            {"variants": {"input": {"directory": directory, "status": status}}}
-        )
+        variant_state = {"directory": directory, "status": status}
+        if is_admission_rejected:
+            assert status == "fail"
+            variant_state["failure_kind"] = "admission_rejected"
+        else:
+            pass
+        samples.append({"variants": {"input": variant_state}})
     (run_dir / "manifest.json").write_text(
         json.dumps({"kind": "full-duplex-bench-v1.0", "profile": profile})
     )
@@ -275,6 +344,153 @@ def test_level_counts_every_unit_of_a_failed_session_as_missed(tmp_path: Path) -
         "no failed sessions",
         "unit miss rate at most 1%",
     ]
+
+
+def test_level_counts_rejected_sessions_apart_from_failures(tmp_path: Path) -> None:
+    """Final rejection used to inflate unit misses alongside runtime failures."""
+    run_dir = record_run(
+        tmp_path / "run",
+        3,
+        [("pass", ON_TIME), ("fail", []), ("fail", [101.16])],
+        rejected_updates=2,
+        rejected_session_index=1,
+    )
+    run_path = run_dir / "run.json"
+    run = json.loads(run_path.read_text())
+    run["samples"][2]["variants"]["input"]["failure_kind"] = "runtime"
+    run_path.write_text(json.dumps(run))
+    report = serving_report(
+        [run_dir],
+        PLAYBACK_RESERVE_S,
+    )
+    level = report["levels"][0]
+    header, _, row = benchmark_duplex_serving.format_table(report).splitlines()[:3]
+    cells = dict(
+        zip(
+            [cell.strip() for cell in header.split("|")],
+            [cell.strip() for cell in row.split("|")],
+        )
+    )
+
+    assert level["sessions_failed"] == 1
+    assert level["sessions_rejected"] == 1
+    assert level["sessions_with_admission_events"] == 3
+    assert level["sessions_with_admission_rejections"] == 3
+    assert "admission_rejections" not in level
+    assert level["admission_denial_events"] == 8
+    assert level["units_expected"] == 6
+    assert level["units_missed"] == 3
+    assert level["unit_miss_rate"] == 0.5
+    assert cells["rejected"] == "1"
+    assert cells["affected"] == "3"
+    assert cells["denial events"] == "8"
+    assert level["unmet_targets"] == [
+        "no failed sessions",
+        "no admission rejections",
+        "unit miss rate at most 1%",
+    ]
+
+    rejected_dir = run_dir / run["samples"][1]["variants"]["input"]["directory"]
+    assert json.loads((rejected_dir / SEND_RECEIPTS_FILE).read_text())["appends"] == []
+    rejected_trace = [
+        json.loads(line)
+        for line in (rejected_dir / "continuous.jsonl").read_text().splitlines()
+    ]
+    assert not any(
+        record["event"]["type"]
+        in ("input_audio_buffer.append", "sglang.input_audio.end")
+        for record in rejected_trace
+    )
+    verdict = evaluate_trace(
+        rejected_trace, profile=PROFILE, max_admission_attempts=ADMISSION_RETRIES
+    )
+    assert verdict["failure_kind"] == "admission_rejected", verdict
+    assert verdict["metrics"]["admission_rejections"] == ADMISSION_RETRIES + 1
+
+
+@pytest.mark.parametrize("has_admitted_session", [False, True])
+def test_rejection_fails_targets_without_counting_unit_misses(
+    tmp_path: Path, has_admitted_session: bool
+) -> None:
+    """Rejected sessions used to contribute units even when none were admitted."""
+    sessions = (
+        [("pass", ON_TIME), ("fail", [])] if has_admitted_session else [("fail", [])]
+    )
+    run_dir = record_run(
+        tmp_path / "run",
+        len(sessions),
+        sessions,
+        rejected_session_index=len(sessions) - 1,
+    )
+    report = serving_report([run_dir], PLAYBACK_RESERVE_S)
+    level = report["levels"][0]
+    assert level["sessions"] == len(sessions)
+    assert level["sessions_failed"] == 0
+    assert level["sessions_rejected"] == 1
+    assert level["units_expected"] == (3 if has_admitted_session else 0)
+    assert level["units_missed"] == 0
+    assert level["unit_miss_rate"] == (0.0 if has_admitted_session else None)
+    assert level["unmet_targets"] == ["no admission rejections"]
+    assert report["max_concurrency_meeting_targets"] is None
+    header, _, row = benchmark_duplex_serving.format_table(report).splitlines()[:3]
+    cells = dict(
+        zip(
+            [cell.strip() for cell in header.split("|")],
+            [cell.strip() for cell in row.split("|")],
+        )
+    )
+    assert cells["unit miss"] == ("0.0%" if has_admitted_session else "-")
+
+
+@pytest.mark.parametrize(
+    ("saved_counts", "valid_rows"), [(False, True), (True, True), (True, False)]
+)
+def test_failed_trace_with_bad_rows_preserves_report(
+    tmp_path: Path, saved_counts: bool, valid_rows: bool
+) -> None:
+    """A malformed trace row used to abort reporting an already failed session."""
+    run_dir = record_run(tmp_path / "run", 1, [("error", [])], rejected_updates=1)
+    run_path = run_dir / "run.json"
+    run = json.loads(run_path.read_text())
+    variant = run["samples"][0]["variants"]["input"]
+    variant["failure_kind"] = "runtime"
+    if saved_counts:
+        variant["admission"] = {"admission_denials": 2, "admission_rejections": 3}
+    else:
+        pass
+    run_path.write_text(json.dumps(run))
+    trace_path = run_dir / variant["directory"] / "continuous.jsonl"
+    with trace_path.open("a" if valid_rows else "w") as trace_file:
+        trace_file.write('{"direction":\n')
+    report = serving_report([run_dir], PLAYBACK_RESERVE_S)
+    level = report["levels"][0]
+    assert level["sessions"] == 1
+    assert level["sessions_failed"] == 1
+    assert level["sessions_with_admission_events"] == 1
+    assert level["http_admission_denial_events"] == (2 if saved_counts else 0)
+    assert level["session_admission_rejection_events"] == (3 if saved_counts else 1)
+    assert level["units_expected"] == level["units_missed"] == 3
+    table = benchmark_duplex_serving.format_table(report)
+    if valid_rows:
+        assert level["mean_open_sessions"] == 1
+    else:
+        assert level["mean_open_sessions"] is None
+        assert "| 1 | - | 1/1 |" in table
+
+
+def test_failed_session_uses_trace_when_admission_counts_are_unavailable(
+    tmp_path: Path,
+) -> None:
+    run_dir = record_run(tmp_path / "run", 1, [("error", [])], rejected_updates=1)
+    run_path = run_dir / "run.json"
+    run = json.loads(run_path.read_text())
+    variant = run["samples"][0]["variants"]["input"]
+    variant.update(failure_kind="runtime", admission=None)
+    run_path.write_text(json.dumps(run))
+
+    level = summarize_level(run_dir, PLAYBACK_RESERVE_S)
+    assert level["sessions_failed"] == 1
+    assert level["session_admission_rejection_events"] == 1
 
 
 def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> None:

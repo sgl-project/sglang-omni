@@ -65,7 +65,8 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 func (p *proc) handleLine(line []byte, at time.Time) {
 	m, err := proto.Decode(line)
 	if err != nil {
-		p.tail.add("stdout: " + string(line))
+		// Its size only: the line may be an answer holding text read from another app (textio.read).
+		p.tail.add(fmt.Sprintf("stdout: undecodable line (%d bytes)", len(line)))
 		return
 	}
 	switch m.Kind() {

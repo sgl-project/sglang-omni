@@ -5,11 +5,12 @@ name: Omni CI
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
-# any stage label, including run-unit-test-ci-only, runs pr-test, and each model
-# suite runs only when its stage is selected. run-lint-only passes the gate and
-# skips setup. Model suites, including MPS, start after pr-test and use always()
-# so a failed or skipped suite never skips another one. Only setup blocks all
-# downstream model CI.
+# any stage label except run-mac-ci, including run-unit-test-ci-only, runs
+# pr-test, and each model suite runs only when its stage is selected.
+# run-lint-only and run-mac-ci alone pass the gate and skip setup. Model
+# suites, including MPS, start after pr-test and use always() so a failed or
+# skipped suite never skips another one. Only setup blocks all downstream
+# model CI.
 #
 # MPS has no result dependency on other model suites and uses the same
 # workflow SHA, so it does not wait for those suites to finish.
@@ -28,6 +29,12 @@ name: Omni CI
 on:
   pull_request:
     types: [opened, labeled, synchronize, reopened, ready_for_review]
+    # A pull request that changes only the MLX path is tested by Mac CI and Voxt CI, and Mac CI checks its labels.
+    paths-ignore:
+      - "sglang_omni_mlx/**"
+      - "Voxt/**"
+      - ".github/workflows/mac-ci.yaml"
+      - ".github/workflows/voxt*.yaml"
   workflow_dispatch:
     inputs:
       ci_labels:

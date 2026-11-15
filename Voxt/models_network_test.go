@@ -1,13 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"fmt"
+	"io/fs"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	famsettings "github.com/hehehai/actnowkit/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -36,7 +47,7 @@ func TestNetworkDialog(t *testing.T) {
 	if a.currentPage() != "models" || !a.netOpen || !has(tt, "How model downloads reach Hugging Face") {
 		t.Fatalf("deep link: page %q open %v %q", a.currentPage(), a.netOpen, tt.Texts())
 	}
-	if !has(tt, "Applies to all apps that use this model library") || !has(tt, "The proxy in the Mac's network settings, or the one the environment names.") {
+	if !has(tt, "Applies to all apps that use this model library") || !has(tt, "The proxy in this Mac's network settings, or one set by an environment variable.") {
 		t.Fatalf("defaults: %q", tt.Texts())
 	}
 
@@ -44,7 +55,7 @@ func TestNetworkDialog(t *testing.T) {
 	click(t, tt, "Custom")
 	a.netForm.proxyURL = "ftp://127.0.0.1:21"
 	click(t, tt, "Save")
-	if !a.netOpen || !has(tt, "Enter a proxy's address that starts with http://, https:// or socks5://, like http://127.0.0.1:7890.") {
+	if !a.netOpen || !has(tt, "Enter a proxy address that starts with http://, https:// or socks5://, such as http://127.0.0.1:7890.") {
 		t.Fatalf("an ftp proxy was taken: %q", tt.Texts())
 	}
 	a.netForm.proxyURL = " socks5://127.0.0.1:1080 "
@@ -186,5 +197,144 @@ func TestFamilyLinesNeedAnotherApp(t *testing.T) {
 		if about := uitext.ModelAbout(id); about == "" || strings.Contains(strings.ToLower(about), "another") {
 			t.Errorf("%s: %q", id, about)
 		}
+	}
+}
+
+// TestProxyAuth: a custom proxy's user name and password, as Voxt 1.x's.
+// The dialog has the two fields; with both set,
+// downloads, the remote services' requests and their WebSockets carry
+// them to a proxy that wants them, which answers 407 without. The
+// password is in the Keychain ("proxy.<host>") and nowhere on disk or in
+// the logs; a new host drops the old host's item, Automatic keeps them
+// for later, and a restart reads them again.
+func TestProxyAuth(t *testing.T) {
+	const password = "Vx-proxy-pw-90417"
+	keys := &memKeys{m: map[string]string{}}
+	useKeys(t, keys)
+	logFile := filepath.Join(t.TempDir(), "log")
+	logOut, err := os.Create(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.SetOutput(logOut)
+	t.Cleanup(func() { log.SetOutput(os.Stderr); logOut.Close() })
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:"+password))
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Proxy-Authorization") != want {
+			w.Header().Set("Proxy-Authenticate", `Basic realm="proxy"`)
+			w.WriteHeader(http.StatusProxyAuthRequired)
+			return
+		}
+		fmt.Fprint(w, "ok "+r.URL.Host)
+	}))
+	t.Cleanup(proxy.Close)
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(proxy.URL, "http://"))
+	// statuses are the proxy's answers to a download, a remote service's
+	// request and a WebSocket's handshake, through a's clients.
+	statuses := func(a *app) [3]int {
+		t.Helper()
+		var out [3]int
+		for i, client := range []*http.Client{a.networkFor(a.prefs).Client, a.remoteHTTP.Load(), asr.WSClient(a.remoteHTTP.Load())} {
+			res, err := client.Get("http://service.example/v1/models")
+			if err != nil {
+				t.Fatalf("request %d: %v", i, err)
+			}
+			res.Body.Close()
+			out[i] = res.StatusCode
+		}
+		return out
+	}
+	ok, refused := [3]int{200, 200, 200}, [3]int{407, 407, 407}
+
+	dir := t.TempDir()
+	a, _, tt := newTestAppIn(t, dir)
+	a.famStarted = true // the proxy goes to the family's settings.json, which VoxtNew follows
+	a.openURL("voxtnew://models/network")
+	click(t, tt, "Custom")
+	if l := tt.AccessLabels(); !slices.Contains(l, "Proxy user name") || !slices.Contains(l, "Proxy password") {
+		t.Fatalf("no user name or password field: %q", l)
+	}
+	a.netForm.proxyURL = proxy.URL
+	for _, field := range []struct{ label, text string }{{"Proxy user name", "alice"}, {"Proxy password", password}} {
+		if err := tt.Click(field.label); err != nil {
+			t.Fatal(err)
+		}
+		tt.Type(field.text)
+	}
+	if a.netForm.proxyUser != "alice" || a.netForm.proxyPassword != password {
+		t.Fatalf("typed %+v", a.netForm)
+	}
+	click(t, tt, "Save")
+	if keys.m["proxy.127.0.0.1"] != password || a.prefs.Network.ProxyUser != "alice" || a.prefs.Network.ProxyAuthHost != "127.0.0.1" {
+		t.Fatalf("saved %v, %+v", keys.m, a.prefs.Network)
+	}
+	if got := statuses(a); got != ok {
+		t.Fatalf("with the user: %v", got)
+	}
+
+	// Only with both: no user name, no Proxy-Authorization.
+	a.openNetwork()
+	a.netForm.proxyUser = ""
+	click(t, tt, "Save")
+	if got := statuses(a); got != refused {
+		t.Errorf("without a user name: %v", got)
+	}
+
+	// Another host: the old host's item goes.
+	a.openNetwork()
+	if a.netForm.proxyPassword != password {
+		t.Fatalf("form %+v", a.netForm)
+	}
+	a.netForm.proxyURL, a.netForm.proxyUser = "http://localhost:"+port, "alice"
+	click(t, tt, "Save")
+	if _, old := keys.m["proxy.127.0.0.1"]; old || keys.m["proxy.localhost"] != password {
+		t.Fatalf("keys %v", keys.m)
+	}
+	if got := statuses(a); got != ok {
+		t.Errorf("on the new host: %v", got)
+	}
+
+	// Automatic keeps them; Custom shows them again.
+	a.openNetwork()
+	click(t, tt, "Automatic")
+	click(t, tt, "Save")
+	a.openNetwork()
+	click(t, tt, "Custom")
+	if a.netForm.proxyUser != "alice" || a.netForm.proxyPassword != password || keys.m["proxy.localhost"] != password {
+		t.Fatalf("after Automatic: form %+v, keys %v", a.netForm, keys.m)
+	}
+	a.netForm.proxyURL = "http://localhost:" + port
+	click(t, tt, "Save")
+
+	// A restart reads the password from the Keychain.
+	a.quit()
+	a.lib.close()
+	b, _, _ := newTestAppIn(t, dir)
+	if got := statuses(b); got != ok {
+		t.Errorf("after a restart: %v", got)
+	}
+
+	// The error a request shows names no password: the proxy is gone.
+	proxy.Close()
+	if _, err := b.remoteHTTP.Load().Get("http://service.example/v1/models"); err == nil || strings.Contains(err.Error(), password) {
+		t.Errorf("error %v", err)
+	}
+	// Nowhere on disk (the settings, the family's settings.json, the
+	// database) or in the logs.
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if raw, _ := os.ReadFile(path); bytes.Contains(raw, []byte(password)) {
+				t.Errorf("%s has the password", path)
+			}
+		}
+		return nil
+	})
+	for _, e := range b.logs.Tail(1000, "") {
+		if strings.Contains(e.Message, password) {
+			t.Errorf("log %q", e.Message)
+		}
+	}
+	if raw, _ := os.ReadFile(logFile); bytes.Contains(raw, []byte(password)) || bytes.Contains(raw, []byte(want)) {
+		t.Errorf("the Go log has the password: %s", raw)
 	}
 }

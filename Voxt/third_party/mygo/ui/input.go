@@ -420,28 +420,57 @@ func (rt *engine) pointerUp(button, clicks int) {
 	rt.requestFrame()
 }
 
+// scrollGap ends a scroll gesture: an event that comes later than this
+// after the one before starts a new gesture, which goes to what is under
+// the pointer. A trackpad's events, momentum included, come every frame;
+// a wheel's notches of one turn well within it.
+const scrollGap = 300 * time.Millisecond
+
 func (rt *engine) scroll(dx, dy float32, mods Modifiers, precise bool) {
+	now := rt.now()
+	latched := rt.scrollLatch
+	if now.Sub(rt.scrollAt) > scrollGap {
+		latched = 0
+	}
+	rt.scrollAt = now
+	// Shift turns the wheel sideways: down is toward the end, which is
+	// to the left right to left.
+	sideways := mods&Shift != 0 && dx == 0
+	move := func(s *state) bool {
+		x, y := dx, dy
+		if sideways {
+			x, y = dy, 0
+		}
+		sx, sy := s.vector(rt.pointerX, rt.pointerY, x, y)
+		if sideways && s.rtl {
+			sx = -sx
+		}
+		return scrollBy(s, sx, sy)
+	}
+	// A gesture stays with the container it started to move, as macOS's
+	// do: a scroll container that comes under the pointer while the page
+	// scrolls does not take the rest of the gesture, and the container
+	// does not hand it on when it reaches its end. One the last frame did
+	// not build (another page shows) keeps its state but not the gesture.
+	if s := rt.states[latched]; latched != 0 && s != nil && s.seen == rt.frame && s.pass == rt.pass {
+		if move(s) {
+			rt.requestFrame()
+		}
+		return
+	}
+	rt.scrollLatch = 0
 	chain := rt.appendHitChain(rt.chain[:0], rt.pointerX, rt.pointerY)
 	rt.chain = chain[:0]
 	if h := rt.handler(chain); h != nil && rt.deliver(h, InputEvent{Kind: InputScroll, DX: dx, DY: dy, Mods: mods, Precise: precise}) {
 		return
-	}
-	// Shift turns the wheel sideways: down is toward the end, which is
-	// to the left right to left.
-	sideways := mods&Shift != 0 && dx == 0
-	if sideways {
-		dx, dy = dy, 0
 	}
 	for _, id := range chain {
 		s := rt.states[id]
 		if s == nil {
 			continue
 		}
-		sx, sy := s.vector(rt.pointerX, rt.pointerY, dx, dy)
-		if sideways && s.rtl {
-			sx = -sx
-		}
-		if scrollBy(s, sx, sy) {
+		if move(s) {
+			rt.scrollLatch = id
 			rt.requestFrame()
 			return
 		}
@@ -809,11 +838,13 @@ func routeKey(regs []shortcutReg, chain []uint64, k keyEvent) (target uint64, fo
 			}
 		}
 	}
-	// The overlay on top: the one made last, as it paints last.
+	// The overlay on top: the one made last, as it paints last; a
+	// tooltip only when no other overlay takes the key.
 	var top int32 = -1
+	tip := true
 	for _, r := range regs {
-		if r.overlay && r.mods == k.mods && r.key == k.key && r.serial >= top {
-			target, found, top = r.id, true, r.serial
+		if r.overlay && r.mods == k.mods && r.key == k.key && (tip && !r.tip || r.tip == tip && r.serial >= top) {
+			target, found, top, tip = r.id, true, r.serial, r.tip
 		}
 	}
 	if found {

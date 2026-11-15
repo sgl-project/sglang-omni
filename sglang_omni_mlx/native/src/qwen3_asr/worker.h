@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "qwen3_asr/qwen3_asr_transcriber.h"
 
@@ -30,7 +31,9 @@ inline CancelFlag NewCancelFlag() {
 using Transcription =
     std::function<TranscriptionResult(const std::atomic<bool> &)>;
 
-// Serializes requests: one model, one MLX stream, one request at a time.
+// Runs requests in queue order on one model and one MLX stream. Each runs
+// alone unless max_batch is above 1, in which case consecutive queued
+// BatchableTranscription requests are decoded together.
 class TranscriptionWorker {
 public:
   // Called on the worker thread with the result, or with the exception the
@@ -38,9 +41,11 @@ public:
   using Completion = std::function<void(std::optional<TranscriptionResult>,
                                         std::exception_ptr)>;
 
-  // Runs load on the worker thread; throws what load throws.
+  // Runs load on the worker thread; throws what load throws. Up to max_batch
+  // queued BatchableTranscription requests decode together.
   TranscriptionWorker(std::function<void()> load,
-                      std::function<void()> release_idle_memory);
+                      std::function<void()> release_idle_memory,
+                      int max_batch = 1);
   ~TranscriptionWorker();
   TranscriptionWorker(const TranscriptionWorker &) = delete;
   TranscriptionWorker &operator=(const TranscriptionWorker &) = delete;
@@ -67,7 +72,12 @@ private:
   mutable std::mutex mutex_;
   std::condition_variable wake_;
   std::deque<Job> queue_;
-  CancelFlag running_cancel_;
+  std::vector<CancelFlag> running_cancels_;
+  // Most queued batchable requests decoded together. Batched output can differ
+  // from serial on borderline tokens, so the default of 1 keeps every request
+  // serial and deterministic.
+  int max_batch_;
+  int running_count_ = 0;
   bool running_ = false;
   bool stopping_ = false;
   std::thread thread_;

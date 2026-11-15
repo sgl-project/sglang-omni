@@ -86,7 +86,7 @@ func storedRules(t *testing.T, a *app) appctx.Rules {
 
 func TestAppEnhancementEmpty(t *testing.T) {
 	a, _, tt := aeTester(t)
-	for _, s := range []string{"App enhancement", "New group", "Rules for the app or website in front", "Switch to another app to see which group it falls in."} {
+	for _, s := range []string{"App enhancement", "New group", "Rules for the frontmost app or website", "Switch to another app to see which group it falls in."} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
 		}
@@ -101,7 +101,7 @@ func TestAppEnhancementEmpty(t *testing.T) {
 	}
 	// The master switch is a setting.
 	click(t, tt, "Use App enhancement")
-	if a.lib.settings.Get().AppEnhancement.Enabled || !has(tt, "App enhancement is off: every app gets only the features' own rules.") {
+	if a.lib.settings.Get().AppEnhancement.Enabled || !has(tt, "App enhancement is off, so every app uses only the features' own rules.") {
 		t.Error("switch not saved")
 	}
 }
@@ -111,7 +111,7 @@ func TestAppEnhancementEdit(t *testing.T) {
 	a.setRules(sampleRules())
 	a.aePage.sel = "g-code"
 	frames(tt)
-	for _, s := range []string{"Team chat", "Code review", "Work browser", "2 apps", "2 websites", "Scene prompt", "github.com", "gitlab.com/acme/*", "Applies to"} {
+	for _, s := range []string{"Team chat", "Code review", "Work browser", "2 apps", "2 websites", "Group prompt", "github.com", "gitlab.com/acme/*", "Applies to"} {
 		if !has(tt, s) {
 			t.Errorf("no %q", s)
 		}
@@ -120,7 +120,7 @@ func TestAppEnhancementEdit(t *testing.T) {
 	click(t, tt, "Group name")
 	tt.Type(" 2")
 	frames(tt)
-	click(t, tt, "Scene prompt of the group")
+	click(t, tt, "Prompt for this group")
 	tt.Key(ui.Ctrl, ui.KeyEnd) // the prompt wraps: the click may land inside it
 	tt.Type(" Thanks.")
 	frames(tt)
@@ -136,19 +136,19 @@ func TestAppEnhancementEdit(t *testing.T) {
 	// Website rules: an invalid one says why; a valid one is added.
 	click(t, tt, "New website rule")
 	tt.Type("not a site")
-	click(t, tt, "Add the website rule")
-	if !has(tt, "A website rule has no spaces.") {
+	click(t, tt, "Add website rule")
+	if !has(tt, "A website rule cannot contain spaces.") {
 		t.Errorf("no error: %q", firstTexts(tt))
 	}
 	a.aePage.urlIn = "*.notion.so"
 	frames(tt)
-	click(t, tt, "Add the website rule")
+	click(t, tt, "Add website rule")
 	if g, _ := storedRules(t, a).Group("g-code"); len(g.URLs) != 3 || g.URLs[2] != "*.notion.so" || a.aePage.urlIn != "" {
 		t.Errorf("urls %q", g.URLs)
 	}
 	a.aePage.urlIn = "GitHub.com/"
 	frames(tt)
-	click(t, tt, "Add the website rule")
+	click(t, tt, "Add website rule")
 	if !has(tt, "This rule is in the group already.") {
 		t.Error("duplicate rule added")
 	}
@@ -158,7 +158,7 @@ func TestAppEnhancementEdit(t *testing.T) {
 	}
 	// Delete the group.
 	click(t, tt, "More actions")
-	if err := tt.ChooseMenuItem("Delete the group…"); err != nil {
+	if err := tt.ChooseMenuItem("Delete group…"); err != nil {
 		t.Fatal(err)
 	}
 	click(t, tt, "Delete")
@@ -179,7 +179,7 @@ func TestAppEnhancementAutoKey(t *testing.T) {
 	frames(tt)
 	click(t, tt, "Custom key after inserting")
 	tt.Key(0, ui.KeyEnter)
-	if !has(tt, "One key, with modifiers or not: Return, Command+Return, Tab.") {
+	if !has(tt, "Enter one key, with or without modifiers: Return, Command+Return, Tab.") {
 		t.Errorf("no error: %q", firstTexts(tt))
 	}
 	a.aePage.keyText = "command+return"
@@ -198,25 +198,25 @@ func TestAppEnhancementPreview(t *testing.T) {
 	// Chrome in front: its address matches Code review by its rule.
 	a.helperNotified(appActivated(chromeApp))
 	frames(tt)
-	if !has(tt, "In front: Google Chrome") || !has(tt, "github.com/hehehai/voxtnew/pulls") || !has(tt, "Matches Code review, by the website rule github.com") {
+	if !has(tt, "Frontmost: Google Chrome") || !has(tt, "github.com/hehehai/voxtnew/pulls") || !has(tt, "Matches Code review, by the website rule github.com") {
 		t.Errorf("preview %q", firstTexts(tt))
 	}
 	// VoxtNew comes to the front: the preview keeps Chrome.
 	a.helperNotified(appActivated(proto.App{PID: 77, BundleID: selfBundleID, Name: "VoxtNew"}))
 	frames(tt)
-	if !has(tt, "In front: Google Chrome") {
+	if !has(tt, "Frontmost: Google Chrome") {
 		t.Errorf("preview after VoxtNew %q", firstTexts(tt))
 	}
 	// Slack: its group.
 	a.helperNotified(appActivated(proto.App{PID: 812, BundleID: "com.tinyspeck.slackmacgap", Name: "Slack"}))
 	frames(tt)
-	if !has(tt, "Matches Team chat, as its app") {
+	if !has(tt, "Matches Team chat, by the app") {
 		t.Errorf("slack %q", firstTexts(tt))
 	}
 	// Safari gives no address: it says so, and nothing matches.
 	a.helperNotified(appActivated(proto.App{PID: 902, BundleID: "com.apple.Safari", Name: "Safari"}))
 	frames(tt)
-	if !has(tt, "No group matches: only the features' own rules apply.") || !tt.HasText("does not show it to Accessibility now") {
+	if !has(tt, "No group matches, so only the features' own rules apply.") || !tt.HasText("does not show its address right now") {
 		t.Errorf("safari %q", firstTexts(tt))
 	}
 	// Add Safari to the group shown, from the preview.
@@ -239,22 +239,22 @@ func TestAppEnhancementApps(t *testing.T) {
 	a.aePage.sel = "g-code"
 	frames(tt)
 	click(t, tt, "Add apps…")
-	for _, s := range []string{"Add apps to Code review", "Slack", "Notes", "Running"} {
+	for _, s := range []string{"Add apps to Code review", "Slack", "Mail", "Running"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
 		}
 	}
-	click(t, tt, "Notes")
+	click(t, tt, "Mail") // not Notes: the sidebar has a page of that name
 	click(t, tt, "Bundle ID")
 	tt.Type("com.example.editor")
-	click(t, tt, "Add the bundle ID")
+	click(t, tt, "Add bundle ID")
 	click(t, tt, "Done")
 	g, _ := storedRules(t, a).Group("g-code")
-	if !g.HasApp("com.apple.Notes") || !g.HasApp("com.example.editor") {
+	if !g.HasApp("com.apple.mail") || !g.HasApp("com.example.editor") {
 		t.Errorf("apps %+v", g.Apps)
 	}
-	click(t, tt, "Remove Notes")
-	if g, _ := storedRules(t, a).Group("g-code"); g.HasApp("com.apple.Notes") {
+	click(t, tt, "Remove Mail")
+	if g, _ := storedRules(t, a).Group("g-code"); g.HasApp("com.apple.mail") {
 		t.Error("not removed")
 	}
 }
@@ -273,7 +273,7 @@ func TestAppEnhancementBrowsers(t *testing.T) {
 	}
 	a.aePage.brID, a.aePage.brName = "org.example.browser", "Example"
 	frames(tt)
-	click(t, tt, "Add the browser")
+	click(t, tt, "Add browser")
 	if bs := a.lib.settings.Get().AppEnhancement.Browsers; len(bs) != 1 || bs[0].BundleID != "org.example.browser" {
 		t.Fatalf("browsers %+v", bs)
 	}
@@ -383,7 +383,7 @@ func TestAppEnhancementHeader(t *testing.T) {
 			if br.Y > float32(titleBarHeight) {
 				t.Errorf("%v %s: Browsers %+v below the header", size, lang, br)
 			}
-			tip, ok := tt.Find(i18n.T("Added on top of the features' basic clean-up and your rules, never instead of them: say what is special here (tone, format, names)."))
+			tip, ok := tt.Find(i18n.T("Added on top of each feature's own rules."))
 			if !ok || tip.W > 20 || tip.H > 20 {
 				t.Errorf("%v %s: the scene prompt's help %+v %v, not a ⓘ", size, lang, tip, ok)
 			}
@@ -392,5 +392,24 @@ func TestAppEnhancementHeader(t *testing.T) {
 				t.Errorf("%v %s: Browsers did not open", size, lang)
 			}
 		}
+	}
+}
+
+// TestAppEnhancementWide: in a wide window the group's settings fill the
+// page, under the header's buttons, instead of stopping at a fixed width
+// with a blank band on the right.
+func TestAppEnhancementWide(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(1700, 1100)
+	a.setRules(sampleRules())
+	a.navigate("/app-enhancement")
+	frames(tt)
+	br, ok1 := tt.Find(i18n.T("Browsers"))
+	prompt, ok2 := tt.Find(i18n.T("Prompt for this group"))
+	if !ok1 || !ok2 {
+		t.Fatalf("Browsers %v, scene prompt %v", ok1, ok2)
+	}
+	if d := (br.X + br.W) - (prompt.X + prompt.W); d < -2 || d > 2 {
+		t.Errorf("the scene prompt ends at %.0f, the header's Browsers at %.0f", prompt.X+prompt.W, br.X+br.W)
 	}
 }

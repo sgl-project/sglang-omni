@@ -58,14 +58,15 @@ WORKLOADS: dict[str, AsrWorkload | TranscribeDiarizeWorkload | TtsWorkload] = {
         client_arguments=("--lang", "zh"),
         error_rate="CER",
     ),
-    "seedtts-en": AsrWorkload(
+    # note (wilsonzheng0327): two copies of one clip sent together are prefilled as one batch, which hides the wait of a request that arrives alone. The names keep these runs apart from earlier ones over every SeedTTS row.
+    "seedtts-en-unique-clips": AsrWorkload(
         client="benchmarks.eval.benchmark_asr_seedtts",
-        client_arguments=("--lang", "en"),
+        client_arguments=("--lang", "en", "--unique-audio"),
         error_rate="WER",
     ),
-    "seedtts-zh": AsrWorkload(
+    "seedtts-zh-unique-clips": AsrWorkload(
         client="benchmarks.eval.benchmark_asr_seedtts",
-        client_arguments=("--lang", "zh"),
+        client_arguments=("--lang", "zh", "--unique-audio"),
         error_rate="CER",
     ),
     "longlibriheavy-30": AsrWorkload(

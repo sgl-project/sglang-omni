@@ -19,24 +19,24 @@ import Foundation
 //   second time on the default input; after that the job ends (an error
 //   when no audio came at all).
 // - A configuration change (default device switched, AirPods connected)
-//   rebuilds the engine; the chosen device going away ends the recording
-//   (deviceLost), unless it was the default input, which follows the new
-//   default.
+//   rebuilds the engine. An input going away moves the recording to the
+//   next of devices still connected, else the default input (deviceLost;
+//   the default input follows the new default); none left ends it.
 // - Tests only: VOXTNEW_HELPER_CAPTURE_FILE names an audio file that
 //   stands in for the microphone (CaptureFileConfig): the same conversion,
 //   framing, notifications and endings, at a microphone's pace, without
-//   asking for the microphone.
+//   asking for the microphone. capture.system: SystemCapture.swift.
 
 // MARK: Devices (Core Audio)
 
-private func property<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+func property<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
                          scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal, _ value: inout T) -> Bool {
     var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
     var size = UInt32(MemoryLayout<T>.size)
     return withUnsafeMutablePointer(to: &value) { AudioObjectGetPropertyData(object, &address, 0, nil, &size, $0) } == noErr
 }
 
-private func stringProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+func stringProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
     var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
     var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
     let value = UnsafeMutablePointer<Unmanaged<CFString>?>.allocate(capacity: 1)
@@ -124,23 +124,28 @@ func cpuSeconds() -> Double {
 
 // MARK: Capture
 
-/// Runs one recording at a time.
+/// Runs one capture.start and one capture.system at a time.
 final class CaptureManager: @unchecked Sendable {
     let out: Writer
-    /// The test-only file input (VOXTNEW_HELPER_CAPTURE_FILE), else nil.
+    /// The test-only file inputs (VOXTNEW_HELPER_CAPTURE_FILE,
+    /// VOXTNEW_HELPER_SYSTEM_FILE), else nil.
     let file: CaptureFileConfig?
+    let systemFile: CaptureFileConfig?
     private let lock = NSLock()
-    private var run: CaptureRun?
+    private var runs = CaptureSlots<CaptureRun>()
 
-    init(out: Writer, file: CaptureFileConfig? = CaptureFileConfig.from(environment: ProcessInfo.processInfo.environment)) {
+    init(out: Writer, environment env: [String: String] = ProcessInfo.processInfo.environment) {
         self.out = out
-        self.file = file
+        file = CaptureFileConfig.from(environment: env)
+        systemFile = CaptureFileConfig.system(from: env)
         if let file { log("capture reads \(file.path) at \(file.speed)× instead of the microphone (\(CaptureFileConfig.fileVariable): tests only)") }
+        if let systemFile { log("capture.system reads \(systemFile.path) instead of the system's sound (\(CaptureFileConfig.systemFileVariable): tests only)") }
     }
 
-    /// Starts the capture.start job: the run answers it when it ends.
-    func start(job: String, _ p: CaptureParams, clock: RequestClock) async throws {
-        if file == nil {
+    /// Starts the capture.start job, or capture.system's (system): the run
+    /// answers it when it ends.
+    func start(job: String, _ p: CaptureParams, system: Bool = false, clock: RequestClock) async throws {
+        if file == nil && !system {
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
             case .authorized: break
             case .notDetermined:
@@ -152,35 +157,34 @@ final class CaptureManager: @unchecked Sendable {
             }
         }
         let r: CaptureRun = try lock.withLock {
-            if let cur = run { throw RPCError(Code.busy, "A recording is running already (\(cur.job))") }
-            let r = CaptureRun(out: out, job: job, params: p, file: file, t0: clock.received) { [weak self] ended in
-                self?.lock.withLock { if self?.run === ended { self?.run = nil } }
+            let r = CaptureRun(out: out, job: job, params: p, system: system, file: system ? systemFile : file, t0: clock.received) { [weak self] ended in
+                self?.lock.withLock { self?.runs.release(ended) }
             }
-            run = r
+            try runs.claim(system ? Method.captureSystem : Method.captureStart, job: job, r)
             return r
         }
         do {
             try r.begin()
         } catch {
-            lock.withLock { if run === r { run = nil } }
+            lock.withLock { runs.release(r) }
             throw error
         }
     }
 
     /// Ends the job's recording (it answers first); false when not running.
     func stop(job: String) -> Bool {
-        guard let r = lock.withLock({ run }), r.job == job else { return false }
+        guard let r = lock.withLock({ runs.run(job: job) }) else { return false }
         return r.finish(reason: CaptureReason.stopped)
     }
 
     /// Discards the job's recording (it answers cancelled first).
     func cancel(job: String) -> Bool {
-        guard let r = lock.withLock({ run }), r.job == job else { return false }
+        guard let r = lock.withLock({ runs.run(job: job) }) else { return false }
         return r.cancel()
     }
 
     func cancelAll() {
-        if let r = lock.withLock({ run }) { _ = r.cancel() }
+        for r in lock.withLock({ runs.all }) { _ = r.cancel() }
     }
 }
 
@@ -194,6 +198,8 @@ private final class CaptureRun: @unchecked Sendable {
     let out: Writer
     let job: String
     let params: CaptureParams
+    /// capture.system: the default output's tap (SystemTap) instead of an engine.
+    let system: Bool
     let file: CaptureFileConfig?
     let onEnd: (CaptureRun) -> Void
     private let rate: Int
@@ -202,6 +208,7 @@ private final class CaptureRun: @unchecked Sendable {
     private let lock = NSLock()
 
     private var engine: AVAudioEngine?
+    private var tap: SystemTap?
     private var deviceID: AudioObjectID = 0
     private var deviceUID = ""
     private var usingDefault = true
@@ -227,10 +234,11 @@ private final class CaptureRun: @unchecked Sendable {
     private var configObserver: NSObjectProtocol?
     private var watcher: DispatchSourceTimer?
 
-    init(out: Writer, job: String, params: CaptureParams, file: CaptureFileConfig?, t0: Double, onEnd: @escaping (CaptureRun) -> Void) {
+    init(out: Writer, job: String, params: CaptureParams, system: Bool, file: CaptureFileConfig?, t0: Double, onEnd: @escaping (CaptureRun) -> Void) {
         self.out = out
         self.job = job
         self.params = params
+        self.system = system
         self.file = file
         self.t0 = t0
         self.onEnd = onEnd
@@ -243,6 +251,10 @@ private final class CaptureRun: @unchecked Sendable {
     func begin() throws {
         if let file {
             return try startFile(file)
+        }
+        if system {
+            try startSystem()
+            return startWatchers()
         }
         var reasons: [String] = []
         for uid in params.devices ?? [] where !uid.isEmpty {
@@ -324,6 +336,38 @@ private final class CaptureRun: @unchecked Sendable {
         armWatchdog(generation: gen)
     }
 
+    /// capture.system: a tap on the default output, whose buffers go
+    /// through receive() like the engine's; a new default output restarts it.
+    private func startSystem() throws {
+        let tap = try SystemTap(ownPIDs: [getpid(), getppid()]) { [weak self] in
+            guard let self else { return }
+            self.queue.async { self.restart(reason: CaptureReason.configurationChange) }
+        }
+        guard let res = MonoResampler(inputRate: tap.format.sampleRate, rate: rate) else {
+            tap.stop()
+            throw RPCError(Code.deviceUnavailable, "cannot convert \(Int(tap.format.sampleRate)) Hz")
+        }
+        let gen: Int = lock.withLock {
+            generation += 1
+            callbacksThisEngine = 0
+            self.tap = tap
+            deviceID = tap.deviceID
+            deviceUID = tap.outputUID
+            usingDefault = true
+            resampler = res
+            inputFormat = tap.format
+            return generation
+        }
+        do {
+            try tap.start { [weak self] b in self?.receive(b, generation: gen) }
+        } catch {
+            lock.withLock { if self.tap === tap { self.tap = nil } }
+            tap.stop()
+            throw error
+        }
+        armWatchdog(generation: gen)
+    }
+
     /// The test-only file input: the file's buffers go through receive()
     /// like the tap's, paced by a timer; no watchdog or device watcher.
     private func startFile(_ fc: CaptureFileConfig) throws {
@@ -374,33 +418,38 @@ private final class CaptureRun: @unchecked Sendable {
         }
     }
 
-    /// Rebuilds the engine (on the queue).
+    /// Rebuilds the engine (on the queue), on the inputs of restartOrder in
+    /// turn. A chosen input that went away makes it deviceLost; when no
+    /// other input starts, that recording ends with what it has.
     private func restart(reason: String, toDefault: Bool = false) {
         let (attempt, preferred, wasDefault) = lock.withLock { () -> (Int, String?, Bool) in
             restarts += 1
             return (restarts, usingDefault ? nil : deviceUID, usingDefault)
         }
         stopEngine()
-        let uid = toDefault ? nil : preferred
-        do {
-            try startEngine(uid: uid)
-        } catch {
+        let gone = !system && preferred.map { findDevice(uid: $0).map(isAlive) != true } ?? false
+        var failure: Error?
+        for uid in system ? [nil] : restartOrder(devices: params.devices ?? [], current: preferred, gone: gone, toDefault: toDefault) {
             do {
-                try startEngine(uid: nil)
+                try system ? startSystem() : startEngine(uid: uid)
+                failure = nil
+                break
             } catch {
-                endAsync(noAudio: "restart failed: \(errorMessage(error))")
-                return
+                failure = error
             }
         }
-        if !wasDefault && lock.withLock({ usingDefault }) {
-            lock.withLock {
-                if !startedSent {
-                    fellBack = true
-                    fallbackReason = "\(preferred ?? "the input") gave no audio"
-                }
-            }
+        if let failure {
+            return gone ? endAsync(reason: CaptureReason.deviceLost) : endAsync(noAudio: "restart failed: \(errorMessage(failure))")
         }
-        out.notify(Method.captureRestarted, RestartedParams(job: job, reason: reason, attempt: attempt, device: lock.withLock { deviceUID }))
+        let (uid, id) = lock.withLock { () -> (String, AudioObjectID) in
+            if !wasDefault && !startedSent && (usingDefault || deviceUID != preferred) {
+                fellBack = true
+                fallbackReason = "\(preferred ?? "the input") " + (gone ? "went away" : "gave no audio")
+            }
+            return (deviceUID, deviceID)
+        }
+        out.notify(Method.captureRestarted, RestartedParams(job: job, reason: gone ? CaptureReason.deviceLost : reason, attempt: attempt,
+                                                            device: uid, deviceName: system ? nil : deviceName(id)))
     }
 
     private func startWatchers() {
@@ -412,27 +461,25 @@ private final class CaptureRun: @unchecked Sendable {
         t.schedule(deadline: .now() + 0.25, repeating: 0.25)
         t.setEventHandler { [weak self] in
             guard let self else { return }
-            let (id, dflt, done) = self.lock.withLock { (self.deviceID, self.usingDefault, self.ended) }
-            if done || id == 0 || isAlive(id) { return }
-            if dflt {
-                self.restart(reason: CaptureReason.deviceLost)
-            } else {
-                self.endAsync(reason: CaptureReason.deviceLost)
-            }
+            let (id, done) = self.lock.withLock { (self.deviceID, self.ended) }
+            // The tap's own listener follows the default output.
+            if done || id == 0 || self.system || isAlive(id) { return }
+            self.restart(reason: CaptureReason.deviceLost)
         }
         t.resume()
         watcher = t
     }
 
     private func stopEngine() {
-        let (e, t): (AVAudioEngine?, DispatchSourceTimer?) = lock.withLock {
-            let e = engine
-            let t = fileTimer
+        let (e, t, tp): (AVAudioEngine?, DispatchSourceTimer?, SystemTap?) = lock.withLock {
+            let r = (engine, fileTimer, tap)
             engine = nil
             fileTimer = nil
-            return (e, t)
+            tap = nil
+            return r
         }
         t?.cancel()
+        tp?.stop()
         guard let e else { return }
         e.inputNode.removeTap(onBus: 0)
         e.stop()
@@ -469,9 +516,10 @@ private final class CaptureRun: @unchecked Sendable {
         let started: CaptureStartedParams? = lock.withLock {
             guard !startedSent else { return nil }
             startedSent = true
-            return CaptureStartedParams(job: job, device: deviceUID, deviceName: sourceName ?? deviceName(deviceID), fellBack: fellBack,
+            // capture.system never names the output (a Bluetooth name may be a person's) and reports the mono mix.
+            return CaptureStartedParams(job: job, device: deviceUID, deviceName: system ? "" : sourceName ?? deviceName(deviceID), fellBack: fellBack,
                                         fallbackReason: fellBack ? fallbackReason : nil,
-                                        deviceSampleRate: Int(inputFormat?.sampleRate ?? 0), deviceChannels: Int(inputFormat?.channelCount ?? 0),
+                                        deviceSampleRate: Int(inputFormat?.sampleRate ?? 0), deviceChannels: system ? 1 : Int(inputFormat?.channelCount ?? 0),
                                         sampleRate: rate, startMs: ((at - t0) * 10).rounded() / 10)
         }
         if let started { out.notify(Method.captureStarted, started) }

@@ -69,7 +69,8 @@ type fakeAudio struct {
 	late    map[string]func(AudioEvent) // the callback of an ended recording
 	frames  int
 	stopped int
-	running int // Records that have not returned
+	params  []proto.CaptureParams // of each Record
+	running int                   // Records that have not returned
 }
 
 func newFakeAudio() *fakeAudio {
@@ -82,6 +83,7 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 	}
 	stop := make(chan struct{})
 	f.mu.Lock()
+	f.params = append(f.params, p)
 	f.stops[id] = stop
 	f.running++
 	f.mu.Unlock()
@@ -146,7 +148,7 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 			if f.failAt > 0 && n == f.failAt {
 				return proto.CaptureResult{}, f.failErr
 			}
-			if f.maxFrame > 0 && n == f.maxFrame {
+			if (f.maxFrame > 0 && n == f.maxFrame) || (p.MaxSeconds > 0 && float64(n) >= p.MaxSeconds*10) { // 100 ms frames
 				return proto.CaptureResult{Reason: proto.CaptureMaxSeconds, Frames: n}, nil
 			}
 		}
@@ -215,12 +217,17 @@ type fakeStreamer struct {
 	openWait time.Duration // Open takes this long
 	openGate chan struct{} // Open waits for it to close (nil: no wait)
 	silent   bool          // no partials
-	salvage  string        // the text its streams salvage (asr.Salvager), "" for none
+	// partials are what its partials say, one per send, the last one
+	// repeated (nil: "partial").
+	partials []string
+	salvage  string // the text its streams salvage (asr.Salvager), "" for none
 
 	mu      sync.Mutex
 	streams []*fakeStream
 	hints   []string
 	prompt  string // the last stream's prompt
+	// liveResult is the last stream's StreamRequest.LiveResult.
+	liveResult bool
 }
 
 func (f *fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true, Hints: true} }
@@ -246,7 +253,7 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 	s := &fakeStream{f: f, ctx: ctx, events: make(chan asr.Event, 1024)}
 	f.mu.Lock()
 	f.streams = append(f.streams, s)
-	f.hints, f.prompt = req.Hints, req.Prompt
+	f.hints, f.prompt, f.liveResult = req.Hints, req.Prompt, req.LiveResult
 	f.mu.Unlock()
 	return s, nil
 }
@@ -294,7 +301,11 @@ func (s *fakeStream) Send(pcm []byte) error {
 		return nil
 	}
 	if !s.f.silent {
-		s.emit(asr.Event{Kind: asr.EventPartial, Text: "partial"})
+		text := "partial"
+		if len(s.f.partials) > 0 {
+			text = s.f.partials[min(n, len(s.f.partials))-1]
+		}
+		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
 	}
 	return nil
 }
@@ -337,6 +348,7 @@ type fakeFile struct {
 	audio  []byte // the last request's audio
 	lang   string // the last request's language hint
 	prompt string // the last request's prompt
+	most   int    // the last request's MaxBytes
 }
 
 func (f *fakeFile) Caps() asr.Caps { return asr.Caps{File: true, Prompt: true} }
@@ -346,7 +358,7 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 	f.calls++
 	f.bytes = len(req.Audio)
 	f.audio = req.Audio
-	f.lang, f.prompt = req.Lang, req.Prompt
+	f.lang, f.prompt, f.most = req.Lang, req.Prompt, req.MaxBytes
 	f.mu.Unlock()
 	if f.hang {
 		<-ctx.Done()
@@ -364,6 +376,7 @@ type fakeLLM struct {
 	err    error
 	failOn int
 	hang   bool
+	hangOn int // with hang: only the hangOn-th request hangs (0: all)
 	chunk  int
 	pause  time.Duration
 	finish string // the response's FinishReason
@@ -380,8 +393,9 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		text = f.texts[min(len(f.reqs), len(f.texts))-1]
 	}
 	failed := f.err != nil && (f.failOn == 0 || f.failOn == len(f.reqs))
+	hang := f.hang && (f.hangOn == 0 || f.hangOn == len(f.reqs))
 	f.mu.Unlock()
-	if f.hang {
+	if hang {
 		if req.OnDelta != nil {
 			req.OnDelta("Half an ans")
 		}
@@ -399,7 +413,11 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		}
 		for i := 0; i < len(rs); i += n {
 			if f.pause > 0 {
-				time.Sleep(f.pause)
+				select {
+				case <-time.After(f.pause):
+				case <-ctx.Done(): // a real service's stream ends with the request
+					return llm.Response{}, ctx.Err()
+				}
 			}
 			req.OnDelta(string(rs[i:min(i+n, len(rs))]))
 		}
@@ -557,6 +575,7 @@ var errHelperForTest = core.ErrHelper
 type fakeSelector struct {
 	text     string
 	copyText string
+	steps    []string
 	err      error
 	delay    time.Duration
 
@@ -584,7 +603,7 @@ func (f *fakeSelector) Selection(ctx context.Context, p proto.SelectionParams) (
 	case f.copyText != "" && p.AllowCopy:
 		return proto.SelectionResult{Text: f.copyText, Via: proto.ViaCopy, MS: 40}, nil
 	}
-	return proto.SelectionResult{Via: proto.ViaNone, MS: 1}, nil
+	return proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: f.steps}, nil
 }
 
 func (f *fakeSelector) params() []proto.SelectionParams {

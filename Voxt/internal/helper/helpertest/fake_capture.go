@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"slices"
@@ -23,21 +24,22 @@ func (f *fake) cancelled(id string) bool {
 	return f.cancel[id]
 }
 
-// startCapture runs a capture.start job on a goroutine of its own; one at
-// a time.
+// startCapture runs a capture.start or capture.system job on a goroutine
+// of its own; one of each at a time.
 func (f *fake) startCapture(m proto.Message) {
-	var p proto.CaptureParams
+	system := m.Method == proto.MethodCaptureSystem
+	var p proto.CaptureParams // capture.system's: the same without devices
 	if err := m.DecodeParams(&p); err != nil {
 		f.fail(m.ID, proto.CodeBadRequest, "Bad params: %v", err)
 		return
 	}
 	f.mu.Lock()
-	if f.mic == proto.PermNotDetermined {
+	if f.mic == proto.PermNotDetermined && !system {
 		f.mic = proto.PermGranted
 	}
 	mic := f.mic
 	f.mu.Unlock()
-	if mic != proto.PermGranted {
+	if mic != proto.PermGranted && !system {
 		f.failData(m.ID, proto.CodePermissionDenied, map[string]string{"permission": proto.PermissionMicrophone}, "VoxtNew may not use the microphone")
 		return
 	}
@@ -46,12 +48,12 @@ func (f *fake) startCapture(m proto.Message) {
 		return
 	}
 	f.mu.Lock()
-	if len(f.running) > 0 {
+	if slices.Contains(slices.Collect(maps.Values(f.running)), m.Method) {
 		f.mu.Unlock()
 		f.fail(m.ID, proto.CodeBusy, "A recording is running already")
 		return
 	}
-	f.running[m.ID] = true
+	f.running[m.ID] = m.Method
 	stop, done := make(chan struct{}), make(chan struct{})
 	f.stop[m.ID], f.finished[m.ID] = stop, done
 	f.mu.Unlock()
@@ -65,7 +67,7 @@ func (f *fake) startCapture(m proto.Message) {
 			f.mu.Unlock()
 			close(done)
 		}()
-		f.capture(m.ID, p, stop)
+		f.capture(m.ID, p, system, stop)
 	}()
 }
 
@@ -114,24 +116,34 @@ func level(frame []byte) (rms, peak float64) {
 
 // capture records until capture.stop, job.cancel, maxSeconds or a fake
 // device's end.
-func (f *fake) capture(id string, p proto.CaptureParams, stop chan struct{}) {
+func (f *fake) capture(id string, p proto.CaptureParams, system bool, stop chan struct{}) {
 	rate := p.SampleRate
 	if rate <= 0 {
 		rate = 16000
 	}
 	dev := Devices()[0]
 	fellBack := false
+	lost := len(p.Devices) > 0 && p.Devices[0] == "lost"
 	for _, d := range p.Devices {
+		if lost {
+			dev = LostInput
+			break
+		}
 		if i := slices.IndexFunc(Devices(), func(x proto.CaptureDevice) bool { return x.ID == d }); i >= 0 {
 			dev = Devices()[i]
 			break
 		}
-		if d != "crash" && d != "lost" {
+		if d != "crash" {
 			fellBack = true
 		}
 	}
+	recording := f.opts["pcm"]
+	if system {
+		// The mix of the default output, which has no name (as the helper's).
+		dev, recording = proto.CaptureDevice{ID: Speakers.UID, Channels: 1, SampleRate: 48000}, f.opts["system"]
+	}
 	src := &source{rate: rate}
-	if path := f.opts["pcm"]; path != "" {
+	if path := recording; path != "" {
 		pcm, err := ReadPCM(path, rate)
 		if err != nil {
 			f.fail(id, proto.CodeInternal, "pcm: %v", err)
@@ -156,7 +168,7 @@ func (f *fake) capture(id string, p proto.CaptureParams, stop chan struct{}) {
 	samples := rate * frameMS / 1000
 	tick := time.NewTicker(time.Duration(wallMS) * time.Millisecond)
 	defer tick.Stop()
-	seq, total, reason, peak := 0, 0, "", -120.0
+	seq, total, reason, peak, restarts := 0, 0, "", -120.0, 0
 	first := 0.0
 	t0 := time.Now()
 	for reason == "" {
@@ -185,15 +197,29 @@ func (f *fake) capture(id string, p proto.CaptureParams, stop chan struct{}) {
 			fmt.Fprintln(os.Stderr, "fatal: the audio engine stopped")
 			os.Exit(3)
 		}
-		if len(p.Devices) > 0 && p.Devices[0] == "lost" && seq == 3 {
-			reason = proto.CaptureDeviceLost
+		if lost && seq == 3 {
+			// The helper's restartOrder: the next listed input still connected, else the default one.
+			next, ok := Devices()[0], !f.has("lost-all")
+			for _, d := range p.Devices[1:] {
+				if i := slices.IndexFunc(Devices(), func(x proto.CaptureDevice) bool { return x.ID == d }); i >= 0 {
+					next = Devices()[i]
+					break
+				}
+			}
+			if ok {
+				dev, restarts = next, restarts+1
+				f.notify(proto.MethodCaptureRestarted, proto.RestartedParams{Job: id, Reason: proto.CaptureDeviceLost, Attempt: restarts,
+					Device: dev.ID, DeviceName: dev.Name})
+			} else {
+				reason = proto.CaptureDeviceLost
+			}
 		}
 		if p.MaxSeconds > 0 && seconds >= p.MaxSeconds {
 			reason = proto.CaptureMaxSeconds
 		}
 	}
 	f.result(id, proto.CaptureResult{Device: dev.ID, Reason: reason, Frames: seq, Samples: total,
-		Seconds: float64(total) / float64(rate), Peak: peak, FirstFrameMS: first, CPUSeconds: 0.001})
+		Seconds: float64(total) / float64(rate), Restarts: restarts, Peak: peak, FirstFrameMS: first, CPUSeconds: 0.001})
 }
 
 // captureStop ends a recording; the job answers first.

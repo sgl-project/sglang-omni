@@ -110,8 +110,8 @@ type Runtime struct {
 
 	mu      sync.Mutex
 	servers map[string]*server // by model id and directory
-	// draining are speech models' servers retired by a switch, until they
-	// stopped: the next speech model starts after them.
+	// draining are speech models' servers retired by a switch or an
+	// Unload, until they stopped: the next speech model starts after them.
 	draining []*server
 	closed   bool
 
@@ -188,12 +188,13 @@ func (rt *Runtime) logf(level, format string, args ...any) {
 // errClosed: the runtime was closed (VoxtNew is quitting).
 var errClosed = errors.New("omni: the runtime is closed")
 
-// acquire leases spec's server for dir, starting it if it is not running
-// (and waiting for it, at most until ctx ends). Release the lease when
-// the use ends. Taking a speech model retires the other speech models'
-// servers (they stop once their uses end).
-func (rt *Runtime) acquire(ctx context.Context, spec Spec, dir string) (*lease, error) {
-	key := spec.ID + "\x00" + dir
+// acquire leases spec's server for dir with the speculative draft in
+// draft ("" none), starting it if it is not running (and waiting for it,
+// at most until ctx ends). Release the lease when the use ends. Taking a
+// speech model retires the other speech models' servers, the same model
+// with another draft among them (they stop once their uses end).
+func (rt *Runtime) acquire(ctx context.Context, spec Spec, dir, draft string) (*lease, error) {
+	key := spec.ID + "\x00" + dir + "\x00" + draft
 	rt.mu.Lock()
 	if rt.closed {
 		rt.mu.Unlock()
@@ -201,7 +202,7 @@ func (rt *Runtime) acquire(ctx context.Context, spec Spec, dir string) (*lease, 
 	}
 	s := rt.servers[key]
 	if s == nil {
-		s = newServer(rt, spec, dir)
+		s = newServer(rt, spec, dir, draft)
 		rt.servers[key] = s
 	}
 	var retire []*server
@@ -212,15 +213,7 @@ func (rt *Runtime) acquire(ctx context.Context, spec Spec, dir string) (*lease, 
 				retire = append(retire, o)
 			}
 		}
-		kept := rt.draining[:0]
-		for _, o := range rt.draining {
-			select {
-			case <-o.stopped:
-			default:
-				kept = append(kept, o)
-			}
-		}
-		rt.draining = append(kept, retire...)
+		rt.drain(retire)
 	}
 	rt.mu.Unlock()
 	for _, o := range retire {
@@ -229,7 +222,7 @@ func (rt *Runtime) acquire(ctx context.Context, spec Spec, dir string) (*lease, 
 	l, err := s.acquire(ctx)
 	if errors.Is(err, errRetired) && ctx.Err() == nil {
 		// Another switch retired s meanwhile: once more, with the map's.
-		return rt.acquire(ctx, spec, dir)
+		return rt.acquire(ctx, spec, dir, draft)
 	}
 	return l, err
 }
@@ -265,10 +258,32 @@ func (rt *Runtime) Unload(id string) {
 			out = append(out, s)
 		}
 	}
+	rt.drain(out)
 	rt.mu.Unlock()
 	for _, s := range out {
 		s.retire("unloaded")
 	}
+}
+
+// drain puts the speech models' servers among retired on the draining
+// list, the stopped ones taken off it: the next speech model's server
+// starts after them (waitDrained), whether a switch or an Unload (a
+// deleted draft) retired them. Called with rt.mu held.
+func (rt *Runtime) drain(retired []*server) {
+	kept := rt.draining[:0]
+	for _, o := range rt.draining {
+		select {
+		case <-o.stopped:
+		default:
+			kept = append(kept, o)
+		}
+	}
+	for _, o := range retired {
+		if o.spec.ASR != nil {
+			kept = append(kept, o)
+		}
+	}
+	rt.draining = kept
 }
 
 // Running lists the ids of the models whose servers run now (for the
@@ -316,14 +331,14 @@ func (rt *Runtime) forget(s *server) {
 	}
 }
 
-// Warm starts spec's server for dir in the background, so that a first
-// use does not wait for the model's load (a session starting). It is
-// stopped again when idle.
-func (rt *Runtime) Warm(spec Spec, dir string) {
+// Warm starts spec's server for dir (with the draft in draft, "" none) in
+// the background, so that a first use does not wait for the model's load
+// (a session starting). It is stopped again when idle.
+func (rt *Runtime) Warm(spec Spec, dir, draft string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), rt.cfg.StartTimeout+time.Second)
 		defer cancel()
-		l, err := rt.acquire(ctx, spec, dir)
+		l, err := rt.acquire(ctx, spec, dir, draft)
 		if err != nil {
 			rt.logf("warning", "warming %s: %v", spec.ID, err)
 			return

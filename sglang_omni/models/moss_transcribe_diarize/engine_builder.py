@@ -82,6 +82,7 @@ class MossTranscribeDiarizeEngineBuilder(
         enable_torch_compile: bool | None,
         torch_compile_max_bs: int,
         enable_async_decode: bool | None,
+        enable_plain_fallback: bool,
         async_decode_min_batch_size: int,
         prefill_coalesce_requests: int,
         prefill_coalesce_wait_ms: float,
@@ -105,6 +106,7 @@ class MossTranscribeDiarizeEngineBuilder(
         self.enable_torch_compile = enable_torch_compile
         self.torch_compile_max_bs = torch_compile_max_bs
         self.enable_async_decode = enable_async_decode
+        self.enable_plain_fallback = enable_plain_fallback
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
@@ -277,7 +279,9 @@ class MossTranscribeDiarizeEngineBuilder(
         model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> ModelRunner[MossTranscribeDiarizeRequestData]:
-        return MossTranscribeDiarizeModelRunner(model_worker, output_proc)
+        model_runner = MossTranscribeDiarizeModelRunner(model_worker, output_proc)
+        model_runner.speculative_ignores_request_seed = True
+        return model_runner
 
     def setup_model_resources(
         self,
@@ -327,7 +331,7 @@ class MossTranscribeDiarizeEngineBuilder(
             enable_trimmed_fbank=self.enable_trimmed_fbank,
             speculative_reserve_tokens=(
                 0
-                if self.speculative_worker_class is None
+                if self.speculative_worker_class is None or self.enable_plain_fallback
                 else get_alloc_reserve_per_decode()
             ),
         )
@@ -343,6 +347,7 @@ class MossTranscribeDiarizeEngineBuilder(
                 )
             ),
             "enable_async_decode": self.enable_async_decode,
+            "enable_plain_fallback": self.enable_plain_fallback,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             # The scheduler otherwise idles on every prefill's sampled-token
             # copy while the next decode could already launch.

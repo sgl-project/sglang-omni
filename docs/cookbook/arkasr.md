@@ -69,6 +69,29 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Speculative Decoding
+
+The decoder can verify tokens proposed by the 19-language DFlash draft [`wilsonzheng0327/ARK-ASR-3B-dflash`](https://huggingface.co/wilsonzheng0327/ARK-ASR-3B-dflash) on one CUDA GPU.
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --asr.engine.speculative_algorithm DFLASH \
+  --asr.engine.speculative_draft_model_path wilsonzheng0327/ARK-ASR-3B-dflash \
+  --port 8000
+```
+
+Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap verification with host work. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. On one H200 with greedy decoding and the prefix cache off, the draft against the server without one:
+
+| Concurrent requests | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| SeedTTS English, synchronous | 2.02x | 1.92x | 1.62x | 1.45x | 1.15x | 1.13x | 1.86x |
+| SeedTTS English, overlapped | 2.08x | 2.05x | 1.75x | 1.51x | 1.20x | 1.17x | 1.83x |
+| SeedTTS Chinese, synchronous | 1.74x | 1.60x | 1.56x | 1.39x | 1.18x | 1.21x | 2.00x |
+| SeedTTS Chinese, overlapped | 1.84x | 1.65x | 1.65x | 1.44x | 1.21x | 1.20x | 1.74x |
+
+WER stays at 1.11-1.13% on English and CER at 0.86-0.89% on Chinese, and p95 latency drops at every load in both modes. The larger gain at 64 comes from the default cap of 32 running requests, under which the server without a draft slows from 32 to 64 concurrent requests; with `--asr.engine.max_running_requests 64 --asr.engine.cuda_graph_max_bs 64` on both sides, the gain at 16, 32 and 64 is 1.12x, 1.18x and 1.06x synchronous and 1.30x, 1.27x and 1.13x overlapped. Overlap delays streamed first text: first-output p95 against the server without a draft is -4%, +6% and +15% at 1, 4 and 16 concurrent requests synchronous, and +8%, +23% and +31% overlapped. The draft reserves 13% of the KV pool. The draft checkpoint sets the default block size; `--asr.engine.speculative_num_draft_tokens` overrides it. The default context budget includes speculative KV reserve; an explicit `--context-length` must leave room for that reserve as well as the prompt and output.
+
 ### Prefill Coalescing
 
 ARK-ASR holds newly built requests briefly by default so the scheduler can

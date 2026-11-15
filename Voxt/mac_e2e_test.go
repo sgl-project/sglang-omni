@@ -39,6 +39,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -289,6 +290,12 @@ func TestMacHelperReadOnly(t *testing.T) {
 	t.Logf("textio.focus: pid %d (%+v) role %s/%s editable %v, value %d chars %s", focus.PID, focus.App, focus.Role, focus.Subrole, focus.Editable, focus.ValueLength, focus.Error)
 	if focus.App == nil || focus.App.PID != focus.PID && focus.Error == "" {
 		t.Errorf("textio.focus names no app, or another one than its pid's: %+v", focus.App)
+	}
+	read := macCall[proto.ReadResult](t, h, proto.MethodTextRead, proto.ReadParams{PID: focus.PID, Range: proto.TextRange{Location: -10, Length: proto.MaxRead + 20}})
+	n := len(utf16.Encode([]rune(read.Text))) // lengths only: the text stays private
+	t.Logf("textio.read pid %d: %d units at %+v of %d, element %d %s", focus.PID, n, read.Range, read.Length, read.Element, read.Error)
+	if read.Error == "" && (n != read.Range.Length || read.Range.Location != 0 || read.Range.Length > read.Length || read.Element == 0) {
+		t.Errorf("textio.read: %d units at %+v of %d, element %d", n, read.Range, read.Length, read.Element)
 	}
 	sel := macCall[proto.SelectionResult](t, h, proto.MethodTextSelection, proto.SelectionParams{AllowCopy: false})
 	t.Logf("textio.selection (no ⌘C): via %s, %d chars, %.1f ms", sel.Via, len([]rune(sel.Text)), sel.MS)

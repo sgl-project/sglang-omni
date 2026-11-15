@@ -33,6 +33,7 @@ type finalRequest struct {
 	context   string
 	maxTokens int
 	layout    string
+	preview   bool // the batch preview's: not logged (one a second)
 }
 
 // finalResult is a request's answer.
@@ -80,7 +81,9 @@ func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Durati
 	body, ctype := r.body(l.endpoint().model)
 	// The hint goes to the log, never the recognised text: a wrong hint
 	// translated Chinese dictation (#3398) and nothing showed it.
-	l.s.rt.logf("info", "%s: Final request with language hint %q", l.s.spec.ID, r.language)
+	if !r.preview {
+		l.s.rt.logf("info", "%s: Final request with language hint %q", l.s.spec.ID, r.language)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.endpoint().base()+"/v1/audio/transcriptions", body)

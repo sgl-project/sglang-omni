@@ -547,7 +547,7 @@ func TestNew(t *testing.T) {
 	if err != nil || c.Endpoint() != DefaultEndpoint || c.Model() != DefaultModel || c.mode != modeAsync {
 		t.Fatalf("defaults: %v %v", c, err)
 	}
-	if c, err := New(asr.Config{Key: "api-key"}); err != nil || c.authHeader().Get("X-Api-Key") != "api-key" || c.authHeader().Get("X-Api-App-Key") != "" {
+	if c, err := New(asr.Config{Key: "api-key"}); err != nil || authHeader(c.appID, c.token).Get("X-Api-Key") != "api-key" || authHeader(c.appID, c.token).Get("X-Api-App-Key") != "" {
 		t.Errorf("API key only: %v %v", c, err)
 	}
 	c, _ = New(asr.Config{AppID: "a", Key: "k", Model: ModelV1})

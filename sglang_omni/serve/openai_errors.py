@@ -13,6 +13,7 @@ _BAD_REQUEST_MARKERS = (
     "Requested token count exceeds the model's maximum context length",
     "Request has no prompt tokens",
     "Request requires more tokens than the thinker KV cache can hold",
+    "CFG request group requires ",
     "speculative decoding reserve",
     "Speculative decoding does not support",
     "out-of-vocabulary token id",

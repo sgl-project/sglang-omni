@@ -28,6 +28,13 @@ ASR_PROMPT = (
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
+PLAIN_ARGUMENTS: tuple[str, ...] = ()
+NEXTN_ARGUMENTS = ("--speculative-algorithm", "NEXTN")
+# note (XXXXRT666): NEXTN changes only the decode loop, so request handling is
+# checked on the plain server alone.
+plain_server_only = pytest.mark.parametrize(
+    "chat_port", [PLAIN_ARGUMENTS], ids=["plain"], indirect=True
+)
 
 
 @contextmanager
@@ -41,9 +48,14 @@ def running_chat(
         yield server
 
 
-@pytest.fixture(scope="module")
-def chat_port(tmp_path_factory: pytest.TempPathFactory) -> Iterator[int]:
-    with running_chat(tmp_path_factory.mktemp("ming3-audio")) as (port, _):
+@pytest.fixture(
+    scope="module", params=[PLAIN_ARGUMENTS, NEXTN_ARGUMENTS], ids=["plain", "nextn"]
+)
+def chat_port(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[int]:
+    log_directory = tmp_path_factory.mktemp("ming3-audio")
+    with running_chat(log_directory, request.param) as (port, _):
         yield port
 
 
@@ -190,6 +202,7 @@ def test_audio_answer_and_request_isolation(chat_port: int, chat_body: str) -> N
     assert replies[0]["usage"] == replies[1]["usage"]
 
 
+@plain_server_only
 def test_system_and_text_before_audio(chat_port: int, chat_body: str) -> None:
     status, response = request(chat_port, chat_body)
     assert status == 200, response
@@ -206,6 +219,7 @@ def test_system_and_text_before_audio(chat_port: int, chat_body: str) -> None:
     assert reply["usage"]["prompt_tokens"] > plain["usage"]["prompt_tokens"]
 
 
+@plain_server_only
 def test_generation_budget_above_1024(chat_port: int, chat_body: str) -> None:
     """A valid context budget was rejected solely for exceeding 1024 output tokens."""
     body = json.loads(chat_body)
@@ -361,6 +375,7 @@ def test_frozen_corpus_accuracy(chat_port: int, chat_body: str, tmp_path: Path) 
     assert not failures, "\n".join(failures)
 
 
+@plain_server_only
 def test_completion_limit_overrides_max_tokens(chat_port: int, chat_body: str) -> None:
     body = json.loads(chat_body)
     body["max_completion_tokens"] = 1
@@ -372,6 +387,22 @@ def test_completion_limit_overrides_max_tokens(chat_port: int, chat_body: str) -
     assert reply["choices"][0]["finish_reason"] == "length"
 
 
+@pytest.mark.parametrize("max_completion_tokens", [1, 2, 3, 8, 9])
+def test_generation_stops_at_the_token_budget(
+    chat_port: int, chat_body: str, max_completion_tokens: int
+) -> None:
+    """A budget ending inside a NEXTN verify round must not commit extra tokens."""
+    body = json.loads(chat_body)
+    body["messages"][0]["content"][1]["text"] = ASR_PROMPT
+    body["max_completion_tokens"] = max_completion_tokens
+    status, response = request(chat_port, json.dumps(body))
+    assert status == 200, response
+    reply = json.loads(response)
+    assert reply["usage"]["completion_tokens"] == max_completion_tokens
+    assert reply["choices"][0]["finish_reason"] == "length"
+
+
+@plain_server_only
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -398,6 +429,7 @@ def test_unsupported_requests(
     assert json.loads(response)["error"]["type"] == "invalid_request_error"
 
 
+@plain_server_only
 @pytest.mark.parametrize("damage", ["base64", "wav", "format", "missing", "multiple"])
 def test_invalid_audio(chat_port: int, chat_body: str, damage: str) -> None:
     body = json.loads(chat_body)
@@ -417,6 +449,7 @@ def test_invalid_audio(chat_port: int, chat_body: str, damage: str) -> None:
     assert json.loads(response)["error"]["type"] == "invalid_request_error"
 
 
+@plain_server_only
 @pytest.mark.parametrize("body", ["{", "[]", "null"])
 def test_invalid_json(chat_port: int, body: str) -> None:
     status, response = request(chat_port, body)
@@ -424,6 +457,7 @@ def test_invalid_json(chat_port: int, body: str) -> None:
     assert json.loads(response)["error"]["message"]
 
 
+@plain_server_only
 def test_chat_needs_post_and_serves_no_transcriptions(chat_port: int) -> None:
     status, response = request(chat_port, method="GET")
     assert status == 405

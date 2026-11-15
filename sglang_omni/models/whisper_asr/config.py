@@ -15,6 +15,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.whisper_asr"
 
@@ -97,6 +98,12 @@ class WhisperASRPipelineConfig(PipelineConfig):
             terminal=True,
         )
     ]
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, float]:
+        if current_platform.is_npu():
+            return {"mem_fraction_static": 0.50}
+        else:
+            return {}
 
 
 EntryClass = WhisperASRPipelineConfig

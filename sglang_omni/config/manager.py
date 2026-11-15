@@ -16,6 +16,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_nemo_config,
     try_resolve_arch_from_personaplex_layout,
     try_resolve_arch_from_raw_config,
+    try_resolve_arch_from_zonos3_layout,
     try_resolve_ming3_dense_tts,
 )
 
@@ -69,6 +70,10 @@ def resolve_config_cls_for_model_path(model_path: str):
         pass
     if arch is None:
         arch = try_resolve_arch_from_personaplex_layout(repo_id, revision=revision)
+    else:
+        pass
+    if arch is None:
+        arch = try_resolve_arch_from_zonos3_layout(repo_id, revision=revision)
     else:
         pass
     if arch is None:

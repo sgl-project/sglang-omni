@@ -4,8 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"strings"
-	"unicode"
 	"unicode/utf8"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 )
 
 // transcript accumulates a stream's text: the sentences (inference) or
@@ -51,33 +52,7 @@ func (t *transcript) String() string {
 			parts = append(parts, s.text)
 		}
 	}
-	return joinText(parts)
-}
-
-// joinText joins sentences: with a space between two that meet in a
-// spaced script (Latin, Cyrillic…), with nothing where either side is
-// Chinese, Japanese or Korean, or full-width punctuation. (Voxt joins
-// with a space everywhere, which puts spaces between Chinese sentences.)
-func joinText(parts []string) string {
-	var b strings.Builder
-	for i, p := range parts {
-		if i > 0 {
-			last, _ := utf8.DecodeLastRuneInString(b.String())
-			first, _ := utf8.DecodeRuneInString(p)
-			if !wide(last) && !wide(first) && !unicode.IsSpace(last) {
-				b.WriteByte(' ')
-			}
-		}
-		b.WriteString(p)
-	}
-	return b.String()
-}
-
-// wide reports a rune of a script written without spaces, or full-width
-// punctuation.
-func wide(r rune) bool {
-	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul, unicode.Thai, unicode.Lao, unicode.Khmer, unicode.Myanmar) ||
-		(r >= 0x3000 && r <= 0x303F) || (r >= 0xFF00 && r <= 0xFFEF)
+	return asr.JoinText(parts)
 }
 
 // newID is a random 32-hex-digit id (a UUID without dashes, as

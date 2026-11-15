@@ -18,11 +18,12 @@ func testSoundsFS() fstest.MapFS {
   {"id": "tally", "file": "sounds/tally.wav", "name": {"en": "Tally", "zh": "开录"}, "group": "media", "tags": ["short"], "duration": 0.45, "audible": 0.35, "uses": ["record.start"], "pair": "wrap"},
   {"id": "wrap", "file": "sounds/wrap.wav", "name": {"en": "Wrap", "zh": "收工"}, "group": "media", "tags": ["soft"], "duration": 0.47, "audible": 0.37, "uses": ["record.stop"], "pair": "tally"},
   {"id": "pebble", "file": "sounds/pebble.wav", "name": {"en": "Pebble", "zh": "卵石"}, "group": "tap", "tags": ["soft", "short"], "duration": 0.23, "uses": ["record.start"], "replaces": ["Pop"]},
+  {"id": "nib", "file": "sounds/nib.wav", "name": {"en": "Nib", "zh": "笔尖"}, "group": "tap", "tags": ["soft", "short"], "duration": 0.13, "uses": ["record.stop"]},
   {"id": "tink", "file": "sounds/tink.wav", "name": {"en": "Tink", "zh": "叮"}, "group": "tap", "tags": ["short"], "duration": 0.16, "uses": ["record.stop"], "replaces": ["Tink"]},
   {"id": "chime", "file": "sounds/chime.wav", "name": {"en": "Chime", "zh": "风铃"}, "group": "notify", "tags": ["soft"], "duration": 1.44}
  ]}`
 	fs := fstest.MapFS{"sounds/catalog.json": {Data: []byte(cat)}}
-	for _, id := range []string{"tally", "wrap", "pebble", "tink", "chime"} {
+	for _, id := range []string{"tally", "wrap", "pebble", "nib", "tink", "chime"} {
 		fs["sounds/sounds/"+id+".wav"] = &fstest.MapFile{Data: []byte("RIFF" + id)}
 	}
 	return fs
