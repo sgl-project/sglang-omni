@@ -30,7 +30,7 @@ private:
 
   const omni_common::Checkpoint &checkpoint_;
   HeadConfig config_;
-  mx::array freqs_;  // [1, 128] sinusoidal frequency basis
+  mx::array freqs_; // [1, 128] sinusoidal frequency basis
 };
 
 } // namespace haru

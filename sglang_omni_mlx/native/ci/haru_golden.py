@@ -12,7 +12,6 @@ reference chip.
 
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
 from typing import TypedDict
@@ -23,9 +22,7 @@ class HaruOutputs(TypedDict):
     audio_sha256: str
 
 
-def synthesize(
-    runtime_bin: Path, model_directory: Path, case: dict
-) -> HaruOutputs:
+def synthesize(runtime_bin: Path, model_directory: Path, case: dict) -> HaruOutputs:
     """Run one seeded session and return its token stream and decoded audio hash."""
     seed = case.get("seed", 42)
     command = [

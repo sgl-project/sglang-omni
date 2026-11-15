@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// DuplexSession end-to-end test: a character card + a synthetic voice reference,
-// speak-first, then a few silent user frames. Prints tokens, text and audio sums.
+// DuplexSession end-to-end test: a character card + a synthetic voice
+// reference, speak-first, then a few silent user frames. Prints tokens, text
+// and audio sums.
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -24,7 +25,8 @@ namespace mx = mlx::core;
 
 int main(int argc, char **argv) {
   if (argc < 2 || argc > 4) {
-    std::cerr << "usage: haru_session_probe <model-dir> [seed] [quantize-bits]\n";
+    std::cerr
+        << "usage: haru_session_probe <model-dir> [seed] [quantize-bits]\n";
     return 2;
   }
   try {
@@ -52,8 +54,7 @@ int main(int argc, char **argv) {
     const int ref_samples = 3 * 16000;
     std::vector<float> ref16k(ref_samples);
     for (int i = 0; i < ref_samples; ++i) {
-      ref16k[i] =
-          0.05f * std::sin(2.0f * 3.14159265f * 220.0f * i / 16000.0f);
+      ref16k[i] = 0.05f * std::sin(2.0f * 3.14159265f * 220.0f * i / 16000.0f);
     }
     const std::string wav =
         omni_common::WavBytes(omni_common::Pcm16Bytes(ref16k), 16000);
@@ -62,21 +63,20 @@ int main(int argc, char **argv) {
     haru::DuplexConfig session_config;
     session_config.speak_first = true;
     session_config.seed = seed;
-    session_config.temperature = 0.0f;  // greedy, deterministic
+    session_config.temperature = 0.0f; // greedy, deterministic
     haru::DuplexSession session(model, codec, head, tokenizer, session_config);
 
-    haru::Frame frame =
-        session.Start("You are a friendly voice assistant named Haru.",
-                      reference);
+    haru::Frame frame = session.Start(
+        "You are a friendly voice assistant named Haru.", reference);
     std::vector<float> all_audio = frame.audio;
     std::cout << "frame " << frame.index << " token " << frame.token
-              << " text \"" << frame.text << "\" audio_sum "
-              << [&] {
-                   double s = 0;
-                   for (float v : frame.audio) s += v;
-                   return s;
-                 }()
-              << "\n";
+              << " text \"" << frame.text << "\" audio_sum " <<
+        [&] {
+          double s = 0;
+          for (float v : frame.audio)
+            s += v;
+          return s;
+        }() << "\n";
 
     std::vector<float> silence(config.frame_samples, 0.0f);
     for (int i = 0; i < 3; ++i) {
