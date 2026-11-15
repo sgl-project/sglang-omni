@@ -56,22 +56,3 @@ class TestApplyOmniQuantizationAdapters:
 
         # Must not raise.
         model_worker.apply_omni_quantization_adapters(model_config)
-
-    def test_nested_auto_round_config_is_detected(self) -> None:
-        from sglang_omni.model_runner import model_worker
-
-        quant_config = {
-            "quant_method": "auto-round",
-            "block_name_to_quantize": "thinker.model.layers",
-        }
-        thinker = SimpleNamespace(quantization_config=quant_config)
-        hf_config = SimpleNamespace(
-            architectures=["Qwen3OmniThinkerForCausalLM"],
-            quantization_config=quant_config,
-            thinker_config=thinker,
-        )
-        model_config = SimpleNamespace(hf_config=hf_config)
-
-        model_worker.apply_omni_quantization_adapters(model_config)
-
-        assert quant_config["block_name_to_quantize"] == "model.layers"

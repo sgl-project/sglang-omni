@@ -28,7 +28,6 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 from sglang_omni.vendor.sglang.utils import is_flashinfer_available
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.fishaudio_s2_pro.model_runner import FishS2ProModelRunner
     from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
@@ -90,9 +89,11 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
         *,
         max_new_tokens: int,
         ras_window: int,
+        enable_async_decode: bool = False,
     ) -> None:
         self.max_new_tokens = max_new_tokens
         self.ras_window = ras_window
+        self.enable_async_decode = enable_async_decode
         self.adapter: S2ProTokenizerAdapter | None = None
         self.tokenizer: PreTrainedTokenizerFast | None = None
 
@@ -162,7 +163,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -195,6 +196,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
             codebook_size=codebook_size,
             ras_window=self.ras_window,
         )
+        model.async_decode_state_enabled = self.enable_async_decode
 
     def get_model_buffer_bs(self, model: S2ProSGLangTextModel) -> int:
         return fish_stages.resolve_s2pro_model_buffer_bs(model)
@@ -219,7 +221,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> FishS2ProModelRunner:
         model_runner_mod = importlib.import_module(
@@ -246,4 +248,8 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
     def extra_scheduler_kwargs(
         self,
     ) -> SchedulerExtras[request_builders.S2ProSGLangRequestData]:
-        return {"stream_output_builder": self.stream_output_builder}
+        return {
+            "stream_output_builder": self.stream_output_builder,
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_resolve_before_prefill": True,
+        }

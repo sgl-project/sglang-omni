@@ -15,6 +15,15 @@ class FinishReason(str, Enum):
     LENGTH = "length"
 
 
+def finish_reason_from_server(value: str | None) -> FinishReason:
+    try:
+        return FinishReason(value)
+    except ValueError:
+        # note (Yucheng Hu): absent from servers without the field; other
+        # values are engine states this metric does not classify.
+        return FinishReason.UNKNOWN
+
+
 @dataclass
 class RequestResult:
     request_id: str = ""

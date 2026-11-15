@@ -63,6 +63,40 @@ def make_chunk(sequence: int, samples: int = 4040, *, eos: bool = False) -> Time
     )
 
 
+def test_pool_capacity_follows_session_reservation_budget() -> None:
+    runner = FakeRunner()
+    max_pcm_bytes, max_history_tokens, max_text_bytes = 8, 16, 8
+    reservation = (
+        runner.streaming_state_budget_bytes
+        + max_pcm_bytes
+        + 96 * max_history_tokens
+        + 12 * max_text_bytes
+    )
+    engine = NemotronBatchEngine(
+        runner,
+        max_batch_size=8,
+        max_batch_wait_ms=0,
+        max_pending_tasks=8,
+        max_open_sessions=4,
+        max_state_bytes=2 * reservation,
+        max_pcm_bytes=max_pcm_bytes,
+        max_history_tokens=max_history_tokens,
+        max_text_bytes=max_text_bytes,
+    )
+    try:
+        assert runner.encoder_state_pool.capacity_slots == 2
+        identities = [SessionIdentity(str(index)) for index in range(3)]
+        for identity in identities[:2]:
+            engine.open(identity, OmniRequest(None)).result(5)
+        with pytest.raises(RuntimeError, match="reservation exhausted"):
+            engine.open(identities[2], OmniRequest(None)).result(5)
+        engine.close(identities[0]).result(5)
+        engine.open(identities[2], OmniRequest(None)).result(5)
+        assert len(runner.encoder_state_pool.active_slots) == 2
+    finally:
+        engine.shutdown()
+
+
 def payload_for(
     identity: SessionIdentity,
     operation: Literal["open", "append", "close"],
@@ -186,6 +220,8 @@ def test_empty_stream_and_exact_window_eos_do_not_repeat_inference() -> None:
             assert isinstance(first, AppendResult) and isinstance(final, AppendResult)
             assert final.is_final
             assert len(runner.batches) == before_eos
+            assert not runner.encoder_state_pool.active_slots
+            assert engine.usage(identity).slots["cache_bytes"] == 0
             with pytest.raises(ValueError, match="ended"):
                 engine.append(
                     identity, make_chunk(2), payload, threading.Event()
@@ -254,6 +290,7 @@ def test_prefix_failure_and_inflight_cancel_leave_other_lane_healthy(
             second[0].result(5)
         assert second[1].result(5).full_text == "word more"
         assert identities[0] not in engine.states
+        assert len(runner.encoder_state_pool.active_slots) == 1
         monkeypatch.setattr(runner, "run_streaming_batch", original)
         engine.close(identities[1]).result(5)
         for identity in identities:
@@ -278,10 +315,12 @@ def test_prefix_failure_and_inflight_cancel_leave_other_lane_healthy(
         ]
         assert entered.wait(5)
         cancelled.set()
+        assert len(runner.encoder_state_pool.active_slots) == 2
         proceed.set()
         with pytest.raises(RuntimeError, match="closed|cancelled"):
             futures[0].result(5)
         assert futures[1].result(5).full_text == "word"
+        assert len(runner.encoder_state_pool.active_slots) == 1
     finally:
         proceed.set()
         engine.shutdown()
@@ -324,6 +363,8 @@ def test_shutdown_releases_waiting_tickets_before_forward_returns(
     proceed.set()
     engine.shutdown()
     assert not engine.thread.is_alive() and not engine.tasks and not engine.states
+    assert not runner.encoder_state_pool.active_slots
+    assert runner.encoder_state_pool.nbytes == 0
 
 
 def test_budget_failure_and_decode_limit_do_not_accumulate_pcm() -> None:
@@ -340,6 +381,7 @@ def test_budget_failure_and_decode_limit_do_not_accumulate_pcm() -> None:
             ).result(5)
         assert engine.usage(identity).slots["pcm_bytes"] == 0
         assert len(runner.batches) == 1
+        assert not runner.encoder_state_pool.active_slots
         result = engine.append(
             identity, make_chunk(10, 0, eos=True), payload, threading.Event()
         ).result(5)
@@ -351,6 +393,7 @@ def test_budget_failure_and_decode_limit_do_not_accumulate_pcm() -> None:
                 other, make_chunk(0, 5000), payload, threading.Event()
             ).result(5)
         assert other not in engine.states
+        assert not runner.encoder_state_pool.active_slots
     finally:
         engine.shutdown()
 
@@ -467,3 +510,5 @@ def test_fatal_owner_error_settles_every_future(
     finally:
         engine.shutdown()
     assert not engine.tasks and not engine.thread.is_alive()
+    assert not runner.encoder_state_pool.active_slots
+    assert runner.encoder_state_pool.nbytes == 0

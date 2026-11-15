@@ -162,6 +162,7 @@ def register_translations(app: FastAPI) -> None:
 
         try:
             result = await speech_to_text.complete_speech_to_text_request(
+                request,
                 client,
                 gen_req,
                 request_id=request_id,
@@ -184,6 +185,7 @@ def register_translations(app: FastAPI) -> None:
                 architectures=getattr(app.state, "architectures", None),
                 duration_s=duration_s,
                 response_formats=TRANSLATION_RESPONSE_FORMATS,
+                finish_reason=result.finish_reason,
             )
         except HTTPException as exc:
             return http_exception_response(exc, param=None)

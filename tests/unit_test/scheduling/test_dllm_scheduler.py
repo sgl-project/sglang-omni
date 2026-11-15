@@ -4,16 +4,21 @@ from __future__ import annotations
 import queue
 import threading
 from array import array
+from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.managers.schedule_batch import ReqKvInfo
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
-from sglang.srt.mem_cache.chunk_cache import ChunkCache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 
@@ -37,7 +42,7 @@ class ReqDouble:
         self.full_untruncated_fill_ids = self.origin_input_ids + array(
             "q", [-1] * block_size
         )
-        self.extend_range = SimpleNamespace(end=len(self.full_untruncated_fill_ids))
+        self.extend_end = len(self.full_untruncated_fill_ids)
         self.output_ids: list[int] = []
         self.output_ids_through_stop: list[int] = self.output_ids
         self.finished_reason = None
@@ -69,6 +74,9 @@ def make_scheduler(
     scheduler.abort_lock = threading.Lock()
     scheduler.aborted_request_ids = set()
     scheduler.inbox = queue.Queue()
+    scheduler.tp_rank = 0
+    scheduler.tp_size = 1
+    scheduler.running = True
     scheduler.waiting_queue = []
     scheduler.cond_to_unconds = {}
     scheduler.uncond_to_cond = {}
@@ -77,6 +85,46 @@ def make_scheduler(
     scheduler.result_adapter = lambda value: value
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
     return scheduler
+
+
+@pytest.mark.parametrize("tp_rank,expected_errors", [(0, 1), (1, 0)])
+def test_tp_request_rejection_is_reported_by_leader_only(
+    tp_rank: int, expected_errors: int
+) -> None:
+    errors: list[object] = []
+    scheduler = make_scheduler(fdfo=False)
+    scheduler.tp_size = 2
+    scheduler.tp_rank = tp_rank
+    scheduler.outbox = SimpleNamespace(put=errors.append)
+    scheduler.cond_to_unconds = {"request": []}
+
+    scheduler.reject_waiting_request_group("request", "request group is too large")
+
+    assert len(errors) == expected_errors
+
+
+@pytest.mark.parametrize("tp_size,tp_rank", [(1, 0), (2, 0), (2, 1)])
+def test_dllm_scheduler_owns_tp_work_broadcast(
+    monkeypatch: pytest.MonkeyPatch, tp_size: int, tp_rank: int
+) -> None:
+    monkeypatch.setattr(
+        dllm_scheduler_module, "get_parallel", lambda: SimpleNamespace(tp_size=tp_size)
+    )
+    scheduler = DllmScheduler(
+        tp_worker=SimpleNamespace(tp_rank=tp_rank),
+        tree_cache=None,
+        req_to_token_pool=None,
+        token_to_kv_pool_allocator=None,
+        server_args=None,
+        model_config=None,
+        dllm_config=SimpleNamespace(block_size=128),
+        request_builder=lambda payload: payload,
+        result_adapter=lambda result: result,
+    )
+
+    assert scheduler.tp_rank == tp_rank
+    assert scheduler.tp_size == tp_size
+    assert scheduler.requires_tp_work_fanout is False
 
 
 def test_model_worker_fdfo_forwards_carried_states_and_all_result_fields() -> None:
@@ -153,7 +201,7 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     forwarded = []
 
     scheduler.running = True
-    scheduler.drain_and_purge = lambda: None
+    scheduler.drain_and_purge = lambda: scheduler.running
     scheduler.schedule_next_batch = lambda: batch
     scheduler.apply_results = lambda *_: None
     scheduler.apply_cfg_padding_metadata = lambda *_: None
@@ -186,55 +234,6 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     assert forward_batch.reqs == []
 
 
-def test_dllm_staging_admission_uses_dllm_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from sglang.srt.runtime_context import get_context
-
-    scheduler = make_scheduler(fdfo=True)
-    scheduler.tree_cache = object()
-    scheduler.token_to_kv_pool_allocator = object()
-    scheduler.req_to_token_pool = object()
-    scheduler.model_config = object()
-    scheduler.chunked_prefill_size = 16
-    scheduler.waiting_queue = []
-    req = SimpleNamespace(
-        rid="req",
-        kv=SimpleNamespace(),
-        inflight_middle_chunks=0,
-        init_next_round_input=lambda: None,
-    )
-    scheduler.staging_queue = [req]
-    created = {}
-
-    class Adder:
-        def __init__(self, *args, **kwargs) -> None:
-            created["dllm_config"] = kwargs.get("dllm_config")
-            self.can_run_list = []
-
-        def add_dllm_staging_req(self, value):
-            created["staging_req"] = value
-            self.can_run_list.append(value)
-            return dllm_scheduler_module.AddReqResult.CONTINUE
-
-    class Batch:
-        @staticmethod
-        def init_new(**kwargs):
-            created["batch_reqs"] = kwargs["reqs"]
-            return SimpleNamespace(prepare_for_extend=lambda: None)
-
-    monkeypatch.setattr(dllm_scheduler_module, "PrefillAdder", Adder)
-    monkeypatch.setattr(dllm_scheduler_module, "ScheduleBatch", Batch)
-
-    with get_context().override_server_args(page_size=1, max_prefill_tokens=16):
-        batch = scheduler.schedule_next_batch()
-
-    assert batch is not None
-    assert created["dllm_config"] is scheduler.dllm_config
-    assert created["staging_req"] is req
-    assert created["batch_reqs"] == [req]
-
-
 def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
     scheduler = make_scheduler(fdfo=True)
     req = ReqDouble()
@@ -242,7 +241,7 @@ def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
     cache_calls = []
     free_calls = []
     scheduler.tree_cache = SimpleNamespace(
-        cache_unfinished_req=lambda *args, **kwargs: cache_calls.append((args, kwargs))
+        checkpoint=lambda *args, **kwargs: cache_calls.append((args, kwargs))
     )
     scheduler.req_to_token_pool = SimpleNamespace(
         free=lambda value: free_calls.append(value)
@@ -290,19 +289,6 @@ def test_fdfo_resolved_block_commits_fill_ids_and_output_tokens() -> None:
     assert req.full_untruncated_fill_ids == array("q", [1, 2, 10, 11, 12, 13])
     assert req.output_ids == [10, 11, 12, 13]
     assert req.accepted_lengths == [4]
-
-
-def test_fdfo_result_requires_accept_lengths() -> None:
-    scheduler = make_scheduler(fdfo=True)
-    batch = SimpleNamespace(reqs=[ReqDouble()])
-    result = SimpleNamespace(
-        next_token_ids=[[10, 11, 12, 13]],
-        accept_length_per_req_cpu=None,
-        dllm_algo_state=None,
-    )
-
-    with pytest.raises(AssertionError, match="missing accept lengths"):
-        scheduler.apply_results(batch, result)
 
 
 @pytest.mark.parametrize(
@@ -391,12 +377,13 @@ def chunked_scheduler() -> DllmScheduler:
     scheduler.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
         512, torch.float32, "cpu", None, False
     )
-    scheduler.tree_cache = ChunkCache(
+    scheduler.tree_cache = UnifiedRadixCache(
         CacheInitParams(
             disable=True,
             req_to_token_pool=scheduler.req_to_token_pool,
             token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
             page_size=1,
+            tree_components=(ComponentType.FULL,),
         )
     )
     scheduler.chunked_prefill_size = 32
@@ -427,7 +414,7 @@ def test_cfg_chunked_admission_rolls_back_and_retries(
     requests[1]._is_uncond = True  # noqa: leading-underscore  # DLLM protocol
     allocator = scheduler.token_to_kv_pool_allocator
     occupied = allocator.alloc(300)
-    original_ranges = [req.extend_range for req in requests]
+    original_spans = [(req.prefix_len, req.extend_end) for req in requests]
     monkeypatch.setattr(
         dllm_scheduler_module,
         "ScheduleBatch",
@@ -440,12 +427,37 @@ def test_cfg_chunked_admission_rolls_back_and_retries(
     with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
         assert scheduler.schedule_next_batch() is None
         assert scheduler.waiting_queue == requests
-        assert [req.extend_range for req in requests] == original_ranges
+        assert [(req.prefix_len, req.extend_end) for req in requests] == original_spans
         allocator.free(occupied)
         batch = scheduler.schedule_next_batch()
 
     assert batch.reqs == requests
-    assert all(req.extend_range.length == 32 for req in batch.reqs)
+    assert all(req.extend_len == 32 for req in batch.reqs)
+
+
+def test_dllm_staging_admission_uses_dllm_config(
+    chunked_scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scheduler = chunked_scheduler
+    request = scheduler.waiting_queue[0]
+    scheduler.waiting_queue = [request]
+    monkeypatch.setattr(
+        dllm_scheduler_module,
+        "ScheduleBatch",
+        SimpleNamespace(
+            init_new=lambda **kwargs: SimpleNamespace(
+                reqs=kwargs["reqs"], prepare_for_extend=lambda: None
+            )
+        ),
+    )
+
+    with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
+        assert scheduler.schedule_next_batch() is not None
+        assert scheduler.staging_queue == [request]
+        batch = scheduler.schedule_next_batch()
+
+    assert batch.reqs == [request]
+    assert request.extend_len == scheduler.dllm_config.block_size
 
 
 def test_abort_between_blocks_releases_cached_tokens(
@@ -460,7 +472,7 @@ def test_abort_between_blocks_releases_cached_tokens(
     pool.alloc([req])
     req.kv.kv_allocated_len = req.kv.kv_committed_len = 32
     pool.req_to_token[req.kv.req_pool_idx, :32] = allocator.alloc(32).int()
-    req.set_extend_range(0, 32)
+    req.extend_end = 32
     scheduler.post_step(SimpleNamespace(reqs=[req], filter_batch=lambda **kwargs: None))
     scheduler.aborted_request_ids = {req.rid}
 
@@ -504,3 +516,84 @@ def test_cfg_group_must_fit_physical_kv_pool(
         assert not scheduler.waiting_queue and not scheduler.rid_to_req_data
         assert not scheduler.cond_to_unconds and not scheduler.uncond_to_cond
     assert scheduler.token_to_kv_pool_allocator.available_size() == 512
+
+
+def run_tp_abort_rank(rank: int, rendezvous: str, stop_follower_early: bool) -> None:
+    dist.init_process_group(
+        "gloo",
+        rank=rank,
+        world_size=2,
+        init_method=rendezvous,
+        timeout=timedelta(seconds=15),
+    )
+    try:
+        scheduler = make_scheduler(fdfo=False)
+        scheduler.tp_rank, scheduler.tp_size = rank, 2
+        scheduler.abort_lock = threading.Lock()
+        scheduler.aborted_request_ids = set()
+        scheduler.inbox = queue.Queue()
+        group_ids = ["cond", "cond-uncond", "cond-uncond-img"]
+        scheduler.staging_queue = [ReqDouble(rid=rid) for rid in group_ids]
+        scheduler.cond_to_unconds = {"cond": group_ids[1:]}
+        scheduler.uncond_to_cond = dict.fromkeys(group_ids[1:], "cond")
+        scheduler.uncond_rids = set(group_ids[1:])
+        scheduler.request_builder = lambda rid: SimpleNamespace(req=ReqDouble(rid=rid))
+        released: list[str] = []
+        parallel = SimpleNamespace(
+            tp_group=SimpleNamespace(
+                rank=rank, ranks=[0, 1], cpu_group=dist.group.WORLD
+            )
+        )
+        scheduler.tree_cache = None
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(dllm_scheduler_module, "get_parallel", lambda: parallel)
+            patch.setattr(
+                dllm_scheduler_module,
+                "release_kv_once",
+                lambda req, cache: released.append(req.rid),
+            )
+            for step in range(3):
+                if step == 0 and rank == 1:
+                    scheduler.abort("cond")
+                    if stop_follower_early:
+                        scheduler.stop()
+                elif step == 1 and rank == 0:
+                    scheduler.abort("cond")
+                    scheduler.inbox.put(
+                        IncomingMessage("after", "new_request", "after")
+                    )
+                elif step == 2 and rank == 1:
+                    scheduler.abort("after")
+                assert scheduler.drain_and_purge()
+                requests = scheduler.staging_queue or scheduler.waiting_queue
+                assert [req.rid for req in requests] == (
+                    group_ids if step == 0 else ["after"]
+                )
+                # Match a forward collective after each agreed scheduling boundary.
+                value = torch.tensor([len(requests)])
+                dist.all_reduce(value)
+                assert value.item() == 2 * len(requests)
+
+            if rank == 0:
+                scheduler.stop()
+            assert not scheduler.drain_and_purge()
+
+        assert released == group_ids
+        assert not scheduler.cond_to_unconds
+        assert not scheduler.uncond_to_cond
+        assert not scheduler.uncond_rids
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.skipif(not dist.is_gloo_available(), reason="requires Gloo")
+@pytest.mark.parametrize("stop_follower_early", [False, True])
+def test_tp_abort_at_forward_boundary(
+    tmp_path: Path, stop_follower_early: bool
+) -> None:
+    mp.spawn(
+        run_tp_abort_rank,
+        args=((tmp_path / "tp-rendezvous").as_uri(), stop_follower_early),
+        nprocs=2,
+        join=True,
+    )

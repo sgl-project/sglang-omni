@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Session lifecycle and the private hook executor for Nemotron ASR."""
+"""Session lifecycle for Nemotron ASR."""
 
 from __future__ import annotations
 
 import asyncio
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 from sglang_omni.models.nemotron3_5_asr.batch_engine import NemotronBatchEngine
 from sglang_omni.models.nemotron3_5_asr.streaming import AppendResult
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
+from sglang_omni.proto.streams import RUNNING_TEXT, TEXT
 from sglang_omni.scheduling.session import (
     SessionContext,
     SessionHooks,
@@ -38,11 +38,11 @@ class NemotronSessionHooks(SessionHooks):
             elif result.text or result.is_final:
                 context.emit(
                     TimedChunk(
-                        modality="text",
+                        modality=TEXT,
                         t_start_ms=chunk.t_start_ms,
                         duration_ms=chunk.duration_ms,
                         seq=chunk.seq,
-                        format="text",
+                        format=RUNNING_TEXT,
                         eos=result.is_final,
                         payload={
                             "text": result.text,
@@ -126,11 +126,6 @@ class NemotronSessionScheduler(SessionScheduler):
                 self.has_started = True
                 self.running = True
         loop = asyncio.new_event_loop()
-        loop.set_default_executor(
-            ThreadPoolExecutor(
-                max_workers=self.max_concurrency + 1, thread_name_prefix="nemotron-hook"
-            )
-        )
         try:
             loop.run_until_complete(self.run_workers(loop))
         finally:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -26,8 +27,20 @@ SYSTEM_PROMPT = (
 )
 
 
+@dataclass
+class NemotronVoiceChatRequestData(SGLangARRequestData):
+    acoustic_frames: torch.Tensor | None = None
+    function_ids: list[int] = field(default_factory=list)
+    pending_stream_tokens: list[int] = field(default_factory=list)
+
+
 def ar_request(
-    payload: StagePayload, *, input_ids: list[int], max_new_tokens: int, vocab_size: int
+    payload: StagePayload,
+    *,
+    input_ids: list[int],
+    max_new_tokens: int,
+    vocab_size: int,
+    data_type: type[SGLangARRequestData] = SGLangARRequestData,
 ) -> SGLangARRequestData:
     # Greedy sampling keeps Thinker's sampled tokens equal to those sent to Talker.
     sampling_params = SamplingParams(
@@ -43,7 +56,7 @@ def ar_request(
         sampling_params=sampling_params,
         vocab_size=vocab_size,
     )
-    return SGLangARRequestData(
+    return data_type(
         req=req,
         input_ids=torch.tensor(input_ids, dtype=torch.long),
         stage_payload=payload,
@@ -58,7 +71,7 @@ def build_thinker_request(
     vocab_size: int,
     prompt_token_ids: list[int],
     pad_token_id: int,
-) -> SGLangARRequestData:
+) -> NemotronVoiceChatRequestData:
     """One request per utterance: the system prompt plus a position for the
     first acoustic frame, then one decode step per frame."""
     params = payload.request.params
@@ -70,20 +83,29 @@ def build_thinker_request(
         )
     else:
         pass
-    num_frames = NemotronVoiceChatState.from_dict(payload.data).num_frames
+    state = NemotronVoiceChatState.from_dict(payload.data)
+    acoustic_frames = state.acoustic_frames
     opening = [*prompt_token_ids, pad_token_id]
     data = ar_request(
         payload,
         input_ids=opening,
-        max_new_tokens=num_frames,
+        max_new_tokens=state.num_frames,
         vocab_size=vocab_size,
+        data_type=NemotronVoiceChatRequestData,
     )
-    data.pending_stream_tokens = []
+    data.acoustic_frames = acoustic_frames.contiguous()
+    # The Thinker result only needs the frame count and generated text. Keeping
+    # the wire bytes here would duplicate the request-owned CPU and device tensors.
+    state.waveform = None
+    state.acoustic_frames = None
+    payload.data = state.to_dict()
     return data
 
 
-def apply_thinker_result(data: SGLangARRequestData) -> StagePayload:
+def apply_thinker_result(data: NemotronVoiceChatRequestData) -> StagePayload:
     payload = data.stage_payload
+    # Release the request-owned acoustic tensor before forwarding the result.
+    data.acoustic_frames = None
     state = NemotronVoiceChatState.from_dict(payload.data)
     state.text_ids = list(data.output_ids)
     payload.data = state.to_dict()
@@ -91,7 +113,7 @@ def apply_thinker_result(data: SGLangARRequestData) -> StagePayload:
 
 
 def thinker_stream_output_builder(
-    request_id: str, data: SGLangARRequestData, req_output
+    request_id: str, data: NemotronVoiceChatRequestData, req_output
 ) -> list[OutgoingMessage]:
     del req_output
     tokens = data.pending_stream_tokens

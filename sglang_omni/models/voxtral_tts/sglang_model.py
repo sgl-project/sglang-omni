@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import asdict
 
@@ -36,6 +37,8 @@ from sglang_omni.vendor.sglang.layers import (
     VocabParallelEmbedding,
     get_rope,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class VoxtralSGLangAttention(nn.Module):
@@ -206,9 +209,50 @@ class VoxtralSGLangTTSModel(nn.Module):
             device=embed_weight.device,
             dtype=embed_weight.dtype,
         )
+        self.acoustic_graphs: dict[
+            int, tuple[torch.cuda.CUDAGraph, torch.Tensor, torch.Tensor]
+        ] = {}
 
     def get_input_embeddings(self):
         return self.language_model.embed_tokens
+
+    @torch.no_grad()
+    def init_acoustic_graphs(self, batch_sizes: list[int]) -> None:
+        """Capture the acoustic transformer (semantic head plus the flow-matching
+        Euler loop) into one CUDA graph per decode batch-size bucket."""
+        weight = self.decode_input_embed_buffer
+        for bucket in sorted({int(bs) for bs in batch_sizes}):
+            hidden = torch.zeros(
+                bucket, self.hidden_size, device=weight.device, dtype=weight.dtype
+            )
+            warmup_stream = torch.cuda.Stream()
+            warmup_stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(warmup_stream):
+                for _ in range(2):
+                    self.acoustic_transformer(hidden)
+            torch.cuda.current_stream().wait_stream(warmup_stream)
+            torch.cuda.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                codes = self.acoustic_transformer(hidden)
+            self.acoustic_graphs[bucket] = (graph, hidden, codes)
+        logger.info(
+            f"Voxtral acoustic transformer CUDA graphs captured for bs={sorted(self.acoustic_graphs)}"
+        )
+
+    def run_acoustic_transformer(self, hidden: torch.Tensor) -> torch.Tensor:
+        batch_size = int(hidden.shape[0])
+        bucket = min(
+            (bs for bs in self.acoustic_graphs if bs >= batch_size), default=None
+        )
+        if bucket is None:
+            return self.acoustic_transformer(hidden)
+        else:
+            pass
+        graph, static_hidden, static_codes = self.acoustic_graphs[bucket]
+        static_hidden[:batch_size].copy_(hidden)
+        graph.replay()
+        return static_codes[:batch_size].clone()
 
     @torch.no_grad()
     def forward(

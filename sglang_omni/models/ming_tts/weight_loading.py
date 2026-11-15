@@ -9,9 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, TypedDict
 
 if TYPE_CHECKING:
-    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
-        AudioVAE,
-    )
+    from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
 else:
     pass
 

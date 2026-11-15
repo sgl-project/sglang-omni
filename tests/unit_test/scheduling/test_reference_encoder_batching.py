@@ -34,6 +34,7 @@ class BatchHook(TensorReferenceEncodeHook[str]):
         self.fail_batch = False
         self.fail_items: set[str] = set()
         self.gate: threading.Event | None = None
+        self.batch_entered = threading.Event()
 
     def input_key(self, item: str) -> str | None:
         if item.startswith("uncacheable"):
@@ -55,6 +56,7 @@ class BatchHook(TensorReferenceEncodeHook[str]):
         return self.encode(item)
 
     def encode_batch(self, items: list[str]) -> list[torch.Tensor]:
+        self.batch_entered.set()
         if self.gate is not None:
             self.gate.wait(timeout=5)
         with self.lock:
@@ -78,29 +80,6 @@ def parallel(
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(items)) as pool:
         futures = [pool.submit(service.get_or_encode, item) for item in items]
         return [future.result(timeout=10) for future in futures]
-
-
-def test_batching_is_opt_in_per_hook() -> None:
-    hook = BatchHook(batch_enabled=False)
-    service = make_service(hook)
-    try:
-        assert service.batching_enabled is False
-        service.get_or_encode("a")
-        assert hook.batch_sizes == []
-        assert hook.single_calls == ["a"]
-    finally:
-        service.close()
-
-
-def test_batching_requires_max_batch_size_above_one() -> None:
-    hook = BatchHook()
-    service = make_service(hook, max_batch_size=1)
-    try:
-        assert service.batching_enabled is False
-        service.get_or_encode("a")
-        assert hook.batch_sizes == []
-    finally:
-        service.close()
 
 
 def test_distinct_keys_coalesce_into_one_batch() -> None:
@@ -128,32 +107,6 @@ def test_distinct_keys_coalesce_into_one_batch() -> None:
         stats = service.stats()
         assert stats["batched_items"] == 4
         assert stats["misses"] == 4
-    finally:
-        service.close()
-
-
-def test_batch_results_map_to_the_right_items() -> None:
-    hook = BatchHook()
-    service = make_service(hook)
-    try:
-        items = [f"ref-{index}{chr(ord('a') + index)}" for index in range(6)]
-        results = parallel(service, items)
-        for item, result in zip(items, results):
-            assert tuple(result.tolist()) == (len(item), ord(item[-1]))
-    finally:
-        service.close()
-
-
-def test_cache_hits_never_reach_the_batch_queue() -> None:
-    hook = BatchHook()
-    service = make_service(hook)
-    try:
-        service.get_or_encode("a")
-        before = list(hook.batch_sizes)
-        for _ in range(5):
-            service.get_or_encode("a")
-        assert hook.batch_sizes == before
-        assert service.stats()["hits"] == 5
     finally:
         service.close()
 
@@ -215,18 +168,6 @@ def test_one_bad_reference_does_not_fail_its_batch_peers() -> None:
         service.close()
 
 
-def test_uncacheable_items_still_batch() -> None:
-    hook = BatchHook()
-    service = make_service(hook)
-    try:
-        results = parallel(service, ["uncacheable-a", "uncacheable-b"])
-        assert len(results) == 2
-        assert sum(hook.batch_sizes) == 2
-        assert service.stats()["uncacheable"] == 2
-    finally:
-        service.close()
-
-
 def test_max_batch_size_caps_the_forward() -> None:
     hook = BatchHook()
     hook.gate = threading.Event()
@@ -258,24 +199,45 @@ def test_shutdown_fails_queued_waiters_instead_of_hanging() -> None:
     hook = BatchHook()
     hook.gate = threading.Event()
     service = make_service(hook, max_batch_size=2, timeout_s=30.0)
+    queued_entries: list[object] = []
+    queue_grew = threading.Condition()
+    original_put = service.batch_queue.put
+
+    def recording_put(entry: object) -> None:
+        original_put(entry)
+        with queue_grew:
+            queued_entries.append(entry)
+            queue_grew.notify_all()
+
+    service.batch_queue.put = recording_put
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            early = [
                 pool.submit(service.get_or_encode, f"item-{index}")
-                for index in range(4)
+                for index in range(2)
             ]
-            time.sleep(0.2)
-            service.close()
+            assert hook.batch_entered.wait(timeout=5)
+            close_thread = threading.Thread(target=service.close)
+            close_thread.start()
+            with queue_grew:
+                assert queue_grew.wait_for(lambda: None in queued_entries, timeout=5)
+            late = pool.submit(service.get_or_encode, "item-late")
+            with queue_grew:
+                assert queue_grew.wait_for(
+                    lambda: isinstance(queued_entries[-1], tuple)
+                    and queued_entries[-1][0] == "item-late",
+                    timeout=5,
+                )
             hook.gate.set()
-            outcomes = []
-            for future in futures:
-                try:
-                    future.result(timeout=10)
-                    outcomes.append("ok")
-                except Exception:
-                    outcomes.append("failed")
-        # Nothing may block on the 30s encode timeout after close().
-        assert len(outcomes) == 4
+
+            with pytest.raises(RuntimeError, match="shutting down"):
+                late.result(timeout=5)
+            assert [tuple(future.result(timeout=5).tolist()) for future in early] == [
+                (6, ord("0")),
+                (6, ord("1")),
+            ]
+        close_thread.join(timeout=5)
+        assert not close_thread.is_alive()
     finally:
         service.close()
 

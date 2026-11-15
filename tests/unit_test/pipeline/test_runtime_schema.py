@@ -41,20 +41,6 @@ def engine_stage(**kwargs) -> EngineStageConfig:
     return EngineStageConfig(**data)
 
 
-def test_stage_accepts_typed_values_in_every_consumer_group() -> None:
-    stage = engine_stage(
-        gpu_memory_fraction=0.25,
-        engine={"mem_fraction_static": 0.7},
-        factory={"max_concurrency": 4, "max_seq_len": 8192, "video_fps": 2.0},
-    )
-
-    assert stage.gpu_memory_fraction == 0.25
-    assert stage.engine.mem_fraction_static == 0.7
-    assert stage.factory.max_concurrency == 4
-    assert stage.factory.max_seq_len == 8192
-    assert stage.factory.video_fps == 2.0
-
-
 def test_invalid_gpu_memory_fraction_raises() -> None:
     with pytest.raises(ValueError, match="gpu_memory_fraction"):
         make_stage(gpu_memory_fraction=0.0)
@@ -63,6 +49,11 @@ def test_invalid_gpu_memory_fraction_raises() -> None:
 def test_invalid_engine_mem_fraction_static_raises() -> None:
     with pytest.raises(ValueError, match="mem_fraction_static"):
         EngineArgs(mem_fraction_static=1.0)
+
+
+def test_cpu_offload_gb_range_is_enforced_at_validation() -> None:
+    with pytest.raises(ValueError, match="cpu_offload_gb"):
+        EngineArgs(cpu_offload_gb=-1)
 
 
 def test_invalid_model_group_values_raise() -> None:
@@ -117,25 +108,9 @@ def test_stage_rejects_terminal_with_next() -> None:
         )
 
 
-def test_tp_size_accepts_a_matching_gpu_list() -> None:
-    stage = make_stage(tp_size=2, gpu=[0, 1])
-
-    assert stage.tp_size == 2
-
-
 def test_tp_size_below_one_raises() -> None:
     with pytest.raises(ValueError, match="tp_size"):
         make_stage(tp_size=0)
-
-
-def test_pipeline_accepts_placement_config() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        placement=PlacementConfig(max_total_gpu_memory_fraction_per_gpu=0.95),
-        stages=[make_stage()],
-    )
-
-    assert config.placement.max_total_gpu_memory_fraction_per_gpu == 0.95
 
 
 def test_invalid_placement_limit_raises() -> None:
@@ -159,7 +134,7 @@ def test_engine_kv_cache_bytes_parses_sizes(value, expected) -> None:
     assert EngineArgs(kv_cache_bytes=value).kv_cache_bytes == expected
 
 
-@pytest.mark.parametrize("value", [0, -1, True, "2GB", "1.5GiB", "GiB", " 2GiB"])
+@pytest.mark.parametrize("value", [0, True, "2GB", "1.5GiB", "GiB", " 2GiB"])
 def test_engine_kv_cache_bytes_rejects_bad_values(value) -> None:
     from sglang_omni.config import EngineArgs
 

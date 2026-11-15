@@ -82,7 +82,7 @@ def test_native_decoder_rejects_padded_or_aliased_rows(slots, lengths, valid, er
 
 
 def test_repository_codec_native_pool_keeps_compact_slots_isolated() -> None:
-    from sglang_omni.models.moss_tts_local.streaming_vocoder import CodecStreamSession
+    from sglang_omni.models.moss_tts.codec_session import CodecStreamSession
 
     session = CodecStreamSession(tiny_repository_vocoder(), stream_slots=4, n_vq=1)
     first, second, third = [session.acquire() for _ in range(3)]

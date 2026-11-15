@@ -15,6 +15,8 @@ The released checkpoints use:
 | [`tencent/AuK`](https://huggingface.co/tencent/AuK) | Euler, NFE=32, CFG=2.0, sway=-1.0 |
 | [`tencent/AuK-Flash`](https://huggingface.co/tencent/AuK-Flash) | Released four-step time grid, CFG=0. Factory `nfe` / `cfg_strength` / `sway_sampling_coef` are ignored |
 
+Both checkpoints use Qwen2.5-Omni-3B weights under the [Qwen Research License](https://huggingface.co/Qwen/Qwen2.5-Omni-3B/blob/f75b40e3da2003cdd6e1829b1f420ca70797c34e/LICENSE): research and evaluation only; commercial use requires a separate license. The source-code licenses do not grant commercial rights to those weights. Built with Qwen.
+
 ## Prerequisites
 
 Follow [Installation](../get_started/installation.md), then run from the repository root:
@@ -27,7 +29,40 @@ python -m sglang_omni.cli serve --model-path tencent/AuK --port 8000
 python -m sglang_omni.cli serve --model-path tencent/AuK-Flash --port 8000
 ```
 
-For Intel GPUs, follow the [AuK XPU recipe](../get_started/installation_xpu.md#auk-speech-generation-and-editing-single-xpu).
+For Intel GPUs, follow the [AuK XPU recipe](../other_platforms/installation_xpu.md#auk-speech-generation-and-editing-single-xpu).
+
+## Apple Silicon
+
+AuK and AuK-Flash run on the standalone native MLX server. Build it, then point it at local copies of the published `tencent/AuK-Flash` (or `tencent/AuK`) and `Qwen/Qwen2.5-Omni-3B` repositories:
+
+```bash
+sglang_omni_mlx/native/scripts/build_runtime.sh build/auk
+MLX_ENABLE_TF32=0 build/auk/bin/auk_server \
+  --model-path /models/AuK-Flash \
+  --text-encoder-path /models/Qwen2.5-Omni-3B --port 8000
+```
+
+Use the AuK checkpoint instead for the base model. The server reads both directories as published: `config.yaml`, `auk_flash.safetensors` or `auk_base.safetensors` and `vae.safetensors` from the AuK checkpoint, and the Thinker text and audio tensors with the tokenizer from Qwen2.5-Omni-3B. No conversion step or Python is needed.
+
+The server supports `/v1/audio/speech`, answered with a WAV or PCM file, and `/generate`, answered with JSON holding a base64 WAV. Both follow the speech API the other native TTS servers share: one request runs at a time, `--max-queued-requests` more (2 by default) may wait and the rest get 503, and a request not finished within `--request-timeout-s` seconds (600 by default) gets 504. A `model` field is checked only against a name chosen with `--model-name`; another name gets 404. Reference audio is a base64 `data:` URL holding a WAV file (8 to 32-bit PCM or 32 or 64-bit float), its channels averaged. Client disconnects cancel synthesis at the next computation boundary. Keep both directions of the connection open until the response finishes; a TCP half-close is treated as cancellation. `--max-seconds` sets the duration cap, up to 30 seconds. `--cache-limit-gb` caps MLX's reusable buffer cache in GiB (default: 1); set it to 0 to disable caching. It applies during loading and synthesis and does not cap total model memory. The server clears it whenever no request is running or waiting.
+
+The speech-generation example below works with either server. For cloning or editing on the native server, embed the WAV in `ref_audio` instead of using the HTTP URLs shown in the Torch examples. Native serving does not support structured `references`, remote audio fetching, streaming, or quantized weights. It keeps the model loaded until shutdown and is not integrated into the Voxt app.
+
+BF16 is the default matrix precision; `--dtype float32` selects FP32. Text residuals, hidden-state fusion, rotary positions, VAE computation and Euler integration stay in FP32. Use `MLX_ENABLE_TF32=0` for FP32 comparisons. Sampling follows each checkpoint's released recipe.
+
+For a local Torch MPS comparison, use the ordinary Omni server with each stage's `max_batch_size` set to 1 and DiT CUDA graphs, compilation, and fused Q/K normalization disabled. Run the two servers separately and send both the same Seed-TTS requests with the shared benchmark:
+
+```bash
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --model tencent/AuK-Flash --meta zhaochenyang20/seed-tts-eval-arrow \
+  --base-url http://127.0.0.1:8000 --use-existing-server --generate-only \
+  --inline-ref-audio --server-pid "$SERVER_PID" \
+  --output-dir results/native-flash
+```
+
+The AuK profile sends one request at a time after one warmup request, with `seed=1234`. `--inline-ref-audio` sends each reference WAV as a data URI, which the native server requires. `--server-pid` writes `memory.json`, the physical footprint of the server's whole process tree sampled every 250 ms. Start a fresh server for each independent trial. The two backends use their own random generators, so equal seeds do not imply equal noise or waveforms.
+
+Native AuK model checks run locally, outside Mac CI. Use the shared [TTS evaluation tools](../developer_reference/tts_bench.md) for ASR scoring of generated audio.
 
 ## Speech Generation
 

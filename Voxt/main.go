@@ -1,0 +1,168 @@
+// VoxtNew is a voice input app for macOS on local models only (speech
+// recognition on sglang-omni's native MLX servers, language models in a
+// process of their own): press a shortcut to transcribe what you say into
+// any text field, to
+// translate speech or the selection, or to rewrite the selection (or write
+// new text) from a spoken instruction, with per-app scene rules. The
+// window is MyGo native UI in Go; a small Swift helper (voxtnew-helper)
+// records the microphone, watches the keyboard and reads browser URLs.
+//
+// Package main is the UI (views and their state); the domain lives in
+// internal/ (see docs/architecture.md). main only wires them together:
+// each step is a function in the file of the area that owns it.
+package main
+
+import (
+	"log"
+	"os"
+	"path/filepath"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/updater"
+	"github.com/egoist/mygo/plugins/updater/native"
+
+	// MyGo's own strings (a text field's menu, a dialog's buttons) in
+	// Chinese, when the app shows it (showLanguage).
+	_ "github.com/egoist/mygo/locales/zh-Hans"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/announce"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+)
+
+func main() {
+	// `Voxt history …` (history_cli.go) only talks to the running app: no
+	// window, no data, no lock.
+	if len(os.Args) > 1 && os.Args[1] == "history" {
+		os.Exit(runHistoryCLI(os.Args[2:]))
+	}
+	// `Voxt transcribe FILE` (transcribe_cli.go) too: the running app
+	// recognises what it sends.
+	if len(os.Args) > 1 && os.Args[1] == "transcribe" {
+		os.Exit(runTranscribeCLI(os.Args[2:]))
+	}
+	// The languages VoxtNew is written in, of which MyGo shows one
+	// (showLanguage, settings_locale.go).
+	mygo.App.SetLanguages(i18n.Supported()...)
+	// The update check of -tags updatecheck builds (update_check.go) runs
+	// instead of the app: no window, no data, no lock.
+	if out := argAfter("--update-check"); out != "" && updateCheck != nil {
+		updateCheck(out)
+		return
+	}
+	// The overlay check (overlay_check.go) runs instead of the app: no
+	// data, no lock, no helper.
+	if dir := overlayCheckDir(); dir != "" {
+		runOverlayCheck(dir)
+		return
+	}
+	// The logs' screenshots of -tags logscheck builds (logs_check.go): a
+	// window of their own over a temporary library, no lock, no helper.
+	if dir := argAfter("--logs-check"); dir != "" && logsCheck != nil {
+		logsCheck(dir)
+		return
+	}
+	// The packaged app's smoke run (smoke.go, scripts/mac-regress.sh): its
+	// own data, no window, no lock.
+	if dir := argAfter("--smoke"); dir != "" {
+		os.Exit(runSmoke(dir))
+	}
+	// Dev builds are "VoxtNew Dev"; share data with the installed app.
+	if err := nameApp(); err != nil {
+		log.Fatal(err)
+	}
+	// One VoxtNew at a time (one library, one set of global shortcuts);
+	// a second launch shows the first one's window.
+	if !mygo.App.RequestSingleInstanceLock() {
+		return
+	}
+	// Updates (updates.go): the update window in native UI, in the
+	// language VoxtNew shows (App.Locale), checking once a day; it
+	// installs only when the user says so, unless they turn on
+	// Settings → About → Install updates automatically.
+	mygo.Use(native.New(updater.Options{}))
+
+	home, err := mygo.App.Path(mygo.PathUserData)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// The data folder may have moved (Settings → Storage); a move or an
+	// erase asked for finishes here, before the library opens.
+	dataDir, err := datadir.Resolve(home) // internal/datadir
+	if err != nil {
+		showFatal(err)
+		return
+	}
+	resources, _ := mygo.App.Path(mygo.PathResources)
+	logDir, _ := mygo.App.Path(mygo.PathLogs)
+	cacheDir, _ := mygo.App.Path(mygo.PathCache)
+
+	// Wiring: one call per area, each defined in the file of that area.
+	lib, err := openLibrary(dataDir) // library.go
+	if err != nil {
+		showFatal(err) // shell.go: explains, then quits
+		return
+	}
+	h := newHelperHost(resources, logDir)         // helperlink.go
+	a := newApp(lib, h)                           // app.go
+	a.dataHome = home                             // settings_storage.go
+	a.openIcons(cacheDir)                         // appicons.go
+	a.omniCache = filepath.Join(cacheDir, "omni") // models_omni.go: Whisper's folders
+	a.muteJournal = outputJournal(home, cacheDir) // mute_link.go
+	a.connectShell(logDir)                        // shell.go
+	a.connectHelper()                             // helperlink.go
+	// A release without an update feed (2.0.x) checks GitHub's releases
+	// (updates_github.go); a development build has no updater: no Check
+	// for Updates…, and About says so.
+	if mygo.Updater.HasFeed() {
+		a.upd = pluginUpdates{}
+	} else if v := mygo.App.Version(); checksReleases(mygo.IsDev(), v) {
+		a.upd = newReleaseUpdates(a.settings, releasesURL, v, a.checkReleasesNow)
+	}
+	a.bundleStale = h.stale
+	a.connectUpdates()                    // updates.go
+	a.keepReleaseCard(mygo.App.Version()) // updates_github.go
+	a.startFamily()                       // family.go: the manifest, the other ActNow apps, the first start's migration
+	// Out of the Dock from launch: an app that starts in the Dock and
+	// turns accessory once launched may keep its Dock icon (#3918).
+	a.applyDock() // tray.go
+
+	mygo.App.WhenReady(func() {
+		a.openWindow()           // shell.go
+		a.applyBeta()            // updates.go: betas or not, before the first check
+		a.startHelper()          // helperlink.go
+		a.openTray()             // tray.go: the menu bar icon, close to the menu bar
+		a.applyDock()            // tray.go: in the Dock or not
+		a.connectWindowLife()    // tray.go
+		a.watchBundle()          // updates.go: an update installed while it runs
+		a.watchReleases()        // updates_github.go: the daily check without a feed
+		a.expireRecordings()     // history_retry.go: recordings kept for a retry, past their time
+		a.openHistoryAccess()    // history_access.go: the socket, when the setting is on
+		a.openTranscribeSocket() // transcribe_socket.go: `Voxt transcribe`
+		a.announceURL = announce.URL
+		a.checkAnnouncements() // announcements.go
+		mygo.App.OnSecondInstance(func([]string, string) { a.post(a.showMainWindow) })
+	})
+	mygo.App.OnQuit(func() {
+		a.quit()
+		lib.close()
+	})
+	if err := mygo.App.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// nameApp names the app Voxt (the update window, the single-instance
+// lock) and keeps its data, logs and cache in the VoxtNew folders that
+// MyGo named after the app before 2.0.0, where testers' libraries are.
+func nameApp() error {
+	mygo.App.SetName("VoxtNew")
+	for _, p := range []mygo.PathName{mygo.PathUserData, mygo.PathLogs, mygo.PathCache} {
+		dir, err := mygo.App.Path(p)
+		if err != nil {
+			return err
+		}
+		mygo.App.SetPath(p, dir)
+	}
+	mygo.App.SetName("Voxt")
+	return nil
+}

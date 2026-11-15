@@ -23,13 +23,14 @@ from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
-from sglang.srt.mem_cache.common import release_kv_cache
+from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.runtime_context import get_schedule
+from sglang.srt.runtime_context import get_parallel, get_schedule
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -59,7 +60,7 @@ class DllmForwardBatch(ForwardBatch):
 
 def release_kv_once(req: Req, tree_cache: BasePrefixCache) -> None:
     if req.kv.holds_kv:
-        release_kv_cache(req, tree_cache)
+        release_kv_cache(req, tree_cache, checkpoint=True)
     else:
         pass
 
@@ -108,6 +109,11 @@ class DllmScheduler:
         self.waiting_queue: list[DllmRequest] = []
         self.staging_queue: list[DllmRequest] = []
 
+        self.tp_rank = tp_worker.tp_rank
+        self.tp_size = get_parallel().tp_size
+        self.requires_tp_work_fanout = False
+
+        # CFG tracking: cond_rid <-> uncond_rid(s)
         self.cond_to_unconds: dict[str, list[str]] = {}
         self.uncond_to_cond: dict[str, str] = {}
         self.uncond_rids: set[str] = set()
@@ -130,9 +136,21 @@ class DllmScheduler:
         with self.abort_lock:
             self.aborted_request_ids.add(request_id)
 
+    def emit_request_error(self, request_id: str, error: object) -> None:
+        """Report a request failure once while every TP rank cleans up locally."""
+        if self.tp_size == 1 or self.tp_rank == 0:
+            self.outbox.put(
+                OutgoingMessage(
+                    request_id=request_id,
+                    type="error",
+                    data=error,
+                )
+            )
+        else:
+            pass
+
     def _event_loop(self) -> None:
-        while self.running:
-            self.drain_and_purge()
+        while self.drain_and_purge():
             batch = self.schedule_next_batch()
 
             if batch is None:
@@ -157,7 +175,7 @@ class DllmScheduler:
             self.apply_results(batch, batch_result)
             self.post_step(batch)
 
-    def drain_and_purge(self) -> None:
+    def drain_and_purge(self) -> bool:
         with self.abort_lock:
             aborted = self.aborted_request_ids
             self.aborted_request_ids = set()
@@ -167,6 +185,23 @@ class DllmScheduler:
                 messages.append(self.inbox.get_nowait())
             except _queue_mod.Empty:
                 break
+        running = self.running
+        if self.tp_size > 1:
+            # note (Anmuliar): All ranks must cancel and stop at the same forward boundary.
+            group = get_parallel().tp_group
+            running, aborted, messages = broadcast_pyobj(
+                [running, aborted, messages] if self.tp_rank == 0 else [],
+                group.rank,
+                group.cpu_group,
+                src=group.ranks[0],
+            )
+        else:
+            pass
+        if not running:
+            return False
+        else:
+            pass
+        # Aborting any member of a CFG group must purge the whole group.
         aborted_groups: set[str] = set()
         for rid in aborted:
             cond_rid = self.uncond_to_cond.get(rid, rid)
@@ -187,11 +222,7 @@ class DllmScheduler:
                     logger.exception(
                         f"DllmScheduler: request builder failed for {msg.request_id}"
                     )
-                    self.outbox.put(
-                        OutgoingMessage(
-                            request_id=msg.request_id, type="error", data=exc
-                        )
-                    )
+                    self.emit_request_error(msg.request_id, exc)
                     continue
                 req = req_data.req
                 self.rid_to_req_data[req.rid] = req_data
@@ -268,6 +299,8 @@ class DllmScheduler:
             self.uncond_rids.discard(rid)
             self.orphaned_uncond_rids.discard(rid)
 
+        return True
+
     def create_uncond_companion(
         self,
         cond_req: DllmRequest,
@@ -341,13 +374,7 @@ class DllmScheduler:
             self.uncond_to_cond.pop(companion_rid, None)
             self.uncond_rids.discard(companion_rid)
             self.orphaned_uncond_rids.discard(companion_rid)
-        self.outbox.put(
-            OutgoingMessage(
-                request_id=cond_rid,
-                type="error",
-                data=error,
-            )
-        )
+        self.emit_request_error(cond_rid, error)
 
     def apply_cfg_padding_metadata(
         self,
@@ -513,7 +540,7 @@ class DllmScheduler:
         """Undo request and cache mutations from an incomplete group probe."""
         if not from_staging:
             for req in admitted_reqs:
-                self.tree_cache.dec_lock_ref(req.last_node)
+                self.tree_cache.unlock(req.lock)
         else:
             pass
         for req, state in request_snapshots:
@@ -573,12 +600,9 @@ class DllmScheduler:
         ready = scheduled_rids == expected_rids
         if ready and len(request_group) > 1:
             self.synchronize_cfg_phases(adder.can_run_list)
-            spans = {
-                (req.extend_range.start, req.extend_range.end)
-                for req in adder.can_run_list
-            }
+            spans = {(req.prefix_len, req.extend_end) for req in adder.can_run_list}
             if len(spans) != 1 or any(
-                req.extend_range.length != self.dllm_config.block_size
+                req.extend_len != self.dllm_config.block_size
                 for req in adder.can_run_list
             ):
                 ready = False
@@ -727,12 +751,12 @@ class DllmScheduler:
             # Commit real denoised tokens into the fill IDs used by the prefix
             # cache. Without this, the next round keys on the mask block.
             req.full_untruncated_fill_ids[
-                req.extend_range.end - new_tokens : req.extend_range.end
+                req.extend_end - new_tokens : req.extend_end
             ] = array("q", req_token_ids)
 
             if fdfo_mode:
                 len_input = len(req.origin_input_ids)
-                len_fill = req.extend_range.end
+                len_fill = req.extend_end
                 if len_fill <= len_input:
                     continue
                 else:
@@ -783,15 +807,15 @@ class DllmScheduler:
                     message_type = "result"
                 except Exception as exc:
                     logger.exception(f"DLLM result adapter failed for {req.rid}")
-                    result = str(exc)
-                    message_type = "error"
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=req.rid,
-                        type=message_type,
-                        data=result,
+                    self.emit_request_error(req.rid, str(exc))
+                else:
+                    self.outbox.put(
+                        OutgoingMessage(
+                            request_id=req.rid,
+                            type=message_type,
+                            data=result,
+                        )
                     )
-                )
             else:
                 pass
 
@@ -825,7 +849,7 @@ class DllmScheduler:
                 continue
             else:
                 pass
-            self.tree_cache.cache_unfinished_req(req, chunked=True)
+            checkpoint_kv_cache(req, self.tree_cache)
             # Keep the row until finish/abort so release_kv_cache owns both
             # cached tokens and the request slot throughout staging.
             new_staging.append(req)
@@ -834,4 +858,4 @@ class DllmScheduler:
         self.waiting_queue = [r for r in self.waiting_queue if r.rid not in orphaned]
         self.uncond_rids.difference_update(orphaned)
         self.orphaned_uncond_rids.clear()
-        batch.filter_batch(chunked_req_to_exclude=list(exclude))
+        batch.filter_batch(reqs_to_exclude=list(exclude))

@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.cuda import CudaDeviceMixin
 
-from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
+from sglang_omni.platforms.interface import (
+    JointRopeInplaceKernel,
+    OmniPlatform,
+    RMSNormKernel,
+)
 from sglang_omni.quantization import resolve_quant_config
 from sglang_omni.utils.misc import model_config_has_moe, normalize_quantization
 from sglang_omni.vendor.sglang.server_args import override_server_args
@@ -67,7 +71,20 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         spec: StageLaunchConfig,
         env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
-        if spec.tp_size <= 1:
+        if spec.allow_child_processes and spec.owned_gpu_ids:
+            # Native children inherit this, and host threads that touch an
+            # unpinned device stay on the stage's own GPUs.
+            from sglang_omni.utils.gpu_memory import narrow_visible_devices
+
+            source_env = env if env is not None else os.environ
+            return {
+                "CUDA_VISIBLE_DEVICES": narrow_visible_devices(
+                    source_env.get("CUDA_VISIBLE_DEVICES"),
+                    spec.owned_gpu_ids,
+                    "CUDA_VISIBLE_DEVICES",
+                )
+            }
+        elif spec.tp_size <= 1:
             return {}
         else:
             pass
@@ -96,6 +113,18 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
             "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
         }
+        if (
+            source_env.get(
+                "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS",
+                spec.env_defaults.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"),
+            )
+            == "false"
+        ):
+            # note (Anmuliar): symmetric memory needs consistent device ordinals across ranks.
+            env_updates.pop("CUDA_VISIBLE_DEVICES")
+            env_updates["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] = "false"
+        else:
+            pass
         # note (ratish): NVLS multicast binding is not available on every host,
         # and NCCL 2.29 fails communicator init instead of falling back. A
         # value from the shell or the stage configuration stands.
@@ -116,6 +145,11 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         from sgl_kernel import fused_qk_norm_rope
 
         return fused_qk_norm_rope
+
+    def get_rmsnorm(self) -> RMSNormKernel:
+        from sgl_kernel import rmsnorm
+
+        return rmsnorm
 
     def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
         from sglang.kernels.ops.attention.rope import apply_rope_inplace

@@ -13,12 +13,14 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
-#include "moss_transcriber.h"
+#include "common/audio.h"
+#include "moss/moss_transcriber.h"
 #include "nlohmann/json.hpp"
 
 int main(int argc, char **argv) {
   std::string model_path;
+  std::string draft_model_path;
+  int draft_quantization_bits = 0;
   moss::MossOptions options;
   std::vector<std::string> files;
   for (int i = 1; i < argc; ++i) {
@@ -33,6 +35,10 @@ int main(int argc, char **argv) {
     };
     if (argument == "--model-path") {
       model_path = value();
+    } else if (argument == "--draft-model-path") {
+      draft_model_path = value();
+    } else if (argument == "--draft-bits") {
+      draft_quantization_bits = std::stoi(value());
     } else if (argument == "--prompt") {
       options.prompt = value();
     } else if (argument == "--max-new-tokens") {
@@ -48,8 +54,18 @@ int main(int argc, char **argv) {
       files.push_back(argument);
     }
   }
+  if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
+      draft_quantization_bits != 6 && draft_quantization_bits != 8) {
+    throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
+  } else if (draft_quantization_bits != 0 && draft_model_path.empty()) {
+    throw std::invalid_argument("--draft-bits needs --draft-model-path");
+  } else if (options.max_new_tokens.value_or(0) < 0) {
+    throw std::invalid_argument("max_new_tokens must not be negative");
+  } else {
+  }
   const auto load_started = std::chrono::steady_clock::now();
-  const moss::MossTranscriber transcriber(model_path);
+  const moss::MossTranscriber transcriber(model_path, draft_model_path,
+                                          draft_quantization_bits);
   std::cerr << "loaded in "
             << std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                              load_started)
@@ -62,7 +78,7 @@ int main(int argc, char **argv) {
     bytes << stream.rdbuf();
     const auto started = std::chrono::steady_clock::now();
     const auto result = transcriber.Transcribe(
-        qwen3_asr::DecodeWav(bytes.str()), options, cancel);
+        omni_common::DecodeWav(bytes.str()), options, cancel);
     const nlohmann::ordered_json line = {
         {"file", file},
         {"text", result.text},
@@ -71,6 +87,7 @@ int main(int argc, char **argv) {
                          : nlohmann::ordered_json()},
         {"generated_token_count", result.generated_token_count},
         {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
+        {"verify_rounds", result.verify_round_count},
         {"segments", qwen3_asr::SpeakerSegmentsJson(result.segments)},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)

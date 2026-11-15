@@ -44,6 +44,33 @@ REFERENCE_FILES = {
         "19e5477dac9a9a1e11de126783a0b820b3ecb70db5e91181824fa944e1947977",
     ),
 }
+V10_REFERENCE_FILES = {
+    "asr": REFERENCE_FILES["asr"],
+    "evaluate": (
+        "v1_v1.5/evaluation/evaluate.py",
+        "ae362d718f80428a6fe73d8a87e9e3b8935e86008267f0b2e34d1cc7573f1d4e",
+    ),
+    "pause_handling": (
+        "v1_v1.5/evaluation/eval_pause_handling.py",
+        "1e86519b4f4543f2f667ce60b9bea2f6148a3bc4255bb20c1ea111b45e0adbb5",
+    ),
+    "smooth_turn_taking": (
+        "v1_v1.5/evaluation/eval_smooth_turn_taking.py",
+        "cb7d6b987cd415e1b71b6eea06e67ea8fdc77a1167107e5c0552105bac05b2df",
+    ),
+    "user_interruption": (
+        "v1_v1.5/evaluation/eval_user_interruption.py",
+        "e701c14579c1477577b262265cfff75b28ac2e057beee5ba82572afa2a35963a",
+    ),
+    "backchannel": (
+        "v1_v1.5/evaluation/eval_backchannel.py",
+        "36371e3efb4a25e6b5afe317d70c81ad8f8815b95ef025baa06b11c378ecd0d9",
+    ),
+    "backchannel_distribution": (
+        "v1_v1.5/evaluation/icc_gt_distribution.json",
+        "92bcd0ff27246aaa9a0136737b476afd456cd393f003944c3394c140e590f2a8",
+    ),
+}
 ASR_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v2"
 JUDGE_MODEL = "gpt-4o-2024-08-06"
 C_LABELS = ("C_RESPOND", "C_RESUME", "C_UNCERTAIN_HANDLING", "C_UNKNOWN")

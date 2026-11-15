@@ -315,6 +315,70 @@ def test_prepare_and_forward_clears_sidecar_before_cleanup_on_forward_error() ->
     assert get_omni_prefill_inputs(forward_batch) is None
 
 
+@pytest.mark.parametrize("retain_prefill_input_embeds", [True, False])
+def test_prepare_and_forward_keeps_the_composed_embeds_only_for_a_draft_that_reads_them(
+    retain_prefill_input_embeds: bool,
+) -> None:
+    """The sidecar is cleared at cleanup, so an EAGLE draft gets its own reference."""
+    runner = object.__new__(ModelRunner)
+    runner.retain_prefill_input_embeds = retain_prefill_input_embeds
+    forward_batch = prefill_forward_batch()
+    payload = OmniPrefillInputs(input_embeds=torch.zeros(1, 4))
+    runner.before_prefill = lambda *args: attach_omni_prefill_inputs(
+        forward_batch, payload
+    )
+    runner.custom_prefill_forward = lambda *args: SimpleNamespace(
+        logits_output=None, next_token_ids=torch.tensor([5])
+    )
+    runner.cleanup_prefill = lambda *args: None
+
+    runner.prepare_and_forward(
+        forward_batch,
+        SimpleNamespace(is_prefill_only=True),
+        [],
+        True,
+    )
+
+    assert get_omni_prefill_inputs(forward_batch) is None
+    assert runner.retained_prefill_input_embeds is (
+        payload.input_embeds if retain_prefill_input_embeds else None
+    )
+
+
+@pytest.mark.parametrize("runner_retains_itself", [False, True])
+def test_a_failed_prefill_keeps_no_composed_embeds(runner_retains_itself: bool) -> None:
+    """The target adapter releases the retained embeddings only from a returned
+    result, so a failed prefill keeps none, from the sidecar or set by the runner."""
+    runner = object.__new__(ModelRunner)
+    runner.retain_prefill_input_embeds = True
+    forward_batch = prefill_forward_batch()
+    payload = OmniPrefillInputs(input_embeds=torch.zeros(1, 4))
+    runner.before_prefill = lambda *args: attach_omni_prefill_inputs(
+        forward_batch, payload
+    )
+
+    def fail_forward(*args):
+        if runner_retains_itself:
+            runner.retained_prefill_input_embeds = payload.input_embeds
+        else:
+            pass
+        raise torch.OutOfMemoryError("CUDA out of memory")
+
+    runner.custom_prefill_forward = fail_forward
+    runner.cleanup_prefill = lambda *args: None
+
+    with pytest.raises(torch.OutOfMemoryError):
+        runner.prepare_and_forward(
+            forward_batch,
+            SimpleNamespace(is_prefill_only=True),
+            [],
+            True,
+        )
+
+    assert runner.retained_prefill_input_embeds is None
+    assert get_omni_prefill_inputs(forward_batch) is None
+
+
 def test_execute_isolates_scheduler_sampling_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

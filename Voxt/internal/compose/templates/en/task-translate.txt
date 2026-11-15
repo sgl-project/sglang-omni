@@ -1,0 +1,5 @@
+Task: translate the text into {{TARGET_LANGUAGE}}.
+- Translate all of it, short text too; parts already in {{TARGET_LANGUAGE}} stay as they are.
+- Keep the meaning, the tone and the level of formality; do not add, drop or explain anything.
+- Keep names, product names, code, commands, file paths, URLs, email addresses and numbers as written{{#if SELECTED}}, and keep the text's form: line breaks, lists, Markdown and spacing{{/if}}.
+- Write natural {{TARGET_LANGUAGE}}, with its own punctuation, as a native speaker would.

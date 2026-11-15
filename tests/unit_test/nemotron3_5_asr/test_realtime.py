@@ -41,7 +41,9 @@ def test_websocket_stage_final_drain_and_cleanup(
     completion, abort, endpoint = [
         f"ipc://{tmp_path}/{name}" for name in ("done", "abort", "asr")
     ]
-    coordinator = Coordinator(completion, abort, "asr", ["asr"])
+    coordinator = Coordinator(
+        completion, abort, "asr", ["asr"], session_route=lambda: ["asr"]
+    )
     client = Client(coordinator)
     pipeline_config = Nemotron3_5ASRPipelineConfig(model_path="nemotron-test")
     deployment_factory = import_string(pipeline_config.realtime_deployment_factory)

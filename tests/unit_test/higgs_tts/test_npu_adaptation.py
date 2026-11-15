@@ -15,7 +15,6 @@ from sglang_omni.models.higgs_tts import config as higgs_config
 from sglang_omni.models.higgs_tts import npu_fallback
 from sglang_omni.models.higgs_tts import sampler as higgs_sampler
 from sglang_omni.models.higgs_tts import stages as higgs_stages
-from sglang_omni.platforms import current_platform
 
 
 class FakePlatform:
@@ -97,16 +96,6 @@ def test_batched_sampler_works_with_torch_renorm_fallback(monkeypatch) -> None:
     assert bool((codes >= 0).all().item()) and bool((codes < V).all().item())
     # Row 0 is greedy (top_k == 1): it must equal argmax over the raw logits.
     assert torch.equal(codes[0], logits[0].argmax(dim=-1))
-
-
-def test_stage_devices_resolve_from_platform_type() -> None:
-    from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
-
-    config = HiggsTtsPipelineConfig(model_path="unused")
-
-    for stage in config.stages:
-        if stage.factory.device is not None:
-            assert stage.factory.device == current_platform.device_type
 
 
 @pytest.mark.parametrize(

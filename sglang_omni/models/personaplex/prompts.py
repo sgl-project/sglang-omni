@@ -152,6 +152,11 @@ def voices_dir(model_dir: str | Path) -> Path:
         return unpack_voices(archive, fallback)
 
 
+def packaged_voices(model_dir: str | Path) -> tuple[str, ...]:
+    """The names of the voices the checkpoint ships."""
+    return tuple(sorted(path.stem for path in voices_dir(model_dir).glob("*.pt")))
+
+
 def resolve_voice_path(model_dir: str | Path, voice: str) -> Path:
     """A voice is a file path, or the name of a packaged voice (NATF2)."""
     direct = Path(voice).expanduser()
@@ -236,6 +241,7 @@ __all__ = [
     "load_text_tokenizer",
     "load_voice_prompt",
     "normalize_loudness",
+    "packaged_voices",
     "pad_to_whole_frames",
     "resolve_voice_path",
     "tokenize_text_prompt",

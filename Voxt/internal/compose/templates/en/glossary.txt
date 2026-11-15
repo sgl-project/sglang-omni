@@ -1,0 +1,2 @@
+Glossary: write these terms exactly as below, also when the recognizer heard them differently.
+{{GLOSSARY}}

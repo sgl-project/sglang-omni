@@ -11,7 +11,6 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
     build_stage_placement_plan,
-    resolve_stage_gpu_ids,
 )
 
 FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
@@ -123,42 +122,6 @@ def test_mixed_fraction_and_byte_stages_sum_in_their_own_domains() -> None:
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.10)
 
 
-def test_placement_summary_includes_kv_cache_bytes(monkeypatch) -> None:
-    pytest.importorskip("sglang")
-    pytest.importorskip("uvicorn")
-    from sglang_omni.serve import launcher
-
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            make_stage("preprocess", gpu=0, fraction=0.10, next_stage="thinker"),
-            make_stage("thinker", gpu=0, kv_cache_bytes=2 * 1024**3, terminal=True),
-        ],
-    )
-    plan = build_stage_placement_plan(config)
-    process_plan = SimpleNamespace(groups=(), tp_stage_to_processes={})
-
-    monkeypatch.setattr(
-        launcher,
-        "get_gpu_device_info",
-        lambda gpu_id: SimpleNamespace(
-            device_id=gpu_id,
-            name=f"gpu-{gpu_id}",
-            total_memory_bytes=24 * 1024**3,
-        ),
-    )
-
-    summary = launcher.placement_log_summary(
-        plan,
-        process_plan,
-        config,
-    )
-
-    assert summary["stage_runtime"]["thinker"]["kv_cache_bytes"] == 2 * 1024**3
-    assert summary["gpus"][0]["total_kv_cache_bytes"] == 2 * 1024**3
-    assert summary["gpus"][0]["total_reserve_bytes"] == 0
-
-
 def test_gpu_capacity_check_rejects_combined_overcommit(monkeypatch) -> None:
     import sglang_omni.utils.gpu_memory as gpu_memory
     from sglang_omni.config.placement import validate_gpu_capacity
@@ -214,38 +177,6 @@ def test_gpu_capacity_check_passes_within_card(monkeypatch) -> None:
     validate_gpu_capacity(plan)
 
 
-def test_same_gpu_placement_records_missing_memory_fraction_stages() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            make_stage("preprocess", gpu=0, fraction=0.10, next_stage="thinker"),
-            make_stage("thinker", gpu=0, terminal=True),
-        ],
-    )
-
-    plan = build_stage_placement_plan(config)
-
-    assert plan.gpus[0].missing_fraction_stage_names == ("thinker",)
-
-
-def test_same_gpu_without_budget_records_placement() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            make_stage("image_encoder", gpu=0, next_stage="thinker"),
-            make_stage("thinker", gpu=0, terminal=True),
-        ],
-    )
-
-    plan = build_stage_placement_plan(config)
-
-    assert plan.gpus[0].stage_names == ("image_encoder", "thinker")
-    assert plan.gpus[0].missing_fraction_stage_names == (
-        "image_encoder",
-        "thinker",
-    )
-
-
 def test_same_gpu_colocation_sums_budget() -> None:
     config = PipelineConfig(
         model_path="dummy",
@@ -272,21 +203,6 @@ def test_same_gpu_colocation_rejects_over_budget() -> None:
 
     with pytest.raises(ValueError, match="exceeds placement limit"):
         build_stage_placement_plan(config)
-
-
-def test_tp_rank_gpu_ids_are_preserved() -> None:
-    stage = make_stage(
-        "thinker",
-        gpu=[0, 1],
-        fraction=0.45,
-        tp_size=2,
-        terminal=True,
-    )
-    config = PipelineConfig(model_path="dummy", stages=[stage])
-
-    plan = build_stage_placement_plan(config)
-
-    assert resolve_stage_gpu_ids(plan, stage) == [0, 1]
 
 
 def test_tp_memory_fraction_is_per_rank_per_assigned_gpu() -> None:

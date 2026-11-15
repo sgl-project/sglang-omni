@@ -9,6 +9,13 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+from sglang.srt.layers.attention.vision import (
+    VisionAttentionMetadata,
+    prepare_vision_attention_metadata,
+)
+from sglang.srt.model_executor.runner.base_cuda_graph_runner import freeze_gc
+
+from sglang_omni.models.qwen3_omni.components.packed_attention import PackedAttention
 
 logger = logging.getLogger(__name__)
 
@@ -25,63 +32,46 @@ class Captured:
     segment_slots: int
 
 
-_HOPPER = 9
-
-
-def packed_attention_backend(capability: tuple[int, int], *, is_hip: bool) -> str:
-    """FA3 on NVIDIA Hopper, Triton on every other supported device.
-
-    sglang's VisionAttention rule also picks FA4 on Blackwell. Omni validates
-    Hopper only, and Triton is the arm sglang itself uses on the other parts.
-    """
-    if is_hip:
-        # Note (zijiecode): HIP reports gfx950 as (9, 5), which the Hopper check
-        # would send to FA3; FA3 does not exist on HIP.
-        return "triton_attn"
-    else:
-        pass
-    major, _ = capability
-    return "fa3" if major == _HOPPER else "triton_attn"
-
-
-def resolve_packed_attention(device: torch.device) -> tuple[nn.Module, str]:
-    # Local import: only a process that requests the graphs loads sglang's kernels.
-    from sglang.srt.layers.attention import vision
-
-    backend = packed_attention_backend(
-        torch.cuda.get_device_capability(device),
-        is_hip=torch.version.hip is not None,
-    )
-    if backend == "fa3":
-        impl_class = vision.VisionFlash3Attention
-    else:
-        impl_class = vision.VisionTritonAttention
-    # The encoder process holds no sglang parallel state to read.
-    return impl_class(use_data_parallel=True), backend
+def stack_qkv_projection(attention: nn.Module) -> None:
+    """Give the attention one q, k and v projection; q_proj, k_proj and v_proj become views of it."""
+    projections = (attention.q_proj, attention.k_proj, attention.v_proj)
+    with torch.no_grad():
+        weight = torch.cat([projection.weight for projection in projections])
+        bias = torch.cat([projection.bias for projection in projections])
+    stacked_projection = nn.Linear(weight.shape[1], weight.shape[0], device="meta")
+    stacked_projection.weight = nn.Parameter(weight)
+    stacked_projection.bias = nn.Parameter(bias)
+    attention.qkv_proj = stacked_projection
+    start_row = 0
+    for projection in projections:
+        end_row = start_row + projection.out_features
+        projection.weight = nn.Parameter(weight[start_row:end_row])
+        projection.bias = nn.Parameter(bias[start_row:end_row])
+        start_row = end_row
 
 
 def packed_attention_forward(
     attention: nn.Module,
-    packed_attention: nn.Module,
+    packed_attention: PackedAttention,
     hidden_states: torch.Tensor,
-    cu_seqlens: torch.Tensor,
-    max_seqlen: int,
+    attention_metadata: VisionAttentionMetadata,
 ) -> torch.Tensor:
     seq_length, _ = hidden_states.size()
-    heads = attention.num_heads
-    query_states = attention.q_proj(hidden_states).reshape(seq_length, heads, -1)
-    key_states = attention.k_proj(hidden_states).reshape(seq_length, heads, -1)
-    value_states = attention.v_proj(hidden_states).reshape(seq_length, heads, -1)
-    # An int max_seqlen avoids the device-to-host max() that would break capture.
+    # note (ratish): the packed attention reads strided q, k and v, so one GEMM projects all three without copies.
+    query_states, key_states, value_states = (
+        attention.qkv_proj(hidden_states)
+        .reshape(seq_length, 3, attention.num_heads, -1)
+        .unbind(1)
+    )
     attn_output = packed_attention(
         query_states,
         key_states,
         value_states,
-        cu_seqlens,
+        attention_metadata.cu_seqlens,
         bsz=1,
         seq_len=seq_length,
         softmax_scale=attention.scaling,
-        max_seqlen=max_seqlen,
+        forward_metadata=attention_metadata,
     )
     return attention.out_proj(attn_output.reshape(seq_length, -1).contiguous())
 
@@ -89,10 +79,8 @@ def packed_attention_forward(
 class AudioLayerGraphRunner:
     """Replays the audio encoder's layer stack from a captured CUDA graph.
 
-    One instance owns one tower on one CUDA device. Replay is opt-in because
-    it runs the packed attention kernel sglang picks for the device where
-    serving otherwise runs sdpa: outputs agree to bf16 kernel noise, not
-    bitwise, so it needs the content gate rather than an equality check.
+    One instance owns one tower on one CUDA device and attends through the
+    encoder's packed attention.
     """
 
     def __init__(
@@ -101,6 +89,7 @@ class AudioLayerGraphRunner:
         *,
         device: torch.device,
         window: int,
+        packed_attention: PackedAttention,
         token_buckets: tuple[int, ...] = DEFAULT_TOKEN_BUCKETS,
         max_batch_rows: int = 32,
     ) -> None:
@@ -124,8 +113,7 @@ class AudioLayerGraphRunner:
         self.owner_pid = os.getpid()
         self.dtype = next(tower.parameters()).dtype
         self.hidden = tower.config.d_model
-        self.packed_attention: nn.Module | None = None
-        self.backend: str | None = None
+        self.packed_attention: PackedAttention = packed_attention
 
     @property
     def has_graphs(self) -> bool:
@@ -154,23 +142,11 @@ class AudioLayerGraphRunner:
         segments.extend([0] * (self.segment_slots(bucket) - len(segments)))
         return segments
 
-    def resolve_attention(self) -> None:
-        if self.packed_attention is not None or self.disabled_reason is not None:
-            return
-        else:
-            pass
-        try:
-            self.packed_attention, self.backend = resolve_packed_attention(self.device)
-        except Exception as exc:
-            # Like a failed capture: the encoder stays eager, the stage lives.
-            self.disabled_reason = f"packed attention unavailable: {exc}"
-            logger.warning(
-                "audio layer CUDA graphs unavailable: %s",
-                self.disabled_reason,
-                exc_info=True,
-            )
-
     def run_layers(self, hidden_states, cu_seqlens, max_seqlen: int):
+        # An int max_seqlen avoids the device-to-host max() that would break capture.
+        attention_metadata = prepare_vision_attention_metadata(
+            cu_seqlens, cu_seqlens.device, max_seqlen=max_seqlen
+        )
         for layer in self.tower.layers:
             residual = hidden_states
             hidden_states = layer.self_attn_layer_norm(hidden_states)
@@ -178,8 +154,7 @@ class AudioLayerGraphRunner:
                 layer.self_attn,
                 self.packed_attention,
                 hidden_states,
-                cu_seqlens,
-                max_seqlen,
+                attention_metadata,
             )
             hidden_states = residual + hidden_states
             residual = hidden_states
@@ -228,24 +203,21 @@ class AudioLayerGraphRunner:
         return Captured(graph, hidden_states, cu_seqlens, output, slots)
 
     def capture_all(self) -> None:
-        self.resolve_attention()
-        if self.disabled_reason is not None:
-            return
-        else:
-            pass
-        for bucket in self.token_buckets:
-            captured = self.capture(bucket)
-            if captured is None:
-                self.disabled_reason = f"capture failed at bucket {bucket}"
-                self.graphs.clear()
-                return
-            else:
-                pass
-            self.graphs[bucket] = captured
+        # note (ratish): a collection during capture can free what a reference cycle holds,
+        # a dead runner's graphs among them, and invalidate the capture.
+        with freeze_gc(enable_cudagraph_gc=False):
+            for bucket in self.token_buckets:
+                captured = self.capture(bucket)
+                if captured is None:
+                    self.disabled_reason = f"capture failed at bucket {bucket}"
+                    self.graphs.clear()
+                    return
+                else:
+                    pass
+                self.graphs[bucket] = captured
         logger.info(
-            "audio layer CUDA graphs captured for buckets %s with %s attention",
-            list(self.graphs),
-            self.backend,
+            f"audio layer CUDA graphs captured for buckets {list(self.graphs)} "
+            f"with {type(self.packed_attention).__name__}"
         )
 
     def select(self, tokens: int, segments: list[int]) -> int | None:

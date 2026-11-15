@@ -1,93 +1,31 @@
 from __future__ import annotations
 
 import torch
+from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
-from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceChatState
+from sglang_omni.models.nemotron_voicechat.request_builders import (
+    NemotronVoiceChatRequestData,
+)
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.types import SchedulerRequest
 
 
-class NemotronVoiceChatModelRunner(ModelRunner):
-    def before_prefill(self, forward_batch, schedule_batch, requests) -> None:
-        del schedule_batch
-        rows = [self.prefill_rows(request.data) for request in requests]
-        attach_omni_prefill_inputs(
-            forward_batch,
-            OmniPrefillInputs(
-                input_embeds=torch.cat(rows, dim=0),
-                input_embeds_are_projected=True,
-            ),
-        )
-
-    def before_decode(
-        self, forward_batch, schedule_batch, requests, *, is_lookahead: bool = False
-    ) -> None:
-        del forward_batch, schedule_batch, is_lookahead
-        buffer = self.model.fusion_buffer
-        batch = len(requests)
-        rows = [
-            self.decode_row(request.data, buffer.device, buffer.dtype)
-            for request in requests
-        ]
-        buffer[:batch] = torch.stack(rows, dim=0)
-        self.model.fusion_mask[:batch] = True
-
-    @staticmethod
-    def acoustic_frames(data) -> torch.Tensor:
-        return NemotronVoiceChatState.from_dict(data.stage_payload.data).acoustic_frames
-
-    def acoustic_row(self, data, index: int) -> torch.Tensor:
-        return self.acoustic_frames(data)[index]
-
-    def prefill_rows(self, data) -> torch.Tensor:
-        """The instruction rides the caller's audio channel, text and function
-        are padding, and the last position is the first acoustic frame."""
-        embeddings = self.model.llm.get_input_embeddings()
-        device = embeddings.weight.device
-        ids = data.input_ids.to(device)
-        row = self.acoustic_row(data, 0)
-        spoken = embeddings(ids[:-1])
-        heard = torch.cat(
-            [spoken, row.to(device=spoken.device, dtype=spoken.dtype).reshape(1, -1)],
-            dim=0,
-        )
-        # The last id the request carries is the padding one, and every
-        # position's text and function channels are that same padding.
-        pad = embeddings(torch.full_like(ids, int(ids[-1])))
-        fusion = self.model.fusion
-        return (
-            pad * fusion.text_weight
-            + heard * fusion.user_weight
-            + pad * fusion.function_weight
-        )
-
-    def decode_row(self, data, device, dtype) -> torch.Tensor:
-        output_ids = data.req.output_ids
-        frame_index = len(output_ids)
-        embeddings = self.model.llm.get_input_embeddings()
-        tokens = torch.tensor(
-            [output_ids[-1], data.extra_model_outputs["function_ids"][-1]],
-            dtype=torch.long,
-            device=embeddings.weight.device,
-        )
-        text, function = embeddings(tokens).to(device=device, dtype=dtype)
-        acoustic = self.acoustic_row(data, frame_index).to(device=device, dtype=dtype)
-        return self.model.fusion(acoustic, text, function)
-
+class VoiceChatModelRunner(ModelRunner):
     def record_function_ids(self, requests) -> None:
         sampled = self.model.function_ids[: len(requests)].tolist()
         for request, token in zip(requests, sampled):
-            request.data.extra_model_outputs.setdefault("function_ids", []).append(
-                token
-            )
+            request.data.function_ids.append(token)
 
     @staticmethod
     def record_stream_tokens(result, requests) -> None:
-        # Sampling has not happened yet in the post hooks; the thinker decodes
-        # greedily, so the argmax IS the token the sampler will record.
+        # note (Junnan Li): the post hooks run before sampling; the thinker decodes greedily, so the argmax is the sampled token.
         logits = result.logits_output.next_token_logits
         sampled = logits[: len(requests)].argmax(dim=-1).tolist()
         for request, token in zip(requests, sampled):
@@ -102,3 +40,133 @@ class NemotronVoiceChatModelRunner(ModelRunner):
         del forward_batch, schedule_batch
         self.record_function_ids(requests)
         self.record_stream_tokens(result, requests)
+
+
+class NemotronVoiceChatModelRunner(VoiceChatModelRunner):
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
+        super().__init__(tp_worker, output_processor)
+        token_id_buffer = self.model.fusion_token_ids
+        self.decode_token_ids_host = torch.empty(
+            token_id_buffer.shape, dtype=token_id_buffer.dtype
+        )
+
+    def device_acoustic_frames(
+        self, data: NemotronVoiceChatRequestData
+    ) -> torch.Tensor:
+        acoustic_frames = data.acoustic_frames
+        buffer = self.model.fusion_buffer
+        if (
+            acoustic_frames.device != buffer.device
+            or acoustic_frames.dtype != buffer.dtype
+        ):
+            acoustic_frames = acoustic_frames.to(
+                device=buffer.device, dtype=buffer.dtype, non_blocking=True
+            )
+            data.acoustic_frames = acoustic_frames
+        else:
+            pass
+        return acoustic_frames
+
+    def build_prefill_rows(self, requests: list[SchedulerRequest]) -> torch.Tensor:
+        channel_token_ids: list[list[int]] = []
+        acoustic_positions: list[int] = []
+        acoustic_rows: list[torch.Tensor] = []
+
+        for request in requests:
+            data = request.data
+            req = data.req
+            prompt_token_ids = [int(token_id) for token_id in req.origin_input_ids]
+            prompt_length = len(prompt_token_ids)
+            prefix_length = int(req.prefix_len)
+            extend_end = int(req.extend_end)
+            acoustic_frames = self.device_acoustic_frames(data)
+            pad_token_id = prompt_token_ids[-1]
+            for position in range(prefix_length, extend_end):
+                if position < prompt_length - 1:
+                    channel_token_ids.append(
+                        [prompt_token_ids[position], pad_token_id, pad_token_id]
+                    )
+                elif position == prompt_length - 1:
+                    channel_token_ids.append([pad_token_id, pad_token_id, pad_token_id])
+                    acoustic_positions.append(len(channel_token_ids) - 1)
+                    acoustic_rows.append(acoustic_frames[0])
+                else:
+                    generated_index = position - prompt_length
+                    channel_token_ids.append(
+                        [
+                            pad_token_id,
+                            int(req.output_ids[generated_index]),
+                            data.function_ids[generated_index],
+                        ]
+                    )
+                    acoustic_positions.append(len(channel_token_ids) - 1)
+                    acoustic_rows.append(acoustic_frames[generated_index + 1])
+
+        embedding = self.model.llm.get_input_embeddings()
+        packed_token_ids = torch.tensor(
+            channel_token_ids,
+            dtype=torch.long,
+            device=embedding.weight.device,
+        )
+        channel_embeddings = embedding(packed_token_ids)
+        if acoustic_rows:
+            acoustic_indices = torch.tensor(
+                acoustic_positions,
+                dtype=torch.long,
+                device=channel_embeddings.device,
+            )
+            channel_embeddings[acoustic_indices, 0] = torch.stack(acoustic_rows, dim=0)
+        else:
+            pass
+
+        return self.model.fusion(
+            channel_embeddings[:, 0], channel_embeddings[:, 1], channel_embeddings[:, 2]
+        )
+
+    def before_prefill(
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        del schedule_batch
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self.build_prefill_rows(requests),
+                input_embeds_are_projected=True,
+            ),
+        )
+
+    def before_decode(
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+        *,
+        is_lookahead: bool = False,
+    ) -> None:
+        del forward_batch, schedule_batch, is_lookahead
+        batch_size = len(requests)
+        host_token_ids = self.decode_token_ids_host
+        acoustic_rows: list[torch.Tensor] = []
+        for row_index, request in enumerate(requests):
+            data = request.data
+            req = data.req
+            frame_index = len(req.output_ids)
+            acoustic_frames = self.device_acoustic_frames(data)
+            host_token_ids[row_index, 0] = int(req.output_ids[-1])
+            host_token_ids[row_index, 1] = data.function_ids[-1]
+            acoustic_rows.append(acoustic_frames[frame_index])
+
+        model = self.model
+        device_token_ids = model.fusion_token_ids[:batch_size]
+        device_token_ids.copy_(host_token_ids[:batch_size])
+        token_embeddings = model.llm.get_input_embeddings()(device_token_ids)
+        model.fusion_buffer[:batch_size] = model.fusion(
+            torch.stack(acoustic_rows, dim=0),
+            token_embeddings[:, 0],
+            token_embeddings[:, 1],
+        )

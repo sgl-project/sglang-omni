@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="{{lang}}" dir="{{dir}}">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-{{nonce}}'">
+<title>{{title}}</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: {{background}};
+  --fg: #1d1d1f;
+  --muted: #6e6e73;
+  --panel: #fff;
+  --border: rgb(0 0 0 / 0.15);
+  --button: #fff;
+  --button-fg: #1d1d1f;
+  --accent: #007aff;
+  --track: rgb(0 0 0 / 0.1);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: {{darkBackground}};
+    --fg: #f5f5f7;
+    --muted: #98989d;
+    --panel: #141414;
+    --border: rgb(255 255 255 / 0.15);
+    --button: #5b5b5f;
+    --button-fg: #f5f5f7;
+    --accent: #0a84ff;
+    --track: rgb(255 255 255 / 0.12);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Cantarell, Ubuntu, system-ui, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+main {
+  height: 100%;
+  display: grid;
+  grid-template: "icon body" 1fr "foot foot" auto / 64px 1fr;
+  gap: 12px 18px;
+  padding: 18px 20px 20px;
+}
+main.noicon { grid-template-columns: 0 1fr; column-gap: 0; }
+#icon { grid-area: icon; width: 64px; height: 64px; }
+main.noicon #icon { display: none; }
+#body { grid-area: body; display: flex; flex-direction: column; min-height: 0; }
+main:not(.release) #body { align-self: start; }
+h1 { font-size: 13px; font-weight: 700; margin: 0 0 4px; }
+/* Texts that may fall back to English, and errors, take the direction of
+   their own words; release notes are in the language of the changelog. */
+h1, p, label { unicode-bidi: plaintext; }
+p { margin: 0; }
+#message { margin-bottom: 6px; }
+#detail {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+#bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; margin: 6px 0 4px; }
+#fill { height: 100%; width: 0; border-radius: 3px; background: var(--accent); transition: width 0.1s linear; }
+#bar.indeterminate #fill { width: 30%; transition: none; animation: slide 1.4s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(333%); } }
+#notes-box { flex: 1; display: flex; flex-direction: column; min-height: 0; margin-top: 6px; }
+h2 { font-size: 11px; font-weight: 700; margin: 0 0 4px; }
+#notes {
+  flex: 1;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: auto;
+}
+#notes > :first-child { margin-top: 0; }
+#notes > :last-child { margin-bottom: 0; }
+#notes h1, #notes h2, #notes h3, #notes h4, #notes h5, #notes h6 { font-size: 13px; font-weight: 700; margin: 12px 0 4px; }
+#notes h1 { font-size: 16px; }
+#notes h2 { font-size: 14px; }
+#notes p, #notes ul, #notes ol, #notes pre, #notes blockquote { margin: 0 0 8px; }
+#notes ul, #notes ol { padding-inline-start: 20px; }
+#notes li > ul, #notes li > ol { margin: 0; }
+#notes code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--track); border-radius: 3px; padding: 0 3px; }
+#notes pre { overflow: auto; }
+#notes pre code { display: block; padding: 6px 8px; }
+#notes blockquote { border-inline-start: 3px solid var(--border); padding-inline-start: 10px; color: var(--muted); margin-inline-start: 0; }
+#notes hr { border: 0; border-top: 1px solid var(--border); }
+#notes a { color: var(--accent); cursor: pointer; }
+label { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+input { margin: 0; accent-color: var(--accent); }
+footer { grid-area: foot; display: flex; gap: 10px; align-items: center; }
+footer div { display: flex; flex: none; gap: 10px; }
+footer .spacer { flex: 1; }
+button {
+  font: inherit;
+  white-space: nowrap;
+  min-width: 84px;
+  height: 24px;
+  padding: 0 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--button);
+  color: var(--button-fg);
+  box-shadow: 0 1px 1px rgb(0 0 0 / 0.08);
+}
+button.default { background: var(--accent); border-color: transparent; color: #fff; }
+button:active:not(:disabled) { filter: brightness(0.9); }
+button:disabled { opacity: 0.5; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main id="main">
+  <img id="icon" src="{{icon}}" alt="">
+  <section id="body">
+    <h1 id="title"></h1>
+    <p id="message"></p>
+    <div id="bar" role="progressbar"><div id="fill"></div></div>
+    <p id="detail"></p>
+    <div id="notes-box">
+      <h2>{{releaseNotes}}</h2>
+      <div id="notes" dir="auto"></div>
+    </div>
+    <label id="auto-box"><input type="checkbox" id="auto"> {{automaticDownloads}}</label>
+  </section>
+  <footer id="foot"><div id="aside"></div><span class="spacer"></span><div id="buttons"></div></footer>
+</main>
+<script nonce="{{nonce}}">
+const $ = (id) => document.getElementById(id);
+if (!$("icon").getAttribute("src")) $("main").classList.add("noicon");
+
+let view = null;
+let notes = null;
+
+const text = (el, s) => {
+  el.textContent = s || "";
+  el.hidden = !s;
+};
+
+function render(v) {
+  const prompt = !view || view.prompt !== v.prompt;
+  view = v;
+  $("main").classList.toggle("release", !!v.release);
+  $("title").textContent = v.title;
+  text($("message"), v.message);
+  text($("detail"), v.detail);
+  $("detail").title = v.detail || "";
+  $("bar").hidden = !v.bar;
+  const known = v.progress >= 0;
+  $("bar").classList.toggle("indeterminate", !known);
+  $("fill").style.width = known ? v.progress * 100 + "%" : "";
+  if (known) $("bar").setAttribute("aria-valuenow", Math.round(v.progress * 100));
+  else $("bar").removeAttribute("aria-valuenow");
+  $("notes-box").hidden = !v.notes;
+  if (v.notes !== notes) {
+    notes = v.notes;
+    $("notes").innerHTML = notes || ""; // rendered and escaped by Go
+  }
+  $("auto-box").hidden = !v.checkbox;
+  if (prompt) {
+    $("auto").checked = !!v.checked;
+    renderButtons(v.buttons);
+  }
+  fit();
+}
+
+// The window takes the width of the buttons, and status views the height
+// of their text, which depend on the language and the platform's fonts.
+let fitted = "";
+function fit() {
+  const main = getComputedStyle($("main"));
+  const aside = $("aside").offsetWidth;
+  const width = Math.ceil(
+    parseFloat(main.paddingLeft) + aside + (aside ? 40 : 0) + $("buttons").offsetWidth +
+    parseFloat(main.paddingRight),
+  );
+  const height = Math.ceil(
+    parseFloat(main.paddingTop) + Math.max($("icon").offsetHeight, $("body").offsetHeight) +
+    parseFloat(main.rowGap) + $("foot").offsetHeight + parseFloat(main.paddingBottom),
+  );
+  const key = [view.release, width, view.release ? 0 : height].join();
+  if (key !== fitted) {
+    fitted = key;
+    mygo.call("plugin:updater.Fit", width, height).catch(() => {});
+  }
+}
+addEventListener("resize", () => view && fit());
+
+function renderButtons(buttons) {
+  $("aside").replaceChildren();
+  $("buttons").replaceChildren();
+  for (const b of buttons) {
+    const el = document.createElement("button");
+    el.textContent = b.label;
+    el.disabled = !!b.disabled;
+    if (b.default) el.className = "default";
+    el.addEventListener("click", () => respond(b.action));
+    $(b.aside ? "aside" : "buttons").append(el);
+  }
+}
+
+// Only the first response to a prompt counts: the buttons wait for the
+// next view.
+let answered = null;
+function respond(action) {
+  if (answered === view.prompt) return;
+  answered = view.prompt;
+  for (const el of document.querySelectorAll("footer button")) el.disabled = true;
+  mygo.call("plugin:updater.Respond", view.prompt, action, $("auto").checked).catch(() => {});
+}
+
+addEventListener("keydown", (e) => {
+  if (!view || e.isComposing) return;
+  const pick = (want) => {
+    const b = view.buttons.find((b) => want(b) && !b.disabled);
+    if (b) {
+      e.preventDefault();
+      respond(b.action);
+    }
+  };
+  if (e.key === "Escape") pick((b) => b.cancel);
+  else if (e.key === "Enter" && !(document.activeElement instanceof HTMLButtonElement)) pick((b) => b.default);
+});
+
+addEventListener("contextmenu", (e) => {
+  if (!e.target.closest("#notes, #detail")) e.preventDefault();
+});
+
+render({{view}});
+mygo.call("plugin:updater.Watch", mygo.channel(render)).catch(() => {});
+</script>
+</body>
+</html>

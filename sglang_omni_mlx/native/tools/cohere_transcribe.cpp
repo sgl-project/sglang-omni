@@ -16,11 +16,11 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
-#include "cohere_transcriber.h"
-#include "form.h"
+#include "cohere/cohere_transcriber.h"
+#include "common/audio.h"
+#include "common/form.h"
 #include "nlohmann/json.hpp"
-#include "speech_segments.h"
+#include "silero_vad/speech_segments.h"
 
 int main(int argc, char **argv) {
   std::string model_path;
@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
     } else if (argument == "--language") {
       options.language = value();
     } else if (argument == "--use-punctuation") {
-      options.use_punctuation = qwen3_asr::FormFlag(value());
+      options.use_punctuation = omni_common::FormFlag(value());
     } else if (argument == "--max-new-tokens") {
       options.max_new_tokens = std::stoi(value());
     } else if (argument == "--temperature") {
@@ -101,7 +101,7 @@ int main(int argc, char **argv) {
     bytes << stream.rdbuf();
     const auto started = std::chrono::steady_clock::now();
     const auto result = transcriber.Transcribe(
-        qwen3_asr::DecodeWav(bytes.str()), options, cancel);
+        omni_common::DecodeWav(bytes.str()), options, cancel);
     const nlohmann::json line = {
         {"file", file},
         {"text", result.text},
@@ -115,6 +115,9 @@ int main(int argc, char **argv) {
                         .count()},
     };
     std::cout << line.dump() << std::endl;
+    // Note (Jiaxin Deng): as the server does between requests; buffers of one
+    // clip's sizes rarely fit the next, so the cache would grow without end.
+    mlx::core::clear_cache();
   }
   return 0;
 }

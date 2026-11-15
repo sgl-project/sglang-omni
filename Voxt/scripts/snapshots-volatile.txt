@@ -1,0 +1,5 @@
+# Snapshots allowed to differ a little from run to run (scripts/snapshots.sh,
+# internal/tools/snapcmp -volatile): a line each, a file name pattern
+# (path.Match), the largest difference allowed in any colour channel
+# (0-255), and why. None today: every snapshot is reproducible byte for
+# byte (snapshot_env_test.go). Add a line only with the reason.

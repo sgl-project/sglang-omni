@@ -67,10 +67,12 @@ class ReferenceBehavior(Protocol):
     ]: ...
 
 
-def verify_reference(source: Path) -> dict[str, Path]:
+def verify_reference(
+    source: Path, files: dict[str, tuple[str, str]] = REFERENCE_FILES
+) -> dict[str, Path]:
     """Refuse any checkout whose used files differ from the pinned revision."""
     paths = {}
-    for key, (relative_path, expected) in REFERENCE_FILES.items():
+    for key, (relative_path, expected) in files.items():
         path = source / relative_path
         actual = file_sha256(path)
         if actual != expected:
