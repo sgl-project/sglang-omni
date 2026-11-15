@@ -134,6 +134,7 @@ markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
     "tts_stage(name): select an in-file TTS benchmark CI stage",
     "accelerator: requires accelerator hardware",
+    "xpu_serving: serves a model on an Intel XPU (tests/test_ci/xpu_model)",
 ]
 
 [tool.setuptools.packages.find]
