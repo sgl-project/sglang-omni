@@ -11,7 +11,8 @@ from benchmarks.duplex.profiles import PROFILES, ProfileName
 from benchmarks.duplex.reference_capture import PROTOCOL_FORMAT, TraceFormat
 from sglang_omni.scheduling.session import NODE_STAGE_MAX_OPEN_SESSIONS
 
-EngineName = Literal["minicpmo", "qwen3-omni", "cascade"]
+EngineName = Literal["minicpmo", "qwen3-omni", "cascade", "haru"]
+Launcher = Literal["sglang-omni", "haru-native"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -27,6 +28,7 @@ class Engine:
     max_sessions: int
     sets_max_sessions: bool
     needs_aligner: bool
+    launcher: Launcher = "sglang-omni"
 
     @property
     def trace_format(self) -> TraceFormat:
@@ -96,5 +98,20 @@ ENGINES: dict[EngineName, Engine] = {
         max_sessions=NODE_STAGE_MAX_OPEN_SESSIONS,
         sets_max_sessions=False,
         needs_aligner=True,
+    ),
+    # note (haru): runs on Apple silicon through the standalone MLX server; its
+    # voice and character card come from HARU_REFERENCE_AUDIO and HARU_INSTRUCTIONS_FILE.
+    "haru": Engine(
+        name="haru",
+        model_id="higurashi-ai/Haru-4B",
+        model_revision=None,
+        record_profile="haru-native-mlx",
+        launch_config=None,
+        hf_model_ids=(),
+        server_gpu_count=1,
+        max_sessions=1,
+        sets_max_sessions=False,
+        needs_aligner=False,
+        launcher="haru-native",
     ),
 }

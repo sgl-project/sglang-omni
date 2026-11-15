@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "haru/haru_session.h"
 
+#include "haru/haru_quiet.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -102,6 +104,9 @@ mx::array DuplexSession::NextKey() {
 
 Frame DuplexSession::Start(const std::string &system_prompt,
                            const std::vector<float> &reference) {
+  // MLX prints generated Metal source on stdout while compiling a custom
+  // kernel; keep a supervised server's JSON stream and the tools clean.
+  const QuietStdout quiet;
   const auto &cfg = model_.config();
   const int dim = cfg.latent_dim;
 
@@ -222,6 +227,8 @@ Frame DuplexSession::Start(const std::string &system_prompt,
 }
 
 Frame DuplexSession::Step(const std::vector<float> &user_frame) {
+  // The codec compiles a kernel per frame shape on first use; see Start().
+  const QuietStdout quiet;
   const auto &cfg = model_.config();
   const mx::array user_audio = mx::array(
       user_frame.data(), {static_cast<int>(user_frame.size())}, mx::float32);
@@ -341,8 +348,11 @@ Frame DuplexSession::Emit(const mx::array &hidden) {
   const mx::array token = SampleToken(logits);
   mx::eval(token);
 
-  const mx::array noise =
-      mx::random::normal(mx::Shape{1, cfg.latent_dim}, mx::float32, NextKey());
+  // The head's weights are half precision; a float32 noise would promote every
+  // matmul of the velocity network to float32 and cost an order of magnitude.
+  const mx::array noise = mx::astype(
+      mx::random::normal(mx::Shape{1, cfg.latent_dim}, mx::float32, NextKey()),
+      model_.checkpoint().Weight("head.cond_proj.weight").dtype());
   const mx::array latent =
       model_.UnscaleLatents(head_.Sample(hlast, noise, config_.guidance_scale));
   mx::eval(latent);

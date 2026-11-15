@@ -74,6 +74,8 @@ class Settings:
     session_timeout_s: str
     v10_session_timeout_s: str
     run_name: str
+    reference_audio: Path | None = None
+    instructions_file: Path | None = None
 
     @property
     def fdb_source(self) -> Path:
@@ -107,6 +109,11 @@ class Settings:
             / PARAKEET_FILENAME.removesuffix(".nemo")
             / PARAKEET_FILENAME
         )
+
+    @property
+    def asr_device(self) -> str:
+        """The device the scoring ASR runs on; a Mac sets FDB_ASR_DEVICE=cpu."""
+        return env_text("FDB_ASR_DEVICE", "cuda")
 
     @property
     def judge_revision_file(self) -> Path:
@@ -203,6 +210,12 @@ def env_text(name: str, default: str) -> str:
 
 def env_path(name: str, default: Path) -> Path:
     return Path(env_text(name, str(default))).expanduser().absolute()
+
+
+def env_optional_path(name: str) -> Path | None:
+    """The path a variable names, or None when it is unset or empty."""
+    value = os.environ.get(name)
+    return Path(value).expanduser().absolute() if value else None
 
 
 def session_timeout(name: str, default: str) -> str:
@@ -351,6 +364,8 @@ def load_settings(run_name: str) -> Settings:
         session_timeout_s=session_timeout("SESSION_TIMEOUT_S", "90"),
         v10_session_timeout_s=session_timeout("V10_SESSION_TIMEOUT_S", "230"),
         run_name=run_name,
+        reference_audio=env_optional_path("HARU_REFERENCE_AUDIO"),
+        instructions_file=env_optional_path("HARU_INSTRUCTIONS_FILE"),
     )
 
 

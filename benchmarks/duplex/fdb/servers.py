@@ -43,10 +43,51 @@ JUDGE_SEEDS = [1, 2, 3]
 ALIGNER_PORT = 8010
 ALIGNER_MODEL_ID = "Qwen/Qwen3-ForcedAligner-0.6B"
 ALIGNER_SCRIPT = REPO_ROOT / "examples" / "streaming_cascade" / "alignment_worker.py"
+HARU_QUANTIZE_BITS = "8"
+HARU_INPUT_SAMPLE_RATE = 16000
+
+
+def haru_server_command(settings: Settings) -> list[str]:
+    """The native MLX server, always 8-bit: bf16 weights thrash the swap of a 16 GB Mac.
+
+    HARU_SERVER_BIN names the binary built from sglang_omni_mlx/native; the
+    server takes its sampling defaults from the command line, so the seed
+    comes from HARU_SERVER_SEED.
+    """
+    if settings.reference_audio is None or settings.instructions_file is None:
+        raise SystemExit(
+            "ERROR: ENGINE=haru needs HARU_REFERENCE_AUDIO (the voice WAV) and "
+            "HARU_INSTRUCTIONS_FILE (the character card text file)."
+        )
+    binary = os.environ.get("HARU_SERVER_BIN")
+    if not binary:
+        raise SystemExit(
+            "ERROR: ENGINE=haru needs HARU_SERVER_BIN (the haru_server binary "
+            "built from sglang_omni_mlx/native)."
+        )
+    return [
+        binary,
+        "--model-path",
+        str(settings.model_path),
+        "--quantize",
+        HARU_QUANTIZE_BITS,
+        "--seed",
+        os.environ.get("HARU_SERVER_SEED", "42"),
+        "--reference-audio",
+        str(settings.reference_audio),
+        "--instructions-file",
+        str(settings.instructions_file),
+        "--input-sample-rate",
+        str(HARU_INPUT_SAMPLE_RATE),
+        "--port",
+        str(settings.server_port),
+    ]
 
 
 def model_server_command(settings: Settings) -> list[str]:
-    if settings.engine.launch_config is None:
+    if settings.engine.launcher == "haru-native":
+        return haru_server_command(settings)
+    elif settings.engine.launch_config is None:
         model_arguments = [
             "--model-path",
             str(settings.model_path),
