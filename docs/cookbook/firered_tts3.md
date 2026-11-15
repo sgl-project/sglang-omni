@@ -25,7 +25,7 @@ One architecture, three checkpoints. The variant is detected from the checkpoint
 | Default CFG | 2.0 | 2.0 (tts) / 1.2 (design, edits) | 1.2 |
 | `max_patches` | 400 (~64 s) | 400 | 600 (~96 s) |
 | Default `flow_mode` | `compile_bf16` | `fp32` (see below) | `compile_bf16` |
-| Dual-stream decode form | no | no | opt-in via `extra_params.dual_stream` |
+| Dual-stream decode form | no | no | opt-in via `stage_params.preprocessing.dual_stream` |
 | Pipeline stages | preprocessing → reference_encode → talker → vocoder | same as Base | preprocessing → talker → vocoder (no reference_encode) |
 
 ## Prerequisites
@@ -173,7 +173,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output speaker.wav
 ```
 
-The dual-stream decode form interleaves text and latent feeds (2 text tokens per patch group) and emits each patch's audio immediately — the reference's low-latency streaming inference form. Opt in per request with `extra_params.dual_stream` (serving rejects it on non-speaker checkpoints), optionally with an `extra_params.style` prefix:
+The dual-stream decode form interleaves text and latent feeds (2 text tokens per patch group) and emits each patch's audio immediately — the reference's low-latency streaming inference form. Opt in per request with `stage_params.preprocessing.dual_stream` (serving rejects it on non-speaker checkpoints), optionally with a `stage_params.preprocessing.style` prefix:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -181,7 +181,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   -d '{
     "model": "FireRedTTS3-Speaker",
     "input": "欢迎使用点点语音合成系统，这是一段零样本音色克隆测试。",
-    "extra_params": {"dual_stream": true, "style": "轻松自然地讲述"},
+    "stage_params": {"preprocessing": {"dual_stream": true, "style": "轻松自然地讲述"}},
     "stream": true,
     "response_format": "pcm",
     "seed": 42
@@ -193,7 +193,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 
 ### Request Parameters
 
-Top-level fields (the endpoint drops unknown top-level keys silently — model knobs belong in `stage_params` / `extra_params`):
+Top-level fields (the endpoint drops unknown top-level keys silently — model knobs belong in `stage_params`):
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -236,7 +236,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-Speaker-only `extra_params` (validated at the serving layer):
+Speaker-only options under `stage_params.preprocessing` (validated at the serving layer):
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -244,6 +244,8 @@ Speaker-only `extra_params` (validated at the serving layer):
 | `style` | string | `null` | Style prefix for the dual-stream prompt; applies to the dual-stream form only |
 
 AcousticEdit composition knobs under `stage_params.preprocessing`: `acoustic_attribute` (`Speed` / `Pitch` / `Volume`) and `acoustic_value` (float). An explicit `instructions` string overrides composition entirely.
+
+The HTTP, batch, and WebSocket APIs use `stage_params` for model options. The offline SDK also retains `GenerateRequest.extra_params` for existing callers.
 
 ### Flow Execution Modes
 

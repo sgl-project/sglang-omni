@@ -15,88 +15,123 @@ from fastapi.testclient import TestClient
 import sglang_omni.serve.speech_service as speech_service
 from sglang_omni.client.client import Client
 from sglang_omni.models.firered_tts3.config import FireRedTTS3PipelineConfig
-from sglang_omni.models.firered_tts3.hf_config import FireRedTTS3Variant
+from sglang_omni.models.firered_tts3.hf_config import (
+    FireRedTTS3Config,
+    FireRedTTS3Variant,
+)
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.json import JsonValue
+from tests.unit_test.fixtures.firered_tts3_preprocessing import preprocess_payload
+
+REFERENCE_AUDIO = "data:audio/wav;base64," + base64.b64encode(b"RIFF").decode("ascii")
 
 
 @pytest.mark.parametrize(
-    "variant,extra_params,delivery",
+    "variant,overrides,parameter_path,delivery",
     [
-        ("base", {"dual_stream": True}, "single"),
-        ("speaker", {"dual_stream": "yes"}, "batch"),
-        ("speaker", {"style": 3}, "single"),
-        ("speaker", [1], "single"),
+        (
+            "base",
+            {"stage_params": {"preprocessing": {"dual_stream": True}}},
+            "stage_params.preprocessing.dual_stream",
+            "single",
+        ),
+        (
+            "speaker",
+            {"stage_params": {"preprocessing": {"dual_stream": "yes"}}},
+            "stage_params.preprocessing.dual_stream",
+            "batch",
+        ),
+        (
+            "speaker",
+            {"stage_params": {"preprocessing": {"style": 3}}},
+            "stage_params.preprocessing.style",
+            "websocket",
+        ),
+        (
+            "speaker",
+            {"stage_params": {"talker": {"n_timesteps": -1}}},
+            "stage_params.talker.n_timesteps",
+            "single",
+        ),
+        (
+            "speaker",
+            {"stage_params": {"talker": {"n_timesteps": []}}},
+            "stage_params.talker.n_timesteps",
+            "batch",
+        ),
+        (
+            "speaker",
+            {"stage_params": {"talker": {"inference_cfg": {}}}},
+            "stage_params.talker.inference_cfg",
+            "single",
+        ),
+        (
+            "speaker",
+            {"stage_params": {"talker": {"max_patches": 0}}},
+            "stage_params.talker.max_patches",
+            "single",
+        ),
+        (
+            "speaker",
+            {"stage_params": {"talker": {"min_patches": -1}}},
+            "stage_params.talker.min_patches",
+            "single",
+        ),
+        ("instruct", {"task_type": "CustomVoice"}, "task_type", "single"),
+        ("base", {"task_type": "VoiceDesign"}, "task_type", "single"),
+        ("speaker", {"task_type": "SemanticEdit"}, "task_type", "websocket"),
+        (
+            "instruct",
+            {"task_type": "VoiceDesign", "instructions": " "},
+            "instructions",
+            "batch",
+        ),
+        (
+            "instruct",
+            {"input": "", "task_type": "SemanticEdit"},
+            "instructions",
+            "single",
+        ),
+        (
+            "instruct",
+            {
+                "input": "",
+                "task_type": "SemanticEdit",
+                "instructions": "Replace a word.",
+            },
+            "ref_audio",
+            "single",
+        ),
+        ("instruct", {"input": "", "task_type": "AcousticEdit"}, "ref_audio", "batch"),
+        ("instruct", {}, "ref_audio", "single"),
+        ("instruct", {"ref_audio": REFERENCE_AUDIO}, "ref_text", "single"),
+        (
+            "base",
+            {"references": [{"vq_codes": [1], "text": "reference"}]},
+            "references",
+            "single",
+        ),
+        (
+            "instruct",
+            {"task_type": "AcousticEdit", "references": [{"vq_codes": [1]}]},
+            "references",
+            "single",
+        ),
     ],
 )
 def test_speech_parameters_rejected_before_generation(
     tmp_path: Path,
     variant: FireRedTTS3Variant,
-    extra_params: dict[str, JsonValue] | list[int],
-    delivery: Literal["single", "batch"],
-) -> None:
-    """Invalid model parameters must return 400 before any backend dispatch."""
-    pipeline = FireRedTTS3PipelineConfig(model_path=str(tmp_path), variant=variant)
-    backend = mock.create_autospec(Client, instance=True)
-    client = TestClient(
-        create_app(
-            backend,
-            model_name="tts",
-            speech_request_validator_cls=import_string(
-                pipeline.speech_request_validator_factory
-            ),
-        )
-    )
-    payload = {"input": "hello", "extra_params": extra_params}
-    if delivery == "batch":
-        response = client.post("/v1/audio/speech/batch", json={"items": [payload]})
-        assert response.status_code == 200
-        result = response.json()["results"][0]
-        assert result["status"] == "error"
-        assert result["error"]["code"] == 400
-        assert result["error"]["param"] == "items.0.extra_params"
-    else:
-        response = client.post("/v1/audio/speech", json=payload)
-        assert response.status_code == 400
-        assert response.json()["error"]["param"] == "extra_params"
-    backend.speech.assert_not_called()
-    backend.generate.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "overrides,parameter_path,delivery",
-    [
-        (
-            {"stage_params": {"talker": {"n_timesteps": -1}}},
-            "stage_params.talker.n_timesteps",
-            "single",
-        ),
-        ({"extra_params": {"n_timesteps": 0}}, "extra_params.n_timesteps", "single"),
-        (
-            {"extra_params": {"stage_params": {"talker": {"n_timesteps": []}}}},
-            "extra_params.stage_params.talker.n_timesteps",
-            "batch",
-        ),
-        (
-            {"extra_params": {"inference_cfg": {}}},
-            "extra_params.inference_cfg",
-            "single",
-        ),
-        ({"extra_params": {"max_patches": -1}}, "extra_params.max_patches", "single"),
-        ({"extra_params": {"min_patches": -1}}, "extra_params.min_patches", "single"),
-    ],
-)
-def test_invalid_generation_overrides_are_rejected_at_http_boundary(
-    tmp_path: Path,
     overrides: dict[str, JsonValue],
     parameter_path: str,
-    delivery: Literal["single", "batch"],
+    delivery: Literal["single", "batch", "websocket"],
 ) -> None:
-    """Invalid Flow requests must fail before launching model inference."""
-    pipeline = FireRedTTS3PipelineConfig(model_path=str(tmp_path), variant="speaker")
+    """Unsupported tasks, missing fields and invalid stage options must fail before dispatch."""
+    pipeline = FireRedTTS3PipelineConfig(model_path=str(tmp_path), variant=variant)
     backend = mock.create_autospec(Client, instance=True)
     client = TestClient(
         create_app(
@@ -115,6 +150,12 @@ def test_invalid_generation_overrides_are_rejected_at_http_boundary(
         assert result["status"] == "error"
         assert result["error"]["code"] == 400
         assert result["error"]["param"] == f"items.0.{parameter_path}"
+    elif delivery == "websocket":
+        with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+            websocket.send_json({"type": "session.config", "session": payload})
+            result = websocket.receive_json()
+        assert result["type"] == "error"
+        assert result["param"] == parameter_path
     else:
         response = client.post("/v1/audio/speech", json=payload)
         assert response.status_code == 400
@@ -123,9 +164,10 @@ def test_invalid_generation_overrides_are_rejected_at_http_boundary(
     backend.generate.assert_not_called()
 
 
-def test_http_generation_override_validation_uses_preprocessing_precedence(
+def test_stage_options_reach_preprocessing_without_overwriting_sampling(
     tmp_path: Path,
 ) -> None:
+    """An unknown HTTP extra_params bag must not overwrite validated sampling or stage fields."""
     pipeline = FireRedTTS3PipelineConfig(model_path=str(tmp_path), variant="speaker")
     service = import_string(pipeline.speech_request_validator_factory)(
         default_model="tts"
@@ -133,18 +175,39 @@ def test_http_generation_override_validation_uses_preprocessing_precedence(
     prepared = service.parse_generation_request(
         {
             "input": "hello",
-            "stage_params": {"talker": {"n_timesteps": -1}},
+            "temperature": 0.5,
+            "stage_params": {
+                "talker": {"n_timesteps": "3", "min_patches": 0, "seed": -1},
+                "preprocessing": {"dual_stream": True, "style": "calm"},
+            },
             "extra_params": {
-                "n_timesteps": -1,
-                "stage_params": {"talker": {"n_timesteps": "3"}},
+                "temperature": "not-a-number",
+                "stage_params": {"talker": {"n_timesteps": -1}},
                 "seed": [],
             },
             "seed": 7,
+            "initial_codec_chunk_frames": 8,
         }
     )
     generated = service.build_generate_request(prepared.request, validate=False)
-    assert generated.extra_params["stage_params"] == {"talker": {"n_timesteps": "3"}}
-    assert generated.metadata["tts_params"]["seed"] == 7
+    assert generated.extra_params == {"initial_codec_chunk_frames": 8}
+    payload = StagePayload(
+        request_id="stage-options",
+        request=Client.build_omni_request(generated),
+        data={},
+    )
+    assert payload.request.params["temperature"] == 0.5
+    state = preprocess_payload(
+        payload,
+        config=FireRedTTS3Config(text_latent_interleave_ratio=[2, 1], use_lm_head=True),
+    )
+    assert state.dual_stream is True
+    assert state.n_timesteps == 3
+    assert state.min_patches == 0
+    assert state.seed == 7
+
+    generated.extra_params["seed"] = 11
+    assert Client.build_omni_request(generated).params["seed"] == 11
 
 
 @pytest.mark.parametrize("reference_state", ["missing", "oversized"])
@@ -193,7 +256,13 @@ def test_editing_policy_is_scoped_to_firered(tmp_path: Path, task_type: str) -> 
         default_model="tts"
     )
     generic = SpeechRequestValidator(default_model="tts")
-    payload = {"input": "", "task_type": task_type, "speed": 0.8}
+    payload = {
+        "input": "",
+        "task_type": task_type,
+        "speed": 0.8,
+        "ref_audio": REFERENCE_AUDIO,
+        "instructions": "adjust the speed to 0.8x",
+    }
     prepared = editing.parse_generation_request(payload)
     assert prepared.request.task_type in {"SemanticEdit", "AcousticEdit"}
     assert editing.resolve_encode_speed(prepared.request) == 1.0

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +16,7 @@ from sglang.srt.models.registry import ModelRegistry
 from transformers import AutoConfig
 
 from sglang_omni.cli.config import resolve_sources
+from sglang_omni.client.client import Client
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
@@ -31,15 +34,26 @@ from sglang_omni.models.firered_tts3.payload_types import (
     engine_token_budget,
 )
 from sglang_omni.models.firered_tts3.sglang_model import FireRedTTS3SGLangModel
-from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.json import JsonValue
+from tests.unit_test.fixtures.firered_tts3 import make_speaker_tokenizer
+from tests.unit_test.fixtures.firered_tts3_preprocessing import preprocess_payload
 
 
 def test_firered_tts3_pipeline_is_registered() -> None:
-    assert (
-        PIPELINE_CONFIG_REGISTRY.get_config("FireRedTTS3ForConditionalGeneration")
-        is FireRedTTS3PipelineConfig
+    """Config discovery must not import FireRed speech admission."""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "from sglang_omni.models.firered_tts3.config import FireRedTTS3PipelineConfig\n"
+            "from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY\n"
+            "assert PIPELINE_CONFIG_REGISTRY.get_config('FireRedTTS3ForConditionalGeneration') is FireRedTTS3PipelineConfig\n"
+            "assert 'sglang_omni.models.firered_tts3.speech_validation' not in sys.modules\n",
+        ],
+        check=True,
     )
 
 
@@ -158,24 +172,42 @@ def test_checkpoint_config_drives_pipeline_topology(
     assert [stage.name for stage in resolved.stages] == stage_names
     service = import_string(pipeline.speech_request_validator_factory)(
         default_model="tts",
+        required_speech_reference_count=pipeline.required_speech_reference_count,
+        speech_reference_text_required=pipeline.speech_reference_text_required,
     )
-    prepared = service.parse_generation_request(
-        {
-            "input": "hello",
-            "extra_params": {"dual_stream": dual_stream, "style": "calm"},
-            "initial_codec_chunk_frames": 8,
-        }
-    )
+    payload = {
+        "input": "hello",
+        "stage_params": {
+            "preprocessing": {"dual_stream": dual_stream, "style": "calm"}
+        },
+        "initial_codec_chunk_frames": 8,
+        "ref_audio": "data:audio/wav;base64,UklGRg==" if variant != "speaker" else None,
+        "ref_text": "reference" if variant != "speaker" else None,
+    }
+    prepared = service.parse_generation_request(payload)
     generated = service.build_generate_request(
         prepared.request,
         validate=False,
         reference_descriptors=prepared.reference_descriptors,
     )
-    assert generated.extra_params == {
-        "dual_stream": dual_stream,
-        "style": "calm",
-        "initial_codec_chunk_frames": 8,
-    }
+    assert generated.extra_params == {"initial_codec_chunk_frames": 8}
+    tokenizer = make_speaker_tokenizer()
+    n_timesteps, max_patches = pipeline.talker_generation_limits()
+    state = preprocess_payload(
+        StagePayload(
+            request_id="topology", request=Client.build_omni_request(generated), data={}
+        ),
+        config=config,
+        tokenizer=tokenizer,
+        n_timesteps=n_timesteps,
+        max_patches=max_patches,
+    )
+    assert state.variant == variant
+    assert state.dual_stream is dual_stream
+    if dual_stream:
+        assert "calm" in tokenizer.decode(state.input_ids)
+    else:
+        pass
 
 
 def test_unknown_checkpoint_variant_is_rejected() -> None:

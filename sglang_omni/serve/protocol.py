@@ -13,7 +13,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    JsonValue,
     SerializerFunctionWrapHandler,
     field_validator,
     model_serializer,
@@ -507,7 +506,6 @@ class CreateSpeechRequest(BaseModel):
 
     # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, object]] | None = None
-    extra_params: dict[str, JsonValue] | None = None
 
     return_spec_tokens_details: bool = False
 
@@ -549,7 +547,6 @@ class SpeechBatchItem(BaseModel):
     condition_buckets: object = None
     condition_values: object = None
     stage_params: object = None
-    extra_params: object = None
 
 
 class CreateSpeechBatchRequest(BaseModel):
@@ -589,7 +586,6 @@ class CreateSpeechBatchRequest(BaseModel):
     condition_buckets: dict[str, int | None] | None = None
     condition_values: dict[str, float | None] | None = None
     stage_params: dict[str, dict[str, object]] | None = None
-    extra_params: dict[str, JsonValue] | None = None
 
 
 class SpeechBatchResult(BaseModel):
@@ -672,7 +668,6 @@ class SpeechStreamSessionConfig(BaseModel):
     condition_buckets: dict[str, int | None] | None = None
     condition_values: dict[str, float | None] | None = None
     stage_params: dict[str, dict[str, object]] | None = None
-    extra_params: dict[str, JsonValue] | None = None
 
 
 class UploadedVoiceMetadata(BaseModel):

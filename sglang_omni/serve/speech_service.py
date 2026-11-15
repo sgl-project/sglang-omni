@@ -367,7 +367,6 @@ class SpeechRequestValidator:
         else:
             pass
         self.validate_custom_voice_request(request, task_type=updates.get("task_type"))
-        self.validate_extra_params(request)
         self.validate_speaker_embedding(request, task_type=updates.get("task_type"))
         if request.language is not None:
             updates["language"] = self.normalize_language(request.language)
@@ -604,9 +603,6 @@ class SpeechRequestValidator:
     def resolve_encode_speed(self, request: CreateSpeechRequest) -> float:
         return request.speed
 
-    def validate_extra_params(self, request: CreateSpeechRequest) -> None:
-        """Override to validate model-owned parameters before dispatch."""
-
     @staticmethod
     def normalize_task_type(value: str) -> str:
         return normalize_task_type(value)
@@ -636,7 +632,11 @@ class SpeechRequestValidator:
             prompt=build_speech_prompt(request, reference_descriptors),
             sampling=build_sampling_params(request),
             stage_params=request.stage_params,
-            extra_params=build_extra_params(request),
+            extra_params=(
+                {INITIAL_CODEC_CHUNK_FRAMES_PARAM: request.initial_codec_chunk_frames}
+                if request.initial_codec_chunk_frames is not None
+                else {}
+            ),
             stream=request.stream,
             output_modalities=["audio"],
             metadata={
@@ -952,12 +952,6 @@ class SpeechRequestValidator:
         return uploaded_voice
 
     def validate_raw_payload(self, payload: Mapping[str, object]) -> None:
-        if payload.get("extra_params") is not None and not isinstance(
-            payload["extra_params"], dict
-        ):
-            raise bad_request("extra_params must be an object", param="extra_params")
-        else:
-            pass
         for field_name in (
             "model",
             "input",
@@ -1286,17 +1280,6 @@ def build_speech_prompt(
     else:
         pass
     return request.input
-
-
-def build_extra_params(request: CreateSpeechRequest) -> dict[str, JsonValue]:
-    extra_params: dict[str, JsonValue] = dict(request.extra_params or {})
-    if request.initial_codec_chunk_frames is not None:
-        extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
-            request.initial_codec_chunk_frames
-        )
-    else:
-        pass
-    return extra_params
 
 
 class SpeechReferenceMediaIO(MediaIO[dict[str, str]]):

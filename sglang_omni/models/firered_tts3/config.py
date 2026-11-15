@@ -19,10 +19,6 @@ from sglang_omni.models.firered_tts3.hf_config import (
     detect_fireredtts3_variant,
     load_checkpoint_hf_config,
 )
-from sglang_omni.models.firered_tts3.speech_validation import (
-    FireRedTTS3SpeakerSpeechRequestValidator,
-    FireRedTTS3SpeechRequestValidator,
-)
 
 __all__ = [
     "DEFAULT_MAX_PATCHES",
@@ -30,8 +26,6 @@ __all__ = [
     "DEFAULT_N_TIMESTEPS",
     "EntryClass",
     "FireRedTTS3PipelineConfig",
-    "FireRedTTS3SpeakerSpeechRequestValidator",
-    "FireRedTTS3SpeechRequestValidator",
     "FireRedTTS3StageFactoryKwargs",
     "FireRedTTS3VocoderFactoryArgs",
     "FireRedTTS3VocoderStageConfig",
@@ -184,12 +178,13 @@ class FireRedTTS3PipelineConfig(PipelineConfig):
 
     @property
     def speech_request_validator_factory(self) -> str:
-        validator = (
-            "FireRedTTS3SpeakerSpeechRequestValidator"
-            if self.variant == "speaker"
-            else "FireRedTTS3SpeechRequestValidator"
-        )
-        return f"{PACKAGE_PATH}.config.{validator}"
+        if self.variant == "instruct":
+            validator_class_name = "FireRedTTS3InstructSpeechRequestValidator"
+        elif self.variant == "speaker":
+            validator_class_name = "FireRedTTS3SpeakerSpeechRequestValidator"
+        else:
+            validator_class_name = "FireRedTTS3SpeechRequestValidator"
+        return f"{PACKAGE_PATH}.speech_validation.{validator_class_name}"
 
     @property
     def speech_reference_text_required(self) -> bool:

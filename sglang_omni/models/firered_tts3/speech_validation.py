@@ -3,25 +3,30 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     NonNegativeInt,
     PositiveInt,
+    StrictBool,
+    StrictStr,
     ValidationError,
     ValidationInfo,
     field_validator,
 )
 
-from sglang_omni.serve.protocol import SUPPORTED_TTS_TASK_TYPES, CreateSpeechRequest
+from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.speech_errors import bad_request
 from sglang_omni.serve.speech_service import (
     PreparedSpeechReferences,
+    SpeechRequestUpdates,
     SpeechRequestValidator,
 )
 from sglang_omni.utils.json import JsonValue
+
+FireRedTTS3SpeechTask = Literal["Base", "VoiceDesign", "SemanticEdit", "AcousticEdit"]
 
 
 class FireRedTTS3GenerationOverrides(BaseModel):
@@ -49,107 +54,168 @@ class FireRedTTS3GenerationOverrides(BaseModel):
             return value
 
 
+class FireRedTTS3PreprocessingOverrides(BaseModel):
+    """Validate speaker prompt options before dispatch."""
+
+    dual_stream: StrictBool | None = None
+    style: StrictStr | None = None
+
+
 class FireRedTTS3SpeechRequestValidator(SpeechRequestValidator):
-    """Apply native editing, speed and checkpoint parameter rules at the API boundary."""
+    """Validate native speed, generation settings and Base task admission."""
 
     supports_dual_stream: ClassVar[bool] = False
+    supported_task_types: ClassVar[frozenset[FireRedTTS3SpeechTask]] = frozenset(
+        {"Base"}
+    )
 
-    @staticmethod
-    def normalize_task_type(value: str) -> str:
-        supported = SUPPORTED_TTS_TASK_TYPES | {"SemanticEdit", "AcousticEdit"}
+    @classmethod
+    def normalize_task_type(cls, value: str) -> FireRedTTS3SpeechTask:
         normalized = value.strip().replace("_", "").replace("-", "").lower()
-        for task_type in supported:
+        for task_type in cls.supported_task_types:
             if normalized == task_type.lower():
                 return task_type
             else:
                 pass
         raise bad_request(
-            f"task_type must be one of: {', '.join(sorted(supported))}",
+            f"task_type must be one of: {', '.join(sorted(cls.supported_task_types))}",
             param="task_type",
         )
 
-    def validate_input_text(
-        self, input_text: str, *, task_type: str | None = None
-    ) -> None:
-        task_type = (
-            self.normalize_task_type(task_type) if task_type is not None else None
-        )
+    def prepare_generation_updates(
+        self, request: CreateSpeechRequest
+    ) -> SpeechRequestUpdates:
+        updates = super().prepare_generation_updates(request)
+        stage_parameters = request.stage_params or {}
+        talker_parameters = {
+            parameter_name: value
+            for parameter_name, value in stage_parameters.get("talker", {}).items()
+            if value is not None
+        }
+        if request.seed is not None:
+            talker_parameters["seed"] = request.seed
+        else:
+            pass
+        preprocessing_parameters = stage_parameters.get("preprocessing", {})
+        for stage_name, parameter_schema, stage_values in (
+            ("talker", FireRedTTS3GenerationOverrides, talker_parameters),
+            (
+                "preprocessing",
+                FireRedTTS3PreprocessingOverrides,
+                preprocessing_parameters,
+            ),
+        ):
+            try:
+                parameter_schema.model_validate(stage_values)
+            except ValidationError as error:
+                detail = error.errors()[0]
+                parameter_name = str(detail["loc"][0])
+                parameter_path = (
+                    "seed"
+                    if stage_name == "talker"
+                    and parameter_name == "seed"
+                    and request.seed is not None
+                    else f"stage_params.{stage_name}.{parameter_name}"
+                )
+                raise bad_request(
+                    f"{parameter_path}: {detail['msg']}", param=parameter_path
+                ) from error
         if (
-            task_type in {"SemanticEdit", "AcousticEdit"}
-            and isinstance(input_text, str)
-            and not input_text.strip()
-        ):
-            return
-        else:
-            super().validate_input_text(input_text, task_type=task_type)
-
-    def validate_extra_params(self, request: CreateSpeechRequest) -> None:
-        extra_params = request.extra_params or {}
-        stage_parameters = extra_params.get("stage_params", request.stage_params or {})
-        if isinstance(stage_parameters, dict):
-            talker_parameters = stage_parameters.get("talker")
-        else:
-            talker_parameters = None
-        if not isinstance(talker_parameters, dict):
-            talker_parameters = {}
-        else:
-            pass
-        generation_values = {}
-        for parameter_name in FireRedTTS3GenerationOverrides.model_fields:
-            if parameter_name == "seed" and request.seed is not None:
-                generation_values[parameter_name] = request.seed
-            elif talker_parameters.get(parameter_name) is not None:
-                generation_values[parameter_name] = talker_parameters[parameter_name]
-            elif extra_params.get(parameter_name) is not None:
-                generation_values[parameter_name] = extra_params[parameter_name]
-            else:
-                pass
-        try:
-            FireRedTTS3GenerationOverrides.model_validate(generation_values)
-        except ValidationError as error:
-            detail = error.errors()[0]
-            parameter_name = str(detail["loc"][0])
-            if parameter_name == "seed" and request.seed is not None:
-                parameter_path = "seed"
-            elif talker_parameters.get(parameter_name) is not None:
-                stage_path = (
-                    "extra_params.stage_params"
-                    if "stage_params" in extra_params
-                    else "stage_params"
-                )
-                parameter_path = f"{stage_path}.talker.{parameter_name}"
-            else:
-                parameter_path = f"extra_params.{parameter_name}"
-            raise bad_request(
-                f"{parameter_path}: {detail['msg']}", param=parameter_path
-            ) from error
-        if "dual_stream" in extra_params:
-            if not isinstance(extra_params["dual_stream"], bool):
-                raise bad_request(
-                    "extra_params.dual_stream must be a boolean", param="extra_params"
-                )
-            elif extra_params["dual_stream"] and not self.supports_dual_stream:
-                raise bad_request(
-                    "extra_params.dual_stream requires a dual-stream-capable "
-                    "checkpoint (this deployment does not support it)",
-                    param="extra_params",
-                )
-            else:
-                pass
-        else:
-            pass
-        if extra_params.get("style") is not None and not isinstance(
-            extra_params["style"], str
+            preprocessing_parameters.get("dual_stream")
+            and not self.supports_dual_stream
         ):
             raise bad_request(
-                "extra_params.style must be a string", param="extra_params"
+                "dual_stream requires a dual-stream-capable checkpoint",
+                param="stage_params.preprocessing.dual_stream",
             )
         else:
             pass
+        return updates
 
     def resolve_encode_speed(self, request: CreateSpeechRequest) -> float:
         # note (kermit): FireRed consumes speed natively; encode-time resampling would apply it twice.
         return 1.0
+
+    def validate_speech_references(
+        self,
+        request: CreateSpeechRequest,
+        prepared_references: PreparedSpeechReferences,
+    ) -> None:
+        super().validate_speech_references(request, prepared_references)
+        if any(
+            not (reference.get("audio_path") or reference.get("data"))
+            for reference in prepared_references.reference_descriptors
+        ):
+            raise bad_request("reference audio is required", param="references")
+        else:
+            pass
+
+
+class FireRedTTS3InstructSpeechRequestValidator(FireRedTTS3SpeechRequestValidator):
+    """Validate Instruct task requirements before backend dispatch."""
+
+    supported_task_types: ClassVar[frozenset[FireRedTTS3SpeechTask]] = frozenset(
+        {"Base", "VoiceDesign", "SemanticEdit", "AcousticEdit"}
+    )
+
+    def validate_input_text(
+        self, input_text: str, *, task_type: str | None = None
+    ) -> None:
+        normalized_task = (
+            self.normalize_task_type(task_type) if task_type is not None else "Base"
+        )
+        if (
+            normalized_task in {"SemanticEdit", "AcousticEdit"}
+            and not input_text.strip()
+        ):
+            return
+        else:
+            super().validate_input_text(input_text, task_type=normalized_task)
+
+    def prepare_generation_updates(
+        self, request: CreateSpeechRequest
+    ) -> SpeechRequestUpdates:
+        updates = super().prepare_generation_updates(request)
+        if updates.get("task_type") in {"VoiceDesign", "SemanticEdit"} and not (
+            request.instructions and request.instructions.strip()
+        ):
+            raise bad_request(
+                "instructions are required for this task", param="instructions"
+            )
+        else:
+            return updates
+
+    def validate_speech_references(
+        self,
+        request: CreateSpeechRequest,
+        prepared_references: PreparedSpeechReferences,
+    ) -> None:
+        super().validate_speech_references(request, prepared_references)
+        task_type = (
+            self.normalize_task_type(request.task_type)
+            if request.task_type is not None
+            else "Base"
+        )
+        references = prepared_references.reference_descriptors
+        if task_type == "VoiceDesign":
+            if references:
+                raise bad_request(
+                    "VoiceDesign does not accept speech references", param="references"
+                )
+            else:
+                pass
+        elif len(references) != 1:
+            raise bad_request(
+                "exactly one speech reference is required for this task",
+                param="ref_audio" if not references else "references",
+            )
+        elif task_type == "Base" and not (
+            isinstance(reference_text := references[0].get("text"), str)
+            and reference_text.strip()
+        ):
+            raise bad_request("reference transcript is required", param="ref_text")
+        else:
+            pass
 
 
 class FireRedTTS3SpeakerSpeechRequestValidator(FireRedTTS3SpeechRequestValidator):
