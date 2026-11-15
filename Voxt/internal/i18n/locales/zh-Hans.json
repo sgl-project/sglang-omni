@@ -1651,5 +1651,6 @@
   "min": "分钟",
   "The length limit stops the recording in %s": "%s 后到达时长上限，录音会停止",
   "Over the upload size limit: Voxt sends the recording in pieces": "已超过上传大小上限：Voxt 会分段发送录音",
-  "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音"
+  "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音",
+  "Voxt suggests a word here when you correct one it wrote in the %d seconds after inserting, or when Scan history finds one. Nothing goes in the dictionary until you click Add. To stop them, turn off Learn from my corrections.": "Voxt 插入文字后 %d 秒内，你改了它写的词，或“扫描历史”找到了词，就会在这里建议。点“添加”之前不会放进词典。不想要建议，就关掉“从我的改正中学习”。"
 }
