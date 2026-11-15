@@ -109,7 +109,7 @@ func meetingModeFrom(s settings.Meeting) meeting.Mode {
 }
 
 func (a *app) startMeeting() {
-	if !a.meetingEnabled() || a.meetMgr == nil {
+	if a.meetMgr == nil {
 		return
 	}
 	a.async(func() {

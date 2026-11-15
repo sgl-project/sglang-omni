@@ -34,8 +34,6 @@ func TestMeetingFeatureLabels(t *testing.T) {
 // Automatic and Same as the main language go back to the defaults (#3991).
 func TestMeetingSpeechSettings(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
 	tt.SetSize(windowWidth, 2400)
 	a.navigate("/meetings")
 	a.mv.setOpen = true
@@ -88,8 +86,6 @@ func TestMeetingSpeechSettings(t *testing.T) {
 // menu reads Automatic and cannot open.
 func TestMeetingSpeechSettingsNoModel(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
 	tt.SetSize(windowWidth, 2400)
 	a.navigate("/meetings")
 	a.mv.setOpen = true

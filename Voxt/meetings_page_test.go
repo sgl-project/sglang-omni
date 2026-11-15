@@ -7,37 +7,37 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-func TestMeetingsNavHiddenWhenDisabled(t *testing.T) {
-	_, _, tt := newTestApp(t)
-	meetingDevHook = func() bool { return false }
-	t.Cleanup(func() { meetingDevHook = nil })
+// Meetings are in release builds (C1-10): the sidebar, ⌘K and the menu bar
+// menu offer them, as in development builds.
+func TestMeetingsInReleaseBuild(t *testing.T) {
+	t.Setenv("MYGO_ENV", "production")
+	a, _, tt := newTestApp(t)
 	frames(tt)
-	if has(tt, "Meetings") {
-		t.Fatalf("Meetings in sidebar when disabled: %q", firstTexts(tt))
+	if !has(tt, "Meetings") {
+		t.Fatalf("no Meetings in the sidebar: %q", firstTexts(tt))
 	}
-}
-
-func TestMeetingsNotInPaletteWhenDisabled(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	t.Cleanup(func() { meetingDevHook = nil })
-	for _, enabled := range []bool{false, true} {
-		meetingDevHook = func() bool { return enabled }
-		a.paletteQuery = "meetings"
-		listed := slices.ContainsFunc(a.paletteItems(), func(cmd command) bool { return cmd.id == "go/meetings" })
-		if listed != enabled {
-			t.Errorf("meetings enabled %v: palette lists Go to Meetings %v", enabled, listed)
-		}
+	a.paletteQuery = "meetings"
+	if !slices.ContainsFunc(a.paletteItems(), func(cmd command) bool { return cmd.id == "go/meetings" }) {
+		t.Fatal("⌘K does not list Go to Meetings")
+	}
+	if !slices.ContainsFunc(a.trayItems(), func(it *mygo.MenuItem) bool { return it.Label == "Start meeting" }) {
+		t.Fatal("the menu bar menu has no Start meeting")
+	}
+	a.navigate("/meetings")
+	frames(tt)
+	if !has(tt, "No meetings yet.") {
+		t.Fatalf("the Meetings page: %q", firstTexts(tt))
 	}
 }
 
 func TestMeetingsPageSearchPaginationEmpty(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
 	tt.SetSize(windowWidth, 1400) // Linux's taller lines put the pager near 1200
 	a.navigate("/meetings")
 	frames(tt)
@@ -99,8 +99,6 @@ func TestMeetingsPageSearchPaginationEmpty(t *testing.T) {
 // with its running time, instead of the empty state (#3990).
 func TestMeetingsPageListsMeetingInProgress(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
 	a.navigate("/meetings")
 	frames(tt)
 	if !has(tt, "No meetings yet.") {

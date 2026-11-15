@@ -14,8 +14,6 @@ import (
 
 func TestMeetingDetailExportsFiles(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
 	repo := a.lib.store.Meetings()
 	ctx := context.Background()
 	rec, err := repo.CreateMeeting(ctx, store.Meeting{

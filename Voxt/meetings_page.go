@@ -1,9 +1,9 @@
 package main
 
-// The Meetings page (/meetings): past meetings newest first (dev builds
-// only until C1-10), laid out like History: a search, the list, and the
-// details of one in a side panel beside it, or over it when the window is
-// narrow. The meeting settings open in a dialog from the header.
+// The Meetings page (/meetings): past meetings newest first, laid out
+// like History: a search, the list, and the details of one in a side
+// panel beside it, or over it when the window is narrow. The meeting
+// settings open in a dialog from the header.
 
 import (
 	"context"
@@ -248,10 +248,6 @@ func meetingItems(list []store.Meeting, now time.Time) []meetingItem {
 }
 
 func (a *app) meetingsPage(c *ui.Context) {
-	if !a.meetingEnabled() {
-		a.notFoundPage(c, "/meetings")
-		return
-	}
 	t := c.Theme()
 	n := &a.mv
 	if !n.read && !n.loading {
