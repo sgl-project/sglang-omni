@@ -6,6 +6,7 @@ package main
 import (
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -153,19 +154,29 @@ func (a *app) rewriteSettings(c *ui.Context) {
 
 // ---- Your rules ----
 
-// variableInfo says what a prompt variable holds.
+// variableInfo says what a prompt variable holds, where its value comes
+// from and which features fill it.
 func variableInfo(name string) string {
 	switch name {
 	case "USER_MAIN_LANGUAGE":
-		return i18n.T("Your main language")
+		return i18n.T("Your main language, from General settings. Every feature.")
 	case "USER_OTHER_LANGUAGES":
-		return i18n.T("Your other languages")
+		return i18n.T("Your other languages, from General settings. Every feature.")
 	case "TARGET_LANGUAGE":
-		return i18n.T("The target language (Translate only)")
+		return i18n.T("The Target language menu on the Translate page. Translate only.")
 	case "APP_NAME":
-		return i18n.T("The frontmost app")
+		return i18n.T("The app in front, when an App enhancement group matches it. The features that group applies to.")
 	}
 	return ""
+}
+
+// featureVariables are the variables feature fills: Translate's target
+// language only in Translate.
+func featureVariables(feature string) []string {
+	if feature == hotkey.Translate {
+		return compose.VariableNames
+	}
+	return slices.DeleteFunc(slices.Clone(compose.VariableNames), func(n string) bool { return n == "TARGET_LANGUAGE" })
 }
 
 // promptOf is a feature's saved rules.
@@ -349,8 +360,10 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 				a.savePrompt(feature)
 			}
 		})
+		pin := a.previewInput(feature)
+		values := compose.Variables(pin, compose.TemplateSet(pin.MainLanguage))
 		ui.Column(c.Key(p + "-vars")).Gap(px(t, 4)).Children(func() {
-			for _, name := range compose.VariableNames {
+			for _, name := range featureVariables(feature) {
 				token := "{{" + name + "}}"
 				ui.Row(c.Key("var-" + name)).Wrap().GapX(px(t, sp2)).GapY(px(t, 2)).AlignItems(ui.Center).Children(func() {
 					b := ui.ButtonBase(c.Key("copy")).Padding(px(t, 2), px(t, 6)).Radius(px(t, 4)).Background(k.Hover).Label(token).Tooltip(i18n.T("Copy")).Shrink(0)
@@ -364,11 +377,15 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 						c.Services().WriteClipboard(token)
 						a.toast(i18n.T("Copied"))
 					}
-					caption(c, variableInfo(name)).Grow(1).Basis(px(t, 200)).MinWidth(0)
+					now := values[name]
+					if strings.TrimSpace(now) == "" {
+						now = i18n.T("(none)")
+					}
+					caption(c, variableInfo(name)+" "+i18n.T("Now: %s", now)).Grow(1).Basis(px(t, 200)).MinWidth(0)
 				})
 			}
 		})
-		collapsible(c.Key(p+"-preview"), i18n.T("Example user message"), &u.preview, nil, func() {
+		collapsible(c.Key(p+"-preview"), i18n.T("What the language model receives"), &u.preview, nil, func() {
 			a.previewBody(c, feature)
 		})
 	})
@@ -407,9 +424,10 @@ func (a *app) previewInput(feature string) compose.Input {
 	return in
 }
 
+// previewBody is the whole request, system prompt and messages, with the
+// variables filled in from the settings now.
 func (a *app) previewBody(c *ui.Context, feature string) {
 	t := c.Theme()
-	k := tok(t)
 	p := uitext.FeaturePrefix(feature)
 	if feature == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {
 		caption(c, i18n.T("Clean-up is off, so nothing is sent to a language model."))
@@ -419,10 +437,10 @@ func (a *app) previewBody(c *ui.Context, feature string) {
 		caption(c, err.Error())
 		return
 	}
-	ui.Column(c.Key(p + "-preview-user")).Gap(px(t, 4)).Children(func() {
-		ui.Text(c, i18n.T("Example user message")).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
-		fillCard(c).Padding(px(t, sp3)).Children(func() {
-			ui.Text(c, out.User).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
-		})
+	caption(c, i18n.T("Your rules with the variables filled in from your settings now, for a sample input. When the personal dictionary is on, it goes right after the system prompt: see How it is used on the Dictionary page."))
+	ui.Column(c.Key(p + "-preview-msgs")).Gap(px(t, sp2)).Children(func() {
+		for i, m := range out.Messages() {
+			promptCard(c, "msg-"+strconv.Itoa(i), m.Role, m.Content)
+		}
 	})
 }

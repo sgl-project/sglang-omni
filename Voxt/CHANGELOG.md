@@ -32,6 +32,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Each feature page shows the whole request and what each variable is** (#4016): on the Transcribe, Translate and Rewrite pages, Your rules lists only the variables that feature fills, each with where its value comes from, which features use it and its value now. {{TARGET_LANGUAGE}} is offered on the Translate page only. What the language model receives, under Your rules, shows the system prompt and the messages as they are sent, with the variables filled in from your settings and a sample input. The Dictionary page's How it is used points to these previews. What Voxt sends to the language model has not changed.
 - **Wait for the language model takes your own number of minutes** (#3941): besides Automatic, 1, 2, 5 and 10 minutes, the setting on the Language models page has Custom…, which shows a minutes field. Type or step any whole number from 1 to 60, and Voxt waits at least that long for Transcribe, Translate and Rewrite, as with the presets. The field says its range, min (1–60), and a number over 60 shows At most 60 minutes instead (#3955); a number outside 1 to 60 is not saved. Settings saved before keep their wait.
 - **Translate's menu says Target language, and the page says when your prompt ignores it** (#3956): the menu on the Translate page is now labeled Target language, and the page explains how Translate works: speech recognition writes what you said in your own language, and the language model translates it into the target language. A prompt of your own in Your rules replaces the built-in one, so it gets the menu's language only where it says {{TARGET_LANGUAGE}}. When it does not, the page warns that the menu does nothing and has a button that adds the variable. The rules field now starts from the built-in prompt with {{TARGET_LANGUAGE}} in it, not the language's name, so a prompt you edit from it keeps following the menu.
 - **The meeting window looks like the dictation window** (#3986): collapsed, it is as tall as the recording pill and has the same padding; expanded, it has the answer card's padding, the line under the controls and the same text size for the transcript. Meetings are only in development builds.
@@ -113,6 +114,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **每个功能页显示完整的请求和每个变量的含义**（#4016）：转录、翻译、改写页的“你的规则”只列出这个功能会填的变量，每个都写明值从哪里来、哪些功能用到、现在是什么。{{TARGET_LANGUAGE}} 只在翻译页出现。“你的规则”下的“语言模型收到的内容”按发送时的样子显示系统提示词和各条消息，变量按你的设置填好，输入用一段示例。词典页的“怎么使用”会指向这些预览。Voxt 发给语言模型的内容没有变。
 - **“等待语言模型”可以自己填分钟数**（#3941）：语言模型页的这个设置除了自动、1、2、5、10 分钟，多了“自定义…”，选它后旁边出现分钟数输入框。填或点加减到 1 到 60 之间的整数，转录、翻译、改写就至少等这么久，和预设一样。输入框旁写着范围“分钟（1–60）”，填超过 60 的数会显示“最多 60 分钟”（#3955）；超出 1 到 60 的数不保存。以前存的设置照旧。
 - **翻译页的菜单叫“目标语言”，提示词不认这个菜单时页面会提醒**（#3956）：翻译页的菜单改名为“目标语言”，页面上说明翻译怎么做：语音识别按你说的语言写下文字，语言模型再把它翻译成目标语言。“你的规则”里你自己的提示词会替换内置的那一份，只有写了 {{TARGET_LANGUAGE}} 的地方才用菜单选的语言。没写时，页面提醒这个菜单不起作用，并给一个按钮把变量加进去。规则输入框现在从带 {{TARGET_LANGUAGE}} 的内置提示词开始，不再写成具体语言名，在它基础上改出来的提示词仍然跟着菜单走。
 - **会议浮窗和听写浮窗一个样子**（#3986）：收起时和录音胶囊一样高、内边距相同；展开时用回答卡片的内边距、按钮下面的分隔线和同样大小的字幕文字。会议功能目前只在开发版里有。

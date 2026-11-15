@@ -150,6 +150,7 @@ func (a *app) notesExample(c *ui.Context) {
 	d := &a.dv
 	sectionTitle(c, i18n.T("How it is used"))
 	caption(c, i18n.T("An example with your settings: system prompt + personal dictionary + your input + speech recognition text = what the language model receives. The dictionary comes right after the system prompt, before anything that changes from one request to the next, so the model server can reuse its cache."))
+	caption(c, i18n.T("Each feature's page shows its own whole request, with the variables filled in: open Your rules, then What the language model receives."))
 	segmentedFit(c.Key("dict-notes-feature"), &d.notesFeature, i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite")).Label(i18n.T("Example for"))
 	feature := notesFeatures[d.notesFeature]
 	if feature == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {
