@@ -28,6 +28,7 @@ from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3IncrementalVocoderScheduler,
     Drama3VocoderScheduler,
 )
+from sglang_omni.models.fishaudio_drama3.window_graphs import WindowGraphDecoder
 from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from tests.unit_test.fishaudio_drama3.test_prompt import (
@@ -49,6 +50,7 @@ from tests.unit_test.fishaudio_drama3.test_vocoder import (
     FrameNumberCodec,
     RecordingBatchDecoder,
     chunk_message,
+    final_audio,
     final_payload,
     numbered_frames,
 )
@@ -498,9 +500,14 @@ def test_a_static_fraction_other_than_the_stage_share_is_refused_before_building
     assert builds == []
 
 
-def cpu_vocoder(factory_args: Drama3VocoderFactoryArgs) -> Drama3VocoderScheduler:
+def factory_vocoder(
+    factory_args: Drama3VocoderFactoryArgs,
+    *,
+    device: str = "cpu",
+    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS_CAP,
+) -> Drama3VocoderScheduler:
     return stages.create_vocoder_executor(
-        device="cpu",
+        device=device,
         codec_path=factory_args.codec_path,
         stream_stride=factory_args.stream_stride,
         stream_followup_stride_ramp=factory_args.stream_followup_stride_ramp,
@@ -515,7 +522,7 @@ def cpu_vocoder(factory_args: Drama3VocoderFactoryArgs) -> Drama3VocoderSchedule
         ),
         stream_window_batch_size=factory_args.stream_window_batch_size,
         decode_dtype=factory_args.decode_dtype,
-        max_new_tokens=DEFAULT_MAX_NEW_TOKENS_CAP,
+        max_new_tokens=max_new_tokens,
         stream_decode=factory_args.stream_decode,
         max_stream_batch_size=factory_args.max_stream_batch_size,
         stream_slot_count=factory_args.stream_slot_count,
@@ -529,7 +536,7 @@ def test_the_vocoder_factory_loads_the_codec_on_its_device_with_the_windows(
     codec_file = tmp_path / "codec.pth"
     codec_file.write_bytes(b"")
 
-    vocoder = cpu_vocoder(
+    vocoder = factory_vocoder(
         Drama3VocoderFactoryArgs(codec_path=str(codec_file)).model_copy(
             update={"window_cuda_graphs": False, "decode_dtype": "float32"}
         )
@@ -558,7 +565,7 @@ def test_window_cuda_graphs_on_a_cpu_device_are_refused(
     codec_file.write_bytes(b"")
 
     with pytest.raises(RuntimeError, match="window_cuda_graphs to false"):
-        cpu_vocoder(
+        factory_vocoder(
             Drama3VocoderFactoryArgs(codec_path=str(codec_file)).model_copy(
                 update={"decode_dtype": "float32"}
             )
@@ -584,7 +591,7 @@ def test_stream_windows_skip_their_discarded_frames_at_window_batch_size_one(
     monkeypatch.setattr(
         stages, "WindowGraphDecoder", lambda decode, **graph_shapes: decoder
     )
-    vocoder = cpu_vocoder(
+    vocoder = factory_vocoder(
         Drama3VocoderFactoryArgs(codec_path=str(codec_file), stream_window_batch_size=1)
     )
     frames = numbered_frames(214)
@@ -740,7 +747,7 @@ def test_incremental_decoding_falls_back_to_overlap_without_fa3(
     codec_file = tmp_path / "codec.pth"
     codec_file.write_bytes(b"")
 
-    vocoder = cpu_vocoder(
+    vocoder = factory_vocoder(
         Drama3VocoderFactoryArgs(codec_path=str(codec_file)).model_copy(
             update={"window_cuda_graphs": False, "decode_dtype": "float32"}
         )
@@ -749,6 +756,42 @@ def test_incremental_decoding_falls_back_to_overlap_without_fa3(
     assert isinstance(vocoder, Drama3VocoderScheduler)
     assert not isinstance(vocoder, Drama3IncrementalVocoderScheduler)
     assert vocoder.decode_window == vocoder.codec.from_indices
+
+
+@pytest.mark.accelerator
+def test_incremental_streams_keep_the_non_streaming_graphs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Incremental streams decode through their own windows, so the graph decoder
+    holds no stream window; a non-streaming request still replays its graph."""
+    codec_file = tmp_path / "codec.pth"
+    codec_file.write_bytes(b"")
+    monkeypatch.setattr(
+        stages, "load_codec", lambda checkpoint_dir, device: tiny_codec().to(device)
+    )
+
+    vocoder = factory_vocoder(
+        Drama3VocoderFactoryArgs(
+            codec_path=str(codec_file),
+            non_streaming_cuda_graph_max_frames=16,
+            max_stream_batch_size=1,
+            stream_slot_count=2,
+        ),
+        device="cuda",
+        max_new_tokens=64,
+    )
+    frames = numbered_frames(16)
+    audio = final_audio(
+        vocoder.vocode_payloads([final_payload(frames, is_streaming=False)])[0]
+    )
+
+    assert isinstance(vocoder, Drama3IncrementalVocoderScheduler)
+    graph_decoder = vocoder.decode_window
+    assert isinstance(graph_decoder, WindowGraphDecoder)
+    assert sorted(graph_decoder.graphs) == [(1, 8, 0), (1, 16, 0)]
+    with torch.no_grad():
+        eager_audio = graph_decoder.decode(frames[:, 1:].T[None].cuda())
+    assert torch.equal(torch.from_numpy(audio), eager_audio[0, 0].float().cpu())
 
 
 @pytest.mark.accelerator
