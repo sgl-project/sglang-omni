@@ -24,8 +24,8 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     untested_gpu_reason,
 )
 from sglang_omni.models.fishaudio_drama3.tower_tiles import (
-    fused_block_m,
     MAX_FUSED_ROWS,
+    fused_block_m,
     split_count,
 )
 
