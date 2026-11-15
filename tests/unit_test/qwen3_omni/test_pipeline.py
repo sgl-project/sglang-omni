@@ -2504,6 +2504,7 @@ def run_video_request(
         audio_target_sr: int,
         resource_connector: MultiModalResourceConnector,
         video_decode_threads: int,
+        video_intraop_threads: int | None,
     ) -> tuple[list[torch.Tensor], list[float], None]:
         return [frames], [2.0], None
 
@@ -2718,7 +2719,10 @@ def test_preprocessing_video_holds_up_no_request_behind_it(
 
     class Preprocessor:
         async def process(
-            self, payload: StagePayload, request_inputs: RequestInputs
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_share: preprocessor_mod.VideoCpuShare | None,
         ) -> str:
             if payload.request_id == "video":
                 video_entered.set()
@@ -2765,11 +2769,14 @@ def test_preprocessing_serial_requests_keep_arrival_order_on_the_scheduler_threa
     class Preprocessor:
         async def __call__(self, payload: StagePayload) -> str:
             return await self.process(
-                payload, preprocessor_mod.read_request_inputs(payload)
+                payload, preprocessor_mod.read_request_inputs(payload), None
             )
 
         async def process(
-            self, payload: StagePayload, request_inputs: RequestInputs
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_share: preprocessor_mod.VideoCpuShare | None,
         ) -> str:
             calls.append((payload.request_id, threading.get_ident()))
             return payload.request_id
@@ -2805,7 +2812,10 @@ def test_preprocessing_runs_no_more_videos_than_its_threads(
 
     class Preprocessor:
         async def process(
-            self, payload: StagePayload, request_inputs: RequestInputs
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_share: preprocessor_mod.VideoCpuShare | None,
         ) -> str:
             nonlocal running, most_running
             with running_lock:
@@ -2834,12 +2844,84 @@ def test_preprocessing_runs_no_more_videos_than_its_threads(
     assert most_running == 2
 
 
+@pytest.mark.parametrize(
+    ("video_cpus", "video_decode_threads", "intraop_threads", "decode_threads"),
+    [
+        (6, None, (6, 3), (10, 20)),
+        (6, 5, (6, 3), (5, 5)),
+        (None, None, (None, None), (10, 20)),
+    ],
+)
+def test_preprocessing_video_shares_the_video_cpus_with_the_videos_running(
+    monkeypatch: pytest.MonkeyPatch,
+    video_cpus: int | None,
+    video_decode_threads: int | None,
+    intraop_threads: tuple[int | None, int | None],
+    decode_threads: tuple[int, int],
+) -> None:
+    first_entered, first_release = threading.Event(), threading.Event()
+    shares: dict[str, tuple[preprocessor_mod.VideoCpuShare | None, int]] = {}
+
+    class Preprocessor:
+        async def process(
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_share: preprocessor_mod.VideoCpuShare | None,
+        ) -> str:
+            shares[payload.request_id] = (video_share, torch.get_num_threads())
+            if payload.request_id == "first":
+                first_entered.set()
+                assert first_release.wait(timeout=5)
+            else:
+                pass
+            return payload.request_id
+
+    monkeypatch.setattr(
+        qwen_stages, "automatic_video_decode_threads", lambda running: 10 * running
+    )
+    scheduler = qwen_stages.PreprocessingScheduler(
+        Preprocessor(),
+        video_threads=2,
+        video_cpus=video_cpus,
+        video_decode_threads=video_decode_threads,
+    )
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        scheduler.inbox.put(video_request("first"))
+        assert first_entered.wait(timeout=5)
+        scheduler.inbox.put(video_request("second"))
+        assert scheduler.outbox.get(timeout=5).data == "second"
+        first_release.set()
+        assert scheduler.outbox.get(timeout=5).data == "first"
+        scheduler.inbox.put(text_request("text"))
+        assert scheduler.outbox.get(timeout=5).data == "text"
+    finally:
+        first_release.set()
+        scheduler.stop()
+        worker.join(timeout=3)
+
+    for request_id, intraop, decode in zip(
+        ("first", "second"), intraop_threads, decode_threads
+    ):
+        share, team = shares[request_id]
+        assert share == preprocessor_mod.VideoCpuShare(
+            intraop_threads=intraop, decode_threads=decode
+        )
+        assert intraop is None or team == intraop
+    assert shares["text"][0] is None
+
+
 def test_preprocessing_video_threads_see_the_stage_bound_to_the_scheduler_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Preprocessor:
         async def process(
-            self, payload: StagePayload, request_inputs: RequestInputs
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_share: preprocessor_mod.VideoCpuShare | None,
         ) -> str | None:
             return get_active_stage()
 
@@ -2872,7 +2954,10 @@ def test_preprocessing_video_reports_errors_and_drops_aborted_requests(
 
     class Preprocessor:
         async def process(
-            self, payload: StagePayload, request_inputs: RequestInputs
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_share: preprocessor_mod.VideoCpuShare | None,
         ) -> str:
             started.append(payload.request_id)
             if payload.request_id.startswith("running"):
@@ -2926,7 +3011,10 @@ def test_preprocessing_stop_drops_videos_still_waiting_for_a_thread(
 
     class Preprocessor:
         async def process(
-            self, payload: StagePayload, request_inputs: RequestInputs
+            self,
+            payload: StagePayload,
+            request_inputs: RequestInputs,
+            video_share: preprocessor_mod.VideoCpuShare | None,
         ) -> str:
             started.append(payload.request_id)
             if payload.request_id.startswith("running"):

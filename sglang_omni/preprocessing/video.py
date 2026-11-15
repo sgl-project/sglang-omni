@@ -11,6 +11,7 @@ import os
 import tempfile
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from itertools import islice
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_f
 
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.utils.cpu import intraop_team
 
 from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
@@ -61,6 +63,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
         decode_threads: int,
+        intraop_threads: int | None = None,
         **kwargs: object,
     ) -> None:
         """Initialize VideoMediaIO.
@@ -75,6 +78,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
             decode_threads: FFmpeg threads this video's torchcodec decoders may use together.
+            intraop_threads: OpenMP team the loading thread decodes and resizes this video on; None keeps its own.
             **kwargs: Additional arguments (for compatibility with MultiModalResourceConnector).
         """
         super().__init__()
@@ -87,18 +91,24 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
         self.extract_audio = extract_audio
         self.audio_target_sr = audio_target_sr
         self.decode_threads = decode_threads
+        self.intraop_threads = intraop_threads
         self.kwargs = kwargs
 
     def load_path(self, filepath: Path) -> tuple[torch.Tensor, float]:
-        return load_video_path(
-            filepath,
-            fps=self.fps,
-            max_frames=self.max_frames,
-            min_pixels=self.min_pixels,
-            max_pixels=self.max_pixels,
-            total_pixels=self.total_pixels,
-            decode_threads=self.decode_threads,
-        )
+        with (
+            nullcontext()
+            if self.intraop_threads is None
+            else intraop_team(self.intraop_threads)
+        ):
+            return load_video_path(
+                filepath,
+                fps=self.fps,
+                max_frames=self.max_frames,
+                min_pixels=self.min_pixels,
+                max_pixels=self.max_pixels,
+                total_pixels=self.total_pixels,
+                decode_threads=self.decode_threads,
+            )
 
     def load_bytes(
         self, data: bytes
@@ -163,6 +173,7 @@ async def ensure_video_list_async(
     extract_audio: bool = False,
     audio_target_sr: int = 16000,
     video_decode_threads: int,
+    video_intraop_threads: int | None = None,
 ) -> tuple[
     list[object], list[float] | None, list[npt.NDArray[np.float32] | None] | None
 ]:
@@ -181,6 +192,8 @@ async def ensure_video_list_async(
         extract_audio: If True, extract audio from videos and return as third element.
         audio_target_sr: Target sample rate for audio extraction (default: 16000).
         video_decode_threads: FFmpeg threads the request's videos share while they load together.
+        video_intraop_threads: OpenMP threads the request's videos share while they load together; None keeps each
+            loading thread's own team.
 
     Returns:
         Tuple of (normalized video list, sample_fps_list or None, extracted_audio_list or None).
@@ -194,8 +207,12 @@ async def ensure_video_list_async(
         items = videos
     else:
         items = [videos]
-    decode_threads = video_decode_threads // max(
-        sum(1 for item in items if isinstance(item, (str, Path))), 1
+    path_videos = max(sum(1 for item in items if isinstance(item, (str, Path))), 1)
+    decode_threads = video_decode_threads // path_videos
+    intraop_threads = (
+        None
+        if video_intraop_threads is None
+        else max(video_intraop_threads // path_videos, 1)
     )
     normalized: list[object] = []
     sample_fps_list: list[float] = [0.0] * len(items)
@@ -228,6 +245,7 @@ async def ensure_video_list_async(
                 extract_audio=extract_audio,
                 audio_target_sr=audio_target_sr,
                 decode_threads=decode_threads,
+                intraop_threads=intraop_threads,
             )
         else:
             media_io = VideoMediaIO(
@@ -239,6 +257,7 @@ async def ensure_video_list_async(
                 extract_audio=extract_audio,
                 audio_target_sr=audio_target_sr,
                 decode_threads=decode_threads,
+                intraop_threads=intraop_threads,
             )
             video_path = Path(video_item)
             loop = asyncio.get_running_loop()

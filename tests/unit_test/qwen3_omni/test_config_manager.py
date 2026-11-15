@@ -45,6 +45,7 @@ def test_preprocessing_cpu_policy_is_resolved_at_launch(
             )
     capacity.assert_called_once_with()
     assert config.model_dump() == document
+    assert config.stage_factory_kwargs("preprocessing") == {"video_cpus": 64}
 
     capacity.return_value = 4
     rebuilt = config_cls.model_validate(document)
@@ -85,6 +86,7 @@ def test_preprocessing_cpu_policy_preserves_explicit_settings(
         config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"]
         == expected_threads
     )
+    assert config.stage_factory_kwargs("preprocessing") == {}
     assert config.model_dump() == document
     capacity.assert_not_called()
 

@@ -502,6 +502,28 @@ def test_videos_of_one_request_share_its_decode_threads(
     ] * 2
 
 
+def test_videos_of_one_request_share_its_intraop_threads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    teams: list[int] = []
+
+    def load_video_path(path: Path, **_kwargs: object) -> tuple[torch.Tensor, float]:
+        teams.append(torch.get_num_threads())
+        return torch.zeros(1, 3, 2, 2), 2.0
+
+    monkeypatch.setattr(video, "load_video_path", load_video_path)
+    paths = [tmp_path / "first.mp4", tmp_path / "second.mp4"]
+    for path in paths:
+        path.touch()
+    asyncio.run(
+        video.ensure_video_list_async(
+            paths, video_decode_threads=16, video_intraop_threads=6
+        )
+    )
+
+    assert teams == [3, 3]
+
+
 def test_torchcodec_reader_of_record_runs_when_the_native_decoder_is_unavailable(
     mpeg4_video: Path, monkeypatch
 ) -> None:

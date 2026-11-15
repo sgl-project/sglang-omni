@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from contextvars import copy_context
 from dataclasses import dataclass
 from functools import partial
@@ -34,6 +36,7 @@ from sglang_omni.models.qwen3_omni.components.preprocessor import (
     ChatRequestInputs,
     Qwen3OmniPreprocessor,
     TrainRequestInputs,
+    VideoCpuShare,
     read_request_inputs,
 )
 from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
@@ -63,7 +66,7 @@ from sglang_omni.scheduling.sglang_backend import (
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
-from sglang_omni.utils.cpu import automatic_video_decode_threads
+from sglang_omni.utils.cpu import automatic_video_decode_threads, intraop_team
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 from sglang_omni.utils.misc import avail_gpu_mem
 from sglang_omni.utils.process import name_native_thread
@@ -1013,7 +1016,14 @@ def batch_audio_encoder_payloads(
 class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
     """Run requests in arrival order on the scheduler thread, except that a request with video runs on a video thread, so its long decode holds up no request behind it."""
 
-    def __init__(self, preprocessor: Qwen3OmniPreprocessor, video_threads: int) -> None:
+    def __init__(
+        self,
+        preprocessor: Qwen3OmniPreprocessor,
+        *,
+        video_threads: int,
+        video_cpus: int | None,
+        video_decode_threads: int | None,
+    ) -> None:
         video_executor = ThreadPoolExecutor(
             max_workers=video_threads,
             thread_name_prefix="preprocessing-video",
@@ -1028,28 +1038,67 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         # note (ratish): the threads share one preprocessor, since the HF processor writes none of its own state while it runs and its tokenizer keeps one padding and truncation setting.
         self.preprocessor = preprocessor
         self.video_executor = video_executor
+        self.video_cpus = video_cpus
+        self.video_decode_threads = video_decode_threads
+        self.videos_lock = threading.Lock()
+        self.videos_running = 0
+
+    def warm_up_serving_thread(self) -> None:
+        # note (ratish): settles this thread's OpenMP team at the stage's before any video thread resizes its own.
+        torch.get_num_threads()
 
     def run_single(self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop) -> None:
         request_inputs = read_request_inputs(msg.data)
         if isinstance(request_inputs, ChatRequestInputs) and request_inputs.has_video:
             self.video_executor.submit(
-                copy_context().run, self.run_request, msg, request_inputs, asyncio.run
+                copy_context().run, self.run_video_request, msg, request_inputs
             )
         else:
-            self.run_request(msg, request_inputs, loop.run_until_complete)
+            self.run_request(msg, request_inputs, loop.run_until_complete, None)
+
+    def run_video_request(
+        self, msg: IncomingMessage, request_inputs: ChatRequestInputs
+    ) -> None:
+        with self.videos_lock:
+            self.videos_running += 1
+            running = self.videos_running
+        # note (ratish): a video takes the CPUs split over the videos running as it starts, so a lone video runs on all of them as on the serial stage, and every video thread at once on one thread's share each.
+        video_share = VideoCpuShare(
+            intraop_threads=(
+                None if self.video_cpus is None else self.video_cpus // running
+            ),
+            decode_threads=(
+                automatic_video_decode_threads(running)
+                if self.video_decode_threads is None
+                else self.video_decode_threads
+            ),
+        )
+        try:
+            with (
+                nullcontext()
+                if video_share.intraop_threads is None
+                else intraop_team(video_share.intraop_threads)
+            ):
+                self.run_request(msg, request_inputs, asyncio.run, video_share)
+        finally:
+            with self.videos_lock:
+                self.videos_running -= 1
 
     def run_request(
         self,
         msg: IncomingMessage,
         request_inputs: TrainRequestInputs | ChatRequestInputs,
         run_coroutine: Callable[[Coroutine[None, None, StagePayload]], StagePayload],
+        video_share: VideoCpuShare | None,
     ) -> None:
         if self.consume_if_aborted(msg.request_id):
             return
         else:
             pass
         try:
-            result = run_coroutine(self.preprocessor.process(msg.data, request_inputs))
+            result = run_coroutine(
+                self.preprocessor.process(msg.data, request_inputs, video_share)
+            )
         except Exception as exc:
             if self.consume_if_aborted(msg.request_id):
                 return
@@ -1076,11 +1125,8 @@ def create_preprocessing_executor(
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
     video_decode_threads: int | None = None,
+    video_cpus: int | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    if video_decode_threads is None:
-        video_decode_threads = automatic_video_decode_threads(max(max_concurrency, 1))
-    else:
-        pass
     preprocessor = Qwen3OmniPreprocessor(
         model_path=model_path,
         max_seq_len=max_seq_len,
@@ -1089,7 +1135,11 @@ def create_preprocessing_executor(
         video_min_pixels=video_min_pixels,
         video_max_pixels=video_max_pixels,
         video_total_pixels=video_total_pixels,
-        video_decode_threads=video_decode_threads,
+        video_decode_threads=(
+            automatic_video_decode_threads(max(max_concurrency, 1))
+            if video_decode_threads is None
+            else video_decode_threads
+        ),
     )
 
     if max_concurrency <= 1:
@@ -1097,7 +1147,12 @@ def create_preprocessing_executor(
     else:
         pass
 
-    return PreprocessingScheduler(preprocessor, video_threads=max_concurrency)
+    return PreprocessingScheduler(
+        preprocessor,
+        video_threads=max_concurrency,
+        video_cpus=video_cpus,
+        video_decode_threads=video_decode_threads,
+    )
 
 
 def create_aggregate_executor(

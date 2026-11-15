@@ -348,6 +348,14 @@ class ChatRequestInputs:
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class VideoCpuShare:
+    """The CPUs a video request preprocesses on: the OpenMP team that resizes its frames, None to keep the loading thread's, and the FFmpeg threads that decode them."""
+
+    intraop_threads: int | None
+    decode_threads: int
+
+
 def read_request_inputs(
     payload: StagePayload,
 ) -> TrainRequestInputs | ChatRequestInputs:
@@ -583,15 +591,16 @@ class Qwen3OmniPreprocessor:
         self,
         payload: StagePayload,
         request_inputs: TrainRequestInputs | ChatRequestInputs,
+        video_share: VideoCpuShare | None = None,
     ) -> StagePayload:
-        """Preprocess a request whose inputs were already read."""
+        """Preprocess a request whose inputs were already read, its videos on video_share when the stage sets one."""
         _emit_event(
             request_id=payload.request_id,
             stage=None,
             event_name="preprocess_start",
         )
         try:
-            result = await self.call_impl(payload, request_inputs)
+            result = await self.call_impl(payload, request_inputs, video_share)
         finally:
             _emit_event(
                 request_id=payload.request_id,
@@ -752,6 +761,7 @@ class Qwen3OmniPreprocessor:
         self,
         payload: StagePayload,
         request_inputs: TrainRequestInputs | ChatRequestInputs,
+        video_share: VideoCpuShare | None,
     ) -> StagePayload:
         if isinstance(request_inputs, TrainRequestInputs):
             return self.preprocess_train_inputs(
@@ -899,7 +909,14 @@ class Qwen3OmniPreprocessor:
                 extract_audio=extract_audio_from_video_flag,
                 audio_target_sr=audio_target_sr,
                 resource_connector=connector,
-                video_decode_threads=self.video_decode_threads,
+                video_decode_threads=(
+                    self.video_decode_threads
+                    if video_share is None
+                    else video_share.decode_threads
+                ),
+                video_intraop_threads=(
+                    None if video_share is None else video_share.intraop_threads
+                ),
             ),
             ensure_audio_list_async(
                 request_audios,

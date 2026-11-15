@@ -714,6 +714,7 @@ class MultiModalResourceConnector:
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
         decode_threads: int,
+        intraop_threads: int | None = None,
     ) -> tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]:
         """Asynchronously load video from a URL.
 
@@ -729,6 +730,7 @@ class MultiModalResourceConnector:
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
             decode_threads: FFmpeg threads this video's torchcodec decoders may use together.
+            intraop_threads: OpenMP team the loading thread decodes and resizes this video on; None keeps its own.
 
         Returns:
             Tuple of (video_tensor, sample_fps, audio_or_None).
@@ -745,6 +747,7 @@ class MultiModalResourceConnector:
             extract_audio=extract_audio,
             audio_target_sr=audio_target_sr,
             decode_threads=decode_threads,
+            intraop_threads=intraop_threads,
             **self.media_io_kwargs.get("video", {}),
         )
 

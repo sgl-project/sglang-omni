@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from sglang_omni.utils import cpu
 
@@ -98,6 +100,30 @@ def test_bounded_intraop_threads_accounts_for_outer_workers(
     monkeypatch.setattr(cpu, "effective_cpu_count", lambda: 32)
 
     assert cpu.bounded_intraop_threads(worker_count=16, max_threads=8) == 2
+
+
+def test_intraop_team_holds_through_a_threads_first_parallel_work() -> None:
+    process_team = torch.get_num_threads()
+    teams: list[int] = []
+
+    def run() -> None:
+        with cpu.intraop_team(process_team + 3):
+            other = threading.Thread(target=torch.set_num_threads, args=(1,))
+            other.start()
+            other.join()
+            torch.ones(1 << 20).add_(1)
+            teams.append(torch.get_num_threads())
+        teams.append(torch.get_num_threads())
+
+    torch.set_num_threads(process_team)
+    try:
+        worker = threading.Thread(target=run)
+        worker.start()
+        worker.join()
+    finally:
+        torch.set_num_threads(process_team)
+
+    assert teams == [process_team + 3, process_team]
 
 
 @pytest.mark.parametrize(
