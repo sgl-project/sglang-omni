@@ -171,4 +171,27 @@ func TestMeetingDetailFollowsRecording(t *testing.T) {
 	if !has(tt, "second line") || !has(tt, "第一行") {
 		t.Fatalf("the details did not follow the meeting: %q", firstTexts(tt))
 	}
+	// It ends: the final pass rewrote the lines and the manager lets the
+	// meeting go; then the correction and summary land.
+	if err := repo.AppendSegments(ctx, rec.Seq, []store.MeetingSegment{{Idx: 5, Source: store.SegmentMic, StartMS: 4000, EndMS: 5000, Text: "final pass line", Final: true}}); err != nil {
+		t.Fatal(err)
+	}
+	a.meetingChanged(meeting.Snapshot{State: meeting.StateIdle})
+	for i := 0; i < 50 && !has(tt, "final pass line"); i++ {
+		frames(tt)
+	}
+	if !has(tt, "final pass line") {
+		t.Fatalf("the details missed the final pass: %q", firstTexts(tt))
+	}
+	rec.Status, rec.Title, rec.Summary = store.MeetingDone, "Launch plan", `{"title":"Launch plan","body":"We agreed the plan.","todos":[]}`
+	if err := repo.UpdateMeeting(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	a.meetingUpdated("live")
+	for i := 0; i < 50 && !has(tt, "We agreed the plan."); i++ {
+		frames(tt)
+	}
+	if !has(tt, "We agreed the plan.") || has(tt, "No summary yet.") {
+		t.Fatalf("the details missed the summary: %q", firstTexts(tt))
+	}
 }

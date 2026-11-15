@@ -75,11 +75,18 @@ func (a *app) loadMeetingDetail(id string) {
 
 // followMeeting keeps the open details of the meeting being recorded
 // current (11-15: they showed the lines from when they were opened): a
-// new state reads it again, a new line is added from the snapshot, whose
-// store write may not have landed yet.
+// new state, or its end, reads it again; new lines and translations come
+// from the snapshot, whose store writes may not have landed yet.
 func (a *app) followMeeting(s, prev meeting.Snapshot) {
 	d := a.mv.detail
-	if d == nil || d.id != s.ID || d.loading {
+	if d == nil {
+		return
+	}
+	if d.id == prev.ID && s.ID != prev.ID { // it ended: the manager let it go
+		a.loadMeetingDetail(d.id)
+		return
+	}
+	if d.id != s.ID || d.loading {
 		return
 	}
 	if s.State != prev.State {
@@ -96,6 +103,17 @@ func (a *app) followMeeting(s, prev meeting.Snapshot) {
 		} else {
 			d.segments = append(d.segments, seg.Row())
 		}
+	}
+}
+
+// meetingUpdated shows a past meeting's corrected transcript and summary
+// (11-15: the open details kept "No summary yet" after the meeting's).
+func (a *app) meetingUpdated(id string) {
+	if a.mv.read {
+		a.loadMeetings() // its title
+	}
+	if d := a.mv.detail; d != nil && d.id == id {
+		a.loadMeetingDetail(id)
 	}
 }
 

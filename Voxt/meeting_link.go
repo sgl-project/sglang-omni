@@ -68,6 +68,7 @@ func (a *app) openMeetings() {
 				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: msg})
 			})
 		},
+		Updated: func(id string) { a.post(func() { a.meetingUpdated(id) }) },
 	})
 	a.meetMgr.Subscribe(func(s meeting.Snapshot) {
 		a.post(func() { a.meetingChanged(s) })

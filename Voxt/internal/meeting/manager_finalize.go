@@ -92,6 +92,9 @@ func (m *Manager) correctAndSummarize(ctx context.Context, id string) {
 	if err := m.GenerateMeetingSummary(ctx, id); err != nil {
 		m.warn("summary: " + err.Error())
 	}
+	if m.cfg.Updated != nil {
+		m.cfg.Updated(id)
+	}
 }
 
 func (m *Manager) warn(msg string) {

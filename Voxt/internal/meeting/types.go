@@ -129,6 +129,10 @@ type Config struct {
 	// Warn records a failure no caller waits for (the correction after a
 	// meeting); nil drops it.
 	Warn func(msg string)
+	// Updated reports that a meeting's stored transcript or summary
+	// changed after it ended (the correction and summary that follow it);
+	// nil reports nothing.
+	Updated func(id string)
 }
 
 // ErrBusy means a meeting is already live.

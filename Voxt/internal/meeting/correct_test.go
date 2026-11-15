@@ -108,7 +108,12 @@ func TestCorrectTranscript(t *testing.T) {
 func TestSummaryReadsCorrectedTranscript(t *testing.T) {
 	m, repo, chat := correctFixture(t, store.MeetingSegment{Idx: -1, Source: store.SegmentMic, Speaker: "me", Text: "Box ships today"})
 	ctx := context.Background()
+	updated := ""
+	m.cfg.Updated = func(id string) { updated = id } // the app shows the result (11-15)
 	m.correctAndSummarize(ctx, "m")
+	if updated != "m" {
+		t.Fatalf("Updated(%q), want the meeting's id", updated)
+	}
 	mt, _, _ := repo.Meeting(ctx, "m")
 	sum, _ := ParseStoredSummary(mt.Summary)
 	if len(chat.reqs) != 2 || !strings.Contains(sum.Body, "Voxt ships today") {
