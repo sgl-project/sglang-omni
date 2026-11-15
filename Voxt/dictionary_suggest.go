@@ -112,6 +112,8 @@ func (a *app) suggestionsSection(c *ui.Context) {
 				d.allSuggestions = true
 			}
 		})
+		// #4027: the section appears by itself, so it says why
+		caption(c, i18n.T("Voxt suggests a word here when you correct one it wrote in the %d seconds after inserting, or when Scan history finds one. Nothing goes in the dictionary until you click Add. To stop them, turn off Learn from my corrections.", learn.WatchSeconds)).Padding(0, px(t, sp6))
 		ui.Scroll(c.Key("dict-suggest-rows")).MaxHeight(px(t, suggestionRowsHeight)).Children(func() {
 			for _, s := range list {
 				a.suggestionRow(c, s)
