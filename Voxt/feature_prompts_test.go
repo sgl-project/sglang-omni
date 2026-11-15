@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 func TestPromptSaveUsesFullSystem(t *testing.T) {
@@ -18,7 +20,7 @@ func TestPromptSaveUsesFullSystem(t *testing.T) {
 	a.fui(hotkey.Translate).prompt = custom
 	a.fui(hotkey.Translate).promptDirty = true
 	a.savePrompt(hotkey.Translate)
-	click(t, tt, "Example user message")
+	click(t, tt, "What the language model receives")
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != custom {
 		t.Fatalf("saved %q", p)
 	}
@@ -301,5 +303,73 @@ func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
 	click(t, tt, "Reset to default prompt")
 	if has(tt, warning) {
 		t.Error("warning after the reset")
+	}
+}
+
+// TestFeaturePageShowsFilledRequest: each feature page offers only the
+// variables the feature fills, each saying where its value comes from and
+// what it is now, and shows the whole request with them filled in. The
+// Translate page showed only the user message and offered
+// {{TARGET_LANGUAGE}} on every page (#4016).
+func TestFeaturePageShowsFilledRequest(t *testing.T) {
+	a, tt := pageTester(t, "/transcribe")
+	tt.SetSize(windowWidth, 9000)
+	click(t, tt, "Your rules")
+	if has(tt, "{{TARGET_LANGUAGE}}") {
+		t.Error("Transcribe offers {{TARGET_LANGUAGE}}")
+	}
+	if !hasPrefix(tt, "Your main language, from General settings. Every feature. Now: ") {
+		t.Errorf("no note for {{USER_MAIN_LANGUAGE}} in %q", firstTexts(tt))
+	}
+
+	a, tt = pageTester(t, "/translate")
+	tt.SetSize(windowWidth, 9000)
+	click(t, tt, "Your rules")
+	if !strings.Contains(a.fui(hotkey.Translate).prompt, "{{TARGET_LANGUAGE}}") {
+		t.Fatalf("rules field %q", a.fui(hotkey.Translate).prompt)
+	}
+	in := a.previewInput(hotkey.Translate)
+	target := compose.LanguageName(in.TargetLanguage, compose.TemplateSet(in.MainLanguage))
+	if !has(tt, "The Target language menu on the Translate page. Translate only. Now: "+target) {
+		t.Errorf("no note for {{TARGET_LANGUAGE}} = %q", target)
+	}
+	click(t, tt, "What the language model receives")
+	out, err := a.composedPreview(hotkey.Translate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.System, "{{") || !strings.Contains(out.System, target) {
+		t.Fatalf("system prompt not filled in: %q", out.System)
+	}
+	for _, s := range []string{"system", out.System, "user", out.User} {
+		if !hasExact(tt, s) {
+			t.Errorf("preview lacks %q", s)
+		}
+	}
+}
+
+// TestFeaturePageFilledRequestEdges: a variable with no value says so,
+// and a prompt of one's own shows filled in as it is sent.
+func TestFeaturePageFilledRequestEdges(t *testing.T) {
+	a, tt := pageTester(t, "/translate")
+	tt.SetSize(windowWidth, 9000)
+	a.updateSettings(func(s *settings.Settings) {
+		s.General.OtherLanguages = nil
+		s.Features.Translate.Prompt = "把文字翻成 {{TARGET_LANGUAGE}}，不懂的保留 {{USER_OTHER_LANGUAGES}} 原文。"
+	})
+	click(t, tt, "Your rules")
+	if !has(tt, "Your other languages, from General settings. Every feature. Now: (none)") {
+		t.Errorf("empty variable not shown as none in %q", tt.Texts())
+	}
+	click(t, tt, "What the language model receives")
+	out, err := a.composedPreview(hotkey.Translate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.System, "{{") || !strings.HasPrefix(out.System, "把文字翻成 ") {
+		t.Fatalf("system %q", out.System)
+	}
+	if !hasExact(tt, out.System) {
+		t.Errorf("preview lacks the filled prompt %q", out.System)
 	}
 }

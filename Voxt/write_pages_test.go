@@ -66,7 +66,7 @@ func TestTranslatePage(t *testing.T) {
 	a.fui(hotkey.Translate).prompt = "Use British spelling."
 	a.fui(hotkey.Translate).promptDirty = true
 	a.savePrompt(hotkey.Translate)
-	click(t, tt, "Example user message")
+	click(t, tt, "What the language model receives")
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != "Use British spelling." || a.lib.settings.Get().Features.Transcribe.Prompt != "" {
 		t.Errorf("rules %q", p)
 	}
@@ -97,7 +97,7 @@ func TestRewritePage(t *testing.T) {
 		t.Error("0.1.0's card length setting is back")
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Example user message")
+	click(t, tt, "What the language model receives")
 	// A try that is blocked says why, here.
 	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {

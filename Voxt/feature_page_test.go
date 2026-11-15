@@ -357,7 +357,7 @@ func TestTranslateFallbackModel(t *testing.T) {
 // change elsewhere shows, and long rules fill a tall field.
 func TestTranscribeRules(t *testing.T) {
 	a, tt := trTester(t)
-	if has(tt, "{{USER_MAIN_LANGUAGE}}") || has(tt, "Example user message") {
+	if has(tt, "{{USER_MAIN_LANGUAGE}}") || has(tt, "What the language model receives") {
 		t.Fatal("Your rules are open at first")
 	}
 	click(t, tt, "Your rules")
@@ -368,7 +368,7 @@ func TestTranscribeRules(t *testing.T) {
 		t.Fatal("not dirty after typing")
 	}
 	// Leaving the field saves it.
-	click(t, tt, "Example user message")
+	click(t, tt, "What the language model receives")
 	if p := a.lib.settings.Get().Features.Transcribe.Prompt; !strings.Contains(p, "Write {{USER_MAIN_LANGUAGE}} numbers as digits.") {
 		t.Fatalf("prompt %q", p)
 	}
