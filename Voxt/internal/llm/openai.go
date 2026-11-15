@@ -75,10 +75,14 @@ func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool
 	if req.Image != nil && last >= 0 {
 		oms[last].Content = o.withImage(msgs[last].Content, req.Image)
 	}
+	p := o.preset
+	if t := req.Thinking; t != nil {
+		p.Generation.Thinking.Mode, p.Generation.Thinking.Effort, p.Generation.Thinking.Budget = t.Mode, t.Effort, t.Budget
+	}
 	b := map[string]any{}
 	// A thinking mode the user chose replaces the preset's (ExtraBody).
-	if extra && o.preset.Generation.Thinking.Mode == ThinkDefault {
-		for k, v := range o.preset.ExtraBody {
+	if extra && p.Generation.Thinking.Mode == ThinkDefault {
+		for k, v := range p.ExtraBody {
 			b[k] = v
 		}
 	}
@@ -123,7 +127,7 @@ func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool
 			b["stream_options"] = map[string]any{"include_usage": true}
 		}
 	}
-	applyGeneration(b, o.preset, model, stream)
+	applyGeneration(b, p, model, stream)
 	if o.responsesAPI() {
 		b = responsesBody(b, o.preset.Generation.ExtraBody)
 	}

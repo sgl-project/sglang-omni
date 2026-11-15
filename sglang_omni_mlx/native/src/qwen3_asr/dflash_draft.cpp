@@ -217,10 +217,11 @@ mx::array DFlashDraft::ProposeBlock(const mx::array &block_embeddings,
   return mx::reshape(mx::astype(target_ids, mx::int32), {block_size_ - 1});
 }
 
-int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
-                        int max_new_tokens, int prefill_step_tokens,
-                        const std::function<bool(int)> &commit,
-                        const std::atomic<bool> &cancel) const {
+DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
+                                    const mx::array &embeddings,
+                                    int max_new_tokens, int prefill_step_tokens,
+                                    const std::function<bool(int)> &commit,
+                                    const std::atomic<bool> &cancel) const {
   std::vector<KVCache> caches = target.NewCaches();
   std::vector<KVCache> draft_caches = decoder_.NewCaches();
   std::vector<mx::array> aux_hidden_states;
@@ -266,7 +267,7 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
   }
   bool finished = commit(anchor_id);
   int committed_token_count = 1;
-  int round_count = 0;
+  DraftStatistics statistics;
   while (!finished) {
     if (cancel.load()) {
       throw TranscriptionCancelled();
@@ -293,7 +294,6 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
         aux_layers_, &aux_hidden_states);
     const mx::array predictions = mx::argmax(target.Logits(hidden), -1);
     mx::eval({proposed_ids, predictions});
-    ++round_count;
     // note (wilsonzheng0327): prediction i follows block token i, so proposal
     // i is accepted while every earlier one was and it matches prediction i;
     // the prediction after the last accepted token is committed as well.
@@ -312,6 +312,9 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
     } else {
     }
     committed_token_count += accepted_count + 1;
+    ++statistics.verify_round_count;
+    statistics.proposed_token_count += verify_count - 1;
+    statistics.accepted_token_count += accepted_count;
     // note (wilsonzheng0327): the caches keep the anchor and the accepted
     // proposals; the committed positions' hidden states become the draft's
     // context.
@@ -320,7 +323,7 @@ int DFlashDraft::Decode(const Qwen3Decoder &target, const mx::array &embeddings,
     }
     AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
   }
-  return round_count;
+  return statistics;
 }
 
 } // namespace qwen3_asr

@@ -44,7 +44,10 @@ func TimedOut(err error) bool {
 func (r *run) llmChat(req llm.Request) (llm.Response, error) {
 	ctx, cancel := context.WithTimeout(r.llmCtx, req.Timeout)
 	defer cancel()
-	if r.shot != nil {
+	switch {
+	case r.clip != nil: // the picture the user copied wins over the window's
+		req.Image = r.clip
+	case r.shot != nil:
 		req.Image = r.shot()
 	}
 	resp, err := r.svc.LLM.Chat(ctx, req)

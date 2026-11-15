@@ -55,6 +55,15 @@ Json DoneEvent(const TranscriptionResult &result,
         {"language",
          result.language.has_value() ? Json(*result.language) : Json()},
         {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)}};
+    if (result.verify_round_count > 0) {
+      event["generation_metadata"]["verify_round_count"] =
+          result.verify_round_count;
+      event["generation_metadata"]["proposed_draft_token_count"] =
+          result.proposed_draft_token_count;
+      event["generation_metadata"]["accepted_draft_token_count"] =
+          result.accepted_draft_token_count;
+    } else {
+    }
   } else {
   }
   return event;

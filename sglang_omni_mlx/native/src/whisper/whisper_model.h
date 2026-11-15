@@ -38,21 +38,31 @@ struct DecoderLayerCache {
   std::optional<mlx::core::array> cross_values;
 };
 
+// Keeps the first token_count positions of each layer's self-attention keys
+// and values.
+void TruncateCaches(std::vector<DecoderLayerCache> &caches, int token_count);
+
 class WhisperModel {
 public:
   // Reads config.json and the weights (*.safetensors, else weights.npz) of an
   // mlx-community Whisper checkpoint.
   explicit WhisperModel(const std::filesystem::path &model_directory);
+  // Reads only the decoder of a draft checkpoint, in the target's dtype, to
+  // decode against the target's encoder states; refuses a draft whose decoder
+  // cannot read them.
+  WhisperModel(const std::filesystem::path &draft_directory,
+               const WhisperModel &target);
 
   const WhisperConfig &config() const { return config_; }
   // One window of kWindowSampleCount samples to encoder states [1, 1500,
   // width].
   mlx::core::array Encode(const std::vector<float> &window_samples) const;
   // Token ids [1, length] placed from start_position on, to the logits of the
-  // last position [vocabulary].
+  // last logit_count positions [logit_count, vocabulary].
   mlx::core::array Decode(const mlx::core::array &token_ids, int start_position,
                           const mlx::core::array &encoder_states,
-                          std::vector<DecoderLayerCache> &caches) const;
+                          std::vector<DecoderLayerCache> &caches,
+                          int logit_count) const;
 
 private:
   const mlx::core::array &Weight(const std::string &name) const;

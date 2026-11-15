@@ -160,7 +160,7 @@ type Output struct {
 	// User; "" for none (a smaller dictionary's is in System).
 	Glossary string
 	// Dictionary is the personal dictionary's layer of System (the notes
-	// in <dictionary> tags), "" for none: for the Dictionary page's example.
+	// as written), "" for none: for the Dictionary page's example.
 	Dictionary string
 	// Language is the template set used (English, Chinese).
 	Language string

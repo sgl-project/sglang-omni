@@ -84,6 +84,10 @@ type Request struct {
 	FirstTokenTimeout time.Duration
 	StallTimeout      time.Duration
 
+	// Thinking, when set, replaces the service's thinking mode, effort
+	// and budget for this request (the answer card's thinking menu).
+	Thinking *Thinking
+
 	// Skill tags the call for usage accounting.
 	Skill Skill
 }

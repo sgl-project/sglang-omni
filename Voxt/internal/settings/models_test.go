@@ -51,8 +51,9 @@ func TestKeepLoadedDocument(t *testing.T) {
 	}
 }
 
-// TestLLMWait (#3821): each choice of Models.LLMWait is the least wait for
-// a language model; empty and unknown values are Automatic (0). Older
+// TestLLMWait (#3821, #3941): each choice of Models.LLMWait, and a custom
+// whole number of minutes up to WaitMaxMinutes, is the least wait for a
+// language model; empty and unknown values are Automatic (0). Older
 // documents have none (no migration); a choice survives a save and a read.
 func TestLLMWait(t *testing.T) {
 	for _, c := range []struct {
@@ -61,6 +62,9 @@ func TestLLMWait(t *testing.T) {
 	}{
 		{WaitAuto, 0}, {Wait1Min, time.Minute}, {Wait2Min, 2 * time.Minute},
 		{Wait5Min, 5 * time.Minute}, {Wait10Min, 10 * time.Minute}, {"1h", 0},
+		// #3941: any whole number of minutes the user typed, within limits
+		{"3m", 3 * time.Minute}, {"20m", 20 * time.Minute}, {WaitMinutes(WaitMaxMinutes), WaitMaxMinutes * time.Minute},
+		{"0m", 0}, {"-5m", 0}, {"61m", 0}, {"+5m", 0}, {"05m", 0}, {"1.5m", 0}, {"m", 0}, {"5", 0}, {"九m", 0},
 	} {
 		if d := (Models{LLMWait: c.v}).LLMWaitFor(); d != c.d {
 			t.Errorf("%q: %v, want %v", c.v, d, c.d)

@@ -925,6 +925,7 @@ def set_up_mocked_model(
     model.audio_decoder.main_token_candidate_ids = torch.arange(codebook_size + 1)
     model.audio_decoder.sampling_step = torch.zeros((), dtype=torch.int64)
     model.audio_decoder.sampler = None
+    model.audio_decoder.fused_frame_embeddings = False
     model.audio_decoder.fused_layers_unsupported_reason.return_value = (
         fused_layers_reason
     )
@@ -1055,7 +1056,8 @@ def test_setup_model_picks_the_codebook_sampler_and_logs_why(
             True,
             None,
             f"Drama 3 tower fused layers: on for passes up to {MAX_FUSED_ROWS} rows "
-            f"({', '.join(FUSED_KERNELS)})",
+            f"({', '.join(FUSED_KERNELS)}); fused frame embeddings and decode-row "
+            f"staging: off",
         ),
     ],
 )
@@ -2249,13 +2251,30 @@ def test_model_rejects_a_tower_that_cannot_share_the_backbone_pool() -> None:
 
 
 @pytest.mark.parametrize(
-    "pipeline_parallel_size,tensor_parallel_size", [(2, 1), (1, 2)]
+    (
+        "pipeline_parallel_size",
+        "tensor_parallel_size",
+        "attention_tensor_parallel_size",
+        "decode_context_parallel_size",
+        "error",
+    ),
+    [
+        (2, 1, 1, 1, "one pipeline rank"),
+        (1, 3, 3, 1, "key/value heads"),
+        (1, 2, 1, 1, "attn_tp_size=1 and attn_dcp_size=1"),
+        (1, 2, 2, 2, "attn_tp_size=2 and attn_dcp_size=2"),
+    ],
 )
-def test_model_rejects_more_than_one_tensor_or_pipeline_rank(
+def test_model_rejects_parallel_layouts_the_tower_cannot_follow(
     monkeypatch: pytest.MonkeyPatch,
     pipeline_parallel_size: int,
     tensor_parallel_size: int,
+    attention_tensor_parallel_size: int,
+    decode_context_parallel_size: int,
+    error: str,
 ) -> None:
+    """The tower's two key/value heads live in the backbone's pool, so the ranks
+    must split them as the backbone's attention does, evenly or shared evenly."""
     config_dict = fish_config_dict()
     decoder_config = config_dict["audio_decoder_config"]
     assert isinstance(decoder_config, dict)
@@ -2264,10 +2283,13 @@ def test_model_rejects_more_than_one_tensor_or_pipeline_rank(
         sglang_model,
         "get_parallel",
         lambda: SimpleNamespace(
-            pp_size=pipeline_parallel_size, tp_size=tensor_parallel_size
+            pp_size=pipeline_parallel_size,
+            tp_size=tensor_parallel_size,
+            attn_tp_size=attention_tensor_parallel_size,
+            attn_dcp_size=decode_context_parallel_size,
         ),
     )
-    with pytest.raises(NotImplementedError, match="one tensor and pipeline rank"):
+    with pytest.raises(NotImplementedError, match=error):
         Drama3ForCausalLM(FishOmniConfig(**config_dict))
 
 
@@ -2378,6 +2400,7 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         ({"page_size": 16}, "page_size"),
         ({"kv_cache_dtype": "fp8_e4m3"}, "model dtype"),
         ({"enable_torch_compile": True}, "torch.compile"),
+        ({"tp_size": 2}, "--tts_engine.tp_size"),
     ],
     ids=[
         "radix",
@@ -2391,6 +2414,7 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         "paged",
         "fp8-kv",
         "torch-compile",
+        "tensor-parallel-override",
     ],
 )
 def test_engine_rejects_settings_outside_the_supported_runtime(
