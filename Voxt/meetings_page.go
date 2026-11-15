@@ -21,9 +21,13 @@ import (
 
 const meetingsPageSize = 20
 
-// meetingPanelW is the details panel's width (DIPs at 100 %): a
-// transcript needs more room than a History entry.
-const meetingPanelW = 420
+// With a meeting open, the list is a column meetingListW wide (DIPs at
+// 100 %) beside its details, when they get at least meetingDetailMinW;
+// else the details take the page alone (#4019).
+const (
+	meetingListW      = 300
+	meetingDetailMinW = 520
+)
 
 type meetingsView struct {
 	list    []store.Meeting
@@ -301,55 +305,66 @@ func (a *app) meetingsPage(c *ui.Context) {
 				}, nil)
 			})
 		}
-		list, d := n.list, n.detail
-		w := px(t, meetingPanelW)
-		inline := a.pageWidth(c)-w >= px(t, historyListMinW)
+		d := n.detail
+		split := a.pageWidth(c)-px(t, meetingListW) >= px(t, meetingDetailMinW)
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-				switch {
-				case !n.read:
-					// The first read is on its way: no empty state yet.
-				case len(list) == 0:
-					a.meetingsEmpty(c)
-				default:
-					ui.List(c.Key("meetings-list"), &n.listUI, len(items)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp2)).
-						ItemKey(func(i int) any {
-							if it := items[i]; it.mt != nil {
-								return it.mt.ID
-							}
-							return "head/" + items[i].head
-						}).Rows(func(r ui.ListRow) {
-						if it := items[r.Index]; it.mt != nil {
-							at := -1
-							if r.Index == cur {
-								at = curAt
-							}
-							a.meetingRow(c, *it.mt, q, at)
-						} else {
-							ui.Text(c, it.head).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text3).
-								Padding(px(t, sp4), px(t, sp6), px(t, sp1))
-						}
-					})
-					if n.page > 0 || n.hasMore {
-						a.meetingsPager(c)
-					}
+			if d == nil || split {
+				col := ui.Column(c).MinWidth(0)
+				if d != nil {
+					col = col.Width(px(t, meetingListW)).Shrink(0)
+				} else {
+					col = col.Grow(1)
 				}
-			})
+				col.Children(func() { a.meetingsList(c, items, q, cur, curAt) })
+			}
 			if d != nil {
-				closePanel := func() {
-					if n.delID == "" { // a click in the Delete dialog is outside the drawer
-						a.stopMeetingPlayback()
-						n.detail = nil
-					}
+				if split {
+					ui.Box(c).Width(1).Background(tok(t).Line).Shrink(0)
 				}
-				sidePanel(c, "mt-detail", w, inline, i18n.T("Meeting details"), closePanel, func() {
-					a.meetingDetailSection(c, closePanel)
+				a.meetingDetailSection(c, func() {
+					a.stopMeetingPlayback()
+					n.detail = nil
 				})
 			}
 		})
 	})
 	a.meetingSettingsDialog(c)
 	a.meetingDeleteDialog(c)
+}
+
+// meetingsList is the meetings, by day, and the pager; the row at cur
+// has the current search match at curAt.
+func (a *app) meetingsList(c *ui.Context, items []meetingItem, q string, cur, curAt int) {
+	t := c.Theme()
+	n := &a.mv
+	switch {
+	case !n.read:
+		// The first read is on its way: no empty state yet.
+	case len(n.list) == 0:
+		a.meetingsEmpty(c)
+	default:
+		ui.List(c.Key("meetings-list"), &n.listUI, len(items)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp2)).
+			ItemKey(func(i int) any {
+				if it := items[i]; it.mt != nil {
+					return it.mt.ID
+				}
+				return "head/" + items[i].head
+			}).Rows(func(r ui.ListRow) {
+			if it := items[r.Index]; it.mt != nil {
+				at := -1
+				if r.Index == cur {
+					at = curAt
+				}
+				a.meetingRow(c, *it.mt, q, at)
+			} else {
+				ui.Text(c, it.head).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text3).
+					Padding(px(t, sp4), px(t, sp6), px(t, sp1))
+			}
+		})
+		if n.page > 0 || n.hasMore {
+			a.meetingsPager(c)
+		}
+	}
 }
 
 // meetingsEmpty is the list's empty state: no meeting yet, or none

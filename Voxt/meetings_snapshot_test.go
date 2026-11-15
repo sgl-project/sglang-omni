@@ -21,13 +21,14 @@ import (
 // TestSnapshotsMeetings saves the Meetings page (empty, the list, a
 // meeting's details with and without a language model, an interrupted
 // one, the settings and the delete dialog) at the default and the
-// smallest window, Chinese dark and English light.
+// smallest window and a wide one (the list beside the details), Chinese
+// dark and English light.
 func TestSnapshotsMeetings(t *testing.T) { runSnapshots(t, "VOXTNEW_SNAPSHOTS", snapshotsMeetings) }
 
 func snapshotsMeetings(t *testing.T, out string) {
 	meetingDevHook = func() bool { return true }
 	t.Cleanup(func() { meetingDevHook = nil })
-	for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}} {
+	for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}, {1280, 800}} {
 		for _, run := range []struct {
 			lang string
 			dark bool

@@ -32,7 +32,7 @@ type meetingDetail struct {
 	busy     bool
 	err      string
 	playback meetingDetailPlayback
-	segList  ui.ListState
+	segList  ui.ListState // the details' one list (meetingDetailSection)
 }
 
 func (a *app) openMeetingDetail(id string) {
@@ -64,28 +64,65 @@ func (a *app) openMeetingDetail(id string) {
 	})
 }
 
-// meetingDetailSection is the details panel's content; close hides it.
+// meetingDetailMaxW caps the details' lines (DIPs at 100 %), so that a
+// wide window does not make them too long to read.
+const meetingDetailMaxW = 960
+
+// meetingDetailSection is an open meeting's details, one list that
+// scrolls them all (#4019): its top (the title, summary, questions and
+// the transcript's heading), then a row for each transcript line, laid
+// out only in view however long the meeting.
 func (a *app) meetingDetailSection(c *ui.Context, close func()) {
 	t := c.Theme()
 	d := a.mv.detail
 	if d == nil {
 		return
 	}
-	ui.Column(c).Padding(px(t, sp4)).Gap(px(t, sp5)).Children(func() { a.meetingDetailBody(c, d, close) })
-}
-
-func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
-	t := c.Theme()
-	k := tok(t)
 	if d.loading || d.err != "" {
-		panelHeader(c, i18n.T("Meeting details"), close)
-		if d.loading {
-			caption(c, i18n.T("Loading…"))
-		} else {
-			notice(c, "mt-detail-err", noticeError, i18n.T("Could not read the meeting."), d.err, nil, nil)
-		}
+		ui.Column(c).Grow(1).MinWidth(0).Padding(px(t, sp4), px(t, sp6)).Gap(px(t, sp3)).Children(func() {
+			panelHeader(c, i18n.T("Meeting details"), close)
+			if d.loading {
+				caption(c, i18n.T("Loading…"))
+			} else {
+				notice(c, "mt-detail-err", noticeError, i18n.T("Could not read the meeting."), d.err, nil, nil)
+			}
+		})
 		return
 	}
+	segs := d.segments
+	names := speakerNameMap(d.meeting.Speakers)
+	rows := 1 + max(len(segs), 1) // the top, then the lines or the empty one
+	ui.List(c.Key("mt-detail"), &d.segList, rows).Grow(1).MinWidth(0).Label(i18n.T("Meeting details")).
+		ItemKey(func(i int) any {
+			if i == 0 || len(segs) == 0 {
+				return i
+			}
+			return "seg/" + itoa(segs[i-1].Idx)
+		}).Rows(func(r ui.ListRow) {
+		top, bottom := float32(0), float32(0)
+		if r.Index == 0 {
+			top = px(t, sp4)
+		}
+		if r.Index == rows-1 {
+			bottom = px(t, sp6)
+		}
+		ui.Column(c).Padding(top, px(t, sp6), bottom).MaxWidth(px(t, meetingDetailMaxW)).Children(func() {
+			switch {
+			case r.Index == 0:
+				ui.Column(c).Gap(px(t, sp5)).Padding(0, 0, px(t, sp1)).Children(func() { a.meetingDetailTop(c, d, close) })
+			case len(segs) == 0:
+				ui.Text(c, i18n.T("No transcript yet.")).TextColor(tok(t).Text3).Padding(px(t, sp2))
+			default:
+				a.meetingSegment(c, d, names, segs[r.Index-1])
+			}
+		})
+	})
+}
+
+// meetingDetailTop is the details above the transcript's lines.
+func (a *app) meetingDetailTop(c *ui.Context, d *meetingDetail, close func()) {
+	t := c.Theme()
+	k := tok(t)
 	mt := d.meeting
 	a.meetingDetailHeader(c, mt, close)
 	sum, hasSum := meeting.ParseStoredSummary(mt.Summary)
@@ -95,7 +132,7 @@ func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
 	title := meetingTitle(mt)
 	file := strings.NewReplacer("/", "-", ":", "-").Replace(title)
 
-	// Each section: a title row with its actions, then its card.
+	// Each section: a title row with its actions, then its body.
 	section := func(key, heading string, actions, body func()) {
 		ui.Column(c.Key(key)).Gap(px(t, sp1)).Children(func() {
 			ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).MinHeight(px(t, 28)).Children(func() {
@@ -104,7 +141,9 @@ func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
 					actions()
 				}
 			})
-			body()
+			if body != nil {
+				body()
+			}
 		})
 	}
 	section("mt-sum", i18n.T("Summary"), func() {
@@ -139,6 +178,27 @@ func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
 			}
 		})
 	})
+	if canLLM {
+		section("mt-ask", i18n.T("Ask about this meeting"), nil, func() {
+			for i, msg := range d.chat {
+				if msg.Role == "user" {
+					ui.Text(c.Key(fmt.Sprintf("mt-chat-%d", i)), msg.Content).FontWeight(600)
+				} else {
+					ui.Text(c.Key(fmt.Sprintf("mt-chat-%d", i)), msg.Content).TextColor(k.Text2).Selectable()
+				}
+			}
+			if d.busy {
+				caption(c, i18n.T("Answering…"))
+			}
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+				ui.TextInput(c.Key("mt-followup"), &d.question).Placeholder(i18n.T("Follow-up question")).Grow(1).MinWidth(0)
+				q := strings.TrimSpace(d.question)
+				if ui.Button(c.Key("mt-ask"), i18n.T("Send question")).Disabled(d.busy || q == "").Clicked() {
+					a.askMeetingFollowUp(d.id, q)
+				}
+			})
+		})
+	}
 	section("mt-tr", i18n.T("Transcript"), func() {
 		a.meetingPlaybackBar(c, d)
 		if len(d.segments) == 0 {
@@ -156,37 +216,7 @@ func (a *app) meetingDetailBody(c *ui.Context, d *meetingDetail, close func()) {
 				a.saveMeetingExport(file+".md", meeting.ExportMarkdown(title, exportSegs, names))
 			}
 		})
-	}, func() {
-		fillCard(c).Padding(px(t, sp1)).Gap(0).Children(func() {
-			if len(d.segments) == 0 {
-				ui.Text(c, i18n.T("No transcript yet.")).TextColor(k.Text3).Padding(px(t, sp2))
-				return
-			}
-			a.meetingTranscriptList(c, d)
-		})
-	})
-	if !canLLM {
-		return
-	}
-	section("mt-ask", i18n.T("Ask about this meeting"), nil, func() {
-		for i, msg := range d.chat {
-			if msg.Role == "user" {
-				ui.Text(c.Key(fmt.Sprintf("mt-chat-%d", i)), msg.Content).FontWeight(600)
-			} else {
-				ui.Text(c.Key(fmt.Sprintf("mt-chat-%d", i)), msg.Content).TextColor(k.Text2).Selectable()
-			}
-		}
-		if d.busy {
-			caption(c, i18n.T("Answering…"))
-		}
-		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("mt-followup"), &d.question).Placeholder(i18n.T("Follow-up question")).Grow(1).MinWidth(0)
-			q := strings.TrimSpace(d.question)
-			if ui.Button(c.Key("mt-ask"), i18n.T("Send question")).Disabled(d.busy || q == "").Clicked() {
-				a.askMeetingFollowUp(d.id, q)
-			}
-		})
-	})
+	}, nil)
 }
 
 func (a *app) askMeetingFollowUp(id, question string) {
