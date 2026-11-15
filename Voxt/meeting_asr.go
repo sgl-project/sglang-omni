@@ -41,7 +41,8 @@ func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.
 			hints = session.SpeechHints(a.prefs, terms)
 		}
 	}
-	prompt := asr.BuildSpeechPrompt(strings.TrimSpace(a.prefs.Dictionary.SpeechContext), "", session.MainLanguage(a.prefs, i18n.Locale()), a.prefs.General.OtherLanguages, hints)
+	// What dictation's speechContext gives an on-device model: no service template.
+	prompt := strings.TrimSpace(a.prefs.Dictionary.SpeechContext)
 	ta := meeting.TrackASR{Caps: caps, Lang: l, Prompt: prompt, Hints: hints, StreamReq: asr.StreamRequest{Lang: l, Prompt: prompt, Hints: hints}}
 	if ft, ok := p.(asr.FileTranscriber); ok && caps.File {
 		ta.File = ft
