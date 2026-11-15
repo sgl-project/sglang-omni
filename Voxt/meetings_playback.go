@@ -231,9 +231,9 @@ func meetingSpeakerText(speaker string, names map[string]string) string {
 	label := meeting.SpeakerLabel(speaker, names)
 	switch label {
 	case "Me":
-		return i18n.T("Me")
+		return i18n.T("You")
 	case "Them":
-		return i18n.T("Other")
+		return i18n.T("Others")
 	case "Speaker " + speaker[1:]: // s1…s4, unnamed ("" is Them above)
 		return i18n.T("Speaker %s", speaker[1:])
 	}

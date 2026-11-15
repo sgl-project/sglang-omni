@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
@@ -20,7 +22,7 @@ func TestMeetingOverlayControlsFit(t *testing.T) {
 			s.Problem = &meeting.Problem{Key: problem}
 		}
 		a.meetSnap, a.meetOvCollapsed = s, true
-		m := overlayModel(s, true)
+		m := overlayModel(s, true, 0, meetingMenuNone)
 		tt := ui.NewTester(a.meetingOverlayView, m.Layout.Width, m.Layout.Height)
 		frames(tt)
 		for _, label := range []string{"Pause meeting", "End meeting", "Expand", meetingOverlayProblemText(problem)} {
@@ -40,7 +42,7 @@ func TestMeetingOverlayStartingCanEnd(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	s := meeting.Snapshot{ID: "m1", State: meeting.StateStarting, Mode: meeting.ModeMeeting}
 	a.meetSnap, a.meetOvCollapsed = s, true
-	m := overlayModel(s, true)
+	m := overlayModel(s, true, 0, meetingMenuNone)
 	tt := ui.NewTester(a.meetingOverlayView, m.Layout.Width, m.Layout.Height)
 	frames(tt)
 	if _, ok := tt.Find("End meeting"); !ok {
@@ -82,8 +84,13 @@ func TestMeetingOverlayFrame(t *testing.T) {
 		t.Errorf("expanded after a drag: %+v", f)
 	}
 	low := mygo.Rectangle{X: 1000, Y: 730, Width: 400, Height: 60}
-	if f := meetingOverlayFrame(low, area, 560, 420); f.X != 1280-560+layout.Pad || f.Y != 25+775-420+layout.Pad {
-		t.Errorf("expanded by the bottom-right corner: %+v, want the face inside %+v", f, area)
+	if f := meetingOverlayFrame(low, area, 560, 420); f.X != 1280-560+layout.Pad || f.Y != 730+60-420 {
+		t.Errorf("expanded by the bottom-right corner: %+v, want it inside %+v, its bottom where it was", f, area)
+	}
+	// Low on the screen it grows upward with its text, its bottom kept.
+	first := meetingOverlayFrame(mygo.Rectangle{}, area, 560, 120)
+	if f := meetingOverlayFrame(first, area, 560, 300); f.Y+f.Height != first.Y+first.Height {
+		t.Errorf("grew from %+v to %+v: its bottom moved", first, f)
 	}
 	edge := mygo.Rectangle{X: -layout.Pad, Y: 25 - layout.Pad, Width: 400, Height: 60} // the face flush with the top-left corner
 	if f := meetingOverlayFrame(edge, area, 400, 60); f != edge {
@@ -118,7 +125,8 @@ func TestMeetingOverlayFollowsNewestLine(t *testing.T) {
 		a.meetSnap = s
 	}
 	a.meetOvCollapsed = false
-	m := overlayModel(s, false)
+	m := overlayModel(s, false, 0, meetingMenuNone)
+	m.Layout.Height = meetingOvMaxFaceH + 2*layout.Pad // as high as it grows with the lines below
 	tt := ui.NewTester(a.meetingOverlayView, m.Layout.Width, m.Layout.Height)
 	shows := func(text string) bool {
 		r, ok := tt.Find(text)
@@ -191,5 +199,65 @@ func TestMeetingOverlayFollowsNewestLine(t *testing.T) {
 	frames(tt)
 	if !shows(newest()) {
 		t.Fatalf("next meeting: %q not in view", newest())
+	}
+}
+
+// The expanded header holds the mode and More (11-15): Cancel meeting is
+// in More, not beside Pause and End; a mode's row closes the menu.
+func TestMeetingOverlayMenus(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	s := meeting.Snapshot{ID: "m1", State: meeting.StateRecording, Mode: meeting.ModeMeeting}
+	a.meetSnap, a.meetOvCollapsed = s, false
+	tt := ui.NewTester(a.meetingOverlayView, meetingOvWidths[0]+2*layout.Pad, meetingOvMaxFaceH+2*layout.Pad)
+	frames(tt)
+	for _, label := range []string{"Meeting mode", "Pause meeting", "End meeting", "More", "Collapse"} {
+		if r, ok := tt.Find(label); !ok || r.X+r.W > float32(meetingOvWidths[0]+layout.Pad) {
+			t.Errorf("%q at %+v (found %v): not in the header", label, r, ok)
+		}
+	}
+	if _, ok := tt.Find("Cancel meeting"); ok {
+		t.Fatal("Cancel meeting shows before More is opened")
+	}
+	click := func(label string) {
+		t.Helper()
+		if err := tt.ClickControl(label); err != nil {
+			t.Fatalf("%s: %v (controls %q)", label, err, tt.AccessLabels())
+		}
+		frames(tt)
+	}
+	click("More")
+	click("Cancel meeting")
+	if !a.meetingAbandon || a.meetOvMenu != meetingMenuNone {
+		t.Fatalf("after Cancel meeting: asks %v, menu %v", a.meetingAbandon, a.meetOvMenu)
+	}
+	a.meetingAbandon = false
+	click("Meeting mode")
+	if _, ok := tt.Find("System audio only"); !ok || a.meetOvMenu != meetingMenuMode {
+		t.Fatalf("the modes do not show: menu %v", a.meetOvMenu)
+	}
+	click("Subtitles")
+	if a.meetOvMenu != meetingMenuNone {
+		t.Fatal("the menu stays after a mode is picked")
+	}
+}
+
+// A meeting that does not start, pause or end says so in a toast, not
+// only in the log (11-15: Start meeting looked like it did nothing).
+func TestMeetingFailureToasts(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.meetingFailed("start", meetingStartProblem(&meeting.StartError{Source: meeting.SourceMic, Err: fmt.Errorf("wrapped: %w", local.ErrNotInstalled), Guidance: meeting.GuidanceModel}), errors.New("x"))
+	if len(a.toasts) != 1 || !strings.Contains(a.toasts[0], "not downloaded") {
+		t.Fatalf("toasts %q", a.toasts)
+	}
+	for err, want := range map[error]string{
+		&meeting.StartError{Source: meeting.SourceSystem, Err: errors.New("omni: no runtime"), Guidance: meeting.GuidanceModel}: "Could not load the speech model for meetings: omni: no runtime",
+		&meeting.StartError{Source: meeting.SourceSystem, Err: errors.New("denied")}:                                            "Could not record system audio.",
+		&meeting.StartError{Source: meeting.SourceMic, Err: errors.New("denied")}:                                               "Could not record the microphone.",
+		meeting.ErrBusy:            "A meeting is already recording.",
+		errors.New("disk is full"): "Could not start the meeting: disk is full",
+	} {
+		if got := meetingStartProblem(err); !strings.HasPrefix(got, want) {
+			t.Errorf("%v: %q, want %q…", err, got, want)
+		}
 	}
 }

@@ -34,6 +34,16 @@ func TestMeetingsInReleaseBuild(t *testing.T) {
 	if !has(tt, "No meetings yet.") {
 		t.Fatalf("the Meetings page: %q", firstTexts(tt))
 	}
+	// 11-15: the empty state repeated the header's settings button.
+	settings := 0
+	for _, l := range tt.AccessLabels() {
+		if l == "Meeting settings" {
+			settings++
+		}
+	}
+	if settings != 1 {
+		t.Fatalf("%d Meeting settings buttons, want the header's one", settings)
+	}
 }
 
 func TestMeetingsPageSearchPaginationEmpty(t *testing.T) {
@@ -126,5 +136,39 @@ func TestMeetingsPageListsMeetingInProgress(t *testing.T) {
 	frames(tt)
 	if hasExact(tt, "In progress") || !hasExact(tt, "5 min") {
 		t.Fatalf("ended meeting: %q", firstTexts(tt))
+	}
+}
+
+// The details of the meeting being recorded follow it (11-15: they kept the
+// lines from when they were opened): new lines and translations show as
+// they come, before their store writes land.
+func TestMeetingDetailFollowsRecording(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	ctx := context.Background()
+	repo := a.lib.store.Meetings()
+	rec, err := repo.CreateMeeting(ctx, store.Meeting{ID: "live", CreatedAt: time.Now(), Status: store.MeetingRecording, Mode: store.MeetingModeMeeting})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AppendSegments(ctx, rec.Seq, []store.MeetingSegment{{Idx: 0, Source: store.SegmentSystem, Text: "first line", EndMS: 1000, Final: true}}); err != nil {
+		t.Fatal(err)
+	}
+	first := meeting.Segment{ID: "s0", Source: meeting.SourceSystem, End: time.Second, Text: "first line", Final: true}
+	snap := meeting.Snapshot{ID: "live", State: meeting.StateRecording, Segments: []meeting.Segment{first}}
+	a.meetingChanged(snap)
+	a.navigate("/meetings")
+	a.openMeetingDetail("live")
+	for i := 0; i < 50 && a.mv.detail.loading; i++ {
+		frames(tt)
+	}
+	if !has(tt, "first line") {
+		t.Fatalf("details: %q", firstTexts(tt))
+	}
+	first.Translation = "第一行"
+	snap.Segments = []meeting.Segment{first, {ID: "s1", StoreIdx: 1, Source: meeting.SourceMic, Start: 2 * time.Second, End: 3 * time.Second, Text: "second line", Final: true}}
+	a.meetingChanged(snap)
+	frames(tt)
+	if !has(tt, "second line") || !has(tt, "第一行") {
+		t.Fatalf("the details did not follow the meeting: %q", firstTexts(tt))
 	}
 }

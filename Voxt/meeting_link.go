@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"time"
 
@@ -62,6 +63,11 @@ func (a *app) openMeetings() {
 		},
 		Context:         a.meetingTranscriptContext,
 		SystemCaptureOK: a.systemCaptureOK,
+		Warn: func(msg string) {
+			a.post(func() {
+				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: msg})
+			})
+		},
 	})
 	a.meetMgr.Subscribe(func(s meeting.Snapshot) {
 		a.post(func() { a.meetingChanged(s) })
@@ -87,9 +93,13 @@ func (a *app) meetingActive() bool {
 func (a *app) meetingChanged(s meeting.Snapshot) {
 	prev := a.meetSnap
 	a.meetSnap = s
+	if s.ID != prev.ID || s.State != prev.State {
+		a.meetOvMenu = meetingMenuNone // a menu for the state it opened in
+	}
 	if a.mv.read && (s.ID != prev.ID || s.State != prev.State) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
 	}
+	a.followMeeting(s, prev)
 	a.syncMeetingOverlay()
 	a.syncHotkeys()
 	if a.tray != nil {
@@ -118,7 +128,7 @@ func (a *app) startMeeting() {
 		_, err := a.meetMgr.Start(ctx, meeting.StartRequest{Mode: meetingModeFrom(a.prefs.Features.Meeting)})
 		if err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "start: " + err.Error()})
+				a.meetingFailed("start", meetingStartProblem(err), err)
 			})
 		}
 	})
@@ -140,7 +150,7 @@ func (a *app) meetingPauseResume() {
 		}
 		if err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: err.Error()})
+				a.meetingFailed("pause", i18n.T("Could not pause or resume the meeting: %v", err), err)
 			})
 		}
 	})
@@ -155,7 +165,7 @@ func (a *app) meetingFinish() {
 		ctx := context.Background()
 		if err := a.meetMgr.Finish(ctx, id); err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "finish: " + err.Error()})
+				a.meetingFailed("finish", i18n.T("Could not end the meeting: %v", err), err)
 			})
 		}
 	})
@@ -169,7 +179,7 @@ func (a *app) meetingSave() {
 	a.async(func() {
 		if err := a.meetMgr.Save(context.Background(), id); err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "save: " + err.Error()})
+				a.meetingFailed("save", i18n.T("Could not save the meeting: %v", err), err)
 			})
 			return
 		}
@@ -186,7 +196,7 @@ func (a *app) meetingReprocess(id string) {
 		defer cancel()
 		if err := a.meetMgr.Reprocess(ctx, id); err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "reprocess: " + err.Error()})
+				a.meetingFailed("reprocess", i18n.T("Could not transcribe the meeting again: %v", err), err)
 			})
 			return
 		}
@@ -248,7 +258,7 @@ func (a *app) meetingSetMode(mode meeting.Mode) {
 	a.async(func() {
 		if err := a.meetMgr.SetMode(context.Background(), id, mode); err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: err.Error()})
+				a.meetingFailed("mode", i18n.T("Could not change the meeting mode: %v", err), err)
 			})
 		}
 	})
@@ -262,8 +272,34 @@ func (a *app) meetingDiscard() {
 	a.async(func() {
 		if err := a.meetMgr.Discard(context.Background(), id); err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "discard: " + err.Error()})
+				a.meetingFailed("discard", i18n.T("Could not discard the meeting: %v", err), err)
 			})
 		}
 	})
+}
+
+// meetingFailed tells the user an action on the meeting failed, and logs
+// it: a failure only in the log looked like a button that did nothing
+// (11-15, Start meeting without the speech model).
+func (a *app) meetingFailed(what, msg string, err error) {
+	a.toast(msg)
+	a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: what + ": " + err.Error()})
+}
+
+// meetingStartProblem is what the user reads when a meeting does not start.
+func meetingStartProblem(err error) string {
+	var se *meeting.StartError
+	switch {
+	case errors.Is(err, local.ErrNotInstalled):
+		return i18n.T("The speech model for meetings is not downloaded. Download it in Settings → Meetings.")
+	case errors.Is(err, meeting.ErrBusy):
+		return i18n.T("A meeting is already recording.")
+	case errors.As(err, &se) && se.Guidance == meeting.GuidanceModel:
+		return i18n.T("Could not load the speech model for meetings: %v", se.Err)
+	case errors.As(err, &se) && se.Source == meeting.SourceSystem:
+		return i18n.T("Could not record system audio. Allow Voxt in System Settings → Privacy & Security → Screen & System Audio Recording, or record the microphone only.")
+	case errors.As(err, &se):
+		return i18n.T("Could not record the microphone. Allow Voxt in System Settings → Privacy & Security → Microphone.")
+	}
+	return i18n.T("Could not start the meeting: %v", err)
 }

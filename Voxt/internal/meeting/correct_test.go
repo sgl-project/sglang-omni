@@ -3,6 +3,7 @@ package meeting
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -146,5 +147,40 @@ func TestParseCorrectionIgnoresOtherLines(t *testing.T) {
 	}
 	if got := parseCorrection("sorry, I cannot", batch); len(got) != 0 {
 		t.Fatalf("%v", got)
+	}
+}
+
+// failingChat fails every request.
+type failingChat struct{}
+
+func (failingChat) Chat(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, errors.New("rate limited")
+}
+
+// A correction or summary that fails after the meeting is in the log, not
+// dropped (11-15).
+func TestCorrectAndSummarizeWarns(t *testing.T) {
+	m, _, _ := correctFixture(t, store.MeetingSegment{Idx: -1, Source: store.SegmentMic, Speaker: "me", Text: "Box ships today"})
+	var got []string
+	m.cfg.LLM = func(context.Context, string) (SummaryChat, error) { return failingChat{}, nil }
+	m.cfg.Warn = func(msg string) { got = append(got, msg) }
+	m.correctAndSummarize(context.Background(), "m")
+	if len(got) != 2 || !strings.HasPrefix(got[0], "correct: ") || !strings.Contains(got[0], "rate limited") || !strings.HasPrefix(got[1], "summary: ") {
+		t.Fatalf("warnings %q", got)
+	}
+}
+
+// A line's live translation goes under that line (11-15: the snapshot's
+// lines all had store index 0, so the first line's translation went under
+// every line and the others' under none).
+func TestLiveTranslationFindsItsLine(t *testing.T) {
+	m, _, _ := correctFixture(t)
+	m.commitSegment(Segment{Source: SourceSystem, Text: "one"})
+	m.commitSegment(Segment{Source: SourceSystem, Start: time.Second, Text: "two"})
+	m.segWrites.Wait()
+	m.applyTranslation(1, "二")
+	segs := m.Current().Segments
+	if len(segs) != 2 || segs[0].Translation != "" || segs[1].Translation != "二" {
+		t.Fatalf("%+v", segs)
 	}
 }

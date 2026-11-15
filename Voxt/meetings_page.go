@@ -379,11 +379,7 @@ func (a *app) meetingsEmpty(c *ui.Context) {
 		return
 	}
 	emptyState(c, meetingIcon, i18n.T("No meetings yet."),
-		i18n.T("Start a meeting to record your microphone and, when supported, audio from other apps."), func() {
-			if ghostButton(c.Key("mt-empty-settings"), i18n.T("Meeting settings")).Clicked() {
-				n.setOpen = true
-			}
-		})
+		i18n.T("Start a meeting to record your microphone and, when supported, audio from other apps."), nil)
 }
 
 // meetingRow is a meeting in the list: its title and status, and when,

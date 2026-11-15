@@ -94,7 +94,7 @@ func speechPCM(ms time.Duration, rate int) []byte {
 	out := make([]byte, n*2)
 	for i := 0; i < n; i++ {
 		if i%80 < 40 {
-			out[i*2], out[i*2+1] = 0x40, 0
+			out[i*2], out[i*2+1] = 0, 0x10 // about -18 dBFS: the VAD hears it
 		}
 	}
 	return out
@@ -329,6 +329,91 @@ func TestLiveSegmentEndsAtBreath(t *testing.T) {
 		}
 		if text := (*got)[0].Text; strings.HasSuffix(text, "。") || strings.HasSuffix(text, ".") {
 			t.Fatalf("forced cut mid-sentence ends in a full stop: %q", text)
+		}
+	}
+}
+
+// A phrase starts when its speech does: after a commit, the silence until
+// the next words is no part of them (11-15: a line said at 30 s started at
+// the 9 s commit before it and sorted before the other side's reply).
+func TestLivePhraseStartsAtSpeech(t *testing.T) {
+	const rate = 16000
+	ctx := context.Background()
+	fs := &liveFakeStreamer{partial: " "} // nothing heard yet
+	var got []Segment
+	live := &Live{
+		Clock:    (&tickingClock{t: time.Unix(0, 0)}).Now,
+		Streamer: fs,
+		Req:      asr.StreamRequest{SampleRate: rate},
+		Speech:   NewSpeech(rate, levelModel{}),
+		OnCommit: func(s Segment) { got = append(got, s) },
+	}
+	if err := live.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	push := func(pcm []byte) {
+		for off := 0; off < len(pcm); off += rate / 10 * 2 {
+			if err := live.Push(ctx, pcm[off:min(off+rate/10*2, len(pcm))]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	say := func(text string) {
+		st := fs.streams[0]
+		st.mu.Lock()
+		st.partial = text
+		st.mu.Unlock()
+	}
+	push(silencePCM(2*time.Second, rate))
+	say("First.")
+	push(speechPCM(2*time.Second, rate))
+	push(silencePCM(5*time.Second, rate))
+	say("First. Second.")
+	push(speechPCM(2*time.Second, rate))
+	push(silencePCM(time.Second, rate))
+	if len(got) != 2 {
+		t.Fatalf("%d commits, want 2: %+v", len(got), got)
+	}
+	for i, want := range []time.Duration{2 * time.Second, 9 * time.Second} {
+		if s := got[i].Start; s < want-300*time.Millisecond || s > want {
+			t.Errorf("phrase %d (%q) starts at %v, want its speech at %v", i+1, got[i].Text, s, want)
+		}
+	}
+}
+
+// What the model writes for silence is no line (11-15: "在" on a quiet
+// system track); the same word said is one.
+func TestLiveDropsWordsForSilence(t *testing.T) {
+	const rate = 16000
+	for _, tc := range []struct {
+		name  string
+		audio []byte
+		want  int
+	}{
+		{"silence", silencePCM(3*time.Second, rate), 0},
+		{"said", speechPCM(3*time.Second, rate), 1},
+	} {
+		ctx := context.Background()
+		fs := &liveFakeStreamer{partial: "在"}
+		var got []Segment
+		live := &Live{
+			Clock:    (&tickingClock{t: time.Unix(0, 0)}).Now,
+			Streamer: fs,
+			Req:      asr.StreamRequest{SampleRate: rate},
+			Speech:   NewSpeech(rate, levelModel{}),
+			OnCommit: func(s Segment) { got = append(got, s) },
+		}
+		if err := live.Open(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := live.Push(ctx, tc.audio); err != nil {
+			t.Fatal(err)
+		}
+		if err := live.Finish(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != tc.want {
+			t.Errorf("%s: %d lines %+v, want %d", tc.name, len(got), got, tc.want)
 		}
 	}
 }

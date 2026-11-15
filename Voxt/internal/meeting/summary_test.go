@@ -39,6 +39,10 @@ func TestRenderSummaryPromptReplacesTranscriptAndSpeakerNames(t *testing.T) {
 	if strings.Contains(prompt, "{{TRANSCRIPT_RECORD}}") {
 		t.Fatal("placeholder not replaced")
 	}
+	// A custom template too says who Me and Them are (由 Me 负责, 11-15).
+	if !strings.Contains(prompt, `write "you" in the user's main language`) {
+		t.Fatalf("no speakers rule: %q", prompt)
+	}
 }
 
 func TestParseSummaryKeysAndFences(t *testing.T) {

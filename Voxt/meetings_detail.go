@@ -45,6 +45,13 @@ func (a *app) openMeetingDetail(id string) {
 	n := &a.mv
 	n.detail = &meetingDetail{id: id, loading: true}
 	n.detail.playback.highlight = -1
+	a.loadMeetingDetail(id)
+}
+
+// loadMeetingDetail reads the open meeting from the store, keeping the
+// details' other state (scroll, question, playback).
+func (a *app) loadMeetingDetail(id string) {
+	n := &a.mv
 	repo := a.lib.store.Meetings()
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -64,6 +71,32 @@ func (a *app) openMeetingDetail(id string) {
 			n.detail.chat, _ = meeting.ParseChatMessages(mt.Chat)
 		})
 	})
+}
+
+// followMeeting keeps the open details of the meeting being recorded
+// current (11-15: they showed the lines from when they were opened): a
+// new state reads it again, a new line is added from the snapshot, whose
+// store write may not have landed yet.
+func (a *app) followMeeting(s, prev meeting.Snapshot) {
+	d := a.mv.detail
+	if d == nil || d.id != s.ID || d.loading {
+		return
+	}
+	if s.State != prev.State {
+		a.loadMeetingDetail(s.ID)
+		return
+	}
+	at := make(map[int]int, len(d.segments))
+	for i, row := range d.segments {
+		at[row.Idx] = i
+	}
+	for _, seg := range s.Segments {
+		if i, ok := at[seg.StoreIdx]; ok {
+			d.segments[i].Translation = seg.Translation // translated live
+		} else {
+			d.segments = append(d.segments, seg.Row())
+		}
+	}
 }
 
 // meetingDetailMaxW caps the details' lines (DIPs at 100 %), so that a

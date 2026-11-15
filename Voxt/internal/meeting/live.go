@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -84,6 +85,12 @@ func (l *Live) Push(ctx context.Context, pcm []byte) error {
 	l.timeline += pcmDuration(pcm)
 	l.drainEvents()
 	speaking, silence := l.Speech.Push(pcm)
+	if !speaking && l.committer.Live() == "" {
+		// Nothing said since the last commit: the next phrase starts after
+		// this silence, not at that commit (11-15: a reply that came 20 s
+		// later sorted before the line it answered).
+		l.committer.BeginPhrase(l.timeline)
+	}
 	if tail := l.committer.Live(); collapseLoops(tail) != tail {
 		// The model loops (#3981): commit the text once and restart it, so the
 		// loop does not run on into the next segments.
@@ -198,7 +205,16 @@ func (l *Live) stalePartial(speaking bool) bool {
 	return true
 }
 
+// silenceWordsMax is the longest text taken for the model's words for silence.
+const silenceWordsMax = 12
+
 func (l *Live) emit(seg Segment) {
+	if l.Speech != nil && !l.Speech.SpokeSince(seg.Start) && len([]rune(strings.TrimSpace(seg.Text))) <= silenceWordsMax {
+		// The model's words for silence ("在" on a quiet system track,
+		// 11-15): no speech since the phrase began, nothing was said.
+		// shortcut: longer text is kept, since the VAD may have missed a quiet speaker.
+		return
+	}
 	seg.Source = l.Source
 	if l.OnCommit != nil {
 		l.OnCommit(seg)
