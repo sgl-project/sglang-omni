@@ -81,13 +81,15 @@ func (a *app) syncMeetingOverlay() {
 
 // meetingOverlayFrame is the overlay's frame for w × h: where the window
 // is now (at, zero before it shows), else at the bottom centre of the
-// work area, kept inside the work area as it grows.
+// work area, the face kept inside the work area as it grows (the
+// window's transparent margin, layout.Pad, may go past it, as
+// overlayFrame's).
 func meetingOverlayFrame(at, area mygo.Rectangle, w, h int) mygo.Rectangle {
 	if at.Width == 0 {
 		return mygo.Rectangle{X: area.X + (area.Width-w)/2, Y: area.Y + area.Height - h - 28, Width: w, Height: h}
 	}
-	x := max(min(at.X, area.X+area.Width-w), area.X)
-	y := max(min(at.Y, area.Y+area.Height-h), area.Y)
+	x := max(min(at.X, area.X+area.Width-w+layout.Pad), area.X-layout.Pad)
+	y := max(min(at.Y, area.Y+area.Height-h+layout.Pad), area.Y-layout.Pad)
 	return mygo.Rectangle{X: x, Y: y, Width: w, Height: h}
 }
 

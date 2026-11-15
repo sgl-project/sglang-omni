@@ -6,6 +6,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
 // The capsule's controls fit in its window, with a long warning too.
@@ -79,8 +80,12 @@ func TestMeetingOverlayFrame(t *testing.T) {
 		t.Errorf("expanded after a drag: %+v", f)
 	}
 	low := mygo.Rectangle{X: 1000, Y: 730, Width: 400, Height: 60}
-	if f := meetingOverlayFrame(low, area, 560, 420); f.X != 1280-560 || f.Y != 25+775-420 {
-		t.Errorf("expanded by the bottom-right corner: %+v, want inside %+v", f, area)
+	if f := meetingOverlayFrame(low, area, 560, 420); f.X != 1280-560+layout.Pad || f.Y != 25+775-420+layout.Pad {
+		t.Errorf("expanded by the bottom-right corner: %+v, want the face inside %+v", f, area)
+	}
+	edge := mygo.Rectangle{X: -layout.Pad, Y: 25 - layout.Pad, Width: 400, Height: 60} // the face flush with the top-left corner
+	if f := meetingOverlayFrame(edge, area, 400, 60); f != edge {
+		t.Errorf("dragged flush with the corner, then updated: %+v, want %+v", f, edge)
 	}
 	other := mygo.Rectangle{X: -1920, Y: 0, Width: 1920, Height: 1080} // a screen left of the main one
 	at := mygo.Rectangle{X: -1500, Y: 300, Width: 400, Height: 60}
