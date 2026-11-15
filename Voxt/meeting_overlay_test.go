@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 )
@@ -59,5 +60,31 @@ func TestMeetingOverlayContentProtection(t *testing.T) {
 	a.applyMeetingOverlayProtection()
 	if len(got) != 2 || got[0] || !got[1] {
 		t.Fatalf("content protection calls %v", got)
+	}
+}
+
+// TestMeetingOverlayFrame: the overlay first shows at the bottom centre,
+// then stays where the user dragged it as it grows or shrinks (#3984),
+// kept inside the work area of the screen it is on.
+func TestMeetingOverlayFrame(t *testing.T) {
+	area := mygo.Rectangle{X: 0, Y: 25, Width: 1280, Height: 775}
+	if f := meetingOverlayFrame(mygo.Rectangle{}, area, 400, 60); f != (mygo.Rectangle{X: 440, Y: 25 + 775 - 60 - 28, Width: 400, Height: 60}) {
+		t.Errorf("first show: %+v", f)
+	}
+	dragged := mygo.Rectangle{X: 100, Y: 200, Width: 400, Height: 60}
+	if f := meetingOverlayFrame(dragged, area, 400, 60); f != dragged {
+		t.Errorf("an update after a drag moved it: %+v, want %+v", f, dragged)
+	}
+	if f := meetingOverlayFrame(dragged, area, 560, 420); f.X != 100 || f.Y != 200 || f.Width != 560 || f.Height != 420 {
+		t.Errorf("expanded after a drag: %+v", f)
+	}
+	low := mygo.Rectangle{X: 1000, Y: 730, Width: 400, Height: 60}
+	if f := meetingOverlayFrame(low, area, 560, 420); f.X != 1280-560 || f.Y != 25+775-420 {
+		t.Errorf("expanded by the bottom-right corner: %+v, want inside %+v", f, area)
+	}
+	other := mygo.Rectangle{X: -1920, Y: 0, Width: 1920, Height: 1080} // a screen left of the main one
+	at := mygo.Rectangle{X: -1500, Y: 300, Width: 400, Height: 60}
+	if f := meetingOverlayFrame(at, other, 400, 60); f != at {
+		t.Errorf("on the other screen: %+v, want %+v", f, at)
 	}
 }

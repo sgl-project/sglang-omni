@@ -21,7 +21,6 @@ import (
 type meetingOverlayState struct {
 	meetOvWin       *mygo.Window
 	meetOvShown     bool
-	meetOvFrame     mygo.Rectangle
 	meetOvCollapsed bool
 }
 
@@ -56,15 +55,19 @@ func (a *app) syncMeetingOverlay() {
 		a.meetOvWin = mygo.NewWindow(opts)
 		a.meetOvWin.SetMovable(true)
 	}
-	area := a.overlayArea()
-	x := area.X + (area.Width-w)/2
-	y := area.Y + area.Height - h - 28
-	if a.meetOvFrame.Width > 0 {
-		x, y = a.meetOvFrame.X, a.meetOvFrame.Y
+	at := mygo.Rectangle{}
+	if a.meetOvShown {
+		at = a.meetOvWin.ContentBounds() // where the user dragged it
 	}
-	frame := mygo.Rectangle{X: x, Y: y, Width: w, Height: h}
-	a.meetOvFrame = frame
-	a.meetOvWin.SetContentBounds(frame)
+	area := a.overlayArea()
+	if at.Width > 0 {
+		area = mygo.Screen.DisplayMatching(at).WorkArea
+	}
+	frame := meetingOverlayFrame(at, area, w, h)
+	x, y := frame.X, frame.Y
+	if frame != at {
+		a.meetOvWin.SetContentBounds(frame)
+	}
 	mode, faceH := meetingOverlayFace(model)
 	a.meetOvWin.SetVibrancyStyle(mygo.VibrancyStyle{Top: layout.Pad, Right: layout.Pad, Bottom: layout.Pad, Left: layout.Pad,
 		Radius: float64(faceRadius(a.prefs.Overlay, mode, faceH)), Dark: true})
@@ -74,6 +77,18 @@ func (a *app) syncMeetingOverlay() {
 		showFloating(a.meetOvWin, x, y)
 		a.meetOvShown = true
 	}
+}
+
+// meetingOverlayFrame is the overlay's frame for w × h: where the window
+// is now (at, zero before it shows), else at the bottom centre of the
+// work area, kept inside the work area as it grows.
+func meetingOverlayFrame(at, area mygo.Rectangle, w, h int) mygo.Rectangle {
+	if at.Width == 0 {
+		return mygo.Rectangle{X: area.X + (area.Width-w)/2, Y: area.Y + area.Height - h - 28, Width: w, Height: h}
+	}
+	x := max(min(at.X, area.X+area.Width-w), area.X)
+	y := max(min(at.Y, area.Y+area.Height-h), area.Y)
+	return mygo.Rectangle{X: x, Y: y, Width: w, Height: h}
 }
 
 func (a *app) applyMeetingOverlayProtection() {
@@ -100,7 +115,9 @@ func (a *app) meetingOverlayView(c *ui.Context) {
 	}
 	mode, faceH := meetingOverlayFace(model)
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
-		faceStyle(ui.Column(c.Key("mt-face")), a.prefs.Overlay, mode, faceH).Padding(0, 14-layout.Border).Children(func() {
+		// The face is the handle that moves the window (syncMeetingOverlay
+		// keeps it where it is dragged): it may cover the meeting's window.
+		faceStyle(ui.Column(c.Key("mt-face")), a.prefs.Overlay, mode, faceH).Padding(0, 14-layout.Border).DragWindow().Children(func() {
 			switch {
 			case model.ShowAsking:
 				a.meetingOverlayAsking(c)
@@ -376,7 +393,6 @@ func (a *app) destroyMeetingOverlay() {
 		a.meetOvWin.Destroy()
 		a.meetOvWin = nil
 		a.meetOvShown = false
-		a.meetOvFrame = mygo.Rectangle{}
 		a.meetOvCollapsed = false
 	}
 }
