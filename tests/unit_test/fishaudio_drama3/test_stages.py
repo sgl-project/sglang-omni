@@ -759,15 +759,42 @@ def test_incremental_decoding_falls_back_to_overlap_without_fa3(
 
 
 @pytest.mark.accelerator
-def test_incremental_streams_keep_the_non_streaming_graphs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("refused_measurements", "is_incremental", "utterance_graph_lengths"),
+    [
+        pytest.param((), True, [8, 16], id="every graph fits"),
+        pytest.param((2,), True, [8], id="the 16-frame cap does not fit"),
+        pytest.param((1,), False, [8, 16], id="the incremental state does not fit"),
+    ],
+)
+def test_non_streaming_requests_replay_the_graphs_that_fit_beside_the_streams(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    refused_measurements: tuple[int, ...],
+    is_incremental: bool,
+    utterance_graph_lengths: list[int],
 ) -> None:
     """Incremental streams decode through their own windows, so the graph decoder
-    holds no stream window; a non-streaming request still replays its graph."""
+    holds no stream window. When its graphs leave no room for a longest request,
+    their cap halves and the streams stay incremental; when the incremental state
+    itself leaves none, the streams decode in overlap windows."""
     codec_file = tmp_path / "codec.pth"
     codec_file.write_bytes(b"")
     monkeypatch.setattr(
         stages, "load_codec", lambda checkpoint_dir, device: tiny_codec().to(device)
+    )
+    measure = stages.measure_max_padded_frames_per_decode
+    measurements: list[int] = []
+
+    def measure_with_refusals(decode: WindowDecoder, **budget: object) -> int:
+        measurements.append(len(measurements) + 1)
+        if measurements[-1] in refused_measurements:
+            raise ValueError("no room for one longest request")
+        else:
+            return measure(decode, **budget)
+
+    monkeypatch.setattr(
+        stages, "measure_max_padded_frames_per_decode", measure_with_refusals
     )
 
     vocoder = factory_vocoder(
@@ -780,17 +807,23 @@ def test_incremental_streams_keep_the_non_streaming_graphs(
         device="cuda",
         max_new_tokens=64,
     )
-    frames = numbered_frames(16)
+    frames = numbered_frames(8)
     audio = final_audio(
         vocoder.vocode_payloads([final_payload(frames, is_streaming=False)])[0]
     )
 
-    assert isinstance(vocoder, Drama3IncrementalVocoderScheduler)
+    assert isinstance(vocoder, Drama3IncrementalVocoderScheduler) is is_incremental
     graph_decoder = vocoder.decode_window
     assert isinstance(graph_decoder, WindowGraphDecoder)
-    assert sorted(graph_decoder.graphs) == [(1, 8, 0), (1, 16, 0)]
+    assert (graph_decoder.window_lengths == ()) is is_incremental
+    assert [
+        length for length in (8, 16) if (1, length, 0) in graph_decoder.graphs
+    ] == utterance_graph_lengths
+    codebook_codes = frames[:, 1:].T
+    # note (Wenyao Gao): a replay leaves the request's codes in its graph's input.
+    assert torch.equal(graph_decoder.static_indices[(1, 8, 0)][0].cpu(), codebook_codes)
     with torch.no_grad():
-        eager_audio = graph_decoder.decode(frames[:, 1:].T[None].cuda())
+        eager_audio = graph_decoder.decode(codebook_codes[None].cuda())
     assert torch.equal(torch.from_numpy(audio), eager_audio[0, 0].float().cpu())
 
 

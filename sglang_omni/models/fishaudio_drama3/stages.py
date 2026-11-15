@@ -403,14 +403,37 @@ def create_vocoder_executor(
         )
     else:
         pass
-    utterance_lengths = (
-        utterance_graph_lengths(
-            min(non_streaming_cuda_graph_max_frames, max_new_tokens),
-            frame_step=UTTERANCE_GRAPH_FRAME_STEP,
-        )
+    utterance_graph_max_frames = (
+        min(non_streaming_cuda_graph_max_frames, max_new_tokens)
         if window_cuda_graphs
-        else ()
+        else 0
     )
+    # note (Wenyao Gao): memory_reserved counts every stage loaded into this process,
+    # so the share it is held against is the process's, not the vocoder's alone.
+    memory_share_fraction = (
+        process_total_gpu_memory_fraction
+        if process_total_gpu_memory_fraction is not None
+        else total_gpu_memory_fraction
+    )
+
+    def frame_limit() -> int | None:
+        """The padded frames one decode may take in the memory left now."""
+        if torch_device.type == "cpu":
+            return None
+        else:
+            return measure_max_padded_frames_per_decode(
+                decode,
+                device=torch_device,
+                num_codebooks=num_codebooks,
+                total_gpu_memory_fraction=memory_share_fraction,
+                max_new_tokens=max_new_tokens,
+            )
+
+    def release_unused_memory() -> None:
+        gc.collect()
+        device_module = torch.get_device_module(torch_device)
+        device_module.synchronize(torch_device)
+        device_module.empty_cache()
 
     def overlap_decoders() -> tuple[WindowDecoder, WindowGraphDecoder | None]:
         """decode_window and window_batch_decoder for overlap streams."""
@@ -432,7 +455,9 @@ def create_vocoder_executor(
                 frame_length=int(codec.frame_length),
                 device=torch_device,
                 window_lengths=stream_window_lengths(**window_schedule),
-                utterance_lengths=utterance_lengths,
+                utterance_lengths=utterance_graph_lengths(
+                    utterance_graph_max_frames, frame_step=UTTERANCE_GRAPH_FRAME_STEP
+                ),
                 max_batch_size=stream_window_batch_size,
                 window_discards=(
                     {
@@ -459,8 +484,38 @@ def create_vocoder_executor(
         else:
             return decode, None
 
-    decode_window: WindowDecoder
-    window_batch_decoder: WindowGraphDecoder | None = None
+    def utterance_decoder_within_budget() -> tuple[WindowDecoder, int | None]:
+        """decode_window beside incremental streams, which serves only non-streaming
+        requests, and the frame limit with it: utterance graphs up to the largest
+        halving of their cap that leaves one longest request its memory, else the
+        eager decoder."""
+        max_frames = utterance_graph_max_frames
+        while max_frames > 0:
+            graph_decoder = WindowGraphDecoder(
+                decode,
+                num_codebooks=num_codebooks,
+                frame_length=int(codec.frame_length),
+                device=torch_device,
+                window_lengths=(),
+                utterance_lengths=utterance_graph_lengths(
+                    max_frames, frame_step=UTTERANCE_GRAPH_FRAME_STEP
+                ),
+            )
+            try:
+                return graph_decoder, frame_limit()
+            except ValueError:
+                logger.warning(
+                    "Drama 3 vocoder: non-streaming CUDA graphs of up to %d frames do "
+                    "not fit beside incremental streams in the vocoder's GPU memory "
+                    "share; halving the cap. Raise --vocoder.gpu_memory_fraction or "
+                    "lower --vocoder.factory.stream_slot_count to keep it.",
+                    max_frames,
+                )
+                del graph_decoder
+                release_unused_memory()
+                max_frames //= 2
+        return decode, frame_limit()
+
     window_decoder: IncrementalWindowDecoder | None = None
     if is_incremental:
         window_decoder = build_incremental_window_decoder(
@@ -476,50 +531,14 @@ def create_vocoder_executor(
             stream_slot_count=stream_slot_count,
             use_graphs=window_cuda_graphs,
         )
-        # note (Wenyao Gao): incremental streams decode through window_decoder, so
-        # decode_window serves only non-streaming requests.
-        if utterance_lengths:
-            decode_window = WindowGraphDecoder(
-                decode,
-                num_codebooks=num_codebooks,
-                frame_length=int(codec.frame_length),
-                device=torch_device,
-                window_lengths=(),
-                utterance_lengths=utterance_lengths,
-            )
-        else:
-            decode_window = decode
         logger.info(
             f"Drama 3 vocoder: incremental streams in up to {stream_slot_count} slots, "
             f"grouped up to {max_stream_batch_size} windows of "
             f"{window_decoder.window_lengths} frames"
         )
-    else:
-        decode_window, window_batch_decoder = overlap_decoders()
-
-    # note (Wenyao Gao): memory_reserved counts every stage loaded into this process,
-    # so the share it is held against is the process's, not the vocoder's alone.
-    memory_share_fraction = (
-        process_total_gpu_memory_fraction
-        if process_total_gpu_memory_fraction is not None
-        else total_gpu_memory_fraction
-    )
-    if torch_device.type == "cpu":
-        max_padded_frames_per_decode = None
-    else:
         try:
-            max_padded_frames_per_decode = measure_max_padded_frames_per_decode(
-                decode,
-                device=torch_device,
-                num_codebooks=num_codebooks,
-                total_gpu_memory_fraction=memory_share_fraction,
-                max_new_tokens=max_new_tokens,
-            )
+            frame_limit()
         except ValueError as budget_error:
-            if window_decoder is None:
-                raise
-            else:
-                pass
             logger.warning(
                 "Drama 3 vocoder: incremental decoding does not fit the vocoder's "
                 "GPU memory share (%s); falling back to overlap decoding. Raise "
@@ -527,20 +546,17 @@ def create_vocoder_executor(
                 "--vocoder.factory.stream_slot_count to keep incremental streams.",
                 budget_error,
             )
-            del window_decoder, decode_window
-            gc.collect()
-            device_module = torch.get_device_module(torch_device)
-            device_module.synchronize(torch_device)
-            device_module.empty_cache()
+            del window_decoder
+            release_unused_memory()
             window_decoder = None
-            decode_window, window_batch_decoder = overlap_decoders()
-            max_padded_frames_per_decode = measure_max_padded_frames_per_decode(
-                decode,
-                device=torch_device,
-                num_codebooks=num_codebooks,
-                total_gpu_memory_fraction=memory_share_fraction,
-                max_new_tokens=max_new_tokens,
-            )
+    else:
+        pass
+    window_batch_decoder: WindowGraphDecoder | None = None
+    if window_decoder is None:
+        decode_window, window_batch_decoder = overlap_decoders()
+        max_padded_frames_per_decode = frame_limit()
+    else:
+        decode_window, max_padded_frames_per_decode = utterance_decoder_within_budget()
     scheduler_args = dict(
         device=resolved_device,
         stream_stride=stream_stride,
