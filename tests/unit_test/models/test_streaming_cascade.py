@@ -2721,7 +2721,7 @@ def test_profiles_speak_the_user_language(profile):
 
 @pytest.mark.parametrize("profile", PROFILE_NAMES)
 def test_profiles_cloning_vivian_send_its_transcript_and_drop_the_quiet_start(profile):
-    """The DFlash vivian profile was copied without the transcript the other vivian profiles send."""
+    """Only the profiles that clone vivian.wav send its transcript and drop the quiet start."""
     tts = profile_config(profile).component_graph().node("tts").component
     clones_vivian = (
         tts.reference_audio_path == "examples/streaming_cascade/voices/vivian.wav"
