@@ -177,8 +177,13 @@ func RenderSummaryPrompt(template, mainLanguage, transcriptRecord string) string
 	} else {
 		out += "\n\nTranscript:\n" + transcriptRecord
 	}
-	return strings.TrimSpace(out)
+	return strings.TrimSpace(out) + "\n\n" + OwnWordsRule
 }
+
+// OwnWordsRule keeps the instructions' English out of an answer in another
+// language: a Chinese summary wrote "transcript 中未提及" (#4026). It
+// follows every template, the user's own too.
+const OwnWordsRule = `Write the answer entirely in its language, words taken from these instructions too: in a Chinese answer, write 会议记录 for "transcript", never the English word. Names and terms keep the spelling they have in the transcript.`
 
 // SummaryWindows splits a long transcript for hierarchical summary (default 12000 runes per window).
 func SummaryWindows(text string, maxRunes int) []string {
