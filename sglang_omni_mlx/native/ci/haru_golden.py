@@ -20,29 +20,39 @@ from typing import TypedDict
 
 class HaruOutputs(TypedDict):
     tokens: list[int]
+    audio_sha256: str
 
 
 def synthesize(
     runtime_bin: Path, model_directory: Path, case: dict
 ) -> HaruOutputs:
-    """Run one seeded session and return its token stream."""
+    """Run one seeded session and return its token stream and decoded audio hash."""
     seed = case.get("seed", 42)
+    command = [
+        str(runtime_bin / "haru_session_probe"),
+        str(model_directory),
+        str(seed),
+    ]
+    if case.get("quantize"):
+        command.append(str(case["quantize"]))
     completed = subprocess.run(
-        [
-            str(runtime_bin / "haru_session_probe"),
-            str(model_directory),
-            str(seed),
-        ],
+        command,
         capture_output=True,
         text=True,
         check=True,
     )
+    lines = completed.stdout.splitlines()
     return {
         "tokens": [
             int(line.split("token ")[1].split()[0])
-            for line in completed.stdout.splitlines()
+            for line in lines
             if "token " in line
-        ]
+        ],
+        "audio_sha256": next(
+            line.split("audio_sha256 ")[1]
+            for line in lines
+            if line.startswith("audio_sha256 ")
+        ),
     }
 
 
@@ -57,21 +67,19 @@ def check(
         ]
     reference_device = device if device in devices else next(iter(devices))
     reference = devices[reference_device]["clips"]
-    differences = {
-        case_id: outputs["tokens"] != results[case_id]["tokens"]
-        for case_id, outputs in reference.items()
-        if case_id in results
-    }
-    missing_results = [
-        f"`{case_id}` was not run" for case_id in reference if case_id not in results
-    ]
-    missing_golden = [
+    failures = []
+    for case_id, want in reference.items():
+        actual = results.get(case_id)
+        if actual is None:
+            failures.append(f"`{case_id}` was not run")
+        elif actual.get("tokens") != want.get("tokens"):
+            failures.append(f"`{case_id}` token stream differs")
+        elif actual.get("audio_sha256") != want.get("audio_sha256"):
+            failures.append(f"`{case_id}` decoded audio differs")
+    failures += [
         f"`{case_id}` has no golden output"
         for case_id in golden["cases"]
         if case_id not in reference
-    ]
-    failures = missing_results + missing_golden + [
-        f"`{case_id}` token stream differs" for case_id, differs in differences.items() if differs
     ]
     identical = len(reference) - len(failures)
     mode = (

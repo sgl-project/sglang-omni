@@ -2,6 +2,7 @@
 #include "haru/haru_realtime.h"
 
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 
 #include "common/text.h"
@@ -17,21 +18,23 @@ constexpr int kSampleRate = 24000;
 constexpr int kNativeUnitMs = 400;  // three 3200-sample frames
 constexpr float kPcm16FullScale = 32768.0f;
 
+} // namespace
+
 nlohmann::json Capabilities() {
   return {
       {"interaction", "native"},
       {"native_full_duplex", true},
       {"output_modalities", {"audio"}},
+      {"input_modalities", {"audio"}},
       {"input_audio_format", {{"type", "audio/pcm"}, {"rate", kSampleRate}}},
       {"output_audio_format", {{"type", "audio/pcm"}, {"rate", kSampleRate}}},
       {"native_unit_ms", kNativeUnitMs},
       {"supports_reference_audio", true},
+      {"supports_cancel", true},
       {"sampling_parameters",
        {"temperature", "top_k", "top_p", "guidance_scale", "seed", "speak_first"}},
   };
 }
-
-} // namespace
 
 HaruRealtimeSession::HaruRealtimeSession(
     HaruModel &model, VibeVoiceCodec &codec, MeanFlowHead &head,
@@ -46,7 +49,11 @@ HaruRealtimeSession::HaruRealtimeSession(
       config_(config),
       worker_(worker),
       system_prompt_(std::move(system_prompt)),
-      reference_(std::move(reference)) {}
+      reference_(std::move(reference)) {
+  // The OpenAI Realtime protocol opens with session.created; the playground
+  // waits for it before sending session.update.
+  SendEvent("session.created", {{"session", {{"id", "sess"}}}});
+}
 
 void HaruRealtimeSession::RunOnWorker(std::function<void()> fn) {
   worker_.Transcribe(
@@ -131,6 +138,47 @@ void HaruRealtimeSession::FinishResponse(const std::string &reason) {
   transcript_.clear();
 }
 
+void HaruRealtimeSession::ApplySampling(const nlohmann::json &sampling) {
+  if (sampling.contains("temperature")) {
+    const double value = sampling.at("temperature").get<double>();
+    if (!(value >= 0.0 && value <= 2.0)) {
+      throw std::invalid_argument("temperature must be in [0, 2]");
+    }
+    config_.temperature = static_cast<float>(value);
+  }
+  if (sampling.contains("top_k")) {
+    const long long value = sampling.at("top_k").get<long long>();
+    if (value < 1 || value > static_cast<long long>(INT32_MAX)) {
+      throw std::invalid_argument("top_k must be >= 1");
+    }
+    config_.top_k = static_cast<int>(value);
+  }
+  if (sampling.contains("top_p")) {
+    const double value = sampling.at("top_p").get<double>();
+    if (!(value > 0.0 && value <= 1.0)) {
+      throw std::invalid_argument("top_p must be in (0, 1]");
+    }
+    config_.top_p = static_cast<float>(value);
+  }
+  if (sampling.contains("guidance_scale")) {
+    const double value = sampling.at("guidance_scale").get<double>();
+    if (!(value >= 1.0 && value <= 2.0)) {
+      throw std::invalid_argument("guidance_scale must be in [1, 2]");
+    }
+    config_.guidance_scale = static_cast<float>(value);
+  }
+  if (sampling.contains("seed")) {
+    const long long value = sampling.at("seed").get<long long>();
+    if (value < 0 || value > static_cast<long long>(INT32_MAX)) {
+      throw std::invalid_argument("seed must be in [0, 2147483647]");
+    }
+    config_.seed = static_cast<int>(value);
+  }
+  if (sampling.contains("speak_first")) {
+    config_.speak_first = sampling.at("speak_first").get<bool>();
+  }
+}
+
 bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
   const std::string type = message.at("type").get<std::string>();
   if (type == "session.update") {
@@ -149,19 +197,37 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
         }
       }
     }
-    SendEvent("session.updated",
-              {{"session", {{"id", "sess"}}}, {"capabilities", Capabilities()}});
+    if (sglang.contains("sampling")) {
+      try {
+        ApplySampling(sglang.at("sampling"));
+      } catch (const std::exception &error) {
+        SendError("invalid_request_error", "invalid_sampling", error.what());
+        return true;
+      }
+    }
+    // Start() runs before session.updated so the first append is served
+    // without waiting for the prompt prefill.
     RunOnWorker([&] {
       session_ = std::make_unique<DuplexSession>(model_, codec_, head_,
                                                  tokenizer_, config_);
       first_frame_ = session_->Start(system_prompt_, reference_);
     });
+    SendEvent("session.updated",
+              {{"session",
+                {{"id", "sess"}, {"sglang", {{"granted", Capabilities()}}}}},
+               {"capabilities", Capabilities()}});
     started_ = true;
     return true;
   }
   if (type == "input_audio_buffer.append") {
+    std::vector<float> samples;
+    try {
+      samples = AppendSamples(message);
+    } catch (const std::invalid_argument &error) {
+      SendError("invalid_request_error", "invalid_audio", error.what());
+      return true;
+    }
     SendEvent("sglang.input_audio.accepted");
-    const std::vector<float> samples = AppendSamples(message);
     std::vector<Frame> frames;
     RunOnWorker([&] {
       if (first_frame_.has_value()) {

@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Native MLX server for Haru-4B: full-duplex spoken dialogue on /v1/realtime.
+#include <atomic>
+#include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 
+#include "civetweb.h"
 #include "common/tokenizer.h"
 #include "haru/haru_audio.h"
 #include "haru/haru_codec.h"
@@ -18,17 +22,29 @@
 
 namespace {
 
+// Serves the model's capabilities as JSON for the /v1/realtime playground.
+int HandleCapabilities(mg_connection *connection, void *) {
+  const std::string body = haru::Capabilities().dump();
+  mg_printf(connection,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Content-Length: %zu\r\n\r\n%s",
+            body.size(), body.c_str());
+  return 1;
+}
+
 class HaruServedModel : public asr_service::ServedModel {
 public:
   HaruServedModel(const std::filesystem::path &model_directory,
                   int quantize_bits, std::string instructions,
-                  std::vector<float> reference, int seed)
+                  std::vector<float> reference, int seed,
+                  int warmup_frames)
       : model_(model_directory, quantize_bits),
         codec_(model_.checkpoint(), model_.config().codec),
         head_(model_.checkpoint(), model_.config().head),
         tokenizer_(model_directory),
         instructions_(std::move(instructions)),
-        reference_(std::move(reference)) {
+        reference_(std::move(reference)),
+        warmup_frames_(warmup_frames) {
     session_config_.seed = seed;
     mlx::core::set_cache_limit(asr_service::kDecodeBufferCacheLimitBytes);
   }
@@ -46,9 +62,48 @@ public:
           instructions_, reference_, std::move(sender));
     };
     asr_service::AddRealtimeHandler(context, realtime_);
+    // Register the capabilities endpoint before the warm-up: the civetweb
+    // listener is already accepting connections at this point, and clients
+    // (playground warm-up included) probe capabilities as soon as it answers.
+    mg_set_request_handler(context, "/v1/realtime/capabilities$",
+                           HandleCapabilities, nullptr);
+    Warmup(worker);
   }
 
 private:
+  // First sessions pay for Metal kernel compilation inside Start(), which
+  // showed up as an 8-12 s first-frame delay, so compile it at load time on the
+  // worker thread that owns the MLX stream.
+  void Warmup(qwen3_asr::TranscriptionWorker &worker) {
+    if (warmup_frames_ <= 0) {
+      return;
+    }
+    try {
+      worker.Transcribe(
+          [this](const std::atomic<bool> &) -> qwen3_asr::TranscriptionResult {
+            haru::DuplexSession session(model_, codec_, head_, tokenizer_,
+                                        session_config_);
+            (void)session.Start(instructions_, reference_);
+            // A sine tone rather than silence: the codec's encode path takes
+            // different branches on degenerate all-zero frames.
+            std::vector<float> frame(3200, 0.0f);
+            for (size_t sample = 0; sample < frame.size(); ++sample) {
+              frame[sample] =
+                  0.1f * static_cast<float>(std::sin(2.0 * M_PI * 220.0 *
+                                                    static_cast<double>(sample) /
+                                                    24000.0));
+            }
+            for (int index = 0; index < warmup_frames_; ++index) {
+              (void)session.Step(frame);
+            }
+            return {};
+          },
+          qwen3_asr::NewCancelFlag());
+    } catch (const std::exception &error) {
+      std::fprintf(stderr, "haru: warm-up failed: %s\n", error.what());
+    }
+  }
+
   haru::HaruModel model_;
   haru::VibeVoiceCodec codec_;
   haru::MeanFlowHead head_;
@@ -56,6 +111,7 @@ private:
   haru::DuplexConfig session_config_;
   std::string instructions_;
   std::vector<float> reference_;
+  int warmup_frames_;
   asr_service::RealtimeFactory realtime_;
 };
 
@@ -64,6 +120,7 @@ private:
 int main(int argc, char **argv) {
   int quantize_bits = 0;
   int seed = -1;
+  int warmup_frames = 16;
   std::filesystem::path reference_audio;
   std::filesystem::path instructions_file;
 
@@ -77,10 +134,15 @@ int main(int argc, char **argv) {
       {"--instructions-file",
        [&](const std::string &value) { instructions_file = value; }},
       {"--seed", [&](const std::string &value) { seed = std::stoi(value); }},
+      {"--warmup-frames",
+       [&](const std::string &value) { warmup_frames = std::stoi(value); }},
   };
   haru.check_flags = [&]() {
     if (quantize_bits != 0 && quantize_bits != 8) {
       throw std::invalid_argument("--quantize must be 0 or 8");
+    }
+    if (warmup_frames < 0) {
+      throw std::invalid_argument("--warmup-frames must be >= 0");
     }
   };
   haru.load = [&](const std::filesystem::path &model_directory) {
@@ -96,7 +158,8 @@ int main(int argc, char **argv) {
     }
     return std::make_unique<HaruServedModel>(model_directory, quantize_bits,
                                              std::move(instructions),
-                                             std::move(reference), seed);
+                                             std::move(reference), seed,
+                                             warmup_frames);
   };
   return asr_service::Serve(argc, argv, haru);
 }

@@ -22,6 +22,10 @@
 
 namespace haru {
 
+// The capabilities object reported in session.updated and, as JSON, by the
+// /v1/realtime/capabilities endpoint.
+nlohmann::json Capabilities();
+
 // One /v1/realtime socket's full-duplex conversation.
 class HaruRealtimeSession : public qwen3_asr::RealtimeConnection {
 public:
@@ -38,6 +42,8 @@ public:
 private:
   // Runs fn on the worker thread, the thread that loaded the model.
   void RunOnWorker(std::function<void()> fn);
+  // Applies sglang.sampling from a session.update to this session's config.
+  void ApplySampling(const nlohmann::json &sampling);
   std::vector<float> AppendSamples(const nlohmann::json &message);
   void EmitFrame(const Frame &frame);
   void FinishResponse(const std::string &reason);
