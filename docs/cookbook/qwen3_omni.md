@@ -50,9 +50,9 @@ sgl-omni serve \
   --port 8008
 ```
 
-Multimodal preprocessing (tokenization, image/video/audio feature extraction) runs serially by default. Add `--preprocessing.factory.max_concurrency 4` to run it on a thread pool when CPU preprocessing is the bottleneck under concurrent load. Threaded preprocessing changes how requests arrive at the thinker, so greedy outputs of the bf16 MoE can differ from the serial default; keep the default when comparing accuracy across runs.
+Multimodal preprocessing (tokenization, image/video/audio feature extraction) runs requests without video one at a time, in arrival order. A request with video runs on a thread of its own, so its decode holds up no other request. `--preprocessing.factory.max_concurrency` sets how many videos run at once. It defaults to 8, the size of the media decode pool, and 1 runs every request one at a time. Videos running at once fill the thinker's batches, and greedy outputs of the bf16 MoE can differ with those batches, so use 1 when comparing accuracy across runs.
 
-Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+Each video thread decodes its request's videos on parallel decoders that share min(16, the stage's CPUs divided by its video threads) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
 
 For MMSU-style audio-input / text-output benchmarks with short requests, use the fused text-path config so the full text path stays inside one worker process:
 

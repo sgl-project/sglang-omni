@@ -20,6 +20,7 @@ from sglang_omni.config import (
 from sglang_omni.config.session_audio import AudioSessionPipelineConfig, StageGroup
 from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS
 from sglang_omni.platforms import current_platform
+from sglang_omni.preprocessing.resource_connector import MEDIA_WORKERS
 from sglang_omni.proto.session import GRAPH_INPUT
 from sglang_omni.proto.streams import IMAGE, SessionPorts
 from sglang_omni.serve.protocol import ChatCompletionRequest, ChatMessage
@@ -72,7 +73,8 @@ def preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageC
         name="preprocessing",
         process=process,
         factory_path=f"{_PKG}.stages.create_preprocessing_executor",
-        factory=FactoryArgs(),
+        # note (ratish): one video thread per media worker, since a further video would only wait for a worker to decode it.
+        factory=FactoryArgs(max_concurrency=MEDIA_WORKERS),
         next=next_stages,
         route_fn=route_fn,
         project_payload={

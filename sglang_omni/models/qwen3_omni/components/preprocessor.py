@@ -10,6 +10,7 @@ import logging
 import math
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict, TypeGuard
 
@@ -48,7 +49,9 @@ from sglang_omni.preprocessing.resource_connector import (
     await_media_cleanup,
 )
 from sglang_omni.preprocessing.text import (
+    ContentMedia,
     MediaPlaceholderPart,
+    TemplateMessage,
     TextContentPart,
     split_content_parts,
 )
@@ -318,6 +321,74 @@ def is_pretokenized_prompt(inputs: object) -> TypeGuard[list[int]]:
     )
 
 
+@dataclass(frozen=True, kw_only=True)
+class TrainRequestInputs:
+    """A request that carries its token ids, with the processor tensors for them when it has media."""
+
+    token_ids: list[int]
+    tensor_bundle: Mapping[str, object] | None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ChatRequestInputs:
+    """A chat request's fields, its messages with each media part a placeholder, and its media."""
+
+    inputs: Mapping[str, object]
+    messages: list[TemplateMessage]
+    content_media: ContentMedia
+    raw_images: object
+    raw_videos: object
+    raw_audios: object
+
+    @property
+    def has_video(self) -> bool:
+        return (
+            bool(self.content_media.videos)
+            or count_top_level_media(self.raw_videos) > 0
+        )
+
+
+def read_request_inputs(
+    payload: StagePayload,
+) -> TrainRequestInputs | ChatRequestInputs:
+    """A request's inputs, read once for both routing and preprocessing."""
+    inputs = payload.request.inputs
+    if is_pretokenized_prompt(inputs):
+        return TrainRequestInputs(token_ids=inputs, tensor_bundle=None)
+    elif isinstance(inputs, list):
+        inputs = {"messages": inputs}
+    elif not isinstance(inputs, dict):
+        raise ValueError("Preprocessing expects a list of chat messages")
+    else:
+        pass
+    tensor_bundle = inputs.get("multimodal_train_inputs")
+    if tensor_bundle is not None:
+        return TrainRequestInputs(
+            token_ids=inputs["input_ids"], tensor_bundle=tensor_bundle
+        )
+    else:
+        pass
+    messages, content_media = split_content_parts(inputs.get("messages", []))
+    raw_videos = inputs.get("videos")
+    if raw_videos is None:
+        raw_videos = inputs.get("video")
+    else:
+        pass
+    raw_audios = inputs.get("audio")
+    if raw_audios is None:
+        raw_audios = inputs.get("audios")
+    else:
+        pass
+    return ChatRequestInputs(
+        inputs=inputs,
+        messages=messages,
+        content_media=content_media,
+        raw_images=inputs.get("images"),
+        raw_videos=raw_videos,
+        raw_audios=raw_audios,
+    )
+
+
 class Qwen3OmniPreprocessor:
     """CPU-side preprocessing and tokenization using the HF processor."""
 
@@ -506,13 +577,21 @@ class Qwen3OmniPreprocessor:
         return result
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
+        return await self.process(payload, read_request_inputs(payload))
+
+    async def process(
+        self,
+        payload: StagePayload,
+        request_inputs: TrainRequestInputs | ChatRequestInputs,
+    ) -> StagePayload:
+        """Preprocess a request whose inputs were already read."""
         _emit_event(
             request_id=payload.request_id,
             stage=None,
             event_name="preprocess_start",
         )
         try:
-            result = await self.call_impl(payload)
+            result = await self.call_impl(payload, request_inputs)
         finally:
             _emit_event(
                 request_id=payload.request_id,
@@ -669,210 +748,193 @@ class Qwen3OmniPreprocessor:
             },
         )
 
-    async def call_impl(self, payload: StagePayload) -> StagePayload:
-        inputs = payload.request.inputs
-        if is_pretokenized_prompt(inputs):
-            return self.preprocess_train_inputs(payload, inputs)
+    async def call_impl(
+        self,
+        payload: StagePayload,
+        request_inputs: TrainRequestInputs | ChatRequestInputs,
+    ) -> StagePayload:
+        if isinstance(request_inputs, TrainRequestInputs):
+            return self.preprocess_train_inputs(
+                payload, request_inputs.token_ids, request_inputs.tensor_bundle
+            )
         else:
             pass
-        if isinstance(inputs, list):
-            inputs = {"messages": inputs}
+        inputs = request_inputs.inputs
+        messages = request_inputs.messages
+        content_media = request_inputs.content_media
+        raw_images = request_inputs.raw_images
+        raw_videos = request_inputs.raw_videos
+        raw_audios = request_inputs.raw_audios
+        audio_target_sr = int(inputs.get("audio_target_sr", 16000))
+        audio_bytes = inputs.get("audio_bytes")
+        if audio_bytes is not None:
+            transcription_prompt = (
+                "Please transcribe the speech in the audio verbatim. "
+                "Output only the transcription in its original language, "
+                "without explanations."
+            )
+            language = str(payload.request.params.get("language") or "").strip()
+            if language:
+                language = resolve_language(language)
+                transcription_prompt += f"\nThe spoken language is {language}."
+            else:
+                pass
+            context = str(payload.request.params.get("prompt") or "").strip()
+            if context:
+                transcription_prompt += f"\nTranscription context: {context}"
+            else:
+                pass
+            messages = [{"role": "user", "content": transcription_prompt}]
         else:
             pass
-        if isinstance(inputs, dict):
-            multimodal_train_inputs = inputs.get("multimodal_train_inputs")
-            if multimodal_train_inputs is not None:
-                return self.preprocess_train_inputs(
-                    payload,
-                    inputs["input_ids"],
-                    multimodal_train_inputs,
-                )
-            else:
-                pass
-            messages, content_media = split_content_parts(inputs.get("messages", []))
-            raw_images = inputs.get("images")
-            raw_videos = inputs.get("videos")
-            if raw_videos is None:
-                raw_videos = inputs.get("video")
-            else:
-                pass
-            raw_audios = inputs.get("audio")
-            if raw_audios is None:
-                raw_audios = inputs.get("audios")
-            else:
-                pass
-            audio_target_sr = int(inputs.get("audio_target_sr", 16000))
-            audio_bytes = inputs.get("audio_bytes")
-            if audio_bytes is not None:
-                transcription_prompt = (
-                    "Please transcribe the speech in the audio verbatim. "
-                    "Output only the transcription in its original language, "
-                    "without explanations."
-                )
-                language = str(payload.request.params.get("language") or "").strip()
-                if language:
-                    language = resolve_language(language)
-                    transcription_prompt += f"\nThe spoken language is {language}."
-                else:
-                    pass
-                context = str(payload.request.params.get("prompt") or "").strip()
-                if context:
-                    transcription_prompt += f"\nTranscription context: {context}"
-                else:
-                    pass
-                messages = [{"role": "user", "content": transcription_prompt}]
-            else:
-                pass
-            video_fps = inputs.get("video_fps", self.default_video_fps)
-            video_max_frames = inputs.get(
-                "video_max_frames",
-                self.default_video_max_frames,
-            )
-            video_min_pixels = inputs.get(
-                "video_min_pixels",
-                self.default_video_min_pixels,
-            )
-            video_max_pixels = inputs.get(
-                "video_max_pixels",
-                self.default_video_max_pixels,
-            )
-            video_total_pixels = inputs.get(
-                "video_total_pixels",
-                self.default_video_total_pixels,
-            )
-            use_audio_in_video = inputs.get("use_audio_in_video")
-            video_seconds_per_chunk = inputs.get("video_seconds_per_chunk")
-            video_position_id_per_seconds = inputs.get("video_position_id_per_seconds")
-            audio_from_video = False
-            resolved_video_fps = float(video_fps) if video_fps is not None else None
-            resolved_video_max_frames = (
-                int(video_max_frames) if video_max_frames is not None else None
-            )
-            resolved_video_min_pixels = (
-                int(video_min_pixels) if video_min_pixels is not None else None
-            )
-            resolved_video_max_pixels = (
-                int(video_max_pixels) if video_max_pixels is not None else None
-            )
-            resolved_video_total_pixels = (
-                int(video_total_pixels) if video_total_pixels is not None else None
-            )
-            resolved_video_seconds_per_chunk = (
-                float(video_seconds_per_chunk)
-                if video_seconds_per_chunk is not None
-                else None
-            )
-            resolved_video_position_id_per_seconds = (
-                float(video_position_id_per_seconds)
-                if video_position_id_per_seconds is not None
-                else None
-            )
+        video_fps = inputs.get("video_fps", self.default_video_fps)
+        video_max_frames = inputs.get(
+            "video_max_frames",
+            self.default_video_max_frames,
+        )
+        video_min_pixels = inputs.get(
+            "video_min_pixels",
+            self.default_video_min_pixels,
+        )
+        video_max_pixels = inputs.get(
+            "video_max_pixels",
+            self.default_video_max_pixels,
+        )
+        video_total_pixels = inputs.get(
+            "video_total_pixels",
+            self.default_video_total_pixels,
+        )
+        use_audio_in_video = inputs.get("use_audio_in_video")
+        video_seconds_per_chunk = inputs.get("video_seconds_per_chunk")
+        video_position_id_per_seconds = inputs.get("video_position_id_per_seconds")
+        audio_from_video = False
+        resolved_video_fps = float(video_fps) if video_fps is not None else None
+        resolved_video_max_frames = (
+            int(video_max_frames) if video_max_frames is not None else None
+        )
+        resolved_video_min_pixels = (
+            int(video_min_pixels) if video_min_pixels is not None else None
+        )
+        resolved_video_max_pixels = (
+            int(video_max_pixels) if video_max_pixels is not None else None
+        )
+        resolved_video_total_pixels = (
+            int(video_total_pixels) if video_total_pixels is not None else None
+        )
+        resolved_video_seconds_per_chunk = (
+            float(video_seconds_per_chunk)
+            if video_seconds_per_chunk is not None
+            else None
+        )
+        resolved_video_position_id_per_seconds = (
+            float(video_position_id_per_seconds)
+            if video_position_id_per_seconds is not None
+            else None
+        )
 
-            # Insert placeholders:
-            # - Explicit audio files get independent audio placeholders
-            # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
-            messages_mm = self.build_multimodal_messages(
-                messages,
-                num_images=count_top_level_media(raw_images),
-                num_audios=(
-                    1 if audio_bytes is not None else count_top_level_media(raw_audios)
-                ),
-                num_videos=count_top_level_media(raw_videos),
-            )
-            prompt_text = self.processor.apply_chat_template(
-                messages_mm,
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-            max_new_tokens = payload.request.params.get(
-                "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
-            )
-            self.validate_prompt_text_len(
-                prompt_text,
-                max_new_tokens=max_new_tokens,
-                request_id=payload.request_id,
-            )
-            if audio_bytes is not None:
-                try:
-                    prepared_audio = await asyncio.to_thread(
-                        prepare_audio,
-                        payload,
-                        source_name="Qwen3-Omni",
-                        target_sample_rate=audio_target_sr,
-                    )
-                except AudioDecodeError as exc:
-                    raise ValueError(
-                        "Qwen3-Omni could not decode the uploaded audio; "
-                        "provide a valid audio file."
-                    ) from exc
-                raw_audios = [prepared_audio.waveform]
-            else:
-                pass
-
-            request_images = with_content_media(content_media.images, raw_images)
-            request_videos = with_content_media(content_media.videos, raw_videos)
-            request_audios = with_content_media(content_media.audios, raw_audios)
-
-            # Use async versions for concurrent loading
-            # If we need audio from video, extract it during video loading to avoid duplicate downloads
-            extract_audio_from_video_flag = bool(
-                use_audio_in_video and request_videos is not None
-            )
-
-            # Worker requests run on separate event loops. Keep pooled HTTP
-            # connections within this request and close them before its loop ends.
-            connection = ResourceHTTPConnection()
-            connector = MultiModalResourceConnector(connection=connection)
-            loaders = [
-                ensure_image_list_async(request_images, media_connector=connector),
-                ensure_video_list_async(
-                    request_videos,
-                    fps=resolved_video_fps,
-                    max_frames=resolved_video_max_frames,
-                    min_pixels=resolved_video_min_pixels,
-                    max_pixels=resolved_video_max_pixels,
-                    total_pixels=resolved_video_total_pixels,
-                    extract_audio=extract_audio_from_video_flag,
-                    audio_target_sr=audio_target_sr,
-                    resource_connector=connector,
-                    video_decode_threads=self.video_decode_threads,
-                ),
-                ensure_audio_list_async(
-                    request_audios,
-                    target_sr=audio_target_sr,
-                    resource_connector=connector,
-                ),
-            ]
-            tasks = [asyncio.create_task(loader) for loader in loaders]
-
-            async def cleanup() -> None:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                    else:
-                        pass
-                try:
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                finally:
-                    await connection.close()
-
+        # Insert placeholders:
+        # - Explicit audio files get independent audio placeholders
+        # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
+        messages_mm = self.build_multimodal_messages(
+            messages,
+            num_images=count_top_level_media(raw_images),
+            num_audios=(
+                1 if audio_bytes is not None else count_top_level_media(raw_audios)
+            ),
+            num_videos=count_top_level_media(raw_videos),
+        )
+        prompt_text = self.processor.apply_chat_template(
+            messages_mm,
+            add_generation_prompt=True,
+            tokenize=False,
+        )
+        max_new_tokens = payload.request.params.get(
+            "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
+        )
+        self.validate_prompt_text_len(
+            prompt_text,
+            max_new_tokens=max_new_tokens,
+            request_id=payload.request_id,
+        )
+        if audio_bytes is not None:
             try:
-                images, videos_result, audios_result = await asyncio.gather(*tasks)
-            finally:
-                await await_media_cleanup(cleanup())
-            videos, sampled_video_fps, extracted_audio_from_video = videos_result
-
-            audios, audio_from_video = merge_extracted_video_audio(
-                audios_result,
-                extracted_audio_from_video,
-            )
-            effective_use_audio_in_video = (
-                bool(use_audio_in_video and audio_from_video)
-                if use_audio_in_video is not None
-                else None
-            )
+                prepared_audio = await asyncio.to_thread(
+                    prepare_audio,
+                    payload,
+                    source_name="Qwen3-Omni",
+                    target_sample_rate=audio_target_sr,
+                )
+            except AudioDecodeError as exc:
+                raise ValueError(
+                    "Qwen3-Omni could not decode the uploaded audio; "
+                    "provide a valid audio file."
+                ) from exc
+            raw_audios = [prepared_audio.waveform]
         else:
-            raise ValueError("Preprocessing expects a list of chat messages")
+            pass
+
+        request_images = with_content_media(content_media.images, raw_images)
+        request_videos = with_content_media(content_media.videos, raw_videos)
+        request_audios = with_content_media(content_media.audios, raw_audios)
+
+        # Use async versions for concurrent loading
+        # If we need audio from video, extract it during video loading to avoid duplicate downloads
+        extract_audio_from_video_flag = bool(
+            use_audio_in_video and request_videos is not None
+        )
+
+        # Worker requests run on separate event loops. Keep pooled HTTP
+        # connections within this request and close them before its loop ends.
+        connection = ResourceHTTPConnection()
+        connector = MultiModalResourceConnector(connection=connection)
+        loaders = [
+            ensure_image_list_async(request_images, media_connector=connector),
+            ensure_video_list_async(
+                request_videos,
+                fps=resolved_video_fps,
+                max_frames=resolved_video_max_frames,
+                min_pixels=resolved_video_min_pixels,
+                max_pixels=resolved_video_max_pixels,
+                total_pixels=resolved_video_total_pixels,
+                extract_audio=extract_audio_from_video_flag,
+                audio_target_sr=audio_target_sr,
+                resource_connector=connector,
+                video_decode_threads=self.video_decode_threads,
+            ),
+            ensure_audio_list_async(
+                request_audios,
+                target_sr=audio_target_sr,
+                resource_connector=connector,
+            ),
+        ]
+        tasks = [asyncio.create_task(loader) for loader in loaders]
+
+        async def cleanup() -> None:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+                else:
+                    pass
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                await connection.close()
+
+        try:
+            images, videos_result, audios_result = await asyncio.gather(*tasks)
+        finally:
+            await await_media_cleanup(cleanup())
+        videos, sampled_video_fps, extracted_audio_from_video = videos_result
+
+        audios, audio_from_video = merge_extracted_video_audio(
+            audios_result,
+            extracted_audio_from_video,
+        )
+        effective_use_audio_in_video = (
+            bool(use_audio_in_video and audio_from_video)
+            if use_audio_in_video is not None
+            else None
+        )
 
         if audio_from_video and (content_media.audios or content_media.videos):
             # note (ratish): the processor reads one audio per audio placeholder and per video
