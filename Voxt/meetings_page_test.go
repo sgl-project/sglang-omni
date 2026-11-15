@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -91,5 +92,41 @@ func TestMeetingsPageSearchPaginationEmpty(t *testing.T) {
 	frames(tt)
 	if !has(tt, "Nothing matches") {
 		t.Fatalf("no matches: %q", firstTexts(tt))
+	}
+}
+
+// A meeting that starts while the Meetings page is open is listed at once,
+// with its running time, instead of the empty state (#3990).
+func TestMeetingsPageListsMeetingInProgress(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	meetingDevHook = func() bool { return true }
+	t.Cleanup(func() { meetingDevHook = nil })
+	a.navigate("/meetings")
+	frames(tt)
+	if !has(tt, "No meetings yet.") {
+		t.Fatalf("empty list: %q", firstTexts(tt))
+	}
+	// The manager writes the row, then reports the recording state.
+	rec, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
+		ID: "live", CreatedAt: time.Now(), Status: store.MeetingRecording, Mode: store.MeetingModeMeeting,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.meetingChanged(meeting.Snapshot{ID: "live", State: meeting.StateRecording, Elapsed: 3 * time.Minute})
+	frames(tt)
+	if has(tt, "No meetings yet.") || !hasExact(tt, "In progress") || !hasExact(tt, "3 min") {
+		t.Fatalf("meeting in progress: %q", firstTexts(tt))
+	}
+	// Ending it updates the row: no "In progress", the stored length.
+	if err := a.lib.store.Meetings().UpdateMeeting(context.Background(), store.Meeting{
+		Seq: rec.Seq, ID: "live", CreatedAt: rec.CreatedAt, Status: store.MeetingDone, Mode: store.MeetingModeMeeting, DurationMS: (5 * time.Minute).Milliseconds(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.meetingChanged(meeting.Snapshot{ID: "live", State: meeting.StateDone, Elapsed: 5 * time.Minute})
+	frames(tt)
+	if hasExact(tt, "In progress") || !hasExact(tt, "5 min") {
+		t.Fatalf("ended meeting: %q", firstTexts(tt))
 	}
 }

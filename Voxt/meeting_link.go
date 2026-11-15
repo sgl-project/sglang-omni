@@ -82,7 +82,11 @@ func (a *app) meetingActive() bool {
 }
 
 func (a *app) meetingChanged(s meeting.Snapshot) {
+	prev := a.meetSnap
 	a.meetSnap = s
+	if a.mv.read && (s.ID != prev.ID || s.State != prev.State) {
+		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
+	}
 	a.syncMeetingOverlay()
 	a.syncHotkeys()
 	if a.tray != nil {

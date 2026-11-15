@@ -51,6 +51,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **A dictation is no longer cut off at 10 minutes**: Transcribe, Translate and Rewrite stopped recording by themselves after 10 minutes, so a long dictation such as a podcast ended without a key press. A recording now has no time limit: it runs until you stop it.
 - **Meetings use your main language**: the live transcript and the transcript made after a meeting now give the speech model the same language hint as dictation (your main language in Settings → General, such as Simplified or Traditional Chinese). Before, meetings gave no hint and the model guessed the language. The speech model still picks the Chinese script itself: Voxt does not convert between Simplified and Traditional.
 - **Dictation goes into Raycast and other launcher panels**: a panel that takes the keyboard without bringing its app to the front (Raycast, Tinycast) got nothing and Voxt showed the answer card instead. The text is now pasted into the panel's field.
+- **The Meetings page lists the meeting you are recording** (development builds, #3990): while a meeting recorded, the page said "No meetings yet." and asked you to start one, until you left the page and came back. The meeting now shows at the top of the list as soon as it starts, marked In progress with its running time, and its row updates when it ends.
 - **Meeting live text no longer repeats a sentence after a pause** (development builds): when the model changed the last words of a sentence after Voxt had shown it, the next live line started the whole sentence again. Now it shows only the words after the part that stayed the same. The transcript made after the meeting was not affected.
 - **System dictation keeps what was said before a pause**: some macOS versions restart their speech recognition after a short pause, and the result held only the words after it, in History and in the app the text went to. Voxt now keeps each part and joins them.
 - **One Escape closes a dialog** (History settings, the setup guide, Network, a language model's settings): with the keyboard focus on a button that shows a tip, such as the dialog's ×, the first Escape only hid the tip and the second closed the dialog.
@@ -112,6 +113,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **长时间口述不再在 10 分钟时被截断**：转录、翻译和改写录到 10 分钟会自己停下，录播客这样的长段口述没按快捷键就结束了。现在录音没有时长上限，录到你按停止为止。
 - **会议也按主语言识别**：会议的实时字幕和会后整理的转录稿，现在和听写一样把主语言（设置 → 通用 → 主语言，比如简体中文或繁体中文）告诉语音识别模型。以前会议不告诉模型，由模型自己猜语言。简体还是繁体仍由模型决定，Voxt 不做简繁转换。
 - **听写的文字能输入到 Raycast 等启动器的面板里**：Raycast、Tinycast 这类面板接管键盘，但它们的 App 不到前台，以前文字进不去，Voxt 改为弹出结果卡片。现在文字会粘贴到面板的输入框里。
+- **会议页列出正在录的会议**（开发版，#3990）：会议录着的时候，会议页仍显示“还没有会议记录”并提示开始一场，要离开再回到这一页才会出现。现在会议一开始就排在列表最上面，标着“进行中”和已录的时长，结束后这一行随之更新。
 - **会议实时文字停顿后不再重复整句**（开发版）：Voxt 已经显示一句话之后，模型又改了句尾几个字，下一行实时文字会把整句从头再出一遍。现在只显示没变的那部分之后的字。会议结束后生成的转录稿不受影响。
 - **系统听写不再丢掉停顿之前说的话**：有些 macOS 版本在短暂停顿后会重新开始识别，结果里只剩停顿之后的话，历史记录和输入的 app 里都一样。现在 Voxt 把每一段都留下，再接起来。
 - **按一次 Esc 就能关对话框**（历史设置、设置引导、网络、语言模型的设置）：焦点在带提示的按钮上时（比如对话框右上角的 ×），第一次 Esc 只收起提示，第二次才关掉对话框。

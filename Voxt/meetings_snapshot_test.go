@@ -20,8 +20,8 @@ import (
 
 // TestSnapshotsMeetings saves the Meetings page (empty, the list, a
 // meeting's details with and without a language model, an interrupted
-// one, the settings and the delete dialog) at the default and the
-// smallest window, Chinese dark and English light.
+// one, the settings, the delete dialog and a meeting in progress) at the
+// default and the smallest window, Chinese dark and English light.
 func TestSnapshotsMeetings(t *testing.T) { runSnapshots(t, "VOXTNEW_SNAPSHOTS", snapshotsMeetings) }
 
 func snapshotsMeetings(t *testing.T, out string) {
@@ -63,6 +63,18 @@ func snapshotsMeetings(t *testing.T, out string) {
 			}
 			a.navigate("/meetings")
 			save("meetings-empty")
+			ctx := context.Background()
+			if _, err := a.lib.store.Meetings().CreateMeeting(ctx, store.Meeting{
+				ID: "live", CreatedAt: time.Now(), Status: store.MeetingRecording, Mode: store.MeetingModeMeeting,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			a.meetingChanged(meeting.Snapshot{ID: "live", Mode: meeting.ModeMeeting, State: meeting.StateRecording, Elapsed: 754 * time.Second})
+			save("meetings-in-progress")
+			if err := a.lib.store.Meetings().DeleteMeeting(ctx, "live"); err != nil {
+				t.Fatal(err)
+			}
+			a.meetSnap = meeting.Snapshot{}
 			seedSnapshotMeetings(t, a)
 			a.loadMeetings()
 			save("meetings-list")
