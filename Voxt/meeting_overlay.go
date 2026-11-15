@@ -22,6 +22,7 @@ type meetingOverlayState struct {
 	meetOvWin       *mygo.Window
 	meetOvShown     bool
 	meetOvCollapsed bool
+	meetOvList      ui.ListState // the live transcript's place
 }
 
 // meetingContentProtectionHook is set in tests to observe SetContentProtection.
@@ -258,21 +259,45 @@ func (a *app) meetingOverlayExpanded(c *ui.Context, s meeting.Snapshot) {
 			}
 		})
 	}
-	ui.Scroll(c.Key("mt-live")).Grow(1).MinHeight(0).Padding(0, 0, 12, 0).Children(func() {
-		ui.Column(c).Gap(8).Children(func() {
-			if len(s.Segments) == 0 && s.Live[meeting.SourceMic] == "" && s.Live[meeting.SourceSystem] == "" {
-				ui.Text(c, i18n.T("Listening…")).FontSize(13).TextColor(ovText2)
+	// The live line of each track follows the segments; one row says
+	// Voxt is listening while there is nothing yet.
+	var live []meeting.Source
+	for _, src := range []meeting.Source{meeting.SourceMic, meeting.SourceSystem} {
+		if s.Live[src] != "" {
+			live = append(live, src)
+		}
+	}
+	segs := s.Segments
+	n := len(segs) + len(live)
+	if n == 0 {
+		n = 1
+	}
+	// A List builds only the rows in view and follows the newest while it
+	// shows the end (#3985). Keyed by segment, a user reading stays on their
+	// line as the snapshot drops its oldest ones.
+	a.meetOvList.FollowEnd = true
+	ui.List(c.Key("mt-live"), &a.meetOvList, n).Grow(1).MinHeight(0).Gap(8).Padding(0, 0, 12, 0).
+		ItemKey(func(i int) any {
+			if i < len(segs) {
+				return segs[i].ID
 			}
-			for _, seg := range s.Segments {
-				me := seg.Speaker == "me" || seg.Speaker == "" && seg.Source == meeting.SourceMic
-				meetingOverlayLine(c, meetingSpeaker(seg.Speaker, seg.Source), seg.Text, me, false)
+			if i-len(segs) < len(live) {
+				return live[i-len(segs)]
 			}
-			for _, src := range []meeting.Source{meeting.SourceMic, meeting.SourceSystem} {
-				if live := s.Live[src]; live != "" {
-					meetingOverlayLine(c, meetingSpeaker("", src), live, src == meeting.SourceMic, true)
-				}
-			}
-		})
+			return nil
+		}).Rows(func(r ui.ListRow) {
+		i := r.Index
+		switch {
+		case i < len(segs):
+			seg := segs[i]
+			me := seg.Speaker == "me" || seg.Speaker == "" && seg.Source == meeting.SourceMic
+			meetingOverlayLine(c, meetingSpeaker(seg.Speaker, seg.Source), seg.Text, me, false)
+		case i-len(segs) < len(live):
+			src := live[i-len(segs)]
+			meetingOverlayLine(c, meetingSpeaker("", src), s.Live[src], src == meeting.SourceMic, true)
+		default:
+			ui.Text(c, i18n.T("Listening…")).FontSize(13).TextColor(ovText2)
+		}
 	})
 }
 
