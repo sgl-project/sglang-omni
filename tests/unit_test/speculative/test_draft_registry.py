@@ -229,12 +229,18 @@ def test_every_draft_off_by_default_is_served_in_a_doc_or_example_config() -> No
     } <= served_drafts
 
 
-def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
+def test_model_defaults_serve_exactly_the_default_on_drafts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Model defaults must resolve draft IDs without fetching checkpoint metadata."""
     registry_paths = sorted({draft.model_path for draft in DRAFT_REGISTRY})
     # note (Haoling Pu): a near-miss path stands for a sibling checkpoint without an entry, such as Qwen3-ASR 0.6B next to 1.7B.
     model_paths = registry_paths + [
         f"{path}-without-a-draft" for path in registry_paths
     ]
+    monkeypatch.chdir(tmp_path)
+    for model_path in model_paths:
+        (tmp_path / model_path).mkdir(parents=True)
     default_drafts = set()
     for config_module_path in sorted(
         (REPO_ROOT / "sglang_omni" / "models").glob("*/config.py")
