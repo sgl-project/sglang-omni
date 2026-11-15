@@ -91,7 +91,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         max_new_tokens: int,
         enable_async_decode: bool,
         enable_plain_fallback: bool,
-        async_decode_min_batch_size: int,
+        async_decode_min_batch_size: int | None,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
         enable_torch_compile: bool | None,
@@ -611,7 +611,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             "enable_async_decode": (
                 False if use_torch_mps else self.enable_async_decode
             ),
-            "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            # note (Haoling Pu): with a draft this defaults to 2, so one request decodes synchronously and its first text is not one launch late.
+            "async_decode_min_batch_size": (
+                (1 if self.draft_checkpoint is None else 2)
+                if self.async_decode_min_batch_size is None
+                else self.async_decode_min_batch_size
+            ),
             # note (rsi): ASR prompts fit one chunk, so a prefill's first
             # tokens can be resolved after the next decode launches.
             "async_prefill": current_platform.is_cuda()
