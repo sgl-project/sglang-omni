@@ -112,15 +112,22 @@ func (r *run) write(raw, selection string) {
 		source = selection
 	}
 	llmStart := r.now()
-	res, profile, truncated, err := r.askOrFallback(in)
-	if err == nil && kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && r.ctx.Err() == nil && !r.stopped.Load() {
-		r.logf("warning", "the translation looks untranslated: asking again, strictly")
-		r.m.update(r, func(s *Snapshot) { s.Retried, s.Draft = true, "" })
-		in.Strict = true
-		if again, p, cut, err2 := r.ask(in); err2 == nil {
-			res, profile, truncated = again, p, cut
-		} else if r.ctx.Err() == nil {
-			r.logf("warning", "the strict retry failed, keeping the first answer: %v", err2)
+	var res compose.Answer
+	var profile string
+	var truncated bool
+	var err error
+	for first := true; first || r.askAgain(); first = false {
+		in.Strict = false
+		res, profile, truncated, err = r.askOrFallback(in)
+		if err == nil && kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && r.ctx.Err() == nil && !r.stopped.Load() {
+			r.logf("warning", "the translation looks untranslated: asking again, strictly")
+			r.m.update(r, func(s *Snapshot) { s.Retried, s.Draft = true, "" })
+			in.Strict = true
+			if again, p, cut, err2 := r.ask(in); err2 == nil {
+				res, profile, truncated = again, p, cut
+			} else if r.ctx.Err() == nil && !r.rethink.Load() {
+				r.logf("warning", "the strict retry failed, keeping the first answer: %v", err2)
+			}
 		}
 	}
 	llmTime := r.now().Sub(llmStart)
@@ -181,7 +188,7 @@ func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, err
 	res, profile, truncated, err := r.ask(in)
 	// A used-up plan is the user's to manage: moving to another paid
 	// service without asking would spend it unseen.
-	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || llm.Code(err) == llm.CodeUsageLimit {
+	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || llm.Code(err) == llm.CodeUsageLimit {
 		return res, profile, truncated, err
 	}
 	r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, err, r.svc.FallbackInfo.ID, r.svc.FallbackInfo.Model)
@@ -225,7 +232,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
 	req := llm.Request{
-		Messages: msgs, Skill: skill, Thinking: r.req.Thinking,
+		Messages: msgs, Skill: skill, Thinking: r.thinking(),
 		OnDelta: func(d string) {
 			buf.WriteString(d)
 			publish(false)
@@ -235,6 +242,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		req.Format, req.Schema = llm.FormatJSON, answerSchema
 	}
 	chars := utf8.RuneCountInString(in.Text + in.Instruction)
+	req.InputChars = chars          // this turn's: a follow-up's earlier turns do not make it long
 	for _, t := range in.Previous { // note (luojiaxuan): a follow-up sends the earlier turns again, read before the first token
 		chars += utf8.RuneCountInString(t.Instruction + t.Selection + t.Answer.Title + t.Answer.Content)
 	}
