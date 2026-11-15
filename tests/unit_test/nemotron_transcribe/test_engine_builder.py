@@ -12,6 +12,7 @@ from sglang.srt.server_args import ServerArgs
 from torch import nn
 
 import sglang_omni.models.nemotron_transcribe.engine_builder as engine_builder
+from sglang_omni.config.schema import EngineArgs
 from sglang_omni.models.nemotron_transcribe.config import (
     EncoderCompileMode,
     NemotronTranscribePipelineConfig,
@@ -137,16 +138,29 @@ def test_nextn_is_off_by_default_and_keeps_server_overrides_unchanged(
         .engine.overrides()
     )
     assert not any(name.startswith("speculative_") for name in engine_overrides)
+    disabled_overrides = EngineArgs(
+        **NEMOTRON_TRANSCRIBE_DRAFT.engine_overrides(),
+        disable_speculative_decoding=True,
+    ).overrides()
+    disabled_overrides, disabled_enabled = prepare_nemotron_speculative_options(
+        NEMOTRON_TRANSCRIBE_DRAFT.model_path, disabled_overrides
+    )
+    assert disabled_overrides == {
+        "revision": NEMOTRON_TRANSCRIBE_DRAFT.draft_model_revision
+    }
+    assert disabled_enabled is False
+    assert make_builder(nextn_enabled=disabled_enabled).infra_kwargs() == {}
+    assert registry.get("NemotronHForCausalLMMTP") is registered_mtp
 
 
 def test_nextn_registers_the_native_draft_with_shared_infrastructure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    nemotron_target = engine_builder.ModelRegistry.models.get("NemotronHForCausalLM")
+    registry_before = dict(engine_builder.ModelRegistry.models)
     monkeypatch.setattr(
         engine_builder.ModelRegistry,
         "models",
-        dict(engine_builder.ModelRegistry.models),
+        dict(registry_before),
     )
     overrides, enabled = prepare_nemotron_speculative_options(
         "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
@@ -168,9 +182,13 @@ def test_nextn_registers_the_native_draft_with_shared_infrastructure(
         engine_builder.ModelRegistry.models["NemotronHForCausalLMMTP"]
         is engine_builder.NemotronTranscribeMTP
     )
-    assert (
-        engine_builder.ModelRegistry.models.get("NemotronHForCausalLM")
-        is nemotron_target
+    assert set(engine_builder.ModelRegistry.models) == (
+        set(registry_before) | {"NemotronHForCausalLMMTP"}
+    )
+    assert all(
+        engine_builder.ModelRegistry.models.get(name) is model_class
+        for name, model_class in registry_before.items()
+        if name != "NemotronHForCausalLMMTP"
     )
 
 
@@ -397,6 +415,12 @@ def test_remote_revision_resolves_the_requested_snapshot(
     else:
         pass
     snapshot_directory = write_synthetic_checkpoint(tmp_path / "snapshot")
+    if not nextn_enabled:
+        checkpoint_config = json.loads((snapshot_directory / "config.json").read_text())
+        checkpoint_config["mtp"]["enabled"] = False
+        (snapshot_directory / "config.json").write_text(json.dumps(checkpoint_config))
+    else:
+        pass
     requested: list[tuple[str, str | None, bool]] = []
 
     def download_snapshot(

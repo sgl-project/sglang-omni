@@ -1,6 +1,6 @@
 # Nemotron Transcribe
 
-[Nemotron Transcribe 30B-A4B](https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B) serves whole-file transcription through `/v1/audio/transcriptions`. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang's NemotronH decoder. The serving path does not require NeMo.
+[Nemotron Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B) serves whole-file transcription through `/v1/audio/transcriptions`. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang's NemotronH decoder. The serving path does not require NeMo.
 
 This integration accepts consolidated NeMo SpeechLM checkpoints with the `NeMoSpeechLMForConditionalGeneration` architecture, a NemotronH `llm_config`, and `perception` and `pe_encoder_config` sections. The checkpoint directory must contain its tokenizer files and model weights. The loader creates a small configuration shim and reads the original weights without copying them.
 
@@ -9,14 +9,14 @@ This integration accepts consolidated NeMo SpeechLM checkpoints with the `NeMoSp
 Install SGLang-Omni following [Installation](../get_started/installation.md), then download the checkpoint:
 
 ```bash
-hf download nvidia/Nemotron-3.5-Transcribe-30B-A4B
+hf download nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B
 ```
 
 The BF16 30B-A4B checkpoint was validated on one H100 80 GB. Leave memory for audio encoding and graph workspaces in addition to the weights and KV cache:
 
 ```bash
 sgl-omni serve \
-  --model-path nvidia/Nemotron-3.5-Transcribe-30B-A4B \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
   --model-name nemotron-transcribe \
   --mem-fraction-static 0.85 \
   --port 8000
@@ -95,7 +95,7 @@ Enable compilation and encoder CUDA graphs independently of decoder graphs:
 SGLANG_FLASHINFER_AUTOTUNE_EXTEND=1 \
 SGLANG_FLASHINFER_AUTOTUNE_CACHE=0 \
 sgl-omni serve \
-  --model-path nvidia/Nemotron-3.5-Transcribe-30B-A4B \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
   --model-name nemotron-transcribe \
   --mem-fraction-static 0.85 \
   --asr.engine.max_running_requests 16 \
