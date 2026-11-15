@@ -44,6 +44,9 @@ from sglang_omni.models.fishaudio_drama3.incremental_decoder import (
     IncrementalWindowDecoder,
     incremental_window_lengths,
 )
+from sglang_omni.models.fishaudio_drama3.prefill_cadence_v3 import (
+    DEFAULT_FIRST_AUDIO_BUDGET_MS,
+)
 from sglang_omni.models.fishaudio_drama3.reference_encode import (
     Drama3ReferenceEncodeHook,
 )
@@ -238,11 +241,23 @@ def create_tts_engine_executor(
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+    prefill_decode_interval: int | None = None,
+    dynamic_prefill_interval: bool = False,
+    prefill_first_audio_budget_ms: float = DEFAULT_FIRST_AUDIO_BUDGET_MS,
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
 ) -> OmniScheduler[Drama3RequestData]:
     overrides = dict(server_args_overrides or {})
+    if prefill_decode_interval is not None and dynamic_prefill_interval:
+        raise ValueError(
+            "Drama 3 takes either a fixed prefill_decode_interval or "
+            "dynamic_prefill_interval, not both"
+        )
+    elif prefill_decode_interval is not None:
+        overrides["prefill_decode_interval"] = prefill_decode_interval
+    else:
+        pass
     mem_fraction_static = overrides.get("mem_fraction_static")
     if total_gpu_memory_fraction is None:
         pass
@@ -274,6 +289,8 @@ def create_tts_engine_executor(
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        dynamic_prefill_interval=dynamic_prefill_interval,
+        prefill_first_audio_budget_ms=prefill_first_audio_budget_ms,
         tp_rank=tp_rank,
         tp_size=tp_size,
         nccl_port=nccl_port,

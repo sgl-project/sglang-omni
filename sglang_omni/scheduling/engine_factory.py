@@ -31,6 +31,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 from sglang_omni.scheduling.types import (
     DeferredAdmission,
+    PrefillCadence,
     RequestDataT,
     StreamOutputBuilder,
 )
@@ -95,6 +96,7 @@ class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
     prefill_coalesce_after_builds_during_decode: bool
     request_build_max_workers: int
     request_build_max_pending: int | None
+    prefill_cadence: PrefillCadence | None
 
 
 class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
