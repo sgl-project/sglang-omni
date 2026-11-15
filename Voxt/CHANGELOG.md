@@ -39,6 +39,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Live meeting captions end at pauses and do not add a full stop to a cut sentence** (#3987): a speaker who only took short breaths got a new caption every 8 seconds, often mid-sentence, and each one ended in a full stop. Once a caption is 4 seconds long, a pause of 0.3 seconds now ends it. A caption that still reaches 8 seconds without a pause is cut there without a full stop.
 - **Set up a language model works on the setup guide's Translate and Rewrite steps** (#3917): the button opened the Language models page behind the guide, so it seemed to do nothing. The guide now steps aside, as the same button on the Models step does, and the page offers Back to the setup guide at that step.
 - **Voxt stays out of the Dock from launch** (#3918): with Settings → General → Show in the Dock off, Voxt started as an app in the Dock and left it only once it had finished launching, and its Dock icon could stay, for example after ⌘W closed the window. Voxt now starts out of the Dock, with only its menu bar icon.
 - **Rewrite reads text selected on a web page or in a PDF** (#3835): with a whole page selected with ⌘A in Chrome, or a page of a PDF selected in Acrobat, Rewrite sent the language model only your instruction, and the model answered that no text was given. Voxt took the empty selection that these apps report to Accessibility for no selection at all and did not try copying. It now copies the selection there (and puts your clipboard back), as it already did in apps that report nothing. In a text field, a caret with nothing selected still sends no text.
@@ -100,6 +101,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **会议实时字幕在停顿处换行，被截断的半句不再加句号**（#3987）：以前说话的人只换口气、不停满 0.75 秒，字幕就每 8 秒切一次，常常切在句子中间，而且每段都以句号结尾。现在一段字幕满 4 秒后，停顿 0.3 秒就结束这一段；8 秒内还是没有停顿才在 8 秒处切开，切开的这段不加句号。
 - **设置引导的翻译、改写两步里，“设置语言模型”按钮能用了**（#3917）：以前按钮在引导后面打开“语言模型”页，看上去没反应。现在引导会先让开，和“模型”一步的同一个按钮一样，页面顶部可以“回到设置引导”的这一步。
 - **关掉“在程序坞中显示”后，Voxt 从启动起就不进程序坞**（#3918）：以前 Voxt 先作为程序坞里的 App 启动，启动完才离开程序坞，程序坞图标有时会留下来，比如按 ⌘W 关掉窗口之后。现在 Voxt 启动时就不在程序坞里，只有菜单栏图标。
 - **改写能读到网页和 PDF 里选中的文字**（#3835）：在 Chrome 里用 ⌘A 全选一个网页，或在 Acrobat 里选中 PDF 的一页，改写只把你说的指令发给语言模型，模型回答说没有收到文字。原因是这些应用通过辅助功能报告了一个空的选区，Voxt 当成什么都没选，也没有再试复制。现在 Voxt 会在这些地方复制选中的文字（之后把剪贴板还原），和在什么都不报告的应用里一样。在输入框里只有光标、没有选中文字时，仍然不发送文字。

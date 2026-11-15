@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,12 +13,16 @@ import (
 type liveFakeStreamer struct {
 	mu      sync.Mutex
 	streams []*liveFakeStream
+	partial string // partial text each Send reports; "" means "line"
 }
 
 func (f *liveFakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true} }
 
 func (f *liveFakeStreamer) Open(context.Context, asr.StreamRequest) (asr.Stream, error) {
-	s := &liveFakeStream{events: make(chan asr.Event, 8)}
+	s := &liveFakeStream{events: make(chan asr.Event, 8), partial: f.partial}
+	if s.partial == "" {
+		s.partial = "line"
+	}
 	f.mu.Lock()
 	f.streams = append(f.streams, s)
 	f.mu.Unlock()
@@ -25,11 +30,12 @@ func (f *liveFakeStreamer) Open(context.Context, asr.StreamRequest) (asr.Stream,
 }
 
 type liveFakeStream struct {
-	mu     sync.Mutex
-	data   []byte
-	closed bool
-	done   bool
-	events chan asr.Event
+	mu      sync.Mutex
+	data    []byte
+	closed  bool
+	done    bool
+	events  chan asr.Event
+	partial string
 }
 
 func (s *liveFakeStream) Send(pcm []byte) error {
@@ -40,7 +46,7 @@ func (s *liveFakeStream) Send(pcm []byte) error {
 	}
 	s.data = append(s.data, pcm...)
 	select {
-	case s.events <- asr.Event{Kind: asr.EventPartial, Text: "line"}:
+	case s.events <- asr.Event{Kind: asr.EventPartial, Text: s.partial}:
 	default:
 	}
 	return nil
@@ -212,5 +218,81 @@ func TestLiveRotateStartsFreshText(t *testing.T) {
 	live.committer.Partial("今天晚上")
 	if g := live.LiveText(); g != "今天晚上" {
 		t.Fatalf("live after rotate %q", g)
+	}
+}
+
+// levelModel is a VAD that calls any non-zero frame speech.
+type levelModel struct{}
+
+func (levelModel) Feed(pcm []byte) ([]float64, error) {
+	for _, b := range pcm {
+		if b != 0 {
+			return []float64{1}, nil
+		}
+	}
+	return []float64{0}, nil
+}
+func (levelModel) Chunk() int         { return 160 }
+func (levelModel) Threshold() float64 { return 0.5 }
+func (levelModel) Close()             {}
+
+// TestLiveSegmentEndsAtBreath replays #3987: a speaker who only takes short
+// breaths got a segment every 8 s, each cut mid-sentence and ending in "。".
+func TestLiveSegmentEndsAtBreath(t *testing.T) {
+	const rate = 16000
+	ctx := context.Background()
+	open := func(partial string) (*Live, *[]Segment) {
+		var got []Segment
+		live := &Live{
+			Clock:    (&tickingClock{t: time.Unix(0, 0)}).Now,
+			Streamer: &liveFakeStreamer{partial: partial},
+			Req:      asr.StreamRequest{SampleRate: rate},
+			Speech:   NewSpeech(rate, levelModel{}),
+			OnCommit: func(s Segment) { got = append(got, s) },
+		}
+		if err := live.Open(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return live, &got
+	}
+	push := func(live *Live, pcm []byte) {
+		for off := 0; off < len(pcm); off += rate / 10 * 2 { // 100 ms chunks, like the recorder
+			if err := live.Push(ctx, pcm[off:min(off+rate/10*2, len(pcm))]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	live, got := open("我想问一下，那个插件，它就是因为我对它的理解。")
+	push(live, speechPCM(5*time.Second, rate))
+	push(live, silencePCM(400*time.Millisecond, rate))
+	if len(*got) != 1 {
+		t.Fatalf("want a commit at the 0.4 s breath after 5 s of speech, got %d", len(*got))
+	}
+	if end := (*got)[0].End; end > 5500*time.Millisecond {
+		t.Fatalf("segment ended at %v, want the breath near 5.4 s", end)
+	}
+	if text := (*got)[0].Text; text != "我想问一下，那个插件，它就是因为我对它的理解。" {
+		t.Fatalf("pause commit keeps the model's full stop, got %q", text)
+	}
+
+	// A short breath early in a phrase is not a boundary yet.
+	live, got = open("然后")
+	push(live, speechPCM(time.Second, rate))
+	push(live, silencePCM(400*time.Millisecond, rate))
+	if len(*got) != 0 {
+		t.Fatalf("0.4 s breath after 1 s committed %q", (*got)[0].Text)
+	}
+
+	// No pause at all: the 8 s cap cuts, without the model's full stop.
+	for _, partial := range []string{"然后Typeless就是一个，然后微信书。", "so I think the."} {
+		live, got = open(partial)
+		push(live, speechPCM(8*time.Second, rate))
+		if len(*got) != 1 {
+			t.Fatalf("%q: want one forced cut at 8 s, got %d", partial, len(*got))
+		}
+		if text := (*got)[0].Text; strings.HasSuffix(text, "。") || strings.HasSuffix(text, ".") {
+			t.Fatalf("forced cut mid-sentence ends in a full stop: %q", text)
+		}
 	}
 }
