@@ -214,6 +214,7 @@ func (m *Manager) updateLive(src Source, text string) {
 }
 
 func (m *Manager) commitSegment(seg Segment) {
+	seg.Text = collapseLoops(seg.Text)
 	if seg.Text == "" {
 		return
 	}
