@@ -50,6 +50,25 @@ def test_every_process_on_the_shared_gpu_declares_its_memory() -> None:
     assert (tts_engine.gpu_memory_fraction, vocoder.gpu_memory_fraction) == (0.65, 0.15)
 
 
+def test_a_tensor_parallel_engine_keeps_its_process_to_itself() -> None:
+    """A tensor-parallel stage cannot share its process, so the vocoder, which
+    otherwise runs in the engine's, moves to its own."""
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [
+            ("tts_engine.tp_size", "2"),
+            ("tts_engine.gpu", "[0, 1]"),
+            ("vocoder.gpu", "1"),
+        ]
+    )
+
+    topology = build_compiled_process_topology(config)
+    assert topology.stage_to_process == {
+        "preprocessing": "preprocessing",
+        "vocoder": "vocoder",
+    }
+    assert set(topology.tp_stage_to_processes) == {"tts_engine"}
+
+
 def test_each_factory_gets_the_defaults_written_once() -> None:
     config = Drama3PipelineConfig(model_path="checkpoint")
 

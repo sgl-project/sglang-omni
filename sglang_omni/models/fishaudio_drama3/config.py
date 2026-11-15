@@ -12,6 +12,7 @@ from sglang_omni.config.schema import (
     FactoryArgs,
     PipelineConfig,
     StageConfig,
+    stage_process_name,
 )
 
 PACKAGE = "sglang_omni.models.fishaudio_drama3"
@@ -194,6 +195,14 @@ class Drama3PipelineConfig(PipelineConfig):
     ]
 
     def model_post_init(self, __context: object = None) -> None:
+        engine = self.stage_named("tts_engine")
+        vocoder = self.stage_named("vocoder")
+        # note (Wenyao Gao): a tensor-parallel engine holds its process alone, so the
+        # vocoder leaves it.
+        if engine.tp_size > 1 and vocoder.process == stage_process_name(engine):
+            vocoder.process = vocoder.name
+        else:
+            pass
         super().model_post_init(__context)
         preprocessing_extra = (
             self.stage_named("preprocessing").factory.model_extra or {}
