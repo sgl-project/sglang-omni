@@ -91,8 +91,8 @@ func TestOverlayShotsMeeting(t *testing.T) {
 func snapshotsMeetingOverlay(t *testing.T, out string) {
 	now := time.Now()
 	segs := []meeting.Segment{
-		{Source: meeting.SourceSystem, Speaker: "s1", Text: "Mail and Voice Memos group by day and show two lines per row.", Final: true},
-		{Source: meeting.SourceMic, Speaker: "me", Text: "Yes. I'll ship the list first and the detail panel after.", Final: true},
+		{ID: "seg-1", Source: meeting.SourceSystem, Speaker: "s1", Text: "Mail and Voice Memos group by day and show two lines per row.", Final: true},
+		{ID: "seg-2", Source: meeting.SourceMic, Speaker: "me", Text: "Yes. I'll ship the list first and the detail panel after.", Final: true},
 	}
 	level := map[meeting.Source]float64{meeting.SourceMic: -18, meeting.SourceSystem: -30}
 	live := map[meeting.Source]string{meeting.SourceSystem: "Sounds good, let's review again"}
