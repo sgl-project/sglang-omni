@@ -254,7 +254,8 @@ func (a *app) meetingOverlayExpanded(c *ui.Context, s meeting.Snapshot) {
 		n = 1
 	}
 	// A List builds only the rows in view and follows the newest while it
-	// shows the end (#3985).
+	// shows the end (#3985). Keyed by segment, a user reading stays on their
+	// line as the snapshot drops its oldest ones.
 	a.meetOvList.FollowEnd = true
 	ui.List(c.Key("mt-live"), &a.meetOvList, n).Grow(1).MinHeight(0).Gap(8).Padding(0, 0, 12, 0).
 		ItemKey(func(i int) any {

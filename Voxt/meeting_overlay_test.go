@@ -72,11 +72,16 @@ func TestMeetingOverlayFollowsNewestLine(t *testing.T) {
 		return fmt.Sprintf("Line %d: 我们先看 the release notes，再讨论下一步。", i)
 	}
 	s := meeting.Snapshot{ID: "m1", State: meeting.StateRecording, Mode: meeting.ModeMeeting}
+	next := 0 // the snapshot keeps the newest 200 lines, as meeting.Manager does
 	add := func(n int) {
 		for range n {
-			i := len(s.Segments)
+			i := next
+			next++
 			s.Segments = append(s.Segments, meeting.Segment{ID: fmt.Sprint("seg-", i), Source: meeting.SourceSystem, Speaker: "s1",
 				Text: lineText(i), Final: true})
+			if len(s.Segments) > 200 {
+				s.Segments = s.Segments[1:]
+			}
 		}
 		a.meetSnap = s
 	}
@@ -87,7 +92,7 @@ func TestMeetingOverlayFollowsNewestLine(t *testing.T) {
 		r, ok := tt.Find(text)
 		return ok && r.H > 0 && r.Y >= 0 && r.Y+r.H <= float32(m.Layout.Height)
 	}
-	newest := func() string { return lineText(len(s.Segments) - 1) }
+	newest := func() string { return lineText(next - 1) }
 	a.meetSnap = s
 	frames(tt)
 	if !shows("Listening…") {
@@ -99,13 +104,13 @@ func TestMeetingOverlayFollowsNewestLine(t *testing.T) {
 		add(1)
 		frames(tt)
 		if !shows(newest()) {
-			t.Fatalf("after %d lines: %q not in view", len(s.Segments), newest())
+			t.Fatalf("after %d lines: %q not in view", next, newest())
 		}
 	}
 	add(400)
 	frames(tt)
 	if !shows(newest()) {
-		t.Fatalf("after a burst to %d lines: %q not in view", len(s.Segments), newest())
+		t.Fatalf("after a burst to %d lines: %q not in view", next, newest())
 	}
 	// Scrolled up to read, new lines leave the view where it is.
 	cx, cy := float32(m.Layout.Width)/2, float32(m.Layout.Height)*0.7
@@ -121,7 +126,7 @@ func TestMeetingOverlayFollowsNewestLine(t *testing.T) {
 			break
 		}
 	}
-	add(5)
+	add(5) // the oldest lines leave the snapshot as these come
 	frames(tt)
 	if reading == "" || !shows(reading) || shows(newest()) {
 		t.Fatalf("scrolled up: reading %q, shows it %v, shows newest %v", reading, shows(reading), shows(newest()))
@@ -149,7 +154,7 @@ func TestMeetingOverlayFollowsNewestLine(t *testing.T) {
 	// Another meeting starts at its own end, whatever the last one's place.
 	tt.Scroll(cx, cy, 0, -600)
 	frames(tt)
-	s = meeting.Snapshot{ID: "m2", State: meeting.StateRecording, Mode: meeting.ModeMeeting}
+	s, next = meeting.Snapshot{ID: "m2", State: meeting.StateRecording, Mode: meeting.ModeMeeting}, 0
 	add(30)
 	frames(tt)
 	if !shows(newest()) {
