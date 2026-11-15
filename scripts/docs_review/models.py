@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Types for one local documentation review."""
+"""Types for advisory pull request reviews."""
 
 from __future__ import annotations
 
@@ -85,6 +85,8 @@ class ModelSettings(BaseModel):
     max_output_tokens: int = Field(gt=0)
     api_key_environment_variable: str
     reasoning_effort: ReasoningEffort | None = None
+    token_limit_field: Literal["max_tokens", "max_completion_tokens"] | None = None
+    response_format: Literal["json_object"] | None = None
 
     @model_validator(mode="after")
     def set_default_reasoning_effort(self) -> ModelSettings:
@@ -95,13 +97,26 @@ class ModelSettings(BaseModel):
         return self
 
 
-class ReviewArtifact(BaseModel):
-    pull_request_number: int = Field(gt=0)
-    run_id: str = Field(pattern=r"^[1-9][0-9]*$")
-    run_attempt: int = Field(gt=0)
-    stale: bool
-    publishable: bool
-    report: "Report"
+ReviewScope = Literal["docs", "unit_tests"]
+
+
+class UnitTestCaseLocation(BaseModel):
+    file_path: str
+    name: str
+    line_start: int
+    line_end: int
+    changed_line_ranges: list[tuple[int, int]]
+
+
+class UnitTestCase(UnitTestCaseLocation):
+    previous_source: str = ""
+
+
+class SourceCitation(BaseModel):
+    file_path: str
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    quote: str
 
 
 class Finding(BaseModel):
@@ -121,6 +136,9 @@ class Finding(BaseModel):
     certainty: Literal["supported", "uncertain"]
     parameter_name: str = ""
     parameter_absence_from_text_search: bool = False
+    public_contract: str = ""
+    regression: str = ""
+    duplicate_test: SourceCitation | None = None
 
 
 class CheckView(BaseModel):
@@ -156,6 +174,18 @@ class Report(BaseModel):
     dropped_unsupported_absence_count: int = Field(ge=0)
     document_scopes: list[DocumentScope] = Field(default_factory=list)
     coverage_limitations: list[str] = Field(default_factory=list)
+    review_scope: ReviewScope = "docs"
+    unit_test_cases: list[UnitTestCaseLocation] = Field(default_factory=list)
+
+
+class ReviewArtifact(BaseModel):
+    pull_request_number: int = Field(gt=0)
+    run_id: str = Field(pattern=r"^[1-9][0-9]*$")
+    run_attempt: int = Field(gt=0)
+    stale: bool
+    publishable: bool
+    review_scope: ReviewScope = "docs"
+    report: Report
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -192,6 +222,26 @@ class ReviewBundle:
     added_documentation_text: str
     style_guide_limitation: str
     document_scopes: list[DocumentScope] = field(default_factory=list)
+    review_scope: ReviewScope = "docs"
+    unit_test_cases: list[UnitTestCase] = field(default_factory=list)
+    collection_limitations: list[str] = field(default_factory=list)
+
+    @property
+    def coverage_limitations(self) -> list[str]:
+        return [
+            *self.collection_limitations,
+            *[
+                f"{file.file_path}: {'missing' if file.missing else 'truncated'}"
+                for file in self.files
+                if file.missing or file.truncated
+            ],
+        ]
+
+    @property
+    def needs_model(self) -> bool:
+        return self.review_scope == "docs" or bool(
+            self.unit_test_cases and not self.coverage_limitations
+        )
 
 
 @dataclass(kw_only=True)
@@ -210,6 +260,8 @@ class ReviewRequest:
     follow_up_authorized: bool = False
     retry_count: int = 0
     include_paths: list[str] = field(default_factory=list)
+    review_scope: ReviewScope = "docs"
+    collection_limitations: list[str] = field(default_factory=list)
 
 
 class DocumentationReviewer(Protocol):
@@ -252,3 +304,6 @@ class BundlePayload(BaseModel):
     evidence_text: str
     files: list[BundleFileRecord]
     document_scopes: list[DocumentScope] = Field(default_factory=list)
+    review_scope: ReviewScope = "docs"
+    unit_test_cases: list[UnitTestCase] = Field(default_factory=list)
+    collection_limitations: list[str] = Field(default_factory=list)

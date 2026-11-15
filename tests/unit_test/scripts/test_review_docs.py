@@ -1187,3 +1187,18 @@ def test_evaluation_counts_distinct_defects_in_the_same_file() -> None:
     assert report.labeled_defect_count == 2
     assert report.recall == 0.5
     assert not report.meets_recall_threshold
+
+
+def test_reasoning_effort_and_token_limit_field_are_independent() -> None:
+    settings = ModelSettings(
+        model_name="test-reviewer",
+        endpoint_url="https://example.invalid/v1/chat/completions",
+        max_output_tokens=8192,
+        api_key_environment_variable="TEST_API_KEY",
+        reasoning_effort="none",
+        token_limit_field="max_tokens",
+    )
+    request = json.loads(build_chat_request("input", settings, "rules").to_json())
+    assert request["reasoning_effort"] == "none"
+    assert request["max_tokens"] == 8192
+    assert "max_completion_tokens" not in request

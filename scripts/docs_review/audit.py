@@ -16,7 +16,12 @@ from scripts.docs_review.models import (
     Finding,
     ReviewBundle,
 )
-from scripts.docs_review.policy import CONTRIBUTOR_CHECKLIST, PERFORMANCE_EVIDENCE
+from scripts.docs_review.policy import (
+    CONTRIBUTOR_CHECKLIST,
+    KNOWN_RULE_IDS,
+    PERFORMANCE_EVIDENCE,
+)
+from scripts.docs_review.snapshot import citation_matches
 
 CHECKLIST_HEADING = "## Contributor checklist"
 PERFORMANCE_CLAIM = re.compile(
@@ -301,3 +306,72 @@ def citation_anchor(bundle: ReviewBundle) -> tuple[str, str]:
         else:
             pass
     return "scope.txt", "No documentation files in scope."
+
+
+def validate_docs_findings(
+    findings: list[Finding], bundle: ReviewBundle
+) -> tuple[list[Finding], list[Finding], int, int]:
+    kept: list[Finding] = []
+    pre_existing: list[Finding] = []
+    dropped_citations = 0
+    dropped_absence = 0
+    for finding in findings:
+        if finding.rule_id not in KNOWN_RULE_IDS:
+            dropped_citations += 1
+        elif any(
+            scope.file_path == finding.file_path
+            and finding.rule_id not in scope.rule_ids
+            for scope in bundle.document_scopes
+        ):
+            dropped_citations += 1
+        elif not citation_matches(
+            bundle,
+            finding.file_path,
+            finding.line_start,
+            finding.line_end,
+            finding.quote,
+        ):
+            dropped_citations += 1
+        elif finding.evidence_quote == "" or not citation_matches(
+            bundle,
+            finding.evidence_file_path,
+            finding.evidence_line_start,
+            finding.evidence_line_end,
+            finding.evidence_quote,
+        ):
+            dropped_citations += 1
+        elif finding.parameter_absence_from_text_search and parameter_defined(
+            bundle, finding.parameter_name
+        ):
+            dropped_absence += 1
+        else:
+            accepted = finding
+            if finding.parameter_absence_from_text_search:
+                accepted = finding.model_copy(update={"certainty": "uncertain"})
+            else:
+                pass
+            if accepted.change_relation == "pre_existing":
+                pre_existing.append(accepted)
+            else:
+                kept.append(accepted)
+    return kept, pre_existing, dropped_citations, dropped_absence
+
+
+def parameter_defined(bundle: ReviewBundle, parameter_name: str) -> bool:
+    if parameter_name == "":
+        return False
+    else:
+        pattern = re.compile(rf"\b{re.escape(parameter_name)}\b")
+        for collected in bundle.files:
+            suffix_is_code = collected.file_path.endswith(
+                (".py", ".yaml", ".yml", ".toml", ".json")
+            )
+            if (
+                suffix_is_code
+                and collected.change != "review_input"
+                and pattern.search(collected.content)
+            ):
+                return True
+            else:
+                pass
+        return False

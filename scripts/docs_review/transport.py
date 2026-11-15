@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import http.client
 import os
 import urllib.error
 import urllib.request
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 from scripts.docs_review.models import ModelSettings, ReasoningEffort
 
 MODEL_TIMEOUT_SECONDS = 60
+UNIT_TEST_MODEL_TIMEOUT_SECONDS = 180
 
 
 class ReviewerError(Exception):
@@ -24,6 +26,10 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class ChatResponseFormat(BaseModel):
+    type: Literal["json_object"]
+
+
 class ChatRequest(BaseModel):
     """JSON body sent to an OpenAI-compatible chat endpoint."""
 
@@ -33,6 +39,7 @@ class ChatRequest(BaseModel):
     max_completion_tokens: int | None = Field(default=None, gt=0)
     temperature: Literal[0] | None = None
     reasoning_effort: ReasoningEffort | None = None
+    response_format: ChatResponseFormat | None = None
 
     def to_json(self) -> str:
         return self.model_dump_json(by_alias=True, exclude_none=True)
@@ -41,9 +48,15 @@ class ChatRequest(BaseModel):
 class OpenAICompatibleReviewer:
     """Read-only model call. No shell, web search, or GitHub writes."""
 
-    def __init__(self, settings: ModelSettings, prompt_text: str) -> None:
+    def __init__(
+        self,
+        settings: ModelSettings,
+        prompt_text: str,
+        timeout_seconds: int = MODEL_TIMEOUT_SECONDS,
+    ) -> None:
         self.settings = settings
         self.prompt_text = prompt_text
+        self.timeout_seconds = timeout_seconds
 
     def review(self, bundle_text: str) -> str:
         request = build_chat_request(bundle_text, self.settings, self.prompt_text)
@@ -58,11 +71,20 @@ class OpenAICompatibleReviewer:
         )
         try:
             with urllib.request.urlopen(
-                http_request, timeout=MODEL_TIMEOUT_SECONDS
+                http_request, timeout=self.timeout_seconds
             ) as response:
                 payload_bytes = response.read()
+        except urllib.error.HTTPError as error:
+            raise ReviewerError(f"model service returned HTTP {error.code}") from error
+        except TimeoutError as error:
+            raise ReviewerError("model request timed out") from error
         except urllib.error.URLError as error:
-            raise ReviewerError("model request failed") from error
+            if isinstance(error.reason, TimeoutError):
+                raise ReviewerError("model request timed out") from error
+            else:
+                raise ReviewerError("model service could not be reached") from error
+        except (ConnectionError, http.client.HTTPException) as error:
+            raise ReviewerError("model response connection ended early") from error
         else:
             return parse_chat_content(payload_bytes)
 
@@ -74,20 +96,28 @@ def build_chat_request(
         ChatMessage(role="system", content=prompt_text),
         ChatMessage(role="user", content=bundle_text),
     ]
-    if settings.reasoning_effort is None:
-        return ChatRequest(
-            model_name=settings.model_name,
-            messages=messages,
-            max_tokens=settings.max_output_tokens,
-            temperature=0,
-        )
-    else:
-        return ChatRequest(
-            model_name=settings.model_name,
-            messages=messages,
-            max_completion_tokens=settings.max_output_tokens,
-            reasoning_effort=settings.reasoning_effort,
-        )
+    token_limit_field = settings.token_limit_field or (
+        "max_tokens" if settings.reasoning_effort is None else "max_completion_tokens"
+    )
+    return ChatRequest(
+        model_name=settings.model_name,
+        messages=messages,
+        max_tokens=(
+            settings.max_output_tokens if token_limit_field == "max_tokens" else None
+        ),
+        max_completion_tokens=(
+            settings.max_output_tokens
+            if token_limit_field == "max_completion_tokens"
+            else None
+        ),
+        temperature=0 if settings.reasoning_effort is None else None,
+        reasoning_effort=settings.reasoning_effort,
+        response_format=(
+            ChatResponseFormat(type=settings.response_format)
+            if settings.response_format is not None
+            else None
+        ),
+    )
 
 
 def authorization_header(settings: ModelSettings) -> str:

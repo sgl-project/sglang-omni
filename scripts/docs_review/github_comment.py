@@ -50,6 +50,44 @@ def format_citation(
         )
 
 
+def format_unit_test_finding(
+    repository_url: str, artifact: ReviewArtifact, finding: Finding
+) -> str:
+    test_citation = format_citation(
+        repository_url,
+        artifact,
+        finding.file_path,
+        finding.line_start,
+        finding.line_end,
+    )
+    contract = format_citation(
+        repository_url,
+        artifact,
+        finding.evidence_file_path,
+        finding.evidence_line_start,
+        finding.evidence_line_end,
+    )
+    return "\n".join(
+        [
+            f"- **{safe_text(finding.rule_id)}** — {safe_text(finding.claim)}",
+            f"  - Test: {test_citation} — {safe_text(finding.quote)}",
+            f"  - Contract: {contract} — {safe_text(finding.public_contract)}",
+            f"  - Regression: {safe_text(finding.regression)}",
+            f"  - Impact: {safe_text(finding.impact)}",
+            f"  - Suggested assertion: {safe_text(finding.suggested_fix)}",
+        ]
+    )
+
+
+def format_finding(
+    repository_url: str, artifact: ReviewArtifact, finding: Finding
+) -> str:
+    if artifact.review_scope == "unit_tests":
+        return format_unit_test_finding(repository_url, artifact, finding)
+    else:
+        return format_docs_finding(repository_url, artifact, finding)
+
+
 def format_docs_finding(
     repository_url: str, artifact: ReviewArtifact, finding: Finding
 ) -> str:
@@ -78,31 +116,11 @@ def format_docs_finding(
     )
 
 
-def render_advisory_comment(
-    repository_url: str,
-    artifact: ReviewArtifact,
-    section_title: str,
-    findings: list[Finding],
-    run_url: str,
-) -> str:
-    report = artifact.report
-    if not findings:
-        return ""
+def section_title_for_scope(review_scope: str) -> str:
+    if review_scope == "unit_tests":
+        return "### Advisory unit-test contract review"
     else:
-        pass
-    return "\n\n".join(
-        [
-            ADVISORY_REVIEW_MARKER,
-            section_title,
-            f"Advisory findings for commit `{report.head_commit_sha}`. "
-            "They apply only to this revision; check the current head before acting.",
-            *[
-                format_docs_finding(repository_url, artifact, finding)
-                for finding in findings
-            ],
-            f"Review run: {run_url}",
-        ]
-    )
+        return "### Advisory documentation review"
 
 
 def list_issue_comments(repository_name: str, issue_number: int) -> list[dict[str, object]]:
@@ -172,40 +190,31 @@ def publish_reports(
     artifacts: list[ReviewArtifact],
 ) -> None:
     run_url = f"{repository_url}/actions/runs/{run_id}/attempts/{run_attempt}"
-    sections: list[str] = []
-    for artifact in artifacts:
-        if not artifact.publishable or artifact.stale:
-            continue
-        else:
-            pass
-        report = artifact.report
-        if report.execution != "complete" or not report.findings:
-            continue
-        else:
-            pass
-        title = (
-            "### Advisory documentation review"
-            if not sections
-            else "### Advisory documentation review (continued)"
-        )
-        section = render_advisory_comment(
-            repository_url,
-            artifact,
-            title,
-            report.findings,
-            run_url,
-        )
-        if section:
-            sections.append(section)
-        else:
-            pass
-    if not sections:
+    publishable = [
+        artifact
+        for artifact in artifacts
+        if artifact.publishable
+        and not artifact.stale
+        and artifact.report.execution == "complete"
+        and artifact.report.findings
+    ]
+    if not publishable:
         return
     else:
         pass
-    body = "\n\n".join(sections)
-    if len(artifacts) == 1:
-        pull_request_number = artifacts[0].pull_request_number
-    else:
-        pull_request_number = artifacts[0].pull_request_number
-    upsert_advisory_comment(repository_name, pull_request_number, body)
+    head_commit_sha = publishable[0].report.head_commit_sha
+    parts = [
+        ADVISORY_REVIEW_MARKER,
+        f"Advisory findings for commit `{head_commit_sha}`. "
+        "They apply only to this revision; check the current head before acting.",
+    ]
+    for artifact in publishable:
+        parts.append(section_title_for_scope(artifact.review_scope))
+        parts.extend(
+            format_finding(repository_url, artifact, finding)
+            for finding in artifact.report.findings
+        )
+    parts.append(f"Review run: {run_url}")
+    upsert_advisory_comment(
+        repository_name, publishable[0].pull_request_number, "\n\n".join(parts)
+    )

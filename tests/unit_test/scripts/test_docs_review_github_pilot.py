@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.docs_review import github_comment, github_pilot
+from scripts.docs_review import github, github_comment, github_pilot
 from scripts.docs_review.github_pilot import (
     PilotError,
     Reservation,
@@ -34,7 +34,7 @@ def test_pull_request_keeps_api_base_sha(
             }
         )
 
-    monkeypatch.setattr(github_pilot, "github_api", api)
+    monkeypatch.setattr(github, "github_api", api)
     pull_request = github_pilot.fetch_pull_request("owner/repo", 1)
     assert pull_request.base.sha == "a" * 40
     assert pull_request.head.sha == "b" * 40
@@ -166,7 +166,8 @@ def test_offline_report_contains_results_and_excludes_full_inputs(
     github_pilot.run_github_review()
     artifact = tmp_path / "docs-review" / "artifact"
     assert {file.name for file in artifact.iterdir()} == {"report.json", "report.md"}
-    report = json.loads((artifact / "report.json").read_text(encoding="utf-8"))
+    reports = json.loads((artifact / "report.json").read_text(encoding="utf-8"))
+    report = reports[0]
     assert report["stale"] is True
     assert (report["run_id"], report["run_attempt"]) == ("123", 2)
     assert report["report"]["execution"] == "incomplete"
@@ -219,7 +220,8 @@ def test_failed_model_call_is_reserved_before_invocation_and_not_repeated(
     monkeypatch.setattr(OpenAICompatibleReviewer, "review", fail_model)
     github_pilot.run_github_review()
     artifact = tmp_path / "docs-review" / "artifact"
-    report = json.loads((artifact / "report.json").read_text(encoding="utf-8"))
+    reports = json.loads((artifact / "report.json").read_text(encoding="utf-8"))
+    report = reports[0]
     assert report["report"]["execution"] == "incomplete"
     assert reservations.reservations[0].execution == "incomplete"
     budget = BudgetConfig(

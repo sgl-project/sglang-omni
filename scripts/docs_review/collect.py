@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 from pathlib import Path
 
 from scripts.docs_review.models import (
@@ -23,11 +22,19 @@ from scripts.docs_review.policy import (
     STYLE_GUIDE_PATH,
     classify_document,
 )
+from scripts.docs_review.snapshot import (
+    clip_content,
+    git_show,
+    repository_identity,
+    require_git,
+)
+from scripts.docs_review.unit_tests import (
+    UNIT_TEST_POLICY_VERSION,
+    collect_unit_test_inputs,
+)
 
-MAX_COLLECTED_BYTES = 200_000
 DOCUMENTATION_SUFFIXES = {".md", ".rst", ".mdx"}
 CODE_SUFFIXES = {".py", ".yaml", ".yml", ".toml", ".json"}
-GIT_COMMAND_PREFIX = ["git", "-c", "core.hooksPath=/dev/null"]
 
 
 def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
@@ -35,6 +42,31 @@ def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
     merge_base = require_git(
         repository, ["merge-base", request.base_commit_sha, request.head_commit_sha]
     ).strip()
+    if request.review_scope == "unit_tests":
+        test_files, cases, limitations = collect_unit_test_inputs(
+            repository, merge_base, request.head_commit_sha, request.include_paths
+        )
+        test_files.extend(review_input_files(request))
+        return ReviewBundle(
+            repository_identity=repository_identity(repository),
+            base_commit_sha=request.base_commit_sha,
+            head_commit_sha=request.head_commit_sha,
+            merge_base_commit_sha=merge_base,
+            policy_version=UNIT_TEST_POLICY_VERSION,
+            pull_request_text=request.pull_request_text,
+            comment_text=request.comment_text,
+            evidence_text=request.evidence_text,
+            checks=list(request.checks),
+            files=test_files,
+            reviewed_paths=list(dict.fromkeys(case.file_path for case in cases)),
+            added_documentation_text="",
+            style_guide_limitation="",
+            review_scope=request.review_scope,
+            unit_test_cases=cases,
+            collection_limitations=[*request.collection_limitations, *limitations],
+        )
+    else:
+        pass
     name_status = require_git(
         repository, ["diff", "--name-status", merge_base, request.head_commit_sha]
     )
@@ -138,6 +170,17 @@ def review_input_sha256(
     model_configuration = (
         model_settings.model_dump() if model_settings is not None else None
     )
+    if model_configuration is not None and model_settings is not None:
+        if model_settings.token_limit_field is None:
+            model_configuration.pop("token_limit_field")
+        else:
+            pass
+        if model_settings.response_format is None:
+            model_configuration.pop("response_format")
+        else:
+            pass
+    else:
+        pass
     parts = [
         bundle.repository_identity,
         bundle.base_commit_sha,
@@ -158,6 +201,19 @@ def review_input_sha256(
         bundle.added_documentation_text,
         bundle.style_guide_limitation,
     ]
+    if bundle.review_scope == "unit_tests":
+        parts.extend(
+            [
+                bundle.review_scope,
+                json.dumps(
+                    [case.model_dump(mode="json") for case in bundle.unit_test_cases],
+                    sort_keys=True,
+                ),
+                json.dumps(bundle.collection_limitations),
+            ]
+        )
+    else:
+        pass
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
@@ -190,16 +246,10 @@ def bundle_payload(
         evidence_text=bundle.evidence_text,
         files=records,
         document_scopes=list(bundle.document_scopes),
+        review_scope=bundle.review_scope,
+        unit_test_cases=list(bundle.unit_test_cases),
+        collection_limitations=list(bundle.collection_limitations),
     )
-
-
-def repository_identity(repository: Path) -> str:
-    completed = run_git(repository, ["remote", "get-url", "origin"])
-    if completed.returncode == 0:
-        origin = completed.stdout.strip()
-    else:
-        origin = ""
-    return f"{repository.resolve().as_posix()}\n{origin}"
 
 
 def select_reviewed_paths(
@@ -340,41 +390,3 @@ def checks_canonical(checks: list[CheckRecord]) -> str:
 
 def content_sha256(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
-
-
-def clip_content(content: str) -> tuple[str, bool]:
-    encoded = content.encode()
-    if len(encoded) > MAX_COLLECTED_BYTES:
-        return encoded[:MAX_COLLECTED_BYTES].decode(errors="ignore"), True
-    else:
-        return content, False
-
-
-def git_show(repository: Path, commit_sha: str, file_path: str) -> str | None:
-    completed = run_git(repository, ["show", f"{commit_sha}:{file_path}"])
-    if completed.returncode != 0:
-        return None
-    else:
-        return completed.stdout
-
-
-def require_git(repository: Path, arguments: list[str]) -> str:
-    completed = run_git(repository, arguments)
-    if completed.returncode != 0:
-        message = completed.stderr.strip() or "git command failed"
-        raise RuntimeError(message)
-    else:
-        return completed.stdout
-
-
-def run_git(repository: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
-    if arguments and arguments[0] == "diff":
-        git_arguments = ["diff", "--no-ext-diff", "--no-textconv", *arguments[1:]]
-    else:
-        git_arguments = arguments
-    return subprocess.run(
-        [*GIT_COMMAND_PREFIX, "-C", str(repository), *git_arguments],
-        check=False,
-        capture_output=True,
-        text=True,
-    )

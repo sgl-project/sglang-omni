@@ -14,11 +14,17 @@ from pathlib import Path
 from typing import Literal
 from pydantic import BaseModel, Field, ValidationError
 
+from scripts.docs_review.github import (
+    fetch_pull_request,
+    fetch_revision,
+    fetch_unit_test_checks,
+)
 from scripts.docs_review.models import (
     BudgetConfig,
     ModelSettings,
     ReviewArtifact,
     ReviewRequest,
+    ReviewScope,
 )
 from scripts.docs_review.reporting import render_bundle, render_markdown
 from scripts.docs_review.review import SystemClock, prepare_review, run_review
@@ -88,11 +94,6 @@ def github_api(
             raise PilotError(f"GitHub API request failed (HTTP {status.group(1)})")
     else:
         return completed.stdout
-
-
-def fetch_pull_request(repository_name: str, pull_request_number: int) -> PullRequest:
-    response = github_api(f"repos/{repository_name}/pulls/{pull_request_number}")
-    return PullRequest.model_validate_json(response)
 
 
 def merge_base_commit_sha(
@@ -274,7 +275,10 @@ def finish_reservation(
     raise PilotError("The review ledger could not be updated after repeated conflicts")
 
 
-def fetch_revision(repository: Path, revision: str) -> None:
+def list_changed_paths(
+    repository: Path, base_commit_sha: str, head_commit_sha: str
+) -> list[str]:
+    merge_base = merge_base_commit_sha(repository, base_commit_sha, head_commit_sha)
     completed = subprocess.run(
         [
             "git",
@@ -282,19 +286,207 @@ def fetch_revision(repository: Path, revision: str) -> None:
             "core.hooksPath=/dev/null",
             "-C",
             str(repository),
-            "fetch",
-            "--no-tags",
-            "origin",
-            revision,
+            "diff",
+            "--name-only",
+            merge_base,
+            head_commit_sha,
         ],
         capture_output=True,
         text=True,
         check=False,
     )
     if completed.returncode:
-        raise PilotError("Could not fetch a pull request revision")
+        raise PilotError("Could not list changed paths for the pull request")
+    else:
+        return [line for line in completed.stdout.splitlines() if line.strip()]
+
+
+def detect_review_scopes(changed_paths: list[str]) -> list[ReviewScope]:
+    scopes: list[ReviewScope] = []
+    if any(
+        path.startswith("docs/")
+        or path in {"README.md", "CONTRIBUTING.md"}
+        for path in changed_paths
+    ):
+        scopes.append("docs")
     else:
         pass
+    if any(
+        path.startswith("tests/unit_test/")
+        and path.endswith(".py")
+        and (
+            Path(path).name.startswith("test_")
+            or Path(path).name.endswith("_test.py")
+        )
+        for path in changed_paths
+    ):
+        scopes.append("unit_tests")
+    else:
+        pass
+    return scopes
+
+
+def resolve_review_scopes(
+    repository: Path,
+    base_commit_sha: str,
+    head_commit_sha: str,
+    *,
+    automatic_review: bool,
+) -> list[ReviewScope]:
+    if automatic_review:
+        return detect_review_scopes(
+            list_changed_paths(repository, base_commit_sha, head_commit_sha)
+        )
+    else:
+        scope_input = os.environ.get("REVIEW_SCOPE", "docs")
+        if scope_input == "unit_tests":
+            return ["unit_tests"]
+        else:
+            return ["docs"]
+
+
+def model_settings_for_scope(
+    review_scope: ReviewScope, offline: bool
+) -> ModelSettings | None:
+    if offline:
+        return None
+    else:
+        pass
+    if review_scope == "unit_tests":
+        raw = (
+            os.environ.get("UNIT_TEST_REVIEW_MODEL")
+            or os.environ["DOCS_REVIEW_MODEL"]
+        )
+    else:
+        raw = os.environ["DOCS_REVIEW_MODEL"]
+    return ModelSettings.model_validate_json(raw)
+
+
+def review_one_scope(
+    repository_name: str,
+    pull_request: PullRequest,
+    pull_request_number: int,
+    repository: Path,
+    review_scope: ReviewScope,
+    *,
+    offline: bool,
+    budget: BudgetConfig | None,
+    run_id: str,
+    run_attempt: int,
+    automatic_review: bool,
+    output_directory: Path,
+) -> ReviewArtifact | None:
+    include_paths = (
+        [
+            path.strip()
+            for path in os.environ.get("UNIT_TEST_CONTEXT_PATHS", "").splitlines()
+            if path.strip()
+        ]
+        if review_scope == "unit_tests"
+        else []
+    )
+    checks = (
+        fetch_unit_test_checks(repository_name, pull_request.head.sha)
+        if review_scope == "unit_tests"
+        else []
+    )
+    request = ReviewRequest(
+        repository=repository,
+        base_commit_sha=pull_request.base.sha,
+        head_commit_sha=pull_request.head.sha,
+        pull_request_number=pull_request_number,
+        pull_request_text=pull_request.body or "",
+        model_settings=model_settings_for_scope(review_scope, offline),
+        budget=budget,
+        ledger_path=output_directory / f"local-{review_scope}.sqlite",
+        review_scope=review_scope,
+        include_paths=include_paths,
+        checks=checks,
+    )
+    prepared = prepare_review(request)
+    bundle = prepared.bundle
+    if review_scope == "docs" and not bundle.reviewed_paths:
+        return None
+    elif review_scope == "unit_tests" and not bundle.unit_test_cases:
+        return None
+    elif (
+        not offline
+        and bundle.needs_model
+        and len(render_bundle(bundle).encode()) > MAX_INPUT_BYTES
+    ):
+        if review_scope == "unit_tests":
+            request.collection_limitations.append(
+                "Review input exceeds the byte limit. Select a smaller pull request "
+                "or fewer context files."
+            )
+            prepared = prepare_review(request)
+            bundle = prepared.bundle
+        else:
+            raise PilotError("Review input exceeds the configured byte limit")
+    else:
+        pass
+    reservation: Reservation | None = None
+    if offline or not bundle.needs_model:
+        reservation = None
+    elif budget is None:
+        raise PilotError("The review budget is not configured")
+    else:
+        reservations, _content_sha = load_reservations(repository_name)
+        if automatic_review and has_complete_reservation(
+            reservations, pull_request_number, prepared.input_hash
+        ):
+            print(
+                f"{review_scope} review input unchanged since the last complete run; skipped."
+            )
+            return None
+        else:
+            pass
+        reservation = Reservation(
+            pull_request_number=pull_request_number,
+            head_commit_sha=pull_request.head.sha,
+            review_input_sha256=prepared.input_hash,
+            estimated_cost_cents=budget.call_cost_cents,
+            date_utc=datetime.now(timezone.utc).date().isoformat(),
+            run_id=run_id,
+            run_attempt=run_attempt,
+        )
+        save_reservation_with_retry(
+            repository_name,
+            reservation,
+            budget,
+            os.environ["FOLLOW_UP"] == "true",
+        )
+    result = run_review(request, None, SystemClock(), prepared=prepared)
+    if reservation is not None:
+        finish_reservation(
+            repository_name, reservation, result.report.execution
+        )
+    else:
+        pass
+    reviewed_merge_base = result.bundle.merge_base_commit_sha
+    current = fetch_pull_request(repository_name, pull_request_number)
+    if current.state != "open" or current.head.sha != pull_request.head.sha:
+        stale = True
+    else:
+        current_merge_base = merge_base_commit_sha(
+            repository, current.base.sha, current.head.sha
+        )
+        stale = current_merge_base != reviewed_merge_base
+    publishable = (
+        not offline
+        and not stale
+        and result.report.execution == "complete"
+        and (review_scope == "docs" or bool(result.report.findings))
+    )
+    return ReviewArtifact(
+        pull_request_number=pull_request_number,
+        run_id=run_id,
+        run_attempt=run_attempt,
+        stale=stale,
+        publishable=publishable,
+        review_scope=review_scope,
+        report=result.report,
+    )
 
 
 def run_github_review() -> None:
@@ -324,14 +516,13 @@ def run_github_review() -> None:
     artifact_directory.mkdir(parents=True, exist_ok=True)
     offline = os.environ["OFFLINE_REVIEW"] == "true"
     if offline:
-        model_settings = None
         budget = None
     else:
-        model_settings = ModelSettings.model_validate_json(
-            os.environ["DOCS_REVIEW_MODEL"]
-        )
         budget = BudgetConfig.model_validate_json(os.environ["DOCS_REVIEW_BUDGET"])
-        if model_settings.api_key_environment_variable != "DOCS_REVIEW_API_KEY":
+        model_settings = model_settings_for_scope("docs", offline=False)
+        if model_settings is None or model_settings.api_key_environment_variable != (
+            "DOCS_REVIEW_API_KEY"
+        ):
             raise PilotError("The model must use DOCS_REVIEW_API_KEY")
         elif not os.environ.get("DOCS_REVIEW_API_KEY"):
             raise PilotError("The model API key is not configured")
@@ -339,83 +530,60 @@ def run_github_review() -> None:
             raise PilotError("The estimated call cost must be positive")
         else:
             pass
-    request = ReviewRequest(
-        repository=repository,
-        base_commit_sha=pull_request.base.sha,
-        head_commit_sha=pull_request.head.sha,
-        pull_request_number=pull_request_number,
-        pull_request_text=pull_request.body or "",
-        model_settings=model_settings,
-        budget=budget,
-        ledger_path=output_directory / "local.sqlite",
+    review_scopes = resolve_review_scopes(
+        repository,
+        pull_request.base.sha,
+        pull_request.head.sha,
+        automatic_review=automatic_review,
     )
-    prepared = prepare_review(request)
-    bundle = prepared.bundle
-    if not bundle.reviewed_paths:
+    if not review_scopes:
         if automatic_review:
-            print("No documentation changes; review skipped.")
+            print("No in-scope changes; advisory review skipped.")
             return
         else:
-            raise PilotError("No changed documentation files were found")
-    elif not offline and len(render_bundle(bundle).encode()) > MAX_INPUT_BYTES:
-        raise PilotError("Review input exceeds the configured byte limit")
+            raise PilotError("Choose documentation or unit-test review scope")
     else:
         pass
-    if offline:
-        reservation = None
-    elif budget is None:
-        raise PilotError("The review budget is not configured")
-    else:
-        reservations, _content_sha = load_reservations(repository_name)
-        if automatic_review and has_complete_reservation(
-            reservations, pull_request_number, prepared.input_hash
-        ):
-            print("Review input unchanged since the last complete run; skipped.")
-            return
-        else:
-            pass
-        reservation = Reservation(
-            pull_request_number=pull_request_number,
-            head_commit_sha=pull_request.head.sha,
-            review_input_sha256=prepared.input_hash,
-            estimated_cost_cents=budget.call_cost_cents,
-            date_utc=datetime.now(timezone.utc).date().isoformat(),
+    artifacts: list[ReviewArtifact] = []
+    for review_scope in review_scopes:
+        artifact = review_one_scope(
+            repository_name,
+            pull_request,
+            pull_request_number,
+            repository,
+            review_scope,
+            offline=offline,
+            budget=budget,
             run_id=run_id,
             run_attempt=run_attempt,
+            automatic_review=automatic_review,
+            output_directory=output_directory,
         )
-        save_reservation_with_retry(
-            repository_name,
-            reservation,
-            budget,
-            os.environ["FOLLOW_UP"] == "true",
-        )
-    result = run_review(request, None, SystemClock(), prepared=prepared)
-    reviewed_merge_base = result.bundle.merge_base_commit_sha
-    current = fetch_pull_request(repository_name, pull_request_number)
-    if current.state != "open" or current.head.sha != pull_request.head.sha:
-        stale = True
+        if artifact is None:
+            continue
+        else:
+            artifacts.append(artifact)
+    if not artifacts:
+        if automatic_review:
+            print("No in-scope changes produced a report; skipped.")
+            return
+        else:
+            raise PilotError("No changed files matched the selected review scope")
     else:
-        current_merge_base = merge_base_commit_sha(
-            repository, current.base.sha, current.head.sha
-        )
-        stale = current_merge_base != reviewed_merge_base
-    artifact = ReviewArtifact(
-        pull_request_number=pull_request_number,
-        run_id=run_id,
-        run_attempt=run_attempt,
-        stale=stale,
-        publishable=(
-            not offline and not stale and result.report.execution == "complete"
-        ),
-        report=result.report,
-    )
+        pass
     (artifact_directory / "report.json").write_text(
-        artifact.model_dump_json(indent=2) + "\n", encoding="utf-8"
+        json.dumps(
+            [artifact.model_dump(mode="json") for artifact in artifacts], indent=2
+        )
+        + "\n",
+        encoding="utf-8",
     )
     if automatic_review:
-        publication_note = "Findings post automatically to this pull request when complete."
+        publication_note = (
+            "Findings post automatically to this pull request when complete."
+        )
     else:
-        publication_note = "Findings are advisory and selected separately for publication."
+        publication_note = "Download the report artifact to inspect numbered findings."
     notices = [
         f"Pull request #{pull_request_number}",
         f"Review run {run_id}, attempt {run_attempt}.",
@@ -425,30 +593,25 @@ def run_github_review() -> None:
         notices.append("Collection-only run without a model call.")
     else:
         pass
-    if stale:
-        notices.append(
-            "Stale report. The pull request changed or closed during review."
+    markdown_sections = []
+    for artifact in artifacts:
+        if artifact.stale:
+            notices.append(
+                f"Stale {artifact.review_scope} report. The pull request changed "
+                "or closed during review."
+            )
+        else:
+            pass
+        markdown_sections.append(
+            f"## {artifact.review_scope}\n\n"
+            + render_markdown(artifact.report, number_findings=True)
         )
-    else:
-        pass
     (artifact_directory / "report.md").write_text(
-        "\n\n".join(notices)
-        + "\n\n"
-        + render_markdown(artifact.report, number_findings=True),
+        "\n\n".join(notices) + "\n\n" + "\n\n".join(markdown_sections),
         encoding="utf-8",
     )
-    if reservation is not None:
-        finish_reservation(repository_name, reservation, result.report.execution)
-    else:
-        pass
-    if (
-        automatic_review
-        and artifact.publishable
-        and artifact.report.findings
-    ):
-        repository_url = (
-            f'{os.environ["GITHUB_SERVER_URL"]}/{repository_name}'
-        )
+    if automatic_review:
+        repository_url = f'{os.environ["GITHUB_SERVER_URL"]}/{repository_name}'
         from scripts.docs_review.github_comment import publish_reports
 
         publish_reports(
@@ -456,16 +619,19 @@ def run_github_review() -> None:
             repository_url,
             run_id,
             run_attempt,
-            [artifact],
+            artifacts,
         )
     else:
         pass
+    last_report = artifacts[-1].report
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
-        output.write(f"execution={result.report.execution}\n")
-        output.write(f"stale={str(stale).lower()}\n")
+        output.write(f"execution={last_report.execution}\n")
+        output.write(
+            f"stale={str(any(artifact.stale for artifact in artifacts)).lower()}\n"
+        )
     print(
-        f"Advisory review: {result.report.execution}, "
-        f"stale={str(stale).lower()}. Report saved."
+        f"Advisory review: scopes={[artifact.review_scope for artifact in artifacts]}, "
+        f"execution={last_report.execution}."
     )
 
 

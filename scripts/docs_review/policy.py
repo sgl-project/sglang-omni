@@ -18,6 +18,7 @@ from scripts.docs_review.models import (
     DocumentType,
     Finding,
     ReviewRule,
+    ReviewScope,
     RuleKind,
 )
 
@@ -123,7 +124,11 @@ REVIEW_RULES: tuple[ReviewRule, ...] = (
 KNOWN_RULE_IDS = frozenset(rule.rule_id for rule in REVIEW_RULES)
 
 
-def read_prompt() -> str:
+def read_prompt(review_scope: ReviewScope = "docs") -> str:
+    if review_scope == "unit_tests":
+        return PROMPT_PATH.with_name("unit_test_prompt.md").read_text(encoding="utf-8")
+    else:
+        pass
     rules = [
         {
             **asdict(rule),

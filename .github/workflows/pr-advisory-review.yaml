@@ -19,6 +19,16 @@ on:
         required: true
         default: false
         type: boolean
+      review_scope:
+        description: Choose documentation or changed Python unit-test contracts
+        type: choice
+        default: docs
+        options:
+          - docs
+          - unit_tests
+      unit_test_context_paths:
+        description: Additional evidence paths for unit tests, one per line
+        type: string
 
 permissions: {}
 
@@ -59,7 +69,10 @@ jobs:
           AUTOMATIC_REVIEW: ${{ github.event_name == 'pull_request_target' }}
           OFFLINE_REVIEW: ${{ github.event_name == 'workflow_dispatch' && inputs.offline || 'false' }}
           FOLLOW_UP: ${{ github.event_name == 'workflow_dispatch' && inputs.follow_up || 'false' }}
+          REVIEW_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.review_scope || '' }}
+          UNIT_TEST_CONTEXT_PATHS: ${{ github.event_name == 'workflow_dispatch' && inputs.unit_test_context_paths || '' }}
           DOCS_REVIEW_MODEL: ${{ vars.DOCS_REVIEW_MODEL }}
+          UNIT_TEST_REVIEW_MODEL: ${{ vars.UNIT_TEST_REVIEW_MODEL }}
           DOCS_REVIEW_BUDGET: ${{ vars.DOCS_REVIEW_BUDGET }}
           DOCS_REVIEW_API_KEY: ${{ github.event_name == 'pull_request_target' && secrets.DOCS_REVIEW_API_KEY || (!inputs.offline && secrets.DOCS_REVIEW_API_KEY || '') }}
         run: python -m scripts.docs_review.github_pilot

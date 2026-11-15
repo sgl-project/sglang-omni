@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_command(argv: list[str] | None) -> int:
-    parser = argparse.ArgumentParser(description="Advisory local documentation review.")
+    parser = argparse.ArgumentParser(description="Advisory local pull request review.")
     subcommands = parser.add_subparsers(dest="command", required=True)
     review_parser = subcommands.add_parser("review")
     add_review_arguments(review_parser)
@@ -77,6 +77,9 @@ def add_review_arguments(review_parser: argparse.ArgumentParser) -> None:
     review_parser.add_argument("--model-file", type=Path)
     review_parser.add_argument("--ledger", required=True, type=Path)
     review_parser.add_argument("--output-directory", required=True, type=Path)
+    review_parser.add_argument(
+        "--review-scope", choices=("docs", "unit_tests"), default="docs"
+    )
     review_parser.add_argument("--include-path", action="append", default=[])
     review_parser.add_argument("--follow-up", action="store_true")
     review_parser.add_argument("--retry-count", type=int, default=0)
@@ -98,6 +101,7 @@ def run_review_command(parsed: argparse.Namespace) -> int:
         follow_up_authorized=parsed.follow_up,
         retry_count=parsed.retry_count,
         include_paths=list(parsed.include_path),
+        review_scope=parsed.review_scope,
     )
     result = run_review(request, None, SystemClock())
     output_directory: Path = parsed.output_directory
