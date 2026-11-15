@@ -61,6 +61,7 @@ Tap **right ⌥ Option**. What you say is typed where your cursor is. The text s
 
 - **App enhancement**: groups of apps and websites with their own prompt and a key pressed after inserting, such as a casual tone in chats and Return to send.
 - **Dictionary**: names and jargon that the speech model expects and the language model writes as you spell them. Voxt suggests new terms from your history and from the corrections you make.
+- **Meetings**: choose Start meeting in the menu bar menu or on the Meetings page. Voxt records your microphone, the other side's audio, or both, and shows live captions. After the meeting, a language model corrects the transcript with your dictionary and writes a summary you can ask follow-up questions about. Recording the other side needs System Audio Recording permission.
 - **Notes**: tap right ⌘, speak, and Voxt saves what you said as a note instead of typing it.
 - **History**: every result, with search, **Retry** from the recording, and export.
 
@@ -129,9 +130,9 @@ Without a language model, Transcribe types the text as recognised; Translate and
 ## Privacy
 
 - **Speech stays on your Mac**, unless you set up a cloud speech API for a feature: that feature's recordings then go to that service, and nowhere else.
-- **Text goes only to the language model you set up.** With a server on your Mac, it stays here. Audio is never sent to a language model.
+- **Text goes only to the language model you set up.** With a server on your Mac, it stays here. Audio is never sent to a language model. Images go to it only when you turn on sending the window or a copied image in Settings → Privacy (both off by default).
 - **API keys stay in the macOS Keychain**, never in Voxt's settings or logs.
-- **No account and no analytics.** Voxt has no server that receives your audio or your text. Otherwise it goes online only to download the models you choose and to read Voxt's announcements, a request that sends nothing about you.
+- **No account and no analytics.** Voxt has no server that receives your audio or your text. Otherwise it goes online only to download the models you choose, to read Voxt's announcements and to ask GitHub for the newest version, requests that send nothing about you but Voxt's version.
 - **Your data is in two folders**: the history, its optional recordings, the dictionary and the settings in `~/Library/Application Support/VoxtNew/`, and the models in `~/Library/Application Support/SGLang Omni/models`.
 
 ## Help and community

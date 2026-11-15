@@ -5,6 +5,7 @@ package main
 // a connection test before saving, and Remove.
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/secrets"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -29,8 +31,10 @@ type providerDialog struct {
 	recognitionPrompt  string
 	err, errMore       string // a save or check error
 	saving, removeKey  bool
+	showKey            bool // the typed key in clear
 	test               providerTest
-	gen                genForm // a language model's generation settings (remote_generation.go)
+	gen                genForm  // a language model's generation settings (remote_generation.go)
+	served             []string // the models the server says it has (listModels); nil: the preset's list
 	// was is the setup the dialog opened with: a click beside the dialog,
 	// or Escape, does not close it while the form differs (unsaved).
 	was settings.Provider
@@ -60,6 +64,73 @@ func (a *app) openProviderDialog(kind local.Kind, id string) {
 	if acct := providers.Account(kind, id); !a.keyRead(acct) {
 		a.loadKeyMasks([]string{acct})
 	}
+	a.listModels()
+}
+
+// listModels asks a language model server on this Mac (Ollama, LM Studio,
+// oMLX, a custom one) which models it has, for the Model menu: the
+// preset's names may not be installed (#3950). With no answer the menu is
+// the preset's.
+func (a *app) listModels() {
+	d := &a.provDlg
+	if d.kind != local.LLM || !lookupService(d.kind, d.id).keyOptional {
+		return
+	}
+	p, acct := d.setup(), providers.Account(d.kind, d.id)
+	typed, remove, kr, client := strings.TrimSpace(d.key), d.removeKey, a.keys, a.remoteHTTP.Load()
+	a.async(func() {
+		key := typed
+		if key == "" && !remove {
+			key, _ = kr.Get(acct)
+		}
+		models, err := runListModels(context.Background(), p, key, client)
+		a.post(func() {
+			if !a.provDlg.open || providers.Account(a.provDlg.kind, a.provDlg.id) != acct || a.provDlg.setup().Endpoint != p.Endpoint {
+				return // closed, or an answer for an address since changed
+			}
+			if err != nil || len(models) == 0 {
+				a.provDlg.served = nil // back to the preset's list, not another address's
+				return
+			}
+			a.provDlg.offer(models)
+		})
+	})
+}
+
+// runListModels is providers.Models; tests swap it.
+var runListModels = providers.Models
+
+// offer puts the server's models in the Model menu. A typed model ID the
+// server has becomes its menu item; a new, untouched setup whose default
+// the server lacks takes the server's first model.
+func (d *providerDialog) offer(models []string) {
+	untouched := !d.exists && !d.unsaved()
+	d.served = models
+	cur := d.model
+	if cur == otherModel() {
+		cur = strings.TrimSpace(d.customModel)
+	}
+	switch {
+	case slices.Contains(models, cur):
+		d.model, d.customModel = cur, ""
+	case untouched:
+		d.model, d.customModel = models[0], ""
+		d.was = d.setup()
+	}
+}
+
+// modelOptions is the Model menu: the server's models when it listed
+// them, else the preset's, then the setup's own model if neither has it,
+// then Other.
+func (d *providerDialog) modelOptions(preset []string) []string {
+	opts := slices.Clone(preset)
+	if d.served != nil {
+		opts = slices.Clone(d.served)
+	}
+	if d.model != otherModel() && d.model != "" && !slices.Contains(opts, d.model) {
+		opts = append(opts, d.model)
+	}
+	return append(opts, otherModel())
 }
 
 // keyRead says whether account's key was read (its mask may be "").
@@ -130,7 +201,8 @@ func (a *app) providerDialogView(c *ui.Context) {
 		if sv.signIn {
 			a.chatgptFields(c, d) // remote_chatgpt.go
 		}
-		mask := a.keyMasks[providers.Account(d.kind, d.id)]
+		acct := providers.Account(d.kind, d.id)
+		mask := a.keyMasks[acct]
 		keyInfo := i18n.T("Saved in this Mac's Keychain.")
 		if sv.keyOptional {
 			keyInfo = i18n.T("Optional for a server on this Mac. Saved in this Mac's Keychain.")
@@ -142,13 +214,31 @@ func (a *app) providerDialogView(c *ui.Context) {
 					if mask != "" && !d.removeKey {
 						ph = i18n.T("Saved: %s · paste a new one to replace it", mask)
 					}
-					ui.TextInput(c.Key("remote-key"), &d.key).Password().Placeholder(ph).Label(i18n.T("API key")).Grow(1).MinWidth(0)
+					in := ui.TextInput(c.Key("remote-key"), &d.key).Placeholder(ph).Label(i18n.T("API key")).Grow(1).MinWidth(0)
+					if !d.showKey {
+						in.Password()
+					}
+					if d.key != "" {
+						show := i18n.T("Show")
+						if d.showKey {
+							show = i18n.T("Hide")
+						}
+						if ghostButton(c.Key("remote-key-show"), show).Label(i18n.T("Show or hide the key")).Clicked() {
+							d.showKey = !d.showKey
+						}
+					}
 					if mask != "" && !d.removeKey && ghostButton(c.Key("remote-key-remove"), i18n.T("Remove")).Label(i18n.T("Remove saved key")).Clicked() {
 						d.removeKey, d.key = true, ""
 					}
 				})
-				if d.removeKey {
+				_, inner := secrets.Clean(d.key)
+				switch {
+				case d.removeKey:
 					caption(c, i18n.T("The saved key is removed when you save."))
+				case inner > 0:
+					caption(c, i18n.N(inner, "The key has %d space or line break in it, removed when you test or save.", "The key has %d spaces or line breaks in it, removed when you test or save.", inner)).TextColor(tok(t).Warning)
+				case d.key == "" && a.keySpaced[acct]:
+					caption(c, i18n.T("The saved key has a space or line break in it, so the service refuses it. Paste the key again.")).TextColor(tok(t).Warning)
 				}
 			})
 		}
@@ -174,8 +264,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 			})
 		}
 		fieldInfo(c, i18n.T("Model"), "", func() {
-			opts := append(slices.Clone(sv.models), otherModel())
-			ui.Select(c.Key("remote-model"), &d.model, opts).Label(i18n.T("Model")).Width(px(t, 320))
+			ui.Select(c.Key("remote-model"), &d.model, d.modelOptions(sv.models)).Label(i18n.T("Model")).Width(px(t, 320))
 			if d.model == otherModel() {
 				ui.TextInput(c.Key("remote-model-custom"), &d.customModel).Placeholder(i18n.T("Model ID")).Label(i18n.T("Model ID"))
 			}
@@ -257,7 +346,8 @@ func (a *app) testDialog() {
 	if d.err, d.errMore = d.check(p); d.err != "" {
 		return
 	}
-	typed, remove, kr, acct := strings.TrimSpace(d.key), d.removeKey, a.keys, providers.Account(d.kind, d.id)
+	typed, _ := secrets.Clean(d.key)
+	remove, kr, acct := d.removeKey, a.keys, providers.Account(d.kind, d.id)
 	a.testProvider(d.kind, p, func() (string, error) {
 		switch {
 		case typed != "":
@@ -267,6 +357,7 @@ func (a *app) testDialog() {
 		}
 		return kr.Get(acct)
 	})
+	a.listModels() // the address may have changed since the menu was filled
 }
 
 // saveProviderDialog checks the form, saves the key (when one was typed
@@ -277,7 +368,8 @@ func (a *app) saveProviderDialog() {
 	if d.err, d.errMore = d.check(p); d.err != "" {
 		return
 	}
-	key, remove, kind := strings.TrimSpace(d.key), d.removeKey, d.kind
+	key, _ := secrets.Clean(d.key)
+	remove, kind := d.removeKey, d.kind
 	sv, acct := lookupService(kind, p.ID), providers.Account(kind, p.ID)
 	label := "Voxt " + sv.name + " API key"
 	d.saving = true
@@ -299,8 +391,10 @@ func (a *app) saveProviderDialog() {
 			switch {
 			case key != "":
 				a.keyMasks[acct] = maskKey(key)
+				delete(a.keySpaced, acct)
 			case remove:
 				a.keyMasks[acct] = ""
+				delete(a.keySpaced, acct)
 			}
 			delete(a.provTests, acct)
 			a.updateSettings(func(s *settings.Settings) {
@@ -338,6 +432,7 @@ func (a *app) removeProvider() {
 				return
 			}
 			a.keyMasks[acct] = ""
+			delete(a.keySpaced, acct)
 			delete(a.provTests, acct)
 			a.updateSettings(func(s *settings.Settings) {
 				if kind == local.ASR {

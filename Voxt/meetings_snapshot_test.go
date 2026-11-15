@@ -14,20 +14,20 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // TestSnapshotsMeetings saves the Meetings page (empty, the list, a
 // meeting's details with and without a language model, an interrupted
-// one, the settings and the delete dialog) at the default and the
-// smallest window, Chinese dark and English light.
+// one, the settings, the delete dialog and a meeting in progress) at the
+// default and the smallest window and a wide one (the list beside the
+// details), Chinese dark and English light.
 func TestSnapshotsMeetings(t *testing.T) { runSnapshots(t, "VOXTNEW_SNAPSHOTS", snapshotsMeetings) }
 
 func snapshotsMeetings(t *testing.T, out string) {
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
-	for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}} {
+	for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}, {1280, 800}} {
 		for _, run := range []struct {
 			lang string
 			dark bool
@@ -63,6 +63,18 @@ func snapshotsMeetings(t *testing.T, out string) {
 			}
 			a.navigate("/meetings")
 			save("meetings-empty")
+			ctx := context.Background()
+			if _, err := a.lib.store.Meetings().CreateMeeting(ctx, store.Meeting{
+				ID: "live", CreatedAt: time.Now(), Status: store.MeetingRecording, Mode: store.MeetingModeMeeting,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			a.meetingChanged(meeting.Snapshot{ID: "live", Mode: meeting.ModeMeeting, State: meeting.StateRecording, Elapsed: 754 * time.Second})
+			save("meetings-in-progress")
+			if err := a.lib.store.Meetings().DeleteMeeting(ctx, "live"); err != nil {
+				t.Fatal(err)
+			}
+			a.meetSnap = meeting.Snapshot{}
 			seedSnapshotMeetings(t, a)
 			a.loadMeetings()
 			save("meetings-list")
@@ -91,13 +103,18 @@ func TestOverlayShotsMeeting(t *testing.T) {
 func snapshotsMeetingOverlay(t *testing.T, out string) {
 	now := time.Now()
 	segs := []meeting.Segment{
-		{Source: meeting.SourceSystem, Speaker: "s1", Text: "Mail and Voice Memos group by day and show two lines per row.", Final: true},
-		{Source: meeting.SourceMic, Speaker: "me", Text: "Yes. I'll ship the list first and the detail panel after.", Final: true},
+		{ID: "s1", Source: meeting.SourceSystem, Speaker: "s1", Text: "Mail and Voice Memos group by day and show two lines per row.", Final: true},
+		{ID: "s2", Source: meeting.SourceMic, Speaker: "me", Text: "Yes. I'll ship the list first and the detail panel after.", Final: true},
 	}
-	level := map[meeting.Source]float64{meeting.SourceMic: -18, meeting.SourceSystem: -30}
+	// Each track's last levels: the microphone speaking, the system quieter.
+	level := map[meeting.Source][]float64{}
+	for i := range session.Bars {
+		level[meeting.SourceMic] = append(level[meeting.SourceMic], session.Level(-40+float64(i%5)*7))
+		level[meeting.SourceSystem] = append(level[meeting.SourceSystem], session.Level(-50+float64(i%3)*6))
+	}
 	live := map[meeting.Source]string{meeting.SourceSystem: "Sounds good, let's review again"}
 	rec := meeting.Snapshot{ID: "ov", Mode: meeting.ModeMeeting, State: meeting.StateRecording, Started: now.Add(-754 * time.Second), Elapsed: 754 * time.Second,
-		Level: level, Live: live, Segments: segs}
+		Levels: level, Live: live, Segments: segs}
 	for _, run := range []struct {
 		lang string
 		dark bool
@@ -121,19 +138,21 @@ func snapshotsMeetingOverlay(t *testing.T, out string) {
 			name      string
 			s         meeting.Snapshot
 			collapsed bool
+			menu      meetingMenu
 		}{
-			{"meeting-overlay-starting", meeting.Snapshot{ID: "ov", Mode: meeting.ModeMeeting, State: meeting.StateStarting, Started: now,
-				Level: map[meeting.Source]float64{meeting.SourceMic: -120, meeting.SourceSystem: -120}}, false},
-			{"meeting-overlay-recording", rec, false},
-			{"meeting-overlay-paused", paused, false},
-			{"meeting-overlay-problem", problem, false},
-			{"meeting-overlay-pill", rec, true},
-			{"meeting-overlay-pill-problem", problem, true},
-			{"meeting-overlay-asking", asking, false},
-			{"meeting-overlay-finishing", finishing, false},
+			{"meeting-overlay-starting", meeting.Snapshot{ID: "ov", Mode: meeting.ModeMeeting, State: meeting.StateStarting, Started: now}, false, meetingMenuNone},
+			{"meeting-overlay-recording", rec, false, meetingMenuNone},
+			{"meeting-overlay-paused", paused, false, meetingMenuNone},
+			{"meeting-overlay-problem", problem, false, meetingMenuNone},
+			{"meeting-overlay-pill", rec, true, meetingMenuNone},
+			{"meeting-overlay-pill-problem", problem, true, meetingMenuNone},
+			{"meeting-overlay-asking", asking, false, meetingMenuNone},
+			{"meeting-overlay-finishing", finishing, false, meetingMenuNone},
+			{"meeting-overlay-menu-mode", rec, false, meetingMenuMode},
+			{"meeting-overlay-menu-more", paused, false, meetingMenuMore},
 		} {
-			a.meetSnap, a.meetOvCollapsed = st.s, st.collapsed
-			model := overlayModel(st.s, st.collapsed)
+			a.meetSnap, a.meetOvCollapsed, a.meetOvMenu = st.s, st.collapsed, st.menu
+			model := overlayModel(st.s, st.collapsed, 0, st.menu)
 			mode, faceH := meetingOverlayFace(model)
 			radius := faceRadius(a.prefs.Overlay, mode, faceH)
 			w, h := model.Layout.Width, model.Layout.Height

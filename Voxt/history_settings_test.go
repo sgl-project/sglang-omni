@@ -57,31 +57,32 @@ func openHistSettings(t *testing.T, a *app, tt *ui.Tester) {
 	}
 }
 
-// TestHistorySettingsDialog: the button opens it; Keep the recordings is
-// Privacy's setting; the recordings' number and size show; Done closes.
+// TestHistorySettingsDialog: the button opens it; the recordings' number
+// and size show; Done closes. Keep recordings is only on Settings →
+// Privacy (#3895), which opens the dialog too.
 func TestHistorySettingsDialog(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	seedAged(t, a, 1, 2)
 	openHistSettings(t, a, tt)
-	for _, s := range []string{"History settings", "Recordings", "Keep recordings", "Saved recordings", "2 recordings · 22 B",
+	for _, s := range []string{"History settings", "Recordings", "Saved recordings", "2 recordings · 22 B",
 		"Export recordings", "Automatic clean-up", "Clean up automatically", "Keep entries for", "3 months", "Keep at most", "No limit"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
 		}
 	}
-	click(t, tt, "Save each recording")
-	if !a.prefs.Privacy.KeepAudio || !a.settings.Get().Privacy.KeepAudio {
-		t.Error("Keep recordings did not turn on")
+	if has(tt, "Keep recordings") || has(tt, "Save each recording") {
+		t.Error("the dialog repeats Privacy's Keep recordings")
 	}
 	click(t, tt, "Done")
 	if a.histSet.open {
 		t.Error("Done did not close it")
 	}
-	// Settings → Privacy shows the same value, and opens the dialog.
+	// Settings → Privacy has the switch, and opens the dialog.
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !a.settingsForm.keepAudio {
-		t.Error("Privacy shows it off")
+	click(t, tt, "Save each recording")
+	if !a.prefs.Privacy.KeepAudio || !a.settings.Get().Privacy.KeepAudio {
+		t.Error("Keep recordings did not turn on")
 	}
 	click(t, tt, "Open…")
 	if !a.histSet.open || a.currentPage() != "history" || a.settingsOpen {

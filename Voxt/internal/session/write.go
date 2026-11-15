@@ -35,6 +35,9 @@ func (r *run) writeInput(raw, selection string) compose.Input {
 	case store.KindTranslate:
 		f := r.settings.Features.Translate
 		in.Task, in.TaskPrompt, in.TargetLanguage = compose.Translate, f.Prompt, r.target
+		if strings.TrimSpace(r.req.TargetLanguage) == "" { // a language picked for this text stays
+			in.BackLanguage = in.MainLanguage
+		}
 		if selection != "" {
 			in.Text, in.Selected = selection, true
 		} else {

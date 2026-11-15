@@ -40,14 +40,39 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 	}
 	var first error
 	trackN := len(sources)
+	done := map[Source][]Segment{}
 	for i, src := range sources {
 		base := float64(i) / float64(trackN)
-		err := finalizeTrack(ctx, cfg, mt, audioDir, src, func(p float64) {
+		segs, err := finalizeTrack(ctx, cfg, audioDir, src, func(p float64) {
 			if onProgress != nil {
 				onProgress(base + p/float64(trackN))
 			}
 		})
-		if err != nil && first == nil {
+		if err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		if segs != nil {
+			done[src] = segs
+		}
+	}
+	// Speech from the speakers reaches the microphone too (#3982).
+	mic, micOK := done[SourceMic]
+	if sys, ok := done[SourceSystem]; ok && micOK {
+		done[SourceMic] = dropEchoes(mic, sys)
+	}
+	for _, src := range sources {
+		segs, ok := done[src]
+		if !ok {
+			continue
+		}
+		rows := make([]store.MeetingSegment, 0, len(segs))
+		for _, s := range segs {
+			rows = append(rows, segmentToStore(s, src))
+		}
+		if err := cfg.Store.ReplaceSegments(ctx, mt.Seq, toSegmentSource(src), rows); err != nil && first == nil {
 			first = err
 		}
 	}
@@ -66,35 +91,37 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 	return cfg.Store.UpdateMeeting(ctx, mt)
 }
 
-func finalizeTrack(ctx context.Context, cfg Config, mt store.Meeting, dir string, src Source, onProgress func(float64)) error {
+// finalizeTrack transcribes one track's WAV again; nil segments mean the
+// track has nothing to replace (no file, or no audio).
+func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, onProgress func(float64)) ([]Segment, error) {
 	path := filepath.Join(dir, string(src)+".wav")
 	pcm, rate, err := readTrackPCM(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	speech, err := speechRegions(ctx, pcm, rate, cfg.VAD)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	total := len(pcm) / 2
 	if total == 0 {
-		return nil
+		return nil, nil
 	}
 	chunkP := DefaultChunkParams()
 	chunkP.Rate = rate
 	if cfg.ASR != nil {
 		ta, err := cfg.ASR(ctx, src)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if ta.Caps.MaxDuration > 0 {
 			chunkP.CapMaxDur = ta.Caps.MaxDuration
 		}
 		if ta.File == nil {
-			return fmt.Errorf("meeting: no file ASR for %s", src)
+			return nil, fmt.Errorf("meeting: no file ASR for %s", src)
 		}
 		chunks := PlanChunks(speech, total, chunkP)
 		req := asr.FileRequest{
@@ -102,15 +129,14 @@ func finalizeTrack(ctx context.Context, cfg Config, mt store.Meeting, dir string
 		}
 		segs, err := transcribeChunks(ctx, src, ta.File, req, rate, pcm, chunks, onProgress)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		rows := make([]store.MeetingSegment, 0, len(segs))
-		for _, s := range segs {
-			rows = append(rows, segmentToStore(s, src))
+		if segs == nil {
+			segs = []Segment{} // the track has audio but no words: still replace the live text
 		}
-		return cfg.Store.ReplaceSegments(ctx, mt.Seq, toSegmentSource(src), rows)
+		return segs, nil
 	}
-	return fmt.Errorf("meeting: ASR not configured")
+	return nil, fmt.Errorf("meeting: ASR not configured")
 }
 
 func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, req asr.FileRequest, rate int, pcm []byte, chunks []Chunk, onProgress func(float64)) ([]Segment, error) {

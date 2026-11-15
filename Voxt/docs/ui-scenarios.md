@@ -15,7 +15,7 @@
 - **起点**：Mac 上有 Voxt 1.x 的数据，第一次打开 2.x。
 - **操作**：在设置引导的第一张卡片上点“导入”，看完结果后继续引导。
 - **应看到**：结果按“已导入 / 待处理 / 未导入”分组：词典的条数、历史条数、语言模型和语音服务的个数、提示词；需要重新粘贴 key 的服务逐个列在“待处理”里，并带“完成设置”的入口；导入后卡片不再出现。
-- **边界**：替换词变成“听成”别名，停用的词条保持停用；会议记录和空记录不导入，并在结果里说明；1.x 的 Options JSON 会放进“请求参数”的 `options` 里；地址或模型可能不兼容的服务，会提示用户检查。
+- **边界**：替换词变成“听成”别名，停用的词条保持停用；会议记录导入成会议（id 为 `legacy-<旧 id>`，再导入不会重复，见 voxt-migration.md），文件转录和空记录不导入，并在结果里说明；1.x 的 Options JSON 会放进“请求参数”的 `options` 里；地址或模型可能不兼容的服务，会提示用户检查。
 - **覆盖**：`TestImportLegacySettings`、`TestImportReportGroups`、`TestImportEndsTheOffer`、`TestImportRules`；手测 11.3。
 
 ## S3. 用系统听写作为语音识别模型
@@ -88,7 +88,7 @@
 - **操作**：转录或语音翻译停止录音后，浮窗显示“整理中”时点“用识别原文”，或按取消键（默认 Esc）。另试：语言模型页 → “等待语言模型”选 5 分钟。
 - **应看到**：马上插入识别原文，没有警告；历史记一条成功的记录。选了等待时长后，模型慢也会等到这个时长；语音翻译超时后插入识别原文并提示“语言模型没有及时响应”。
 - **边界**：改写在处理时没有这个按钮，回答还没开始写进卡片时按取消键仍然取消整段（写进卡片后见 S12）；选区翻译也没有；没有按钮时浮窗照旧让鼠标穿过。
-- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`、`TestLLMWaitCustom`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestTranslateTimeoutKeepsSpeech`。
+- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`、`TestLLMWaitCustom`、`TestLLMWaitNoLimit`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestLLMWaitNoLimit`、`TestTranslateTimeoutKeepsSpeech`。
 
 ## S11b. 听写整理时换思考强度
 

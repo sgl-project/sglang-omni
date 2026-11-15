@@ -229,3 +229,58 @@ func TestInputChars(t *testing.T) {
 		})
 	}
 }
+
+// TestLLMWaitNoLimit (#3978): with No limit, an answer that streams for
+// longer than every deadline Automatic sets is not cut off (Automatic
+// does cut the same answer), the stall check still holds the request,
+// and SkipLLM still ends the wait.
+func TestLLMWaitNoLimit(t *testing.T) {
+	short := func(c *Config) { // Automatic's deadlines, all well under the answer's 0.4 s
+		c.LLMTimeout, c.WriteTimeout, c.LLMBase, c.LLMPerChar = 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond, time.Microsecond
+	}
+	for _, kind := range []store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
+		for _, wait := range []string{settings.WaitAuto, settings.WaitNoLimit} {
+			t.Run(string(kind)+"/"+wait, func(t *testing.T) {
+				model := &fakeLLM{text: "Hello there.", chunk: 3, pause: 100 * time.Millisecond}
+				h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
+					short(c)
+					c.Select = &fakeSelector{text: map[store.Kind]string{store.KindRewrite: "Dear Ann"}[kind]}
+					s.Models.LLMWait = wait
+				})
+				id, err := h.m.Start(StartRequest{Kind: kind, Target: slack})
+				if err != nil {
+					t.Fatal(err)
+				}
+				h.speak(id, 3)
+				end := h.rec.wait(t)
+				reqs := model.requests()
+				if len(reqs) == 0 {
+					t.Fatal("no request")
+				}
+				if reqs[0].StallTimeout != h.m.cfg.LLMStall || reqs[0].StallTimeout <= 0 {
+					t.Errorf("stall check %v", reqs[0].StallTimeout)
+				}
+				timedOut := end.Problem != nil || end.State != Done || end.Result != "Hello there."
+				if wait == settings.WaitNoLimit && timedOut {
+					t.Errorf("No limit cut the answer: %s %+v %q", end.State, end.Problem, end.Result)
+				}
+				if wait == settings.WaitAuto && !timedOut {
+					t.Errorf("Automatic waited out the slow answer: the test proves nothing")
+				}
+			})
+		}
+	}
+	t.Run("skip", func(t *testing.T) {
+		h := newHarness(t, &fakeFile{text: "hello aura link"}, &fakeLLM{hang: true}, func(c *Config, s *settings.Settings) {
+			c.Select = &fakeSelector{}
+			s.Models.LLMWait = settings.WaitNoLimit
+		})
+		id, _ := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+		h.speak(id, 3)
+		h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing && s.CanSkip })
+		h.m.SkipLLM(id)
+		if end := h.rec.wait(t); end.State != Done || end.Result != "hello VoxtNew" {
+			t.Errorf("end %s %+v %q", end.State, end.Problem, end.Result)
+		}
+	})
+}

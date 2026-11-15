@@ -112,3 +112,40 @@ func TestCommitterPauseRevisedTail(t *testing.T) {
 		t.Fatalf("second commit got %q ok=%v", seg.Text, ok)
 	}
 }
+
+// TestCommitterForcedCut covers #3987 at the committer: a long phrase ends at
+// a short pause, and only a cut with no pause drops the trailing full stop.
+func TestCommitterForcedCut(t *testing.T) {
+	tests := []struct {
+		name, partial string
+		phrase, quiet time.Duration
+		want          string
+		commit        bool
+	}{
+		{"short pause, short phrase", "然后", time.Second, shortPauseLive, "", false},
+		{"short pause, long phrase", "它就是因为。", longPhraseLive, shortPauseLive, "它就是因为。", true},
+		{"forced cut zh", "它就。", maximumLiveSegment, 0, "它就", true},
+		{"forced cut en", "so I think the.", maximumLiveSegment, 0, "so I think the", true},
+		{"forced cut keeps question mark", "还是说？", maximumLiveSegment, 0, "还是说？", true},
+		{"forced cut, no punctuation", "还在说", maximumLiveSegment, 0, "还在说", true},
+	}
+	for _, tc := range tests {
+		var c Committer
+		c.BeginPhrase(0)
+		c.Partial(tc.partial)
+		seg, ok := c.Tick(tc.phrase, tc.quiet)
+		if ok != tc.commit || seg.Text != tc.want {
+			t.Errorf("%s: got %q ok=%v, want %q ok=%v", tc.name, seg.Text, ok, tc.want, tc.commit)
+		}
+	}
+
+	// The next bubble continues after the cut, not after the dropped full stop.
+	var c Committer
+	c.BeginPhrase(0)
+	c.Partial("它就。")
+	c.Tick(maximumLiveSegment, 0)
+	c.Partial("它就是因为我。")
+	if g := c.Live(); g != "是因为我。" {
+		t.Fatalf("live after forced cut %q", g)
+	}
+}
