@@ -221,6 +221,12 @@ func (m *Manager) commitSegment(seg Segment) {
 		seg.ID = core.NewID(m.cfg.Now())
 	}
 	m.mu.Lock()
+	// The system track may not have committed this speech yet: its live text counts too.
+	if seg.Source == SourceMic && isEcho(seg.Text, systemTextNear(m.snap.Segments, seg.Start, seg.End)+m.snap.Live[SourceSystem]) {
+		m.mu.Unlock()
+		m.noteMicText() // the microphone works; it heard the speakers
+		return
+	}
 	if m.snap.Segments == nil {
 		m.snap.Segments = []Segment{}
 	}
