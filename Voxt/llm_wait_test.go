@@ -102,6 +102,32 @@ func TestLLMWaitCustom(t *testing.T) {
 	}
 }
 
+// TestLLMWaitNoLimit (#3978): No limit on the wait select saves a wait
+// with no deadline, shows in Chinese, and Custom… from it starts the
+// field at the most minutes instead of overflowing it.
+func TestLLMWaitNoLimit(t *testing.T) {
+	t.Cleanup(func() { i18n.SetLocale("en") })
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	frames(tt)
+	click(t, tt, "Automatic")
+	click(t, tt, "No limit")
+	if got := a.settings.Get().Models.LLMWait; got != settings.WaitNoLimit || a.llmWaitCustom {
+		t.Fatalf("saved %q, field open %v", got, a.llmWaitCustom)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	if frames(tt); !hasExact(tt, "不限") {
+		t.Errorf("in Chinese: %q", firstTexts(tt))
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "en" })
+	frames(tt)
+	click(t, tt, "No limit")
+	click(t, tt, "Custom…")
+	if got := a.settings.Get().Models.LLMWait; got != settings.WaitMinutes(settings.WaitMaxMinutes) {
+		t.Errorf("Custom… from No limit saved %q", got)
+	}
+}
+
 // TestSkipLLMPill (#3821): while the language model works on speech that
 // can go in as said, the working pill ends its row with Use transcript,
 // inside the face, and takes the pointer, with the live text in one line

@@ -15,7 +15,7 @@ import (
 
 // waitLabels are the choices' labels, in settings.WaitChoices' order.
 func waitLabels() []string {
-	return []string{i18n.T("Automatic"), i18n.T("1 minute"), i18n.T("2 minutes"), i18n.T("5 minutes"), i18n.T("10 minutes")}
+	return []string{i18n.T("Automatic"), i18n.T("1 minute"), i18n.T("2 minutes"), i18n.T("5 minutes"), i18n.T("10 minutes"), i18n.T("No limit")}
 }
 
 // llmWaitRow is the Language models page's wait setting: a preset, or
@@ -45,8 +45,9 @@ func (a *app) llmWaitRow(c *ui.Context) {
 			if !a.llmWaitCustom {
 				save(settings.WaitChoices[max(slices.Index(opts, a.llmWaitSel), 0)])
 			} else {
-				// the field starts at the wait it replaces, 1 for Automatic
-				a.llmWaitMin = max(a.prefs.Models.LLMWaitFor().Minutes(), 1)
+				// the field starts at the wait it replaces: 1 for Automatic,
+				// WaitMaxMinutes for No limit
+				a.llmWaitMin = min(max(a.prefs.Models.LLMWaitFor().Minutes(), 1), settings.WaitMaxMinutes)
 				save(settings.WaitMinutes(int(a.llmWaitMin)))
 			}
 		}
