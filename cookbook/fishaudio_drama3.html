@@ -629,6 +629,7 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#links">Links</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#incremental-streaming-codec">Incremental streaming codec</a></li>
 </ul>
             </nav>
         </div>
@@ -1308,6 +1309,10 @@ sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span cla
 <li><p><a class="reference external" href="https://sgl-project.github.io/sglang-omni/">SGLang Omni</a></p></li>
 </ul>
 </section>
+<section id="incremental-streaming-codec">
+<h2>Incremental streaming codec<a class="headerlink" href="#incremental-streaming-codec" title="Link to this heading">#</a></h2>
+<p>The incremental codec is opt-in: set <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stateful_decode</span> <span class="pre">true</span></code> to reuse per-request convolution and attention history. While it is on, it replaces the vocoder’s default batched incremental stream decoding (<code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_decode</span> <span class="pre">incremental</span></code>). GEMM upsampling, folded codebooks, Snake/history fusion and compiled attention follow this setting unless individually overridden. Slot capacity follows <code class="docutils literal notranslate"><span class="pre">tts_engine.engine.max_running_requests</span></code> when set, otherwise <code class="docutils literal notranslate"><span class="pre">tts_engine.factory.max_running_requests</span></code>; it does not add an HTTP admission limit. Streams that cannot acquire a slot use window decoding for their entire lifetime. Fixed routing, single replicas, a dedicated TP1 vocoder process and zero crossfade are required. Enabling the feature adds state memory and compilation/capture startup cost. It targets sustained concurrent workloads, especially shared-GPU deployments; benefits with a dedicated vocoder GPU are workload-dependent.</p>
+</section>
 </section>
 
 
@@ -1385,6 +1390,7 @@ sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span cla
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#links">Links</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#incremental-streaming-codec">Incremental streaming codec</a></li>
 </ul>
   </nav></div>
 
