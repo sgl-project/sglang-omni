@@ -62,7 +62,7 @@ Set `stream=true` to receive text deltas as Server-Sent Events. The server encod
 
 ## Optional native NEXTN MTP
 
-NEXTN uses the MTP draft bundled in the target checkpoint and is disabled by default. The ordinary serve command above does not load the draft. Opt in with `--asr.engine.speculative_algorithm NEXTN`; the registry supplies the pinned checkpoint revision and the defaults of two steps, topk 1, and three draft tokens. This pinned example spells out that recipe so the target revision and all speculative settings are reproducible:
+NEXTN uses the MTP draft bundled in the target checkpoint and is disabled by default. The ordinary serve command above does not load the draft. Opt in with `--asr.engine.speculative_algorithm NEXTN`; the registry supplies the pinned checkpoint revision and the recommended defaults of two steps, topk 1, and three draft tokens. This pinned example spells out that recipe so the target revision and all speculative settings are reproducible:
 
 ```bash
 sgl-omni serve \
@@ -78,14 +78,16 @@ The draft uses the same resolved checkpoint and revision as the target. An expli
 
 ### H200 results
 
-The following measurements are for H200, TP=1, PP=1, CUDA Graph on, client concurrency 16, and the frozen 666-sample English SeedTTS corpus. They describe this tested setup, not a performance or quality guarantee for other workloads.
+The P6 C16 ABBA measurements used H200, TP=1, PP=1, CUDA Graph on, client concurrency 16, and a frozen English SeedTTS corpus of 666 audio IDs. The measured NEXTN configuration was `speculative_num_steps=3`, `speculative_num_draft_tokens=4`, and `speculative_eagle_topk=1`. This differs from the recommended `2/3/1` defaults shown above; no performance result is claimed here for the defaults.
 
 | Mode | QPS | WER |
 | --- | ---: | ---: |
 | Baseline | approximately 27.1 | 0.9751% |
 | NEXTN | approximately 34.6 | 0.9751% |
 
-NEXTN measured approximately 27.4% higher QPS. The equal measured WER supports quality non-inferiority on this frozen corpus. Across three fresh server lifetimes, 19,980 requests completed with zero failures.
+NEXTN measured approximately 27.4% higher QPS. Reported WER was 0.9751% for both modes. A paired audio-ID bootstrap with 20,000 draws measured a NEXTN-minus-baseline WER difference of +0.0000 percentage points, with a 95% confidence interval of [-0.0165, +0.0166] percentage points. This passed the 0.1 percentage-point non-inferiority margin. This is corpus-level quality evidence, not bitwise or logit parity.
+
+P8 reliability testing used three independent fresh-server cycles with 6,660 requests per cycle: 19,980 completed requests and zero failures total. CUDA Graph capture and multi-token acceptance were observed. This is finite reliability evidence, not indefinite production stability. The root cause of the historical intermittent CUDA 700 errors remains unproven.
 
 ## Compile the encoder
 
