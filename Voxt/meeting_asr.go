@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -31,7 +32,7 @@ func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.
 		return meeting.TrackASR{}, err
 	}
 	caps := p.Caps()
-	l := session.SpeechLang(a.prefs, i18n.Locale())
+	l := cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale()))
 	ta := meeting.TrackASR{Caps: caps, Lang: l, StreamReq: asr.StreamRequest{Lang: l}}
 	if ft, ok := p.(asr.FileTranscriber); ok && caps.File {
 		ta.File = ft

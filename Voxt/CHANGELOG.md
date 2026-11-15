@@ -26,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The Personal dictionary has a search box too** (#3869): it marks each match in the Markdown in bold red, and Return and Shift+Return select the next and previous match, scrolling to it, with the count beside the field, as in Find in the prompt.
 - **Pick the thinking level for one input in the answer card** (#3879): when the language model service that answered takes a thinking setting, the Translate and Rewrite answer card has a button before Insert. It lists the levels the service offers (As in settings, off, on, its effort levels, or a budget of 1,024, 4,096 or 16,384 tokens). Pick one and Voxt asks again with the same input at that level and replaces the answer in the card. The service's Thinking setting does not change, and the next input uses it again.
 - **Pick the thinking level while Transcribe cleans up your words** (#3940): when Transcribe's language model service takes a thinking setting, the recording window shows a Thinking button after Use transcript while the model writes. It names the level in use, for example "Thinking: Off", and lists the same levels as the answer card. Pick one and Voxt stops the request and cleans up the same words again at that level. Only that answer is inserted. The service's Thinking setting does not change, and the next input uses it again.
+- **Meetings choose their speech model and spoken language** (#3991): Meeting settings now have Speech recognition, the same model menu as Transcribe with Automatic first, and Spoken language, which tells the speech model the language of the meeting (Same as the main language by default). Before, meetings always used the recommended model and the main language, so a larger model you installed went unused. The choice applies to the live captions and to the pass after the meeting.
 
 ### Changed
 
@@ -87,6 +88,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **个人词典也有搜索框了**（#3869）：Markdown 里的每处匹配用红色粗体标出，按回车、Shift+回车选中下一处、上一处并滚到那里，搜索框旁显示计数，和“在提示词里查找”一样。
 - **在答案卡片里为这一次输入选思考强度**（#3879）：回答所用的语言模型服务有思考设置时，翻译和改写的答案卡片在“插入”前面多一个按钮，列出这个服务支持的强度（按设置、关闭、开启、各档 effort，或 1,024、4,096、16,384 token 的预算）。选一个，Voxt 就用同样的输入按这个强度再问一次，替换卡片里的回答。服务的“思考”设置不变，下一次输入照旧用它。
 - **听写整理文字时也能选思考强度**（#3940）：听写所用的语言模型服务有思考设置时，模型整理文字期间，录音窗口在“用识别原文”后面多一个“思考”按钮，按钮上写着当前强度（例如“思考：已关闭”），列出的强度和答案卡片相同。选一个，Voxt 就停掉这次请求，用这个强度把同样的话重新整理一遍，只插入这次的结果。服务的“思考”设置不变，下一次输入照旧用它。
+- **会议可以选语音识别模型和说话语言**（#3991）：会议设置多了“语音识别”和“说话语言”两项。“语音识别”和转录用同一个模型菜单，第一项是“自动”；“说话语言”告诉语音识别模型这场会议说什么语言，默认“与主要语言相同”。以前会议总用推荐的模型和主要语言，装了更大的模型也用不上。选择对实时字幕和会后的重新识别都生效。
 
 #### 变更
 
