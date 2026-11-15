@@ -179,11 +179,16 @@ func RenderSummaryPrompt(template, mainLanguage, transcriptRecord string) string
 	}
 	// The labels are the transcript's, not words for the summary: a
 	// Chinese summary said 由 Me 负责 (11-15).
-	return strings.TrimSpace(out) + "\n\n" + summarySpeakers
+	return strings.TrimSpace(out) + "\n\n" + summarySpeakers + "\n\n" + OwnWordsRule
 }
 
 // summarySpeakers says who the transcript's labels are, after any template.
 const summarySpeakers = `Speakers: in the transcript, "Me" is the user, who recorded the meeting, and "Them" is the other side. In the summary and the to-dos, write "you" in the user's main language for the user (你 in Chinese) and "the other side" (对方 in Chinese) for Them; never write the labels Me or Them.`
+
+// OwnWordsRule keeps the instructions' English out of an answer in another
+// language: a Chinese summary wrote "transcript 中未提及" (#4026). It
+// follows every template, the user's own too.
+const OwnWordsRule = `Write the answer entirely in its language, words taken from these instructions too: in a Chinese answer, write 会议记录 for "transcript", never the English word. Names and terms keep the spelling they have in the transcript.`
 
 // SummaryWindows splits a long transcript for hierarchical summary (default 12000 runes per window).
 func SummaryWindows(text string, maxRunes int) []string {
