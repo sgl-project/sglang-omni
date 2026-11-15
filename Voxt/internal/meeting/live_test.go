@@ -214,3 +214,39 @@ func TestLiveRotateStartsFreshText(t *testing.T) {
 		t.Fatalf("live after rotate %q", g)
 	}
 }
+
+// TestLiveRotateFinalDoesNotRepeat replays #3983: the old stream's Final
+// recognises its whole audio again, worded differently from the preview,
+// and rotating must not commit the already committed minutes again.
+func TestLiveRotateFinalDoesNotRepeat(t *testing.T) {
+	tests := []struct {
+		name, final, want string
+	}{
+		{"reworded", "今天下午我们开会，先说 Voxt 的进度。然后讲会议功能。还有一点", "还有一点"},
+		{"continues", "今天下午开会先说Voxt的进度然后讲会议功能还有一点吗", "还有一点吗"},
+		{"empty", "", "还有一点"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			old := &liveFakeStream{events: make(chan asr.Event, 1), done: true}
+			old.events <- asr.Event{Kind: asr.EventFinal, Text: tc.final}
+			close(old.events)
+			var got []string
+			live := Live{Clock: time.Now, Streamer: &liveFakeStreamer{}, stream: old,
+				OnCommit: func(s Segment) { got = append(got, s.Text) }}
+			for i, p := range []string{"今天下午开会", "今天下午开会先说Voxt的进度", "今天下午开会先说Voxt的进度然后讲会议功能"} {
+				live.committer.Partial(p)
+				if _, ok := live.committer.Tick(time.Duration(i+1)*time.Second, silenceFinalizeLive); !ok {
+					t.Fatalf("commit %d", i)
+				}
+			}
+			live.committer.Partial("今天下午开会先说Voxt的进度然后讲会议功能还有一点")
+			if err := live.rotate(context.Background(), false); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("rotate committed %q, want [%q]", got, tc.want)
+			}
+		})
+	}
+}
