@@ -105,13 +105,16 @@ def render_advisory_comment(
     )
 
 
-def list_issue_comments(repository_name: str, issue_number: int) -> list[dict[str, object]]:
+def list_issue_comments(
+    repository_name: str, issue_number: int
+) -> list[dict[str, object]]:
     comments: list[dict[str, object]] = []
     page = 1
     while True:
         response = github_api(
             f"repos/{repository_name}/issues/{issue_number}/comments"
-            f"?per_page=100&page={page}"
+            f"?per_page=100&page={page}",
+            method="GET",
         )
         batch = json.loads(response)
         if not batch:

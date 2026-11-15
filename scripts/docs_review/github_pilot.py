@@ -12,6 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+
 from pydantic import BaseModel, Field, ValidationError
 
 from scripts.docs_review.models import (
@@ -70,15 +71,18 @@ class GitHubContent(BaseModel):
 
 
 def github_api(
-    endpoint: str, *, body: str | None = None, method: str = "GET"
+    endpoint: str,
+    *,
+    method: Literal["GET", "PUT", "POST", "PATCH"],
+    body: str | None = None,
 ) -> str:
-    arguments = ["gh", "api", endpoint]
-    input_text: str | None = None
+    arguments = ["gh", "api", "--method", method, endpoint]
     if body is not None:
-        arguments.extend(["--method", method, "--input", "-"])
-        input_text = body
+        arguments.extend(["--input", "-"])
+    else:
+        pass
     completed = subprocess.run(
-        arguments, input=input_text, capture_output=True, text=True, check=False
+        arguments, input=body, capture_output=True, text=True, check=False
     )
     if completed.returncode:
         status = re.search(r"HTTP (\d{3})", completed.stderr)
@@ -91,7 +95,9 @@ def github_api(
 
 
 def fetch_pull_request(repository_name: str, pull_request_number: int) -> PullRequest:
-    response = github_api(f"repos/{repository_name}/pulls/{pull_request_number}")
+    response = github_api(
+        f"repos/{repository_name}/pulls/{pull_request_number}", method="GET"
+    )
     return PullRequest.model_validate_json(response)
 
 
@@ -125,7 +131,7 @@ def merge_base_commit_sha(
 
 def load_reservations(repository_name: str) -> tuple[Reservations, str]:
     endpoint = f"repos/{repository_name}/contents/{STATE_PATH}?ref={STATE_BRANCH}"
-    content = GitHubContent.model_validate_json(github_api(endpoint))
+    content = GitHubContent.model_validate_json(github_api(endpoint, method="GET"))
     raw = base64.b64decode(content.content, validate=False)
     return Reservations.model_validate_json(raw), content.sha
 
@@ -207,9 +213,7 @@ def save_reservation_with_retry(
 ) -> None:
     for attempt in range(LEDGER_WRITE_ATTEMPTS):
         reservations, content_sha = load_reservations(repository_name)
-        authorize_reservation(
-            reservations, reservation, budget, follow_up_authorized
-        )
+        authorize_reservation(reservations, reservation, budget, follow_up_authorized)
         reservations.reservations.append(reservation)
         try:
             write_reservations(repository_name, reservations, content_sha)
@@ -387,7 +391,7 @@ def run_github_review() -> None:
             repository_name,
             reservation,
             budget,
-            os.environ["FOLLOW_UP"] == "true",
+            automatic_review or os.environ["FOLLOW_UP"] == "true",
         )
     result = run_review(request, None, SystemClock(), prepared=prepared)
     reviewed_merge_base = result.bundle.merge_base_commit_sha
@@ -413,9 +417,13 @@ def run_github_review() -> None:
         artifact.model_dump_json(indent=2) + "\n", encoding="utf-8"
     )
     if automatic_review:
-        publication_note = "Findings post automatically to this pull request when complete."
+        publication_note = (
+            "Findings post automatically to this pull request when complete."
+        )
     else:
-        publication_note = "Findings are advisory and selected separately for publication."
+        publication_note = (
+            "Findings are advisory and selected separately for publication."
+        )
     notices = [
         f"Pull request #{pull_request_number}",
         f"Review run {run_id}, attempt {run_attempt}.",
@@ -441,14 +449,8 @@ def run_github_review() -> None:
         finish_reservation(repository_name, reservation, result.report.execution)
     else:
         pass
-    if (
-        automatic_review
-        and artifact.publishable
-        and artifact.report.findings
-    ):
-        repository_url = (
-            f'{os.environ["GITHUB_SERVER_URL"]}/{repository_name}'
-        )
+    if automatic_review and artifact.publishable and artifact.report.findings:
+        repository_url = f'{os.environ["GITHUB_SERVER_URL"]}/{repository_name}'
         from scripts.docs_review.github_comment import publish_reports
 
         publish_reports(
