@@ -46,6 +46,10 @@ from tests.unit_test.fishaudio_drama3.test_speech_request import (
 )
 from tests.unit_test.fishaudio_drama3.test_vocoder import FrameNumberCodec
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
+from tests.unit_test.fixtures.fishaudio_codec import (
+    CpuCodecGraphBoundary,
+    tiny_fishaudio_codec,
+)
 
 COMMIT = "1de9996b6be38b745688de084d87a5633f714e4e"
 
@@ -503,6 +507,12 @@ def cpu_vocoder(factory_args: Drama3VocoderFactoryArgs) -> Drama3VocoderSchedule
         max_batch_size=factory_args.max_batch_size,
         max_batch_wait_ms=factory_args.max_batch_wait_ms,
         window_cuda_graphs=factory_args.window_cuda_graphs,
+        stateful_decode=factory_args.stateful_decode,
+        stateful_gemm_upsample=factory_args.stateful_gemm_upsample,
+        stateful_folded_codebooks=factory_args.stateful_folded_codebooks,
+        stateful_fuse_snake_history=factory_args.stateful_fuse_snake_history,
+        stateful_compile_attention=factory_args.stateful_compile_attention,
+        stateful_max_streams=16,
         decode_dtype=factory_args.decode_dtype,
         max_new_tokens=DEFAULT_MAX_NEW_TOKENS_CAP,
         stream_decode=factory_args.stream_decode,
@@ -599,6 +609,133 @@ def test_a_share_that_cannot_hold_one_longest_request_is_refused() -> None:
             total_gpu_memory_fraction=0.01,
             max_new_tokens=10**9,
         )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {
+            "stateful_decode": True,
+            "window_cuda_graphs": False,
+            "stream_crossfade_samples": 1,
+        },
+    ],
+)
+def test_stateful_unsupported_modes_fail_before_codec_load(
+    codec_loads: CodecLoads, updates: dict[str, bool | int]
+) -> None:
+    with pytest.raises(ValueError, match="stateful_decode requires"):
+        cpu_vocoder(Drama3VocoderFactoryArgs().model_copy(update=updates))
+    assert codec_loads.calls == []
+
+
+@pytest.mark.parametrize(
+    "optimization",
+    [
+        "stateful_gemm_upsample",
+        "stateful_folded_codebooks",
+        "stateful_fuse_snake_history",
+        "stateful_compile_attention",
+    ],
+)
+def test_codec_optimizations_require_stateful_before_codec_load(
+    codec_loads: CodecLoads, optimization: str
+) -> None:
+    factory_args = Drama3VocoderFactoryArgs().model_copy(update={optimization: True})
+    with pytest.raises(ValueError, match="Codec optimizations require stateful_decode"):
+        cpu_vocoder(factory_args)
+    assert codec_loads.calls == []
+
+
+@pytest.mark.parametrize("window_cuda_graphs", [False, True])
+@pytest.mark.parametrize("codec_optimizations", [False, True])
+def test_stateful_factory_builds_real_decoder_and_preserves_full_decode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    window_cuda_graphs: bool,
+    codec_optimizations: bool,
+) -> None:
+    codec = tiny_fishaudio_codec()
+    monkeypatch.setattr(stages, "load_codec", lambda checkpoint_dir, device: codec)
+    if window_cuda_graphs:
+        monkeypatch.setattr(
+            "sglang_omni.models.fishaudio_drama3.stateful_graphs.CudaGraphBoundary",
+            lambda device: CpuCodecGraphBoundary(),
+        )
+    else:
+        pass
+    codec_file = tmp_path / "codec.pth"
+    codec_file.write_bytes(b"")
+    vocoder = cpu_vocoder(
+        Drama3VocoderFactoryArgs(
+            codec_path=str(codec_file),
+            stateful_decode=True,
+            stateful_gemm_upsample=codec_optimizations,
+            stateful_folded_codebooks=codec_optimizations,
+            window_cuda_graphs=window_cuda_graphs,
+            decode_dtype="float32",
+        )
+    )
+    assert vocoder.stateful_decoder is not None
+    if window_cuda_graphs:
+        assert isinstance(vocoder.stateful_decoder, stages.StatefulGraphDecoder)
+        backend = vocoder.stateful_decoder.backend
+    else:
+        assert isinstance(vocoder.stateful_decoder, stages.StatefulDACDecoder)
+        backend = vocoder.stateful_decoder
+    assert backend.capacity == 16
+    assert bool(backend.codebook_tables) == codec_optimizations
+    assert bool(backend.upsample_weights) == codec_optimizations
+    codes = torch.randint(0, 16, (1, 10, 13))
+    with torch.no_grad():
+        expected = codec.from_indices(codes.clone())
+    actual = vocoder.stateful_decoder.decode_delta(
+        codes, vocoder.stateful_decoder.create_state(), is_final=True
+    )
+    torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
+    assert vocoder.decode_window == codec.from_indices
+
+
+@pytest.mark.parametrize("stateful_decode", [False, True])
+def test_stateful_decode_replaces_the_batched_incremental_streams(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stateful_decode: bool
+) -> None:
+    codec = tiny_fishaudio_codec()
+    monkeypatch.setattr(stages, "load_codec", lambda checkpoint_dir, device: codec)
+    monkeypatch.setattr(
+        stages, "incremental_decode_enabled", lambda *args, **kwargs: True
+    )
+
+    def refuse_incremental_build(
+        decode: WindowDecoder,
+        *,
+        num_codebooks: int,
+        device: torch.device,
+        strides: tuple[int, ...],
+        max_stream_batch_size: int,
+        stream_slot_count: int,
+        use_graphs: bool,
+    ) -> None:
+        raise AssertionError("built the batched incremental decoder")
+
+    monkeypatch.setattr(
+        stages, "build_incremental_window_decoder", refuse_incremental_build
+    )
+    codec_file = tmp_path / "codec.pth"
+    codec_file.write_bytes(b"")
+    factory_args = Drama3VocoderFactoryArgs(
+        codec_path=str(codec_file),
+        stateful_decode=stateful_decode,
+        window_cuda_graphs=False,
+        decode_dtype="float32",
+    )
+    if stateful_decode:
+        vocoder = cpu_vocoder(factory_args)
+        assert not isinstance(vocoder, Drama3IncrementalVocoderScheduler)
+        assert vocoder.stateful_decoder is not None
+    else:
+        with pytest.raises(AssertionError, match="batched incremental decoder"):
+            cpu_vocoder(factory_args)
 
 
 @pytest.mark.parametrize(
