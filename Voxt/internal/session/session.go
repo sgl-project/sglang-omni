@@ -467,6 +467,9 @@ type StartRequest struct {
 	// Previous are a Rewrite conversation's earlier turns: the session is
 	// a follow-up to the answer card.
 	Previous []compose.Turn
+	// Conversation is the first session of the card's conversation this
+	// one continues (store.Entry.Conversation); "": it begins one.
+	Conversation string
 	// SpeechWait, when set, ends the session with these words instead of
 	// recording: the speech model it should use is still downloading.
 	// Translating a selection needs none and goes on.

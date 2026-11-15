@@ -203,7 +203,7 @@ func TestMeetingsConstraints(t *testing.T) {
 func TestMeetingsMigrateFromV6(t *testing.T) {
 	dir := t.TempDir()
 	s := openTest(t, dir)
-	if v, _ := userVersion(ctx, s.db); v != 7 {
+	if v, _ := userVersion(ctx, s.db); v != Version() {
 		t.Fatalf("version %d", v)
 	}
 	s.Close()
