@@ -20,6 +20,12 @@ from scipy.signal import resample_poly
 
 ROOT = Path(__file__).parent
 FRONTEND = ROOT / "frontend"
+# Presets are looked up in every root, so a model can ship its own cards without
+# touching the MiniCPM assets.
+PRESET_ROOTS = (
+    ROOT / "assets" / "presets",
+    ROOT / "assets" / "minicpmo" / "presets",
+)
 logger = logging.getLogger(__name__)
 REFERENCE_SAMPLE_RATE_HZ = 16000
 # Note (ruoyu): Deterministic and quick on MiniCPM-o, sent only where declared.
@@ -256,18 +262,17 @@ def create_app(api_base: str, model_name: str | None = None) -> web.Application:
     presets = {}
     for mode in ("audio_duplex", "omni"):
         presets[mode] = []
-        for path in sorted(
-            (ROOT / "assets" / "minicpmo" / "presets" / mode).glob("*.yaml")
-        ):
-            preset = yaml.safe_load(path.read_text())
-            reference_path = preset.pop("ref_audio_path", None)
-            if reference_path:
-                preset["ref_audio"] = {
-                    "path": reference_path,
-                    "name": Path(reference_path).name,
-                    "data": None,
-                }
-            presets[mode].append(preset)
+        for root in PRESET_ROOTS:
+            for path in sorted((root / mode).glob("*.yaml")):
+                preset = yaml.safe_load(path.read_text())
+                reference_path = preset.pop("ref_audio_path", None)
+                if reference_path:
+                    preset["ref_audio"] = {
+                        "path": reference_path,
+                        "name": Path(reference_path).name,
+                        "data": None,
+                    }
+                presets[mode].append(preset)
         presets[mode].sort(key=lambda preset: preset.get("order", 999))
 
     async def list_presets(request: web.Request) -> web.Response:
