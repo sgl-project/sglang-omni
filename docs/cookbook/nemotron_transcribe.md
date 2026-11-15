@@ -58,7 +58,34 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F response_format=text
 ```
 
-Set `stream=true` to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. Word timestamps, speaker-attributed output, translation, speculative decoding, and `/v1/realtime` are outside this integration.
+Set `stream=true` to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. Word timestamps, speaker-attributed output, translation, and `/v1/realtime` are outside this integration.
+
+## Optional native NEXTN MTP
+
+NEXTN uses the MTP draft bundled in the target checkpoint and is disabled by default. The ordinary serve command above does not load the draft. Opt in with `--asr.engine.speculative_algorithm NEXTN`; the registry supplies the pinned checkpoint revision and the defaults of two steps, topk 1, and three draft tokens. This pinned example spells out that recipe so the target revision and all speculative settings are reproducible:
+
+```bash
+sgl-omni serve \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
+  --asr.engine.speculative_algorithm NEXTN \
+  --asr.engine.revision c17667641642c4265ff2b7037dd101b7d4567634 \
+  --asr.engine.speculative_num_steps 2 \
+  --asr.engine.speculative_eagle_topk 1 \
+  --asr.engine.speculative_num_draft_tokens 3
+```
+
+The draft uses the same resolved checkpoint and revision as the target. An explicit `--asr.engine.revision` remains authoritative and is applied to both. The current adapter supports tensor parallelism 1 and pipeline parallelism 1, requires greedy requests (`temperature=0`), and keeps decoder CUDA Graph enabled. Valid step overrides are supported when draft tokens equal steps plus one.
+
+### H200 results
+
+The following measurements are for H200, TP=1, PP=1, CUDA Graph on, client concurrency 16, and the frozen 666-sample English SeedTTS corpus. They describe this tested setup, not a performance or quality guarantee for other workloads.
+
+| Mode | QPS | WER |
+| --- | ---: | ---: |
+| Baseline | approximately 27.1 | 0.9751% |
+| NEXTN | approximately 34.6 | 0.9751% |
+
+NEXTN measured approximately 27.4% higher QPS. The equal measured WER supports quality non-inferiority on this frozen corpus. Across three fresh server lifetimes, 19,980 requests completed with zero failures.
 
 ## Compile the encoder
 

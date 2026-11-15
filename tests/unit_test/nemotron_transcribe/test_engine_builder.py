@@ -31,6 +31,7 @@ from sglang_omni.models.nemotron_transcribe.speech_transformer import (
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
 )
+from sglang_omni.speculative.draft_registry import NEMOTRON_TRANSCRIBE_DRAFT
 
 
 def synthetic_checkpoint_config(
@@ -104,39 +105,44 @@ class RecordingEncoder(SpeechTransformerEncoder):
 
 def test_decoder_defaults_keep_cuda_graphs_and_disable_compilation() -> None:
     defaults = make_builder().generation_defaults(dtype="bfloat16")
+    assert defaults["disable_cuda_graph"] is False
     assert defaults["enable_torch_compile"] is False
     assert defaults["disable_radix_cache"] is True
 
 
-def test_nextn_is_off_by_default_and_keeps_server_overrides_unchanged() -> None:
-    original = {"revision": "operator-revision", "max_running_requests": 2}
-    overrides, enabled = prepare_nemotron_speculative_options("model", original)
+def test_nextn_is_off_by_default_and_keeps_server_overrides_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = dict(engine_builder.ModelRegistry.models)
+    monkeypatch.setattr(engine_builder.ModelRegistry, "models", registry)
+    registered_mtp = registry.get("NemotronHForCausalLMMTP")
+    original = {
+        "revision": "operator-revision",
+        "max_running_requests": 2,
+        "disable_overlap_schedule": False,
+        "enable_mixed_chunk": True,
+    }
+    overrides, enabled = prepare_nemotron_speculative_options(
+        "model", original, enable_async_decode=True
+    )
 
     assert overrides == original
     assert overrides is not original
     assert enabled is False
     assert make_builder().infra_kwargs() == {}
-
-
-def test_nextn_disabled_preserves_async_and_non_speculative_overrides() -> None:
-    original = {
-        "revision": "operator-revision",
-        "disable_overlap_schedule": False,
-        "enable_mixed_chunk": True,
-    }
-    overrides, enabled = prepare_nemotron_speculative_options(
-        "model",
-        original,
-        enable_async_decode=True,
+    assert registry.get("NemotronHForCausalLMMTP") is registered_mtp
+    engine_overrides = (
+        NemotronTranscribePipelineConfig(model_path="model")
+        .stages[0]
+        .engine.overrides()
     )
-
-    assert overrides == original
-    assert enabled is False
+    assert not any(name.startswith("speculative_") for name in engine_overrides)
 
 
 def test_nextn_registers_the_native_draft_with_shared_infrastructure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    nemotron_target = engine_builder.ModelRegistry.models.get("NemotronHForCausalLM")
     monkeypatch.setattr(
         engine_builder.ModelRegistry,
         "models",
@@ -150,8 +156,8 @@ def test_nextn_registers_the_native_draft_with_shared_infrastructure(
 
     assert enabled is True
     assert overrides["speculative_algorithm"] == "NEXTN"
-    assert "revision" not in overrides
-    assert "speculative_draft_model_revision" not in overrides
+    assert overrides["revision"] == NEMOTRON_TRANSCRIBE_DRAFT.draft_model_revision
+    assert overrides["speculative_draft_model_revision"] == overrides["revision"]
     assert overrides["speculative_eagle_topk"] == 1
     assert overrides["speculative_num_steps"] == 2
     assert overrides["speculative_num_draft_tokens"] == 3
@@ -162,17 +168,10 @@ def test_nextn_registers_the_native_draft_with_shared_infrastructure(
         engine_builder.ModelRegistry.models["NemotronHForCausalLMMTP"]
         is engine_builder.NemotronTranscribeMTP
     )
-
-
-def test_nextn_preserves_an_operator_selected_revision() -> None:
-    overrides, enabled = prepare_nemotron_speculative_options(
-        "org/nemotron-transcribe",
-        {"speculative_algorithm": "NEXTN", "revision": "release-2026-10"},
+    assert (
+        engine_builder.ModelRegistry.models.get("NemotronHForCausalLM")
+        is nemotron_target
     )
-
-    assert enabled is True
-    assert overrides["revision"] == "release-2026-10"
-    assert overrides["speculative_draft_model_revision"] == "release-2026-10"
 
 
 def test_nextn_preserves_explicit_steps_and_derives_matching_draft_tokens() -> None:
@@ -267,6 +266,10 @@ def test_nextn_defaults_resolve_through_sglang_server_args(
         (
             {"speculative_algorithm": "NEXTN", "tp_size": 2},
             "tp_size=1",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "pp_size": 2},
+            "pp_size=1",
         ),
     ],
 )
@@ -378,6 +381,21 @@ def test_remote_revision_resolves_the_requested_snapshot(
     nextn_enabled: bool,
     cache_hit: bool,
 ) -> None:
+    requested_overrides: dict[str, object] = {"revision": "operator-revision"}
+    if nextn_enabled:
+        requested_overrides["speculative_algorithm"] = "NEXTN"
+    else:
+        pass
+    model_path = NEMOTRON_TRANSCRIBE_DRAFT.model_path
+    overrides, enabled = prepare_nemotron_speculative_options(
+        model_path, requested_overrides
+    )
+    assert enabled is nextn_enabled
+    assert overrides["revision"] == "operator-revision"
+    if nextn_enabled:
+        assert overrides["speculative_draft_model_revision"] == overrides["revision"]
+    else:
+        pass
     snapshot_directory = write_synthetic_checkpoint(tmp_path / "snapshot")
     requested: list[tuple[str, str | None, bool]] = []
 
@@ -397,13 +415,13 @@ def test_remote_revision_resolves_the_requested_snapshot(
     monkeypatch.setattr(engine_builder, "snapshot_download", download_snapshot)
     builder = make_builder(
         nextn_enabled=nextn_enabled,
-        checkpoint_revision="operator-revision",
+        checkpoint_revision=overrides["revision"],
     )
-    resolved_directory = Path(builder.resolve_checkpoint("org/model"))
+    resolved_directory = Path(builder.resolve_checkpoint(model_path))
 
-    expected_requests = [("org/model", "operator-revision", True)]
+    expected_requests = [(model_path, "operator-revision", True)]
     if not cache_hit:
-        expected_requests.append(("org/model", "operator-revision", False))
+        expected_requests.append((model_path, "operator-revision", False))
     else:
         pass
     assert requested == expected_requests
@@ -412,7 +430,6 @@ def test_remote_revision_resolves_the_requested_snapshot(
     ).resolve()
     if nextn_enabled:
         builder.checkpoint_dir = str(resolved_directory)
-        overrides = {"revision": "operator-revision"}
         builder.adjust_overrides(overrides)
         assert overrides["revision"] == "operator-revision"
         assert overrides["speculative_draft_model_path"] == str(resolved_directory)
@@ -421,40 +438,46 @@ def test_remote_revision_resolves_the_requested_snapshot(
         pass
 
 
-def test_remote_nextn_uses_default_revision_without_a_pin(
+def test_remote_nextn_resolves_the_registry_pinned_revision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     snapshot_directory = write_synthetic_checkpoint(
         tmp_path / "snapshot", pattern="E", physical_depth=1
     )
-    resolved: list[str] = []
-    local_requests: list[tuple[str, bool]] = []
+    requests: list[tuple[str, str | None, bool]] = []
+    model_path = NEMOTRON_TRANSCRIBE_DRAFT.model_path
 
-    def find_cached_snapshot(
+    def download_snapshot(
         model_path: str,
         *,
         revision: str | None,
         local_files_only: bool,
     ) -> str:
-        local_requests.append((model_path, local_files_only))
-        assert revision is None
-        assert local_files_only is True
-        raise LocalEntryNotFoundError("cache miss")
+        requests.append((model_path, revision, local_files_only))
+        if local_files_only:
+            raise LocalEntryNotFoundError("cache miss")
+        else:
+            pass
+        return str(snapshot_directory)
 
-    def resolve_default_revision(model_path: str) -> Path:
-        resolved.append(model_path)
-        return snapshot_directory
+    monkeypatch.setattr(engine_builder, "snapshot_download", download_snapshot)
+    overrides, enabled = prepare_nemotron_speculative_options(
+        model_path, {"speculative_algorithm": "NEXTN"}
+    )
+    builder = make_builder(
+        nextn_enabled=enabled,
+        checkpoint_revision=overrides["revision"],
+    )
 
-    monkeypatch.setattr(engine_builder, "snapshot_download", find_cached_snapshot)
-    monkeypatch.setattr(engine_builder, "resolve_model_path", resolve_default_revision)
-    builder = make_builder(nextn_enabled=True)
+    resolved_directory = Path(builder.resolve_checkpoint(model_path))
 
-    resolved_directory = Path(builder.resolve_checkpoint("org/model"))
-
-    assert resolved == ["org/model"]
-    assert local_requests == [("org/model", True)]
-    assert builder.checkpoint_revision is None
+    revision = NEMOTRON_TRANSCRIBE_DRAFT.draft_model_revision
+    assert enabled is True
+    assert overrides["revision"] == revision
+    assert overrides["speculative_draft_model_revision"] == revision
+    assert requests == [(model_path, revision, True), (model_path, revision, False)]
+    assert builder.checkpoint_revision == revision
     assert (resolved_directory / "weights.safetensors").resolve() == (
         snapshot_directory / "weights.safetensors"
     ).resolve()

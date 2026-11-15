@@ -43,6 +43,22 @@ class PinnedDraft:
             }
 
 
+NEMOTRON_TRANSCRIBE_DRAFT = PinnedDraft(
+    model_path="nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+    stage="asr",
+    algorithm="NEXTN",
+    draft_model_path="nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+    draft_model_revision="c17667641642c4265ff2b7037dd101b7d4567634",
+    engine_settings={
+        "speculative_num_steps": 2,
+        "speculative_eagle_topk": 1,
+        "speculative_num_draft_tokens": 3,
+    },
+    license="openmdw-1.1",
+    is_default_on=False,
+)
+
+
 DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
     PinnedDraft(
         model_path="Qwen/Qwen3-ASR-1.7B",
@@ -141,4 +157,5 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         engine_settings={"speculative_num_draft_tokens": 16},
         license="mit",
     ),
+    NEMOTRON_TRANSCRIBE_DRAFT,
 )

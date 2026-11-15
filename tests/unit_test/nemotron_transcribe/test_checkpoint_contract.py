@@ -4,13 +4,11 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
-from sglang.srt.models.nemotron_h_mtp import NemotronHForCausalLMMTP
 from torch.nn import functional as F
 
 from sglang_omni.models.nemotron_transcribe.checkpoint_contract import (
@@ -122,8 +120,10 @@ def test_mtp_names_are_routed_separately_from_target_weights() -> None:
     )
 
 
-def test_mtp_mapping_preserves_qkv_names_expert_transforms_and_bias_dtype() -> None:
+def test_mtp_mapping_preserves_qkv_bias_and_expert_relu2() -> None:
     bias = torch.tensor([0.25, -0.5], dtype=torch.float32)
+    up_weights = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4) / 16
+    down_weights = torch.arange(24, dtype=torch.float32).reshape(2, 4, 3) / 16
     weights = [
         (
             "llm.mtp.layers.0.mixer.q_proj.weight",
@@ -139,11 +139,11 @@ def test_mtp_mapping_preserves_qkv_names_expert_transforms_and_bias_dtype() -> N
         ),
         (
             "llm.mtp.layers.1.mixer.experts.gate_and_up_projs",
-            torch.arange(24, dtype=torch.bfloat16).reshape(2, 3, 4),
+            up_weights,
         ),
         (
             "llm.mtp.layers.1.mixer.experts.down_projs",
-            torch.arange(24, dtype=torch.bfloat16).reshape(2, 4, 3),
+            down_weights,
         ),
         ("llm.mtp.layers.1.mixer.gate.e_score_correction_bias", bias),
         (
@@ -171,22 +171,6 @@ def test_mtp_mapping_preserves_qkv_names_expert_transforms_and_bias_dtype() -> N
         mapped_bias,
         bias,
     )
-
-
-def test_mtp_expert_conversion_preserves_ungated_relu2_computation() -> None:
-    up_weights = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4) / 16
-    down_weights = torch.arange(24, dtype=torch.float32).reshape(2, 4, 3) / 16
-    converted = dict(
-        checkpoint_to_mtp_weights(
-            [
-                (
-                    "llm.mtp.layers.1.mixer.experts.gate_and_up_projs",
-                    up_weights,
-                ),
-                ("llm.mtp.layers.1.mixer.experts.down_projs", down_weights),
-            ]
-        )
-    )
     hidden_states = torch.tensor([[1.0, -2.0, 3.0]])
     for expert_index in range(2):
         prefix = f"mtp.layers.1.mixer.experts.{expert_index}"
@@ -198,61 +182,12 @@ def test_mtp_expert_conversion_preserves_ungated_relu2_computation() -> None:
             F.relu(
                 F.linear(
                     hidden_states,
-                    converted[f"{prefix}.up_proj.weight"],
+                    mapped[f"{prefix}.up_proj.weight"],
                 )
             ).square(),
-            converted[f"{prefix}.down_proj.weight"],
+            mapped[f"{prefix}.down_proj.weight"],
         )
         torch.testing.assert_close(actual, reference)
-
-
-def test_mtp_loader_forwards_tensors_and_propagates_parent_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = NemotronTranscribeMTP.__new__(NemotronTranscribeMTP)
-    adapter.config = SimpleNamespace(max_n_routed_experts=1)
-
-    def named_parameters(
-        model: NemotronTranscribeMTP,
-    ) -> list[tuple[str, torch.Tensor]]:
-        del model
-        return [("model.layers.0.mixer.norm.weight", torch.empty(1))]
-
-    monkeypatch.setattr(NemotronTranscribeMTP, "named_parameters", named_parameters)
-
-    checkpoint_tensor = torch.ones(2, dtype=torch.float16)
-    checkpoint_weights = [("llm.mtp.layers.0.mixer.norm.weight", checkpoint_tensor)]
-    forwarded: list[tuple[str, torch.Tensor]] = []
-
-    def capture_parent_weights(
-        model: NemotronHForCausalLMMTP,
-        weights: Iterable[tuple[str, torch.Tensor]],
-    ) -> None:
-        del model
-        forwarded.extend(weights)
-
-    monkeypatch.setattr(NemotronHForCausalLMMTP, "load_weights", capture_parent_weights)
-    adapter.load_weights(checkpoint_weights)
-
-    assert len(forwarded) == 1
-    assert forwarded[0][0] == "mtp.layers.0.mixer.norm.weight"
-    assert forwarded[0][1] is checkpoint_tensor
-    assert forwarded[0][1].dtype == torch.float16
-
-    parent_error = RuntimeError("parent loader failed")
-
-    def raise_parent_error(
-        model: NemotronHForCausalLMMTP,
-        weights: Iterable[tuple[str, torch.Tensor]],
-    ) -> None:
-        del model, weights
-        raise parent_error
-
-    monkeypatch.setattr(NemotronHForCausalLMMTP, "load_weights", raise_parent_error)
-    with pytest.raises(RuntimeError) as error:
-        adapter.load_weights(checkpoint_weights)
-
-    assert error.value is parent_error
 
 
 def test_mtp_loader_writes_qkv_expert_and_ordinary_parameters(

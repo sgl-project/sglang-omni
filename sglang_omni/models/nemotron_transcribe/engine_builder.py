@@ -60,6 +60,7 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
 )
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from sglang_omni.speculative.draft_registry import NEMOTRON_TRANSCRIBE_DRAFT
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,9 @@ def prepare_nemotron_speculative_options(
     *,
     enable_async_decode: bool = False,
 ) -> tuple[dict[str, object], bool]:
-    """Validate NEXTN options; default to two steps and one extra draft token."""
-    overrides = dict(server_args_overrides or {})
+    """Apply the registry recipe and validate bundled NEXTN options."""
+    user_overrides = dict(server_args_overrides or {})
+    overrides = dict(user_overrides)
     algorithm_name = overrides.get("speculative_algorithm")
     if algorithm_name is not None and not isinstance(algorithm_name, str):
         raise ValueError("speculative_algorithm must be a string")
@@ -80,6 +82,16 @@ def prepare_nemotron_speculative_options(
     algorithm = SpeculativeAlgorithm.from_string(algorithm_name)
     if algorithm.is_none():
         return overrides, False
+    else:
+        pass
+    recipe = NEMOTRON_TRANSCRIBE_DRAFT
+    recipe_overrides = recipe.engine_overrides()
+    if model_path != recipe.model_path:
+        recipe_overrides.pop("revision")
+    else:
+        pass
+    for name, value in recipe_overrides.items():
+        overrides.setdefault(name, value)
     else:
         pass
     if enable_async_decode or overrides.get("enable_async_decode") is True:
@@ -104,8 +116,14 @@ def prepare_nemotron_speculative_options(
         raise ValueError(
             "Nemotron Transcribe NEXTN draft must use the target checkpoint revision"
         )
-    elif overrides.get("speculative_eagle_topk") not in (None, 1):
-        raise ValueError("Nemotron Transcribe NEXTN requires speculative_eagle_topk=1")
+    elif overrides.get("speculative_eagle_topk") not in (
+        None,
+        recipe.engine_settings["speculative_eagle_topk"],
+    ):
+        raise ValueError(
+            "Nemotron Transcribe NEXTN requires speculative_eagle_topk="
+            f"{recipe.engine_settings['speculative_eagle_topk']}"
+        )
     elif overrides.get("disable_overlap_schedule") is False:
         raise ValueError("Nemotron Transcribe NEXTN requires synchronous execution")
     elif overrides.get("enable_mixed_chunk") is True:
@@ -121,9 +139,12 @@ def prepare_nemotron_speculative_options(
             raise ValueError(f"Nemotron Transcribe NEXTN requires {name}=1")
         else:
             pass
-    speculative_num_steps = overrides.get("speculative_num_steps", 2)
+    configured_num_steps = user_overrides.get("speculative_num_steps")
+    speculative_num_steps = overrides.get(
+        "speculative_num_steps", recipe.engine_settings["speculative_num_steps"]
+    )
     if speculative_num_steps is None:
-        speculative_num_steps = 2
+        speculative_num_steps = recipe.engine_settings["speculative_num_steps"]
     else:
         pass
     if (
@@ -137,9 +158,19 @@ def prepare_nemotron_speculative_options(
         )
     else:
         pass
-    speculative_num_draft_tokens = speculative_num_steps + 1
-    configured_num_draft_tokens = overrides.get("speculative_num_draft_tokens")
-    if configured_num_draft_tokens is not None and (
+    expected_num_draft_tokens = speculative_num_steps + 1
+    configured_num_draft_tokens = user_overrides.get("speculative_num_draft_tokens")
+    if configured_num_draft_tokens is None:
+        if configured_num_steps is not None:
+            configured_num_draft_tokens = expected_num_draft_tokens
+        else:
+            configured_num_draft_tokens = recipe.engine_settings[
+                "speculative_num_draft_tokens"
+            ]
+    else:
+        pass
+    speculative_num_draft_tokens = expected_num_draft_tokens
+    if (
         isinstance(configured_num_draft_tokens, bool)
         or not isinstance(configured_num_draft_tokens, int)
         or configured_num_draft_tokens != speculative_num_draft_tokens
@@ -152,9 +183,9 @@ def prepare_nemotron_speculative_options(
     else:
         pass
     overrides.update(
-        speculative_algorithm="NEXTN",
+        speculative_algorithm=recipe.algorithm,
         speculative_draft_model_path=model_path,
-        speculative_eagle_topk=1,
+        speculative_eagle_topk=recipe.engine_settings["speculative_eagle_topk"],
         speculative_num_steps=speculative_num_steps,
         speculative_num_draft_tokens=speculative_num_draft_tokens,
         enable_mixed_chunk=False,
