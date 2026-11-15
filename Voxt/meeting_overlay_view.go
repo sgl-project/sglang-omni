@@ -11,10 +11,9 @@ import (
 // The meeting window's sizes in DIPs: the face's plus layout.Pad on each
 // side for its shadow.
 const (
-	meetingOvBarH       = 44
-	meetingOvProblemH   = 42 // two lines of the warning and its margin
+	meetingOvProblemH   = 42 // two lines of the warning and its gap
 	meetingOvCollapsedW = 360 + 2*layout.Pad
-	meetingOvCollapsedH = meetingOvBarH + 2*layout.Pad
+	meetingOvCollapsedH = layout.PillH + 2*layout.Pad // the dictation pill's (#3986)
 	meetingOvExpandedW  = 520 + 2*layout.Pad
 	meetingOvExpandedH  = 340 + 2*layout.Pad
 )

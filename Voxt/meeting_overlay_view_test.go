@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
 func TestMeetingOverlayModelSizes(t *testing.T) {
@@ -14,6 +15,10 @@ func TestMeetingOverlayModelSizes(t *testing.T) {
 	}
 	if !collapsed.ShowBar || collapsed.ShowExpanded {
 		t.Fatalf("collapsed flags bar=%v expanded=%v", collapsed.ShowBar, collapsed.ShowExpanded)
+	}
+	// The capsule is the dictation pill's height (#3986).
+	if mode, h := meetingOverlayFace(collapsed); mode != ovRecording || h != layout.PillH {
+		t.Fatalf("collapsed face %v %d, want the pill's %d", mode, h, layout.PillH)
 	}
 	expanded := overlayModel(s, false)
 	if expanded.Layout.Width != meetingOvExpandedW || expanded.Layout.Height != meetingOvExpandedH {
