@@ -63,6 +63,14 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         license="apache-2.0",
     ),
     PinnedDraft(
+        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        stage="asr",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/MOSS-Transcribe-Diarize-dflash2",
+        draft_model_revision="201410d4b9c89e86d97af160658766206959ad40",
+        license="apache-2.0",
+    ),
+    PinnedDraft(
         model_path="FunAudioLLM/Fun-ASR-Nano-2512-hf",
         stage="asr",
         algorithm="DFLASH",
