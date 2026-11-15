@@ -5,11 +5,8 @@
 #include <array>
 #include <cmath>
 #include <limits>
-#include <mutex>
 #include <optional>
 #include <stdexcept>
-
-#include <mlx/memory.h>
 
 namespace qwen3_tts {
 
@@ -22,44 +19,6 @@ constexpr float kCodebookUsageEps = 1e-5f;
 constexpr float kSnakeEps = 1e-9f;
 constexpr float kConvNextNormEps = 1e-6f;
 constexpr std::array<int, 3> kResidualDilations = {1, 3, 9};
-// Note (Jiaxin Deng): the CUDA vocoder decodes a whole request in 300-frame
-// chunks, each with up to 25 frames of left context.
-constexpr int kChunkFrames = 300;
-constexpr int kLeftContextFrames = 25;
-constexpr int kStreamedChunkFrames = 25;
-
-// Note (Codex): on M5 Pro, this limit reduced long-chunk footprint without
-// slowing generation. Note (Codex): MLX cache limits are process-wide; the
-// native server owns one model worker.
-constexpr size_t kCodecCacheLimitBytes = 512ULL * 1024 * 1024;
-std::mutex codec_cache_limit_mutex;
-
-class ScopedCodecCacheLimit {
-public:
-  explicit ScopedCodecCacheLimit(bool enabled)
-      : lock_(codec_cache_limit_mutex), enabled_(enabled) {
-    if (enabled_) {
-      previous_cache_limit_bytes_ = mx::set_cache_limit(0);
-      mx::set_cache_limit(
-          std::min(previous_cache_limit_bytes_, kCodecCacheLimitBytes));
-    } else {
-    }
-  }
-  ~ScopedCodecCacheLimit() {
-    if (enabled_) {
-      mx::set_cache_limit(previous_cache_limit_bytes_);
-    } else {
-    }
-  }
-  ScopedCodecCacheLimit(const ScopedCodecCacheLimit &) = delete;
-  ScopedCodecCacheLimit &operator=(const ScopedCodecCacheLimit &) = delete;
-
-private:
-  std::unique_lock<std::mutex> lock_;
-  bool enabled_;
-  size_t previous_cache_limit_bytes_ = 0;
-};
-
 // The other half of each head, the first half negated.
 mx::array RotateHalf(const mx::array &x) {
   const int half = x.shape(-1) / 2;
@@ -119,14 +78,18 @@ SpeechDecoder::PrepareWeights(omni_common::WeightMap weights) {
 }
 
 SpeechDecoder::SpeechDecoder(
-    const std::filesystem::path &speech_tokenizer_directory)
+    const std::filesystem::path &speech_tokenizer_directory,
+    bool incremental_streaming)
     : SpeechDecoder(
           omni_common::ReadJson(speech_tokenizer_directory / "config.json"),
-          omni_common::LoadSafetensors(speech_tokenizer_directory)) {}
+          omni_common::LoadSafetensors(speech_tokenizer_directory),
+          incremental_streaming) {}
 
 SpeechDecoder::SpeechDecoder(const nlohmann::json &config,
-                             omni_common::WeightMap weights)
+                             omni_common::WeightMap weights,
+                             bool incremental_streaming)
     : checkpoint_(PrepareWeights(std::move(weights)), nlohmann::json::object()),
+      incremental_streaming_(incremental_streaming),
       inverse_frequencies_(0.0f) {
   const nlohmann::json &decoder = config.at("decoder_config");
   codebook_count_ = decoder.at("num_quantizers").get<int>();
@@ -155,6 +118,16 @@ SpeechDecoder::SpeechDecoder(const nlohmann::json &config,
   mx::eval(inverse_frequencies_);
 }
 
+std::optional<SpeechDecoderState> SpeechDecoder::NewStreamState() const {
+  if (incremental_streaming_) {
+    SpeechDecoderState state;
+    state.attention.resize(transformer_layer_count_);
+    return state;
+  } else {
+    return std::nullopt;
+  }
+}
+
 mx::array SpeechDecoder::RmsNorm(const mx::array &x,
                                  const std::string &prefix) const {
   const mx::array x_float = mx::astype(x, mx::float32);
@@ -178,11 +151,24 @@ mx::array SpeechDecoder::Snake(const mx::array &x,
 
 mx::array SpeechDecoder::CausalConvolution(const mx::array &x,
                                            const std::string &prefix,
-                                           int dilation, int groups) const {
+                                           int dilation, int groups,
+                                           SpeechDecoderState *state) const {
   const mx::array &weight = checkpoint_.Weight(prefix + ".weight");
   const int padding = (weight.shape(1) - 1) * dilation;
-  const mx::array padded =
-      padding > 0 ? mx::pad(x, {{0, 0}, {padding, 0}, {0, 0}}) : x;
+  mx::array padded = x;
+  if (padding > 0) {
+    padded =
+        state && state->convolution_history.contains(prefix)
+            ? mx::concatenate({state->convolution_history.at(prefix), x}, 1)
+            : mx::pad(x, {{0, 0}, {padding, 0}, {0, 0}});
+    if (state) {
+      state->convolution_history.insert_or_assign(
+          prefix, mx::copy(mx::slice(padded, {0, padded.shape(1) - padding, 0},
+                                     padded.shape())));
+    } else {
+    }
+  } else {
+  }
   const mx::array y = mx::conv1d(padded, weight, 1, 0, dilation, groups);
   if (checkpoint_.Has(prefix + ".bias")) {
     return mx::add(y, checkpoint_.Weight(prefix + ".bias"));
@@ -191,14 +177,54 @@ mx::array SpeechDecoder::CausalConvolution(const mx::array &x,
   }
 }
 
-mx::array SpeechDecoder::TransposedConvolution(const mx::array &x,
-                                               const std::string &prefix,
-                                               int stride) const {
+mx::array
+SpeechDecoder::TransposedConvolution(const mx::array &x,
+                                     const std::string &prefix, int stride,
+                                     SpeechDecoderState *state) const {
   const mx::array &weight = checkpoint_.Weight(prefix + ".weight");
-  const mx::array y = mx::add(mx::conv_transpose1d(x, weight, stride),
-                              checkpoint_.Weight(prefix + ".bias"));
+  const mx::array &bias = checkpoint_.Weight(prefix + ".bias");
   const int trim = weight.shape(1) - stride;
+  mx::array input = x;
+  int context_samples = 0;
+  const bool resumes_block =
+      state && state->decoded_frames % kStreamedChunkFrames != 0;
+  const std::string input_key = prefix + ".input_tail";
+  if (trim > 0 && state) {
+    // Within a codec block, recompute the small overlap from its input.
+    // Adding separately rounded output tails changes the PCM at a substep.
+    if (resumes_block) {
+      const mx::array &tail = state->convolution_history.at(input_key);
+      input = mx::concatenate({tail, x}, 1);
+      context_samples = tail.shape(1) * stride;
+    } else {
+    }
+    const int keep = (trim + stride - 1) / stride;
+    state->convolution_history.insert_or_assign(
+        input_key, mx::copy(mx::slice(input, {0, input.shape(1) - keep, 0},
+                                      input.shape())));
+  } else {
+  }
+  mx::array y = mx::add(mx::conv_transpose1d(input, weight, stride), bias);
+  if (context_samples > 0) {
+    y = mx::slice(y, {0, context_samples, 0}, y.shape());
+  } else {
+  }
   if (trim > 0) {
+    if (state) {
+      auto &history = state->convolution_history;
+      if (history.contains(prefix) && !resumes_block) {
+        // Match the reference's overlap at its complete codec boundaries.
+        const mx::Shape head = {y.shape(0), trim, y.shape(2)};
+        y = mx::concatenate(
+            {mx::add(mx::slice(y, {0, 0, 0}, head), history.at(prefix)),
+             mx::slice(y, {0, trim, 0}, y.shape())},
+            1);
+      } else {
+      }
+      history.insert_or_assign(
+          prefix, mx::copy(mx::slice(y, {0, y.shape(1) - trim, 0}, y.shape())));
+    } else {
+    }
     return mx::slice(y, {0, 0, 0}, {y.shape(0), y.shape(1) - trim, y.shape(2)});
   } else {
     return y;
@@ -208,7 +234,8 @@ mx::array SpeechDecoder::TransposedConvolution(const mx::array &x,
 mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer,
                                           const mx::array &cosines,
                                           const mx::array &sines,
-                                          const mx::array &mask) const {
+                                          const mx::array &mask,
+                                          SpeechDecoderState *state) const {
   const std::string prefix =
       std::string(kPrefix) + ".pre_transformer.layers." + std::to_string(layer);
   const int batch = x.shape(0);
@@ -226,8 +253,21 @@ mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer,
                    mx::multiply(RotateHalf(projected), sines));
   };
   const mx::array queries = rotate(heads("q_proj"));
-  const mx::array keys = rotate(heads("k_proj"));
-  const mx::array values = heads("v_proj");
+  mx::array keys = rotate(heads("k_proj"));
+  mx::array values = heads("v_proj");
+  if (state) {
+    auto &history = state->attention[layer];
+    if (history) {
+      keys = mx::concatenate({history->first, keys}, 2);
+      values = mx::concatenate({history->second, values}, 2);
+    } else {
+    }
+    const int start = std::max(0, keys.shape(2) - (sliding_window_frames_ - 1));
+    history.emplace(
+        mx::contiguous(mx::slice(keys, {0, 0, start, 0}, keys.shape())),
+        mx::contiguous(mx::slice(values, {0, 0, start, 0}, values.shape())));
+  } else {
+  }
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, keys, values,
       static_cast<float>(std::pow(static_cast<double>(head_dim_), -0.5)), "",
@@ -251,7 +291,8 @@ mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer,
                                       mlp_output));
 }
 
-mx::array SpeechDecoder::Decode(const mx::array &codes) const {
+mx::array SpeechDecoder::DecodeFeatures(const mx::array &codes,
+                                        SpeechDecoderState *state) const {
   const std::string prefix = kPrefix;
   const int frame_count = codes.shape(0);
   // [1, frames] per codebook; each quantizer sums its codebooks' rows and
@@ -282,11 +323,13 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
                                   codebook_count_ - semantic_codebook_count_));
   } else {
   }
-  hidden = CausalConvolution(hidden, prefix + ".pre_conv.conv", 1, 1);
+  hidden = CausalConvolution(hidden, prefix + ".pre_conv.conv", 1, 1, state);
 
   const std::string transformer = prefix + ".pre_transformer";
   hidden = checkpoint_.Linear(hidden, transformer + ".input_proj");
-  const mx::array positions = mx::astype(mx::arange(frame_count), mx::float32);
+  const int offset = state ? state->decoded_frames : 0;
+  const mx::array positions =
+      mx::astype(mx::arange(offset, offset + frame_count), mx::float32);
   const mx::array frequencies =
       mx::transpose(mx::multiply(mx::reshape(inverse_frequencies_, {1, -1, 1}),
                                  mx::reshape(positions, {1, 1, -1})),
@@ -297,8 +340,11 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
   // Note (Jiaxin Deng): the decoder's attention is causal within its
   // sliding window, as the CUDA vocoder's; a full causal mask changes the
   // samples of chunks longer than the window.
-  const mx::array queries = mx::expand_dims(mx::arange(frame_count), 1);
-  const mx::array keys = mx::expand_dims(mx::arange(frame_count), 0);
+  const int cached_frames = std::min(offset, sliding_window_frames_ - 1);
+  const mx::array queries =
+      mx::expand_dims(mx::arange(offset, offset + frame_count), 1);
+  const mx::array keys = mx::expand_dims(
+      mx::arange(offset - cached_frames, offset + frame_count), 0);
   const mx::array masked = mx::logical_or(
       mx::less(queries, keys),
       mx::less_equal(keys,
@@ -307,7 +353,7 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
       mx::multiply(mx::astype(masked, mx::float32),
                    mx::array(std::numeric_limits<float>::lowest()));
   for (int layer = 0; layer < transformer_layer_count_; ++layer) {
-    hidden = TransformerLayer(hidden, layer, cosines, sines, mask);
+    hidden = TransformerLayer(hidden, layer, cosines, sines, mask, state);
   }
   hidden = checkpoint_.Linear(RmsNorm(hidden, transformer + ".norm"),
                               transformer + ".output_proj");
@@ -316,11 +362,11 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
     const std::string stage_prefix =
         prefix + ".upsample." + std::to_string(stage);
     hidden = TransposedConvolution(hidden, stage_prefix + ".0.conv",
-                                   upsampling_ratios_[stage]);
+                                   upsampling_ratios_[stage], state);
     const std::string block = stage_prefix + ".1";
     const mx::array residual = hidden;
-    mx::array x =
-        CausalConvolution(hidden, block + ".dwconv.conv", 1, hidden.shape(2));
+    mx::array x = CausalConvolution(hidden, block + ".dwconv.conv", 1,
+                                    hidden.shape(2), state);
     x = checkpoint_.LayerNorm(x, block + ".norm", kConvNextNormEps);
     x = omni_common::Gelu(checkpoint_.Linear(x, block + ".pwconv1"));
     x = checkpoint_.Linear(x, block + ".pwconv2");
@@ -328,105 +374,48 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
                      mx::multiply(checkpoint_.Weight(block + ".gamma"), x));
   }
 
+  if (state) {
+    state->decoded_frames += frame_count;
+  } else {
+  }
+  return hidden;
+}
+
+mx::array SpeechDecoder::Decode(const mx::array &codes) const {
+  return DecodeSamples(DecodeFeatures(codes, nullptr), codes.shape(0), nullptr);
+}
+
+mx::array SpeechDecoder::DecodeSamples(const mx::array &hidden, int frame_count,
+                                       SpeechDecoderState *state) const {
+  const std::string prefix = kPrefix;
   const std::string stack = prefix + ".decoder";
-  mx::array wave = CausalConvolution(hidden, stack + ".0.conv", 1, 1);
+  mx::array wave = CausalConvolution(hidden, stack + ".0.conv", 1, 1, state);
   for (size_t stage = 0; stage < upsample_rates_.size(); ++stage) {
     const std::string block =
         stack + "." + std::to_string(stage + 1) + ".block";
     wave = Snake(wave, block + ".0");
-    wave =
-        TransposedConvolution(wave, block + ".1.conv", upsample_rates_[stage]);
+    wave = TransposedConvolution(wave, block + ".1.conv",
+                                 upsample_rates_[stage], state);
     for (size_t unit = 0; unit < kResidualDilations.size(); ++unit) {
       const std::string unit_prefix = block + "." + std::to_string(unit + 2);
       mx::array x = Snake(wave, unit_prefix + ".act1");
       x = CausalConvolution(x, unit_prefix + ".conv1.conv",
-                            kResidualDilations[unit], 1);
+                            kResidualDilations[unit], 1, state);
       x = Snake(x, unit_prefix + ".act2");
-      x = CausalConvolution(x, unit_prefix + ".conv2.conv", 1, 1);
+      x = CausalConvolution(x, unit_prefix + ".conv2.conv", 1, 1, state);
       wave = mx::add(x, wave);
     }
   }
   const int output_stage = static_cast<int>(upsample_rates_.size()) + 1;
   wave = Snake(wave, stack + "." + std::to_string(output_stage));
   wave = CausalConvolution(
-      wave, stack + "." + std::to_string(output_stage + 1) + ".conv", 1, 1);
+      wave, stack + "." + std::to_string(output_stage + 1) + ".conv", 1, 1,
+      state);
+  if (state) {
+    state->decoded_frames += frame_count;
+  } else {
+  }
   return mx::reshape(mx::clip(wave, mx::array(-1.0f), mx::array(1.0f)), {-1});
-}
-
-SpeechStream::SpeechStream(const SpeechDecoder &decoder, bool streamed,
-                           int first_chunk_frames)
-    : decoder_(decoder), streamed_(streamed),
-      first_chunk_frames_(
-          first_chunk_frames > 0
-              ? std::min(first_chunk_frames, kStreamedChunkFrames)
-              : kStreamedChunkFrames) {}
-
-int SpeechStream::ChunkFrames() const {
-  if (!streamed_) {
-    return kChunkFrames;
-  } else if (emitted_frames_ == 0) {
-    return first_chunk_frames_;
-  } else {
-    return kStreamedChunkFrames;
-  }
-}
-
-std::vector<float> SpeechStream::Push(const mx::array &frame_codes) {
-  frames_.push_back(frame_codes);
-  if (frame_codes.data<int32_t>()[0] > 0) {
-    ++voiced_frames_;
-  } else {
-  }
-  const int chunk_frames = ChunkFrames();
-  if (static_cast<int>(frames_.size()) - emitted_frames_ < chunk_frames) {
-    return {};
-  } else if (streamed_) {
-    return DecodeChunk(emitted_frames_ + chunk_frames);
-  } else {
-    const std::vector<float> chunk =
-        DecodeChunk(emitted_frames_ + chunk_frames);
-    held_samples_.insert(held_samples_.end(), chunk.begin(), chunk.end());
-    return {};
-  }
-}
-
-std::vector<float> SpeechStream::Finish() {
-  std::vector<float> samples = std::move(held_samples_);
-  while (emitted_frames_ < static_cast<int>(frames_.size())) {
-    const std::vector<float> chunk = DecodeChunk(std::min(
-        static_cast<int>(frames_.size()), emitted_frames_ + ChunkFrames()));
-    samples.insert(samples.end(), chunk.begin(), chunk.end());
-  }
-  // Note (Jiaxin Deng): as the CUDA vocoder's whole-request decode, the audio
-  // keeps one frame of samples per frame whose first code is not 0.
-  const size_t kept_samples =
-      static_cast<size_t>(voiced_frames_) * decoder_.samples_per_frame();
-  if (!streamed_ && kept_samples < samples.size()) {
-    samples.resize(kept_samples);
-  } else {
-  }
-  return samples;
-}
-
-std::vector<float> SpeechStream::DecodeChunk(int end_frame) {
-  const ScopedCodecCacheLimit cache_limit(!streamed_);
-  const int context_frames = std::min(kLeftContextFrames, emitted_frames_);
-  const int start_frame = emitted_frames_ - context_frames;
-  const std::vector<mx::array> window(frames_.begin() + start_frame,
-                                      frames_.begin() + end_frame);
-  const int samples_per_frame = decoder_.samples_per_frame();
-  const mx::array audio =
-      mx::slice(decoder_.Decode(mx::stack(window, 0)),
-                {context_frames * samples_per_frame},
-                {(end_frame - start_frame) * samples_per_frame});
-  mx::eval(audio);
-  emitted_frames_ = end_frame;
-  std::vector<float> samples(audio.data<float>(),
-                             audio.data<float>() + audio.size());
-  // Note (Jiaxin Deng): a chunk's upsampling buffers run to gigabytes and
-  // are not needed again until the next chunk, so MLX's cache returns them.
-  mx::clear_cache();
-  return samples;
 }
 
 } // namespace qwen3_tts

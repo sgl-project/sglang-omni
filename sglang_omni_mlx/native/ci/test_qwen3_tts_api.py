@@ -3,7 +3,9 @@
 returns is checked by transcribing it with qwen3_asr_server.
 
     NATIVE_RUNTIME_BIN=<dir with the servers> CI_DATA_ROOT=<provisioned root> \
-        python -m pytest sglang_omni_mlx/native/ci/test_qwen3_tts_tts_api.py
+        python -m pytest sglang_omni_mlx/native/ci/test_qwen3_tts_api.py
+
+Use -k 0.6B or -k 1.7B to test a single provisioned checkpoint.
 """
 
 from __future__ import annotations
@@ -25,8 +27,7 @@ from test_server_api import DATA_ROOT, RUNTIME_BIN, Server
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
-QWEN3_TTS_REPO = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
-CHOSEN_MODEL_NAME = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+CHOSEN_MODEL_NAME = "custom-voice-test"
 SAMPLE_RATE = 24000
 ASR_SAMPLE_RATE = 16000
 # One audio frame is 80 ms of 16-bit samples.
@@ -46,16 +47,21 @@ MAX_REQUEST_BODY_BYTES = 1024 * 1024
 CANCEL_SECONDS = 8.0
 
 
-def qwen3_tts_directory() -> Path:
-    return Path(DATA_ROOT) / "models" / QWEN3_TTS_REPO.replace("/", "_")
+@pytest.fixture(scope="module", params=["0.6B", "1.7B"])
+def qwen3_tts_directory(request: pytest.FixtureRequest) -> Path:
+    return (
+        Path(DATA_ROOT)
+        / "models"
+        / f"mlx-community_Qwen3-TTS-12Hz-{request.param}-CustomVoice-bf16"
+    )
 
 
 @pytest.fixture(scope="module")
-def qwen3_tts_server() -> Iterator[Server]:
+def qwen3_tts_server(qwen3_tts_directory: Path) -> Iterator[Server]:
     running = Server(
         "qwen3_tts_server",
         "qwen3_tts",
-        qwen3_tts_directory(),
+        qwen3_tts_directory,
         (
             "--max-queued-requests",
             str(MAX_QUEUED_REQUESTS),
@@ -418,7 +424,7 @@ def test_qwen3_tts_tiny_top_p_keeps_the_likeliest_code(
 ) -> None:
     """A top_p whose 1 - top_p rounds to 1 still keeps the likeliest code, so
     it samples as greedy decoding chooses."""
-    body = {"input": "hello", "response_format": "pcm", "max_new_tokens": 8}
+    body = {"input": "hello", "response_format": "pcm", "max_new_tokens": 8, "seed": 0}
     engine = {"subtalker_dosample": False}
     status, _, nucleus = speak(
         qwen3_tts_server,
@@ -432,12 +438,50 @@ def test_qwen3_tts_tiny_top_p_keeps_the_likeliest_code(
     assert nucleus == greedy
 
 
-def test_qwen3_tts_seed_repeats_its_audio(qwen3_tts_server: Server) -> None:
-    body = {"input": SENTENCE, "response_format": "pcm", "seed": 7}
+@pytest.mark.parametrize(
+    ("text", "max_frames", "first_frames"),
+    [(LONG_SENTENCE, 50, 25), ((SENTENCE + " ") * 6, 17, 13)],
+)
+def test_qwen3_tts_first_packet_keeps_complete_codec_blocks(
+    qwen3_tts_server: Server,
+    qwen3_tts_directory: Path,
+    text: str,
+    max_frames: int,
+    first_frames: int,
+) -> None:
+    """The first packet must preserve the PCM of full and partial final blocks."""
+    config = json.loads((qwen3_tts_directory / "config.json").read_text())
+    if config["tts_model_size"] != "1b7":
+        pytest.skip("The 0.6B checkpoint uses its original chunk decoder.")
+    else:
+        pass
+    body = {
+        "input": text,
+        "voice": "Ryan",
+        "language": "English",
+        "response_format": "pcm",
+        "stream": True,
+        "seed": 4,
+        "max_new_tokens": max_frames,
+    }
+    first_status, _, early = speak(qwen3_tts_server, body)
+    second_status, _, steady = speak(
+        qwen3_tts_server, {**body, "initial_codec_chunk_frames": first_frames}
+    )
+    assert first_status == second_status == 200
+    assert len(early) == max_frames * FRAME_BYTES
+    assert early == steady
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_qwen3_tts_seed_repeats_its_audio(
+    qwen3_tts_server: Server, stream: bool
+) -> None:
+    body = {"input": SENTENCE, "response_format": "pcm", "stream": stream, "seed": 7}
     first = speak(qwen3_tts_server, body)
     second = speak(qwen3_tts_server, body)
     assert first[0] == second[0] == 200
-    assert first[2] == second[2]
+    assert first[2] and first[2] == second[2]
     other = speak(qwen3_tts_server, {**body, "seed": 8})
     assert other[2] != first[2]
 
@@ -473,6 +517,36 @@ def test_qwen3_tts_greedy_stage_params_repeat_without_a_seed(
     assert first[2] == second[2]
 
 
+@pytest.mark.parametrize(
+    "speaker",
+    [
+        "Vivian",
+        "Serena",
+        "Uncle_Fu",
+        "Dylan",
+        "Eric",
+        "Ryan",
+        "Aiden",
+        "Ono_Anna",
+        "Sohee",
+    ],
+)
+def test_qwen3_tts_synthesizes_each_preset(
+    qwen3_tts_server: Server, speaker: str
+) -> None:
+    status, _, pcm = speak(
+        qwen3_tts_server,
+        {
+            "input": "Hello.",
+            "voice": speaker,
+            "seed": 1,
+            "max_new_tokens": 3,
+            "response_format": "pcm",
+        },
+    )
+    assert status == 200 and pcm
+
+
 def test_qwen3_tts_follows_instructions_and_dialects(
     qwen3_tts_server: Server,
 ) -> None:
@@ -494,7 +568,7 @@ def test_qwen3_tts_follows_instructions_and_dialects(
         return audio
 
     plain = pcm({"voice": "vivian"})
-    assert pcm({"voice": "vivian"}) == plain
+    assert pcm({}) == pcm({"voice": "default"}) == pcm({"voice": "ViViAn"}) == plain
     assert pcm({"voice": "vivian", "instructions": "Speak slowly."}) != plain
     # Dylan's dialect id is used for Auto, and an explicit Chinese replaces it.
     assert pcm({"voice": "dylan"}) != pcm({"voice": "dylan", "language": "Chinese"})
@@ -511,11 +585,13 @@ def test_qwen3_tts_trims_and_lowercases_its_response_format(
     assert (status, headers["Content-Type"]) == (200, "audio/pcm")
 
 
-def test_qwen3_tts_rejects_another_model_than_its_chosen_name() -> None:
+def test_qwen3_tts_rejects_another_model_than_its_chosen_name(
+    qwen3_tts_directory: Path,
+) -> None:
     named_server = Server(
         "qwen3_tts_server",
         "qwen3_tts",
-        qwen3_tts_directory(),
+        qwen3_tts_directory,
         ("--model-name", CHOSEN_MODEL_NAME),
     )
     try:
@@ -579,6 +655,10 @@ def test_qwen3_tts_rejects_another_model_than_its_chosen_name() -> None:
         ),
         ({"input": "hi", "references": [{}]}, "references are not supported"),
         ({"input": "hi", "task_type": "Base"}, "task_type must be one of: CustomVoice"),
+        (
+            {"input": "hi", "task_type": "VoiceDesign"},
+            "task_type must be one of: CustomVoice",
+        ),
         (
             {"input": "hi", "task_type": "clone"},
             "task_type must be one of: Base, CustomVoice, VoiceDesign",

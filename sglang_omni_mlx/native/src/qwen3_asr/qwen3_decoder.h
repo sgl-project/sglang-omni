@@ -4,6 +4,7 @@
 // without the query/key norms and with traditional rotary embeddings.
 #pragma once
 
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -82,6 +83,11 @@ public:
   // table.
   Qwen3Decoder(const omni_common::Checkpoint &checkpoint, std::string prefix,
                Qwen3DecoderConfig config);
+  // Combine the dense, bias-free MLP input projections into one matmul.
+  void PackDenseGateUp();
+  // Precompute a short sequence's opening pair and subsequent one-token
+  // rotary steps before decoding.
+  void CacheRotary(int token_count, mlx::core::Dtype dtype);
 
   // Token ids [1, length] to embeddings [1, length, hidden].
   mlx::core::array EmbedTokens(const mlx::core::array &ids) const;
@@ -142,6 +148,8 @@ private:
   const omni_common::Checkpoint &checkpoint_;
   std::string prefix_;
   Qwen3DecoderConfig config_;
+  std::vector<mlx::core::array> gate_up_weights_;
+  std::map<std::pair<int, int>, RotaryInputs> cached_rotary_inputs_;
 };
 
 } // namespace qwen3_asr

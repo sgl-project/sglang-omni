@@ -17,6 +17,8 @@ namespace {
 
 constexpr const char *kTalkerPrefix = "talker.model";
 constexpr const char *kCodePredictorPrefix = "talker.code_predictor.model";
+constexpr const char *kCodePredictorProjection =
+    "talker.code_predictor.small_to_mtp_projection";
 // Note (Jiaxin Deng): the codec vocabulary's last 1024 ids are control codes,
 // which the talker never samples except the end of speech.
 constexpr int kControlCodeCount = 1024;
@@ -78,7 +80,13 @@ mx::array Sample(mx::array logits, const SamplerConfig &sampler,
                                  mx::divide(selected, penalty)));
   } else {
   }
+  const int vocabulary_size = logits.shape(-1);
   if (sampler.temperature <= 0.0f) {
+    return mx::astype(mx::argmax(logits, -1, true), mx::int32);
+  } else if (sampler.top_p > 0.0f && sampler.top_p <= 1.0f / vocabulary_size) {
+    // The most probable token alone covers this nucleus. Preserve the draw's
+    // place in the seeded sequence for the other codebooks.
+    keys.next();
     return mx::astype(mx::argmax(logits, -1, true), mx::int32);
   } else {
   }
@@ -86,7 +94,6 @@ mx::array Sample(mx::array logits, const SamplerConfig &sampler,
     logits = mx::divide(logits, mx::array(sampler.temperature, dtype));
   } else {
   }
-  const int vocabulary_size = logits.shape(-1);
   if (sampler.top_k > 0 && sampler.top_k < vocabulary_size) {
     const mx::array masked_ids =
         mx::slice(mx::argpartition(mx::negative(logits), sampler.top_k - 1, -1),
@@ -118,10 +125,7 @@ mx::array Sample(mx::array logits, const SamplerConfig &sampler,
   } else {
   }
   return mx::astype(
-      mx::expand_dims(
-          mx::random::categorical(mx::multiply(logits, mx::array(1.0f, dtype)),
-                                  -1, keys.next()),
-          1),
+      mx::expand_dims(mx::random::categorical(logits, -1, keys.next()), 1),
       mx::int32);
 }
 
@@ -145,7 +149,8 @@ Qwen3TtsModel::Qwen3TtsModel(const std::filesystem::path &model_directory,
                              const nlohmann::json &config)
     : checkpoint_(omni_common::LoadSafetensors(model_directory), config),
       tokenizer_(model_directory),
-      speech_decoder_(model_directory / "speech_tokenizer"),
+      speech_decoder_(model_directory / "speech_tokenizer",
+                      config.value("tts_model_size", std::string()) == "1b7"),
       talker_(checkpoint_, kTalkerPrefix,
               DecoderConfig(config.at("talker_config"))),
       code_predictor_(
@@ -159,14 +164,42 @@ Qwen3TtsModel::Qwen3TtsModel(const std::filesystem::path &model_directory,
   }
   const nlohmann::json &talker = config.at("talker_config");
   const nlohmann::json &code_predictor = talker.at("code_predictor_config");
-  if (code_predictor.at("hidden_size") != talker.at("hidden_size")) {
-    throw std::runtime_error("the code predictor must share the talker's "
-                             "hidden size");
+  const int talker_width = talker.at("hidden_size").get<int>();
+  const int predictor_width = code_predictor.at("hidden_size").get<int>();
+  codebook_count_ = talker.at("num_code_groups").get<int>();
+  project_code_predictor_inputs_ = talker_width != predictor_width;
+  if (project_code_predictor_inputs_) {
+    const std::string prefix = kCodePredictorProjection;
+    const mx::array &weight = checkpoint_.Weight(prefix + ".weight");
+    const mx::array &bias = checkpoint_.Weight(prefix + ".bias");
+    if (weight.shape() != mx::Shape{predictor_width, talker_width} ||
+        bias.shape() != mx::Shape{predictor_width}) {
+      throw std::runtime_error("invalid code predictor input projection shape");
+    } else {
+    }
+    // Each of the intermediate codebooks feeds one later predictor step.
+    // Keep the multiplies one row wide: a whole-table GEMM rounds differently
+    // from projecting the sampled embedding on each frame.
+    const mx::array projection =
+        mx::reshape(mx::transpose(weight), {1, talker_width, predictor_width});
+    for (int book = 0; book < codebook_count_ - 2; ++book) {
+      const mx::array &table = checkpoint_.Weight(
+          std::string(kCodePredictorPrefix) + ".codec_embedding." +
+          std::to_string(book) + ".weight");
+      const int rows = table.shape(0);
+      const mx::array projected =
+          mx::gather_mm(mx::reshape(table, {rows, 1, talker_width}), projection,
+                        std::nullopt, mx::zeros({rows}, mx::uint32));
+      projected_code_embeddings_.push_back(
+          mx::reshape(mx::add(projected, bias), {rows, predictor_width}));
+      mx::eval(projected_code_embeddings_.back());
+    }
+    code_predictor_.PackDenseGateUp();
+    code_predictor_.CacheRotary(codebook_count_, weight.dtype());
   } else {
   }
   talker_norm_eps_ = talker.at("rms_norm_eps").get<float>();
   code_predictor_norm_eps_ = code_predictor.at("rms_norm_eps").get<float>();
-  codebook_count_ = talker.at("num_code_groups").get<int>();
   codec_vocabulary_size_ = talker.at("vocab_size").get<int>();
   tts_bos_token_id_ = config.at("tts_bos_token_id").get<int>();
   tts_eos_token_id_ = config.at("tts_eos_token_id").get<int>();
@@ -308,8 +341,15 @@ mx::array Qwen3TtsModel::PredictCodes(const mx::array &hidden,
       {hidden, checkpoint_.Embed(first_code, std::string(kTalkerPrefix) +
                                                  ".codec_embedding")},
       1);
+  if (project_code_predictor_inputs_) {
+    input = checkpoint_.Linear(input, kCodePredictorProjection);
+  } else {
+  }
   for (int codebook = 1; codebook < codebook_count_; ++codebook) {
-    if (codebook > 1) {
+    if (codebook > 1 && project_code_predictor_inputs_) {
+      input =
+          mx::take(projected_code_embeddings_[codebook - 2], codes.back(), 0);
+    } else if (codebook > 1) {
       input = checkpoint_.Embed(
           codes.back(), std::string(kCodePredictorPrefix) +
                             ".codec_embedding." + std::to_string(codebook - 2));

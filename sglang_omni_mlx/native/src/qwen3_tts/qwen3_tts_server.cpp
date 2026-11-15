@@ -67,7 +67,6 @@ constexpr size_t kMaxRequestBodyBytes = 1024 * 1024;
 constexpr int kDefaultAudioFrames = 2048;
 constexpr int kTalkerContextPositions = 8192;
 constexpr size_t kMaxInstructionCharacters = 4096;
-constexpr int kDefaultFirstChunkFrames = 5;
 constexpr double kMinSpeed = 0.25;
 constexpr double kMaxSpeed = 4.0;
 constexpr int kRequestIdHexDigits = 32;
@@ -107,7 +106,7 @@ struct SpeechRequest {
   double speed = 1.0;
   int max_frames = kDefaultAudioFrames;
   // A streamed request's first chunk; 0 starts at the steady chunk.
-  int first_chunk_frames = kDefaultFirstChunkFrames;
+  int first_chunk_frames = qwen3_tts::kDefaultFirstChunkFrames;
 };
 
 // Audio one synthesis hands from the worker thread to its request's thread.

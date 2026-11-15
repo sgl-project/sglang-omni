@@ -343,7 +343,10 @@ install(TARGETS music3_server music3_synthesize RUNTIME DESTINATION bin)
 # Note (Jiaxin Deng): Qwen3-TTS CustomVoice: qwen3_tts_server, with the CUDA
 # server's /v1/audio/speech API, and its parity tool; the talker and code
 # predictor reuse Qwen3's decoder.
-add_library(qwen3_tts STATIC src/qwen3_tts/qwen3_tts_codec.cpp src/qwen3_tts/qwen3_tts_model.cpp)
+add_library(qwen3_tts STATIC
+  src/qwen3_tts/qwen3_tts_codec.cpp
+  src/qwen3_tts/qwen3_tts_model.cpp
+  src/qwen3_tts/qwen3_tts_stream.cpp)
 target_link_libraries(qwen3_tts PUBLIC qwen3_asr)
 target_compile_options(qwen3_tts PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(qwen3_tts_server src/qwen3_tts/qwen3_tts_server.cpp)

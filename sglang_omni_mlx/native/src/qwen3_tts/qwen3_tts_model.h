@@ -111,6 +111,8 @@ private:
   SpeechDecoder speech_decoder_;
   qwen3_asr::Qwen3Decoder talker_;
   qwen3_asr::Qwen3Decoder code_predictor_;
+  bool project_code_predictor_inputs_;
+  std::vector<mlx::core::array> projected_code_embeddings_;
   float talker_norm_eps_;
   float code_predictor_norm_eps_;
   int codebook_count_;
