@@ -12,14 +12,24 @@ import torch
 from sglang.srt.beam_search.coordinator import BeamCoordinator
 from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.managers import scheduler as upstream_scheduler
-from sglang.srt.managers.schedule_batch import Req, ReqKvInfo, ScheduleBatch
-from sglang.srt.managers.schedule_policy import PrefillAdder
+from sglang.srt.managers.schedule_batch import (
+    NextBatchPlan,
+    Req,
+    ReqKvInfo,
+    ScheduleBatch,
+)
+from sglang.srt.managers.schedule_policy import (
+    AddReqResult,
+    PrefillAdder,
+    SchedulePolicy,
+)
 from sglang.srt.managers.scheduler_components.batch_result_processor import (
     SchedulerBatchResultProcessor,
 )
 from sglang.srt.managers.scheduler_components.new_token_ratio_tracker import (
     NewTokenRatioTracker,
 )
+from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
@@ -40,7 +50,11 @@ from sglang_omni.model_runner.base import PendingStep
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, SessionOperation, TimedChunk
 from sglang_omni.scheduling import omni_scheduler
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
+from sglang_omni.scheduling.omni_scheduler import (
+    OmniScheduler,
+    PendingDecode,
+    SessionRetryPrefillAdder,
+)
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionBridge,
@@ -68,6 +82,7 @@ class KVAllocator:
 
 class AdmissionScheduler:
     enable_plain_fallback = False
+    session_prefill_row_cache = None
     get_num_allocatable_reqs = OmniScheduler.get_num_allocatable_reqs
 
     def __init__(
@@ -76,39 +91,52 @@ class AdmissionScheduler:
         request_rows: int,
         continuation_aware_admission: bool = True,
         kv_pool_tokens: int | None = None,
+        device: str = "cpu",
+        page_size: int = 1,
     ) -> None:
         self.continuation_aware_admission = continuation_aware_admission
         self.req_to_token_pool = ReqToTokenPool(
             size=request_rows,
             max_context_len=CONTEXT_LENGTH,
-            device="cpu",
+            device=device,
             enable_memory_saver=False,
         )
         if kv_pool_tokens is None:
             self.token_to_kv_pool_allocator = KVAllocator()
         else:
-            self.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
+            kv_cache = MHATokenToKVPool(
                 size=kv_pool_tokens,
+                page_size=page_size,
                 dtype=torch.float16,
-                device="cpu",
-                kvcache=MHATokenToKVPool(
-                    size=kv_pool_tokens,
-                    page_size=1,
-                    dtype=torch.float16,
-                    head_num=1,
-                    head_dim=8,
-                    layer_num=1,
-                    device="cpu",
-                    enable_memory_saver=False,
-                ),
-                need_sort=False,
+                head_num=1,
+                head_dim=8,
+                layer_num=1,
+                device=device,
+                enable_memory_saver=False,
             )
+            if page_size == 1:
+                self.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
+                    size=kv_pool_tokens,
+                    dtype=torch.float16,
+                    device=device,
+                    kvcache=kv_cache,
+                    need_sort=False,
+                )
+            else:
+                self.token_to_kv_pool_allocator = PagedTokenToKVPoolAllocator(
+                    size=kv_pool_tokens,
+                    page_size=page_size,
+                    dtype=torch.float16,
+                    device=device,
+                    kvcache=kv_cache,
+                    need_sort=False,
+                )
         self.tree_cache = UnifiedRadixCache(
             CacheInitParams(
                 disable=False,
                 req_to_token_pool=self.req_to_token_pool,
                 token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
-                page_size=1,
+                page_size=page_size,
                 enable_kv_cache_events=False,
                 eviction_policy="lru",
                 tree_components=(ComponentType.FULL,),
@@ -128,7 +156,10 @@ class AdmissionScheduler:
         )
         if holds_row:
             (row,) = self.req_to_token_pool.alloc_rows(1)
-            if isinstance(self.token_to_kv_pool_allocator, TokenToKVPoolAllocator):
+            if isinstance(
+                self.token_to_kv_pool_allocator,
+                (TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator),
+            ):
                 retained_positions = self.token_to_kv_pool_allocator.alloc(
                     RETAINED_TOKEN_COUNT
                 )
@@ -312,6 +343,311 @@ def test_first_units_and_plain_requests_are_limited_by_free_rows() -> None:
         "plain-0",
     ]
     assert scheduler.free_rows() == 0
+
+
+def native_prefill_scheduler(pool_state: AdmissionScheduler) -> OmniScheduler:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.__dict__.update(pool_state.__dict__)
+    scheduler.session_bridge.bridge_scheduler = scheduler
+    scheduler.is_retrying_session_prefill = False
+    scheduler.prefill_coalesce_requests = 0
+    scheduler.chunked_req = None
+    scheduler.prefill_delayer = None
+    scheduler.grammar_manager = SimpleNamespace(has_waiting_grammars=lambda: False)
+    scheduler.enable_priority_preemption = False
+    scheduler.is_hybrid_swa = False
+    scheduler.min_free_slots_delayer = None
+    scheduler.policy = SchedulePolicy("fcfs", scheduler.tree_cache, False, False, False)
+    scheduler.processed_tokens_counter = 0
+    scheduler.chunked_prefill_size = None
+    scheduler.dynamic_chunk_sizer = None
+    scheduler.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            attn_backend=SimpleNamespace(), prefill_aware_swa=False
+        )
+    )
+    scheduler.page_size = scheduler.token_to_kv_pool_allocator.page_size
+    scheduler.new_token_ratio_tracker = SimpleNamespace(current=0.7)
+    scheduler.max_prefill_tokens = 64
+    scheduler.is_mixed_chunk = False
+    scheduler.priority_scheduling_preemption_threshold = 0
+    scheduler.max_prefill_bs = 0
+    scheduler.dllm_config = None
+    scheduler.enable_lora = False
+    scheduler.enable_hicache_storage = False
+    scheduler.enable_lmcache = False
+    scheduler.hisparse_coordinator = None
+    scheduler.truncation_align_size = None
+    scheduler.model_config = SimpleNamespace(vocab_size=128, is_encoder_decoder=False)
+    scheduler.enable_overlap = False
+    scheduler.spec_algorithm = SpeculativeAlgorithm.NONE
+    scheduler.enable_hierarchical_cache = False
+    scheduler.enable_unified_cache_external_linker = False
+    scheduler.enable_priority_scheduling = False
+    scheduler.load_inquirer = SimpleNamespace(
+        _get_num_pending_tokens=lambda **kwargs: 0
+    )
+    return scheduler
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("priority_scheduling", [False, True])
+def test_native_prefill_bypasses_first_turn_when_only_retained_rows_remain(
+    native_runtime_context: None, priority_scheduling: bool
+) -> None:
+    """A blocked first turn must not prevent a later session from reusing its row."""
+    pool_state = AdmissionScheduler(request_rows=4, kv_pool_tokens=128, device="cuda")
+    for session_id in ("held-a", "held-b"):
+        pool_state.open_session(session_id, holds_row=True)
+    pool_state.open_session("fresh", holds_row=False)
+    fresh = pool_state.append_unit("fresh", "fresh", is_enqueued=True)
+    assert pool_state.session_bridge.check_session_capacity("fresh") is None
+
+    for index in range(2):
+        (row,) = pool_state.req_to_token_pool.alloc_rows(1)
+        positions = pool_state.token_to_kv_pool_allocator.alloc(1)
+        assert positions is not None
+        pool_state.req_to_token_pool.write((row, slice(0, 1)), positions)
+        request = Req(
+            rid=f"running-{index}",
+            origin_input_text="",
+            origin_input_ids=[1],
+            sampling_params=SamplingParams(max_new_tokens=1),
+        )
+        request.kv = ReqKvInfo(req_pool_idx=row, kv_committed_len=1, kv_allocated_len=1)
+        pool_state.running_batch.reqs.append(request)
+
+    first = pool_state.append_unit(
+        "first", "held-a", is_enqueued=True, prompt_tokens=11
+    )
+    second = pool_state.append_unit(
+        "second", "held-b", is_enqueued=True, prompt_tokens=11
+    )
+    for continuation in (first, second):
+        continuation.sampling_params.normalize(None)
+        assert (
+            pool_state.session_bridge.check_session_capacity(continuation.rid) is None
+        )
+    assert pool_state.free_rows() == 0
+    assert pool_state.waiting_queue == [fresh, first, second]
+
+    scheduler = native_prefill_scheduler(pool_state)
+    if priority_scheduling:
+        fresh.priority, first.priority, second.priority = 0, 10, 1
+        scheduler.enable_priority_scheduling = True
+        scheduler.policy = SchedulePolicy(
+            "fcfs", scheduler.tree_cache, False, True, True
+        )
+        expected = [second, first]
+    else:
+        expected = [first, second]
+    plan = scheduler.get_new_batch_prefill(scheduler.running_batch)
+
+    assert plan.batch_to_run is not None
+    assert plan.batch_to_run.reqs == expected
+    assert scheduler.waiting_queue == [fresh]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("first_is_session", [False, True])
+def test_native_prefill_bypasses_turn_that_does_not_fit_the_kv_budget(
+    first_is_session: bool,
+) -> None:
+    """A native KV budget refusal must not block a smaller held-row continuation."""
+    with get_context().override_server_args(page_size=4):
+        pool_state = AdmissionScheduler(
+            request_rows=4, kv_pool_tokens=24, device="cuda", page_size=4
+        )
+        pool_state.open_session("held", holds_row=True)
+        if first_is_session:
+            pool_state.open_session("fresh", holds_row=False)
+            fresh = pool_state.append_unit(
+                "fresh", "fresh", is_enqueued=True, prompt_tokens=9, max_new_tokens=3
+            )
+        else:
+            fresh = pool_state.queue_request("fresh")
+            fresh.sampling_params.max_new_tokens = 3
+        fresh.origin_input_ids = array("q", range(50, 59))
+        fresh.sampling_params.normalize(None)
+        if first_is_session:
+            assert pool_state.session_bridge.check_session_capacity("fresh") is None
+        else:
+            pass
+        continuation = pool_state.append_unit(
+            "continuation", "held", is_enqueued=True, prompt_tokens=9
+        )
+        continuation.origin_input_ids = array("q", range(1, 10))
+        continuation.sampling_params.normalize(None)
+        assert pool_state.session_bridge.check_session_capacity("continuation") is None
+        assert pool_state.token_to_kv_pool_allocator.available_size() == 16
+        assert pool_state.free_rows() == 3
+
+        scheduler = native_prefill_scheduler(pool_state)
+        plan = scheduler.get_new_batch_prefill(scheduler.running_batch)
+
+    assert plan.batch_to_run is not None
+    assert plan.batch_to_run.reqs == [continuation]
+    assert scheduler.waiting_queue == [fresh]
+
+
+def test_retry_prefill_discards_rejected_ignore_eos_budget(
+    native_runtime_context: None,
+) -> None:
+    """A rejected fixed-length request must not reserve KV against later candidates."""
+    pool_state = AdmissionScheduler(request_rows=4, kv_pool_tokens=16)
+    pool_state.tree_cache.disable = True
+    adder = SessionRetryPrefillAdder(
+        page_size=1,
+        tree_cache=pool_state.tree_cache,
+        token_to_kv_pool_allocator=pool_state.token_to_kv_pool_allocator,
+        running_batch=pool_state.running_batch,
+        new_token_ratio=0.7,
+        rem_input_tokens=64,
+        rem_chunk_tokens=None,
+    )
+    rejected = Req(
+        rid="too-long",
+        origin_input_text="",
+        origin_input_ids=array("q", [1, 2]),
+        sampling_params=SamplingParams(max_new_tokens=12, ignore_eos=True),
+    )
+    accepted = Req(
+        rid="fits",
+        origin_input_text="",
+        origin_input_ids=array("q", [3, 4]),
+        sampling_params=SamplingParams(max_new_tokens=4, ignore_eos=True),
+    )
+    for request in (rejected, accepted):
+        request.sampling_params.normalize(None)
+        request.init_next_round_input(pool_state.tree_cache)
+
+    assert adder.add_one_req(rejected, False, None) == AddReqResult.CONTINUE
+    assert adder.add_one_req(accepted, False, None) == AddReqResult.CONTINUE
+    assert adder.can_run_list == [accepted]
+
+
+@pytest.mark.parametrize("raise_on_retry", [False, True])
+def test_native_prefill_retry_restores_queued_and_requeued_requests(
+    monkeypatch: pytest.MonkeyPatch, raise_on_retry: bool
+) -> None:
+    """Native requeues survive the retry once, including when selection raises."""
+    scheduler = object.__new__(OmniScheduler)
+    first = Req("first", "", [1], SamplingParams(max_new_tokens=1))
+    continuation = Req("continuation", "", [2], SamplingParams(max_new_tokens=1))
+    continuation.session = SimpleNamespace(streaming=True)
+    requeued = Req("requeued", "", [3], SamplingParams(max_new_tokens=1))
+    scheduler.waiting_queue = [first, continuation]
+    scheduler.session_bridge = SimpleNamespace()
+    scheduler.continuation_aware_admission = True
+    scheduler.is_retrying_session_prefill = False
+    scheduler.session_prefill_row_cache = None
+    scheduler.req_to_token_pool = SimpleNamespace(available_size=lambda: 1)
+    running_batch = SimpleNamespace(batch_is_full=False)
+    calls = []
+
+    def native_prefill(scheduler: OmniScheduler, batch: ScheduleBatch) -> NextBatchPlan:
+        calls.append(list(scheduler.waiting_queue))
+        if len(calls) == 2:
+            assert scheduler.get_prefill_adder_class() is SessionRetryPrefillAdder
+            scheduler.waiting_queue.append(requeued)
+            if raise_on_retry:
+                raise RuntimeError("native prefill failed")
+            else:
+                pass
+        else:
+            pass
+        return NextBatchPlan(batch_to_run=None, running_batch=batch)
+
+    monkeypatch.setattr(
+        upstream_scheduler.Scheduler, "get_new_batch_prefill", native_prefill
+    )
+    if raise_on_retry:
+        with pytest.raises(RuntimeError, match="native prefill failed"):
+            scheduler.get_native_batch_prefill(running_batch)
+    else:
+        assert scheduler.get_native_batch_prefill(running_batch).batch_to_run is None
+    assert calls == [[first, continuation], [first, continuation]]
+    assert scheduler.waiting_queue == [first, continuation, requeued]
+    assert not scheduler.is_retrying_session_prefill
+    assert scheduler.session_prefill_row_cache is None
+
+
+@pytest.mark.parametrize(
+    "has_session, continuation_aware", [(False, True), (True, False)]
+)
+def test_native_prefill_does_not_retry_without_session_admission(
+    monkeypatch: pytest.MonkeyPatch, has_session: bool, continuation_aware: bool
+) -> None:
+    """Ordinary stages and disabled continuation admission keep native selection."""
+    scheduler = object.__new__(OmniScheduler)
+    first = Req("first", "", [1], SamplingParams(max_new_tokens=1))
+    second = Req("second", "", [2], SamplingParams(max_new_tokens=1))
+    if has_session:
+        second.session = SimpleNamespace(streaming=True)
+    else:
+        pass
+    scheduler.waiting_queue = [first, second]
+    scheduler.session_bridge = SimpleNamespace()
+    scheduler.continuation_aware_admission = continuation_aware
+    scheduler.is_retrying_session_prefill = False
+    scheduler.req_to_token_pool = SimpleNamespace(available_size=lambda: 1)
+    running_batch = SimpleNamespace(batch_is_full=False)
+    calls = []
+
+    def native_prefill(scheduler: OmniScheduler, batch: ScheduleBatch) -> NextBatchPlan:
+        calls.append(list(scheduler.waiting_queue))
+        return NextBatchPlan(batch_to_run=None, running_batch=batch)
+
+    monkeypatch.setattr(
+        upstream_scheduler.Scheduler, "get_new_batch_prefill", native_prefill
+    )
+    assert scheduler.get_native_batch_prefill(running_batch).batch_to_run is None
+    assert calls == [[first, second]]
+    assert scheduler.waiting_queue == [first, second]
+
+
+def test_retry_row_count_cache_tracks_capacity_and_queue_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One retry pass reuses its row count only while its inputs stay unchanged."""
+    scheduler = AdmissionScheduler(request_rows=4)
+    scheduler.open_session("held", holds_row=True)
+    scheduler.open_session("fresh", holds_row=False)
+    scheduler.queue_request("fresh", "fresh")
+    scheduler.queue_request("continuation", "held")
+    bridge = scheduler.session_bridge
+    count_rows = bridge.count_row_reusing_requests
+    counted: list[int] = []
+
+    def count(waiting_queue: list[Req], free_rows: int) -> int:
+        counted.append(free_rows)
+        return count_rows(waiting_queue, free_rows)
+
+    monkeypatch.setattr(bridge, "count_row_reusing_requests", count)
+    scheduler.session_prefill_row_cache = (-1, -1, 0)
+    assert (
+        scheduler.get_num_allocatable_reqs(0, running_batch=scheduler.running_batch)
+        == 4
+    )
+    assert (
+        scheduler.get_num_allocatable_reqs(0, running_batch=scheduler.running_batch)
+        == 4
+    )
+    assert counted == [3]
+
+    assert scheduler.req_to_token_pool.alloc_rows(1) is not None
+    assert (
+        scheduler.get_num_allocatable_reqs(0, running_batch=scheduler.running_batch)
+        == 3
+    )
+    scheduler.queue_request("ordinary")
+    assert (
+        scheduler.get_num_allocatable_reqs(0, running_batch=scheduler.running_batch)
+        == 3
+    )
+    assert counted == [3, 2, 2]
 
 
 def test_session_units_stay_within_the_per_batch_limit(

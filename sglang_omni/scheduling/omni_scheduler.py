@@ -49,6 +49,7 @@ from sglang.srt.managers.schedule_batch import (
     ScheduleBatch,
     retract_all,
 )
+from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.managers.scheduler import (
     PAUSE_WINDOWS_MAX,
     TEST_RETRACT,
@@ -177,6 +178,38 @@ class PendingSessionAdmission:
     payload: StagePayload
     pending_stream_done: bool
     request_data: SGLangARRequestData
+
+
+class SessionRetryPrefillAdder(PrefillAdder):
+    """Continue past requests whose individual prefill budget does not fit."""
+
+    def add_one_req(
+        self, req: Req, has_chunked_req: bool, truncation_align_size: int | None
+    ) -> AddReqResult:
+        previous_states = self.req_states
+        if req.sampling_params.ignore_eos and getattr(self.tree_cache, "disable", True):
+            previous_states = None if self.req_states is None else list(self.req_states)
+        else:
+            pass
+        admitted_count = len(self.can_run_list)
+        result = super().add_one_req(req, has_chunked_req, truncation_align_size)
+        if result != AddReqResult.NO_TOKEN or len(self.can_run_list) != admitted_count:
+            return result
+        else:
+            pass
+
+        self.req_states = previous_states
+        # note (yujiacheng): Native's rejected-request cleanup normally runs just before it stops scanning.
+        req.kv.mamba_cow_src_index = None
+        req.kv.mamba_needs_clear = False
+        if req.kv.holds_mamba and req.session is None:
+            self.tree_cache.req_to_token_pool.mamba_allocator.free(
+                req.kv.mamba_pool_idx.unsqueeze(-1)
+            )
+            req.kv.mamba_pool_idx = None
+        else:
+            pass
+        return AddReqResult.CONTINUE
 
 
 @dataclass(kw_only=True)
@@ -372,6 +405,7 @@ class OmniScheduler(Generic[RequestDataT]):
     enable_plain_fallback: bool = False
     speculative_steps_since_plain: int = 0
     decode_batch_states: dict[Literal["plain", "spec"], DecodeBatchState] | None = None
+    session_prefill_row_cache: tuple[int, int, int] | None = None
 
     def __init__(
         self,
@@ -430,6 +464,7 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             self.session_admission_timeout_seconds = session_admission_timeout_seconds
         self.pending_session_admissions: dict[str, PendingSessionAdmission] = {}
+        self.is_retrying_session_prefill = False
 
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self.session_adapter = session_adapter
@@ -2678,13 +2713,23 @@ class OmniScheduler(Generic[RequestDataT]):
             )
             # note (Junnan Li): A unit whose session slot holds a request row reuses that row, so it does not count against the free rows.
             per_batch_limit = get_parallel().pp_max_micro_batch_size - running_bs
-            return min(
-                per_batch_limit,
-                free_request_rows
-                + bridge.count_row_reusing_requests(
+            row_cache = self.session_prefill_row_cache
+            if row_cache is None:
+                reusable_rows = bridge.count_row_reusing_requests(
                     self.waiting_queue, free_request_rows
-                ),
-            )
+                )
+            elif row_cache[:2] == (free_request_rows, len(self.waiting_queue)):
+                reusable_rows = row_cache[2]
+            else:
+                reusable_rows = bridge.count_row_reusing_requests(
+                    self.waiting_queue, free_request_rows
+                )
+                self.session_prefill_row_cache = (
+                    free_request_rows,
+                    len(self.waiting_queue),
+                    reusable_rows,
+                )
+            return min(per_batch_limit, free_request_rows + reusable_rows)
 
     def running_batch_admits_prefill(self) -> bool:
         """Whether the batch builder can admit a prefill beside the running batch.
@@ -2815,6 +2860,72 @@ class OmniScheduler(Generic[RequestDataT]):
                 finally:
                     self.waiting_queue = parked_requests + self.waiting_queue
 
+    def get_prefill_adder_class(self) -> type[PrefillAdder]:
+        if self.is_retrying_session_prefill:
+            # note (yujiacheng): native has finished sorting before it asks for the adder.
+            self.session_prefill_row_cache = (-1, -1, 0)
+            return SessionRetryPrefillAdder
+        else:
+            return _Upstream.get_prefill_adder_class(self)
+
+    def get_native_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
+        plan = _Upstream.get_new_batch_prefill(self, running_batch)
+        bridge = self.session_bridge
+        if (
+            plan.batch_to_run is not None
+            or bridge is None
+            or not self.continuation_aware_admission
+            or len(self.waiting_queue) < 2
+            or not any(
+                request.session is not None and request.session.streaming
+                for request in self.waiting_queue
+            )
+        ):
+            return plan
+        else:
+            pass
+
+        waiting_requests = list(self.waiting_queue)
+        if self.req_to_token_pool.available_size() == 0:
+            records = self.tree_cache.session_records()
+            eligible_requests = []
+            for request in waiting_requests:
+                session = request.session
+                if session is not None and session.streaming:
+                    record = records.get(session.session_id)
+                else:
+                    record = None
+                if record is not None and record.holds_kv and request.to_finish is None:
+                    eligible_requests.append(request)
+                else:
+                    pass
+            if not eligible_requests:
+                return plan
+            else:
+                pass
+        else:
+            eligible_requests = list(waiting_requests)
+
+        # note (yujiacheng): blocked requests must not prevent another session from using available capacity.
+        eligible_set = set(eligible_requests)
+        original_set = set(waiting_requests)
+        self.waiting_queue = eligible_requests
+        plan.running_batch.batch_is_full = False
+        self.is_retrying_session_prefill = True
+        try:
+            return _Upstream.get_new_batch_prefill(self, plan.running_batch)
+        finally:
+            self.is_retrying_session_prefill = False
+            self.session_prefill_row_cache = None
+            remaining = set(self.waiting_queue)
+            self.waiting_queue = [
+                request
+                for request in waiting_requests
+                if request not in eligible_set or request in remaining
+            ] + [
+                request for request in self.waiting_queue if request not in original_set
+            ]
+
     def get_coalesced_batch_prefill(
         self, running_batch: ScheduleBatch
     ) -> NextBatchPlan:
@@ -2825,7 +2936,7 @@ class OmniScheduler(Generic[RequestDataT]):
         # so the coalesce hold-off returns an empty plan rather than None.
         waiting = self.prefill_coalesce_waiting_requests(running_batch)
         if waiting is None:
-            return _Upstream.get_new_batch_prefill(self, running_batch)
+            return self.get_native_batch_prefill(running_batch)
         else:
             pass
         now = time.perf_counter()
@@ -2844,7 +2955,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.admit_imminent_request_builds()
             else:
                 pass
-            return _Upstream.get_new_batch_prefill(self, running_batch)
+            return self.get_native_batch_prefill(running_batch)
 
     def admit_imminent_request_builds(self) -> None:
         """Give a releasing prefill the builds that finish within the wait bound.
