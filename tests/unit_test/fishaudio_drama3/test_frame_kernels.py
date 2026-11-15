@@ -15,7 +15,7 @@ from sglang_omni.models.fishaudio_drama3.audio_decoder import (
     CODEBOOK_TOP_K,
     AudioDecoder,
 )
-from sglang_omni.models.fishaudio_drama3.decode_state import Drama3DecodeStatePool
+from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeStatePool
 from sglang_omni.models.fishaudio_drama3.sampling import (
     RAS_WINDOW_FRAMES,
     sample_semantic_with_ras,
@@ -159,7 +159,6 @@ def clone_pool(pool: Drama3DecodeStatePool) -> Drama3DecodeStatePool:
         top_k=pool.top_k.clone(),
         top_p=pool.top_p.clone(),
         epsilon_cutoff=pool.epsilon_cutoff.clone(),
-        row_indices=pool.row_indices.clone(),
     )
 
 
@@ -177,8 +176,9 @@ def test_decode_row_staging_matches_index_select_and_index_copy(
     rows = (
         1 + torch.randperm(slot_count, device=device, generator=generator)[:row_count]
     )
-    pool.row_indices[:row_count].copy_(rows)
-    row_indices = pool.row_indices[:row_count]
+    row_indices = torch.zeros(slot_count, dtype=torch.int64, device=device)
+    row_indices[:row_count].copy_(rows)
+    row_indices = row_indices[:row_count]
     width = 1 + decoder.num_codebooks
     buffers = {
         "frames": torch.zeros((slot_count, width), dtype=torch.int64, device=device),

@@ -24,8 +24,8 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     untested_gpu_reason,
 )
 from sglang_omni.models.fishaudio_drama3.tower_tiles import (
-    FUSED_BLOCK_M,
     MAX_FUSED_ROWS,
+    fused_block_m,
     split_count,
 )
 
@@ -360,7 +360,7 @@ class HeadSampling:
                 device=device,
             ),
             partials=torch.zeros(
-                split * FUSED_BLOCK_M * codebook_size,
+                split * fused_block_m(MAX_FUSED_ROWS) * codebook_size,
                 dtype=torch.float32,
                 device=device,
             ),
@@ -408,7 +408,7 @@ class HeadSampling:
             CODEBOOK_SIZE=codebook_size,
             TILES=self.tiles,
             SPLIT=self.split,
-            BLOCK_M=FUSED_BLOCK_M,
+            BLOCK_M=fused_block_m(row_count),
             BLOCK_N=HEAD_BLOCK_N,
             BLOCK_K=HEAD_BLOCK_K,
             INDEX_BITS=index_bits,
