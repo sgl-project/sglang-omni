@@ -431,6 +431,8 @@ func TestPrivacyClearsHistory(t *testing.T) {
 	// how far down Clear… is depends on the fonts (CI's wrap more lines).
 	tt.SetSize(windowWidth, 1000)
 	a.navigate("/settings/privacy")
+	frames(tt)
+	tt.Scroll(500, 500, 0, 400) // the settings dialog's height is capped: Clear… is further down
 	click(t, tt, "Clear…")
 	if !a.clearHistoryAsk {
 		t.Fatal("no confirmation")

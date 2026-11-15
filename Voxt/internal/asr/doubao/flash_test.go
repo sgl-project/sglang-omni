@@ -177,6 +177,16 @@ func TestFlashTooLarge(t *testing.T) {
 	}
 }
 
+// TestFlashLongPCMInPieces: a PCM recording over the limit as WAV goes
+// up in two requests and the text comes back joined (#3840).
+func TestFlashLongPCMInPieces(t *testing.T) {
+	srv := newFlashServer(t, 200, flashOK, flashOKBody, nil)
+	res, err := testFlash(t, srv.URL, "app-1").Transcribe(context.Background(), asr.FileRequest{Audio: make([]byte, FlashMaxBytes), Format: "pcm"})
+	if err != nil || res.Text != "关闭透传。关闭透传。" || srv.calls.Load() != 2 {
+		t.Fatalf("%+v %v, %d calls", res, err, srv.calls.Load())
+	}
+}
+
 // TestNewFlash: a key is required, the address must be https:// (http://
 // only on this Mac), and the default is the service's.
 func TestNewFlash(t *testing.T) {

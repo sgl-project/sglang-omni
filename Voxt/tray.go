@@ -281,17 +281,21 @@ func (a *app) reopenWindow() {
 	}
 }
 
+// setActivationPolicy is MyGo's; tests replace it. Before App.Run it sets
+// the policy the app launches with.
+var setActivationPolicy = mygo.App.SetActivationPolicy
+
 // setDockShown shows VoxtNew in the Dock or leaves it out (an accessory
-// app); tests replace it. A test app has no Dock.
+// app); tests replace it.
 var setDockShown = func(a *app, shown bool) {
-	if !a.hasMenu {
-		return
-	}
 	p := mygo.ActivationPolicyAccessory
 	if shown {
 		p = mygo.ActivationPolicyRegular
 	}
-	mygo.App.SetActivationPolicy(p)
+	setActivationPolicy(p)
+	if !shown && a.hasMenu && a.life.IsVisible() {
+		mygo.App.Focus() // macOS deactivates an app that turns accessory: its window stays in front
+	}
 }
 
 // applyDock puts VoxtNew in the Dock or not, as the settings say.

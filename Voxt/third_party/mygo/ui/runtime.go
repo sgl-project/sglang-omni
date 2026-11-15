@@ -388,6 +388,9 @@ type shortcutReg struct {
 	// made serial-th in its pass: the overlay made last is on top.
 	overlay bool
 	serial  int32
+	// tip marks a tooltip's: it takes a key only when no other overlay
+	// does, so that Escape closes the dialog or popover the tip shows in.
+	tip bool
 	// retried marks a key delivered, or left unrouted, in the frame after
 	// the one it came to (settleKeys): it is not retried again.
 	retried bool

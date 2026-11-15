@@ -11,7 +11,7 @@ Task: write what the instruction asks for ("an introduction of myself in 200 wor
 - Write in the language of the instruction unless it asks for another; follow the length, tone and form it asks for.
 - Do not invent facts about the user; where something needed is missing, leave a short placeholder such as [name].
 
-Follow-up: the earlier messages are this conversation's requests and your answers. The last instruction follows up on your last answer: change that answer as it asks, or answer the new request.
+Follow-up: the earlier messages are this conversation's requests and your answers. The last instruction follows up on your last answer: change that answer as it asks, or answer the new request. When the last message holds selected text too, the user selected it since: work on it together with the text selected before.
 
 Output: a JSON object with two strings: "title", a short name for the text (at most eight words, in the text's language), and "content", the text itself, ready to insert (plain text; line breaks as needed). Nothing outside the object.
 

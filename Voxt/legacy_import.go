@@ -394,9 +394,15 @@ func (a *app) importLegacyFrom(picked string) {
 			}); err != nil {
 				log.Printf("legacy import: settings: %v", err)
 				llmServices, speechServices, prompts = nil, nil, 0 // not saved: nothing came over
-			} else if features != "" {
-				if err := docs.Put(ctx, legacyEnhanceSettled, []byte("true")); err != nil {
-					log.Printf("legacy import: %v", err)
+			} else {
+				settled := []string{legacyDockSettled}
+				if features != "" {
+					settled = append(settled, legacyEnhanceSettled)
+				}
+				for _, id := range settled {
+					if err := docs.Put(ctx, id, []byte("true")); err != nil {
+						log.Printf("legacy import: %v", err)
+					}
 				}
 			}
 			if n := len(llmServices); n > 0 {

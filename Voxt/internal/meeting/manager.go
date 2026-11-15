@@ -430,7 +430,7 @@ func (m *Manager) nextJob(src Source) string {
 	return fmt.Sprintf("%s/%s/%d", m.id, src, m.jobGen)
 }
 
-// SetTranslate toggles live translation target language (C1-4 wires the UI).
+// SetTranslate toggles live translation target language.
 func (m *Manager) SetTranslate(id, target string) error {
 	m.mu.Lock()
 	if err := m.requireID(id); err != nil {

@@ -115,8 +115,13 @@ func (f *ovFlow) String() string {
 	return b.String()
 }
 
-// TestOverlayFlowsTrace logs each flow's steps (VOXTNEW_FLOWS=1).
+// TestOverlayFlowsTrace logs each flow's steps (VOXTNEW_FLOWS=1) and writes
+// their pictures (VOXTNEW_FLOW_SHOTS=DIR). It checks nothing, so it skips
+// unless one is set: TestOverlayFlows runs the same flows and checks them.
 func TestOverlayFlowsTrace(t *testing.T) {
+	if os.Getenv("VOXTNEW_FLOWS") == "" && os.Getenv("VOXTNEW_FLOW_SHOTS") == "" {
+		t.Skip("set VOXTNEW_FLOWS=1 or VOXTNEW_FLOW_SHOTS to a directory")
+	}
 	for _, fl := range overlayFlows() {
 		t.Run(fl.name, func(t *testing.T) {
 			f := fl.run(t)
@@ -174,13 +179,13 @@ func overlayFlows() []ovFlowCase {
 		{"transcribe", func(t *testing.T) *ovFlow {
 			return two(t, "", "transcribe", "so the release moves to thursday and we finish the onboarding first", draft("So the release moves to Thursday, and we finish the onboarding first.", 100*time.Millisecond), nil)
 		}},
-		{"transcribe-card", func(t *testing.T) *ovFlow {
+		{"transcribe-not-inserted", func(t *testing.T) *ovFlow {
 			return two(t, "readonly,", "transcribe", "so the release moves to thursday and we finish the onboarding first", draft("So the release moves to Thursday, and we finish the onboarding first.", 100*time.Millisecond), nil)
 		}},
 		{"translate-speech", func(t *testing.T) *ovFlow {
 			return two(t, "", "translate", "发布推迟到周四，先把引导页和历史页做完，再做翻译卡片", draft(long, 150*time.Millisecond), nil)
 		}},
-		{"translate-speech-card", func(t *testing.T) *ovFlow {
+		{"translate-speech-not-inserted", func(t *testing.T) *ovFlow {
 			return two(t, "readonly,", "translate", "发布推迟到周四，先把引导页和历史页做完，再做翻译卡片", draft(long, 150*time.Millisecond), nil)
 		}},
 		{"translate-selection", func(t *testing.T) *ovFlow {
@@ -242,16 +247,16 @@ func flowSettings(st *settings.Settings) {
 // to the pill; a follow-up stays in its card.
 func TestOverlayFlows(t *testing.T) {
 	want := map[string]string{
-		"transcribe":                   "recording working",
-		"transcribe-card":              "recording working answer",
-		"translate-speech":             "working recording working",
-		"translate-speech-card":        "working recording working answer",
-		"translate-selection":          "working",
-		"translate-selection-readonly": "working answer",
-		"rewrite":                      "recording working answer",
-		"rewrite-selection":            "recording working answer",
-		"rewrite-no-card":              "recording working",
-		"follow-up":                    "answer",
+		"transcribe":                    "recording working",
+		"transcribe-not-inserted":       "recording working notice",
+		"translate-speech":              "working recording working",
+		"translate-speech-not-inserted": "working recording working notice",
+		"translate-selection":           "working",
+		"translate-selection-readonly":  "working answer",
+		"rewrite":                       "recording working answer",
+		"rewrite-selection":             "recording working answer",
+		"rewrite-no-card":               "recording working",
+		"follow-up":                     "answer",
 	}
 	for _, fl := range overlayFlows() {
 		t.Run(fl.name, func(t *testing.T) {

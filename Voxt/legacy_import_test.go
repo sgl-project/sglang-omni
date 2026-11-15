@@ -284,6 +284,9 @@ func TestImportEndsTheOffer(t *testing.T) {
 	if !a.ob.legacyDone {
 		t.Fatalf("the import did not succeed: %q", a.ob.legacy.text())
 	}
+	if _, ok, _ := a.lib.store.Documents().Get(ctx, legacyDockSettled); !ok { // legacyDockAtStart leaves the switch alone
+		t.Error("the import did not record that it read Show in Dock")
+	}
 	a.quit()
 	b, _, _ := newTestAppIn(t, dir)
 	b.prefs.Setup.Done = true

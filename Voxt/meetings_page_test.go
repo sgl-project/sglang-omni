@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -16,6 +17,19 @@ func TestMeetingsNavHiddenWhenDisabled(t *testing.T) {
 	frames(tt)
 	if has(tt, "Meetings") {
 		t.Fatalf("Meetings in sidebar when disabled: %q", firstTexts(tt))
+	}
+}
+
+func TestMeetingsNotInPaletteWhenDisabled(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	t.Cleanup(func() { meetingDevHook = nil })
+	for _, enabled := range []bool{false, true} {
+		meetingDevHook = func() bool { return enabled }
+		a.paletteQuery = "meetings"
+		listed := slices.ContainsFunc(a.paletteItems(), func(cmd command) bool { return cmd.id == "go/meetings" })
+		if listed != enabled {
+			t.Errorf("meetings enabled %v: palette lists Go to Meetings %v", enabled, listed)
+		}
 	}
 }
 

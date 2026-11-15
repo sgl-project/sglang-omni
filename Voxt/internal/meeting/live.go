@@ -117,7 +117,10 @@ func (l *Live) rotate(ctx context.Context, immediate bool) error {
 	l.gotPartial = false
 	l.lastPartial = time.Time{}
 	l.rotateDue = false
-	if err := l.finishStream(old); err != nil && !immediate {
+	err = l.finishStream(old)
+	// The new stream's text starts from scratch; none of it is committed yet.
+	l.committer.committed, l.committer.cumulative = "", ""
+	if err != nil && !immediate {
 		return err
 	}
 	return nil

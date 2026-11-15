@@ -76,41 +76,6 @@ func keycap(c *ui.Context, keys string) ui.Element {
 		Radius(px(t, 5)).Background(k.Subtle).Border(1, k.Line).SingleLine().Shrink(0)
 }
 
-// chip is a filter chip: plain text, on the grey fill while on; count
-// ("" for none) follows its label in the tertiary grey.
-func chip(c *ui.Context, label, count string, on bool) ui.Element {
-	t := c.Theme()
-	k := tok(t)
-	name := label
-	if count != "" {
-		name += " " + count
-	}
-	b := ui.ButtonBase(c).Padding(px(t, 4), px(t, 10)).Radius(px(t, radiusControl)).Gap(px(t, 6)).AlignItems(ui.Center).
-		Label(name).Checked(on).Shrink(0)
-	switch {
-	case on:
-		b.Background(k.Pressed)
-	case b.Pressed():
-		b.Background(k.Pressed)
-	case b.Hovered():
-		b.Background(k.Hover)
-	}
-	b.Children(func() {
-		col := k.Text2
-		if on {
-			col = k.Text
-		}
-		tx := ui.Text(c, label).FontSize(px(t, fsCaption)).TextColor(col).SingleLine()
-		if on {
-			tx.FontWeight(600)
-		}
-		if count != "" {
-			ui.Text(c, count).FontSize(px(t, fsMicro)).TextColor(k.Text3).SingleLine()
-		}
-	})
-	return b
-}
-
 // statusDot is a 6 px dot of a state's colour.
 func statusDot(c *ui.Context, col ui.Color) ui.Element {
 	t := c.Theme()

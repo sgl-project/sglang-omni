@@ -5,7 +5,6 @@ package main
 // area.
 
 import (
-	"context"
 	"errors"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -77,8 +76,7 @@ func errText(err error) string {
 // degradedLLMText says the recognised text went on past a failed language
 // model: inserted, or with note, saved to Notes.
 func degradedLLMText(p *session.Problem, note bool) string {
-	var le *llm.Error
-	timeout := errors.Is(p.Err, context.DeadlineExceeded) || errors.As(p.Err, &le) && le.Code == llm.CodeTimeout
+	timeout := session.TimedOut(p.Err)
 	usage := llm.Code(p.Err) == llm.CodeUsageLimit
 	switch {
 	case note && usage:

@@ -4,15 +4,31 @@ Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download a Whisper checkpoint:
+Install `sglang-omni` by following [Installation](../get_started/installation.md) or [Installation - Ascend NPU](../get_started/installation_npu.md), then download a Whisper checkpoint:
 
 ```bash
 hf download openai/whisper-large-v3
 ```
 
+## Ascend NPU
+
+Follow [NPU Installation](../get_started/installation_npu.md) and use the SGLang/CANN runtime specified in [pyproject_npu.toml](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml). Whisper runs on a single Ascend NPU in FP16. Select a device and start the service:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0
+export SGLANG_OMNI_PLATFORM_SPEC=sglang_omni.platforms.npu.NPUOmniPlatform
+sgl-omni serve --model-path openai/whisper-large-v3 --port 8000
+```
+
+Pipeline startup defaults to `mem_fraction_static=0.50` on NPU and `0.85` elsewhere. Set `stages.asr.engine.mem_fraction_static` in a pipeline YAML to override this budget; explicit values take precedence, including `0.85` on NPU. Direct Python calls to `create_sglang_whisper_asr_executor` bypass pipeline configuration and retain the original `mem_fraction_static: float = 0.85` default; pass `0.50` explicitly when needed.
+
+NPU decode graphs are disabled by default so Whisper can use the existing attention backend with ordinary decode. Prefill graph and compilation settings are preserved. Explicit graph overrides retain their precedence, but re-enabling NPU decode graphs is outside the validated scope. Ordinary decode can reduce throughput.
+
+The encoder uses NPU SDPA; the encoder CUDA Graph and optional dense-prefill optimizations described below apply to CUDA only.
+
 ## Server Configuration
 
-Whisper ASR runs a single ASR stage on one GPU.
+Whisper ASR runs a single ASR stage on one GPU/Ascend NPU.
 
 ```bash
 sgl-omni serve \

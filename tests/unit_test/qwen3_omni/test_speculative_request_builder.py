@@ -140,6 +140,7 @@ def test_a_retracted_audio_in_video_request_reprefills_at_its_original_positions
             audio_start_token_id=audio_start_token_id,
         ),
         capture_prompt_hidden_states=False,
+        speech_enabled=False,
         is_speculative=is_speculative,
     )
     prompt_token_ids = (

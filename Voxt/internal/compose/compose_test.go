@@ -241,10 +241,15 @@ func TestGoldenRewrite(t *testing.T) {
 		English: "write a two sentence update for the team saying aura link ships friday",
 		Chinese: "写一段两句话的进展，告诉团队 aura link 周五发布",
 	}
+	// A follow-up on a selection with text selected since (#3816).
+	more := map[string][2]string{
+		English: {"summarize the new messages too", "Anna: docs are up. Ben: tests passed, ship it"},
+		Chinese: {"把新消息也总结进去", "安娜：文档已上线。小李：测试通过，可以发"},
+	}
 	mains := map[string]string{English: "en", Chinese: "zh"}
 	n := 0
 	for _, set := range []string{English, Chinese} {
-		for mask := range 10 {
+		for mask := range 11 {
 			in := Input{Task: Rewrite, MainLanguage: mains[set], OtherLanguages: []string{"en", "zh"}}
 			name := "rewrite-" + set
 			switch {
@@ -268,6 +273,10 @@ func TestGoldenRewrite(t *testing.T) {
 				in.Instruction, in.Answer, in.Cleanup = instruction[set], true, true
 				in.Previous = []Turn{{Instruction: generate[set], Answer: Answer{Title: "Update", Content: "VoxtNew ships on Friday."}}}
 				name += "-answer-cleanup-followup"
+			case mask == 9:
+				in.Instruction, in.Text = more[set][0], more[set][1]
+				in.Previous = []Turn{{Instruction: instruction[set], Selection: selection[set], Answer: Answer{Content: "- VoxtNew 0.1 ships on Friday."}}}
+				name += "-selection-followup-new"
 			default:
 				in.Text, in.Instruction, in.Cleanup = selection[set], instruction[set], true
 				in.Scene = &Scene{AppName: "Mail", Prompt: "Formal mail."}
@@ -284,7 +293,7 @@ func TestGoldenRewrite(t *testing.T) {
 			n++
 		}
 	}
-	if n != 20 {
+	if n != 22 {
 		t.Errorf("%d combinations", n)
 	}
 }

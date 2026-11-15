@@ -444,3 +444,24 @@ func TestLogsHeaderFits(t *testing.T) {
 		}
 	}
 }
+
+// A filter that matches no line says so and offers to clear it, on the
+// page and in the panel: the log is not empty (issue 3778).
+func TestLogsFilterNoMatch(t *testing.T) {
+	a, tt := logsApp(t, 3)
+	for _, panel := range []bool{false, true} {
+		if panel {
+			a.navigate("/history")
+			a.logsPanel = true
+		}
+		a.logsQuery = "zzqx"
+		frames(tt)
+		if has(tt, "No log lines yet.") || !has(tt, "Nothing matches “zzqx”") {
+			t.Fatalf("panel %v: %q", panel, firstTexts(tt))
+		}
+		click(t, tt, "Clear filter")
+		if a.logsQuery != "" || !has(tt, "line 3") {
+			t.Fatalf("panel %v, after Clear filter: %q, %q", panel, a.logsQuery, firstTexts(tt))
+		}
+	}
+}

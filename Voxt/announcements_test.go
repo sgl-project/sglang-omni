@@ -167,3 +167,19 @@ func TestAnnouncementsFail(t *testing.T) {
 		t.Errorf("not shown once the server answers: %q", tt.Texts())
 	}
 }
+
+// TestAnnouncementsFor: the card is the newest announcement for Voxt 2 in
+// the UI's language. Voxt 1.x's server still lists its 1.13 announcement
+// of meetings and notes, in Chinese, which Voxt 2 showed to every user,
+// in the English UI too.
+func TestAnnouncementsFor(t *testing.T) {
+	v1 := `{"id":"v1","title":"会议 & 笔记","content":"- 会议功能经过重构回来了，支持 会议、字幕、录音 三种模式","coverImage":null,"version":"1.13.0-beta.3","publishedAt":"2026-11-09T13:09:00Z"}`
+	srv := &announceServer{revision: "r1", list: v1 + "," + oldAnnouncement}
+	url := srv.start(t)
+	a, _, tt := newTestApp(t)
+	a.announceURL = url
+	a.checkAnnouncements()
+	if has(tt, "会议 & 笔记") || !has(tt, "Welcome to Voxt") {
+		t.Errorf("want the 2.0.0 card, not the 1.x one: %q", tt.Texts())
+	}
+}

@@ -83,7 +83,7 @@ func TestRewritePage(t *testing.T) {
 	for _, s := range []string{
 		"Rewrite", "⌃ Right ⌥", "No speech model is installed. Install one to rewrite.", "No language model is set up. Set one up to rewrite.",
 		"Rewriting", "Clean up the instruction",
-		"With an answer in the card, the shortcut asks a follow-up.",
+		"With an answer in the card, the shortcut asks a follow-up and adds the text you select first.",
 	} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, firstTexts(tt))
