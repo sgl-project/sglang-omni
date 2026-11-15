@@ -8,7 +8,11 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import (
+    ContextExhaustedError,
+    QueueFullError,
+    SessionCapacityExhaustedError,
+)
 from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS as QWEN3_OMNI_PORTS
 from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
@@ -407,6 +411,36 @@ async def test_reader_failure_reports_turn_failure_and_fails_the_next_unit():
     await h.bridge.close()
 
 
+def test_session_capacity_exhausted_error_contract() -> None:
+    """SessionCapacityExhaustedError ensures its CODE prefix once and matches only typed or stringified RuntimeErrors."""
+    assert SessionCapacityExhaustedError.CODE == "session_capacity_exhausted"
+    prefixed = SessionCapacityExhaustedError("KV budget exhausted")
+    already_prefixed = SessionCapacityExhaustedError(
+        "session_capacity_exhausted: KV budget exhausted"
+    )
+    empty_message = SessionCapacityExhaustedError("")
+    assert isinstance(prefixed, RuntimeError)
+    assert str(prefixed) == "session_capacity_exhausted: KV budget exhausted"
+    assert str(already_prefixed) == "session_capacity_exhausted: KV budget exhausted"
+    assert str(empty_message) == "session_capacity_exhausted:"
+    assert SessionCapacityExhaustedError.matches(prefixed)
+    assert SessionCapacityExhaustedError.matches(empty_message)
+    assert SessionCapacityExhaustedError.matches(RuntimeError(str(prefixed)))
+    assert not SessionCapacityExhaustedError.matches(
+        ValueError("session_capacity_exhausted: wrong error class")
+    )
+    assert not SessionCapacityExhaustedError.matches(RuntimeError("CUDA out of memory"))
+    assert not SessionCapacityExhaustedError.matches(QueueFullError())
+    assert not SessionCapacityExhaustedError.matches(
+        ContextExhaustedError("context_exhausted: full")
+    )
+    assert not SessionCapacityExhaustedError.matches(
+        RuntimeError("session_capacity_exhausted_other: full")
+    )
+    assert not QueueFullError.matches(prefixed)
+    assert not ContextExhaustedError.matches(prefixed)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error", "code", "is_logged"),
@@ -419,6 +453,18 @@ async def test_reader_failure_reports_turn_failure_and_fails_the_next_unit():
             "context_exhausted",
             False,
         ),
+        (
+            SessionCapacityExhaustedError("KV cache exhausted"),
+            "session_capacity_exhausted",
+            False,
+        ),
+        (
+            RuntimeError("session_capacity_exhausted: KV cache exhausted"),
+            "session_capacity_exhausted",
+            False,
+        ),
+        (RuntimeError("CUDA out of memory"), "internal", True),
+        (QueueFullError(), "internal", True),
     ],
 )
 async def test_reader_failure_reaches_the_client_with_its_own_code(
@@ -439,6 +485,33 @@ async def test_reader_failure_reaches_the_client_with_its_own_code(
     assert any(record.name == BRIDGE_LOGGER_NAME for record in caplog.records) == (
         is_logged
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        SessionCapacityExhaustedError("KV cache exhausted"),
+        RuntimeError("session_capacity_exhausted: KV cache exhausted"),
+    ],
+)
+async def test_session_capacity_exhaustion_with_pending_unit_fails_process_without_logging(
+    error: Exception,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A capacity exhaustion during a pending unit fails process without emitting a duplicate TurnFailure or traceback."""
+    h = Harness(auto_done=False)
+    await h.open()
+    with caplog.at_level(logging.ERROR, logger=BRIDGE_LOGGER_NAME):
+        processing = asyncio.create_task(h.bridge.process(unit(0)))
+        await settle()
+        h.client.outputs.put_nowait(error)
+        with pytest.raises(RuntimeError, match="session_capacity_exhausted"):
+            await processing
+    await h.bridge.close()
+
+    assert h.published == []
+    assert not any(record.name == BRIDGE_LOGGER_NAME for record in caplog.records)
 
 
 @pytest.mark.asyncio

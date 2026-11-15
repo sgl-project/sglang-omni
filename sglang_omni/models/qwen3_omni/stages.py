@@ -39,6 +39,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
 )
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
+from sglang_omni.proto.session import DEFAULT_SESSION_ADMISSION_TIMEOUT_SECONDS
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -1247,6 +1248,7 @@ def create_sglang_thinker_executor_from_config(
     prefill_coalesce_when_idle: bool = False,
     execution_mode: Literal["request", "session"] = "request",
     continuation_aware_admission: bool = True,
+    session_admission_timeout_seconds: float = DEFAULT_SESSION_ADMISSION_TIMEOUT_SECONDS,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Returns OmniScheduler for thinker."""
     from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
@@ -1442,6 +1444,7 @@ def create_sglang_thinker_executor_from_config(
             server_args_overrides
         ),
         continuation_aware_admission=continuation_aware_admission,
+        session_admission_timeout_seconds=session_admission_timeout_seconds,
     )
     from sglang.srt.runtime_context import get_schedule
 
@@ -1490,6 +1493,7 @@ def create_talker_ar_executor_from_config(
     codec_coalesce_early_frames: int = 0,
     execution_mode: Literal["request", "session"] = "request",
     continuation_aware_admission: bool = True,
+    session_admission_timeout_seconds: float = DEFAULT_SESSION_ADMISSION_TIMEOUT_SECONDS,
 ) -> QwenTalkerScheduler:
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
@@ -1587,6 +1591,7 @@ def create_talker_ar_executor_from_config(
         codec_coalesce_first_frames=codec_coalesce_first_frames,
         codec_coalesce_early_frames=codec_coalesce_early_frames,
         continuation_aware_admission=continuation_aware_admission,
+        session_admission_timeout_seconds=session_admission_timeout_seconds,
     )
     from sglang.srt.runtime_context import get_schedule
 

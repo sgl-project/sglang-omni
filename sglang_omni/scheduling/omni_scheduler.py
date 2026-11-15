@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import queue as _queue_mod
 import threading
 import time
@@ -26,11 +27,14 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
 from functools import partial
+from http import HTTPStatus
 from itertools import islice
 from typing import Callable, Generic, Literal
 
 import sglang.srt.runtime_context as runtime_context
 import torch
+from sglang.srt.beam_search.batch_tail import beam_retraction_order
+from sglang.srt.beam_search.fork import free_member_rows
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.environ import envs
@@ -72,6 +76,7 @@ from sglang_omni.admission import (
     AdminDroppedRequestError,
     ContextExhaustedError,
     QueueFullError,
+    SessionCapacityExhaustedError,
 )
 from sglang_omni.model_runner.base import ModelRunner, PendingStep
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -99,7 +104,10 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.proto.session import find_session_operation
+from sglang_omni.proto.session import (
+    DEFAULT_SESSION_ADMISSION_TIMEOUT_SECONDS,
+    find_session_operation,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     get_prefill_cuda_graph_backend,
@@ -159,6 +167,16 @@ class RequestTimeoutAbort:
 
     rid: str
     abort_message: str
+    is_session_capacity: bool = False
+
+
+@dataclass(kw_only=True)
+class PendingSessionAdmission:
+    """A prepared session unit waiting for scheduler capacity."""
+
+    payload: StagePayload
+    pending_stream_done: bool
+    request_data: SGLangARRequestData
 
 
 @dataclass(kw_only=True)
@@ -316,6 +334,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     request_build_max_pending: int | None
     shutdown_callback: Callable[[], None] | None
     continuation_aware_admission: bool
+    session_admission_timeout_seconds: float
 
 
 class OmniScheduler(Generic[RequestDataT]):
@@ -396,10 +415,21 @@ class OmniScheduler(Generic[RequestDataT]):
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
         continuation_aware_admission: bool = True,
+        session_admission_timeout_seconds: float = DEFAULT_SESSION_ADMISSION_TIMEOUT_SECONDS,
     ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self.requires_tp_work_fanout: bool = False
+        if (
+            not math.isfinite(session_admission_timeout_seconds)
+            or session_admission_timeout_seconds <= 0
+        ):
+            raise ValueError(
+                "session_admission_timeout_seconds must be finite and positive"
+            )
+        else:
+            self.session_admission_timeout_seconds = session_admission_timeout_seconds
+        self.pending_session_admissions: dict[str, PendingSessionAdmission] = {}
 
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self.session_adapter = session_adapter
@@ -1137,9 +1167,44 @@ class OmniScheduler(Generic[RequestDataT]):
         now = time.perf_counter()
         timeout_aborts: list[RequestTimeoutAbort] = []
         waiting_timeout_s = envs.SGLANG_REQ_WAITING_TIMEOUT.get()
+        capacity_waiters: set[str] = set()
+        bridge = self.session_bridge
+        if bridge is not None:
+            capacity_timeout_seconds = self.session_admission_timeout_seconds
+            if waiting_timeout_s > 0:
+                capacity_timeout_seconds = min(
+                    capacity_timeout_seconds, waiting_timeout_s
+                )
+            else:
+                pass
+            for unit in bridge.units_by_request_id.values():
+                started_at = unit.capacity_wait_started_at
+                request = unit.session_request
+                if started_at is None or request is None:
+                    continue
+                elif request.time_stats.forward_entry_time > 0:
+                    unit.capacity_wait_started_at = None
+                else:
+                    capacity_waiters.add(unit.request_id)
+                    if now - started_at >= capacity_timeout_seconds:
+                        timeout_aborts.append(
+                            RequestTimeoutAbort(
+                                rid=unit.request_id,
+                                abort_message="session capacity waiting timeout reached",
+                                is_session_capacity=True,
+                            )
+                        )
+                    else:
+                        pass
+        else:
+            pass
         if waiting_timeout_s > 0:
             waiting_deadline = now - waiting_timeout_s
             for queued_request in self.waiting_queue:
+                if queued_request.rid in capacity_waiters:
+                    continue
+                else:
+                    pass
                 entry_time = queued_request.time_stats.wait_queue_entry_time
                 if 0 < entry_time < waiting_deadline:
                     timeout_aborts.append(
@@ -1189,7 +1254,12 @@ class OmniScheduler(Generic[RequestDataT]):
                 else:
                     pass
                 self.emit_request_error(
-                    timeout_abort.rid, RuntimeError(timeout_abort.abort_message)
+                    timeout_abort.rid,
+                    (
+                        SessionCapacityExhaustedError(timeout_abort.abort_message)
+                        if timeout_abort.is_session_capacity
+                        else RuntimeError(timeout_abort.abort_message)
+                    ),
                 )
                 if self.tp_size > 1:
                     self.inbox.put(
@@ -1370,6 +1440,7 @@ class OmniScheduler(Generic[RequestDataT]):
         recv_reqs = ordinary_payloads
         self.drain_request_admission_results()
         self.drain_request_build_results()
+        self.drain_session_admissions()
         recv_reqs, rejected = self.stage_request_build_payloads(recv_reqs)
         for payload in rejected:
             self.reject_queue_full(payload)
@@ -1380,6 +1451,7 @@ class OmniScheduler(Generic[RequestDataT]):
                     req_id in self.aborted_request_ids
                     or req_id in self.pending_request_builds
                     or req_id in self.pending_request_admissions
+                    or req_id in self.pending_session_admissions
                 ):
                     continue
                 else:
@@ -1555,6 +1627,7 @@ class OmniScheduler(Generic[RequestDataT]):
             len(self.waiting_queue)
             + len(self.pending_request_builds)
             + len(self.pending_request_admissions)
+            + len(self.pending_session_admissions)
             + len(self.backlogged_request_build_payloads)
             + len(self.deferred_request_payloads)
         )
@@ -1866,20 +1939,6 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
         else:
             pass
-        session_unit = self.active_session_unit(req_id)
-        if session_unit is not None:
-            bridge = self.session_bridge
-            assert bridge is not None
-            capacity_message = bridge.check_session_capacity(req_id)
-            if capacity_message is not None:
-                self.emit_request_error(req_id, ValueError(capacity_message))
-                bridge.release_append_unit(req_id)
-                self.abort(req_id)
-                return
-            else:
-                pass
-        else:
-            pass
         admission_error = self.select_decode_path(req, req_data)
         admission_error = admission_error or self.request_kv_capacity_error(
             req,
@@ -1895,6 +1954,81 @@ class OmniScheduler(Generic[RequestDataT]):
             return
         else:
             pass
+        if session_unit is not None:
+            session_unit.capacity_wait_started_at = time.perf_counter()
+            if not self._set_or_validate_priority(req):  # noqa: leading-underscore
+                return
+            elif self.waiting_queue_is_full():
+                self.reject_queue_full(payload)
+                return
+            elif self.session_capacity_message(req_id) is not None:
+                self.pending_session_admissions[req_id] = PendingSessionAdmission(
+                    payload=payload,
+                    pending_stream_done=pending_stream_done,
+                    request_data=req_data,
+                )
+                return
+            else:
+                pass
+        else:
+            pass
+        self.enqueue_admitted_request(
+            payload,
+            pending_stream_done,
+            req_data,
+            request_admission_lock_held=request_admission_lock_held,
+        )
+
+    def session_capacity_message(self, request_id: str) -> str | None:
+        bridge = self.session_bridge
+        assert bridge is not None
+        running_request_ids = frozenset(
+            request.rid
+            for batch in (self.running_batch, *self.pending_batches())
+            if batch is not None
+            for request in batch.reqs
+        )
+        return bridge.check_session_capacity(
+            request_id,
+            running_request_ids=running_request_ids,
+            new_token_ratio=self.new_token_ratio_tracker.current,
+        )
+
+    def drain_session_admissions(self) -> None:
+        with self.request_admission_lock:
+            pending_admissions = list(self.pending_session_admissions.values())
+            if self.enable_priority_scheduling:
+                pending_admissions.sort(
+                    key=lambda pending: pending.request_data.req.priority,
+                    reverse=not self.schedule_low_priority_values_first,
+                )
+            else:
+                pass
+            for pending in pending_admissions:
+                request_id = pending.payload.request_id
+                if request_id in self.aborted_request_ids:
+                    self.pending_session_admissions.pop(request_id, None)
+                elif self.session_capacity_message(request_id) is None:
+                    self.pending_session_admissions.pop(request_id)
+                    self.enqueue_admitted_request(
+                        pending.payload,
+                        pending.pending_stream_done,
+                        pending.request_data,
+                        request_admission_lock_held=True,
+                    )
+                else:
+                    pass
+
+    def enqueue_admitted_request(
+        self,
+        payload: StagePayload,
+        pending_stream_done: bool,
+        req_data: RequestDataT | SGLangARRequestData,
+        *,
+        request_admission_lock_held: bool = False,
+    ) -> None:
+        req = req_data.req
+        req_id = req.rid
         self.initialize_request_stream_state(req_data, payload)
         ingress = self.pending_stream_ingress.pop(req_id, None)
         if ingress is not None:
@@ -2264,6 +2398,10 @@ class OmniScheduler(Generic[RequestDataT]):
         return None
 
     def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        if not self.relieve_session_capacity(batch):
+            return None
+        else:
+            pass
         if not self.enable_plain_fallback:
             return _Upstream.update_running_batch(self, batch)
         else:
@@ -2335,6 +2473,92 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
             return updated_batch
+
+    def relieve_session_capacity(self, batch: ScheduleBatch) -> bool:
+        """Terminate affected sessions when the next decode cannot fit."""
+        bridge = self.session_bridge
+        if bridge is None or not any(
+            request.rid in bridge.units_by_request_id for request in batch.reqs
+        ):
+            return True
+        else:
+            pass
+        finishing_requests = self._reqs_finishing_inflight(
+            batch
+        )  # noqa: leading-underscore
+        request_count = len(batch.reqs)
+        batch.filter_batch(reqs_to_exclude=finishing_requests)
+        batch.batch_is_full = batch.batch_is_full and len(batch.reqs) == request_count
+        if batch.is_empty() or batch.check_decode_mem():
+            return True
+        elif finishing_requests:
+            batch.batch_is_full = False
+            return False
+        else:
+            pass
+        self.synchronize_launched_decode()
+        self.resolve_pending_async()
+        batch.filter_batch()
+        batch.batch_is_full = batch.batch_is_full and len(batch.reqs) == request_count
+        retraction_order = beam_retraction_order(
+            batch._get_decode_retraction_order(batch.reqs),  # noqa: leading-underscore
+            batch.reqs,
+        )
+        victims = [batch.reqs[index] for index in reversed(retraction_order)]
+        for request in victims:
+            if batch.is_empty() or batch.check_decode_mem():
+                break
+            else:
+                pass
+            unit = self.active_session_unit(request.rid)
+            if unit is None:
+                request_index = batch.reqs.index(request)
+                if request.beam_group is not None:
+                    request.to_finish = FINISH_ABORT(
+                        "Beam search group aborted: KV cache pool is full.",
+                        status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    )
+                    free_member_rows(
+                        request.beam_group,
+                        self.req_to_token_pool,
+                        self.token_to_kv_pool_allocator,
+                    )
+                    batch.release_req(
+                        request_index, len(batch.reqs) - 1, offload_kv=False
+                    )
+                    self.send_abort_output(
+                        AbortReq(
+                            rid=request.rid, finished_reason=request.to_finish.to_json()
+                        ),
+                        request,
+                    )
+                    self.beam_coordinator.retire_group(request)
+                else:
+                    batch.release_req(
+                        request_index, len(batch.reqs) - 1, offload_kv=False
+                    )
+                    self._add_request_to_queue(
+                        request, is_retracted=True
+                    )  # noqa: leading-underscore
+                batch.filter_batch(reqs_to_exclude={request})
+                self.new_token_ratio_tracker.current = (
+                    self.new_token_ratio_tracker.estimate_new_token_ratio_after_retract(
+                        batch.reqs
+                    )
+                )
+            else:
+                session_id = unit.session_identity.id
+                self.emit_request_error(
+                    request.rid,
+                    SessionCapacityExhaustedError(
+                        "the next decode step cannot fit in the KV pool"
+                    ),
+                )
+                self.abort(request.rid)
+                bridge.release_streaming_session(session_id)
+                batch.filter_batch()
+            batch.batch_is_full = False
+        return True
 
     def retract_parked_decode_requests(self, requests: list[Req]) -> None:
         retract_all(
@@ -3484,6 +3708,7 @@ class OmniScheduler(Generic[RequestDataT]):
     def discard_pending_request_admissions(self) -> None:
         with self.request_admission_lock:
             self.pending_request_admissions.clear()
+            self.pending_session_admissions.clear()
 
     def shutdown_resources(self) -> None:
         with self.shutdown_lock:
@@ -3573,6 +3798,7 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
             self.pending_request_admissions.pop(request_id, None)
+            self.pending_session_admissions.pop(request_id, None)
             if self.backlogged_request_build_payloads:
                 retained = [
                     payload
@@ -4058,6 +4284,7 @@ class OmniScheduler(Generic[RequestDataT]):
     def active_request_ids(self) -> list[str]:
         request_ids: set[str] = set()
         with self.request_admission_lock:
+            request_ids.update(self.pending_session_admissions)
             if self.pending_request_builds:
                 request_ids.update(self.pending_request_builds.keys())
             else:

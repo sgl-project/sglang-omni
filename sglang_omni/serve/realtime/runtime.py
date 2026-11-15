@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from dataclasses import replace
 
-from sglang_omni.admission import ContextExhaustedError, QueueFullError
+from sglang_omni.admission import QueueFullError
 from sglang_omni.profiler.duplex_events import (
     SessionUnitReadyObservation,
     capture_session_unit_ready,
@@ -699,10 +699,7 @@ class SessionRuntime:
         except ProtocolError as exc:
             self.fail(str(exc), exc.code)
         except Exception as exc:
-            if ContextExhaustedError.matches(exc):
-                code = ContextExhaustedError.CODE
-            else:
-                code = failure_code(exc)
+            code = failure_code(exc)
             logger.error(
                 f"Realtime session {self.session_id} input pump failed: {exc}",
                 exc_info=code == CLOSE_REASON_INTERNAL,

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from array import array
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -17,8 +18,10 @@ from sglang.srt.managers.io_struct import (
     TokenizedGenerateReqInput,
 )
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req
+from sglang.srt.managers.schedule_policy import CLIP_MAX_NEW_TOKENS
 from sglang.srt.mem_cache.unified_cache.components import ComponentType
 from sglang.srt.session.session_controller import Session, SessionController
+from sglang.srt.utils.common import ceil_align
 
 from sglang_omni.admission import (
     REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
@@ -68,6 +71,9 @@ class SessionTreeCache(SessionRows, Protocol):
     def evictable_size(self) -> int:
         pass
 
+    def release_session(self, session_id: str) -> None:
+        pass
+
 
 class RequestToTokenPool(Protocol):
     free_slots: list[int]
@@ -75,6 +81,7 @@ class RequestToTokenPool(Protocol):
 
 class TokenToKVPoolAllocator(Protocol):
     size: int
+    page_size: int
 
     def available_size(self) -> int:
         pass
@@ -135,6 +142,8 @@ class ARSessionPreparation:
 
 class ARSessionAdapter:
     """Convert unit inputs and outputs without mutating streaming session state."""
+
+    retain_completed_kv: bool = True
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         """Initialize auxiliary model history after the streaming session is created."""
@@ -232,6 +241,7 @@ class SessionUnit:
     session_identity: SessionIdentity
     stages: tuple[str, ...]
     chunk: TimedChunk
+    capacity_wait_started_at: float | None = None
     # Note (chenyang):
     # There are multiple requests in SGLang Omni. Let's make a distinction between them.
     # payload.request is the user's OmniRequest: inputs, params, and metadata. It is not queued.
@@ -655,7 +665,13 @@ class ARSessionBridge:
         finally:
             self.cancelling_request_id = previous_cancelling_request_id
 
-    def check_session_capacity(self, request_id: str) -> str | None:
+    def check_session_capacity(
+        self,
+        request_id: str,
+        *,
+        running_request_ids: frozenset[str] = frozenset(),
+        new_token_ratio: float = 1.0,
+    ) -> str | None:
         unit = self.units_by_request_id[request_id]
         session_request = unit.session_request
         assert (
@@ -668,6 +684,7 @@ class ARSessionBridge:
         free_request_slots = self.bridge_scheduler.req_to_token_pool.free_slots
         unallocated_request_count = sum(
             active_append_unit is not unit
+            and active_append_unit.is_enqueued
             and active_append_unit.session_request is not None
             and not active_append_unit.session_request.kv.holds_kv
             and active_append_unit.session_identity.id not in records
@@ -684,6 +701,7 @@ class ARSessionBridge:
                 "(one slot kept for a session that already holds KV)"
             )
         else:
+            page_size = self.bridge_scheduler.token_to_kv_pool_allocator.page_size
             required_kv_tokens = len(session_request.origin_input_ids) + int(
                 session_request.sampling_params.max_new_tokens or 0
             )
@@ -691,26 +709,60 @@ class ARSessionBridge:
             for active_append_unit in self.units_by_request_id.values():
                 if (
                     active_append_unit is unit
+                    or not active_append_unit.is_enqueued
                     or active_append_unit.session_request is None
                 ):
                     continue
                 else:
                     active_session_request = active_append_unit.session_request
-                    allocated_kv_tokens = active_session_request.kv.kv_allocated_len
+                    active_record = records.get(active_append_unit.session_identity.id)
+                    allocated_kv_tokens = max(
+                        active_session_request.kv.kv_allocated_len,
+                        (
+                            active_record.kv_allocated_len
+                            if active_record is not None
+                            else 0
+                        ),
+                    )
+                    output_token_count = int(
+                        active_session_request.sampling_params.max_new_tokens or 0
+                    )
+                    if active_append_unit.request_id in running_request_ids:
+                        generated_token_count = len(active_session_request.output_ids)
+                        remaining_token_count = min(
+                            max(0, output_token_count - generated_token_count),
+                            CLIP_MAX_NEW_TOKENS,
+                        )
+                        output_ratio = (
+                            1.0
+                            if active_session_request.sampling_params.ignore_eos
+                            else new_token_ratio
+                        )
+                        output_token_count = generated_token_count + math.ceil(
+                            remaining_token_count * output_ratio
+                        )
+                    else:
+                        pass
                     reserved_kv_tokens += max(
                         0,
-                        len(active_session_request.origin_input_ids)
-                        + int(
-                            active_session_request.sampling_params.max_new_tokens or 0
+                        ceil_align(
+                            len(active_session_request.origin_input_ids)
+                            + output_token_count,
+                            page_size,
                         )
-                        - allocated_kv_tokens,
+                        - ceil_align(allocated_kv_tokens, page_size),
                     )
             available_kv_tokens = (
                 self.bridge_scheduler.token_to_kv_pool_allocator.available_size()
                 + cache.evictable_size()
             )
             if (
-                required_kv_tokens - retained_kv_tokens + reserved_kv_tokens
+                max(
+                    0,
+                    ceil_align(required_kv_tokens, page_size)
+                    - ceil_align(retained_kv_tokens, page_size),
+                )
+                + reserved_kv_tokens
                 > available_kv_tokens
             ):
                 capacity_message = "session KV capacity exhausted"
@@ -834,6 +886,12 @@ class ARSessionBridge:
                         end=start + len(request_data.decode_input_embeds),
                         input_embeds=torch.stack(request_data.decode_input_embeds),
                     )
+                )
+            else:
+                pass
+            if unit.is_enqueued and not self.adapter.retain_completed_kv:
+                self.bridge_scheduler.tree_cache.release_session(
+                    unit.session_identity.id
                 )
             else:
                 pass

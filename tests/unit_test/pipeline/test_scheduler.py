@@ -113,6 +113,8 @@ def init_sync_request_build_state(scheduler: OmniScheduler) -> None:
     scheduler.request_build_max_pending = 0
     scheduler.pending_request_builds = {}
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
+    scheduler.session_admission_timeout_seconds = 30.0
     scheduler.backlogged_request_build_payloads = deque()
     scheduler.request_build_max_pending_observed = 0
     scheduler.async_pending = None
@@ -251,6 +253,7 @@ def test_start_runs_the_loop_on_the_top_priority_stream_only_when_asked(
     scheduler.request_build_executor = None
     scheduler.request_admission_lock = threading.RLock()
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = None
     scheduler.async_d2h_worker = None
@@ -347,6 +350,7 @@ def test_scheduler_idle_sleep_yields_to_pending_request_builds(
     scheduler.request_admission_lock = threading.RLock()
     scheduler.pending_request_builds = {}
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
     sleep_calls: list[float] = []
     monkeypatch.setattr(omni_scheduler_module.time, "sleep", sleep_calls.append)
 
@@ -399,6 +403,7 @@ def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> N
     scheduler.request_admission_lock = threading.RLock()
     scheduler.pending_request_builds = {"req": object()}
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
     scheduler.process_admin_requests = lambda: None
     scheduler.recv_requests = lambda: []
     scheduler.take_deferred_request_payloads = lambda: []
@@ -1011,6 +1016,13 @@ def enqueue_limit_scheduler(monkeypatch):
     scheduler.rust_server = None
     scheduler.max_queued_requests = 1
     scheduler.waiting_queue = []
+    scheduler.pending_request_builds = {}
+    scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
+    scheduler.backlogged_request_build_payloads = deque()
+    scheduler.running_batch = SimpleNamespace(reqs=[])
+    scheduler.pending_batches = lambda: []
+    scheduler.new_token_ratio_tracker = SimpleNamespace(current=0.7)
     scheduler.enable_hicache_storage = False
     scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
@@ -1106,7 +1118,7 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     scheduler.session_bridge = SimpleNamespace(
         units_by_request_id={"req-append": unit},
         create_session_request=create_session_request,
-        check_session_capacity=lambda request_id: None,
+        check_session_capacity=lambda request_id, **kwargs: None,
     )
 
     OmniScheduler.enqueue_built_request(
@@ -1125,6 +1137,82 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     assert capacity_checks == [
         (session_request, {"session_capacity_checked": True, "decode_path": "plain"})
     ]
+
+
+def test_session_capacity_wait_retries_the_prepared_request(monkeypatch) -> None:
+    """A transient capacity refusal used to abort the session's next turn."""
+    scheduler, _, aborts = enqueue_limit_scheduler(monkeypatch)
+    init_sync_request_build_state(scheduler)
+    scheduler.max_queued_requests = 2
+    scheduler.pending_session_admissions = {}
+    scheduler.session_admission_timeout_seconds = 30.0
+    scheduler.running_batch = SimpleNamespace(reqs=[])
+    scheduler.pending_batches = lambda: []
+    scheduler.new_token_ratio_tracker = SimpleNamespace(current=0.7)
+    request = admission_req("session-turn", [1, 2])
+    unit = SimpleNamespace(is_enqueued=False, capacity_wait_started_at=None)
+    creations = []
+    capacity_available = False
+
+    def create_session_request(payload, request_data) -> None:
+        creations.append(payload.request_id)
+        request_data.req = request
+
+    def check_capacity(request_id, **kwargs):
+        return None if capacity_available else "session KV capacity exhausted"
+
+    scheduler.session_bridge = SimpleNamespace(
+        units_by_request_id={request.rid: unit},
+        create_session_request=create_session_request,
+        check_session_capacity=check_capacity,
+        release_append_unit=lambda request_id: None,
+    )
+    request_data = SimpleNamespace(req=request, enforce_request_limits=False)
+    scheduler.enqueue_built_request(new_stage_payload(request.rid), False, request_data)
+
+    assert scheduler.waiting_queue == []
+    assert scheduler.outbox.empty()
+    assert aborts == []
+    assert scheduler.queued_admission_count() == 1
+
+    capacity_available = True
+    scheduler.drain_session_admissions()
+
+    assert scheduler.waiting_queue == [request]
+    assert creations == [request.rid]
+    assert unit.is_enqueued
+    assert scheduler.queued_admission_count() == 1
+    assert scheduler.pending_session_admissions == {}
+
+
+def test_session_native_wait_has_a_deadline_after_bridge_admission(monkeypatch) -> None:
+    """Native prefill can refuse a request that passed the bridge capacity gate."""
+    scheduler, _, _ = enqueue_limit_scheduler(monkeypatch)
+    scheduler.session_admission_timeout_seconds = 30.0
+    request = admission_req("native-wait", [1, 2, 3])
+    request.time_stats.forward_entry_time = 0.0
+    unit = SimpleNamespace(
+        request_id=request.rid,
+        session_request=request,
+        is_enqueued=False,
+        capacity_wait_started_at=None,
+    )
+    scheduler.session_bridge = SimpleNamespace(
+        units_by_request_id={request.rid: unit},
+        create_session_request=lambda payload, request_data: None,
+        check_session_capacity=lambda request_id, **kwargs: None,
+    )
+    monkeypatch.setattr(omni_scheduler_module.time, "perf_counter", lambda: 10.0)
+    scheduler.enqueue_built_request(
+        new_stage_payload(request.rid),
+        False,
+        SimpleNamespace(req=request, enforce_request_limits=False),
+    )
+    monkeypatch.setattr(omni_scheduler_module.time, "perf_counter", lambda: 41.0)
+    with envs.SGLANG_REQ_WAITING_TIMEOUT.override(-1):
+        expirations = scheduler.poll_request_timeout_aborts()
+    assert [expiration.rid for expiration in expirations] == [request.rid]
+    assert expirations[0].is_session_capacity
 
 
 def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (
@@ -1173,6 +1261,7 @@ def staging_scheduler(
     scheduler.request_build_executor = object()
     scheduler.request_build_max_pending = request_build_max_pending
     scheduler.request_build_backlog_limit = backlog_limit
+    scheduler.pending_session_admissions = {}
     scheduler.pending_request_builds = {
         rid: (object(), False, object()) for rid in pending
     }
@@ -3436,6 +3525,60 @@ def test_request_timeout_fails_only_the_expired_request(
     assert all(scheduler.outbox.empty() for scheduler in ranks[1:])
 
 
+@pytest.mark.parametrize("tp_size", [1, 2])
+@pytest.mark.parametrize("admitted", [False, True])
+def test_session_capacity_deadline_survives_native_queue_admission(
+    monkeypatch: pytest.MonkeyPatch, tp_size: int, admitted: bool
+) -> None:
+    """Capacity waiting keeps its deadline through retries and TP fanout."""
+    install_tp_broadcast(monkeypatch)
+    ranks = [tp_rank_scheduler(rank, tp_size, "waiting") for rank in range(tp_size)]
+    for scheduler in ranks:
+        expired = scheduler.waiting_queue[0]
+        expired.time_stats.forward_entry_time = 0.0
+        expired.time_stats.wait_queue_entry_time = time.perf_counter()
+        unit = SimpleNamespace(
+            request_id=expired.rid,
+            session_request=expired,
+            capacity_wait_started_at=time.perf_counter() - 31.0,
+        )
+
+        def cancel_session(request_id, scheduler=scheduler) -> None:
+            bridge = scheduler.session_bridge
+            bridge.cancelling_request_id = request_id
+            scheduler.abort(request_id)
+            bridge.units_by_request_id.pop(request_id)
+            bridge.cancelling_request_id = None
+
+        scheduler.session_bridge = SimpleNamespace(
+            cancelling_request_id=None,
+            units_by_request_id={expired.rid: unit},
+            cancel=cancel_session,
+        )
+        if not admitted:
+            scheduler.waiting_queue.pop(0)
+            scheduler.pending_session_admissions[expired.rid] = (
+                omni_scheduler_module.PendingSessionAdmission(
+                    payload=new_stage_payload(expired.rid),
+                    pending_stream_done=False,
+                    request_data=SimpleNamespace(req=expired),
+                )
+            )
+
+    with envs.SGLANG_REQ_WAITING_TIMEOUT.override(-1):
+        assert [scheduler.recv_requests() for scheduler in ranks] == [[]] * tp_size
+        assert [scheduler.recv_requests() for scheduler in ranks] == [[]] * tp_size
+
+    failure = ranks[0].outbox.get_nowait()
+    assert failure.request_id == "req-expired"
+    assert isinstance(failure.data, omni_scheduler_module.SessionCapacityExhaustedError)
+    assert all(scheduler.outbox.empty() for scheduler in ranks)
+    assert all(scheduler.pending_session_admissions == {} for scheduler in ranks)
+    assert [schedulable_request_ids(scheduler) for scheduler in ranks] == [
+        ["req-fresh"]
+    ] * tp_size
+
+
 @pytest.mark.parametrize(
     "tp_size,has_session_bridge", [(2, False), (2, True), (1, True)]
 )
@@ -4797,6 +4940,7 @@ def test_omni_scheduler_stop_runs_shutdown_callback_once() -> None:
     scheduler.running = True
     scheduler.request_admission_lock = threading.RLock()
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = lambda: shutdowns.append(None)
     scheduler.async_d2h_worker = None
@@ -4835,6 +4979,7 @@ def test_omni_scheduler_start_closes_active_model_paths(
     scheduler.request_build_executor = None
     scheduler.request_admission_lock = threading.RLock()
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = None
     scheduler.async_d2h_worker = None
@@ -5266,6 +5411,7 @@ def test_omni_scheduler_running_abort_does_not_leak_prefill_dedup_state(
     scheduler.aborted_request_id_order = collections.deque()
     scheduler.pending_request_builds = {}
     scheduler.pending_request_admissions = {}
+    scheduler.pending_session_admissions = {}
     scheduler.backlogged_request_build_payloads = []
     scheduler.waiting_queue = []
     scheduler.abort_callback = None

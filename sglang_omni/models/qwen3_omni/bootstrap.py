@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.talker_session import QwenTalkerSessionAdapter
 from sglang_omni.models.qwen3_omni.thinker_session import QwenThinkerSessionAdapter
+from sglang_omni.proto.session import DEFAULT_SESSION_ADMISSION_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
@@ -35,6 +36,7 @@ def create_thinker_scheduler(
     prefill_coalesce_when_idle: bool = False,
     operator_selected_prefill_backend: bool = False,
     continuation_aware_admission: bool = True,
+    session_admission_timeout_seconds: float = DEFAULT_SESSION_ADMISSION_TIMEOUT_SECONDS,
 ) -> "OmniScheduler[SGLangARRequestData]":
     """Create the Qwen thinker scheduler."""
     # Note (Junnan Li): The engine, runner and scheduler imports stay in the factory: this module is imported by the platform layer before a device exists.
@@ -207,6 +209,7 @@ def create_thinker_scheduler(
             else None
         ),
         continuation_aware_admission=continuation_aware_admission,
+        session_admission_timeout_seconds=session_admission_timeout_seconds,
     )
     if session_adapter is not None:
         session_adapter.outbox = scheduler.outbox
@@ -235,6 +238,7 @@ def create_talker_scheduler(
     codec_coalesce_first_frames: int = 0,
     codec_coalesce_early_frames: int = 0,
     continuation_aware_admission: bool = True,
+    session_admission_timeout_seconds: float = DEFAULT_SESSION_ADMISSION_TIMEOUT_SECONDS,
 ) -> "QwenTalkerScheduler":
     """Create the Qwen talker scheduler."""
     del speech_enabled
@@ -399,6 +403,7 @@ def create_talker_scheduler(
         enable_talker_start_topology=enable_talker_start_topology,
         im_end_token_id=root_config.im_end_token_id,
         continuation_aware_admission=continuation_aware_admission,
+        session_admission_timeout_seconds=session_admission_timeout_seconds,
     )
 
     if session_adapter is not None:
