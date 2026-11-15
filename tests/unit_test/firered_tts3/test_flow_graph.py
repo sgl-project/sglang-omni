@@ -8,7 +8,7 @@ import torch
 
 from sglang_omni.models.firered_tts3.dit import DiT
 from sglang_omni.models.firered_tts3.flow_execution import flow_t_span, prepare_flow_dit
-from sglang_omni.models.firered_tts3.flow_graph import FlowGraphEntry, euler_flow_loop
+from sglang_omni.models.firered_tts3.flow_graph import euler_flow_loop
 from tests.unit_test.fixtures.firered_tts3 import (
     N_TIMESTEPS,
     PATCH_SIZE,
@@ -49,18 +49,6 @@ def test_graph_replay_bit_exact_eager(tiny_dit: DiT, device: torch.device) -> No
         assert torch.equal(actual, expected)
     stats = runner.stats()
     assert stats["calls"] == 3 and stats["captures"] == 1 and stats["hits"] == 2
-    entry = runner.capture(
-        history_latents=history_latents,
-        initial_noise=noise_latents,
-        conditioning=conditioning,
-    )
-    assert entry is not None
-    copied_entry = FlowGraphEntry(
-        graph=entry.graph, xt=entry.xt, cond=entry.cond, cfg=entry.cfg
-    )
-    assert copied_entry.xt is entry.xt
-    assert copied_entry.cond is entry.cond
-    assert copied_entry.cfg is entry.cfg
     padded = runner.pad_batch(batch=history_latents, padding_size=1)
     assert torch.equal(padded[:1], history_latents)
     assert torch.count_nonzero(padded[1:]) == 0

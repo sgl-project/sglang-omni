@@ -102,6 +102,7 @@ def convert_to_chatml(
 
 def resolve_acoustic_instruction(
     instruction_text: str | None,
+    request_inputs: dict[str, JsonValue],
     tts_parameters: dict[str, JsonValue],
     preprocessing_parameters: dict[str, JsonValue],
 ) -> str:
@@ -127,6 +128,7 @@ def resolve_acoustic_instruction(
     value = first_not_none(
         preprocessing_parameters.get("acoustic_value"),
         tts_parameters.get("acoustic_value"),
+        request_inputs.get("speed"),
         tts_parameters.get("speed"),
         default=1.0,
     )
@@ -276,7 +278,7 @@ def compose_instruct_state(
     elif task_type == "acoustic_edit":
         audio_input_path = require_edit_source(reference_audio, task_type)
         instruction = resolve_acoustic_instruction(
-            instruction_text, tts_parameters, preprocessing_parameters
+            instruction_text, request_inputs, tts_parameters, preprocessing_parameters
         )
         reference_pad_token_id = tokenizer.convert_tokens_to_ids(
             CHATML_LATENT_IN_PAD_SYM

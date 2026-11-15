@@ -18,6 +18,8 @@ import soundfile as sf
 from tokenizers import Tokenizer, models
 from transformers import PreTrainedTokenizerFast
 
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateRequest
 from sglang_omni.models.firered_tts3.hf_config import FireRedTTS3Config
 from sglang_omni.models.firered_tts3.ref_encode import FireRedReferenceBundle
 from sglang_omni.models.firered_tts3.request_builders import (
@@ -28,7 +30,6 @@ from sglang_omni.models.firered_tts3.speaker_prompts import (
     encode_speaker_text,
     resolve_speaker_token_id,
 )
-from sglang_omni.models.firered_tts3.task_prompts import resolve_acoustic_instruction
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.utils.json import JsonValue
 from tests.unit_test.fixtures.firered_tts3 import make_speaker_tokenizer
@@ -131,31 +132,74 @@ def test_audio_prompt_slots_follow_resampled_patch_boundaries(
         )
 
 
-def test_compose_acoustic_instruction_templates() -> None:
-    assert (
-        resolve_acoustic_instruction(
-            None, {}, {"acoustic_attribute": "Speed", "acoustic_value": 0.8}
-        )
-        == "adjust the speed to 0.8x"
+@pytest.mark.parametrize(
+    "request_fields,tts_parameters,preprocessing_parameters,expected_instruction",
+    [
+        ({}, {}, {}, "adjust the speed to 0.8x"),
+        ({}, {"speed": 1.2}, {}, "adjust the speed to 0.8x"),
+        (
+            {},
+            {},
+            {"acoustic_attribute": "Speed", "acoustic_value": 1.2},
+            "adjust the speed to 1.2x",
+        ),
+        (
+            {},
+            {},
+            {"acoustic_attribute": "Volume", "acoustic_value": 1.5},
+            "adjust the volume to 1.5",
+        ),
+        (
+            {},
+            {},
+            {"acoustic_attribute": "Pitch", "acoustic_value": 2},
+            "shift the pitch by 2 steps",
+        ),
+        (
+            {},
+            {},
+            {"acoustic_attribute": "Pitch", "acoustic_value": -1},
+            "shift the pitch by -1 step",
+        ),
+        (
+            {"instructions": "adjust the volume to 0.5"},
+            {},
+            {"acoustic_attribute": "Pitch", "acoustic_value": 2},
+            "adjust the volume to 0.5",
+        ),
+    ],
+)
+def test_client_acoustic_parameters_reach_model_prompt(
+    request_fields: dict[str, JsonValue],
+    tts_parameters: dict[str, JsonValue],
+    preprocessing_parameters: dict[str, JsonValue],
+    expected_instruction: str,
+) -> None:
+    """SDK speed must reach AcousticEdit without overriding instructions or stage values."""
+    request = GenerateRequest(
+        prompt={
+            "input": "",
+            "task_type": "AcousticEdit",
+            "references": [{"audio_path": "ref.wav"}],
+            "speed": 0.8,
+            **request_fields,
+        },
+        metadata={"tts_params": tts_parameters},
+        stage_params={"preprocessing": preprocessing_parameters},
+        stream=False,
     )
-    assert (
-        resolve_acoustic_instruction(
-            None, {}, {"acoustic_attribute": "Volume", "acoustic_value": 1.5}
-        )
-        == "adjust the volume to 1.5"
+    payload = StagePayload(
+        request_id="acoustic-edit",
+        request=Client.build_omni_request(request),
+        data={},
     )
-    assert (
-        resolve_acoustic_instruction(
-            None, {}, {"acoustic_attribute": "Pitch", "acoustic_value": 2}
-        )
-        == "shift the pitch by 2 steps"
+    tokenizer = make_speaker_tokenizer()
+    state = preprocess_payload(
+        payload,
+        config=FireRedTTS3Config(use_lm_head=True, dit_in_channels=1088),
+        tokenizer=tokenizer,
     )
-    assert (
-        resolve_acoustic_instruction(
-            None, {}, {"acoustic_attribute": "Pitch", "acoustic_value": -1}
-        )
-        == "shift the pitch by -1 step"
-    )
+    assert f"{expected_instruction} /no_think" in tokenizer.decode(state.input_ids)
 
 
 def test_speaker_special_token_must_exist_in_vocabulary() -> None:

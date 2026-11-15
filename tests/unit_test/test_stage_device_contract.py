@@ -33,6 +33,7 @@ CPU_ONLY_GPU_PLACED = {
 
 
 def pipeline_config(config_cls: type[PipelineConfig]) -> PipelineConfig:
+    model_path = str(MODELS_DIR)
     profiles = {
         Qwen3OmniSessionPipelineConfig: "examples/qwen3_omni/session_h200.yaml",
         StreamingCascadePipelineConfig: "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone/launch.yaml",
@@ -40,10 +41,10 @@ def pipeline_config(config_cls: type[PipelineConfig]) -> PipelineConfig:
     if config_cls in profiles:
         profile = MODELS_DIR.parent.parent / profiles[config_cls]
         return ConfigManager.from_file(str(profile)).config.model_copy(
-            update={"model_path": "unused"}
+            update={"model_path": model_path}
         )
     else:
-        return config_cls(model_path="unused")
+        return config_cls(model_path=model_path)
 
 
 def iter_stages():
