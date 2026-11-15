@@ -70,12 +70,16 @@ QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS = 32
 
 
 class Qwen3ASRModelRunner(ModelRunner[Qwen3ASRRequestData]):
-    """The shared AR runner, opted into speculative overlap.
+    """The shared AR runner, opted into speculative overlap and, on CUDA, the shared verify repetition_penalty.
 
     Audio embeddings enter only at prefill, so a decode round reads nothing but the tokens the previous round left on the device.
     """
 
     supports_speculative_async_decode: bool = True
+    # note (wilsonzheng0327): the verify penalty is validated on CUDA only, so other platforms keep refusing repetition_penalty under the draft.
+    speculative_repetition_penalty_owner = (
+        "verify_logits" if current_platform.is_cuda() else None
+    )
 
 
 class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
