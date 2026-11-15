@@ -23,7 +23,7 @@ import (
 // why it failed), what it worked on, a Rewrite conversation's turns.
 func (a *app) openAnswer(s session.Snapshot) {
 	card := answerCard{
-		open: true, id: s.ID, kind: s.Kind, text: s.Result, title: s.Title, target: s.Target,
+		open: true, id: s.ID, conv: s.ID, kind: s.Kind, text: s.Result, title: s.Title, target: s.Target,
 		input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage, llmID: s.LLM.ID,
 		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name),
 	}
@@ -44,7 +44,7 @@ func (a *app) openAnswer(s session.Snapshot) {
 		// A follow-up continues the card's conversation (a translation's
 		// too: its card turns into Rewrite's).
 		if a.followUp != "" && a.answer.id == a.followUp {
-			card.turns = append(card.turns, a.answer.turns...)
+			card.turns, card.conv = append(card.turns, a.answer.turns...), a.answer.conv
 			card.conversation, card.quotesOpen = a.answer.conversation, a.answer.quotesOpen
 			if card.why == "" {
 				card.why = a.answer.why
@@ -111,7 +111,7 @@ func (a *app) retryAnswer(lang string) {
 		return
 	}
 	if card.kind == store.KindRewrite && len(card.turns) > 0 {
-		req.Previous = card.turns
+		req.Previous, req.Conversation = card.turns, card.conv
 		if card.problem == nil {
 			return // nothing to ask again
 		}
@@ -133,7 +133,7 @@ func (a *app) retryAnswer(lang string) {
 // with its thinking level: it stays in the card, which shows its text
 // until the new one comes (Voxt's).
 func (a *app) redoAnswer(req session.StartRequest) {
-	req.Card = true
+	req.Card, req.Conversation = true, a.answer.conv
 	a.answer.msg = ""
 	if n := a.sessionBlocker(req.Kind); n != nil {
 		a.answer.msg = n.text
@@ -162,7 +162,7 @@ func (a *app) followUpAnswer(hold string) bool {
 	}
 	card := a.answer
 	a.followUp = card.id
-	if n := a.startSession(session.StartRequest{Kind: store.KindRewrite, Target: card.target, HoldBinding: hold, Previous: card.turns}); n != nil {
+	if n := a.startSession(session.StartRequest{Kind: store.KindRewrite, Target: card.target, HoldBinding: hold, Previous: card.turns, Conversation: card.conv}); n != nil {
 		a.followUp = ""
 	} else {
 		// The card turns into a conversation, where the follow-up records
@@ -188,8 +188,33 @@ func (a *app) closeAnswer() {
 		a.cancelSession()
 	}
 	a.answer, a.followUp = answerCard{}, ""
+	a.resurface()
 	a.syncHotkeys()
 	a.overlaySync()
+}
+
+// setAside clears the card for a new session that is not its follow-up.
+// A card that holds an answer waits under the new session, and comes back
+// when that session leaves no card (#4013): a transcription in between, or
+// a Rewrite in another app, no longer loses it. One waits: a newer one
+// takes its place. A try (a settings page's) clears it, as before.
+func (a *app) setAside(try bool) {
+	c := a.answer
+	if held := c.kind == store.KindRewrite && len(c.turns) > 0 || c.kind == store.KindTranslate && c.text != ""; !try && c.open && held && c.problem == nil && !c.inserting {
+		c.msg, c.langOpen, c.thinkMenu, c.pillMenu, c.copied, c.redo, c.redoLang, c.redoThink = "", false, false, false, false, "", "", nil
+		a.under = c
+	}
+	a.answer = answerCard{}
+}
+
+// resurface brings the card under back once no card shows and no session
+// runs, and says whether it did.
+func (a *app) resurface() bool {
+	if !a.under.open || a.answer.open || a.sess.State.Live() {
+		return false
+	}
+	a.answer, a.under = a.under, answerCard{}
+	return true
 }
 
 // cardSessionLive says whether the session running is the card's own: a

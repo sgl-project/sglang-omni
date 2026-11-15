@@ -29,6 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **An open answer card waits while you do something else** (#4013): with an answer card open, a transcription, a translation or a new Rewrite no longer throws the card away. The card steps aside and comes back when the new task leaves no card: the transcription is done or cancelled, or you close or insert the new card. Only one card waits; a newer one takes its place. A notice from the transcription, such as nothing heard, shows first. The Rewrite shortcut follows up the card only in the card's app; in another app it starts a new conversation, so the language model no longer gets the other app's conversation. The card's Continue still follows up from any app. History now notes which conversation each entry belongs to, on this Mac only, for counting.
 - **Wait for the language model takes your own number of minutes** (#3941): besides Automatic, 1, 2, 5 and 10 minutes, the setting on the Language models page has Custom…, which shows a minutes field. Type or step any whole number from 1 to 60, and Voxt waits at least that long for Transcribe, Translate and Rewrite, as with the presets. A number outside 1 to 60 is not saved. Settings saved before keep their wait.
 - **Faster transcription is a switch** (#3873): on a speech model's card in Speech models, Faster transcription now has a switch, and its ⓘ says it needs a draft model and how large it is. The switch decides whether the model uses the draft. Downloading the draft no longer turns it on, and turning it off keeps the draft on disk without using it. With the switch on and no draft, the card asks you to download it. If you downloaded the draft in 2.0.2 or 2.0.3, the switch starts on.
 - **The speech model loads before the first dictation**: Voxt now loads Transcribe's on-device speech model when it starts and when you choose another one, instead of at the first press of the shortcut. The first live text after a launch or a change of model no longer waits for the load (0.2 to 0.5 s on an M-series Mac with 36 GB, longer on a busy Mac or one with less memory). The model leaves memory after 10 idle minutes, as before.
@@ -90,6 +91,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **答案卡片开着时可以先做别的事**（#4013）：答案卡片开着时转录、翻译或开始一段新的改写，卡片不再被丢掉。它先收起来，等新的事做完、没有卡片留下时自己回来：转录完成或取消，或者你关掉、插入了新卡片。只留一张，更新的会顶掉它。转录的提示（比如没听到声音）先显示。改写快捷键只在卡片所在的 App 里追问；在别的 App 里按是新对话，语言模型不会再收到另一个 App 的对话。卡片上的“继续”在任何 App 里都还是追问。历史会记下每条属于哪段对话，只存在这台 Mac 上，用来统计。
 - **“等待语言模型”可以自己填分钟数**（#3941）：语言模型页的这个设置除了自动、1、2、5、10 分钟，多了“自定义…”，选它后旁边出现分钟数输入框。填或点加减到 1 到 60 之间的整数，转录、翻译、改写就至少等这么久，和预设一样。超出 1 到 60 的数不保存。以前存的设置照旧。
 - **转录加速改成开关**（#3873）：语音识别模型页里，模型卡片上的“转录加速”现在是一个开关，旁边的 ⓘ 说明它需要一个草稿模型以及草稿有多大。开关决定模型用不用草稿：下载草稿不会再自动打开它，关掉开关时草稿留在磁盘上但不用。开关打开而还没有草稿时，卡片会提示下载。在 2.0.2 或 2.0.3 里下载过草稿的，开关一开始是开着的。
 - **语音识别模型在第一次听写前就加载好**：Voxt 启动时、换语音识别模型时就加载转录用的本地模型，不再等到第一次按快捷键。启动后和换模型后的第一次实时文字不用再等加载（36 GB 的 M 系列 Mac 上是 0.2 到 0.5 秒，机器忙或内存小时更久）。模型空闲 10 分钟后照旧从内存卸载。

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -404,7 +405,7 @@ func (r *run) keep(s Snapshot, status store.Status) {
 		return
 	}
 	e := store.Entry{
-		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status,
+		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status, Conversation: cmp.Or(r.req.Conversation, r.id),
 		AppBundle: s.Target.BundleID, AppName: s.Target.Name,
 		RawText: s.Raw, Result: s.Result, SourceText: s.Selection, TargetLang: s.TargetLanguage,
 		ASRProvider: s.ASR.ID, ASRModel: s.ASR.Model, LLMProvider: s.LLM.ID, LLMModel: s.LLM.Model,

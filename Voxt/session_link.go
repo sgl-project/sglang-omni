@@ -51,6 +51,9 @@ type sessionState struct {
 	sess session.Snapshot
 	// answer is the answer card: open while a result waits there.
 	answer answerCard
+	// under is the card a new session took the place of: it comes back
+	// when that session leaves no card (resurface, #4013).
+	under answerCard
 	// notice is the overlay's one-line message, when it shows one;
 	// noticeSeq numbers them, so that a notice's timer hides only itself.
 	notice    *sessionNotice
@@ -75,6 +78,7 @@ type sessionState struct {
 type answerCard struct {
 	open      bool
 	id        string // the session whose result it shows
+	conv      string // the first session of its conversation (store.Entry.Conversation)
 	kind      store.Kind
 	text      string
 	title     string // Rewrite's answer title ("" for none)
@@ -137,6 +141,7 @@ type sessionNotice struct {
 	warn       bool   // a warning (the session went on), not an error
 	ok         bool   // done as asked (a term added), not a problem
 	seq        int    // which notice: its timer hides only itself
+	over       bool   // shows before the card that came back as its session ended (#4013)
 	// then runs when its time is up (not when a click or the next
 	// session hides it): the notice that follows it.
 	then func()
@@ -298,12 +303,13 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.openAnswer(s)
 		a.syncHotkeys() // the cancel shortcut closes the card
 	}
+	back := a.resurface()
 	var copied *sessionNotice
 	if !s.Card && !s.Inserted && s.Delivery != "" && s.Result != "" && s.State == session.Done {
 		// Not inserted and the card is off: the clipboard has it (Voxt 1.x).
 		a.copyRecent(s.Result)
 		// One short line: a notice is one line, cut past NoticeW2.
-		copied = &sessionNotice{text: i18n.T("Not inserted. Copied: press ⌘V to paste."), warn: true}
+		copied = &sessionNotice{text: i18n.T("Not inserted. Copied: press ⌘V to paste."), warn: true, over: back}
 	}
 	if s.ID != "" && a.followUp != "" && !s.Card {
 		a.followUp = "" // a follow-up that ended without an answer: the card keeps the last one
@@ -321,7 +327,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		}
 		if text != "" {
 			// Nothing heard is not a failure: a warning.
-			n := sessionNotice{text: text, more: more, action: action, warn: p.Degraded || p.Code == session.ProblemNoSpeech}
+			n := sessionNotice{text: text, more: more, action: action, warn: p.Degraded || p.Code == session.ProblemNoSpeech, over: back}
 			if p.Code == session.ProblemASR && s.Recording {
 				n.action, n.entry = actionRetry, s.ID // the entry kept the recording: Retry
 			}

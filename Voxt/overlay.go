@@ -170,6 +170,8 @@ func (a *app) overlayModeNow() overlayMode {
 	live := s.State.Live() && !s.Try
 	card := a.answer.open && (!live || a.cardSessionLive())
 	switch {
+	case a.notice != nil && a.notice.over:
+		return ovNotice // the card that came back shows when the notice goes
 	case card && a.answer.inserting:
 		return ovHidden // Insert pastes: the card comes back if it could not (Voxt's)
 	case card, live && a.writingAnswer():
