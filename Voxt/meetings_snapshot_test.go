@@ -25,8 +25,6 @@ import (
 func TestSnapshotsMeetings(t *testing.T) { runSnapshots(t, "VOXTNEW_SNAPSHOTS", snapshotsMeetings) }
 
 func snapshotsMeetings(t *testing.T, out string) {
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
 	for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}} {
 		for _, run := range []struct {
 			lang string

@@ -42,8 +42,6 @@ func TestTrayIcons(t *testing.T) {
 
 func TestTrayMeetingStatus(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
 	a.openMeetings()
 	if a.trayShowsRecording() {
 		t.Fatal("idle icon at rest")

@@ -36,7 +36,7 @@ func (a *app) meetingOverlayCollapsed() bool {
 }
 
 func (a *app) syncMeetingOverlay() {
-	if !a.overlayNative() || !a.meetingEnabled() {
+	if !a.overlayNative() {
 		return
 	}
 	show := a.meetingActive() || a.meetSnap.State == meeting.StateFinishing
