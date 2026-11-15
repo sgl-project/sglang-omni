@@ -62,6 +62,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Dictation goes into Raycast and other launcher panels**: a panel that takes the keyboard without bringing its app to the front (Raycast, Tinycast) got nothing and Voxt showed the answer card instead. The text is now pasted into the panel's field.
 - **Meetings no longer record the other side again as you** (#3982, development builds): with the call on the speakers, the microphone picked up the other people's words and the transcript showed them twice, once as Other and again as Me. A Me line that mostly repeats what the system audio said at the same time is now left out, in the live transcript and in the one made after the meeting. The recordings keep all the audio.
 - **A meeting's live transcript no longer repeats the last 10 minutes** (development builds, #3983): every 10 minutes Voxt starts a new recognition stream for each track, and the old stream's final text, which covers those 10 minutes again in other words, was added as one more segment. Now only the words the live transcript had not added yet go in.
+- **The meeting overlay can be dragged** (development builds, #3984): drag its background or top bar to move it off the meeting window. It stays where you put it as the transcript updates and when you expand or collapse it, kept on the screen it is on. The next meeting starts at the bottom centre again.
 - **Meeting live text no longer repeats a sentence after a pause** (development builds): when the model changed the last words of a sentence after Voxt had shown it, the next live line started the whole sentence again. Now it shows only the words after the part that stayed the same. The transcript made after the meeting was not affected.
 - **System dictation keeps what was said before a pause**: some macOS versions restart their speech recognition after a short pause, and the result held only the words after it, in History and in the app the text went to. Voxt now keeps each part and joins them.
 - **One Escape closes a dialog** (History settings, the setup guide, Network, a language model's settings): with the keyboard focus on a button that shows a tip, such as the dialog's ×, the first Escape only hid the tip and the second closed the dialog.
@@ -134,6 +135,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **会议也按主语言识别**：会议的实时字幕和会后整理的转录稿，现在和听写一样把主语言（设置 → 通用 → 主语言，比如简体中文或繁体中文）告诉语音识别模型。以前会议不告诉模型，由模型自己猜语言。简体还是繁体仍由模型决定，Voxt 不做简繁转换。
 - **听写的文字能输入到 Raycast 等启动器的面板里**：Raycast、Tinycast 这类面板接管键盘，但它们的 App 不到前台，以前文字进不去，Voxt 改为弹出结果卡片。现在文字会粘贴到面板的输入框里。
 - **会议实时转录不再把前 10 分钟再出一遍**（开发版，#3983）：会议每 10 分钟给每一路声音换一次识别，旧的那次识别收尾时会把这 10 分钟重新识别一遍，措辞和实时文字不一样，以前整段被当成新的一段加进转录。现在只加实时转录里还没有的字。
+- **会议浮窗可以拖动**（开发版，#3984）：按住浮窗的背景或顶栏拖开，不再挡住会议窗口。字幕更新、展开或收起时，浮窗留在拖到的位置，并保持在所在屏幕内。下一次会议仍从屏幕底部中间出现。
 - **会议实时文字停顿后不再重复整句**（开发版）：Voxt 已经显示一句话之后，模型又改了句尾几个字，下一行实时文字会把整句从头再出一遍。现在只显示没变的那部分之后的字。会议结束后生成的转录稿不受影响。
 - **系统听写不再丢掉停顿之前说的话**：有些 macOS 版本在短暂停顿后会重新开始识别，结果里只剩停顿之后的话，历史记录和输入的 app 里都一样。现在 Voxt 把每一段都留下，再接起来。
 - **按一次 Esc 就能关对话框**（历史设置、设置引导、网络、语言模型的设置）：焦点在带提示的按钮上时（比如对话框右上角的 ×），第一次 Esc 只收起提示，第二次才关掉对话框。
