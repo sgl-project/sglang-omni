@@ -1645,5 +1645,10 @@
   "min": "分钟",
   "The length limit stops the recording in %s": "%s 后到达时长上限，录音会停止",
   "Over the upload size limit: Voxt sends the recording in pieces": "已超过上传大小上限：Voxt 会分段发送录音",
-  "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音"
+  "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音",
+  "Show or hide the key": "显示或隐藏密钥",
+  "The key has %d space or line break in it, removed when you test or save.": "密钥中间有 %d 个空格或换行，测试或保存时会去掉。",
+  "The key has %d spaces or line breaks in it, removed when you test or save.": "密钥中间有 %d 个空格或换行，测试或保存时会去掉。",
+  "The saved key has a space or line break in it, so the service refuses it. Paste the key again.": "已保存的密钥里有空格或换行，服务会拒绝它。请重新粘贴密钥。",
+  "Key has a space": "密钥里有空格"
 }

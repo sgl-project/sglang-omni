@@ -13,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/secrets"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -29,6 +30,7 @@ type providerDialog struct {
 	recognitionPrompt  string
 	err, errMore       string // a save or check error
 	saving, removeKey  bool
+	showKey            bool // the typed key in clear
 	test               providerTest
 	gen                genForm // a language model's generation settings (remote_generation.go)
 	// was is the setup the dialog opened with: a click beside the dialog,
@@ -130,7 +132,8 @@ func (a *app) providerDialogView(c *ui.Context) {
 		if sv.signIn {
 			a.chatgptFields(c, d) // remote_chatgpt.go
 		}
-		mask := a.keyMasks[providers.Account(d.kind, d.id)]
+		acct := providers.Account(d.kind, d.id)
+		mask := a.keyMasks[acct]
 		keyInfo := i18n.T("Saved in this Mac's Keychain.")
 		if sv.keyOptional {
 			keyInfo = i18n.T("Optional for a server on this Mac. Saved in this Mac's Keychain.")
@@ -142,13 +145,31 @@ func (a *app) providerDialogView(c *ui.Context) {
 					if mask != "" && !d.removeKey {
 						ph = i18n.T("Saved: %s · paste a new one to replace it", mask)
 					}
-					ui.TextInput(c.Key("remote-key"), &d.key).Password().Placeholder(ph).Label(i18n.T("API key")).Grow(1).MinWidth(0)
+					in := ui.TextInput(c.Key("remote-key"), &d.key).Placeholder(ph).Label(i18n.T("API key")).Grow(1).MinWidth(0)
+					if !d.showKey {
+						in.Password()
+					}
+					if d.key != "" {
+						show := i18n.T("Show")
+						if d.showKey {
+							show = i18n.T("Hide")
+						}
+						if ghostButton(c.Key("remote-key-show"), show).Label(i18n.T("Show or hide the key")).Clicked() {
+							d.showKey = !d.showKey
+						}
+					}
 					if mask != "" && !d.removeKey && ghostButton(c.Key("remote-key-remove"), i18n.T("Remove")).Label(i18n.T("Remove saved key")).Clicked() {
 						d.removeKey, d.key = true, ""
 					}
 				})
-				if d.removeKey {
+				_, inner := secrets.Clean(d.key)
+				switch {
+				case d.removeKey:
 					caption(c, i18n.T("The saved key is removed when you save."))
+				case inner > 0:
+					caption(c, i18n.N(inner, "The key has %d space or line break in it, removed when you test or save.", "The key has %d spaces or line breaks in it, removed when you test or save.", inner)).TextColor(tok(t).Warning)
+				case d.key == "" && a.keySpaced[acct]:
+					caption(c, i18n.T("The saved key has a space or line break in it, so the service refuses it. Paste the key again.")).TextColor(tok(t).Warning)
 				}
 			})
 		}
@@ -257,7 +278,8 @@ func (a *app) testDialog() {
 	if d.err, d.errMore = d.check(p); d.err != "" {
 		return
 	}
-	typed, remove, kr, acct := strings.TrimSpace(d.key), d.removeKey, a.keys, providers.Account(d.kind, d.id)
+	typed, _ := secrets.Clean(d.key)
+	remove, kr, acct := d.removeKey, a.keys, providers.Account(d.kind, d.id)
 	a.testProvider(d.kind, p, func() (string, error) {
 		switch {
 		case typed != "":
@@ -277,7 +299,8 @@ func (a *app) saveProviderDialog() {
 	if d.err, d.errMore = d.check(p); d.err != "" {
 		return
 	}
-	key, remove, kind := strings.TrimSpace(d.key), d.removeKey, d.kind
+	key, _ := secrets.Clean(d.key)
+	remove, kind := d.removeKey, d.kind
 	sv, acct := lookupService(kind, p.ID), providers.Account(kind, p.ID)
 	label := "Voxt " + sv.name + " API key"
 	d.saving = true
@@ -299,8 +322,10 @@ func (a *app) saveProviderDialog() {
 			switch {
 			case key != "":
 				a.keyMasks[acct] = maskKey(key)
+				delete(a.keySpaced, acct)
 			case remove:
 				a.keyMasks[acct] = ""
+				delete(a.keySpaced, acct)
 			}
 			delete(a.provTests, acct)
 			a.updateSettings(func(s *settings.Settings) {
@@ -338,6 +363,7 @@ func (a *app) removeProvider() {
 				return
 			}
 			a.keyMasks[acct] = ""
+			delete(a.keySpaced, acct)
 			delete(a.provTests, acct)
 			a.updateSettings(func(s *settings.Settings) {
 				if kind == local.ASR {
