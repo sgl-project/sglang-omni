@@ -98,6 +98,13 @@ Supporting events used for finer-grained breakdown:
 | Drama 3 vocoder | `drama3_vocoder_window_decode_started` | Each streaming window's decode start, and the tail flush's when frames remain after the last window: `window_index`, `chunk_id` (the stream chunk that completed the window, -1 for frames only the final result holds and for the tail), `is_final`, `emitted_frames`, `decoded_frames` (with the overlap context) and `emitted_audio_s` (audio the earlier windows produced) |
 | Drama 3 vocoder | `drama3_vocoder_window_decode_finished` | Repeats the start metadata once the window's audio chunk is built. The span from the start event is the scheduler thread's wall time for the window, not GPU decode time alone: it includes copying the audio to the host and serializing it, and for the tail flush, building the request's final result |
 
+With the incremental vocoder, windows of several streams are decoded in one
+CUDA graph replay. Every window in that group carries the whole batch decode in
+its started-to-finished span, plus its own audio-chunk serialization, not just
+one window's GPU time. The incremental path has no overlap context, so
+`decoded_frames` equals `emitted_frames`; its last window is decoded in a group
+too and is marked `is_final=1` with `chunk_id=-1`.
+
 Read `d2h_wait_ns` narrowly. With output overlap on, the lazy codec-EOS scan
 calls `.tolist()` on the staged frame heads, which is itself a host
 synchronization point, and it runs before `code2wav_decode_start`. So
