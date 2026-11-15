@@ -1666,5 +1666,10 @@
   "Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing.": "你的提示词里没有 {{TARGET_LANGUAGE}}，这个菜单不起作用。",
   "Add {{TARGET_LANGUAGE}} to the prompt": "在提示词里加上 {{TARGET_LANGUAGE}}",
   "Translate the text into {{TARGET_LANGUAGE}}.": "把文字翻译成{{TARGET_LANGUAGE}}。",
-  "Target language for Translate": "翻译的目标语言"
+  "Target language for Translate": "翻译的目标语言",
+  "Show or hide the key": "显示或隐藏密钥",
+  "The key has %d space or line break in it, removed when you test or save.": "密钥中间有 %d 个空格或换行，测试或保存时会去掉。",
+  "The key has %d spaces or line breaks in it, removed when you test or save.": "密钥中间有 %d 个空格或换行，测试或保存时会去掉。",
+  "The saved key has a space or line break in it, so the service refuses it. Paste the key again.": "已保存的密钥里有空格或换行，服务会拒绝它。请重新粘贴密钥。",
+  "Key has a space": "密钥里有空格"
 }

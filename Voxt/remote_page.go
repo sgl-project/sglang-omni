@@ -159,6 +159,8 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 				keyText = "…"
 			case missing != "":
 				keyText, keyCol = state, k.Warning
+			case a.keySpaced[acct]:
+				keyText, keyCol = i18n.T("Key has a space"), k.Warning
 			case mask == "":
 				keyText, keyCol = i18n.T("No key"), k.Text3
 			}
