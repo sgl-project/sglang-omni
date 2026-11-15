@@ -14,8 +14,10 @@ from sglang.srt.managers.schedule_policy import (
     CLIP_MAX_NEW_TOKENS,
     AddReqResult,
     PrefillAdder,
+    SchedulePolicy,
 )
 from sglang.srt.runtime_context import get_schedule
+from typing_extensions import Unpack
 
 from sglang_omni.models.yue2.model_runner import rewind_sampling
 from sglang_omni.models.yue2.request import ABC_END
@@ -28,7 +30,7 @@ from sglang_omni.models.yue2.sglang_request_builder import (
 )
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler, OmniSchedulerArguments
 
 
 def request_data(req: Req) -> Yue2ARRequestData | None:
@@ -124,9 +126,36 @@ class Yue2PrefillAdder(PrefillAdder):
         req.lock = None
 
 
+class Yue2SchedulePolicy(SchedulePolicy):
+    """Order the waiting queue by the configured policy, keeping each CFG pair together."""
+
+    def calc_priority(
+        self,
+        waiting_queue: list[Req],
+        running_batch: ScheduleBatch | None = None,
+        processed_tokens: int = 0,
+    ) -> None:
+        super().calc_priority(waiting_queue, running_batch, processed_tokens)
+        # note (ruiling): a policy such as random places each row alone, and the prefill row cap then admits rows of different requests.
+        waiting_queue[:] = paired_queue(waiting_queue)
+
+
 class Yue2Scheduler(OmniScheduler[Yue2ARRequestData]):
     request_builder: Yue2RequestBuilder
     decoding_batch: ScheduleBatch | None = None
+
+    def __init__(
+        self, **kwargs: Unpack[OmniSchedulerArguments[Yue2ARRequestData]]
+    ) -> None:
+        super().__init__(**kwargs)
+        policy = self.policy
+        self.policy = Yue2SchedulePolicy(
+            self.schedule_policy,
+            policy.tree_cache,
+            policy.enable_hierarchical_cache,
+            policy.enable_priority_scheduling,
+            policy.schedule_low_priority_values_first,
+        )
 
     def enqueue_built_request(
         self,

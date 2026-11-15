@@ -30,6 +30,7 @@ from sglang_omni.models.yue2.request import (
 )
 from sglang_omni.models.yue2.scheduler import (
     Yue2PrefillAdder,
+    Yue2SchedulePolicy,
     Yue2Scheduler,
     paired_queue,
 )
@@ -223,6 +224,21 @@ def test_cfg_twin_is_sorted_with_its_request_under_priority_scheduling(
     scheduler.enqueue_unconditional(guided.omni_data, twin.omni_data)
     sort_by_priority(scheduler.waiting_queue)
     assert [req.rid for req in scheduler.waiting_queue] == ["a", "b", "b-cfg"]
+
+
+def test_cfg_pairs_stay_together_when_the_policy_reorders_the_queue(
+    builder: Yue2RequestBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """schedule_policy=random placed each row alone, so a prefill batch capped at two rows took rows of two requests."""
+    queue = [*cfg_pair(builder, "a"), *cfg_pair(builder, "b")]
+
+    def calc_priority(policy, waiting_queue, running_batch, processed_tokens) -> None:
+        # An order random.shuffle can produce.
+        waiting_queue[:] = [waiting_queue[index] for index in (2, 0, 3, 1)]
+
+    monkeypatch.setattr(SchedulePolicy, "calc_priority", calc_priority)
+    object.__new__(Yue2SchedulePolicy).calc_priority(queue)
+    assert [req.rid for req in queue] == ["b", "b-cfg", "a", "a-cfg"]
 
 
 @pytest.mark.parametrize("retraction_order", [[0], [1], [0, 1], [1, 0]])
