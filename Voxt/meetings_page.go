@@ -411,8 +411,12 @@ func (a *app) meetingRow(c *ui.Context, mt store.Meeting, q string, at int) {
 			})
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
 				markedText(c, texts[1], q, curIn(at, len(findFolded(title, q)))).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
-				if mt.DurationMS > 0 {
-					ui.Text(c, meetingDuration(mt.DurationMS)).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Shrink(0)
+				ms := mt.DurationMS
+				if mt.ID == a.meetSnap.ID && a.meetSnap.State.Active() {
+					ms = a.meetSnap.Elapsed.Milliseconds() // the store has no length until it ends
+				}
+				if ms > 0 {
+					ui.Text(c, meetingDuration(ms)).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Shrink(0)
 				}
 			})
 		})
