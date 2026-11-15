@@ -183,7 +183,7 @@
   "Audio": "音频",
   "Automatic clean-up": "自动清理",
   "Automatic": "自动",
-  "Automatic is English, or Chinese when your main language is English.": "“自动”译成英语；主要语言是英语时译成中文。",
+  "Automatic is English, or Chinese when your main language is English. Text that is all in the target language goes into your main language.": "“自动”译成英语；主要语言是英语时译成中文。整段已经是目标语言的文字，会译成你的主要语言。",
   "Automatic uses the recommended speech model and your first language model. With no speech model installed, it uses a remote speech service you set up.": "“自动”使用推荐的语音识别模型和你设置的第一个语言模型。没装语音识别模型时，会用你设置的远程语音识别服务。",
   "Automatic (now: %s)": "自动（现在用：%s）",
   "Back": "上一步",

@@ -117,6 +117,10 @@ type Input struct {
 	MainLanguage   string
 	OtherLanguages []string
 	TargetLanguage string
+	// BackLanguage is what Translate writes in instead when all of Text is
+	// already in TargetLanguage (the main language, #4024): the model can
+	// tell languages apart that share a script. "" for none.
+	BackLanguage string
 	// Text is the input: the recognised speech (Transcribe, Translate),
 	// the selection (Translate with Selected, Rewrite; "" when Rewrite
 	// writes from scratch).
@@ -289,7 +293,11 @@ func Build(in Input) (Output, error) {
 			add("input", render("input-speech", nil))
 			add("form", render("form", nil))
 		}
-		add("task", render("task-translate", nil))
+		back := ""
+		if b := strings.TrimSpace(in.BackLanguage); b != "" && lang.Canonical(b) != lang.Canonical(in.TargetLanguage) {
+			back = LanguageName(b, set)
+		}
+		add("task", render("task-translate", map[string]string{"BACK_LANGUAGE": back}))
 		if in.Strict {
 			add("strict", render("strict", nil))
 		}

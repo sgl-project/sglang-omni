@@ -48,7 +48,7 @@ func (a *app) translateSettings(c *ui.Context) {
 	}
 	u.lang = cur // the settings say; a choice saves at once
 	settingRow(c, "tl-target", i18n.T("Translate into"),
-		i18n.T("Automatic is English, or Chinese when your main language is English."), func() {
+		i18n.T("Automatic is English, or Chinese when your main language is English. Text that is all in the target language goes into your main language."), func() {
 			if ui.Select(c.Key("tl-target-sel"), &u.lang, opts).Label(i18n.T("Target language")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Changed() {
 				code := ""
 				if j := slices.Index(opts, u.lang); j > 0 && j <= len(compose.TargetLanguages) {
