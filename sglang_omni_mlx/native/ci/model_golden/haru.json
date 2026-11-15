@@ -4,7 +4,8 @@
   "tool": "haru_session_probe",
   "cases": {
     "seed42": {
-      "seed": 42
+      "seed": 42,
+      "quantize": 8
     }
   },
   "devices": {
@@ -17,7 +18,8 @@
             1683,
             424,
             579
-          ]
+          ],
+          "audio_sha256": "942532b299087bd114744d07e4fca52df9f42b20f396e96c974977e80d30835f"
         }
       }
     }
