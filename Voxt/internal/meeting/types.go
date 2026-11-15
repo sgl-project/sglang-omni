@@ -118,7 +118,8 @@ type Config struct {
 	VAD vad.Model
 	// LLM opens the language model for summary and live translation.
 	LLM func(ctx context.Context, id string) (SummaryChat, error)
-	// MainLanguage names the user's primary language for summary prompts.
+	// MainLanguage names the user's primary language for summary prompts;
+	// "" writes them in the transcript's language.
 	MainLanguage func() string
 }
 
