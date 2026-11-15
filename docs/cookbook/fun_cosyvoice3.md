@@ -116,9 +116,7 @@ For Intel GPUs, follow the [Fun-CosyVoice3 XPU recipe](../other_platforms/instal
 
 ### Zero-shot Voice Cloning
 
-CosyVoice3 clones a voice from a short reference audio clip. `ref_audio` can be a local path, file URL, data URL, or HTTP URL. `ref_text` (the transcript of the reference clip) is optional but recommended for better alignment.
-
-1. Using CURL:
+CosyVoice3 clones a voice from a short reference audio clip. `ref_audio` can be a local path, file URL, data URL, or HTTP URL. `ref_text` (the transcript of the reference clip) is optional but recommended for better alignment. The flags its two modes select, and the client examples, are in [Voice cloning in TTS Model Usage](../basic_usage/tts.md#voice-cloning).
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -132,30 +130,11 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-2. Using Python:
-
-```python
-import requests
-
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-        "input": "Get the trust fund to the bank early.",
-        "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-        "ref_text": "We asked over twenty different people, and they all said it was his.",
-    },
-)
-resp.raise_for_status()
-with open("output.wav", "wb") as f:
-    f.write(resp.content)
-```
+The same request through the Python or OpenAI SDK clients is in the [TTS client examples](../basic_usage/tts.md#python).
 
 ### Cross-lingual Synthesis
 
-CosyVoice3 supports cross-lingual voice cloning where the reference speaker speaks a different language than the synthesis text. Omit `ref_text` to enter cross-lingual mode.
-
-1. Using CURL:
+CosyVoice3 supports cross-lingual voice cloning, where the reference speaker speaks a different language than the synthesis text: omit `ref_text` to enter that mode.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -166,24 +145,6 @@ curl -X POST http://localhost:8000/v1/audio/speech \
     "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
   }' \
   --output output.wav
-```
-
-2. Using Python:
-
-```python
-import requests
-
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-        "input": "今天天气真好，我们一起出去散步吧。",
-        "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-    },
-)
-resp.raise_for_status()
-with open("output.wav", "wb") as f:
-    f.write(resp.content)
 ```
 
 ### Instruction-based Style Control
@@ -220,15 +181,17 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ### Streaming
 
-Incremental Flow + HiFT decoding supports streaming. Set `stream: true` and `response_format: "pcm"` to emit audio before AR generation completes. The vocoder uses CosyVoice3's causal chunk loop: 25 speech tokens per hop (~1 s of audio). The first PCM chunk is emitted once AR produces `28 + prompt_pad` tokens (where `prompt_pad` rounds the Flow prompt length to a 25-token multiple). Later hops grow from 25 to 50 to 100 tokens in vocoder to increase batching efficiency without affecting audio continuity or real-time factor, only the decoding granularity changes, not the total synthesis time. The scheduler processes at most one hop per request per step to prevent backlogged streams from monopolizing the GPU. Non-streaming requests decode the entire utterance in one pass.
+Incremental Flow + HiFT decoding supports streaming. Set `stream: true` and `response_format: "pcm"` to emit audio before AR generation completes; the shared raw PCM and SSE clients are in [TTS Model Usage](../basic_usage/tts.md#streaming).
 
-Optional serving knobs (vocoder factory):
+The vocoder uses CosyVoice3's causal chunk loop: 25 speech tokens per hop (`pre_lookahead_len=3`, 25 Hz, about 1 s of audio). The first PCM chunk is emitted once AR produces `28 + prompt_pad` tokens, where `prompt_pad` (0 to 24) rounds the Flow prompt length to a 25-token multiple. Later hops grow from 25 to 50 to 100 tokens, as upstream `CosyVoice3Model` does, which raises batching efficiency without affecting audio continuity or the real-time factor; only the decoding granularity changes, not the total synthesis time. The scheduler processes at most one hop per request per step, so a backlogged stream cannot monopolize the GPU. Non-streaming requests decode the entire utterance in one pass.
+
+Optional serving knobs (vocoder factory; keep `tts_engine.factory.token_hop_len` in sync when you change the hop):
 
 | Factory arg | Default | Notes |
 |---|---|---|
-| `token_hop_len` | `25` | Base hop size; must match training chunk size |
+| `token_hop_len` | `25` | Base hop and AR follow-up flush; must match the training chunk size |
 | `token_max_hop_len` | `100` | Cap for `25 → 50 → 100` growth |
-| `disable_hop_growth` | `false` | Leave off; growth ON performs better at high concurrency |
+| `disable_hop_growth` | `false` | Leave off unless running an A/B; growth on performed better at concurrency 16 |
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -246,6 +209,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 ## Generation Parameters
 
+These defaults are Fun-CosyVoice3's own; the fields every TTS model shares are in the [shared request parameters](../basic_usage/tts.md#request-parameters).
+
 | Parameter | Default | Notes |
 |---|---|---|
 | `model` | served model | Served model identifier |
@@ -261,6 +226,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
+
+Sampling is repetition-aware, as in upstream CosyVoice: a sampled speech token that already appears among the last 10 generated tokens is masked and redrawn once from the full distribution at the request temperature. Greedy requests (`top_k = 1`) sample without the redraw.
 
 ## Serving Optimization
 
@@ -385,149 +352,6 @@ End-to-end streaming on the same GPU (`benchmark_tts_seedtts --stream`, all 2,02
 | 16 | 18.02 → 21.08 req/s | 0.169 → 0.146 | 0.306 → 0.333 s | 0.76% → 0.73% |
 
 The vocoder takes a growing share of each request as concurrency rises, so the end-to-end gain is largest at low concurrency.
-
-### Zero-shot Voice Cloning
-
-CosyVoice3 clones a voice from a short reference audio clip. `ref_audio` can be a local
-path, file URL, data URL, or HTTP URL. `ref_text` (the transcript of the reference clip)
-is optional but recommended for better alignment.
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-    "input": "SGLang-Omni makes text-to-speech fast and easy to deploy.",
-    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-    "ref_text": "We asked over twenty different people, and they all said it was his."
-  }' \
-  --output output.wav
-```
-
-**Python**
-
-```python
-import requests
-
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-        "input": "Get the trust fund to the bank early.",
-        "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-        "ref_text": "We asked over twenty different people, and they all said it was his.",
-    },
-)
-resp.raise_for_status()
-with open("output.wav", "wb") as f:
-    f.write(resp.content)
-```
-
-### Cross-lingual Synthesis
-
-CosyVoice3 supports cross-lingual voice cloning where the reference speaker speaks a
-different language than the synthesis text. Omit `ref_text` to enter cross-lingual mode.
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-    "input": "今天天气真好，我们一起出去散步吧。",
-    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
-  }' \
-  --output output.wav
-```
-
-### Instruction-based Style Control
-
-Pass `instructions` to guide prosody, emotion, or speaking style:
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-    "input": "Welcome to our annual developer conference.",
-    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-    "instructions": "Speak in a cheerful and energetic tone, as if addressing a large audience."
-  }' \
-  --output output.wav
-```
-
-### Speed Control
-
-Adjust playback speed with `speed` (default `1.0`):
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-    "input": "This is spoken at one point three times normal speed.",
-    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-    "speed": 1.3
-  }' \
-  --output output.wav
-```
-
-### Streaming
-
-Incremental Flow + HiFT decoding is enabled. Set `stream: true` and use
-`response_format: "pcm"` so the server can emit audio before speech-token
-generation finishes.
-
-The vocoder follows CosyVoice3's causal chunk loop: 25 speech tokens per hop
-(`pre_lookahead_len=3`, 25 Hz → about 1 s of audio per chunk). The first PCM
-chunk is emitted once the AR stage has produced `28 + prompt_pad` tokens,
-where `prompt_pad` (0–24) rounds the Flow prompt-token length up to a
-multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream
-`CosyVoice3Model` (default; keep growth on). Each scheduler step runs at most
-one hop per request so a backlogged stream cannot monopolize the GPU.
-Non-streaming requests still use the buffered Flow + HiFT path for the whole utterance.
-
-Optional serving knobs (vocoder factory; keep `tts_engine.factory.token_hop_len`
-in sync if you change the hop):
-
-| Factory arg | Default | Notes |
-|---|---|---|
-| `token_hop_len` | `25` | Base hop / AR follow-up flush; must match training chunk size |
-| `token_max_hop_len` | `100` | Cap for `25 → 50 → 100` growth |
-| `disable_hop_growth` | `false` | Leave off unless A/B'ing; growth ON was better at c=16 |
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-    "input": "Get the trust fund to the bank early.",
-    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-    "ref_text": "We asked over twenty different people, and they all said it was his.",
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  --output output.pcm
-```
-
-## Generation Parameters
-
-| Parameter | Default | Notes |
-|---|---|---|
-| `model` | served model | Served model identifier |
-| `input` | (required) | Text to synthesize |
-| `ref_audio` | `null` | Reference audio for voice cloning (path / URL / data URL) |
-| `ref_text` | `null` | Transcript of the reference audio. Improves cloning quality; omit for cross-lingual mode |
-| `instructions` | `null` | Instruction text for style/prosody/emotion guidance |
-| `speed` | `1.0` | Playback speed multiplier |
-| `temperature` | `0.7` | Sampling temperature |
-| `top_p` | `0.8` | Top-p sampling |
-| `top_k` | `20` | Top-k sampling |
-| `repetition_penalty` | `1.21` | Repetition penalty |
-| `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
-| `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
-
-Sampling is repetition-aware, as in upstream CosyVoice: a sampled speech token that already appears among the last 10 generated tokens is masked and redrawn once from the full distribution at the request temperature. Greedy requests (`top_k = 1`) sample without the redraw.
 
 ## Benchmarking
 
