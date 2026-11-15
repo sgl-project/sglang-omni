@@ -18,9 +18,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from websockets.sync.client import connect
-
 from test_server_api import DATA_ROOT, RUNTIME_BIN, Server
+from websockets.sync.client import connect
 
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
@@ -36,9 +35,7 @@ def haru_directory() -> Path:
 
 @pytest.fixture(scope="module")
 def haru_server() -> Iterator[Server]:
-    running = Server(
-        "haru_server", "haru", haru_directory(), ("--quantize", "8")
-    )
+    running = Server("haru_server", "haru", haru_directory(), ("--quantize", "8"))
     yield running
     running.stop()
 
@@ -49,9 +46,7 @@ def append_event(pcm: bytes) -> str:
     )
 
 
-def events_until(
-    socket, stop_types: set[str], limit: int = 64
-) -> list[dict]:
+def events_until(socket, stop_types: set[str], limit: int = 64) -> list[dict]:
     """Read events until one of stop_types arrives; return everything read."""
     received = []
     while len(received) < limit:

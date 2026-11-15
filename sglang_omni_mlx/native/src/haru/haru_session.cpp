@@ -33,7 +33,7 @@ std::vector<std::pair<int, float>> DryPenalties(const std::vector<int> &history,
     return out;
   }
   const int last = history[n - 1];
-  std::vector<std::pair<int, int>> matches;  // (candidate, length)
+  std::vector<std::pair<int, int>> matches; // (candidate, length)
   for (int j = n - 2; j >= std::max(0, n - 1 - config.lookback); --j) {
     if (history[j] != last) {
       continue;
@@ -47,20 +47,18 @@ std::vector<std::pair<int, float>> DryPenalties(const std::vector<int> &history,
       matches.push_back({history[j + 1], length});
     }
   }
-  std::sort(matches.begin(), matches.end(),
-            [](const auto &a, const auto &b) {
-              return a.first != b.first ? a.first < b.first
-                                        : a.second > b.second;
-            });
+  std::sort(matches.begin(), matches.end(), [](const auto &a, const auto &b) {
+    return a.first != b.first ? a.first < b.first : a.second > b.second;
+  });
   for (size_t i = 0; i < matches.size(); ++i) {
     if (i > 0 && matches[i].first == matches[i - 1].first) {
       continue;
     }
     const float penalty = std::min(
         config.max_penalty,
-        static_cast<float>(config.multiplier *
-                           std::pow(config.base,
-                                    matches[i].second - config.allowed_length)));
+        static_cast<float>(
+            config.multiplier *
+            std::pow(config.base, matches[i].second - config.allowed_length)));
     out.push_back({matches[i].first, penalty});
   }
   return out;
@@ -69,7 +67,8 @@ std::vector<std::pair<int, float>> DryPenalties(const std::vector<int> &history,
 // The latent of digital silence: the last latent of 16 frames of zeros.
 mx::array SilenceLatent(VibeVoiceCodec &codec, int frame_samples) {
   auto state = codec.InitEncoderState();
-  const mx::array silence = mx::zeros(mx::Shape{16 * frame_samples}, mx::float32);
+  const mx::array silence =
+      mx::zeros(mx::Shape{16 * frame_samples}, mx::float32);
   const mx::array means = codec.Encode(silence, state);
   mx::eval(means);
   mx::array result = mx::reshape(
@@ -88,18 +87,18 @@ DuplexSession::DuplexSession(HaruModel &model, VibeVoiceCodec &codec,
       config_(config), pad_id_(model.config().pad_token_id),
       eop_id_(model.config().eop_token_id),
       eos_id_(model.config().eos_token_id),
-      silent_ids_(mx::array({model.config().pad_token_id,
-                             model.config().eop_token_id}, mx::int32)),
+      silent_ids_(
+          mx::array({model.config().pad_token_id, model.config().eop_token_id},
+                    mx::int32)),
       token_(mx::array(0, mx::int32)),
       latent_(mx::zeros(mx::Shape{1, model.config().latent_dim}, mx::float32)),
-      key_(mx::random::key(config.seed >= 0
-                               ? static_cast<uint64_t>(config.seed)
-                               : std::random_device{}())) {}
+      key_(mx::random::key(config.seed >= 0 ? static_cast<uint64_t>(config.seed)
+                                            : std::random_device{}())) {}
 
 mx::array DuplexSession::NextKey() {
   auto [key1, key2] = mx::random::split(key_);
-  key_ = key1;  // keep the first output, use the second
-  return key2;  // use the second
+  key_ = key1; // keep the first output, use the second
+  return key2; // use the second
 }
 
 Frame DuplexSession::Start(const std::string &system_prompt,
@@ -116,7 +115,8 @@ Frame DuplexSession::Start(const std::string &system_prompt,
                              "<|im_end|>\n");
   }
 
-  mx::array ref_latents = mx::zeros(mx::Shape{1, 1, dim}, mx::float32);  // [1, n_ref, dim]
+  mx::array ref_latents =
+      mx::zeros(mx::Shape{1, 1, dim}, mx::float32); // [1, n_ref, dim]
   int n_ref = 0;
   if (!reference.empty()) {
     auto state = codec_.InitEncoderState();
@@ -124,8 +124,8 @@ Frame DuplexSession::Start(const std::string &system_prompt,
         reference.data(), {static_cast<int>(reference.size())}, mx::float32);
     const mx::array means = codec_.Encode(audio, state);
     mx::eval(means);
-    ref_latents = codec_.Sample(mx::reshape(means, {1, means.shape(0), dim}),
-                                NextKey());
+    ref_latents =
+        codec_.Sample(mx::reshape(means, {1, means.shape(0), dim}), NextKey());
     mx::eval(ref_latents);
     n_ref = ref_latents.shape(1);
   }
@@ -166,10 +166,9 @@ Frame DuplexSession::Start(const std::string &system_prompt,
           best = f;
         }
       }
-      room_tone = mx::reshape(
-          mx::slice(ref_latents, mx::Shape{0, best, 0},
-                    mx::Shape{1, best + 1, dim}),
-          mx::Shape{dim});
+      room_tone = mx::reshape(mx::slice(ref_latents, mx::Shape{0, best, 0},
+                                        mx::Shape{1, best + 1, dim}),
+                              mx::Shape{dim});
       mx::eval(room_tone);
     }
   }
@@ -180,7 +179,8 @@ Frame DuplexSession::Start(const std::string &system_prompt,
   if (n_ref > 0) {
     const float *src = ref_latents.data<float>();
     for (int i = 0; i < n_ref * dim; ++i) {
-      model_flat[static_cast<size_t>(n_card + i / dim) * dim + i % dim] = src[i];
+      model_flat[static_cast<size_t>(n_card + i / dim) * dim + i % dim] =
+          src[i];
     }
   }
   if (n_grid > 0) {
@@ -238,9 +238,8 @@ Frame DuplexSession::Step(const std::vector<float> &user_frame) {
       codec_.Sample(mx::reshape(user_mean, {1, 1, cfg.latent_dim}), NextKey());
 
   const mx::array embeddings = model_.Embed(
-      mx::reshape(token_, {1, 1}),
-      mx::reshape(latent_, {1, 1, cfg.latent_dim}), user_latent,
-      mx::full(mx::Shape{1, 1}, 1.0f, mx::float32),
+      mx::reshape(token_, {1, 1}), mx::reshape(latent_, {1, 1, cfg.latent_dim}),
+      user_latent, mx::full(mx::Shape{1, 1}, 1.0f, mx::float32),
       mx::full(mx::Shape{1, 1}, 1.0f, mx::float32));
   mx::array hidden = model_.Backbone(embeddings, caches_);
   mx::eval(hidden);
@@ -250,10 +249,10 @@ Frame DuplexSession::Step(const std::vector<float> &user_frame) {
 mx::array DuplexSession::PreparedLogits(const mx::array &hidden) {
   const auto &cfg = model_.config();
   const int time = hidden.shape(1);
-  const mx::array hlast = mx::reshape(
-      mx::slice(hidden, mx::Shape{0, time - 1, 0},
-                mx::Shape{1, time, cfg.hidden_size()}),
-      mx::Shape{1, cfg.hidden_size()});
+  const mx::array hlast =
+      mx::reshape(mx::slice(hidden, mx::Shape{0, time - 1, 0},
+                            mx::Shape{1, time, cfg.hidden_size()}),
+                  mx::Shape{1, cfg.hidden_size()});
   mx::array logits = mx::reshape(model_.Logits(hlast), {cfg.lm.vocab_size});
   const mx::array vocab = mx::arange(0, cfg.lm.vocab_size, mx::int32);
 
@@ -264,20 +263,24 @@ mx::array DuplexSession::PreparedLogits(const mx::array &hidden) {
                          logits);
     }
   }
-  const mx::array fp32 = mx::reshape(model_.LogitsFp32(hlast, silent_ids_), {2});
+  const mx::array fp32 =
+      mx::reshape(model_.LogitsFp32(hlast, silent_ids_), {2});
   logits = mx::where(mx::equal(vocab, mx::array(pad_id_, mx::int32)),
                      mx::take(fp32, mx::array(0), 0), logits);
   logits = mx::where(mx::equal(vocab, mx::array(eop_id_, mx::int32)),
                      mx::take(fp32, mx::array(1), 0), logits);
   if (config_.eop_bias != 0.0f) {
-    logits = mx::where(mx::equal(vocab, mx::array(eop_id_, mx::int32)),
-                       mx::add(logits, mx::array(config_.eop_bias, mx::float32)),
-                       logits);
+    logits = mx::where(
+        mx::equal(vocab, mx::array(eop_id_, mx::int32)),
+        mx::add(logits, mx::array(config_.eop_bias, mx::float32)), logits);
   }
   if (force_text_ > 0) {
     for (int banned : {pad_id_, eop_id_, eos_id_}) {
       logits = mx::where(mx::equal(vocab, mx::array(banned, mx::int32)),
-                         mx::full(logits.shape(), -std::numeric_limits<float>::infinity(), mx::float32), logits);
+                         mx::full(logits.shape(),
+                                  -std::numeric_limits<float>::infinity(),
+                                  mx::float32),
+                         logits);
     }
   }
   return logits;
@@ -302,10 +305,11 @@ mx::array DuplexSession::SampleToken(const mx::array &logits) {
       indices = mx::take_along_axis(*indices, order, -1);
     }
     const mx::array probs = mx::softmax(l, -1);
-    const mx::array keep = mx::less(
-        mx::subtract(mx::cumsum(probs, -1), probs),
-        mx::array(config_.top_p, mx::float32));
-    l = mx::where(keep, l, mx::full(l.shape(), -std::numeric_limits<float>::infinity(), mx::float32));
+    const mx::array keep = mx::less(mx::subtract(mx::cumsum(probs, -1), probs),
+                                    mx::array(config_.top_p, mx::float32));
+    l = mx::where(keep, l,
+                  mx::full(l.shape(), -std::numeric_limits<float>::infinity(),
+                           mx::float32));
   }
   const mx::array choice = mx::random::categorical(l, -1, NextKey());
   if (indices.has_value()) {
@@ -339,10 +343,10 @@ std::string DuplexSession::Detokenize(int token) {
 Frame DuplexSession::Emit(const mx::array &hidden) {
   const auto &cfg = model_.config();
   const int time = hidden.shape(1);
-  const mx::array hlast = mx::reshape(
-      mx::slice(hidden, mx::Shape{0, time - 1, 0},
-                mx::Shape{1, time, cfg.hidden_size()}),
-      mx::Shape{1, cfg.hidden_size()});
+  const mx::array hlast =
+      mx::reshape(mx::slice(hidden, mx::Shape{0, time - 1, 0},
+                            mx::Shape{1, time, cfg.hidden_size()}),
+                  mx::Shape{1, cfg.hidden_size()});
 
   const mx::array logits = PreparedLogits(hidden);
   const mx::array token = SampleToken(logits);

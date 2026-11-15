@@ -79,7 +79,7 @@ private:
   void EmitFrame(const Frame &frame);
   void FinishResponse(const std::string &status, const std::string &reason);
   void SendEvent(const char *type,
-                    const nlohmann::json &fields = nlohmann::json::object());
+                 const nlohmann::json &fields = nlohmann::json::object());
 
   HaruModel &model_;
   VibeVoiceCodec &codec_;

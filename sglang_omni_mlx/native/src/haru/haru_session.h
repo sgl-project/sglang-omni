@@ -26,11 +26,11 @@ struct DuplexConfig {
   bool speak_first = false;
   int max_frames = 27000;
   bool dry = true;
-  int seed = -1;  // -1 draws a fresh seed
+  int seed = -1; // -1 draws a fresh seed
 };
 
 struct Frame {
-  std::vector<float> audio;  // float32 [3200] at 24 kHz
+  std::vector<float> audio; // float32 [3200] at 24 kHz
   int token = 0;
   std::string text;
   int index = 0;
@@ -65,7 +65,7 @@ private:
   DuplexConfig config_;
 
   int pad_id_, eop_id_, eos_id_;
-  mx::array silent_ids_;  // [pad, eop]
+  mx::array silent_ids_; // [pad, eop]
 
   std::vector<LayerCache> caches_;
   VibeVoiceCodec::State encoder_state_;
@@ -74,8 +74,8 @@ private:
   mx::array key_;
   int index_ = 0;
   int force_text_ = 0;
-  std::vector<int> history_;       // DRY text-stream history
-  std::vector<int> pending_ids_;   // detokenizer's pending multi-byte
+  std::vector<int> history_;     // DRY text-stream history
+  std::vector<int> pending_ids_; // detokenizer's pending multi-byte
   bool in_gap_ = false;
 };
 

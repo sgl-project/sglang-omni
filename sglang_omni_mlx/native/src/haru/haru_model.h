@@ -21,8 +21,8 @@ namespace mx = mlx::core;
 // One layer's state: a gated delta layer's convolution tail and recurrent
 // state, or an attention layer's keys and values.
 struct LayerCache {
-  std::optional<mx::array> convolution_state;  // [B, kernel - 1, conv_dim]
-  std::optional<mx::array> recurrent_state;    // [B, Hv, Dv, Dk] float32
+  std::optional<mx::array> convolution_state; // [B, kernel - 1, conv_dim]
+  std::optional<mx::array> recurrent_state;   // [B, Hv, Dv, Dk] float32
   qwen3_asr::KVCache attention;
 };
 

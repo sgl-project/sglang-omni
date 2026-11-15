@@ -153,9 +153,7 @@ def run_session(
     tail: int,
 ) -> Session:
     """Stream `inputs` and then `tail` silent frames through one session."""
-    with connect(
-        f"ws://127.0.0.1:{server.port}/v1/realtime", max_size=None
-    ) as socket:
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime", max_size=None) as socket:
         created = json.loads(socket.recv(timeout=EVENT_TIMEOUT_SECONDS))
         assert created["type"] == "session.created", created
         update = {
@@ -287,19 +285,23 @@ def summary(sessions: list[Session]) -> dict:
     return {
         "session_update_s": {
             "cold": sessions[0].update_s,
-            "warm": statistics.fmean(session.update_s for session in sessions[1:])
-            if len(sessions) > 1
-            else None,
+            "warm": (
+                statistics.fmean(session.update_s for session in sessions[1:])
+                if len(sessions) > 1
+                else None
+            ),
         },
         "first_audio_s": {
             "cold": sessions[0].first_audio_s,
-            "warm": statistics.fmean(session.first_audio_s for session in sessions[1:])
-            if len(sessions) > 1
-            else None,
+            "warm": (
+                statistics.fmean(session.first_audio_s for session in sessions[1:])
+                if len(sessions) > 1
+                else None
+            ),
         },
-        "ms_per_frame": statistics.fmean(session.ms_per_frame for session in warm)
-        if warm
-        else None,
+        "ms_per_frame": (
+            statistics.fmean(session.ms_per_frame for session in warm) if warm else None
+        ),
         "real_time_factor": statistics.fmean(
             session.real_time_factor for session in sessions
         ),
@@ -396,8 +398,8 @@ def main() -> None:
         flags += ["--reference-audio", str(arguments.reference_audio)]
     if arguments.instructions_file:
         flags += ["--instructions-file", str(arguments.instructions_file)]
-    model_directory = arguments.data_root / "models" / arguments.model_repo.replace(
-        "/", "_"
+    model_directory = (
+        arguments.data_root / "models" / arguments.model_repo.replace("/", "_")
     )
     tail = round(arguments.tail_seconds / FRAME_SECONDS)
     server = SupervisedServer(

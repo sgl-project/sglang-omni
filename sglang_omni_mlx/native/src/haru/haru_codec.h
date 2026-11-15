@@ -39,7 +39,8 @@ private:
   // One causal dense conv as a matmul over its input windows. The checkpoint
   // stores [out, in, kernel]; the model evaluates [out, kernel * in].
   // Returns (output, next state).
-  std::pair<mx::array, mx::array> Conv(const mx::array &x, const mx::array &state,
+  std::pair<mx::array, mx::array> Conv(const mx::array &x,
+                                       const mx::array &state,
                                        const std::string &prefix, int stride,
                                        int kernel) const;
   // One transposed conv with overlap-add; state is the carried tail.

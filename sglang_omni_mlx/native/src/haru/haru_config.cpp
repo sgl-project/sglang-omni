@@ -9,17 +9,20 @@ namespace {
 
 int RequireInt(const nlohmann::json &obj, const char *key) {
   if (!obj.contains(key) || !obj[key].is_number_integer()) {
-    throw std::invalid_argument(std::string("config field ") + key + " must be an integer");
+    throw std::invalid_argument(std::string("config field ") + key +
+                                " must be an integer");
   }
   return obj[key].get<int>();
 }
 
 std::vector<int> IntVector(const nlohmann::json &obj, const char *key) {
   if (!obj.contains(key) || !obj[key].is_array()) {
-    throw std::invalid_argument(std::string("config field ") + key + " must be an array");
+    throw std::invalid_argument(std::string("config field ") + key +
+                                " must be an array");
   }
   std::vector<int> out;
-  for (const auto &value : obj[key]) out.push_back(value.get<int>());
+  for (const auto &value : obj[key])
+    out.push_back(value.get<int>());
   return out;
 }
 
@@ -51,11 +54,13 @@ TextConfig ParseText(const nlohmann::json &lm) {
     }
   }
   if (static_cast<int>(text.layer_types.size()) != layers) {
-    throw std::invalid_argument("layer_types must name one kind per hidden layer");
+    throw std::invalid_argument(
+        "layer_types must name one kind per hidden layer");
   }
 
   // Rotary: prefer rope_parameters, fall back to the flat fields.
-  const auto *rope = lm.contains("rope_parameters") ? &lm["rope_parameters"] : nullptr;
+  const auto *rope =
+      lm.contains("rope_parameters") ? &lm["rope_parameters"] : nullptr;
   text.rope_theta = rope != nullptr && rope->contains("rope_theta")
                         ? (*rope)["rope_theta"].get<float>()
                         : lm.value("rope_theta", 10'000'000.0f);
@@ -68,26 +73,41 @@ TextConfig ParseText(const nlohmann::json &lm) {
 
 CodecConfig ParseCodec(const nlohmann::json &codec) {
   CodecConfig out;
-  if (codec.contains("latent_dim")) out.latent_dim = codec["latent_dim"].get<int>();
-  if (codec.contains("base_channels")) out.base_channels = codec["base_channels"].get<int>();
-  if (codec.contains("ratios")) out.ratios = IntVector(codec, "ratios");
-  if (codec.contains("encoder_depths")) out.encoder_depths = IntVector(codec, "encoder_depths");
-  if (codec.contains("decoder_depths")) out.decoder_depths = IntVector(codec, "decoder_depths");
-  if (codec.contains("norm_eps")) out.norm_eps = codec["norm_eps"].get<float>();
-  if (codec.contains("latent_std")) out.latent_std = codec["latent_std"].get<float>();
+  if (codec.contains("latent_dim"))
+    out.latent_dim = codec["latent_dim"].get<int>();
+  if (codec.contains("base_channels"))
+    out.base_channels = codec["base_channels"].get<int>();
+  if (codec.contains("ratios"))
+    out.ratios = IntVector(codec, "ratios");
+  if (codec.contains("encoder_depths"))
+    out.encoder_depths = IntVector(codec, "encoder_depths");
+  if (codec.contains("decoder_depths"))
+    out.decoder_depths = IntVector(codec, "decoder_depths");
+  if (codec.contains("norm_eps"))
+    out.norm_eps = codec["norm_eps"].get<float>();
+  if (codec.contains("latent_std"))
+    out.latent_std = codec["latent_std"].get<float>();
   return out;
 }
 
 HeadConfig ParseHead(const nlohmann::json &head) {
   HeadConfig out;
-  if (head.contains("hidden_size")) out.hidden_size = head["hidden_size"].get<int>();
-  if (head.contains("latent_dim")) out.latent_dim = head["latent_dim"].get<int>();
-  if (head.contains("num_layers")) out.num_layers = head["num_layers"].get<int>();
-  if (head.contains("ffn_ratio")) out.ffn_ratio = head["ffn_ratio"].get<float>();
-  if (head.contains("norm_eps")) out.norm_eps = head["norm_eps"].get<float>();
-  if (head.contains("interval_embed")) out.interval_embed = head["interval_embed"].get<float>();
-  if (head.contains("num_steps")) out.num_steps = head["num_steps"].get<int>();
-  if (head.contains("guidance_scale")) out.guidance_scale = head["guidance_scale"].get<float>();
+  if (head.contains("hidden_size"))
+    out.hidden_size = head["hidden_size"].get<int>();
+  if (head.contains("latent_dim"))
+    out.latent_dim = head["latent_dim"].get<int>();
+  if (head.contains("num_layers"))
+    out.num_layers = head["num_layers"].get<int>();
+  if (head.contains("ffn_ratio"))
+    out.ffn_ratio = head["ffn_ratio"].get<float>();
+  if (head.contains("norm_eps"))
+    out.norm_eps = head["norm_eps"].get<float>();
+  if (head.contains("interval_embed"))
+    out.interval_embed = head["interval_embed"].get<float>();
+  if (head.contains("num_steps"))
+    out.num_steps = head["num_steps"].get<int>();
+  if (head.contains("guidance_scale"))
+    out.guidance_scale = head["guidance_scale"].get<float>();
   if (head.contains("guidance_range") && head["guidance_range"].is_array()) {
     out.guidance_range = {head["guidance_range"][0].get<float>(),
                           head["guidance_range"][1].get<float>()};
@@ -100,7 +120,8 @@ HeadConfig ParseHead(const nlohmann::json &head) {
 HaruConfig HaruConfig::FromDict(const nlohmann::json &params) {
   const std::string model_type = params.value("model_type", "");
   if (model_type != "haru") {
-    throw std::invalid_argument("not a Haru checkpoint (model_type=" + model_type + ")");
+    throw std::invalid_argument(
+        "not a Haru checkpoint (model_type=" + model_type + ")");
   }
   HaruConfig config;
   config.sample_rate = RequireInt(params, "sample_rate");

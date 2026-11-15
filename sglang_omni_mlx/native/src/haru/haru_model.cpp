@@ -9,15 +9,17 @@ namespace mx = mlx::core;
 
 namespace {
 
-      // AudioProjector's RMS norm epsilon.
+// AudioProjector's RMS norm epsilon.
 constexpr float kAudioProjectorEps = 1e-6f;
 
 // The gated norm's output: silu(gate) * normed in float32, in hidden's dtype.
-std::vector<mx::array> PreciseSwigluGraph(const std::vector<mx::array> &inputs) {
+std::vector<mx::array>
+PreciseSwigluGraph(const std::vector<mx::array> &inputs) {
   const mx::array gate = mx::astype(inputs[1], mx::float32);
   const mx::array activated = mx::multiply(gate, mx::sigmoid(gate));
-  return {mx::astype(mx::multiply(activated, mx::astype(inputs[2], mx::float32)),
-                     inputs[0].dtype())};
+  return {
+      mx::astype(mx::multiply(activated, mx::astype(inputs[2], mx::float32)),
+                 inputs[0].dtype())};
 }
 
 mx::array PreciseSwiglu(const mx::array &hidden, const mx::array &gate,
@@ -29,15 +31,16 @@ mx::array PreciseSwiglu(const mx::array &hidden, const mx::array &gate,
 std::vector<mx::array> DecayGraph(const std::vector<mx::array> &inputs) {
   const mx::array &a_log = inputs[0];
   // The sum is computed in float32: softplus(a.astype(fp32) + dt_bias).
-  const mx::array shifted =
-      mx::add(mx::astype(inputs[1], mx::float32), mx::astype(inputs[2], mx::float32));
+  const mx::array shifted = mx::add(mx::astype(inputs[1], mx::float32),
+                                    mx::astype(inputs[2], mx::float32));
   const mx::array softplus =
       mx::logaddexp(shifted, mx::array(0.0f, mx::float32));
   return {mx::exp(mx::multiply(
       mx::negative(mx::exp(mx::astype(a_log, mx::float32))), softplus))};
 }
 
-// The gated delta rule's per-step decay exp(-exp(A_log) * softplus(a + dt_bias)).
+// The gated delta rule's per-step decay exp(-exp(A_log) * softplus(a +
+// dt_bias)).
 mx::array Decay(const mx::array &a_log, const mx::array &a,
                 const mx::array &dt_bias) {
   static const auto compiled = mx::compile(DecayGraph, true);
@@ -70,7 +73,8 @@ HaruModel::HaruModel(const std::filesystem::path &model_directory,
       layer_count_(config_.lm.num_layers()),
       rotary_dims_(static_cast<int>(config_.lm.head_dim *
                                     config_.lm.partial_rotary_factor)),
-      latent_scale_(mx::astype(checkpoint_.Weight("latent_scale"), mx::float32)),
+      latent_scale_(
+          mx::astype(checkpoint_.Weight("latent_scale"), mx::float32)),
       latent_bias_(mx::astype(checkpoint_.Weight("latent_bias"), mx::float32)) {
   if (quantize_bits == 0) {
     return;
@@ -78,9 +82,9 @@ HaruModel::HaruModel(const std::filesystem::path &model_directory,
   checkpoint_.QuantizeLinear("lm.embed_tokens", 64, quantize_bits);
   for (int layer = 0; layer < layer_count_; ++layer) {
     const std::string prefix = "lm.layers." + std::to_string(layer);
-    const std::string block =
-        config_.lm.layer_types[layer] == kLinear ? prefix + ".linear_attn"
-                                                 : prefix + ".self_attn";
+    const std::string block = config_.lm.layer_types[layer] == kLinear
+                                  ? prefix + ".linear_attn"
+                                  : prefix + ".self_attn";
     if (config_.lm.layer_types[layer] == kLinear) {
       checkpoint_.QuantizeLinear(block + ".in_proj_qkv", 64, quantize_bits);
       checkpoint_.QuantizeLinear(block + ".in_proj_z", 64, quantize_bits);
@@ -116,8 +120,9 @@ std::vector<LayerCache> HaruModel::NewCaches() const {
 }
 
 mx::array HaruModel::NormGain(const std::string &prefix) const {
-  return mx::add(mx::astype(checkpoint_.Weight(prefix + ".weight"), mx::float32),
-                 mx::array(1.0f, mx::float32));
+  return mx::add(
+      mx::astype(checkpoint_.Weight(prefix + ".weight"), mx::float32),
+      mx::array(1.0f, mx::float32));
 }
 
 mx::array HaruModel::Fp32Norm(const mx::array &x, const std::string &prefix,
@@ -132,11 +137,12 @@ mx::array HaruModel::AudioProject(const mx::array &latents,
   const mx::array scaled = mx::multiply(
       mx::add(mx::astype(latents, mx::float32), latent_bias_), latent_scale_);
   const mx::Dtype dtype = checkpoint_.Weight(prefix + ".fc1.weight").dtype();
-  const mx::array h = checkpoint_.Linear(mx::astype(scaled, dtype),
-                                         prefix + ".fc1");
+  const mx::array h =
+      checkpoint_.Linear(mx::astype(scaled, dtype), prefix + ".fc1");
   const mx::array normed =
-// AudioProjector's RMS norm epsilon.
-      mx::fast::rms_norm(h, checkpoint_.Weight(prefix + ".norm.weight"), kAudioProjectorEps);
+      // AudioProjector's RMS norm epsilon.
+      mx::fast::rms_norm(h, checkpoint_.Weight(prefix + ".norm.weight"),
+                         kAudioProjectorEps);
   return checkpoint_.Linear(normed, prefix + ".fc2");
 }
 
@@ -176,9 +182,8 @@ mx::array HaruModel::GatedDeltaLayer(const mx::array &x,
   const int kernel = config_.lm.linear_conv_kernel_dim;
 
   const mx::array qkv = checkpoint_.Linear(x, prefix + ".in_proj_qkv");
-  const mx::array z =
-      mx::reshape(checkpoint_.Linear(x, prefix + ".in_proj_z"),
-                  {batch, time, value_heads, value_head_dim});
+  const mx::array z = mx::reshape(checkpoint_.Linear(x, prefix + ".in_proj_z"),
+                                  {batch, time, value_heads, value_head_dim});
   const mx::array b = checkpoint_.Linear(x, prefix + ".in_proj_b");
   const mx::array a = checkpoint_.Linear(x, prefix + ".in_proj_a");
 
@@ -192,9 +197,10 @@ mx::array HaruModel::GatedDeltaLayer(const mx::array &x,
   cache.convolution_state = mx::contiguous(
       SliceAxis(convolution_input, 1, convolution_input.shape(1) - kept,
                 convolution_input.shape(1)));
-  // The checkpoint stores [out, in, kernel]; MLX conv1d takes [out, kernel, in].
-  const mx::array conv_weight = mx::transpose(
-      checkpoint_.Weight(prefix + ".conv1d.weight"), {0, 2, 1});
+  // The checkpoint stores [out, in, kernel]; MLX conv1d takes [out, kernel,
+  // in].
+  const mx::array conv_weight =
+      mx::transpose(checkpoint_.Weight(prefix + ".conv1d.weight"), {0, 2, 1});
   const mx::array convolved = omni_common::Silu(
       mx::conv1d(convolution_input, conv_weight, 1, 0, 1, convolution_dim));
 
@@ -204,9 +210,9 @@ mx::array HaruModel::GatedDeltaLayer(const mx::array &x,
   mx::array q =
       mx::reshape(SliceLast(convolved, 0, key_dim),
                   {batch, time, config_.lm.linear_num_key_heads, key_head_dim});
-  mx::array k = mx::reshape(
-      SliceLast(convolved, key_dim, 2 * key_dim),
-      {batch, time, config_.lm.linear_num_key_heads, key_head_dim});
+  mx::array k =
+      mx::reshape(SliceLast(convolved, key_dim, 2 * key_dim),
+                  {batch, time, config_.lm.linear_num_key_heads, key_head_dim});
   const mx::array v =
       mx::reshape(SliceLast(convolved, 2 * key_dim, convolution_dim),
                   {batch, time, value_heads, value_head_dim});
@@ -228,7 +234,8 @@ mx::array HaruModel::GatedDeltaLayer(const mx::array &x,
   cache.recurrent_state = updated[1];
 
   const mx::array normed = mx::fast::rms_norm(
-      updated[0], checkpoint_.Weight(prefix + ".norm.weight"), config_.lm.rms_norm_eps);
+      updated[0], checkpoint_.Weight(prefix + ".norm.weight"),
+      config_.lm.rms_norm_eps);
   const mx::array gated = PreciseSwiglu(updated[0], z, normed);
   return checkpoint_.Linear(mx::reshape(gated, {batch, time, -1}),
                             prefix + ".out_proj");
@@ -246,20 +253,20 @@ mx::array HaruModel::AttentionLayer(const mx::array &x,
       mx::reshape(checkpoint_.Linear(x, prefix + ".q_proj"),
                   {batch, time, heads, 2 * head_dim});
   mx::array queries = SliceLast(projected, 0, head_dim);
-  const mx::array gate =
-      mx::reshape(SliceLast(projected, head_dim, 2 * head_dim),
-                  {batch, time, -1});
-  queries = mx::transpose(Fp32Norm(queries, prefix + ".q_norm", config_.lm.rms_norm_eps),
-                          {0, 2, 1, 3});
+  const mx::array gate = mx::reshape(
+      SliceLast(projected, head_dim, 2 * head_dim), {batch, time, -1});
+  queries = mx::transpose(
+      Fp32Norm(queries, prefix + ".q_norm", config_.lm.rms_norm_eps),
+      {0, 2, 1, 3});
   mx::array keys = mx::transpose(
       Fp32Norm(mx::reshape(checkpoint_.Linear(x, prefix + ".k_proj"),
                            {batch, time, kv_heads, head_dim}),
                prefix + ".k_norm", config_.lm.rms_norm_eps),
       {0, 2, 1, 3});
-  const mx::array values = mx::transpose(
-      mx::reshape(checkpoint_.Linear(x, prefix + ".v_proj"),
-                  {batch, time, kv_heads, head_dim}),
-      {0, 2, 1, 3});
+  const mx::array values =
+      mx::transpose(mx::reshape(checkpoint_.Linear(x, prefix + ".v_proj"),
+                                {batch, time, kv_heads, head_dim}),
+                    {0, 2, 1, 3});
   queries = mx::fast::rope(queries, rotary_dims_, false, config_.lm.rope_theta,
                            1.0f, cache.offset());
   keys = mx::fast::rope(keys, rotary_dims_, false, config_.lm.rope_theta, 1.0f,
@@ -286,8 +293,7 @@ mx::array HaruModel::Backbone(const mx::array &embeddings,
                               std::vector<LayerCache> &caches) const {
   mx::array hidden = embeddings;
   for (int layer = 0; layer < layer_count_; ++layer) {
-    const std::string prefix =
-        "lm.layers." + std::to_string(layer);
+    const std::string prefix = "lm.layers." + std::to_string(layer);
     const mx::array normed =
         Fp32Norm(hidden, prefix + ".input_layernorm", config_.lm.rms_norm_eps);
     const mx::array mixed =
@@ -297,10 +303,9 @@ mx::array HaruModel::Backbone(const mx::array &embeddings,
                              caches[layer].attention);
     const mx::array residual = mx::add(hidden, mixed);
     hidden = mx::add(
-        residual,
-        MLP(Fp32Norm(residual, prefix + ".post_attention_layernorm",
-                     config_.lm.rms_norm_eps),
-            prefix + ".mlp"));
+        residual, MLP(Fp32Norm(residual, prefix + ".post_attention_layernorm",
+                               config_.lm.rms_norm_eps),
+                      prefix + ".mlp"));
   }
   return Fp32Norm(hidden, "lm.norm", config_.lm.rms_norm_eps);
 }

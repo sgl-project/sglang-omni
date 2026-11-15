@@ -38,15 +38,13 @@ class HaruServedModel : public asr_service::ServedModel {
 public:
   HaruServedModel(const std::filesystem::path &model_directory,
                   int quantize_bits, std::string instructions,
-                  std::vector<float> reference, int seed,
-                  int warmup_frames, int input_sample_rate)
+                  std::vector<float> reference, int seed, int warmup_frames,
+                  int input_sample_rate)
       : model_(model_directory, quantize_bits),
         codec_(model_.checkpoint(), model_.config().codec),
         head_(model_.checkpoint(), model_.config().head),
-        tokenizer_(model_directory),
-        instructions_(std::move(instructions)),
-        reference_(std::move(reference)),
-        warmup_frames_(warmup_frames),
+        tokenizer_(model_directory), instructions_(std::move(instructions)),
+        reference_(std::move(reference)), warmup_frames_(warmup_frames),
         input_sample_rate_(input_sample_rate) {
     session_config_.seed = seed;
     mlx::core::set_cache_limit(asr_service::kDecodeBufferCacheLimitBytes);
@@ -92,9 +90,9 @@ private:
             std::vector<float> frame(3200, 0.0f);
             for (size_t sample = 0; sample < frame.size(); ++sample) {
               frame[sample] =
-                  0.1f * static_cast<float>(std::sin(2.0 * M_PI * 220.0 *
-                                                    static_cast<double>(sample) /
-                                                    24000.0));
+                  0.1f * static_cast<float>(
+                             std::sin(2.0 * M_PI * 220.0 *
+                                      static_cast<double>(sample) / 24000.0));
             }
             for (int index = 0; index < warmup_frames_; ++index) {
               (void)session.Step(frame);
@@ -142,9 +140,7 @@ int main(int argc, char **argv) {
       {"--warmup-frames",
        [&](const std::string &value) { warmup_frames = std::stoi(value); }},
       {"--input-sample-rate",
-       [&](const std::string &value) {
-         input_sample_rate = std::stoi(value);
-       }},
+       [&](const std::string &value) { input_sample_rate = std::stoi(value); }},
   };
   haru.check_flags = [&]() {
     if (quantize_bits != 0 && quantize_bits != 8) {
@@ -168,10 +164,9 @@ int main(int argc, char **argv) {
     if (!reference_audio.empty()) {
       reference = haru::PrepareReference(reference_audio.string());
     }
-    return std::make_unique<HaruServedModel>(model_directory, quantize_bits,
-                                             std::move(instructions),
-                                             std::move(reference), seed,
-                                             warmup_frames, input_sample_rate);
+    return std::make_unique<HaruServedModel>(
+        model_directory, quantize_bits, std::move(instructions),
+        std::move(reference), seed, warmup_frames, input_sample_rate);
   };
   return asr_service::Serve(argc, argv, haru);
 }

@@ -16,7 +16,7 @@ namespace {
 
 constexpr int kFrameSamples = 3200;
 constexpr int kSampleRate = 24000;
-constexpr int kNativeUnitMs = 400;      // three 3200-sample frames
+constexpr int kNativeUnitMs = 400; // three 3200-sample frames
 constexpr int kNativeUnitFrames = 3;
 constexpr float kPcm16FullScale = 32768.0f;
 // Half the length of the 16 kHz resampling filter, in input samples.
@@ -44,7 +44,8 @@ nlohmann::json Capabilities(int input_sample_rate) {
       {"client_commit", false},
       {"input_modalities", {"audio"}},
       {"output_modalities", {"audio"}},
-      {"input_audio_format", {{"type", "audio/pcm"}, {"rate", input_sample_rate}}},
+      {"input_audio_format",
+       {{"type", "audio/pcm"}, {"rate", input_sample_rate}}},
       {"output_audio_format", {{"type", "audio/pcm"}, {"rate", kSampleRate}}},
       {"native_unit_ms", kNativeUnitMs},
       {"first_unit_ms", kNativeUnitMs},
@@ -58,7 +59,8 @@ nlohmann::json Capabilities(int input_sample_rate) {
       {"pressure_policy", "reject"},
       {"strict_order", true},
       {"sampling_parameters",
-       {"temperature", "top_k", "top_p", "guidance_scale", "seed", "speak_first"}},
+       {"temperature", "top_k", "top_p", "guidance_scale", "seed",
+        "speak_first"}},
       {"supports_reference_audio", true},
       {"supports_instruction_updates", false},
       {"supports_sampling_updates", false},
@@ -108,11 +110,13 @@ std::vector<float> StreamResampler::Convert() {
     ++output_count_;
   }
   const int64_t keep_from =
-      static_cast<int64_t>(std::floor(static_cast<double>(output_count_) * 2.0 / 3.0)) -
+      static_cast<int64_t>(
+          std::floor(static_cast<double>(output_count_) * 2.0 / 3.0)) -
       kResampleHalfTaps;
   if (keep_from > origin_ + 4096) {
     buffer_.erase(buffer_.begin(),
-                  buffer_.begin() + static_cast<std::ptrdiff_t>(keep_from - origin_));
+                  buffer_.begin() +
+                      static_cast<std::ptrdiff_t>(keep_from - origin_));
     origin_ = keep_from;
   }
   return output;
@@ -123,16 +127,10 @@ HaruRealtimeSession::HaruRealtimeSession(
     const omni_common::Tokenizer &tokenizer, const DuplexConfig &config,
     qwen3_asr::TranscriptionWorker &worker, std::string system_prompt,
     std::vector<float> reference, int input_sample_rate, Sender sender)
-    : RealtimeConnection(std::move(sender)),
-      model_(model),
-      codec_(codec),
-      head_(head),
-      tokenizer_(tokenizer),
-      config_(config),
-      worker_(worker),
+    : RealtimeConnection(std::move(sender)), model_(model), codec_(codec),
+      head_(head), tokenizer_(tokenizer), config_(config), worker_(worker),
       system_prompt_(std::move(system_prompt)),
-      reference_(std::move(reference)),
-      input_sample_rate_(input_sample_rate),
+      reference_(std::move(reference)), input_sample_rate_(input_sample_rate),
       resampler_(input_sample_rate) {
   // The OpenAI Realtime protocol opens with session.created; the playground
   // waits for it before sending session.update.
@@ -141,8 +139,8 @@ HaruRealtimeSession::HaruRealtimeSession(
 
 void HaruRealtimeSession::RunOnWorker(std::function<void()> fn) {
   worker_.Transcribe(
-      [fn = std::move(fn)](const std::atomic<bool> &)
-          -> qwen3_asr::TranscriptionResult {
+      [fn = std::move(fn)](
+          const std::atomic<bool> &) -> qwen3_asr::TranscriptionResult {
         fn();
         return {};
       },
@@ -156,8 +154,8 @@ void HaruRealtimeSession::SendEvent(const char *type,
   Send(event);
 }
 
-std::vector<float> HaruRealtimeSession::AppendSamples(
-    const nlohmann::json &message) {
+std::vector<float>
+HaruRealtimeSession::AppendSamples(const nlohmann::json &message) {
   const auto bytes =
       omni_common::DecodeBase64(message.at("audio").get<std::string>());
   if (!bytes || bytes->size() % 2 != 0) {
@@ -268,14 +266,13 @@ void HaruRealtimeSession::FinishResponse(const std::string &status,
                     {"type", "message"},
                     {"role", "assistant"},
                     {"content", content}});
-  SendEvent("response.done",
-            {{"response",
-              {{"id", response_id},
-               {"object", "realtime.response"},
-               {"status", status},
-               {"status_details", {{"reason", reason}}},
-               {"output", output},
-               {"usage", nullptr}}}});
+  SendEvent("response.done", {{"response",
+                               {{"id", response_id},
+                                {"object", "realtime.response"},
+                                {"status", status},
+                                {"status_details", {{"reason", reason}}},
+                                {"output", output},
+                                {"usage", nullptr}}}});
   ++response_index_;
   transcript_.clear();
 }
@@ -333,7 +330,8 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
     if (sglang.contains("reference_audio")) {
       const auto &ref = sglang.at("reference_audio");
       if (ref.value("media_type", "") == "audio/wav" && ref.contains("data")) {
-        const auto bytes = omni_common::DecodeBase64(ref.at("data").get<std::string>());
+        const auto bytes =
+            omni_common::DecodeBase64(ref.at("data").get<std::string>());
         if (bytes) {
           const std::string wav(bytes->begin(), bytes->end());
           reference_ = PrepareReferenceBytes(wav);
@@ -358,20 +356,20 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
     const nlohmann::json capabilities = Capabilities(input_sample_rate_);
     const nlohmann::json input_format = {{"type", "audio/pcm"},
                                          {"rate", input_sample_rate_}};
-    const nlohmann::json output_format = {{"type", "audio/pcm"}, {"rate", kSampleRate}};
-    SendEvent("session.updated",
-              {{"client_event_id", client_event_id},
-               {"session",
-                {{"id", "sess"},
-                 {"object", "realtime.session"},
-                 {"type", "realtime"},
-                 {"instructions", system_prompt_},
-                 {"output_modalities", {"audio"}},
-                 {"audio",
-                  {{"input", {{"format", input_format}}},
-                   {"output", {{"format", output_format}}}}},
-                 {"sglang", {{"granted", capabilities}}}}},
-               {"capabilities", capabilities}});
+    const nlohmann::json output_format = {{"type", "audio/pcm"},
+                                          {"rate", kSampleRate}};
+    SendEvent("session.updated", {{"client_event_id", client_event_id},
+                                  {"session",
+                                   {{"id", "sess"},
+                                    {"object", "realtime.session"},
+                                    {"type", "realtime"},
+                                    {"instructions", system_prompt_},
+                                    {"output_modalities", {"audio"}},
+                                    {"audio",
+                                     {{"input", {{"format", input_format}}},
+                                      {"output", {{"format", output_format}}}}},
+                                    {"sglang", {{"granted", capabilities}}}}},
+                                  {"capabilities", capabilities}});
     started_ = true;
     return true;
   }
@@ -467,8 +465,8 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
   }
   if (type == "session.close") {
     FinishResponse("cancelled", "client_closed");
-    SendEvent("session.closed",
-              {{"reason", "client_closed"}, {"client_event_id", client_event_id}});
+    SendEvent("session.closed", {{"reason", "client_closed"},
+                                 {"client_event_id", client_event_id}});
     return false;
   }
   SendError("invalid_request", "unsupported_event", "unsupported " + type);

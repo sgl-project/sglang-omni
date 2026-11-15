@@ -20,7 +20,7 @@ inline constexpr const char *kFull = "full_attention";
 struct CodecConfig {
   int latent_dim = 64;
   int base_channels = 32;
-  std::vector<int> ratios = {8, 5, 5, 4, 2, 2};      // upsampling order
+  std::vector<int> ratios = {8, 5, 5, 4, 2, 2}; // upsampling order
   std::vector<int> encoder_depths = {3, 3, 3, 3, 3, 3, 8};
   std::vector<int> decoder_depths = {8, 3, 3, 3, 3, 3, 3};
   float norm_eps = 1e-5f;
@@ -28,7 +28,8 @@ struct CodecConfig {
 
   int frame_samples() const {
     int samples = 1;
-    for (int r : ratios) samples *= r;
+    for (int r : ratios)
+      samples *= r;
     return samples; // 3200
   }
 };
@@ -67,7 +68,9 @@ struct TextConfig {
   float partial_rotary_factor = 0.25f;
 
   int key_dim() const { return linear_num_key_heads * linear_key_head_dim; }
-  int value_dim() const { return linear_num_value_heads * linear_value_head_dim; }
+  int value_dim() const {
+    return linear_num_value_heads * linear_value_head_dim;
+  }
   // Width of the Gated DeltaNet convolution: queries, keys and values.
   int conv_dim() const { return 2 * key_dim() + value_dim(); }
   int num_layers() const { return static_cast<int>(layer_types.size()); }
@@ -84,7 +87,9 @@ struct HaruConfig {
   HeadConfig head;
   int eos_token_id = -1; // -1 when the checkpoint has none
 
-  float frame_rate() const { return static_cast<float>(sample_rate) / frame_samples; }
+  float frame_rate() const {
+    return static_cast<float>(sample_rate) / frame_samples;
+  }
   int hidden_size() const { return lm.hidden_size; }
 
   static HaruConfig FromFile(const std::filesystem::path &path);

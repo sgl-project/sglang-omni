@@ -11,7 +11,7 @@
 namespace haru {
 
 class QuietStdout {
- public:
+public:
   QuietStdout()
       : saved_(dup(STDOUT_FILENO)), null_(open("/dev/null", O_WRONLY)) {
     if (saved_ >= 0 && null_ >= 0) {
@@ -39,7 +39,7 @@ class QuietStdout {
   QuietStdout(const QuietStdout &) = delete;
   QuietStdout &operator=(const QuietStdout &) = delete;
 
- private:
+private:
   int saved_ = -1;
   int null_ = -1;
 };
