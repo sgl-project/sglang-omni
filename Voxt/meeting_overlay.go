@@ -100,7 +100,12 @@ func (a *app) meetingOverlayView(c *ui.Context) {
 	}
 	mode, faceH := meetingOverlayFace(model)
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
-		faceStyle(ui.Column(c.Key("mt-face")), a.prefs.Overlay, mode, faceH).Padding(0, 14-layout.Border).Children(func() {
+		// The dictation pill's padding, or the answer card's when expanded (#3986).
+		face := faceStyle(ui.Column(c.Key("mt-face")), a.prefs.Overlay, mode, faceH).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
+		if model.ShowExpanded {
+			face.Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border)
+		}
+		face.Children(func() {
 			switch {
 			case model.ShowAsking:
 				a.meetingOverlayAsking(c)
@@ -136,13 +141,17 @@ var (
 
 func (a *app) meetingOverlayBar(c *ui.Context, s meeting.Snapshot, model meetingOverlayModel) {
 	live := s.State == meeting.StateRecording || s.State == meeting.StatePaused
-	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
+	var rowH, gap float32 = layout.RowH, layout.Gap // the pill's row, or the card's header
+	if model.ShowExpanded {
+		rowH, gap = layout.CardHeadH, layout.CardHeadGap
+	}
+	ui.Row(c).Height(rowH).Shrink(0).Gap(gap).AlignItems(ui.Center).Children(func() {
 		dot, status := mtRecDot, i18n.T("Meeting in progress")
 		if s.State == meeting.StatePaused {
 			dot, status = ovText2, i18n.T("Meeting paused")
 		}
 		ui.Box(c).Size(8, 8).Radius(4).Background(dot).Shrink(0).Label(status)
-		ui.Text(c, formatMeetingElapsed(s.Elapsed)).FontSize(13).Font("monospace").TextColor(ovText).SingleLine().Shrink(0)
+		ui.Text(c, formatMeetingElapsed(s.Elapsed)).FontSize(12).Font("monospace").TextColor(ovText).SingleLine().Shrink(0)
 		if s.State == meeting.StatePaused {
 			ui.Text(c, i18n.T("Meeting paused")).FontSize(12).TextColor(ovText2).SingleLine().Shrink(0)
 		} else {
@@ -204,7 +213,7 @@ func meetingOverlayProblem(c *ui.Context, key string, short bool) {
 	if msg == "" {
 		return
 	}
-	ui.Row(c.Key("mt-problem")).Gap(6).AlignItems(ui.Start).Shrink(0).Padding(0, 0, 10, 0).Children(func() {
+	ui.Row(c.Key("mt-problem")).Gap(6).AlignItems(ui.Start).Shrink(0).Margin(layout.LiveGap, 0, 0, 0).Children(func() {
 		ui.Icon(c, icons.DangerTriangle.Linear).Size(14, 14).TextColor(mtWarn).Shrink(0)
 		text := ui.Text(c, msg).FontSize(12).TextColor(mtWarn).Grow(1).Shrink(1).MinWidth(0)
 		if short {
@@ -215,7 +224,7 @@ func meetingOverlayProblem(c *ui.Context, key string, short bool) {
 
 func (a *app) meetingOverlayExpanded(c *ui.Context, s meeting.Snapshot) {
 	if s.State == meeting.StateRecording || s.State == meeting.StatePaused {
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Padding(0, 0, 10, 0).Children(func() {
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Children(func() {
 			modes := []meeting.Mode{meeting.ModeMeeting, meeting.ModeSubtitles, meeting.ModeRecording}
 			for i, label := range []string{i18n.T("Meeting"), i18n.T("Subtitles"), i18n.T("Recording")} {
 				if meetingChip(c.Key("mt-mode-"+string(modes[i])), label, meetingModeHint(modes[i]), s.Mode == modes[i]) && s.Mode != modes[i] {
@@ -239,10 +248,12 @@ func (a *app) meetingOverlayExpanded(c *ui.Context, s meeting.Snapshot) {
 			}
 		})
 	}
-	ui.Scroll(c.Key("mt-live")).Grow(1).MinHeight(0).Padding(0, 0, 12, 0).Children(func() {
-		ui.Column(c).Gap(8).Children(func() {
+	// The answer card's rule and text (#3986).
+	ui.Box(c).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+	ui.Scroll(c.Key("mt-live")).Grow(1).MinHeight(0).Margin(layout.CardRuleGap, 0, 0, 0).Children(func() {
+		ui.Column(c).Gap(8).Padding(0, layout.CardInset, 0, 0).Children(func() {
 			if len(s.Segments) == 0 && s.Live[meeting.SourceMic] == "" && s.Live[meeting.SourceSystem] == "" {
-				ui.Text(c, i18n.T("Listening…")).FontSize(13).TextColor(ovText2)
+				ui.Text(c, i18n.T("Listening…")).FontSize(layout.CardTextSize).TextColor(ovText2)
 			}
 			for _, seg := range s.Segments {
 				me := seg.Speaker == "me" || seg.Speaker == "" && seg.Source == meeting.SourceMic
@@ -257,18 +268,19 @@ func (a *app) meetingOverlayExpanded(c *ui.Context, s meeting.Snapshot) {
 	})
 }
 
-// meetingChip is a capsule that shows whether it is on; it reports a click.
+// meetingChip is a capsule that shows whether it is on, cardCapsule's
+// look when off; it reports a click.
 func meetingChip(c *ui.Context, label, tip string, on bool) bool {
 	b := ui.ButtonBase(c).Height(layout.CardBtn).Padding(0, 10-layout.Border).Radius(layout.CardBtn / 2).Center().Shrink(0).Label(label)
 	if tip != "" {
 		b.Tooltip(tip)
 	}
-	bg, line, text := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08), ovText2
+	bg, line, text := ui.RGBA(255, 255, 255, 0.08), ui.RGBA(255, 255, 255, 0.1), ovText2
 	switch {
 	case on:
 		bg, line, text = ui.RGBA(255, 255, 255, 0.2), ui.RGBA(255, 255, 255, 0.24), ovText
 	case b.Hovered():
-		bg, line = ui.RGBA(255, 255, 255, 0.14), ui.RGBA(255, 255, 255, 0.18)
+		bg, line = ui.RGBA(255, 255, 255, 0.16), ui.RGBA(255, 255, 255, 0.18)
 	}
 	b.Background(bg).Border(1, line)
 	return b.Children(func() {
@@ -285,7 +297,7 @@ func meetingOverlayLine(c *ui.Context, who, text string, me, live bool) {
 			whoColor = ovText
 		}
 		ui.Text(c, who).FontSize(11).FontWeight(600).TextColor(whoColor)
-		line := ui.Text(c, text).FontSize(13).TextColor(ovText)
+		line := ui.Text(c, text).FontSize(layout.CardTextSize).FontWeight(layout.CardTextWeight).TextColor(ovText)
 		if live {
 			line.Italic().TextColor(ovLiveColor)
 		}
@@ -313,8 +325,8 @@ func meetingSpeaker(name string, src meeting.Source) string {
 }
 
 func (a *app) meetingOverlayAsking(c *ui.Context) {
-	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, i18n.T("Save this meeting?")).FontSize(13).FontWeight(500).TextColor(ovText).SingleLine().Grow(1).MinWidth(0)
+	ui.Row(c).Height(layout.RowH).Shrink(0).Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, i18n.T("Save this meeting?")).FontSize(layout.NoticeSize).FontWeight(500).TextColor(ovText).SingleLine().Grow(1).MinWidth(0)
 		if cardCapsule(c.Key("mt-save"), i18n.T("Save"), "") {
 			a.meetingSave()
 		}
@@ -337,9 +349,9 @@ func meetingOverlayFinishing(c *ui.Context, s meeting.Snapshot, look pillLook) {
 	case meeting.StageSummary:
 		msg = i18n.T("Summarising…")
 	}
-	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+	ui.Row(c).Height(layout.RowH).Shrink(0).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 		overlayLoader(c, msg, look, 0)
-		ui.Text(c, msg).FontSize(13).TextColor(ovText).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		ui.Text(c, msg).FontSize(layout.NoticeSize).TextColor(ovText).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 	})
 }
 
