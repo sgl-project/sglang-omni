@@ -39,11 +39,15 @@ from sglang.srt.layers.attention.linear.kernels.gdn_triton import TritonGDNKerne
 from sglang.srt.layers.radix_linear_attention import RadixLinearAttention
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+    get_prefill_num_tokens_to_capture,
+)
 from sglang.srt.runtime_context import get_exec
 
 __all__ = [
     "GDNPrefillGraphMetadata",
     "GDNPrefillGraphAttnBackend",
+    "buckets_keep_chunk_o_block_size",
     "gdn_extend_in_graph",
     "install_gdn_prefill_graph",
 ]
@@ -187,6 +191,32 @@ class GDNPrefillGraphMetadata:
         return offset + 2 * row_count
 
 
+def chunk_o_block_size(token_count: int) -> int:
+    """chunk_fwd_o's block size for a varlen batch of token_count rows."""
+    return min(CHUNK_SIZE, max(16, triton.next_power_of_2(token_count)))
+
+
+def buckets_keep_chunk_o_block_size(bucket_token_counts: list[int]) -> bool:
+    """Whether every batch replays with the chunk_fwd_o block size of its eager
+    run, which sizes the block from the batch's token count where the graph uses
+    the bucket's."""
+    for token_count in range(1, CHUNK_SIZE + 1):
+        serving_bucket_token_counts = [
+            bucket_token_count
+            for bucket_token_count in bucket_token_counts
+            if bucket_token_count >= token_count
+        ]
+        if not serving_bucket_token_counts:
+            pass
+        elif chunk_o_block_size(min(serving_bucket_token_counts)) != chunk_o_block_size(
+            token_count
+        ):
+            return False
+        else:
+            pass
+    return True
+
+
 def chunk_fwd_o_on_tables(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -202,7 +232,7 @@ def chunk_fwd_o_on_tables(
         value.shape[-1],
     )
     value_head_count = value.shape[-2]
-    chunk_block_size = min(CHUNK_SIZE, max(16, triton.next_power_of_2(token_count)))
+    chunk_block_size = chunk_o_block_size(token_count)
     output = torch.zeros_like(value)
     chunk_fwd_kernel_o[
         (
@@ -369,6 +399,12 @@ class GDNPrefillGraphAttnBackend(GDNAttnBackend):
             mamba_cache.conv[0].is_contiguous() and mamba_cache.temporal.is_contiguous()
         ):
             return "the state pool is strided"
+        elif not buckets_keep_chunk_o_block_size(
+            get_prefill_num_tokens_to_capture(
+                get_exec().graph.cuda_graph_config.prefill.bs or []
+            )
+        ):
+            return "a prefill graph bucket resizes a short batch's chunk_fwd_o block"
         else:
             return None
 

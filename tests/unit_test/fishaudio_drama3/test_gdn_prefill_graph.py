@@ -17,9 +17,16 @@ from sglang.kernels.ops.attention.triton_gdn_fused_proj import (
     fused_qkv_split_gdn_prefill,
 )
 from sglang.kernels.ops.mamba.causal_conv1d_triton import causal_conv1d_fn
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
 
+from sglang_omni.models.fishaudio_drama3.engine_builder import (
+    PREFILL_CUDA_GRAPH_MAX_TOKENS,
+)
 from sglang_omni.models.fishaudio_drama3.gdn_prefill_graph import (
     GDNPrefillGraphMetadata,
+    buckets_keep_chunk_o_block_size,
     gdn_extend_in_graph,
 )
 from tests.unit_test.fishaudio_drama3.graph_checks import (
@@ -198,6 +205,23 @@ def eager_extend(
         inplace_update=True,
     )
     return output
+
+
+@pytest.mark.parametrize(
+    ("bucket_token_counts", "keeps_block_size"),
+    [
+        (generate_prefill_cuda_graph_batch_sizes(PREFILL_CUDA_GRAPH_MAX_TOKENS), True),
+        ([32, 64, 256], False),
+        ([16, 64, 256], False),
+    ],
+    ids=["default buckets", "no 16-token bucket", "no 32-token bucket"],
+)
+def test_buckets_that_resize_a_short_batchs_chunk_fwd_o_block_are_refused(
+    bucket_token_counts: list[int], keeps_block_size: bool
+) -> None:
+    """A batch of up to 16 tokens tiles chunk_fwd_o at 16 rows and one of 17 to 32
+    at 32, so without a bucket at each size the graph replays it at another."""
+    assert buckets_keep_chunk_o_block_size(bucket_token_counts) is keeps_block_size
 
 
 @accelerator
