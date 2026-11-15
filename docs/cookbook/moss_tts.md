@@ -107,78 +107,15 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
+The [TTS client examples](../basic_usage/tts.md#python) cover the Python and OpenAI SDK clients for the same request.
+
 ### Voice Cloning
 
-Provide a reference clip when you want voice cloning. The `references` field accepts `audio_path`
-(a local path, HTTP URL, or base64 data URI) and `text` (the transcript of that clip). Supplying
-the transcript materially improves cloning quality.
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
-    "voice": "default",
-    "input": "SGLang-Omni is a great project!",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
-    }]
-  }' \
-  --output output.wav
-```
-
-`ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
-`references[0].text`.
-
-**Python**
-
-```python
-import requests
-
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
-        "voice": "default",
-        "input": "Get the trust fund to the bank early.",
-        "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-        "ref_text": "We asked over twenty different people, and they all said it was his.",
-    },
-)
-resp.raise_for_status()
-with open("output.wav", "wb") as f:
-    f.write(resp.content)
-```
-
-### Reference Audio Sources
-
-`audio_path` / `ref_audio` may be a local filesystem path readable by the server, an HTTP(S)
-URL, or a base64 **data URI** (`data:audio/wav;base64,<...>`, decoded with `soundfile`):
-
-```json
-{"ref_audio": "data:audio/wav;base64,UklGR.....", "ref_text": "Transcript of the clip."}
-```
+MOSS-TTS clones from a reference clip, and supplying the clip's transcript in `references[0].text` (or `ref_text`) materially improves speaker similarity. See [Voice cloning in TTS Model Usage](../basic_usage/tts.md#voice-cloning) for the request fields, the reference sources the server accepts, and a client example.
 
 ### Streaming
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
-chunks in real time.
-
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
-    "voice": "default",
-    "input": "Get the trust fund to the bank early.",
-    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-    "ref_text": "We asked over twenty different people, and they all said it was his.",
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  --output output.pcm
-```
+MOSS-TTS streams 24 kHz PCM. Add `"stream": true` with `"response_format": "pcm"` to a speech request; the shared raw PCM and SSE clients are in [TTS Model Usage](../basic_usage/tts.md#streaming).
 
 ### Duration Control
 
