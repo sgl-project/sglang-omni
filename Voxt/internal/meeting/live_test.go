@@ -247,7 +247,7 @@ func TestLiveRotateFinalDoesNotRepeat(t *testing.T) {
 				}
 			}
 			live.committer.Partial("今天下午开会先说Voxt的进度然后讲会议功能还有一点")
-			if err := live.rotate(context.Background(), false); err != nil {
+			if err := live.rotate(context.Background(), false, true); err != nil {
 				t.Fatal(err)
 			}
 			if len(got) != 1 || got[0] != tc.want {
