@@ -177,7 +177,7 @@ func TestLiveStreamContinuityOnRotate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := live.rotate(ctx, false); err != nil {
+	if err := live.rotate(ctx, false, true); err != nil {
 		t.Fatal(err)
 	}
 	clk.advance(50 * time.Millisecond)
@@ -206,7 +206,7 @@ func TestLiveRotateStartsFreshText(t *testing.T) {
 	if _, ok := live.committer.Tick(time.Second, silenceFinalizeLive); !ok {
 		t.Fatal("expected commit")
 	}
-	if err := live.rotate(context.Background(), false); err != nil {
+	if err := live.rotate(context.Background(), false, true); err != nil {
 		t.Fatal(err)
 	}
 	live.committer.Partial("今天晚上")
