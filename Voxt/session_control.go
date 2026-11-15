@@ -137,6 +137,14 @@ func (a *app) skipLLM() {
 	}
 }
 
+// stopLLM ends the answer streaming into the card where it is; the card
+// keeps it (session.Manager's StopLLM).
+func (a *app) stopLLM() {
+	if a.mgr != nil {
+		a.mgr.StopLLM(a.sess.ID)
+	}
+}
+
 // toggleTranscribe is the menu bar's Start / Stop transcribing.
 func (a *app) toggleTranscribe() {
 	switch {

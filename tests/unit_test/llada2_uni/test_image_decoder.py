@@ -29,7 +29,6 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.patch import ConfigPatchSet
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.models.llada2_uni import stages
-from sglang_omni.models.llada2_uni.components import common as common_module
 from sglang_omni.models.llada2_uni.components import decoder_runtime
 from sglang_omni.models.llada2_uni.components.decoder_model import (
     DecoderConfig,
@@ -237,7 +236,7 @@ def test_sglang_decoder_factory_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
     decoder = Mock(spec=LLaDA2ImageDecoder)
     decoder.decode.return_value = Image.new("RGB", (8, 8))
     constructor = Mock(return_value=decoder)
-    monkeypatch.setattr(decoder_runtime, "initialize_decoder_runtime", initialize)
+    monkeypatch.setattr(stages, "initialize_decoder_runtime", initialize)
     monkeypatch.setattr(stages, "LLaDA2ImageDecoder", constructor)
 
     scheduler = create_image_decode_executor("unused", device="cpu", backend="sglang")
@@ -781,7 +780,7 @@ def test_thinking_stops_at_boundary_then_generates_image(
     assert thinker_next(payload.request_id, output) == ["decode", "image_decode"]
     assert extract_image_vq_tokens(state)[:3] == ([7] * 1024, 32, 32)
 
-    monkeypatch.setattr(common_module, "load_llada2_tokenizer", lambda path: tokenizer)
+    monkeypatch.setattr(stages, "load_llada2_tokenizer", lambda path: tokenizer)
     output.data = state.to_dict()
     decoded = create_decode_executor("unused").fn(output)
     thinking_tokens = text_request.output_ids.index(preprocessor.boi_id) + 1
@@ -805,7 +804,7 @@ def test_single_pass_usage_is_unchanged(
     task_kind: str,
 ) -> None:
     tokenizer = preprocessor.tokenizer
-    monkeypatch.setattr(common_module, "load_llada2_tokenizer", lambda path: tokenizer)
+    monkeypatch.setattr(stages, "load_llada2_tokenizer", lambda path: tokenizer)
     state = LLaDA2UniPipelineState(
         prompt={"input_ids": torch.tensor([[1, 2, 3]])},
         thinker_out={"output_ids": [IMAGE_TOKEN_OFFSET + 7] * 4},

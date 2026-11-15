@@ -47,9 +47,13 @@ type langMenuState struct {
 }
 
 // langMenuWanted says whether the menu shows: the card shows, offers
-// another language, and the capsule opened it.
+// another language (or thinking level), and the capsule opened it.
 func (a *app) langMenuWanted() bool {
-	return a.answer.langOpen && a.ov.shown && a.ov.mode == ovAnswer && a.cardNow().canLang
+	if a.answer.pillMenu {
+		return a.answer.langOpen && a.ov.shown && a.pillThinks(a.ov.mode)
+	}
+	v := a.cardNow()
+	return a.answer.langOpen && a.ov.shown && a.ov.mode == ovAnswer && (a.answer.thinkMenu && v.canThink || !a.answer.thinkMenu && v.canLang)
 }
 
 // langMenuHeight is the list's height: all the languages, up to
@@ -74,16 +78,43 @@ func langMenuFrame(card mygo.Rectangle, top bool) mygo.Rectangle {
 	return mygo.Rectangle{X: x - layout.Pad, Y: y - layout.Pad, Width: ovLangW + 2*layout.Pad, Height: h + 2*layout.Pad}
 }
 
-// toggleLangMenu opens or closes the language menu (the capsule).
+// thinkMenuFrame is the thinking menu's frame: the language menu's lang
+// (its right edge under the thinking button, the one before Insert), as
+// high as its n rows.
+func thinkMenuFrame(lang mygo.Rectangle, top bool, n int) mygo.Rectangle {
+	h := min(n*ovLangRowH+2*ovLangPad, ovLangMaxH) + 2*layout.Pad
+	if !top {
+		lang.Y += lang.Height - h // above the card: its bottom stays
+	}
+	lang.Height = h
+	return lang
+}
+
+// pillMenuFrame is the working pill's thinking menu's frame for the
+// pill's window frame pill: n rows, its right edge under the pill's (the
+// capsule ends the row), above the pill or, at the top, under it.
+func pillMenuFrame(pill mygo.Rectangle, top bool, n int) mygo.Rectangle {
+	h := min(n*ovLangRowH+2*ovLangPad, ovLangMaxH)
+	x := pill.X + pill.Width - layout.Pad - ovLangW
+	y := pill.Y + layout.Pad - ovLangGap - h
+	if top {
+		y = pill.Y + pill.Height - layout.Pad + ovLangGap
+	}
+	return mygo.Rectangle{X: x - layout.Pad, Y: y - layout.Pad, Width: ovLangW + 2*layout.Pad, Height: h + 2*layout.Pad}
+}
+
+// toggleLangMenu opens or closes the language menu (the capsule); it
+// takes the thinking menu's place.
 func (a *app) toggleLangMenu() {
-	a.answer.langOpen = !a.answer.langOpen
+	a.answer.langOpen = !a.answer.langOpen || a.answer.thinkMenu
+	a.answer.thinkMenu, a.answer.pillMenu = false, false
 	a.syncLangMenu()
 }
 
-// closeLangMenu closes the language menu, if it shows.
+// closeLangMenu closes the language (or thinking) menu, if it shows.
 func (a *app) closeLangMenu() {
 	if a.answer.langOpen {
-		a.answer.langOpen = false
+		a.answer.langOpen, a.answer.thinkMenu, a.answer.pillMenu = false, false, false
 		a.syncLangMenu()
 	}
 }
@@ -93,8 +124,8 @@ func (a *app) closeLangMenu() {
 func (a *app) syncLangMenu() {
 	m := &a.ov.lang
 	if !a.langMenuWanted() {
-		if !a.ov.shown || a.ov.mode != ovAnswer {
-			a.answer.langOpen = false
+		if !a.ov.shown || a.ov.mode != ovAnswer || a.answer.pillMenu {
+			a.answer.langOpen, a.answer.thinkMenu, a.answer.pillMenu = false, false, false
 		}
 		if m.shown {
 			m.shown = false
@@ -105,9 +136,18 @@ func (a *app) syncLangMenu() {
 		return
 	}
 	frame := langMenuFrame(a.ov.frame, a.prefs.Overlay.Position == "top")
+	if a.answer.pillMenu {
+		frame = pillMenuFrame(a.ov.frame, a.prefs.Overlay.Position == "top", len(a.menuThinkLevels()))
+	} else if a.answer.thinkMenu {
+		frame = thinkMenuFrame(frame, a.prefs.Overlay.Position == "top", len(a.cardThinkLevels()))
+	} else if a.cardNow().thinks {
+		frame.X -= layout.CardBtn + layout.CardHeadGap // the thinking button sits between the capsule and Insert
+	}
 	moved := frame != m.frame || !m.shown
 	m.frame = frame
-	if !m.shown {
+	if a.answer.thinkMenu {
+		m.scroll.Y = 0
+	} else if !m.shown {
 		// Scrolled to the chosen language.
 		m.scroll.Y = float32(max(0, langIndex(a.cardNow().lang)*ovLangRowH-langMenuHeight()/2))
 	}
@@ -152,14 +192,24 @@ func (a *app) langMenuView(c *ui.Context) {
 	c.SetTheme(overlayTheme())
 	defer c.Root().Background(ui.Transparent)
 	cur := a.cardNow().lang
+	label := i18n.T("Translate into")
+	if a.answer.thinkMenu {
+		label = i18n.T("Thinking")
+	}
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
 		ui.Column(c.Key("ov-lang-face")).Fill().Radius(ovLangRadius).Background(ui.RGBA(30, 30, 34, 0.98)).
 			Border(1, ui.RGBA(255, 255, 255, 0.12)).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA)).
-			Label(i18n.T("Translate into")).Children(func() {
+			Label(label).Children(func() {
 			ui.Scroll(c.Key("ov-lang-scroll")).Fill().TrackScroll(&a.ov.lang.scroll).Children(func() {
 				ui.Column(c).Padding(ovLangPad - layout.Border).Children(func() {
+					if a.answer.thinkMenu {
+						a.thinkMenuView(c)
+						return
+					}
 					for _, code := range compose.TargetLanguages {
-						a.langMenuRow(c, code, code == cur)
+						if menuRow(c.Key("ov-lang-"+code), uitext.TargetLanguageLabel(code), code == cur) {
+							a.chooseLanguage(code)
+						}
 					}
 				})
 			})
@@ -167,23 +217,21 @@ func (a *app) langMenuView(c *ui.Context) {
 	})
 }
 
-// langMenuRow is one language: its name, a check when it is the card's.
-func (a *app) langMenuRow(c *ui.Context, code string, chosen bool) {
-	name := uitext.TargetLanguageLabel(code)
-	b := ui.ButtonBase(c.Key("ov-lang-"+code)).Height(ovLangRowH).Padding(0, 10).Radius(8).Label(name).Checked(chosen)
+// menuRow is one row of the menu: its name, a check when it is the
+// card's. It reports a click.
+func menuRow(c *ui.Context, name string, chosen bool) bool {
+	b := ui.ButtonBase(c).Height(ovLangRowH).Padding(0, 10).Radius(8).Label(name).Checked(chosen)
 	if b.Hovered() {
 		b.Background(ui.RGBA(255, 255, 255, 0.08))
 	}
-	if b.Children(func() {
+	return b.Children(func() {
 		ui.Row(c).Fill().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, name).FontSize(13).TextColor(ui.RGBA(255, 255, 255, 0.92)).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 			if chosen {
 				ui.Icon(c, icons.Check.Linear).Size(14, 14).TextColor(tok(c.Theme()).Accent).Shrink(0)
 			}
 		})
-	}).Clicked() {
-		a.chooseLanguage(code)
-	}
+	}).Clicked()
 }
 
 // chooseLanguage is a language chosen in the menu: it closes, and the

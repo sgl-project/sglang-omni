@@ -16,7 +16,10 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // URL is where the announcements are (Voxt 1.x's address).
@@ -91,4 +94,30 @@ func get(ctx context.Context, client *http.Client, address string, v any) error 
 		return fmt.Errorf("%s: %w", address, err)
 	}
 	return nil
+}
+
+// For keeps the announcements a Voxt 2 user can use and read. Voxt 1.x's
+// (a version below 2) go: the server is 1.x's, and they are about 1.x,
+// such as its meetings and notes. Unless chinese, so do the ones written
+// mostly in Chinese: the server says nothing of an announcement's
+// language. A version that does not parse keeps it.
+func For(list []Announcement, chinese bool) []Announcement {
+	return slices.DeleteFunc(slices.Clone(list), func(n Announcement) bool {
+		major, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimSpace(n.Version), "v"), ".")
+		if m, err := strconv.Atoi(major); err == nil && m < 2 {
+			return true
+		}
+		han, words, inWord := 0, 0, false // a Han character against a Latin word
+		for _, r := range n.Title + "\n" + n.Content {
+			latin := r <= unicode.MaxLatin1 && unicode.IsLetter(r)
+			if latin && !inWord {
+				words++
+			}
+			if unicode.Is(unicode.Han, r) {
+				han++
+			}
+			inWord = latin
+		}
+		return !chinese && han > words
+	})
 }

@@ -34,6 +34,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -66,18 +67,23 @@ type cardView struct {
 	why       string   // why it is in the card (Insert's tip)
 	lang      string   // Translate's target
 	target    string   // the app it came from
+	// think is the answer's thinking level (nil: the service's setting);
+	// thinks: the card offers the levels, canThink: now.
+	think            *llm.Thinking
+	thinks, canThink bool
 	// conversation: the turns of a Rewrite conversation, as bubbles.
 	conversation bool
 	bubbles      []cardBubble
 	// What the header offers.
-	canInsert, canCopy, canFollowUp, canStop, canRetry, canLang bool
-	copied                                                      bool
-	follow                                                      string // the Rewrite shortcut's glyphs
+	// canStopAnswer: the answer streams in, Stop keeps it so far (#3886).
+	canInsert, canCopy, canFollowUp, canStop, canStopAnswer, canRetry, canLang bool
+	copied                                                                     bool
+	follow                                                                     string // the Rewrite shortcut's glyphs
 	// size is the card's, its feature's (Features.CardSizes).
 	size layout.CardSize
 	// writing: Rewrite's first answer as the model writes it
-	// (writingAnswer), the card at its full height from the first words:
-	// it does not grow line by line (10-15).
+	// (writingAnswer), shown at a steady pace in a card that grows a few
+	// lines at a time (overlay_stream.go, #3836).
 	writing bool
 }
 
@@ -137,7 +143,7 @@ func (a *app) cardNow() cardView {
 	if !a.answer.open {
 		if a.writingAnswer() {
 			s := a.pillSession()
-			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: s.Draft, busy: true, writing: true,
+			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: a.shownDraft(s), busy: true, writing: true, canStopAnswer: a.sess.CanStop(),
 				target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
 		}
 		return cardView{size: layout.CardSizes[0]} // no card: the pill shows the session
@@ -150,14 +156,18 @@ func (a *app) cardNow() cardView {
 		target: card.target.Name, copied: card.copied, busy: own, conversation: card.conversation || follow,
 		size: layout.CardSizes[a.prefs.Features.CardSize(string(card.kind))]}
 	v.title = uitext.CardTitle(card.kind, card.title)
+	v.think = card.think
 	if redo {
-		v.lang = card.redoLang
+		v.lang, v.think = card.redoLang, card.redoThink
 	}
 	v.canCopy = card.text != ""
 	v.canInsert = card.problem == nil && card.text != "" && !own
 	v.canLang = card.kind == store.KindTranslate && card.problem == nil && !s.State.Live()
 	v.canFollowUp = a.canFollowUp()
+	v.thinks = card.problem == nil && !v.conversation && len(card.turns) <= 1 && len(a.cardThinkLevels()) > 1
+	v.canThink = v.thinks && !s.State.Live()
 	v.canStop = follow && s.State == session.Recording
+	v.canStopAnswer = follow && a.sess.CanStop()
 	v.canRetry = card.problem != nil && !s.State.Live()
 	v.follow = a.featureKeys(hotkey.Rewrite)
 	if v.failed != nil && !v.conversation {
@@ -187,7 +197,7 @@ func (a *app) cardNow() cardView {
 			v.bubbles = append(v.bubbles, b)
 		}
 		if s.State != session.Recording {
-			v.bubbles = append(v.bubbles, cardBubble{title: s.Title, text: s.Draft, live: true})
+			v.bubbles = append(v.bubbles, cardBubble{title: s.Title, text: a.shownDraft(s), live: true})
 		}
 	case card.problem != nil:
 		// The follow-up that failed: what was said; why, under the card.
@@ -332,6 +342,10 @@ func (a *app) blockHeight(b cardBlock) (float32, bool) {
 	return h, exact
 }
 
+// streamGrowStep is how much the card grows at a time while an answer
+// streams into it: four lines of its text.
+const streamGrowStep = 4 * 19 // layout.CardTextSize × 1.3, rounded up (guessText)
+
 // cardBodyHeight is the height of v's text in the card: all of it up to
 // cardBodyMax (then it scrolls), and whether it was measured.
 func (a *app) cardBodyHeight(v cardView) (int, bool) {
@@ -342,6 +356,20 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 		bh, ok := a.blockHeight(b)
 		h += b.gap + bh
 		exact = exact && ok
+	}
+	if v.writing || v.conversation && v.busy && !v.recording {
+		// An answer on its way: the card grows a few lines at a time,
+		// not with every line (#3836).
+		h = float32(math.Ceil(float64(h/streamGrowStep))) * streamGrowStep
+		// A guess for text the view has not measured yet runs a little
+		// long: it kept the card a step taller until the measure came
+		// back a frame later, so the card grew and dropped back. Keep
+		// the last measured height until then.
+		if r := &a.ov.stream; exact {
+			r.h = h
+		} else if r.h > 0 {
+			h = r.h
+		}
 	}
 	return min(int(math.Ceil(float64(h))), bodyMax), exact
 }

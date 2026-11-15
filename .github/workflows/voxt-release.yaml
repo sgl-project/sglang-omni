@@ -9,10 +9,12 @@ name: Voxt Release
 # release whose notes are the version's section of Voxt/CHANGELOG.md. Apple
 # silicon only. The nightly from main (voxt-nightly.yaml, version
 # X.Y.Z-nightly.YYYYMMDD) and the beta of each Voxt change merged into main
-# (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N), or either run by hand
-# from any branch, are signed and notarized the same way and keep their
-# disk image and its SHA-256 as an artifact, without the ZIP, which only a
-# release's update uses. A beta takes the Omni runtime from the cache when
+# (voxt-beta.yaml, version X.Y.Z-beta.YYYYMMDD.N with Z one past mygo.json's
+# patch), or either run by hand from any branch, are signed and notarized
+# the same way and keep their disk image and its SHA-256 as an artifact,
+# without the ZIP, which only a release's update uses. A beta from main is
+# also a prerelease voxt-vX.Y.Z-beta.YYYYMMDD.N with them, the last five
+# kept, which the app's Beta updates offers. A beta takes the Omni runtime from the cache when
 # one was built from the same sources. Any other run (a pull request that
 # changes the release, or this workflow by hand) builds the same app ad
 # hoc, unsigned, and keeps its disk image the same way.
@@ -99,8 +101,9 @@ jobs:
           elif [[ "$IS_NIGHTLY" == "true" ]]; then
             version="$(jq -r .version mygo.json)-nightly.$(date -u +%Y%m%d)"
           elif [[ "$IS_BETA" == "true" ]]; then
-            # The run number tells apart the betas of one day.
-            version="$(jq -r .version mygo.json)-beta.$(date -u +%Y%m%d).$GITHUB_RUN_NUMBER"
+            # A beta previews the next patch: after release X.Y.Z, X.Y.Z-beta would sort before it and the app's check would never offer it. The run number tells apart the betas of one day.
+            IFS=. read -r major minor patch <<< "$(jq -r .version mygo.json)"
+            version="$major.$minor.$((patch + 1))-beta.$(date -u +%Y%m%d).$GITHUB_RUN_NUMBER"
           else
             version="$(jq -r .version mygo.json)"
           fi
@@ -259,6 +262,29 @@ jobs:
           name: Voxt-${{ env.VERSION }}-arm64${{ env.IS_SIGNED != 'true' && '-unsigned' || '' }}
           path: ${{ env.ARTIFACTS_DIR }}
           retention-days: 14
+
+      # Beta updates in the app (updates_github.go) offers the newest of these prereleases; never the latest release, and only the last few kept.
+      - name: Publish the beta as a prerelease
+        if: env.IS_BETA == 'true' && env.IS_SIGNED == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_BETAS: 5
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/beta-notes.md"
+          section="$(awk '/^## /{f = index($0, "[Unreleased]") > 0; next} f' CHANGELOG.md)"
+          cat > "$notes" <<NOTES
+          A beta of Voxt built from main at $GITHUB_SHA after each merged change. Open Voxt-$VERSION-arm64.dmg and drag Voxt to Applications. Betas are not tested as releases are.
+
+          $section
+          NOTES
+          gh release create "voxt-v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Voxt v$VERSION" --notes-file "$notes" "$ARTIFACTS_DIR"/*
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | test("^voxt-v[0-9]+\\.[0-9]+\\.[0-9]+-beta\\.[0-9]{8}\\.[0-9]+$")))] | sort_by(.createdAt) | reverse | .[env.KEEP_BETAS | tonumber:][] | .tagName' \
+            | while read -r tag; do
+                gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+              done
 
       - name: Create the draft release
         if: env.IS_RELEASE == 'true'

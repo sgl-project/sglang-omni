@@ -180,3 +180,43 @@ func TestTranslateFailureRetry(t *testing.T) {
 		t.Errorf("pasted %+v", p)
 	}
 }
+
+// TestTranslateContinue: the tester's case 4 (#3897). English selected,
+// the main language Chinese: Translate writes Chinese, into the card,
+// which offers Continue; a spoken follow-up changes that translation, the
+// request holding the source and the translation the card shows (here
+// into Japanese, picked on the card); Insert pastes the changed one.
+func TestTranslateContinue(t *testing.T) {
+	const src = "Good morning, team. The release moves to Friday because the tests are still running."
+	chat := &fakeChat{texts: []string{"早上好，团队。测试还在跑，发布改到周五。", "テストがまだ走っているので、リリースは金曜日に移ります。", "リリースは金曜日。"}}
+	set, keys, tr := fileSetup(t, "unused", chat)
+	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", src)+","+ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Translate.ShowCard = true
+		s.General.MainLanguage = "zh"
+	}, keys)
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if a.sess.TargetLanguage != "zh-Hans" || !a.answer.open || a.answer.lang != "zh-Hans" {
+		t.Fatalf("end %+v, card %+v", a.sess, a.answer)
+	}
+	if v := a.cardNow(); !v.canFollowUp || !v.canLang {
+		t.Errorf("the card offers no Continue: %+v", v)
+	}
+	a.retryAnswer("ja")
+	a.pump("Japanese", func() bool { return a.answer.redo == "" && a.answer.lang == "ja" })
+	a.recordFollowUp(t, tr, "make it shorter")
+	msgs := chatMessages(chat.requests()[2])
+	if len(msgs) != 4 || !strings.Contains(msgs[1][1], "Japanese") || !strings.Contains(msgs[1][1], "<selected_text>\n"+src+"\n</selected_text>") ||
+		msgs[2] != [2]string{"assistant", "テストがまだ走っているので、リリースは金曜日に移ります。"} || msgs[3][1] != "<instruction>\nmake it shorter\n</instruction>" {
+		t.Errorf("follow-up messages %q", msgs)
+	}
+	if a.answer.text != "リリースは金曜日。" || len(a.answer.turns) != 2 || !a.cardNow().conversation {
+		t.Errorf("card %+v", a.answer)
+	}
+	a.insertAnswer()
+	a.pump("the insert", func() bool { return !a.answer.open })
+	if p := a.pasted(); len(p) != 1 || p[0].Text != "リリースは金曜日。" {
+		t.Errorf("pasted %+v", p)
+	}
+}

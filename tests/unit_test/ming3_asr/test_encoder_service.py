@@ -21,6 +21,7 @@ from sglang_omni.modules.ming_audio.audio_encoder import (
     AudioEncoderConfig,
     Ming3AudioEncoder,
 )
+from tests.unit_test.fixtures.accelerator import require_device_streams
 
 
 def tiny_encoder() -> Ming3AudioEncoder:
@@ -226,6 +227,35 @@ def test_cuda_bf16_mixed_length_batch_matches_separate_chunks() -> None:
         separate = [encoder.embed_mels([part])[0] for part in chunks]
     for got, expected in zip(batched, separate, strict=True):
         torch.testing.assert_close(got, expected, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.accelerator
+def test_device_stream_batch_matches_separate_chunks() -> None:
+    device = require_device_streams()
+    torch.manual_seed(0)
+    encoder = tiny_encoder().to(device=device)
+    mels = boundary_mels(encoder)
+    torch.get_device_module(device).synchronize()
+    service = Ming3ASRPreLMEncoderService(
+        encoder,
+        max_batch_size=len(mels),
+        max_batch_wait_ms=1000,
+    )
+    try:
+        assert service.stream is not None
+        assert service.consumer_stream == torch.get_device_module(
+            device
+        ).current_stream(device)
+        futures = [service.submit([mel]) for mel in mels]
+        batched = [
+            future.result(timeout=service.ENCODE_TIMEOUT_S) for future in futures
+        ]
+        assert service.stream.query()
+    finally:
+        service.close()
+    separate = separate_chunk_embeddings(encoder, mels)
+    for got, expected in zip(batched, separate, strict=True):
+        torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-5)
 
 
 def test_batch_failure_retries_each_request() -> None:

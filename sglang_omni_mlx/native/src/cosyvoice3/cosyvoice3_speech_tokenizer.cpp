@@ -10,7 +10,6 @@
 #include <string>
 
 #include "common/audio.h"
-#include "qwen3_asr/qwen3_audio.h"
 
 namespace cosyvoice3 {
 
@@ -132,8 +131,8 @@ mx::array SpeechTokenizer::Encode(const std::vector<float> &samples_16k) const {
   // Note (Jiaxin Deng): Whisper's 128-band log-mel, as the reference
   // computes it; [1, mel frames, mel bands].
   mx::array x =
-      mx::expand_dims(mx::transpose(qwen3_asr::LogMel(
-                          samples_16k, qwen3_asr::AudioLayout::kReference)),
+      mx::expand_dims(mx::transpose(omni_common::LogMel(
+                          samples_16k, omni_common::FinalStftFrame::kDropped)),
                       0);
   x = omni_common::Gelu(
       mx::add(mx::conv1d(x, checkpoint_.Weight("encoder.conv1.weight"), 2, 1),
