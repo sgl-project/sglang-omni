@@ -389,10 +389,17 @@ class Qwen3OmniBasePipelineConfig(PipelineConfig):
     )
 
     def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
-        """Keep CPU-sensitive preprocessing parallel unless OMP is configured."""
+        """Split the CPUs over preprocessing's video threads unless OMP is configured."""
         env_defaults = super().resolved_stage_env_defaults(stage_name)
-        if stage_name == "preprocessing" and "OMP_NUM_THREADS" not in env_defaults:
-            env_defaults["OMP_NUM_THREADS"] = str(effective_cpu_count())
+        if stage_name != "preprocessing":
+            return env_defaults
+        else:
+            pass
+        if "OMP_NUM_THREADS" not in env_defaults:
+            video_threads = self.stage_named(stage_name).factory.max_concurrency
+            env_defaults["OMP_NUM_THREADS"] = str(
+                max(effective_cpu_count() // video_threads, 1)
+            )
         else:
             pass
         return env_defaults
