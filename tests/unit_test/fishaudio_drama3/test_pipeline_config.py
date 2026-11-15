@@ -52,7 +52,7 @@ def test_every_process_on_the_shared_gpu_declares_its_memory() -> None:
         6 * 1024**3,
         True,
     )
-    assert (tts_engine.gpu_memory_fraction, vocoder.gpu_memory_fraction) == (0.70, 0.10)
+    assert (tts_engine.gpu_memory_fraction, vocoder.gpu_memory_fraction) == (0.65, 0.15)
 
 
 def test_each_factory_gets_the_defaults_written_once() -> None:
@@ -64,13 +64,14 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "max_concurrency": 8,
         "reference_encode_dtype": "bfloat16",
         "max_reference_audio_seconds": 60.0,
+        "reference_encode_graph_max_seconds": 20.0,
         "max_prompt_rows": 8192,
         "codec_path": DEFAULT_CODEC_PATH,
     }
     assert launch_kwargs(config, "tts_engine") == {
         "model_path": "checkpoint",
         "gpu_id": 0,
-        "total_gpu_memory_fraction": 0.70,
+        "total_gpu_memory_fraction": 0.65,
         "context_length": 16384,
         "max_running_requests": 16,
         "max_new_tokens": 2048,
@@ -87,7 +88,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
     }
     assert launch_kwargs(config, "vocoder") == {
         "gpu_id": 0,
-        "total_gpu_memory_fraction": 0.10,
+        "total_gpu_memory_fraction": 0.15,
         "codec_path": DEFAULT_CODEC_PATH,
         **VOCODER_WINDOWS,
         "window_cuda_graphs": True,
@@ -98,6 +99,10 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "stateful_compile_attention": False,
         "stateful_max_streams": 16,
         "decode_dtype": "float16",
+        "stream_decode": "incremental",
+        "max_stream_batch_size": 16,
+        "stream_slot_count": 256,
+        "decode_step_message_budget": 8,
         "max_new_tokens": 2048,
     }
 
@@ -117,6 +122,7 @@ def test_preprocessing_follows_the_engine_cap_and_the_vocoder_codec() -> None:
         "max_concurrency": 8,
         "reference_encode_dtype": "bfloat16",
         "max_reference_audio_seconds": 60.0,
+        "reference_encode_graph_max_seconds": 20.0,
         "max_prompt_rows": 4096,
         "codec_path": "local/codec.pth",
     }

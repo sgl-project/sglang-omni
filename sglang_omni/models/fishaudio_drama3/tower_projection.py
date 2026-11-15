@@ -39,6 +39,7 @@ if HAS_TRITON:
     @triton.jit(do_not_specialize=["row_count"])
     def mix_eh_proj_kernel(
         code_ids_pointer: tl.tensor,
+        code_ids_stride: tl.tensor,
         label_is_semantic_pointer: tl.tensor,
         token_embedding_pointer: tl.tensor,
         shared_input_pointer: tl.tensor,
@@ -76,7 +77,10 @@ if HAS_TRITON:
         square = tl.zeros([BLOCK_M, BLOCK_M], dtype=tl.float32)
         product = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         if reduction_split_index < HALF_SPLIT:
-            code_ids = tl.load(code_ids_pointer + row_indices, mask=is_row, other=0)
+            # code_ids may be a strided column of a frame buffer.
+            code_ids = tl.load(
+                code_ids_pointer + row_indices * code_ids_stride, mask=is_row, other=0
+            )
             table_rows = tl.minimum(tl.maximum(code_ids, 0), CODEBOOK_SIZE - 1)
             is_semantic = (
                 tl.load(label_is_semantic_pointer + row_indices, mask=is_row, other=0)
@@ -237,6 +241,7 @@ def mix_eh_proj(
     row_count = hidden_states.shape[0]
     mix_eh_proj_kernel[(shape.dim // MIX_BLOCK_N, 2 * shape.mix_half_split)](
         code_ids,
+        code_ids.stride(0),
         label_is_semantic,
         weights.token_embedding,
         hidden_states if shared_input is None else shared_input,
