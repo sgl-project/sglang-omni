@@ -57,7 +57,11 @@ func (c *Committer) Tick(now, silence time.Duration) (Segment, bool) {
 
 // Final commits any tail left at EventFinal.
 func (c *Committer) Final(text string, now time.Duration) (Segment, bool) {
-	c.cumulative = text
+	// The Final recognises the stream's audio again; worded differently, it
+	// would repeat what the preview committed, so the preview's tail is left (#3983).
+	if c.committed == "" || strings.HasPrefix(strings.TrimSpace(text), strings.TrimSpace(c.committed)) {
+		c.cumulative = text
+	}
 	tail := uncommittedSuffix(c.cumulative, c.committed)
 	if tail == "" {
 		return Segment{}, false
