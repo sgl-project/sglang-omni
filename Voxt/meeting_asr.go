@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"strings"
 
@@ -32,7 +33,7 @@ func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.
 		return meeting.TrackASR{}, err
 	}
 	caps := p.Caps()
-	l := session.SpeechLang(a.prefs, i18n.Locale())
+	l := cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale()))
 	// The dictionary terms and speech context dictation sends (#3988); a
 	// dictionary that will not read leaves the meeting without terms.
 	var hints []string
