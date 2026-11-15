@@ -11,6 +11,9 @@ type PermissionsResult struct {
 	// SpeechRecognition is a Perm* state: macOS's speech recognition
 	// (speech.recognize, System dictation); "" from a helper without it.
 	SpeechRecognition string `json:"speechRecognition,omitempty"`
+	// ScreenRecording: CGPreflightScreenCaptureAccess (screen.window);
+	// absent while not allowed.
+	ScreenRecording bool `json:"screenRecording,omitempty"`
 }
 
 // Microphone and Speech Recognition states.
@@ -27,7 +30,7 @@ const (
 // the prompt that adds VoxtNew to the list in System Settings (answered
 // at once: the user grants it there).
 type PermissionsRequestParams struct {
-	Permission string `json:"permission"` // PermissionMicrophone | PermissionAccessibility | PermissionSpeechRecognition
+	Permission string `json:"permission"` // PermissionMicrophone | PermissionAccessibility | PermissionSpeechRecognition | PermissionScreenRecording
 }
 
 // Permissions, as in permissions.request and permission_denied's data.
@@ -35,7 +38,8 @@ const (
 	PermissionMicrophone        = "microphone"
 	PermissionAccessibility     = "accessibility"
 	PermissionSpeechRecognition = "speechRecognition"
-	PermissionSystemAudio       = "systemAudio" // capture.system's permission_denied only: macOS asks for it itself
+	PermissionScreenRecording   = "screenRecording" // asks once, adds Voxt to the list in System Settings, answers at once
+	PermissionSystemAudio       = "systemAudio"     // capture.system's permission_denied only: macOS asks for it itself
 )
 
 // ---- app.* ----

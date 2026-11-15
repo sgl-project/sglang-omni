@@ -62,7 +62,7 @@ def window_graph_keys(
     first: batch 1 whole for every length and at each stream window's or flush
     shape's discard, and batched at the discard of stream windows that fit the limit."""
     batched_frame_limit = BATCHED_WINDOW_FRAME_LIMIT_IN_LONGEST_WINDOWS * max(
-        window_lengths
+        window_lengths, default=0
     )
     graph_keys = {
         *((1, length, 0) for length in (*window_lengths, *utterance_lengths)),

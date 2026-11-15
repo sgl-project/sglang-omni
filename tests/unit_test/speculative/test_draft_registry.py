@@ -39,10 +39,14 @@ def engine_draft_keys(engine: EngineArgs | None) -> dict[str, str]:
         return {}
     else:
         overrides = engine.overrides()
+        # Compare draft identity independently of device-specific attention backends.
         return {
             key: str(value)
             for key, value in overrides.items()
-            if key.startswith("speculative_")
+            if (
+                key.startswith("speculative_")
+                and key != "speculative_draft_attention_backend"
+            )
             or (key == "revision" and overrides.get("speculative_algorithm"))
         }
 

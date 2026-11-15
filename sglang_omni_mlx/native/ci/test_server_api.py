@@ -11,6 +11,7 @@ import http.client
 import io
 import json
 import os
+import select
 import subprocess
 import time
 import uuid
@@ -32,6 +33,9 @@ pytestmark = pytest.mark.skipif(
 MODEL_REPO = "mlx-community/Qwen3-ASR-0.6B-4bit"
 DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-0.6B-dflash"
 LARGE_DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
+# Bounds on a server that hangs, so a test fails instead of waiting forever.
+STARTUP_TIMEOUT_SECONDS = 600
+SHUTDOWN_TIMEOUT_SECONDS = 10
 
 
 def model_directory(repo: str = MODEL_REPO) -> Path:
@@ -70,7 +74,17 @@ class Server:
             stderr=subprocess.DEVNULL,
             text=True,
         )
-        self.ready = json.loads(self.process.stdout.readline())
+        readable, _, _ = select.select(
+            [self.process.stdout], [], [], STARTUP_TIMEOUT_SECONDS
+        )
+        if not readable:
+            self.process.kill()
+            self.process.wait()
+            raise TimeoutError(
+                f"{binary} sent no ready event within {STARTUP_TIMEOUT_SECONDS} s"
+            )
+        else:
+            self.ready = json.loads(self.process.stdout.readline())
         self.port = self.ready.get("port")
 
     def request(
@@ -109,7 +123,13 @@ class Server:
         if self.process.poll() is None:
             self.process.stdin.write('{"command": "shutdown"}\n')
             self.process.stdin.flush()
-            self.process.wait(timeout=10)
+            try:
+                self.process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                # A server left running would keep its model in memory.
+                self.process.kill()
+                self.process.wait()
+                raise
         else:
             pass
 

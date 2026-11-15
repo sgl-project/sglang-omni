@@ -48,6 +48,11 @@ func TestLibrary(t *testing.T) {
 	if llms := s.Installed(LLM); len(llms) != 0 {
 		t.Fatalf("llm %+v", llms)
 	}
+	// The Models page asks this dozens of times a frame (usedBy): it reads
+	// the catalogue in place, no copy of it per call.
+	if n := testing.AllocsPerRun(10, func() { s.Installed(LLM) }); n != 0 {
+		t.Errorf("Installed(LLM) allocates %v times a call, want 0", n)
+	}
 	llms := []Model{{ID: "all"}, {ID: "translator", Features: []string{"translate"}}}
 	if got := ForFeature(llms, "rewrite"); len(got) != 1 || got[0].ID != "all" {
 		t.Errorf("rewrite %+v", got)

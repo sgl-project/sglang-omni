@@ -4,14 +4,60 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <vector>
+
+#include "yaml-cpp/yaml.h"
 
 namespace omni_common {
 
 namespace mx = mlx::core;
 
 namespace {
+
+nlohmann::json YamlToJson(const YAML::Node &node) {
+  if (node.IsMap()) {
+    nlohmann::json object = nlohmann::json::object();
+    for (const auto &entry : node) {
+      object[entry.first.as<std::string>()] = YamlToJson(entry.second);
+    }
+    return object;
+  } else if (node.IsSequence()) {
+    nlohmann::json array = nlohmann::json::array();
+    for (const auto &element : node) {
+      array.push_back(YamlToJson(element));
+    }
+    return array;
+  } else if (!node.IsScalar()) {
+    return nullptr;
+  } else if (node.Tag() == "!") {
+    // A quoted scalar is a string whatever it spells.
+    return node.Scalar();
+  } else {
+  }
+  // Note (XXXXRT666): PyYAML's safe loader, which OmegaConf reads config.yaml
+  // with, takes these as booleans; yaml-cpp's own decoding adds y, n and any
+  // casing.
+  static const std::set<std::string> true_words{
+      "true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"};
+  static const std::set<std::string> false_words{
+      "false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"};
+  long long integer = 0;
+  double number = 0.0;
+  if (true_words.contains(node.Scalar())) {
+    return true;
+  } else if (false_words.contains(node.Scalar())) {
+    return false;
+  } else if (YAML::convert<long long>::decode(node, integer)) {
+    return integer;
+  } else if (YAML::convert<double>::decode(node, number)) {
+    return number;
+  } else {
+    return node.Scalar();
+  }
+}
 
 std::vector<mx::array> GeluGraph(const std::vector<mx::array> &inputs) {
   // Note (Jiaxin Deng): mlx.nn.gelu's op order, kept for bit identity.
@@ -104,6 +150,15 @@ nlohmann::json ReadJson(const std::filesystem::path &path) {
   return nlohmann::json::parse(stream);
 }
 
+nlohmann::json ReadYaml(const std::filesystem::path &path) {
+  std::ifstream stream(path);
+  if (!stream) {
+    throw std::runtime_error("cannot read " + path.string());
+  } else {
+  }
+  return YamlToJson(YAML::Load(stream));
+}
+
 WeightMap LoadSafetensors(const std::filesystem::path &model_directory) {
   std::vector<std::filesystem::path> weight_files;
   for (const auto &entry :
@@ -166,6 +221,15 @@ const mx::array &Checkpoint::Weight(const std::string &name) const {
 
 bool Checkpoint::Has(const std::string &name) const {
   return weights_.count(name) > 0;
+}
+
+void Checkpoint::RequireShape(const std::string &name,
+                              const mx::Shape &shape) const {
+  if (Weight(name).shape() != shape) {
+    throw std::invalid_argument("checkpoint tensor has an unexpected shape: " +
+                                name);
+  } else {
+  }
 }
 
 const QuantizationConfig &

@@ -88,7 +88,7 @@
   function editor(o) {
     return '<div class="vx-win" style="left:60px;top:18px;width:520px;height:220px"><div class="vx-tb"><i></i><i></i><i></i><span class="t">' + o.title + "</span></div>" +
       '<div class="vx-ed">' + o.body + "</div></div>" +
-      '<div class="vx-pill" id="pill" style="top:252px"><div class="row">' + ic(o.icon) + '<div class="vx-wave" id="wave">' + new Array(17).join("<i></i>") + '</div><div class="vx-dots">' + new Array(6).join("<i></i>") + '</div><span class="lbl" id="plbl"></span></div><div class="vx-live"><span id="live"></span></div></div>';
+      '<div class="vx-pill" id="pill" style="bottom:8px"><div class="vx-pill-row">' + ic("mic") + '<span class="lbl" id="plbl"></span><div class="vx-wave" id="wave">' + new Array(17).join("<i></i>") + '</div><div class="vx-dots">' + new Array(6).join("<i></i>") + '</div></div><div class="vx-live"><span id="live"></span></div></div>';
   }
   function tickWave(box, t, on) {
     var bars = box.querySelectorAll("#wave i");
@@ -326,17 +326,18 @@
   // Shortcut scenes. o.keys, o.icon, o.live (spoken), o.work (overlay label), o.result, o.sel (selected text the result replaces).
   function shortcutScene(o) {
     var sel = o.sel, tl = o.tl;
+    var recordingLabel = { mic: L("转录", "Transcribe"), globe: L("翻译", "Translate"), pen: L("改写", "Rewrite") }[o.icon];
     var body = (o.head ? '<div class="muted">' + o.head + "</div>" : "") +
       (sel ? '<span class="vx-selt" id="selt">' + sel + "</span>" : "") + '<span id="out"></span><span class="vx-caret" id="caret"></span>';
     var sc = {
       w: 640, h: 330, dur: tl.end, label: o.label,
-      html: editor({ icon: o.icon, title: o.title, body: body }) + (o.card ? '<div class="vx-acard" id="card" style="top:150px"><div class="hd">' + ic("pen", ' style="width:13px;height:13px"') + L("改写", "Rewrite") + '<span class="sp"></span><span class="cap">' + L("继续", "Continue") + '</span><span class="ib" id="b-ins">' + ic("pen") + L("插入", "Insert") + '</span><span class="ib">' + ic("copy") + L("复制", "Copy") + '</span><span class="ib">' + ic("x") + '</span></div><div class="bd" id="ans"></div></div>' : ""),
+      html: editor({ title: o.title, body: body }) + (o.card ? '<div class="vx-acard" id="card" style="top:150px"><div class="hd">' + ic("pen", ' style="width:13px;height:13px"') + L("改写", "Rewrite") + '<span class="sp"></span><span class="cap">' + L("继续", "Continue") + '</span><span class="ib" id="b-ins">' + ic("pen") + L("插入", "Insert") + '</span><span class="ib">' + ic("copy") + L("复制", "Copy") + '</span><span class="ib">' + ic("x") + '</span></div><div class="bd" id="ans"></div></div>' : ""),
       keys: tl.keys.map(function (k) { return { a: k[0], b: k[1], k: o.keys }; }),
       on: [[tl.rec[0], tl.work[1], "#pill"], [tl.work[0], tl.work[1], "#pill", "work"]].concat(o.live ? [[tl.live[0], tl.work[1], "#pill", "live"]] : []).concat(sel ? [[0, tl.put, "#selt"]] : []).concat(o.card ? [[tl.card[0], tl.card[1], "#card"], [tl.ins - 0.4, tl.card[1], "#b-ins", "hot"]] : []),
       type: [].concat(o.live ? [[tl.live[0], tl.live[1], "#live", o.live]] : []).concat(o.card ? [[tl.card[0], tl.card[0] + 1.1, "#ans", o.result]] : []).concat([[tl.put, tl.put + (o.instant ? 0.01 : 0.6), "#out", o.result]]),
       tick: function (t, c) {
         tickWave(c.box, t, t >= tl.rec[0] && t < tl.work[0] && !!o.live);
-        c.q("#plbl").textContent = t >= tl.work[0] ? o.work : "";
+        c.q("#plbl").textContent = t >= tl.work[0] ? o.work : recordingLabel;
         if (sel) c.q("#selt").style.display = t >= tl.put ? "none" : "";
         c.q("#caret").style.display = sel && t < tl.put ? "none" : "";
       }

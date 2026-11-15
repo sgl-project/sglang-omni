@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import math
 import os
@@ -23,6 +24,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_ENABLE_ASYNC_DECODE,
     DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS,
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
+    DEFAULT_GDN_PREFILL_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
     DEFAULT_MAX_RUNNING_REQUESTS,
@@ -37,6 +39,14 @@ from sglang_omni.models.fishaudio_drama3.config import (
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
+from sglang_omni.models.fishaudio_drama3.incremental_decoder import (
+    IncrementalDecoder,
+    IncrementalWindowDecoder,
+    incremental_window_lengths,
+)
+from sglang_omni.models.fishaudio_drama3.reference_encode import (
+    Drama3ReferenceEncodeHook,
+)
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
@@ -47,12 +57,12 @@ from sglang_omni.models.fishaudio_drama3.stream_windows import (
     stream_window_lengths,
     utterance_graph_lengths,
 )
-from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
-from sglang_omni.models.fishaudio_drama3.window_graphs import WindowGraphDecoder
-from sglang_omni.models.fishaudio_s2_pro.stages import (
-    FishReferenceEncodeHook,
-    load_codec,
+from sglang_omni.models.fishaudio_drama3.vocoder import (
+    Drama3IncrementalVocoderScheduler,
+    Drama3VocoderScheduler,
 )
+from sglang_omni.models.fishaudio_drama3.window_graphs import WindowGraphDecoder
+from sglang_omni.models.fishaudio_s2_pro.stages import load_codec
 from sglang_omni.scheduling.audio_stream import WindowDecoder
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
@@ -69,10 +79,64 @@ MEMORY_PROBE_FRAME_COUNT = 128
 # note (Wenyao Gao): spacing of the non-streaming graph lengths, so a request
 # pads at most 7 frames.
 UTTERANCE_GRAPH_FRAME_STEP = 8
+# sglang 0.5.23 FA3 paged-KV kernel: SM 8.x/9.x, CUDA >= 12.3.
+FA3_COMPUTE_CAPABILITY_MAJORS = frozenset({8, 9})
+MINIMUM_FA3_CUDA_VERSION = (12, 3)
 # A hub codec names a full commit, so preprocessing and the vocoder load one file.
 HUB_CODEC_PATTERN = re.compile(
     r"(?P<repo_id>[^@\s]+/[^@\s]+)@(?P<revision>[0-9a-f]{40})"
 )
+
+
+def cuda_compute_capability(device: torch.device) -> tuple[int, int] | None:
+    try:
+        major, minor = torch.cuda.get_device_capability(device)
+        return major, minor
+    except (AssertionError, AttributeError, RuntimeError, ValueError):
+        return None
+
+
+def cuda_runtime_version() -> tuple[int, ...] | None:
+    version = getattr(torch.version, "cuda", None)
+    if not version:
+        return None
+    else:
+        pass
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return None
+
+
+def fa3_available(device: torch.device) -> bool:
+    """FA3's paged KV attention is available only on SM 8.x/9.x (sglang 0.5.23)."""
+    if device.type != "cuda":
+        return False
+    else:
+        pass
+    capability = cuda_compute_capability(device)
+    if capability is None or capability[0] not in FA3_COMPUTE_CAPABILITY_MAJORS:
+        return False
+    else:
+        pass
+    version = cuda_runtime_version()
+    return version is not None and version >= MINIMUM_FA3_CUDA_VERSION
+
+
+def incremental_decode_enabled(
+    *,
+    stream_decode: str,
+    decode_dtype: str,
+    device: torch.device,
+    fa3_supported: bool,
+) -> bool:
+    """Incremental decoding needs CUDA fp16 and FA3's paged KV attention."""
+    return (
+        stream_decode == "incremental"
+        and decode_dtype == "float16"
+        and device.type == "cuda"
+        and fa3_supported
+    )
 
 
 def resolve_codec_directory(codec_path: str) -> str:
@@ -107,6 +171,7 @@ def create_preprocessing_executor(
     codec_path: str,
     reference_encode_dtype: Literal["float32", "bfloat16"],
     max_reference_audio_seconds: float,
+    reference_encode_graph_max_seconds: float,
 ) -> ThreadedSimpleScheduler:
     """Speech requests to prompt rows; reference audio encodes with the vocoder's codec."""
     resolved_device = str(resolve_concrete_device(device, gpu_id))
@@ -122,12 +187,14 @@ def create_preprocessing_executor(
     checkpoint_dir = resolve_checkpoint(model_path)
     codec_directory = resolve_codec_directory(codec_path)
     codec = load_codec(codec_directory, resolved_device)
-    reference_encode_hook = FishReferenceEncodeHook(
+    codec.fold_weight_norm()
+    reference_encode_hook = Drama3ReferenceEncodeHook(
         codec=codec,
         checkpoint_id=os.path.join(codec_directory, CODEC_FILE_NAME),
         device=resolved_device,
         autocast_dtype=torch.bfloat16 if reference_encode_dtype == "bfloat16" else None,
         max_reference_audio_seconds=max_reference_audio_seconds,
+        reference_encode_graph_max_seconds=reference_encode_graph_max_seconds,
     )
     if not is_on_cpu:
         warmup_seconds = min(
@@ -169,6 +236,7 @@ def create_tts_engine_executor(
     first_frame_cuda_graph_max_requests: int = (
         DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS
     ),
+    gdn_prefill_cuda_graphs: bool = DEFAULT_GDN_PREFILL_CUDA_GRAPHS,
     triton_sampling: bool = DEFAULT_TRITON_SAMPLING,
     reference_sampling: bool = DEFAULT_REFERENCE_SAMPLING,
     reference_sampling_fallback: ReferenceSamplingFallback = (
@@ -177,6 +245,9 @@ def create_tts_engine_executor(
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
 ) -> OmniScheduler[Drama3RequestData]:
     overrides = dict(server_args_overrides or {})
     mem_fraction_static = overrides.get("mem_fraction_static")
@@ -203,12 +274,16 @@ def create_tts_engine_executor(
         max_new_tokens_cap=max_new_tokens,
         first_frame_cuda_graphs=first_frame_cuda_graphs,
         first_frame_cuda_graph_max_requests=first_frame_cuda_graph_max_requests,
+        gdn_prefill_cuda_graphs=gdn_prefill_cuda_graphs,
         triton_sampling=triton_sampling,
         reference_sampling=reference_sampling,
         reference_sampling_fallback=reference_sampling_fallback,
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        nccl_port=nccl_port,
     ).build(
         model_path,
         device=device,
@@ -293,6 +368,10 @@ def create_vocoder_executor(
     max_new_tokens: int,
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
+    stream_decode: Literal["incremental", "overlap"] = "overlap",
+    max_stream_batch_size: int = 16,
+    stream_slot_count: int = 256,
+    decode_step_message_budget: int = 8,
 ) -> Drama3VocoderScheduler:
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     torch_device = torch.device(resolved_device)
@@ -306,74 +385,163 @@ def create_vocoder_executor(
         decode: WindowDecoder = ChannelsLastDecoder(codec, dtype=torch.float16)
     else:
         decode = codec.from_indices
-    if window_cuda_graphs:
-        window_schedule = {
-            "stream_stride": stream_stride,
-            "stream_followup_stride_ramp": stream_followup_stride_ramp,
-            "stream_followup_stride": stream_followup_stride,
-            "stream_overlap_tokens": stream_overlap_tokens,
-        }
-        # note (Wenyao Gao): only the channels-last decoder takes keep_from_frame.
-        skips_discarded_frames = isinstance(decode, ChannelsLastDecoder)
-        kept_frames = crossfade_frames(
-            stream_crossfade_samples, int(codec.frame_length)
+    is_incremental = incremental_decode_enabled(
+        stream_decode=stream_decode,
+        decode_dtype=decode_dtype,
+        device=torch_device,
+        fa3_supported=fa3_available(torch_device),
+    )
+    if (
+        stream_decode == "incremental"
+        and not is_incremental
+        and torch_device.type == "cuda"
+    ):
+        logger.warning(
+            "Drama 3 vocoder: incremental decoding needs FA3 (SM 8.x/9.x); "
+            "falling back to overlap decoding on %s",
+            torch_device,
         )
-        window_graph_decoder = WindowGraphDecoder(
+    else:
+        pass
+    utterance_lengths = (
+        utterance_graph_lengths(
+            min(non_streaming_cuda_graph_max_frames, max_new_tokens),
+            frame_step=UTTERANCE_GRAPH_FRAME_STEP,
+        )
+        if window_cuda_graphs
+        else ()
+    )
+
+    def overlap_decoders() -> tuple[WindowDecoder, WindowGraphDecoder | None]:
+        """decode_window and window_batch_decoder for overlap streams."""
+        if window_cuda_graphs:
+            window_schedule = {
+                "stream_stride": stream_stride,
+                "stream_followup_stride_ramp": stream_followup_stride_ramp,
+                "stream_followup_stride": stream_followup_stride,
+                "stream_overlap_tokens": stream_overlap_tokens,
+            }
+            # note (Wenyao Gao): only the channels-last decoder takes keep_from_frame.
+            skips_discarded_frames = isinstance(decode, ChannelsLastDecoder)
+            kept_frames = crossfade_frames(
+                stream_crossfade_samples, int(codec.frame_length)
+            )
+            window_graph_decoder = WindowGraphDecoder(
+                decode,
+                num_codebooks=num_codebooks,
+                frame_length=int(codec.frame_length),
+                device=torch_device,
+                window_lengths=stream_window_lengths(**window_schedule),
+                utterance_lengths=utterance_lengths,
+                max_batch_size=stream_window_batch_size,
+                window_discards=(
+                    {
+                        window_length: discarded_frames(overlap_frames, kept_frames)
+                        for window_length, overlap_frames in stream_window_discards(
+                            **window_schedule
+                        ).items()
+                    }
+                    if skips_discarded_frames
+                    else None
+                ),
+                flush_shapes=(
+                    {
+                        (frame_count, discarded_frames(overlap_frames, kept_frames))
+                        for frame_count, overlap_frames in flush_window_shapes(
+                            **window_schedule
+                        )
+                    }
+                    if skips_discarded_frames
+                    else ()
+                ),
+            )
+            return window_graph_decoder, window_graph_decoder
+        else:
+            return decode, None
+
+    decode_window: WindowDecoder
+    window_batch_decoder: WindowGraphDecoder | None = None
+    window_decoder: IncrementalWindowDecoder | None = None
+    if is_incremental:
+        window_decoder = build_incremental_window_decoder(
             decode,
             num_codebooks=num_codebooks,
-            frame_length=int(codec.frame_length),
             device=torch_device,
-            window_lengths=stream_window_lengths(**window_schedule),
-            utterance_lengths=utterance_graph_lengths(
-                min(non_streaming_cuda_graph_max_frames, max_new_tokens),
-                frame_step=UTTERANCE_GRAPH_FRAME_STEP,
+            strides=(
+                stream_stride,
+                *stream_followup_stride_ramp,
+                stream_followup_stride,
             ),
-            max_batch_size=stream_window_batch_size,
-            window_discards=(
-                {
-                    window_length: discarded_frames(overlap_frames, kept_frames)
-                    for window_length, overlap_frames in stream_window_discards(
-                        **window_schedule
-                    ).items()
-                }
-                if skips_discarded_frames
-                else None
-            ),
-            flush_shapes=(
-                {
-                    (frame_count, discarded_frames(overlap_frames, kept_frames))
-                    for frame_count, overlap_frames in flush_window_shapes(
-                        **window_schedule
-                    )
-                }
-                if skips_discarded_frames
-                else ()
-            ),
+            max_stream_batch_size=max_stream_batch_size,
+            stream_slot_count=stream_slot_count,
+            use_graphs=window_cuda_graphs,
         )
-        decode_window: WindowDecoder = window_graph_decoder
-        window_batch_decoder: WindowGraphDecoder | None = window_graph_decoder
+        # note (Wenyao Gao): incremental streams decode through window_decoder, so
+        # decode_window serves only non-streaming requests.
+        if utterance_lengths:
+            decode_window = WindowGraphDecoder(
+                decode,
+                num_codebooks=num_codebooks,
+                frame_length=int(codec.frame_length),
+                device=torch_device,
+                window_lengths=(),
+                utterance_lengths=utterance_lengths,
+            )
+        else:
+            decode_window = decode
+        logger.info(
+            f"Drama 3 vocoder: incremental streams in up to {stream_slot_count} slots, "
+            f"grouped up to {max_stream_batch_size} windows of "
+            f"{window_decoder.window_lengths} frames"
+        )
     else:
-        decode_window = decode
-        window_batch_decoder = None
+        decode_window, window_batch_decoder = overlap_decoders()
+
+    # note (Wenyao Gao): memory_reserved counts every stage loaded into this process,
+    # so the share it is held against is the process's, not the vocoder's alone.
+    memory_share_fraction = (
+        process_total_gpu_memory_fraction
+        if process_total_gpu_memory_fraction is not None
+        else total_gpu_memory_fraction
+    )
     if torch_device.type == "cpu":
         max_padded_frames_per_decode = None
     else:
-        max_padded_frames_per_decode = measure_max_padded_frames_per_decode(
-            decode,
-            device=torch_device,
-            num_codebooks=num_codebooks,
-            # note (Wenyao Gao): memory_reserved counts every stage loaded into this
-            # process, so the share it is held against is the process's, not the
-            # vocoder's alone.
-            total_gpu_memory_fraction=(
-                process_total_gpu_memory_fraction
-                if process_total_gpu_memory_fraction is not None
-                else total_gpu_memory_fraction
-            ),
-            max_new_tokens=max_new_tokens,
-        )
-    return Drama3VocoderScheduler(
-        codec,
+        try:
+            max_padded_frames_per_decode = measure_max_padded_frames_per_decode(
+                decode,
+                device=torch_device,
+                num_codebooks=num_codebooks,
+                total_gpu_memory_fraction=memory_share_fraction,
+                max_new_tokens=max_new_tokens,
+            )
+        except ValueError as budget_error:
+            if window_decoder is None:
+                raise
+            else:
+                pass
+            logger.warning(
+                "Drama 3 vocoder: incremental decoding does not fit the vocoder's "
+                "GPU memory share (%s); falling back to overlap decoding. Raise "
+                "--vocoder.gpu_memory_fraction or lower "
+                "--vocoder.factory.stream_slot_count to keep incremental streams.",
+                budget_error,
+            )
+            del window_decoder, decode_window
+            gc.collect()
+            device_module = torch.get_device_module(torch_device)
+            device_module.synchronize(torch_device)
+            device_module.empty_cache()
+            window_decoder = None
+            decode_window, window_batch_decoder = overlap_decoders()
+            max_padded_frames_per_decode = measure_max_padded_frames_per_decode(
+                decode,
+                device=torch_device,
+                num_codebooks=num_codebooks,
+                total_gpu_memory_fraction=memory_share_fraction,
+                max_new_tokens=max_new_tokens,
+            )
+    scheduler_args = dict(
         device=resolved_device,
         stream_stride=stream_stride,
         stream_followup_stride_ramp=stream_followup_stride_ramp,
@@ -384,5 +552,49 @@ def create_vocoder_executor(
         max_batch_wait_ms=max_batch_wait_ms,
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
-        window_batch_decoder=window_batch_decoder,
+    )
+    if window_decoder is None:
+        return Drama3VocoderScheduler(
+            codec, window_batch_decoder=window_batch_decoder, **scheduler_args
+        )
+    else:
+        return Drama3IncrementalVocoderScheduler(
+            codec,
+            window_decoder=window_decoder,
+            max_stream_batch_size=max_stream_batch_size,
+            stream_slot_count=stream_slot_count,
+            max_stream_frames=int(codec.quantizer.post_module.freqs_cis.shape[0]),
+            decode_step_message_budget=decode_step_message_budget,
+            **scheduler_args,
+        )
+
+
+def build_incremental_window_decoder(
+    decode: ChannelsLastDecoder,
+    *,
+    num_codebooks: int,
+    device: torch.device,
+    strides: tuple[int, ...],
+    max_stream_batch_size: int,
+    stream_slot_count: int,
+    use_graphs: bool,
+) -> IncrementalWindowDecoder:
+    batch_sizes = {max_stream_batch_size}
+    batch_size = 1
+    while batch_size < max_stream_batch_size:
+        batch_sizes.add(batch_size)
+        batch_size *= 2
+    return IncrementalWindowDecoder(
+        IncrementalDecoder(
+            decode,
+            stream_slots=stream_slot_count,
+            max_window_frames=max(strides),
+            device=device,
+        ),
+        num_codebooks=num_codebooks,
+        frame_length=int(decode.codec.frame_length),
+        device=device,
+        batch_sizes=tuple(batch_sizes),
+        window_lengths=incremental_window_lengths(strides),
+        use_graphs=use_graphs,
     )

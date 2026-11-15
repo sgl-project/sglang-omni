@@ -4300,6 +4300,8 @@ def spec_overlap_scheduler(monkeypatch: pytest.MonkeyPatch) -> OmniScheduler:
     monkeypatch.setenv("SGLANG_FORCE_COARSE_WAR_BARRIER", "0")
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_overlap = True
+    scheduler.async_decode_min_batch_size = 1
+    scheduler.running_batch = SimpleNamespace(reqs=[])
     scheduler.running = True
     scheduler._engine_paused = (
         False  # noqa: leading-underscore  # native scheduler contract
@@ -4379,6 +4381,106 @@ def test_spec_overlap_orders_launch_consumption_and_shared_reads(
     assert events == expected
     assert not scheduler.result_queue
     assert shared_reader.shared_read_done_event is None
+
+
+@pytest.mark.parametrize(
+    "min_batch_size, expected",
+    [
+        (
+            1,
+            "S0 L0 S1 L1 C0 S2 L2 C1 S3 L3 C2 S4 L4 C3 S5 L5 C4 S6 L6 C5 S7 L7 C6 S8 L8 C7 S9 L9 C8 C9",
+        ),
+        (
+            3,
+            "S0 L0 C0 S1 L1 C1 S2 L2 S3 L3 C2 S4 L4 C3 C4 S5 L5 C5 S6 L6 S7 L7 C6 S8 L8 C7 S9 L9 C8 C9",
+        ),
+    ],
+    ids=["overlap-every-batch", "synchronous-below-3"],
+)
+def test_spec_overlap_runs_decode_batches_below_the_minimum_synchronously(
+    spec_overlap_scheduler: OmniScheduler,
+    min_batch_size: int,
+    expected: str,
+) -> None:
+    """S is choosing a batch, L a launch, C a consumed result, and ! a launch of a request a consumed result already finished.
+
+    With the minimum at 3, A's prefill is consumed before A's first decode is chosen, and that decode right after its launch. B and C's prefill brings the decode set to the minimum, so it overlaps, and so does the decode of A, B and C. That round finishes B and C after D's prefill launches, so only A and D are left and D's prefill is consumed before their decode is chosen. E's prefill brings the set back to the minimum. Round 7 finishes D, so batch 9 holds A and E; round 8 finishes A, and batch 9 still launches before round 8 is consumed.
+    """
+    events: list[str] = []
+    requests = {
+        name: SimpleNamespace(inflight_middle_chunks=0, omni_data=name)
+        for name in "ABCDE"
+    }
+    for request in requests.values():
+        request.finished = lambda request=request: request.omni_data is None
+    finished_by_round = {3: "BC", 7: "D", 8: "A"}
+    batches = []
+    for index, (forward_mode, request_names) in enumerate(
+        [
+            (ForwardMode.EXTEND, "A"),
+            (ForwardMode.DECODE, "A"),
+            (ForwardMode.EXTEND, "BC"),
+            (ForwardMode.DECODE, "ABC"),
+            (ForwardMode.EXTEND, "D"),
+            (ForwardMode.DECODE, "AD"),
+            (ForwardMode.EXTEND, "E"),
+            (ForwardMode.DECODE, "ADE"),
+            (ForwardMode.DECODE, "ADE"),
+            (ForwardMode.DECODE, "AE"),
+        ]
+    ):
+        batch = SimpleNamespace(
+            index=index,
+            reqs=[requests[name] for name in request_names],
+            forward_mode=forward_mode,
+            spec_algorithm=SpeculativeAlgorithm.DFLASH,
+            grammar_needs_sync=lambda: False,
+        )
+        batch.copy = lambda batch=batch: batch
+        batches.append(batch)
+    selected_batches = iter([*batches, None])
+    scheduler = spec_overlap_scheduler
+    scheduler.async_decode_min_batch_size = min_batch_size
+
+    def select() -> SimpleNamespace | None:
+        # note (Haoling Pu): native batch selection drops finished requests from the running batch every step.
+        scheduler.running_batch = SimpleNamespace(
+            reqs=[
+                request
+                for request in scheduler.running_batch.reqs
+                if not request.finished()
+            ]
+        )
+        batch = next(selected_batches)
+        if batch is None:
+            pass
+        else:
+            events.append(f"S{batch.index}")
+            if batch.forward_mode == ForwardMode.DECODE:
+                scheduler.running_batch = batch
+            else:
+                pass
+        return batch
+
+    scheduler.get_next_batch_to_run = select
+
+    def launch(batch: SimpleNamespace) -> int:
+        is_detached = any(request.omni_data is None for request in batch.reqs)
+        events.append(f"L{batch.index}{'!' if is_detached else ''}")
+        return batch.index
+
+    def consume(batch: SimpleNamespace, result: int) -> None:
+        events.append(f"C{result}")
+        for name in finished_by_round.get(result, ""):
+            requests[name].omni_data = None
+
+    scheduler.run_batch = launch
+    scheduler.process_batch_result = consume
+    scheduler.event_loop_spec_overlap()
+    scheduler.resolve_pending_async()
+
+    assert " ".join(events) == expected
+    assert not scheduler.result_queue
 
 
 @pytest.fixture

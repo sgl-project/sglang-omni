@@ -32,6 +32,10 @@ type meetingsView struct {
 	err     string
 	seq     int
 	query   string
+	find    finder // Return steps through the matches (find_marks.go)
+	// lines are, while searching, the transcript line holding the search
+	// of each meeting listed (by ID), for its row.
+	lines   map[string]string
 	page    int
 	hasMore bool
 	listUI  ui.ListState
@@ -65,6 +69,15 @@ func (a *app) loadMeetings() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		list, err := repo.ListMeetings(ctx, q)
+		var lines map[string]string
+		if q.Search != "" && err == nil {
+			lines = map[string]string{}
+			for _, mt := range list {
+				if _, segs, err := repo.Meeting(ctx, mt.ID); err == nil {
+					lines[mt.ID] = meetingLine(segs, q.Search)
+				}
+			}
+		}
 		a.post(func() {
 			n := &a.mv
 			if seq != n.seq || want != n.wants() {
@@ -79,9 +92,35 @@ func (a *app) loadMeetings() {
 			if n.hasMore {
 				list = list[:meetingsPageSize]
 			}
-			n.list, n.err = list, ""
+			n.list, n.lines, n.err = list, lines, ""
 		})
 	})
+}
+
+// meetingLine is the first line of segs' texts or translations holding
+// q, "" for none (the store's search also finds words in other forms).
+func meetingLine(segs []store.MeetingSegment, q string) string {
+	for _, sg := range segs {
+		for _, s := range []string{sg.Text, sg.Translation} {
+			for l := range strings.SplitSeq(s, "\n") {
+				if l = strings.TrimSpace(l); len(findFolded(l, q)) > 0 {
+					return l
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// meetingRowTexts are the texts a meeting's row shows, where the search
+// marks its matches: its title, and the transcript line holding the
+// search, else the first line of its summary (meetingSnippet).
+func (n *meetingsView) meetingRowTexts(mt store.Meeting) []string {
+	line := n.lines[mt.ID]
+	if line == "" {
+		line = meetingSnippet(mt)
+	}
+	return []string{meetingDisplayTitle(mt), line}
 }
 
 // meetingTitle is a meeting's title, else when it started (for file
@@ -214,12 +253,28 @@ func (a *app) meetingsPage(c *ui.Context) {
 		a.loadMeetings()
 	}
 	active := a.meetingActive()
+	items := meetingItems(n.list, time.Now())
+	q := strings.TrimSpace(n.query)
+	hits := findHits(q, len(items), func(i int) []string {
+		if mt := items[i].mt; mt != nil {
+			return n.meetingRowTexts(*mt)
+		}
+		return nil // a day's heading
+	})
+	if n.find.advance(hits[len(items)]) {
+		row, _ := rowOf(hits, n.find.cur)
+		n.listUI.ScrollIntoView(row)
+	}
+	cur, curAt := rowOf(hits, n.find.cur)
 	widePageHeader(c, i18n.T("Meetings"), func() {
 		if len(n.list) > 0 || n.query != "" || n.page > 0 {
-			if searchField(c, "meetings-search", &n.query, i18n.T("Search"), px(t, 240)).
+			if n.find.field(c, "meetings-search", &n.query, i18n.T("Search"), px(t, 240)).
 				Label(i18n.T("Search meetings")).Changed() {
 				n.page = 0
 				a.loadMeetings()
+			}
+			if hits[len(items)] > 0 { // none: the list says nothing matches, or the store found other word forms
+				n.find.count(c, q, hits[len(items)])
 			}
 		}
 		if iconButton(c.Key("mt-settings"), icons.Tuning2, i18n.T("Meeting settings")).Shrink(0).Clicked() {
@@ -257,7 +312,6 @@ func (a *app) meetingsPage(c *ui.Context) {
 				case len(list) == 0:
 					a.meetingsEmpty(c)
 				default:
-					items := meetingItems(list, time.Now())
 					ui.List(c.Key("meetings-list"), &n.listUI, len(items)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp2)).
 						ItemKey(func(i int) any {
 							if it := items[i]; it.mt != nil {
@@ -266,7 +320,11 @@ func (a *app) meetingsPage(c *ui.Context) {
 							return "head/" + items[i].head
 						}).Rows(func(r ui.ListRow) {
 						if it := items[r.Index]; it.mt != nil {
-							a.meetingRow(c, *it.mt)
+							at := -1
+							if r.Index == cur {
+								at = curAt
+							}
+							a.meetingRow(c, *it.mt, q, at)
 						} else {
 							ui.Text(c, it.head).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text3).
 								Padding(px(t, sp4), px(t, sp6), px(t, sp1))
@@ -318,11 +376,13 @@ func (a *app) meetingsEmpty(c *ui.Context) {
 
 // meetingRow is a meeting in the list: its title and status, and when,
 // how long and what it captured. A click shows its details, or hides them.
-func (a *app) meetingRow(c *ui.Context, mt store.Meeting) {
+// The matches of the search q are marked, at the current one (-1 for none).
+func (a *app) meetingRow(c *ui.Context, mt store.Meeting, q string, at int) {
 	t := c.Theme()
 	k := tok(t)
 	n := &a.mv
-	title := meetingDisplayTitle(mt) // the day heads the group, the time ends the row
+	texts := n.meetingRowTexts(mt)
+	title := texts[0] // the day heads the group, the time ends the row
 	sel := n.detail != nil && n.detail.id == mt.ID
 	row := ui.ButtonBase(c.Key("mt-row-"+mt.ID)).Padding(px(t, sp3), px(t, sp3)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
 		Label(title).Gap(px(t, sp2)).AlignItems(ui.Start)
@@ -343,14 +403,14 @@ func (a *app) meetingRow(c *ui.Context, mt store.Meeting) {
 	row.Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, title).FontSize(px(t, fsBody+1)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+				markedText(c, title, q, curIn(at, 0)).FontSize(px(t, fsBody+1)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 				if s := meetingStatusLabel(mt.Status); s != "" {
 					tagChip(c, s)
 				}
 				ui.Text(c, mt.CreatedAt.Format("15:04")).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Shrink(0)
 			})
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, meetingSnippet(mt)).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+				markedText(c, texts[1], q, curIn(at, len(findFolded(title, q)))).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 				if mt.DurationMS > 0 {
 					ui.Text(c, meetingDuration(mt.DurationMS)).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Shrink(0)
 				}
