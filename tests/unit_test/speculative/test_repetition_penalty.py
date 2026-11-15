@@ -15,6 +15,7 @@ from sglang_omni.scheduling.types import SchedulerRequest
 from sglang_omni.speculative.repetition_penalty import (
     apply_verify_repetition_penalty,
     record_committed_tokens,
+    verify_penalty_temporary_bytes,
 )
 
 # A small vocabulary, so outputs and drafts repeat often.
@@ -137,13 +138,13 @@ def penalized_request(
     )
 
 
-@pytest.mark.parametrize("chunk_elements", [1 << 24, 1])
+@pytest.mark.parametrize("chunk_bytes", [64 << 20, 1])
 def test_runner_history_follows_each_request_through_its_slot_and_committed_prefix(
-    monkeypatch: pytest.MonkeyPatch, chunk_elements: int
+    monkeypatch: pytest.MonkeyPatch, chunk_bytes: int
 ) -> None:
-    """A slot's new request starts from its own retained output, only a block's committed prefix counts, and rows without a penalty stay as they are."""
+    """A slot's new request starts from its own retained output, only a block's committed prefix counts, and rows without a penalty stay as they are, whether adjacent penalized rows share a chunk or not."""
     monkeypatch.setattr(
-        model_runner_base, "SPECULATIVE_PENALTY_CHUNK_ELEMENTS", chunk_elements
+        model_runner_base, "SPECULATIVE_PENALTY_CHUNK_BYTES", chunk_bytes
     )
     vocab_size = 8
     runner = object.__new__(ModelRunner)
@@ -174,20 +175,20 @@ def test_runner_history_follows_each_request_through_its_slot_and_committed_pref
     unpenalized = penalized_request(1.0, [])
     fresh = penalized_request(0.5, [])
     batch = SimpleNamespace(
-        reqs=[retracted, unpenalized, fresh], req_pool_indices=torch.tensor([2, 1, 3])
+        reqs=[retracted, fresh, unpenalized], req_pool_indices=torch.tensor([2, 3, 1])
     )
     runner.record_speculative_output(
-        batch, SimpleNamespace(next_token_ids=torch.tensor([4, 6, 1])), is_prefill=True
+        batch, SimpleNamespace(next_token_ids=torch.tensor([4, 1, 6])), is_prefill=True
     )
     runner.record_speculative_output(
         batch,
         SimpleNamespace(
-            next_token_ids=torch.tensor([1, 2, 7, 5, 5, 5, 3, 0, 0]),
-            accept_lens=torch.tensor([2, 3, 1], dtype=torch.int32),
+            next_token_ids=torch.tensor([1, 2, 7, 3, 0, 0, 5, 5, 5]),
+            accept_lens=torch.tensor([2, 1, 3], dtype=torch.int32),
         ),
         is_prefill=False,
     )
-    verify_input_ids = torch.tensor([[2, 7, 0], [5, 6, 6], [3, 3, 5]])
+    verify_input_ids = torch.tensor([[2, 7, 0], [3, 3, 5], [5, 6, 6]])
     original = torch.randn(3, 3, vocab_size, generator=torch.Generator().manual_seed(1))
     verify_logits = original.clone()
     runner.apply_speculative_repetition_penalty(
@@ -204,7 +205,7 @@ def test_runner_history_follows_each_request_through_its_slot_and_committed_pref
 
     expected_histories = {
         0: ([3, 4, 1, 2], [3, 4, 1, 2, 7], [3, 4, 1, 2, 7, 0]),
-        2: ([1, 3], [1, 3], [1, 3, 5]),
+        1: ([1, 3], [1, 3], [1, 3, 5]),
     }
     for request, histories in expected_histories.items():
         penalty = batch.reqs[request].sampling_params.repetition_penalty
@@ -213,4 +214,37 @@ def test_runner_history_follows_each_request_through_its_slot_and_committed_pref
                 verify_logits[request, row],
                 plain_penalized_logits(original[request, row], history, penalty),
             ), (request, row)
-    assert torch.equal(verify_logits[1], original[1])
+    assert torch.equal(verify_logits[2], original[2])
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="measures CUDA allocations")
+def test_verify_penalty_stays_within_its_temporary_byte_budget() -> None:
+    """Chunk sizing trusts verify_penalty_temporary_bytes, so an extra full-size intermediate must break this bound."""
+    request_count, block_size, vocab_size = 4, 8, 151_936
+    device = torch.device("cuda")
+    generator = torch.Generator(device=device).manual_seed(0)
+    verify_logits = torch.randn(
+        request_count, block_size, vocab_size, device=device, generator=generator
+    )
+    verify_input_ids = torch.randint(
+        vocab_size, (request_count, block_size), device=device, generator=generator
+    )
+    committed_token_presence = (
+        torch.rand(request_count, vocab_size, device=device, generator=generator) < 0.01
+    )
+    repetition_penalties = torch.full((request_count,), 1.2, device=device)
+    torch.cuda.synchronize()
+    baseline_bytes = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+
+    apply_verify_repetition_penalty(
+        verify_logits, verify_input_ids, committed_token_presence, repetition_penalties
+    )
+
+    torch.cuda.synchronize()
+    temporary_bytes = torch.cuda.max_memory_allocated() - baseline_bytes
+    # note (wilsonzheng0327): the draft-prefix step adds block-by-block tensors, far below 1 MiB.
+    assert temporary_bytes <= request_count * verify_penalty_temporary_bytes(
+        block_size, vocab_size
+    ) + (1 << 20), temporary_bytes

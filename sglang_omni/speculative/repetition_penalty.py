@@ -8,6 +8,17 @@ from __future__ import annotations
 
 import torch
 
+# Temporaries apply_verify_repetition_penalty holds at once: per logit a sign mask and a product in the logits dtype (float32 at most), per vocabulary entry of a request a float32 scale and a presence row.
+TEMPORARY_BYTES_PER_LOGIT = 5
+TEMPORARY_BYTES_PER_VOCAB_ENTRY = 5
+
+
+def verify_penalty_temporary_bytes(block_size: int, vocab_size: int) -> int:
+    """Peak temporary bytes apply_verify_repetition_penalty adds per penalized request."""
+    return vocab_size * (
+        block_size * TEMPORARY_BYTES_PER_LOGIT + TEMPORARY_BYTES_PER_VOCAB_ENTRY
+    )
+
 
 def apply_verify_repetition_penalty(
     verify_logits: torch.Tensor,
@@ -18,7 +29,7 @@ def apply_verify_repetition_penalty(
     """Scale every verify row in place as plain decode would at its position.
 
     Args:
-        verify_logits: [requests, block, vocab].
+        verify_logits: [requests, block, vocab], contiguous.
         verify_input_ids: [requests, block] int64, the anchor then the drafts.
         committed_token_presence: [requests, vocab] bool, the committed output tokens.
         repetition_penalties: [requests] float32.
@@ -26,11 +37,12 @@ def apply_verify_repetition_penalty(
     request_count, block_size, _ = verify_logits.shape
     penalties = repetition_penalties[:, None]
     committed_scales = torch.where(committed_token_presence, penalties, 1.0)[:, None, :]
-    verify_logits[:] = torch.where(
-        verify_logits < 0,
-        verify_logits * committed_scales,
-        verify_logits / committed_scales,
-    )
+    is_negative = verify_logits < 0
+    # note (wilsonzheng0327): both products round once to the logits' dtype, as plain decode's float32 result does when stored.
+    negative_scaled_logits = torch.empty_like(verify_logits)
+    torch.mul(verify_logits, committed_scales, out=negative_scaled_logits)
+    verify_logits.div_(committed_scales)
+    torch.where(is_negative, negative_scaled_logits, verify_logits, out=verify_logits)
     positions = torch.arange(block_size, device=verify_logits.device)
     # [row, input token]: drafts 1 to j precede row j.
     is_draft_before_row = (positions[None, :] >= 1) & (

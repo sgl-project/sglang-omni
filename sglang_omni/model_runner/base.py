@@ -39,6 +39,7 @@ from sglang_omni.scheduling.types import (
 from sglang_omni.speculative.repetition_penalty import (
     apply_verify_repetition_penalty,
     record_committed_tokens,
+    verify_penalty_temporary_bytes,
 )
 
 if TYPE_CHECKING:
@@ -154,8 +155,8 @@ class PendingStep:
     )
 
 
-# Bounds the dense verify penalty's temporaries at 64 MiB of float32 per chunk of requests.
-SPECULATIVE_PENALTY_CHUNK_ELEMENTS = 1 << 24
+# Bounds the verify penalty's temporaries per chunk of requests.
+SPECULATIVE_PENALTY_CHUNK_BYTES = 64 << 20
 
 
 class ModelRunner(Generic[RequestDataInput]):
@@ -783,31 +784,38 @@ class ModelRunner(Generic[RequestDataInput]):
         verify_input_ids = verify_batch.input_ids.view(-1, block_size)
         pin_memory = is_pin_memory_available(self.device)
         requests_per_chunk = max(
-            1, SPECULATIVE_PENALTY_CHUNK_ELEMENTS // (block_size * vocab_size)
+            1,
+            SPECULATIVE_PENALTY_CHUNK_BYTES
+            // verify_penalty_temporary_bytes(block_size, vocab_size),
         )
-        for start in range(0, len(penalized_rows), requests_per_chunk):
-            chunk_rows = penalized_rows[start : start + requests_per_chunk]
-            row_index = torch.tensor(
-                chunk_rows, dtype=torch.int64, pin_memory=pin_memory
-            ).to(self.device, non_blocking=True)
+        # Each chunk is a run of adjacent penalized rows, scaled in place as a view.
+        chunks: list[range] = []
+        for row in penalized_rows:
+            if (
+                chunks
+                and chunks[-1].stop == row
+                and len(chunks[-1]) < requests_per_chunk
+            ):
+                chunks[-1] = range(chunks[-1].start, row + 1)
+            else:
+                chunks.append(range(row, row + 1))
+        for chunk in chunks:
             repetition_penalties = torch.tensor(
                 [
                     requests[row].data.req.sampling_params.repetition_penalty
-                    for row in chunk_rows
+                    for row in chunk
                 ],
                 dtype=torch.float32,
                 pin_memory=pin_memory,
             ).to(self.device, non_blocking=True)
-            penalized_logits = verify_logits.index_select(0, row_index)
             apply_verify_repetition_penalty(
-                penalized_logits,
-                verify_input_ids.index_select(0, row_index).long(),
+                verify_logits[chunk.start : chunk.stop],
+                verify_input_ids[chunk.start : chunk.stop].long(),
                 committed_token_presence[
-                    verify_batch.req_pool_indices.index_select(0, row_index), :-1
+                    verify_batch.req_pool_indices[chunk.start : chunk.stop], :-1
                 ],
                 repetition_penalties,
             )
-            verify_logits.index_copy_(0, row_index, penalized_logits)
 
     def record_speculative_output(
         self, batch: ScheduleBatch, result: GenerationBatchResult, *, is_prefill: bool
