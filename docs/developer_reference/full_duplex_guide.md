@@ -437,6 +437,8 @@ A judge starts only when the step has a request for it: the v1.5 pairs and the v
 | `qwen3-omni` | Qwen3-Omni-30B-A3B-Instruct, turn-based | `--config examples/qwen3_omni/session_h100.yaml` | 2 |
 | `cascade` | Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS Base cloning Vivian | `--config examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian/launch.yaml`, plus the forced-alignment worker, which `setup` installs into `$FDB_WORK/aligner-venv` | 2 |
 
+`ENGINE=haru` records Haru-4B on Apple silicon, with the profile `haru-native-mlx` (400 ms units, 24 kHz output, 16 kHz input). `HARU_SERVER_BIN` must name the native `haru_server` built from `sglang_omni_mlx/native/`; the harness does not fall back to a Python server. It always loads 8-bit weights, takes the voice from `HARU_REFERENCE_AUDIO` and the character card from `HARU_INSTRUCTIONS_FILE`, reads the checkpoint from `MODEL_PATH`, and admits one session at a time, so `--num-shards` stays 1. On a Mac, `generate`, `asr` and `timing` run with `FDB_ASR_DEVICE=cpu` and a scoring venv built for the local platform, and `FDB_SKIP_LISTENING=1` skips the listening metrics; the judge steps need the CUDA models described under Setup.
+
 A two-GPU engine needs `CUDA_VISIBLE_DEVICES` to list exactly two GPUs; ASR and the judge run on the first. A run remembers its engine, and a later step with a different `ENGINE` stops with an error.
 
 ```bash

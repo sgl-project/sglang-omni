@@ -16,6 +16,35 @@ mx::array SliceAxis(const mx::array &x, int axis, int begin, int end) {
   return mx::slice(x, start, stop);
 }
 
+// The causal depthwise mixer of a block as one Metal kernel: the array form
+// costs seven float32 dispatches over [T, C] and is several times slower on a
+// GPU.
+const mx::fast::CustomKernelFunction &MixerKernel() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "haru_causal_depthwise_mixer",
+      {"x", "n", "state", "w", "bias", "gamma"},
+      {"out", "new_state"}, R"(
+  uint c = thread_position_in_grid.x;
+  uint r = thread_position_in_grid.y;
+  if (c >= C) return;
+  if (r < T) {
+    float acc = float(bias[c]);
+    for (int k = 0; k < K; ++k) {
+      int i = int(r) + k - (K - 1);
+      float v = i < 0 ? float(state[(i + K - 1) * C + c]) : float(n[i * C + c]);
+      acc += float(w[c * K + k]) * v;
+    }
+    out[r * C + c] =
+        static_cast<OutT>(float(x[r * C + c]) + float(gamma[c]) * acc);
+  } else {
+    int src = int(r);  // concat(state, n) row that becomes new_state row r - T
+    new_state[(r - T) * C + c] =
+        src < K - 1 ? state[src * C + c] : n[(src - (K - 1)) * C + c];
+  }
+)");
+  return kernel;
+}
+
 enum class Kind { Conv, ConvTranspose, Block };
 
 struct Layer {
@@ -193,22 +222,36 @@ VibeVoiceCodec::Block(const mx::array &x, const mx::array &state,
   const mx::array weight = mx::reshape(mx::transpose(raw_conv, {0, 2, 1}),
                                        {raw_conv.shape(0), raw_conv.shape(2)});
   const mx::array gamma = checkpoint_.Weight(prefix + ".gamma");
-  const mx::array context = mx::concatenate({state, n}, 0);  // [steps+6, dim]
-  const mx::array taps = mx::astype(context, mx::float32);
-  const mx::array w = mx::astype(weight, mx::float32);
-  const mx::array g = mx::astype(gamma, mx::float32);
-  mx::array acc = mx::astype(checkpoint_.Weight(prefix + ".conv.bias"), mx::float32);
-  for (int k = 0; k < kKernel; ++k) {
-    const mx::array tap =
-        mx::slice(taps, mx::Shape{k, 0}, mx::Shape{k + steps, dim});
-    const mx::array w_k = mx::reshape(
-        mx::slice(w, mx::Shape{0, k}, mx::Shape{dim, k + 1}), {1, dim});
-    acc = mx::add(acc, mx::multiply(tap, w_k));
+  const mx::array bias = checkpoint_.Weight(prefix + ".conv.bias");
+  mx::array mixed = x;
+  mx::array next = state;
+  if (mx::default_device() == mx::Device::gpu) {
+    const std::vector<mx::array> outputs = MixerKernel()(
+        {x, n, state, weight, bias, gamma},
+        {{steps, dim}, {kKernel - 1, dim}}, {x.dtype(), state.dtype()},
+        {dim, steps + kKernel - 1, 1}, {std::min(dim, 256), 1, 1},
+        {{"OutT", x.dtype()}, {"T", steps}, {"C", dim}, {"K", kKernel}},
+        std::nullopt, true, {});
+    mixed = outputs[0];
+    next = outputs[1];
+  } else {
+    const mx::array context = mx::concatenate({state, n}, 0);  // [steps+6, dim]
+    const mx::array taps = mx::astype(context, mx::float32);
+    const mx::array w = mx::astype(weight, mx::float32);
+    const mx::array g = mx::astype(gamma, mx::float32);
+    mx::array acc = mx::astype(bias, mx::float32);
+    for (int k = 0; k < kKernel; ++k) {
+      const mx::array tap =
+          mx::slice(taps, mx::Shape{k, 0}, mx::Shape{k + steps, dim});
+      const mx::array w_k = mx::reshape(
+          mx::slice(w, mx::Shape{0, k}, mx::Shape{dim, k + 1}), {1, dim});
+      acc = mx::add(acc, mx::multiply(tap, w_k));
+    }
+    mixed = mx::astype(
+        mx::add(mx::astype(x, mx::float32), mx::multiply(g, acc)), x.dtype());
+    next = mx::slice(context, mx::Shape{steps, 0},
+                     mx::Shape{steps + kKernel - 1, dim});
   }
-  const mx::array mixed = mx::astype(
-      mx::add(mx::astype(x, mx::float32), mx::multiply(g, acc)), x.dtype());
-  const mx::array next = mx::slice(context, mx::Shape{steps, 0},
-                                   mx::Shape{steps + kKernel - 1, dim});
 
   const mx::array h =
       mx::fast::rms_norm(mixed, checkpoint_.Weight(prefix + ".ffn_norm.weight"),

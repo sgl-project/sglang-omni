@@ -5,6 +5,7 @@
 // per-thread), which the server constructs the session against.
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -23,8 +24,31 @@
 namespace haru {
 
 // The capabilities object reported in session.updated and, as JSON, by the
-// /v1/realtime/capabilities endpoint.
-nlohmann::json Capabilities();
+// /v1/realtime/capabilities endpoint. input_sample_rate is the rate clients
+// send audio at.
+nlohmann::json Capabilities(int input_sample_rate);
+
+// Converts the client's 16 kHz audio to the 24 kHz the codec consumes. Filter
+// state is kept across appends so the input is filtered as one signal, and the
+// sample count follows the input exactly (3 outputs per 2 inputs) so unit
+// receipts line up with what the client sent.
+class StreamResampler {
+public:
+  explicit StreamResampler(int input_rate);
+
+  std::vector<float> Process(const std::vector<float> &input);
+  // Emits the samples still inside the filter window once the input ended.
+  std::vector<float> Flush();
+
+private:
+  std::vector<float> Convert();
+
+  int input_rate_;
+  std::vector<float> buffer_;
+  int64_t origin_ = 0;
+  int64_t input_count_ = 0;
+  int64_t output_count_ = 0;
+};
 
 // One /v1/realtime socket's full-duplex conversation.
 class HaruRealtimeSession : public qwen3_asr::RealtimeConnection {
@@ -35,7 +59,7 @@ public:
                       const DuplexConfig &config,
                       qwen3_asr::TranscriptionWorker &worker,
                       std::string system_prompt, std::vector<float> reference,
-                      Sender sender);
+                      int input_sample_rate, Sender sender);
 
   bool Handle(const nlohmann::json &message) override;
 
@@ -45,8 +69,15 @@ private:
   // Applies sglang.sampling from a session.update to this session's config.
   void ApplySampling(const nlohmann::json &sampling);
   std::vector<float> AppendSamples(const nlohmann::json &message);
+  // Steps one 24 kHz frame and records the unit receipt it completes.
+  void StepFrame(const std::vector<float> &frame, bool is_padding,
+                 std::vector<Frame> &frames);
+  void SendUnitDone(double duration_ms);
+  void EmitPendingUnits();
+  double AcceptedEndMs() const;
+  double PaddingMs() const;
   void EmitFrame(const Frame &frame);
-  void FinishResponse(const std::string &reason);
+  void FinishResponse(const std::string &status, const std::string &reason);
   void SendEvent(const char *type,
                     const nlohmann::json &fields = nlohmann::json::object());
 
@@ -66,6 +97,12 @@ private:
   bool input_ended_ = false;
   bool response_open_ = false;
   bool started_ = false;
+  int input_sample_rate_;
+  StreamResampler resampler_;
+  int64_t accepted_input_samples_ = 0;
+  int64_t stepped_frames_ = 0;
+  int64_t unit_count_ = 0;
+  std::vector<double> pending_units_;
 };
 
 } // namespace haru

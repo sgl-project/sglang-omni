@@ -23,8 +23,10 @@
 namespace {
 
 // Serves the model's capabilities as JSON for the /v1/realtime playground.
-int HandleCapabilities(mg_connection *connection, void *) {
-  const std::string body = haru::Capabilities().dump();
+// data is the model's input sample rate.
+int HandleCapabilities(mg_connection *connection, void *data) {
+  const int input_sample_rate = *static_cast<const int *>(data);
+  const std::string body = haru::Capabilities(input_sample_rate).dump();
   mg_printf(connection,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
             "Content-Length: %zu\r\n\r\n%s",
@@ -37,14 +39,15 @@ public:
   HaruServedModel(const std::filesystem::path &model_directory,
                   int quantize_bits, std::string instructions,
                   std::vector<float> reference, int seed,
-                  int warmup_frames)
+                  int warmup_frames, int input_sample_rate)
       : model_(model_directory, quantize_bits),
         codec_(model_.checkpoint(), model_.config().codec),
         head_(model_.checkpoint(), model_.config().head),
         tokenizer_(model_directory),
         instructions_(std::move(instructions)),
         reference_(std::move(reference)),
-        warmup_frames_(warmup_frames) {
+        warmup_frames_(warmup_frames),
+        input_sample_rate_(input_sample_rate) {
     session_config_.seed = seed;
     mlx::core::set_cache_limit(asr_service::kDecodeBufferCacheLimitBytes);
   }
@@ -59,14 +62,14 @@ public:
     realtime_ = [this, &worker](qwen3_asr::RealtimeConnection::Sender sender) {
       return std::make_shared<haru::HaruRealtimeSession>(
           model_, codec_, head_, tokenizer_, session_config_, worker,
-          instructions_, reference_, std::move(sender));
+          instructions_, reference_, input_sample_rate_, std::move(sender));
     };
     asr_service::AddRealtimeHandler(context, realtime_);
     // Register the capabilities endpoint before the warm-up: the civetweb
     // listener is already accepting connections at this point, and clients
     // (playground warm-up included) probe capabilities as soon as it answers.
     mg_set_request_handler(context, "/v1/realtime/capabilities$",
-                           HandleCapabilities, nullptr);
+                           HandleCapabilities, &input_sample_rate_);
     Warmup(worker);
   }
 
@@ -112,6 +115,7 @@ private:
   std::string instructions_;
   std::vector<float> reference_;
   int warmup_frames_;
+  int input_sample_rate_;
   asr_service::RealtimeFactory realtime_;
 };
 
@@ -121,6 +125,7 @@ int main(int argc, char **argv) {
   int quantize_bits = 0;
   int seed = -1;
   int warmup_frames = 16;
+  int input_sample_rate = 24000;
   std::filesystem::path reference_audio;
   std::filesystem::path instructions_file;
 
@@ -136,6 +141,10 @@ int main(int argc, char **argv) {
       {"--seed", [&](const std::string &value) { seed = std::stoi(value); }},
       {"--warmup-frames",
        [&](const std::string &value) { warmup_frames = std::stoi(value); }},
+      {"--input-sample-rate",
+       [&](const std::string &value) {
+         input_sample_rate = std::stoi(value);
+       }},
   };
   haru.check_flags = [&]() {
     if (quantize_bits != 0 && quantize_bits != 8) {
@@ -143,6 +152,9 @@ int main(int argc, char **argv) {
     }
     if (warmup_frames < 0) {
       throw std::invalid_argument("--warmup-frames must be >= 0");
+    }
+    if (input_sample_rate != 16000 && input_sample_rate != 24000) {
+      throw std::invalid_argument("--input-sample-rate must be 16000 or 24000");
     }
   };
   haru.load = [&](const std::filesystem::path &model_directory) {
@@ -159,7 +171,7 @@ int main(int argc, char **argv) {
     return std::make_unique<HaruServedModel>(model_directory, quantize_bits,
                                              std::move(instructions),
                                              std::move(reference), seed,
-                                             warmup_frames);
+                                             warmup_frames, input_sample_rate);
   };
   return asr_service::Serve(argc, argv, haru);
 }

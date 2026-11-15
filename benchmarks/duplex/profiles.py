@@ -7,6 +7,7 @@ from typing import Literal
 ProfileName = Literal[
     "nemotron-voicechat-pr2188",
     "minicpmo-native-pr2377",
+    "haru-native-mlx",
     "qwen3-omni-half-duplex",
     "turn-based",
 ]
@@ -39,6 +40,17 @@ PROFILES: dict[ProfileName, DuplexProfile] = {
         native_unit_ms=1000,
         output_sample_rate=24000,
         stop_requires_eos=False,
+        continuous_output=False,
+        protocol="native",
+    ),
+    # note (haru): a native unit is three 3200-sample model frames at 24 kHz. The
+    # model answers user frame k with frame k + 1 and sends its first frame before
+    # any user audio, so the output is one frame longer than the padded input and
+    # the oracle cannot check output byte conservation.
+    "haru-native-mlx": DuplexProfile(
+        native_unit_ms=400,
+        output_sample_rate=24000,
+        stop_requires_eos=True,
         continuous_output=False,
         protocol="native",
     ),

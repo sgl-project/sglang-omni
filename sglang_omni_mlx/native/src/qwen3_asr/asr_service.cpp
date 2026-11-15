@@ -206,7 +206,17 @@ int SocketData(mg_connection *connection, int bits, char *data, size_t length,
   } else {
   }
   try {
-    return socket->session->Handle(event) ? 1 : 0;
+    if (socket->session->Handle(event)) {
+      return 1;
+    }
+    // Civetweb drops the TCP connection when the handler returns 0, which
+    // clients report as a truncated session; close the WebSocket properly.
+    const char normal_closure[] = {0x03, static_cast<char>(0xE8)};
+    mg_lock_connection(connection);
+    mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_CONNECTION_CLOSE,
+                       normal_closure, sizeof(normal_closure));
+    mg_unlock_connection(connection);
+    return 0;
   } catch (const std::exception &error) {
     // Note (Jiaxin Deng): log the type alone, never audio or text.
     std::cerr << "realtime session failed: " << typeid(error).name() << "\n";
