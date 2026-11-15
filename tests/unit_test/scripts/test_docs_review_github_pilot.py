@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Behavior tests for the maintainer-triggered review pilot."""
+"""Behavior tests for the advisory review GitHub integration."""
 
 from __future__ import annotations
 
@@ -9,37 +9,34 @@ from pathlib import Path
 
 import pytest
 
-from scripts.docs_review import github_pilot, github_publish
+from scripts.docs_review import github_comment, github_pilot
 from scripts.docs_review.github_pilot import (
     PilotError,
     Reservation,
     Reservations,
     authorize_reservation,
 )
-from scripts.docs_review.models import BudgetConfig, Finding, Report
+from scripts.docs_review.models import BudgetConfig, Finding
 from scripts.docs_review.transport import OpenAICompatibleReviewer, ReviewerError
 
 
-def test_pull_request_uses_current_base_branch_commit(
+def test_pull_request_keeps_api_base_sha(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def api(endpoint: str) -> str:
-        if endpoint.endswith("/pulls/1"):
-            return json.dumps(
-                {
-                    "state": "open",
-                    "body": "",
-                    "base": {"sha": "a" * 40, "ref": "release/example"},
-                    "head": {"sha": "b" * 40},
-                }
-            )
-        else:
-            assert endpoint.endswith("/commits/release%2Fexample")
-            return json.dumps({"sha": "c" * 40})
+    def api(endpoint: str, **kwargs: object) -> str:
+        assert endpoint.endswith("/pulls/1")
+        return json.dumps(
+            {
+                "state": "open",
+                "body": "",
+                "base": {"sha": "a" * 40, "ref": "main"},
+                "head": {"sha": "b" * 40},
+            }
+        )
 
     monkeypatch.setattr(github_pilot, "github_api", api)
     pull_request = github_pilot.fetch_pull_request("owner/repo", 1)
-    assert pull_request.base.sha == "c" * 40
+    assert pull_request.base.sha == "a" * 40
     assert pull_request.head.sha == "b" * 40
 
 
@@ -125,6 +122,7 @@ def configure_run(
         "GITHUB_OUTPUT": str(tmp_path / "outputs"),
         "GITHUB_RUN_ID": "123",
         "GITHUB_RUN_ATTEMPT": "2",
+        "AUTOMATIC_REVIEW": "false",
         "OFFLINE_REVIEW": str(offline).lower(),
         "FOLLOW_UP": "false",
         "DOCS_REVIEW_API_KEY": "test-only-key",
@@ -206,7 +204,15 @@ def test_failed_model_call_is_reserved_before_invocation_and_not_repeated(
         assert len(reservations.reservations) == 1
         raise ReviewerError("Model unavailable")
 
-    monkeypatch.setattr(github_pilot, "save_reservation", save_reservation)
+    def reserve_with_retry(
+        name: str,
+        reservation: Reservation,
+        budget: BudgetConfig,
+        follow_up_authorized: bool,
+    ) -> None:
+        save_reservation(name, reservations, "a" * 40, reservation)
+
+    monkeypatch.setattr(github_pilot, "save_reservation_with_retry", reserve_with_retry)
     monkeypatch.setattr(
         github_pilot, "write_reservations", lambda name, ledger, sha: None
     )
@@ -216,26 +222,29 @@ def test_failed_model_call_is_reserved_before_invocation_and_not_repeated(
     report = json.loads((artifact / "report.json").read_text(encoding="utf-8"))
     assert report["report"]["execution"] == "incomplete"
     assert reservations.reservations[0].execution == "incomplete"
-    with pytest.raises(PilotError, match="already reserved"):
-        github_pilot.run_github_review()
-    assert len(reservations.reservations) == 1
-
-
-@pytest.mark.parametrize(
-    "scenario",
-    ["current", "changed_before", "changed_during", "wrong_attempt", "collection_only"],
-)
-def test_publishes_only_selected_findings_for_current_revision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
-) -> None:
-    base, head = configure_run(
-        tmp_path, monkeypatch, offline=scenario == "collection_only"
+    budget = BudgetConfig(
+        max_cost_cents_per_call=25,
+        max_cost_cents_per_pull_request=50,
+        max_cost_cents_per_day=200,
+        call_cost_cents=25,
     )
-    original = github_pilot.PullRequest(
+    duplicate = reservations.reservations[0].model_copy(update={"run_id": "124"})
+    with pytest.raises(PilotError, match="already reserved"):
+        authorize_reservation(
+            reservations, duplicate, budget, follow_up_authorized=False
+        )
+
+
+def test_automatic_review_posts_sticky_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base, head = configure_run(tmp_path, monkeypatch, offline=False)
+    monkeypatch.setenv("AUTOMATIC_REVIEW", "true")
+    pull_request = github_pilot.PullRequest(
         state="open", body="", base={"sha": base}, head={"sha": head}
     )
     monkeypatch.setattr(
-        github_pilot, "fetch_pull_request", lambda name, number: original
+        github_pilot, "fetch_pull_request", lambda name, number: pull_request
     )
     reservations = Reservations()
     monkeypatch.setattr(
@@ -244,13 +253,23 @@ def test_publishes_only_selected_findings_for_current_revision(
     monkeypatch.setattr(
         github_pilot, "write_reservations", lambda name, ledger, sha: None
     )
+
+    def reserve_with_retry(
+        name: str,
+        reservation: Reservation,
+        budget: BudgetConfig,
+        follow_up_authorized: bool,
+    ) -> None:
+        reservations.reservations.append(reservation)
+
+    monkeypatch.setattr(github_pilot, "save_reservation_with_retry", reserve_with_retry)
     model_finding = Finding(
         rule_id="API_CONTRACT",
         file_path="docs/api_reference/demo.md",
         line_start=2,
         line_end=2,
         quote="The response is WAV.",
-        claim="@someone documentation says WAV, but code returns PCM.",
+        claim="documentation says WAV, but code returns PCM.",
         evidence_file_path="demo.py",
         evidence_line_start=1,
         evidence_line_end=1,
@@ -260,111 +279,41 @@ def test_publishes_only_selected_findings_for_current_revision(
         change_relation="introduced",
         certainty="supported",
     )
-    unselected = model_finding.model_copy(
-        update={"claim": "Leave this other suggestion in the report."}
-    )
     monkeypatch.setattr(
         OpenAICompatibleReviewer,
         "review",
-        lambda reviewer, bundle: json.dumps(
-            [model_finding.model_dump(), unselected.model_dump()]
-        ),
+        lambda reviewer, bundle: json.dumps([model_finding.model_dump()]),
     )
-    github_pilot.run_github_review()
-    artifact = tmp_path / "docs-review" / "artifact"
-    report = json.loads((artifact / "report.json").read_text(encoding="utf-8"))
-    assert report["publishable"] == (scenario != "collection_only")
-    if scenario != "collection_only":
-        assert len(report["report"]["findings"]) == 3
-        assert report["report"]["findings"][1]["claim"] == model_finding.claim
-        assert "2. `API_CONTRACT`" in (artifact / "report.md").read_text(
-            encoding="utf-8"
-        )
-    else:
-        pass
-
-    monkeypatch.setenv("REVIEW_RUN_ID", "123")
-    monkeypatch.setenv("REVIEW_RUN_ATTEMPT", "2")
-    monkeypatch.setenv("FINDING_NUMBERS", "2")
-    monkeypatch.setenv("DEFAULT_BRANCH", "main")
     posted: list[tuple[str, str]] = []
 
-    def api(endpoint: str, body: str | None = None, method: str = "PUT") -> str:
-        if endpoint.endswith("/actions/runs/123/attempts/2"):
+    def api(endpoint: str, **kwargs: object) -> str:
+        body = kwargs.get("body")
+        method = kwargs.get("method", "GET")
+        if endpoint.endswith("/pulls/1"):
             return json.dumps(
                 {
-                    "event": "workflow_dispatch",
-                    "path": ".github/workflows/docs-review-pilot.yml",
-                    "status": "completed",
-                    "conclusion": "success",
-                    "head_branch": "main",
-                    "run_attempt": 2,
+                    "state": "open",
+                    "body": "",
+                    "base": {"sha": base, "ref": "main"},
+                    "head": {"sha": head},
                 }
             )
-        else:
+        elif endpoint.endswith("/issues/1/comments?per_page=100&page=1"):
+            return "[]"
+        elif method == "POST" and endpoint.endswith("/issues/1/comments"):
             assert body is not None
-            assert endpoint in {
-                "repos/owner/repo/issues/1/comments",
-                "repos/owner/repo/issues/comments/42",
-            }
-            posted.append((method, json.loads(body)["body"]))
+            posted.append((method, json.loads(str(body))["body"]))
             return json.dumps({"id": 42})
-
-    def download(
-        arguments: list[str], *, capture_output: bool, text: bool, check: bool
-    ) -> subprocess.CompletedProcess[str]:
-        assert capture_output and text and not check
-        assert arguments[arguments.index("--name") + 1] == "docs-review-123-2"
-        destination = Path(arguments[arguments.index("--dir") + 1])
-        artifact_text = (artifact / "report.json").read_text(encoding="utf-8")
-        if scenario == "wrong_attempt":
-            wrong_artifact = json.loads(artifact_text)
-            wrong_artifact["run_attempt"] = 1
-            artifact_text = json.dumps(wrong_artifact)
         else:
-            pass
-        (destination / "report.json").write_text(artifact_text, encoding="utf-8")
-        return subprocess.CompletedProcess(arguments, 0, "", "")
+            raise AssertionError(endpoint)
 
-    updated = original.model_copy(update={"head": github_pilot.Revision(sha="f" * 40)})
-    if scenario == "changed_before":
-        revisions = iter([updated])
-    elif scenario == "changed_during":
-        revisions = iter([original, updated])
-    else:
-        revisions = iter([original, original])
-    monkeypatch.setattr(github_publish, "github_api", api)
-    monkeypatch.setattr(github_publish.subprocess, "run", download)
-    monkeypatch.setattr(
-        github_publish, "fetch_pull_request", lambda name, number: next(revisions)
-    )
-    expected_errors = {
-        "changed_before": "changed since the review",
-        "wrong_attempt": "different run or attempt",
-        "collection_only": "model-backed Docs review",
-    }
-    if scenario in expected_errors:
-        with pytest.raises(PilotError, match=expected_errors[scenario]):
-            github_publish.publish_selected_findings()
-        assert posted == []
-    else:
-        github_publish.publish_selected_findings()
-        assert [method for method, body in posted] == (
-            ["POST", "PATCH"] if scenario == "changed_during" else ["POST"]
-        )
-        assert "@someone" not in posted[0][1]
-        assert "Document PCM." in posted[0][1]
-        assert unselected.claim not in posted[0][1]
-        assert "Contributor checklist is missing" not in posted[0][1]
-        assert head in posted[0][1]
-        assert f"/blob/{head}/demo.py#L1" in posted[0][1]
-        if scenario == "changed_during":
-            assert posted[1][1].startswith("**Stale:**")
-        else:
-            pass
+    monkeypatch.setattr(github_comment, "github_api", api)
+    github_pilot.run_github_review()
+    assert len(posted) == 1
+    assert github_comment.ADVISORY_REVIEW_MARKER in posted[0][1]
+    assert "Document PCM." in posted[0][1]
+    assert head in posted[0][1]
 
 
-def test_publish_rejects_invalid_selection() -> None:
-    assert "@" not in github_publish.safe_text("@team [click](https://example.invalid)")
-    with pytest.raises(PilotError, match="comma-separated"):
-        github_publish.selected_findings(Report.model_construct(findings=[]), "1;2")
+def test_safe_text_strips_mentions() -> None:
+    assert "@" not in github_comment.safe_text("@team [click](https://example.invalid)")

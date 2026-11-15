@@ -95,6 +95,15 @@ class ModelSettings(BaseModel):
         return self
 
 
+class ReviewArtifact(BaseModel):
+    pull_request_number: int = Field(gt=0)
+    run_id: str = Field(pattern=r"^[1-9][0-9]*$")
+    run_attempt: int = Field(gt=0)
+    stale: bool
+    publishable: bool
+    report: "Report"
+
+
 class Finding(BaseModel):
     rule_id: str
     file_path: str

@@ -12,14 +12,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
-
 from pydantic import BaseModel, Field, ValidationError
 
 from scripts.docs_review.models import (
     BudgetConfig,
     ModelSettings,
-    Report,
+    ReviewArtifact,
     ReviewRequest,
 )
 from scripts.docs_review.reporting import render_bundle, render_markdown
@@ -29,7 +27,8 @@ STATE_BRANCH = "docs-review-ledger"
 STATE_PATH = "docs-review-ledger.json"
 MAX_INPUT_BYTES = 100_000
 MAX_REVIEWS_PER_PULL_REQUEST = 2
-REVIEW_WORKFLOW_PATH = ".github/workflows/docs-review-pilot.yml"
+REVIEW_WORKFLOW_PATH = ".github/workflows/pr-advisory-review.yaml"
+LEDGER_WRITE_ATTEMPTS = 5
 
 
 class PilotError(Exception):
@@ -46,15 +45,6 @@ class PullRequest(BaseModel):
     body: str | None
     base: Revision
     head: Revision
-
-
-class ReviewArtifact(BaseModel):
-    pull_request_number: int = Field(gt=0)
-    run_id: str = Field(pattern=r"^[1-9][0-9]*$")
-    run_attempt: int = Field(gt=0)
-    stale: bool
-    publishable: bool
-    report: Report
 
 
 class Reservation(BaseModel):
@@ -79,11 +69,12 @@ class GitHubContent(BaseModel):
     encoding: Literal["base64"]
 
 
-def github_api(endpoint: str, body: str | None = None, method: str = "PUT") -> str:
+def github_api(
+    endpoint: str, *, body: str | None = None, method: str = "GET"
+) -> str:
     arguments = ["gh", "api", endpoint]
-    if body is None:
-        input_text = None
-    else:
+    input_text: str | None = None
+    if body is not None:
         arguments.extend(["--method", method, "--input", "-"])
         input_text = body
     completed = subprocess.run(
@@ -101,16 +92,35 @@ def github_api(endpoint: str, body: str | None = None, method: str = "PUT") -> s
 
 def fetch_pull_request(repository_name: str, pull_request_number: int) -> PullRequest:
     response = github_api(f"repos/{repository_name}/pulls/{pull_request_number}")
-    pull_request = PullRequest.model_validate_json(response)
-    if not pull_request.base.ref:
-        raise PilotError("The pull request base branch is unavailable")
+    return PullRequest.model_validate_json(response)
+
+
+def merge_base_commit_sha(
+    repository: Path, base_commit_sha: str, head_commit_sha: str
+) -> str:
+    completed = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+            str(repository),
+            "merge-base",
+            base_commit_sha,
+            head_commit_sha,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode:
+        raise PilotError("Could not compute the pull request merge base")
     else:
-        base_ref = quote(pull_request.base.ref, safe="")
-        base_response = github_api(f"repos/{repository_name}/commits/{base_ref}")
-        base_sha = Revision.model_validate_json(base_response).sha
-        return pull_request.model_copy(
-            update={"base": pull_request.base.model_copy(update={"sha": base_sha})}
-        )
+        merge_base = completed.stdout.strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", merge_base):
+            raise PilotError("The merge base is not a commit SHA")
+        else:
+            return merge_base
 
 
 def load_reservations(repository_name: str) -> tuple[Reservations, str]:
@@ -168,6 +178,17 @@ def authorize_reservation(
         pass
 
 
+def has_complete_reservation(
+    reservations: Reservations, pull_request_number: int, review_input_sha256: str
+) -> bool:
+    return any(
+        entry.pull_request_number == pull_request_number
+        and entry.review_input_sha256 == review_input_sha256
+        and entry.execution == "complete"
+        for entry in reservations.reservations
+    )
+
+
 def save_reservation(
     repository_name: str,
     reservations: Reservations,
@@ -176,6 +197,32 @@ def save_reservation(
 ) -> None:
     reservations.reservations.append(reservation)
     write_reservations(repository_name, reservations, content_sha)
+
+
+def save_reservation_with_retry(
+    repository_name: str,
+    reservation: Reservation,
+    budget: BudgetConfig,
+    follow_up_authorized: bool,
+) -> None:
+    for attempt in range(LEDGER_WRITE_ATTEMPTS):
+        reservations, content_sha = load_reservations(repository_name)
+        authorize_reservation(
+            reservations, reservation, budget, follow_up_authorized
+        )
+        reservations.reservations.append(reservation)
+        try:
+            write_reservations(repository_name, reservations, content_sha)
+        except PilotError as error:
+            if attempt + 1 == LEDGER_WRITE_ATTEMPTS or not re.search(
+                r"HTTP (409|422)", str(error)
+            ):
+                raise
+            else:
+                pass
+        else:
+            return
+    raise PilotError("The review ledger could not be updated after repeated conflicts")
 
 
 def write_reservations(
@@ -190,7 +237,9 @@ def write_reservations(
             "branch": STATE_BRANCH,
         }
     )
-    github_api(f"repos/{repository_name}/contents/{STATE_PATH}", body)
+    github_api(
+        f"repos/{repository_name}/contents/{STATE_PATH}", body=body, method="PUT"
+    )
 
 
 def finish_reservation(
@@ -198,19 +247,31 @@ def finish_reservation(
     reservation: Reservation,
     execution: Literal["complete", "incomplete"],
 ) -> None:
-    reservations, content_sha = load_reservations(repository_name)
-    matching = [
-        entry
-        for entry in reservations.reservations
-        if entry.run_id == reservation.run_id
-        and entry.run_attempt == reservation.run_attempt
-        and entry.review_input_sha256 == reservation.review_input_sha256
-    ]
-    if len(matching) != 1:
-        raise PilotError("The review reservation could not be located")
-    else:
-        matching[0].execution = execution
-        write_reservations(repository_name, reservations, content_sha)
+    for attempt in range(LEDGER_WRITE_ATTEMPTS):
+        reservations, content_sha = load_reservations(repository_name)
+        matching = [
+            entry
+            for entry in reservations.reservations
+            if entry.run_id == reservation.run_id
+            and entry.run_attempt == reservation.run_attempt
+            and entry.review_input_sha256 == reservation.review_input_sha256
+        ]
+        if len(matching) != 1:
+            raise PilotError("The review reservation could not be located")
+        else:
+            matching[0].execution = execution
+        try:
+            write_reservations(repository_name, reservations, content_sha)
+        except PilotError as error:
+            if attempt + 1 == LEDGER_WRITE_ATTEMPTS or not re.search(
+                r"HTTP (409|422)", str(error)
+            ):
+                raise
+            else:
+                pass
+        else:
+            return
+    raise PilotError("The review ledger could not be updated after repeated conflicts")
 
 
 def fetch_revision(repository: Path, revision: str) -> None:
@@ -249,6 +310,7 @@ def run_github_review() -> None:
         pass
     run_id = os.environ["GITHUB_RUN_ID"]
     run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+    automatic_review = os.environ.get("AUTOMATIC_REVIEW", "false") == "true"
     pull_request = fetch_pull_request(repository_name, pull_request_number)
     if pull_request.state != "open":
         raise PilotError("The pull request is not open")
@@ -290,7 +352,11 @@ def run_github_review() -> None:
     prepared = prepare_review(request)
     bundle = prepared.bundle
     if not bundle.reviewed_paths:
-        raise PilotError("No changed documentation files were found")
+        if automatic_review:
+            print("No documentation changes; review skipped.")
+            return
+        else:
+            raise PilotError("No changed documentation files were found")
     elif not offline and len(render_bundle(bundle).encode()) > MAX_INPUT_BYTES:
         raise PilotError("Review input exceeds the configured byte limit")
     else:
@@ -300,6 +366,14 @@ def run_github_review() -> None:
     elif budget is None:
         raise PilotError("The review budget is not configured")
     else:
+        reservations, _content_sha = load_reservations(repository_name)
+        if automatic_review and has_complete_reservation(
+            reservations, pull_request_number, prepared.input_hash
+        ):
+            print("Review input unchanged since the last complete run; skipped.")
+            return
+        else:
+            pass
         reservation = Reservation(
             pull_request_number=pull_request_number,
             head_commit_sha=pull_request.head.sha,
@@ -309,21 +383,22 @@ def run_github_review() -> None:
             run_id=run_id,
             run_attempt=run_attempt,
         )
-        reservations, content_sha = load_reservations(repository_name)
-        authorize_reservation(
-            reservations,
+        save_reservation_with_retry(
+            repository_name,
             reservation,
             budget,
             os.environ["FOLLOW_UP"] == "true",
         )
-        save_reservation(repository_name, reservations, content_sha, reservation)
     result = run_review(request, None, SystemClock(), prepared=prepared)
+    reviewed_merge_base = result.bundle.merge_base_commit_sha
     current = fetch_pull_request(repository_name, pull_request_number)
-    stale = (
-        current.state != "open"
-        or current.head.sha != pull_request.head.sha
-        or current.base.sha != pull_request.base.sha
-    )
+    if current.state != "open" or current.head.sha != pull_request.head.sha:
+        stale = True
+    else:
+        current_merge_base = merge_base_commit_sha(
+            repository, current.base.sha, current.head.sha
+        )
+        stale = current_merge_base != reviewed_merge_base
     artifact = ReviewArtifact(
         pull_request_number=pull_request_number,
         run_id=run_id,
@@ -337,10 +412,14 @@ def run_github_review() -> None:
     (artifact_directory / "report.json").write_text(
         artifact.model_dump_json(indent=2) + "\n", encoding="utf-8"
     )
+    if automatic_review:
+        publication_note = "Findings post automatically to this pull request when complete."
+    else:
+        publication_note = "Findings are advisory and selected separately for publication."
     notices = [
         f"Pull request #{pull_request_number}",
         f"Review run {run_id}, attempt {run_attempt}.",
-        "Findings are advisory and selected separately for publication.",
+        publication_note,
     ]
     if offline:
         notices.append("Collection-only run without a model call.")
@@ -362,6 +441,25 @@ def run_github_review() -> None:
         finish_reservation(repository_name, reservation, result.report.execution)
     else:
         pass
+    if (
+        automatic_review
+        and artifact.publishable
+        and artifact.report.findings
+    ):
+        repository_url = (
+            f'{os.environ["GITHUB_SERVER_URL"]}/{repository_name}'
+        )
+        from scripts.docs_review.github_comment import publish_reports
+
+        publish_reports(
+            repository_name,
+            repository_url,
+            run_id,
+            run_attempt,
+            [artifact],
+        )
+    else:
+        pass
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         output.write(f"execution={result.report.execution}\n")
         output.write(f"stale={str(stale).lower()}\n")
@@ -376,12 +474,6 @@ def main() -> int:
         run_github_review()
     except PilotError as error:
         print(str(error), file=sys.stderr)
-        return 1
-    except (KeyError, ValueError, OSError, RuntimeError, ValidationError):
-        print(
-            "Documentation review could not run; check configuration and permissions.",
-            file=sys.stderr,
-        )
         return 1
     else:
         return 0
