@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -58,6 +60,7 @@ func (a *app) openMeetings() {
 		MainLanguage: func() string {
 			return uitext.LangLabel(a.prefs.General.MainLanguage)
 		},
+		Context:         a.meetingTranscriptContext,
 		SystemCaptureOK: a.systemCaptureOK,
 	})
 	a.meetMgr.Subscribe(func(s meeting.Snapshot) {
@@ -184,6 +187,52 @@ func (a *app) meetingReprocess(id string) {
 			return
 		}
 		a.post(a.loadMeetings)
+	})
+}
+
+// meetingTranscriptContext is the dictionary and speech context a
+// transcript's correction gets, as dictation's clean-up has them.
+func (a *app) meetingTranscriptContext(ctx context.Context) meeting.TranscriptContext {
+	d := a.prefs.Dictionary
+	tc := meeting.TranscriptContext{Notes: session.PromptDictionary(a.prefs), Speech: d.SpeechContext}
+	if d.Enabled && d.Glossary {
+		terms, _ := a.lib.store.Dictionary().List(ctx, "")
+		for _, t := range terms {
+			if t.Enabled {
+				tc.Terms = append(tc.Terms, compose.Term{Term: t.Term, Aliases: t.Aliases})
+			}
+		}
+	}
+	return tc
+}
+
+// meetingCorrect corrects a stored meeting's transcript with the language
+// model, then summarizes it again.
+func (a *app) meetingCorrect(id string) {
+	if a.meetMgr == nil || id == "" {
+		return
+	}
+	n := &a.mv
+	if n.detail != nil && n.detail.id == id {
+		n.detail.correcting = true
+	}
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+		defer cancel()
+		err := a.meetMgr.CorrectTranscript(ctx, id)
+		if err == nil {
+			err = a.meetMgr.GenerateMeetingSummary(ctx, id)
+		}
+		a.post(func() {
+			if err != nil {
+				a.toast(i18n.T("Could not correct the transcript: %v", err))
+				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "correct: " + err.Error()})
+			}
+			if n.detail != nil && n.detail.id == id {
+				a.openMeetingDetail(id)
+			}
+			a.loadMeetings()
+		})
 	})
 }
 

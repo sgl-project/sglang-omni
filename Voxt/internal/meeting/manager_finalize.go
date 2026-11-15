@@ -65,9 +65,7 @@ func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
 	m.resetAfterDone()
 	m.notify(m.snap)
 	if auto {
-		go func() {
-			_ = m.GenerateMeetingSummary(context.Background(), meetingID)
-		}()
+		go m.correctAndSummarize(context.Background(), meetingID)
 	}
 }
 
@@ -83,4 +81,11 @@ func (m *Manager) finalizeProgress(id string) func(float64) {
 		m.mu.Unlock()
 		m.notify(s)
 	}
+}
+
+// correctAndSummarize corrects the transcript, then summarizes it; a
+// correction that fails leaves the summary to the recognised text.
+func (m *Manager) correctAndSummarize(ctx context.Context, id string) {
+	_ = m.CorrectTranscript(ctx, id)
+	_ = m.GenerateMeetingSummary(ctx, id)
 }

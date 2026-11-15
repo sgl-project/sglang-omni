@@ -30,9 +30,11 @@ type meetingDetail struct {
 	question string
 	loading  bool
 	busy     bool
-	err      string
-	playback meetingDetailPlayback
-	segList  ui.ListState
+	// correcting: the language model is correcting the transcript.
+	correcting bool
+	err        string
+	playback   meetingDetailPlayback
+	segList    ui.ListState
 }
 
 func (a *app) openMeetingDetail(id string) {

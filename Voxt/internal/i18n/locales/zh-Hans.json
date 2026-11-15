@@ -1651,5 +1651,8 @@
   "min": "分钟",
   "The length limit stops the recording in %s": "%s 后到达时长上限，录音会停止",
   "Over the upload size limit: Voxt sends the recording in pieces": "已超过上传大小上限：Voxt 会分段发送录音",
-  "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音"
+  "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音",
+  "Correct with the language model": "用语言模型校对",
+  "Correcting the transcript with the language model…": "正在用语言模型校对转录稿…",
+  "Could not correct the transcript: %v": "无法校对转录稿：%v"
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -452,6 +453,11 @@ func (a *app) meetingDetailTitle(c *ui.Context, mt store.Meeting, close func()) 
 				if mt.Status == store.MeetingDone && m.Item(i18n.T("Reprocess transcript")).Chosen() {
 					a.meetingReprocess(mt.ID)
 				}
+				d := a.mv.detail
+				if mt.Status == store.MeetingDone && len(a.installed(local.LLM)) > 0 && d != nil && !d.correcting &&
+					m.Item(i18n.T("Correct with the language model")).Chosen() {
+					a.meetingCorrect(mt.ID)
+				}
 				if mt.Audio != "" && m.Item(i18n.T("Show in Finder")).Chosen() {
 					revealInFinder(filepath.Join(a.dataDir(), "meetings", mt.Audio))
 				}
@@ -466,6 +472,9 @@ func (a *app) meetingDetailTitle(c *ui.Context, mt store.Meeting, close func()) 
 		}
 	})
 	caption(c, meetingMeta(mt))
+	if d := a.mv.detail; d != nil && d.correcting {
+		caption(c, i18n.T("Correcting the transcript with the language model…"))
+	}
 	if mt.Status == store.MeetingInterrupted || mt.Status == store.MeetingFinishing {
 		ui.Row(c).Margin(px(t, sp2), 0, 0, 0).Children(func() {
 			if ui.Button(c.Key("mt-continue"), i18n.T("Continue processing")).Clicked() {

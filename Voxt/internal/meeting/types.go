@@ -116,6 +116,9 @@ type Config struct {
 	ASR func(ctx context.Context, src Source) (TrackASR, error)
 	// VAD finds speech regions for the final pass; nil uses energy analysis.
 	VAD vad.Model
+	// Context is what the language model corrects a transcript with;
+	// nil for none.
+	Context func(ctx context.Context) TranscriptContext
 	// LLM opens the language model for summary and live translation.
 	LLM func(ctx context.Context, id string) (SummaryChat, error)
 	// MainLanguage names the user's primary language for summary prompts.
