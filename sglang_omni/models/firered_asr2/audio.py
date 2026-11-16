@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -12,10 +13,16 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
+logger = logging.getLogger(__name__)
+
 try:
     import kaldi_native_fbank as knf
 except ImportError:
     knf = None
+    logger.warning(
+        "FireRedASR2 transcription is unavailable without kaldi-native-fbank. "
+        "Install it with: python -m pip install 'kaldi-native-fbank>=1.20.0'"
+    )
 
 
 def num_audio_tokens(num_frames: int, downsample_rate: int = 2) -> int:
