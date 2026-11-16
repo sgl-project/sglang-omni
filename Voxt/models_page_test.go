@@ -119,8 +119,9 @@ func TestModelsPageDraftAlone(t *testing.T) {
 	if !has(tt, "Faster transcription") || !has(tt, "262.5 MB on disk") || has(tt, "712.8 MB on disk") {
 		t.Fatalf("the draft alone: %q", tt.Texts())
 	}
-	click(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
-	click(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft")
+	scrollSettingsToText(tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft")
 	if has(tt, "Faster transcription") || a.models.Installed(models.ASRFastDraft) {
 		t.Errorf("after the delete: %q", tt.Texts())
 	}
