@@ -1,5 +1,6 @@
 """Exercise reference preprocessing, native editing and sequential outputs."""
 
+import pickle
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -224,11 +225,13 @@ def test_edit_api_rejects_invalid_image_tokens_before_dispatch(
     dispatch.assert_not_called()
 
 
-def test_t2i_does_not_validate_unused_edit_guidance() -> None:
+def test_t2i_skips_unused_edit_guidance() -> None:
+    """T2I requests ignore edit-only guidance and keep it out of their pickles."""
     sampling = SenseNovaU1SamplingParams(prompt="a landscape", img_cfg_scale=-1)
     request = Req(sampling_params=sampling)
     sampling.apply_request_extra(request)
     assert request.image_path is None
+    assert b"img_cfg_scale" not in pickle.dumps(request)
 
 
 @pytest.mark.parametrize(

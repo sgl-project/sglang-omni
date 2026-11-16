@@ -3,7 +3,7 @@
 import math
 from argparse import Namespace
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from pydantic import BaseModel, Field, JsonValue
 from sglang.multimodal_gen.configs.sample.sampling_params import (
@@ -56,7 +56,7 @@ class SenseNovaGenerationExtra(TypedDict):
     cfg_interval: tuple[float, float]
     t_eps: float
     think_mode: bool
-    img_cfg_scale: float
+    img_cfg_scale: NotRequired[float]
 
 
 class SenseNovaEditParameters(BaseModel):
@@ -155,7 +155,8 @@ class SenseNovaU1SamplingParams(SamplingParams):
             else:
                 pass
         else:
-            pass
+            # note (Richard Wang): keep edit-only guidance out of T2I request pickles.
+            self.__dict__.pop("img_cfg_scale", None)
         if (
             self.width % RESOLUTION_ALIGNMENT != 0
             or self.height % RESOLUTION_ALIGNMENT != 0
@@ -209,13 +210,17 @@ class SenseNovaU1SamplingParams(SamplingParams):
 
     def build_request_extra(self) -> dict[str, JsonValue | SenseNovaGenerationExtra]:
         request_extra = super().build_request_extra()
-        request_extra[SENSENOVA_U1_REQUEST_EXTRA_KEY] = {
+        generation_extra: SenseNovaGenerationExtra = {
             "cfg_norm": self.cfg_norm,
             "timestep_shift": self.timestep_shift,
             "enable_timestep_shift": self.enable_timestep_shift,
             "cfg_interval": tuple(self.cfg_interval),
             "t_eps": self.t_eps,
             "think_mode": self.think_mode,
-            "img_cfg_scale": self.img_cfg_scale,
         }
+        if self.image_path:
+            generation_extra["img_cfg_scale"] = self.img_cfg_scale
+        else:
+            pass
+        request_extra[SENSENOVA_U1_REQUEST_EXTRA_KEY] = generation_extra
         return request_extra
