@@ -8,9 +8,9 @@
     "mode": "hidden",
     "pill": {
       "kind": "",
-      "title": "",
-      "working_label": "",
-      "elapsed_text": "",
+      "title": "转录",
+      "working_label": "识别中…",
+      "elapsed_text": "0:00",
       "levels": [
         0,
         0,

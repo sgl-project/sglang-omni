@@ -8,9 +8,9 @@
     "mode": "hidden",
     "pill": {
       "kind": "",
-      "title": "",
-      "working_label": "",
-      "elapsed_text": "",
+      "title": "Transcribe",
+      "working_label": "Recognising…",
+      "elapsed_text": "0:00",
       "levels": [
         0,
         0,

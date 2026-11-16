@@ -86,7 +86,7 @@ VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -count=1 -run '^TestMeetingDem
 检查 fixture 切换和控件到 action 的接线：
 
 ```sh
-go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|SessionDemo|SessionOverlayDemoMatchesProduction)$' .
+go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|SessionDemo.*|SessionOverlayDemoMatchesProduction)$' .
 go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History|Session)(Demo|OverlayDemoMatchesProduction)' .
 ```
 

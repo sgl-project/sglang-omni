@@ -34,7 +34,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // The test binary is also the fake helper (helpertest) and the fake
@@ -393,6 +395,33 @@ func (f *fakeTimers) advance(d time.Duration) {
 // guessWidth is how wide the overlay's texts are in tests that build no
 // overlay view (measureHook is guessText).
 func guessWidth(k ovSized) float32 { w, _ := guessText(k); return w }
+
+func (a *app) ovTextHeight(key ovSized) (float32, bool) {
+	measured, ok := a.ovText(key)
+	return measured.h, ok
+}
+
+func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
+	pill := sessionPillViewState{Title: uitext.KindTitle(snapshot.Kind), Starting: snapshot.Waiting != session.WaitNone}
+	scene := float32(0)
+	if name := uitext.SceneShort(snapshot); name != "" {
+		scene = float32(textWidth(name, float64(layout.SceneSize)))
+	}
+	row, _ := recordingPillRow(&pill, true, showTime, scene, func(key ovSized) (float32, bool) {
+		return float32(textWidth(key.text, float64(key.size))), true
+	})
+	return row + 2*layout.PillPadX
+}
+
+func (a *app) cardBodyHeight(card *sessionCardViewState) (int, bool) {
+	body, streamHeight, exact := sessionOverlayCardBodyHeight(card, a.ovTextHeight, a.cardBodyMax(card), a.ov.stream.h)
+	a.ov.stream.h = streamHeight
+	return body, exact
+}
+
+func (a *app) cardBodyMax(card *sessionCardViewState) int {
+	return sessionOverlayCardBodyMax(card, a.ov.area.Height, a.prefs.Overlay.Margin)
+}
 
 func (a *app) cachedCard() sessionCardViewState {
 	a.refreshSessionOverlay(time.Now())

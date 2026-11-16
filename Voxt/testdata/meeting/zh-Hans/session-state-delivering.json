@@ -9,7 +9,7 @@
     "pill": {
       "kind": "",
       "title": "转录",
-      "working_label": "识别中…",
+      "working_label": "插入中…",
       "elapsed_text": "0:00",
       "levels": [
         0,

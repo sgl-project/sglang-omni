@@ -383,7 +383,7 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 	if a.sess.Problem != nil {
 		next.ProblemCode = a.sess.Problem.Code
 	}
-	if input.Mode == ovRecording || input.Mode == ovWorking {
+	if input.Mode == ovRecording || input.Mode == ovWorking || input.Mode == ovHidden {
 		key := sessionPillKeyFor(input, locale, now)
 		if !projection.pillReady || key != projection.pillKey {
 			next.Pill = buildSessionPillViewState(projection.translator, input, now)
