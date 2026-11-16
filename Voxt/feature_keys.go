@@ -333,33 +333,9 @@ func (a *app) chooseKeys(feature string, i int, r *keyRow, byLabel map[string]st
 	})
 }
 
-// customKeys is the field for typed keys: they are saved (in canonical
-// spelling) on Return or when the field loses the focus, if they parse;
-// until then it says why not. Not on every key: on the way to
-// "Control+Option+K" the field says "Control", a shortcut of its own.
-func (a *app) customKeys(c *ui.Context, r *keyRow, label string, save func(keys string)) {
-	t := c.Theme()
-	in := ui.TextInput(c.Key("custom"), &r.text).Placeholder("Control+Option+Space").Label(label).Font("monospace").MaxWidth(px(t, 360))
-	if in.Changed() {
-		r.edited = true
-	}
-	ch, err := hotkey.Parse(r.text)
-	if r.edited && err == nil && (in.Submitted() || !in.Focused()) {
-		r.edited = false
-		r.text = ch.String()
-		save(r.text)
-	}
-	switch {
-	case err != nil:
-		warnLine(c, uitext.ParseErrorText(err))
-	case r.edited:
-		caption(c, i18n.T("Press Return to use %s.", uitext.HotkeyText(r.text)))
-		return
-	default:
-		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
-	}
-	// Also under an error: Mouse1 is refused, mouse buttons are not.
-	caption(c, i18n.T("Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."))
+func (a *app) keysField(c *ui.Context, r *keyRow, label string, save func(keys string)) {
+	state := keyRecorderViewState{HelperRecordsKeys: a.helperRecordsKeys(), DisplayedKeys: uitext.HotkeyText(r.text), Typed: a.customShortcutKeysState(r.text)}
+	keysField(c, r, label, save, state, a)
 }
 
 // problemLines are a binding's problems, in the warning colour.

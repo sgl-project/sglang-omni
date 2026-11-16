@@ -15,7 +15,7 @@ import (
 
 const (
 	mygoPath          = "github.com/egoist/mygo"
-	viewAllowlistSize = 67
+	viewAllowlistSize = 66
 )
 
 type rootFile struct {

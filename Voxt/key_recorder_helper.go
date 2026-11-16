@@ -6,6 +6,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // helperRecordsKeys reports whether the helper should capture chords.
@@ -13,9 +14,13 @@ func (a *app) helperRecordsKeys() bool {
 	return a.hstatus.Has(proto.MethodHotkeyRecord) && a.hotkeys.Accessibility
 }
 
-func (a *app) beginHotkeyRecord(r *keyRow, save func(keys string)) {
+func (a *app) markShortcutRecorderFocused() {
+	a.keysHeard = true
+}
+
+func (a *app) beginHotkeyRecord(r *keyRow, save func(keys string)) string {
 	if !a.helperRecordsKeys() {
-		return
+		return uitext.HotkeyText(r.text)
 	}
 	a.cancelHotkeyRecord()
 	a.recorderActive = true
@@ -46,6 +51,36 @@ func (a *app) beginHotkeyRecord(r *keyRow, save func(keys string)) {
 		r.text, r.edited = keys, false
 		save(keys)
 	})
+	return uitext.HotkeyText(r.text)
+}
+
+func (a *app) saveShortcutRecorderKeys(keys string, r *keyRow, save func(keys string)) string {
+	r.text, r.edited = keys, false
+	save(keys)
+	return uitext.HotkeyText(keys)
+}
+
+func (a *app) customShortcutKeysState(keys string) customKeysViewState {
+	chord, err := hotkey.Parse(keys)
+	if err != nil {
+		return customKeysViewState{ErrorText: uitext.ParseErrorText(err)}
+	}
+	return customKeysViewState{Valid: true, CanonicalKeys: chord.String(), FormattedKeys: uitext.HotkeyText(keys)}
+}
+
+func (a *app) typeShortcutKeys(r *keyRow) customKeysViewState {
+	r.edited = true
+	return a.customShortcutKeysState(r.text)
+}
+
+func (a *app) saveTypedShortcutKeys(r *keyRow, save func(keys string)) customKeysViewState {
+	state := a.customShortcutKeysState(r.text)
+	if state.Valid {
+		r.edited = false
+		r.text = state.CanonicalKeys
+		save(r.text)
+	}
+	return state
 }
 
 func (a *app) cancelHotkeyRecord() {

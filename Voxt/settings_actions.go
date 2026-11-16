@@ -47,6 +47,16 @@ type settingsShortcutsActions interface {
 	setStrictShortcuts(on bool)
 }
 
+type keyRecorderActions interface {
+	beginHotkeyRecord(row *keyRow, save func(keys string)) string
+	saveShortcutRecorderKeys(keys string, row *keyRow, save func(keys string)) string
+	typeShortcutKeys(row *keyRow) customKeysViewState
+	saveTypedShortcutKeys(row *keyRow, save func(keys string)) customKeysViewState
+	cancelHotkeyRecord()
+	openShortcutPermissions()
+	markShortcutRecorderFocused()
+}
+
 type shortcutPromptActions interface {
 	answerShortcutPrompt()
 	openShortcutPromptLink(context *shortcutPromptUIContext, link string)

@@ -24,7 +24,6 @@ feature_prompts.go  # feature
 floating.go  # overlay
 home_page.go  # home
 home_ready.go  # home
-key_recorder.go  # settings
 legacy_report.go  # legacy: exempt one-time 1.x import reporting
 llm_debug.go  # remote
 llm_wait.go  # remote
