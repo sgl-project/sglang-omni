@@ -41,6 +41,7 @@ type meetingDemoHost struct {
 	remoteWaitUI          llmWaitLocalUI
 	remoteDialogUI        providerDialogLocalUI
 	remoteDebugUI         llmDebugUI
+	modelsUI              modelsLocalUI
 	overlayLook           settings.Overlay
 	sessionState          sessionOverlayViewState
 	sessionSeed           sessionOverlayFixtureUI
@@ -146,7 +147,8 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "remote" && fixture.Remote != nil ||
 		fixture.Kind == "remote-cards" && fixture.RemoteCards != nil ||
 		fixture.Kind == "remote-dialog" && fixture.RemoteDialog != nil ||
-		fixture.Kind == "remote-debug" && fixture.RemoteDebug != nil
+		fixture.Kind == "remote-debug" && fixture.RemoteDebug != nil ||
+		fixture.Kind == "models" && fixture.Models != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -277,6 +279,26 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	host.remoteDebugUI = llmDebugUI{}
 	if state := fixture.state.RemoteDebug; state != nil {
 		host.remoteDebugUI = llmDebugLocalState(*state)
+	}
+	host.modelsUI = modelsLocalUI{}
+	if state := fixture.state.Models; state != nil {
+		host.modelsUI.modelAdvanced = state.Advanced.Open
+		host.modelsUI.modelKeepSel = state.Advanced.Selection
+		host.modelsUI.modelKeepFor = state.Advanced.Value + "\x00" + state.Advanced.Locale
+		host.modelsUI.modelHiddenOpen = state.HiddenOpen
+		host.modelsUI.netOpen = state.Network.Open
+		host.modelsUI.netForm = networkForm{
+			proxyMode: state.Network.ProxyMode, proxyErr: state.Network.ProxyError,
+			source: state.Network.Source, sourceURL: state.Network.SourceURL,
+		}
+		host.modelsUI.netWas = host.modelsUI.netForm
+		host.modelsUI.speechContext = speechContextState{text: state.SpeechContext, seen: state.SpeechContext}
+		if state.Delete.Plain != nil {
+			host.modelsUI.modelAsk = state.Delete.Plain.ID
+		}
+		if state.Delete.Shared != nil {
+			host.modelsUI.modelShared = &sharedDelete{id: state.Delete.Shared.ID, forAll: state.Delete.Shared.ForAll}
+		}
 	}
 }
 
@@ -503,7 +525,6 @@ func (host *meetingDemoHost) onboardingTryLanguage() { host.record("onboardingTr
 func (host *meetingDemoHost) onboardingDownloadAndContinue() {
 	host.record("onboardingDownloadAndContinue")
 }
-func (host *meetingDemoHost) downloadModel(id string) { host.record("downloadModel %s", id) }
 func (host *meetingDemoHost) obUse(ids ...string) {
 	host.record("obUse %s", strings.Join(ids, ","))
 }

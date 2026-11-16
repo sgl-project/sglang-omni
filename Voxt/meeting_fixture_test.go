@@ -194,6 +194,16 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 		localizeRemoteDebugInput(&input, translator)
 		state := buildLLMDebugViewState(translator, input)
 		fixture.RemoteDebug = &state
+	case "models":
+		if scenario.modelsProblem != "" {
+			_, code := networkProxyValueFor(scenario.models.NetworkForm)
+			if code != scenario.modelsProblem {
+				t.Fatalf("%s: proxy validation returned %q, want %q", scenario.name, code, scenario.modelsProblem)
+			}
+			scenario.models.NetworkForm.proxyErr = networkProxyProblemTextFor(translator, code)
+		}
+		state := buildModelsViewState(translator, scenario.models)
+		fixture.Models = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

@@ -416,6 +416,32 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return debug.Result.Answer
 		}
 		return debug.Form.Prompt
+	case "models":
+		models := state.Models
+		if models.Network.Open {
+			return i18n.T("Network")
+		}
+		if models.Delete.Plain != nil {
+			return models.Delete.Plain.Prompt
+		}
+		if models.Delete.Shared != nil {
+			if models.Delete.Shared.ForAll {
+				return models.Delete.Shared.AllPrompt
+			}
+			return models.Delete.Shared.RemovePrompt
+		}
+		for _, card := range append(append(append([]modelCardViewState{}, models.ASR...), models.LLM...), models.Hidden...) {
+			for _, row := range card.Rows {
+				if row.Error != nil {
+					return row.Error.Message
+				}
+				if row.Progress != nil {
+					return row.Progress.Label
+				}
+				return row.Name
+			}
+		}
+		return i18n.T("Speech models")
 	default:
 		return ""
 	}
@@ -449,6 +475,9 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.remoteWaitUI.llmWaitSel = "stale"
 	host.remoteDialogUI.endpoint = "stale"
 	host.remoteDebugUI.prompt = "stale"
+	host.modelsUI.netOpen = true
+	host.modelsUI.modelAdvanced = true
+	host.modelsUI.modelShared = &sharedDelete{id: "stale"}
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -466,7 +495,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 		host.historyUI.delAsk || host.historyUI.delID != "" ||
 		host.appEnhancementUI.appsQuery != "" || host.appEnhancementUI.sel == "stale" ||
 		host.dictionaryUI.query != "" || host.dictionaryUI.editOpen || host.dictionaryUI.scanOpen || host.dictionaryUI.notes.text != "" || host.notesUI.keys.custom ||
-		host.remoteWaitUI.llmWaitSel == "stale" || host.remoteDialogUI.endpoint == "stale" || host.remoteDebugUI.prompt == "stale" {
+		host.remoteWaitUI.llmWaitSel == "stale" || host.remoteDialogUI.endpoint == "stale" || host.remoteDebugUI.prompt == "stale" ||
+		host.modelsUI.netOpen || host.modelsUI.modelAdvanced || host.modelsUI.modelShared != nil {
 		t.Fatal("fixture switch kept local UI state")
 	}
 	if state := host.current().state.Onboarding; state != nil && host.onboardingUI.open != state.Open {

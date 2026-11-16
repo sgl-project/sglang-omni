@@ -40,6 +40,8 @@ type meetingFixtureScenario struct {
 	remoteCards                remoteCardsStateInput
 	remoteDialog               *remoteDialogStateInput
 	remoteDebug                llmDebugStateInput
+	models                     modelsViewStateInput
+	modelsProblem              string
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
@@ -161,6 +163,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 
 	scenarios = append(scenarios, dictionaryFixtureScenarios()...)
 	scenarios = append(scenarios, remoteFixtureScenarios()...)
+	scenarios = append(scenarios, modelsFixtureScenarios()...)
 	return scenarios
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 )
 
 // pages builds the page the router shows.
@@ -82,7 +83,19 @@ func (a *app) page(c *ui.Context, p navPage) {
 		a.logsPage(c)
 		return
 	case modelsPath:
-		a.modelsPage(c) // models_page.go
+		model := a.modelsPageModel()
+		modelsPage(c, &model, a, &a.modelsLocalUI, modelsPageViews{
+			onboardingBackBar: func() { onboardingBackBar(c, a.onboardingBackViewState(modelsPath), a) },
+			remoteASRCards: func() {
+				remoteCards := a.remoteCardsModel(local.ASR)
+				remoteProviderCards(c, &remoteCards, a, a.pageWidth(c))
+			},
+			remoteDialog: func() {
+				if remoteDialog := a.remoteDialogModel(); remoteDialog != nil {
+					remoteProviderDialogView(c, remoteDialog, a, &a.provDlg.providerDialogLocalUI)
+				}
+			},
+		})
 		return
 	case remotePath:
 		model := a.remotePageModel()

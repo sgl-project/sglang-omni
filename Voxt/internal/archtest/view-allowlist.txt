@@ -14,12 +14,6 @@ feature_page.go  # feature
 feature_prompts.go  # feature
 key_recorder.go  # settings
 legacy_report.go  # legacy: exempt one-time 1.x import reporting
-models_cards.go  # models
-models_context.go  # models
-models_delete.go  # models
-models_keep.go  # models
-models_network.go  # models
-models_page.go  # models
 pages.go  # shell
 permissions.go  # settings
 settings_about.go  # settings

@@ -25,6 +25,7 @@ type meetingFixtureState struct {
 	RemoteCards           *remoteCardsViewState       `json:"remote_cards,omitempty"`
 	RemoteDialog          *remoteDialogViewState      `json:"remote_dialog,omitempty"`
 	RemoteDebug           *llmDebugViewState          `json:"remote_debug,omitempty"`
+	Models                *modelsViewState            `json:"models,omitempty"`
 }
 
 type sessionOverlayFixtureUI struct {

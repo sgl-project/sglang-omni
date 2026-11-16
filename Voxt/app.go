@@ -18,7 +18,7 @@ import (
 //	trayState         tray.go         the menu bar icon
 //	permissionsState  permissions.go  Settings → Permissions
 //	familyState       family.go       the ActNow family (internal/actnow): the other apps, shared settings
-//	modelsState       models_page.go  the Speech models page, the local models (internal/local)
+//	modelsState       models_controller.go  the Speech models page, the local models (internal/local)
 //	memoryState       models_memory.go  the loaded models' memory (the Speech models page)
 //	omniState         models_omni.go  the speech models' runtime (internal/omni)
 //	remoteState       remote_link.go  the remote language models, the Language models page
@@ -96,7 +96,7 @@ func newApp(lib *library, h *helperHost) *app {
 	a.openShell(lib)
 	a.openPermissions()
 	a.openFamily()          // family.go: before the models, whose library is the family's
-	a.openModels()          // models_page.go
+	a.openModels()          // models_controller.go
 	a.openAppEnhancement()  // appenhance.go
 	a.openAudio()           // settings_audio.go
 	a.openHistorySettings() // history_settings_ops.go: the recordings folder, the clean-up
