@@ -101,9 +101,8 @@ class MossTTSDelaySamplingCudaGraphRunner:
             capture_failed = True
             failure = "OOM" if runner.is_cuda_oom(exc) else "failure"
             logger.exception(
-                "MOSS-TTS Delay sampling CUDA graph initialization %s; "
-                "discarding partial graphs and using eager sampling",
-                failure,
+                f"MOSS-TTS Delay sampling graph initialization {failure} "
+                f"on {model.device}; discarding partial graphs"
             )
         # note (Zhang Yiyang): Clear outside the active exception scope so its
         # traceback cannot retain failed-capture tensors while empty_cache runs.
@@ -131,11 +130,10 @@ class MossTTSDelaySamplingCudaGraphRunner:
             free_bytes, _ = self.device_module.mem_get_info(self.model.device)
             if free_bytes < _MIN_CAPTURE_FREE_BYTES:
                 logger.warning(
-                    "MOSS-TTS Delay sampling CUDA graph capture stopped: free "
-                    "VRAM %.2f GiB is below %.2f GiB headroom; discarding "
-                    "partial graphs and using eager sampling",
-                    free_bytes / 1024**3,
-                    _MIN_CAPTURE_FREE_BYTES / 1024**3,
+                    f"MOSS-TTS Delay sampling graph capture stopped on {self.model.device}: "
+                    f"free device memory {free_bytes / 1024**3:.2f} GiB is below "
+                    f"{_MIN_CAPTURE_FREE_BYTES / 1024**3:.2f} GiB headroom; "
+                    "discarding partial graphs"
                 )
                 self.clear()
                 return
@@ -161,9 +159,8 @@ class MossTTSDelaySamplingCudaGraphRunner:
                 else:
                     pass
                 logger.exception(
-                    "Failed to capture MOSS-TTS Delay sampling CUDA graph "
-                    "backbone_bucket=%s; that bucket will use eager",
-                    bucket,
+                    f"Failed to capture MOSS-TTS Delay sampling graph "
+                    f"on {self.model.device} for backbone_bucket={bucket}"
                 )
 
     @staticmethod

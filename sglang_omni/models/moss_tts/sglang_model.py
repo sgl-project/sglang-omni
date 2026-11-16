@@ -61,6 +61,14 @@ else:
 
 logger = logging.getLogger(__name__)
 
+NPU_SAMPLING_GRAPH_CAPTURE_HINT = (
+    "Check the preceding capture traceback. For OOM or insufficient capture "
+    "headroom, free device memory or reduce stages.tts_engine.engine.cuda_graph_bs. "
+    "For other errors, check the runtime dependencies in "
+    "docs/other_platforms/installation_npu.md. If the error persists, report "
+    "the original traceback, runtime versions and batch sizes."
+)
+
 
 class ChannelLogitsList(list[torch.Tensor | None]):
     """Per-channel logits; ``fused_audio`` carries the [B, n_vq, vocab] fp32
@@ -70,10 +78,11 @@ class ChannelLogitsList(list[torch.Tensor | None]):
 
 
 class MossNPUAttention(Qwen3Attention):
-    """Use staged Q/K normalization and RoPE with the original parameters."""
+    """Preserve parameter identities and RoPE settings while using staged NPU attention."""
 
     def __init__(self, attention: Qwen3Attention) -> None:
         torch.nn.Module.__init__(self)
+        # note (micha): Reusing registered modules preserves checkpoint loading and rotary configuration; only the NPU preparation path changes.
         self.__dict__.update(
             (name, value.copy() if isinstance(value, (dict, set)) else value)
             for name, value in vars(attention).items()
@@ -847,7 +856,13 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             disable_padding=disable_padding,
         )
         if current_platform.is_npu() and set(runner.graphs) != set(buckets):
-            raise RuntimeError("MOSS-TTS NPU sampling graph capture is incomplete")
+            raise RuntimeError(
+                f"MOSS-TTS NPU sampling graph capture is incomplete on {self.device}: "
+                f"expected batch sizes={list(buckets)}, "
+                f"captured={sorted(runner.graphs)}, "
+                f"missing={sorted(set(buckets) - set(runner.graphs))}. "
+                f"{NPU_SAMPLING_GRAPH_CAPTURE_HINT}"
+            )
         else:
             pass
         if not runner.graphs:
@@ -867,7 +882,11 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         )
         if current_platform.is_npu() and set(mixed_runner.graphs) != set(buckets):
             raise RuntimeError(
-                "MOSS-TTS NPU mixed sampling graph capture is incomplete"
+                f"MOSS-TTS NPU mixed sampling graph capture is incomplete on {self.device}: "
+                f"expected batch sizes={list(buckets)}, "
+                f"captured={sorted(mixed_runner.graphs)}, "
+                f"missing={sorted(set(buckets) - set(mixed_runner.graphs))}. "
+                f"{NPU_SAMPLING_GRAPH_CAPTURE_HINT}"
             )
         else:
             pass

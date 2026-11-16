@@ -17,8 +17,9 @@ MOSS_HASH_SHIFT_CONSTANTS: dict[torch.device, tuple[torch.Tensor, ...]] = {}
 
 
 def moss_hash_shift_constants(device: torch.device) -> tuple[torch.Tensor, ...]:
-    """Keep distinct device operands alive across sampling graph replays."""
+    """Keep graph operands alive on the tensor's exact device, including its index."""
     if device not in MOSS_HASH_SHIFT_CONSTANTS:
+        # note (micha): Hash32 splits the 64-bit seed at 32, rotates 32-bit words by 15 (right 17) and 13 (right 19), and finalizes with shifts 16/13/16.
         MOSS_HASH_SHIFT_CONSTANTS[device] = torch.tensor(
             [32, 15, 17, 13, 19, 16], dtype=torch.int64, device=device
         ).unbind()

@@ -309,6 +309,7 @@ def test_npu_sampling_graph_setup_rejects_missing_buckets(
     missing_graph: Literal["audio", "mixed"],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Incomplete NPU capture must identify the missing batch and recovery steps."""
     monkeypatch.setattr(current_platform, "is_npu", lambda: True)
     graph_buckets = {1: object(), 2: object()}
     monkeypatch.setattr(
@@ -328,8 +329,14 @@ def test_npu_sampling_graph_setup_rejects_missing_buckets(
     )
     with pytest.raises(
         RuntimeError, match="NPU .*sampling graph capture is incomplete"
-    ):
+    ) as failure:
         MossTTSDelaySGLangModel.init_sampling_graphs(model, [1, 2])
+    message = str(failure.value)
+    assert f"on {model.device}" in message
+    assert "expected batch sizes=[1, 2], captured=[1], missing=[2]" in message
+    assert "preceding capture traceback" in message
+    assert "stages.tts_engine.engine.cuda_graph_bs" in message
+    assert "installation_npu.md" in message
 
 
 class CudaGraphModel:
