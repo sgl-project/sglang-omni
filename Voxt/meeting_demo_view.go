@@ -57,6 +57,10 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 						historyAccessSection(c, fixture.state.HistoryAccess, host, &host.historyAccessUI)
 					})
 				})
+			case "dictionary":
+				dictionaryPage(c, fixture.state.Dictionary, host, &host.dictionaryUI)
+			case "notes":
+				notesPage(c, fixture.state.Notes, host, &host.notesUI)
 			}
 		})
 	})

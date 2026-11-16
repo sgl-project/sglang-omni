@@ -35,6 +35,7 @@ func dictionaryFixtureScenarios() []meetingFixtureScenario {
 		input.Terms = input.Terms[1:2]
 	})
 	add("dictionary-off", func(input *dictionaryViewStateInput) { input.Settings.Dictionary.Enabled = false })
+	add("dictionary-scan-unavailable", func(input *dictionaryViewStateInput) { input.Installed = nil })
 	add("dictionary-suggestions-all", func(input *dictionaryViewStateInput) {
 		input.Suggestions = nil
 		for index := range 6 {

@@ -31,6 +31,8 @@ type meetingDemoHost struct {
 	historyUI         historyLocalUI
 	historySettingsUI historySettingsLocalUI
 	historyAccessUI   historyAccessLocalUI
+	dictionaryUI      dictionaryLocalUI
+	notesUI           notesLocalUI
 	overlayLook       settings.Overlay
 }
 
@@ -98,7 +100,9 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "start" && fixture.Start != nil ||
 		fixture.Kind == "history" && fixture.History != nil ||
 		fixture.Kind == "history-settings" && fixture.HistorySettings != nil ||
-		fixture.Kind == "history-access" && fixture.HistoryAccess != nil
+		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||
+		fixture.Kind == "dictionary" && fixture.Dictionary != nil ||
+		fixture.Kind == "notes" && fixture.Notes != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -146,6 +150,39 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	if state := fixture.state.HistoryAccess; state != nil {
 		host.historyAccessUI = historyAccessLocalUI{
 			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
+		}
+	}
+	host.dictionaryUI = dictionaryLocalUI{}
+	if state := fixture.state.Dictionary; state != nil {
+		host.dictionaryUI.query = state.Query
+		host.dictionaryUI.tab = state.Tab
+		host.dictionaryUI.scanOpen = state.ScanOpen
+		host.dictionaryUI.notes = speechContextState{text: state.NotesText, seen: state.NotesText}
+		host.dictionaryUI.notesQuery = state.NotesQuery
+		host.dictionaryUI.notesFind.cur = state.NotesFindCurrent
+		host.dictionaryUI.notesFeature = 0
+		for index, feature := range notesFeatures {
+			if feature == state.Notes.Feature {
+				host.dictionaryUI.notesFeature = index
+			}
+		}
+		host.dictionaryUI.editOpen = state.Edit.Open
+		host.dictionaryUI.edit = termEdit{
+			id: state.Edit.ID, term: state.Edit.Term, aliases: state.Edit.Aliases, note: state.Edit.Note,
+			enabled: state.Edit.Enabled, err: state.Edit.Error, saving: state.Edit.Saving,
+			original: state.Edit.Original, suggestion: state.Edit.Suggestion,
+		}
+		host.dictionaryUI.editWas = host.dictionaryUI.edit
+	}
+	host.notesUI = notesLocalUI{}
+	if state := fixture.state.Notes; state != nil {
+		shortcut := state.Shortcut
+		host.notesUI.keys = keyRow{
+			sel: shortcut.Selection, custom: shortcut.Custom, typing: shortcut.Typing, edited: shortcut.Edited,
+			text: shortcut.Text, recFocused: shortcut.Custom, recordDenied: shortcut.RecordDenied, unknown: shortcut.Unknown,
+		}
+		if host.notesUI.keys.sel == "" {
+			host.notesUI.keys.sel = shortcut.CurrentText
 		}
 	}
 }
