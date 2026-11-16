@@ -295,6 +295,11 @@ func (a *app) keyRowView(c *ui.Context, feature string, i int, h settings.Hotkey
 	})
 }
 
+// usedByView keeps the feature pages' recorder warning beside their controls.
+func (a *app) usedByView(c *ui.Context, keys string) {
+	usedByView(c, a.usedByLines(keys))
+}
+
 // recordedKeys are the keys a shortcut's controls show: the typed ones
 // while they parse, else saved.
 func recordedKeys(r keyRow, saved string) string {

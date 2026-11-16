@@ -40,8 +40,8 @@ type settingsForm struct {
 	settingsAppearanceLocalUI
 	settingsPrivacyLocalUI
 	settingsAudioLocalUI
-	strictShortcuts bool        // Features.StrictShortcuts
-	ovStyle         overlayForm // settings_overlay.go
+	settingsShortcutsLocalUI
+	ovStyle overlayForm // settings_overlay.go
 
 	// loginIs is whether macOS opens VoxtNew at login, as last read or
 	// set: the setting changes it only when they differ.
@@ -412,7 +412,9 @@ func (a *app) settingsSection(c *ui.Context, r *ui.Route) {
 		"overlay": func(c *ui.Context) {
 			overlaySettings(c, a.overlaySettingsModel(), a, &a.settingsForm.ovStyle)
 		},
-		"shortcuts": a.shortcutsSettings, // settings_shortcuts.go
+		"shortcuts": func(c *ui.Context) {
+			shortcutsSettings(c, a.shortcutsSettingsModel(), a, &a.settingsForm.settingsShortcutsLocalUI)
+		},
 		"appearance": func(c *ui.Context) {
 			appearanceSettings(c, a.appearanceSettingsModel(), a, &a.settingsForm.settingsAppearanceLocalUI)
 		},

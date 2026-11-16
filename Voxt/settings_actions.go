@@ -36,6 +36,23 @@ type settingsOverlayActions interface {
 	overlayEdited()
 }
 
+type shortcutPresetActions interface {
+	applyShortcutPreset(preset string)
+}
+
+type settingsShortcutsActions interface {
+	shortcutPresetActions
+	openShortcutPermissions()
+	openShortcutFeature(path string)
+	setStrictShortcuts(on bool)
+}
+
+type shortcutPromptActions interface {
+	answerShortcutPrompt()
+	openShortcutPromptLink(context *shortcutPromptUIContext, link string)
+	changeShortcutPrompt(path string)
+}
+
 type settingsAudioActions interface {
 	settingsSoundsActions
 	loadDevices()
