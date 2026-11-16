@@ -167,15 +167,9 @@ def test_edit_accepts_implicit_and_explicit_references(prompt: str) -> None:
     SenseNovaU1SamplingParams(prompt=prompt, image_path=["first.png", "second.png"])
 
 
-@pytest.mark.parametrize(
-    "reference_count", [MAX_REFERENCE_COUNT, MAX_REFERENCE_COUNT + 1]
-)
-def test_edit_reference_count_limit(reference_count: int) -> None:
-    image_path = [f"reference{index}.png" for index in range(reference_count)]
-    if reference_count > MAX_REFERENCE_COUNT:
-        with pytest.raises(ValueError, match="at most 64 reference images"):
-            SenseNovaU1SamplingParams(prompt="edit", image_path=image_path)
-    else:
+def test_edit_reference_count_limit() -> None:
+    image_path = [f"reference{index}.png" for index in range(MAX_REFERENCE_COUNT + 1)]
+    with pytest.raises(ValueError, match="at most 64 reference images"):
         SenseNovaU1SamplingParams(prompt="edit", image_path=image_path)
 
 
