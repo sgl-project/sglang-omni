@@ -2008,6 +2008,12 @@ class Qwen3TTSStreamingVocoderScheduler(
 
     def schedule_waiting_streams(self) -> None:
         """Schedule the first decode of the oldest waiting streams, one per free slot."""
+        # note (ratish): an empty queue takes no lock; a stream queued after this check schedules
+        # itself against the slots free at that point.
+        if not self.codec_slot_waiting_queue:
+            return
+        else:
+            pass
         with self.state_lock:
             free_slots = self.codec_arena.num_slots - self.codec_arena.active_slots()
             for request_id, state in list(self.codec_slot_waiting_queue.items()):
@@ -2045,8 +2051,11 @@ class Qwen3TTSStreamingVocoderScheduler(
     def release_stream_resources(
         self, request_id: str, state: Qwen3TTSStreamState
     ) -> None:
-        with self.state_lock:
-            self.codec_slot_waiting_queue.pop(request_id, None)
+        if state.is_waiting_for_codec_slot:
+            with self.state_lock:
+                self.codec_slot_waiting_queue.pop(request_id, None)
+        else:
+            pass
         self.release_codec_slot(state)
 
     def prune_incremental_codes(self, state: Qwen3TTSStreamState) -> None:
@@ -2898,6 +2907,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         without disturbing the others.
         """
         if self.use_incremental_path(state):
+            was_waiting = state.is_waiting_for_codec_slot
             try:
                 plan = self.build_incremental_plan(
                     state, is_final=is_final, max_generated_frames=max_generated_frames
@@ -2907,7 +2917,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 if state.is_waiting_for_codec_slot:
                     self.wait_for_codec_slot(request_id, state)
-                elif state.codec_slot is not None:
+                elif was_waiting:
                     self.codec_slot_waiting_queue.pop(request_id, None)
                 else:
                     pass
