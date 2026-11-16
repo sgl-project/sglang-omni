@@ -45,7 +45,10 @@ func TestHistoryDemoActionControls(t *testing.T) {
 		{name: "close detail", fixture: "en/history-detail-normal", steps: historySteps("Close"), want: []string{"closeHistoryDetail"}},
 		{name: "copy result", fixture: "en/history-detail-normal", steps: historySteps("Copy result"), want: []string{`copyHistoryText ` + quoted(copyResult)}},
 		{name: "copy raw", fixture: "en/history-detail-normal", steps: historySteps("Copy recognised text"), want: []string{`copyHistoryText ` + quoted(copyRaw)}},
+		{name: "copy instruction", fixture: "en/history-detail-rewrite-selection", steps: historySteps("Copy instruction"), want: []string{`copyHistoryText "Rewrite formally"`}},
+		{name: "copy selected text", fixture: "en/history-detail-translate-selection", steps: historySteps("Copy selected text"), want: []string{`copyHistoryText "selected source"`}},
 		{name: "detail reveal", fixture: "en/history-detail-normal", steps: historySteps("Show recording in Finder"), want: []string{"showHistoryRecording history-inserted"}},
+		{name: "transcribe again", fixture: "en/history-detail-transcribe-again", steps: historySteps("Transcribe again"), want: []string{"retryHistoryEntry history-inserted"}},
 		{name: "detail retry", fixture: "en/history-detail-retry", steps: historySteps("Retry"), want: []string{"retryHistoryEntry history-retry"}},
 		{name: "row retry", fixture: "en/history-page-normal", steps: historySteps("Retry"), want: []string{"retryHistoryEntry history-cancelled"}},
 		{name: "menu copy", fixture: "en/history-page-normal", steps: []historyDemoStep{{label: "Weekly plan", context: true}, {label: "Copy", menu: true}}, want: []string{`copyHistoryText ` + quoted(copyResult)}},
@@ -100,6 +103,11 @@ func TestHistoryDemoActionControls(t *testing.T) {
 			}
 		}},
 		{name: "access on", fixture: "en/history-access-ask", steps: historySteps("Turn on"), want: []string{"setHistoryAccess true"}},
+		{name: "access cancel", fixture: "en/history-access-ask", steps: historySteps("Cancel"), check: func(t *testing.T, host *meetingDemoHost) {
+			if host.historyAccessUI.ask {
+				t.Fatal("access confirmation stayed open")
+			}
+		}},
 		{name: "access off", fixture: "en/history-access-on", steps: historySteps("Allow reading"), want: []string{"setHistoryAccess false"}},
 		{name: "access selection", fixture: "en/history-access-on", steps: historySteps("Include selected text"), want: []string{"setHistorySelection false"}},
 		{name: "access log", fixture: "en/history-access-on", steps: historySteps("Read log…", "Done"), check: func(t *testing.T, host *meetingDemoHost) {
