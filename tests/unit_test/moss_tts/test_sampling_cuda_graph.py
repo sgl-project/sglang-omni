@@ -26,6 +26,7 @@ from sglang_omni.models.moss_tts.sampling_cuda_graph import (
     MossTTSDelaySamplingCudaGraphRunner,
 )
 from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
 
 INT64_MAX = torch.iinfo(torch.int64).max
@@ -407,9 +408,12 @@ def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.skipif(
+    not torch.cuda.is_available() and not current_platform.is_musa(),
+    reason="CUDA or MUSA is required",
+)
 def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
-    device = torch.device("cuda")
+    device = torch.device("musa" if current_platform.is_musa() else "cuda")
     model = CudaGraphModel(device)
     runner = MossTTSDelaySamplingCudaGraphRunner.capture(
         model=model,

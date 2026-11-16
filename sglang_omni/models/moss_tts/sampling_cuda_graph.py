@@ -375,6 +375,8 @@ class MossTTSDelaySamplingCudaGraphRunner:
 
         captured = self.graphs[key]
         captured.graph.replay()
+        # Replay may enqueue work on the capture stream, so consumers on the
+        # current stream must wait before reading graph outputs.
         torch.cuda.current_stream(control_logits.device).wait_stream(
             self.capture_stream
         )
