@@ -1,6 +1,6 @@
 // Voice page for a /v1/realtime session (native full duplex or turn based), proxied by playground/realtime/app.py.
 import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
-import { ReplyMediaGate } from "./reply_media_gate.js";
+import { ReplyMediaGate, playoutDelayFrom } from "./reply_media_gate.js";
 import { SMPLH_FLAME_MOTION, MotionView, smplhFlameMotionRenderer } from "./smplh_flame_motion.js";
 import { JPEG_FRAME, VideoFrameView, jpegFrameRenderer } from "./video_frame.js";
 import { Orb } from "./orb.js";
@@ -54,14 +54,18 @@ let micAnalyser = null;
 let playbackContext = null;
 let playbackNode = null;
 // A renderer of a format whose port follows replies calls mediaGate.shown(responseId) once it shows a reply's first frame; ?av_sync=free plays the audio unheld.
+// ?playout_delay_ms=N sets how long after its first chunk a renderer plays plugin media, the jitter buffer the gate's waits include.
+const playoutDelayMs = playoutDelayFrom(new URLSearchParams(location.search));
 const mediaGate = new ReplyMediaGate({
   policy: new URLSearchParams(location.search).get("av_sync") || "hold",
   now: () => performance.now(),
   post: (message, transfer) => playbackNode.port.postMessage(message, transfer),
+  playoutDelayMs,
 });
-const motionView = new MotionView(ui.motionView, { onReplyShown: (responseId) => mediaGate.shown(responseId) });
+// A turnless reply stream (a native full-duplex model) plays its audio and its pictures on one media clock, the gate's.
+const motionView = new MotionView(ui.motionView, { now: () => performance.now(), onReplyShown: (responseId) => mediaGate.shown(responseId), playoutDelayMs, clock: mediaGate });
 registerPluginRenderer(SMPLH_FLAME_MOTION, smplhFlameMotionRenderer(motionView));
-const videoView = new VideoFrameView(ui.avatarView, { onReplyShown: (responseId) => mediaGate.shown(responseId) });
+const videoView = new VideoFrameView(ui.avatarView, { now: () => performance.now(), onReplyShown: (responseId) => mediaGate.shown(responseId), playoutDelayMs, clock: mediaGate });
 registerPluginRenderer(JPEG_FRAME, jpegFrameRenderer(videoView));
 let playbackAnalyser = null;
 let playbackRate = 24000;
@@ -361,7 +365,7 @@ function sessionListeners() {
     granted: async () => {
       sessionStart = performance.now();
       await ensurePlayback(session.outputRate);
-      mediaGate.follow(session.pluginOutputPorts, drawsPluginFormat);
+      mediaGate.follow(session.pluginOutputPorts, drawsPluginFormat, { turnless: session.native, sampleRate: playbackContext.sampleRate });
       setButtons();
       // One tap starts everything: the microphone follows the grant.
       startMic().catch((error) => warn(`Microphone: ${error.message}`, true));
@@ -376,7 +380,11 @@ function sessionListeners() {
       if (mutedResponse) {
         if (session.turnBased) return;
         mutedQuietMs = rmsOf(samples) < QUIET_RMS ? mutedQuietMs + (samples.length * 1000) / playbackContext.sampleRate : 0;
-        if (mutedQuietMs < UNMUTE_QUIET_MS) return;
+        if (mutedQuietMs < UNMUTE_QUIET_MS) {
+          // The dropped audio keeps its place on the media clock the pictures share.
+          mediaGate.skip(samples.length);
+          return;
+        }
         mutedResponse = false;
       }
       mediaGate.audio(samples, responseId);

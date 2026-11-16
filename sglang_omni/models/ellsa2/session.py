@@ -3,16 +3,19 @@
 
 from __future__ import annotations
 
-import math
 import threading
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 import torch
-from scipy.signal import resample_poly
 
+from sglang_omni.models.dyadic_audio.timeline import (
+    DyadicAudio,
+    Resampler,
+    pcm16_samples,
+    timeline_sample,
+)
 from sglang_omni.models.ellsa2.batching import (
     GRAPH_BATCH_SIZES,
     BatchedBlocks,
@@ -28,6 +31,7 @@ from sglang_omni.models.ellsa2.generator import (
 )
 from sglang_omni.models.ellsa2.loading import MotionModels, load_motion_models
 from sglang_omni.models.ellsa2.motion import MotionDecoder
+from sglang_omni.models.personaplex.formats import PERSONAPLEX_REPLY
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -47,20 +51,8 @@ from sglang_omni.scheduling.session import (
 from sglang_omni.utils.device import resolve_concrete_device
 
 BLOCK_MS = BLOCK_SAMPLES * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ
-PCM16_SCALE = 32768
-# scipy's resample_poly filter reaches 10 * max(up, down) samples of the upsampled signal to each side.
-RESAMPLE_FILTER_HALF_WIDTH = 10
 # One Session keeps up on any GPU that runs the checkpoint faster than real time; a profile sets the capacity measured on its GPU.
 DEFAULT_MAX_OPEN_SESSIONS = 1
-
-
-@dataclass(kw_only=True)
-class Speech:
-    """Reply audio of one turn at the speech rate, playing from timeline sample `start` (16 kHz)."""
-
-    turn: int | None
-    start: int
-    audio: np.ndarray
 
 
 @dataclass(kw_only=True)
@@ -68,14 +60,10 @@ class MotionSession:
     decoder: MotionDecoder
     emit: ChunkEmitter | None = None
     fail: Callable[[BaseException], None] | None = None
-    # (timeline sample, float32 samples) of the user's audio not yet in a generated block.
-    partner: deque[tuple[int, np.ndarray]] = field(default_factory=deque)
-    partner_end: int = 0
-    is_input_ended: bool = False
+    # The user's audio not yet in a generated block, and the agent's audio as placed replies or as units.
+    audio: DyadicAudio = field(default_factory=DyadicAudio.at_rates)
     # The start of the next block to generate; None until the user's audio arrives.
     cursor: int | None = None
-    speech: list[Speech] = field(default_factory=list)
-    interrupted_turns: set[int | None] = field(default_factory=set)
     history: list[HistoryBlock] = field(default_factory=list)
     error: BaseException | None = None
     # The codes of the style this Session moves like; the stage's when None.
@@ -97,11 +85,13 @@ class BlockWork:
 class MotionHooks(SessionHooks):
     """Turns each Session's audio into motion blocks on one worker shared by the stage's Sessions.
 
-    The user's audio is ELLSA 2's partner stream and the reply audio its
-    target stream. A reply starts on a block boundary, so a client that
-    holds a reply's audio until the first motion chunk carrying its turn
-    plays both together; a block is ready once the user's audio covers it,
-    or, after the input ended, while it holds reply audio.
+    The user's audio is ELLSA 2's partner stream and the agent's audio its
+    target stream. A turn's reply starts on a block boundary, so a client
+    that holds a reply's audio until the first motion chunk carrying its
+    turn plays both together; a full-duplex speech node's units play at
+    their own stamps. A block is ready once the user's audio covers it and,
+    while they stream, the agent's units do; after the input ended, while
+    it holds the agent's audio.
     The worker generates one ready block per Session in turn; every block
     runs, in order, since each conditions on the codes before it. With
     kv_batch it takes the ready block of every Session at once (up to
@@ -115,6 +105,8 @@ class MotionHooks(SessionHooks):
         models: MotionModels,
         speech_sample_rate_hz: int,
         *,
+        input_sample_rate_hz: int = SESSION_INPUT_SAMPLE_RATE_HZ,
+        reply_stream: bool = False,
         kv_batch: bool = False,
         max_batch: int = 1,
         cuda_graphs: bool = True,
@@ -133,12 +125,10 @@ class MotionHooks(SessionHooks):
             if kv_batch
             else None
         )
-        divisor = math.gcd(SESSION_INPUT_SAMPLE_RATE_HZ, speech_sample_rate_hz)
-        self.resample_up = SESSION_INPUT_SAMPLE_RATE_HZ // divisor
-        self.resample_down = speech_sample_rate_hz // divisor
-        self.resample_context = RESAMPLE_FILTER_HALF_WIDTH * max(
-            self.resample_up, self.resample_down
-        )
+        self.speech_sample_rate_hz = speech_sample_rate_hz
+        self.input_sample_rate_hz = input_sample_rate_hz
+        self.reply_stream = reply_stream
+        self.speech_resampler = Resampler(speech_sample_rate_hz)
         self.sessions: dict[SessionIdentity, MotionSession] = {}
         self.lock = threading.Lock()
         self.wake = threading.Condition(self.lock)
@@ -172,7 +162,14 @@ class MotionHooks(SessionHooks):
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         decoder = self.models.new_decoder()
         with self.lock:
-            self.sessions[session_identity] = MotionSession(decoder=decoder)
+            self.sessions[session_identity] = MotionSession(
+                decoder=decoder,
+                audio=DyadicAudio.at_rates(
+                    user_rate_hz=self.input_sample_rate_hz,
+                    speech_rate_hz=self.speech_sample_rate_hz,
+                    reply_stream=self.reply_stream,
+                ),
+            )
             self.start_worker(warm_up=False)
 
     def attach_output_stream(
@@ -196,8 +193,7 @@ class MotionHooks(SessionHooks):
         with self.lock:
             session = self.sessions[session_identity]
             return ResourceUsage(
-                bytes=sum(samples.nbytes for _, samples in session.partner)
-                + sum(speech.audio.nbytes for speech in session.speech)
+                bytes=session.audio.nbytes
                 + sum(
                     block.target_audio.nbytes + block.partner_audio.nbytes
                     for block in session.history
@@ -213,11 +209,15 @@ class MotionHooks(SessionHooks):
                 self.append_partner(session, chunk, chunk.payload)
             elif chunk.format == PCM_F32 and isinstance(chunk.payload, bytes):
                 self.append_speech(session, chunk.turn, chunk.payload)
+            elif chunk.format == PERSONAPLEX_REPLY and isinstance(chunk.payload, dict):
+                session.audio.units.append(
+                    chunk.t_start_ms, pcm16_samples(chunk.payload["pcm"]), eos=chunk.eos
+                )
             elif chunk.format == SESSION_CONTROL:
                 pass
             else:
                 raise ValueError(
-                    "the ELLSA 2 motion node takes the user's pcm16 audio, the agent's pcm_f32le reply audio and session controls"
+                    "the ELLSA 2 motion node takes the user's pcm16 audio, the agent's pcm_f32le reply audio or personaplex_reply units, and session controls"
                 )
             self.wake.notify_all()
         payload.data = {"accepted": True}
@@ -226,19 +226,11 @@ class MotionHooks(SessionHooks):
     def append_partner(
         self, session: MotionSession, chunk: TimedChunk, pcm: bytes
     ) -> None:
-        start = round(chunk.t_start_ms * SESSION_INPUT_SAMPLE_RATE_HZ / 1000)
-        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / PCM16_SCALE
-        if samples.size:
-            session.partner.append((start, samples))
-        else:
-            pass
-        session.partner_end = max(session.partner_end, start + samples.size)
+        session.audio.user.append(chunk.t_start_ms, pcm16_samples(pcm), eos=chunk.eos)
         if session.cursor is None:
-            session.cursor = start // BLOCK_SAMPLES * BLOCK_SAMPLES
-        else:
-            pass
-        if chunk.eos:
-            session.is_input_ended = True
+            session.cursor = (
+                timeline_sample(chunk.t_start_ms) // BLOCK_SAMPLES * BLOCK_SAMPLES
+            )
         else:
             pass
 
@@ -246,53 +238,33 @@ class MotionHooks(SessionHooks):
         self, session: MotionSession, turn: int | None, pcm: bytes
     ) -> None:
         """A reply's first audio starts on a block boundary: the block still collecting the user's audio, or the first boundary after the previous reply. Its later audio follows on, unless the next block to generate is already past the reply's end, where it then starts."""
-        samples = np.frombuffer(pcm, dtype="<f4")
-        last = session.speech[-1] if session.speech else None
-        cursor = 0 if session.cursor is None else session.cursor
-        if turn in session.interrupted_turns:
-            pass
-        elif last is not None and last.turn == turn and self.end(last) >= cursor:
-            last.audio = np.concatenate([last.audio, samples])
-        elif last is not None and last.turn == turn:
-            session.speech.append(Speech(turn=turn, start=cursor, audio=samples.copy()))
-        else:
-            previous_end = 0 if last is None else self.end(last)
-            start = max(cursor, -(-previous_end // BLOCK_SAMPLES) * BLOCK_SAMPLES)
-            session.speech.append(Speech(turn=turn, start=start, audio=samples.copy()))
-
-    def end(self, speech: Speech) -> int:
-        """The timeline sample after a reply's last sample."""
-        return speech.start + speech.audio.size * self.resample_up // self.resample_down
+        session.audio.replies.append_following(
+            turn,
+            np.frombuffer(pcm, dtype="<f4"),
+            cursor=0 if session.cursor is None else session.cursor,
+            boundary=BLOCK_SAMPLES,
+        )
 
     def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
         """An interrupt cuts the replies of its turn, or every reply without one, at the next block to generate, as far as a client that plays reply audio with its motion has played them; their later audio is dropped."""
         if control_type(event) == INTERRUPT:
             with self.lock:
                 session = self.sessions[session_identity]
-                cut = 0 if session.cursor is None else session.cursor
-                for speech in session.speech:
-                    if event.turn is None or speech.turn == event.turn:
-                        shown = max(cut - speech.start, 0)
-                        speech.audio = speech.audio[
-                            : shown * self.resample_down // self.resample_up
-                        ]
-                        session.interrupted_turns.add(speech.turn)
-                    else:
-                        pass
-                session.interrupted_turns.add(event.turn)
+                session.audio.replies.interrupt(
+                    event.turn, at=0 if session.cursor is None else session.cursor
+                )
                 self.wake.notify_all()
         else:
             pass
 
     def is_ready(self, session: MotionSession) -> bool:
+        audio = session.audio
         if session.cursor is None or session.error is not None:
             return False
-        elif session.partner_end >= session.cursor + BLOCK_SAMPLES:
-            return True
-        elif session.is_input_ended:
-            return session.cursor < max(
-                [session.partner_end] + [self.end(speech) for speech in session.speech]
-            )
+        elif audio.user.is_ended:
+            return session.cursor < max(audio.user.end, audio.speech_end())
+        elif audio.user.end >= session.cursor + BLOCK_SAMPLES:
+            return not audio.awaits_units(session.cursor + BLOCK_SAMPLES)
         else:
             return False
 
@@ -313,83 +285,25 @@ class MotionHooks(SessionHooks):
     ) -> BlockWork:
         """Called with the lock held."""
         start = session.cursor
+        audio = session.audio
         work = BlockWork(
             session_identity=session_identity,
             session=session,
             start=start,
-            turn=next(
-                (
-                    speech.turn
-                    for speech in session.speech
-                    if speech.start < start + BLOCK_SAMPLES
-                    and self.end(speech) > start
-                ),
-                None,
-            ),
-            target_audio=self.speech_window(session, start),
-            partner_audio=self.partner_window(session, start),
+            turn=audio.replies.turn_at(start, BLOCK_SAMPLES),
+            target_audio=audio.speech_window(start, BLOCK_SAMPLES),
+            partner_audio=audio.user.window(start, BLOCK_SAMPLES),
         )
         self.sessions[session_identity] = self.sessions.pop(session_identity)
         session.cursor = start + BLOCK_SAMPLES
-        while (
-            session.partner
-            and session.partner[0][0] + session.partner[0][1].size <= session.cursor
-        ):
-            session.partner.popleft()
-        session.speech = [
-            speech
-            for speech in session.speech
-            if self.end(speech) > session.cursor or speech is session.speech[-1]
-        ]
+        audio.user.drop_before(session.cursor)
+        audio.units.drop_before(session.cursor)
+        audio.replies.drop_ended(session.cursor)
         return work
-
-    def partner_window(self, session: MotionSession, start: int) -> np.ndarray:
-        """The user's audio of the block from start, silence where none arrived."""
-        window = np.zeros(BLOCK_SAMPLES, dtype=np.float32)
-        for begin, samples in session.partner:
-            low = max(begin, start)
-            high = min(begin + samples.size, start + BLOCK_SAMPLES)
-            if high > low:
-                window[low - start : high - start] = samples[low - begin : high - begin]
-            else:
-                pass
-        return window
-
-    def speech_window(self, session: MotionSession, start: int) -> np.ndarray:
-        """The reply audio of the block from start at 16 kHz, silence where none plays."""
-        window = np.zeros(BLOCK_SAMPLES, dtype=np.float32)
-        for speech in session.speech:
-            low = max(start, speech.start) - speech.start
-            high = min(start + BLOCK_SAMPLES, self.end(speech)) - speech.start
-            if high > low:
-                offset = speech.start + low - start
-                window[offset : offset + high - low] = self.resampled(
-                    speech.audio, low, high
-                )
-            else:
-                pass
-        return window
 
     def resampled(self, audio: np.ndarray, low: int, high: int) -> np.ndarray:
         """Samples [low, high) at 16 kHz of reply audio at the speech rate, with filter context on both sides, so windows join as one resampling of the whole reply would."""
-        if self.resample_up == self.resample_down:
-            return audio[low:high]
-        else:
-            first = (
-                max(low - self.resample_context, 0)
-                // self.resample_up
-                * self.resample_up
-            )
-        native = audio[
-            first
-            * self.resample_down
-            // self.resample_up : math.ceil(
-                (high + self.resample_context) * self.resample_down / self.resample_up
-            )
-        ]
-        return resample_poly(native, self.resample_up, self.resample_down)[
-            low - first : high - first
-        ].astype(np.float32)
+        return self.speech_resampler.window(audio, low, high)
 
     @torch.no_grad()
     def generate(
@@ -570,6 +484,8 @@ def create_scheduler(
     speech_sample_rate_hz: int,
     encoder_attn_implementation: str,
     cudnn_attention: bool = False,
+    input_sample_rate_hz: int = SESSION_INPUT_SAMPLE_RATE_HZ,
+    reply_stream: bool = False,
     kv_batch: bool = True,
     cuda_graphs: bool = True,
     max_open_sessions: int = DEFAULT_MAX_OPEN_SESSIONS,
@@ -588,6 +504,8 @@ def create_scheduler(
         MotionHooks(
             models,
             speech_sample_rate_hz,
+            input_sample_rate_hz=input_sample_rate_hz,
+            reply_stream=reply_stream,
             kv_batch=kv_batch,
             max_batch=max_open_sessions,
             cuda_graphs=cuda_graphs,

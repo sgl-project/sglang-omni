@@ -1,6 +1,6 @@
 // Voice page for a /v1/realtime session (native full duplex or turn based), proxied by playground/realtime/app.py.
 import { DuplexSession, drawsPluginFormat } from "./session.js";
-import { ReplyMediaGate } from "./reply_media_gate.js";
+import { ReplyMediaGate, playoutDelayFrom } from "./reply_media_gate.js";
 import { Camera } from "./camera.js";
 import { Orb } from "./orb.js";
 import { Settings } from "./settings.js";
@@ -52,10 +52,13 @@ let micAnalyser = null;
 let playbackContext = null;
 let playbackNode = null;
 // A renderer of a format whose port follows replies calls mediaGate.shown(responseId) once it shows a reply's first frame; ?av_sync=free plays the audio unheld.
+// ?playout_delay_ms=N sets how long after its first chunk a renderer plays plugin media, the jitter buffer the gate's waits include.
+const playoutDelayMs = playoutDelayFrom(new URLSearchParams(location.search));
 const mediaGate = new ReplyMediaGate({
   policy: new URLSearchParams(location.search).get("av_sync") || "hold",
   now: () => performance.now(),
   post: (message, transfer) => playbackNode.port.postMessage(message, transfer),
+  playoutDelayMs,
 });
 let playbackGeneration = 0;
 let playbackAnalyser = null;
@@ -392,7 +395,7 @@ function sessionListeners(activeSession) {
       await ensurePlayback(activeSession.outputRate);
       if (session !== activeSession || !isOpen()) return;
       configurePlayback(activeSession.unitMs, activeSession.turnBased);
-      mediaGate.follow(activeSession.pluginOutputPorts, drawsPluginFormat);
+      mediaGate.follow(activeSession.pluginOutputPorts, drawsPluginFormat, { turnless: activeSession.native, sampleRate: playbackContext.sampleRate });
       const node = playbackNode;
       if (node !== boundPlaybackNode) {
         boundPlaybackNode = node;

@@ -17,6 +17,7 @@ from sglang_omni.models.personaplex.architecture import (
     SILENCE_CODES,
 )
 from sglang_omni.models.personaplex.components.mimi import MimiCodec, MimiEncodeState
+from sglang_omni.models.personaplex.formats import PERSONAPLEX_REPLY
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.timeline import no_codes
@@ -215,6 +216,7 @@ class Code2WavHooks(BatchedSessionHooks):
                     samples_to_ms(num_samples, SAMPLE_RATE),
                     append.chunk.seq,
                     {"text": unit.text, "pcm": unit_pcm},
+                    format=PERSONAPLEX_REPLY,
                     eos=append.chunk.eos,
                 )
             )
@@ -227,6 +229,7 @@ class Code2WavHooks(BatchedSessionHooks):
 
 
 __all__ = [
+    "PERSONAPLEX_REPLY",
     "Code2WavHooks",
     "MimiEncodeHooks",
     "PromptPreparer",

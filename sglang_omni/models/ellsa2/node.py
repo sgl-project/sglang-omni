@@ -40,7 +40,11 @@ class MotionFactoryArgs(FactoryArgs):
     style: str = DEFAULT_STYLE
     "The style clip's id: testset/style/<style>.npz and testset/style_flame/<style>_flame.npz."
     speech_sample_rate_hz: int | None = Field(default=None, gt=0)
-    "The rate of the speech node's pcm_f32le reply audio."
+    "The rate of the speech node's audio: pcm_f32le replies, or personaplex_reply units."
+    input_sample_rate_hz: int | None = Field(default=None, gt=0)
+    "The rate of the Session input's pcm16 audio, 16 kHz unless the speech node takes another, such as PersonaPlex's 24 kHz."
+    reply_stream: bool | None = None
+    "The speech node streams the agent's audio as units from the Session's start (PersonaPlex's personaplex_reply): every block waits until the units reach its end, the first ones included; unset, blocks wait for units only once the first unit arrived."
     encoder_attn_implementation: Literal["sdpa", "flash_attention_2"] = "sdpa"
     "The audio encoder's attention: flash_attention_2 (the flash-attn package) is what the reference runs; sdpa needs nothing extra and rounds differently."
     cudnn_attention: bool = False

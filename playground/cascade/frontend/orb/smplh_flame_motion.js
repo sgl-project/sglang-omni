@@ -4,6 +4,8 @@ import { base64ToBytes } from "./session.js";
 export const SMPLH_FLAME_MOTION = "smplh_flame_motion";
 export const FEATURES_PER_FRAME = 264;
 export const MOTION_FPS = 30;
+// The page passes the media gate's playout delay; this is its default (reply_media_gate.js DEFAULT_PLAYOUT_DELAY_MS).
+export const DEFAULT_PLAYOUT_DELAY_MS = 100;
 const NUM_JOINTS = 52;
 // The FLAME motion code follows the 156 pose values; its jaw rotation is entry 103.
 const JAW = 156 + 103;
@@ -93,29 +95,42 @@ export function jointPositions(frame) {
   return positions;
 }
 
-// Frames queue on the chunks' media clock, the Session input timeline the node stamps them on, and play from the first chunk's arrival; draw() paints the frame due now, seen from the front.
+// Frames queue on the chunks' media clock, the Session input timeline the node stamps them on, and play playoutDelayMs after the first chunk's arrival,
+// so a later chunk arriving up to that much later than the first one's pace still plays on time; a frame due before its chunk arrived is skipped,
+// and draw() paints the frame due now, seen from the front.
 // onReplyShown(responseId) fires once, when the first frame of a reply's motion is due: the page's media gate plays that reply's audio from then on, so voice and motion start together.
 // drop(responseId) ends an interrupted reply's motion where it was cut: its frames not yet due, and any that still arrive, are dropped, and the figure keeps its last pose until the next block is due.
+// clock.mediaOrigin(proposedMs), when given (the page's media gate), may move that origin or hold it back (null): a turnless reply stream plays its motion on the clock its audio plays on.
 export class MotionView {
-  constructor(canvas, { now = () => performance.now(), onReplyShown = () => {} } = {}) {
+  constructor(canvas, { now = () => performance.now(), onReplyShown = () => {}, playoutDelayMs = DEFAULT_PLAYOUT_DELAY_MS, clock = null } = {}) {
     this.canvas = canvas;
     this.now = now;
+    this.clock = clock;
+    this.playoutDelayMs = playoutDelayMs;
     this.onReplyShown = onReplyShown;
     this.reset();
   }
 
   push(event) {
     if (event.response_id && this.dropped.has(event.response_id)) return;
-    if (this.originMs === null) this.originMs = this.now() - event.t_start_ms;
+    if (this.proposedOriginMs === null) this.proposedOriginMs = this.now() + this.playoutDelayMs - event.t_start_ms;
     decodeFrames(event.payload_b64).forEach((frame, index) => {
-      this.queue.push({ atMs: this.originMs + event.t_start_ms + (index * 1000) / MOTION_FPS, frame, responseId: event.response_id });
+      this.queue.push({ mediaMs: event.t_start_ms + (index * 1000) / MOTION_FPS, frame, responseId: event.response_id });
     });
   }
 
+  // The media clock's origin, null while the clock holds it back.
+  origin() {
+    if (this.originMs === null && this.proposedOriginMs !== null) this.originMs = this.clock ? this.clock.mediaOrigin(this.proposedOriginMs) : this.proposedOriginMs;
+    return this.originMs;
+  }
+
   due() {
+    const origin = this.origin();
+    if (origin === null) return null;
     const now = this.now();
     let frame = null;
-    while (this.queue.length && this.queue[0].atMs <= now) {
+    while (this.queue.length && origin + this.queue[0].mediaMs <= now) {
       const entry = this.queue.shift();
       frame = entry.frame;
       if (entry.responseId && !this.shown.has(entry.responseId)) {
@@ -133,6 +148,7 @@ export class MotionView {
 
   reset() {
     this.queue = [];
+    this.proposedOriginMs = null;
     this.originMs = null;
     this.shown = new Set();
     this.dropped = new Set();

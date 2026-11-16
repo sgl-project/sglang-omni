@@ -118,6 +118,11 @@ export class DuplexSession {
     return Boolean(this.granted) && this.granted.interaction === "turn_based";
   }
 
+  // A native full-duplex model: one reply for the whole session, with no turns.
+  get native() {
+    return Boolean(this.granted) && this.granted.interaction === "native";
+  }
+
   // Whether the server stops its open reply on response.cancel; otherwise a page can only mute its playback.
   get cancellable() {
     return Boolean(this.granted) && this.granted.supports_cancel === true;

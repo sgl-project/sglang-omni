@@ -6,15 +6,15 @@ from __future__ import annotations
 import math
 import threading
 import time
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
-from scipy.signal import resample_poly
 
 from sglang_omni.models.avtr.formats import JPEG_FRAME, VIDEO, VIDEO_FPS
+from sglang_omni.models.dyadic_audio.timeline import DyadicAudio, pcm16_samples
+from sglang_omni.models.personaplex.formats import PERSONAPLEX_REPLY
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -39,7 +39,6 @@ CHUNK_SAMPLES = CHUNK_FRAMES * FRAME_SAMPLES
 WINDOW_SAMPLES = (
     CHUNK_FRAMES + LOOKAHEAD_FRAMES
 ) * FRAME_SAMPLES + LOOKAHEAD_EXTRA_SAMPLES
-PCM16_SCALE = 32768
 # How often a worker that failed asks its renderer whether it serves again.
 RECOVERY_PROBE_S = 1.0
 
@@ -65,16 +64,6 @@ class AvatarRenderer(Protocol):
 
 
 @dataclass(kw_only=True)
-class Reply:
-    """The agent's audio of one turn at the speech rate; start is the timeline sample its first sample plays at, once placed."""
-
-    turn: int | None
-    audio: np.ndarray
-    start: int | None = None
-    is_done: bool = False
-
-
-@dataclass(kw_only=True)
 class AvatarSession:
     emit: ChunkEmitter | None = None
     fail: Callable[[BaseException], None] | None = None
@@ -84,13 +73,10 @@ class AvatarSession:
     is_rendering: bool = False
     # Chunks in a row whose worker failed; as many as there are workers fail the Session.
     failed_chunks: int = 0
-    # (timeline sample, float32 samples) of the user's audio a later chunk still listens to.
-    partner: deque[tuple[int, np.ndarray]] = field(default_factory=deque)
-    partner_end: int = 0
-    is_input_ended: bool = False
+    # The user's audio a later chunk still listens to, and the agent's audio as replies or as units.
+    audio: DyadicAudio = field(default_factory=DyadicAudio.at_rates)
     # The start of the next chunk to render; None until the user's audio arrives.
     cursor: int | None = None
-    replies: list[Reply] = field(default_factory=list)
     error: BaseException | None = None
 
 
@@ -151,6 +137,8 @@ class AvatarHooks(SessionHooks):
         renderers: list[AvatarRenderer],
         speech_sample_rate_hz: int,
         *,
+        input_sample_rate_hz: int = SESSION_INPUT_SAMPLE_RATE_HZ,
+        reply_stream: bool = False,
         recovery_probe_s: float = RECOVERY_PROBE_S,
     ) -> None:
         if not renderers:
@@ -159,10 +147,9 @@ class AvatarHooks(SessionHooks):
             pass
         self.renderers = renderers
         self.speech_sample_rate_hz = speech_sample_rate_hz
+        self.input_sample_rate_hz = input_sample_rate_hz
+        self.reply_stream = reply_stream
         self.recovery_probe_s = recovery_probe_s
-        divisor = math.gcd(SESSION_INPUT_SAMPLE_RATE_HZ, speech_sample_rate_hz)
-        self.resample_up = SESSION_INPUT_SAMPLE_RATE_HZ // divisor
-        self.resample_down = speech_sample_rate_hz // divisor
         self.sessions: dict[SessionIdentity, AvatarSession] = {}
         self.lock = threading.Lock()
         self.wake = threading.Condition(self.lock)
@@ -170,7 +157,13 @@ class AvatarHooks(SessionHooks):
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         with self.lock:
-            self.sessions[session_identity] = AvatarSession()
+            self.sessions[session_identity] = AvatarSession(
+                audio=DyadicAudio.at_rates(
+                    user_rate_hz=self.input_sample_rate_hz,
+                    speech_rate_hz=self.speech_sample_rate_hz,
+                    reply_stream=self.reply_stream,
+                )
+            )
             for index, worker in enumerate(self.workers):
                 if worker is None:
                     self.workers[index] = threading.Thread(
@@ -203,11 +196,7 @@ class AvatarHooks(SessionHooks):
     def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
         with self.lock:
             session = self.sessions[session_identity]
-            return ResourceUsage(
-                bytes=len(session.state)
-                + sum(samples.nbytes for _, samples in session.partner)
-                + sum(reply.audio.nbytes for reply in session.replies)
-            )
+            return ResourceUsage(bytes=len(session.state) + session.audio.nbytes)
 
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
@@ -218,17 +207,17 @@ class AvatarHooks(SessionHooks):
                 self.append_partner(session, chunk, chunk.payload)
             elif chunk.format == PCM_F32 and isinstance(chunk.payload, bytes):
                 self.append_speech(session, chunk, chunk.payload)
+            elif chunk.format == PERSONAPLEX_REPLY and isinstance(chunk.payload, dict):
+                session.audio.units.append(
+                    chunk.t_start_ms, pcm16_samples(chunk.payload["pcm"]), eos=chunk.eos
+                )
             elif control_type(chunk) == TURN_DONE:
-                for reply in session.replies:
-                    if reply.turn == chunk.turn:
-                        reply.is_done = True
-                    else:
-                        pass
+                session.audio.replies.finish(chunk.turn)
             elif chunk.format == SESSION_CONTROL:
                 pass
             else:
                 raise ValueError(
-                    "the avatar takes the user's pcm16 audio, the agent's pcm_f32le speech and session controls"
+                    "the avatar takes the user's pcm16 audio, the agent's pcm_f32le speech or personaplex_reply units, and session controls"
                 )
             self.place(session)
             self.wake.notify_all()
@@ -238,108 +227,57 @@ class AvatarHooks(SessionHooks):
     def append_partner(
         self, session: AvatarSession, chunk: TimedChunk, pcm: bytes
     ) -> None:
-        start = round(chunk.t_start_ms * SESSION_INPUT_SAMPLE_RATE_HZ / 1000)
-        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / PCM16_SCALE
-        if samples.size:
-            session.partner.append((start, samples))
-        else:
-            pass
-        session.partner_end = max(session.partner_end, start + samples.size)
+        session.audio.user.append(chunk.t_start_ms, pcm16_samples(pcm), eos=chunk.eos)
         if session.cursor is None:
-            session.cursor = session.partner_end // CHUNK_SAMPLES * CHUNK_SAMPLES
-        else:
-            pass
-        if chunk.eos:
-            session.is_input_ended = True
+            session.cursor = session.audio.user.end // CHUNK_SAMPLES * CHUNK_SAMPLES
         else:
             pass
 
     def append_speech(
         self, session: AvatarSession, chunk: TimedChunk, pcm: bytes
     ) -> None:
-        samples = np.frombuffer(pcm, dtype="<f4")
-        reply = next(
-            (
-                reply
-                for reply in session.replies
-                if reply.turn == chunk.turn and not reply.is_done
-            ),
-            None,
-        )
-        if reply is None:
-            session.replies.append(Reply(turn=chunk.turn, audio=samples.copy()))
-        else:
-            reply.audio = np.concatenate([reply.audio, samples])
-
-    def timeline_samples(self, reply: Reply) -> int:
-        return (
-            reply.audio.size
-            * SESSION_INPUT_SAMPLE_RATE_HZ
-            // self.speech_sample_rate_hz
+        session.audio.replies.append_pending(
+            chunk.turn, np.frombuffer(pcm, dtype="<f4")
         )
 
     def place(self, session: AvatarSession) -> None:
-        """Start each unplaced reply, in turn order, at the first frame boundary at or after the next chunk to render and the previous reply's end."""
+        """Start each unplaced reply, in turn order, at the first frame boundary at or after the next chunk to render and the previous reply's end, once WINDOW_SAMPLES of it arrived or its turn ended."""
         if session.cursor is None:
             return
         else:
-            end = session.cursor
-        for reply in session.replies:
-            length = self.timeline_samples(reply)
-            if reply.start is not None:
-                end = max(end, reply.start + length)
-            elif length >= WINDOW_SAMPLES or reply.is_done:
-                reply.start = math.ceil(end / FRAME_SAMPLES) * FRAME_SAMPLES
-                end = reply.start + length
-            else:
-                break
+            session.audio.replies.place(
+                cursor=session.cursor,
+                boundary=FRAME_SAMPLES,
+                min_length=WINDOW_SAMPLES,
+            )
 
     def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
-        """An interrupt ends the replies of its turn, or every reply without one, at the next chunk to render."""
+        """An interrupt ends the replies of its turn, or every reply without one, at the next chunk to render, and drops their later audio."""
         if control_type(event) == INTERRUPT:
             with self.lock:
                 session = self.sessions[session_identity]
-                kept = []
-                for reply in session.replies:
-                    if event.turn is not None and reply.turn != event.turn:
-                        kept.append(reply)
-                    elif reply.start is None:
-                        pass
-                    else:
-                        shown = max(session.cursor - reply.start, 0)
-                        reply.audio = reply.audio[
-                            : shown
-                            * self.speech_sample_rate_hz
-                            // SESSION_INPUT_SAMPLE_RATE_HZ
-                        ]
-                        reply.is_done = True
-                        kept.append(reply)
-                session.replies = kept
+                session.audio.replies.interrupt(
+                    event.turn, at=0 if session.cursor is None else session.cursor
+                )
                 self.wake.notify_all()
         else:
             pass
 
     def ready_chunks(self, session: AvatarSession) -> range:
-        """The starts of the chunks that may render: their listening window has arrived or, once the input ended, they show placed speech."""
+        """The starts of the chunks that may render: their listening window has arrived and, while the agent's units stream, so has their speech window; once the input ended, they show placed speech."""
+        audio = session.audio
         if session.cursor is None or session.error is not None or session.is_rendering:
             return range(0)
-        else:
-            last = session.partner_end // CHUNK_SAMPLES * CHUNK_SAMPLES
-        if session.is_input_ended:
-            speech_end = max(
-                (
-                    reply.start + self.timeline_samples(reply)
-                    for reply in session.replies
-                    if reply.start is not None
-                ),
-                default=0,
-            )
+        elif audio.user.is_ended:
             last = max(
-                last,
-                math.ceil(speech_end / CHUNK_SAMPLES) * CHUNK_SAMPLES - CHUNK_SAMPLES,
+                audio.user.end // CHUNK_SAMPLES * CHUNK_SAMPLES,
+                math.ceil(audio.speech_end() / CHUNK_SAMPLES) * CHUNK_SAMPLES
+                - CHUNK_SAMPLES,
             )
         else:
-            pass
+            last = audio.user.end // CHUNK_SAMPLES * CHUNK_SAMPLES
+            while last >= session.cursor and audio.awaits_units(last + WINDOW_SAMPLES):
+                last -= CHUNK_SAMPLES
         return range(session.cursor, last + 1, CHUNK_SAMPLES)
 
     def next_work(self) -> RenderWork | None:
@@ -353,7 +291,7 @@ class AvatarHooks(SessionHooks):
             ready = self.ready_chunks(session)
             if not ready:
                 continue
-            elif session.is_input_ended:
+            elif session.audio.user.is_ended:
                 held, chunk_start = [], ready[0]
             else:
                 held, chunk_start = list(ready[:-1]), ready[-1]
@@ -363,88 +301,25 @@ class AvatarHooks(SessionHooks):
                 held={start: self.frame_turns(session, start) for start in held},
                 chunk_start=chunk_start,
                 turns=self.frame_turns(session, chunk_start),
-                speech=self.speech_window(session, chunk_start),
-                listen=self.listen_window(session, chunk_start),
+                speech=session.audio.speech_window(chunk_start, WINDOW_SAMPLES),
+                listen=session.audio.user.window(
+                    chunk_start - WINDOW_SAMPLES, WINDOW_SAMPLES
+                ),
             )
             self.sessions[session_identity] = self.sessions.pop(session_identity)
             session.is_rendering = True
             session.cursor = chunk_start + CHUNK_SAMPLES
-            while session.partner:
-                start, samples = session.partner[0]
-                if start + samples.size <= session.cursor - WINDOW_SAMPLES:
-                    session.partner.popleft()
-                else:
-                    break
-            session.replies = [
-                reply
-                for reply in session.replies
-                if not reply.is_done
-                or reply.start is None
-                or reply.start + self.timeline_samples(reply) > session.cursor
-            ]
+            session.audio.user.drop_before(session.cursor - WINDOW_SAMPLES)
+            session.audio.units.drop_before(session.cursor)
+            session.audio.replies.drop_finished(session.cursor)
             self.place(session)
             return work
         return None
 
-    def speech_window(self, session: AvatarSession, chunk_start: int) -> np.ndarray:
-        """The placed speech from the chunk start on, resampled to 16 kHz per window."""
-        window = np.zeros(WINDOW_SAMPLES, dtype=np.float32)
-        rate = self.speech_sample_rate_hz
-        for reply in session.replies:
-            if reply.start is None:
-                continue
-            else:
-                begin = max(chunk_start, reply.start) - reply.start
-                end = (
-                    min(
-                        chunk_start + WINDOW_SAMPLES,
-                        reply.start + self.timeline_samples(reply),
-                    )
-                    - reply.start
-                )
-            if end > begin:
-                native = reply.audio[
-                    begin
-                    * rate
-                    // SESSION_INPUT_SAMPLE_RATE_HZ : math.ceil(
-                        end * rate / SESSION_INPUT_SAMPLE_RATE_HZ
-                    )
-                ]
-                samples = resample_poly(native, self.resample_up, self.resample_down)
-                offset = reply.start + begin - chunk_start
-                window[offset : offset + end - begin] = samples[: end - begin]
-            else:
-                pass
-        return window
-
-    def listen_window(self, session: AvatarSession, chunk_start: int) -> np.ndarray:
-        """The user's audio of the WINDOW_SAMPLES before the chunk start, silence where none arrived."""
-        window = np.zeros(WINDOW_SAMPLES, dtype=np.float32)
-        window_start = chunk_start - WINDOW_SAMPLES
-        for start, samples in session.partner:
-            begin = max(start, window_start)
-            end = min(start + samples.size, chunk_start)
-            if end > begin:
-                window[begin - window_start : end - window_start] = samples[
-                    begin - start : end - start
-                ]
-            else:
-                pass
-        return window
-
     def frame_turns(self, session: AvatarSession, chunk_start: int) -> list[int | None]:
         """The turn of the reply audio each frame of the chunk shows, None for a listening frame."""
         return [
-            next(
-                (
-                    reply.turn
-                    for reply in session.replies
-                    if reply.start is not None
-                    and reply.start < frame_start + FRAME_SAMPLES
-                    and reply.start + self.timeline_samples(reply) > frame_start
-                ),
-                None,
-            )
+            session.audio.replies.turn_at(frame_start, FRAME_SAMPLES)
             for frame_start in range(
                 chunk_start, chunk_start + CHUNK_SAMPLES, FRAME_SAMPLES
             )

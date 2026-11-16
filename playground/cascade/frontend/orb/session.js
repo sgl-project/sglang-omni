@@ -173,6 +173,11 @@ export class DuplexSession {
     return Boolean(this.granted) && this.granted.interaction === "turn_based";
   }
 
+  // A native full-duplex model: one reply for the whole session, with no turns.
+  get native() {
+    return Boolean(this.granted) && this.granted.interaction === "native";
+  }
+
   // Input PCM rate the server granted; the microphone is resampled to it.
   get inputRate() {
     const format = this.granted && this.granted.input_audio_format;

@@ -214,7 +214,12 @@ def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
         for variant in (module.EntryClass, *vars(module).get("Variants", {}).values()):
             config_cls = resolve_variant(variant)
             # note (Haoling Pu): a config whose stages come only from a profile file has no defaults.
-            if config_cls.model_fields["stages"].is_required():
+            # A variant that needs more than a model path, such as PersonaPlex's session graph whose nodes a config file declares, has none either.
+            if any(
+                field.is_required()
+                for name, field in config_cls.model_fields.items()
+                if name != "model_path"
+            ):
                 pass
             else:
                 for model_path in model_paths:

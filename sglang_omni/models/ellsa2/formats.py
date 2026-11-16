@@ -14,6 +14,8 @@ FEATURES_PER_FRAME = POSE_FEATURES + FLAME_FEATURES
 MOTION_FPS = 30
 # A reply's first motion frame comes one 0.8 s block plus its compute (about 0.1 s) after the reply's audio at most; a client holding the audio for it stops waiting a little past that.
 REPLY_MEDIA_WAIT_MS = 1000
+# A block's first frame hears the reply audio up to the block's end, 0.8 s past it; a client aligning a turnless reply stream plays the audio that much (plus its playout delay) behind its arrival.
+REPLY_LOOKAHEAD_MS = 800
 # Each chunk is stamped with its block's start on the Session input timeline, listening blocks included, and carries the turn of the reply audio it shows.
 SMPLH_FLAME_MOTION_PORT = PluginPort(
     MOTION,
@@ -23,6 +25,7 @@ SMPLH_FLAME_MOTION_PORT = PluginPort(
         TIMELINE: INPUT_TIMELINE,
         "follows_replies": True,
         "reply_media_wait_ms": REPLY_MEDIA_WAIT_MS,
+        "reply_lookahead_ms": REPLY_LOOKAHEAD_MS,
     },
 )
 
@@ -32,6 +35,7 @@ __all__ = [
     "MOTION",
     "MOTION_FPS",
     "POSE_FEATURES",
+    "REPLY_LOOKAHEAD_MS",
     "REPLY_MEDIA_WAIT_MS",
     "SMPLH_FLAME_MOTION",
     "SMPLH_FLAME_MOTION_PORT",

@@ -13,10 +13,11 @@ from PIL import Image
 from sglang_omni.models.avtr.formats import DEFAULT_HEIGHT, DEFAULT_WIDTH
 from sglang_omni.models.avtr.session import (
     CHUNK_SAMPLES,
-    PCM16_SCALE,
     AvatarHooks,
     RendererUnavailable,
 )
+from sglang_omni.models.dyadic_audio.timeline import PCM16_SCALE
+from sglang_omni.proto.streams import SESSION_INPUT_SAMPLE_RATE_HZ
 from sglang_omni.scheduling.session import DEFAULT_MAX_CONCURRENCY, SessionScheduler
 
 RENDER_PATH = "/process-audio-v3"
@@ -214,6 +215,8 @@ def create_scheduler(
     avatar: str,
     background: str,
     speech_sample_rate_hz: int,
+    input_sample_rate_hz: int = SESSION_INPUT_SAMPLE_RATE_HZ,
+    reply_stream: bool = False,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     jpeg_quality: int = DEFAULT_JPEG_QUALITY,
@@ -245,7 +248,12 @@ def create_scheduler(
                 for _ in range(requests_per_renderer)
             ]
     return SessionScheduler(
-        AvatarHooks(renderers, speech_sample_rate_hz),
+        AvatarHooks(
+            renderers,
+            speech_sample_rate_hz,
+            input_sample_rate_hz=input_sample_rate_hz,
+            reply_stream=reply_stream,
+        ),
         max_open_sessions=len(renderer_urls) * sessions_per_renderer,
         max_concurrency=DEFAULT_MAX_CONCURRENCY,
     )
