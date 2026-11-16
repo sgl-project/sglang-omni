@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"time"
 
@@ -285,22 +284,4 @@ func (a *app) meetingDiscard() {
 func (a *app) meetingFailed(what, msg string, err error) {
 	a.toast(msg)
 	a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: what + ": " + err.Error()})
-}
-
-// meetingStartProblem is what the user reads when a meeting does not start.
-func meetingStartProblem(err error) string {
-	var se *meeting.StartError
-	switch {
-	case errors.Is(err, local.ErrNotInstalled):
-		return i18n.T("The speech model for meetings is not downloaded. Download it in Settings → Meetings.")
-	case errors.Is(err, meeting.ErrBusy):
-		return i18n.T("A meeting is already recording.")
-	case errors.As(err, &se) && se.Guidance == meeting.GuidanceModel:
-		return i18n.T("Could not load the speech model for meetings: %v", se.Err)
-	case errors.As(err, &se) && se.Source == meeting.SourceSystem:
-		return i18n.T("Could not record system audio. Allow Voxt in System Settings → Privacy & Security → Screen & System Audio Recording, or record the microphone only.")
-	case errors.As(err, &se):
-		return i18n.T("Could not record the microphone. Allow Voxt in System Settings → Privacy & Security → Microphone.")
-	}
-	return i18n.T("Could not start the meeting: %v", err)
 }

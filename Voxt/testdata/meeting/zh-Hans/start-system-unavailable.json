@@ -1,0 +1,8 @@
+{
+  "name": "start-system-unavailable",
+  "kind": "start",
+  "start": {
+    "code": "meeting.system.unavailable",
+    "text": "没能录系统声音。请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”里允许 Voxt，或者只录麦克风。"
+  }
+}

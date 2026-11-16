@@ -16,7 +16,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -126,106 +125,6 @@ func (n *meetingsView) meetingRowTexts(mt store.Meeting) []string {
 		line = meetingSnippet(mt)
 	}
 	return []string{meetingDisplayTitle(mt), line}
-}
-
-// meetingTitle is a meeting's title, else when it started (for file
-// names).
-func meetingTitle(mt store.Meeting) string {
-	if mt.Title != "" {
-		return mt.Title
-	}
-	return mt.CreatedAt.Format("2006-01-02 15:04")
-}
-
-// meetingDisplayTitle is a meeting's title as the list and its details
-// show it.
-func meetingDisplayTitle(mt store.Meeting) string {
-	if mt.Title != "" {
-		return mt.Title
-	}
-	return i18n.T("Untitled meeting")
-}
-
-// meetingStatusLabel is the row's mark for a meeting that is not done, ""
-// for a done one.
-func meetingStatusLabel(s store.MeetingStatus) string {
-	switch s {
-	case store.MeetingRecording, store.MeetingAsking:
-		return i18n.T("In progress")
-	case store.MeetingInterrupted:
-		return i18n.T("Interrupted")
-	case store.MeetingFinishing:
-		return i18n.T("Finishing")
-	case store.MeetingFailed:
-		return i18n.T("Failed")
-	}
-	return ""
-}
-
-// meetingMeta is the row's second line: when (unless the title says
-// it), how long, what it captured.
-func meetingMeta(mt store.Meeting) string {
-	parts := []string{mt.CreatedAt.Format("2006-01-02 15:04")}
-	if mt.DurationMS > 0 {
-		parts = append(parts, meetingDuration(mt.DurationMS))
-	}
-	switch mt.Mode {
-	case store.MeetingModeSubtitles:
-		parts = append(parts, i18n.T("System audio only"))
-	case store.MeetingModeRecording:
-		parts = append(parts, i18n.T("Microphone only"))
-	default:
-		parts = append(parts, i18n.T("Microphone and system audio"))
-	}
-	return strings.Join(parts, " · ")
-}
-
-// meetingDuration is a meeting's length as a list shows it: minutes,
-// with hours past an hour.
-func meetingDuration(ms int64) string {
-	m := int((time.Duration(ms)*time.Millisecond + 30*time.Second) / time.Minute)
-	switch {
-	case m < 1:
-		return i18n.T("Under a minute")
-	case m < 60:
-		return i18n.T("%d min", m)
-	default:
-		return i18n.T("%d h %d min", m/60, m%60)
-	}
-}
-
-// meetingGroup is the heading a meeting is listed under, by its day.
-func meetingGroup(at, now time.Time) string {
-	y, m, d := now.Date()
-	today := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
-	switch {
-	case !at.Before(today):
-		return i18n.T("Today")
-	case !at.Before(today.AddDate(0, 0, -1)):
-		return i18n.T("Yesterday")
-	case !at.Before(today.AddDate(0, 0, -7)):
-		return i18n.T("Previous 7 days")
-	default:
-		return at.Format("2006-01")
-	}
-}
-
-// meetingSnippet is a row's second line: its summary's opening, else
-// what it captured.
-func meetingSnippet(mt store.Meeting) string {
-	if s, ok := meeting.ParseStoredSummary(mt.Summary); ok {
-		if line, _, _ := strings.Cut(strings.TrimSpace(s.Body), "\n"); line != "" {
-			return strings.TrimLeft(line, "-*# ")
-		}
-	}
-	switch mt.Mode {
-	case store.MeetingModeSubtitles:
-		return i18n.T("System audio only")
-	case store.MeetingModeRecording:
-		return i18n.T("Microphone only")
-	default:
-		return i18n.T("Microphone and system audio")
-	}
 }
 
 // meetingItem is a row of the list: a day's heading, or a meeting.

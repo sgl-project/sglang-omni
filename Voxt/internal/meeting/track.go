@@ -24,7 +24,7 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 		return &StartError{
 			Source:   src,
 			Err:      fmt.Errorf("meeting: no capture for %s", src),
-			Guidance: "meeting.system.unavailable",
+			Guidance: GuidanceSystem,
 		}
 	}
 	job := m.nextJob(src)
@@ -125,9 +125,9 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	select {
 	case err := <-started:
 		if err != nil {
-			guidance := "meeting.mic.unavailable"
+			guidance := GuidanceMic
 			if src == SourceSystem {
-				guidance = "meeting.system.unavailable"
+				guidance = GuidanceSystem
 			}
 			return &StartError{Source: src, Err: err, Guidance: guidance}
 		}

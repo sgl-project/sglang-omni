@@ -248,8 +248,9 @@ func meetingModeTitle(m meeting.Mode) string {
 		return i18n.T("Subtitles")
 	case meeting.ModeRecording:
 		return i18n.T("Recording")
+	default:
+		return i18n.T("Meeting")
 	}
-	return i18n.T("Meeting")
 }
 
 // meetingModeCapsule is the mode in the card's header, a capsule with a

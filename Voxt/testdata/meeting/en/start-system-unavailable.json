@@ -1,0 +1,8 @@
+{
+  "name": "start-system-unavailable",
+  "kind": "start",
+  "start": {
+    "code": "meeting.system.unavailable",
+    "text": "Could not record system audio. Allow Voxt in System Settings → Privacy \u0026 Security → Screen \u0026 System Audio Recording, or record the microphone only."
+  }
+}

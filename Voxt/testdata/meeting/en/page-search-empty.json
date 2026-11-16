@@ -1,0 +1,15 @@
+{
+  "name": "page-search-empty",
+  "kind": "page",
+  "page": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "query": "missing",
+    "page": 0,
+    "has_more": true,
+    "active": true,
+    "meeting_count": 0,
+    "items": null
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "name": "state-finishing-saving",
+  "kind": "overlay",
+  "overlay": {
+    "visible": true,
+    "id": "fixture-live",
+    "state": "finishing",
+    "stage": "saving",
+    "mode": "meeting",
+    "progress": 0.4,
+    "show_bar": true,
+    "show_expanded": false,
+    "show_asking": false,
+    "show_finishing": true,
+    "live": false,
+    "paused": false,
+    "starting": false,
+    "status_text": "Meeting in progress",
+    "elapsed_text": "1:05:02",
+    "mode_title": "Meeting",
+    "mode_hint": "Microphone and system audio",
+    "finishing_text": "Finishing the meeting…",
+    "problem_key": "",
+    "problem_text": "",
+    "show_microphone": true,
+    "show_system": true,
+    "microphone_levels": [
+      0.1,
+      0.4,
+      0.8
+    ],
+    "system_levels": [
+      0.2,
+      0.5,
+      0.7
+    ],
+    "sources": [
+      "mic",
+      "system"
+    ],
+    "rows": [
+      {
+        "key": "segment-mic",
+        "who": "You",
+        "text": "First part",
+        "me": true,
+        "live": false,
+        "first": true,
+        "source": "mic"
+      },
+      {
+        "key": "segment-system",
+        "who": "Speaker 1",
+        "text": "A complete answer.",
+        "me": false,
+        "live": false,
+        "first": true,
+        "source": "system"
+      },
+      {
+        "key": "live/mic",
+        "who": "You",
+        "text": "still listening",
+        "me": true,
+        "live": true,
+        "first": true,
+        "source": "mic"
+      },
+      {
+        "key": "live/system",
+        "who": "Others",
+        "text": "system live",
+        "me": false,
+        "live": true,
+        "first": true,
+        "source": "system"
+      }
+    ],
+    "modes": [
+      {
+        "id": "meeting",
+        "title": "Meeting",
+        "hint": "Microphone and system audio",
+        "selected": true
+      },
+      {
+        "id": "subtitles",
+        "title": "Subtitles",
+        "hint": "System audio only",
+        "selected": false
+      },
+      {
+        "id": "recording",
+        "title": "Recording",
+        "hint": "Microphone only",
+        "selected": false
+      }
+    ],
+    "more_items": [
+      {
+        "id": "translate",
+        "label": "Live translation",
+        "selected": false,
+        "danger": false
+      },
+      {
+        "id": "cancel",
+        "label": "Cancel meeting",
+        "selected": false,
+        "danger": true
+      }
+    ],
+    "translation_active": false,
+    "translation_label": "Live translation",
+    "card_size": 1
+  }
+}

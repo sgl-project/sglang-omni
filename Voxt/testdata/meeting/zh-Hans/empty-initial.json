@@ -1,0 +1,69 @@
+{
+  "name": "empty-initial",
+  "kind": "overlay",
+  "overlay": {
+    "visible": false,
+    "id": "",
+    "state": "",
+    "stage": "",
+    "mode": "",
+    "progress": 0,
+    "show_bar": false,
+    "show_expanded": false,
+    "show_asking": false,
+    "show_finishing": false,
+    "live": false,
+    "paused": false,
+    "starting": false,
+    "status_text": "会议进行中",
+    "elapsed_text": "0:00",
+    "mode_title": "会议",
+    "mode_hint": "麦克风与系统音频",
+    "finishing_text": "正在结束会议…",
+    "problem_key": "",
+    "problem_text": "",
+    "show_microphone": true,
+    "show_system": true,
+    "microphone_levels": null,
+    "system_levels": null,
+    "sources": null,
+    "rows": null,
+    "modes": [
+      {
+        "id": "meeting",
+        "title": "会议",
+        "hint": "麦克风与系统音频",
+        "selected": false
+      },
+      {
+        "id": "subtitles",
+        "title": "字幕",
+        "hint": "仅系统音频",
+        "selected": false
+      },
+      {
+        "id": "recording",
+        "title": "录音",
+        "hint": "仅麦克风",
+        "selected": false
+      }
+    ],
+    "more_items": [
+      {
+        "id": "translate",
+        "label": "实时翻译",
+        "selected": false,
+        "danger": false
+      },
+      {
+        "id": "cancel",
+        "label": "取消会议",
+        "selected": false,
+        "danger": true
+      }
+    ],
+    "translation_active": false,
+    "translation_label": "实时翻译",
+    "card_size": 1
+  }
+}
