@@ -29,7 +29,10 @@ from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, SessionOperation, TimedChunk
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
+from sglang_omni.scheduling.sglang_backend.ar_session import (
+    ARSessionAdapter,
+    ARSessionBridge,
+)
 from sglang_omni.scheduling.sglang_backend.history_cut import DraftSessionKV, HistoryCut
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from tests.unit_test.fixtures.accelerator import require_cuda
@@ -381,6 +384,24 @@ def test_a_session_stage_refuses_a_draft_it_cannot_keep(
     with pytest.raises(ValueError, match=message):
         scheduler.speculative_session_draft_kv(
             pools.req_to_token_pool, pools.token_to_kv_pool_allocator
+        )
+
+
+def test_a_session_stage_refuses_plain_fallback() -> None:
+    """Plain fallback switches per-request decode paths, while a session's KV and draft reserve assume speculative decoding."""
+    with pytest.raises(ValueError, match="Plain fallback does not support sessions"):
+        OmniScheduler(
+            tp_worker=SimpleNamespace(),
+            tree_cache=SimpleNamespace(),
+            req_to_token_pool=SimpleNamespace(),
+            token_to_kv_pool_allocator=SimpleNamespace(),
+            server_args=SimpleNamespace(enable_streaming_session=True),
+            model_config=SimpleNamespace(),
+            model_runner=None,
+            request_builder=lambda payload: payload,
+            result_adapter=lambda data: data,
+            session_adapter=ARSessionAdapter(),
+            enable_plain_fallback=True,
         )
 
 
