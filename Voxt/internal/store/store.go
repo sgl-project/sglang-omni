@@ -270,6 +270,8 @@ const (
 	MeetingModeMeeting   MeetingMode = "meeting"
 	MeetingModeSubtitles MeetingMode = "subtitles"
 	MeetingModeRecording MeetingMode = "recording"
+	// MeetingModeImport is a meeting from an imported recording file.
+	MeetingModeImport MeetingMode = "import"
 )
 
 // SegmentSource is which audio track produced a segment.

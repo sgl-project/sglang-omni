@@ -259,3 +259,48 @@ func TestMeetingsReplaceFailsMidTransaction(t *testing.T) {
 		t.Fatalf("rolled back: %+v", segs)
 	}
 }
+
+// Migration 9 lets a meeting be an imported recording and keeps the
+// meetings and their lines a version-8 database had.
+func TestMigration9ImportMode(t *testing.T) {
+	dir := t.TempDir()
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = saved[:8]
+	s := openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != 8 {
+		t.Fatalf("user_version %d", v)
+	}
+	m := s.Meetings()
+	rec, err := m.CreateMeeting(ctx, store.Meeting{
+		ID: "m8", CreatedAt: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+		Status: store.MeetingDone, Mode: store.MeetingModeMeeting, Title: "old call",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AppendSegments(ctx, rec.Seq, []store.MeetingSegment{seg(store.SegmentSystem, "kept line")}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	migrations = saved
+	s = openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != 9 {
+		t.Fatalf("user_version %d", v)
+	}
+	m = s.Meetings()
+	mt, segs, err := m.Meeting(ctx, "m8")
+	if err != nil || mt.Title != "old call" || len(segs) != 1 || segs[0].Text != "kept line" {
+		t.Fatalf("old meeting lost: %+v %+v %v", mt, segs, err)
+	}
+	list, err := m.ListMeetings(ctx, store.MeetingQuery{Search: "kept"})
+	if err != nil || len(list) != 1 || list[0].ID != "m8" {
+		t.Fatalf("search after the rebuild: %+v %v", list, err)
+	}
+	if _, err := m.CreateMeeting(ctx, store.Meeting{
+		ID: "m9", CreatedAt: time.Now(), Status: store.MeetingDone, Mode: store.MeetingModeImport,
+	}); err != nil {
+		t.Fatalf("import mode: %v", err)
+	}
+}

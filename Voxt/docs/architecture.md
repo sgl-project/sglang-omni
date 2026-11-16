@@ -78,8 +78,9 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     snapshots, the history entry; adapters over the helper (helperio.go)
 │   ├── meeting/          a meeting's owner (Manager, Snapshot for the UI, Config callbacks): the
 │   │                     two tracks' capture, live captions (Live, Committer, echo and loop checks),
-│   │                     the WAV archive, the pass after the meeting (including MTD speaker labels), correction, the summary and
-│   │                     its follow-ups
+│   │                     the WAV archive, the pass after the meeting (including MTD speaker labels),
+│   │                     importing a recording file as a meeting (Manager.Import), correction, the
+│   │                     summary and its follow-ups
 │   ├── fileasr/          `Voxt transcribe` (docs/transcribe.md): the command sends a file's PCM to
 │   │                     the running app, which cuts it as a meeting does and recognises it
 │   ├── dictation/        System dictation (macOS's SFSpeechRecognizer over the helper) as a speech model

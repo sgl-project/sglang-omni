@@ -47,6 +47,10 @@ type meetingsView struct {
 	detail  *meetingDetail
 	setOpen bool   // the meeting settings dialog
 	delID   string // the meeting the Delete dialog deletes, "" for none
+	// importing is the recording file being imported (meetings_import.go),
+	// importNoMTD opens the dialog that importing needs MTD.
+	importing   *meetingImport
+	importNoMTD bool
 }
 
 type meetingsState struct {
@@ -174,6 +178,8 @@ func meetingMeta(mt store.Meeting) string {
 		parts = append(parts, i18n.T("System audio only"))
 	case store.MeetingModeRecording:
 		parts = append(parts, i18n.T("Microphone only"))
+	case store.MeetingModeImport:
+		parts = append(parts, i18n.T("Imported recording"))
 	default:
 		parts = append(parts, i18n.T("Microphone and system audio"))
 	}
@@ -223,6 +229,8 @@ func meetingSnippet(mt store.Meeting) string {
 		return i18n.T("System audio only")
 	case store.MeetingModeRecording:
 		return i18n.T("Microphone only")
+	case store.MeetingModeImport:
+		return i18n.T("Imported recording")
 	default:
 		return i18n.T("Microphone and system audio")
 	}
@@ -278,6 +286,9 @@ func (a *app) meetingsPage(c *ui.Context) {
 				n.find.count(c, q, hits[len(items)])
 			}
 		}
+		if ui.Button(c.Key("mt-import"), i18n.T("Import recording…")).Shrink(0).Disabled(active || n.importing != nil).Clicked() {
+			a.meetingImport()
+		}
 		if iconButton(c.Key("mt-settings"), icons.Tuning2, i18n.T("Meeting settings")).Shrink(0).Clicked() {
 			n.setOpen = true
 		}
@@ -301,6 +312,9 @@ func (a *app) meetingsPage(c *ui.Context) {
 					}
 				}, nil)
 			})
+		}
+		if imp := n.importing; imp != nil {
+			pad(func() { a.meetingImportRow(c, imp) })
 		}
 		d := n.detail
 		split := a.pageWidth(c)-px(t, meetingListW) >= px(t, meetingDetailMinW)
@@ -327,6 +341,7 @@ func (a *app) meetingsPage(c *ui.Context) {
 	})
 	a.meetingSettingsDialog(c)
 	a.meetingDeleteDialog(c)
+	a.meetingImportDialog(c)
 }
 
 // meetingsList is the meetings, by day, and the pager; the row at cur

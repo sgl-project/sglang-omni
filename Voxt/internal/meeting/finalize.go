@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,11 @@ const (
 
 // ErrFinalizeRetry means the final pass stopped mid-track; live segments stay.
 var ErrFinalizeRetry = errors.New("meeting: final pass incomplete")
+
+// ErrNoDiarizer means an import found no MOSS-Transcribe-Diarize: an
+// imported file is one mixed track, so plain transcription would lose the
+// speakers it was imported for (no silent fallback).
+var ErrNoDiarizer = errors.New("meeting: MOSS-Transcribe-Diarize is not installed")
 
 // FinalizePass reruns file-mode ASR on archived WAVs and replaces live segments (C1-3a).
 func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress func(float64)) error {
@@ -53,7 +59,7 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 			holdRelease = nil
 		}
 		base := float64(i) / float64(trackN)
-		segs, err := finalizeTrack(ctx, cfg, audioDir, src, mode.Diarize(), func(p float64) {
+		segs, err := finalizeTrack(ctx, cfg, audioDir, src, mode, func(p float64) {
 			if onProgress != nil {
 				onProgress(base + p/float64(trackN))
 			}
@@ -103,7 +109,8 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 
 // finalizeTrack transcribes one track's WAV again; nil segments mean the
 // track has nothing to replace (no file, or no audio).
-func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diarize bool, onProgress func(float64)) ([]Segment, error) {
+func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode Mode, onProgress func(float64)) ([]Segment, error) {
+	diarize := mode.Diarize()
 	path := filepath.Join(dir, string(src)+".wav")
 	pcm, rate, err := readTrackPCM(path)
 	if err != nil {
@@ -137,10 +144,14 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 		req := asr.FileRequest{
 			SampleRate: rate, Lang: ta.Lang, Prompt: ta.Prompt, Hints: ta.Hints, Format: "pcm",
 		}
-		if diarize && src == SourceSystem && cfg.Diarizer != nil {
-			d, err := cfg.Diarizer(ctx)
-			if err != nil {
-				return nil, err
+		if diarize && src == SourceSystem {
+			var d asr.Diarizer
+			if cfg.Diarizer != nil {
+				var err error
+				d, err = cfg.Diarizer(ctx)
+				if err != nil {
+					return nil, err
+				}
 			}
 			if d != nil {
 				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, onProgress)
@@ -151,6 +162,9 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 					segs = []Segment{}
 				}
 				return segs, nil
+			}
+			if mode == ModeImport {
+				return nil, ErrNoDiarizer
 			}
 		}
 		segs, err := transcribeChunks(ctx, src, ta.File, req, rate, pcm, chunks, onProgress)
@@ -192,19 +206,21 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 	return out, nil
 }
 
+// mtdSpeaker is MTD's S01 (or S1) as the store's s1; an imported file can
+// have more voices than a call's other side, so any S<number> from 1 maps.
 func mtdSpeaker(speaker string) string {
-	switch speaker {
-	case "S01", "S1":
-		return "s1"
-	case "S02", "S2":
-		return "s2"
-	case "S03", "S3":
-		return "s3"
-	case "S04", "S4":
-		return "s4"
-	default:
+	n, ok := strings.CutPrefix(speaker, "S")
+	if !ok {
 		return ""
 	}
+	n = strings.TrimLeft(n, "0")
+	if n == "" {
+		return ""
+	}
+	if _, err := strconv.Atoi(n); err != nil {
+		return ""
+	}
+	return "s" + n
 }
 
 func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, req asr.FileRequest, rate int, pcm []byte, chunks []Chunk, onProgress func(float64)) ([]Segment, error) {
@@ -316,6 +332,9 @@ func readTrackPCM(path string) ([]byte, int, error) {
 }
 
 func markFinalizeFailed(ctx context.Context, cfg Config, mt store.Meeting) error {
+	// The failure may be the context's own cancel: the interrupted status
+	// must still land, or the meeting stays "finishing" forever.
+	ctx = context.WithoutCancel(ctx)
 	mode := fromStoreMode(mt.Mode)
 	now := time.Now()
 	if cfg.Now != nil {
