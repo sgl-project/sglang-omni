@@ -75,8 +75,8 @@ func TestTranslateCopySelection(t *testing.T) {
 }
 
 // TestTranslateSpeechCard: nothing selected, the speech is translated
-// into the card (the setting); the card's language select translates the
-// same text again, into Japanese, without recording.
+// into the card (the setting), streaming; the card's language select
+// translates the same text again, into Japanese, without recording.
 func TestTranslateSpeechCard(t *testing.T) {
 	chat := &fakeChat{texts: []string{"See you on Thursday.", "木曜日に会いましょう。"}}
 	set, keys, tr := fileSetup(t, "周四见", chat)
@@ -87,15 +87,20 @@ func TestTranslateSpeechCard(t *testing.T) {
 		s.Features.Translate.Cleanup = true
 		s.General.MainLanguage = "zh" // the target is English
 	}, keys)
-	// The draft stays out of the pill (FB6); the card comes with the result.
-	draftInPill, early := false, false
+	// The draft stays out of the pill (FB6); the translation streams into
+	// the card, in its language, from its first words. It used to wait in
+	// the pill until the whole translation was in.
+	draftInPill, streamed := false, false
 	a.pump("the end", func() bool {
 		draftInPill = draftInPill || a.sess.State == session.Composing && liveLineText(a.sess) == strings.TrimSpace(a.sess.Draft) && a.sess.Draft != ""
-		early = early || a.sess.State.Live() && a.ov.mode == ovAnswer
+		if a.sess.State == session.Composing && a.ov.mode == ovAnswer {
+			v := a.cardNow()
+			streamed = streamed || v.writing && v.lang == "en" && v.canStopAnswer && strings.HasPrefix(a.sess.Draft, v.text)
+		}
 		return a.sess.State.Ended()
 	})
-	if draftInPill || early {
-		t.Errorf("the draft in the pill %v, a card before the end %v", draftInPill, early)
+	if draftInPill || !streamed {
+		t.Errorf("the draft in the pill %v, streamed into the card %v", draftInPill, streamed)
 	}
 	if a.sess.Result != "See you on Thursday." || a.sess.Raw != "周四见" || a.sess.Inserted || !a.answer.open || a.answer.lang != "en" || a.ov.mode != ovAnswer {
 		t.Fatalf("end %+v, card %+v", a.sess, a.answer)
@@ -107,8 +112,9 @@ func TestTranslateSpeechCard(t *testing.T) {
 		t.Errorf("first request %q", msgs)
 	}
 	// Another language: into the card whatever the setting (Voxt's menu
-	// replaces the card's answer); the card keeps its text meanwhile,
-	// with a spinner and the new language in its menu.
+	// replaces the card's answer); the card keeps its text, with a spinner
+	// and the new language in its menu, until the new translation's first
+	// words stream in over it.
 	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.ShowCard = false })
 	first := a.sess.ID
 	chat.mu.Lock()
@@ -119,7 +125,17 @@ func TestTranslateSpeechCard(t *testing.T) {
 	if v := a.cardNow(); a.ov.mode != ovAnswer || !v.busy || v.text != "See you on Thursday." || v.lang != "ja" || v.canInsert || v.canLang || !v.canCopy {
 		t.Errorf("on its way: %s %+v", a.ov.mode, v)
 	}
-	a.pump("the second end", func() bool { return a.sess.ID != first && a.sess.State.Ended() })
+	redoStreamed := false
+	a.pump("the second end", func() bool {
+		if a.sess.ID != first && a.sess.State == session.Composing && a.sess.Draft != "" {
+			v := a.cardNow()
+			redoStreamed = redoStreamed || v.writing && v.lang == "ja" && !v.canCopy && !v.canInsert && strings.HasPrefix(a.sess.Draft, v.text)
+		}
+		return a.sess.ID != first && a.sess.State.Ended()
+	})
+	if !redoStreamed {
+		t.Error("the new language did not stream into the card")
+	}
 	if a.sess.Result != "木曜日に会いましょう。" || a.sess.TargetLanguage != "ja" || !a.answer.open || a.answer.lang != "ja" || tr.count() != 1 {
 		t.Errorf("again %+v, card %+v", a.sess, a.answer)
 	}
