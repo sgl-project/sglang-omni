@@ -122,12 +122,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 }
 
 func (r *meetingsRepo) UpdateSegmentTranslation(ctx context.Context, seq int64, idx int, translation string) error {
+	return r.updateSegment(ctx, "translation", seq, idx, translation)
+}
+
+func (r *meetingsRepo) UpdateSegmentText(ctx context.Context, seq int64, idx int, text string) error {
+	return r.updateSegment(ctx, "text", seq, idx, text)
+}
+
+// updateSegment sets one column (a constant of the callers) of a segment.
+func (r *meetingsRepo) updateSegment(ctx context.Context, column string, seq int64, idx int, value string) error {
 	if seq <= 0 || idx < 0 {
 		return fmt.Errorf("meeting segment: %w", core.ErrInvalid)
 	}
-	res, err := r.db.Execute(ctx, `UPDATE meeting_segments SET translation = ? WHERE meeting_seq = ? AND idx = ?`, translation, seq, idx)
+	res, err := r.db.Execute(ctx, `UPDATE meeting_segments SET `+column+` = ? WHERE meeting_seq = ? AND idx = ?`, value, seq, idx)
 	if err != nil {
-		return wrap("meeting segment translation", err)
+		return wrap("meeting segment "+column, err)
 	}
 	if res.Changes == 0 {
 		return fmt.Errorf("meeting segment idx %d: %w", idx, core.ErrNotFound)

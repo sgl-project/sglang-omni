@@ -164,3 +164,16 @@ func omniVoiceCodes() []string {
 	}
 	return out
 }
+
+// TestCanonicalEnglishName: the name a speech model reports ("Chinese",
+// Qwen3-ASR's) finds the language, as its code does (#3981).
+func TestCanonicalEnglishName(t *testing.T) {
+	for name, want := range map[string]string{"Chinese": "zh", "english": "en", "Portuguese": "pt", "Cantonese": "yue", "zh": "zh"} {
+		if got := Canonical(name); got != want {
+			t.Errorf("Canonical(%q) = %q, want %q", name, got, want)
+		}
+	}
+	if got, ok := Match([]string{"zh", "en", "ja"}, "Japanese"); !ok || got != "ja" {
+		t.Errorf("Match(Japanese) = %q, %v", got, ok)
+	}
+}

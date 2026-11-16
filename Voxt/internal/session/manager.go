@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -122,6 +123,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
 	}
 	r.llmCtx, r.llmStop = context.WithCancel(ctx)
+	r.think = req.Thinking
 	m.cur = r
 	m.rev++
 	m.snap = Snapshot{
@@ -196,10 +198,11 @@ func (m *Manager) StopLLM(id string) {
 }
 
 // Rethink asks the language model again at thinking level t (nil: the
-// service's setting) while it cleans up session id's Transcribe text
-// (#3940, the preview's thinking menu): the request ends where it is and
-// the text is cleaned up again from the start. The service's setting
-// stays. Otherwise it does nothing.
+// service's setting) while it works on session id's Transcribe text or
+// Translate's or Rewrite's answer (#3940, #3957: the preview's thinking
+// menu): the request ends where it is and the model starts again from
+// the start; only the new answer goes in. The service's setting stays.
+// Otherwise it does nothing.
 func (m *Manager) Rethink(id string, t *llm.Thinking) {
 	m.mu.Lock()
 	r := m.cur
@@ -208,7 +211,7 @@ func (m *Manager) Rethink(id string, t *llm.Thinking) {
 		return
 	}
 	m.update(r, func(s *Snapshot) {
-		if s.Kind != store.KindTranscribe || s.State != Composing || !s.CanSkip || r.skipped.Load() {
+		if !slices.Contains([]store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite}, s.Kind) || s.State != Composing || r.skipped.Load() || r.stopped.Load() {
 			return
 		}
 		s.Thinking, r.think = t, t

@@ -6,6 +6,8 @@
 #include <cmath>
 #include <limits>
 
+#include "qwen3_asr/qwen3_asr_transcriber.h"
+
 namespace qwen3_asr {
 
 namespace mx = mlx::core;
@@ -172,8 +174,37 @@ Qwen3Decoder::Qwen3Decoder(const omni_common::Checkpoint &checkpoint,
                            std::string prefix, Qwen3DecoderConfig config)
     : checkpoint_(checkpoint), prefix_(std::move(prefix)), config_(config) {}
 
+Qwen3Decoder::Qwen3Decoder(const Qwen3Decoder &other,
+                           bool batch_single_row_projections)
+    : checkpoint_(other.checkpoint_), prefix_(other.prefix_),
+      config_(other.config_),
+      batch_single_row_projections_(batch_single_row_projections) {}
+
 std::string Qwen3Decoder::Name(const std::string &suffix) const {
   return prefix_.empty() ? suffix : prefix_ + "." + suffix;
+}
+
+mx::array Qwen3Decoder::Project(const mx::array &x, const std::string &prefix,
+                                bool tied_embedding) const {
+  mx::array input = x;
+  if (batch_single_row_projections_ && x.size() == x.shape(-1) &&
+      checkpoint_.Has(prefix + ".scales") &&
+      checkpoint_.Quantization(prefix).mode == "affine") {
+    // note (ZaneZhang-67): MLX 0.32.3's single-row affine kernel rounds
+    // differently from block verification. Batch only the projection, not KV
+    // positions, to retain the block kernel's arithmetic after a fallback.
+    input = mx::concatenate({x, x}, 1);
+  } else {
+  }
+  const mx::array output = tied_embedding
+                               ? checkpoint_.TiedProjection(input, prefix)
+                               : checkpoint_.Linear(input, prefix);
+  if (input.shape(1) != x.shape(1)) {
+    return mx::slice(output, {0, 0, 0},
+                     {x.shape(0), x.shape(1), output.shape(2)});
+  } else {
+    return output;
+  }
 }
 
 mx::array Qwen3Decoder::EmbedTokens(const mx::array &ids) const {
@@ -190,9 +221,8 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer, KVCache &cache,
   const int head_dim = config_.head_dim;
   const mx::array normed =
       checkpoint_.RmsNorm(x, prefix + ".input_layernorm", eps);
-  mx::array queries =
-      mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.q_proj"),
-                  {batch, length, head_count, head_dim});
+  mx::array queries = mx::reshape(Project(normed, prefix + ".self_attn.q_proj"),
+                                  {batch, length, head_count, head_dim});
   if (config_.has_query_key_norm) {
     queries = checkpoint_.RmsNorm(queries, prefix + ".self_attn.q_norm", eps);
   } else {
@@ -213,19 +243,17 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer, KVCache &cache,
     attended = mx::fast::scaled_dot_product_attention(
         queries, cached_keys, cached_values, scale, length > 1 ? "causal" : "");
   }
-  const mx::array hidden = mx::add(
-      x, checkpoint_.Linear(mx::reshape(mx::transpose(*attended, {0, 2, 1, 3}),
-                                        {batch, length, -1}),
-                            prefix + ".self_attn.o_proj"));
+  const mx::array hidden =
+      mx::add(x, Project(mx::reshape(mx::transpose(*attended, {0, 2, 1, 3}),
+                                     {batch, length, -1}),
+                         prefix + ".self_attn.o_proj"));
   const mx::array mlp_input =
       checkpoint_.RmsNorm(hidden, prefix + ".post_attention_layernorm", eps);
   return mx::add(
-      hidden,
-      checkpoint_.Linear(
-          mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                           mlp_input, prefix + ".mlp.gate_proj")),
-                       checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
-          prefix + ".mlp.down_proj"));
+      hidden, Project(mx::multiply(omni_common::Silu(Project(
+                                       mlp_input, prefix + ".mlp.gate_proj")),
+                                   Project(mlp_input, prefix + ".mlp.up_proj")),
+                      prefix + ".mlp.down_proj"));
 }
 
 mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
@@ -264,9 +292,8 @@ Qwen3Decoder::KeysValues(const mx::array &x, const std::string &prefix,
   const int length = x.shape(1);
   const int kv_head_count = config_.num_key_value_heads;
   const int head_dim = config_.head_dim;
-  mx::array keys =
-      mx::reshape(checkpoint_.Linear(x, prefix + ".self_attn.k_proj"),
-                  {batch, length, kv_head_count, head_dim});
+  mx::array keys = mx::reshape(Project(x, prefix + ".self_attn.k_proj"),
+                               {batch, length, kv_head_count, head_dim});
   if (config_.has_query_key_norm) {
     keys = checkpoint_.RmsNorm(keys, prefix + ".self_attn.k_norm",
                                config_.rms_norm_eps);
@@ -274,7 +301,7 @@ Qwen3Decoder::KeysValues(const mx::array &x, const std::string &prefix,
   }
   keys = Rotated(mx::transpose(keys, {0, 2, 1, 3}), cache, rotary);
   const mx::array values =
-      mx::reshape(checkpoint_.Linear(x, prefix + ".self_attn.v_proj"),
+      mx::reshape(Project(x, prefix + ".self_attn.v_proj"),
                   {batch, length, kv_head_count, head_dim});
   return {keys, mx::transpose(values, {0, 2, 1, 3})};
 }
@@ -295,8 +322,7 @@ mx::array Qwen3Decoder::LastLogits(const mx::array &hidden_states) const {
       mx::slice(hidden_states, {0, length - 1, 0},
                 {hidden_states.shape(0), length, hidden_states.shape(2)}),
       Name("norm"), config_.rms_norm_eps);
-  const mx::array logits =
-      checkpoint_.TiedProjection(last, Name("embed_tokens"));
+  const mx::array logits = Project(last, Name("embed_tokens"), true);
   return mx::reshape(logits, {logits.shape(-1)});
 }
 
@@ -355,9 +381,9 @@ Qwen3Decoder::Rotated(const mx::array &heads, const KVCache &cache,
 }
 
 mx::array Qwen3Decoder::Logits(const mx::array &hidden_states) const {
-  const mx::array logits = checkpoint_.TiedProjection(
+  const mx::array logits = Project(
       checkpoint_.RmsNorm(hidden_states, Name("norm"), config_.rms_norm_eps),
-      Name("embed_tokens"));
+      Name("embed_tokens"), true);
   return mx::reshape(logits, {hidden_states.shape(1), logits.shape(-1)});
 }
 
@@ -433,6 +459,43 @@ mx::array Qwen3Decoder::DecodeBatch(const mx::array &embeddings,
   const mx::array logits =
       checkpoint_.TiedProjection(normed, Name("embed_tokens"));
   return mx::reshape(logits, {logits.shape(0), logits.shape(-1)});
+}
+
+void Qwen3Decoder::DecodePlain(
+    mx::array &next_token, std::vector<KVCache> &caches,
+    float repetition_penalty, const std::function<bool(int)> &commit,
+    const std::atomic<bool> &cancel, const std::vector<int> &capture_layers,
+    std::vector<std::vector<mx::array>> *captured) const {
+  // Note (Minyi Tang): only generated tokens are penalized, as on CUDA; the
+  // scales stay lazy so penalizing adds no host sync to the queued step.
+  mx::array penalty_by_token_id = mx::ones({config_.vocab_size}, mx::float32);
+  bool finished = false;
+  while (!finished) {
+    if (cancel.load()) {
+      throw TranscriptionCancelled();
+    } else {
+    }
+    const mx::array token = next_token;
+    // Note (Jiaxin Deng): queue the next step before reading this token, so
+    // the GPU decodes while the stop rules are checked.
+    const mx::array embeddings = EmbedTokens(mx::reshape(token, {1, 1}));
+    mx::array logits = LastLogits(
+        Forward(embeddings, caches, capture_layers,
+                captured == nullptr ? nullptr : &captured->emplace_back()));
+    if (repetition_penalty != 1.0f) {
+      penalty_by_token_id =
+          mx::put_along_axis(penalty_by_token_id, mx::reshape(token, {1}),
+                             mx::array(repetition_penalty), 0);
+      logits = mx::astype(logits, mx::float32);
+      logits = mx::where(mx::less(logits, mx::array(0.0f)),
+                         mx::multiply(logits, penalty_by_token_id),
+                         mx::divide(logits, penalty_by_token_id));
+    } else {
+    }
+    next_token = mx::argmax(logits);
+    mx::async_eval({next_token});
+    finished = commit(static_cast<int>(token.item<uint32_t>()));
+  }
 }
 
 std::vector<KVCache> Qwen3Decoder::NewCaches() const {

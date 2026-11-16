@@ -100,11 +100,12 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 		req.SpeechWait = n.text
 	}
 	if len(req.Previous) == 0 {
-		a.answer = answerCard{}
+		a.setAside(req.Try)
 	}
 	a.notice = nil
 	id, err := a.mgr.Start(req)
 	if err != nil {
+		a.resurface()  // no session took the card's place
 		return "", nil // a session runs already
 	}
 	return id, nil

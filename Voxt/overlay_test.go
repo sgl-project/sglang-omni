@@ -358,6 +358,10 @@ func overlayShots(t *testing.T, a *app, out, suffix string, dark bool) {
 		{"overlay-composing-think", session.Snapshot{Kind: store.KindTranscribe, State: session.Composing, CanSkip: true, LLM: session.Model{ID: "zhipu"},
 			Thinking: &llm.Thinking{Mode: llm.ThinkOff}, Partial: "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划"},
 			func() { a.prefs.Providers.LLM = []settings.Provider{{ID: "zhipu"}} }, nil}, // the thinking level (#3940)
+		{"overlay-composing-think-rewrite", session.Snapshot{Kind: store.KindRewrite, State: session.Composing, LLM: session.Model{ID: "deepseek"}, Raw: "make it shorter"},
+			func() {
+				a.prefs.Providers.LLM = []settings.Provider{{ID: "deepseek", Generation: settings.Generation{Thinking: llm.ThinkEffort, ThinkingEffort: "high"}}}
+			}, nil}, // Rewrite's preview takes it too, the default named (#3957)
 		{"overlay-error", session.Snapshot{State: session.Failed, Problem: &session.Problem{Code: session.ProblemASR, Err: &asr.Error{Kind: asr.KindAuth}}}, nil, nil},
 		{"overlay-no-speech", session.Snapshot{State: session.Done, Problem: &session.Problem{Code: session.ProblemNoSpeech}}, nil, nil},
 		{"overlay-warning", session.Snapshot{State: session.Done, Result: "x", Inserted: true, Problem: &session.Problem{Code: session.ProblemLLM, Degraded: true,
