@@ -14,6 +14,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 type meetingDemoFixture struct {
@@ -39,6 +40,8 @@ type meetingDemoHost struct {
 	settingsUpdatesUI settingsUpdatesLocalUI
 	settingsMeetingUI meetingSettingsUI
 	settingsDialogUI  settingsDialogLocalUI
+	keyRow            keyRow
+	recorderActive    bool
 }
 
 func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
@@ -108,7 +111,8 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||
 		fixture.Kind == "settings" && fixture.Settings != nil ||
 		fixture.Kind == "meeting-settings" && fixture.MeetingSettings != nil ||
-		fixture.Kind == "shortcut-prompt" && fixture.ShortcutPrompt != nil
+		fixture.Kind == "shortcut-prompt" && fixture.ShortcutPrompt != nil ||
+		fixture.Kind == "key-recorder" && fixture.KeyRecorder != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -158,6 +162,14 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
 		}
 	}
+	host.keyRow = keyRow{}
+	host.recorderActive = false
+	if state := fixture.state.KeyRecorder; state != nil {
+		host.keyRow = keyRow{
+			custom: state.Custom, typing: state.Typing, text: state.RawKeys, edited: state.Edited,
+			unknown: state.Unknown, recordDenied: state.RecordDenied, recFocused: state.Focused,
+		}
+	}
 	host.resetSettingsDemo(fixture)
 }
 
@@ -171,6 +183,51 @@ func (host *meetingDemoHost) record(format string, arguments ...any) {
 	host.calls = append(host.calls, call)
 	fmt.Printf("meeting demo action: %s\n", call)
 }
+
+func (host *meetingDemoHost) beginHotkeyRecord(row *keyRow, _ func(keys string)) string {
+	if host.current().state.KeyRecorder.HelperRecordsKeys {
+		host.cancelHotkeyRecord()
+		host.recorderActive = true
+	}
+	host.record("beginHotkeyRecord")
+	return uitext.HotkeyTextFor(i18n.CurrentTranslator(), row.text)
+}
+
+func (host *meetingDemoHost) cancelHotkeyRecord() {
+	if !host.recorderActive {
+		return
+	}
+	host.recorderActive = false
+	host.record("cancelHotkeyRecord")
+}
+
+func (host *meetingDemoHost) saveShortcutRecorderKeys(keys string, row *keyRow, save func(keys string)) string {
+	row.text, row.edited = keys, false
+	host.record("saveShortcutRecorderKeys %s", keys)
+	save(keys)
+	return uitext.HotkeyTextFor(i18n.CurrentTranslator(), keys)
+}
+
+func (host *meetingDemoHost) typeShortcutKeys(row *keyRow) customKeysViewState {
+	row.edited = true
+	host.record("typeShortcutKeys")
+	return buildCustomKeysViewState(i18n.CurrentTranslator(), row.text)
+}
+
+func (host *meetingDemoHost) saveTypedShortcutKeys(row *keyRow, save func(keys string)) customKeysViewState {
+	state := buildCustomKeysViewState(i18n.CurrentTranslator(), row.text)
+	host.record("saveTypedShortcutKeys")
+	if state.Valid {
+		row.edited = false
+		row.text = state.CanonicalKeys
+		save(row.text)
+	}
+	return state
+}
+
+func (host *meetingDemoHost) markShortcutRecorderFocused() {}
+
+func (host *meetingDemoHost) saveKeys(keys string) { host.record("saveKeys %s", keys) }
 
 func (host *meetingDemoHost) startMeeting()  { host.record("startMeeting") }
 func (host *meetingDemoHost) meetingFinish() { host.record("meetingFinish") }

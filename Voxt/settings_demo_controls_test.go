@@ -6,6 +6,78 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+func settingsDemoKeyRecorderCases() []settingsDemoCase {
+	return []settingsDemoCase{
+		{
+			name: "key recorder focus and window chord", fixture: "en/key-recorder-window-recording",
+			steps: []historyDemoStep{{key: ui.KeyTab}, {mods: ui.Shift, key: ui.KeyTab}, {mods: ui.Alt, key: ui.KeySpace}},
+			want:  []string{"beginHotkeyRecord", "saveShortcutRecorderKeys Option+Space", "saveKeys Option+Space"},
+			check: func(t *testing.T, host *meetingDemoHost) {
+				if host.keyRow.text != "Option+Space" || host.keyRow.edited {
+					t.Fatalf("window chord left recorder state %+v", host.keyRow)
+				}
+			},
+		},
+		{
+			name: "key recorder helper focus and cancel", fixture: "en/key-recorder-helper-recording",
+			steps: []historyDemoStep{{key: ui.KeyTab}, {mods: ui.Shift, key: ui.KeyTab}, {key: ui.KeyTab}},
+			want:  []string{"beginHotkeyRecord", "cancelHotkeyRecord"},
+			check: func(t *testing.T, host *meetingDemoHost) {
+				if host.recorderActive {
+					t.Fatal("helper recording stayed active after cancellation")
+				}
+			},
+		},
+		{
+			name: "key recorder typed valid canonicalizes and saves", fixture: "en/key-recorder-typed-valid",
+			prepare: func(host *meetingDemoHost) { host.keyRow.text = "" },
+			steps:   []historyDemoStep{{label: "Custom keys of shortcut 1", text: "ctrl+opt+K"}, {key: ui.KeyEnter}},
+			want:    []string{"typeShortcutKeys", "saveTypedShortcutKeys", "saveKeys Control+Option+K"},
+			check: func(t *testing.T, host *meetingDemoHost) {
+				if host.keyRow.text != "Control+Option+K" || host.keyRow.edited {
+					t.Fatalf("valid typed keys left recorder state %+v", host.keyRow)
+				}
+			},
+		},
+		{
+			name: "key recorder typed invalid shows error without saving", fixture: "en/key-recorder-typed-invalid",
+			prepare:  func(host *meetingDemoHost) { host.keyRow.text = "" },
+			steps:    []historyDemoStep{{label: "Custom keys of shortcut 1", text: "ctrl+opt+K+J"}, {key: ui.KeyEnter}},
+			want:     []string{"typeShortcutKeys"},
+			wantText: "Only one key besides the modifiers.",
+			check: func(t *testing.T, host *meetingDemoHost) {
+				if host.keyRow.text != "ctrl+opt+K+J" || !host.keyRow.edited {
+					t.Fatalf("invalid typed keys left recorder state %+v", host.keyRow)
+				}
+			},
+		},
+		{
+			name: "key recorder permission denied opens permissions", fixture: "en/key-recorder-permission-denied",
+			steps: historySteps("Open Permissions"), want: []string{"openShortcutPermissions"},
+			wantText: "Recording a shortcut needs Accessibility access.",
+		},
+		{
+			name: "key recorder unknown key does not save", fixture: "en/key-recorder-window-recording",
+			steps:    []historyDemoStep{{key: ui.KeyContextMenu}},
+			wantText: "Voxt cannot use that key. Press another, or type the keys instead.",
+			check: func(t *testing.T, host *meetingDemoHost) {
+				if host.keyRow.text != "Control+Option+Space" || !host.keyRow.unknown {
+					t.Fatalf("unknown key left recorder state %+v", host.keyRow)
+				}
+			},
+		},
+		{
+			name: "key recorder local press and type transitions", fixture: "en/key-recorder-typed-valid",
+			steps: historySteps("Press the keys instead", "Type the keys instead"),
+			check: func(t *testing.T, host *meetingDemoHost) {
+				if !host.keyRow.typing || host.keyRow.edited {
+					t.Fatalf("local transitions left recorder state %+v", host.keyRow)
+				}
+			},
+		},
+	}
+}
+
 func settingsDemoControlCases() []settingsDemoCase {
 	return []settingsDemoCase{
 		{name: "overlay position", fixture: "en/settings-overlay-normal", steps: historySteps("Top centre"), want: []string{"overlayEdited"}},

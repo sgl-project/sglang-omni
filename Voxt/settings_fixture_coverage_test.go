@@ -30,6 +30,7 @@ func checkSettingsFixtureEnvelopes(t *testing.T, locale string, fixtures map[str
 			"history": fixture.History != nil, "history-settings": fixture.HistorySettings != nil,
 			"history-access": fixture.HistoryAccess != nil, "settings": fixture.Settings != nil,
 			"meeting-settings": fixture.MeetingSettings != nil, "shortcut-prompt": fixture.ShortcutPrompt != nil,
+			"key-recorder": fixture.KeyRecorder != nil,
 		}
 		for kind, present := range states {
 			if want := kind == fixture.Kind; present != want {
@@ -136,6 +137,7 @@ func checkSettingsFixtureValues(t *testing.T, locale string, fixtures map[string
 	checkSettingsStorageFixtures(t, locale, fixtures)
 	checkSettingsAboutFixtures(t, locale, fixtures)
 	checkSettingsMeetingAndPromptFixtures(t, locale, fixtures)
+	checkKeyRecorderFixtures(t, locale, fixtures)
 }
 
 func checkSettingsAudioFixtures(t *testing.T, locale string, fixtures map[string]meetingFixtureState) {
@@ -389,10 +391,67 @@ func checkSettingsMeetingAndPromptFixtures(t *testing.T, locale string, fixtures
 	}
 
 	prompt := requireSettingsFixture(t, locale, fixtures, "shortcut-prompt-conflict").ShortcutPrompt
+	if prompt == nil {
+		t.Fatalf("%s: shortcut prompt did not exercise the non-nil model branch", locale)
+	}
 	expected := buildShortcutPromptViewState(i18n.NewTranslator(locale), settings.Defaults().Features, settingsFixtureConflict())
 	if *prompt != expected {
 		t.Errorf("%s: shortcut prompt is %+v, want %+v", locale, *prompt, expected)
 	}
+}
+
+func checkKeyRecorderFixtures(t *testing.T, locale string, fixtures map[string]meetingFixtureState) {
+	t.Helper()
+	for _, name := range []string{
+		"key-recorder-window-recording", "key-recorder-helper-recording", "key-recorder-typed-valid",
+		"key-recorder-typed-invalid", "key-recorder-permission-denied",
+	} {
+		requireKeyRecorderFixture(t, locale, fixtures, name)
+	}
+	translator := i18n.NewTranslator(locale)
+	for name, fixture := range fixtures {
+		state := fixture.KeyRecorder
+		if state == nil {
+			continue
+		}
+		expected := buildKeyRecorderViewState(translator, state.HelperRecordsKeys, state.RawKeys)
+		if state.DisplayedKeys != expected.DisplayedKeys || state.Typed != expected.Typed {
+			t.Errorf("%s/%s: recorder display state differs from its builder", locale, name)
+		}
+		if !state.Custom || !state.Focused {
+			t.Errorf("%s/%s: recorder has custom=%t and focused=%t", locale, name, state.Custom, state.Focused)
+		}
+	}
+
+	window := requireKeyRecorderFixture(t, locale, fixtures, "key-recorder-window-recording")
+	if window.HelperRecordsKeys || window.Typing || window.Edited || window.Unknown || window.RecordDenied {
+		t.Errorf("%s: window recorder has unexpected state %+v", locale, window)
+	}
+	helper := requireKeyRecorderFixture(t, locale, fixtures, "key-recorder-helper-recording")
+	if !helper.HelperRecordsKeys || helper.Typing || helper.Edited || helper.Unknown || helper.RecordDenied {
+		t.Errorf("%s: helper recorder has unexpected state %+v", locale, helper)
+	}
+	valid := requireKeyRecorderFixture(t, locale, fixtures, "key-recorder-typed-valid")
+	if !valid.Typing || valid.Edited || !valid.Typed.Valid || valid.Typed.CanonicalKeys != "Control+Option+K" {
+		t.Errorf("%s: valid typed recorder has unexpected state %+v", locale, valid)
+	}
+	invalid := requireKeyRecorderFixture(t, locale, fixtures, "key-recorder-typed-invalid")
+	if !invalid.Typing || !invalid.Edited || invalid.Typed.Valid || invalid.Typed.ErrorText == "" {
+		t.Errorf("%s: invalid typed recorder has unexpected state %+v", locale, invalid)
+	}
+	denied := requireKeyRecorderFixture(t, locale, fixtures, "key-recorder-permission-denied")
+	if !denied.HelperRecordsKeys || !denied.RecordDenied {
+		t.Errorf("%s: permission-denied recorder has unexpected state %+v", locale, denied)
+	}
+}
+
+func requireKeyRecorderFixture(t *testing.T, locale string, fixtures map[string]meetingFixtureState, name string) *keyRecorderViewState {
+	t.Helper()
+	state := requireSettingsFixture(t, locale, fixtures, name).KeyRecorder
+	if state == nil {
+		t.Fatalf("%s/%s: missing key recorder state", locale, name)
+	}
+	return state
 }
 
 func requireSettingsFixture(t *testing.T, locale string, fixtures map[string]meetingFixtureState, name string) meetingFixtureState {

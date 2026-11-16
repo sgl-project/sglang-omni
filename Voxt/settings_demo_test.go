@@ -8,21 +8,23 @@ import (
 )
 
 type settingsDemoCase struct {
-	name    string
-	fixture string
-	prepare func(*meetingDemoHost)
-	scroll  string
-	row     string
-	slider  string
-	steps   []historyDemoStep
-	want    []string
-	check   func(*testing.T, *meetingDemoHost)
+	name     string
+	fixture  string
+	prepare  func(*meetingDemoHost)
+	scroll   string
+	row      string
+	slider   string
+	steps    []historyDemoStep
+	want     []string
+	wantText string
+	check    func(*testing.T, *meetingDemoHost)
 }
 
 func TestSettingsDemoActionControls(t *testing.T) {
 	tests := settingsDemoGeneralCases()
 	tests = append(tests, settingsDemoAudioCases()...)
 	tests = append(tests, settingsDemoControlCases()...)
+	tests = append(tests, settingsDemoKeyRecorderCases()...)
 	tests = append(tests, settingsDemoStorageCases()...)
 	tests = append(tests, settingsDemoUpdateCases()...)
 	for _, test := range tests {
@@ -85,6 +87,9 @@ func TestSettingsDemoActionControls(t *testing.T) {
 			}
 			if !slices.Equal(host.calls, test.want) {
 				t.Fatalf("calls %q, want %q", host.calls, test.want)
+			}
+			if test.wantText != "" && !tester.HasText(test.wantText) {
+				t.Fatalf("view does not show %q; texts %q", test.wantText, tester.Texts())
 			}
 			if test.check != nil {
 				test.check(t, host)

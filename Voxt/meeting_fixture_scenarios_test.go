@@ -24,6 +24,7 @@ type meetingFixtureScenario struct {
 	settings        settingsFixtureInput
 	meetingSettings settingsMeetingStateInput
 	shortcutPrompt  shortcutPromptFixtureInput
+	keyRecorder     keyRecorderViewState
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)

@@ -279,6 +279,26 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 		return meeting.CaptureModeSelected
 	case "shortcut-prompt":
 		return state.ShortcutPrompt.OtherApp
+	case "key-recorder":
+		recorder := state.KeyRecorder
+		switch {
+		case recorder.RecordDenied:
+			return i18n.T("Recording a shortcut needs Accessibility access.")
+		case recorder.Unknown:
+			return i18n.T("Voxt cannot use that key. Press another, or type the keys instead.")
+		case recorder.Typing && !recorder.Typed.Valid:
+			return recorder.Typed.ErrorText
+		case recorder.Typing && recorder.Edited:
+			return i18n.T("Press Return to use %s.", recorder.Typed.FormattedKeys)
+		case recorder.Typing:
+			return i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5.")
+		case recorder.Focused && recorder.HelperRecordsKeys:
+			return i18n.T("Press the shortcut you want, including fn, a left or right modifier, or a mouse button. Each press replaces the last.")
+		case recorder.Focused:
+			return i18n.T("Press the keys you want, such as ⌥Space. Each press replaces the last.")
+		default:
+			return recorder.DisplayedKeys
+		}
 	default:
 		return ""
 	}
@@ -306,6 +326,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.settingsUpdatesUI.AutoCheck = true
 	host.settingsMeetingUI.hide = true
 	host.settingsOpen = true
+	host.keyRow = keyRow{custom: true, typing: true, text: "stale", edited: true, unknown: true, recordDenied: true, recFocused: true}
+	host.recorderActive = true
 	host.settingsRouter.Replace("/about")
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
@@ -331,6 +353,9 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	}
 	if host.settingsRouter.Path() != "/general" {
 		t.Fatal("fixture switch kept settings router")
+	}
+	if host.keyRow != (keyRow{}) || host.recorderActive {
+		t.Fatalf("fixture switch kept key recorder state: %+v, active=%t", host.keyRow, host.recorderActive)
 	}
 	if host.settingsDialogUI.Open != &host.settingsOpen || host.settingsDialogUI.Router != host.settingsRouter ||
 		host.settingsDialogUI.Form != &host.settingsForm || host.settingsDialogUI.HistoryAccess != &host.historyAccessUI ||

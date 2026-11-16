@@ -177,3 +177,15 @@ func buildMeetingSettingsFixture(t *testing.T, input settingsMeetingStateInput) 
 	a.local = &settingsFixtureLocal{installedModels: installedModels}
 	return a.meetingSettingsModel()
 }
+
+func buildShortcutPromptFixture(t *testing.T, input shortcutPromptFixtureInput) shortcutPromptViewState {
+	t.Helper()
+	a := newSettingsFixtureApp(t)
+	a.prefs.Features = input.features
+	a.scPrompt = &input.conflict
+	state := a.shortcutPromptModel()
+	if state == nil {
+		t.Fatal("shortcut prompt fixture did not exercise the non-nil model branch")
+	}
+	return *state
+}

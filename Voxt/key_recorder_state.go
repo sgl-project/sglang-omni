@@ -10,6 +10,13 @@ type keyRecorderViewState struct {
 	HelperRecordsKeys bool                `json:"helper_records_keys"`
 	DisplayedKeys     string              `json:"displayed_keys"`
 	Typed             customKeysViewState `json:"typed"`
+	RawKeys           string              `json:"raw_keys"`
+	Custom            bool                `json:"custom"`
+	Typing            bool                `json:"typing"`
+	Edited            bool                `json:"edited"`
+	Unknown           bool                `json:"unknown"`
+	RecordDenied      bool                `json:"record_denied"`
+	Focused           bool                `json:"focused"`
 }
 
 type customKeysViewState struct {

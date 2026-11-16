@@ -228,6 +228,28 @@ func settingsFixtureScenarios() []meetingFixtureScenario {
 		name: "shortcut-prompt-conflict", kind: "shortcut-prompt",
 		shortcutPrompt: shortcutPromptFixtureInput{features: settings.Defaults().Features, conflict: settingsFixtureConflict()},
 	})
+	scenarios = append(scenarios,
+		meetingFixtureScenario{
+			name: "key-recorder-window-recording", kind: "key-recorder",
+			keyRecorder: keyRecorderViewState{RawKeys: "Control+Option+Space", Custom: true, Focused: true},
+		},
+		meetingFixtureScenario{
+			name: "key-recorder-helper-recording", kind: "key-recorder",
+			keyRecorder: keyRecorderViewState{HelperRecordsKeys: true, RawKeys: "RightOption+Space", Custom: true, Focused: true},
+		},
+		meetingFixtureScenario{
+			name: "key-recorder-typed-valid", kind: "key-recorder",
+			keyRecorder: keyRecorderViewState{RawKeys: "ctrl+opt+K", Custom: true, Typing: true, Focused: true},
+		},
+		meetingFixtureScenario{
+			name: "key-recorder-typed-invalid", kind: "key-recorder",
+			keyRecorder: keyRecorderViewState{RawKeys: "ctrl+opt+K+J", Custom: true, Typing: true, Edited: true, Focused: true},
+		},
+		meetingFixtureScenario{
+			name: "key-recorder-permission-denied", kind: "key-recorder",
+			keyRecorder: keyRecorderViewState{HelperRecordsKeys: true, RawKeys: "Fn+F5", Custom: true, RecordDenied: true, Focused: true},
+		},
+	)
 	return scenarios
 }
 

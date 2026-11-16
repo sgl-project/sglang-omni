@@ -99,8 +99,19 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 		state := buildMeetingSettingsFixture(t, scenario.meetingSettings)
 		fixture.MeetingSettings = &state
 	case "shortcut-prompt":
-		state := buildShortcutPromptViewState(translator, scenario.shortcutPrompt.features, scenario.shortcutPrompt.conflict)
+		state := buildShortcutPromptFixture(t, scenario.shortcutPrompt)
 		fixture.ShortcutPrompt = &state
+	case "key-recorder":
+		input := scenario.keyRecorder
+		state := buildKeyRecorderViewState(translator, input.HelperRecordsKeys, input.RawKeys)
+		state.RawKeys = input.RawKeys
+		state.Custom = input.Custom
+		state.Typing = input.Typing
+		state.Edited = input.Edited
+		state.Unknown = input.Unknown
+		state.RecordDenied = input.RecordDenied
+		state.Focused = input.Focused
+		fixture.KeyRecorder = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

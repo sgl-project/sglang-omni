@@ -74,6 +74,10 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				})
 			case "shortcut-prompt":
 				shortcutPromptDialog(c, fixture.state.ShortcutPrompt, host)
+			case "key-recorder":
+				ui.Column(c).Padding(24).Children(func() {
+					keysField(c, &host.keyRow, i18n.T("Custom keys of shortcut %d", 1), host.saveKeys, *fixture.state.KeyRecorder, host)
+				})
 			}
 		})
 	})
