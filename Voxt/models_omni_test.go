@@ -209,6 +209,25 @@ func TestOmniDraft(t *testing.T) {
 	}
 }
 
+// MOSS uses the same Faster transcription switch as Qwen, on by default
+// when its draft is installed and off only after the user switches it off.
+func TestMossDraftDefaultOn(t *testing.T) {
+	fakeOmni(t, omnitest.Opts{})
+	a := newSessionApp(t, "", func(*settings.Settings) {}, realLocal{installed: []string{models.ASRMoss, models.ASRMossDraft}})
+	draft := a.models.Dir(models.ASRMossDraft)
+	if draft == "" || a.omniDraft(models.ASRMoss) != draft {
+		t.Fatalf("default: draft %q, omniDraft %q", draft, a.omniDraft(models.ASRMoss))
+	}
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+		s.Models.Faster = map[string]bool{models.ASRMoss: false}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.omniDraft(models.ASRMoss); got != "" {
+		t.Fatalf("switched off: omniDraft %q", got)
+	}
+}
+
 // eventually waits for cond, at most 10 s.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()

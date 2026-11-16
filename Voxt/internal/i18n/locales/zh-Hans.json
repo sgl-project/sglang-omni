@@ -358,6 +358,7 @@
   "Download again": "重新下载",
   "Download source": "下载源",
   "Download the draft model to use this.": "下载草稿模型后才能使用。",
+  "Download MOSS-Transcribe-Diarize on the Speech models page to label the other side as Speaker 1–4.": "在语音识别模型页下载 MOSS-Transcribe-Diarize，把对方的话按说话人 1–4 分开。",
   "Faster transcription for %s": "%s 的转录加速",
   "Downloading %s": "正在下载 %s",
   "Downloading in %s…": "正在由 %s 下载…",

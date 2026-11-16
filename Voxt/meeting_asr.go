@@ -3,12 +3,14 @@ package main
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
@@ -24,6 +26,36 @@ func (a *app) meetingVAD() vad.Model {
 		return v
 	}
 	return nil
+}
+
+func (a *app) meetingMTDInstalled() bool {
+	if a.local == nil {
+		return false
+	}
+	for _, m := range a.local.Installed(local.ASR) {
+		if m.ID == models.ASRMoss {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
+	if !a.meetingMTDInstalled() {
+		return nil, nil
+	}
+	p, opened, err := a.local.ASR(ctx, models.ASRMoss)
+	if err != nil {
+		return nil, err
+	}
+	if opened.ID != models.ASRMoss {
+		return nil, nil
+	}
+	d, ok := p.(asr.Diarizer)
+	if !ok {
+		return nil, fmt.Errorf("meeting: %s has no speaker diarization support", models.ASRMoss)
+	}
+	return d, nil
 }
 
 func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {

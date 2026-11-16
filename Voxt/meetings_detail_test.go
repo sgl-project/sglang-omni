@@ -188,6 +188,45 @@ func TestMeetingDetailOpensLanguageModels(t *testing.T) {
 	}
 }
 
+func TestMeetingDetailExplainsSpeakerLabelsWithoutMTD(t *testing.T) {
+	const guidance = "Download MOSS-Transcribe-Diarize on the Speech models page to label the other side as Speaker 1–4."
+	for _, tc := range []struct {
+		name      string
+		installed bool
+		want      bool
+	}{{"without MTD", false, true}, {"with MTD", true, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, tt := newTestApp(t)
+			a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
+			if tc.installed {
+				a.local = &meetingMTDLocal{provider: &meetingDiarizerFake{}}
+			}
+			if _, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
+				ID: "m-speaker-help", CreatedAt: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+				Status: store.MeetingDone, Mode: store.MeetingModeMeeting,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			tt.SetSize(windowWidth, 900)
+			a.navigate("/meetings")
+			a.openMeetingDetail("m-speaker-help")
+			frames(tt)
+			if _, ok := tt.Find(guidance); ok != tc.want {
+				t.Fatalf("guidance visible %v, want %v (%q)", ok, tc.want, firstTexts(tt))
+			}
+			if tc.want {
+				if err := tt.ClickControl("Open Speech models"); err != nil {
+					t.Fatal(err)
+				}
+				frames(tt)
+				if a.shownPath() != modelsPath {
+					t.Fatalf("went to %s", a.shownPath())
+				}
+			}
+		})
+	}
+}
+
 // #4019: an open meeting gets the room beside a narrow list, or the page
 // alone in a narrow window, and its details scroll as one: the transcript
 // is not a scroll box of its own under the summary.
