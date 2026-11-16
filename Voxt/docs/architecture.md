@@ -74,7 +74,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │   └── omnitest/     a fake qwen3_asr_server for tests (the test binary re-runs itself)
 │   ├── session/          the one owner of a voice session: the state machine (reading →
 │   │                     recording → recognizing → composing → delivering → done/cancelled/
-│   │                     failed), the selection, Translate's and Rewrite's streaming answer, its
+│   │                     failed), the selection, the language model's streaming answer, its
 │   │                     snapshots, the history entry; adapters over the helper (helperio.go)
 │   ├── meeting/          a meeting's owner (Manager, Snapshot for the UI, Config callbacks): the
 │   │                     two tracks' capture, live captions (Live, Committer, echo and loop checks),

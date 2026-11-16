@@ -22,6 +22,10 @@ type RetryRequest struct {
 	// OnStage is told when recognition (Recognizing) and the language
 	// model (Composing) start, on Retry's goroutine; nil: nobody.
 	OnStage func(State)
+	// OnDraft is told the language model's answer so far as it streams
+	// (it starts over when the model is asked again), on Retry's
+	// goroutine; nil: nobody.
+	OnDraft func(string)
 }
 
 // ErrNoRecording: the entry kept no recording to retry.
@@ -57,7 +61,7 @@ func (m *Manager) Retry(ctx context.Context, req RetryRequest) (store.Entry, err
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	r := &run{m: m, id: e.ID, req: StartRequest{Kind: e.Kind}, settings: cfg.Settings(), ctx: ctx, cancel: cancel, llmCtx: ctx,
-		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(), target: e.TargetLang}
+		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(), target: e.TargetLang, onDraft: req.OnDraft}
 	r.pcm.append(pcm)
 	r.retryScene(e)
 	stage := func(st State) {
