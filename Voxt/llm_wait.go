@@ -1,65 +1,67 @@
 package main
 
-// How long Transcribe, Translate and Rewrite wait at least for a language
-// model's answer (settings.Models.LLMWait, the Language models page,
-// #3821): Automatic keeps the session's own limits; a long text gets
-// longer either way (internal/session's llmDeadlines).
+// The Language models page's wait setting. The controller supplies the
+// saved value and localized choices; this file owns only widget state.
 
 import (
-	"slices"
-
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-// waitLabels are the choices' labels, in settings.WaitChoices' order.
-func waitLabels() []string {
-	return []string{i18n.T("Automatic"), i18n.T("1 minute"), i18n.T("2 minutes"), i18n.T("5 minutes"), i18n.T("10 minutes"), i18n.T("No limit")}
+// llmWaitLocalUI is the select and custom-minutes widget state. Its field
+// names stay compatible with the existing modelsState embedding and tests.
+type llmWaitLocalUI struct {
+	llmWaitSel, llmWaitFor string
+	llmWaitCustom          bool
+	llmWaitMin             float64
 }
 
-// llmWaitRow is the Language models page's wait setting: a preset, or
-// Custom… and a whole number of minutes (#3941). The label follows the
-// setting and the language, unless a choice of this select is on its way
-// to the setting (models_keep.go's).
-func (a *app) llmWaitRow(c *ui.Context) {
+func remoteOptionTitles(options []remoteOptionViewState) []string {
+	titles := make([]string, len(options))
+	for index, option := range options {
+		titles[index] = option.Title
+	}
+	return titles
+}
+
+func remoteOptionValue(options []remoteOptionViewState, title string) (string, bool) {
+	for _, option := range options {
+		if option.Title == title {
+			return option.Value, option.Custom
+		}
+	}
+	return "", false
+}
+
+func llmWaitView(c *ui.Context, state *remoteWaitViewState, actions remoteWaitActions, local *llmWaitLocalUI) {
 	t := c.Theme()
 	help := i18n.T("How long Voxt waits for an answer before it inserts the recognised text instead. Automatic waits 20 seconds to a minute, longer for long text.")
 	settingRow(c, "llm-wait", i18n.T("Wait for the language model"), help, func() {
-		custom := i18n.T("Custom…")
-		opts := append(waitLabels(), custom)
-		save := func(v string) {
-			a.llmWaitFor = v + "\x00" + i18n.Locale()
-			a.updateSettings(func(s *settings.Settings) { s.Models.LLMWait = v })
-		}
-		v := a.prefs.Models.LLMWait
-		if want := v + "\x00" + i18n.Locale(); a.llmWaitFor != want {
-			i := slices.Index(settings.WaitChoices, v)
-			a.llmWaitFor, a.llmWaitSel, a.llmWaitCustom = want, opts[max(i, 0)], false
-			if d := a.prefs.Models.LLMWaitFor(); i < 0 && d > 0 {
-				a.llmWaitSel, a.llmWaitCustom, a.llmWaitMin = custom, true, d.Minutes()
+		if local.llmWaitFor != state.Token {
+			local.llmWaitFor = state.Token
+			local.llmWaitSel = state.Selected
+			local.llmWaitCustom = state.Custom
+			if state.Custom {
+				local.llmWaitMin = state.Minutes
 			}
 		}
-		if ui.Select(c.Key("llm-wait-select"), &a.llmWaitSel, opts).Label(i18n.T("Wait for the language model")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 140)).Changed() {
-			a.llmWaitCustom = a.llmWaitSel == custom
-			if !a.llmWaitCustom {
-				save(settings.WaitChoices[max(slices.Index(opts, a.llmWaitSel), 0)])
-			} else {
-				// the field starts at the wait it replaces: 1 for Automatic,
-				// WaitMaxMinutes for No limit
-				a.llmWaitMin = min(max(a.prefs.Models.LLMWaitFor().Minutes(), 1), settings.WaitMaxMinutes)
-				save(settings.WaitMinutes(int(a.llmWaitMin)))
+		if ui.Select(c.Key("llm-wait-select"), &local.llmWaitSel, remoteOptionTitles(state.Options)).Label(i18n.T("Wait for the language model")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 140)).Changed() {
+			value, custom := remoteOptionValue(state.Options, local.llmWaitSel)
+			local.llmWaitCustom = custom
+			if custom {
+				local.llmWaitMin = min(max(state.CurrentMinutes, 1), float64(state.MaxMinutes))
 			}
+			actions.chooseLLMWait(value, custom, int(local.llmWaitMin))
 		}
-		if a.llmWaitCustom {
+		if local.llmWaitCustom {
 			over := false
-			if numberInput(c.Key("llm-wait-min"), &a.llmWaitMin, 1, settings.WaitMaxMinutes, 1, numOpts{Label: i18n.T("Wait for the language model in minutes"), Over: &over}) {
-				save(settings.WaitMinutes(int(a.llmWaitMin)))
+			if numberInput(c.Key("llm-wait-min"), &local.llmWaitMin, 1, float64(state.MaxMinutes), 1, numOpts{Label: i18n.T("Wait for the language model in minutes"), Over: &over}) {
+				actions.changeLLMWaitMinutes(int(local.llmWaitMin))
 			}
-			if over { // typed past the most: say so rather than drop it silently (#3955)
-				caption(c, i18n.T("At most %d minutes", settings.WaitMaxMinutes))
+			if over {
+				caption(c, i18n.T("At most %d minutes", state.MaxMinutes))
 			} else {
-				caption(c, i18n.T("min (%d–%d)", 1, settings.WaitMaxMinutes))
+				caption(c, i18n.T("min (%d–%d)", 1, state.MaxMinutes))
 			}
 		}
 	})

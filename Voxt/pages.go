@@ -28,7 +28,8 @@ func (a *app) pages(c *ui.Context) {
 		}
 		if r.Match(llmDebugPath) {
 			r.Title(i18n.T("Language model debug"))
-			a.llmDebugPage(c) // llm_debug.go
+			model := a.llmDebugModel()
+			llmDebugView(c, &model, a, &a.llmDbg.llmDebugUI)
 			return
 		}
 		r.Title(i18n.T("Not found"))
@@ -74,7 +75,9 @@ func (a *app) page(c *ui.Context, p navPage) {
 		a.modelsPage(c) // models_page.go
 		return
 	case remotePath:
-		a.remotePage(c) // remote_page.go
+		model := a.remotePageModel()
+		local := remoteLocalUI{wait: &a.llmWaitLocalUI, dialog: &a.provDlg.providerDialogLocalUI}
+		remotePageView(c, &model, a, &local, a.pageWidth(c))
 		return
 	case "/transcribe":
 		a.transcribePage(c) // feature_page.go
