@@ -7,11 +7,6 @@
 # path  # area
 
 announcements.go  # shell
-appenhance_dialogs.go  # appenhance
-appenhance_group.go  # appenhance
-appenhance_page.go  # appenhance
-appenhance_preview.go  # appenhance
-appicons.go  # appenhance
 dictionary_notes.go  # dictionary
 dictionary_page.go  # dictionary
 dictionary_scan.go  # dictionary

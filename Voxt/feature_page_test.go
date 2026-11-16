@@ -612,7 +612,7 @@ func TestSectionTitleAdd(t *testing.T) {
 			}
 			a.setRules(sampleRules())
 			a.navigate("/app-enhancement")
-			a.aePage.sel = "g-chat"
+			a.aeUI.sel = "g-chat"
 			tt.SetSize(size[0], 1600) // the Apps section, below the prompt
 			check("Apps", "Add apps…", i18n.T("Remove %s", "Slack"))
 		}

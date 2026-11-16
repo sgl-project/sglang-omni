@@ -97,7 +97,9 @@ func (a *app) page(c *ui.Context, p navPage) {
 		}
 		return
 	case "/app-enhancement":
-		a.appEnhancementPage(c) // appenhance_page.go
+		model := a.appEnhancementModel()
+		appEnhancementPage(c, &model, a, &a.aeUI, a.pageWidth(c), a)
+		a.flushIcons()
 		return
 	case "/dictionary":
 		a.dictionaryPage(c) // dictionary_page.go

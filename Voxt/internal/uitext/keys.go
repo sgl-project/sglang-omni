@@ -20,6 +20,10 @@ import (
 // HotkeyText shows keys as macOS writes them: "fn ⇧", "Right ⌘",
 // "⌃⌥Space", "⌃⌘V". Keys that do not parse show as written.
 func HotkeyText(keys string) string {
+	return HotkeyTextFor(i18n.CurrentTranslator(), keys)
+}
+
+func HotkeyTextFor(translator *i18n.Translator, keys string) string {
 	c, err := hotkey.Parse(keys)
 	if err != nil {
 		return strings.TrimSpace(keys)
@@ -36,15 +40,15 @@ func HotkeyText(keys string) string {
 		}
 		switch side {
 		case proto.SideLeft:
-			parts = append(parts, i18n.T("Left %s", glyph[f]))
+			parts = append(parts, translator.T("Left %s", glyph[f]))
 		case proto.SideRight:
-			parts = append(parts, i18n.T("Right %s", glyph[f]))
+			parts = append(parts, translator.T("Right %s", glyph[f]))
 		default:
 			parts = append(parts, glyph[f])
 		}
 	}
 	if c.Key != "" {
-		parts = append(parts, keyGlyph(c.Key))
+		parts = append(parts, keyGlyphFor(translator, c.Key))
 	}
 	// Glyphs run together, and a key's name follows them (⌃⌥⇧⌘V,
 	// ⌥Space, as macOS writes them); other words keep a space around them
@@ -60,20 +64,20 @@ func HotkeyText(keys string) string {
 	return b.String()
 }
 
-// keyGlyph is a key as macOS shows it; the keys whose glyphs few people
+// keyGlyphFor is a key as macOS shows it; the keys whose glyphs few people
 // know (⎋ ↩ ⌫ ⇥) by their names, as Voxt 1.x does.
-func keyGlyph(k string) string {
+func keyGlyphFor(translator *i18n.Translator, k string) string {
 	switch k {
 	case "Space":
-		return i18n.T("Space")
+		return translator.T("Space")
 	case "Return":
-		return i18n.T("Return")
+		return translator.T("Return")
 	case "Tab":
-		return i18n.T("Tab")
+		return translator.T("Tab")
 	case "Escape":
-		return i18n.T("Esc")
+		return translator.T("Esc")
 	case "Delete":
-		return i18n.T("Delete")
+		return translator.T("Delete")
 	case "ForwardDelete":
 		return "⌦"
 	case "Left":
@@ -93,10 +97,10 @@ func keyGlyph(k string) string {
 	case "End":
 		return "↘"
 	case "Mouse3":
-		return i18n.T("Middle mouse button")
+		return translator.T("Middle mouse button")
 	}
 	if n, ok := strings.CutPrefix(k, "Mouse"); ok {
-		return i18n.T("Mouse button %s", n)
+		return translator.T("Mouse button %s", n)
 	}
 	return k
 }
