@@ -351,21 +351,32 @@ This result is only demonstrative, since we have further optimization after the 
 
 ### Speculative Decoding
 
-SpeechSpec's DSpark draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.co/yuekai/cosyvoice3_llm_dspark) proposes 7 speech tokens per step from three of the LLM's hidden layers, and the LLM verifies them in one forward pass.
+The DSpark draft [`wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark`](https://huggingface.co/wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark) (Apache-2.0) proposes 7 speech tokens per step from three of the LLM's hidden layers, and the LLM verifies them in one forward pass. It has the shape of SpeechSpec's draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.co/yuekai/cosyvoice3_llm_dspark), which states no license, and is trained on English and Chinese voice-cloning requests labelled by this server's own sampler. SpeechSpec's draft still serves with the same flags, its path and `--tts_engine.engine.speculative_draft_model_revision 0b1b28dbb751bac3b74eea5dcc11e0570c91563b`.
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
   --tts_engine.engine.speculative_algorithm DSPARK \
-  --tts_engine.engine.speculative_draft_model_path yuekai/cosyvoice3_llm_dspark \
+  --tts_engine.engine.speculative_draft_model_path wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark \
   --port 8000
 ```
+
+Gain over the same server without a draft, on one H200 with SGLang 0.5.23 and the default sampling, streamed, 400 SeedTTS utterances per language, two passes per load, A B B A on fresh servers (`python -m benchmarks.eval.speculative_sweep --workload tts-seedtts-en` or `tts-seedtts-zh`). Each draft ran on its own GPU of one node against its own server without a draft:
+
+| Language | Draft | Concurrency 1 | 2 | 4 | 8 | 16 | Accepted per verify |
+|---|---|---:|---:|---:|---:|---:|---:|
+| English | This draft | 1.41x | 1.42x | 1.35x | 1.29x | 1.19x | 2.95 |
+| English | SpeechSpec | 1.15x | 1.14x | 1.13x | 1.11x | 1.08x | 2.21 |
+| Chinese | This draft | 1.54x | 1.51x | 1.43x | 1.36x | 1.22x | 3.10 |
+| Chinese | SpeechSpec | 1.47x | 1.44x | 1.39x | 1.31x | 1.21x | 2.98 |
+
+In its own throughput this draft is 10–25% faster than SpeechSpec's on English and 1–4% on Chinese. First audio p95 is within 5% of no draft from 1 to 16 requests with either draft; with this one it is at most 1.9% higher on English and 4.2% on Chinese. English WER with this draft is 1.21–1.43% across loads, with one 1.92% pass at 2 requests, against 1.10–1.36% without a draft; Chinese CER is 0.18–0.29% against 0.20–0.27%.
 
 Send `return_spec_tokens_details: true` with a speech request to get its acceptance statistics. Buffered audio adds `X-SGLang-Omni-Spec-Accept-Length`, `X-SGLang-Omni-Spec-Accept-Rate`, `X-SGLang-Omni-Spec-Num-Correct-Drafts`, `X-SGLang-Omni-Spec-Num-Proposed-Drafts` and `X-SGLang-Omni-Spec-Verify-Ct` headers; the SSE `speech.audio.done` event and the raw PCM outcome from `GET /v1/audio/speech/{request_id}` carry `sglext.spec_tokens_details`, which also holds the per-verify histogram. `spec_accept_length` is speech tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens. `spec_accept_rate` and `spec_num_proposed_drafts`, and their headers, are left out when no drafts were proposed or the draft width is adaptive.
 
 Verification reproduces CosyVoice3's sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request's `seed` fixes every draft and verify draw, so a seeded request reproduces its speech tokens while the draft is on; they differ from the tokens the same seed gives without the draft, which samples differently.
 
-LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:
+With SpeechSpec's draft, LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:
 
 | Batch | Baseline | DSpark | Speedup |
 |---|---|---|---|
