@@ -268,11 +268,16 @@ def unsupported_guidance(
         return None
 
 
+def spans_multiple_devices(decoder: Qwen3Model) -> bool:
+    return len({next(layer.parameters()).device for layer in decoder.layers}) > 1
+
+
 def resolve_cache_dit_switch(
     request_switch: bool | None,
     *,
     branch_count: int,
     cfg_interval: tuple[float, float],
+    decoder: Qwen3Model | None = None,
 ) -> bool:
     """Return whether a request runs with Cache-DiT.
 
@@ -283,6 +288,17 @@ def resolve_cache_dit_switch(
         envs.SGLANG_CACHE_DIT_ENABLED if request_switch is None else request_switch
     )
     problem = unsupported_guidance(branch_count, cfg_interval) if enabled else None
+    if (
+        problem is None
+        and enabled
+        and decoder is not None
+        and spans_multiple_devices(decoder)
+    ):
+        # cache-dit keeps one residual buffer, so a reuse step adds it to hidden
+        # states that a spanned backbone leaves on another device.
+        problem = "a backbone spanned across devices"
+    else:
+        pass
     if problem is None:
         return enabled
     elif request_switch is None:
@@ -314,6 +330,7 @@ class SenseNovaCacheDit:
             sampling_params.enable_cache_dit,
             branch_count=branch_count,
             cfg_interval=cfg_interval,
+            decoder=decoder,
         )
         if requested:
             overrides = request_cache_dit_overrides(sampling_params.cache_dit_params)
