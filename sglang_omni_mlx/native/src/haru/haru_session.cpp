@@ -370,10 +370,9 @@ Frame DuplexSession::Emit(const mx::array &hidden) {
   if (force_text_ > 0) {
     --force_text_;
   }
-  if (config_.dry) {
-    if (token_id != pad_id_ && token_id != eop_id_) {
-      history_.push_back(token_id);
-    }
+  if (config_.dry && token_id != pad_id_ && token_id != eop_id_ &&
+      token_id != eos_id_) {
+    history_.push_back(token_id);
   }
   Frame frame;
   const float *audio_data = audio.data<float>();

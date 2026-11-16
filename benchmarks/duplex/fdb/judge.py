@@ -44,6 +44,23 @@ def pending_v10_subsets(tree: Path) -> list[str]:
     ]
 
 
+def v10_judge_endpoint_arguments() -> list[str]:
+    """Point the v1.0 relevance judge at another OpenAI-compatible endpoint.
+
+    The hosted judge is OpenAI's, so a run with only another provider's key (a
+    DeepSeek key, say) needs both its URL and the model name to send there.
+    """
+    base_url = os.environ.get("FDB_V10_JUDGE_BASE_URL")
+    served_model = os.environ.get("FDB_V10_JUDGE_MODEL")
+    if (base_url is None) != (served_model is None):
+        raise SystemExit(
+            "ERROR: FDB_V10_JUDGE_BASE_URL and FDB_V10_JUDGE_MODEL go together."
+        )
+    if base_url is None:
+        return []
+    return ["--base-url", base_url, "--served-model", served_model]
+
+
 def run_judge_phase(
     server: RunningServer,
     what: str,
@@ -248,7 +265,7 @@ def judge_with_gpt(
         settings,
         v10_tree,
         v10_subsets,
-        ["--api-key-env", "OPENAI_API_KEY"],
+        ["--api-key-env", "OPENAI_API_KEY", *v10_judge_endpoint_arguments()],
         server=None,
     )
     return is_v15_ok, failed_v10
