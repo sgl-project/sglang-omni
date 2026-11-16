@@ -1,6 +1,6 @@
 # Develop views with fixtures
 
-Use this guide to change a meeting or history view without starting Voxt's helper, loading a model, granting microphone permission, or opening Voxt's data directory.
+Use this guide to change a meeting, history, or feature view without starting Voxt's helper, loading a model, granting microphone permission, or opening Voxt's data directory.
 
 ## Open the first fixture
 
@@ -36,27 +36,28 @@ To render fixtures without a window, use [the screenshot command](#render-screen
 
 ## Change a view
 
-The meeting views are `meetings_page.go`, `meetings_detail.go`, `meetings_playback.go`, `meeting_overlay.go`, and `meeting_overlay_view.go`. History uses `history_page.go`, `history_detail.go`, `history_menu.go`, `history_retry.go`, `history_settings.go`, `history_export.go`, and `history_access.go`. These files read view state, call actions, and own local widget state such as scroll position and open menus. They do not read stores, snapshots, settings, or `app`.
+The meeting views are `meetings_page.go`, `meetings_detail.go`, `meetings_playback.go`, `meeting_overlay.go`, and `meeting_overlay_view.go`. History uses `history_page.go`, `history_detail.go`, `history_menu.go`, `history_retry.go`, `history_settings.go`, `history_export.go`, and `history_access.go`. The feature area uses `feature_page.go`, `feature_keys.go`, `feature_models.go`, `feature_prompts.go`, `feature_endword.go`, and `try_card.go`. These files read view state, call actions, and own local widget state such as scroll position and open menus. They do not read stores, snapshots, settings, or `app`.
 
 The matching logic files build view state and implement actions:
 
 - `meetings_view_state.go` and `meeting_overlay_state.go` build meeting display data. `meetings_controller.go`, `meetings_detail_controller.go`, `meetings_playback_controller.go`, and `meeting_overlay_window.go` own store reads, detail updates, audio work, and native resources.
 - `history_view_state.go`, `history_settings_view_state.go`, and `history_access_view_state.go` build history display data. The history controllers own store reads, retries, recording jobs, exports, and the access socket.
-- `meeting_actions.go` and `history_actions.go` define user intents. `app` implements them in production. `meetingDemoHost` records them in the demo.
+- `feature_view_state.go`, `feature_shortcut_view_state.go`, `feature_prompt_view_state.go`, `feature_page_view_state.go`, and `try_view_state.go` build feature display data. The feature controllers own settings, model lists, shortcut parsing, prompt composition, and session snapshots.
+- `meeting_actions.go`, `history_actions.go`, `feature_actions.go`, and `try_actions.go` define user intents. `app` implements them in production. `meetingDemoHost` records them in the demo.
 
 Keep dimensions, colors, and widget choices in the view files. Run `go tool mygo vet .` and `go test ./internal/archtest` after moving code.
 
 ## Add or change fixture data
 
-Do not edit fixture JSON by hand. Change the production builder and its scenario in `meeting_fixture_scenarios_test.go` or `history_fixture_scenarios_test.go`, then regenerate both languages:
+Do not edit fixture JSON by hand. Change the production builder and its scenario in `meeting_fixture_scenarios_test.go`, `history_fixture_scenarios_test.go`, or `feature_fixture_scenarios_test.go`, then regenerate both languages:
 
 ```sh
 VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 ```
 
-`TestMeetingViewStateGolden` builds every fixture through the production view-state builders. `TestMeetingFixtureCoverage` and `TestHistoryFixtureCoverage` derive required states and problem codes from the domain declarations and fail when a fixture is missing.
+`TestMeetingViewStateGolden` builds every fixture through the production view-state builders. `TestMeetingFixtureCoverage`, `TestHistoryFixtureCoverage`, and `TestFeatureFixtureCoverage` derive required states and problem codes from the domain declarations and fail when a fixture is missing.
 
-If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to `meeting_actions.go` or `history_actions.go`, implement it on `app`, record it on `meetingDemoHost`, and add a click test to `TestMeetingDemoActionControls` or `TestHistoryDemoActionControls`.
+If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to the area's actions file, implement it on `app`, record it on `meetingDemoHost`, and add a click test to `TestMeetingDemoActionControls`, `TestHistoryDemoActionControls`, or `TestFeatureDemoActionControls`.
 
 ## Add the next area or a fixture-backed page
 
@@ -66,7 +67,7 @@ Use a short kind such as `note` for the new page. Keep the view in a `*_page.go`
 
 1. Add an optional field for the new kind to `meetingFixtureState` in `meeting_fixture.go` and a matching case to `buildMeetingFixture` in `meeting_fixture_test.go`. Add a scenario to `meeting_fixture_scenarios_test.go` and regenerate the fixtures.
 2. Accept the kind in `readMeetingDemoFixture` in `meeting_demo.go` and add its render branch to `meetingDemoView` in `meeting_demo_view.go`. Initialize and reset any local widget state in `selectMeetingFixture`.
-3. Add the action methods to `meeting_actions.go`, implement them on `app`, and record them on `meetingDemoHost`.
+3. Add the action methods to the area's actions file, implement them on `app`, and record them on `meetingDemoHost`.
 4. Add the expected visible text to `meetingDemoSentinel` in `meeting_demo_test.go` and add controls to `TestMeetingDemoActionControls`.
 5. For a production page, construct its state in the owning controller and register the view in `pages.go`. A demo-only exercise can stop after the fixture, view, and action tests.
 
@@ -85,11 +86,11 @@ The test writes one PNG per fixture as `<locale>-<scenario>.png` and checks each
 Check fixture switching and control-to-action wiring:
 
 ```sh
-go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls)$' .
-go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History)Demo' .
+go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|FeatureDemoActionControls)$' .
+go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History|Feature)Demo' .
 ```
 
-The first command clicks every action-bearing meeting and history control and the local cancellation controls, then compares the exact recorded calls. It covers menus, confirmation dialogs, playback, search, settings, exports, cleanup, and Privacy access. The second command also compiles the enabled demo entry point.
+The first command clicks every action-bearing meeting, history, and feature control and the local cancellation controls, then compares the exact recorded calls. It covers menus, confirmation dialogs, playback, search, settings, exports, cleanup, Privacy access, shortcut editing, model selection, prompt controls, and Try sessions. The second command also compiles the enabled demo entry point.
 
 These tests use `ui.Tester`. They need no window, helper binary, model, microphone, network, or Voxt data directory. They also run on Linux.
 

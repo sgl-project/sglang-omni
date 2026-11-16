@@ -1,6 +1,6 @@
 # 用 fixture 开发视图
 
-这份指南帮助你在不启动 Voxt 辅助进程、不加载模型、不授予麦克风权限、不打开 Voxt 数据目录的情况下修改会议或历史视图。
+这份指南帮助你在不启动 Voxt 辅助进程、不加载模型、不授予麦克风权限、不打开 Voxt 数据目录的情况下修改会议、历史或功能页视图。
 
 ## 打开第一个 fixture
 
@@ -36,27 +36,28 @@ GOFLAGS='-tags=meetingdemo' go tool mygo build -skip-dmg ./demo
 
 ## 修改视图
 
-会议视图包括 `meetings_page.go`、`meetings_detail.go`、`meetings_playback.go`、`meeting_overlay.go` 和 `meeting_overlay_view.go`。历史视图包括 `history_page.go`、`history_detail.go`、`history_menu.go`、`history_retry.go`、`history_settings.go`、`history_export.go` 和 `history_access.go`。视图只读取 view state、调用 actions，并持有滚动位置、打开的菜单等界面本地状态，不读取 store、snapshot、settings 或 `app`。
+会议视图包括 `meetings_page.go`、`meetings_detail.go`、`meetings_playback.go`、`meeting_overlay.go` 和 `meeting_overlay_view.go`。历史视图包括 `history_page.go`、`history_detail.go`、`history_menu.go`、`history_retry.go`、`history_settings.go`、`history_export.go` 和 `history_access.go`。功能区域视图包括 `feature_page.go`、`feature_keys.go`、`feature_models.go`、`feature_prompts.go`、`feature_endword.go` 和 `try_card.go`。视图只读取 view state、调用 actions，并持有滚动位置、打开的菜单等界面本地状态，不读取 store、snapshot、settings 或 `app`。
 
 对应的逻辑文件负责构造 view state 和实现 actions：
 
 - `meetings_view_state.go` 和 `meeting_overlay_state.go` 构造会议显示数据。`meetings_controller.go`、`meetings_detail_controller.go`、`meetings_playback_controller.go` 和 `meeting_overlay_window.go` 负责 store 读取、详情更新、音频工作和原生资源。
 - `history_view_state.go`、`history_settings_view_state.go` 和 `history_access_view_state.go` 构造历史显示数据。历史控制器负责 store 读取、重试、录音任务、导出和访问 socket。
-- `meeting_actions.go` 和 `history_actions.go` 定义用户意图。正式 app 由 `app` 实现，demo 由 `meetingDemoHost` 记录。
+- `feature_view_state.go`、`feature_shortcut_view_state.go`、`feature_prompt_view_state.go`、`feature_page_view_state.go` 和 `try_view_state.go` 构造功能页显示数据。功能控制器负责设置、模型列表、快捷键解析、提示词组合和会话 snapshot。
+- `meeting_actions.go`、`history_actions.go`、`feature_actions.go` 和 `try_actions.go` 定义用户意图。正式 app 由 `app` 实现，demo 由 `meetingDemoHost` 记录。
 
 尺寸、颜色和控件选择只放在视图文件里。移动代码后运行 `go tool mygo vet .` 和 `go test ./internal/archtest`。
 
 ## 新增或修改 fixture 数据
 
-不要手改 fixture JSON。先改生产代码里的构造器和 `meeting_fixture_scenarios_test.go` 或 `history_fixture_scenarios_test.go` 中的场景，再重新生成中英文 fixture：
+不要手改 fixture JSON。先改生产代码里的构造器和 `meeting_fixture_scenarios_test.go`、`history_fixture_scenarios_test.go` 或 `feature_fixture_scenarios_test.go` 中的场景，再重新生成中英文 fixture：
 
 ```sh
 VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 ```
 
-`TestMeetingViewStateGolden` 通过生产代码的 view state 构造器生成全部 fixture。`TestMeetingFixtureCoverage` 和 `TestHistoryFixtureCoverage` 从领域声明中读取状态和问题代码，缺 fixture 时会失败。
+`TestMeetingViewStateGolden` 通过生产代码的 view state 构造器生成全部 fixture。`TestMeetingFixtureCoverage`、`TestHistoryFixtureCoverage` 和 `TestFeatureFixtureCoverage` 从领域声明中读取状态和问题代码，缺 fixture 时会失败。
 
-视图需要新数据时，由功能侧把数据加入构造器输入和 view state，并增加一个能证明该值来自真实逻辑的场景。新增用户意图时，在 `meeting_actions.go` 或 `history_actions.go` 中加入 action，在 `app` 上实现，在 `meetingDemoHost` 上记录，并在 `TestMeetingDemoActionControls` 或 `TestHistoryDemoActionControls` 中加入点击测试。
+视图需要新数据时，由功能侧把数据加入构造器输入和 view state，并增加一个能证明该值来自真实逻辑的场景。新增用户意图时，在所属区域的 actions 文件中加入 action，在 `app` 上实现，在 `meetingDemoHost` 上记录，并在 `TestMeetingDemoActionControls`、`TestHistoryDemoActionControls` 或 `TestFeatureDemoActionControls` 中加入点击测试。
 
 ## 接入下一个区域或 fixture 驱动的小页面
 
@@ -66,7 +67,7 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 1. 在 `meeting_fixture.go` 的 `meetingFixtureState` 中加入对应字段，并在 `meeting_fixture_test.go` 的 `buildMeetingFixture` 中加入构造分支。在 `meeting_fixture_scenarios_test.go` 中加入场景，然后重新生成 fixture。
 2. 在 `meeting_demo.go` 的 `readMeetingDemoFixture` 中接受这个 kind，并在 `meeting_demo_view.go` 的 `meetingDemoView` 中加入渲染分支。在 `selectMeetingFixture` 中初始化和重置界面本地状态。
-3. 在 `meeting_actions.go` 中加入 action，在 `app` 上实现，并在 `meetingDemoHost` 上记录。
+3. 在所属区域的 actions 文件中加入 action，在 `app` 上实现，并在 `meetingDemoHost` 上记录。
 4. 在 `meeting_demo_test.go` 的 `meetingDemoSentinel` 中加入预期可见文字，并在 `TestMeetingDemoActionControls` 中加入控件测试。
 5. 正式页面还要由所属控制器构造状态，并在 `pages.go` 中注册视图。只做 demo 练习时，完成 fixture、视图和 action 测试即可。
 
@@ -85,11 +86,11 @@ VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -count=1 -run '^TestMeetingDem
 检查 fixture 切换和控件到 action 的接线：
 
 ```sh
-go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls)$' .
-go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History)Demo' .
+go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|FeatureDemoActionControls)$' .
+go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History|Feature)Demo' .
 ```
 
-第一条命令点击每个会触发 action 的会议和历史控件以及本地取消控件，再比较完整的调用记录，覆盖菜单、确认对话框、播放、搜索、历史设置、导出、清理和“其他程序”。第二条命令还会编译启用 demo 的入口。
+第一条命令点击每个会触发 action 的会议、历史和功能页控件以及本地取消控件，再比较完整的调用记录，覆盖菜单、确认对话框、播放、搜索、历史设置、导出、清理、“其他程序”、快捷键编辑、模型选择、提示词控件和试用会话。第二条命令还会编译启用 demo 的入口。
 
 这些测试使用 `ui.Tester`，不需要窗口、辅助进程二进制、模型、麦克风、网络或 Voxt 数据目录，也能在 Linux 上运行。
 
