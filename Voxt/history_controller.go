@@ -17,10 +17,11 @@ import (
 const historyLimit = 500
 
 type historyState struct {
-	hist    historyView
-	histUI  historyLocalUI
-	histSet histSettingsState
-	homeDir string
+	hist      historyView
+	histUI    historyLocalUI
+	histSet   histSettingsState
+	histSetUI historySettingsLocalUI
+	homeDir   string
 }
 
 type historyView struct {

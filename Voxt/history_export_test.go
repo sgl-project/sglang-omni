@@ -94,7 +94,7 @@ func TestHistoryExportDialog(t *testing.T) {
 	if !has(tt, "Export text") || !has(tt, "Markdown") {
 		t.Fatalf("no row: %q", firstTexts(tt))
 	}
-	a.histSet.textFormat = "JSONL"
+	a.histSetUI.textFormat = "JSONL"
 	frames(tt)
 	click(t, tt, "Export text…")
 	if saved != "voxt-history.jsonl" {

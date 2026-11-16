@@ -108,14 +108,13 @@ func (a *app) askCleanup(next settings.History) {
 	a.async(func() {
 		n, err := h.CountPrune(context.Background(), rt)
 		a.post(func() {
-			hs := &a.histSet
 			if err != nil {
 				a.toast(i18n.T("Could not read the history: %v", err))
-				hs.formFor = "" // the controls show the setting again
+				a.histSetUI.formFor = "" // the controls show the setting again
 				return
 			}
 			if n > 0 {
-				hs.pruneAsk, hs.pruneN, hs.pruneTo = true, n, next
+				a.histSetUI.pruneAsk, a.histSetUI.pruneN, a.histSet.pruneTo = true, n, next
 				return
 			}
 			a.saveCleanup(next)
@@ -128,7 +127,7 @@ func (a *app) saveCleanup(h settings.History) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.History.CleanupOff, s.History.KeepDays, s.History.KeepCount = h.CleanupOff, h.KeepDays, h.KeepCount
 	})
-	a.histSet.formFor = ""
+	a.histSetUI.formFor = ""
 }
 
 // applyAudioDir makes the saved recordings folder the store's, or, when
