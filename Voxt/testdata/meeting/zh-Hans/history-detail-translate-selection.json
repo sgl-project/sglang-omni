@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "translate",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-translated",
-      "kind": "translate",
-      "status": "done",
-      "delivery": "card",
-      "rule_source": "url",
-      "dsp": "highpass",
       "error_text": "",
       "error_detail": "",
       "error_warning": false,

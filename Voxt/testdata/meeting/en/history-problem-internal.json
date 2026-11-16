@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-problem-internal",
-      "kind": "transcribe",
-      "status": "failed",
-      "delivery": "insert",
-      "rule_source": "app",
-      "dsp": "highpass+level",
       "error_text": "Failed: Something went wrong: fixture problem",
       "error_detail": "Something went wrong: fixture problem",
       "error_warning": false,

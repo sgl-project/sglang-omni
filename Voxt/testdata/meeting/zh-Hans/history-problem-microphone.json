@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-problem-microphone",
-      "kind": "transcribe",
-      "status": "failed",
-      "delivery": "insert",
-      "rule_source": "app",
-      "dsp": "highpass+level",
       "error_text": "失败：Voxt 没有麦克风权限。",
       "error_detail": "Voxt 没有麦克风权限。",
       "error_warning": false,

@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-problem-truncated",
-      "kind": "transcribe",
-      "status": "done",
-      "delivery": "card",
-      "rule_source": "app",
-      "dsp": "highpass+level",
       "error_text": "Done, but with a problem: The model hit its length limit, so the answer may be incomplete.",
       "error_detail": "The model hit its length limit, so the answer may be incomplete.",
       "error_warning": true,

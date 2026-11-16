@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-inserted",
-      "kind": "transcribe",
-      "status": "done",
-      "delivery": "card",
-      "rule_source": "app",
-      "dsp": "highpass+level",
       "error_text": "已完成，但有问题：the answer may be incomplete",
       "error_detail": "the answer may be incomplete",
       "error_warning": true,

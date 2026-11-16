@@ -18,7 +18,7 @@ func historyFixtureScenarios() []meetingFixtureScenario {
 		scenarios = append(scenarios, meetingFixtureScenario{name: name, kind: "history", history: input})
 	}
 	addHistory("history-page-loading", func(input *historyViewStateInput) {
-		input.Read, input.Loading, input.Entries = false, true, nil
+		input.Read, input.Entries = false, nil
 	})
 	for _, kind := range append([]store.Kind{""}, store.Kinds...) {
 		name := "all"

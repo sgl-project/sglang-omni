@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -47,11 +46,6 @@
     ],
     "detail": {
       "id": "history-inserted",
-      "kind": "transcribe",
-      "status": "done",
-      "delivery": "insert",
-      "rule_source": "app",
-      "dsp": "highpass",
       "error_text": "",
       "error_detail": "",
       "error_warning": false,

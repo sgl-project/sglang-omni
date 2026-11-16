@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "fixture read failed",
     "kind": "transcribe",
     "query": "",

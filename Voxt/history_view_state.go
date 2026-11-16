@@ -64,11 +64,6 @@ type historyFactSectionViewState struct {
 
 type historyDetailViewState struct {
 	ID                string                        `json:"id"`
-	Kind              string                        `json:"kind"`
-	Status            string                        `json:"status"`
-	Delivery          string                        `json:"delivery"`
-	RuleSource        string                        `json:"rule_source"`
-	DSP               string                        `json:"dsp"`
 	ErrorText         string                        `json:"error_text"`
 	ErrorDetail       string                        `json:"error_detail"`
 	ErrorWarning      bool                          `json:"error_warning"`
@@ -89,7 +84,6 @@ type historyEmptyViewState struct {
 
 type historyViewState struct {
 	Read              bool                    `json:"read"`
-	Loading           bool                    `json:"loading"`
 	Error             string                  `json:"error"`
 	Kind              string                  `json:"kind"`
 	Query             string                  `json:"query"`
@@ -114,7 +108,6 @@ type historyViewStateInput struct {
 	Entries           []store.Entry
 	Kind              store.Kind
 	Read              bool
-	Loading           bool
 	Error             string
 	Query             string
 	SelectedID        string
@@ -143,7 +136,7 @@ func historyKindName(translator *i18n.Translator, kind store.Kind) string {
 
 func buildHistoryViewState(translator *i18n.Translator, input historyViewStateInput) historyViewState {
 	state := historyViewState{
-		Read: input.Read, Loading: input.Loading, Error: input.Error, Kind: string(input.Kind), Query: input.Query,
+		Read: input.Read, Error: input.Error, Kind: string(input.Kind), Query: input.Query,
 		Tabs: historyTabsFor(translator), KeepHistory: input.KeepHistory, SettingsAvailable: input.SettingsAvailable,
 	}
 	if count := len(input.Entries); count > 0 {
@@ -290,8 +283,7 @@ func buildHistoryEmptyViewState(translator *i18n.Translator, kind store.Kind, qu
 func buildHistoryDetailViewState(translator *i18n.Translator, input historyDetailStateInput, now time.Time) *historyDetailViewState {
 	entry := input.Entry
 	state := &historyDetailViewState{
-		ID: entry.ID, Kind: string(entry.Kind), Status: string(entry.Status), Delivery: entry.Delivery,
-		RuleSource: entry.RuleSource, DSP: entry.DSP, ErrorDetail: entry.Error, CanReveal: entry.Audio != "",
+		ID: entry.ID, ErrorDetail: entry.Error, CanReveal: entry.Audio != "",
 		Retry: buildHistoryRetryViewState(translator, entry, input.Retry),
 	}
 	if entry.Error != "" {

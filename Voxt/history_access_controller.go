@@ -199,10 +199,6 @@ func readerLabel(read historyapi.Read) string {
 	return historyReaderLabelFor(i18n.CurrentTranslator(), read)
 }
 
-func readLine(read historyapi.Read) string {
-	return historyReadLineFor(i18n.CurrentTranslator(), read, time.Now())
-}
-
 func (a *app) historyAccessModel(now time.Time) historyAccessViewState {
 	return buildHistoryAccessViewState(i18n.CurrentTranslator(), historyAccessStateInput{
 		On: a.prefs.Privacy.HistoryAccess, Selection: a.histAccessUI.historySelection,

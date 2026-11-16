@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-problem-microphone",
-      "kind": "transcribe",
-      "status": "failed",
-      "delivery": "insert",
-      "rule_source": "app",
-      "dsp": "highpass+level",
       "error_text": "Failed: Voxt does not have microphone access.",
       "error_detail": "Voxt does not have microphone access.",
       "error_warning": false,

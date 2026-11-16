@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-retry",
-      "kind": "transcribe",
-      "status": "cancelled",
-      "delivery": "insert",
-      "rule_source": "app",
-      "dsp": "highpass+level",
       "error_text": "Done, but with a problem: recognition failed",
       "error_detail": "recognition failed",
       "error_warning": true,

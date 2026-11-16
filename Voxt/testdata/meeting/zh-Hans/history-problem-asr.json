@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-problem-asr",
-      "kind": "transcribe",
-      "status": "done",
-      "delivery": "card",
-      "rule_source": "app",
-      "dsp": "highpass+level",
       "error_text": "已完成，但有问题：完整识别失败，用了实时识别的文字。",
       "error_detail": "完整识别失败，用了实时识别的文字。",
       "error_warning": true,

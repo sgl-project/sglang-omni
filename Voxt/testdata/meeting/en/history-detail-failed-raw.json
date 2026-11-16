@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-failed",
-      "kind": "transcribe",
-      "status": "failed",
-      "delivery": "",
-      "rule_source": "",
-      "dsp": "",
       "error_text": "Failed: speech service failed",
       "error_detail": "speech service failed",
       "error_warning": false,

@@ -145,10 +145,10 @@ func TestHistoryAccessFlow(t *testing.T) {
 	read("daily-obsidian")
 	waitFor(t, drain, func() bool { return len(a.histAccess.reads) == 1 && a.noticeCount("daily-obsidian") == 1 })
 	drain()
-	if line := readLine(a.histAccess.reads[0]); !strings.Contains(line, "1 entry") || !strings.Contains(line, "daily-obsidian") {
+	if line := historyReadLineFor(i18n.CurrentTranslator(), a.histAccess.reads[0], time.Now()); !strings.Contains(line, "1 entry") || !strings.Contains(line, "daily-obsidian") {
 		t.Errorf("line %q", line)
 	}
-	if !has(tt, readLine(a.histAccess.reads[0])) {
+	if !has(tt, historyReadLineFor(i18n.CurrentTranslator(), a.histAccess.reads[0], time.Now())) {
 		t.Errorf("Last read does not show: %q", tt.Texts())
 	}
 	read("daily-obsidian")

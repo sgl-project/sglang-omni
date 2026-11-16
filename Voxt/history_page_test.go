@@ -12,6 +12,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -278,11 +279,11 @@ func TestHistoryAllTab(t *testing.T) {
 		t.Errorf("no search empty state: %q", firstTexts(tt))
 	}
 	// Export offers the shown entries only when they are not all of them.
-	if got := a.shownLabel(); got != "All matching “无此内容 nothing”" {
+	if got := historyShownLabelFor(i18n.CurrentTranslator(), a.histUI.kind(), a.histSearch()); got != "All matching “无此内容 nothing”" {
 		t.Errorf("shown label with a search %q", got)
 	}
 	a.histUI.query = ""
-	if got := a.shownLabel(); got != "" {
+	if got := historyShownLabelFor(i18n.CurrentTranslator(), a.histUI.kind(), a.histSearch()); got != "" {
 		t.Errorf("shown label %q", got)
 	}
 	// The feature tabs do not name the feature.
@@ -473,6 +474,29 @@ func TestHistoryDelete(t *testing.T) {
 	}
 	if a.histUI.sel != "" || len(a.hist.list) != 3 || has(tt, "明天上午十点的站会改到线上，链接我稍后发到群里。") {
 		t.Errorf("after Delete: selected %q, %v", a.histUI.sel, historyIDs(a))
+	}
+}
+
+func TestHistoryPageModelTimeZone(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	instant := time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
+	a.hist.list = []store.Entry{{ID: "zone", Kind: store.KindTranscribe, Status: store.StatusDone, CreatedAt: instant.Add(-48 * time.Hour), Result: "old"}}
+	a.hist.listFor = "transcribe\x00"
+	a.histUI.sel = "zone"
+	first := a.historyPageModel(instant)
+	second := a.historyPageModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	timeText := func(state historyViewState) string {
+		for _, section := range state.Detail.Sections {
+			for _, fact := range section.Facts {
+				if fact.Label == "Time" {
+					return fact.Value
+				}
+			}
+		}
+		return ""
+	}
+	if first.Detail == nil || second.Detail == nil || timeText(first) == timeText(second) {
+		t.Fatalf("timezone change kept stale detail time %q and %q", timeText(first), timeText(second))
 	}
 }
 

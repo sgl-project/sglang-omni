@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-problem-empty",
-      "kind": "transcribe",
-      "status": "failed",
-      "delivery": "insert",
-      "rule_source": "app",
-      "dsp": "highpass+level",
       "error_text": "Failed: The language model returned an empty answer.",
       "error_detail": "The language model returned an empty answer.",
       "error_warning": false,

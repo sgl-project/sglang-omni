@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": true,
-    "loading": false,
     "error": "",
     "kind": "transcribe",
     "query": "",
@@ -53,11 +52,6 @@
     ],
     "detail": {
       "id": "history-problem-llm",
-      "kind": "transcribe",
-      "status": "done",
-      "delivery": "card",
-      "rule_source": "app",
-      "dsp": "highpass+level",
       "error_text": "已完成，但有问题：语言模型出错了，已插入识别原文。",
       "error_detail": "语言模型出错了，已插入识别原文。",
       "error_warning": true,

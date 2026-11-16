@@ -27,10 +27,6 @@ type histSettingsState struct {
 
 func (a *app) histSearch() string { return strings.TrimSpace(a.histUI.query) }
 
-func (a *app) shownLabel() string {
-	return historyShownLabelFor(i18n.CurrentTranslator(), a.histUI.kind(), a.histSearch())
-}
-
 func (a *app) openHistorySettingsDialog() {
 	a.histSetUI.open, a.histSetUI.formFor, a.histSet.usageFor = true, "", ""
 	if a.histSet.busy == "" {

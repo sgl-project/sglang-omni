@@ -3,7 +3,6 @@
   "kind": "history",
   "history": {
     "read": false,
-    "loading": true,
     "error": "",
     "kind": "transcribe",
     "query": "",

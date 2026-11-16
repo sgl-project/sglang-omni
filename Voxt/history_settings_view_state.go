@@ -174,12 +174,3 @@ func historySelectedLabel(selected string, options []string) string {
 	}
 	return options[0]
 }
-
-func historySelectedValue(label string, options []historyChoiceViewState) int {
-	for _, option := range options {
-		if option.Label == label {
-			return option.Value
-		}
-	}
-	return options[0].Value
-}
