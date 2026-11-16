@@ -1364,6 +1364,8 @@
   "The password cannot have quotes, backslashes or line breaks.": "密码里不能有引号、反斜杠或换行。",
   "Could not save the proxy's password in the Keychain.": "无法把代理密码保存到钥匙串。",
   "Read": "查看全文",
+  "What's new": "更新内容",
+  "What's new in %s": "%s 更新内容",
   "Added to the dictionary: %s": "已加入词典：%s",
   "Already in the dictionary: %s": "词典里已经有：%s",
   "Could not add it to the dictionary.": "无法加入词典。",

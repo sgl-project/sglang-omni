@@ -314,6 +314,13 @@ func (a *app) aboutSettings(c *ui.Context) {
 	})
 
 	a.updateSettingsSection(c) // updates.go
+	if n := a.announceCurrent; n.Version != "" && n.Version == a.version {
+		settingRow(c, "about-whats-new", i18n.T("What's new in %s", n.Version), "", func() {
+			if ui.Button(c.Key("about-whats-new"), i18n.T("Read")).Clicked() {
+				a.announceShown, a.announceShownOpen = n, true
+			}
+		})
+	}
 
 	sectionTitle(c, i18n.T("Self-check"))
 	settingRow(c, "about-check", i18n.T("Check Voxt"), "", func() {

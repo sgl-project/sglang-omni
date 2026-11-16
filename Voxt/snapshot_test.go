@@ -273,6 +273,22 @@ func snapshotsMain(t *testing.T, out string) {
 		a.clearNotices()
 		a.upd, a.updKnown = fake, false
 
+		// The current version's short announcement and its full-notes entry
+		// in Settings → About → Updates (announcements.go).
+		a.version = "2.0.3"
+		announcements := &announceServer{revision: "r1", list: newAnnouncement}
+		a.announceURL = announcements.start(t)
+		a.checkAnnouncements()
+		a.navigate("/home")
+		save("sidebar-announcement-short")
+		a.navigate("/settings/about")
+		scrollToText(tt, i18n.T("What's new in %s", a.version))
+		save("settings-about-whats-new")
+		a.settingsOpen = false
+		a.announceURL = ""
+		a.version = "0.1.0"
+		a.clearNotices()
+
 		// The recording overlay, state by state (overlay_test.go).
 		overlayShots(t, a, out, suffix, run.dark)
 
