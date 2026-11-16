@@ -10,11 +10,13 @@ import (
 )
 
 type meetingFixtureScenario struct {
-	name     string
-	kind     string
-	snapshot meeting.Snapshot
-	page     meetingsViewStateInput
-	err      error
+	name      string
+	kind      string
+	snapshot  meeting.Snapshot
+	page      meetingsViewStateInput
+	err       error
+	collapsed bool
+	cardSize  int
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
@@ -22,7 +24,7 @@ var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
 func meetingFixtureScenarios() []meetingFixtureScenario {
 	var scenarios []meetingFixtureScenario
 	addOverlay := func(name string, snapshot meeting.Snapshot) {
-		scenarios = append(scenarios, meetingFixtureScenario{name: name, kind: "overlay", snapshot: snapshot})
+		scenarios = append(scenarios, meetingFixtureScenario{name: name, kind: "overlay", snapshot: snapshot, cardSize: 1})
 	}
 	addOverlay("empty-initial", meeting.Snapshot{})
 	for _, state := range []meeting.State{
@@ -62,6 +64,10 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 		snapshot.Problem = &meeting.Problem{Key: problem.key}
 		addOverlay("problem-"+problem.name, snapshot)
 	}
+	scenarios = append(scenarios,
+		meetingFixtureScenario{name: "state-collapsed", kind: "overlay", snapshot: meetingFixtureSnapshot(), collapsed: true, cardSize: 1},
+		meetingFixtureScenario{name: "state-card-largest", kind: "overlay", snapshot: meetingFixtureSnapshot(), cardSize: len(meetingOvWidths) - 1},
+	)
 
 	for _, scenario := range []struct {
 		name  string
@@ -95,6 +101,10 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 		}},
 		{"detail-error", func(input *meetingsViewStateInput) {
 			input.Detail = &meetingDetailStateInput{Meeting: meetingFixtureDetailMeeting(), Error: "fixture detail failed"}
+		}},
+		{"detail-interrupted", func(input *meetingsViewStateInput) {
+			input.Detail = meetingFixtureDetailInput()
+			input.Detail.Meeting.Status = store.MeetingInterrupted
 		}},
 		{"detail-empty-no-llm", func(input *meetingsViewStateInput) {
 			stored := meetingFixtureDetailMeeting()

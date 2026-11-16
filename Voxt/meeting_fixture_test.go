@@ -65,7 +65,7 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	translator := i18n.NewTranslator(locale)
 	switch scenario.kind {
 	case "overlay":
-		state := buildMeetingOverlayViewState(translator, scenario.snapshot, false, 1)
+		state := buildMeetingOverlayViewState(translator, scenario.snapshot, scenario.collapsed, scenario.cardSize)
 		fixture.Overlay = &state
 	case "page":
 		state := buildMeetingsViewState(translator, scenario.page)
