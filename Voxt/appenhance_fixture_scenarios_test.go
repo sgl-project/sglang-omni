@@ -73,6 +73,9 @@ func appEnhancementFixtureScenarios() []meetingFixtureScenario {
 		input.SelectedID = "g-code"
 		input.Rules.Groups[1].URLs = []string{"HTTPS://GitHub.com/"}
 	})
+	add("url-error-empty", func(input *appEnhancementViewStateInput) {
+		appEnhancementFixturePattern(input, "")
+	})
 	add("url-error-space", func(input *appEnhancementViewStateInput) {
 		appEnhancementFixturePattern(input, "bad host")
 	})

@@ -70,9 +70,7 @@ func checkAppEnhancementFixtureValues(t *testing.T, locale string, fixtures map[
 		}
 	}
 	assertMeetingFixtureSet(t, locale+" app enhancement match sources", meetingTypedConstants(t, "internal/appctx/match.go", "Source"), sources)
-	requiredPatternProblems := appEnhancementPatternProblemCodes(t)
-	delete(requiredPatternProblems, "empty") // Empty input never reaches the Add URL action or a normalized document.
-	assertMeetingFixtureSet(t, locale+" app enhancement pattern problems", requiredPatternProblems, patternProblems)
+	assertMeetingFixtureSet(t, locale+" app enhancement pattern problems", appEnhancementPatternProblemCodes(t), patternProblems)
 	assertMeetingFixtureSet(t, locale+" app enhancement auto-key problems", map[string]bool{"autoKey": true}, autoKeyProblems)
 	assertMeetingFixtureSet(t, locale+" app enhancement browser engines", map[string]bool{appctx.WebKit: true, appctx.Chromium: true, appctx.Gecko: true, "": true}, engines)
 	assertMeetingFixtureSet(t, locale+" app enhancement address states", map[string]bool{
