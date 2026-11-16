@@ -11,10 +11,12 @@
 #include <utility>
 #include <vector>
 
+#include "common/generation.h"
 #include "qwen3_asr/draft_backoff.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 
 namespace qwen3_asr {
+
+using omni_common::GenerationCancelled;
 
 namespace mx = mlx::core;
 
@@ -245,7 +247,7 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
   int processed = 0;
   while (prefill_step_tokens > 0 && embeddings.shape(1) - processed > 1) {
     if (cancel.load()) {
-      throw TranscriptionCancelled();
+      throw GenerationCancelled();
     } else {
     }
     const int token_count =
@@ -265,7 +267,7 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
     processed += token_count;
   }
   if (cancel.load()) {
-    throw TranscriptionCancelled();
+    throw GenerationCancelled();
   } else {
   }
   int anchor_id;
@@ -279,7 +281,7 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
         mx::argmax(target.LastLogits(prompt_hidden)).item<uint32_t>());
   }
   if (cancel.load()) {
-    throw TranscriptionCancelled();
+    throw GenerationCancelled();
   } else {
   }
   bool finished = commit(anchor_id);
@@ -288,7 +290,7 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
   DraftStatistics statistics;
   while (!finished) {
     if (cancel.load()) {
-      throw TranscriptionCancelled();
+      throw GenerationCancelled();
     } else {
     }
     const auto round_started = std::chrono::steady_clock::now();
@@ -356,7 +358,7 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
     }
 
     if (cancel.load()) {
-      throw TranscriptionCancelled();
+      throw GenerationCancelled();
     } else {
     }
     const Qwen3Decoder plain_target(target, true);
@@ -372,7 +374,7 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
     if (finished) {
       break;
     } else if (cancel.load()) {
-      throw TranscriptionCancelled();
+      throw GenerationCancelled();
     } else {
     }
     const uint32_t probe_anchor_id = static_cast<uint32_t>(anchor_id);

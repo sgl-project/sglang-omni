@@ -9,8 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "common/transcription.h"
 #include "parakeet/parakeet_model.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 
 namespace parakeet {
 
@@ -47,7 +47,7 @@ public:
   explicit ParakeetTranscriber(const std::filesystem::path &model_directory);
 
   // The text, trimmed as Swift trims it, and one segment per sentence.
-  qwen3_asr::TranscriptionResult
+  omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const ParakeetOptions &options,
              const std::atomic<bool> &cancel) const;
 
