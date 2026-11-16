@@ -284,6 +284,60 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 		}
 		return enhancement.Preview.MatchText
 
+	case "dictionary":
+		dictionary := state.Dictionary
+		if dictionary.ScanOpen {
+			if dictionary.Scan.Body != "" {
+				return dictionary.Scan.Body
+			}
+			if dictionary.Scan.Warning != "" {
+				return dictionary.Scan.Warning
+			}
+			return i18n.T("Scan history")
+		}
+		if dictionary.Edit.Open {
+			if dictionary.Edit.Error != "" {
+				return dictionary.Edit.Error
+			}
+			if dictionary.Edit.ID != "" {
+				return i18n.T("Edit term")
+			}
+			return i18n.T("Add term")
+		}
+		if dictionary.Tab == dictNotesTab {
+			return i18n.T("Personal dictionary")
+		}
+		if dictionary.Error != "" {
+			return dictionary.Error
+		}
+		if len(dictionary.Terms) == 0 && dictionary.ListFor != "" {
+			return i18n.T("No term matches “%s”", dictionary.ListFor)
+		}
+		if len(dictionary.Terms) == 0 {
+			return i18n.T("Names and terms you use")
+		}
+		return dictionary.Terms[0].Term
+	case "notes":
+		notes := state.Notes
+		if notes.Shortcut.RecordDenied {
+			return i18n.T("Recording a shortcut needs Accessibility access.")
+		}
+		if notes.Shortcut.Custom && notes.Shortcut.Typing && notes.Shortcut.ParseError != "" {
+			return notes.Shortcut.ParseError
+		}
+		if len(notes.Shortcut.Problems) > 0 {
+			return notes.Shortcut.Problems[0]
+		}
+		if notes.Error != "" {
+			return notes.Error
+		}
+		if !notes.Read {
+			return i18n.T("Notes")
+		}
+		if len(notes.Rows) == 0 {
+			return i18n.T("No notes yet")
+		}
+		return notes.Rows[0].Text
 	default:
 		return ""
 	}
@@ -309,6 +363,11 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.appEnhancementUI.sel = "stale"
 	host.appEnhancementUI.appsQuery = "stale"
 
+	host.dictionaryUI.query = "stale"
+	host.dictionaryUI.editOpen = true
+	host.dictionaryUI.scanOpen = true
+	host.dictionaryUI.notes.text = "stale"
+	host.notesUI.keys.custom = true
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -324,8 +383,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen ||
 		host.updatesUI.relOpen || host.updatesUI.autoInstall ||
 		host.historyUI.delAsk || host.historyUI.delID != "" ||
-		host.appEnhancementUI.appsQuery != "" || host.appEnhancementUI.sel == "stale" {
-
+		host.appEnhancementUI.appsQuery != "" || host.appEnhancementUI.sel == "stale" ||
+		host.dictionaryUI.query != "" || host.dictionaryUI.editOpen || host.dictionaryUI.scanOpen || host.dictionaryUI.notes.text != "" || host.notesUI.keys.custom {
 		t.Fatal("fixture switch kept local UI state")
 	}
 	if state := host.current().state.Onboarding; state != nil && host.onboardingUI.open != state.Open {

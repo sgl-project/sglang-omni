@@ -166,14 +166,18 @@ func HotkeyProblemTextFor(translator *i18n.Translator, p hotkey.Problem) string 
 // index: its own, and the conflicts reported on another feature's
 // binding that clash with it.
 func HotkeyProblems(f settings.Features, feature string) map[int][]string {
+	return HotkeyProblemsFor(i18n.CurrentTranslator(), f, feature)
+}
+
+func HotkeyProblemsFor(translator *i18n.Translator, f settings.Features, feature string) map[int][]string {
 	out := map[int][]string{}
 	for _, p := range hotkey.Check(f) {
 		switch {
 		case p.Feature == feature:
-			out[p.Index] = append(out[p.Index], HotkeyProblemText(p))
+			out[p.Index] = append(out[p.Index], HotkeyProblemTextFor(translator, p))
 		case p.Code == hotkey.ProblemConflict && p.Other == feature:
 			out[p.OtherIndex] = append(out[p.OtherIndex],
-				i18n.T("%s has the same keys and trigger, so only one of them works.", FeatureTitle(p.Feature)))
+				translator.T("%s has the same keys and trigger, so only one of them works.", FeatureTitleFor(translator, p.Feature)))
 		}
 	}
 	return out

@@ -1,0 +1,97 @@
+{
+  "name": "notes-shortcut-parse-empty",
+  "kind": "notes",
+  "notes": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "count_label": "2 notes",
+    "rows": [
+      {
+        "id": "note-2",
+        "text": "call Ana",
+        "time_text": "1 hour ago",
+        "delete_text": "Delete call Ana"
+      },
+      {
+        "id": "note-1",
+        "text": "buy milk",
+        "time_text": "2 hours ago",
+        "delete_text": "Delete buy milk"
+      }
+    ],
+    "shortcut": {
+      "keys": "RightCommand",
+      "current_text": "Right ⌘",
+      "options": [
+        {
+          "label": "Off",
+          "keys": ""
+        },
+        {
+          "label": "Right ⌥",
+          "keys": "RightOption"
+        },
+        {
+          "label": "Right ⌥ ⇧",
+          "keys": "RightOption+Shift"
+        },
+        {
+          "label": "⌃ Right ⌥",
+          "keys": "Control+RightOption"
+        },
+        {
+          "label": "Right ⌘",
+          "keys": "RightCommand"
+        },
+        {
+          "label": "Right ⇧",
+          "keys": "RightShift"
+        },
+        {
+          "label": "fn",
+          "keys": "Fn"
+        },
+        {
+          "label": "fn ⇧",
+          "keys": "Fn+Shift"
+        },
+        {
+          "label": "fn ⌃",
+          "keys": "Fn+Control"
+        },
+        {
+          "label": "⌥Space",
+          "keys": "Option+Space"
+        },
+        {
+          "label": "⌃⌥Space",
+          "keys": "Control+Option+Space"
+        },
+        {
+          "label": "Custom…",
+          "keys": ""
+        }
+      ],
+      "problems": null,
+      "problem_codes": null,
+      "system_codes": null,
+      "used_by": null,
+      "empty_hint": "Press Right ⌘ in any app, speak, and press it again. What you say is saved here instead of typed.",
+      "set_hint": false,
+      "helper_records": false,
+      "selection": "Right ⌘",
+      "custom": true,
+      "typing": true,
+      "edited": true,
+      "text": "",
+      "editing_text": "",
+      "parsed_keys": "",
+      "parse_error": "Type the keys, as in Control+Option+Space.",
+      "parse_code": "empty",
+      "edited_hint": "",
+      "record_denied": false,
+      "unknown": false
+    }
+  }
+}

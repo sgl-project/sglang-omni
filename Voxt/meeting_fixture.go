@@ -19,6 +19,8 @@ type meetingFixtureState struct {
 	Onboarding            *onboardingViewState        `json:"onboarding,omitempty"`
 	AppEnhancement        *appEnhancementViewState    `json:"appenhance,omitempty"`
 	AppEnhancementDetails []appEnhancementGroupDetail `json:"appenhance_details,omitempty"`
+	Dictionary            *dictionaryViewState        `json:"dictionary,omitempty"`
+	Notes                 *notesViewState             `json:"notes,omitempty"`
 }
 
 type sessionOverlayFixtureUI struct {

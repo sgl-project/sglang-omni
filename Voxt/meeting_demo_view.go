@@ -75,6 +75,10 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 			case "appenhance":
 				appEnhancementPage(c, host.appEnhancementState(), host, &host.appEnhancementUI, 800, host)
 
+			case "dictionary":
+				dictionaryPage(c, fixture.state.Dictionary, host, &host.dictionaryUI)
+			case "notes":
+				notesPage(c, fixture.state.Notes, host, &host.notesUI)
 			}
 		})
 	})

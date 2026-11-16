@@ -34,6 +34,8 @@ type meetingFixtureScenario struct {
 	appEnhancementURLCheck     bool
 	appEnhancementAutoKeyCheck bool
 	appEnhancementLibrary      bool
+	dictionary                 dictionaryViewStateInput
+	notes                      notesViewStateInput
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
@@ -153,6 +155,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, onboardingFixtureScenarios()...)
 	scenarios = append(scenarios, appEnhancementFixtureScenarios()...)
 
+	scenarios = append(scenarios, dictionaryFixtureScenarios()...)
 	return scenarios
 }
 

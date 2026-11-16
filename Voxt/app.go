@@ -27,7 +27,7 @@ import (
 //	transcribeState   feature_page.go  the feature pages (Transcribe, Translate, Rewrite)
 //	historyState      history_controller.go the History page
 //	appEnhanceState   appenhance.go   App enhancement: the groups, address reads, the page
-//	dictionaryState   dictionary_page.go  the Dictionary page
+//	dictionaryState   dictionary_controller.go  the Dictionary page
 //	homeState         home_controller.go Home: readiness, today, recent results
 //	onboardingState   onboarding.go   the setup guide
 //	scPromptState     settings_shortcuts_family.go  a shortcut another ActNow app uses too: the prompt
@@ -35,7 +35,7 @@ import (
 //	soundsState       settings_sounds.go  the sounds' presets and previews
 //	muteState         mute_link.go    the system's output, muted while recording
 //	updateState       updates.go      the updater, an update installed while running
-//	notesState        notes_page.go   the Notes page
+//	notesState        notes_controller.go   the Notes page
 //	learnState        learn_link.go   the watch that learns from the user's corrections
 //	historyAccessState history_access_controller.go  other programs reading the history
 //	transcribeSocketState transcribe_socket.go  `Voxt transcribe`'s socket

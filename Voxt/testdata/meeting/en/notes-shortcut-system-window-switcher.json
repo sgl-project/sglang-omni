@@ -1,0 +1,107 @@
+{
+  "name": "notes-shortcut-system-window-switcher",
+  "kind": "notes",
+  "notes": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "count_label": "2 notes",
+    "rows": [
+      {
+        "id": "note-2",
+        "text": "call Ana",
+        "time_text": "1 hour ago",
+        "delete_text": "Delete call Ana"
+      },
+      {
+        "id": "note-1",
+        "text": "buy milk",
+        "time_text": "2 hours ago",
+        "delete_text": "Delete buy milk"
+      }
+    ],
+    "shortcut": {
+      "keys": "Command+`",
+      "current_text": "⌘`",
+      "options": [
+        {
+          "label": "Off",
+          "keys": ""
+        },
+        {
+          "label": "Right ⌥",
+          "keys": "RightOption"
+        },
+        {
+          "label": "Right ⌥ ⇧",
+          "keys": "RightOption+Shift"
+        },
+        {
+          "label": "⌃ Right ⌥",
+          "keys": "Control+RightOption"
+        },
+        {
+          "label": "Right ⌘",
+          "keys": "RightCommand"
+        },
+        {
+          "label": "Right ⇧",
+          "keys": "RightShift"
+        },
+        {
+          "label": "fn",
+          "keys": "Fn"
+        },
+        {
+          "label": "fn ⇧",
+          "keys": "Fn+Shift"
+        },
+        {
+          "label": "fn ⌃",
+          "keys": "Fn+Control"
+        },
+        {
+          "label": "⌥Space",
+          "keys": "Option+Space"
+        },
+        {
+          "label": "⌃⌥Space",
+          "keys": "Control+Option+Space"
+        },
+        {
+          "label": "⌘`",
+          "keys": "Command+`"
+        },
+        {
+          "label": "Custom…",
+          "keys": ""
+        }
+      ],
+      "problems": [
+        "macOS uses these keys for switching windows."
+      ],
+      "problem_codes": [
+        "system"
+      ],
+      "system_codes": [
+        "windowSwitcher"
+      ],
+      "used_by": null,
+      "empty_hint": "Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.",
+      "set_hint": false,
+      "helper_records": false,
+      "selection": "⌘`",
+      "custom": false,
+      "typing": false,
+      "edited": false,
+      "text": "Command+`",
+      "editing_text": "⌘`",
+      "parsed_keys": "RightCommand",
+      "parse_error": "",
+      "parse_code": "",
+      "edited_hint": "",
+      "record_denied": false,
+      "unknown": false
+    }
+  }
+}
