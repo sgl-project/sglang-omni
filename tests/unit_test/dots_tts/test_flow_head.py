@@ -509,6 +509,26 @@ def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
     assert flow.resolve_batched_eos() == []
 
 
+def test_prepare_batched_eos_staging_uses_is_cuda(monkeypatch) -> None:
+    flow = DotsTTSFlowHead.__new__(DotsTTSFlowHead)
+    flow.batched_eos_pending = 1
+    flow.batched_eos_host = []
+    flow.batched_eos_pinned = None
+    flow.batched_eos_event = None
+
+    pinned = torch.zeros(4, dtype=torch.bool)
+    event = object()
+    monkeypatch.setattr(torch, "zeros", lambda *_args, **_kwargs: pinned)
+    monkeypatch.setattr(torch.cuda, "Event", lambda: event)
+
+    flow.prepare_batched_eos_staging(4, SimpleNamespace(is_cuda=True))
+
+    assert flow.batched_eos_pending == 0
+    assert flow.batched_eos_host is None
+    assert flow.batched_eos_pinned is pinned
+    assert flow.batched_eos_event is event
+
+
 def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
     torch.manual_seed(8)
     flow = flow_head(tmp_path)
