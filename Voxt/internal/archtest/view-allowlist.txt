@@ -59,9 +59,7 @@ remote_dialog.go  # remote
 remote_generation.go  # remote
 remote_page.go  # remote
 settings_about.go  # settings
-settings_appearance.go  # settings
 settings_audio.go  # settings
-settings_general.go  # settings
 settings_meeting.go  # settings
 settings_overlay.go  # settings
 settings_privacy.go  # settings

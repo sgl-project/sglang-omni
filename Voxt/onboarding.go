@@ -248,12 +248,3 @@ func (a *app) obGo(step int) {
 		a.obSurvey() // onboarding_models.go
 	}
 }
-
-// onboardingRow is Settings → General's way back to the guide.
-func (a *app) onboardingRow(c *ui.Context) {
-	settingRow(c, "setup-guide", i18n.T("Setup guide"), "", func() {
-		if ui.Button(c.Key("setup-guide-open"), i18n.T("Open setup guide")).Clicked() {
-			a.openOnboarding()
-		}
-	})
-}

@@ -1,13 +1,11 @@
 package main
 
 // The language VoxtNew shows (shell_settings.go): applying it, the
-// system's, the language MyGo shows, and the lists of languages the settings
-// offer.
+// system's, and the language MyGo shows.
 
 import (
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // applyLocale switches the UI to the settings' language, or the system's,
@@ -53,25 +51,4 @@ func showLanguage(tag string) {
 	if mygo.App.Locale() != tag {
 		mygo.App.SetLocale(tag)
 	}
-}
-
-// The options of the selects, and what they mean.
-func languageOptions() []string {
-	opts := []string{i18n.T("Follow the system")}
-	for _, tag := range i18n.Supported() {
-		opts = append(opts, i18n.Name(tag))
-	}
-	return opts
-}
-
-// mainLanguages are the languages the main language select offers (lang
-// codes), most spoken by VoxtNew's users first.
-var mainLanguages = []string{"zh", "en", "ja", "ko", "yue", "fr", "de", "es", "pt", "ru", "it", "vi", "th", "id", "ar"}
-
-func mainLanguageOptions() []string {
-	opts := []string{i18n.T("Same as the app")}
-	for _, code := range mainLanguages {
-		opts = append(opts, uitext.LangLabel(code))
-	}
-	return opts
 }

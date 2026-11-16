@@ -35,17 +35,9 @@ type settingsState struct {
 type settingsForm struct {
 	systemLocale string // mygo.App.Locale(), read when the window opens
 
-	language        string // label
-	mainLanguage    string // label
-	theme           int
-	scale           int
-	reduceMotion    bool
-	menuBar         bool
-	dock            bool
-	copyResult      bool
+	settingsGeneralLocalUI
+	settingsAppearanceLocalUI
 	strictShortcuts bool // Features.StrictShortcuts
-	closeToTray     bool
-	openAtLogin     bool
 	keepHistory     bool
 	keepAudio       bool
 	logText         bool
@@ -57,7 +49,6 @@ type settingsForm struct {
 	muteOutput      bool        // Audio.MuteOn()
 	uploadMB        float64     // Audio.UploadMB
 	maxMinutes      float64     // Audio.MaxSeconds, in minutes
-	sidebar         int         // automatic, names and icons, icons only (settings_appearance.go)
 	ovStyle         overlayForm // settings_overlay.go
 
 	clearHistoryAsk bool // Privacy's Clear the history… dialog
@@ -215,27 +206,16 @@ func (a *app) applyTheme(c *ui.Context) {
 	c.SetTheme(&th)
 }
 
-var scaleLabels = []string{"90%", "100%", "110%", "125%"}
-
 // loadSettingsForm sets the controls from a.prefs.
 func (a *app) loadSettingsForm() {
 	s := a.prefs
 	f := &a.settingsForm
-	f.language = languageOptions()[0]
-	for i, tag := range i18n.Supported() {
-		if tag == s.General.Language {
-			f.language = languageOptions()[i+1]
-		}
-	}
-	f.mainLanguage = mainLanguageOptions()[0]
-	if i := slices.Index(mainLanguages, s.General.MainLanguage); i >= 0 {
-		f.mainLanguage = mainLanguageOptions()[i+1]
-	}
-	f.theme = max(0, slices.Index(settings.Themes, s.Appearance.Theme))
-	f.scale = max(0, slices.Index(settings.Scales, s.Appearance.Scale))
-	f.reduceMotion = s.Appearance.ReduceMotion
-	f.menuBar, f.closeToTray, f.openAtLogin = s.General.MenuBar, s.General.CloseToTray, s.General.LaunchAtLogin
-	f.dock, f.copyResult = !s.General.HideDock, s.General.CopyResult
+	general := a.generalSettingsModel()
+	f.language, f.mainLanguage = general.Language, general.MainLanguage
+	f.menuBar, f.closeToTray, f.openAtLogin = general.MenuBar, general.CloseToTray, general.OpenAtLogin
+	f.dock, f.copyResult = general.Dock, general.CopyResult
+	appearance := a.appearanceSettingsModel()
+	f.theme, f.scale, f.reduceMotion, f.sidebar = appearance.Theme, appearance.Scale, appearance.ReduceMotion, appearance.Sidebar
 	f.strictShortcuts = s.Features.StrictShortcuts
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sendWindow, f.sendClipboard = s.Privacy.SendWindow, s.Privacy.SendClipboardImage
@@ -245,7 +225,6 @@ func (a *app) loadSettingsForm() {
 	f.cleanSound = !s.Audio.Clean.Off
 	f.muteOutput = s.Audio.MuteOn()
 	f.uploadMB, f.maxMinutes = float64(s.Audio.UploadMB), float64(s.Audio.MaxSeconds)/60
-	f.sidebar = sidebarChoice(s.Appearance)
 	a.loadOverlayForm() // settings_overlay.go
 }
 
@@ -429,15 +408,19 @@ func settingsDialogSize(t *ui.Theme, w, h float32) (dw, dh float32) {
 // settingsSection builds the section of the settings dialog r shows.
 func (a *app) settingsSection(c *ui.Context, r *ui.Route) {
 	sections := map[string]func(*ui.Context){
-		"general":     a.generalSettings,
+		"general": func(c *ui.Context) {
+			generalSettings(c, a.generalSettingsModel(), a, &a.settingsForm.settingsGeneralLocalUI)
+		},
 		"permissions": a.permissionsSettings, // permissions.go
 		"audio":       a.audioSettings,       // settings_audio.go
 		"overlay":     a.overlaySettings,     // settings_overlay.go
 		"shortcuts":   a.shortcutsSettings,   // settings_shortcuts.go
-		"appearance":  a.appearanceSettings,
-		"privacy":     a.privacySettings, // settings_privacy.go
-		"storage":     a.storageSettings, // settings_storage.go
-		"about":       a.aboutSettings,   // settings_about.go
+		"appearance": func(c *ui.Context) {
+			appearanceSettings(c, a.appearanceSettingsModel(), a, &a.settingsForm.settingsAppearanceLocalUI)
+		},
+		"privacy": a.privacySettings, // settings_privacy.go
+		"storage": a.storageSettings, // settings_storage.go
+		"about":   a.aboutSettings,   // settings_about.go
 	}
 	for _, s := range settingsSections() {
 		if r.Match("/" + s.id) {

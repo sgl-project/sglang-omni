@@ -6,52 +6,40 @@ package main
 import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-// sidebarRow chooses the sidebar's layout: automatic, names and icons,
-// icons only.
-func sidebarChoice(ap settings.Appearance) int {
-	switch {
-	case ap.Rail:
-		return 2
-	case ap.RailChosen:
-		return 1
-	}
-	return 0
+type settingsAppearanceLocalUI struct {
+	theme        int
+	scale        int
+	sidebar      int
+	reduceMotion bool
 }
 
-func (a *app) sidebarRow(c *ui.Context) {
-	f := &a.settingsForm
-	settingRow(c, "sidebar-style", i18n.T("Sidebar"), i18n.T("Automatic shows icons only while the window is narrow."), func() {
-		if ui.Segmented(c.Key("sidebar-seg"), &f.sidebar, i18n.T("Automatic"), i18n.T("Names and icons"), i18n.T("Icons only")).Label(i18n.T("Sidebar")).Changed() {
-			if f.sidebar == 0 {
-				a.updateSettings(func(s *settings.Settings) { s.Appearance.Rail, s.Appearance.RailChosen = false, false })
-				return
-			}
-			a.setRail(f.sidebar == 2)
-		}
-	})
-}
-
-func (a *app) appearanceSettings(c *ui.Context) {
+func appearanceSettings(c *ui.Context, state settingsAppearanceViewState, actions settingsAppearanceActions, local *settingsAppearanceLocalUI) {
 	settingRow(c, "theme", i18n.T("Theme"), "", func() {
-		if ui.Segmented(c.Key("theme-seg"), &a.theme, i18n.T("System"), i18n.T("Light"), i18n.T("Dark")).Label(i18n.T("Theme")).Changed() {
-			theme := settings.Themes[a.theme]
-			a.updateSettings(func(s *settings.Settings) { s.Appearance.Theme = theme })
+		if ui.Segmented(c.Key("theme-seg"), &local.theme, state.ThemeOptions...).Label(i18n.T("Theme")).Changed() {
+			actions.setTheme(state.ThemeValues[local.theme])
 		}
 	})
 	settingRow(c, "scale", i18n.T("Interface size"), i18n.T("Scales text and spacing."), func() {
-		if ui.Segmented(c.Key("scale-seg"), &a.scale, scaleLabels...).Label(i18n.T("Interface size")).Changed() {
-			scale := settings.Scales[a.scale]
-			a.updateSettings(func(s *settings.Settings) { s.Appearance.Scale = scale })
+		if ui.Segmented(c.Key("scale-seg"), &local.scale, state.ScaleOptions...).Label(i18n.T("Interface size")).Changed() {
+			actions.setInterfaceScale(state.ScaleValues[local.scale])
 		}
 	})
-	a.sidebarRow(c) // settings_appearance.go
+	sidebarRow(c, state, actions, local)
 	settingRow(c, "motion", i18n.T("Reduce motion"), i18n.T("Also follows the system setting."), func() {
-		if ui.Switch(c.Key("motion-switch"), &a.reduceMotion).Label(i18n.T("Reduce motion")).Changed() {
-			on := a.reduceMotion
-			a.updateSettings(func(s *settings.Settings) { s.Appearance.ReduceMotion = on })
+		if ui.Switch(c.Key("motion-switch"), &local.reduceMotion).Label(i18n.T("Reduce motion")).Changed() {
+			actions.setReduceMotion(local.reduceMotion)
+		}
+	})
+}
+
+// sidebarRow chooses the sidebar's layout: automatic, names and icons,
+// icons only.
+func sidebarRow(c *ui.Context, state settingsAppearanceViewState, actions settingsAppearanceActions, local *settingsAppearanceLocalUI) {
+	settingRow(c, "sidebar-style", i18n.T("Sidebar"), i18n.T("Automatic shows icons only while the window is narrow."), func() {
+		if ui.Segmented(c.Key("sidebar-seg"), &local.sidebar, state.SidebarOptions...).Label(i18n.T("Sidebar")).Changed() {
+			actions.setSidebarChoice(state.SidebarValues[local.sidebar])
 		}
 	})
 }
