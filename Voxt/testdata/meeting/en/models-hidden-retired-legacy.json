@@ -418,6 +418,7 @@
       ]
     },
     "llm": null,
+    "show_llm": true,
     "hidden": null,
     "hidden_open": false,
     "advanced": {

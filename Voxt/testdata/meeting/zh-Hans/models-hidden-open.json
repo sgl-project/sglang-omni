@@ -413,6 +413,7 @@
         ]
       }
     ],
+    "show_llm": true,
     "hidden": [
       {
         "key": "model-asr.fast",

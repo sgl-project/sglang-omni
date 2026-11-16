@@ -66,8 +66,13 @@ func TestModelsFixtureCoverage(t *testing.T) {
 			if state == nil {
 				continue
 			}
-			if name == "models-hidden-retired-legacy" && len(state.LLM) != 0 {
-				t.Errorf("%s: legacy hidden retired model is visible", locale)
+			if name == "models-hidden-retired-legacy" {
+				if len(state.LLM) != 0 {
+					t.Errorf("%s: legacy hidden retired model is visible", locale)
+				}
+				if !state.ShowLLM {
+					t.Errorf("%s: retired model section heading is hidden", locale)
+				}
 			}
 			cards := append(append(append([]modelCardViewState{}, state.ASR...), state.LLM...), state.Hidden...)
 			if state.Dictation != nil {

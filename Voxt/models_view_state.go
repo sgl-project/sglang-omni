@@ -139,6 +139,7 @@ type modelsViewState struct {
 	ASR           []modelCardViewState    `json:"asr"`
 	Dictation     *modelCardViewState     `json:"dictation,omitempty"`
 	LLM           []modelCardViewState    `json:"llm"`
+	ShowLLM       bool                    `json:"show_llm"`
 	Hidden        []modelCardViewState    `json:"hidden"`
 	HiddenOpen    bool                    `json:"hidden_open"`
 	Advanced      modelsAdvancedViewState `json:"advanced"`
@@ -174,6 +175,12 @@ func buildModelsViewState(translator *i18n.Translator, input modelsViewStateInpu
 		Network: buildModelsNetworkViewState(translator, input), SpeechContext: input.Settings.Dictionary.SpeechContext,
 	}
 	state.Dictation = buildDictationCard(translator, input, false)
+	for _, model := range input.Catalog {
+		if model.Kind == models.LLM && modelShown(model, input.Status[model.ID]) {
+			state.ShowLLM = true
+			break
+		}
+	}
 	return state
 }
 

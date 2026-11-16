@@ -4,6 +4,7 @@
   "models": {
     "asr": null,
     "llm": null,
+    "show_llm": false,
     "hidden": null,
     "hidden_open": false,
     "advanced": {

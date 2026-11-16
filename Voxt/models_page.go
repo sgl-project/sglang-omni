@@ -43,7 +43,7 @@ func modelsPage(c *ui.Context, state *modelsViewState, actions modelsActions, lo
 				external.remoteASRCards()
 			}
 			speechContextSection(c, state.SpeechContext, actions, &local.speechContext)
-			if len(state.LLM) > 0 {
+			if state.ShowLLM {
 				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt no longer uses these. Delete them to free up space."))
 				modelCards(c, state.LLM, actions)
 			}
