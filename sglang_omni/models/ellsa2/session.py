@@ -13,6 +13,12 @@ import numpy as np
 import torch
 from scipy.signal import resample_poly
 
+from sglang_omni.models.ellsa2.batching import (
+    GRAPH_BATCH_SIZES,
+    BatchedBlocks,
+    BlockRequest,
+    SessionCache,
+)
 from sglang_omni.models.ellsa2.formats import MOTION, SMPLH_FLAME_MOTION
 from sglang_omni.models.ellsa2.generator import (
     BLOCK_SAMPLES,
@@ -72,6 +78,10 @@ class MotionSession:
     interrupted_turns: set[int | None] = field(default_factory=set)
     history: list[HistoryBlock] = field(default_factory=list)
     error: BaseException | None = None
+    # The codes of the style this Session moves like; the stage's when None.
+    style: torch.Tensor | None = None
+    # Its slot of the batched path's caches, from its first block on.
+    cache: SessionCache | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -93,11 +103,36 @@ class MotionHooks(SessionHooks):
     plays both together; a block is ready once the user's audio covers it,
     or, after the input ended, while it holds reply audio.
     The worker generates one ready block per Session in turn; every block
-    runs, in order, since each conditions on the codes before it.
+    runs, in order, since each conditions on the codes before it. With
+    kv_batch it takes the ready block of every Session at once (up to
+    max_batch) and generates them as one batch, each block's steps decoding
+    from a KV cache; without it, one block at a time as the reference does,
+    every step a full forward pass.
     """
 
-    def __init__(self, models: MotionModels, speech_sample_rate_hz: int) -> None:
+    def __init__(
+        self,
+        models: MotionModels,
+        speech_sample_rate_hz: int,
+        *,
+        kv_batch: bool = False,
+        max_batch: int = 1,
+        cuda_graphs: bool = True,
+        reuse_history: bool = True,
+    ) -> None:
         self.models = models
+        self.max_batch = max_batch if kv_batch else 1
+        self.batched = (
+            BatchedBlocks(
+                models.generator,
+                models.filterbank,
+                max_batch=max_batch,
+                cuda_graphs=cuda_graphs,
+                reuse_history=reuse_history,
+            )
+            if kv_batch
+            else None
+        )
         divisor = math.gcd(SESSION_INPUT_SAMPLE_RATE_HZ, speech_sample_rate_hz)
         self.resample_up = SESSION_INPUT_SAMPLE_RATE_HZ // divisor
         self.resample_down = speech_sample_rate_hz // divisor
@@ -154,7 +189,7 @@ class MotionHooks(SessionHooks):
 
     def close(self, session_identity: SessionIdentity) -> None:
         with self.lock:
-            self.sessions.pop(session_identity)
+            self.release(self.sessions.pop(session_identity))
             self.wake.notify_all()
 
     def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
@@ -261,43 +296,52 @@ class MotionHooks(SessionHooks):
         else:
             return False
 
-    def next_work(self) -> BlockWork | None:
-        """Take the next block of the first Session with one ready and move that Session last; called with the lock held."""
+    def next_works(self) -> list[BlockWork]:
+        """Take the next block of the first max_batch Sessions with one ready and move those Sessions last; called with the lock held."""
+        works = []
         for session_identity, session in list(self.sessions.items()):
-            if not self.is_ready(session):
-                continue
+            if len(works) == self.max_batch:
+                break
+            elif self.is_ready(session):
+                works.append(self.take_work(session_identity, session))
             else:
-                start = session.cursor
-            work = BlockWork(
-                session_identity=session_identity,
-                session=session,
-                start=start,
-                turn=next(
-                    (
-                        speech.turn
-                        for speech in session.speech
-                        if speech.start < start + BLOCK_SAMPLES
-                        and self.end(speech) > start
-                    ),
-                    None,
+                pass
+        return works
+
+    def take_work(
+        self, session_identity: SessionIdentity, session: MotionSession
+    ) -> BlockWork:
+        """Called with the lock held."""
+        start = session.cursor
+        work = BlockWork(
+            session_identity=session_identity,
+            session=session,
+            start=start,
+            turn=next(
+                (
+                    speech.turn
+                    for speech in session.speech
+                    if speech.start < start + BLOCK_SAMPLES
+                    and self.end(speech) > start
                 ),
-                target_audio=self.speech_window(session, start),
-                partner_audio=self.partner_window(session, start),
-            )
-            self.sessions[session_identity] = self.sessions.pop(session_identity)
-            session.cursor = start + BLOCK_SAMPLES
-            while (
-                session.partner
-                and session.partner[0][0] + session.partner[0][1].size <= session.cursor
-            ):
-                session.partner.popleft()
-            session.speech = [
-                speech
-                for speech in session.speech
-                if self.end(speech) > session.cursor or speech is session.speech[-1]
-            ]
-            return work
-        return None
+                None,
+            ),
+            target_audio=self.speech_window(session, start),
+            partner_audio=self.partner_window(session, start),
+        )
+        self.sessions[session_identity] = self.sessions.pop(session_identity)
+        session.cursor = start + BLOCK_SAMPLES
+        while (
+            session.partner
+            and session.partner[0][0] + session.partner[0][1].size <= session.cursor
+        ):
+            session.partner.popleft()
+        session.speech = [
+            speech
+            for speech in session.speech
+            if self.end(speech) > session.cursor or speech is session.speech[-1]
+        ]
+        return work
 
     def partner_window(self, session: MotionSession, start: int) -> np.ndarray:
         """The user's audio of the block from start, silence where none arrived."""
@@ -369,18 +413,105 @@ class MotionHooks(SessionHooks):
             models.prompt,
             target.unsqueeze(0).to(models.device),
             partner.unsqueeze(0).to(models.device),
-            torch.cat([models.style] + [b.codes for b in history]),
-            models.style.shape[0],
+            torch.cat([self.style(session)] + [b.codes for b in history]),
+            self.style(session).shape[0],
             len(blocks),
         )
         session.history = blocks
         return session.decoder.decode(block.codes)
 
+    @torch.no_grad()
+    def generate_together(self, works: list[BlockWork]) -> list[np.ndarray]:
+        """The rows of each work's block, the blocks generated as one batch; runs on the worker."""
+        assert self.batched is not None
+        models = self.models
+        in_use = {
+            work.session.cache.slot for work in works if work.session.cache is not None
+        }
+        requests, histories = [], []
+        for work in works:
+            session = work.session
+            if session.cache is None:
+                session.cache = self.batched.acquire(in_use)
+            else:
+                pass
+            history = retained_history(session.history)
+            blocks = history + [
+                HistoryBlock(
+                    target_audio=work.target_audio, partner_audio=work.partner_audio
+                )
+            ]
+            histories.append(blocks)
+            requests.append(
+                BlockRequest(
+                    target_audio=[b.target_audio for b in blocks],
+                    partner_audio=[b.partner_audio for b in blocks],
+                    known_codes=torch.cat(
+                        [self.style(session)] + [b.codes for b in history]
+                    ),
+                    style_steps=self.style(session).shape[0],
+                    num_blocks=len(blocks),
+                    cache=session.cache,
+                )
+            )
+        codes = self.batched.generate(models.prompt, requests)
+        for work, blocks, block_codes in zip(works, histories, codes):
+            blocks[-1].codes = block_codes
+            work.session.history = blocks
+        return MotionDecoder.decode_together(
+            [work.session.decoder for work in works], codes
+        )
+
+    def release(self, session: MotionSession) -> None:
+        """Give back the Session's slot of the batched path's caches; any thread."""
+        if self.batched is not None and session.cache is not None:
+            self.batched.release(session.cache)
+            session.cache = None
+        else:
+            pass
+
+    def style(self, session: MotionSession) -> torch.Tensor:
+        return self.models.style if session.style is None else session.style
+
     def warm_up(self) -> None:
-        session = MotionSession(decoder=self.models.new_decoder())
         silence = np.zeros(BLOCK_SAMPLES, dtype=np.float32)
-        for _ in range(MAX_HISTORY_BLOCKS + 1):
-            self.generate(session, silence, silence)
+        if self.batched is None:
+            session = MotionSession(decoder=self.models.new_decoder())
+            for _ in range(MAX_HISTORY_BLOCKS + 1):
+                self.generate(session, silence, silence)
+        else:
+            # Every history length once, then each batch size's graph at the longest history.
+            sessions = [MotionSession(decoder=self.models.new_decoder())]
+            for _ in range(MAX_HISTORY_BLOCKS):
+                self.generate_together(
+                    [self.silent_work(session, silence) for session in sessions]
+                )
+            for size in GRAPH_BATCH_SIZES:
+                if size <= self.max_batch:
+                    sessions += [
+                        MotionSession(
+                            decoder=self.models.new_decoder(),
+                            history=list(sessions[0].history),
+                        )
+                        for _ in range(size - len(sessions))
+                    ]
+                    self.generate_together(
+                        [self.silent_work(session, silence) for session in sessions]
+                    )
+                else:
+                    pass
+            for session in sessions:
+                self.release(session)
+
+    def silent_work(self, session: MotionSession, silence: np.ndarray) -> BlockWork:
+        return BlockWork(
+            session_identity=SessionIdentity("warm-up"),
+            session=session,
+            start=0,
+            turn=None,
+            target_audio=silence,
+            partner_audio=silence,
+        )
 
     def generate_blocks(self, warm_up: bool) -> None:
         """The worker, for the life of the stage."""
@@ -391,36 +522,44 @@ class MotionHooks(SessionHooks):
         self.warmed_up.set()
         while True:
             with self.lock:
-                work = self.next_work()
-                while work is None:
+                works = self.next_works()
+                while not works:
                     self.wake.wait()
-                    work = self.next_work()
+                    works = self.next_works()
             try:
-                rows = self.generate(
-                    work.session, work.target_audio, work.partner_audio
-                )
+                if self.batched is None:
+                    blocks = [
+                        self.generate(
+                            work.session, work.target_audio, work.partner_audio
+                        )
+                        for work in works
+                    ]
+                else:
+                    blocks = self.generate_together(works)
             except Exception as error:
-                with self.lock:
-                    work.session.error = error
-                assert work.session.fail is not None
-                work.session.fail(error)
+                for work in works:
+                    with self.lock:
+                        work.session.error = error
+                    assert work.session.fail is not None
+                    work.session.fail(error)
                 continue
             with self.lock:
-                if self.sessions.get(work.session_identity) is work.session:
-                    assert work.session.emit is not None
-                    work.session.emit(
-                        TimedChunk(
-                            MOTION,
-                            work.start * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
-                            BLOCK_MS,
-                            0,
-                            rows.tobytes(),
-                            format=SMPLH_FLAME_MOTION,
-                            turn=work.turn,
+                for work, rows in zip(works, blocks):
+                    if self.sessions.get(work.session_identity) is work.session:
+                        assert work.session.emit is not None
+                        work.session.emit(
+                            TimedChunk(
+                                MOTION,
+                                work.start * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
+                                BLOCK_MS,
+                                0,
+                                rows.tobytes(),
+                                format=SMPLH_FLAME_MOTION,
+                                turn=work.turn,
+                            )
                         )
-                    )
-                else:
-                    pass
+                    else:
+                        pass
 
 
 def create_scheduler(
@@ -431,6 +570,8 @@ def create_scheduler(
     speech_sample_rate_hz: int,
     encoder_attn_implementation: str,
     cudnn_attention: bool = False,
+    kv_batch: bool = True,
+    cuda_graphs: bool = True,
     max_open_sessions: int = DEFAULT_MAX_OPEN_SESSIONS,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -444,7 +585,13 @@ def create_scheduler(
         cudnn_attention=cudnn_attention,
     )
     return SessionScheduler(
-        MotionHooks(models, speech_sample_rate_hz),
+        MotionHooks(
+            models,
+            speech_sample_rate_hz,
+            kv_batch=kv_batch,
+            max_batch=max_open_sessions,
+            cuda_graphs=cuda_graphs,
+        ),
         max_open_sessions=max_open_sessions,
     )
 

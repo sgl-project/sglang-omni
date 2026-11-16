@@ -44,7 +44,11 @@ class MotionFactoryArgs(FactoryArgs):
     encoder_attn_implementation: Literal["sdpa", "flash_attention_2"] = "sdpa"
     "The audio encoder's attention: flash_attention_2 (the flash-attn package) is what the reference runs; sdpa needs nothing extra and rounds differently."
     cudnn_attention: bool = False
-    "Let the backbone's attention use cuDNN as the reference does: needed to match the reference's codes bit for bit, at 7 Sessions an H100 instead of 8."
+    "Let the backbone's attention use cuDNN as the reference does: needed to match the reference's codes bit for bit, at 7 Sessions an H100 instead of 8. Applies with kv_batch off."
+    kv_batch: bool = True
+    "Generate the ready blocks of all Sessions as one batch, each block's six steps decoding from a KV cache: codes that follow the reference's in distribution, not bit for bit. Off, the worker runs the reference's path, one block at a time with every step a full forward pass, for checks against the reference."
+    cuda_graphs: bool = True
+    "With kv_batch on a GPU, run each batch's five cached steps as one captured CUDA graph per batch size."
     max_open_sessions: int | None = Field(default=None, ge=1)
 
 

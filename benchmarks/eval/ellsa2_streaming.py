@@ -205,6 +205,21 @@ def main() -> None:
         action="store_true",
         help="let the backbone's attention use cuDNN, as the reference and ellsa2_parity do",
     )
+    parser.add_argument(
+        "--kv-batch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="the serving path: the ready blocks of all Sessions as one batch, each block's steps decoding from a KV cache; --no-kv-batch runs the reference's path, one block at a time",
+    )
+    parser.add_argument(
+        "--cuda-graphs", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--reuse-history",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="with --kv-batch, keep each Session's keys and values across blocks; --no-reuse-history recomputes the whole history every block",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     rows = [
@@ -228,13 +243,25 @@ def main() -> None:
         cudnn_attention=args.cudnn_attention,
         device=torch.device("cuda:0"),
     )
-    hooks = MotionHooks(models, SESSION_INPUT_SAMPLE_RATE_HZ)
+    hooks = MotionHooks(
+        models,
+        SESSION_INPUT_SAMPLE_RATE_HZ,
+        kv_batch=args.kv_batch,
+        max_batch=max(args.sessions),
+        cuda_graphs=args.cuda_graphs,
+        reuse_history=args.reuse_history,
+    )
     hooks.warm_up_serving_thread()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     results = []
     for sessions in args.sessions:
         for repeat in range(args.repeats):
-            result = {"repeat": repeat, **run(hooks, clips, sessions)}
+            result = {
+                "repeat": repeat,
+                "kv_batch": args.kv_batch,
+                "reuse_history": args.reuse_history,
+                **run(hooks, clips, sessions),
+            }
             results.append(result)
             print(json.dumps(result), flush=True)
             (args.output_dir / "streaming.json").write_text(

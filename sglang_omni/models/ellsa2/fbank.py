@@ -54,6 +54,11 @@ def mel_banks() -> torch.Tensor:
     return F.pad(bins, (0, 1), mode="constant", value=0).T
 
 
+def tail_start(first_frame: int) -> int:
+    """The first sample frame first_frame reads, past the start of the waveform."""
+    return first_frame * HOP_SAMPLES - (FRAME_SAMPLES - HOP_SAMPLES) // 2
+
+
 class LogMelFilterbank:
     """Waveform [samples] at 16 kHz → features [frames, NUM_MEL_BINS], frames = round(samples / HOP_SAMPLES)."""
 
@@ -65,27 +70,41 @@ class LogMelFilterbank:
         self.eps = torch.tensor(torch.finfo(torch.float).eps)
 
     def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
-        samples = waveform.unsqueeze(0)
-        num_samples = samples.size(-1)
-        num_frames = (num_samples + HOP_SAMPLES // 2) // HOP_SAMPLES
-        pad = (num_frames - 1) * HOP_SAMPLES + FRAME_SAMPLES - num_samples
+        return self.many(waveform.unsqueeze(0))[0]
+
+    def many(self, samples: torch.Tensor, first_frame: int = 0) -> torch.Tensor:
+        """Waveforms of one length [batch, samples] on any device → features [batch, frames, NUM_MEL_BINS].
+
+        With a first_frame, samples are the waveforms from
+        tail_start(first_frame) on, and the features are those of the whole
+        waveforms from that frame on.
+        """
+        batch = samples.shape[0]
+        skipped = 0 if first_frame == 0 else tail_start(first_frame)
+        num_samples = samples.size(-1) + skipped
+        num_frames = (num_samples + HOP_SAMPLES // 2) // HOP_SAMPLES - first_frame
+        pad = (num_frames + first_frame - 1) * HOP_SAMPLES + FRAME_SAMPLES - num_samples
         pad_left = (FRAME_SAMPLES - HOP_SAMPLES) // 2
         samples = torch.cat(
             (
-                torch.flip(samples[:, :pad_left], (1,)),
+                (
+                    torch.flip(samples[:, :pad_left], (1,))
+                    if first_frame == 0
+                    else samples[:, :0]
+                ),
                 samples,
                 torch.flip(samples[:, -(pad - pad_left) :], (1,)),
             ),
             dim=1,
         )
         frames = samples.as_strided(
-            [1, num_frames, FRAME_SAMPLES],
+            [batch, num_frames, FRAME_SAMPLES],
             (samples.stride(0), HOP_SAMPLES * samples.stride(1), samples.stride(1)),
         )
         frames = frames - torch.mean(frames, dim=2, keepdim=True)
         shifted = F.pad(frames, (1, 0), mode="replicate")
         frames = frames - PREEMPHASIS * shifted[:, :, :-1]
-        frames = frames * self.window
+        frames = frames * self.window.to(frames.device)
         frames = F.pad(
             frames.unsqueeze(1),
             [0, FFT_SIZE - FRAME_SAMPLES],
@@ -93,7 +112,9 @@ class LogMelFilterbank:
             value=0.0,
         ).squeeze(1)
         power = torch.fft.rfft(frames, dim=-1).abs() ** 2
-        return torch.max(torch.matmul(power, self.banks), self.eps).log()[0]
+        return torch.max(
+            torch.matmul(power, self.banks.to(power.device)), self.eps.to(power.device)
+        ).log()
 
 
-__all__ = ["NUM_MEL_BINS", "LogMelFilterbank"]
+__all__ = ["NUM_MEL_BINS", "LogMelFilterbank", "tail_start"]
