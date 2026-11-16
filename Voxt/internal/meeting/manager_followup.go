@@ -43,12 +43,7 @@ func (m *Manager) AnswerMeetingFollowUp(ctx context.Context, meetingID, question
 	if s, ok := ParseStoredSummary(mt.Summary); ok {
 		sumPtr = &s
 	}
-	mainLang := "English"
-	if m.cfg.MainLanguage != nil {
-		if v := strings.TrimSpace(m.cfg.MainLanguage()); v != "" {
-			mainLang = v
-		}
-	}
+	mainLang := m.mainLanguage()
 	answer, err := AnswerFollowUp(ctx, chat, mainLang, record, sumPtr, history, question)
 	if err != nil {
 		return err

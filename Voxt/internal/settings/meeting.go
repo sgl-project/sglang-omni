@@ -6,6 +6,9 @@ package settings
 type Meeting struct {
 	Feature
 	Mode string `json:"mode,omitempty"` // "" = meeting; subtitles | recording
+	// Lang is the language the speech model listens for (a lang code);
+	// "" = the main language, as dictation (session.SpeechLang).
+	Lang string `json:"lang,omitempty"`
 	// NoFinalPass disables the post-meeting re-transcription pass (C1-3a).
 	NoFinalPass bool `json:"noFinalPass,omitempty"`
 	// NoAutoSummary disables generating a summary when a meeting ends.

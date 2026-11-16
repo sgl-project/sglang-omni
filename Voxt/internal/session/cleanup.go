@@ -39,15 +39,8 @@ func (r *run) transcribe(text string) {
 		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip = Composing, true })
 		llmStart := r.now()
 		cleaned, profile, err := r.cleanUp(text, nil)
-		for r.rethink.Load() && !r.cancelled.Load() && !r.skipped.Load() {
-			r.m.mu.Lock()
-			r.rethink.Store(false)
-			think := r.think
-			r.llmCtx, r.llmStop = context.WithCancel(r.ctx)
-			r.m.mu.Unlock()
-			r.logf("info", "asking the language model again at the thinking level chosen: %+v", think)
-			r.m.update(r, func(s *Snapshot) { s.Draft = "" })
-			cleaned, profile, err = r.cleanUp(text, think)
+		for r.askAgain() {
+			cleaned, profile, err = r.cleanUp(text, r.thinking())
 		}
 		llmTime := r.now().Sub(llmStart)
 		if r.cancelled.Load() {
@@ -94,7 +87,7 @@ func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) 
 	var failed error
 	for i, p := range parts {
 		draft := newDrafter(r, parts[:i+1], answers)
-		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, OnDelta: draft.add}
+		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, InputChars: utf8.RuneCountInString(text), OnDelta: draft.add}
 		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
 		switch {
 		case r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():
@@ -157,4 +150,29 @@ func (d *drafter) publish() {
 func (d *drafter) done(answers []string) {
 	draft := compose.JoinParts(d.parts, answers)
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
+}
+
+// askAgain says whether Rethink chose another level for the answer under
+// way (and nothing ended it since), and readies its request: a new
+// llmCtx, an empty draft.
+func (r *run) askAgain() bool {
+	if !r.rethink.Load() || r.cancelled.Load() || r.skipped.Load() || r.stopped.Load() {
+		return false
+	}
+	r.m.mu.Lock()
+	r.rethink.Store(false)
+	think := r.think
+	r.llmCtx, r.llmStop = context.WithCancel(r.ctx)
+	r.m.mu.Unlock()
+	r.logf("info", "asking the language model again at the thinking level chosen: %+v", think)
+	r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = "", "" })
+	return true
+}
+
+// thinking is the level the requests ask with: Rethink's, else the
+// session's (StartRequest.Thinking; nil: the service's setting).
+func (r *run) thinking() *llm.Thinking {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	return r.think
 }
