@@ -141,9 +141,10 @@ func (d *drafter) add(delta string) {
 	}
 }
 
-// publish puts the draft so far in the snapshot.
+// publish puts the draft so far in the snapshot, without the contract's
+// <output> tags (PartialOutput).
 func (d *drafter) publish() {
-	draft := compose.JoinParts(d.parts, append(d.answers, d.buf.String()))
+	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String())))
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
 }
 
