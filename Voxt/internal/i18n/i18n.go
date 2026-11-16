@@ -80,11 +80,26 @@ func NewTranslator(tag string) *Translator {
 	return &Translator{catalog: newCatalog(Match(tag))}
 }
 
+func CurrentTranslator() *Translator {
+	return &Translator{catalog: current.Load()}
+}
+
 func (t *Translator) Locale() string {
 	return t.catalog.tag
 }
 
 func (t *Translator) T(msg string, args ...any) string {
+	if translated, ok := t.catalog.messages[msg]; ok && translated != "" {
+		msg = translated
+	}
+	return format(msg, args)
+}
+
+func (t *Translator) N(n int, one, other string, args ...any) string {
+	msg := other
+	if n == 1 && t.Locale() == "en" {
+		msg = one
+	}
 	if translated, ok := t.catalog.messages[msg]; ok && translated != "" {
 		msg = translated
 	}

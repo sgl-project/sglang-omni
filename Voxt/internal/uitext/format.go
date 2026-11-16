@@ -40,7 +40,12 @@ func MemoryBytes(n int64) string {
 
 // ShortPath shows a path under the home folder as "~/…".
 func ShortPath(p string) string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
+	home, _ := os.UserHomeDir()
+	return ShortPathAt(p, home)
+}
+
+func ShortPathAt(p, home string) string {
+	if home != "" {
 		if rel, err := filepath.Rel(home, p); err == nil && !filepath.IsAbs(rel) && rel != ".." && len(rel) < len(p) && rel[:min(2, len(rel))] != ".." {
 			return "~/" + rel
 		}
@@ -68,16 +73,20 @@ func OrDash(s string) string {
 
 // TimeAgo says how long ago t was, briefly.
 func TimeAgo(t time.Time) string {
-	d := time.Since(t)
+	return TimeAgoFor(i18n.CurrentTranslator(), t, time.Now())
+}
+
+func TimeAgoFor(translator *i18n.Translator, t, now time.Time) string {
+	d := now.Sub(t)
 	switch {
 	case d < time.Minute:
-		return i18n.T("just now")
+		return translator.T("just now")
 	case d < time.Hour:
-		return i18n.N(int(d.Minutes()), "%d minute ago", "%d minutes ago", int(d.Minutes()))
+		return translator.N(int(d.Minutes()), "%d minute ago", "%d minutes ago", int(d.Minutes()))
 	case d < 24*time.Hour:
-		return i18n.N(int(d.Hours()), "%d hour ago", "%d hours ago", int(d.Hours()))
+		return translator.N(int(d.Hours()), "%d hour ago", "%d hours ago", int(d.Hours()))
 	}
-	return i18n.DateTime(t)
+	return translator.DateTimeAt(t, now)
 }
 
 // ClockMS is a length as m:ss.
@@ -102,11 +111,15 @@ func StageTime(ms int64) string {
 // RecordingTime is the recording's length and, when the speech model
 // got less of it (the silence left out), how much: "7.5 s, 2.5 s sent".
 func RecordingTime(e store.Entry) string {
+	return RecordingTimeFor(i18n.CurrentTranslator(), e)
+}
+
+func RecordingTimeFor(translator *i18n.Translator, e store.Entry) string {
 	rec := StageTime(e.AudioMS)
 	if rec == "" || e.SentMS <= 0 || e.SentMS >= e.AudioMS-50 {
 		return rec
 	}
-	return i18n.T("%s, %s sent", rec, StageTime(e.SentMS))
+	return translator.T("%s, %s sent", rec, StageTime(e.SentMS))
 }
 
 // TrayRecentWidth is how wide each of the menu bar's recent results
