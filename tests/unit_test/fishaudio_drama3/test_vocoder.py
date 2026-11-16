@@ -1891,9 +1891,7 @@ def test_stateful_option_preserves_nonstream_full_decode() -> None:
     with torch.no_grad():
         expected = vocoder.codec.from_indices(frames[:, 1:].T[None].clone())[0, 0]
     result = vocoder.vocode_payload(final_payload(frames, is_streaming=False))
-    np.testing.assert_allclose(
-        result.data["audio_data"], expected.numpy(), atol=0, rtol=0
-    )
+    np.testing.assert_allclose(final_audio(result), expected.numpy(), atol=0, rtol=0)
     assert not vocoder.request_slots
 
 
