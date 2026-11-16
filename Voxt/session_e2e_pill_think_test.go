@@ -36,7 +36,7 @@ func TestPillThinkingLevel(t *testing.T) {
 				s.Overlay.Position = "top"
 			}
 		})
-		label := askAgainText(long, settings.Generation{})
+		label := thinkButtonText(long, settings.Generation{})
 		snap(a, session.Snapshot{Kind: store.KindTranscribe, State: session.Composing, CanSkip: true, LLM: session.Model{ID: "zhipu"}, Thinking: long, Partial: "so the release moves to thursday"})
 		tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 		frames(tt)
@@ -82,7 +82,7 @@ func TestPillThinkingLevel(t *testing.T) {
 		} {
 			snap(a, s)
 			frames(tt)
-			if want := s.LLM.ID == "zhipu"; has(tt, askAgainText(nil, settings.Generation{})) != want {
+			if want := s.LLM.ID == "zhipu"; has(tt, thinkButtonText(nil, settings.Generation{})) != want {
 				t.Errorf("%s: %s on %s: capsule %v, want %v: %q", c.lang, s.Kind, s.LLM.ID, !want, want, firstTexts(tt))
 			} else if want && a.ov.passThrough {
 				t.Errorf("%s: %s's pill lets the click on its capsule through", c.lang, s.Kind)
@@ -151,7 +151,11 @@ func TestThinkingDefaultNamed(t *testing.T) {
 			s.Providers.LLM = []settings.Provider{{ID: "deepseek", Generation: settings.Generation{Thinking: llm.ThinkOn}}}
 		})
 		snap(a, session.Snapshot{Kind: store.KindRewrite, State: session.Composing, LLM: session.Model{ID: "deepseek"}, Raw: "make it shorter"})
-		on, off := i18n.T("%s (default)", i18n.T("On")), i18n.T("Ask again: Thinking (%s, default)", i18n.T("On"))
+		on, off := i18n.T("%s (default)", i18n.T("On")), i18n.T("Thinking level: %s (default)", i18n.T("On"))
+		// The capsule names the setting, not an action (#4066).
+		if want := map[string]string{"en": "Thinking level: On (default)", "zh-Hans": "思考强度：已开启（默认）"}[lang]; off != want {
+			t.Errorf("%s: capsule %q, want %q", lang, off, want)
+		}
 		tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 		frames(tt)
 		a.overlaySync()
