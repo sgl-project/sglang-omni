@@ -10,7 +10,8 @@ package main
 //	shell_commands.go  command registry, ⌘K palette, ? sheet, native menu, deep links
 //	shell_notices.go   notification cards, the problems they report
 //	shell_logs.go      logs page and panel
-//	shell_settings.go  settings service wiring, the settings dialog, language, theme
+//	shell_settings.go  the settings dialog and theme
+//	shell_settings_controller.go  settings service wiring
 //	pages.go           the pages of the sidebar
 
 import (
@@ -261,7 +262,7 @@ func startHidden(atLogin bool, g settings.General) bool {
 
 func (a *app) view(c *ui.Context) {
 	a.mainUI = c.Services()
-	a.applyTheme(c)
+	applyTheme(c, a.prefs.Appearance.Theme, a.prefs.Appearance.Scale)
 	t := c.Theme()
 	if a.win == nil || a.prefs.Appearance.ReduceMotion {
 		// Tests and snapshots show every change at once, as does the
@@ -290,7 +291,11 @@ func (a *app) view(c *ui.Context) {
 			}
 		})
 	})
-	a.settingsDialog(c)                                 // shell_settings.go
+	settingsDialog(c, a.settingsDialogModel(time.Now()), a, settingsDialogLocalUI{
+		Open: &a.settingsOpen, Router: a.setRouter, Form: &a.settingsForm,
+		HistoryAccess: &a.histAccessUI, Storage: &a.storageState.settingsStorageLocalUI,
+		RenderUpdates: a.updateSettingsSection,
+	})
 	a.onboarding(c)                                     // onboarding_view.go
 	shortcutPromptDialog(c, a.shortcutPromptModel(), a) // settings_shortcuts_family.go
 	a.announcementDialog(c)                             // announcements.go
