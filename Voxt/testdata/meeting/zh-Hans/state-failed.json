@@ -8,6 +8,7 @@
     "stage": "",
     "mode": "meeting",
     "progress": 0,
+    "collapsed": false,
     "show_bar": false,
     "show_expanded": false,
     "show_asking": false,

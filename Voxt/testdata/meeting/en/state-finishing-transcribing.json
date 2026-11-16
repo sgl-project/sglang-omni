@@ -8,6 +8,7 @@
     "stage": "transcribing",
     "mode": "meeting",
     "progress": 0.4,
+    "collapsed": false,
     "show_bar": true,
     "show_expanded": false,
     "show_asking": false,

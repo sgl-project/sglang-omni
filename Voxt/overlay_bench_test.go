@@ -260,7 +260,7 @@ func BenchmarkW0MeetingOverlayStates(b *testing.B) {
 	}
 	for _, state := range states {
 		b.Run(state.name, func(b *testing.B) {
-			a.meetSnap, a.meetOvCollapsed, a.meetOvMenu = state.snapshot, state.collapsed, state.menu
+			a.meetSnap, a.meetOvUI.collapsed, a.meetOvUI.menu = state.snapshot, state.collapsed, state.menu
 			model := overlayModel(state.snapshot, state.collapsed, 0, state.menu)
 			tt := hudTester(a.meetingOverlayView, model.Layout.Width, model.Layout.Height)
 			tt.SetScale(2)

@@ -87,7 +87,8 @@ func snapshotsMeetings(t *testing.T, out string) {
 			save("meetings-detail-llm")
 			a.mvUI.delID = "m-0"
 			save("meetings-delete")
-			a.mvUI.delID, a.mv.detail = "", nil
+			a.mvUI.delID = ""
+			a.closeMeetingDetail()
 			a.mvUI.setOpen = true
 			save("meetings-settings")
 		}
@@ -151,7 +152,7 @@ func snapshotsMeetingOverlay(t *testing.T, out string) {
 			{"meeting-overlay-menu-mode", rec, false, meetingMenuMode},
 			{"meeting-overlay-menu-more", paused, false, meetingMenuMore},
 		} {
-			a.meetSnap, a.meetOvCollapsed, a.meetOvMenu = st.s, st.collapsed, st.menu
+			a.meetSnap, a.meetOvUI.collapsed, a.meetOvUI.menu = st.s, st.collapsed, st.menu
 			model := overlayModel(st.s, st.collapsed, 0, st.menu)
 			mode, faceH := meetingOverlayFace(model)
 			radius := faceRadius(a.prefs.Overlay, mode, faceH)

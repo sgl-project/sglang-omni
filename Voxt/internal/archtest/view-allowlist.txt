@@ -35,8 +35,6 @@ key_recorder.go  # settings
 legacy_report.go  # legacy: exempt one-time 1.x import reporting
 llm_debug.go  # remote
 llm_wait.go  # remote
-meeting_overlay.go  # meeting
-meeting_overlay_view.go  # meeting
 models_cards.go  # models
 models_context.go  # models
 models_delete.go  # models

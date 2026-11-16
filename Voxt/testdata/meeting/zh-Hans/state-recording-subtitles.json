@@ -8,6 +8,7 @@
     "stage": "",
     "mode": "subtitles",
     "progress": 0,
+    "collapsed": false,
     "show_bar": true,
     "show_expanded": true,
     "show_asking": false,

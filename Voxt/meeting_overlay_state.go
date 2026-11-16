@@ -31,6 +31,7 @@ type meetingOverlayViewState struct {
 	Stage             string                        `json:"stage"`
 	Mode              string                        `json:"mode"`
 	Progress          float64                       `json:"progress"`
+	Collapsed         bool                          `json:"collapsed"`
 	ShowBar           bool                          `json:"show_bar"`
 	ShowExpanded      bool                          `json:"show_expanded"`
 	ShowAsking        bool                          `json:"show_asking"`
@@ -70,6 +71,7 @@ func buildMeetingOverlayViewState(snapshot meeting.Snapshot, collapsed bool, car
 		Stage:             string(snapshot.Stage),
 		Mode:              string(snapshot.Mode),
 		Progress:          snapshot.Progress,
+		Collapsed:         collapsed,
 		ShowBar:           live || snapshot.State == meeting.StateStarting || finishing,
 		ShowExpanded:      !collapsed && !asking && !finishing && snapshot.State.Active(),
 		ShowAsking:        asking,

@@ -24,10 +24,9 @@ import (
 const meetingLogSource = "meeting"
 
 type meetingState struct {
-	meetMgr        *meeting.Manager
-	meetSnap       meeting.Snapshot
-	meetingUI      *meetingSettingsUI // settings_meeting.go
-	meetingAbandon bool               // abandon while recording
+	meetMgr   *meeting.Manager
+	meetSnap  meeting.Snapshot
+	meetingUI *meetingSettingsUI // settings_meeting.go
 }
 
 func (a *app) openMeetings() {
@@ -94,7 +93,7 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	prev := a.meetSnap
 	a.meetSnap = s
 	if s.ID != prev.ID || s.State != prev.State {
-		a.meetOvMenu = meetingMenuNone // a menu for the state it opened in
+		a.meetOvUI.menu = meetingMenuNone // a menu for the state it opened in
 	}
 	if a.mv.read && (s.ID != prev.ID || s.State != prev.State) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
