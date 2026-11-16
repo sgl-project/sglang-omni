@@ -24,3 +24,20 @@ type ScreenWindowResult struct {
 // window's text, small enough for any model's image limit and the wire
 // (MaxLine).
 const ScreenMaxSide = 1600
+
+// ---- clipboard.image ----
+
+// ClipboardImageParams asks for the picture on the clipboard, for
+// Rewrite's language model (Privacy.SendClipboardImage). No permission.
+type ClipboardImageParams struct {
+	// MaxSide bounds the picture's longer side in pixels
+	// (ScreenMaxSide when 0, at most ScreenMaxSide).
+	MaxSide int `json:"maxSide,omitempty"`
+}
+
+// ClipboardImageResult is the picture: JPEG is absent when the clipboard
+// holds none: no image, text (a copied spreadsheet range or styled text
+// brings a picture of itself), or a copied file that is not an image.
+type ClipboardImageResult struct {
+	JPEG []byte `json:"jpeg,omitempty"` // base64 on the wire
+}

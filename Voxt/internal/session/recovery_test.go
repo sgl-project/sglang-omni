@@ -170,9 +170,15 @@ func TestRetry(t *testing.T) {
 		h, e := retryHarness(t, &fakeFile{text: "hello aura link"}, model, false)
 		var mu sync.Mutex
 		var stages []State
-		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e, OnStage: func(s State) { mu.Lock(); stages = append(stages, s); mu.Unlock() }})
+		var drafts []string
+		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e, OnStage: func(s State) { mu.Lock(); stages = append(stages, s); mu.Unlock() },
+			OnDraft: func(d string) { mu.Lock(); drafts = append(drafts, d); mu.Unlock() }})
 		if err != nil {
 			t.Fatal(err)
+		}
+		// The clean-up streams out as it is written (History's details show it).
+		if len(drafts) == 0 || drafts[len(drafts)-1] != out.Result {
+			t.Errorf("drafts %q", drafts)
 		}
 		if out.ID != "e1" || out.Status != store.StatusDone || out.Error != "" || out.RawText != "hello aura link" || out.Result != "Hello, VoxtNew." ||
 			out.ASRProvider != "doubao" || out.LLMProvider != "deepseek" || out.Audio != "" || !out.AudioUntil.IsZero() || out.CreatedAt != e.CreatedAt {

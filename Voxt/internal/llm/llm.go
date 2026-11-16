@@ -84,6 +84,14 @@ type Request struct {
 	FirstTokenTimeout time.Duration
 	StallTimeout      time.Duration
 
+	// Thinking, when set, replaces the service's thinking mode, effort
+	// and budget for this request (the answer card's thinking menu).
+	Thinking *Thinking
+	// InputChars is the length of the user's input (the dictation, the
+	// selection and the instruction), for Generation.ThinkOffUnder; 0:
+	// unknown.
+	InputChars int
+
 	// Skill tags the call for usage accounting.
 	Skill Skill
 }

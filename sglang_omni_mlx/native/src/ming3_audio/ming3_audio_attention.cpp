@@ -66,6 +66,21 @@ const mx::fast::CustomKernelFunction &DeltaRule() {
 )");
   return kernel;
 }
+
+// Returns the outputs [length, heads, width] and the state after the last
+// token.
+std::vector<mx::array>
+RunDeltaRule(const mx::array &queries, const mx::array &keys,
+             const mx::array &values, const mx::array &decay,
+             const mx::array &beta, const mx::array &state) {
+  const int heads = queries.shape(1), width = queries.shape(2);
+  return DeltaRule()(
+      {queries, keys, values, decay, beta, state},
+      {queries.shape(), state.shape()}, {mx::float32, mx::float32},
+      {32, width, heads}, {32, 4, 1},
+      {{"key_width", width}, {"value_width", width}, {"heads", heads}},
+      std::nullopt, false, {});
+}
 } // namespace
 
 mx::array Model::LatentAttention(const mx::array &hidden,
@@ -129,7 +144,7 @@ mx::array Model::DeltaAttention(const mx::array &hidden,
                                 LayerCache &cache) const {
   const int length = hidden.shape(1), heads = text_.num_attention_heads;
   const int width = text_.head_dim, kernel = text_.short_conv_kernel_size;
-  std::vector<mx::array> projected;
+  std::vector<mx::array> projected, convolution_inputs;
   int projection_index = 0;
   for (const auto *name : {"q", "k", "v"}) {
     const std::string projection = prefix + "." + name;
@@ -137,6 +152,7 @@ mx::array Model::DeltaAttention(const mx::array &hidden,
     const auto history = cache.convolution[projection_index].value_or(
         mx::zeros({1, kernel - 1, heads * width}, hidden.dtype()));
     const auto padded = mx::concatenate({history, values}, 1);
+    convolution_inputs.push_back(padded);
     cache.convolution[projection_index++] =
         mx::slice(padded, {0, length, 0}, padded.shape());
     const auto convolved =
@@ -178,13 +194,14 @@ mx::array Model::DeltaAttention(const mx::array &hidden,
       {length, heads});
   const auto state =
       cache.recurrent.value_or(mx::zeros({heads, width, width}, mx::float32));
-  const auto recurrence = DeltaRule()(
-      {queries, keys, values, decay, beta, state},
-      {{length, heads, width}, state.shape()}, {mx::float32, mx::float32},
-      {32, width, heads}, {32, 4, 1},
-      {{"key_width", width}, {"value_width", width}, {"heads", heads}},
-      std::nullopt, false, {});
+  const auto recurrence =
+      RunDeltaRule(queries, keys, values, decay, beta, state);
   cache.recurrent = recurrence[1];
+  if (cache.keeps_pending_rounds) {
+    cache.pending_rounds.push_back(PendingRound{
+        state, queries, keys, values, decay, beta, convolution_inputs});
+  } else {
+  }
   auto normalized = mx::fast::rms_norm(
       mx::astype(mx::astype(recurrence[0], hidden.dtype()), mx::float32),
       checkpoint_.Weight(prefix + ".o_norm.weight"), text_.rms_norm_eps);
@@ -195,6 +212,42 @@ mx::array Model::DeltaAttention(const mx::array &hidden,
                           hidden.dtype());
   return checkpoint_.Linear(mx::reshape(normalized, {1, length, heads * width}),
                             prefix + ".o_proj");
+}
+
+void Model::AcceptOldestRound(std::vector<LayerCache> &caches) const {
+  for (int layer = 0; layer < text_.num_hidden_layers; ++layer) {
+    if ((layer + 1) % text_.layer_group_size != 0) {
+      caches[layer].pending_rounds.pop_front();
+    } else {
+    }
+  }
+}
+
+void Model::RejectOldestDraft(std::vector<LayerCache> &caches,
+                              int dropped_positions) const {
+  const int kernel = text_.short_conv_kernel_size;
+  for (int layer = 0; layer < text_.num_hidden_layers; ++layer) {
+    auto &cache = caches[layer];
+    if ((layer + 1) % text_.layer_group_size == 0) {
+      cache.attention.Trim(dropped_positions);
+    } else {
+      const auto &round = cache.pending_rounds.front();
+      const auto anchor = [](const mx::array &input) {
+        return mx::slice(input, {0, 0, 0}, {1, input.shape(1), input.shape(2)});
+      };
+      cache.recurrent =
+          RunDeltaRule(anchor(round.queries), anchor(round.keys),
+                       anchor(round.values), anchor(round.decay),
+                       mx::slice(round.beta, {0, 0}, {1, round.beta.shape(1)}),
+                       round.state)[1];
+      for (int i = 0; i < 3; ++i) {
+        const auto &inputs = round.convolution_inputs[i];
+        cache.convolution[i] =
+            mx::slice(inputs, {0, 1, 0}, {1, kernel, inputs.shape(2)});
+      }
+      cache.pending_rounds.clear();
+    }
+  }
 }
 
 } // namespace ming3_audio

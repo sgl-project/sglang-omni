@@ -79,14 +79,16 @@ type Problem struct {
 
 // Snapshot is the live view of the active meeting for UI and tests.
 type Snapshot struct {
-	ID        string
-	Mode      Mode
-	State     State
-	Stage     Stage
-	Progress  float64
-	Started   time.Time
-	Elapsed   time.Duration
-	Level     map[Source]float64
+	ID       string
+	Mode     Mode
+	State    State
+	Stage    Stage
+	Progress float64
+	Started  time.Time
+	Elapsed  time.Duration
+	// Levels are each track's last session.Bars input levels as bar
+	// heights (session.Level), oldest first: its waveform.
+	Levels    map[Source][]float64
 	Live      map[Source]string
 	Segments  []Segment
 	Translate string
@@ -116,10 +118,21 @@ type Config struct {
 	ASR func(ctx context.Context, src Source) (TrackASR, error)
 	// VAD finds speech regions for the final pass; nil uses energy analysis.
 	VAD vad.Model
+	// Context is what the language model corrects a transcript with;
+	// nil for none.
+	Context func(ctx context.Context) TranscriptContext
 	// LLM opens the language model for summary and live translation.
 	LLM func(ctx context.Context, id string) (SummaryChat, error)
-	// MainLanguage names the user's primary language for summary prompts.
+	// MainLanguage names the user's primary language for summary prompts;
+	// "" writes them in the transcript's language.
 	MainLanguage func() string
+	// Warn records a failure no caller waits for (the correction after a
+	// meeting); nil drops it.
+	Warn func(msg string)
+	// Updated reports that a meeting's stored transcript or summary
+	// changed after it ended (the correction and summary that follow it);
+	// nil reports nothing.
+	Updated func(id string)
 }
 
 // ErrBusy means a meeting is already live.
@@ -129,6 +142,10 @@ var ErrBusy = errors.New("meeting: one is running already")
 var ErrNoMeeting = errors.New("meeting: not found")
 
 // StartError means a track failed to start; the meeting does not begin.
+// GuidanceModel is StartError.Guidance when the track's speech model did
+// not load, as opposed to its capture.
+const GuidanceModel = "meeting.model.unavailable"
+
 type StartError struct {
 	Source   Source
 	Err      error

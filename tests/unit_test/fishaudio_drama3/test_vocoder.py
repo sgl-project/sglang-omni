@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -23,6 +25,7 @@ from sglang_omni.models.fishaudio_drama3.request_builders import (
     Drama3GenerationResult,
     Drama3RequestData,
 )
+from sglang_omni.models.fishaudio_drama3.stateful_decoder import StatefulDACDecoder
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
     frames_in_complete_windows,
     stream_window_lengths,
@@ -43,6 +46,7 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
+from tests.unit_test.fixtures.fishaudio_codec import tiny_fishaudio_codec
 from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
     CublasFlagSetter,
     cublas_flags,
@@ -999,6 +1003,302 @@ def test_non_streaming_batch_preserves_request_audio_with_bounded_padding(
     )
 
 
+def stateful_vocoder(capacity: int = 2) -> Drama3VocoderScheduler:
+    codec = tiny_fishaudio_codec()
+    factory = Drama3VocoderFactoryArgs()
+    return Drama3VocoderScheduler(
+        codec,
+        device="cpu",
+        stream_stride=factory.stream_stride,
+        stream_followup_stride_ramp=factory.stream_followup_stride_ramp,
+        stream_followup_stride=factory.stream_followup_stride,
+        stream_overlap_tokens=factory.stream_overlap_tokens,
+        stream_crossfade_samples=0,
+        max_batch_size=8,
+        max_batch_wait_ms=0,
+        stateful_decoder=StatefulDACDecoder(codec, capacity=capacity),
+        stateful_max_streams=capacity,
+    )
+
+
+def native_stream_chunk(
+    vocoder: Drama3VocoderScheduler, request_id: str, frames: torch.Tensor
+) -> None:
+    vocoder.handle_stream_chunk(
+        request_id, StreamItem(chunk_id=0, data=frames.T, from_stage="tts_engine")
+    )
+
+
+def random_codec_frames(frame_count: int) -> torch.Tensor:
+    return torch.cat(
+        (
+            torch.full((frame_count, 1), 5000, dtype=torch.long),
+            torch.randint(0, 16, (frame_count, 10)),
+        ),
+        dim=1,
+    )
+
+
+@pytest.mark.parametrize(
+    "frame_count,chunk_counts,done_first",
+    [
+        (7, [1, 3], False),
+        (64, [64], False),
+        (128, [1] * 128, False),
+        (214, [5, 150, 59], False),
+        (31, [], True),
+        (32, [7, 3], True),
+    ],
+)
+def test_stateful_native_scheduler_matches_full_codec(
+    frame_count: int, chunk_counts: list[int], done_first: bool
+) -> None:
+    vocoder = stateful_vocoder()
+    frames = random_codec_frames(frame_count)
+    with torch.no_grad():
+        expected = vocoder.codec.from_indices(frames[:, 1:].T[None].clone())[0, 0]
+    offset = 0
+    for count in chunk_counts:
+        native_stream_chunk(vocoder, "request-a", frames[offset : offset + count])
+        offset += count
+    if done_first:
+        vocoder.handle_stream_done("request-a")
+    else:
+        pass
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    if not done_first:
+        vocoder.handle_stream_done("request-a")
+    else:
+        pass
+    messages = drained(vocoder)
+    assert messages[-1].type == "result"
+    actual = streamed_audio(messages)
+    assert np.isfinite(actual).all()
+    np.testing.assert_allclose(actual, expected.numpy(), atol=1e-4, rtol=1e-4)
+    assert actual.size == frame_count * vocoder.codec.frame_length
+    assert vocoder.request_slots == {}
+    assert messages[-1].data.data["usage"]["completion_tokens"] == frame_count
+
+
+@pytest.mark.parametrize(
+    "first_frames,ramp_frames,followup_frames",
+    [(65, (10,), 64), (10, (65,), 64), (10, (10,), 128)],
+)
+def test_stateful_large_windows_preserve_audio_and_chunk_boundaries(
+    first_frames: int, ramp_frames: tuple[int, ...], followup_frames: int
+) -> None:
+    """Configured windows above 64 frames must not exceed the decoder delta limit."""
+    vocoder = stateful_vocoder()
+    vocoder.stream_stride = first_frames
+    vocoder.stream_followup_stride_ramp = ramp_frames
+    vocoder.stream_followup_stride = followup_frames
+    frames = random_codec_frames(210)
+    with torch.no_grad():
+        expected = vocoder.codec.from_indices(frames[:, 1:].T[None].clone())[0, 0]
+    native_stream_chunk(vocoder, "request-a", frames)
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("request-a")
+    messages = drained(vocoder)
+    np.testing.assert_allclose(
+        streamed_audio(messages), expected.numpy(), atol=1e-4, rtol=1e-4
+    )
+    chunks = [message for message in messages if message.type == "stream"]
+    assert (
+        len(chunks[0].data["audio_waveform"])
+        == first_frames * vocoder.codec.frame_length * 4
+    )
+    assert vocoder.request_slots == {}
+
+
+def test_stateful_capacity_lag_abort_interleave_and_slot_reuse() -> None:
+    vocoder = stateful_vocoder(capacity=1)
+    first_window_frames = vocoder.stream_stride
+    frames = random_codec_frames(20)
+    native_stream_chunk(vocoder, "first", frames[:first_window_frames])
+    first_messages = drained(vocoder)
+    saved_bytes = first_messages[0].data["audio_waveform"]
+    native_stream_chunk(vocoder, "waiting", frames[:first_window_frames])
+    assert "waiting" in vocoder.window_fallback_requests
+    assert set(vocoder.request_slots) == {"first"}
+    fallback_messages = drained(vocoder)
+    with torch.no_grad():
+        expected = vocoder.codec.from_indices(
+            frames[:first_window_frames, 1:].T[None].clone()
+        )[0, 0]
+    np.testing.assert_allclose(
+        streamed_audio(fallback_messages), expected.numpy(), atol=1e-4, rtol=1e-4
+    )
+    vocoder.abort("waiting")
+    assert "waiting" not in vocoder.window_fallback_requests
+    assert "first" in vocoder.request_slots
+    native_stream_chunk(vocoder, "first", frames[first_window_frames:])
+    first_payload = final_payload(frames, is_streaming=True)
+    first_payload.request_id = "first"
+    vocoder.handle_streaming_new_request("first", first_payload)
+    vocoder.handle_stream_done("first")
+    assert not vocoder.request_slots
+    native_stream_chunk(vocoder, "reused", frames[:first_window_frames])
+    assert saved_bytes == first_messages[0].data["audio_waveform"]
+    reused_messages = drained(vocoder)
+    reused = [message for message in reused_messages if message.request_id == "reused"]
+    assert reused[0].data["audio_waveform"] == saved_bytes
+    vocoder.abort("reused")
+    assert not vocoder.request_slots
+
+
+def test_full_arena_fallback_stays_window_based_until_completion() -> None:
+    vocoder = stateful_vocoder(capacity=1)
+    frames = random_codec_frames(35)
+    native_stream_chunk(vocoder, "owner", frames[:10])
+    drained(vocoder)
+    native_stream_chunk(vocoder, "overflow", frames[:10])
+    first = drained(vocoder)
+    assert "overflow" in vocoder.window_fallback_requests
+    vocoder.abort("owner")
+    native_stream_chunk(vocoder, "overflow", frames[10:])
+    assert "overflow" not in vocoder.request_slots
+    payload = final_payload(frames, is_streaming=True)
+    payload.request_id = "overflow"
+    vocoder.handle_streaming_new_request("overflow", payload)
+    vocoder.handle_stream_done("overflow")
+    messages = first + drained(vocoder)
+    assert streamed_audio(messages).size == frames.shape[0] * vocoder.codec.frame_length
+    assert len([message for message in messages if message.type == "result"]) == 1
+    assert "overflow" not in vocoder.window_fallback_requests
+    assert not vocoder.request_slots
+    native_stream_chunk(vocoder, "replacement", frames[:10])
+    assert "replacement" in vocoder.request_slots
+    vocoder.abort("replacement")
+
+
+def test_stateful_interleaved_requests_keep_independent_audio() -> None:
+    vocoder = stateful_vocoder()
+    requests = {name: random_codec_frames(33) for name in ("left", "right")}
+    for start, end in ((0, 10), (10, 19), (19, 33)):
+        for name, frames in requests.items():
+            native_stream_chunk(vocoder, name, frames[start:end])
+    for name, frames in requests.items():
+        payload = final_payload(frames, is_streaming=True)
+        payload.request_id = name
+        vocoder.handle_streaming_new_request(name, payload)
+        vocoder.handle_stream_done(name)
+    messages = drained(vocoder)
+    for name, frames in requests.items():
+        with torch.no_grad():
+            expected = vocoder.codec.from_indices(frames[:, 1:].T[None].clone())[0, 0]
+        np.testing.assert_allclose(
+            streamed_audio(
+                [message for message in messages if message.request_id == name]
+            ),
+            expected.numpy(),
+            atol=1e-4,
+            rtol=1e-4,
+        )
+
+
+def test_stateful_failed_decode_waits_before_reset_and_reuse() -> None:
+    vocoder = stateful_vocoder(capacity=1)
+    frames = random_codec_frames(10)
+    assert vocoder.stateful_decoder is not None
+    original_decode_slot = vocoder.stateful_decoder.decode_slot
+
+    def execute_then_fail(
+        codes: torch.Tensor, slot_index: torch.Tensor, frame_count: int
+    ) -> torch.Tensor:
+        original_decode_slot(codes, slot_index, frame_count)
+        raise RuntimeError("decode failed")
+
+    with patch.object(
+        vocoder.stateful_decoder,
+        "decode_slot",
+        side_effect=execute_then_fail,
+    ):
+        with pytest.raises(RuntimeError, match="decode failed"):
+            native_stream_chunk(vocoder, "failed", frames)
+    entered = Event()
+    completed = Event()
+
+    def wait_for_completion() -> None:
+        entered.set()
+        assert completed.wait(timeout=10)
+
+    with patch.object(
+        vocoder, "wait_for_stream_completion", side_effect=wait_for_completion
+    ):
+        abort_thread = Thread(target=vocoder.abort, args=("failed",))
+        abort_thread.start()
+        assert entered.wait(timeout=10)
+        assert "failed" in vocoder.request_slots
+        assert vocoder.request_slots["failed"].slot_index == 0
+        completed.set()
+        abort_thread.join(timeout=10)
+        assert not abort_thread.is_alive()
+    assert not vocoder.request_slots
+    native_stream_chunk(vocoder, "fresh", frames)
+    assert drained(vocoder)[0].request_id == "fresh"
+
+
+def test_failed_slot_release_keeps_owner_for_retry() -> None:
+    """A failed release must not orphan the live slot before cleanup can retry."""
+    vocoder = stateful_vocoder(capacity=1)
+    frames = random_codec_frames(10)
+    native_stream_chunk(vocoder, "failed", frames)
+    decoder = vocoder.stateful_decoder
+    assert decoder is not None
+    state = vocoder.request_slots["failed"]
+    with patch.object(
+        decoder, "release_state", side_effect=RuntimeError("release failed")
+    ):
+        with pytest.raises(RuntimeError, match="release failed"):
+            vocoder.abort("failed")
+    assert vocoder.request_slots["failed"] is state
+    with pytest.raises(ValueError, match="No free production state slot"):
+        decoder.create_state()
+    vocoder.abort("failed")
+    assert not vocoder.request_slots
+    native_stream_chunk(vocoder, "replacement", frames)
+    assert "replacement" in vocoder.request_slots
+    vocoder.abort("replacement")
+
+
+def test_stateful_option_preserves_nonstream_full_decode() -> None:
+    vocoder = stateful_vocoder()
+    frames = random_codec_frames(23)
+    with torch.no_grad():
+        expected = vocoder.codec.from_indices(frames[:, 1:].T[None].clone())[0, 0]
+    result = vocoder.vocode_payload(final_payload(frames, is_streaming=False))
+    np.testing.assert_allclose(
+        result.data["audio_data"], expected.numpy(), atol=0, rtol=0
+    )
+    assert not vocoder.request_slots
+
+
+def test_stateful_terminal_output_follows_slot_release() -> None:
+    """Terminal output must not become visible while its codec slot is owned."""
+    vocoder = stateful_vocoder(capacity=1)
+    frames = random_codec_frames(20)
+    native_stream_chunk(vocoder, "old", frames)
+    original_put = vocoder.outbox.put
+
+    def record_output(message: OutgoingMessage) -> None:
+        if message.type == "result":
+            assert vocoder.request_slots == {}
+        else:
+            pass
+        original_put(message)
+
+    vocoder.outbox.put = record_output
+    vocoder.handle_streaming_new_request(
+        "old", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("old")
+    assert any(message.type == "result" for message in drained(vocoder))
+
+
 FIRST_CHUNK_WINDOWS = [
     (0, 0, 0, 4, 4),
     (1, 0, 0, 10, 14),
@@ -1103,3 +1403,38 @@ def test_every_decoded_window_records_its_decode(
         )
         / SAMPLE_RATE
     )
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_incremental_and_fallback_windows_record_actual_decode_frames(
+    tmp_path: Path, fallback: bool
+) -> None:
+    vocoder = stateful_vocoder(capacity=1)
+    if fallback:
+        native_stream_chunk(vocoder, "occupied", random_codec_frames(4))
+        drained(vocoder)
+    else:
+        pass
+    frames = random_codec_frames(70)
+    path = event_recorder.get_recorder().start("incremental", str(tmp_path), "vocoder")
+    try:
+        native_stream_chunk(vocoder, "measured", frames)
+        payload = final_payload(frames, is_streaming=True)
+        payload.request_id = "measured"
+        vocoder.handle_streaming_new_request("measured", payload)
+        vocoder.handle_stream_done("measured")
+    finally:
+        event_recorder.get_recorder().stop(wait=True)
+    events = [json.loads(line) for line in Path(path).read_text().splitlines()]
+    starts = [event for event in events if event["event_name"].endswith("started")]
+    finishes = [event for event in events if event["event_name"].endswith("finished")]
+    assert len(starts) == len(finishes) == 5
+    assert [event["metadata"] for event in starts] == [
+        event["metadata"] for event in finishes
+    ]
+    emitted = [4, 10, 12, 32, 12]
+    assert [event["metadata"]["emitted_frames"] for event in starts] == emitted
+    assert [event["metadata"]["decoded_frames"] for event in starts] == (
+        [4, 14, 26, 58, 44] if fallback else emitted
+    )
+    assert starts[-1]["metadata"]["is_final"] == 1
