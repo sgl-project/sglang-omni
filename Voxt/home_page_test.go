@@ -224,7 +224,7 @@ func TestHomeTryHistoryBeforeTheFlag(t *testing.T) {
 
 func TestSloganHint(t *testing.T) {
 	join := func(h *settings.Hotkey) string {
-		b, k, a := sloganHint(h)
+		b, k, a := sloganHintFor(i18n.CurrentTranslator(), h)
 		return b + "[" + k + "]" + a
 	}
 	for _, tc := range []struct {
@@ -342,6 +342,42 @@ func TestHomeRecent(t *testing.T) {
 	}
 }
 
+func TestHomeRecentActionsUseVisibleEntry(t *testing.T) {
+	a, tt := homeTester(t)
+	fresh := store.Entry{
+		ID: "same", Kind: store.KindTranscribe, Status: store.StatusDone,
+		CreatedAt: time.Now(), Result: "  fresh text  \n", RawText: "fresh raw",
+	}
+	stale := fresh
+	stale.Kind, stale.Result, stale.RawText = store.KindRewrite, "stale text", "stale raw"
+	if err := a.lib.store.History().Put(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	a.hist.stale = true
+	a.hist.list = []store.Entry{stale}
+	a.hm.recent = []store.Entry{fresh}
+	frames(tt)
+
+	click(t, tt, "Copy: fresh text")
+	if got := tt.Clipboard(); got != fresh.Result {
+		t.Fatalf("inline Copy = %q, want original result %q", got, fresh.Result)
+	}
+	openMenu(t, tt, "fresh text")
+	choose(t, tt, "Copy")
+	if got := tt.Clipboard(); got != "fresh text" {
+		t.Fatalf("menu Copy = %q, want trimmed result", got)
+	}
+
+	click(t, tt, "fresh text")
+	frames(tt)
+	if a.router.Path() != "/history" || a.histUI.sel != fresh.ID || a.histUI.kind() != fresh.Kind {
+		t.Fatalf("opened %s selection %q kind %q", a.router.Path(), a.histUI.sel, a.histUI.kind())
+	}
+	if !has(tt, "fresh text") || hasExact(tt, "stale text") {
+		t.Fatalf("opened the stale entry: %q", tt.Texts())
+	}
+}
+
 // selfFront is VoxtNew as the app in front.
 func selfFront() *proto.App {
 	return &proto.App{PID: os.Getpid(), BundleID: "dev.hehehai.voxtnew", Name: "VoxtNew"}
@@ -392,8 +428,8 @@ func TestHomeTryByShortcut(t *testing.T) {
 	drain := queuePosts(a)
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
 	frames(tt)
-	if a.sess.State.Live() || a.hm.block == nil || !has(tt, "No speech model is installed.") {
-		t.Fatalf("blocked try: %+v %v %q", a.sess, a.hm.block, tt.Texts())
+	if a.sess.State.Live() || a.homeUI.block == nil || !has(tt, "No speech model is installed.") {
+		t.Fatalf("blocked try: %+v %v %q", a.sess, a.homeUI.block, tt.Texts())
 	}
 	if a.notice != nil {
 		t.Error("a try's problem went to the overlay")

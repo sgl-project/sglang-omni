@@ -100,6 +100,10 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "updates-release":
 		state := buildReleaseViewState(translator, scenario.release)
 		fixture.UpdatesRelease = &state
+	case "home":
+		scenario.home.Readiness = buildHomeReadinessList(translator, scenario.home.Features, scenario.homeReadiness)
+		state := buildHomeViewState(translator, scenario.home)
+		fixture.Home = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

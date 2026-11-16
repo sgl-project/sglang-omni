@@ -24,6 +24,8 @@ type meetingFixtureScenario struct {
 	session         *sessionFixtureScenario
 	updates         updatesViewStateInput
 	release         releaseViewStateInput
+	home            homeViewStateInput
+	homeReadiness   homeReadinessInput
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
@@ -139,6 +141,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, historyFixtureScenarios()...)
 	scenarios = appendSessionFixtureScenarios(scenarios)
 	scenarios = append(scenarios, updatesFixtureScenarios()...)
+	scenarios = append(scenarios, homeFixtureScenarios()...)
 	return scenarios
 }
 

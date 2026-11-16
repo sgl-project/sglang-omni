@@ -109,7 +109,8 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||
 		fixture.Kind == "session-overlay" && fixture.Session != nil && fixture.SessionUI != nil ||
 		fixture.Kind == "updates-settings" && fixture.UpdatesSettings != nil ||
-		fixture.Kind == "updates-release" && fixture.UpdatesRelease != nil
+		fixture.Kind == "updates-release" && fixture.UpdatesRelease != nil ||
+		fixture.Kind == "home" && fixture.Home != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -359,4 +360,17 @@ func (host *meetingDemoHost) checkReleasesNow() {
 }
 func (host *meetingDemoHost) downloadRelease(address string) {
 	host.record("downloadRelease %q", address)
+}
+
+func (host *meetingDemoHost) openHomeGuide()   { host.record("openHomeGuide") }
+func (host *meetingDemoHost) openHomeHistory() { host.record("openHomeHistory") }
+func (host *meetingDemoHost) openHomeRecent(id string) {
+	host.record("openHomeRecent %s", id)
+}
+func (host *meetingDemoHost) copyHomeRecent(id string) {
+	host.record("copyHomeRecent %s", id)
+}
+func (host *meetingDemoHost) addHomeShortcut() { host.record("addHomeShortcut") }
+func (host *meetingDemoHost) fixHomeReadiness(fix string) {
+	host.record("fixHomeReadiness %s", fix)
 }

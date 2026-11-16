@@ -193,6 +193,29 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 		return i18n.T("Check for updates")
 	case "updates-release":
 		return state.UpdatesRelease.Title
+	case "home":
+		home := state.Home
+		if home.Error != "" {
+			return home.Error
+		}
+		if !home.KeepHistory {
+			return i18n.T("History is off, so nothing is counted.")
+		}
+		for _, readiness := range home.Ready {
+			if readiness.Warn {
+				return readiness.Text
+			}
+		}
+		for _, readiness := range home.Missing {
+			return readiness.Text
+		}
+		if len(home.Recent) > 0 {
+			return home.Recent[0].Row.Title
+		}
+		if home.Read {
+			return i18n.T("Results appear here after you use a shortcut.")
+		}
+		return i18n.T("Home")
 	default:
 		return ""
 	}
@@ -213,6 +236,7 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.historySettingsUI.exportSel = "stale"
 	host.historyAccessUI.listOpen = true
 	host.updatesUI.relOpen, host.updatesUI.autoInstall = true, true
+	host.historyUI.delAsk, host.historyUI.delID = true, "stale"
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -226,7 +250,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	}
 	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" ||
 		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen ||
-		host.updatesUI.relOpen || host.updatesUI.autoInstall {
+		host.updatesUI.relOpen || host.updatesUI.autoInstall ||
+		host.historyUI.delAsk || host.historyUI.delID != "" {
 		t.Fatal("fixture switch kept local UI state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {

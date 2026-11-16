@@ -70,18 +70,22 @@ func PermissionText(p permission.State) (string, bool) {
 
 // HelperFailText says why the helper does not run.
 func HelperFailText(st helper.Status) string {
+	return HelperFailTextFor(i18n.CurrentTranslator(), st)
+}
+
+func HelperFailTextFor(translator *i18n.Translator, st helper.Status) string {
 	switch st.Reason {
 	case helper.FailMissing:
-		return i18n.T("Helper missing")
+		return translator.T("Helper missing")
 	case helper.FailProtocol:
-		return i18n.T("Helper out of date")
+		return translator.T("Helper out of date")
 	case helper.FailUpdated:
-		return i18n.T("Voxt was updated. Restart it to finish.")
+		return translator.T("Voxt was updated. Restart it to finish.")
 	}
 	if st.State == helper.Stopped {
-		return i18n.T("Helper stopped")
+		return translator.T("Helper stopped")
 	}
-	return i18n.T("Helper stopped unexpectedly")
+	return translator.T("Helper stopped unexpectedly")
 }
 
 func LogSourceLabel(s string) string {
