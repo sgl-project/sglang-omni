@@ -29,9 +29,11 @@ from sglang_omni.proto.streams import (
     REPLY_DELIVERED,
     REPLY_HEARD,
     REPLY_PROGRESS,
+    REPLY_TRUNCATED,
     SPEECH_ERROR,
     SPEECH_STARTED,
     SPEECH_STOPPED,
+    SPOKEN_TEXT_END,
     TEXT_DELTA,
     TOOL_CALL,
     TRANSCRIPT_FORMAT,
@@ -167,7 +169,7 @@ def assistant_tool_call(call: ToolCall) -> AssistantToolCall:
 
 
 def tool_message(
-    tool_call_id: str, result: dict[str, str], is_cut: bool = False
+    tool_call_id: str, result: dict[str, str | bool], is_cut: bool = False
 ) -> ChatMessage:
     return ChatMessage(
         role="tool",
@@ -179,7 +181,7 @@ def tool_message(
 
 @dataclass(kw_only=True)
 class Speech:
-    """The text being spoken and the history entry that answers it: the tool entry of a call, or the assistant entry of text the model wrote without calling the tool."""
+    """The text being spoken and the tool entry that answers its call."""
 
     text: str
     entry_index: int
@@ -315,9 +317,12 @@ class Dialog(StreamComponent):
     user is speaking or an utterance waits; the turn is announced only if the
     model then speaks. The speech starts with the first words of the call's
     text while the model still writes the rest. Text the model writes without
-    a call is spoken as it is, so the user does not sit through a silent
-    reply. New instructions are repeated beside the next utterance in its
-    prompt only, since a long past speech otherwise outweighs them.
+    a call is spoken and answered as a call of the speech tool, so the user
+    does not sit through a silent reply. A completion that stopped at its
+    token budget flags its speech's turn.done with REPLY_TRUNCATED and its
+    answer with "truncated". New instructions are repeated beside the next
+    utterance in its prompt only, since a long past speech otherwise
+    outweighs them.
     """
 
     def __init__(self, config: DialogConfig) -> None:
@@ -461,12 +466,14 @@ class Dialog(StreamComponent):
             if is_partial_call(chunk):
                 self.stream_speech(tool_calls_of(chunk)[0])
             else:
-                self.start_speech(tool_calls_of(chunk))
+                self.start_speech(
+                    tool_calls_of(chunk), chunk.payload.get(REPLY_TRUNCATED) is True
+                )
         elif control_type(chunk) == TURN_DONE and self.is_reply(chunk):
             if self.speech is not None:
                 self.end_speech(chunk)
             elif self.config.speech_tool is not None:
-                self.end_inference()
+                self.end_inference(chunk.payload.get(REPLY_TRUNCATED) is True)
             else:
                 reply = "".join(self.reply)
                 self.messages.append(
@@ -536,12 +543,12 @@ class Dialog(StreamComponent):
         else:
             return None
 
-    def start_speech(self, calls: list[ToolCall]) -> None:
+    def start_speech(self, calls: list[ToolCall], is_truncated: bool) -> None:
         """Record the model's calls and speak the first one that can be; any other is answered at once, so the next prompt holds one answer per call."""
         assert self.reply is not None
         self.text_reader = None
         if self.speech is not None and self.speech.is_streaming:
-            self.finish_streamed_speech(calls)
+            self.finish_streamed_speech(calls, is_truncated)
             return
         else:
             pass
@@ -573,7 +580,7 @@ class Dialog(StreamComponent):
             self.should_follow_up = True
             self.end_silent_inference()
         else:
-            self.speak(spoken)
+            self.speak(spoken, is_truncated)
 
     def announce_turn(self) -> None:
         """Tell the client of a turn it has not heard of, now that the model speaks in it."""
@@ -585,11 +592,15 @@ class Dialog(StreamComponent):
         else:
             pass
 
-    def speak(self, call: ToolCall) -> None:
+    def speak(self, call: ToolCall, is_truncated: bool) -> None:
         """Hand the call to the synthesizer, announcing a turn the client has not heard of."""
         assert self.emit is not None
         self.announce_turn()
-        self.emit(tool_call_chunk([call], self.reply_turn, self.language))
+        self.emit(
+            tool_call_chunk(
+                [call], self.reply_turn, self.language, is_truncated=is_truncated
+            )
+        )
 
     def stream_speech(self, call: ToolCall) -> None:
         """One more piece of the arguments of the call the model is writing. The speech starts with the first words of its text and each later piece follows them to the synthesizer, so the first sentence is spoken while the model writes the rest."""
@@ -648,7 +659,7 @@ class Dialog(StreamComponent):
             update={"tool_calls": [assistant_tool_call(call) for call in calls]}
         )
 
-    def finish_streamed_speech(self, calls: list[ToolCall]) -> None:
+    def finish_streamed_speech(self, calls: list[ToolCall], is_truncated: bool) -> None:
         """The model finished the call whose text is already being spoken: the synthesizer is told the text is complete, and any other call is answered at once. A call the token budget cut has no arguments to read, so what was spoken is its text."""
         assert self.emit is not None and self.speech is not None
         speech = self.speech
@@ -683,28 +694,31 @@ class Dialog(StreamComponent):
             )
         else:
             pass
-        self.emit(tool_call_chunk([spoken], self.reply_turn, self.language))
+        self.emit(
+            tool_call_chunk(
+                [spoken], self.reply_turn, self.language, is_truncated=is_truncated
+            )
+        )
 
     def end_speech(self, chunk: TimedChunk) -> None:
-        """The speech's audio reached the client, or its synthesis failed; a call is answered, and a text the model wrote without a call ends the utterance's replies."""
+        """The speech's audio reached the client, or its synthesis failed; its call is answered."""
         assert self.speech is not None
         speech = self.speech
         entry = self.messages[speech.entry_index]
         error = chunk.payload.get(SPEECH_ERROR)
         self.speech = None
-        if entry.role != "tool":
-            self.end_reply(speech.entry_index, speech.text, [])
-        elif error is None:
-            self.messages[speech.entry_index] = tool_message(
-                entry.tool_call_id, {"status": "completed"}
-            )
+        if error is None:
+            result: dict[str, str | bool] = {"status": "completed"}
+            if chunk.payload.get(REPLY_TRUNCATED) is True:
+                result["truncated"] = True
+            else:
+                pass
+            self.messages[speech.entry_index] = tool_message(entry.tool_call_id, result)
             self.end_reply(speech.entry_index, speech.text, [])
         else:
             result = {"status": "failed", "error": str(error)}
             # note (Jinyan Su): the sentences whose audio was complete before the service failed reached the client, so the model is told where to go on from.
-            heard = (
-                speech.text[: self.progress[-1][0]].rstrip() if self.progress else ""
-            )
+            heard = speech.text[: int(chunk.payload.get(SPOKEN_TEXT_END, 0))].rstrip()
             if heard:
                 result["heard_prefix"] = heard
             else:
@@ -716,23 +730,24 @@ class Dialog(StreamComponent):
             self.reply = None
             self.should_follow_up = True
 
-    def end_inference(self) -> None:
-        """The model ended a completion without calling anything, as a service that ignores `tool_choice` lets it: what it wrote is spoken, and writing nothing leaves the turn silent."""
+    def end_inference(self, is_truncated: bool) -> None:
+        """The model ended a completion without calling anything, as a service that ignores tool_choice lets it: what it wrote is spoken as a call of the speech tool, so a failure is answered and followed up as any call's is, and writing nothing leaves the turn silent."""
         assert self.reply is not None
         text = "".join(self.reply).strip()
         if text:
             logger.warning(
-                f"turn {self.reply_turn}: the model wrote text without calling {self.config.speech_tool}; speaking it"
+                f"turn {self.reply_turn}: the model wrote text without calling {self.config.speech_tool}; speaking it as a call"
             )
-            self.messages.append(ChatMessage(role="assistant", content=text))
-            self.speech = Speech(text=text, entry_index=len(self.messages) - 1)
             self.reply = []
-            self.speak(
-                ToolCall(
-                    id=f"call_{self.reply_turn}_text",
-                    name=str(self.config.speech_tool),
-                    arguments={"text": text},
-                )
+            self.start_speech(
+                [
+                    ToolCall(
+                        id=f"call_{self.reply_turn}_text",
+                        name=str(self.config.speech_tool),
+                        arguments={"text": text},
+                    )
+                ],
+                is_truncated,
             )
         else:
             self.end_silent_inference()
@@ -896,26 +911,14 @@ class Dialog(StreamComponent):
                 pass
 
     def join_around(self, index: int) -> None:
-        """Drop the reply at index, which the history keeps nothing of, and join the user messages around it: nothing of the reply was heard, so the user kept talking, and an empty assistant entry would only show the model an empty answer to copy. A reply after an answered call has no user message to join."""
-        if self.messages[index - 1].role == "user":
-            self.messages[index - 1] = ChatMessage(
-                role="user",
-                content=f"{self.messages[index - 1].content} {self.messages[index + 1].content}",
-            )
-            del self.messages[index : index + 2]
-            removed = 2
-        else:
-            self.messages.pop(index)
-            removed = 1
+        """Drop the reply at index, which the history keeps nothing of, and join the user messages around it: nothing of the reply was heard, so the user kept talking, and an empty assistant entry would only show the model an empty answer to copy."""
+        self.messages[index - 1] = ChatMessage(
+            role="user",
+            content=f"{self.messages[index - 1].content} {self.messages[index + 1].content}",
+        )
+        del self.messages[index : index + 2]
         if self.truncatable is not None and self.truncatable[1] == index:
             self.truncatable = None
-        elif self.truncatable is not None and self.truncatable[1] > index:
-            self.truncatable = (self.truncatable[0], self.truncatable[1] - removed)
-        else:
-            pass
-        # note (yxs): a late truncate can empty the reply before a speech that is still being spoken, and the speech's entry moves with the entries removed before it.
-        if self.speech is not None and self.speech.entry_index > index:
-            self.speech.entry_index -= removed
         else:
             pass
 

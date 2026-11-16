@@ -20,6 +20,7 @@ from sglang_omni.models.streaming_cascade.base import (
 from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 from sglang_omni.models.streaming_cascade.dialog import SpokenTextReader
 from sglang_omni.models.streaming_cascade.generators import (
+    ChatChoice,
     ChatDelta,
     FunctionDelta,
     ToolCallDelta,
@@ -31,8 +32,11 @@ from sglang_omni.proto.streams import (
     PCM_F32,
     REPLY_DELIVERED,
     REPLY_PROGRESS,
+    REPLY_TRUNCATED,
+    SESSION_CONTROL,
     SPEECH_ERROR,
     SPEECH_STARTED,
+    SPOKEN_TEXT_END,
     TEXT_DELTA,
     TOOL_CALL,
     TRUNCATE,
@@ -99,12 +103,14 @@ def answers(messages: list[ChatMessage]) -> dict[str, dict[str, str]]:
     }
 
 
-def progress_of(dialog) -> list[object]:
+def progress_of(
+    dialog, points: list[tuple[int, float]] = SPEECH_PROGRESS_POINTS
+) -> list[object]:
     return [
         lambda text_end=text_end, audio_ms=audio_ms: dialog.control(
             control_chunk(REPLY_PROGRESS, turn=1, text_end=text_end, audio_ms=audio_ms)
         )
-        for text_end, audio_ms in SPEECH_PROGRESS_POINTS
+        for text_end, audio_ms in points
     ]
 
 
@@ -274,7 +280,7 @@ async def test_a_refused_call_ends_the_announced_turn_and_the_model_may_try_agai
 
 
 @pytest.mark.asyncio
-async def test_text_the_model_wrote_without_a_call_is_spoken_and_ends_its_replies():
+async def test_text_the_model_wrote_without_a_call_is_spoken_and_answered_as_a_call():
     dialog = speech_dialog()
     outputs = await drain(
         dialog,
@@ -288,10 +294,37 @@ async def test_text_the_model_wrote_without_a_call_is_spoken_and_ends_its_replie
     assert (TURN_EMPTY, 1) not in turn_events(outputs)
     assert await drain(dialog, [control_chunk(TURN_DONE, turn=1)]) == []
     assert dialog.reply is None
-    assert (dialog.messages[-1].role, dialog.messages[-1].content) == (
+    assert [message.role for message in dialog.messages] == [
+        "system",
+        "user",
         "assistant",
-        "Plain answer.",
+        "tool",
+    ]
+    assert json.loads(dialog.messages[2].tool_calls[0].function.arguments) == {
+        "text": "Plain answer."
+    }
+    assert answers(dialog.messages) == {"call_1_text": COMPLETED}
+
+
+@pytest.mark.asyncio
+async def test_text_the_model_wrote_without_a_call_whose_speech_failed_is_followed_up():
+    """Text the model wrote without a call whose speech failed was recorded as said in full, and the model was not prompted again, so the user heard nothing more."""
+    dialog = speech_dialog()
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk(SPEECH, 1),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(
+                TURN_DONE, turn=1, **{SPEECH_ERROR: "503", SPOKEN_TEXT_END: 8}
+            ),
+        ],
     )
+    failed = {"status": "failed", "error": "503", "heard_prefix": "One two."}
+    assert answers(dialog.messages) == {"call_1_text": failed}
+    [_, retry] = prompts(outputs)
+    assert answers(retry) == {"call_1_text": failed}
 
 
 @pytest.mark.asyncio
@@ -311,7 +344,7 @@ async def test_text_after_a_refused_call_is_spoken_since_nothing_was_said_yet():
 
 
 @pytest.mark.asyncio
-async def test_an_interrupted_text_without_a_call_is_cut_like_a_plain_reply():
+async def test_an_interrupted_text_without_a_call_is_cut_like_a_call():
     dialog = speech_dialog()
     await drain(
         dialog,
@@ -324,8 +357,9 @@ async def test_an_interrupted_text_without_a_call_is_cut_like_a_plain_reply():
             control_chunk(REPLY_DELIVERED, turn=1, audio_ms=1100),
         ],
     )
-    assert dialog.messages[-1].content == "One two."
-    assert dialog.messages[-1].is_cut
+    assert answers(dialog.messages) == {
+        "call_1_text": {"status": "interrupted", "heard_prefix": "One two."}
+    }
 
 
 @pytest.mark.asyncio
@@ -438,15 +472,29 @@ async def test_a_failed_speech_is_reported_to_the_model_and_no_truncate_rewrites
 
 
 @pytest.mark.asyncio
-async def test_a_speech_that_failed_after_some_audio_tells_the_model_what_was_heard():
+@pytest.mark.parametrize(
+    "progress_points",
+    [
+        # The aligner relays reply.progress a hop behind the synthesizer's turn.done.
+        [],
+        # The forced aligner reports the word ends of a sentence after the sentence's end.
+        [(20, 2000.0), (3, 375.0)],
+    ],
+)
+async def test_a_speech_that_failed_after_some_audio_tells_the_model_what_was_heard(
+    progress_points: list[tuple[int, float]],
+):
+    """The model was told the user heard less than the synthesizer had spoken when reply.progress reached the dialog late or out of order."""
     dialog = speech_dialog()
     outputs = await drain(
         dialog,
         [
             transcript_chunk("question", True),
             speech_call(),
-            *progress_of(dialog),
-            control_chunk(TURN_DONE, turn=1, **{SPEECH_ERROR: "503"}),
+            *progress_of(dialog, progress_points),
+            control_chunk(
+                TURN_DONE, turn=1, **{SPEECH_ERROR: "503", SPOKEN_TEXT_END: 20}
+            ),
         ],
     )
     assert answers(dialog.messages)["call_1"] == {
@@ -458,36 +506,6 @@ async def test_a_speech_that_failed_after_some_audio_tells_the_model_what_was_he
     [_, retry] = prompts(outputs)
     assert "broke off" in retry[0].content
     assert "cut you off" not in retry[0].content
-
-
-@pytest.mark.asyncio
-async def test_a_speech_keeps_its_place_when_a_late_truncate_removes_the_reply_before_it():
-    dialog = speech_dialog()
-    await drain(
-        dialog,
-        [
-            transcript_chunk("question", True),
-            # A reply the model wrote without a call: the generator ends it, then the synthesizer.
-            text_chunk("Plain answer.", 1),
-            control_chunk(TURN_DONE, turn=1),
-            control_chunk(TURN_DONE, turn=1),
-            transcript_chunk("next", True),
-            speech_call("Said.", "call_1", 2),
-            # The client reports late that it heard nothing of the first reply, while the second is spoken.
-            control_chunk(TRUNCATE, turn=1, t_ms=0),
-            control_chunk(TURN_DONE, turn=2),
-        ],
-    )
-    assert [(message.role, message.content) for message in dialog.messages[1:2]] == [
-        ("user", "question next")
-    ]
-    assert [message.role for message in dialog.messages] == [
-        "system",
-        "user",
-        "assistant",
-        "tool",
-    ]
-    assert answers(dialog.messages) == {"call_1": COMPLETED}
 
 
 @pytest.mark.asyncio
@@ -636,6 +654,39 @@ async def test_the_synthesizer_speaks_a_call_and_emits_its_text_before_the_audio
         1,
     )
     assert SPEECH_ERROR not in outputs[-1].payload
+    assert REPLY_TRUNCATED not in outputs[-1].payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        [
+            tool_call_chunk(
+                [ToolCall(id="call_1", name="tts_start", arguments={"text": "One."})],
+                1,
+                is_truncated=True,
+            )
+        ],
+        [
+            text_chunk("One.", 1),
+            control_chunk(TURN_DONE, turn=1, **{REPLY_TRUNCATED: True}),
+        ],
+    ],
+)
+async def test_the_synthesizer_repeats_a_token_budget_cut_on_the_turn_done_it_sends(
+    inputs: list[TimedChunk],
+):
+    """A reply or speech the token budget cut ended in a turn.done like a whole one's, so the client reported it as a completed response."""
+    synthesizer = speech_synthesizer()
+
+    async def speak(sentence: str, language: str | None):
+        yield np.zeros(240, dtype="<f4")
+
+    synthesizer.speak = speak
+    outputs = await drain(synthesizer, inputs)
+    assert control_type(outputs[-1]) == TURN_DONE
+    assert outputs[-1].payload[REPLY_TRUNCATED] is True
 
 
 @pytest.mark.asyncio
@@ -643,13 +694,21 @@ async def test_a_failed_speech_service_ends_the_speech_with_the_error_instead_of
     synthesizer = speech_synthesizer()
 
     async def speak(sentence: str, language: str | None):
-        raise httpx.ConnectError("refused")
-        yield
+        if sentence == "Two.":
+            raise httpx.ConnectError("refused")
+        else:
+            pass
+        yield np.zeros(240, dtype="<f4")
 
     synthesizer.speak = speak
-    outputs = await drain(synthesizer, [speech_call("One.")])
+    outputs = await drain(synthesizer, [speech_call("One. Two.")])
     assert control_type(outputs[-1]) == TURN_DONE
     assert "refused" in outputs[-1].payload[SPEECH_ERROR]
+    # The failure says where the speech stopped, since the dialog may read reply.progress after it.
+    [progress] = [
+        output for output in outputs if control_type(output) == REPLY_PROGRESS
+    ]
+    assert outputs[-1].payload[SPOKEN_TEXT_END] == progress.payload["text_end"] > 0
 
 
 @pytest.mark.asyncio
@@ -685,20 +744,27 @@ async def test_the_generator_joins_call_fragments_into_one_chunk_and_leaves_the_
     generator = tool_generator()
 
     async def complete(messages: list[ChatMessage], tool_choice: str | None):
-        yield ChatDelta(content="Note. ")
-        yield ChatDelta(
-            tool_calls=[
-                ToolCallDelta(
-                    index=0,
-                    id="call_a",
-                    function=FunctionDelta(name="tts_start", arguments='{"te'),
-                )
-            ]
+        yield ChatChoice(delta=ChatDelta(content="Note. "))
+        yield ChatChoice(
+            delta=ChatDelta(
+                tool_calls=[
+                    ToolCallDelta(
+                        index=0,
+                        id="call_a",
+                        function=FunctionDelta(name="tts_start", arguments='{"te'),
+                    )
+                ]
+            )
         )
-        yield ChatDelta(
-            tool_calls=[
-                ToolCallDelta(index=0, function=FunctionDelta(arguments='xt": "Hi."}'))
-            ]
+        yield ChatChoice(
+            delta=ChatDelta(
+                tool_calls=[
+                    ToolCallDelta(
+                        index=0, function=FunctionDelta(arguments='xt": "Hi."}')
+                    )
+                ]
+            ),
+            finish_reason="tool_calls",
         )
 
     generator.complete = complete
@@ -730,6 +796,7 @@ async def test_the_generator_joins_call_fragments_into_one_chunk_and_leaves_the_
     assert tool_calls_of(outputs[3]) == [
         ToolCall(id="call_a", name="tts_start", arguments={"text": "Hi."})
     ]
+    assert REPLY_TRUNCATED not in outputs[3].payload
 
 
 @pytest.mark.asyncio
@@ -737,22 +804,64 @@ async def test_a_call_the_token_budget_cut_keeps_its_raw_text_for_the_dialog_to_
     generator = tool_generator()
 
     async def complete(messages: list[ChatMessage], tool_choice: str | None):
-        yield ChatDelta(
-            tool_calls=[
-                ToolCallDelta(
-                    index=0,
-                    function=FunctionDelta(name="tts_start", arguments='{"text": "Hi'),
-                )
-            ]
+        yield ChatChoice(
+            delta=ChatDelta(
+                tool_calls=[
+                    ToolCallDelta(
+                        index=0,
+                        function=FunctionDelta(
+                            name="tts_start", arguments='{"text": "Hi'
+                        ),
+                    )
+                ]
+            ),
+            finish_reason="length",
         )
 
     generator.complete = complete
     outputs = []
     await generator.reply([], 7, None, outputs.append)
     await generator.close()
-    assert tool_calls_of(outputs[0]) == [
+    assert tool_calls_of(outputs[-1]) == [
         ToolCall(id="call_7_0", name="tts_start", arguments='{"text": "Hi')
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("delta", "end_format"),
+    [
+        (ChatDelta(content="Hi"), SESSION_CONTROL),
+        (
+            ChatDelta(
+                tool_calls=[
+                    ToolCallDelta(
+                        index=0,
+                        function=FunctionDelta(
+                            name="tts_start", arguments='{"text": "Hi'
+                        ),
+                    )
+                ]
+            ),
+            TOOL_CALL,
+        ),
+    ],
+)
+async def test_a_completion_the_token_budget_cut_flags_its_end(
+    delta: ChatDelta, end_format: str
+):
+    """A completion that stopped at max_tokens ended like a whole one, so nothing after the generator could tell the reply was cut."""
+    generator = tool_generator()
+
+    async def complete(messages: list[ChatMessage], tool_choice: str | None):
+        yield ChatChoice(delta=delta, finish_reason="length")
+
+    generator.complete = complete
+    outputs = []
+    await generator.reply([], 7, None, outputs.append)
+    await generator.close()
+    assert outputs[-1].format == end_format
+    assert outputs[-1].payload[REPLY_TRUNCATED] is True
 
 
 def speech_profile(**changes: dict[str, object]) -> StreamingCascadePipelineConfig:
@@ -934,7 +1043,9 @@ async def test_a_streamed_call_the_token_budget_cut_keeps_the_text_that_was_spok
             transcript_chunk("question", True),
             *speech_pieces([cut]),
             tool_call_chunk(
-                [ToolCall(id="call_1", name="tts_start", arguments=cut)], 1
+                [ToolCall(id="call_1", name="tts_start", arguments=cut)],
+                1,
+                is_truncated=True,
             ),
         ],
     )
@@ -942,6 +1053,12 @@ async def test_a_streamed_call_the_token_budget_cut_keeps_the_text_that_was_spok
     assert completed_calls(outputs) == ["One two. Three"]
     assert json.loads(dialog.messages[2].tool_calls[0].function.arguments) == {
         "text": "One two. Three"
+    }
+    # The synthesizer is told, so the speech's turn.done says so, and the model reads it in the answer.
+    assert outputs[-1].payload[REPLY_TRUNCATED] is True
+    await drain(dialog, [control_chunk(TURN_DONE, turn=1, **{REPLY_TRUNCATED: True})])
+    assert answers(dialog.messages) == {
+        "call_1": {"status": "completed", "truncated": True}
     }
 
 

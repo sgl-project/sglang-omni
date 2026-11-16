@@ -46,7 +46,7 @@ from sglang_omni.models.streaming_cascade.dialog import (
     DialogConfig,
     heard_prefix,
 )
-from sglang_omni.models.streaming_cascade.generators import ChatDelta
+from sglang_omni.models.streaming_cascade.generators import ChatChoice, ChatDelta
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.models.streaming_cascade.recognizers import probe_realtime_service
 from sglang_omni.models.streaming_cascade.running_transcript import (
@@ -2657,7 +2657,7 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
 
     async def complete(messages, tool_choice):
         for content in ("1, ", "2."):
-            yield ChatDelta(content=content)
+            yield ChatChoice(delta=ChatDelta(content=content))
 
     generator.complete = complete
     outputs = await drain(

@@ -26,7 +26,13 @@ from sglang_omni.models.streaming_cascade.synthesizers import (
     OpenAISpeechSynthesizerConfig,
 )
 from sglang_omni.proto.session import TimedChunk
-from sglang_omni.proto.streams import MESSAGES, TEXT_DELTA, TURN_DONE, chunk_language
+from sglang_omni.proto.streams import (
+    MESSAGES,
+    REPLY_TRUNCATED,
+    TEXT_DELTA,
+    TURN_DONE,
+    chunk_language,
+)
 from sglang_omni.proto.tools import ToolCall, tool_call_chunk
 from sglang_omni.scheduling.session import ChunkEmitter
 
@@ -185,7 +191,7 @@ class OpenAIChatGenerator(Replier):
         emit: ChunkEmitter,
         tool_choice: str | None = None,
     ) -> None:
-        """Stream the reply's text deltas, each carrying the user's language and the style the last tag named for the synthesizer; a completion that called tools ends in their tool_call chunk and leaves the turn to the node that reads it, any other in turn.done."""
+        """Stream the reply's text deltas, each carrying the user's language and the style the last tag named for the synthesizer; a completion that called tools ends in their tool_call chunk and leaves the turn to the node that reads it, any other in turn.done. Either end carries REPLY_TRUNCATED when the completion stopped at max_tokens."""
         # note (Haoling Pu): Qwen3.8-27B wrote [Sympathetic] in 6 of 740 replies, which a case-sensitive match left in the text and the speech service spoke.
         style_names = {name.lower(): name for name in self.styles}
         style_tag = re.compile(
@@ -197,7 +203,13 @@ class OpenAIChatGenerator(Replier):
         ids: dict[int, str] = {}
         names: dict[int, str] = {}
         arguments: dict[int, list[str]] = {}
-        async for delta in self.complete(messages, tool_choice):
+        is_truncated = False
+        async for choice in self.complete(messages, tool_choice):
+            delta = choice.delta
+            if choice.finish_reason == "length":
+                is_truncated = True
+            else:
+                pass
             received = partial_tag + (delta.content or "")
             tag_start = received.rfind("[")
             tail = received[tag_start:].lower()
@@ -267,7 +279,9 @@ class OpenAIChatGenerator(Replier):
             for index, name in sorted(names.items())
         ]
         if calls:
-            emit(tool_call_chunk(calls, turn))
+            emit(tool_call_chunk(calls, turn, is_truncated=is_truncated))
+        elif is_truncated:
+            emit(control_chunk(TURN_DONE, turn=turn, **{REPLY_TRUNCATED: True}))
         else:
             emit(control_chunk(TURN_DONE, turn=turn))
 
@@ -311,7 +325,7 @@ class OpenAIChatGenerator(Replier):
 
     async def complete(
         self, messages: list[ChatMessage], tool_choice: str | None = None
-    ) -> AsyncIterator[ChatDelta]:
+    ) -> AsyncIterator[ChatChoice]:
         finished = False
         async with self.client.stream(
             "POST",
@@ -340,7 +354,7 @@ class OpenAIChatGenerator(Replier):
                         raise RuntimeError(f"LLM stopped with {choice.finish_reason}")
                     else:
                         finished = True
-                    yield choice.delta
+                    yield choice
             if not finished:
                 raise RuntimeError("LLM stream ended before completion")
             else:

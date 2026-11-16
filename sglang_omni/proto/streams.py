@@ -58,6 +58,8 @@ TURN_INTERRUPTED = "turn.interrupted"  # the reply stopped before its end
 REPLY_TRUNCATED = "reply_truncated"
 # The error a synthesizer speaking a tool call's text flags on that speech's turn.done, so the model is told instead of the Session failing.
 SPEECH_ERROR = "speech_error"
+# Beside SPEECH_ERROR: the characters of the speech's text whose sentences the synthesizer had spoken before it failed.
+SPOKEN_TEXT_END = "spoken_text_end"
 CONFIGURED = "configured"  # {"nodes": {name: kind}}
 # {"text_end": int, "audio_ms": float}; the reply text's first text_end characters have audio, ending audio_ms after the reply's first sample
 REPLY_PROGRESS = "reply.progress"

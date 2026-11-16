@@ -32,7 +32,9 @@ from sglang_omni.proto.streams import (
     PCM_F32,
     REPLY_PROGRESS,
     REPLY_SENTENCE,
+    REPLY_TRUNCATED,
     SPEECH_ERROR,
+    SPOKEN_TEXT_END,
     TEXT_DELTA,
     TOOL_CALL,
     TURN_DONE,
@@ -121,8 +123,10 @@ class TurnSpeaker(Replier):
     control of that turn cancels it and the rest of the reply's text is dropped.
     A tool_call chunk holds one speech of its own turn as a whole: its text is
     emitted as a text delta for the nodes that follow the spoken words, and a
-    service failure ends the speech with the error on its turn.done, so the
-    model is told instead of the Session failing.
+    service failure ends the speech with the error and the end of its last
+    spoken sentence on its turn.done, so the model is told instead of the
+    Session failing. A reply or speech whose generation stopped at its token
+    budget ends with REPLY_TRUNCATED on its turn.done.
     """
 
     async def speak_reply(
@@ -144,10 +148,20 @@ class TurnSpeaker(Replier):
         self, inputs: AsyncIterator[TimedChunk], emit: ChunkEmitter
     ) -> None:
         deltas: asyncio.Queue[TimedChunk | None] = asyncio.Queue()
+        # Turns whose generation stopped at its token budget, until the turn.done that repeats it.
+        truncated_turns: set[int] = set()
+
+        def end_turn(turn: int, **fields: object) -> None:
+            if turn in truncated_turns:
+                truncated_turns.discard(turn)
+                fields[REPLY_TRUNCATED] = True
+            else:
+                pass
+            emit(control_chunk(TURN_DONE, turn=turn, **fields))
 
         async def speak_then_end(turn: int) -> None:
             await self.speak_reply(iterate(deltas), turn, emit)
-            emit(control_chunk(TURN_DONE, turn=turn))
+            end_turn(turn)
 
         # The turn of the call whose text is arriving in pieces, until its complete chunk; a piece for it once its speech ended, cut or failed, is dropped.
         streamed_turn: int | None = None
@@ -163,11 +177,14 @@ class TurnSpeaker(Replier):
             turn: int, speech: asyncio.Queue[TimedChunk | None]
         ) -> None:
             audio_count = 0
+            spoken_text_end = 0
 
             def emit_counting(chunk: TimedChunk) -> None:
-                nonlocal audio_count
+                nonlocal audio_count, spoken_text_end
                 if chunk.format == PCM_F32:
                     audio_count += 1
+                elif control_type(chunk) == REPLY_PROGRESS:
+                    spoken_text_end = int(chunk.payload["text_end"])
                 else:
                     pass
                 emit(chunk)
@@ -176,18 +193,18 @@ class TurnSpeaker(Replier):
                 await self.speak_reply(published(speech), turn, emit_counting)
             except httpx.HTTPError as error:
                 logger.error(f"speech of turn {turn} failed: {error!r}")
-                emit(control_chunk(TURN_DONE, turn=turn, **{SPEECH_ERROR: repr(error)}))
+                # note (Jingwen): the dialog reads reply.progress through the aligner, which can deliver it after this turn.done and out of order, so the failure carries where the speech stopped.
+                end_turn(
+                    turn,
+                    **{SPEECH_ERROR: repr(error), SPOKEN_TEXT_END: spoken_text_end},
+                )
             else:
                 if audio_count == 0:
                     # note (Jinyan Su): a text of only symbols, such as "..." or an emoji, leaves nothing to speak, and the model must not be told it was heard.
                     logger.warning(f"speech of turn {turn} had nothing to speak")
-                    emit(
-                        control_chunk(
-                            TURN_DONE, turn=turn, **{SPEECH_ERROR: NOTHING_TO_SPEAK}
-                        )
-                    )
+                    end_turn(turn, **{SPEECH_ERROR: NOTHING_TO_SPEAK})
                 else:
-                    emit(control_chunk(TURN_DONE, turn=turn))
+                    end_turn(turn)
 
         async def handle(chunk: TimedChunk, replies: Replies) -> None:
             nonlocal deltas, streamed_turn
@@ -212,6 +229,9 @@ class TurnSpeaker(Replier):
                     streamed_turn = None
                     if is_streamed and not replies.is_running(chunk.turn):
                         pass
+                    elif chunk.payload.get(REPLY_TRUNCATED) is True:
+                        truncated_turns.add(chunk.turn)
+                        deltas.put_nowait(None)
                     else:
                         deltas.put_nowait(None)
             elif chunk.format == TEXT_DELTA and chunk.turn in replies.interrupted:
@@ -225,13 +245,17 @@ class TurnSpeaker(Replier):
                 else:
                     pass
                 deltas.put_nowait(chunk)
+            elif control_type(chunk) == TURN_DONE and chunk.turn in replies.interrupted:
+                replies.interrupted.discard(chunk.turn)
             elif control_type(chunk) == TURN_DONE:
+                if chunk.payload.get(REPLY_TRUNCATED) is True:
+                    truncated_turns.add(chunk.turn)
+                else:
+                    pass
                 if replies.is_running(chunk.turn):
                     deltas.put_nowait(None)
-                elif chunk.turn in replies.interrupted:
-                    replies.interrupted.discard(chunk.turn)
                 else:
-                    emit(control_chunk(TURN_DONE, turn=chunk.turn))
+                    end_turn(chunk.turn)
             else:
                 pass
 
