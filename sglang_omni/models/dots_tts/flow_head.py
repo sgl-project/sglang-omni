@@ -228,7 +228,10 @@ class DotsTTSFlowHead(nn.Module):
             optimize=optimize,
         )
         self.batched_nfe = int(nfe)
-        self.prepare_batched_eos_staging(int(num_slots), parameter)
+        self.prepare_batched_eos_staging(
+            int(num_slots),
+            is_cuda=parameter.is_cuda,
+        )
 
     def validate_request(
         self,
@@ -751,20 +754,20 @@ class DotsTTSFlowHead(nn.Module):
         self.batched_eos_pending = 0
         return flags
 
-    def prepare_batched_eos_staging(self, capacity: int, tensor: torch.Tensor) -> None:
+    def prepare_batched_eos_staging(self, capacity: int, *, is_cuda: bool) -> None:
         """Reset pending EOS staging and size the pinned buffer at init."""
         self.batched_eos_pending = 0
         self.batched_eos_host = None
-        if not tensor.is_cuda or capacity <= 0:
+        if not is_cuda or capacity <= 0:
             self.batched_eos_pinned = None
             self.batched_eos_event = None
             return
         else:
             pass
-        self.ensure_batched_eos_capacity(capacity, tensor)
+        self.ensure_batched_eos_capacity(capacity, is_cuda=is_cuda)
 
-    def ensure_batched_eos_capacity(self, capacity: int, tensor: torch.Tensor) -> None:
-        if not tensor.is_cuda or capacity <= 0:
+    def ensure_batched_eos_capacity(self, capacity: int, *, is_cuda: bool) -> None:
+        if not is_cuda or capacity <= 0:
             return
         else:
             pass
@@ -794,7 +797,10 @@ class DotsTTSFlowHead(nn.Module):
         else:
             pass
         if eos_hits.is_cuda:
-            self.ensure_batched_eos_capacity(n, eos_hits)
+            self.ensure_batched_eos_capacity(
+                n,
+                is_cuda=eos_hits.is_cuda,
+            )
             assert self.batched_eos_pinned is not None
             assert self.batched_eos_event is not None
             self.batched_eos_pinned[:n].copy_(
