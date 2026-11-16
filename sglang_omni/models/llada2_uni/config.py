@@ -192,13 +192,19 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
             )
         else:
             pass
-        preload = os.environ.get("LD_PRELOAD", "")
-        if "torch_memory_saver" not in preload:
-            environment["LD_PRELOAD"] = (
-                f"{libraries[0]}:{preload}" if preload else str(libraries[0])
+        preload = ":".join(
+            value
+            for value in (
+                environment.get("LD_PRELOAD", ""),
+                os.environ.get("LD_PRELOAD", ""),
             )
+            if value
+        )
+        if "torch_memory_saver" not in preload:
+            preload = f"{libraries[0]}:{preload}" if preload else str(libraries[0])
         else:
             pass
+        environment["LD_PRELOAD"] = preload
         return environment
 
     def with_serial_offload(
@@ -214,12 +220,45 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
         configuration = self.model_dump()
         thinker = self.stage_named(THINKER_STAGE)
         process = thinker.process or thinker.name
+        offload_stage_names = {IMAGE_STAGE, THINKER_STAGE, IMAGE_DECODE_STAGE}
+        source_processes = {
+            stage.process or stage.name
+            for stage in self.stages
+            if stage.name in offload_stage_names
+        }
+        target_policy = self.processes.get(process)
+        target_devices = (
+            target_policy.replica_devices
+            if target_policy is not None and target_policy.replica_devices is not None
+            else [thinker.gpu]
+        )
+        for process_name in sorted(source_processes):
+            policy = self.processes.get(process_name)
+            if policy is None:
+                continue
+            elif policy.num_replicas != 1:
+                raise ValueError("Serial offload requires one process replica")
+            elif (
+                policy.replica_devices is not None
+                and policy.replica_devices != target_devices
+            ):
+                raise ValueError(
+                    f"Serial offload process {process_name!r} has replica_devices "
+                    f"incompatible with target process {process!r}: {target_devices}"
+                )
+            else:
+                pass
         for stage in configuration["stages"]:
-            if stage["name"] in {IMAGE_STAGE, THINKER_STAGE, IMAGE_DECODE_STAGE}:
+            if stage["name"] in offload_stage_names:
                 stage["process"] = process
                 stage["factory"]["enable_serial_offload"] = True
             else:
                 pass
+        remaining_processes = {
+            stage["process"] or stage["name"] for stage in configuration["stages"]
+        }
+        for process_name in source_processes - remaining_processes:
+            configuration["processes"].pop(process_name, None)
         return type(self)(**configuration)
 
     def image_decode_mode(self) -> Literal["normal", "decoder-turbo"]:

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from importlib.machinery import ModuleSpec
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -12,7 +14,9 @@ import pytest
 import torch
 from pydantic import ValidationError
 
+from sglang_omni.config.schema import ProcessConfig
 from sglang_omni.models.llada2_uni.config import (
+    DECODE_STAGE,
     IMAGE_DECODE_STAGE,
     IMAGE_STAGE,
     THINKER_STAGE,
@@ -35,6 +39,117 @@ def test_offload_colocates_stages_without_mutating_resident_config() -> None:
     assert all(stage.factory.enable_serial_offload for stage in stages)
     assert not resident.stage_named(THINKER_STAGE).factory.enable_serial_offload
     assert LLaDA2UniOmniPipelineConfig(**offload.model_dump()) == offload
+
+
+@pytest.mark.parametrize(
+    ("keep_decoder_process", "replica_devices"),
+    [(False, None), (False, [0]), (True, None)],
+)
+def test_offload_handles_explicit_source_process_policy(
+    keep_decoder_process: bool, replica_devices: list[int] | None
+) -> None:
+    """Colocation must remove orphan policies while preserving processes with members."""
+    resident = LLaDA2UniOmniPipelineConfig(
+        model_path="unused",
+        processes={
+            "pipeline": ProcessConfig(num_replicas=1),
+            IMAGE_DECODE_STAGE: ProcessConfig(
+                num_replicas=1, replica_devices=replica_devices
+            ),
+        },
+    )
+    if keep_decoder_process:
+        resident.stage_named(DECODE_STAGE).process = IMAGE_DECODE_STAGE
+    else:
+        pass
+    resident = LLaDA2UniOmniPipelineConfig(**resident.model_dump())
+    original_configuration = resident.model_dump()
+
+    offload = resident.with_serial_offload(frozenset({"thinker", "decoder", "vae"}))
+
+    assert offload.stage_named(IMAGE_DECODE_STAGE).process == "pipeline"
+    assert offload.processes["pipeline"] == resident.processes["pipeline"]
+    if keep_decoder_process:
+        assert (
+            offload.processes[IMAGE_DECODE_STAGE]
+            == resident.processes[IMAGE_DECODE_STAGE]
+        )
+        assert offload.stage_named(DECODE_STAGE).process == IMAGE_DECODE_STAGE
+    else:
+        assert IMAGE_DECODE_STAGE not in offload.processes
+    assert resident.model_dump() == original_configuration
+    assert LLaDA2UniOmniPipelineConfig(**offload.model_dump()) == offload
+
+
+@pytest.mark.parametrize(
+    ("source_policy", "error"),
+    [
+        (ProcessConfig(num_replicas=2), "one process replica"),
+        (ProcessConfig(replica_devices=[1]), "replica_devices.*incompatible"),
+    ],
+)
+def test_offload_rejects_incompatible_source_process_policy(
+    source_policy: ProcessConfig, error: str
+) -> None:
+    """Colocation must not silently discard replica or device constraints."""
+    resident = LLaDA2UniOmniPipelineConfig(
+        model_path="unused", processes={IMAGE_DECODE_STAGE: source_policy}
+    )
+
+    with pytest.raises(ValueError, match=error):
+        resident.with_serial_offload(frozenset({"thinker", "decoder", "vae"}))
+
+
+@pytest.mark.parametrize(
+    ("configured_preload", "inherited_preload", "expected_preload"),
+    [
+        ("libtrace.so", "", "{allocator}:libtrace.so"),
+        ("libtrace.so", "libprofile.so", "{allocator}:libtrace.so:libprofile.so"),
+        ("libtrace.so", "{allocator}", "libtrace.so:{allocator}"),
+        ("{allocator}:libtrace.so", "", "{allocator}:libtrace.so"),
+        (
+            "{allocator} libtrace.so",
+            "libprofile.so",
+            "{allocator} libtrace.so:libprofile.so",
+        ),
+    ],
+)
+def test_offload_preserves_configured_and_inherited_preload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_preload: str,
+    inherited_preload: str,
+    expected_preload: str,
+) -> None:
+    """Offload must preserve configured and inherited preload libraries."""
+    package_directory = tmp_path / "torch_memory_saver"
+    package_directory.mkdir()
+    allocator = tmp_path / "torch_memory_saver_hook_mode_preload_cu13.abi3.so"
+    allocator.touch()
+    monkeypatch.setattr(
+        "sglang_omni.models.llada2_uni.config.find_spec",
+        Mock(
+            return_value=ModuleSpec(
+                "torch_memory_saver",
+                loader=None,
+                origin=str(package_directory / "__init__.py"),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.llada2_uni.config.version", Mock(return_value="0.0.10")
+    )
+    monkeypatch.setattr(torch.version, "cuda", "13.0")
+    monkeypatch.setenv("LD_PRELOAD", inherited_preload.format(allocator=allocator))
+    environment = {"LD_PRELOAD": configured_preload.format(allocator=allocator)}
+    configuration = LLaDA2UniOmniPipelineConfig(
+        model_path="unused", env_defaults=environment
+    ).with_serial_offload(frozenset({"thinker", "decoder", "vae"}))
+
+    resolved = configuration.resolved_env_defaults()
+
+    assert resolved["LD_PRELOAD"] == expected_preload.format(allocator=allocator)
+    assert configuration.env_defaults == environment
 
 
 @pytest.mark.parametrize("setting", ["process", "gpu", "backend", "partial"])
