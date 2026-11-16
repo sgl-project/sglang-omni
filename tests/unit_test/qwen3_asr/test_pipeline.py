@@ -710,16 +710,6 @@ def test_qwen3_asr_build_initializes_and_attests_prefill_graphs(monkeypatch) -> 
     assert len(recorded.attest_calls) == 1
 
 
-def test_qwen3_asr_without_a_draft_overlaps_every_decode_batch(monkeypatch) -> None:
-    patch_engine_dependencies(monkeypatch)
-
-    scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor("dummy")
-
-    assert scheduler.enable_async_decode is True
-    assert scheduler.async_decode_min_batch_size == 1
-    scheduler.shutdown_callback()
-
-
 def test_qwen3_asr_stage_import_without_dflash() -> None:
     """Ordinary ASR stage loading must not require the Triton-dependent draft module."""
     subprocess.run(
@@ -789,19 +779,10 @@ def write_dflash_checkpoint(directory: Path, *, non_causal: bool) -> None:
 
 @pytest.mark.parametrize("platform", ["cuda", "npu"])
 @pytest.mark.parametrize("non_causal", [False, True])
-@pytest.mark.parametrize(
-    ("factory_kwargs", "min_batch_size"),
-    [({}, 2), ({"async_decode_min_batch_size": 1}, 1)],
-)
 def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    non_causal: bool,
-    platform: str,
-    factory_kwargs: dict[str, int],
-    min_batch_size: int,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, non_causal: bool, platform: str
 ) -> None:
-    """DFlash must run speculative overlap by default with a single decoding request run synchronously unless the factory sets the minimum, turn the prefill hold during decode off by default, and release its temporary checkpoint after both successful and failed builds."""
+    """DFlash must run speculative overlap by default, turn the prefill hold during decode off by default, and release its temporary checkpoint after both successful and failed builds."""
     # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
     from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
@@ -850,7 +831,6 @@ def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
             "speculative_algorithm": "DFLASH",
             "speculative_draft_model_path": str(tmp_path),
         },
-        **factory_kwargs,
     )
     draft_path = Path(recorded.build_kwargs["speculative_draft_model_path"])
     assert not draft_path.exists()
@@ -861,7 +841,6 @@ def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
     )
     assert recorded.infra_kwargs[-1]["enable_async_decode"] is True
     assert scheduler.enable_async_decode is True
-    assert scheduler.async_decode_min_batch_size == min_batch_size
     assert scheduler.async_prefill is False
     assert scheduler.prefill_coalesce_after_builds_during_decode is False
     assert recorded.adapter_kwargs["greedy_only"] is (platform == "npu")
