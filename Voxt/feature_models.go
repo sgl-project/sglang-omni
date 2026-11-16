@@ -80,6 +80,9 @@ func featureModelSelectRow(c *ui.Context, key, title, label string, value *strin
 	if key == "tl-fallback" {
 		help = i18n.T("Used when the language model fails.")
 	}
+	if key == "tl-target" {
+		help = i18n.T("The language model translates into this. Speech recognition writes what you said in your own language. Automatic is English, or Chinese when your main language is English. Text that is all in the target language goes into your main language.")
+	}
 	settingRow(c, key, title, help, func() {
 		options := make([]string, len(state.Options))
 		for index, option := range state.Options {

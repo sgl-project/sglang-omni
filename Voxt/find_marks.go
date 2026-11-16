@@ -7,6 +7,7 @@ package main
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -75,6 +76,26 @@ func (f *finder) count(c *ui.Context, query string, n int) {
 	default:
 		caption(c, i18n.N(n, "%d match", "%d matches", n)).SingleLine().Shrink(0)
 	}
+}
+
+// findFolded returns where query is in text, ignoring case, as rune offsets.
+func findFolded(text, query string) [][2]int {
+	if strings.TrimSpace(query) == "" {
+		return nil
+	}
+	haystack, needle := []rune(text), []rune(query)
+	var matches [][2]int
+	for index := 0; index+len(needle) <= len(haystack); index++ {
+		matched := 0
+		for matched < len(needle) && unicode.ToLower(haystack[index+matched]) == unicode.ToLower(needle[matched]) {
+			matched++
+		}
+		if matched == len(needle) {
+			matches = append(matches, [2]int{index, index + matched})
+			index += matched - 1
+		}
+	}
+	return matches
 }
 
 // findHits counts the matches of query in the texts each of n rows

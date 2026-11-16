@@ -3,9 +3,8 @@ package main
 import (
 	"time"
 
-	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 type tryOpts struct {
@@ -31,8 +30,21 @@ func (a *app) tryIntro(feature string) string {
 	return buildTryIntro(i18n.CurrentTranslator(), feature, a.featureKeys(feature))
 }
 
+func (a *app) featureTryOptions(feature string) tryOpts {
+	local := a.fui(feature)
+	return tryOpts{
+		prefix: uitext.FeaturePrefix(feature), feature: feature, mine: a.trySessionOf(feature),
+		intro: a.tryIntro(feature), block: &local.block,
+		start: func() *sessionNotice { _, notice := a.startTry(featureKind(feature)); return notice },
+	}
+}
+
 func (a *app) tryCardState(options tryOpts) (tryCardViewState, tryCardActions) {
-	input := newTryCardStateInput(options.prefix, options.feature, options.mine, options.intro, *options.block, a.sess, time.Now())
+	return a.tryCardStateAt(options, time.Now())
+}
+
+func (a *app) tryCardStateAt(options tryOpts, now time.Time) (tryCardViewState, tryCardActions) {
+	input := newTryCardStateInput(options.prefix, options.feature, options.mine, options.intro, *options.block, a.sess, now)
 	state := buildTryCardViewState(i18n.CurrentTranslator(), input)
 	return state, &tryController{app: a, options: options}
 }
@@ -50,12 +62,7 @@ func (controller *tryController) cancelTry() {
 }
 
 func (controller *tryController) copyTryResult(text string) {
-	if controller.app.copyText != nil {
-		_ = controller.app.copyText(text)
-	} else {
-		_ = mygo.Clipboard.Write(transfer.TextData(text))
-	}
-	controller.app.toast(i18n.T("Copied"))
+	controller.app.copyFeatureText(text)
 }
 
 func (controller *tryController) clearTryNotice() {

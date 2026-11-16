@@ -124,15 +124,15 @@ func (a *app) featureShortcuts(c *ui.Context, feature string) {
 	featureShortcuts(c, feature, &state, a, a.fui(feature))
 }
 
-func (a *app) featureTry(c *ui.Context, feature string) {
-	local := a.fui(feature)
-	sectionTitle(c, i18n.T("Try it"))
-	a.tryCard(c, tryOpts{
-		prefix: uitext.FeaturePrefix(feature), feature: feature, mine: a.trySessionOf(feature),
-		intro: a.tryIntro(feature), block: &local.block,
-		start: func() *sessionNotice { _, notice := a.startTry(featureKind(feature)); return notice },
-	})
+func (a *app) featurePage(c *ui.Context, feature string) {
+	state := a.featurePageModel(feature)
+	_, tryActions := a.tryCardState(a.featureTryOptions(feature))
+	featurePage(c, &state, a, a.fui(feature), tryActions)
 }
+
+func (a *app) transcribePage(c *ui.Context) { a.featurePage(c, hotkey.Transcribe) }
+func (a *app) translatePage(c *ui.Context)  { a.featurePage(c, hotkey.Translate) }
+func (a *app) rewritePage(c *ui.Context)    { a.featurePage(c, hotkey.Rewrite) }
 
 func (a *app) tryCard(c *ui.Context, options tryOpts) {
 	state, actions := a.tryCardState(options)

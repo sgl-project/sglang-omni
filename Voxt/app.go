@@ -24,7 +24,7 @@ import (
 //	remoteState       remote_link.go  the remote language models, the Language models page
 //	sessionState      session_link.go  sessions, shortcuts, the answer card
 //	overlayState      overlay.go      the recording overlay
-//	transcribeState   feature_page.go  the feature pages (Transcribe, Translate, Rewrite)
+//	transcribeState   feature_controller.go  the feature pages (Transcribe, Translate, Rewrite)
 //	historyState      history_controller.go the History page
 //	appEnhanceState   appenhance.go   App enhancement: the groups, address reads, the page
 //	dictionaryState   dictionary_page.go  the Dictionary page

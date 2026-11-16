@@ -16,8 +16,6 @@ dictionary_notes.go  # dictionary
 dictionary_page.go  # dictionary
 dictionary_scan.go  # dictionary
 dictionary_suggest.go  # dictionary
-feature_page.go  # feature
-feature_prompts.go  # feature
 floating.go  # overlay
 home_page.go  # home
 home_ready.go  # home
