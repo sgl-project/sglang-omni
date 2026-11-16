@@ -179,6 +179,20 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return access.LastRead
 		}
 		return i18n.T("Other programs")
+	case "updates-settings":
+		settings := state.UpdatesSettings
+		if !settings.Available {
+			return i18n.T("This version does not update automatically.")
+		}
+		if settings.BundleUpdated {
+			return i18n.T("Update installed")
+		}
+		if settings.CheckDescription != "" {
+			return settings.CheckDescription
+		}
+		return i18n.T("Check for updates")
+	case "updates-release":
+		return state.UpdatesRelease.Title
 	default:
 		return ""
 	}
@@ -198,6 +212,7 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.historyUI.query, host.historyUI.sel = "stale", "stale"
 	host.historySettingsUI.exportSel = "stale"
 	host.historyAccessUI.listOpen = true
+	host.updatesUI.relOpen, host.updatesUI.autoInstall = true, true
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -210,7 +225,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 		t.Fatalf("next fixture does not show %q", want)
 	}
 	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" ||
-		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen {
+		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen ||
+		host.updatesUI.relOpen || host.updatesUI.autoInstall {
 		t.Fatal("fixture switch kept local UI state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {

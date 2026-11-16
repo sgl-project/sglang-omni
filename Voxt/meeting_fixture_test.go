@@ -94,6 +94,12 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "session-overlay":
 		_, state, seed := driveSessionFixture(t, *scenario.session, locale)
 		fixture.Session, fixture.SessionUI = state, seed
+	case "updates-settings":
+		state := buildUpdatesViewState(translator, scenario.updates)
+		fixture.UpdatesSettings = &state
+	case "updates-release":
+		state := buildReleaseViewState(translator, scenario.release)
+		fixture.UpdatesRelease = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

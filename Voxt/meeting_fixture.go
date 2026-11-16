@@ -13,6 +13,8 @@ type meetingFixtureState struct {
 	HistoryAccess   *historyAccessViewState   `json:"history_access,omitempty"`
 	Session         *sessionOverlayViewState  `json:"session,omitempty"`
 	SessionUI       *sessionOverlayFixtureUI  `json:"session_ui,omitempty"`
+	UpdatesSettings *updatesViewState         `json:"updates_settings,omitempty"`
+	UpdatesRelease  *releaseViewState         `json:"updates_release,omitempty"`
 }
 
 type sessionOverlayFixtureUI struct {

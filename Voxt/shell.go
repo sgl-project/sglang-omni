@@ -294,7 +294,8 @@ func (a *app) view(c *ui.Context) {
 	a.onboarding(c)           // onboarding_view.go
 	a.shortcutPromptDialog(c) // settings_shortcuts_family.go
 	a.announcementDialog(c)   // announcements.go
-	a.releaseDialog(c)        // updates_github.go
+	m, u := a.releaseDialogModel(), &a.updUI
+	releaseDialog(c, m, a, u) // updates_view.go
 	a.legacyReportDialog(c)   // legacy_report.go
 	a.palette(c)
 	a.shortcutSheet(c)
