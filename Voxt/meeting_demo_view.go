@@ -46,6 +46,17 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 						ui.Text(c, fixture.state.Start.Text)
 					})
 				})
+			case "history":
+				historyPage(c, fixture.state.History, host, &host.historyUI, 800)
+				historyDeleteDialog(c, &host.historyUI, host)
+			case "history-settings":
+				historySettingsDialog(c, fixture.state.HistorySettings, host, &host.historySettingsUI)
+			case "history-access":
+				ui.Scroll(c.Key("demo-history-access")).Grow(1).Children(func() {
+					pageColumn(c).Children(func() {
+						historyAccessSection(c, fixture.state.HistoryAccess, host, &host.historyAccessUI)
+					})
+				})
 			}
 		})
 	})

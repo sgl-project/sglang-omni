@@ -13,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 type meetingDemoFixture struct {
@@ -22,12 +23,15 @@ type meetingDemoFixture struct {
 }
 
 type meetingDemoHost struct {
-	fixtures    []meetingDemoFixture
-	selected    int
-	calls       []string
-	pageUI      meetingsLocalUI
-	overlayUI   meetingOverlayLocalUI
-	overlayLook settings.Overlay
+	fixtures          []meetingDemoFixture
+	selected          int
+	calls             []string
+	pageUI            meetingsLocalUI
+	overlayUI         meetingOverlayLocalUI
+	historyUI         historyLocalUI
+	historySettingsUI historySettingsLocalUI
+	historyAccessUI   historyAccessLocalUI
+	overlayLook       settings.Overlay
 }
 
 func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
@@ -89,7 +93,12 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return meetingFixtureState{}, fmt.Errorf("trailing JSON value")
 	}
-	valid := fixture.Kind == "overlay" && fixture.Overlay != nil || fixture.Kind == "page" && fixture.Page != nil || fixture.Kind == "start" && fixture.Start != nil
+	valid := fixture.Kind == "overlay" && fixture.Overlay != nil ||
+		fixture.Kind == "page" && fixture.Page != nil ||
+		fixture.Kind == "start" && fixture.Start != nil ||
+		fixture.Kind == "history" && fixture.History != nil ||
+		fixture.Kind == "history-settings" && fixture.HistorySettings != nil ||
+		fixture.Kind == "history-access" && fixture.HistoryAccess != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -114,6 +123,30 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	host.overlayUI = meetingOverlayLocalUI{}
 	if fixture.state.Overlay != nil {
 		host.overlayUI.collapsed = fixture.state.Overlay.Collapsed
+	}
+	host.historyUI = historyLocalUI{}
+	if fixture.state.History != nil {
+		host.historyUI.tab = len(store.Kinds)
+		for index, kind := range store.Kinds {
+			if string(kind) == fixture.state.History.Kind {
+				host.historyUI.tab = index
+			}
+		}
+		host.historyUI.query = fixture.state.History.Query
+	}
+	host.historySettingsUI = historySettingsLocalUI{}
+	if state := fixture.state.HistorySettings; state != nil {
+		host.historySettingsUI = historySettingsLocalUI{
+			open: state.Open, cleanOn: state.CleanOn, daysSel: state.DaysSelection, countSel: state.CountSelection,
+			exportSel: state.RecordingScope, pruneAsk: state.PruneAsk, delAudioAsk: state.DeleteAudioAsk,
+			textScope: state.TextScope, textFormat: state.TextFormat,
+		}
+	}
+	host.historyAccessUI = historyAccessLocalUI{}
+	if state := fixture.state.HistoryAccess; state != nil {
+		host.historyAccessUI = historyAccessLocalUI{
+			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
+		}
 	}
 }
 
@@ -200,3 +233,77 @@ func (host *meetingDemoHost) requestMeetingDiscard() {
 	host.overlayUI.abandon = true
 	host.record("requestMeetingDiscard")
 }
+
+func (host *meetingDemoHost) loadHistory() { host.record("loadHistory") }
+func (host *meetingDemoHost) searchHistory(query string) {
+	host.historyUI.query = query
+	host.record("searchHistory %q", query)
+}
+func (host *meetingDemoHost) showHistoryTab(tab int) {
+	host.historyUI.tab, host.historyUI.sel = tab, ""
+	host.record("showHistoryTab %d", tab)
+}
+func (host *meetingDemoHost) openHistoryDetail(id string) {
+	host.historyUI.sel = id
+	host.record("openHistoryDetail %s", id)
+}
+func (host *meetingDemoHost) closeHistoryDetail() {
+	host.historyUI.sel = ""
+	host.record("closeHistoryDetail")
+}
+func (host *meetingDemoHost) openHistoryFeature(feature string) {
+	host.record("openHistoryFeature %s", feature)
+}
+func (host *meetingDemoHost) openHistoryPrivacy() { host.record("openHistoryPrivacy") }
+func (host *meetingDemoHost) openHistorySettingsDialog() {
+	host.historySettingsUI.open = true
+	host.record("openHistorySettingsDialog")
+}
+func (host *meetingDemoHost) copyHistoryText(text string) { host.record("copyHistoryText %q", text) }
+func (host *meetingDemoHost) showHistoryRecording(id string) {
+	host.record("showHistoryRecording %s", id)
+}
+func (host *meetingDemoHost) retryHistoryEntry(id string) {
+	host.record("retryHistoryEntry %s", id)
+}
+func (host *meetingDemoHost) deleteHistoryEntry(id string) {
+	host.record("deleteHistoryEntry %s", id)
+}
+func (host *meetingDemoHost) chooseHistoryRecordingFolder() {
+	host.record("chooseHistoryRecordingFolder")
+}
+func (host *meetingDemoHost) showHistoryRecordingFolder() {
+	host.record("showHistoryRecordingFolder")
+}
+func (host *meetingDemoHost) useDefaultHistoryRecordingFolder() {
+	host.record("useDefaultHistoryRecordingFolder")
+}
+func (host *meetingDemoHost) exportHistoryRecordings(shown bool) {
+	host.record("exportHistoryRecordings %t", shown)
+}
+func (host *meetingDemoHost) exportShownHistoryText(shown bool, format historyTextFormat) {
+	host.record("exportShownHistoryText %t %s", shown, format)
+}
+func (host *meetingDemoHost) setHistoryCleanup(on bool, keepDays, keepCount int) {
+	host.historySettingsUI.cleanOn = on
+	host.record("setHistoryCleanup %t %d %d", on, keepDays, keepCount)
+}
+func (host *meetingDemoHost) savePendingHistoryCleanup() {
+	host.record("savePendingHistoryCleanup")
+}
+func (host *meetingDemoHost) deleteHistoryRecordings() {
+	host.record("deleteHistoryRecordings")
+}
+func (host *meetingDemoHost) cancelHistoryWork() { host.record("cancelHistoryWork") }
+func (host *meetingDemoHost) setHistoryAccess(on bool) {
+	host.historyAccessUI.historyAccess = on
+	host.record("setHistoryAccess %t", on)
+}
+func (host *meetingDemoHost) setHistorySelection(on bool) {
+	host.historyAccessUI.historySelection = on
+	host.record("setHistorySelection %t", on)
+}
+func (host *meetingDemoHost) copyHistoryAccessCommand() {
+	host.record("copyHistoryAccessCommand")
+}
+func (host *meetingDemoHost) openHistoryAccessDocs() { host.record("openHistoryAccessDocs") }

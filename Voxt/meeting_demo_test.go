@@ -120,6 +120,56 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return i18n.T("No meetings yet.")
 		}
 		return i18n.T("Meetings")
+	case "history":
+		history := state.History
+		if history.Detail != nil {
+			return i18n.T("Entry details")
+		}
+		if history.Error != "" {
+			return history.Error
+		}
+		if history.Empty != nil {
+			return history.Empty.Title
+		}
+		if history.FolderNotice != "" {
+			return history.FolderNotice
+		}
+		for _, row := range history.Rows {
+			if row.Retry.Active {
+				return row.Retry.StageText
+			}
+		}
+		if history.CountLabel != "" {
+			return history.CountLabel
+		}
+		return i18n.T("History")
+	case "history-settings":
+		settings := state.HistorySettings
+		if settings.PruneAsk {
+			return settings.PrunePrompt
+		}
+		if settings.DeleteAudioAsk {
+			return i18n.T("Delete every recording?")
+		}
+		if settings.Busy {
+			return settings.BusyLabel
+		}
+		if settings.MissingNotice != "" {
+			return settings.MissingNotice
+		}
+		return i18n.T("History settings")
+	case "history-access":
+		access := state.HistoryAccess
+		if access.Ask {
+			return i18n.T("Let programs on this Mac read the history?")
+		}
+		if access.ListOpen {
+			return i18n.T("Read log")
+		}
+		if access.ShowLastRead {
+			return access.LastRead
+		}
+		return i18n.T("Other programs")
 	default:
 		return ""
 	}
@@ -136,6 +186,9 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.pageUI.query = "stale"
 	host.pageUI.detail = &meetingDetailLocalUI{question: "stale"}
 	host.overlayUI.menu = meetingMenuMore
+	host.historyUI.query, host.historyUI.sel = "stale", "stale"
+	host.historySettingsUI.exportSel = "stale"
+	host.historyAccessUI.listOpen = true
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -147,7 +200,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	if want := meetingDemoSentinel(host.current()); want != "" && !tester.HasText(want) {
 		t.Fatalf("next fixture does not show %q", want)
 	}
-	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" {
+	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" ||
+		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen {
 		t.Fatal("fixture switch kept local UI state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {
