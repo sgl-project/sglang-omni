@@ -48,6 +48,7 @@ SPEECH_RATE_HZ = 24000
 MODELS = {
     "avatarforcing": (JPEG_FRAME, 25, 16, 2240, False),
     "avatarforcing-ki": (JPEG_FRAME, 25, 10, 80, True),
+    "dystream": (JPEG_FRAME, 25, 10, 80, True),
 }
 SKELETON = {
     "joints": ["pelvis", "spine", "head"],
@@ -120,7 +121,7 @@ def test_each_profile_feeds_both_parties_audio_to_the_node_and_publishes_an_inpu
     assert geometry.lookahead_samples == lookahead_ms * 16
 
 
-@pytest.mark.parametrize("name", ["avatarforcing_ki"])
+@pytest.mark.parametrize("name", ["dystream", "avatarforcing_ki"])
 def test_the_personaplex_examples_carry_a_listening_node_behind_the_reply_stream(name):
     config = ConfigManager.from_file(
         str(ROOT / f"examples/configs/personaplex_session_{name}.yaml")

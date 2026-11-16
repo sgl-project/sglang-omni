@@ -1,0 +1,32 @@
+# PersonaPlex full-duplex sessions with a dystream avatar_worker node: a talking and listening head from the agent's audio and the user's, published as jpeg_frame on the Session input timeline beside the reply, rendered by the model's chunk worker started beforehand on port 8123 (docs/developer_reference/full_duplex_guide.md, Stage avatar_worker).
+# Serve with: sgl-omni serve --config examples/configs/personaplex_session_dystream.yaml --enable-realtime
+config_cls: PersonaPlexSessionGraphPipelineConfig
+model_path: nvidia/personaplex-7b-v1
+
+stages:
+  avatar_worker:
+    factory:
+      # Start the worker on a GPU other than the LM's, which it keeps busy every 80 ms.
+      renderer_urls: ["http://127.0.0.1:8123"]
+      fps: 25
+      chunk_frames: 10
+      lookahead_ms: 80
+      listens: true
+      render_ms: 400
+      width: 512
+      height: 512
+      sessions_per_renderer: 1
+      # PersonaPlex streams the agent's units from the Session's start: chunks wait for them from the first one on.
+      reply_stream: true
+
+session_nodes:
+  speech:
+    stages: [preprocessing, mimi_encode, lm, code2wav]
+    inputs: [input]
+  avatar_worker:
+    stages: [avatar_worker]
+    inputs: ["input:pcm16", "speech:personaplex_reply"]
+
+session_publish:
+  speech: [personaplex_reply]
+  avatar_worker: [jpeg_frame]
