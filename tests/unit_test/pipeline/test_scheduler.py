@@ -2291,6 +2291,53 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     assert_refusal_is_a_caller_error(message)
 
 
+@pytest.mark.parametrize(
+    ("context_len", "pool_tokens", "max_total_tokens", "has_draft", "expected_hint"),
+    [
+        (8192, 4096, 4096, False, "engine.max_total_tokens=4096 caps the KV pool"),
+        (8192, 4096, 1_000_000, False, "Current engine.mem_fraction_static is 0.813"),
+        (8192, 4096, None, False, "Current engine.mem_fraction_static is 0.813"),
+        (8192, 151_718, None, False, "The 8192-token model context sets this limit"),
+        (8192, 151_718, None, True, "a speculative draft keeps it within the draft's"),
+    ],
+)
+def test_kv_capacity_rejection_names_the_setting_that_sets_the_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    context_len: int,
+    pool_tokens: int,
+    max_total_tokens: int | None,
+    has_draft: bool,
+    expected_hint: str,
+) -> None:
+    """A KV-capacity refusal told users to raise --thinker-mem-fraction-static, which sgl-omni serve rejects, whether engine.max_total_tokens, the model context or a speculative draft's context set the limit."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = SimpleNamespace() if has_draft else None
+    monkeypatch.setattr(
+        omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
+    )
+    scheduler.model_config = SimpleNamespace(context_len=context_len)
+    scheduler.max_total_num_tokens = pool_tokens
+    scheduler.max_req_len = min(context_len, pool_tokens) - 1
+    scheduler.page_size = 1
+    scheduler.token_to_kv_pool_allocator = Mock()
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(
+            max_total_tokens=max_total_tokens, mem_fraction_static=0.813
+        ),
+    )
+    message = scheduler.request_kv_capacity_error(
+        SimpleNamespace(
+            origin_input_ids=[0] * 9009,
+            sampling_params=SimpleNamespace(max_new_tokens=64),
+            session=None,
+        )
+    )
+    assert expected_hint in message
+    assert "--thinker-mem-fraction-static" not in message
+    assert_refusal_is_a_caller_error(message)
+
+
 def test_streaming_pure_swa_uses_context_instead_of_physical_kv_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2486,7 +2533,7 @@ def test_plain_fallback_accepts_requests_without_room_for_draft_reserve(
     )
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_schedule",
-        lambda: SimpleNamespace(mem_fraction_static=0.76),
+        lambda: SimpleNamespace(mem_fraction_static=0.76, max_total_tokens=None),
     )
     request = Req(
         rid="capacity-boundary",
@@ -4301,6 +4348,8 @@ def spec_overlap_scheduler(monkeypatch: pytest.MonkeyPatch) -> OmniScheduler:
     monkeypatch.setenv("SGLANG_FORCE_COARSE_WAR_BARRIER", "0")
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_overlap = True
+    scheduler.async_decode_min_batch_size = 1
+    scheduler.running_batch = SimpleNamespace(reqs=[])
     scheduler.running = True
     scheduler._engine_paused = (
         False  # noqa: leading-underscore  # native scheduler contract
@@ -4380,6 +4429,106 @@ def test_spec_overlap_orders_launch_consumption_and_shared_reads(
     assert events == expected
     assert not scheduler.result_queue
     assert shared_reader.shared_read_done_event is None
+
+
+@pytest.mark.parametrize(
+    "min_batch_size, expected",
+    [
+        (
+            1,
+            "S0 L0 S1 L1 C0 S2 L2 C1 S3 L3 C2 S4 L4 C3 S5 L5 C4 S6 L6 C5 S7 L7 C6 S8 L8 C7 S9 L9 C8 C9",
+        ),
+        (
+            3,
+            "S0 L0 C0 S1 L1 C1 S2 L2 S3 L3 C2 S4 L4 C3 C4 S5 L5 C5 S6 L6 S7 L7 C6 S8 L8 C7 S9 L9 C8 C9",
+        ),
+    ],
+    ids=["overlap-every-batch", "synchronous-below-3"],
+)
+def test_spec_overlap_runs_decode_batches_below_the_minimum_synchronously(
+    spec_overlap_scheduler: OmniScheduler,
+    min_batch_size: int,
+    expected: str,
+) -> None:
+    """S is choosing a batch, L a launch, C a consumed result, and ! a launch of a request a consumed result already finished.
+
+    With the minimum at 3, A's prefill is consumed before A's first decode is chosen, and that decode right after its launch. B and C's prefill brings the decode set to the minimum, so it overlaps, and so does the decode of A, B and C. That round finishes B and C after D's prefill launches, so only A and D are left and D's prefill is consumed before their decode is chosen. E's prefill brings the set back to the minimum. Round 7 finishes D, so batch 9 holds A and E; round 8 finishes A, and batch 9 still launches before round 8 is consumed.
+    """
+    events: list[str] = []
+    requests = {
+        name: SimpleNamespace(inflight_middle_chunks=0, omni_data=name)
+        for name in "ABCDE"
+    }
+    for request in requests.values():
+        request.finished = lambda request=request: request.omni_data is None
+    finished_by_round = {3: "BC", 7: "D", 8: "A"}
+    batches = []
+    for index, (forward_mode, request_names) in enumerate(
+        [
+            (ForwardMode.EXTEND, "A"),
+            (ForwardMode.DECODE, "A"),
+            (ForwardMode.EXTEND, "BC"),
+            (ForwardMode.DECODE, "ABC"),
+            (ForwardMode.EXTEND, "D"),
+            (ForwardMode.DECODE, "AD"),
+            (ForwardMode.EXTEND, "E"),
+            (ForwardMode.DECODE, "ADE"),
+            (ForwardMode.DECODE, "ADE"),
+            (ForwardMode.DECODE, "AE"),
+        ]
+    ):
+        batch = SimpleNamespace(
+            index=index,
+            reqs=[requests[name] for name in request_names],
+            forward_mode=forward_mode,
+            spec_algorithm=SpeculativeAlgorithm.DFLASH,
+            grammar_needs_sync=lambda: False,
+        )
+        batch.copy = lambda batch=batch: batch
+        batches.append(batch)
+    selected_batches = iter([*batches, None])
+    scheduler = spec_overlap_scheduler
+    scheduler.async_decode_min_batch_size = min_batch_size
+
+    def select() -> SimpleNamespace | None:
+        # note (Haoling Pu): native batch selection drops finished requests from the running batch every step.
+        scheduler.running_batch = SimpleNamespace(
+            reqs=[
+                request
+                for request in scheduler.running_batch.reqs
+                if not request.finished()
+            ]
+        )
+        batch = next(selected_batches)
+        if batch is None:
+            pass
+        else:
+            events.append(f"S{batch.index}")
+            if batch.forward_mode == ForwardMode.DECODE:
+                scheduler.running_batch = batch
+            else:
+                pass
+        return batch
+
+    scheduler.get_next_batch_to_run = select
+
+    def launch(batch: SimpleNamespace) -> int:
+        is_detached = any(request.omni_data is None for request in batch.reqs)
+        events.append(f"L{batch.index}{'!' if is_detached else ''}")
+        return batch.index
+
+    def consume(batch: SimpleNamespace, result: int) -> None:
+        events.append(f"C{result}")
+        for name in finished_by_round.get(result, ""):
+            requests[name].omni_data = None
+
+    scheduler.run_batch = launch
+    scheduler.process_batch_result = consume
+    scheduler.event_loop_spec_overlap()
+    scheduler.resolve_pending_async()
+
+    assert " ".join(events) == expected
+    assert not scheduler.result_queue
 
 
 @pytest.fixture
@@ -5086,7 +5235,7 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors(monkeypatch) -> N
     """Request-limit and KV-capacity rejections are entry-rank emissions only."""
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_schedule",
-        lambda: SimpleNamespace(mem_fraction_static=0.85),
+        lambda: SimpleNamespace(mem_fraction_static=0.85, max_total_tokens=None),
     )
     scheduler = object.__new__(OmniScheduler)
     scheduler.outbox = Queue()
@@ -5111,6 +5260,7 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors(monkeypatch) -> N
     scheduler.max_new_tokens_limit = None
     scheduler.page_size = 1
     scheduler.max_total_num_tokens = 128
+    scheduler.model_config = SimpleNamespace(context_len=7)
     scheduler.server_args = SimpleNamespace(mem_fraction_static=0.85)
     init_sync_request_build_state(scheduler)
 

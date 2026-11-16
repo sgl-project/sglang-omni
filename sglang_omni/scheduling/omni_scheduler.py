@@ -133,6 +133,7 @@ from sglang_omni.scheduling.types import (
     SpecTokensDetailsDict,
     StreamOutputBuilder,
 )
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils.process import terminate_gpu_worker
 
 logger = logging.getLogger(__name__)
@@ -489,9 +490,7 @@ class OmniScheduler(Generic[RequestDataT]):
             tp_worker.speculative_worker is not None and enable_async_decode
         )
         self.enable_async_decode = enable_async_decode
-        # Ordinary decode batches smaller than this run as a plain synchronous step
-        # instead of the lookahead. The default 1 sends every decode batch the
-        # runner allows through the lookahead.
+        # note (Haoling Pu): decode batches with fewer requests run synchronously, so a light load streams each round's tokens without waiting on the next launch.
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         self.async_decode_resolve_before_prefill = async_decode_resolve_before_prefill
         # Plain prefill batches join the lookahead: launch, then resolve after
@@ -508,10 +507,6 @@ class OmniScheduler(Generic[RequestDataT]):
             raise ValueError(
                 "enable_overlap requires a speculative worker; use "
                 "enable_async_decode for ordinary decoding"
-            )
-        elif self.enable_overlap and self.async_decode_min_batch_size != 1:
-            raise ValueError(
-                "Speculative async decode requires async_decode_min_batch_size=1"
             )
         else:
             pass
@@ -1546,7 +1541,7 @@ class OmniScheduler(Generic[RequestDataT]):
             try:
                 req_data = self.run_request_builder(payload, active_stage)
             except Exception as exc:
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self.log_request_builder_failure(req_id, exc)
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
@@ -1569,6 +1564,15 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         self.drain_request_build_results()
         self.drain_request_admission_results()
+
+    def log_request_builder_failure(self, request_id: str, error: Exception) -> None:
+        if is_bad_request_error(error):
+            # note (ruiling): the caller already gets this message with a 400, so the traceback is noise.
+            logger.warning(
+                f"OmniScheduler: request builder rejected {request_id}: {error}"
+            )
+        else:
+            logger.exception(f"OmniScheduler: request builder failed for {request_id}")
 
     def request_build_queue_fits_workers(self) -> bool:
         """True when pending+backlog still fits in the request-build pool.
@@ -1791,7 +1795,7 @@ class OmniScheduler(Generic[RequestDataT]):
                         continue
                     else:
                         pass
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self.log_request_builder_failure(req_id, exc)
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
@@ -2190,22 +2194,43 @@ class OmniScheduler(Generic[RequestDataT]):
         kv_cache_bytes = getattr(
             getattr(self, "tp_worker", None), "kv_cache_bytes", None
         )
-        mem_fraction = runtime_context.get_schedule().mem_fraction_static
-        if kv_cache_bytes is not None:
-            mem_hint = " Try raising engine.kv_cache_bytes."
-        elif mem_fraction is not None:
-            mem_hint = (
-                f" Current mem_fraction_static is {mem_fraction:.3f}; try setting "
-                "--thinker-mem-fraction-static higher."
+        schedule = runtime_context.get_schedule()
+        context_len = int(self.model_config.context_len)
+        if request_capacity == context_len - 1 and self.draft_worker is not None:
+            capacity_hint = (
+                f" The {context_len}-token context sets this limit, not the KV "
+                "pool; a speculative draft keeps it within the draft's own "
+                "context. Lower max_tokens or shorten the input."
+            )
+        elif request_capacity == context_len - 1:
+            capacity_hint = (
+                f" The {context_len}-token model context sets this limit, not the "
+                "KV pool; lower max_tokens or shorten the input."
+            )
+        elif kv_cache_bytes is not None:
+            capacity_hint = " Try raising engine.kv_cache_bytes."
+        # note (evanderfan): SGLang caps the pool at max_total_tokens only when memory allows more, then aligns it down to a page.
+        elif (
+            schedule.max_total_tokens is not None
+            and schedule.max_total_tokens < self.max_total_num_tokens + self.page_size
+        ):
+            capacity_hint = (
+                f" engine.max_total_tokens={schedule.max_total_tokens} caps the "
+                "KV pool; try raising it."
+            )
+        elif schedule.mem_fraction_static is not None:
+            capacity_hint = (
+                f" Current engine.mem_fraction_static is "
+                f"{schedule.mem_fraction_static:.3f}; try raising it."
             )
         else:
-            mem_hint = " Try setting a higher --thinker-mem-fraction-static value."
+            capacity_hint = " Try raising engine.mem_fraction_static."
 
         return (
             "Request requires more tokens than the thinker KV cache can hold "
             f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
             f"required_tokens={required_tokens}, kv_capacity={request_capacity})."
-            f"{mem_hint}"
+            f"{capacity_hint}"
         )
 
     def select_decode_path(
@@ -4429,7 +4454,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
     @DynamicGradMode()
     def event_loop_spec_overlap(self) -> None:
-        """Submit the next speculative round before consuming the previous result."""
+        """Submit the next speculative round before consuming the previous result, except that a decode batch under async_decode_min_batch_size is consumed right after its own launch, and a prefill after which fewer requests than it are decoding is consumed before the next batch is chosen."""
         self.enable_skip_finishing_decode = True
         while self.running:
             self.process_admin_requests()
@@ -4449,9 +4474,29 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
 
+            # note (Haoling Pu): when the decode set stays under the minimum, the pending prefill is processed before choosing, so its first tokens stream without waiting on a launch.
+            if (
+                self.async_decode_min_batch_size > 1
+                and self.result_queue
+                and self.last_batch is not None
+                and self.last_batch.forward_mode.is_extend()
+                and sum(not request.finished() for request in self.running_batch.reqs)
+                + len(self.last_batch.reqs)
+                < self.async_decode_min_batch_size
+            ):
+                pending_batch, pending_result = self.result_queue.popleft()
+                self.process_batch_result(pending_batch, pending_result)
+            else:
+                pass
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
             has_pending_result = bool(self.result_queue)
+            # note (Haoling Pu): after an overlapped round a small batch still launches first, since processing that round can finish and detach a request the batch holds.
+            is_synchronous_decode = (
+                batch is not None
+                and self.batch_is_decode(batch)
+                and len(batch.reqs) < self.async_decode_min_batch_size
+            )
             # note (YzXiao): only result processing decrements inflight_middle_chunks; prefill hooks use it to recognize the final chunk.
             consume_before_launch = has_pending_result and (
                 self.is_disable_overlap_for_batch(batch, last_batch=self.last_batch)
@@ -4489,6 +4534,11 @@ class OmniScheduler(Generic[RequestDataT]):
             if has_pending_result and not consume_before_launch:
                 pending_batch, pending_result = self.result_queue.popleft()
                 self.process_batch_result(pending_batch, pending_result)
+            else:
+                pass
+            if is_synchronous_decode:
+                launched_batch, launched_result = self.result_queue.popleft()
+                self.process_batch_result(launched_batch, launched_result)
             else:
                 pass
             self.last_batch = batch

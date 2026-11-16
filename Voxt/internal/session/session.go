@@ -38,6 +38,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
@@ -169,6 +170,11 @@ type Snapshot struct {
 	// StartedAt: the shortcut; HeardAt: the first audio (zero until then:
 	// the user's first words are not heard yet); StoppedAt: Stop.
 	StartedAt, HeardAt, StoppedAt time.Time
+	// MaxLen is the length a recording stops at (Audio.MaxSeconds; 0:
+	// none); UploadLen how long a recording gets before it is past the
+	// speech model's upload limit and goes in pieces (0: none applies).
+	// The pill warns as either nears (#3840).
+	MaxLen, UploadLen time.Duration
 	// Levels are the last Bars input levels, 0–1, oldest first.
 	Levels []float64
 	// Waiting is what the session still waits for, once it waited
@@ -200,6 +206,9 @@ type Snapshot struct {
 	// CanSkip: while Composing, SkipLLM inserts the recognised text in
 	// place of the model's answer (Transcribe, and Translate of speech).
 	CanSkip bool
+	// Thinking is the thinking level chosen in the preview while the
+	// language model works (Manager.Rethink); nil: the service's setting.
+	Thinking *llm.Thinking
 	// Inserted: the result was pasted; Card: it shows in the answer card
 	// (Delivery says why it was not inserted). While the model writes,
 	// Card says the answer streams into the card.
@@ -226,6 +235,12 @@ type Snapshot struct {
 	// Recording: the session's history entry keeps its recording (the
 	// settings', or for a while because recognition failed: Retry).
 	Recording bool
+}
+
+// CanStop says whether StopLLM can end the answer streaming into the
+// answer card where it is, keeping what the model wrote so far (#3886).
+func (s Snapshot) CanStop() bool {
+	return s.State == Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // Elapsed is how long the recording has run (from the first audio), at
@@ -287,9 +302,11 @@ type Services struct {
 }
 
 // Resolver opens the models a session of kind uses with settings s; it
-// may block (it may start a runtime). A model that is not ready is nil
+// may block (it may start a runtime). speech false: the session hears
+// nothing (a selection to translate, a typed text), so no speech model
+// is opened and ASR stays nil (#3838). A model that is not ready is nil
 // in Services (an error wrapping ErrNoASR works too).
-type Resolver func(ctx context.Context, kind Kind, s settings.Settings) (Services, error)
+type Resolver func(ctx context.Context, kind Kind, s settings.Settings, speech bool) (Services, error)
 
 // ErrNoASR: no speech model is ready.
 var ErrNoASR = errors.New("session: no speech model is ready")
@@ -311,6 +328,15 @@ type Config struct {
 	// Select reads the selection (nil: Translate and Rewrite never see
 	// one).
 	Select Selector
+	// Window takes a JPEG of app pid's front window (the helper's
+	// screen.window; nil without a picture) for the language model, when
+	// the settings send one (Privacy.SendWindow). Nil: never.
+	Window func(ctx context.Context, pid int) ([]byte, error)
+	// ClipboardImage reads the picture on the clipboard as a JPEG (the
+	// helper's clipboard.image; nil without one) for Rewrite's language
+	// model, when the settings send it (Privacy.SendClipboardImage).
+	// Nil: never.
+	ClipboardImage func(ctx context.Context) ([]byte, error)
 	// History keeps finished sessions (nil: none); Glossary lists the
 	// dictionary's enabled terms (nil: none).
 	History  store.History
@@ -430,6 +456,10 @@ type StartRequest struct {
 	Text *TextInput
 	// TargetLanguage overrides Translate's target ("": the settings').
 	TargetLanguage string
+	// Thinking overrides the language model's thinking for Translate's
+	// and Rewrite's answer (the answer card's thinking menu); nil: the
+	// service's setting.
+	Thinking *llm.Thinking
 	// Card keeps the answer in the answer card, never inserted: the
 	// card's text into another language (Voxt's language menu replaces
 	// the card's answer).
@@ -437,6 +467,9 @@ type StartRequest struct {
 	// Previous are a Rewrite conversation's earlier turns: the session is
 	// a follow-up to the answer card.
 	Previous []compose.Turn
+	// Conversation is the first session of the card's conversation this
+	// one continues (store.Entry.Conversation); "": it begins one.
+	Conversation string
 	// SpeechWait, when set, ends the session with these words instead of
 	// recording: the speech model it should use is still downloading.
 	// Translating a selection needs none and goes on.

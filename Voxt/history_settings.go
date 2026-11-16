@@ -136,12 +136,7 @@ func (a *app) histRecordingsSection(c *ui.Context) {
 	h := a.lib.store.History()
 	busy := hs.busy != ""
 	sectionTitleText(c, i18n.T("Recordings"))
-	settingRow(c, "hist-set-audio", i18n.T("Keep recordings"), i18n.T("When off, failed or cancelled recordings are still kept for 7 days so you can retry them."), func() {
-		if ui.Switch(c.Key("hist-set-audio"), &a.settingsForm.keepAudio).Label(i18n.T("Save each recording")).Disabled(!a.prefs.Privacy.KeepHistory).Changed() {
-			on := a.settingsForm.keepAudio
-			a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepAudio = on })
-		}
-	})
+	// Keep recordings is Settings → Privacy's switch only (#3895).
 	chosen := a.prefs.History.AudioDir
 	shown := chosen
 	if shown == "" {
@@ -176,13 +171,16 @@ func (a *app) histRecordingsSection(c *ui.Context) {
 		}
 	})
 	settingRow(c, "hist-set-export", i18n.T("Export recordings"), "", func() {
-		opts := []string{i18n.T("All recordings"), a.shownLabel()}
+		opts := []string{i18n.T("All recordings")}
+		if l := a.shownLabel(); l != "" {
+			opts = append(opts, l)
+		}
 		if !slices.Contains(opts, hs.exportSel) {
 			hs.exportSel = opts[0]
 		}
 		ui.Select(c.Key("hist-set-scope"), &hs.exportSel, opts).Label(i18n.T("Which recordings")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 120))
 		if ui.Button(c.Key("hist-set-export"), i18n.T("Export…")).Disabled(busy || hs.usageN == 0).Clicked() {
-			only := hs.exportSel == opts[1]
+			only := len(opts) > 1 && hs.exportSel == opts[1]
 			chooseFolder(a, i18n.T("Export the recordings to…"), i18n.T("Export here"), func(dir string) { a.exportRecordings(dir, only) })
 		}
 	})
@@ -193,11 +191,14 @@ func (a *app) histRecordingsSection(c *ui.Context) {
 }
 
 // shownLabel names the recordings the History page shows: its tab, and
-// its search.
+// its search; "" when it shows them all (All, no search).
 func (a *app) shownLabel() string {
-	tab := []string{i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite")}[min(max(a.hist.tab, 0), 2)]
+	tab := historyTabs()[min(max(a.hist.tab, 0), len(historyTabs())-1)]
 	q := a.histSearch()
 	if q == "" {
+		if a.hist.kind() == "" {
+			return ""
+		}
 		return i18n.T("%s only", tab)
 	}
 	if r := []rune(q); len(r) > 16 {

@@ -7,6 +7,7 @@
 #include <atomic>
 #include <filesystem>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "common/layers.h"
@@ -15,7 +16,19 @@
 
 namespace qwen3_asr {
 
+enum class DraftPolicy { kAdaptive, kFixed };
+
+DraftPolicy ParseDraftPolicy(const std::string &value);
+
 struct LoadedDraft;
+
+// One draft decode's verification rounds, and the proposals the target
+// checked and accepted; the token the target adds each round is in neither.
+struct DraftStatistics {
+  int verify_round_count = 0;
+  int proposed_token_count = 0;
+  int accepted_token_count = 0;
+};
 
 class DFlashDraft {
 public:
@@ -28,13 +41,16 @@ public:
   // Greedy decoding with the draft: each round the target verifies the block
   // the draft proposed, cut to the tokens max_new_tokens still allows, and
   // commits the accepted tokens plus one more. Tokens go to commit until it
-  // reports the output complete; returns the rounds. A positive
-  // prefill_step_tokens bounds prompt chunks, leaving the last token for the
-  // first logits; zero prefills the prompt in one pass.
-  int Decode(const Qwen3Decoder &target, const mlx::core::array &embeddings,
-             int max_new_tokens, int prefill_step_tokens,
-             const std::function<bool(int)> &commit,
-             const std::atomic<bool> &cancel) const;
+  // reports the output complete. A positive prefill_step_tokens bounds prompt
+  // chunks, leaving the last token for the first logits; zero prefills the
+  // prompt in one pass. Adaptive backoff is opt-in here so other targets retain
+  // their existing fixed-draft behavior.
+  DraftStatistics Decode(const Qwen3Decoder &target,
+                         const mlx::core::array &embeddings, int max_new_tokens,
+                         int prefill_step_tokens,
+                         const std::function<bool(int)> &commit,
+                         const std::atomic<bool> &cancel,
+                         DraftPolicy policy = DraftPolicy::kFixed) const;
 
 private:
   DFlashDraft(LoadedDraft draft, int quantization_bits);

@@ -230,7 +230,6 @@ def create_talker_scheduler(
     total_gpu_memory_fraction: float | None = None,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
-    enable_talker_start_topology: bool = False,
     code2wav_in_process: bool = False,
     operator_selected_prefill_backend: bool = False,
     codec_coalesce_frames: int = 0,
@@ -398,7 +397,6 @@ def create_talker_scheduler(
         session_adapter=session_adapter,
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
-        enable_talker_start_topology=enable_talker_start_topology,
         im_end_token_id=root_config.im_end_token_id,
         continuation_aware_admission=continuation_aware_admission,
     )

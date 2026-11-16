@@ -11,6 +11,7 @@ from native_server import EVENT_TIMEOUT_SECONDS, EXIT_TIMEOUT_SECONDS, Supervise
 
 # The model kinds Voxt starts each server with.
 SERVED_KINDS = {
+    "auk_server": ("auk",),
     "qwen3_asr_server": ("qwen3_asr", "silero_vad", "sortformer"),
     "whisper_server": ("whisper",),
     "cohere_transcribe_server": ("cohere_transcribe",),
@@ -28,6 +29,28 @@ SERVED_KINDS = {
     "ming_tts_server": ("ming_tts",),
 }
 SYSTEM_LIBRARY_PREFIXES = ("/usr/lib/", "/System/Library/")
+
+
+@pytest.mark.parametrize("chunk_duration", ["nan", "inf", "-1", "0", "1", "600"])
+def test_parakeet_cli_rejects_bad_chunk_duration_before_loading(
+    runtime_bin: Path, chunk_duration: str, tmp_path: Path
+) -> None:
+    """Invalid lengths must fail before a checkpoint or an encoder is loaded."""
+    completed = subprocess.run(
+        [
+            str(runtime_bin / "parakeet_transcribe"),
+            "--model-path",
+            str(tmp_path),
+            "--chunk-duration",
+            chunk_duration,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=EXIT_TIMEOUT_SECONDS,
+    )
+    assert completed.returncode == 2
+    assert "chunk_duration must be" in completed.stderr
+    assert "config.json" not in completed.stderr
 
 
 def mach_o_load_commands(path: Path) -> tuple[list[str], list[str]]:
@@ -107,6 +130,7 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("qwen3_asr_server", ("--max-segment-seconds", "0.00001"), "--max-segment-seconds must span one sample"),
         ("qwen3_asr_server", ("--decode-interval-ms", "0"), "--decode-interval-ms must be positive"),
         ("qwen3_asr_server", ("--first-decode-ms", "-1"), "--first-decode-ms must not be negative"),
+        ("qwen3_asr_server", ("--draft-policy", "unknown"), "--draft-policy must be adaptive or fixed"),
         ("qwen3_asr_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
         ("qwen3_asr_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
         ("moss_transcribe_diarize_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
@@ -120,8 +144,11 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("music3_server", ("--stage-offload-components", ""), "requires both ar,dit"),
         ("cosyvoice3_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
         ("ming3_audio_server", ("--context-length", "0"), "--context-length must be a positive integer"),
+        ("ming3_audio_server", ("--speculative-algorithm", "EAGLE3"), "--speculative-algorithm must be NEXTN"),
         ("fish_s2_pro_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
         ("fish_s2_pro_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
+        ("whisper_server", ("--draft-steps", "0"), "--draft-steps must be at least 1"),
+        ("whisper_server", ("--draft-steps", "3"), "--draft-steps needs --draft-model-path"),
     ],
 )  # fmt: skip
 def test_invalid_server_flags_exit_before_the_load(
@@ -145,8 +172,12 @@ def test_invalid_server_flags_exit_before_the_load(
             ("qwen3_asr_transcribe", ("--repetition-penalty", penalty), "--repetition-penalty must be positive and finite")
             for penalty in ("0", "-1", "nan", "inf")
         ],
+        ("qwen3_asr_transcribe", ("--draft-policy", "unknown"), "--draft-policy must be adaptive or fixed"),
         ("music3_synthesize", ("--stage-offload-components", "dit"), "requires both ar,dit"),
         ("ming3_audio_chat", ("--context-length", "0"), "--context-length must be a positive integer"),
+        ("ming3_audio_chat", ("--speculative-algorithm", "EAGLE3"), "--speculative-algorithm must be NEXTN"),
+        ("whisper_transcribe", ("--draft-steps", "0"), "--draft-steps must be at least 1"),
+        ("whisper_transcribe", ("--draft-steps", "3"), "--draft-steps needs --draft-model-path"),
     ],
 )  # fmt: skip
 def test_invalid_tool_flags_fail_before_the_load(

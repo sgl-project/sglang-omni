@@ -461,3 +461,87 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	frames(tt)
 	scrollToText(tt, uitext.ModelName(models.LLMFast))
 }
+
+// TestModelsPageFaster (#3873): Faster transcription is a switch on the
+// speech model's card. Off, the card offers no draft download; on
+// without the draft, it says the draft is needed and offers it; the
+// draft's download does not turn it on, and off keeps the draft on disk
+// (deletable) but unused. A model never switched follows its draft.
+func TestModelsPageFaster(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1600)
+	seedModels(t, a, models.ASRFast)
+	a.navigate(modelsPath)
+	const sw, dl = "Faster transcription for Qwen3-ASR 0.6B (4bit)", "Download Qwen3-ASR 0.6B DFlash draft"
+	if !has(tt, "Faster transcription") || has(tt, "Download the draft model to use this.") || tt.HasText(dl) {
+		t.Fatalf("off: %q", tt.Texts())
+	}
+	click(t, tt, sw)
+	if !a.settings.Get().Models.Faster[models.ASRFast] || !has(tt, "Download the draft model to use this.") || !has(tt, "262.5 MB download") || !tt.HasText(dl) {
+		t.Fatalf("on without the draft: %+v %q", a.settings.Get().Models, tt.Texts())
+	}
+	click(t, tt, sw)
+	if on, set := a.settings.Get().Models.Faster[models.ASRFast]; !set || on {
+		t.Fatalf("switched off: %+v", a.settings.Get().Models)
+	}
+
+	// The draft arrives with the switch off: installed, unused.
+	seedModels(t, a, models.ASRFast, models.ASRFastDraft)
+	a.navigate("/home")
+	a.navigate(modelsPath)
+	if !has(tt, "262.5 MB on disk") || has(tt, "Download the draft model to use this.") || a.omniDraft(models.ASRFast) != "" {
+		t.Fatalf("installed, off: %q, omniDraft %q", tt.Texts(), a.omniDraft(models.ASRFast))
+	}
+	click(t, tt, sw)
+	if a.omniDraft(models.ASRFast) == "" {
+		t.Error("switched on with the draft: unused")
+	}
+
+	// Never switched: the installed draft is used, the switch shows on.
+	a.updateSettings(func(s *settings.Settings) { s.Models.Faster = nil })
+	frames(tt)
+	if a.omniDraft(models.ASRFast) == "" {
+		t.Error("never switched, installed: unused")
+	}
+	click(t, tt, sw)
+	if on, set := a.settings.Get().Models.Faster[models.ASRFast]; !set || on || a.omniDraft(models.ASRFast) != "" {
+		t.Errorf("never switched, then off: %+v", a.settings.Get().Models)
+	}
+}
+
+// TestModelCardsLineUp: a speech model in a card of its own starts its
+// text at the card's edge, as the models of a family card do, its icon
+// beside its name (#3854: the text sat after an empty icon column). The
+// same holds for System dictation and the language models' cards, in
+// Chinese, and at the narrowest window.
+func TestModelCardsLineUp(t *testing.T) {
+	for _, loc := range []string{"en", "zh-Hans"} {
+		for _, w := range []int{windowWidth, windowMinWidth} {
+			a, fs, tt := newTestApp(t)
+			i18n.SetLocale(loc)
+			t.Cleanup(func() { i18n.SetLocale("en") })
+			tt.SetSize(w, 6000)
+			a.dictation.SetHelper(fs)
+			a.navigate(modelsPath)
+			frames(tt)
+			ids := []string{dictation.ModelID}
+			for _, m := range models.Catalog() {
+				if (m.Kind == models.ASR || m.Kind == models.LLM) && a.modelShown(m) {
+					ids = append(ids, m.ID)
+				}
+			}
+			var x0 float32
+			for i, id := range ids {
+				r, ok := tt.Find(uitext.ModelAbout(id))
+				if !ok {
+					t.Fatalf("%s %d wide: no about text for %s in %q", loc, w, id, firstTexts(tt))
+				}
+				if i == 0 {
+					x0 = r.X
+				} else if d := r.X - x0; d < -1 || d > 1 {
+					t.Errorf("%s %d wide: %s's text at x %.0f, System dictation's at %.0f", loc, w, id, r.X, x0)
+				}
+			}
+		}
+	}
+}
