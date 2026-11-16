@@ -21,7 +21,6 @@ feature_keys.go  # feature
 feature_models.go  # feature
 feature_page.go  # feature
 feature_prompts.go  # feature
-floating.go  # overlay
 home_page.go  # home
 home_ready.go  # home
 key_recorder.go  # settings
@@ -44,12 +43,9 @@ onboarding_view.go  # onboarding
 overlay.go  # overlay
 overlay_card.go  # overlay
 overlay_card_view.go  # overlay
-overlay_check.go  # overlay
-overlay_check_sheet.go  # overlay
 overlay_face.go  # overlay
 overlay_lang.go  # overlay
 overlay_size.go  # overlay
-overlay_stream.go  # overlay
 overlay_think.go  # overlay
 overlay_wave.go  # overlay
 pages.go  # shell
