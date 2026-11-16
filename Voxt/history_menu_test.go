@@ -217,6 +217,15 @@ func TestHomeRecentMenu(t *testing.T) {
 	}
 }
 
+func TestHistoryCopyFailure(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.copyText = func(string) error { return errors.New("denied") }
+	a.copyHistoryText("text")
+	if len(a.toasts) != 1 || a.toasts[0] != "Could not copy: denied" {
+		t.Fatalf("clipboard failure toasts %q", a.toasts)
+	}
+}
+
 func TestHomeRecentMenuUsesVisibleEntry(t *testing.T) {
 	a, _ := homeTester(t)
 	a.hist.stale = true

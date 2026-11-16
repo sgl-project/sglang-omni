@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -182,7 +183,16 @@ func (a *app) copyHistoryText(text string) {
 	if text == "" {
 		return
 	}
-	a.copyRecent(text)
+	var err error
+	if a.copyText != nil {
+		err = a.copyText(text)
+	} else {
+		err = mygo.Clipboard.Write(transfer.TextData(text))
+	}
+	if err != nil {
+		a.toast(i18n.T("Could not copy: %v", err))
+		return
+	}
 	a.toast(i18n.T("Copied"))
 }
 
