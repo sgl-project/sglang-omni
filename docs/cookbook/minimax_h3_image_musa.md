@@ -144,7 +144,7 @@ sglang serve \
 ```
 
 Use the same `/v1/images/generations` and `/v1/images/edits` requests shown
-above.
+above. TP2 and TP4 were validated with both endpoints at 2048 x 2048.
 
 ## Validate
 
