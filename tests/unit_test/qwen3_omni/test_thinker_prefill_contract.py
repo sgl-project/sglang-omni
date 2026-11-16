@@ -124,6 +124,7 @@ def admit_thinker_request(
             audio_start_token_id=55,
         ),
         capture_prompt_hidden_states=capture_prompt_hidden_states,
+        speaks=False,
     )
     request = request_data.req
     assert isinstance(request, QwenThinkerRequest)

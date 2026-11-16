@@ -82,10 +82,11 @@ func (f *Flash) String() string {
 	return fmt.Sprintf("doubao(%s%s, %s)", u.Host, u.Path, ModelFlash)
 }
 
-// Transcribe sends req's recording. Network failures and the service's
+// Transcribe sends req's recording, in pieces under FlashMaxBytes when
+// it is a longer PCM recording. Network failures and the service's
 // busy and internal errors are retried once.
 func (f *Flash) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, error) {
-	res, err := f.transcribe(ctx, req)
+	res, err := asr.TranscribeInPieces(ctx, req, FlashMaxBytes, f.transcribe)
 	return res, asr.HideKey(err, f.token)
 }
 

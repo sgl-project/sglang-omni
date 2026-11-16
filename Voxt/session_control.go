@@ -25,10 +25,6 @@ func (a *app) helperReady() bool {
 	return a.hstatus.State == helper.Ready
 }
 
-// transcribeBlocker checks, without I/O, what a Transcribe session
-// needs (sessionBlocker).
-func (a *app) transcribeBlocker() *sessionNotice { return a.sessionBlocker(store.KindTranscribe) }
-
 // sessionBlocker checks, without I/O, what a session of kind needs: a
 // running helper, a speech model (Transcribe, Rewrite: Translate may
 // translate a selection without one) and a language model (Translate,
@@ -104,11 +100,12 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 		req.SpeechWait = n.text
 	}
 	if len(req.Previous) == 0 {
-		a.answer = answerCard{}
+		a.setAside(req.Try)
 	}
 	a.notice = nil
 	id, err := a.mgr.Start(req)
 	if err != nil {
+		a.resurface()  // no session took the card's place
 		return "", nil // a session runs already
 	}
 	return id, nil
@@ -130,6 +127,22 @@ func (a *app) stopSession() {
 func (a *app) cancelSession() {
 	if a.mgr != nil && a.sess.State.Live() {
 		a.mgr.Cancel(a.sess.ID)
+	}
+}
+
+// skipLLM inserts the recognised text of the live session in place of
+// the language model's answer (session.Manager's SkipLLM).
+func (a *app) skipLLM() {
+	if a.mgr != nil {
+		a.mgr.SkipLLM(a.sess.ID)
+	}
+}
+
+// stopLLM ends the answer streaming into the card where it is; the card
+// keeps it (session.Manager's StopLLM).
+func (a *app) stopLLM() {
+	if a.mgr != nil {
+		a.mgr.StopLLM(a.sess.ID)
 	}
 }
 

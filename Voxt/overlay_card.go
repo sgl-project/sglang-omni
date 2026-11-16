@@ -34,6 +34,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -52,9 +53,8 @@ type cardView struct {
 	kind  store.Kind
 	title string
 	text  string
-	// busy: another language, or a follow-up, is on its way (the
-	// spinner, or the conversation's waveform). A first answer is written
-	// in the pill: the card comes with it.
+	// busy: an answer, another language, or a follow-up, is on its way
+	// (the spinner, or the conversation's waveform).
 	busy bool
 	// recording: a follow-up records (the conversation's waveform moves).
 	recording bool
@@ -66,19 +66,26 @@ type cardView struct {
 	why       string   // why it is in the card (Insert's tip)
 	lang      string   // Translate's target
 	target    string   // the app it came from
+	// think is the answer's thinking level (nil: the service's setting);
+	// thinks: the card offers the levels, canThink: now.
+	think            *llm.Thinking
+	thinks, canThink bool
 	// conversation: the turns of a Rewrite conversation, as bubbles.
 	conversation bool
 	bubbles      []cardBubble
 	// What the header offers.
-	canInsert, canCopy, canFollowUp, canStop, canRetry, canLang bool
-	copied                                                      bool
-	follow                                                      string // the Rewrite shortcut's glyphs
+	// canStopAnswer: the answer streams in, Stop keeps it so far (#3886).
+	canInsert, canCopy, canFollowUp, canStop, canStopAnswer, canRetry, canLang bool
+	copied                                                                     bool
+	follow                                                                     string // the Rewrite shortcut's glyphs
 	// size is the card's, its feature's (Features.CardSizes).
 	size layout.CardSize
-	// writing: Rewrite's first answer as the model writes it
-	// (writingAnswer), the card at its full height from the first words:
-	// it does not grow line by line (10-15).
-	writing bool
+	// writing: an answer as the model writes it (writingAnswer, or one
+	// asked again in another language or at another thinking level),
+	// shown at a steady pace in a card that grows a few lines at a time
+	// (overlay_stream.go, #3836). canUseTranscript: Transcribe's clean-up
+	// or Translate's speech can go in as recognised instead (#3821).
+	writing, canUseTranscript bool
 }
 
 // cardBubble is one turn's side in a conversation.
@@ -86,6 +93,46 @@ type cardBubble struct {
 	user        bool
 	title, text string
 	live        bool // being said, or written
+	// quote: a follow-up's text selected since, under its instruction
+	// (#3816), shortened unless open; turn is its index in the turns.
+	quote     string
+	cut, open bool
+	turn      int
+}
+
+// quoteMax is how much of a follow-up's selection its bubble shows
+// before Show all: runes, lines.
+const quoteMax, quoteLines = 160, 3
+
+// quoteText is sel as a bubble shows it: whole when open, else cut to
+// quoteMax runes or quoteLines lines, and whether it was cut.
+func quoteText(sel string, open bool) (string, bool) {
+	sel = strings.TrimSpace(sel)
+	short := sel
+	if lines := strings.SplitN(short, "\n", quoteLines+1); len(lines) > quoteLines {
+		short = strings.Join(lines[:quoteLines], "\n")
+	}
+	if r := []rune(short); len(r) > quoteMax {
+		short = string(r[:quoteMax])
+	}
+	if short == sel {
+		return sel, false
+	}
+	if open {
+		return sel, true
+	}
+	return strings.TrimSpace(short) + "…", true
+}
+
+// userBubble is a turn's user side: what was said, and the text selected
+// since for a follow-up (the first turn's selection is the card's text).
+func (card answerCard) userBubble(turn int, said, sel string, live bool) (cardBubble, bool) {
+	b := cardBubble{user: true, title: i18n.T("You"), text: strings.TrimSpace(said), live: live, turn: turn}
+	if turn > 0 {
+		b.open = card.quotesOpen[turn]
+		b.quote, b.cut = quoteText(sel, b.open)
+	}
+	return b, b.text != "" || b.quote != ""
 }
 
 // cardNow is the card as it shows now.
@@ -97,8 +144,8 @@ func (a *app) cardNow() cardView {
 	if !a.answer.open {
 		if a.writingAnswer() {
 			s := a.pillSession()
-			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: s.Draft, busy: true, writing: true,
-				target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
+			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: a.shownDraft(s), busy: true, writing: true, canStopAnswer: a.sess.CanStop(),
+				canUseTranscript: a.sess.CanSkip, lang: s.TargetLanguage, target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
 		}
 		return cardView{size: layout.CardSizes[0]} // no card: the pill shows the session
 	}
@@ -110,14 +157,23 @@ func (a *app) cardNow() cardView {
 		target: card.target.Name, copied: card.copied, busy: own, conversation: card.conversation || follow,
 		size: layout.CardSizes[a.prefs.Features.CardSize(string(card.kind))]}
 	v.title = uitext.CardTitle(card.kind, card.title)
+	v.think = card.think
 	if redo {
-		v.lang = card.redoLang
+		v.lang, v.think = card.redoLang, card.redoThink
+		if !v.conversation && s.State == session.Composing && strings.TrimSpace(s.Draft) != "" {
+			// The answer asked again streams in over the card's; a failure
+			// or a cancel brings the card's back (endRedo).
+			v.title, v.text, v.writing = uitext.CardTitle(card.kind, s.Title), a.shownDraft(s), true
+		}
 	}
-	v.canCopy = card.text != ""
+	v.canCopy = card.text != "" && !v.writing
 	v.canInsert = card.problem == nil && card.text != "" && !own
 	v.canLang = card.kind == store.KindTranslate && card.problem == nil && !s.State.Live()
 	v.canFollowUp = a.canFollowUp()
+	v.thinks = card.problem == nil && !v.conversation && len(card.turns) <= 1 && len(a.cardThinkLevels()) > 1
+	v.canThink = v.thinks && !s.State.Live()
 	v.canStop = follow && s.State == session.Recording
+	v.canStopAnswer = follow && a.sess.CanStop()
 	v.canRetry = card.problem != nil && !s.State.Live()
 	v.follow = a.featureKeys(hotkey.Rewrite)
 	if v.failed != nil && !v.conversation {
@@ -135,24 +191,24 @@ func (a *app) cardNow() cardView {
 	}
 	v.recording = follow && s.State == session.Recording
 	v.levels, v.heard = s.Levels, !s.HeardAt.IsZero()
-	for _, t := range card.turns {
-		if in := strings.TrimSpace(t.Instruction); in != "" {
-			v.bubbles = append(v.bubbles, cardBubble{user: true, title: i18n.T("You"), text: in})
+	for i, t := range card.turns {
+		if b, ok := card.userBubble(i, t.Instruction, t.Selection, false); ok {
+			v.bubbles = append(v.bubbles, b)
 		}
 		v.bubbles = append(v.bubbles, cardBubble{title: t.Answer.Title, text: t.Answer.Content})
 	}
 	switch {
 	case follow:
-		if said := cmpOr(strings.TrimSpace(s.Raw), strings.TrimSpace(s.Partial)); said != "" {
-			v.bubbles = append(v.bubbles, cardBubble{user: true, title: i18n.T("You"), text: said, live: true})
+		if b, ok := card.userBubble(len(card.turns), cmpOr(strings.TrimSpace(s.Raw), strings.TrimSpace(s.Partial)), s.Selection, true); ok {
+			v.bubbles = append(v.bubbles, b)
 		}
 		if s.State != session.Recording {
-			v.bubbles = append(v.bubbles, cardBubble{title: s.Title, text: s.Draft, live: true})
+			v.bubbles = append(v.bubbles, cardBubble{title: s.Title, text: a.shownDraft(s), live: true})
 		}
 	case card.problem != nil:
 		// The follow-up that failed: what was said; why, under the card.
-		if in := strings.TrimSpace(card.input.Raw); in != "" {
-			v.bubbles = append(v.bubbles, cardBubble{user: true, title: i18n.T("You"), text: in})
+		if b, ok := card.userBubble(len(card.turns), card.input.Raw, card.input.Selection, false); ok {
+			v.bubbles = append(v.bubbles, b)
 		}
 		if v.msg == "" {
 			v.msg, _, _ = sessionProblemText(card.problem)
@@ -168,15 +224,17 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-// writingAnswer says whether Rewrite's first answer is being written, its
-// first words in, and will end in the card: the pill hands over to the
-// answer card, which the answer streams into, instead of a loader until
-// the whole answer is in (#3644). Not with Show live text off, nor for a
-// follow-up (its card is open already), a try (the page shows it) or an
-// answer that goes in at once (the card switch off: the pill shows it).
+// writingAnswer says whether a first answer (Transcribe's clean-up,
+// Translate's or Rewrite's answer) is being written, its first words in,
+// and will end in the card: the pill hands over to the answer card,
+// which the answer streams into, instead of a loader until the whole
+// answer is in (#3644). Not with Show live text off, nor for a follow-up
+// or an answer asked again (its card is open already), a try (the page
+// shows it) or an answer that goes in at once (the card switch off: the
+// pill shows it).
 func (a *app) writingAnswer() bool {
 	s := a.pillSession()
-	return !a.answer.open && s.Kind == store.KindRewrite && s.State == session.Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
+	return !a.answer.open && s.State == session.Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // cardRecording says whether the card shows a follow-up recording (its
@@ -200,7 +258,16 @@ type cardBlock struct {
 	bubble     bool
 	title      ovSized
 	user, live bool
+	// quote: a follow-up's selection under the text; cut, open: Show all
+	// or Show less under it, for the turn's.
+	quote     ovSized
+	cut, open bool
+	turn      int
 }
+
+// quoteGap is the space above a bubble's selection and its Show all
+// (the bubble column's gap), quoteToggleH that line's height.
+const quoteGap, quoteToggleH, quoteSize = layout.BubbleTitleGap, 16, 12
 
 // cardBlocks are the pieces of v's text, in order.
 func cardBlocks(v cardView) []cardBlock {
@@ -214,7 +281,11 @@ func cardBlocks(v cardView) []cardBlock {
 			if text == "" {
 				text = "…"
 			}
-			blk := cardBlock{bubble: true, user: b.user, live: b.live, text: ovSized{text, layout.BubbleTextSize, 500, inner}}
+			blk := cardBlock{bubble: true, user: b.user, live: b.live, text: ovSized{text, layout.BubbleTextSize, 500, inner},
+				cut: b.cut, open: b.open, turn: b.turn}
+			if b.quote != "" {
+				blk.quote = ovSized{b.quote, quoteSize, 0, inner}
+			}
 			// An answer without a title has no heading (Voxt's).
 			if title := strings.TrimSpace(b.title); title != "" {
 				blk.title = ovSized{title, layout.BubbleTitleSize, 600, 0}
@@ -249,6 +320,9 @@ func cardTexts(v cardView) []ovSized {
 		if b.title.text != "" {
 			out = append(out, b.title)
 		}
+		if b.quote.text != "" {
+			out = append(out, b.quote)
+		}
 	}
 	return out
 }
@@ -265,9 +339,20 @@ func (a *app) blockHeight(b cardBlock) (float32, bool) {
 			th, ok := a.ovTextHeight(b.title)
 			h, exact = h+th+layout.BubbleTitleGap, exact && ok
 		}
+		if b.quote.text != "" {
+			qh, ok := a.ovTextHeight(b.quote)
+			h, exact = h+quoteGap+qh, exact && ok
+			if b.cut {
+				h += quoteGap + quoteToggleH
+			}
+		}
 	}
 	return h, exact
 }
+
+// streamGrowStep is how much the card grows at a time while an answer
+// streams into it: four lines of its text.
+const streamGrowStep = 4 * 19 // layout.CardTextSize × 1.3, rounded up (guessText)
 
 // cardBodyHeight is the height of v's text in the card: all of it up to
 // cardBodyMax (then it scrolls), and whether it was measured.
@@ -279,6 +364,20 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 		bh, ok := a.blockHeight(b)
 		h += b.gap + bh
 		exact = exact && ok
+	}
+	if v.writing || v.conversation && v.busy && !v.recording {
+		// An answer on its way: the card grows a few lines at a time,
+		// not with every line (#3836).
+		h = float32(math.Ceil(float64(h/streamGrowStep))) * streamGrowStep
+		// A guess for text the view has not measured yet runs a little
+		// long: it kept the card a step taller until the measure came
+		// back a frame later, so the card grew and dropped back. Keep
+		// the last measured height until then.
+		if r := &a.ov.stream; exact {
+			r.h = h
+		} else if r.h > 0 {
+			h = r.h
+		}
 	}
 	return min(int(math.Ceil(float64(h))), bodyMax), exact
 }

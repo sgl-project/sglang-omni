@@ -14,8 +14,6 @@ import (
 
 func TestMeetingDetailExportsFiles(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
 	repo := a.lib.store.Meetings()
 	ctx := context.Background()
 	rec, err := repo.CreateMeeting(ctx, store.Meeting{
@@ -187,5 +185,58 @@ func TestMeetingDetailOpensLanguageModels(t *testing.T) {
 	frames(tt)
 	if a.shownPath() != remotePath {
 		t.Fatalf("went to %s", a.shownPath())
+	}
+}
+
+// #4019: an open meeting gets the room beside a narrow list, or the page
+// alone in a narrow window, and its details scroll as one: the transcript
+// is not a scroll box of its own under the summary.
+func TestMeetingDetailIsWideAndScrollsOnce(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	repo := a.lib.store.Meetings()
+	ctx := context.Background()
+	rec, err := repo.CreateMeeting(ctx, store.Meeting{
+		ID: "m-wide", CreatedAt: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+		Status: store.MeetingDone, Mode: store.MeetingModeMeeting, Title: "Wide",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("a long transcript line ", 30)
+	var segs []store.MeetingSegment
+	for i := range 300 {
+		segs = append(segs, store.MeetingSegment{Idx: i, Source: store.SegmentSystem, Text: fmt.Sprintf("line %d %s", i, long), StartMS: int64(i) * 3000, EndMS: int64(i)*3000 + 2500})
+	}
+	if err := repo.AppendSegments(ctx, rec.Seq, segs); err != nil {
+		t.Fatal(err)
+	}
+	tt.SetSize(1280, 900)
+	a.navigate("/meetings")
+	a.loadMeetings()
+	frames(tt)
+	a.openMeetingDetail("m-wide")
+	frames(tt)
+	first, ok := tt.Find("line 0 " + long)
+	if !ok {
+		t.Fatalf("the first line is not shown (%q)", firstTexts(tt))
+	}
+	listEnd := a.sideW + meetingListW
+	if first.X < listEnd || first.W < 600 {
+		t.Fatalf("the first line is at x=%v, %v wide: want right of the list (x>%v), over 600 wide", first.X, first.W, listEnd)
+	}
+	for range 40 {
+		tt.Scroll(first.X+first.W/2, 600, 0, 2000)
+		frames(tt)
+	}
+	if _, ok := tt.Find("line 299 " + long); !ok {
+		t.Fatal("scrolling the details did not reach the last line")
+	}
+	if _, ok := tt.Find("Summary"); ok {
+		t.Fatal("the summary stayed while the transcript scrolled: the transcript scrolls in a box of its own")
+	}
+	tt.SetSize(windowWidth, 900)
+	frames(tt)
+	if r, ok := tt.Find("line 299 " + long); !ok || r.X > a.sideW+sp6+80 {
+		t.Fatalf("in a narrow window the details are not the page alone: %v %v", r, ok)
 	}
 }

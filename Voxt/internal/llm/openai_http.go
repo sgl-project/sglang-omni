@@ -19,18 +19,23 @@ const maxBody = 32 << 20
 // UserAgent is sent with every request to a remote model.
 var UserAgent = "Voxt"
 
-// send POSTs body and returns the response when the status is 2xx, else
-// an *Error from the body. The key goes in the Authorization header only.
+// send POSTs body (GETs when body is nil) and returns the response when
+// the status is 2xx, else an *Error from the body. The key goes in the
+// Authorization header only.
 func (o *OpenAI) send(ctx context.Context, url string, body any, model string, timeout time.Duration) (*http.Response, error) {
-	b, err := json.Marshal(body)
-	if err != nil {
-		e := newErr(CodeBadRequest, "provider", o.preset.ID, "detail", "marshal")
-		e.Err = err
-		return nil, e
+	method, b := http.MethodGet, []byte(nil)
+	if body != nil {
+		var err error
+		if b, err = json.Marshal(body); err != nil {
+			e := newErr(CodeBadRequest, "provider", o.preset.ID, "detail", "marshal")
+			e.Err = err
+			return nil, e
+		}
+		method = http.MethodPost
 	}
 	stale := ""
 	for attempt := 0; ; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
+		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(b))
 		if err != nil {
 			e := newErr(CodeConfig, "provider", o.preset.ID, "field", "baseURL")
 			e.Err = err
@@ -40,7 +45,9 @@ func (o *OpenAI) send(ctx context.Context, url string, body any, model string, t
 		for k, v := range o.preset.Headers {
 			req.Header.Set(k, v)
 		}
-		req.Header.Set("Content-Type", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		token := o.key
 		if o.tokens != nil {
 			cred, err := o.tokens(ctx, stale)
@@ -74,6 +81,35 @@ func (o *OpenAI) send(ctx context.Context, url string, body any, model string, t
 	}
 }
 
+// Models lists the IDs of the models the server has (GET {root}/models,
+// which Ollama, LM Studio and oMLX answer as OpenAI does), in its order.
+func (o *OpenAI) Models(ctx context.Context) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+	defer cancel()
+	resp, err := o.send(ctx, o.preset.BaseURL+"/models", nil, "", ProbeTimeout)
+	if err != nil {
+		return nil, o.scrub(ctxErr(ctx, o.preset.ID, err, ProbeTimeout))
+	}
+	defer resp.Body.Close()
+	var list struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(&list); err != nil {
+		e := newErr(CodeInvalidJSON, "provider", o.preset.ID)
+		e.Err = err
+		return nil, e
+	}
+	var ids []string
+	for _, m := range list.Data {
+		if m.ID != "" && !slices.Contains(ids, m.ID) {
+			ids = append(ids, m.ID)
+		}
+	}
+	return ids, nil
+}
+
 // failed is the error of a response that is not 2xx.
 func (o *OpenAI) failed(resp *http.Response, model string) error {
 	defer resp.Body.Close()
@@ -89,6 +125,14 @@ func (o *OpenAI) failed(resp *http.Response, model string) error {
 			e.Status, e.RetryAfter = resp.StatusCode, parseRetryAfter(resp.Header)
 			return e
 		}
+	}
+	// A 404 whose words do not mention a model is a path the server does
+	// not serve (Ollama's "404 page not found"): the address is wrong, not
+	// the model (#3950). A signed-in service's address is fixed.
+	if resp.StatusCode == http.StatusNotFound && !o.preset.SignIn && !strings.Contains(strings.ToLower(detail), "model") {
+		e := newErr(CodeAddress, "provider", o.preset.ID, "status", "404", "detail", clip(detail, 300))
+		e.Status = resp.StatusCode
+		return e
 	}
 	return HTTPError(o.preset.ID, model, resp.StatusCode, detail, parseRetryAfter(resp.Header))
 }

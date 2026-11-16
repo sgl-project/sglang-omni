@@ -67,6 +67,7 @@ Reinstall Voxt 1.16.3 from its release. Its dictionary, history and settings are
 | Dictionary terms scoped to an app group | Global terms: Voxt 2 has no per-group terms. |
 | Hosted web search (`searchEnabled`) | Not carried over: Voxt 2 sends no hosted web search tool. |
 | The Qwen3-ASR context | The speech context (Speech models page), sent to the speech model before the dictionary's terms, when the user wrote one and Voxt 2 has none; `{{DICTIONARY_TERMS}}` goes. |
+| Show in Dock (General) | Voxt 2's Show in the Dock. Hiding it turns the menu bar icon on, so Voxt stays reachable. |
 | Shortcuts, other settings, app enhancement groups, notes | Not imported. |
 
 Terms merge by name, ignoring case: an existing term gains the aliases it lacks. An import that stops halfway, for example when Voxt is force-quit, leaves the database consistent; importing again adds what is missing.

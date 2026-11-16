@@ -71,6 +71,7 @@ type updateService interface {
 // updatePrefs is a snapshot of the updater for Settings → About.
 type updatePrefs struct {
 	Enabled     bool // this build can update itself
+	CheckOnly   bool // it only checks GitHub's releases (updates_github.go)
 	AutoCheck   bool // checks once a day in the background
 	AutoInstall bool // installs what a background check finds without asking
 	LastCheck   time.Time
@@ -102,6 +103,7 @@ type updateState struct {
 	bundleStale func() bool
 	// bundleUpdated is set once it did: the card asks to restart.
 	bundleUpdated bool
+	releaseState  // updates_github.go
 }
 
 // The update's card: its ID, and the link of its action, which restarts
@@ -274,7 +276,11 @@ func (a *app) updateSettingsSection(c *ui.Context) {
 	if !a.updKnown || !p.Enabled {
 		return
 	}
-	settingRow(c, "about-update-auto", i18n.T("Check automatically"), i18n.T("Once a day. Voxt asks before installing."), func() {
+	auto := i18n.T("Once a day. Voxt asks before installing.")
+	if p.CheckOnly {
+		auto = i18n.T("Once a day. A card says when a new version is out.")
+	}
+	settingRow(c, "about-update-auto", i18n.T("Check automatically"), auto, func() {
 		if ui.Switch(c.Key("about-update-auto-switch"), &a.updPrefs.AutoCheck).Label(i18n.T("Check for updates automatically")).Changed() {
 			a.setAutoCheck(a.updPrefs.AutoCheck)
 		}
@@ -292,6 +298,10 @@ func (a *app) updateSettingsSection(c *ui.Context) {
 			a.setBeta(beta)
 		}
 	})
+	if p.CheckOnly {
+		caption(c, i18n.T("Voxt does not install updates itself: install a new version from its disk image, or with brew upgrade --cask voxt."))
+		return
+	}
 	settingRow(c, "about-update-install", i18n.T("Install updates automatically"), i18n.T("Voxt asks only to restart."), func() {
 		if ui.Switch(c.Key("about-update-install-switch"), &a.updPrefs.AutoInstall).Label(i18n.T("Install updates without asking")).Disabled(!a.updPrefs.AutoCheck).Changed() {
 			a.setAutoInstall(a.updPrefs.AutoInstall)

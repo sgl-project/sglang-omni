@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/qwen3_asr_transcriber.h"
-#include "common/text.h"
 
 #include <algorithm>
 #include <cctype>
@@ -8,11 +7,19 @@
 #include <cstdint>
 #include <map>
 
+#include "common/audio.h"
+#include "common/generation.h"
+#include "common/text.h"
+#include "common/transcription.h"
+
 namespace qwen3_asr {
 
 using omni_common::CollapseTokenLoop;
+using omni_common::FinishReason;
+using omni_common::GenerationCancelled;
 using omni_common::IsTokenLoop;
 using omni_common::IsUnicodeSpace;
+using omni_common::TranscriptionResult;
 
 namespace mx = mlx::core;
 
@@ -74,31 +81,6 @@ std::optional<size_t> FindSubsequence(const std::vector<int> &values,
 
 } // namespace
 
-const char *FinishReasonName(FinishReason reason) {
-  return reason == FinishReason::kStop ? "stop" : "length";
-}
-
-nlohmann::ordered_json
-SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments) {
-  nlohmann::ordered_json array = nlohmann::ordered_json::array();
-  for (const SpeakerSegment &segment : segments) {
-    nlohmann::ordered_json json = {{"start", segment.start_seconds},
-                                   {"end", segment.end_seconds},
-                                   {"speaker", segment.speaker},
-                                   {"text", segment.text}};
-    for (const auto &[name, value] : {std::pair{"language", &segment.language},
-                                      std::pair{"emotion", &segment.emotion},
-                                      std::pair{"event", &segment.event}}) {
-      if (value->has_value()) {
-        json[name] = **value;
-      } else {
-      }
-    }
-    array.push_back(std::move(json));
-  }
-  return array;
-}
-
 std::optional<std::string> NormalizeLanguage(const std::string &language) {
   const std::string stripped = Strip(language);
   const std::string normalized = Lowercase(stripped);
@@ -125,12 +107,14 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
 
 Qwen3ASRTranscriber::Qwen3ASRTranscriber(
     const std::filesystem::path &model_directory,
-    const std::filesystem::path &draft_directory, int draft_quantization_bits)
+    const std::filesystem::path &draft_directory, int draft_quantization_bits,
+    DraftPolicy draft_policy)
     : model_(model_directory), tokenizer_(model_directory),
       audio_pad_id_(tokenizer_.AddedTokenId(kAudioPad)),
       end_of_text_id_(tokenizer_.AddedTokenId("<|endoftext|>")),
       im_end_id_(tokenizer_.AddedTokenId("<|im_end|>")),
-      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)) {
+      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)),
+      draft_policy_(draft_policy) {
   if (!draft_directory.empty()) {
     draft_.emplace(draft_directory, draft_quantization_bits,
                    model_.decoder().config());
@@ -185,7 +169,10 @@ Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
 Qwen3ASRTranscriber::Prompt
 Qwen3ASRTranscriber::BuildPrompt(const std::vector<float> &samples,
                                  const TranscriptionOptions &options) const {
-  const mx::array mel = LogMel(samples, options.layout);
+  const mx::array mel =
+      omni_common::LogMel(samples, options.layout == AudioLayout::kReference
+                                       ? omni_common::FinalStftFrame::kDropped
+                                       : omni_common::FinalStftFrame::kKept);
   const int audio_token_count = TokenCount(mel.shape(-1), options.layout);
   const std::vector<int> prompt_ids = PromptIds(audio_token_count, options);
   const mx::array audio_features = model_.EncodeAudio(mel, options.layout);
@@ -224,7 +211,7 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
                                 const TranscriptionOptions &options,
                                 const std::atomic<bool> &cancel) const {
   if (cancel.load()) {
-    throw TranscriptionCancelled();
+    throw GenerationCancelled();
   } else {
   }
   const Prompt prompt = BuildPrompt(samples, options);
@@ -250,50 +237,24 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
       return static_cast<int>(output_ids.size()) >= max_new_tokens;
     }
   };
-  int verify_round_count = 0;
+  DraftStatistics draft_statistics;
   // note (wilsonzheng0327): a penalty would have to be applied per block
   // position with the block's own earlier tokens; a request that asks for one
   // decodes without the draft.
   if (draft_.has_value() && options.repetition_penalty == 1.0f) {
-    verify_round_count = draft_->Decode(model_.decoder(), embeddings,
-                                        max_new_tokens, 0, commit, cancel);
+    draft_statistics =
+        draft_->Decode(model_.decoder(), embeddings, max_new_tokens, 0, commit,
+                       cancel, draft_policy_);
   } else {
     std::vector<KVCache> caches = model_.NewCaches();
     const mx::array prefill_logits = model_.Decode(embeddings, caches);
     mx::array next_token = mx::argmax(prefill_logits);
     mx::async_eval({next_token});
-    // Note (Minyi Tang): only generated tokens are penalized, as on CUDA; the
-    // scales stay lazy so penalizing adds no host sync to the queued step.
-    mx::array penalty_by_token_id =
-        mx::ones(prefill_logits.shape(), mx::float32);
-    bool finished = false;
-    while (!finished) {
-      if (cancel.load()) {
-        throw TranscriptionCancelled();
-      } else {
-      }
-      const mx::array token = next_token;
-      // Note (Jiaxin Deng): queue the next step before reading this token, so
-      // the GPU decodes while the stop rules are checked.
-      mx::array logits =
-          model_.Decode(model_.EmbedTokens(mx::reshape(token, {1, 1})), caches);
-      if (options.repetition_penalty != 1.0f) {
-        penalty_by_token_id =
-            mx::put_along_axis(penalty_by_token_id, mx::reshape(token, {1}),
-                               mx::array(options.repetition_penalty), 0);
-        logits = mx::astype(logits, mx::float32);
-        logits = mx::where(mx::less(logits, mx::array(0.0f)),
-                           mx::multiply(logits, penalty_by_token_id),
-                           mx::divide(logits, penalty_by_token_id));
-      } else {
-      }
-      next_token = mx::argmax(logits);
-      mx::async_eval({next_token});
-      finished = commit(static_cast<int>(token.item<uint32_t>()));
-    }
+    model_.decoder().DecodePlain(next_token, caches, options.repetition_penalty,
+                                 commit, cancel);
   }
   return FinishedResult(output_ids, options, finish_reason,
-                        stopped_on_token_loop, verify_round_count);
+                        stopped_on_token_loop, draft_statistics);
 }
 
 bool Qwen3ASRTranscriber::IsStopToken(
@@ -305,7 +266,7 @@ bool Qwen3ASRTranscriber::IsStopToken(
 TranscriptionResult Qwen3ASRTranscriber::FinishedResult(
     const std::vector<int> &output_ids, const TranscriptionOptions &options,
     FinishReason finish_reason, bool stopped_on_token_loop,
-    int verify_round_count) const {
+    const DraftStatistics &draft_statistics) const {
   const bool ended_on_stop =
       !output_ids.empty() && IsStopToken(output_ids.back(), options);
   // Note (Minyi Tang): the repeats are the model feeding on its own output,
@@ -318,7 +279,9 @@ TranscriptionResult Qwen3ASRTranscriber::FinishedResult(
           static_cast<int>(output_ids.size()) - (ended_on_stop ? 1 : 0),
           finish_reason,
           {},
-          verify_round_count};
+          draft_statistics.verify_round_count,
+          draft_statistics.proposed_token_count,
+          draft_statistics.accepted_token_count};
 }
 
 struct Qwen3ASRTranscriber::BatchRow {
@@ -351,7 +314,7 @@ Qwen3ASRTranscriber::PrefillRows(const std::vector<BatchRequest> &requests,
   for (size_t i = 0; i < requests.size(); ++i) {
     try {
       if (requests[i].cancel->load()) {
-        throw TranscriptionCancelled();
+        throw GenerationCancelled();
       } else {
       }
       const Prompt prompt =
@@ -459,7 +422,7 @@ void Qwen3ASRTranscriber::DecodeRows(const std::vector<BatchRequest> &requests,
       const BatchRequest &request = requests[row.request_index];
       BatchOutcome outcome;
       if (request.cancel->load()) {
-        outcome.error = std::make_exception_ptr(TranscriptionCancelled());
+        outcome.error = std::make_exception_ptr(GenerationCancelled());
         row.is_done = true;
       } else if (AcceptToken(row, static_cast<int>(token_ids[i]),
                              *request.options, outcome)) {

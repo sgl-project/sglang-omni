@@ -44,19 +44,25 @@ func (a *app) speechContextSection(c *ui.Context) {
 	caption(c, i18n.T("Tell the speech model who is speaking and about what."))
 	in := ui.TextArea(c.Key("models-speech-context"), &sc.text).Label(i18n.T("Speech context")).
 		Placeholder(i18n.T("For example: I work on LLM serving and speak Chinese with English technical terms.")).MinHeight(px(t, 72))
+	a.autosave(in, sc, a.saveSpeechContext)
+}
+
+// autosave runs save promptSaveDelay after the last change to field in,
+// whose typing st tracks, or when it loses the focus.
+func (a *app) autosave(in ui.Element, st *speechContextState, save func()) {
 	if in.Changed() {
-		sc.dirty = true
-		sc.seq++
-		if seq := sc.seq; a.win != nil {
+		st.dirty = true
+		st.seq++
+		if seq := st.seq; a.win != nil {
 			time.AfterFunc(promptSaveDelay, func() {
 				a.post(func() {
-					if sc.dirty && sc.seq == seq {
-						a.saveSpeechContext()
+					if st.dirty && st.seq == seq {
+						save()
 					}
 				})
 			})
 		}
-	} else if sc.dirty && !in.Focused() {
-		a.saveSpeechContext() // it lost the focus
+	} else if st.dirty && !in.Focused() {
+		save() // it lost the focus
 	}
 }

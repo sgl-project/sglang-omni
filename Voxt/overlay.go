@@ -124,6 +124,9 @@ type overlayState struct {
 		cardScrollKey string
 		bubbleCopied  string
 		bubbleSeq     int
+		// stream is how much of the draft streaming into it the card
+		// shows (overlay_stream.go).
+		stream streamReveal
 		// lang is the card's language menu (overlay_lang.go).
 		lang langMenuState
 	}
@@ -167,6 +170,8 @@ func (a *app) overlayModeNow() overlayMode {
 	live := s.State.Live() && !s.Try
 	card := a.answer.open && (!live || a.cardSessionLive())
 	switch {
+	case a.notice != nil && a.notice.over:
+		return ovNotice // the card that came back shows when the notice goes
 	case card && a.answer.inserting:
 		return ovHidden // Insert pastes: the card comes back if it could not (Voxt's)
 	case card, live && a.writingAnswer():
@@ -196,6 +201,7 @@ func (a *app) overlayModeNow() overlayMode {
 // shows again is first transparent, until its view built the new face
 // (reveal): no frame of the last face shows.
 func (a *app) overlaySync() {
+	a.paceDraft() // overlay_stream.go
 	mode := a.overlayModeNow()
 	was := a.ov.shown
 	if mode == ovHidden {
@@ -281,11 +287,12 @@ func (a *app) overlayDragged() {
 }
 
 // syncPassThrough lets the pointer through the small pill (recording,
-// working: nothing in it takes a click), but not through the face with
+// working: nothing in it takes a click, but Use transcript and the
+// thinking capsule), but not through the face with
 // live text in lines (Overlay.LiveLines): it is dragged as the card is,
 // and the wheel scrolls its text.
 func (a *app) syncPassThrough() {
-	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking) && !a.prefs.Overlay.LiveLines
+	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking && !canSkip(a.sess, ovWorking) && !a.pillThinks(ovWorking)) && !a.prefs.Overlay.LiveLines
 	if pass == a.ov.passThrough {
 		return
 	}

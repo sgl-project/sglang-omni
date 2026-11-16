@@ -102,12 +102,15 @@ def run_benchmark(
 
 @pytest.fixture
 def stub_runtime_bin(stub_server_binary: Path, tmp_path: Path) -> Path:
-    """A runtime directory whose qwen3_asr_server runs the stub server."""
+    """A runtime directory whose ASR binaries run the stub server."""
     directory = tmp_path / "bin"
     directory.mkdir()
-    server = directory / "qwen3_asr_server"
-    server.write_text(f'#!/bin/sh\nexec {shlex.quote(str(stub_server_binary))} "$@"\n')
-    server.chmod(0o755)
+    for model_kind in ("qwen3_asr", "parakeet"):
+        server = directory / f"{model_kind}_server"
+        server.write_text(
+            f'#!/bin/sh\n# {model_kind}\nexec {shlex.quote(str(stub_server_binary))} "$@"\n'
+        )
+        server.chmod(0o755)
     return directory
 
 
@@ -191,6 +194,46 @@ def test_score_counts_dropped_tails_and_repeated_text(
     assert result.errors == errors
     assert result.reference_tokens == reference_tokens
     assert result.error_rate == errors / reference_tokens
+
+
+@pytest.mark.parametrize(
+    (
+        "language",
+        "reference",
+        "hypothesis",
+        "errors",
+        "deleted_reference_tokens",
+        "longest_deleted_reference_token_run",
+    ),
+    [
+        ("en", "alpha bravo charlie delta echo", "alpha delta echo", 2, 2, 2),
+        ("en", "alpha bravo charlie delta echo", "alpha charlie echo", 2, 2, 1),
+        ("en", "alpha bravo charlie delta echo", "charlie", 4, 4, 2),
+        ("en", "alpha bravo charlie", "", 3, 3, 3),
+        ("en", "alpha bravo charlie", "alpha bravo charlie", 0, 0, 0),
+        ("en", "alpha bravo charlie", "alpha delta charlie", 1, 0, 0),
+        ("en", "alpha bravo charlie", "alpha extra bravo charlie", 1, 0, 0),
+        ("zh", "今天天气不错", "今天不错", 2, 2, 2),
+        ("zh", "今天天气不错", "今天气错", 2, 2, 1),
+        ("mixed", "今天 OpenAI 天气不错", "今天不错", 3, 3, 3),
+    ],
+)
+def test_score_measures_consecutive_deleted_reference_tokens(
+    language: str,
+    reference: str,
+    hypothesis: str,
+    errors: int,
+    deleted_reference_tokens: int,
+    longest_deleted_reference_token_run: int,
+) -> None:
+    """Equal error counts must distinguish missing spans from isolated deletions."""
+    result = score(reference, hypothesis, language)
+    assert result.errors == errors
+    assert result.deleted_reference_tokens == deleted_reference_tokens
+    assert (
+        result.longest_deleted_reference_token_run
+        == longest_deleted_reference_token_run
+    )
 
 
 def test_realtime_silent_audio_does_not_time_out_before_input_ends(
@@ -399,11 +442,30 @@ def test_stop_server_fails_a_server_that_already_exited(exit_code: int) -> None:
 
 
 @pytest.mark.parametrize(
-    ("flags", "text"),
+    (
+        "flags",
+        "text",
+        "model_kind",
+        "deleted_reference_tokens",
+        "longest_deleted_reference_token_run",
+    ),
     [
-        (("--mode", "http"), "48000"),
-        (("--mode", "http", "--chunk-seconds", "1"), "16000 16000 16000"),
-        (("--mode", "realtime", "--speed", "20"), "48000"),
+        (("--mode", "http"), "48000", "qwen3_asr", 2, 2),
+        (
+            ("--mode", "http", "--chunk-seconds", "1"),
+            "16000 16000 16000",
+            "qwen3_asr",
+            0,
+            0,
+        ),
+        (("--mode", "realtime", "--speed", "20"), "48000", "qwen3_asr", 2, 2),
+        (
+            ("--model-kind", "parakeet", "--mode", "http"),
+            "48000",
+            "parakeet",
+            2,
+            2,
+        ),
     ],
 )
 def test_benchmark_measures_a_case_on_the_stub_server(
@@ -412,8 +474,11 @@ def test_benchmark_measures_a_case_on_the_stub_server(
     stub_runtime_bin: Path,
     flags: tuple[str, ...],
     text: str,
+    model_kind: str,
+    deleted_reference_tokens: int,
+    longest_deleted_reference_token_run: int,
 ) -> None:
-    exit_code, _, result = run_benchmark(
+    exit_code, output, result = run_benchmark(
         monkeypatch, tmp_path, stub_runtime_bin, *flags, *STUB_KIND_FLAGS
     )
     assert exit_code == 0
@@ -421,9 +486,64 @@ def test_benchmark_measures_a_case_on_the_stub_server(
     assert result["error"] == ""
     assert result["transcription"]["text"] == text
     assert result["score"]["reference_tokens"] == 3
+    assert result["score"]["deleted_reference_tokens"] == deleted_reference_tokens
+    assert (
+        result["score"]["longest_deleted_reference_token_run"]
+        == longest_deleted_reference_token_run
+    )
     assert result["recovery_matches_warmup"] is True
     assert result["server_exit_code"] == 0
     assert result["peak_footprint_bytes"] >= result["warmup_peak_footprint_bytes"] > 0
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["arguments"]["model_kind"] == model_kind
+    assert (
+        metadata["binary_sha256"]
+        == hashlib.sha256(
+            (stub_runtime_bin / f"{model_kind}_server").read_bytes()
+        ).hexdigest()
+    )
+
+
+@pytest.mark.parametrize(
+    ("flags", "error"),
+    [
+        (("--mode", "realtime", "--languages", "en"), "requires --mode http"),
+        (("--mode", "http", "--languages", "zh"), "requires --languages en"),
+        (("--mode", "http", "--languages", "en", "zh"), "requires --languages en"),
+    ],
+)
+def test_parakeet_rejects_unsupported_cases_before_creating_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    flags: tuple[str, ...],
+    error: str,
+) -> None:
+    """An unsupported case must fail before loading a model or writing results."""
+    output = tmp_path / "results"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_long_audio",
+            "--runtime-bin",
+            str(tmp_path / "missing-runtime"),
+            "--data-root",
+            str(tmp_path / "missing-data"),
+            "--model",
+            "owner/model",
+            "--model-kind",
+            "parakeet",
+            "--output",
+            str(output),
+            *flags,
+        ],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        benchmark_long_audio.main()
+    assert stopped.value.code == 2
+    assert error in capsys.readouterr().err
+    assert not output.exists()
 
 
 def test_a_failed_shutdown_fails_a_measured_case(

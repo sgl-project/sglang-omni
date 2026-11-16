@@ -24,7 +24,8 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── logs/             log ring + rotated files
 │   ├── notify/           the notification centre (kept in the store's documents)
 │   ├── lang/             the language table, 652 languages                                     (leaf)
-│   ├── permission/       Microphone and Accessibility (purego on darwin; Fake for tests)       (leaf)
+│   ├── permission/       Microphone, Accessibility and Speech Recognition (purego on darwin;
+│   │                     Fake for tests); system audio is asked for through the helper    (leaf)
 │   ├── macx/             activating an app again before a paste (purego on darwin); the       (leaf)
 │   │                     recording's sounds (afplay, Voxt's presets and how long each is
 │   │                     heard); the system's web proxies (CFNetwork);
@@ -73,8 +74,18 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │   └── omnitest/     a fake qwen3_asr_server for tests (the test binary re-runs itself)
 │   ├── session/          the one owner of a voice session: the state machine (reading →
 │   │                     recording → recognizing → composing → delivering → done/cancelled/
-│   │                     failed), the selection, Translate's and Rewrite's streaming answer, its
+│   │                     failed), the selection, the language model's streaming answer, its
 │   │                     snapshots, the history entry; adapters over the helper (helperio.go)
+│   ├── meeting/          a meeting's owner (Manager, Snapshot for the UI, Config callbacks): the
+│   │                     two tracks' capture, live captions (Live, Committer, echo and loop checks),
+│   │                     the WAV archive, the pass after the meeting, correction, the summary and
+│   │                     its follow-ups
+│   ├── fileasr/          `Voxt transcribe` (docs/transcribe.md): the command sends a file's PCM to
+│   │                     the running app, which cuts it as a meeting does and recognises it
+│   ├── dictation/        System dictation (macOS's SFSpeechRecognizer over the helper) as a speech model
+│   ├── announce/         Voxt's announcements (Voxt 1.x's manifest and list; sends only the revision)
+│   ├── learn/            dictionary suggestions from what the user does with Voxt's text
+│   ├── codexauth/        the ChatGPT (Codex) sign-in: browser login with PKCE, tokens in the Keychain
 │   ├── vad/              local voice activity detection (energy over an adaptive noise floor):
 │   │                     Analyze, Compact (file services), Gate (streams), Merge; Model, the
 │   │                     interface of a VAD model (Silero, internal/omni) the gate can follow  (leaf)
@@ -243,7 +254,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | Seam | Defined in | Used by |
 |---|---|---|
 | `a.lib` (`*library`: store, bus, settings) | library.go | every area |
-| `a.navigate(path)`, `a.showPage(name)`, `a.currentPage()`, `a.shownPath()`; `movedPaths` (old paths, e.g. `/permissions` → `/settings/permissions`) | shell.go, shell_pages.go, shell_settings.go | palette, deep links, notifications, tests |
+| `a.navigate(path)`, `a.currentPage()`, `a.shownPath()`; `movedPaths` (old paths, e.g. `/permissions` → `/settings/permissions`) | shell.go, shell_pages.go, shell_settings.go | palette, deep links, notifications, tests |
 | `navGroups`, `shortcutPages` (⌘1–⌘6), `pageTitle`, `a.navBadge` | shell_pages.go | sidebar, rail, palette, Go menu |
 | `a.page(c, p)`, `a.pageShown(path)` | pages.go | the router: each page's view, and what it reads when it shows |
 | `a.updateSettings(fn)`, `a.prefs`, `settingsSections()`, `a.settingsShown(sub)`, `a.setMainLanguage(code)`, `a.syncOpenAtLogin()` | shell_settings.go (the dialog, `settingsState`), settings_general.go, settings_locale.go | every area that changes a setting; sections that read something when they open; the window's opening (shell.go) |
@@ -289,7 +300,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | Data folder location | `…/VoxtNew/location.json` when the user moved it (Settings → Storage); `move.json`, `reset.json` while a move or an erase waits for the next start |
 | The output's mutes (crash recovery) | `~/Library/Caches/VoxtNew/output-mute/<helper pid>.json`: the devices a helper muted, written before each mute, removed when it gives them back; the next helper undoes a dead one's (`output.recover`). Empty while nothing records |
 | Apps' icons (App enhancement's lists) | `~/Library/Caches/VoxtNew/icons/<bundle id>-64.png`, drawn by the helper (`app.icons`), redrawn after a week (`internal/appicons`) |
-| Logs | `~/Library/Logs/VoxtNew/voxtnew.log` (app, rotated at 5 MB) and `helper.log` (the helper's stderr) |
+| Logs | `~/Library/Logs/VoxtNew/voxtnew.log` (app, rotated at 5 MB) `helper.log` (the helper's stderr) and `crash.log` (a Go crash's stack; the one before is `crash.log.1`) |
 | Helper | `VoxtNew.app/Contents/Resources/helper/voxtnew-helper` (or `$VOXTNEW_HELPER`) |
 | Omni runtime | `VoxtNew.app/Contents/Resources/omni/bin/`: `qwen3_asr_server`, `silero_vad_server` (its copy, for Silero VAD, so that Activity Monitor tells the two apart), `libmlx.dylib`, `libjaccl.dylib`, `mlx.metallib` (`scripts/build-omni.sh`; or `$VOXTNEW_OMNI_RUNTIME`) |
 
@@ -334,7 +345,7 @@ Not taken: jobs, hub (downloads), catalog, licence, engine's MLX side, services,
 | Packaged app | `scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'` | the helper (mygo.json's `helperEntitlements` name it), then the app; signing during development: [development.md](development.md) |
 | Release build | `scripts/mac.sh 'scripts/release.sh --runtimes $HOME/voxtnew-runtime'`; `scripts/mac-sign-e2e.sh` | the helper and the Omni runtime inside the app, checked by `release-verify.sh` (every nested binary signed, the Omni server starts from the bundle, no voxtnew-llm left); signed with a throwaway identity: the hardened runtime and timestamps everywhere ([release.md](release.md)) |
 | CI | `.github/workflows/voxtnew-ci.yaml` (repository root) | on changes to `Voxt/**` and before each Voxt Nightly build: gofmt, the Go tests, MyGo vet, the update-check build's vet, `vendor-mygo.sh --check`, on Linux |
-| Settings (M6) | `go test -run 'TestAudioSettings|TestDeviceInUse|TestRecordingCues|TestSessionSounds|TestSounds|TestPreviewPlayer|TestOverlayStyle|TestShortcutsSettings|TestOtherLanguages|TestAutoRail|TestStartHidden|TestTray' .`; `go test -run 'TestPlay|TestPresets|TestSoundFiles|TestStartStop' ./internal/macx` (TestStartStop on a Mac: a silent stand-in for afplay) | the microphones' list over the fake helper's `capture.devices`, the cues of each change of a session and of each preset, the presets' menu (shown while the sounds are on, a choice or a rest in it plays, Try's accent), the overlay's settings, the shortcut table's problems and links, the automatic rail at 680 and 800 wide, the menu bar's items and icons |
+| Settings (M6) | `go test -run 'TestAudioSettings|TestDeviceInUse|TestRecordingCues|TestSessionSounds|TestSounds|TestPreviewPlayer|TestOverlayStyle|TestShortcutsSettings|TestStrictShortcutsSetting|TestOtherLanguages|TestAutoRail|TestStartHidden|TestTray' .`; `go test -run 'TestPlay|TestPresets|TestSoundFiles|TestStartStop' ./internal/macx` (TestStartStop on a Mac: a silent stand-in for afplay) | the microphones' list over the fake helper's `capture.devices`, the cues of each change of a session and of each preset, the presets' menu (shown while the sounds are on, a choice or a rest in it plays, Try's accent), the overlay's settings, the shortcut table's problems and links, the Strict shortcuts switch, the automatic rail at 680 and 800 wide, the menu bar's items and icons |
 | App enhancement, dictionary | `go test ./internal/appctx ./internal/dict`; `go test -run 'TestScene' ./internal/session`; `go test -run 'TestAppEnhancement|TestDictionary|TestSessionAppEnhancement|TestSceneConfig' .` | URL rules and the matching order (table tests); sessions in a URL group, a browser's group, an app's group, none, an address that times out, the auto key; the dictionary's hints in each service's request (golden files) |
 | Sound | `go test -v -run 'TestCompareVariants' ./internal/dsp` (the table of levels before and after; `VOXTNEW_DSP_OUT=dir` writes the WAVs) | the filter's response at 50, 60, 80, 100, 200 Hz and 1 kHz, a DC offset at the start and a jump of it, chunks against the whole byte for byte; the gain rule (table), quiet speech raised as a file and as a stream, noise alone never raised, a stream's gain holding through silence and moving smoothly, the limiter on full-scale squares and on speech raised by 30 dB, nothing, a byte, zeros; the speech sample quiet, under hum, white and fan noise, and clipped (no speech frame cut, never over -1 dBFS, the stream's gain near the file's) |
 | Sessions | `go test ./internal/session ./internal/vad ./internal/compose ./internal/deliver ./internal/hotkey`; `go test -run 'TestSession|TestOverlay|TestAnswer|TestTranslate|TestRewrite' .` | the state machine with in-process fakes (both kinds of speech service × the language model on, off, failing, timing out × cancel at each stage × a target that takes no text × late callbacks; Translate and Rewrite: a selection read, missing, failing, by ⌘C, the strict retry, the card by choice, by a target that takes no text and by length, the JSON answer, the text given at Start, follow-ups; the voice activity detection on the speech sample with silence and noise added, a stream held until the speech, a recording without speech sent nowhere; the overlay leaving the screen after each way a session ends, on a fake clock); the app over the fake helper process (`selection=`, `copy-selection=`, `readonly`, `focus=`, `switch=`, `paste-log=`) with the fake local models of local_fakes_test.go (a transcriber, a streamer, a chat model behind `llm.Client`) |

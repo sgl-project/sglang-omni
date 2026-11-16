@@ -12,10 +12,28 @@ import (
 // settingRow is a setting: its name, a ⓘ telling what it does (desc, ""
 // for none) and its control on the right (formRow in ui_layout.go).
 func settingRow(c *ui.Context, key, title, desc string, control func()) {
-	if !settingsTextMatches(settingsSearchQuery, title, desc) {
+	if !settingsSearchShows(title, desc) {
 		return
 	}
 	formRow(c, key, title, desc, control)
+}
+
+// settingRowUnder is settingRow with its control under the name, where
+// formRow puts it when the two do not fit on a line.
+func settingRowUnder(c *ui.Context, key, title, desc string, control func()) {
+	if !settingsSearchShows(title, desc) {
+		return
+	}
+	t := c.Theme()
+	ui.Column(c.Key(key)).Gap(px(t, 6)).MinHeight(px(t, 32)).Children(func() {
+		ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
+			settingsName(c, title).MinWidth(0)
+			if desc != "" {
+				infoTip(c, desc)
+			}
+		})
+		ui.Row(c).Wrap().Gap(px(t, sp2)).AlignItems(ui.Center).Children(control)
+	})
 }
 
 // settingRowNote is a setting whose description is a state to read at
@@ -27,17 +45,17 @@ func settingRowNote(c *ui.Context, key, title, note string, control func()) {
 // settingRowNoteTip is settingRowNote with a ⓘ beside the name telling
 // what the setting does (tip, "" for none).
 func settingRowNoteTip(c *ui.Context, key, title, tip, note string, control func()) {
-	if !settingsTextMatches(settingsSearchQuery, title, tip, note) {
+	if !settingsSearchShows(title, tip, note) {
 		return
 	}
 	t := c.Theme()
 	ui.Row(c.Key(key)).Wrap().GapX(px(t, sp4)).GapY(px(t, 6)).AlignItems(ui.Center).MinHeight(px(t, 32)).Children(func() {
 		ui.Column(c).Grow(1).Basis(px(t, 200)).MinWidth(px(t, 140)).Gap(px(t, 2)).Children(func() {
 			if tip == "" {
-				ui.Text(c, title)
+				settingsName(c, title)
 			} else {
 				ui.Row(c).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, title).MinWidth(0)
+					settingsName(c, title).MinWidth(0)
 					infoTip(c, tip)
 				})
 			}
@@ -51,7 +69,7 @@ func settingRowNoteTip(c *ui.Context, key, title, tip, note string, control func
 
 // sectionTitle heads a group of settings.
 func sectionTitle(c *ui.Context, title string) {
-	if !settingsTextMatches(settingsSearchQuery, title) {
+	if !settingsSearchShows(title) {
 		return
 	}
 	t := c.Theme()
@@ -60,7 +78,7 @@ func sectionTitle(c *ui.Context, title string) {
 
 func sectionTitleText(c *ui.Context, title string) ui.Element {
 	t := c.Theme()
-	return ui.Text(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text2)
+	return settingsName(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text2)
 }
 
 // sectionTitleTip is sectionTitle with a ⓘ beside it: the margin goes on

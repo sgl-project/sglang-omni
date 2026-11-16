@@ -1,11 +1,15 @@
 package main
 
 import (
+	"cmp"
 	"context"
+	"strings"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
@@ -29,7 +33,18 @@ func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.
 		return meeting.TrackASR{}, err
 	}
 	caps := p.Caps()
-	ta := meeting.TrackASR{Caps: caps}
+	l := cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale()))
+	// The dictionary terms and speech context dictation sends (#3988); a
+	// dictionary that will not read leaves the meeting without terms.
+	var hints []string
+	if a.prefs.Dictionary.Enabled {
+		if terms, err := a.lib.store.Dictionary().List(ctx, ""); err == nil {
+			hints = session.SpeechHints(a.prefs, terms)
+		}
+	}
+	// What dictation's speechContext gives an on-device model: no service template.
+	prompt := strings.TrimSpace(a.prefs.Dictionary.SpeechContext)
+	ta := meeting.TrackASR{Caps: caps, Lang: l, Prompt: prompt, Hints: hints, StreamReq: asr.StreamRequest{Lang: l, Prompt: prompt, Hints: hints}}
 	if ft, ok := p.(asr.FileTranscriber); ok && caps.File {
 		ta.File = ft
 	}

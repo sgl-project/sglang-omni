@@ -57,7 +57,17 @@ func (a *app) overlayView(c *ui.Context) {
 			// In lines it moves where it is dragged, as the card; the small
 			// pill lets the pointer through (syncPassThrough).
 			faceStyle(ui.Column(c.Key("ov-face")), o, a.ov.mode, a.ov.h).DragWindow().Children(func() {
-				overlayPill(c, a.pillSession(), a.ov.mode, look) // mute_link.go: the output's note
+				think := ""
+				if a.pillThinks(a.ov.mode) {
+					think = a.pillThinkText().text
+				}
+				skip, thinkClicked := overlayPill(c, a.pillSession(), a.ov.mode, look, think) // mute_link.go: the output's note
+				if skip {
+					a.skipLLM()
+				}
+				if thinkClicked {
+					a.togglePillThinkMenu()
+				}
 			})
 		}
 	})
@@ -106,8 +116,11 @@ type pillLook struct {
 // wide: the feature's icon, the waveform or the loader, the time and the
 // matched group when they show, in a row centred in the pill (Voxt's
 // compact card); with live text the row and the text's line under it,
-// both centred, in the wider padding of Voxt's card with text.
-func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillLook) {
+// both centred, in the wider padding of Voxt's card with text. While the
+// language model works on speech that can go in as said, the row ends
+// with Use transcript (canSkip), then the thinking capsule labelled think
+// ("": none; #3940); it reports a click on each.
+func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillLook, think string) (skip, thinkClicked bool) {
 	text, hint := pillLine(s)
 	// The face's border takes layout.Border of its padding (MyGo's border box).
 	col := ui.Column(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
@@ -145,6 +158,12 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 				ui.Text(c, name).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).
 					Label(i18n.T("App enhancement: %s", uitext.SceneLabel(s)))
 			}
+			if canSkip(s, mode) {
+				skip = cardCapsule(c.Key("ov-skip"), skipText().text, i18n.T("Insert the recognised text without waiting for the language model"))
+			}
+			if think != "" {
+				thinkClicked = cardCapsule(c.Key("ov-think"), think, "")
+			}
 		})
 		switch {
 		case hint:
@@ -161,7 +180,17 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 			ui.Box(c).Height(layout.LineH).Shrink(0) // the first line's room, before any text
 		}
 	})
+	return skip, thinkClicked
 }
+
+// canSkip: the pill in mode offers Use transcript (session.Manager's
+// SkipLLM, #3821).
+func canSkip(s session.Snapshot, mode overlayMode) bool {
+	return mode == ovWorking && s.State == session.Composing && s.CanSkip
+}
+
+// skipText is Use transcript's label as it draws (cardCapsule's).
+func skipText() ovSized { return ovSized{i18n.T("Use transcript"), 11, 600, 0} }
 
 // pillLine is the line under the pill's row: the live text, else (hint)
 // "Starting the microphone…" while the microphone gives no audio (what
@@ -169,6 +198,9 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 // loading shows only the starting icon (the user, 10-21): the recording
 // works meanwhile, so no line is needed.
 func pillLine(s session.Snapshot) (text string, hint bool) {
+	if note := limitNote(s, time.Now()); note != "" {
+		return note, true
+	}
 	if text := liveLineText(s); text != "" {
 		return text, false
 	}
@@ -178,6 +210,26 @@ func pillLine(s session.Snapshot) (text string, hint bool) {
 		}
 	}
 	return "", false
+}
+
+// limitNote warns while recording that a limit of Settings → Audio is
+// near (#3840): in the last minute before the length limit stops the
+// recording, and from 30 s before it passes the upload size limit (it
+// then goes to the speech model in pieces); "" for none.
+func limitNote(s session.Snapshot, now time.Time) string {
+	if s.State != session.Recording {
+		return ""
+	}
+	at := s.Elapsed(now)
+	switch {
+	case s.MaxLen > 0 && s.MaxLen-at <= time.Minute:
+		return i18n.T("The length limit stops the recording in %s", clock(max(0, s.MaxLen-at)))
+	case s.UploadLen > 0 && at >= s.UploadLen:
+		return i18n.T("Over the upload size limit: Voxt sends the recording in pieces")
+	case s.UploadLen > 0 && s.UploadLen-at <= 30*time.Second:
+		return i18n.T("Near the upload size limit: Voxt will send the recording in pieces")
+	}
+	return ""
 }
 
 // startingIcon is the feature's icon while the microphone or the speech
@@ -291,19 +343,23 @@ func fadeSpans(text string, off float32, measure func(string) float32) (string, 
 	return string(r[lo:]), from, spans
 }
 
-// liveText is the text the pill shows under it. The preview carries only
-// live ASR partials, not the offline Final nor language-model drafts
-// (FB6). While the language model works, the live text stays as it last
-// was (Rewrite's spoken instruction too): the pill went blank then
-// (#3644); without one, the selection worked on (selected text to
-// translate).
+// liveText is the text the pill shows under it: the live ASR partials
+// while recording and recognising, never a file model's Final nor the
+// language model's drafts (FB6). While the language model works, a
+// stream's words become the recognised text as it was sent to the model
+// (Rewrite's spoken instruction too): the stream's last partial can
+// differ from it. Without live words, the selection (selected text to
+// translate). The pill went blank then (#3644).
 func liveText(s session.Snapshot) string {
 	partial := strings.TrimSpace(s.Partial)
 	switch s.State {
 	case session.Recording, session.Recognizing:
 		return partial
 	case session.Composing, session.Delivering:
-		return cmpOr(partial, strings.TrimSpace(s.Selection))
+		if partial != "" {
+			return cmpOr(strings.TrimSpace(s.Spoken), partial)
+		}
+		return strings.TrimSpace(s.Selection)
 	}
 	return ""
 }

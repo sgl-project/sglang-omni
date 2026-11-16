@@ -249,3 +249,28 @@ func TestSetupMissingItsKey(t *testing.T) {
 		t.Errorf("the card's Complete setup: %+v", a.provDlg.open)
 	}
 }
+
+// TestDialogTestWithoutKey: the bug was a connection test with no API key
+// whose ⓘ (and its access label) said only "llm.no_key provider=…". The
+// ⓘ tells the whole reason in words, and the reason fits the dialog the
+// key is typed in.
+func TestDialogTestWithoutKey(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	click(t, tt, "Anthropic")
+	click(t, tt, "Test connection")
+	const want = "Paste the service's API key above, then test again."
+	if a.provDlg.test.res.Err == nil || !has(tt, want) {
+		t.Fatalf("test %+v, texts %q", a.provDlg.test, tt.Texts())
+	}
+	var info string
+	for _, l := range tt.AccessLabels() {
+		if strings.Contains(l, "llm.no_key") {
+			info = l
+		}
+	}
+	if !strings.HasPrefix(info, want) {
+		t.Errorf("the ⓘ says %q", info)
+	}
+}
