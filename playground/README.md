@@ -105,7 +105,7 @@ microphone and camera chat with MiniCPM-o, including remote access from your bro
 ## Streaming cascade with body motion
 
 `cascade/app.py` serves the cascade page and proxies `/v1/realtime`. A
-Session that publishes `smplx_motion` (MIBURI) or
+Session that publishes `smplx_motion` (StreamTalk, MIBURI) or
 `smplh_flame_motion` (ELLSA 2) is drawn as a stick figure, or on the SMPL-X
 body mesh when the playground is given an SMPL-X model:
 
