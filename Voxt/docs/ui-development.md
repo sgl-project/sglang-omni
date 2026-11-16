@@ -1,8 +1,10 @@
 # Develop meeting views with fixtures
 
-Use this guide to change a meeting view without starting Voxt's helper, loading a model, granting microphone permission, or opening Voxt's data directory. Run every command from `Voxt/`.
+Use this guide to change a meeting view without starting Voxt's helper, loading a model, granting microphone permission, or opening Voxt's data directory.
 
 ## Open the first fixture
+
+Install Go 1.27.1 or a newer Go 1.27 patch release as described in [the development guide](development.md), then run every command from `Voxt/`.
 
 1. Build and start the demo:
 
@@ -10,17 +12,27 @@ Use this guide to change a meeting view without starting Voxt's helper, loading 
    MYGO_LOCALE=en VOXTNEW_DEMO_DIR="$PWD/testdata/meeting" GOFLAGS='-tags=meetingdemo' go tool mygo dev ./demo
    ```
 
-2. Click **Continue** or **Back** to switch fixtures without restarting the window.
+2. Check that the **Voxt UI Demo** window shows `en/detail-answering`. This is the first fixture in sorted order.
+3. Click **Continue** or **Back** to switch fixtures without restarting the window. The selector wraps at either end and resets local widget state.
+4. Click **Close** in a detail fixture. The terminal prints the recorded action without changing the fixture:
 
-The demo reads only `testdata/meeting`. Its MyGo configuration has no helper entitlement, model runtime, or permission declaration. The window has no saved state. Actions print records to stdout and do not change the fixture.
+   ```text
+   meeting demo action: closeMeetingDetail
+   ```
 
-Normal builds do not enable the demo. Setting `VOXTNEW_DEMO_DIR` without `-tags=meetingdemo` returns an error before normal app startup.
+Keep `mygo dev` running while you change view code. It rebuilds and restarts the demo after a successful build. Fixture selection loads JSON once at startup, so restart the demo after regenerating fixture files.
+
+The demo reads only `testdata/meeting`. Its MyGo configuration has no helper entitlement, model runtime, or permission declaration. `MYGO_LOCALE` prevents MyGo from reading or saving a language preference; the demo sets it to the first fixture's locale when you omit it. Actions only print records to stdout.
+
+Normal builds do not enable the demo. Setting `VOXTNEW_DEMO_DIR` without `-tags=meetingdemo` returns an error before normal app startup. No user-facing setting enables demo mode.
 
 To check the demo package without opening a window, run:
 
 ```sh
 GOFLAGS='-tags=meetingdemo' go tool mygo build -skip-dmg ./demo
 ```
+
+To render fixtures without a window, use [the screenshot command](#render-screenshots-and-check-actions). It creates the output directory.
 
 ## Change a view
 
@@ -48,7 +60,9 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to `meeting_actions.go`, implement it on `app`, record it on `meetingDemoHost`, and add a click test to `TestMeetingDemoActionControls`.
 
-## Add a small fixture-backed page
+## Add the next area or a fixture-backed page
+
+Extend the existing fixture window instead of adding another startup path. A new area supplies its view state, actions, scenarios, and views. The integration points below are the only demo changes; `main.go`, `meeting_demo_enabled.go`, `meeting_demo_disabled.go`, and `demo/mygo.json` stay unchanged. Extract shared loading or selection code when the second area needs it, and do not add a UI-version selector.
 
 Use a short kind such as `note` for the new page. Keep the view in a `*_page.go` file with only its view state, actions, and local UI state. Then wire each required path:
 
@@ -68,11 +82,16 @@ Render every fixture in both languages:
 VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -count=1 -run '^TestMeetingDemoScreenshots$' .
 ```
 
+The test writes one PNG per fixture as `<locale>-<scenario>.png` and checks each fixture's expected text and non-empty frame.
+
 Check fixture switching and control-to-action wiring:
 
 ```sh
 go test -count=1 -run '^TestMeetingDemo(ActionControls|SwitchesFixtures)$' .
+go test -tags=meetingdemo -count=1 -run '^TestMeetingDemo' .
 ```
+
+The first command clicks every action-bearing meeting control and the local cancellation controls, then compares the exact recorded calls. It covers menus, confirmation dialogs, playback, and search. The second command also compiles the enabled demo entry point.
 
 These tests use `ui.Tester`. They need no window, helper binary, model, microphone, network, or Voxt data directory. They also run on Linux.
 

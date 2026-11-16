@@ -1,8 +1,10 @@
 # 用 fixture 开发会议视图
 
-这份指南帮助你在不启动 Voxt 辅助进程、不加载模型、不授予麦克风权限、不打开 Voxt 数据目录的情况下修改会议视图。所有命令都在 `Voxt/` 下执行。
+这份指南帮助你在不启动 Voxt 辅助进程、不加载模型、不授予麦克风权限、不打开 Voxt 数据目录的情况下修改会议视图。
 
 ## 打开第一个 fixture
+
+先按[开发指南](development.zh-CN.md)安装 Go 1.27.1 或更新的 Go 1.27 补丁版本，再在 `Voxt/` 下执行所有命令。
 
 1. 构建并启动 demo：
 
@@ -10,17 +12,27 @@
    MYGO_LOCALE=en VOXTNEW_DEMO_DIR="$PWD/testdata/meeting" GOFLAGS='-tags=meetingdemo' go tool mygo dev ./demo
    ```
 
-2. 点 **Continue** 或 **Back**，不用重启窗口就能切换 fixture。
+2. 确认 **Voxt UI Demo** 窗口显示 `en/detail-answering`，这是按名称排序后的第一个 fixture。
+3. 点 **Continue** 或 **Back**，不用重启窗口就能切换 fixture。到首尾后会循环切换，界面本地状态会重置。
+4. 在详情 fixture 里点 **Close**。终端会打印记录，fixture 不会改变：
 
-demo 只读取 `testdata/meeting`。它的 MyGo 配置不声明辅助进程、模型运行时或权限。窗口不保存状态。操作只把 action 记录打印到 stdout，不修改 fixture。
+   ```text
+   meeting demo action: closeMeetingDetail
+   ```
 
-正式构建默认不启用 demo。只设置 `VOXTNEW_DEMO_DIR`、不加 `-tags=meetingdemo` 时，程序会在正常启动之前报错退出。
+修改视图代码时保持 `mygo dev` 运行，构建成功后它会重新构建并启动 demo。fixture 选择只在启动时读取一次 JSON，所以重新生成 fixture 文件后要重启 demo。
+
+demo 只读取 `testdata/meeting`。它的 MyGo 配置不声明辅助进程、模型运行时或权限。`MYGO_LOCALE` 阻止 MyGo 读取或保存语言偏好；没有设置这个变量时，demo 会把它设为第一个 fixture 的语言。操作只把 action 记录打印到 stdout。
+
+正式构建默认不启用 demo。只设置 `VOXTNEW_DEMO_DIR`、不加 `-tags=meetingdemo` 时，程序会在正常启动之前报错退出。用户界面上没有启用 demo 的开关。
 
 要在不打开窗口的情况下检查 demo 构建，执行：
 
 ```sh
 GOFLAGS='-tags=meetingdemo' go tool mygo build -skip-dmg ./demo
 ```
+
+要在不打开窗口的情况下查看 fixture，使用[截图命令](#出截图并检查操作)。测试会创建输出目录。
 
 ## 修改视图
 
@@ -48,7 +60,9 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 视图需要新数据时，由功能侧把数据加入构造器输入和 view state，并增加一个能证明该值来自真实逻辑的场景。新增用户意图时，在 `meeting_actions.go` 中加入 action，在 `app` 上实现，在 `meetingDemoHost` 上记录，并在 `TestMeetingDemoActionControls` 中加入点击测试。
 
-## 新增一个 fixture 驱动的小页面
+## 接入下一个区域或 fixture 驱动的小页面
+
+在现有 fixture 窗口上扩展，不要另加启动路径。新区域提供自己的 view state、actions、场景和视图，只需要改下面列出的接入点；`main.go`、`meeting_demo_enabled.go`、`meeting_demo_disabled.go` 和 `demo/mygo.json` 保持不变。第二个区域需要共享加载或切换代码时再提取，不要增加 UI 版本选择开关。
 
 给新页面选一个简短的 kind，例如 `note`。视图放在 `*_page.go` 中，只接收 view state、actions 和界面本地状态。然后接好以下各处：
 
@@ -68,11 +82,16 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -count=1 -run '^TestMeetingDemoScreenshots$' .
 ```
 
+测试为每个 fixture 写一张 `<locale>-<scenario>.png`，并检查预期文字和非空图像。
+
 检查 fixture 切换和控件到 action 的接线：
 
 ```sh
 go test -count=1 -run '^TestMeetingDemo(ActionControls|SwitchesFixtures)$' .
+go test -tags=meetingdemo -count=1 -run '^TestMeetingDemo' .
 ```
+
+第一条命令点击每个会触发 action 的会议控件和本地取消控件，再比较完整的调用记录，覆盖菜单、确认对话框、播放和搜索。第二条命令还会编译启用 demo 的入口。
 
 这些测试使用 `ui.Tester`，不需要窗口、辅助进程二进制、模型、麦克风、网络或 Voxt 数据目录，也能在 Linux 上运行。
 
