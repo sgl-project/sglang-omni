@@ -92,7 +92,7 @@ func TestCatalog(t *testing.T) {
 			t.Errorf("%s missing", id)
 		}
 	}
-	if m, _ := Lookup(ASRMoss); !m.Default || m.Repo != "OpenMOSS-Team/MOSS-Transcribe-Diarize" || m.Draft != ASRMossDraft {
+	if m, _ := Lookup(ASRMoss); !m.Default || m.Repo != "OpenMOSS-Team/MOSS-Transcribe-Diarize" {
 		t.Errorf("moss: %+v", m)
 	}
 	if _, ok := Lookup("nope"); ok {

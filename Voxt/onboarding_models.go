@@ -35,13 +35,30 @@ func (a *app) obSpeech() string { return models.ASRMoss }
 
 // obPack is the recommended pack: what the guide downloads. The speech
 // model's draft comes with it, so that Faster transcription is on from
-// the start (settings.Models.FasterOn).
-func (a *app) obPack() []string { return []string{a.obSpeech(), models.ASRMossDraft, models.VADSilero} }
+// the start (settings.Models.FasterOn). The catalogue names the draft
+// (Model.Draft): MTD's arrives with #3827; until then the pack is the
+// speech model and the VAD.
+func (a *app) obPack() []string {
+	pack := []string{a.obSpeech()}
+	if d := a.obDraft(); d != "" {
+		pack = append(pack, d)
+	}
+	return append(pack, models.VADSilero)
+}
+
+// obDraft is the pack speech model's catalogue draft, "" when the
+// catalogue names none.
+func (a *app) obDraft() string {
+	m, _ := a.models.Lookup(a.obSpeech())
+	return m.Draft
+}
 
 // obDownload downloads the pack's speech model and its draft.
 func (a *app) obDownload() {
 	a.downloadModel(a.obSpeech())
-	a.downloadModel(models.ASRMossDraft)
+	if d := a.obDraft(); d != "" {
+		a.downloadModel(d)
+	}
 }
 
 // downloadPercent is how much of a download has come, in percent.
@@ -56,9 +73,12 @@ func downloadPercent(st models.Status) int {
 // have to download, for the buttons that start it.
 func (a *app) obDownloadLeft() string {
 	var left int64
-	for _, id := range []string{a.obSpeech(), models.ASRMossDraft} {
+	for _, id := range []string{a.obSpeech(), a.obDraft()} {
+		if id == "" {
+			continue
+		}
 		if st := a.modelStatus[id]; !st.Installed {
-			m, _ := models.Lookup(id)
+			m, _ := a.models.Lookup(id)
 			left += m.Size() - st.Done
 		}
 	}

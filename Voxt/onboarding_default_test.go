@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models/modelstest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -52,10 +54,11 @@ func downloadAsked(t *testing.T, a *app, drain func(), id string) {
 }
 
 // TestGuideDownloadAndContinue: the guide recommends MOSS-Transcribe-Diarize
-// on every Mac, 8 GB ones included, and downloads only it and its draft.
+// on every Mac, 8 GB ones included, and downloads only the pack (it, its
+// catalogue draft and the VAD).
 func TestGuideDownloadAndContinue(t *testing.T) {
-	label := "Download and continue (2.1 GB)"
 	a, tt, asked, drain := guideAt(t)
+	label := "Download and continue (" + a.obDownloadLeft() + ")"
 	if !has(tt, "MOSS-Transcribe-Diarize") || !has(tt, label) || !has(tt, "Skip this step") || hasPrefix(tt, "Chosen for this Mac") {
 		t.Fatalf("%q", tt.Texts())
 	}
@@ -67,7 +70,6 @@ func TestGuideDownloadAndContinue(t *testing.T) {
 		t.Fatalf("step %d", a.ob.step)
 	}
 	downloadAsked(t, a, drain, models.ASRMoss)
-	downloadAsked(t, a, drain, models.ASRMossDraft)
 	for _, id := range []string{models.ASRFast, models.ASRAccurate} {
 		if s := a.models.Status(id); s.Err != nil || s.Downloading {
 			t.Errorf("%s downloaded too: %+v", id, s)
@@ -75,20 +77,88 @@ func TestGuideDownloadAndContinue(t *testing.T) {
 	}
 }
 
-// TestGuideDownloadsTheDraft: with the recommended model on this Mac,
-// the pack's download is its draft alone, so that Faster transcription is
-// on (#4067).
-func TestGuideDownloadsTheDraft(t *testing.T) {
+// obTestDraft is a draft the tests pair with the recommended speech
+// model, standing in for the catalogue's (MTD's arrives with #3827).
+var obTestDraft = models.Model{
+	ID: "test.moss.draft", Name: "MTD test draft", Kind: models.Draft, Runtime: models.Omni, Family: "test",
+	Repo: "mlx-community/test-moss-draft", Revision: "4444444444444444444444444444444444444444",
+	Files: []models.File{
+		{Path: "config.json", Size: 1888, SHA256: strings.Repeat("4", 64)},
+		{Path: "model.safetensors", Size: 262451248, SHA256: strings.Repeat("5", 64), LFS: true},
+	},
+}
+
+// obCatalog is the catalogue with the recommended speech model's draft
+// as draftID ("": none), plus the draft itself when named.
+func obCatalog(draftID string) []models.Model {
+	cat := slices.Clone(models.Catalog())
+	for i := range cat {
+		if cat[i].ID == models.ASRMoss {
+			cat[i].Draft = draftID
+		}
+	}
+	if draftID != "" {
+		cat = append(cat, obTestDraft)
+	}
+	return cat
+}
+
+// obModelsWith reopens a's models over the catalogue cat.
+func obModelsWith(t *testing.T, a *app, cat []models.Model) {
+	t.Helper()
+	opt := a.managerOptions(func() {})
+	opt.Catalog = cat
+	a.models.Close()
+	a.models = models.Open(opt)
+	a.modelStatus = nil
+	a.readModelStatus()
+}
+
+// TestObPackWithoutDraft: with no draft in the catalogue (today, before
+// #3827), the pack is the speech model and the VAD, and the label is the
+// speech model's size alone.
+func TestObPackWithoutDraft(t *testing.T) {
+	a, _ := obTester(t)
+	reopenModels(a)
+	obModelsWith(t, a, obCatalog(""))
+	if got := a.obPack(); !slices.Equal(got, []string{models.ASRMoss, models.VADSilero}) {
+		t.Errorf("pack %v", got)
+	}
+	if got := a.obDownloadLeft(); got != "1.8 GB" {
+		t.Errorf("left %q, want the speech model's size", got)
+	}
+}
+
+// TestObPackWithDraft: with a draft in the catalogue (as #3827 adds
+// MTD's), the pack includes it and the label counts it; with the speech
+// model on this Mac the download is the draft alone, so that Faster
+// transcription is on (#4067, Models.FasterOn's default).
+func TestObPackWithDraft(t *testing.T) {
 	countingHub(t)
 	a, _ := obTester(t)
 	drain := queuePosts(a)
 	reopenModels(a)
-	seedModels(t, a, models.ASRMoss, models.VADSilero)
+	obModelsWith(t, a, obCatalog(obTestDraft.ID))
+	if got := a.obPack(); !slices.Equal(got, []string{models.ASRMoss, obTestDraft.ID, models.VADSilero}) {
+		t.Fatalf("pack %v", got)
+	}
+	if got := a.obDownloadLeft(); got != "2.1 GB" {
+		t.Errorf("left %q, want the speech model and the draft", got)
+	}
+	if err := modelstest.Seed(a.models.Hub(), models.ASRMoss, models.VADSilero); err != nil {
+		t.Fatal(err)
+	}
+	a.models.Refresh()
+	a.modelStatus = nil
+	a.readModelStatus()
 	if got := a.obDownloadLeft(); got != "262.5 MB" {
 		t.Errorf("left %q, want the draft's size", got)
 	}
 	a.obDownload()
-	downloadAsked(t, a, drain, models.ASRMossDraft)
+	downloadAsked(t, a, drain, obTestDraft.ID)
+	if !a.settings.Get().Models.FasterOn(models.ASRMoss, true) {
+		t.Error("Faster transcription off with the draft installed and never switched")
+	}
 }
 
 // findPrefix is the text on screen that starts with s.
@@ -180,11 +250,11 @@ func TestGuideOnlyVADOnThisMac(t *testing.T) {
 	a.models.Refresh()
 	a.navigate("/history") // not Home, which offers the download too
 	a.obGo(obModels)
-	if !has(tt, "Use them") || !has(tt, "Download (2.1 GB)") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
+	if !has(tt, "Use them") || !has(tt, "Download ("+a.obDownloadLeft()+")") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
 		t.Fatalf("reuse card: %q", tt.Texts())
 	}
 	click(t, tt, "Use them")
-	if !has(tt, "Download and continue (2.1 GB)") || hasPrefix(tt, "Download (") {
+	if !has(tt, "Download and continue ("+a.obDownloadLeft()+")") || hasPrefix(tt, "Download (") {
 		t.Fatalf("after Use them: %q", tt.Texts())
 	}
 }
