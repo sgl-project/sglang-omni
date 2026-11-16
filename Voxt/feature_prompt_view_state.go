@@ -66,7 +66,7 @@ func buildFeaturePromptViewState(translator *i18n.Translator, input featurePromp
 	case hotkey.Translate:
 		state.Card.Show = input.Settings.Features.Translate.ShowCard
 		state.Cleanup = input.Settings.Features.Translate.Cleanup
-		target := featureTranslateTargetSelect(translator, input.Settings, local)
+		target := featureTranslateTargetSelect(translator, input.Settings)
 		state.Target = &target
 		own := promptOf(input.Settings, feature)
 		state.TargetWarning = own != "" && !strings.Contains(own, targetVar)
@@ -80,7 +80,7 @@ func buildFeaturePromptViewState(translator *i18n.Translator, input featurePromp
 	return state
 }
 
-func featureTranslateTargetSelect(translator *i18n.Translator, settingsValue settings.Settings, local *featureUI) featureSelectViewState {
+func featureTranslateTargetSelect(translator *i18n.Translator, settingsValue settings.Settings) featureSelectViewState {
 	automatic := translator.T("Automatic (now: %s)", compose.LanguageName(session.TranslateTarget(settings.Settings{General: settingsValue.General}, translator.Locale(), ""), translator.Locale()))
 	state := featureSelectViewState{Value: automatic}
 	state.Options = append(state.Options, featureOptionViewState{Label: automatic})
@@ -92,9 +92,6 @@ func featureTranslateTargetSelect(translator *i18n.Translator, settingsValue set
 	} else if target := settingsValue.Features.Translate.Target; target != "" {
 		state.Value = compose.LanguageName(target, translator.Locale())
 		state.Options = append(state.Options, featureOptionViewState{Label: state.Value, Value: target})
-	}
-	if local != nil {
-		state.Value = selectValue(local.lang, state)
 	}
 	return state
 }

@@ -1,0 +1,343 @@
+{
+  "name": "feature-translate-target-warning",
+  "kind": "feature",
+  "feature": {
+    "feature": "translate",
+    "prefix": "tl",
+    "title": "Translate",
+    "caption": "Translates the selected text in place, or what you say when nothing is selected.",
+    "refresh_recording": false,
+    "shortcuts": {
+      "prefix": "tl",
+      "hotkeys_installed": true,
+      "helper_records_keys": false,
+      "empty_text": "",
+      "rewrite_hint": false,
+      "rows": [
+        {
+          "keys": "RightOption+Shift",
+          "value": "Right ⌥ ⇧",
+          "options": [
+            {
+              "label": "Right ⌥",
+              "value": "RightOption",
+              "custom": false
+            },
+            {
+              "label": "Right ⌥ ⇧",
+              "value": "RightOption+Shift",
+              "custom": false
+            },
+            {
+              "label": "⌃ Right ⌥",
+              "value": "Control+RightOption",
+              "custom": false
+            },
+            {
+              "label": "Right ⌘",
+              "value": "RightCommand",
+              "custom": false
+            },
+            {
+              "label": "Right ⇧",
+              "value": "RightShift",
+              "custom": false
+            },
+            {
+              "label": "fn",
+              "value": "Fn",
+              "custom": false
+            },
+            {
+              "label": "fn ⇧",
+              "value": "Fn+Shift",
+              "custom": false
+            },
+            {
+              "label": "fn ⌃",
+              "value": "Fn+Control",
+              "custom": false
+            },
+            {
+              "label": "⌥Space",
+              "value": "Option+Space",
+              "custom": false
+            },
+            {
+              "label": "⌃⌥Space",
+              "value": "Control+Option+Space",
+              "custom": false
+            },
+            {
+              "label": "Custom…",
+              "value": "",
+              "custom": true
+            }
+          ],
+          "custom": {
+            "input_text": "",
+            "keys_text": "",
+            "canonical": "",
+            "parsed": false,
+            "error_text": "Type the keys, as in Control+Option+Space."
+          },
+          "needs_accessibility": true,
+          "problems": null,
+          "problem_codes": null,
+          "used_by": null
+        }
+      ]
+    },
+    "models": {
+      "prefix": "tl",
+      "before": null,
+      "after": null,
+      "asr_label": "Speech model for Translate",
+      "llm_label": "Language model for Translate",
+      "asr": {
+        "value": "Automatic (now: Fixture speech model)",
+        "options": [
+          {
+            "label": "Automatic (now: Fixture speech model)",
+            "value": "",
+            "custom": false
+          },
+          {
+            "label": "Fixture speech model",
+            "value": "fixture-speech",
+            "custom": false
+          }
+        ],
+        "disabled": false
+      },
+      "llm": {
+        "value": "Automatic (now: Fixture language model)",
+        "options": [
+          {
+            "label": "Automatic (now: Fixture language model)",
+            "value": "",
+            "custom": false
+          },
+          {
+            "label": "Fixture language model",
+            "value": "fixture-language",
+            "custom": false
+          }
+        ],
+        "disabled": false
+      },
+      "fallback": {
+        "value": "None",
+        "options": [
+          {
+            "label": "None",
+            "value": "",
+            "custom": false
+          },
+          {
+            "label": "Fixture language model",
+            "value": "fixture-language",
+            "custom": false
+          }
+        ],
+        "disabled": true
+      },
+      "cleanup": {
+        "enhance": true,
+        "cleanup": true,
+        "structure": false
+      }
+    },
+    "prompt": {
+      "target": {
+        "value": "Automatic (now: Simplified Chinese)",
+        "options": [
+          {
+            "label": "Automatic (now: Simplified Chinese)",
+            "value": "",
+            "custom": false
+          },
+          {
+            "label": "English",
+            "value": "en",
+            "custom": false
+          },
+          {
+            "label": "Simplified Chinese",
+            "value": "zh-Hans",
+            "custom": false
+          },
+          {
+            "label": "Traditional Chinese",
+            "value": "zh-Hant",
+            "custom": false
+          },
+          {
+            "label": "Japanese",
+            "value": "ja",
+            "custom": false
+          },
+          {
+            "label": "Korean",
+            "value": "ko",
+            "custom": false
+          },
+          {
+            "label": "Spanish",
+            "value": "es",
+            "custom": false
+          },
+          {
+            "label": "French",
+            "value": "fr",
+            "custom": false
+          },
+          {
+            "label": "German",
+            "value": "de",
+            "custom": false
+          },
+          {
+            "label": "Italian",
+            "value": "it",
+            "custom": false
+          },
+          {
+            "label": "Portuguese",
+            "value": "pt",
+            "custom": false
+          },
+          {
+            "label": "Russian",
+            "value": "ru",
+            "custom": false
+          },
+          {
+            "label": "Dutch",
+            "value": "nl",
+            "custom": false
+          },
+          {
+            "label": "Turkish",
+            "value": "tr",
+            "custom": false
+          },
+          {
+            "label": "Polish",
+            "value": "pl",
+            "custom": false
+          },
+          {
+            "label": "Ukrainian",
+            "value": "uk",
+            "custom": false
+          },
+          {
+            "label": "Arabic",
+            "value": "ar",
+            "custom": false
+          },
+          {
+            "label": "Hebrew",
+            "value": "he",
+            "custom": false
+          },
+          {
+            "label": "Hindi",
+            "value": "hi",
+            "custom": false
+          },
+          {
+            "label": "Thai",
+            "value": "th",
+            "custom": false
+          },
+          {
+            "label": "Vietnamese",
+            "value": "vi",
+            "custom": false
+          },
+          {
+            "label": "Indonesian",
+            "value": "id",
+            "custom": false
+          },
+          {
+            "label": "Malay",
+            "value": "ms",
+            "custom": false
+          }
+        ],
+        "disabled": false
+      },
+      "target_warning": true,
+      "cleanup": true,
+      "card": {
+        "show": false,
+        "size": 0
+      },
+      "rules": {
+        "settings_open": false,
+        "prompt": "Translate Chinese into English.",
+        "summary": "31 characters",
+        "reset_disabled": false,
+        "matches": null,
+        "variables": [
+          {
+            "name": "USER_MAIN_LANGUAGE",
+            "token": "{{USER_MAIN_LANGUAGE}}",
+            "text": "Your main language, from General settings. Every feature. Now: English"
+          },
+          {
+            "name": "USER_OTHER_LANGUAGES",
+            "token": "{{USER_OTHER_LANGUAGES}}",
+            "text": "Your other languages, from General settings. Every feature. Now: (none)"
+          },
+          {
+            "name": "TARGET_LANGUAGE",
+            "token": "{{TARGET_LANGUAGE}}",
+            "text": "The Target language menu on the Translate page. Translate only. Now: Simplified Chinese"
+          },
+          {
+            "name": "APP_NAME",
+            "token": "{{APP_NAME}}",
+            "text": "The app in front, when an App enhancement group matches it. The features that group applies to. Now: (none)"
+          }
+        ],
+        "enhance_off": false,
+        "preview_error": "",
+        "preview_messages": [
+          {
+            "role": "system",
+            "content": "Translate Chinese into English."
+          },
+          {
+            "role": "user",
+            "content": "\u003cinput\u003e\nUm, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? I need it before five, I really, I really need it before five.\n\u003c/input\u003e"
+          },
+          {
+            "role": "assistant",
+            "content": "你能在 5 点前把周报发给 Anna 吗？我 5 点前真的要用。"
+          },
+          {
+            "role": "user",
+            "content": "\u003cinput\u003e\num so the meeting moves to Thursday at three, no, at four\n\u003c/input\u003e"
+          }
+        ]
+      }
+    },
+    "try": {
+      "prefix": "tl",
+      "feature": "translate",
+      "state": "",
+      "problem_code": "",
+      "mode": "idle",
+      "intro": "Press Right ⌥ ⇧ or Start, then say a sentence or two. The translation shows here and is not typed anywhere.",
+      "start_label": "Start",
+      "busy": false,
+      "busy_text": "",
+      "working_text": "",
+      "draft": ""
+    }
+  }
+}

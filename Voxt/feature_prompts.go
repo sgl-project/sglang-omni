@@ -14,6 +14,7 @@ const promptMinLines = 4
 func translateSettings(c *ui.Context, state *featurePromptViewState, actions featureActions, local *featureUI) {
 	sectionTitle(c, i18n.T("Translation"))
 	caption(c, i18n.T("How Translate works: speech recognition writes what you said in your own language, then the language model translates it into the target language with the prompt in Your rules. A prompt of your own replaces the built-in one and gets the target language only where it says {{TARGET_LANGUAGE}}. Selected text already in the target language goes into your main language instead."))
+	local.lang = state.Target.Value
 	featureModelSelectRow(c, "tl-target", i18n.T("Target language"), i18n.T("Target language for Translate"), &local.lang, state.Target, actions.selectFeatureTarget)
 	if state.TargetWarning {
 		notice(c, "tl-no-target", noticeWarn, i18n.T("Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing."), "", func() {
