@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -243,10 +242,17 @@ func TestSessionReturnFinishes(t *testing.T) {
 			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
 			a := newSessionApp(t, ev, set, keys)
 			a.pump("the recording", func() bool { return a.sess.State == session.Recording })
-			if !slices.ContainsFunc(a.hotkeyPlan().Configure(true).Bindings, func(b proto.HotkeyBinding) bool { return b.ID == "finish" }) {
+			if !strings.Contains(a.hotkeysSent, "ID:finish") {
 				t.Fatal("Return is not bound while Transcribe records")
 			}
 			a.hotkeyFired(proto.HotkeyEventParams{Binding: "finish", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
+			a.pump("the recognition", func() bool { return a.sess.State != session.Recording })
+			if a.sess.State != session.Recognizing {
+				t.Fatalf("state after stop: %s, want recognizing", a.sess.State)
+			}
+			if strings.Contains(a.hotkeysSent, "ID:finish") {
+				t.Fatalf("helper still swallows Return while recognizing: %s", a.hotkeysSent)
+			}
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
 			if a.sess.State != session.Done || a.sess.Result != "Finished sentence." || !a.sess.Inserted {
 				t.Fatalf("end %+v", a.sess)
@@ -254,8 +260,8 @@ func TestSessionReturnFinishes(t *testing.T) {
 			if p := a.pasted(); len(p) != 1 || p[0].Text != "Finished sentence." || len(p[0].Press) != 0 {
 				t.Errorf("pasted %+v", p)
 			}
-			if slices.ContainsFunc(a.hotkeyPlan().Configure(false).Bindings, func(b proto.HotkeyBinding) bool { return b.ID == "finish" }) {
-				t.Error("Return is still bound after the session")
+			if strings.Contains(a.hotkeysSent, "ID:finish") {
+				t.Errorf("Return is still bound after the session: %s", a.hotkeysSent)
 			}
 		})
 	}
