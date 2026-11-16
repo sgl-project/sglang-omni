@@ -127,7 +127,8 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 		default:
 			caption(c, i18n.T("Press a shortcut anywhere, speak, and the text is typed where your cursor is."))
 		}
-		a.featureShortcuts(c, feature)
+		shortcuts := a.featureShortcutsModel(feature)
+		featureShortcuts(c, feature, &shortcuts, a, a.fui(feature))
 		featureModels(c, feature, &models, a, a.fui(feature))
 	}
 	right := func() {

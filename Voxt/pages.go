@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -118,6 +119,11 @@ func (a *app) page(c *ui.Context, p navPage) {
 	emptyState(c, p.icon, pageTitle(p.path), "", nil)
 }
 
+func (a *app) featureShortcuts(c *ui.Context, feature string) {
+	state := a.featureShortcutsModel(feature)
+	featureShortcuts(c, feature, &state, a, a.fui(feature))
+}
+
 func (a *app) featureTry(c *ui.Context, feature string) {
 	local := a.fui(feature)
 	sectionTitle(c, i18n.T("Try it"))
@@ -131,6 +137,39 @@ func (a *app) featureTry(c *ui.Context, feature string) {
 func (a *app) tryCard(c *ui.Context, options tryOpts) {
 	state, actions := a.tryCardState(options)
 	tryCard(c, &state, actions)
+}
+
+func (a *app) recordFeatureKeys(row *keyRow, event ui.InputEvent, save func(string)) {
+	keys, ok := pressedKeys(event)
+	row.unknown = !ok
+	if ok {
+		row.text, row.edited = keys, false
+		save(keys)
+	}
+}
+
+func (a *app) customKeys(c *ui.Context, row *keyRow, label string, save func(string)) {
+	t := c.Theme()
+	input := ui.TextInput(c.Key("custom"), &row.text).Placeholder("Control+Option+Space").Label(label).Font("monospace").MaxWidth(px(t, 360))
+	if input.Changed() {
+		row.edited = true
+	}
+	chord, err := hotkey.Parse(row.text)
+	if row.edited && err == nil && (input.Submitted() || !input.Focused()) {
+		row.edited = false
+		row.text = chord.String()
+		save(row.text)
+	}
+	switch {
+	case err != nil:
+		warnLine(c, uitext.ParseErrorText(err))
+	case row.edited:
+		caption(c, i18n.T("Press Return to use %s.", uitext.HotkeyText(row.text)))
+		return
+	default:
+		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
+	}
+	caption(c, i18n.T("Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."))
 }
 
 func (a *app) notFoundPage(c *ui.Context, path string) {

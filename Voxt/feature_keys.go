@@ -1,465 +1,308 @@
 package main
 
-// A feature page's Shortcuts section (feature_page.go): its rows of
-// shortcuts with their triggers, choosing or typing a chord, and Transcribe's
-// paste-the-last-result and cancel-transcription rows. Keys another ActNow
-// app uses too say so under the row, as they are chosen or typed; saving
-// stays allowed.
-
 import (
 	"fmt"
 	"slices"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// keyRow is a shortcut's controls.
+// keyRow is a shortcut's widget-local editing state.
 type keyRow struct {
-	sel          string // the select's label
-	custom       bool   // "Custom…" chosen: the keys are pressed (key_recorder.go)
-	typing       bool   // … or typed, when asked
-	text         string // the pressed or typed keys
-	trig         int    // 0 tap, 1 double tap, 2 long press
-	edited       bool   // the typed keys are not saved yet
-	unknown      bool   // the last key pressed has no name in the grammar
-	recFocused   bool   // the record box had focus last frame
-	recordDenied bool   // helper returned permission_denied for hotkey.record
+	sel          string
+	custom       bool
+	typing       bool
+	text         string
+	trig         int
+	edited       bool
+	unknown      bool
+	recFocused   bool
+	recordDenied bool
 }
 
-// keyPresets are the shortcuts the selects offer, in the grammar of
-// internal/hotkey: the defaults first (the ActNow family's, right
-// Option), then fn's (Auralink's defaults, for those without it). No
-// more than ten: a longer list scrolls in the popup, and Custom… (where
-// mouse buttons are typed: Mouse4) goes out of sight. Right Control is
-// left out: Mac laptops' keyboards have none.
-var keyPresets = []string{
-	"RightOption", "RightOption+Shift", "Control+RightOption",
-	"RightCommand", "RightShift",
-	"Fn", "Fn+Shift", "Fn+Control",
-	"Option+Space", "Control+Option+Space",
-}
-
-// triggers are the settings' triggers in the segmented control's order.
-var triggers = []string{settings.TriggerTap, settings.TriggerDouble, settings.TriggerLong}
-
-func triggerIndex(t string) int {
-	if i := slices.Index(triggers, t); i >= 0 {
-		return i
-	}
-	return 0
-}
-
-// ---- Shortcuts ----
-
-// featureSync sets a feature's shortcut controls from the settings when
-// they changed elsewhere (or the language did: the labels are
-// translated).
-func (a *app) featureSync(feature string) {
-	u := a.fui(feature)
-	seen := a.featureKeysKey(feature)
-	if seen == u.seen {
-		return
-	}
-	u.seen = seen
-	hs := hotkey.HotkeysOf(a.prefs.Features, feature)
-	u.rows = make([]keyRow, len(hs))
-	for i, h := range hs {
-		u.rows[i] = keyRow{sel: chordLabel(h.Keys), text: h.Keys, trig: triggerIndex(h.Trigger)}
-	}
-	pl := a.prefs.Features.PasteLast.Keys
-	u.paste = keyRow{sel: chordLabel(pl), text: pl}
-	if pl == "" {
-		u.paste.sel = i18n.T("Off")
-	}
-	ck := a.prefs.Features.Cancel.Keys
-	u.cancel = keyRow{sel: chordLabel(ck), text: ck}
-	if ck == "" {
-		u.cancel.sel = i18n.T("Off")
-	}
-}
-
-func (a *app) featureKeysKey(feature string) string {
-	f := a.prefs.Features
-	return fmt.Sprint(hotkey.HotkeysOf(f, feature), f.PasteLast, f.Cancel, i18n.Locale())
-}
-
-// chordLabel is the select's label of keys: the preset they are, or their
-// own glyphs.
-func chordLabel(keys string) string {
-	if p := presetOf(keys); p != "" {
-		return uitext.HotkeyText(p)
-	}
-	return uitext.HotkeyText(keys)
-}
-
-// presetOf is the preset keys are, "" for none.
-func presetOf(keys string) string {
-	c, err := hotkey.Parse(keys)
-	if err != nil {
-		return ""
-	}
-	for _, p := range keyPresets {
-		if pc, _ := hotkey.Parse(p); pc.Equal(c) {
-			return p
-		}
-	}
-	return ""
-}
-
-// keyOptions are a select's options for a binding whose keys are cur:
-// the row's own presets (first), the presets, cur when it is none of
-// them, then "Custom…" (and "Off" first with off). byLabel maps each
-// label to its keys.
-func keyOptions(cur string, off bool, first ...string) (opts []string, byLabel map[string]string) {
-	byLabel = map[string]string{}
-	if off {
-		opts = append(opts, i18n.T("Off"))
-		byLabel[i18n.T("Off")] = ""
-	}
-	for _, p := range slices.Concat(first, keyPresets) {
-		l := uitext.HotkeyText(p)
-		opts = append(opts, l)
-		byLabel[l] = p
-	}
-	if cur != "" && presetOf(cur) == "" {
-		l := uitext.HotkeyText(cur)
-		if _, dup := byLabel[l]; !dup {
-			opts = append(opts, l)
-			byLabel[l] = cur
-		}
-	}
-	opts = append(opts, i18n.T("Custom…"))
-	return opts, byLabel
-}
-
-// setHotkeys changes a feature's shortcuts with fn, on the settings' own
-// copy.
-func (a *app) setHotkeys(feature string, resync bool, fn func(hs []settings.Hotkey) []settings.Hotkey) {
-	a.updateSettings(func(s *settings.Settings) {
-		hs := &s.Features.Transcribe.Hotkeys
-		switch feature {
-		case hotkey.Translate:
-			hs = &s.Features.Translate.Hotkeys
-		case hotkey.Rewrite:
-			hs = &s.Features.Rewrite.Hotkeys
-		}
-		*hs = fn(slices.Clone(*hs))
-	})
-	u := a.fui(feature)
-	if resync {
-		u.seen = ""
-	} else {
-		u.seen = a.featureKeysKey(feature) // the controls already show it
-	}
-}
-
-// newHotkey is the shortcut "Add a shortcut" adds: the first preset no
-// feature uses.
-func newHotkey(f settings.Features) settings.Hotkey {
-	for _, p := range keyPresets {
-		pc, _ := hotkey.Parse(p)
-		used := false
-		for _, feat := range append(slices.Clone(hotkey.Features), hotkey.PasteLast, hotkey.Note) {
-			for _, h := range hotkey.HotkeysOf(f, feat) {
-				if hc, err := hotkey.Parse(h.Keys); err == nil && hc.Overlaps(pc) {
-					used = true
-				}
-			}
-		}
-		if !used {
-			return settings.Hotkey{Keys: p, Trigger: settings.TriggerTap}
-		}
-	}
-	return settings.Hotkey{Keys: keyPresets[0], Trigger: settings.TriggerDouble}
-}
-
-func (a *app) featureShortcuts(c *ui.Context, feature string) {
+func featureShortcuts(c *ui.Context, feature string, state *featureShortcutsViewState, actions featureActions, local *featureUI) {
 	t := c.Theme()
-	p := uitext.FeaturePrefix(feature)
-	u := a.fui(feature)
-	a.featureSync(feature)
-	if sectionTitleAdd(c, p+"-key-add", i18n.T("Shortcuts"), "", i18n.T("Add a shortcut")) {
-		h := newHotkey(a.prefs.Features)
-		a.setHotkeys(feature, true, func(hs []settings.Hotkey) []settings.Hotkey { return append(hs, h) })
+	prefix := state.Prefix
+	if sectionTitleAdd(c, prefix+"-key-add", i18n.T("Shortcuts"), "", i18n.T("Add a shortcut")) {
+		actions.addFeatureShortcut(feature)
 	}
-	if !a.hotkeys.Installed {
-		notice(c, p+"-no-tap", noticeWarn,
+	if !state.HotkeysInstalled {
+		notice(c, prefix+"-no-tap", noticeWarn,
 			i18n.T("Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."),
 			"", func() {
-				if ui.Button(c.Key(p+"-open-perms"), i18n.T("Open Permissions")).Clicked() {
-					a.navigate("/settings/permissions")
+				if ui.Button(c.Key(prefix+"-open-perms"), i18n.T("Open Permissions")).Clicked() {
+					actions.openFeaturePermissions()
 				}
 			}, nil)
 	}
-	problems := uitext.HotkeyProblems(a.prefs.Features, feature)
-	card(c.Key(p + "-keys")).Gap(px(t, sp2)).Children(func() {
-		hs := hotkey.HotkeysOf(a.prefs.Features, feature)
-		if len(hs) == 0 {
-			if feature == hotkey.Transcribe {
-				caption(c, i18n.T("No shortcut yet. Start from the menu bar, or add one."))
-			} else {
-				caption(c, i18n.T("No shortcut yet. Add one to use this feature."))
-			}
+	card(c.Key(prefix + "-keys")).Gap(px(t, sp2)).Children(func() {
+		if state.EmptyText != "" {
+			caption(c, state.EmptyText)
 		}
-		for i := range hs {
-			if i >= len(u.rows) {
+		for index := range state.Rows {
+			if index >= len(local.rows) {
 				break
 			}
-			if i > 0 {
+			if index > 0 {
 				ui.Box(c).Height(1).Background(tok(t).Line).Shrink(0)
 			}
-			a.keyRowView(c, feature, i, hs[i], problems[i])
+			featureKeyRowView(c, state.Prefix, feature, index, &state.Rows[index], state.HotkeysInstalled, state.HelperRecordsKeys, actions, &local.rows[index])
 		}
 	})
-	switch feature {
-	case hotkey.Transcribe:
-		a.trPasteRow(c)
-		a.trCancelRow(c)
-		trEndWordRow(c, a.featureEndWordModel(), a, &a.fui(hotkey.Transcribe).endWord) // feature_endword.go
-	case hotkey.Rewrite:
+	if state.Paste != nil {
+		featurePasteCancelRow(c, "tr-paste", i18n.T("Paste the last result"), "", i18n.T("Keys to paste the last result"), i18n.T("Custom keys to paste the last result"), state.Paste,
+			state.HelperRecordsKeys, actions, &local.paste, actions.chooseFeaturePasteLast, actions.saveFeaturePasteLast)
+	}
+	if state.Cancel != nil {
+		featurePasteCancelRow(c, "tr-cancel", i18n.T("Cancel recording"), i18n.T("The recording stays in History, so you can retry."), i18n.T("Keys to cancel recording"), i18n.T("Custom keys to cancel recording"), state.Cancel,
+			state.HelperRecordsKeys, actions, &local.cancel, actions.chooseFeatureCancelKeys, actions.saveFeatureCancelKeys)
+	}
+	trEndWordRow(c, state.EndWord, actions, &local.endWord)
+	if state.RewriteHint {
 		caption(c, i18n.T("With an answer in the card, the shortcut asks a follow-up and adds the text you select first."))
 	}
 }
 
-// keyRowView is the i-th shortcut: its keys, its trigger, a mark when it
-// needs Accessibility, Remove; the typed keys when custom; its problems.
-func (a *app) keyRowView(c *ui.Context, feature string, i int, h settings.Hotkey, problems []string) {
+func featureKeyRowView(c *ui.Context, prefix, feature string, index int, state *featureKeyRowViewState, hotkeysInstalled, helperRecords bool, actions featureActions, local *keyRow) {
 	t := c.Theme()
-	k := tok(t)
-	r := &a.fui(feature).rows[i]
-	n := i + 1
-	ui.Column(c.Key(fmt.Sprintf("%s-key-%d", uitext.FeaturePrefix(feature), i))).Gap(px(t, 6)).Children(func() {
+	colors := tok(t)
+	number := index + 1
+	ui.Column(c.Key(fmt.Sprintf("%s-key-%d", prefix, index))).Gap(px(t, 6)).Children(func() {
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Wrap().Gap(px(t, sp2)).AlignItems(ui.Center).Grow(1).MinWidth(0).Children(func() {
-				opts, byLabel := keyOptions(h.Keys, false)
-				if !slices.Contains(opts, r.sel) {
-					r.sel = chordLabel(h.Keys)
+				options := featureOptionLabels(state.Options)
+				if !slices.Contains(options, local.sel) {
+					local.sel = state.Value
 				}
-				if r.custom {
-					r.sel = i18n.T("Custom…")
+				if local.custom {
+					local.sel = i18n.T("Custom…")
 				}
-				sel := ui.Select(c.Key("sel"), &r.sel, opts).Label(i18n.T("Keys of shortcut %d", n)).Width(px(t, 180)).Shrink(1).MinWidth(px(t, 120))
-				if sel.Changed() {
-					a.chooseKeys(feature, i, r, byLabel)
+				selectControl := ui.Select(c.Key("sel"), &local.sel, options).Label(i18n.T("Keys of shortcut %d", number)).Width(px(t, 180)).Shrink(1).MinWidth(px(t, 120))
+				if selectControl.Changed() {
+					for _, option := range state.Options {
+						if option.Label != local.sel {
+							continue
+						}
+						if option.Custom {
+							local.custom, local.text = true, state.Keys
+							return
+						}
+						actions.chooseFeatureShortcut(feature, index, option.Value)
+						return
+					}
 				}
 				tips := []string{
 					i18n.T("Press to start, press again to stop."),
 					i18n.T("Press twice quickly to start; once more to stop."),
 					i18n.T("Record while you hold the keys; release to stop."),
 				}
-				seg := segmentedSome(c.Key("trig"), &r.trig, []string{i18n.T("Tap"), i18n.T("Double tap"), i18n.T("Long press")}, nil, tips).
-					Label(i18n.T("Trigger of shortcut %d", n))
-				if seg.Changed() {
-					trig := triggers[r.trig]
-					a.setHotkeys(feature, false, func(hs []settings.Hotkey) []settings.Hotkey {
-						if i < len(hs) {
-							hs[i].Trigger = trig
-						}
-						return hs
-					})
+				segment := segmentedSome(c.Key("trig"), &local.trig, []string{i18n.T("Tap"), i18n.T("Double tap"), i18n.T("Long press")}, nil, tips).
+					Label(i18n.T("Trigger of shortcut %d", number))
+				if segment.Changed() {
+					actions.setFeatureShortcutTrigger(feature, index, local.trig)
 				}
 			})
-			if hotkey.NeedsTap(h) {
-				col := k.Text3
-				if !a.hotkeys.Installed {
-					col = k.Warning
+			if state.NeedsAccessibility {
+				color := colors.Text3
+				if !hotkeysInstalled {
+					color = colors.Warning
 				}
-				iconMark(c, icons.Accessibility, col, i18n.T("Works only with Accessibility access."))
+				iconMark(c, icons.Accessibility, color, i18n.T("Works only with Accessibility access."))
 			}
-			if iconButton(c.Key("remove"), icons.TrashBinMinimalistic, i18n.T("Remove shortcut %d", n)).Clicked() {
-				a.setHotkeys(feature, true, func(hs []settings.Hotkey) []settings.Hotkey {
-					if i < len(hs) {
-						hs = slices.Delete(hs, i, i+1)
-					}
-					return hs
-				})
+			if iconButton(c.Key("remove"), icons.TrashBinMinimalistic, i18n.T("Remove shortcut %d", number)).Clicked() {
+				actions.removeFeatureShortcut(feature, index)
 			}
 		})
-		if r.custom {
-			a.keysField(c, r, i18n.T("Custom keys of shortcut %d", n), func(keys string) {
-				a.setHotkeys(feature, false, func(hs []settings.Hotkey) []settings.Hotkey {
-					if i < len(hs) {
-						hs[i].Keys = keys
-					}
-					return hs
-				})
+		if local.custom {
+			featureKeysField(c, local, i18n.T("Custom keys of shortcut %d", number), &state.Custom, helperRecords, actions, func(keys string) {
+				actions.saveFeatureShortcutKeys(feature, index, keys)
 			})
 		}
-		problemLines(c, problems)
-		a.usedByView(c, recordedKeys(*r, h.Keys)) // settings_shortcuts_family.go: another app's keys
+		problemLines(c, state.Problems)
+		problemLines(c, state.UsedBy)
 	})
 }
 
-// recordedKeys are the keys a shortcut's controls show: the typed ones
-// while they parse, else saved.
-func recordedKeys(r keyRow, saved string) string {
-	if r.custom && r.edited {
-		if ch, err := hotkey.Parse(r.text); err == nil {
-			return ch.String()
-		}
-	}
-	return saved
-}
-
-// chooseKeys applies a choice of a feature's i-th shortcut select.
-func (a *app) chooseKeys(feature string, i int, r *keyRow, byLabel map[string]string) {
-	if r.sel == i18n.T("Custom…") {
-		r.custom = true
-		if hs := hotkey.HotkeysOf(a.prefs.Features, feature); i < len(hs) {
-			r.text = hs[i].Keys
-		}
-		return
-	}
-	keys, ok := byLabel[r.sel]
-	if !ok {
-		return
-	}
-	r.custom, r.text = false, keys
-	a.setHotkeys(feature, false, func(hs []settings.Hotkey) []settings.Hotkey {
-		if i < len(hs) {
-			hs[i].Keys = keys
-		}
-		return hs
-	})
-}
-
-// customKeys is the field for typed keys: they are saved (in canonical
-// spelling) on Return or when the field loses the focus, if they parse;
-// until then it says why not. Not on every key: on the way to
-// "Control+Option+K" the field says "Control", a shortcut of its own.
-func (a *app) customKeys(c *ui.Context, r *keyRow, label string, save func(keys string)) {
+func featurePasteCancelRow(c *ui.Context, key, title, help, label, customLabel string, state *featureKeyRowViewState, helperRecords bool, actions featureActions, local *keyRow, choose, save func(string)) {
 	t := c.Theme()
-	in := ui.TextInput(c.Key("custom"), &r.text).Placeholder("Control+Option+Space").Label(label).Font("monospace").MaxWidth(px(t, 360))
-	if in.Changed() {
-		r.edited = true
+	ui.Column(c.Key(key)).Gap(px(t, 6)).Children(func() {
+		settingRow(c, key+"-row", title, help, func() {
+			options := featureOptionLabels(state.Options)
+			if !slices.Contains(options, local.sel) {
+				local.sel = state.Value
+			}
+			if local.custom {
+				local.sel = i18n.T("Custom…")
+			}
+			if ui.Select(c.Key(key+"-sel"), &local.sel, options).Label(label).Width(px(t, 180)).Changed() {
+				for _, option := range state.Options {
+					if option.Label != local.sel {
+						continue
+					}
+					if option.Custom {
+						local.custom, local.text = true, state.Keys
+						return
+					}
+					choose(option.Value)
+					return
+				}
+			}
+		})
+		if local.custom {
+			featureKeysField(c, local, customLabel, &state.Custom, helperRecords, actions, save)
+		}
+		problemLines(c, state.Problems)
+		problemLines(c, state.UsedBy)
+	})
+}
+
+func featureOptionLabels(options []featureOptionViewState) []string {
+	labels := make([]string, len(options))
+	for index, option := range options {
+		labels[index] = option.Label
 	}
-	ch, err := hotkey.Parse(r.text)
-	if r.edited && err == nil && (in.Submitted() || !in.Focused()) {
-		r.edited = false
-		r.text = ch.String()
-		save(r.text)
+	return labels
+}
+
+func featureKeysField(c *ui.Context, local *keyRow, label string, state *featureCustomKeysViewState, helperRecords bool, actions featureActions, save func(string)) {
+	if local.typing {
+		featureCustomKeys(c, local, label, state, save)
+		if ghostButton(c.Key("record-keys"), i18n.T("Press the keys instead")).Clicked() {
+			local.typing, local.edited = false, false
+		}
+		return
+	}
+	featureKeyRecorder(c, local, label, state, helperRecords, actions, save)
+}
+
+func featureCustomKeys(c *ui.Context, local *keyRow, label string, state *featureCustomKeysViewState, save func(string)) {
+	t := c.Theme()
+	input := ui.TextInput(c.Key("custom"), &local.text).Placeholder("Control+Option+Space").Label(label).Font("monospace").MaxWidth(px(t, 360))
+	if input.Changed() {
+		local.edited = true
+	}
+	if local.edited && state.Parsed && state.InputText == local.text && (input.Submitted() || !input.Focused()) {
+		local.edited = false
+		local.text = state.Canonical
+		save(state.Canonical)
+	}
+	if state.InputText != local.text {
+		return
 	}
 	switch {
-	case err != nil:
-		warnLine(c, uitext.ParseErrorText(err))
-	case r.edited:
-		caption(c, i18n.T("Press Return to use %s.", uitext.HotkeyText(r.text)))
+	case state.ErrorText != "":
+		warnLine(c, state.ErrorText)
+	case local.edited:
+		caption(c, i18n.T("Press Return to use %s.", state.KeysText))
 		return
 	default:
 		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
 	}
-	// Also under an error: Mouse1 is refused, mouse buttons are not.
 	caption(c, i18n.T("Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."))
 }
 
-// problemLines are a binding's problems, in the warning colour.
-func problemLines(c *ui.Context, problems []string) {
-	for _, p := range problems {
-		warnLine(c, p)
+func featureKeyRecorder(c *ui.Context, local *keyRow, label string, state *featureCustomKeysViewState, helperRecords bool, actions featureActions, save func(string)) {
+	t := c.Theme()
+	colors := tok(t)
+	box := ui.Box(c.Key("record")).Focusable().AutoFocus().Role(ui.RoleTextField).Label(label).
+		Padding(px(t, 5), px(t, sp2)).Radius(px(t, radiusControl)).MaxWidth(px(t, 360)).Cursor(ui.CursorPointer)
+	focused := box.Focused()
+	if focused && !local.recFocused {
+		local.recordDenied = false
+		actions.beginHotkeyRecord(local, save)
+	}
+	if local.recFocused && !focused {
+		actions.cancelHotkeyRecord()
+	}
+	local.recFocused = focused
+	if focused {
+		actions.markFeatureKeysHeard()
+		box.Border(1, colors.Accent)
+	} else {
+		box.Border(1, colors.Line)
+	}
+	if box.Clicked() {
+		box.Focus()
+	}
+	useWindow := !helperRecords
+	box.HandleInput(func(event ui.InputEvent) bool {
+		if !useWindow {
+			if event.Kind == ui.InputKeyDown && event.Key == ui.KeyTab && event.Mods&^ui.Shift == 0 {
+				return false
+			}
+			return event.Kind == ui.InputKeyDown || event.Kind == ui.InputText || event.Kind == ui.InputCompose || event.Kind == ui.InputCommand
+		}
+		switch event.Kind {
+		case ui.InputText, ui.InputCompose, ui.InputCommand:
+			return true
+		case ui.InputKeyDown:
+		default:
+			return false
+		}
+		if event.Key == ui.KeyTab && event.Mods&^ui.Shift == 0 {
+			return false
+		}
+		if event.Repeat {
+			return true
+		}
+		actions.recordFeatureKeys(local, event, save)
+		return true
+	})
+	shown := state.KeysText
+	if state.InputText != local.text {
+		shown = local.text
+	}
+	box.Value(shown).Children(func() {
+		switch {
+		case local.text != "":
+			ui.Text(c, shown).Font("monospace").TextColor(colors.Text)
+		case focused:
+			ui.Text(c, i18n.T("Press the keys…")).Font("monospace").TextColor(colors.Text3)
+		default:
+			ui.Text(c, i18n.T("Click, then press the keys")).Font("monospace").TextColor(colors.Text3)
+		}
+	})
+	switch {
+	case local.recordDenied:
+		warnLine(c, i18n.T("Recording a shortcut needs Accessibility access."))
+		ui.Row(c).Children(func() {
+			if ghostButton(c.Key("record-open-perms"), i18n.T("Open Permissions")).Clicked() {
+				actions.openFeaturePermissions()
+			}
+		})
+	case local.unknown:
+		warnLine(c, i18n.T("Voxt cannot use that key. Press another, or type the keys instead."))
+	case focused:
+		if helperRecords {
+			caption(c, i18n.T("Press the shortcut you want, including fn, a left or right modifier, or a mouse button. Each press replaces the last."))
+		} else {
+			caption(c, i18n.T("Press the keys you want, such as ⌥Space. Each press replaces the last."))
+		}
+	default:
+		if helperRecords {
+			caption(c, i18n.T("Click the field, then press the shortcut, including fn, a left or right modifier, or a mouse button."))
+		} else {
+			caption(c, i18n.T("Click the field and press the keys, such as ⌥Space. To use fn, a left or right modifier or a mouse button, allow Accessibility in Permissions."))
+		}
+	}
+	if ghostButton(c.Key("type-keys"), i18n.T("Type the keys instead")).Clicked() {
+		local.typing, local.unknown = true, false
 	}
 }
 
-// warnLine is a caption in the warning colour, with its icon.
+func problemLines(c *ui.Context, problems []string) {
+	for _, problem := range problems {
+		warnLine(c, problem)
+	}
+}
+
 func warnLine(c *ui.Context, text string) {
 	t := c.Theme()
-	k := tok(t)
+	colors := tok(t)
 	ui.Row(c).Gap(px(t, 4)).AlignItems(ui.Start).Children(func() {
-		ui.Icon(c, icons.DangerTriangle.Linear).Size(px(t, 14), px(t, 14)).TextColor(k.Warning).Shrink(0).Margin(px(t, 1), 0, 0, 0)
-		ui.Text(c, text).FontSize(px(t, fsCaption)).TextColor(k.Warning).Grow(1).MinWidth(0)
+		ui.Icon(c, icons.DangerTriangle.Linear).Size(px(t, 14), px(t, 14)).TextColor(colors.Warning).Shrink(0).Margin(px(t, 1), 0, 0, 0)
+		ui.Text(c, text).FontSize(px(t, fsCaption)).TextColor(colors.Warning).Grow(1).MinWidth(0)
 	})
-}
-
-// trPasteRow is "Paste the last result": its keys only (always a tap).
-func (a *app) trPasteRow(c *ui.Context) {
-	t := c.Theme()
-	r := &a.fui(hotkey.Transcribe).paste
-	cur := a.prefs.Features.PasteLast.Keys
-	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.PasteLast)[0]
-	ui.Column(c.Key("tr-paste")).Gap(px(t, 6)).Children(func() {
-		settingRow(c, "tr-paste-row", i18n.T("Paste the last result"), "", func() {
-			opts, byLabel := keyOptions(cur, true)
-			if !slices.Contains(opts, r.sel) {
-				r.sel = chordLabel(cur)
-			}
-			if r.custom {
-				r.sel = i18n.T("Custom…")
-			}
-			if ui.Select(c.Key("tr-paste-sel"), &r.sel, opts).Label(i18n.T("Keys to paste the last result")).Width(px(t, 180)).Changed() {
-				if r.sel == i18n.T("Custom…") {
-					r.custom, r.text = true, cur
-					return
-				}
-				keys, ok := byLabel[r.sel]
-				if !ok {
-					return
-				}
-				r.custom, r.text = false, keys
-				a.setPasteLast(keys)
-			}
-		})
-		if r.custom {
-			a.keysField(c, r, i18n.T("Custom keys to paste the last result"), a.setPasteLast)
-		}
-		problemLines(c, problems)
-		a.usedByView(c, recordedKeys(*r, cur))
-	})
-}
-
-func (a *app) setPasteLast(keys string) {
-	a.updateSettings(func(s *settings.Settings) {
-		s.Features.PasteLast = settings.Hotkey{Keys: keys, Trigger: settings.TriggerTap}
-	})
-	u := a.fui(hotkey.Transcribe)
-	u.seen = a.featureKeysKey(hotkey.Transcribe)
-}
-
-// trCancelRow is "Cancel recording": its keys only (always a tap).
-// The helper judges them only while a session records or the answer
-// card shows; the rest of the time they reach the app in front.
-func (a *app) trCancelRow(c *ui.Context) {
-	t := c.Theme()
-	r := &a.fui(hotkey.Transcribe).cancel
-	cur := a.prefs.Features.Cancel.Keys
-	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.CancelID)[0]
-	ui.Column(c.Key("tr-cancel")).Gap(px(t, 6)).Children(func() {
-		settingRow(c, "tr-cancel-row", i18n.T("Cancel recording"), i18n.T("The recording stays in History, so you can retry."), func() {
-			opts, byLabel := keyOptions(cur, true, settings.DefaultCancel)
-			if !slices.Contains(opts, r.sel) {
-				r.sel = chordLabel(cur)
-			}
-			if r.custom {
-				r.sel = i18n.T("Custom…")
-			}
-			if ui.Select(c.Key("tr-cancel-sel"), &r.sel, opts).Label(i18n.T("Keys to cancel recording")).Width(px(t, 180)).Changed() {
-				if r.sel == i18n.T("Custom…") {
-					r.custom, r.text = true, cur
-					return
-				}
-				keys, ok := byLabel[r.sel]
-				if !ok {
-					return
-				}
-				r.custom, r.text = false, keys
-				a.setCancelKeys(keys)
-			}
-		})
-		if r.custom {
-			a.keysField(c, r, i18n.T("Custom keys to cancel recording"), a.setCancelKeys)
-		}
-		problemLines(c, problems)
-		a.usedByView(c, recordedKeys(*r, cur))
-	})
-}
-
-func (a *app) setCancelKeys(keys string) {
-	a.updateSettings(func(s *settings.Settings) {
-		s.Features.Cancel = settings.Hotkey{Keys: keys, Trigger: settings.TriggerTap}
-	})
-	u := a.fui(hotkey.Transcribe)
-	u.seen = a.featureKeysKey(hotkey.Transcribe)
 }
