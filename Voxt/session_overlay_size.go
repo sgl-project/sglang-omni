@@ -49,11 +49,6 @@ func (a *app) ovTextWidth(key ovSized) (float32, bool) {
 	return measured.w, ok
 }
 
-func (a *app) ovTextHeight(key ovSized) (float32, bool) {
-	measured, ok := a.ovText(key)
-	return measured.h, ok
-}
-
 func (a *app) ovText(key ovSized) (ovMeasured, bool) {
 	if a.measureHook != nil {
 		width, height := a.measureHook(key)

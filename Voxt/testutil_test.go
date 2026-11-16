@@ -396,6 +396,11 @@ func (f *fakeTimers) advance(d time.Duration) {
 // overlay view (measureHook is guessText).
 func guessWidth(k ovSized) float32 { w, _ := guessText(k); return w }
 
+func (a *app) ovTextHeight(key ovSized) (float32, bool) {
+	measured, ok := a.ovText(key)
+	return measured.h, ok
+}
+
 func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
 	pill := sessionPillViewState{Title: uitext.KindTitle(snapshot.Kind), Starting: snapshot.Waiting != session.WaitNone}
 	scene := float32(0)
