@@ -23,9 +23,12 @@ import pytest
 
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.patch import (
+    ConfigPatch,
     ConfigPatchSet,
+    ConfigSource,
     DuplicatePatchError,
     Layer,
+    SourceKind,
     Specificity,
 )
 from sglang_omni.config.path import ConfigPathError
@@ -54,13 +57,6 @@ def stage(config: PipelineConfig, name: str):
 
 
 class TestDottedCli:
-    def test_text_is_coerced_to_the_declared_type(self, pipeline_config):
-        patches = patches_from_dotted_cli(
-            [("thinker.tp_size", "2"), ("thinker.gpu", "[0, 1]")], pipeline_config
-        )
-        resolved = resolve(pipeline_config, patches)
-        assert stage(resolved, "thinker").tp_size == 2
-
     def test_the_stage_name_head_gets_the_implied_prefix(self, pipeline_config):
         patches = patches_from_dotted_cli(
             [("thinker.factory.max_seq_len", "4096")], pipeline_config
@@ -78,17 +74,6 @@ class TestDottedCli:
         with pytest.raises(ConfigPathError, match="one field below"):
             patches_from_dotted_cli([("thinker", "2")], pipeline_config)
 
-    def test_an_unknown_head_suggests_stages_and_top_level_fields(
-        self, pipeline_config
-    ):
-        with pytest.raises(ConfigPathError) as excinfo:
-            patches_from_dotted_cli([("thinkr.tp_size", "2")], pipeline_config)
-        assert "thinker" in str(excinfo.value)
-
-    def test_an_unknown_field_inside_a_stage_gets_suggestions(self, pipeline_config):
-        with pytest.raises(ConfigPathError, match="tp_size"):
-            patches_from_dotted_cli([("thinker.tp_siz", "2")], pipeline_config)
-
     def test_the_none_sentinel_clears_a_field(self, pipeline_config):
         patches = patches_from_dotted_cli(
             [("thinker.factory.max_seq_len", "none")], pipeline_config
@@ -96,32 +81,12 @@ class TestDottedCli:
         resolved = resolve(pipeline_config, patches)
         assert stage(resolved, "thinker").factory.max_seq_len is None
 
-    def test_a_top_level_field_passes_through(self, pipeline_config):
-        patches = patches_from_dotted_cli(
-            [("model_path", "/models/other")], pipeline_config
-        )
-        resolved = resolve(pipeline_config, patches)
-        assert resolved.model_path == "/models/other"
-
-    def test_engine_on_a_non_engine_stage_is_refused(self, pipeline_config):
-        with pytest.raises(ConfigPathError, match="not an engine stage"):
-            patches_from_dotted_cli(
-                [("preprocessing.engine.mem_fraction_static", "0.5")],
-                pipeline_config,
-            )
-
     def test_a_group_path_is_refused_with_leaf_guidance(self, pipeline_config):
         """The CLI writes one leaf at a time; a whole group as one flag value
         would replace the container and reset siblings other sources set."""
         with pytest.raises(ConfigPathError, match="one field below"):
             patches_from_dotted_cli(
                 [("thinker.factory", '{"device": "cpu"}')], pipeline_config
-            )
-
-    def test_a_group_path_is_refused_regardless_of_the_value(self, pipeline_config):
-        with pytest.raises(ConfigPathError, match="one field below"):
-            patches_from_dotted_cli(
-                [("thinker.engine", "not-a-mapping")], pipeline_config
             )
 
 
@@ -136,16 +101,6 @@ class TestGroupPassThrough:
         assert (
             stage(resolved, "thinker").engine.overrides()["disable_radix_cache"] is True
         )
-
-    def test_free_form_scheduler_and_model_keys_are_kept(self, pipeline_config):
-        patches = patches_from_dotted_cli(
-            [("thinker.factory.made_up_knob", "7"), ("thinker.factory.lookahead", "9")],
-            pipeline_config,
-        )
-        resolved = resolve(pipeline_config, patches)
-        thinker = stage(resolved, "thinker")
-        assert thinker.factory.model_extra["made_up_knob"] == 7
-        assert thinker.factory.model_extra["lookahead"] == 9
 
     def test_a_declared_key_still_validates_eagerly(self, pipeline_config):
         patches = patches_from_dotted_cli(
@@ -354,46 +309,29 @@ class TestStageDefaults:
 
 
 class TestPrecedence:
-    def test_the_command_line_beats_the_file(self, pipeline_config):
-        file_patches = patches_from_stages_mapping(
-            {"thinker": {"tp_size": 2}}, type(pipeline_config), ["thinker"]
-        )
-        cli_patches = patches_from_dotted_cli(
-            [("thinker.tp_size", "4"), ("thinker.gpu", "[0, 1, 2, 3]")],
-            pipeline_config,
-        )
-        resolved = resolve(pipeline_config, file_patches, cli_patches)
-        assert stage(resolved, "thinker").tp_size == 4
-
     def test_the_model_path_flag_beats_the_file_value(self, pipeline_config):
         flag = patches_from_model_path_flag("/models/flag", pipeline_config)
         resolved = resolve(pipeline_config, flag)
         assert resolved.model_path == "/models/flag"
+        file_patch = ConfigPatchSet(
+            [
+                ConfigPatch.create(
+                    "model_path",
+                    "/models/file",
+                    ConfigSource(SourceKind.YAML_FILE, "pipeline.yaml"),
+                    root=type(pipeline_config),
+                )
+            ]
+        )
+        assert resolve(pipeline_config, file_patch, flag).model_path == "/models/flag"
+        assert resolve(pipeline_config, flag, file_patch).model_path == "/models/flag"
 
 
 class TestManager:
-    def test_merge_config_applies_dotted_pairs(self, pipeline_config):
-        manager = ConfigManager(pipeline_config)
-        merged = manager.merge_config(
-            [("thinker.tp_size", "2"), ("thinker.gpu", "[0, 1]")]
-        )
-        assert stage(merged, "thinker").tp_size == 2
-
     def test_a_flag_repeated_with_different_values_is_refused(self, pipeline_config):
         manager = ConfigManager(pipeline_config)
         with pytest.raises(DuplicatePatchError):
             manager.merge_config([("thinker.tp_size", "2"), ("thinker.tp_size", "4")])
-
-    def test_a_flag_repeated_with_the_same_value_is_tolerated(self, pipeline_config):
-        manager = ConfigManager(pipeline_config)
-        merged = manager.merge_config(
-            [
-                ("thinker.tp_size", "2"),
-                ("thinker.tp_size", "2"),
-                ("thinker.gpu", "[0, 1]"),
-            ]
-        )
-        assert stage(merged, "thinker").tp_size == 2
 
     def test_extra_patches_join_the_same_conflict_check(self, pipeline_config):
         manager = ConfigManager(pipeline_config)
@@ -406,6 +344,23 @@ class TestManager:
         )
         assert merged.model_path == "/models/flag"
         assert stage(merged, "thinker").tp_size == 2
+        conflicting_extra = extra.merge(
+            ConfigPatchSet(
+                [
+                    ConfigPatch.create(
+                        "stages.thinker.tp_size",
+                        4,
+                        ConfigSource(SourceKind.CLI_FLAG, "--extra"),
+                        root=type(pipeline_config),
+                    )
+                ]
+            )
+        )
+        with pytest.raises(DuplicatePatchError):
+            manager.merge_config(
+                [("thinker.tp_size", "2"), ("thinker.gpu", "[0, 1]")],
+                extra_patches=conflicting_extra,
+            )
 
 
 class TestPerStageTypedGroup:

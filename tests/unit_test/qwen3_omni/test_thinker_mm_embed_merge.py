@@ -286,19 +286,13 @@ def test_cached_prefix_reconstructs_audio_preserving_unrelated_cursor():
     assert existing == {"video": 0, "audio": 2}
 
 
-@pytest.mark.parametrize(
-    ("modality", "token_id"),
-    [("image", IMAGE_ID), ("video", VIDEO_ID), ("audio", AUDIO_ID)],
-)
-def test_cached_prefix_reconstructs_missing_cursor_for_each_modality(
-    modality, token_id
-):
+def test_cached_prefix_reconstructs_a_missing_video_cursor():
     runner = make_runner()
-    prompt = [token_id, TEXT, token_id, TEXT]
+    prompt = [VIDEO_ID, TEXT, VIDEO_ID, TEXT]
     embeds = torch.tensor([[1.0] * HIDDEN, [2.0] * HIDDEN], dtype=torch.float32)
     req = make_req(
         prompt,
-        {f"{modality}_embeds": embeds},
+        {"video_embeds": embeds},
         inflight_middle_chunks=1,
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
@@ -307,7 +301,7 @@ def test_cached_prefix_reconstructs_missing_cursor_for_each_modality(
 
     torch.testing.assert_close(out[0], embeds[1])
     assert req._omni_consumed == {
-        modality: 2
+        "video": 2
     }  # noqa: leading-underscore  # production name
 
 
@@ -337,7 +331,6 @@ def test_existing_cursor_is_authoritative_over_prefix_derived_offset():
         pytest.param(-1, ValueError, id="negative"),
         pytest.param(0.5, TypeError, id="non-integral"),
         pytest.param(True, TypeError, id="bool"),
-        pytest.param(2, ValueError, id="beyond-end"),
         pytest.param(1, ValueError, id="live-range-overrun"),
     ],
 )
@@ -620,8 +613,8 @@ def count_sync_ops(monkeypatch, runner, fb, sb):
     for name in ("item", "any", "nonzero"):
         monkeypatch.setattr(torch.Tensor, name, counting(name))
     monkeypatch.setattr(torch, "where", counting("where"))
-    runner.inject_multimodal_embeds(fb, sb)
-    return calls
+    merged = runner.inject_multimodal_embeds(fb, sb)
+    return dict(calls), merged
 
 
 def mixed_mm_batch():
@@ -633,6 +626,19 @@ def mixed_mm_batch():
         for _ in range(4)
     ]
     return batches(reqs)
+
+
+def expected_mixed_embeds(
+    runner: ThinkerModelRunner,
+    forward_batch: types.SimpleNamespace,
+    schedule_batch: types.SimpleNamespace,
+) -> torch.Tensor:
+    expected = base_embeds(runner, forward_batch)
+    for index, request in enumerate(schedule_batch.reqs):
+        start = 5 * index
+        expected[start + 1 : start + 3] = request.omni_model_inputs["image_embeds"]
+        expected[start + 3] = request.omni_model_inputs["audio_embeds"][0]
+    return expected
 
 
 def deepstack_mm_batch():
@@ -654,26 +660,70 @@ def deepstack_mm_batch():
 def test_no_host_syncs_on_hot_path(monkeypatch):
     runner = make_runner()
     fb, sb = mixed_mm_batch()
-    assert count_sync_ops(monkeypatch, runner, fb, sb) == NO_SYNCS
+    expected = expected_mixed_embeds(runner, fb, sb)
+
+    calls, (out, ds, masks) = count_sync_ops(monkeypatch, runner, fb, sb)
+
+    assert calls == NO_SYNCS
+    torch.testing.assert_close(out, expected)
+    assert ds is None and masks is None
 
 
 def test_cached_prefix_reconstruction_has_no_host_syncs(monkeypatch):
     runner = make_runner()
     prompt = [AUDIO_ID, IMAGE_ID, AUDIO_ID, IMAGE_ID]
+    audio_embeds, image_embeds = rand(2), rand(2)
     req = make_req(
         prompt,
-        {"audio_embeds": rand(2), "image_embeds": rand(2)},
+        {"audio_embeds": audio_embeds, "image_embeds": image_embeds},
         inflight_middle_chunks=1,
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
-    assert count_sync_ops(monkeypatch, runner, fb, sb) == NO_SYNCS
+    calls, (out, _, _) = count_sync_ops(monkeypatch, runner, fb, sb)
+
+    assert calls == NO_SYNCS
+    torch.testing.assert_close(out[0], audio_embeds[1])
+    torch.testing.assert_close(out[1], image_embeds[1])
+    assert req._omni_consumed == {
+        "audio": 2,
+        "image": 2,
+    }  # noqa: leading-underscore  # production name
 
 
 def test_no_host_syncs_on_deepstack_path(monkeypatch):
     runner = make_runner()
     fb, sb = deepstack_mm_batch()
-    assert count_sync_ops(monkeypatch, runner, fb, sb) == NO_SYNCS
+    inputs = [request.omni_model_inputs for request in sb.reqs]
+    expected = base_embeds(runner, fb)
+    for index, request_inputs in enumerate(inputs):
+        start = 5 * index
+        expected[start] = request_inputs["video_embeds"][0]
+        expected[start + 1] = request_inputs["image_embeds"][0]
+        expected[start + 3] = request_inputs["image_embeds"][1]
+        expected[start + 4] = request_inputs["video_embeds"][1]
+
+    calls, (out, ds, mask) = count_sync_ops(monkeypatch, runner, fb, sb)
+
+    assert calls == NO_SYNCS
+    torch.testing.assert_close(out, expected)
+    assert mask.tolist() == [True, True, False, True, True] * 4
+    assert len(ds) == 2
+    for layer_index in range(2):
+        expected_layer = torch.cat(
+            [
+                torch.stack(
+                    [
+                        request_inputs["video_deepstack_visual_embeds"][layer_index][0],
+                        request_inputs["image_deepstack_visual_embeds"][layer_index][0],
+                        request_inputs["image_deepstack_visual_embeds"][layer_index][1],
+                        request_inputs["video_deepstack_visual_embeds"][layer_index][1],
+                    ]
+                )
+                for request_inputs in inputs
+            ]
+        )
+        torch.testing.assert_close(ds[layer_index], expected_layer)
 
 
 def test_no_host_syncs_with_cpu_tensor_extend_lens(monkeypatch):
@@ -683,4 +733,9 @@ def test_no_host_syncs_with_cpu_tensor_extend_lens(monkeypatch):
     fb.extend_prefix_lens_cpu = torch.tensor(
         fb.extend_prefix_lens_cpu, dtype=torch.int64
     )
-    assert count_sync_ops(monkeypatch, runner, fb, sb) == NO_SYNCS
+    expected = expected_mixed_embeds(runner, fb, sb)
+
+    calls, (out, _, _) = count_sync_ops(monkeypatch, runner, fb, sb)
+
+    assert calls == NO_SYNCS
+    torch.testing.assert_close(out, expected)

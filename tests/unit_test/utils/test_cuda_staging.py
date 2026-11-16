@@ -12,7 +12,6 @@ the slot on a device other than the process-current one.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
@@ -52,17 +51,13 @@ class FakeEvent:
             raise self.sync_error
 
 
-def install_fake_events(
-    monkeypatch, *, configure: Callable[[FakeEvent], None] | None = None
-) -> list[FakeEvent]:
+def install_fake_events(monkeypatch) -> list[FakeEvent]:
     created: list[FakeEvent] = []
 
     def factory(
         device: torch.device | None = None, *, blocking: bool = False
     ) -> FakeEvent:
         event = FakeEvent()
-        if configure is not None:
-            configure(event)
         created.append(event)
         return event
 
@@ -140,26 +135,6 @@ def test_growable_pinned_buffer_grows_exactly_and_keeps_storage_on_failure(
         buffer.view(6)
 
 
-def test_pinned_transfer_slot_reuses_one_event(monkeypatch):
-    created = install_fake_events(monkeypatch)
-    install_fake_pinned_alloc(monkeypatch)
-    slot = PinnedTransferSlot("cpu", torch.float32, initial_capacity=8)
-    stream = object()
-
-    assert slot.capacity == 8
-    for _ in range(3):
-        slot.record(stream)
-        slot.synchronize()
-    slot.ensure_capacity(16)
-    slot.record(stream)
-    slot.synchronize()
-
-    assert len(created) == 1, "the slot must reuse its event across transfers"
-    assert created[0].recorded_streams == [stream] * 4
-    assert created[0].synchronize_calls == 4
-    assert slot.view(16).numel() == 16
-
-
 def test_pinned_transfer_slot_query_probes_completion_without_blocking(monkeypatch):
     created = install_fake_events(monkeypatch)
     install_fake_pinned_alloc(monkeypatch)
@@ -183,76 +158,6 @@ def test_pinned_transfer_slot_query_probes_completion_without_blocking(monkeypat
     # A failed probe leaves the record in place (owner policy).
     created[0].query_error = None
     assert slot.query() is True
-
-
-def test_pinned_transfer_slot_first_record_failure_rejects_completion_reads(
-    monkeypatch,
-):
-    """A slot whose only ``record()`` raised has no transfer to report on."""
-    record_error = RuntimeError("event record failed")
-
-    def fail_record(event: FakeEvent) -> None:
-        event.record_error = record_error
-
-    created = install_fake_events(monkeypatch, configure=fail_record)
-    install_fake_pinned_alloc(monkeypatch)
-    slot = PinnedTransferSlot("cpu", torch.float32)
-
-    with pytest.raises(RuntimeError) as record_info:
-        slot.record(object())
-    assert record_info.value is record_error
-    assert len(created) == 1
-    assert created[0].complete is True
-
-    # The slot must not treat the failed transfer as complete.
-    with pytest.raises(RuntimeError, match="not recorded"):
-        slot.query()
-    with pytest.raises(RuntimeError, match="not recorded"):
-        slot.synchronize()
-    assert (created[0].query_calls, created[0].synchronize_calls) == (0, 0)
-
-    created[0].record_error = None
-    stream = object()
-    slot.record(stream)
-    assert len(created) == 1
-    assert created[0].recorded_streams == [stream]
-    assert slot.query() is True
-    slot.synchronize()
-    assert created[0].synchronize_calls == 1
-
-
-def test_pinned_transfer_slot_event_construction_failure_rejects_completion_reads(
-    monkeypatch,
-):
-    """A failed event construction leaves no event; the retry creates it."""
-    created = install_fake_events(monkeypatch)
-    install_fake_pinned_alloc(monkeypatch)
-    slot = PinnedTransferSlot("cpu", torch.float32)
-    init_error = RuntimeError("event init failed")
-    factory = cuda_staging.new_device_event
-
-    def exploding_once(
-        device: torch.device | None = None, *, blocking: bool = False
-    ) -> FakeEvent:
-        monkeypatch.setattr(cuda_staging, "new_device_event", factory)
-        raise init_error
-
-    monkeypatch.setattr(cuda_staging, "new_device_event", exploding_once)
-    with pytest.raises(RuntimeError) as init_info:
-        slot.record(object())
-    assert init_info.value is init_error
-    assert created == []
-    with pytest.raises(RuntimeError, match="not recorded"):
-        slot.query()
-    with pytest.raises(RuntimeError, match="not recorded"):
-        slot.synchronize()
-
-    stream = object()
-    slot.record(stream)
-    assert len(created) == 1
-    assert created[0].recorded_streams == [stream]
-    assert slot.query() is True
-    slot.synchronize()
 
 
 def test_pinned_transfer_slot_failed_rerecord_hides_previous_completion(

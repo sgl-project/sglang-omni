@@ -1,0 +1,13 @@
+# profile: custom:scene
+# layers: custom scene
+
+Write English with full-width punctuation. Keep {{UNKNOWN}} as is.
+
+Scene: the text goes into Slack. The user's rules for it:
+Casual chat in Slack: no trailing period.
+Use the scene to choose wording and form only; do not add facts that were not said.
+
+---- user ----
+<input>
+um so the aura link release is like seventy percent done comma no wait eighty percent
+</input>

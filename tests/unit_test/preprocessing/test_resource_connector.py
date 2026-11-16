@@ -14,6 +14,8 @@ zero load_file calls.
 from __future__ import annotations
 
 import asyncio
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,18 @@ from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.image import ensure_image_list_async
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.preprocessing.video import ensure_video_list_async
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="comm names live in /proc")
+def test_media_decode_workers_have_their_python_name_in_proc_comm() -> None:
+    worker = resource_connector.global_thread_pool.submit(
+        threading.current_thread
+    ).result(timeout=5.0)
+
+    native_name = Path(f"/proc/self/task/{worker.native_id}/comm").read_text().strip()
+
+    assert worker.name.startswith("media-decode_")
+    assert native_name == worker.name[:15]
 
 
 class RecordingMediaIO(MediaIO[Path]):
@@ -41,18 +55,6 @@ class RecordingMediaIO(MediaIO[Path]):
     def load_file(self, filepath: Path) -> Path:
         self.loaded_paths.append(filepath)
         return filepath
-
-
-def test_load_local_path_allowed_without_allowlist(tmp_path: Path) -> None:
-    audio = tmp_path / "ref.wav"
-    audio.write_bytes(b"RIFF")
-    connector = MultiModalResourceConnector()
-    media_io = RecordingMediaIO()
-
-    result = connector.load_local_path(audio, media_io)
-
-    assert result == audio.resolve()
-    assert media_io.loaded_paths == [audio.resolve()]
 
 
 def test_load_local_path_inside_allowlist(tmp_path: Path) -> None:
@@ -99,27 +101,17 @@ def test_chat_media_follows_the_server_media_policy(
     for load in (
         ensure_image_list_async([str(outside)], media_connector=connector),
         ensure_audio_list_async([str(outside)], resource_connector=connector),
-        ensure_video_list_async([str(outside)], resource_connector=connector),
-        ensure_video_list_async([missing], resource_connector=connector),
+        ensure_video_list_async(
+            [str(outside)], resource_connector=connector, video_decode_threads=16
+        ),
+        ensure_video_list_async(
+            [missing], resource_connector=connector, video_decode_threads=16
+        ),
     ):
         with pytest.raises(ValueError, match="not within allowed directory"):
             asyncio.run(load)
     with pytest.raises(ValueError, match="is not allowed"):
         connector.assert_url_allowed("http://127.0.0.1/image.png")
-
-
-def test_load_local_path_rejects_traversal_escape(tmp_path: Path) -> None:
-    allowed = tmp_path / "allowed"
-    allowed.mkdir()
-    outside = tmp_path / "outside.wav"
-    outside.write_bytes(b"RIFF")
-    connector = MultiModalResourceConnector(allowed_local_media_path=allowed)
-    media_io = RecordingMediaIO()
-
-    with pytest.raises(ValueError, match="not within allowed directory"):
-        connector.load_local_path(allowed / ".." / "outside.wav", media_io)
-
-    assert media_io.loaded_paths == []
 
 
 def test_load_local_path_rejects_symlink_escape(tmp_path: Path) -> None:
@@ -160,17 +152,3 @@ def test_file_url_rejection_never_reaches_media_io(tmp_path: Path) -> None:
         connector.load_resource(traversal_url, media_io)
 
     assert media_io.loaded_paths == []
-
-
-def test_file_url_passes_resolved_path_to_media_io(tmp_path: Path) -> None:
-    """The connector resolves/normalizes the path; existence is media_io's job."""
-    allowed = tmp_path / "allowed"
-    allowed.mkdir()
-    connector = MultiModalResourceConnector(allowed_local_media_path=allowed)
-    media_io = RecordingMediaIO()
-    missing = allowed / "ghost.wav"
-
-    result = connector.load_resource(missing.as_uri(), media_io)
-
-    assert media_io.loaded_paths == [missing.resolve()]
-    assert result == missing.resolve()

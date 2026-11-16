@@ -3,18 +3,18 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 import torch
 
+from sglang_omni.models.moss_tts.channel_embedding import ChannelEmbeddingTables
 from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
 
 
 @pytest.mark.parametrize(
     "dtypes",
     [
-        (torch.float16, torch.float16, torch.float16),
         (torch.bfloat16, torch.bfloat16, torch.bfloat16),
         (torch.float32, torch.float32, torch.float32),
         (torch.float16, torch.float32, torch.float32),
@@ -76,3 +76,69 @@ def test_input_embeddings_preserve_ordered_sum_and_independent_outputs(
             actual_gradients, expected_gradients
         ):
             assert torch.equal(actual_gradient, expected_gradient)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("token_dtype", [torch.int32, torch.int64])
+def test_fused_channel_embeddings_preserve_rounding_and_storage_changes(
+    dtype: torch.dtype, token_dtype: torch.dtype
+) -> None:
+    generator = torch.Generator(device="cuda").manual_seed(42)
+    weights = [
+        torch.randn(128, 257, device="cuda", dtype=dtype, generator=generator)
+        for _ in range(33)
+    ]
+    tables = ChannelEmbeddingTables()
+    assert tables.refresh(weights)
+    token_ids = torch.randint(
+        0, 128, (17, 66), device="cuda", dtype=token_dtype, generator=generator
+    )[:, ::2]
+    for moved_weights in (weights, [weight.clone() * 2 for weight in weights]):
+        assert tables.refresh(moved_weights)
+        expected = torch.zeros(17, 257, device="cuda", dtype=dtype)
+        for index, weight in enumerate(moved_weights):
+            expected = expected + weight[token_ids[:, index].long()]
+        actual = tables.embed(token_ids, moved_weights)
+        assert torch.equal(actual, expected)
+        saved = actual.clone()
+        tables.embed(token_ids, moved_weights).zero_()
+        assert torch.equal(actual, saved)
+    assert not tables.refresh([weights[0].t()])
+    assert tables.embed(token_ids[:0], moved_weights).shape == (0, 257)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("tensor_parallel_size", [1, 2])
+def test_cuda_model_embeddings_keep_eager_fallback_with_runtime_context(
+    monkeypatch: pytest.MonkeyPatch, tensor_parallel_size: int
+) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.models.moss_tts.sglang_model.get_parallel",
+        lambda: SimpleNamespace(tp_size=tensor_parallel_size),
+    )
+    generator = torch.Generator(device="cuda").manual_seed(42)
+    layers = [
+        torch.nn.Embedding.from_pretrained(
+            torch.randn(16, 8, device="cuda", dtype=torch.bfloat16, generator=generator)
+        )
+        for _ in range(3)
+    ]
+    model = SimpleNamespace(
+        config=SimpleNamespace(channels=3),
+        hidden_size=8,
+        pp_group=SimpleNamespace(is_first_rank=True),
+        embedding_list=layers,
+        first_embedding_weight=lambda: layers[0].weight,
+    )
+    model.fused_channel_embedding_weights = MethodType(
+        MossTTSDelaySGLangModel.fused_channel_embedding_weights, model
+    )
+    token_ids = torch.randint(0, 16, (7, 3), device="cuda", generator=generator)
+    expected = torch.zeros(7, 8, device="cuda", dtype=torch.bfloat16)
+    for channel, layer in enumerate(layers):
+        expected = expected + layer(token_ids[:, channel])
+    actual = MossTTSDelaySGLangModel.prepare_multi_modal_inputs(model, token_ids)
+    assert torch.equal(actual, expected)

@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock
 import pytest
 from starlette.websockets import WebSocketState
 
+from sglang_omni.audio.vad import Emit, VADEvent
 from sglang_omni.client.types import CompletionStreamChunk
 from sglang_omni.serve.realtime import session as session_module
 from sglang_omni.serve.realtime.session import RealtimeSession
-from sglang_omni.serve.realtime.vad import Emit, VADEvent
 
 
 class FakeVAD:

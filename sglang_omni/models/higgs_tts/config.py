@@ -13,6 +13,7 @@ from sglang_omni.config import (
 from sglang_omni.config.schema import stage_process_name
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils.cpu import bounded_intraop_threads
+from sglang_omni.utils.device import resolve_device_spec
 
 _PKG = "sglang_omni.models.higgs_tts"
 _PREPROCESS_MAX_WORKERS = 2
@@ -118,6 +119,33 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         else:
             pass
         return env_defaults
+
+    def validate_processes(self) -> None:
+        super().validate_processes()
+        audio_encoder = self.stage_named("audio_encoder")
+        if resolve_device_spec(audio_encoder.factory.device) != "cuda":
+            return
+        else:
+            pass
+
+        encoder_process = stage_process_name(audio_encoder)
+        for stage in self.stages:
+            if stage.name == audio_encoder.name or (
+                stage.gpu is None and stage.name not in ("tts_engine", "vocoder")
+            ):
+                continue
+            elif (
+                stage_process_name(stage) == encoder_process
+                and resolve_device_spec(stage.factory.device) == "cuda"
+            ):
+                # note (Ratish): cuDNN and SDPA policy is process-wide, even across GPUs.
+                raise ValueError(
+                    "CUDA audio_encoder must use a separate process from "
+                    f"CUDA stage {stage.name!r}; reference encoding changes "
+                    "process-wide cuDNN and SDPA settings"
+                )
+            else:
+                pass
 
     def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)

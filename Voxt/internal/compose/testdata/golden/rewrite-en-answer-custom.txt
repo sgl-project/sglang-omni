@@ -1,0 +1,9 @@
+# profile: custom
+# layers: custom
+
+Write like  people do; no emoji.
+
+---- user ----
+<instruction>
+write a two sentence update for the team saying aura link ships friday
+</instruction>

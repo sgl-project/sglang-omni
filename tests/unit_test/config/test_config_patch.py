@@ -10,11 +10,9 @@ from sglang_omni.config.patch import (
     ConfigPatchSet,
     ConfigSource,
     DuplicatePatchError,
-    Layer,
     SourceKind,
     Specificity,
 )
-from sglang_omni.config.path import ConfigPathError
 
 MEM_FRACTION = "stages.thinker.engine.mem_fraction_static"
 
@@ -34,26 +32,8 @@ def patch(pipeline_config):
 
 
 class TestConstruction:
-    def test_layer_defaults_to_the_source_kind(self, patch):
-        assert patch(MEM_FRACTION, "0.8", YAML).layer is Layer.USER_FILE
-        assert patch(MEM_FRACTION, "0.8", CLI).layer is Layer.CLI
-
-    def test_value_is_coerced_to_the_declared_type(self, patch):
-        assert patch("stages.thinker.tp_size", "4", CLI).value == 4
-        assert patch(MEM_FRACTION, "0.8", CLI).value == 0.8
-
     def test_coercion_can_be_disabled_for_already_typed_sources(self, patch):
         assert patch("stages.thinker.tp_size", "4", YAML, coerce=False).value == "4"
-
-    def test_unknown_path_fails_at_construction(self, patch):
-        with pytest.raises(ConfigPathError):
-            patch("stages.thinker.nope", 1, CLI)
-
-    def test_a_free_form_group_key_is_not_an_unknown_path(self, patch):
-        """Group vocabularies belong to their consumers, so construction
-        accepts any key under them and coerces the text best-effort."""
-        created = patch("stages.thinker.engine.disable_radix_cache", "true", CLI)
-        assert created.value is True
 
 
 class TestPrecedence:

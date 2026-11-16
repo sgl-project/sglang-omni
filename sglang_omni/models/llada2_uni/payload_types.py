@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 if TYPE_CHECKING:
     import torch
@@ -32,6 +32,71 @@ class SkippedEncoderInputs(TypedDict):
     _result: dict[str, list[list[int]]]
 
 
+class ImageGrid(TypedDict):
+    grid_h: int
+    grid_w: int
+
+
+class InterleavedSegment(ImageGrid):
+    frame_index: int
+    text: str
+
+
+class InterleavedFrame(ImageGrid):
+    index: int
+    text: str
+    remaining_image_tokens: int
+    vq_tokens: list[int]
+
+
+class InterleavedCFGPlan(TypedDict):
+    mode: Literal["none", "simple", "editing"]
+    branches: dict[str, list[int]]
+    cfg_scale: float
+    cfg_text_scale: float
+    cfg_image_scale: float
+    cfg_rescale: float
+
+
+class InterleavedState(TypedDict, total=False):
+    """Interleaved progress, advanced by the thinker and read by the adapter.
+
+    The preprocessor also copies every InterleavedGenerationParams field here.
+    These are the ones read from this state.
+    """
+
+    max_frames: int
+    text_max_new_tokens: int
+    dllm_steps: int
+    phase: Literal["text", "image", "done"]
+    frame_index: int
+    segment_start: int
+    prompt_length: int
+    max_seq_len: int
+    segments: list[InterleavedSegment]
+    current_frame: InterleavedFrame
+    cfg_plan: InterleavedCFGPlan
+    emit_frame: bool
+    done: bool
+    finish_reason: str
+    usage: dict[str, int]
+    trailing_text: str
+
+
+class LLaDA2UniStreamState(TypedDict, total=False):
+    image_token_offset: int
+    interleaved: InterleavedState
+    image_info: list[ImageGrid]
+    dllm_steps: int
+    cfg_scale: float
+    cfg_rescale: float
+    cfg_image_scale: float
+    uncond_input_ids: list[int]
+    uncond_left_pad_len: int
+    uncond_img_input_ids: list[int]
+    uncond_img_left_pad_len: int
+
+
 @dataclass
 class LLaDA2UniPipelineState:
     """Typed view of the per-request pipeline state."""
@@ -43,6 +108,13 @@ class LLaDA2UniPipelineState:
     encoder_outs: dict[str, dict[str, list[list[int]]]] = field(default_factory=dict)
     thinker_out: ThinkerOutput | None = None
     engine_outputs: dict[str, ThinkerOutput] = field(default_factory=dict)
+    stream_state: LLaDA2UniStreamState = field(default_factory=dict)
+    request_metadata: dict[str, object] = field(default_factory=dict)
+    task_kind: str = "chat"
+    thinking_phase: Literal["text", "image"] | None = None
+    thinking_text: str = ""
+    thinking_prompt_tokens: int = 0
+    thinking_completion_tokens: int = 0
 
     @classmethod
     def from_dict(cls, data: object) -> "LLaDA2UniPipelineState":
@@ -54,12 +126,24 @@ class LLaDA2UniPipelineState:
         encoder_outs = data.get("encoder_outs")
         engine_outputs = data.get("engine_outputs")
         thinker_out = data.get("thinker_out")
+        stream_state = data.get("stream_state")
+        request_metadata = data.get("request_metadata")
+        task_kind = data.get("task_kind")
         return cls(
             prompt=data.get("prompt"),
             encoder_inputs=encoder_inputs if isinstance(encoder_inputs, dict) else {},
             encoder_outs=encoder_outs if isinstance(encoder_outs, dict) else {},
             thinker_out=thinker_out if isinstance(thinker_out, dict) else None,
             engine_outputs=engine_outputs if isinstance(engine_outputs, dict) else {},
+            stream_state=stream_state if isinstance(stream_state, dict) else {},
+            request_metadata=(
+                request_metadata if isinstance(request_metadata, dict) else {}
+            ),
+            task_kind=task_kind if isinstance(task_kind, str) else "chat",
+            thinking_phase=data.get("thinking_phase"),
+            thinking_text=data.get("thinking_text", ""),
+            thinking_prompt_tokens=data.get("thinking_prompt_tokens", 0),
+            thinking_completion_tokens=data.get("thinking_completion_tokens", 0),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -82,6 +166,25 @@ class LLaDA2UniPipelineState:
             pass
         if self.engine_outputs:
             data["engine_outputs"] = self.engine_outputs
+        else:
+            pass
+        if self.stream_state:
+            data["stream_state"] = self.stream_state
+        else:
+            pass
+        if self.request_metadata:
+            data["request_metadata"] = self.request_metadata
+        else:
+            pass
+        if self.task_kind != "chat":
+            data["task_kind"] = self.task_kind
+        else:
+            pass
+        if self.thinking_phase is not None:
+            data["thinking_phase"] = self.thinking_phase
+            data["thinking_text"] = self.thinking_text
+            data["thinking_prompt_tokens"] = self.thinking_prompt_tokens
+            data["thinking_completion_tokens"] = self.thinking_completion_tokens
         else:
             pass
         return data

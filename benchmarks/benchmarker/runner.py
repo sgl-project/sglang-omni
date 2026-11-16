@@ -74,12 +74,8 @@ class BenchmarkRunner:
         after_send: AfterSendFn | None = None,
     ) -> list[RequestResult]:
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
-        # note (guozhihao): Closed-loop runs are bounded by max_concurrency.
-        # Open-loop (max_concurrency=0) must not inherit aiohttp's default
-        # 100-conn cap, or sustained overshoot silently queues on the client.
-        connector = (
-            aiohttp.TCPConnector(limit=0) if not self.config.max_concurrency else None
-        )
+        # note (Zhang Yiyang): The semaphore bounds concurrency; the HTTP pool must not impose another cap.
+        connector = aiohttp.TCPConnector(limit=0)
         async with aiohttp.ClientSession(
             timeout=timeout, connector=connector, trust_env=self.config.trust_env
         ) as session:

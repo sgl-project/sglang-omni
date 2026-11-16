@@ -154,6 +154,64 @@ def test_runner_without_graphs_runs_the_encoder_eagerly() -> None:
     assert torch.equal(embedding, eager[0])
 
 
+class FailingGraphBackend:
+    def graph_pool_handle(self) -> tuple[int, int]:
+        raise RuntimeError("no graph pool")
+
+
+@pytest.mark.parametrize(
+    ("graph_backend", "disable_reason"),
+    [
+        (None, "no graph backend on cpu"),
+        (FailingGraphBackend(), "capture_failed: RuntimeError: no graph pool"),
+    ],
+    ids=["no_backend", "capture_failed"],
+)
+def test_runner_reports_why_it_has_no_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+    graph_backend: FailingGraphBackend | None,
+    disable_reason: str,
+) -> None:
+    monkeypatch.setattr(
+        speaker_encoder_cuda_graph, "supports_device_streams", lambda device: True
+    )
+    monkeypatch.setattr(
+        speaker_encoder_cuda_graph.current_platform,
+        "get_device_graph_backend",
+        lambda device: graph_backend,
+    )
+    encoder = small_speaker_encoder(torch.float32)
+    runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
+    runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
+    with torch.inference_mode():
+        runner.embed(clip_of(20, 6))
+
+    assert runner.stats() == {
+        "enabled": False,
+        "disable_reason": disable_reason,
+        "bucket_frames": [16, 32],
+        "captured": [],
+        "replays": 0,
+        "misses": 1,
+    }
+
+
+def test_runner_without_buckets_captures_nothing() -> None:
+    runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(
+        small_speaker_encoder(torch.float32), sample_rate=SAMPLE_RATE
+    )
+    runner.capture((), 8 * SPEAKER_MEL_HOP)
+
+    assert runner.stats() == {
+        "enabled": False,
+        "disable_reason": None,
+        "bucket_frames": [],
+        "captured": [],
+        "replays": 0,
+        "misses": 0,
+    }
+
+
 def test_embed_rejects_a_clip_shorter_than_the_largest_reflect_pad() -> None:
     encoder = small_speaker_encoder(torch.float32)
     runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
@@ -171,6 +229,14 @@ def test_runner_replays_captured_buckets_and_encodes_the_rest() -> None:
     assert runner.pads == PADS
     runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
     assert sorted(runner.graphs) == [16, 32]
+    assert runner.stats() == {
+        "enabled": True,
+        "disable_reason": None,
+        "bucket_frames": [16, 32],
+        "captured": [16, 32],
+        "replays": 0,
+        "misses": 0,
+    }
 
     frames = (32, 20, 5, 24, 20, 40)
     seeds = (0, 1, 2, 3, 1, 5)

@@ -5,16 +5,43 @@ from __future__ import annotations
 
 import threading
 from typing import Literal, TypedDict
+from unittest.mock import Mock
 
 import numpy as np
+import pytest
 import torch
 from numpy.typing import NDArray
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.generation.utils import GenerateDecoderOnlyOutput
 
+from sglang_omni.models.nemotron3_5_asr import encoder, model_runner
+from sglang_omni.models.nemotron3_5_asr.encoder import (
+    CapturedEncoderBatch,
+    NemotronStreamingEncoderGraphRunner,
+    encode_pooled_streaming_batch,
+)
+from sglang_omni.models.nemotron3_5_asr.encoder_state_pool import (
+    EncoderPoolLayout,
+    NemotronEncoderStatePool,
+)
 from sglang_omni.models.nemotron3_5_asr.model_runner import Nemotron3_5ASRModelRunner
 from sglang_omni.models.nemotron3_5_asr.request_builders import Nemotron3_5ASRRequest
 from sglang_omni.proto.request import OmniRequest, StagePayload
+
+ENCODER_POOL_LAYOUT = EncoderPoolLayout(
+    attention_shape=(1, 1, 4, 2),
+    convolution_shapes={"conv.0": (2, 2)},
+    dtype=torch.float32,
+    device=torch.device("cpu"),
+)
+XPU_ACCELERATOR_MARKS = [
+    pytest.mark.accelerator,
+    pytest.mark.skipif(not torch.xpu.is_available(), reason="XPU required"),
+]
+CUDA_ACCELERATOR_MARKS = [
+    pytest.mark.accelerator,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+]
 
 
 class ProcessorCall(TypedDict):
@@ -127,6 +154,8 @@ def make_runner() -> tuple[Nemotron3_5ASRModelRunner, FakeProcessor, FakeModel]:
     runner.processor = processor
     runner.model = model
     runner.model_lock = threading.Lock()
+    runner.encoder_state_pool = None
+    runner.encoder_graph_runner = None
     return runner, processor, model
 
 
@@ -173,3 +202,108 @@ def test_batch_groups_token_limits_without_changing_request_order() -> None:
     assert [call["input_features"].shape[0] for call in model.calls] == [2, 1]
     assert model.calls[0]["input_features"].dtype == runner.dtype
     assert model.calls[0]["prompt_ids"].dtype == torch.long
+
+
+@pytest.mark.parametrize("execution", ["replay", "first", "uncaptured_batch"])
+def test_streaming_encoder_routes_graph_and_eager_batches(
+    monkeypatch: pytest.MonkeyPatch,
+    execution: Literal["replay", "first", "uncaptured_batch"],
+) -> None:
+    pool = NemotronEncoderStatePool(ENCODER_POOL_LAYOUT, 2)
+    model = Mock(training=False)
+    graph_runner = object.__new__(NemotronStreamingEncoderGraphRunner)
+    graph_runner.subsequent_mel_frames = 32
+    graph = Mock()
+    graph_runner.captured_batches = {
+        1: CapturedEncoderBatch(
+            input_features=torch.empty(1, 32, 4),
+            prompt_ids=torch.empty(1, dtype=torch.long),
+            slot_ids=torch.empty(1, dtype=torch.long),
+            encoded_frames=torch.empty(1, 4, 8),
+            graph=graph,
+        )
+    }
+    batch_size = 2 if execution == "uncaptured_batch" else 1
+    slots = [pool.acquire() for _ in range(batch_size)]
+    for slot in slots:
+        slot.seen_frames = 0 if execution == "first" else 4
+    eager = Mock(return_value=torch.empty(batch_size, 4, 8))
+    monkeypatch.setattr(encoder, "encode_pooled_windows", eager)
+
+    encode_pooled_streaming_batch(
+        model,
+        [torch.zeros(1, 32, 4) for _ in slots],
+        torch.zeros(batch_size, dtype=torch.long),
+        encoder_slots=slots,
+        num_lookahead_tokens=3,
+        graph_runner=graph_runner,
+    )
+
+    if execution == "replay":
+        graph.replay.assert_called_once_with()
+        eager.assert_not_called()
+    else:
+        graph.replay.assert_not_called()
+        eager.assert_called_once()
+    pool.close()
+
+
+@pytest.mark.parametrize(
+    "device_type,enable_encoder_cuda_graph,expects_graph",
+    [
+        pytest.param(
+            "cuda", True, True, marks=CUDA_ACCELERATOR_MARKS, id="cuda-enabled"
+        ),
+        pytest.param("xpu", True, True, marks=XPU_ACCELERATOR_MARKS, id="xpu-enabled"),
+        pytest.param(
+            "xpu", False, False, marks=XPU_ACCELERATOR_MARKS, id="xpu-disabled"
+        ),
+        pytest.param("cpu", True, False, id="cpu-no-backend"),
+    ],
+)
+def test_runner_selects_graph_execution_from_the_device_platform(
+    monkeypatch: pytest.MonkeyPatch,
+    device_type: str,
+    enable_encoder_cuda_graph: bool,
+    expects_graph: bool,
+) -> None:
+    layout = EncoderPoolLayout(
+        attention_shape=(1, 1, 4, 2),
+        convolution_shapes={"conv.0": (2, 2)},
+        dtype=torch.float32,
+        device=torch.device(device_type),
+    )
+    monkeypatch.setattr(
+        model_runner, "resolve_checkpoint", Mock(return_value="/checkpoint")
+    )
+    monkeypatch.setattr(model_runner, "Nemotron3_5AsrProcessor", Mock())
+    monkeypatch.setattr(model_runner, "Nemotron3_5AsrConfig", Mock())
+    monkeypatch.setattr(model_runner, "Nemotron3_5AsrForRNNT", Mock())
+    monkeypatch.setattr(
+        model_runner, "EncoderPoolLayout", Mock(from_model=Mock(return_value=layout))
+    )
+    graph_runner_class = Mock()
+    monkeypatch.setattr(
+        model_runner, "NemotronStreamingEncoderGraphRunner", graph_runner_class
+    )
+
+    runner = Nemotron3_5ASRModelRunner(
+        "checkpoint",
+        device=device_type,
+        enable_encoder_cuda_graph=enable_encoder_cuda_graph,
+        encoder_graph_max_batch_size=2,
+    )
+
+    assert runner.enable_encoder_cuda_graph is expects_graph
+    assert (runner.graph_backend is not None) is expects_graph
+
+    runner.configure_encoder_state_pool(2)
+    if expects_graph:
+        assert runner.encoder_graph_runner is not None
+        assert (
+            graph_runner_class.call_args.kwargs["graph_backend"] is runner.graph_backend
+        )
+    else:
+        assert runner.encoder_graph_runner is None
+        graph_runner_class.assert_not_called()
+    runner.close()

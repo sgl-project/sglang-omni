@@ -15,6 +15,7 @@ from sglang_omni.models.qwen3_omni.mrope_positions import (
     feat_extract_output_lengths,
     get_rope_index_qwen3_omni_vectorized,
 )
+from sglang_omni.models.qwen3_omni.request_builders import compute_mrope_positions
 
 # Defaults from Qwen3OmniMoeThinkerConfig
 IMAGE_TOKEN_ID = 151655
@@ -612,3 +613,28 @@ def test_build_talker_request_attaches_no_mrope_without_mm_markers(
         talker_model_inputs=model_inputs,
     )
     assert data.req.multimodal_inputs is None
+
+
+@pytest.mark.parametrize("grid", [[4, 4, 4], [8, 16, 16]])
+def test_compute_mrope_positions_serves_fractional_video_timing_floored(
+    grid: list[int],
+) -> None:
+    """A video timed at its sampled fps gets fractional positions: served as int64 they are its floor, and the first decode position, read from the delta as int64, follows the largest."""
+    tokens = [10] + video_span(grid) + [11, 12]
+    seconds = torch.tensor([1.1611], dtype=torch.float)
+    video_grid = torch.tensor([grid], dtype=torch.long)
+    (oracle_pos, _), _ = oracle_and_fast(
+        torch.tensor([tokens], dtype=torch.long),
+        video_grid_thw=video_grid,
+        second_per_grid_ts=seconds,
+    )
+    served = oracle_pos.squeeze(1).float().floor()
+
+    positions, delta = compute_mrope_positions(
+        torch.tensor(tokens, dtype=torch.long),
+        {"video_grid_thw": video_grid, "video_second_per_grid": seconds},
+        thinker_config_ns(),
+    )
+    first_decode = int(torch.tensor([delta.item()], dtype=torch.int64)) + len(tokens)
+    assert torch.equal(positions.float(), served)
+    assert first_decode == served.max().item() + 1

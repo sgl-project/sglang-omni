@@ -1,0 +1,16 @@
+{"to":"helper","msg":{"id":"c3","method":"app.frontmost"}}
+{"to":"app","msg":{"id":"c3","result":{"pid":812,"bundleId":"com.tinyspeck.slackmacgap","name":"Slack"}}}
+{"to":"app","msg":{"method":"app.activated","params":{"pid":901,"bundleId":"com.google.Chrome","name":"Google Chrome"}}}
+{"to":"app","msg":{"method":"app.activated","params":{"pid":77}}}
+{"to":"helper","msg":{"id":"c4","method":"app.frontmost"}}
+{"to":"app","msg":{"id":"c4","result":{"pid":77}}}
+{"to":"helper","msg":{"id":"c5","method":"app.list"}}
+{"to":"app","msg":{"id":"c5","result":{"apps":[{"bundleId":"com.google.Chrome","name":"Google Chrome","running":true,"pid":901,"path":"/Applications/Google Chrome.app"},{"bundleId":"com.tinyspeck.slackmacgap","name":"Slack","running":true,"pid":812,"path":"/Applications/Slack.app"}]}}}
+{"to":"helper","msg":{"id":"c6","method":"app.list","params":{"installed":true}}}
+{"to":"app","msg":{"id":"c6","result":{"apps":[{"bundleId":"com.apple.Notes","name":"Notes","running":false,"path":"/System/Applications/Notes.app"},{"bundleId":"com.google.Chrome","name":"Google Chrome","running":true,"pid":901,"path":"/Applications/Google Chrome.app"},{"bundleId":"com.tinyspeck.slackmacgap","name":"Slack","running":true,"pid":812,"path":"/Applications/Slack.app"}]}}}
+{"to":"helper","msg":{"id":"c7","method":"app.configure","params":{"manualAccessibility":["com.google.Chrome","company.thebrowser.Browser","com.example.MyBrowser"]}}}
+{"to":"app","msg":{"id":"c7","result":{}}}
+{"to":"helper","msg":{"id":"c8","method":"app.configure","params":{}}}
+{"to":"app","msg":{"id":"c8","result":{}}}
+{"to":"helper","msg":{"id":"c9","method":"app.icons","params":{"apps":[{"bundleId":"com.tinyspeck.slackmacgap","path":"/Applications/Slack.app"},{"bundleId":"com.example.removed"}],"size":64}}}
+{"to":"app","msg":{"id":"c9","result":{"icons":[{"bundleId":"com.tinyspeck.slackmacgap","png":"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGPwEvX+D8IMMAYANywGpeWVRmAAAAAASUVORK5CYII="},{"bundleId":"com.example.removed"}]}}}

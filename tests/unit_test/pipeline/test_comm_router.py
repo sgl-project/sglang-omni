@@ -5,6 +5,7 @@ import pytest
 import torch
 
 import sglang_omni.platforms as platforms
+from sglang_omni.comm import router as router_module
 from sglang_omni.comm.data_ref import TransportKind
 from sglang_omni.comm.router import CommRouter
 
@@ -170,16 +171,25 @@ def test_a_mooncake_relay_is_refused_on_a_non_cuda_accelerator(monkeypatch) -> N
 def test_a_host_only_stage_still_gets_a_mooncake_relay(monkeypatch) -> None:
     """A stage with no card uses the cpu path, which is unaffected."""
     pin_non_cuda_platform(monkeypatch)
+    relay_kwargs: dict[str, object] = {}
+    built_relay = object()
+
+    def record_relay(kind: str, **kwargs: object) -> object:
+        relay_kwargs.update(kwargs, kind=kind)
+        return built_relay
+
+    monkeypatch.setattr(router_module, "create_relay", record_relay)
     router = CommRouter(
         stage_name="preprocessing",
         gpu_id=None,
         same_process_targets=set(),
         gpu_stage_names=set(),
         remote_stage_names={"remote_decode"},
-        injected_relay=object(),
     )
 
-    assert router.relay(TransportKind.MOONCAKE) is router.injected_relay
+    assert router.relay(TransportKind.MOONCAKE) is built_relay
+    assert relay_kwargs["kind"] == "mooncake"
+    assert relay_kwargs["device"] == "cpu"
 
 
 def test_comm_router_admits_compatible_direct_cuda_ipc_namespace() -> None:
@@ -306,29 +316,3 @@ def test_a_non_cuda_platform_never_runs_the_cuda_peer_probe(monkeypatch) -> None
 
     assert router.outbound("vocoder") is TransportKind.SHM
     assert router.inbound("vocoder") is TransportKind.SHM
-
-
-def test_a_cuda_platform_still_falls_back_when_peers_cannot_talk(monkeypatch) -> None:
-    """CUDA keeps its peer fallback: the probe decides, not the platform alone."""
-    monkeypatch.setattr(
-        platforms.current_platform,
-        "get_intra_node_transport",
-        lambda: TransportKind.CUDA_IPC,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        platforms.current_platform, "device_type", "cuda", raising=False
-    )
-    router = CommRouter(
-        stage_name="talker",
-        gpu_id=0,
-        same_process_targets=set(),
-        gpu_stage_names={"vocoder"},
-        stage_gpu_ids={"vocoder": (1,)},
-    )
-
-    monkeypatch.setattr(router, "cuda_ipc_peer_available", lambda target: False)
-    assert router.outbound("vocoder") is TransportKind.SHM
-
-    monkeypatch.setattr(router, "cuda_ipc_peer_available", lambda target: True)
-    assert router.outbound("vocoder") is TransportKind.CUDA_IPC

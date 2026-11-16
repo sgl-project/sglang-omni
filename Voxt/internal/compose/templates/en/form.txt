@@ -1,0 +1,1 @@
+Form: keep the speaker's order and sentences. Do not turn prose into lists or headings; add line breaks only where the speaker asked for them.

@@ -1,1 +1,0 @@
-Clean up the dictated text while preserving meaning. Fix punctuation, casing, repeated words, spoken filler, and obvious number or unit formatting.

@@ -1,0 +1,44 @@
+{%- set target = pathto(doc_redirects[pagename]) -%}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>This page has moved</title>
+    <link rel="canonical" href="{{ target | e }}">
+    <script>
+      const destination = new URL({{ target | tojson }}, window.location.href);
+      destination.search = window.location.search;
+      destination.hash = window.location.hash;
+      {%- if pagename == 'get_started/apiserver_quickstart' %}
+      const apiAnchors = {
+        '#api-server-reference': '#api-server-design',
+        '#what-this-server-is': '#role-in-the-system',
+        '#start-the-server': '#launch-commands',
+        '#unified-sglang-cli': '#launch-commands',
+        '#check-that-it-works': '#route-surface',
+        '#health-check': '#route-surface',
+        '#list-the-served-model': '#route-surface',
+        '#send-a-minimal-chat-request': '#non-streaming-chat',
+        '#streaming-and-multi-modal-requests': '#chat-requests',
+        '#streaming': '#streaming-chat',
+        '#multi-modal-input-and-output': '#chat-requests',
+        '#common-errors': '#common-errors',
+        '#next-reading': '#api-server-design',
+      };
+      const apiAnchor = apiAnchors[destination.hash];
+      if (apiAnchor) {
+        destination.pathname = new URL({{ pathto('developer_reference/apiserver_design') | tojson }}, destination).pathname;
+        destination.hash = apiAnchor;
+      } else if (destination.hash === '#text-to-speech') {
+        destination.pathname = new URL({{ pathto('get_started/examples') | tojson }}, destination).pathname;
+        destination.hash = '#generate-speech-from-text';
+      }
+      {%- endif %}
+      window.location.replace(destination.href);
+    </script>
+  </head>
+  <body>
+    <h1>This page has moved</h1>
+    <p>Continue to <a href="{{ target | e }}">the new page</a>.</p>
+  </body>
+</html>

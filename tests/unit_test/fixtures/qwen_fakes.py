@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import threading
+from queue import Queue
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,8 +15,20 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
 )
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
+from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.session import SessionContext
+
+
+class RecordingOutbox(Queue[OutgoingMessage]):
+    """A real scheduler outbox whose messages a test reads back in order."""
+
+    @property
+    def sent(self) -> list[OutgoingMessage]:
+        return list(self.queue)
 
 
 class FakeQwenTokenizer:
@@ -68,6 +82,44 @@ def make_qwen_payload(
         ),
         data=(state or make_qwen_state()).to_dict(),
     )
+
+
+def make_thinker_config(
+    *,
+    image_token_id: int,
+    video_token_id: int,
+    audio_token_id: int,
+    vision_start_token_id: int,
+    audio_start_token_id: int,
+) -> SimpleNamespace:
+    """The thinker config fields the Qwen3-Omni request builder and its M-RoPE read."""
+    return SimpleNamespace(
+        image_token_id=image_token_id,
+        video_token_id=video_token_id,
+        audio_token_id=audio_token_id,
+        vision_start_token_id=vision_start_token_id,
+        audio_start_token_id=audio_start_token_id,
+        position_id_per_seconds=25,
+        vision_config=SimpleNamespace(spatial_merge_size=2, tokens_per_second=2),
+    )
+
+
+def make_dialog(
+    session_identity: SessionIdentity,
+) -> tuple[QwenInputHooks, list[TimedChunk], SessionContext]:
+    """An open dialog stage whose emitted chunks a test reads back in order."""
+    hooks = QwenInputHooks(
+        max_utterance_seconds=1, max_queued_turns=2, max_utterance_frames=4
+    )
+    outputs: list[TimedChunk] = []
+    hooks.open(session_identity, OmniRequest(None))
+    hooks.attach_output_stream(session_identity, outputs.append)
+    context = SessionContext(
+        session_identity=session_identity,
+        cancelled=threading.Event(),
+        emit=outputs.append,
+    )
+    return hooks, outputs, context
 
 
 class FakeCodecEmbedding(nn.Module):

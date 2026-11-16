@@ -17,20 +17,11 @@ wildcard: stop whatever's active.
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
-from sglang_omni.profiler.event_recorder import get_recorder, reset_active_stage
-from sglang_omni.proto.messages import ProfilerStopMessage
-
-
-@pytest.fixture(autouse=True)
-def reset_recorder():
-    rec = get_recorder()
-    if rec.is_active():
-        rec.stop()
-    reset_active_stage(None)
+from sglang_omni.proto.messages import (
+    ProfilerStartMessage,
+    ProfilerStopMessage,
+    parse_message,
+)
 
 
 def test_profiler_stop_message_supports_optional_run_id() -> None:
@@ -51,25 +42,31 @@ def test_profiler_stop_message_legacy_run_id_round_trip() -> None:
     assert round_trip.run_id == "abc"
 
 
-def test_recorder_stop_with_none_run_id_unconditionally_stops(
-    tmp_path: Path,
-) -> None:
-    """A wildcard (None) stop must close the active recorder even when
-    the recorder was started with a specific run_id."""
-    rec = get_recorder()
-    rec.start(run_id="generated-run-12345", event_dir=str(tmp_path), stage="s")
-    assert rec.is_active()
-    rec.stop(run_id=None)
-    assert not rec.is_active()
+def test_profiler_start_message_capacity_round_trip_and_legacy_payload() -> None:
+    message = ProfilerStartMessage(
+        run_id="performance_test",
+        trace_path_template="",
+        event_dir="/tmp/performance_test/events",
+        enable_torch=False,
+        event_buffer_capacity=1500,
+    )
 
+    payload = message.to_dict()
+    round_trip = parse_message(payload)
 
-def test_recorder_stop_with_mismatched_run_id_is_still_noop(
-    tmp_path: Path,
-) -> None:
-    """A non-None mismatched run_id must NOT close the recorder
-    (preserved from earlier behavior)."""
-    rec = get_recorder()
-    rec.start(run_id="real-run", event_dir=str(tmp_path), stage="s")
-    rec.stop(run_id="other-run")
-    assert rec.is_active(), "mismatched non-None run_id should not stop"
-    rec.stop()  # cleanup
+    assert isinstance(round_trip, ProfilerStartMessage)
+    assert round_trip.event_buffer_capacity == 1500
+
+    legacy_message = parse_message(
+        {
+            "type": "profiler_start",
+            "run_id": "legacy",
+            "trace_path_template": "",
+            "event_dir": "/tmp/legacy/events",
+            "enable_torch": False,
+        }
+    )
+
+    assert isinstance(legacy_message, ProfilerStartMessage)
+    assert legacy_message.event_buffer_capacity is None
+    assert "event_buffer_capacity" not in legacy_message.to_dict()
