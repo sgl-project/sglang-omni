@@ -209,6 +209,32 @@ func TestOmniDraft(t *testing.T) {
 	}
 }
 
+// TestOmniSharedDraftUnload: the 1.7B draft serves both 1.7B quants;
+// deleting it unloads both speech models, which then run without it.
+func TestOmniSharedDraftUnload(t *testing.T) {
+	fakeOmni(t, omnitest.Opts{})
+	a := newSessionApp(t, "", func(*settings.Settings) {}, realLocal{installed: []string{models.ASRAccurate, models.ASRQwen6bit, models.ASRAccurateDraft}})
+	draft := a.models.Dir(models.ASRAccurateDraft)
+	if draft == "" || a.omniDraft(models.ASRAccurate) != draft || a.omniDraft(models.ASRQwen6bit) != draft {
+		t.Fatalf("one draft for both quants: %q, %q, %q", draft, a.omniDraft(models.ASRAccurate), a.omniDraft(models.ASRQwen6bit))
+	}
+	for _, id := range []string{models.ASRAccurate, models.ASRQwen6bit} {
+		if _, err := a.openOmniASR(context.Background(), id, a.models.Dir(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.localLib.Delete(context.Background(), models.ASRAccurateDraft, fammodels.ThisApp); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.omniASR) != 0 {
+		t.Fatalf("%d providers after the draft's delete", len(a.omniASR))
+	}
+	// Without the draft both models work as before: no draft.
+	if a.omniDraft(models.ASRAccurate) != "" || a.omniDraft(models.ASRQwen6bit) != "" {
+		t.Error("a draft without its files")
+	}
+}
+
 // eventually waits for cond, at most 10 s.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
