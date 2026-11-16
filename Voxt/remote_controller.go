@@ -81,12 +81,13 @@ func (a *app) remoteDialogModel() *remoteDialogViewState {
 func (a *app) llmDebugModel() llmDebugViewState {
 	a.prepareLLMDebug()
 	setups := a.llmDebugSetups()
-	input := llmDebugStateInput{Presets: a.llmDebugPresets(), UI: &a.llmDbg}
+	input := llmDebugStateInput{Presets: a.llmDebugPresets(), SavedPrompts: map[string]string{}, UI: &a.llmDbg}
 	for _, setup := range setups {
 		input.ModelNames = append(input.ModelNames, setupName(local.LLM, setup))
 	}
 	if len(setups) > 0 {
 		for _, preset := range input.Presets {
+			input.SavedPrompts[llmDebugPresetKey(preset)] = a.savedPrompt(preset)
 			if preset.title == a.llmDbg.preset {
 				input.Selected = preset
 				input.SavedPrompt = a.savedPrompt(preset)

@@ -11,6 +11,32 @@
       "Translate",
       "Rewrite"
     ],
+    "preset_states": [
+      {
+        "title": "Transcribe",
+        "feature": "transcribe",
+        "saved_prompt": "Fixture saved prompt",
+        "prompt_label": "System prompt",
+        "input_label": "Recognised text",
+        "instruction": false
+      },
+      {
+        "title": "Translate",
+        "feature": "translate",
+        "saved_prompt": "Fixture saved prompt",
+        "prompt_label": "System prompt",
+        "input_label": "Text to translate",
+        "instruction": false
+      },
+      {
+        "title": "Rewrite",
+        "feature": "rewrite",
+        "saved_prompt": "Fixture saved prompt",
+        "prompt_label": "System prompt",
+        "input_label": "Selected text (optional)",
+        "instruction": true
+      }
+    ],
     "saved_prompt": "Fixture saved prompt",
     "prompt_label": "System prompt",
     "input_label": "Recognised text",

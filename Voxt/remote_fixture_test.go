@@ -3,10 +3,12 @@ package main
 import (
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 func TestRemoteFixtureCoverage(t *testing.T) {
@@ -14,7 +16,7 @@ func TestRemoteFixtureCoverage(t *testing.T) {
 		"remote-page-empty", "remote-page-loading", "remote-page-normal", "remote-page-error",
 		"remote-dialog-empty", "remote-dialog-loading", "remote-dialog-normal", "remote-dialog-error",
 		"remote-debug-empty", "remote-debug-loading", "remote-debug-transcribe", "remote-debug-error",
-		"remote-wait-custom", "remote-dialog-speech-realtime", "remote-dialog-speech-upload",
+		"remote-wait-custom", "remote-dialog-speech-realtime", "remote-dialog-speech-upload", "remote-cards-normal",
 	}
 	for _, locale := range i18n.Supported() {
 		fixtures := readMeetingFixtures(t, locale)
@@ -23,14 +25,14 @@ func TestRemoteFixtureCoverage(t *testing.T) {
 				t.Errorf("%s: missing required remote fixture %s", locale, name)
 			}
 		}
-		kinds, missing := map[string]bool{}, map[string]bool{}
+		cardKinds, dialogKinds, missing := map[string]bool{}, map[string]bool{}, map[string]bool{}
 		llmProblems, speechProblems, chatProblems := map[string]bool{}, map[string]bool{}, map[string]bool{}
 		thinking, efforts, formats, verbositySet, apis, waits := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 		translator := i18n.NewTranslator(locale)
 		for _, fixture := range fixtures {
 			if fixture.Remote != nil {
 				remote := fixture.Remote
-				kinds[remote.Cards.Kind] = true
+				cardKinds[remote.Cards.Kind] = true
 				for _, option := range remote.Wait.Options {
 					if option.Title == remote.Wait.Selected {
 						if option.Custom {
@@ -51,9 +53,12 @@ func TestRemoteFixtureCoverage(t *testing.T) {
 					}
 				}
 			}
+			if fixture.RemoteCards != nil {
+				cardKinds[fixture.RemoteCards.Kind] = true
+			}
 			if fixture.RemoteDialog != nil {
 				dialog := fixture.RemoteDialog
-				kinds[dialog.Kind] = true
+				dialogKinds[dialog.Kind] = true
 				if dialog.Test.Code != "" {
 					if dialog.Kind == "asr" {
 						speechProblems[dialog.Test.Code] = true
@@ -76,7 +81,31 @@ func TestRemoteFixtureCoverage(t *testing.T) {
 				}
 			}
 		}
-		assertMeetingFixtureSet(t, locale+" remote kinds", meetingTypedConstants(t, "internal/local/local.go", "Kind"), kinds)
+		if got, want := fixtures["remote-page-normal"].Remote.Cards.Groups[0].Cards[0].Used, translator.T("Used by %s", translator.T("Rewrite")); got != want {
+			t.Errorf("%s: used-by text %q, want %q", locale, got, want)
+		}
+		if got, want := fixtures["remote-onboarding-back"].Remote.BackBar.Text, translator.T("The setup guide is paused at the %s step.", translator.T("Models")); got != want {
+			t.Errorf("%s: onboarding text %q, want %q", locale, got, want)
+		}
+		keyDialog := fixtures["remote-dialog-key-spaced"].RemoteDialog
+		if keyDialog.Key.Warning == "" || keyDialog.Form.TypedKeySpaces != 1 {
+			t.Errorf("%s: key whitespace was not preserved in the fixture: %+v", locale, keyDialog.Key)
+		}
+		for _, problem := range []struct {
+			name string
+			kind asr.Kind
+		}{{"remote-speech-problem-auth", asr.KindAuth}, {"remote-speech-problem-quota", asr.KindQuota}} {
+			got := fixtures[problem.name].RemoteDialog.Test.LongText
+			want, _ := uitext.ModelErrorTextFor(translator, &asr.Error{Kind: problem.kind, Provider: providers.StepFunASR})
+			if got != want {
+				t.Errorf("%s: %s text %q, want %q", locale, problem.name, got, want)
+			}
+		}
+		if !fixtures["remote-cards-normal"].RemoteCards.Groups[0].Cards[0].Realtime || fixtures["remote-cards-upload"].RemoteCards.Groups[0].Cards[0].Realtime {
+			t.Errorf("%s: speech card realtime states are wrong", locale)
+		}
+		assertMeetingFixtureSet(t, locale+" remote card kinds", meetingTypedConstants(t, "internal/local/local.go", "Kind"), cardKinds)
+		assertMeetingFixtureSet(t, locale+" remote dialog kinds", meetingTypedConstants(t, "internal/local/local.go", "Kind"), dialogKinds)
 		assertMeetingFixtureSet(t, locale+" remote missing codes", meetingNamedConstants(t, "internal/providers/providers.go", "Missing"), missing)
 		assertMeetingFixtureSet(t, locale+" remote language problem codes", meetingNamedConstants(t, "internal/llm/errors.go", "Code"), llmProblems)
 		assertMeetingFixtureSet(t, locale+" remote speech problem codes", meetingTypedConstants(t, "internal/asr/errors.go", "Kind"), speechProblems)

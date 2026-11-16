@@ -13,6 +13,7 @@
     "key": {
       "info": "Optional for a server on this Mac. Saved in this Mac's Keychain.",
       "placeholder": "Saved: •••• · paste a new one to replace it",
+      "warning": "The key has 1 space or line break in it, removed when you test or save.",
       "has_saved": true
     },
     "endpoint": {
@@ -156,6 +157,7 @@
     "form": {
       "model": "fixture-model",
       "has_typed_key": true,
+      "typed_key_spaces": 1,
       "generation": {
         "think": "Thinking on",
         "format": "Plain text",

@@ -31,9 +31,9 @@
       "state": "failure",
       "code": "auth",
       "text": "Failed",
-      "long_text": "The speech model answered something Voxt does not understand.",
-      "tooltip": "The speech model answered something Voxt does not understand.\n\nredacted fixture detail",
-      "long_tooltip": "The speech model answered something Voxt does not understand.\n\nredacted fixture detail"
+      "long_text": "The remote service refused the API key.",
+      "tooltip": "The remote service refused the API key.\n\nredacted fixture detail",
+      "long_tooltip": "The remote service refused the API key.\n\nredacted fixture detail"
     },
     "show_remove": true,
     "saving": false,

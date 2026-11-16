@@ -51,6 +51,24 @@ func remoteFixtureScenarios() []meetingFixtureScenario {
 		input.Wait.CurrentMinutes = 45
 	})
 
+	addCards := func(name string, mutate func(*remoteCardsStateInput)) {
+		input := remoteFixtureCardsInput()
+		mutate(&input)
+		scenarios = append(scenarios, meetingFixtureScenario{name: name, kind: "remote-cards", remoteCards: input})
+	}
+	addCards("remote-cards-empty", func(input *remoteCardsStateInput) { input.Services = nil })
+	addCards("remote-cards-loading", func(input *remoteCardsStateInput) {
+		input.Services[0].Mask, input.Services[0].KeyRead = "", false
+		input.Services[0].Test = providerTest{running: true}
+	})
+	addCards("remote-cards-normal", func(input *remoteCardsStateInput) {})
+	addCards("remote-cards-upload", func(input *remoteCardsStateInput) {
+		input.Services[0].Service.speech.Uploads = []string{"fixture-model"}
+	})
+	addCards("remote-cards-error", func(input *remoteCardsStateInput) {
+		input.Services[0].Test = remoteFixtureTest(&asr.Error{Kind: asr.KindNetwork, Provider: providers.StepFunASR})
+	})
+
 	addDialog := func(name string, mutate func(*remoteDialogStateInput)) {
 		input := remoteFixtureDialogInput(local.LLM)
 		mutate(input)
@@ -67,7 +85,7 @@ func remoteFixtureScenarios() []meetingFixtureScenario {
 	addDialog("remote-dialog-unsaved", func(input *remoteDialogStateInput) {
 		input.Dialog.endpoint, input.Unsaved = "changed", true
 	})
-	addDialog("remote-dialog-key-spaced", func(input *remoteDialogStateInput) { input.Dialog.key = "fixture " })
+	addDialog("remote-dialog-key-spaced", func(input *remoteDialogStateInput) { input.Dialog.key = "fix ture" })
 	addDialog("remote-dialog-remove-key", func(input *remoteDialogStateInput) { input.Dialog.removeKey = true })
 	addDialog("remote-dialog-custom-model", func(input *remoteDialogStateInput) {
 		input.Dialog.model, input.Dialog.customModel = otherModel(), "custom-model"
@@ -198,6 +216,18 @@ func remoteFixturePageInput() remotePageStateInput {
 	}
 }
 
+func remoteFixtureCardsInput() remoteCardsStateInput {
+	configured := remoteFixtureServiceState(local.ASR)
+	configured.Service.speech.Stream = true
+	configured.Configured = true
+	configured.Mask, configured.KeyRead = "••••", true
+	configured.Test = remoteFixtureTest(nil)
+	configured.HasTest = true
+	unconfigured := remoteFixtureServiceState(local.ASR)
+	unconfigured.Service.id, unconfigured.Service.name = "online-speech", "Online speech"
+	return remoteCardsStateInput{Kind: local.ASR, Services: []remoteServiceStateInput{configured, unconfigured}}
+}
+
 func remoteFixtureServiceState(kind local.Kind) remoteServiceStateInput {
 	sv := service{kind: kind, id: "fixture", name: "Fixture service", model: "fixture-model", models: []string{"fixture-model", "other-model"}, keyOptional: true, keyURL: "https://example.invalid"}
 	return remoteServiceStateInput{Service: sv, Setup: settings.Provider{ID: sv.id, Model: "fixture-model"}}
@@ -232,7 +262,7 @@ func remoteFixtureDialogInput(kind local.Kind) *remoteDialogStateInput {
 
 func remoteFixtureSpeechProblem(kind asr.Kind) *remoteDialogStateInput {
 	input := remoteFixtureDialogInput(local.ASR)
-	input.Dialog.test = remoteFixtureTest(&asr.Error{Kind: kind, Provider: "fixture"})
+	input.Dialog.test = remoteFixtureTest(&asr.Error{Kind: kind, Provider: providers.StepFunASR})
 	return input
 }
 
@@ -257,6 +287,18 @@ func remoteFixtureDebugError() llmDebugStateInput {
 	input := remoteFixtureDebugInput(hotkey.Transcribe)
 	input.UI.res = &llmDebugResult{err: "fixture run failed"}
 	return input
+}
+
+func localizeRemotePageInput(input *remotePageStateInput, translator *i18n.Translator) {
+	input.Cards.Services = append([]remoteServiceStateInput(nil), input.Cards.Services...)
+	if input.BackBarText != "" {
+		input.BackBarText = translator.T("The setup guide is paused at the %s step.", translator.T("Models"))
+	}
+	for index := range input.Cards.Services {
+		if input.Cards.Services[index].Used != "" {
+			input.Cards.Services[index].Used = translator.T("Used by %s", translator.T(input.Cards.Services[index].Used))
+		}
+	}
 }
 
 func localizeRemoteDialogInput(input *remoteDialogStateInput, translator *i18n.Translator) {
@@ -294,6 +336,10 @@ func localizeRemoteDebugInput(input *llmDebugStateInput, translator *i18n.Transl
 	}
 	if input.Selected.title == "" && len(input.Presets) > 0 {
 		input.Selected = input.Presets[0]
+	}
+	input.SavedPrompts = map[string]string{}
+	for _, preset := range input.Presets {
+		input.SavedPrompts[llmDebugPresetKey(preset)] = input.SavedPrompt
 	}
 	if selected != nil {
 		if len(input.ModelNames) > 0 {

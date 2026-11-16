@@ -55,7 +55,7 @@
               "account": "llm.fixture",
               "name": "Fixture service",
               "model": "fixture-model",
-              "used": "Rewrite",
+              "used": "用于改写",
               "where": "远程",
               "configured": true,
               "missing": "endpoint",

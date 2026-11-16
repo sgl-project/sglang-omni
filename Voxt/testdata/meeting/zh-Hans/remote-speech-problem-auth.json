@@ -31,9 +31,9 @@
       "state": "failure",
       "code": "auth",
       "text": "失败",
-      "long_text": "语音识别模型返回了 Voxt 无法解析的内容。",
-      "tooltip": "语音识别模型返回了 Voxt 无法解析的内容。\n\nredacted fixture detail",
-      "long_tooltip": "语音识别模型返回了 Voxt 无法解析的内容。\n\nredacted fixture detail"
+      "long_text": "远程服务拒绝了这个 API Key。",
+      "tooltip": "远程服务拒绝了这个 API Key。\n\nredacted fixture detail",
+      "long_tooltip": "远程服务拒绝了这个 API Key。\n\nredacted fixture detail"
     },
     "show_remove": true,
     "saving": false,

@@ -16,6 +16,9 @@ func newMeetingDemoTester(t *testing.T, host *meetingDemoHost) *ui.Tester {
 	t.Helper()
 	fixture := host.current()
 	width, height := 1000, 700
+	if fixture.state.Kind == "remote-dialog" {
+		height = 1600
+	}
 	if fixture.state.Kind == "overlay" && fixture.state.Overlay.Visible {
 		model := meetingOverlayLayoutModel(*fixture.state.Overlay, host.overlayUI.menu)
 		width, height = model.Layout.Width, model.Layout.Height+48
@@ -192,6 +195,21 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			}
 		}
 		return remote.Wait.Selected
+	case "remote-cards":
+		for _, group := range state.RemoteCards.Groups {
+			for _, card := range group.Cards {
+				if card.Test != nil && card.Test.State == "failure" {
+					return card.Test.Text
+				}
+				if card.Realtime {
+					return i18n.T("Realtime")
+				}
+				if card.Name != "" {
+					return card.Name
+				}
+			}
+		}
+		return fixture.name
 	case "remote-dialog":
 		dialog := state.RemoteDialog
 		if dialog.ChatGPT != nil {

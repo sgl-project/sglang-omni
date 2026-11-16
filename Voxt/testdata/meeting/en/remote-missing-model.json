@@ -55,7 +55,7 @@
               "account": "llm.fixture",
               "name": "Fixture service",
               "model": "fixture-model",
-              "used": "Rewrite",
+              "used": "Used by Rewrite",
               "where": "Remote",
               "configured": true,
               "missing": "model",

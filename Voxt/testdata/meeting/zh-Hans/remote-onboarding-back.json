@@ -3,7 +3,7 @@
   "kind": "remote",
   "remote": {
     "back_bar": {
-      "text": "The setup guide is paused at the Models step."
+      "text": "设置引导停在“模型”这一步。"
     },
     "wait": {
       "value": "",
@@ -58,7 +58,7 @@
               "account": "llm.fixture",
               "name": "Fixture service",
               "model": "fixture-model",
-              "used": "Rewrite",
+              "used": "用于改写",
               "where": "远程",
               "configured": true,
               "status": "success",

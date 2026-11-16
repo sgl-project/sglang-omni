@@ -96,8 +96,12 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 		fixture.HistoryAccess = &state
 	case "remote":
 		scenario.remote.Wait.Locale = locale
+		localizeRemotePageInput(&scenario.remote, translator)
 		state := buildRemotePageViewState(translator, scenario.remote)
 		fixture.Remote = &state
+	case "remote-cards":
+		state := buildRemoteCardsViewState(translator, scenario.remoteCards)
+		fixture.RemoteCards = &state
 	case "remote-dialog":
 		input := *scenario.remoteDialog
 		dialog := *input.Dialog

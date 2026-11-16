@@ -22,6 +22,7 @@ type meetingFixtureScenario struct {
 	historyAccess   historyAccessStateInput
 	historyProblem  string
 	remote          remotePageStateInput
+	remoteCards     remoteCardsStateInput
 	remoteDialog    *remoteDialogStateInput
 	remoteDebug     llmDebugStateInput
 }

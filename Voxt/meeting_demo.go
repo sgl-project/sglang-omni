@@ -103,6 +103,7 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "history-settings" && fixture.HistorySettings != nil ||
 		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||
 		fixture.Kind == "remote" && fixture.Remote != nil ||
+		fixture.Kind == "remote-cards" && fixture.RemoteCards != nil ||
 		fixture.Kind == "remote-dialog" && fixture.RemoteDialog != nil ||
 		fixture.Kind == "remote-debug" && fixture.RemoteDebug != nil
 	if !valid {

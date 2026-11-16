@@ -3,6 +3,10 @@ package main
 // Recording-only remote actions for the fixture demo. No method performs
 // settings, credential, browser, model or network work.
 
+func (host *meetingDemoHost) remoteDebugState() llmDebugViewState {
+	return llmDebugStateForLocal(*host.current().state.RemoteDebug, &host.remoteDebugUI)
+}
+
 func (host *meetingDemoHost) openRemoteProvider(kind, id string) {
 	host.record("openRemoteProvider %s %s", kind, id)
 }
@@ -22,7 +26,7 @@ func (host *meetingDemoHost) changeLLMWaitMinutes(minutes int) {
 func (host *meetingDemoHost) openOnboarding()        { host.record("openOnboarding") }
 func (host *meetingDemoHost) dismissOnboardingBack() { host.record("dismissOnboardingBack") }
 func (host *meetingDemoHost) openLLMDebug()          { host.record("openLLMDebug") }
-func (host *meetingDemoHost) testDialog()         { host.record("testDialog") }
+func (host *meetingDemoHost) testDialog()            { host.record("testDialog") }
 func (host *meetingDemoHost) saveProviderDialog()    { host.record("saveProviderDialog") }
 func (host *meetingDemoHost) removeProvider()        { host.record("removeProvider") }
 func (host *meetingDemoHost) openRemoteKeyURL()      { host.record("openRemoteKeyURL") }
