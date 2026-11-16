@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Speech-driven avatars on the Session input timeline: a pool of chunk workers renders the agent's reply audio into pictures or motion.
 
-The models behind these nodes (FlashHead, MuseTalk) hear only the
+The models behind these nodes (FlashHead, MuseTalk, StreamTalk) hear only the
 agent's speech. Each renders a chunk of `chunk_frames` from a window of that
 speech, `context_samples` before the chunk and `lookahead_samples` after it,
 and a state that carries the Session from one chunk to the next; the state
