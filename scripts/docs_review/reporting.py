@@ -42,14 +42,32 @@ def render_bundle(bundle: ReviewBundle) -> str:
             [
                 "Changed test cases and head line ranges:",
                 json.dumps(
-                    [case.model_dump(mode="json") for case in bundle.unit_test_cases],
+                    [
+                        case.model_dump(mode="json")
+                        for case in bundle.unit_test_cases
+                        if not case.evidence_limitations
+                    ],
                     sort_keys=True,
                 ),
             ]
         )
     else:
         pass
+    incomplete_only_paths = {
+        case.file_path for case in bundle.unit_test_cases if case.evidence_limitations
+    } - {
+        case.file_path
+        for case in bundle.unit_test_cases
+        if not case.evidence_limitations
+    }
     for collected in bundle.files:
+        if (
+            bundle.review_scope == "unit_tests"
+            and collected.file_path in incomplete_only_paths
+        ):
+            continue
+        else:
+            pass
         parts.append(
             f"File {collected.file_path} change {collected.change} truncated={collected.truncated} missing={collected.missing}"
         )
@@ -88,9 +106,20 @@ def render_markdown(report: Report, *, number_findings: bool = False) -> str:
     if report.review_scope == "unit_tests":
         lines.extend(["", "## Changed test cases", ""])
         lines.extend(
-            f"- `{case.file_path}`:{case.line_start}-{case.line_end} `{case.name}`"
+            f"- `{case.file_path}`:{case.line_start}-{case.line_end} `{case.name}` "
+            f"({'reviewed' if case.reviewed else 'not reviewed'})"
+            + (
+                f": {'; '.join(case.evidence_limitations)}"
+                if case.evidence_limitations
+                else ""
+            )
             for case in report.unit_test_cases
         )
+        if report.test_hygiene_notes:
+            lines.extend(["", "## Test hygiene", ""])
+            lines.extend(f"- {note}" for note in report.test_hygiene_notes)
+        else:
+            pass
     else:
         lines.extend(["", "## Document types and applied rules", ""])
         for scope in report.document_scopes:
@@ -188,6 +217,14 @@ def format_finding_section(
                 f"`{finding.file_path}`:{finding.line_start}: {claim}"
             )
             if review_scope == "unit_tests":
+                if finding.change_evidence is not None:
+                    change = finding.change_evidence
+                    lines.append(
+                        f"{indent}Changed dependency: `{change.file_path}`:{change.line_start} "
+                        f"`{' '.join(change.quote.split())}`"
+                    )
+                else:
+                    pass
                 lines.extend(
                     [
                         f"{indent}Contract evidence: `{finding.evidence_file_path}`:"

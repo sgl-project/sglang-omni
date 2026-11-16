@@ -100,23 +100,27 @@ class ModelSettings(BaseModel):
 ReviewScope = Literal["docs", "unit_tests"]
 
 
+class SourceCitation(BaseModel):
+    file_path: str
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    quote: str
+
+
 class UnitTestCaseLocation(BaseModel):
     file_path: str
     name: str
     line_start: int
     line_end: int
     changed_line_ranges: list[tuple[int, int]]
+    change_evidence: list[SourceCitation] = Field(default_factory=list)
+    evidence_limitations: list[str] = Field(default_factory=list)
+    reviewed: bool = False
 
 
 class UnitTestCase(UnitTestCaseLocation):
     previous_source: str = ""
-
-
-class SourceCitation(BaseModel):
-    file_path: str
-    line_start: int = Field(ge=1)
-    line_end: int = Field(ge=1)
-    quote: str
+    previous_dependencies: dict[str, str] = Field(default_factory=dict)
 
 
 class Finding(BaseModel):
@@ -139,6 +143,7 @@ class Finding(BaseModel):
     public_contract: str = ""
     regression: str = ""
     duplicate_test: SourceCitation | None = None
+    change_evidence: SourceCitation | None = None
 
 
 class CheckView(BaseModel):
@@ -176,6 +181,7 @@ class Report(BaseModel):
     coverage_limitations: list[str] = Field(default_factory=list)
     review_scope: ReviewScope = "docs"
     unit_test_cases: list[UnitTestCaseLocation] = Field(default_factory=list)
+    test_hygiene_notes: list[str] = Field(default_factory=list)
 
 
 class ReviewArtifact(BaseModel):
@@ -225,11 +231,17 @@ class ReviewBundle:
     review_scope: ReviewScope = "docs"
     unit_test_cases: list[UnitTestCase] = field(default_factory=list)
     collection_limitations: list[str] = field(default_factory=list)
+    test_hygiene_notes: list[str] = field(default_factory=list)
 
     @property
     def coverage_limitations(self) -> list[str]:
         return [
             *self.collection_limitations,
+            *[
+                f"{case.file_path}:{case.line_start} {case.name}: {limitation}"
+                for case in self.unit_test_cases
+                for limitation in case.evidence_limitations
+            ],
             *[
                 f"{file.file_path}: {'missing' if file.missing else 'truncated'}"
                 for file in self.files
@@ -240,7 +252,7 @@ class ReviewBundle:
     @property
     def needs_model(self) -> bool:
         return self.review_scope == "docs" or bool(
-            self.unit_test_cases and not self.coverage_limitations
+            any(not case.evidence_limitations for case in self.unit_test_cases)
         )
 
 

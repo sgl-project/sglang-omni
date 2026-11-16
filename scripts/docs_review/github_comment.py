@@ -9,7 +9,7 @@ import re
 from urllib.parse import quote
 
 from scripts.docs_review.github_pilot import PilotError, github_api
-from scripts.docs_review.models import Finding, Report, ReviewArtifact
+from scripts.docs_review.models import Finding, ReviewArtifact
 from scripts.docs_review.policy import STYLE_GUIDE_PATH
 
 ADVISORY_REVIEW_MARKER = "<!-- sglang-omni-advisory-review -->"
@@ -67,16 +67,27 @@ def format_unit_test_finding(
         finding.evidence_line_start,
         finding.evidence_line_end,
     )
-    return "\n".join(
+    lines = [
+        f"- **{safe_text(finding.rule_id)}** — {safe_text(finding.claim)}",
+        f"  - Test: {test_citation} — {safe_text(finding.quote)}",
+    ]
+    if finding.change_evidence is not None:
+        change = finding.change_evidence
+        lines.append(
+            f"  - Changed dependency: {format_citation(repository_url, artifact, change.file_path, change.line_start, change.line_end)}"
+            f" — {safe_text(change.quote)}"
+        )
+    else:
+        pass
+    lines.extend(
         [
-            f"- **{safe_text(finding.rule_id)}** — {safe_text(finding.claim)}",
-            f"  - Test: {test_citation} — {safe_text(finding.quote)}",
             f"  - Contract: {contract} — {safe_text(finding.public_contract)}",
             f"  - Regression: {safe_text(finding.regression)}",
             f"  - Impact: {safe_text(finding.impact)}",
             f"  - Suggested assertion: {safe_text(finding.suggested_fix)}",
         ]
     )
+    return "\n".join(lines)
 
 
 def format_finding(
@@ -123,7 +134,9 @@ def section_title_for_scope(review_scope: str) -> str:
         return "### Advisory documentation review"
 
 
-def list_issue_comments(repository_name: str, issue_number: int) -> list[dict[str, object]]:
+def list_issue_comments(
+    repository_name: str, issue_number: int
+) -> list[dict[str, object]]:
     comments: list[dict[str, object]] = []
     page = 1
     while True:
@@ -146,10 +159,13 @@ def find_advisory_comment_id(
     for comment in comments:
         body = comment.get("body")
         comment_id = comment.get("id")
+        author = comment.get("user")
         if (
             isinstance(body, str)
             and ADVISORY_REVIEW_MARKER in body
             and isinstance(comment_id, int)
+            and isinstance(author, dict)
+            and author.get("login") == "github-actions[bot]"
         ):
             return comment_id
         else:
@@ -161,13 +177,51 @@ def upsert_advisory_comment(
     repository_name: str,
     pull_request_number: int,
     body: str,
-) -> None:
+    *,
+    expected_base_sha: str = "",
+    expected_head_sha: str = "",
+    run_id: str = "",
+    run_attempt: int = 0,
+) -> bool:
     if ADVISORY_REVIEW_MARKER not in body:
         raise PilotError("The advisory comment body is missing its marker")
     else:
         pass
     comments = list_issue_comments(repository_name, pull_request_number)
     comment_id = find_advisory_comment_id(comments)
+    previous = next(
+        (
+            comment.get("body")
+            for comment in comments
+            if comment.get("id") == comment_id
+        ),
+        "",
+    )
+    if isinstance(previous, str) and run_id:
+        newer_run = re.search(r"<!-- advisory-run:(\d+):(\d+) -->", previous)
+        if newer_run and (int(newer_run.group(1)), int(newer_run.group(2))) > (
+            int(run_id),
+            run_attempt,
+        ):
+            return False
+        else:
+            pass
+    else:
+        pass
+    if expected_base_sha and expected_head_sha:
+        current = json.loads(
+            github_api(f"repos/{repository_name}/pulls/{pull_request_number}")
+        )
+        if (
+            current["state"] != "open"
+            or current["base"]["sha"] != expected_base_sha
+            or current["head"]["sha"] != expected_head_sha
+        ):
+            return False
+        else:
+            pass
+    else:
+        pass
     if comment_id is None:
         github_api(
             f"repos/{repository_name}/issues/{pull_request_number}/comments",
@@ -180,6 +234,7 @@ def upsert_advisory_comment(
             body=json.dumps({"body": body}),
             method="PATCH",
         )
+    return True
 
 
 def publish_reports(
@@ -188,33 +243,105 @@ def publish_reports(
     run_id: str,
     run_attempt: int,
     artifacts: list[ReviewArtifact],
-) -> None:
+    *,
+    expected_base_sha: str = "",
+    expected_head_sha: str = "",
+) -> bool:
     run_url = f"{repository_url}/actions/runs/{run_id}/attempts/{run_attempt}"
-    publishable = [
-        artifact
-        for artifact in artifacts
-        if artifact.publishable
-        and not artifact.stale
-        and artifact.report.execution == "complete"
-        and artifact.report.findings
-    ]
+    if any(artifact.stale for artifact in artifacts):
+        return False
+    else:
+        pass
+    publishable = [artifact for artifact in artifacts if artifact.publishable]
     if not publishable:
-        return
+        return True
     else:
         pass
     head_commit_sha = publishable[0].report.head_commit_sha
+    if any(
+        artifact.report.head_commit_sha != head_commit_sha for artifact in artifacts
+    ):
+        return False
+    else:
+        pass
+    comments = list_issue_comments(repository_name, publishable[0].pull_request_number)
+    comment_id = find_advisory_comment_id(comments)
+    previous = next(
+        (comment["body"] for comment in comments if comment.get("id") == comment_id), ""
+    )
+    sections: dict[str, str] = {}
+    if (
+        isinstance(previous, str)
+        and f"<!-- advisory-head:{head_commit_sha} -->" in previous
+        and (
+            not expected_base_sha
+            or f"<!-- advisory-base:{expected_base_sha} -->" in previous
+        )
+    ):
+        for scope in ("docs", "unit_tests"):
+            start = f"<!-- advisory-scope:{scope}:start -->"
+            end = f"<!-- advisory-scope:{scope}:end -->"
+            if start in previous and end in previous:
+                sections[scope] = previous.split(start, 1)[1].split(end, 1)[0].strip()
+            else:
+                pass
+    else:
+        pass
     parts = [
         ADVISORY_REVIEW_MARKER,
+        f"<!-- advisory-head:{head_commit_sha} -->",
+        f"<!-- advisory-base:{expected_base_sha} -->",
+        f"<!-- advisory-run:{run_id}:{run_attempt} -->",
         f"Advisory findings for commit `{head_commit_sha}`. "
         "They apply only to this revision; check the current head before acting.",
     ]
-    for artifact in publishable:
-        parts.append(section_title_for_scope(artifact.review_scope))
-        parts.extend(
-            format_finding(repository_url, artifact, finding)
-            for finding in artifact.report.findings
-        )
+    for artifact in artifacts:
+        scope_parts = [section_title_for_scope(artifact.review_scope)]
+        if artifact.report.execution != "complete":
+            scope_parts.append(
+                "Review incomplete. See the report for coverage limitations."
+            )
+            sections[artifact.review_scope] = "\n\n".join(scope_parts)
+            continue
+        else:
+            pass
+        if not artifact.publishable:
+            continue
+        else:
+            pass
+        if artifact.report.findings:
+            scope_parts.extend(
+                format_finding(repository_url, artifact, finding)
+                for finding in artifact.report.findings
+            )
+        else:
+            scope_parts.append("No findings.")
+        if artifact.report.test_hygiene_notes:
+            scope_parts.append("### Unit-test hygiene")
+            for note in artifact.report.test_hygiene_notes:
+                rule_id, separator, detail = note.partition(": ")
+                if separator:
+                    scope_parts.append(f"- **{rule_id}** — {safe_text(detail)}")
+                else:
+                    scope_parts.append(f"- {safe_text(note)}")
+        else:
+            pass
+        sections[artifact.review_scope] = "\n\n".join(scope_parts)
+    for scope in ("docs", "unit_tests"):
+        if scope in sections:
+            parts.append(
+                f"<!-- advisory-scope:{scope}:start -->\n{sections[scope]}\n"
+                f"<!-- advisory-scope:{scope}:end -->"
+            )
+        else:
+            pass
     parts.append(f"Review run: {run_url}")
-    upsert_advisory_comment(
-        repository_name, publishable[0].pull_request_number, "\n\n".join(parts)
+    return upsert_advisory_comment(
+        repository_name,
+        publishable[0].pull_request_number,
+        "\n\n".join(parts),
+        expected_base_sha=expected_base_sha,
+        expected_head_sha=expected_head_sha,
+        run_id=run_id,
+        run_attempt=run_attempt,
     )

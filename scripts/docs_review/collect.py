@@ -28,6 +28,10 @@ from scripts.docs_review.snapshot import (
     repository_identity,
     require_git,
 )
+from scripts.docs_review.unit_test_hygiene import (
+    internal_mock_notes,
+    unit_test_volume_notes,
+)
 from scripts.docs_review.unit_tests import (
     UNIT_TEST_POLICY_VERSION,
     collect_unit_test_inputs,
@@ -46,6 +50,17 @@ def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
         test_files, cases, limitations = collect_unit_test_inputs(
             repository, merge_base, request.head_commit_sha, request.include_paths
         )
+        test_hygiene_notes = [
+            *internal_mock_notes(
+                repository, merge_base, request.head_commit_sha, cases
+            ),
+            *unit_test_volume_notes(
+                repository,
+                merge_base,
+                request.head_commit_sha,
+                request.pull_request_text,
+            ),
+        ]
         test_files.extend(review_input_files(request))
         return ReviewBundle(
             repository_identity=repository_identity(repository),
@@ -64,6 +79,7 @@ def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
             review_scope=request.review_scope,
             unit_test_cases=cases,
             collection_limitations=[*request.collection_limitations, *limitations],
+            test_hygiene_notes=test_hygiene_notes,
         )
     else:
         pass
@@ -210,6 +226,7 @@ def review_input_sha256(
                     sort_keys=True,
                 ),
                 json.dumps(bundle.collection_limitations),
+                json.dumps(bundle.test_hygiene_notes),
             ]
         )
     else:

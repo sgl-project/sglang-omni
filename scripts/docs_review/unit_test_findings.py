@@ -185,6 +185,11 @@ def normalize_unit_test_citations(
         complete_citation_payload(bundle, covering_test, "")
     else:
         pass
+    changed_dependency = finding_payload.get("change_evidence")
+    if isinstance(changed_dependency, dict):
+        complete_citation_payload(bundle, changed_dependency, "")
+    else:
+        pass
 
 
 def covers_other_test(
@@ -251,19 +256,37 @@ def validate_unit_test_findings(
                 quote=finding.quote,
             ),
         )
+        changed_dependency = (
+            resolve_unit_test_citation(bundle, finding.change_evidence)
+            if finding.change_evidence is not None
+            else None
+        )
         case = next(
             (
                 case
                 for case in bundle.unit_test_cases
                 if test_citation is not None
+                and not case.evidence_limitations
                 and case.file_path == test_citation.file_path
                 and case.line_start
                 <= test_citation.line_start
                 <= test_citation.line_end
                 <= case.line_end
-                and any(
-                    start <= test_citation.line_end and test_citation.line_start <= end
-                    for start, end in case.changed_line_ranges
+                and (
+                    any(
+                        start <= test_citation.line_end
+                        and test_citation.line_start <= end
+                        for start, end in case.changed_line_ranges
+                    )
+                    or (
+                        changed_dependency is not None
+                        and any(
+                            changed_dependency.file_path == citation.file_path
+                            and changed_dependency.line_start <= citation.line_end
+                            and citation.line_start <= changed_dependency.line_end
+                            for citation in case.change_evidence
+                        )
+                    )
                 )
             ),
             None,
@@ -333,6 +356,7 @@ def validate_unit_test_findings(
                     "evidence_line_end": evidence_citation.line_end,
                     "evidence_quote": evidence_citation.quote,
                     "duplicate_test": duplicate,
+                    "change_evidence": changed_dependency,
                 }
             )
             if verified_finding.change_relation == "pre_existing":

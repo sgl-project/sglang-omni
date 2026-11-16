@@ -358,7 +358,17 @@ def assemble_report(
         base_commit_sha=bundle.base_commit_sha,
         head_commit_sha=bundle.head_commit_sha,
         merge_base_commit_sha=bundle.merge_base_commit_sha,
-        reviewed_paths=list(bundle.reviewed_paths),
+        reviewed_paths=(
+            list(
+                dict.fromkeys(
+                    case.file_path
+                    for case in bundle.unit_test_cases
+                    if model_findings is not None and not case.evidence_limitations
+                )
+            )
+            if bundle.review_scope == "unit_tests"
+            else list(bundle.reviewed_paths)
+        ),
         style_guide_limitation=bundle.style_guide_limitation,
         findings=kept,
         pre_existing_findings=pre_existing,
@@ -371,5 +381,14 @@ def assemble_report(
         document_scopes=list(bundle.document_scopes),
         coverage_limitations=coverage_limitations,
         review_scope=bundle.review_scope,
-        unit_test_cases=list(bundle.unit_test_cases),
+        unit_test_cases=[
+            case.model_copy(
+                update={
+                    "reviewed": model_findings is not None
+                    and not case.evidence_limitations
+                }
+            )
+            for case in bundle.unit_test_cases
+        ],
+        test_hygiene_notes=list(bundle.test_hygiene_notes),
     )

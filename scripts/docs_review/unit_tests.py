@@ -9,8 +9,15 @@ from pathlib import Path, PurePosixPath
 
 from scripts.docs_review.models import CollectedFile, UnitTestCase
 from scripts.docs_review.snapshot import clip_content, git_show, require_git
+from scripts.docs_review.unit_test_ast import (
+    case_start,
+    is_unit_test_file,
+    test_definitions,
+)
+from scripts.docs_review.unit_test_dependencies import affected_test_cases
+from scripts.docs_review.unit_test_fixtures import case_dependencies
 
-UNIT_TEST_POLICY_VERSION = "unit-tests-4"
+UNIT_TEST_POLICY_VERSION = "unit-tests-6"
 UNIT_TEST_ROOT = "tests/unit_test/"
 AUTOMATIC_CONTEXT_BYTES = 36_000
 EXPLICIT_CONTEXT_BYTES = 16_000
@@ -28,15 +35,6 @@ CONTEXT_SUFFIXES = {
     ".yml",
 }
 TestFunction = ast.FunctionDef | ast.AsyncFunctionDef
-
-
-def is_unit_test_file(file_path: str) -> bool:
-    name = PurePosixPath(file_path).name
-    return (
-        file_path.startswith(UNIT_TEST_ROOT)
-        and name.endswith(".py")
-        and (name.startswith("test_") or name.endswith("_test.py"))
-    )
 
 
 def is_context_path(file_path: str) -> bool:
@@ -64,11 +62,13 @@ def changed_test_paths(
             "--name-status",
             "-z",
             "--find-renames",
-            "--diff-filter=AMRT",
+            "--diff-filter=AMRTD",
             merge_base,
             head_commit_sha,
             "--",
             UNIT_TEST_ROOT,
+            "tests/conftest.py",
+            "conftest.py",
         ],
     )
     entries = iter(diff.rstrip("\0").split("\0") if diff else [])
@@ -84,56 +84,6 @@ def changed_test_paths(
         else:
             pass
     return paths
-
-
-def test_definitions(
-    suite: ast.Module | ast.ClassDef, prefix: str = ""
-) -> dict[str, TestFunction]:
-    definitions: dict[str, TestFunction] = {}
-    for statement in suite.body:
-        if isinstance(statement, ast.ClassDef) and (
-            statement.name.startswith("Test")
-            or any(
-                ast.unparse(base) in {"TestCase", "unittest.TestCase"}
-                for base in statement.bases
-            )
-        ):
-            definitions.update(
-                test_definitions(statement, f"{prefix}{statement.name}.")
-            )
-        elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-            statement.name.startswith("test_")
-        ):
-            definitions[f"{prefix}{statement.name}"] = statement
-        else:
-            pass
-    return definitions
-
-
-def case_start(definition: TestFunction) -> int:
-    return min(
-        [
-            definition.lineno,
-            *(decorator.lineno for decorator in definition.decorator_list),
-        ]
-    )
-
-
-def fixture_definitions(module: ast.Module) -> list[str]:
-    fixtures: list[str] = []
-    for definition in ast.walk(module):
-        if isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
-            isinstance(node, ast.Attribute)
-            and node.attr == "fixture"
-            or isinstance(node, ast.Name)
-            and node.id == "fixture"
-            for decorator in definition.decorator_list
-            for node in ast.walk(decorator)
-        ):
-            fixtures.append(ast.dump(definition))
-        else:
-            pass
-    return fixtures
 
 
 def changed_case_ranges(
@@ -197,9 +147,19 @@ def collect_unit_test_inputs(
     cases: list[UnitTestCase] = []
     limitations: list[str] = []
     contract_modules: list[str] = []
-    for previous_path, head_path in changed_test_paths(
-        repository, merge_base, head_commit_sha
-    ):
+    changed_paths = changed_test_paths(repository, merge_base, head_commit_sha)
+    affected, dependency_limitations = affected_test_cases(
+        repository, merge_base, head_commit_sha, changed_paths
+    )
+    limitations.extend(dependency_limitations)
+    candidate_paths = dict(
+        (head_path, previous_path) for previous_path, head_path in changed_paths
+    )
+    for head_path, _case_name in affected:
+        candidate_paths.setdefault(head_path, head_path)
+    case_contract_modules: dict[tuple[str, str], list[str]] = {}
+    fixture_module_cache: dict[str, ast.Module | None] = {}
+    for head_path, previous_path in candidate_paths.items():
         head_source = git_show(repository, head_commit_sha, head_path)
         before_source = (
             git_show(repository, merge_base, previous_path)
@@ -227,26 +187,144 @@ def collect_unit_test_inputs(
         else:
             pass
         if not is_unit_test_file(head_path):
-            if ast.dump(before_module) != ast.dump(head_module):
-                limitations.append(
-                    f"{head_path}: shared fixture or helper change is outside direct test review"
-                )
-            else:
-                pass
+            content, truncated = clip_content(head_source)
+            files[head_path] = CollectedFile(
+                file_path=head_path,
+                content=content,
+                truncated=truncated,
+                change="added" if previous_path is None else "modified",
+            )
             continue
         else:
             pass
-        referenced_names: set[str] = set()
         before_lines = before_source.splitlines()
         head_lines = head_source.splitlines()
         has_changed_case = False
         for name, definition in test_definitions(head_module).items():
             previous = before_definitions.get(name)
-            if previous is not None and ast.dump(previous) == ast.dump(definition):
+            citations = affected.get((head_path, name), [])
+            if (
+                previous is not None
+                and ast.dump(previous) == ast.dump(definition)
+                and not citations
+            ):
                 continue
             else:
                 pass
             assert definition.end_lineno is not None
+            dependency_contexts, case_limitations = case_dependencies(
+                repository,
+                head_commit_sha,
+                head_path,
+                head_module,
+                definition,
+                fixture_module_cache,
+            )
+            modules = [
+                module
+                for _context_path, context_module, context_names in dependency_contexts
+                for module in referenced_contract_modules(context_module, context_names)
+            ]
+            for context_path, _context_module, _context_names in dependency_contexts:
+                if context_path == head_path:
+                    continue
+                elif context_path in files:
+                    if files[context_path].truncated or files[context_path].missing:
+                        case_limitations.append(
+                            f"{context_path}: fixture source is unavailable"
+                        )
+                    else:
+                        pass
+                    continue
+                else:
+                    dependency_source = git_show(
+                        repository, head_commit_sha, context_path
+                    )
+                if dependency_source is None:
+                    case_limitations.append(
+                        f"{context_path}: fixture source is missing"
+                    )
+                else:
+                    dependency_content, dependency_truncated = clip_content(
+                        dependency_source
+                    )
+                    files[context_path] = CollectedFile(
+                        file_path=context_path,
+                        content=dependency_content,
+                        truncated=dependency_truncated,
+                        change="included",
+                    )
+                    if dependency_truncated:
+                        case_limitations.append(
+                            f"{context_path}: fixture source is truncated"
+                        )
+                    else:
+                        pass
+            previous_dependencies: dict[str, str] = {}
+            for citation in citations:
+                dependency_source = git_show(
+                    repository, head_commit_sha, citation.file_path
+                )
+                if dependency_source is None:
+                    limitations.append(
+                        f"{citation.file_path}: changed fixture or helper is missing"
+                    )
+                else:
+                    dependency_module = ast.parse(dependency_source)
+                    dependency_names = {
+                        node.id
+                        for node in ast.walk(dependency_module)
+                        if isinstance(node, ast.Name)
+                    }
+                    modules.extend(
+                        referenced_contract_modules(dependency_module, dependency_names)
+                    )
+                    dependency_content, dependency_truncated = clip_content(
+                        dependency_source
+                    )
+                    files[citation.file_path] = CollectedFile(
+                        file_path=citation.file_path,
+                        content=dependency_content,
+                        truncated=dependency_truncated,
+                        change="modified",
+                    )
+                    if dependency_truncated:
+                        case_limitations.append(
+                            f"{citation.file_path}: changed dependency is truncated"
+                        )
+                    else:
+                        pass
+                    previous_dependency_path = next(
+                        (
+                            old
+                            for old, current in changed_paths
+                            if current == citation.file_path
+                        ),
+                        citation.file_path,
+                    )
+                    if previous_dependency_path is not None:
+                        previous_dependency = git_show(
+                            repository, merge_base, previous_dependency_path
+                        )
+                        if previous_dependency is None:
+                            case_limitations.append(
+                                f"{previous_dependency_path}: previous dependency is missing"
+                            )
+                        else:
+                            previous_content, previous_truncated = clip_content(
+                                previous_dependency
+                            )
+                            if previous_truncated:
+                                case_limitations.append(
+                                    f"{previous_dependency_path}: previous dependency is truncated"
+                                )
+                            else:
+                                previous_dependencies[previous_dependency_path] = (
+                                    previous_content
+                                )
+                    else:
+                        pass
+            case_contract_modules[(head_path, name)] = list(dict.fromkeys(modules))
             cases.append(
                 UnitTestCase(
                     file_path=head_path,
@@ -263,10 +341,10 @@ def collect_unit_test_inputs(
                     changed_line_ranges=changed_case_ranges(
                         previous, definition, before_lines, head_lines
                     ),
+                    change_evidence=citations,
+                    evidence_limitations=case_limitations,
+                    previous_dependencies=previous_dependencies,
                 )
-            )
-            referenced_names.update(
-                node.id for node in ast.walk(definition) if isinstance(node, ast.Name)
             )
             has_changed_case = True
         if has_changed_case:
@@ -277,18 +355,10 @@ def collect_unit_test_inputs(
                 change="added" if previous_path is None else "modified",
             )
             contract_modules.extend(
-                referenced_contract_modules(head_module, referenced_names)
-            )
-        else:
-            pass
-        if (
-            not has_changed_case and ast.dump(before_module) != ast.dump(head_module)
-        ) or (
-            previous_path is not None
-            and fixture_definitions(before_module) != fixture_definitions(head_module)
-        ):
-            limitations.append(
-                f"{head_path}: test module changed outside the directly reviewed cases"
+                module
+                for case in cases
+                if case.file_path == head_path
+                for module in case_contract_modules[(head_path, case.name)]
             )
         else:
             pass
@@ -341,13 +411,43 @@ def collect_unit_test_inputs(
                     f"({evidence_bytes} bytes, {remaining_context_bytes} bytes left)"
                 )
             break
-    if cases and not any(
-        is_context_path(file_path) and not file_path.startswith(UNIT_TEST_ROOT)
-        for file_path in files
-    ):
-        limitations.append(
-            "No contract source was collected. Include the relevant source or docs."
-        )
-    else:
-        pass
+    explicit_contracts = [
+        file_path
+        for file_path in include_paths
+        if file_path in files
+        and not file_path.startswith(UNIT_TEST_ROOT)
+        and not files[file_path].truncated
+    ]
+    for case in cases:
+        modules = case_contract_modules[(case.file_path, case.name)]
+        module_paths = {
+            candidate
+            for module in modules
+            for candidate in (
+                f"{module.replace('.', '/')}.py",
+                f"{module.replace('.', '/')}/__init__.py",
+            )
+        }
+        if not explicit_contracts and not any(
+            path in files and not files[path].truncated for path in module_paths
+        ):
+            case.evidence_limitations.append(
+                "No contract source was collected. Include the relevant source or docs."
+            )
+        else:
+            pass
+        if not explicit_contracts:
+            for module in modules:
+                module_path = module.replace(".", "/")
+                if not any(
+                    path in files and not files[path].truncated
+                    for path in (f"{module_path}.py", f"{module_path}/__init__.py")
+                ):
+                    case.evidence_limitations.append(
+                        f"Contract source for {module} could not be collected."
+                    )
+                else:
+                    pass
+        else:
+            pass
     return list(files.values()), cases, limitations
