@@ -78,32 +78,37 @@ defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 
 ## Next steps
 
-Activate the environment printed by the installer if it is not already active.
+1. Activate the environment printed by the installer if it is not already active.
 
-`ffmpeg@7` is intentional: the installer pins one FFmpeg major, and
-`torchcodec==0.17.0` ships loaders for FFmpeg 4 through 9. At runtime, expose its libraries:
+2. Export the FFmpeg libraries in every shell that starts a server. `ffmpeg@7`
+   is intentional: the installer pins one FFmpeg major, and `torchcodec==0.17.0`
+   ships loaders for FFmpeg 4 through 9.
 
-```bash
-export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-```
+   ```bash
+   export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+   ```
 
-macOS may remove `DYLD_*` variables when a SIP-protected system executable
-launches the server. Set `DYLD_LIBRARY_PATH` on the final `sgl-omni` process;
-for example, place `/usr/bin/env DYLD_LIBRARY_PATH=...` after wrappers such as
-`/usr/bin/time`. Test a compressed input such as M4A or MP3, since WAV decoding
-can succeed without loading FFmpeg.
+   macOS may remove `DYLD_*` variables when a SIP-protected system executable
+   launches the server. Set `DYLD_LIBRARY_PATH` on the final `sgl-omni` process;
+   for example, place `/usr/bin/env DYLD_LIBRARY_PATH=...` after wrappers such as
+   `/usr/bin/time`.
 
-Before downloading a model, check that both Metal and FFmpeg load:
+3. Check that Metal and FFmpeg load before you download a checkpoint or start a
+   server. TorchCodec loads Homebrew's keg-only FFmpeg libraries through the
+   export above, so this also proves the export took effect:
 
-```bash
-python - <<'PY'
-import torch
-from torchcodec.decoders import AudioDecoder
+   ```bash
+   python - <<'PY'
+   import torch
+   from torchcodec.decoders import AudioDecoder
 
-assert torch.backends.mps.is_available()
-print("PyTorch MPS and TorchCodec FFmpeg loading are available")
-PY
-```
+   assert torch.backends.mps.is_available()
+   print("PyTorch MPS and TorchCodec FFmpeg loading are available")
+   PY
+   ```
 
-- [Run Qwen3-ASR with Torch/MPS](../cookbook/qwen3_asr.md#apple-silicon).
-- [Run Fun-ASR with Torch/MPS](../cookbook/fun_asr.md#apple-silicon).
+4. Start a server from one of the cookbooks, then send a compressed input such
+   as M4A or MP3 first: a WAV request can decode without loading FFmpeg.
+
+   - [Run Qwen3-ASR with Torch/MPS](../cookbook/qwen3_asr.md#apple-silicon).
+   - [Run Fun-ASR with Torch/MPS](../cookbook/fun_asr.md#apple-silicon).
