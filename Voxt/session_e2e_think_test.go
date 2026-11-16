@@ -150,6 +150,10 @@ func TestRewriteCardThinkingLevel(t *testing.T) {
 	if a.answer.text != "Docs are ready; the tests still run." || len(a.answer.turns) != 1 || a.answer.turns[0].Answer.Content != a.answer.text || a.answer.conversation || len(a.pasted()) != 0 {
 		t.Fatalf("card %+v, pasted %v", a.answer, a.pasted())
 	}
+	a.pump("the redo in history", func() bool { return len(a.history()) == 2 })
+	if got := a.history()[0]; got.ID != a.answer.id || got.Conversation != a.answer.conv || got.Replaces != first {
+		t.Fatalf("redo history %+v; first %q, card %+v", got, first, a.answer)
+	}
 	// Continue: the follow-up holds the new answer.
 	a.recordFollowUp(t, tr, "shorter")
 	msgs := chatMessages(chat.requests()[2])

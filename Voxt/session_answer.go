@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -133,7 +134,7 @@ func (a *app) retryAnswer(lang string) {
 // with its thinking level: it stays in the card, which shows its text
 // until the new one comes (Voxt's).
 func (a *app) redoAnswer(req session.StartRequest) {
-	req.Card, req.Conversation = true, a.answer.conv
+	req.Card, req.Conversation, req.Replaces = true, a.answer.conv, a.answer.id
 	a.answer.msg = ""
 	if n := a.sessionBlocker(req.Kind); n != nil {
 		a.answer.msg = n.text
@@ -189,6 +190,7 @@ func (a *app) closeAnswer() {
 	}
 	a.answer, a.followUp = answerCard{}, ""
 	a.resurface()
+	a.buildTrayMenu()
 	a.syncHotkeys()
 	a.overlaySync()
 }
@@ -278,6 +280,7 @@ func (a *app) insertAnswer() {
 				if res.Moved(card.target) {
 					into = res.To // the user clicked into another app
 				}
+				a.reopen = slices.DeleteFunc(a.reopen, func(recent reopenConversation) bool { return recent.conversation == card.conv })
 				a.setDelivery(card.id, "insert", into)
 				a.closeAnswer()
 				return

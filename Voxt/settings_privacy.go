@@ -55,7 +55,7 @@ func (a *app) privacySettings(c *ui.Context) {
 	})
 
 	sectionTitle(c, i18n.T("Kept on this Mac"))
-	settingRow(c, "priv-history", i18n.T("Keep a history"), "", func() {
+	settingRow(c, "priv-history", i18n.T("Keep a history"), i18n.T("When off, the menu bar and Dock menus do not list cards to reopen."), func() {
 		if ui.Switch(c.Key("priv-history"), &a.settingsForm.keepHistory).Label(i18n.T("Save each result")).Changed() {
 			on := a.settingsForm.keepHistory
 			a.updateSettings(func(s *settings.Settings) {

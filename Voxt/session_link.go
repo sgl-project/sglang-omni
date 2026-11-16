@@ -54,6 +54,9 @@ type sessionState struct {
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
+	// reopen is the history's continuable conversations, newest first.
+	reopen     []reopenConversation
+	restoreSeq int
 	// notice is the overlay's one-line message, when it shows one;
 	// noticeSeq numbers them, so that a notice's timer hides only itself.
 	notice    *sessionNotice
