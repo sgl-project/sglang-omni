@@ -1,0 +1,144 @@
+{
+  "name": "appenhance-preview-no-address",
+  "kind": "appenhance",
+  "appenhance": {
+    "enabled": true,
+    "enabled_text": "已开启",
+    "selected": "g-work",
+    "groups": [
+      {
+        "id": "g-chat",
+        "name": "Team chat",
+        "summary": "2 个 App",
+        "enabled": true,
+        "selected": false,
+        "matches": false
+      },
+      {
+        "id": "g-code",
+        "name": "Code review",
+        "summary": "2 个网站",
+        "enabled": true,
+        "selected": false,
+        "matches": false
+      },
+      {
+        "id": "g-work",
+        "name": "Work browser",
+        "summary": "1 个 App",
+        "enabled": true,
+        "selected": true,
+        "matches": true
+      }
+    ],
+    "detail": {
+      "id": "g-work",
+      "name": "Work browser",
+      "enabled": true,
+      "prompt": "Formal English for {{APP_NAME}}.",
+      "features": [
+        {
+          "id": "transcribe",
+          "label": "转录",
+          "checked": true
+        },
+        {
+          "id": "translate",
+          "label": "翻译",
+          "checked": true
+        },
+        {
+          "id": "rewrite",
+          "label": "改写",
+          "checked": true
+        }
+      ],
+      "variables": [
+        {
+          "name": "USER_MAIN_LANGUAGE",
+          "token": "{{USER_MAIN_LANGUAGE}}",
+          "tooltip": "你的主要语言，来自通用设置。所有功能都用到。"
+        },
+        {
+          "name": "USER_OTHER_LANGUAGES",
+          "token": "{{USER_OTHER_LANGUAGES}}",
+          "tooltip": "你的其他语言，来自通用设置。所有功能都用到。"
+        },
+        {
+          "name": "TARGET_LANGUAGE",
+          "token": "{{TARGET_LANGUAGE}}",
+          "tooltip": "来自翻译页的“目标语言”菜单。只有翻译用到。"
+        },
+        {
+          "name": "APP_NAME",
+          "token": "{{APP_NAME}}",
+          "tooltip": "最前面的 App，在它匹配某个应用增强分组时填入。用于该分组生效的功能。"
+        }
+      ],
+      "apps": [
+        {
+          "ref": {
+            "bundle_id": "com.google.Chrome",
+            "name": "Google Chrome"
+          },
+          "browser": true
+        }
+      ],
+      "urls": [],
+      "url_input": "",
+      "auto_key": {
+        "options": [
+          {
+            "label": "无",
+            "value": ""
+          },
+          {
+            "label": "Return ↩",
+            "value": "Return"
+          },
+          {
+            "label": "⌘回车",
+            "value": "Command+Return"
+          },
+          {
+            "label": "⇧回车",
+            "value": "Shift+Return"
+          },
+          {
+            "label": "⌃回车",
+            "value": "Control+Return"
+          },
+          {
+            "label": "⌥回车",
+            "value": "Option+Return"
+          },
+          {
+            "label": "自定义…",
+            "value": ""
+          }
+        ],
+        "current_label": "无",
+        "custom_label": "自定义…",
+        "custom": false,
+        "text": ""
+      }
+    },
+    "preview": {
+      "app": {
+        "bundle_id": "com.google.Chrome",
+        "name": "Google Chrome"
+      },
+      "empty": false,
+      "front_text": "前台：Google Chrome",
+      "browser": true,
+      "address": "Google Chrome 现在读不到网址，只能按 App 匹配。",
+      "address_status": "no-address",
+      "matched": true,
+      "match_source": "browserApp",
+      "match_text": "命中“Work browser”，按浏览器",
+      "can_refresh": true,
+      "add_app": false,
+      "add_site": false
+    }
+  }
+}

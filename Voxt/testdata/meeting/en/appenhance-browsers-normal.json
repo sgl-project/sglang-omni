@@ -1,0 +1,202 @@
+{
+  "name": "appenhance-browsers-normal",
+  "kind": "appenhance",
+  "appenhance": {
+    "enabled": true,
+    "enabled_text": "On",
+    "selected": "g-chat",
+    "groups": [
+      {
+        "id": "g-chat",
+        "name": "Team chat",
+        "summary": "2 apps",
+        "enabled": true,
+        "selected": true,
+        "matches": true
+      },
+      {
+        "id": "g-code",
+        "name": "Code review",
+        "summary": "2 websites",
+        "enabled": true,
+        "selected": false,
+        "matches": false
+      },
+      {
+        "id": "g-work",
+        "name": "Work browser",
+        "summary": "1 app",
+        "enabled": false,
+        "selected": false,
+        "matches": false
+      }
+    ],
+    "detail": {
+      "id": "g-chat",
+      "name": "Team chat",
+      "enabled": true,
+      "prompt": "This is a team chat: short and casual, no greetings or sign-offs.",
+      "features": [
+        {
+          "id": "transcribe",
+          "label": "Transcribe",
+          "checked": true
+        },
+        {
+          "id": "translate",
+          "label": "Translate",
+          "checked": false
+        },
+        {
+          "id": "rewrite",
+          "label": "Rewrite",
+          "checked": true
+        }
+      ],
+      "variables": [
+        {
+          "name": "USER_MAIN_LANGUAGE",
+          "token": "{{USER_MAIN_LANGUAGE}}",
+          "tooltip": "Your main language, from General settings. Every feature."
+        },
+        {
+          "name": "USER_OTHER_LANGUAGES",
+          "token": "{{USER_OTHER_LANGUAGES}}",
+          "tooltip": "Your other languages, from General settings. Every feature."
+        },
+        {
+          "name": "TARGET_LANGUAGE",
+          "token": "{{TARGET_LANGUAGE}}",
+          "tooltip": "The Target language menu on the Translate page. Translate only."
+        },
+        {
+          "name": "APP_NAME",
+          "token": "{{APP_NAME}}",
+          "tooltip": "The app in front, when an App enhancement group matches it. The features that group applies to."
+        }
+      ],
+      "apps": [
+        {
+          "ref": {
+            "bundle_id": "com.tinyspeck.slackmacgap",
+            "name": "Slack",
+            "path": "/fixtures/Slack.app"
+          },
+          "browser": false
+        },
+        {
+          "ref": {
+            "bundle_id": "com.tencent.xinWeChat",
+            "name": "WeChat"
+          },
+          "browser": false
+        }
+      ],
+      "urls": [],
+      "url_input": "",
+      "auto_key": {
+        "options": [
+          {
+            "label": "None",
+            "value": ""
+          },
+          {
+            "label": "Return ↩",
+            "value": "Return"
+          },
+          {
+            "label": "⌘Return",
+            "value": "Command+Return"
+          },
+          {
+            "label": "⇧Return",
+            "value": "Shift+Return"
+          },
+          {
+            "label": "⌃Return",
+            "value": "Control+Return"
+          },
+          {
+            "label": "⌥Return",
+            "value": "Option+Return"
+          },
+          {
+            "label": "Custom…",
+            "value": ""
+          }
+        ],
+        "current_label": "Return ↩",
+        "custom_label": "Custom…",
+        "custom": false,
+        "text": "Return"
+      }
+    },
+    "preview": {
+      "app": {
+        "bundle_id": "com.tinyspeck.slackmacgap",
+        "name": "Slack"
+      },
+      "empty": false,
+      "front_text": "Frontmost: Slack",
+      "browser": false,
+      "address_status": "none",
+      "matched": true,
+      "match_source": "app",
+      "match_text": "Matches Team chat, by the app",
+      "can_refresh": true,
+      "add_app": false,
+      "add_site": false
+    },
+    "browsers": {
+      "rows": [
+        {
+          "ref": {
+            "bundle_id": "com.apple.Safari",
+            "name": "Safari",
+            "path": "/fixtures/Safari.app"
+          },
+          "custom": false,
+          "engine": "webkit",
+          "status_text": "Address read",
+          "status_tone": "success"
+        },
+        {
+          "ref": {
+            "bundle_id": "com.google.Chrome",
+            "name": "Google Chrome",
+            "path": "/fixtures/Chrome.app"
+          },
+          "custom": false,
+          "engine": "chromium",
+          "status_text": "No address: app only",
+          "status_tone": "warning"
+        },
+        {
+          "ref": {
+            "bundle_id": "org.mozilla.firefox",
+            "name": "Firefox",
+            "path": "/fixtures/Firefox.app"
+          },
+          "custom": false,
+          "engine": "gecko",
+          "status_text": "Not tried; may be app only",
+          "status_tone": "info"
+        },
+        {
+          "ref": {
+            "bundle_id": "org.example.browser",
+            "name": "Example Browser"
+          },
+          "custom": true,
+          "engine": "",
+          "status_text": "Not tried; may be app only",
+          "status_tone": "info"
+        }
+      ],
+      "others_text": "Also recognised when installed: Safari Technology Preview, Google Chrome Beta, Google Chrome Dev, Google Chrome Canary, Chromium, Microsoft Edge, Microsoft Edge Beta, Microsoft Edge Dev, Microsoft Edge Canary, Brave Browser, Brave Browser Beta, Brave Browser Nightly, Arc, Dia, Vivaldi, Opera, Zen.",
+      "bundle_input": "",
+      "name_input": "",
+      "add_disabled": true
+    }
+  }
+}

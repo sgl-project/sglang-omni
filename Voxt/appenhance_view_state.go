@@ -45,9 +45,10 @@ type appEnhancementAppRow struct {
 }
 
 type appEnhancementURLRow struct {
-	Text      string `json:"text"`
-	Canonical string `json:"canonical,omitempty"`
-	Warning   string `json:"warning,omitempty"`
+	Text        string `json:"text"`
+	Canonical   string `json:"canonical,omitempty"`
+	Warning     string `json:"warning,omitempty"`
+	WarningCode string `json:"warning_code,omitempty"`
 }
 
 type appEnhancementAutoKeyOption struct {
@@ -62,6 +63,7 @@ type appEnhancementAutoKey struct {
 	Custom       bool                          `json:"custom"`
 	Text         string                        `json:"text"`
 	Error        string                        `json:"error,omitempty"`
+	ErrorCode    string                        `json:"error_code,omitempty"`
 }
 
 type appEnhancementGroupDetail struct {
@@ -79,18 +81,21 @@ type appEnhancementGroupDetail struct {
 }
 
 type appEnhancementPreview struct {
-	App          appEnhancementIconRef `json:"app"`
-	Empty        bool                  `json:"empty"`
-	FrontText    string                `json:"front_text"`
-	Browser      bool                  `json:"browser"`
-	Address      string                `json:"address,omitempty"`
-	Matched      bool                  `json:"matched"`
-	MatchText    string                `json:"match_text"`
-	CanRefresh   bool                  `json:"can_refresh"`
-	AddApp       bool                  `json:"add_app"`
-	AddAppLabel  string                `json:"add_app_label,omitempty"`
-	AddSite      bool                  `json:"add_site"`
-	AddSiteLabel string                `json:"add_site_label,omitempty"`
+	App           appEnhancementIconRef `json:"app"`
+	Empty         bool                  `json:"empty"`
+	FrontText     string                `json:"front_text"`
+	Browser       bool                  `json:"browser"`
+	Address       string                `json:"address,omitempty"`
+	AddressStatus string                `json:"address_status"`
+	Matched       bool                  `json:"matched"`
+	MatchSource   string                `json:"match_source"`
+	MatchPattern  string                `json:"match_pattern,omitempty"`
+	MatchText     string                `json:"match_text"`
+	CanRefresh    bool                  `json:"can_refresh"`
+	AddApp        bool                  `json:"add_app"`
+	AddAppLabel   string                `json:"add_app_label,omitempty"`
+	AddSite       bool                  `json:"add_site"`
+	AddSiteLabel  string                `json:"add_site_label,omitempty"`
 }
 
 type appEnhancementAppChoice struct {
@@ -115,6 +120,7 @@ type appEnhancementAppsDialog struct {
 type appEnhancementBrowserRow struct {
 	Ref        appEnhancementIconRef `json:"ref"`
 	Custom     bool                  `json:"custom"`
+	Engine     string                `json:"engine"`
 	StatusText string                `json:"status_text"`
 	StatusTone string                `json:"status_tone"`
 }
@@ -146,30 +152,33 @@ type appEnhancementViewState struct {
 }
 
 type appEnhancementViewStateInput struct {
-	Enabled          bool
-	Error            string
-	Rules            appctx.Rules
-	SelectedID       string
-	CustomBrowsers   []settings.Browser
-	PreviewApp       proto.App
-	Preview          aePreview
-	HelperReady      bool
-	Apps             []proto.AppInfo
-	URLReads         map[string]urlRead
-	AppsLoading      bool
-	AppsError        string
-	AppsOpen         bool
-	AppsQuery        string
-	BundleInput      string
-	BrowsersOpen     bool
-	BrowserIDInput   string
-	BrowserNameInput string
-	DeleteAsk        bool
-	URLInput         string
-	URLError         string
-	AutoKeyCustom    bool
-	AutoKeyText      string
-	AutoKeyError     string
+	Enabled           bool
+	Error             string
+	Rules             appctx.Rules
+	SelectedID        string
+	CustomBrowsers    []settings.Browser
+	PreviewApp        proto.App
+	Preview           aePreview
+	HelperReady       bool
+	Apps              []proto.AppInfo
+	URLReads          map[string]urlRead
+	AppsLoading       bool
+	AppsError         string
+	AppsHelperStopped bool
+	AppsOpen          bool
+	AppsQuery         string
+	BundleInput       string
+	BrowsersOpen      bool
+	BrowserIDInput    string
+	BrowserNameInput  string
+	DeleteAsk         bool
+	URLInput          string
+	URLError          string
+	URLCheck          bool
+	AutoKeyCustom     bool
+	AutoKeyText       string
+	AutoKeyError      string
+	AutoKeyCheck      bool
 }
 
 var autoKeys = []string{"Return", "Command+Return", "Shift+Return", "Control+Return", "Option+Return"}
@@ -275,10 +284,14 @@ func buildAppEnhancementGroupDetail(translator *i18n.Translator, group appctx.Gr
 		row := appEnhancementURLRow{Text: pattern}
 		if err := appctx.CheckPattern(pattern); err != nil {
 			row.Warning = uitext.PatternErrorTextFor(translator, err)
+			row.WarningCode = appEnhancementPatternErrorCode(err)
 		} else if canonical := appctx.CanonicalPattern(pattern); canonical != strings.ToLower(strings.TrimSpace(pattern)) {
 			row.Canonical = translator.T("matches %s", canonical)
 		}
 		detail.URLs[index] = row
+	}
+	if input.URLCheck {
+		detail.URLError = appEnhancementURLError(translator, group, input.URLInput)
 	}
 	detail.AutoKey = buildAppEnhancementAutoKey(translator, group.AutoKey, input)
 	return detail
@@ -307,6 +320,12 @@ func buildAppEnhancementAutoKey(translator *i18n.Translator, current string, inp
 		CurrentLabel: uitext.AutoKeyLabelFor(translator, current), CustomLabel: translator.T("Custom…"),
 		Custom: input.AutoKeyCustom, Text: text, Error: input.AutoKeyError,
 	}
+	if input.AutoKeyCheck {
+		state.Error = appEnhancementCustomAutoKeyError(translator, text)
+	}
+	if state.Error != "" {
+		state.ErrorCode = "autoKey"
+	}
 	state.Options = append(state.Options, appEnhancementAutoKeyOption{Label: translator.T("None")})
 	for _, keys := range autoKeys {
 		state.Options = append(state.Options, appEnhancementAutoKeyOption{Label: uitext.AutoKeyLabelFor(translator, keys), Value: keys})
@@ -327,7 +346,7 @@ func buildAppEnhancementPreview(translator *i18n.Translator, input appEnhancemen
 	}
 	state := appEnhancementPreview{
 		App: appEnhancementIconRef{BundleID: app.BundleID, Name: name}, Empty: app.BundleID == "",
-		Browser: appctx.IsBrowser(app.BundleID, input.CustomBrowsers), CanRefresh: app.BundleID != "",
+		Browser: appctx.IsBrowser(app.BundleID, input.CustomBrowsers), CanRefresh: app.BundleID != "", AddressStatus: "none",
 	}
 	if state.Empty {
 		state.FrontText = translator.T("Switch to another app to see which group it falls in.")
@@ -338,19 +357,25 @@ func buildAppEnhancementPreview(translator *i18n.Translator, input appEnhancemen
 		switch {
 		case input.Preview.app != app || input.Preview.reading:
 			state.Address = translator.T("Reading the address…")
+			state.AddressStatus = "loading"
 		case input.Preview.url != "":
 			if address, ok := appctx.ParseAddress(input.Preview.url); ok {
 				state.Address = address.String()
+				state.AddressStatus = "address"
 			} else {
 				state.Address = input.Preview.url
+				state.AddressStatus = "raw-address"
 			}
 		case !input.HelperReady:
 			state.Address = translator.T("The helper is not running, so the address cannot be read.")
+			state.AddressStatus = "helper-stopped"
 		default:
 			state.Address = translator.T("%s does not show its address right now, so it matches as an app.", app.Name)
+			state.AddressStatus = "no-address"
 		}
 	}
 	state.Matched = match.Matched()
+	state.MatchSource, state.MatchPattern = string(match.Source), match.Pattern
 	if state.Matched {
 		state.MatchText = translator.T("Matches %s, %s", match.GroupName(), uitext.SourceTextFor(translator, match.Source, match.Pattern))
 	} else {
@@ -374,8 +399,12 @@ func buildAppEnhancementPreview(translator *i18n.Translator, input appEnhancemen
 }
 
 func buildAppEnhancementAppsDialog(translator *i18n.Translator, input appEnhancementViewStateInput, selected appctx.Group) appEnhancementAppsDialog {
+	errorText := input.AppsError
+	if input.AppsHelperStopped {
+		errorText = translator.T("The helper is not running. Add an app by its bundle ID instead.")
+	}
 	state := appEnhancementAppsDialog{
-		GroupID: selected.ID, Title: translator.T("Add apps to %s", selected.Name), Loading: input.AppsLoading, Error: input.AppsError,
+		GroupID: selected.ID, Title: translator.T("Add apps to %s", selected.Name), Loading: input.AppsLoading, Error: errorText,
 		HasCatalog: len(input.Apps) > 0, Query: input.AppsQuery, BundleInput: input.BundleInput,
 	}
 	apps := slices.Clone(input.Apps)
@@ -418,7 +447,7 @@ func buildAppEnhancementBrowsersDialog(translator *i18n.Translator, input appEnh
 		statusText, statusTone := appEnhancementBrowserStatus(translator, browser, input.URLReads)
 		state.Rows = append(state.Rows, appEnhancementBrowserRow{
 			Ref:    appEnhancementIconRef{BundleID: browser.BundleID, Name: browser.Name, Path: appEnhancementPath(input.Apps, browser.BundleID)},
-			Custom: !appctx.IsBuiltin(browser.BundleID), StatusText: statusText, StatusTone: statusTone,
+			Custom: !appctx.IsBuiltin(browser.BundleID), Engine: browser.Engine, StatusText: statusText, StatusTone: statusTone,
 		})
 	}
 	if len(others) > 0 {
@@ -440,6 +469,42 @@ func appEnhancementBrowserStatus(translator *i18n.Translator, browser appctx.Bro
 		return translator.T("Not tried; may be app only"), "info"
 	}
 	return translator.T("Not tried yet"), "info"
+}
+
+func appEnhancementURLError(translator *i18n.Translator, group appctx.Group, pattern string) string {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return ""
+	}
+	if err := appctx.CheckPattern(pattern); err != nil {
+		return uitext.PatternErrorTextFor(translator, err)
+	}
+	if slices.ContainsFunc(group.URLs, func(existing string) bool {
+		return appctx.CanonicalPattern(existing) == appctx.CanonicalPattern(pattern)
+	}) {
+		return translator.T("This rule is in the group already.")
+	}
+	return ""
+}
+
+func appEnhancementCustomAutoKeyError(translator *i18n.Translator, keys string) string {
+	if _, err := appctx.ParseAutoKey(keys); err != nil || strings.TrimSpace(keys) == "" {
+		return translator.T("Enter one key, with or without modifiers: Return, Command+Return, Tab.")
+	}
+	return ""
+}
+
+func appEnhancementPatternErrorCode(err error) string {
+	switch err {
+	case appctx.ErrPatternEmpty:
+		return "empty"
+	case appctx.ErrPatternSpace:
+		return "space"
+	case appctx.ErrPatternScheme:
+		return "scheme"
+	default:
+		return "host"
+	}
 }
 
 func appEnhancementPath(apps []proto.AppInfo, bundleID string) string {

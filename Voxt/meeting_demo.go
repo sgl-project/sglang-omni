@@ -31,6 +31,7 @@ type meetingDemoHost struct {
 	historyUI         historyLocalUI
 	historySettingsUI historySettingsLocalUI
 	historyAccessUI   historyAccessLocalUI
+	appEnhancementUI  appEnhancementLocalUI
 	overlayLook       settings.Overlay
 }
 
@@ -74,7 +75,16 @@ func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
 			return nil, fmt.Errorf("meeting demo: duplicate fixture %s", fixture.name)
 		}
 	}
-	host.selectMeetingFixture(0)
+	initial := 0
+	for index, fixture := range host.fixtures {
+		state := fixture.state.AppEnhancement
+		if state != nil && (state.Apps != nil || state.Browsers != nil || state.Delete != nil) {
+			continue
+		}
+		initial = index
+		break
+	}
+	host.selectMeetingFixture(initial)
 	return host, nil
 }
 
@@ -98,7 +108,8 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "start" && fixture.Start != nil ||
 		fixture.Kind == "history" && fixture.History != nil ||
 		fixture.Kind == "history-settings" && fixture.HistorySettings != nil ||
-		fixture.Kind == "history-access" && fixture.HistoryAccess != nil
+		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||
+		fixture.Kind == "appenhance" && fixture.AppEnhancement != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -146,6 +157,21 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	if state := fixture.state.HistoryAccess; state != nil {
 		host.historyAccessUI = historyAccessLocalUI{
 			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
+		}
+	}
+	host.appEnhancementUI = appEnhancementLocalUI{}
+	if state := fixture.state.AppEnhancement; state != nil {
+		host.appEnhancementUI.sel = state.Selected
+		host.appEnhancementUI.appsOpen = state.Apps != nil
+		host.appEnhancementUI.browsersOpen = state.Browsers != nil
+		host.appEnhancementUI.delAsk = state.Delete != nil
+		if state.Apps != nil {
+			host.appEnhancementUI.appsQuery = state.Apps.Query
+			host.appEnhancementUI.bundleIn = state.Apps.BundleInput
+		}
+		if state.Browsers != nil {
+			host.appEnhancementUI.brID = state.Browsers.BundleInput
+			host.appEnhancementUI.brName = state.Browsers.NameInput
 		}
 	}
 }
@@ -313,3 +339,77 @@ func (host *meetingDemoHost) copyHistoryAccessCommand() {
 	host.record("copyHistoryAccessCommand")
 }
 func (host *meetingDemoHost) openHistoryAccessDocs() { host.record("openHistoryAccessDocs") }
+
+func (host *meetingDemoHost) setAppEnhancementEnabled(on bool) {
+	host.record("setAppEnhancementEnabled %t", on)
+}
+func (host *meetingDemoHost) addAppEnhancementGroup() { host.record("addAppEnhancementGroup") }
+func (host *meetingDemoHost) deleteAppEnhancementGroup(id string) {
+	host.appEnhancementUI.delAsk = false
+	host.record("deleteAppEnhancementGroup %s", id)
+}
+func (host *meetingDemoHost) openAppEnhancementApps() {
+	host.appEnhancementUI.appsOpen = true
+	host.record("openAppEnhancementApps")
+}
+func (host *meetingDemoHost) openAppEnhancementBrowsers() {
+	host.appEnhancementUI.browsersOpen = true
+	host.record("openAppEnhancementBrowsers")
+}
+func (host *meetingDemoHost) setAppEnhancementGroupName(id, name string) {
+	host.record("setAppEnhancementGroupName %s %q", id, name)
+}
+func (host *meetingDemoHost) setAppEnhancementGroupEnabled(id string, on bool) {
+	host.record("setAppEnhancementGroupEnabled %s %t", id, on)
+}
+func (host *meetingDemoHost) setAppEnhancementGroupFeature(id, feature string, on bool) {
+	host.record("setAppEnhancementGroupFeature %s %s %t", id, feature, on)
+}
+func (host *meetingDemoHost) setAppEnhancementGroupPrompt(id, prompt string) {
+	host.record("setAppEnhancementGroupPrompt %s %q", id, prompt)
+}
+func (host *meetingDemoHost) copyAppEnhancementVariable(token string) {
+	host.record("copyAppEnhancementVariable %q", token)
+}
+func (host *meetingDemoHost) toggleAppEnhancementApp(bundleID string) {
+	host.record("toggleAppEnhancementApp %s", bundleID)
+}
+func (host *meetingDemoHost) removeAppEnhancementApp(id, bundleID string) {
+	host.record("removeAppEnhancementApp %s %s", id, bundleID)
+}
+func (host *meetingDemoHost) addAppEnhancementBundle(id, bundleID string) {
+	host.appEnhancementUI.bundleIn = ""
+	host.record("addAppEnhancementBundle %s %s", id, bundleID)
+}
+func (host *meetingDemoHost) addAppEnhancementURL(id, pattern string) {
+	host.record("addAppEnhancementURL %s %q", id, pattern)
+}
+func (host *meetingDemoHost) removeAppEnhancementURL(id string, index int) {
+	host.record("removeAppEnhancementURL %s %d", id, index)
+}
+func (host *meetingDemoHost) setAppEnhancementAutoKey(id, keys string) {
+	host.appEnhancementUI.keyCustom, host.appEnhancementUI.keyErr = false, ""
+	host.record("setAppEnhancementAutoKey %s %q", id, keys)
+}
+func (host *meetingDemoHost) commitAppEnhancementCustomAutoKey(id, keys string) {
+	host.record("commitAppEnhancementCustomAutoKey %s %q", id, keys)
+}
+func (host *meetingDemoHost) addAppEnhancementBrowser(bundleID, name string) {
+	host.appEnhancementUI.brID, host.appEnhancementUI.brName = "", ""
+	host.record("addAppEnhancementBrowser %s %q", strings.TrimSpace(bundleID), strings.TrimSpace(name))
+}
+func (host *meetingDemoHost) removeAppEnhancementBrowser(bundleID string) {
+	host.record("removeAppEnhancementBrowser %s", bundleID)
+}
+func (host *meetingDemoHost) refreshAppEnhancementPreview() {
+	host.record("refreshAppEnhancementPreview")
+}
+func (host *meetingDemoHost) addAppEnhancementPreviewApp() {
+	host.record("addAppEnhancementPreviewApp")
+}
+func (host *meetingDemoHost) addAppEnhancementPreviewSite() {
+	host.record("addAppEnhancementPreviewSite")
+}
+func (host *meetingDemoHost) appEnhancementIcon(ref appEnhancementIconRef, want bool) (*appIconBitmap, bool) {
+	return nil, true
+}

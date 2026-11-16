@@ -20,6 +20,7 @@ type meetingFixtureScenario struct {
 	history         historyViewStateInput
 	historySettings historySettingsStateInput
 	historyAccess   historyAccessStateInput
+	appEnhancement  appEnhancementViewStateInput
 	historyProblem  string
 }
 
@@ -134,6 +135,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 		scenarios = append(scenarios, meetingFixtureScenario{name: scenario.name, kind: "page", page: input})
 	}
 	scenarios = append(scenarios, historyFixtureScenarios()...)
+	scenarios = append(scenarios, appEnhancementFixtureScenarios()...)
 	return scenarios
 }
 

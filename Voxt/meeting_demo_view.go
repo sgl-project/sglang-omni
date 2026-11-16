@@ -57,6 +57,8 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 						historyAccessSection(c, fixture.state.HistoryAccess, host, &host.historyAccessUI)
 					})
 				})
+			case "appenhance":
+				appEnhancementPage(c, fixture.state.AppEnhancement, host, &host.appEnhancementUI, 800, host)
 			}
 		})
 	})

@@ -119,7 +119,10 @@ func appEnhancementBrowsersDialogView(c *ui.Context, state *appEnhancementBrowse
 		ui.Row(c).Gap(px(theme, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			ui.TextInput(c.Key("ae-br-id"), &local.brID).Label(i18n.T("Bundle ID")).Placeholder("com.example.browser").Font("monospace").Grow(1).Basis(px(theme, 180)).MinWidth(0)
 			ui.TextInput(c.Key("ae-br-name"), &local.brName).Label(i18n.T("Name")).Placeholder(i18n.T("Name")).Width(px(theme, 140))
-			if ui.Button(c.Key("ae-br-add"), i18n.T("Add")).Label(i18n.T("Add browser")).Disabled(state.AddDisabled).Clicked() {
+			bundleID := strings.TrimSpace(local.brID)
+			invalid := bundleID == "" || strings.ContainsAny(bundleID, " /")
+			unchangedInvalid := state.AddDisabled && bundleID == strings.TrimSpace(state.BundleInput)
+			if ui.Button(c.Key("ae-br-add"), i18n.T("Add")).Label(i18n.T("Add browser")).Disabled(invalid || unchangedInvalid).Clicked() {
 				actions.addAppEnhancementBrowser(local.brID, local.brName)
 			}
 		})

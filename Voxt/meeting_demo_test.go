@@ -20,6 +20,9 @@ func newMeetingDemoTester(t *testing.T, host *meetingDemoHost) *ui.Tester {
 		model := meetingOverlayLayoutModel(*fixture.state.Overlay, host.overlayUI.menu)
 		width, height = model.Layout.Width, model.Layout.Height+48
 	}
+	if fixture.state.Kind == "appenhance" {
+		height = 1400
+	}
 	tester := ui.NewTester(func(c *ui.Context) { meetingDemoView(c, host) }, width, height)
 	tester.SetLocale(fixture.locale)
 	tester.SetFontSmoothing(hudSmoothing)
@@ -170,6 +173,64 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return access.LastRead
 		}
 		return i18n.T("Other programs")
+	case "appenhance":
+		enhancement := state.AppEnhancement
+		if enhancement.Apps != nil {
+			if enhancement.Apps.Loading {
+				return i18n.T("Looking for apps…")
+			}
+			if enhancement.Apps.Error != "" {
+				return enhancement.Apps.Error
+			}
+			if enhancement.Apps.NoMatches {
+				return i18n.T("No app matches.")
+			}
+			return enhancement.Apps.Title
+		}
+		if enhancement.Browsers != nil {
+			return i18n.T("Voxt reads the current tab's address when you press a shortcut.")
+		}
+		if enhancement.Delete != nil {
+			return enhancement.Delete.Title
+		}
+		if enhancement.Error != "" {
+			return enhancement.Error
+		}
+		if !enhancement.Enabled {
+			return i18n.T("App enhancement is off, so every app uses only the features' own rules.")
+		}
+		if enhancement.Detail != nil {
+			if enhancement.Detail.AutoKey.Error != "" {
+				return enhancement.Detail.AutoKey.Error
+			}
+			if enhancement.Detail.URLError != "" {
+				return enhancement.Detail.URLError
+			}
+			for _, row := range enhancement.Detail.URLs {
+				if row.Warning != "" {
+					return row.Warning
+				}
+				if row.Canonical != "" {
+					return row.Canonical
+				}
+			}
+		}
+		if enhancement.Preview.Empty {
+			return enhancement.Preview.FrontText
+		}
+		if enhancement.Preview.Address != "" {
+			return enhancement.Preview.Address
+		}
+		if enhancement.Preview.AddSite {
+			return enhancement.Preview.AddSiteLabel
+		}
+		if enhancement.Preview.AddApp {
+			return enhancement.Preview.AddAppLabel
+		}
+		if enhancement.Detail == nil {
+			return i18n.T("Rules for the frontmost app or website")
+		}
+		return enhancement.Preview.MatchText
 	default:
 		return ""
 	}
@@ -189,6 +250,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.historyUI.query, host.historyUI.sel = "stale", "stale"
 	host.historySettingsUI.exportSel = "stale"
 	host.historyAccessUI.listOpen = true
+	host.appEnhancementUI.sel = "stale"
+	host.appEnhancementUI.appsQuery = "stale"
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -201,7 +264,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 		t.Fatalf("next fixture does not show %q", want)
 	}
 	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" ||
-		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen {
+		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen ||
+		host.appEnhancementUI.appsQuery != "" || host.appEnhancementUI.sel == "stale" {
 		t.Fatal("fixture switch kept local UI state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {

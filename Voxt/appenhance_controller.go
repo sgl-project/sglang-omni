@@ -13,10 +13,11 @@ import (
 )
 
 type appEnhancementCatalog struct {
-	apps    []proto.AppInfo
-	loading bool
-	err     string
-	seq     int
+	apps          []proto.AppInfo
+	loading       bool
+	err           string
+	helperStopped bool
+	seq           int
 }
 
 func (a *app) aeShown() { a.refreshPreview(true) }
@@ -57,7 +58,7 @@ func (a *app) appEnhancementModel() appEnhancementViewState {
 		Enabled: a.prefs.AppEnhancement.Enabled, Error: a.aeErr, Rules: a.aeRules, SelectedID: selected,
 		CustomBrowsers: a.prefs.AppEnhancement.Browsers, PreviewApp: a.previewApp(), Preview: a.aePrev,
 		HelperReady: a.helperReady(), Apps: a.aeCatalog.apps, URLReads: a.urlReads,
-		AppsLoading: a.aeCatalog.loading, AppsError: a.aeCatalog.err,
+		AppsLoading: a.aeCatalog.loading, AppsError: a.aeCatalog.err, AppsHelperStopped: a.aeCatalog.helperStopped,
 		AppsOpen: a.aeUI.appsOpen, AppsQuery: a.aeUI.appsQuery, BundleInput: a.aeUI.bundleIn,
 		BrowsersOpen: a.aeUI.browsersOpen, BrowserIDInput: a.aeUI.brID, BrowserNameInput: a.aeUI.brName,
 		DeleteAsk: a.aeUI.delAsk, URLInput: a.aeUI.urlIn, URLError: a.aeUI.urlErr,
@@ -105,10 +106,11 @@ func (a *app) loadApps() {
 	sequence := a.aeCatalog.seq
 	if !a.helperReady() {
 		a.aeCatalog.loading = false
+		a.aeCatalog.helperStopped = true
 		a.aeCatalog.err = i18n.T("The helper is not running. Add an app by its bundle ID instead.")
 		return
 	}
-	a.aeCatalog.loading, a.aeCatalog.err = true, ""
+	a.aeCatalog.loading, a.aeCatalog.err, a.aeCatalog.helperStopped = true, "", false
 	helperCall(a, proto.MethodAppList, proto.AppListParams{Installed: true}, 10*time.Second, func(result proto.AppListResult, err error) {
 		if a.aeCatalog.seq != sequence {
 			return
@@ -196,18 +198,12 @@ func (a *app) addAppEnhancementURL(id, pattern string) {
 	if pattern == "" {
 		return
 	}
-	if err := appctx.CheckPattern(pattern); err != nil {
-		a.aeUI.urlErr = uitext.PatternErrorText(err)
-		return
-	}
 	group, ok := a.aeRules.Group(id)
 	if !ok {
 		return
 	}
-	if slices.ContainsFunc(group.URLs, func(existing string) bool {
-		return appctx.CanonicalPattern(existing) == appctx.CanonicalPattern(pattern)
-	}) {
-		a.aeUI.urlErr = i18n.T("This rule is in the group already.")
+	if errorText := appEnhancementURLError(i18n.CurrentTranslator(), group, pattern); errorText != "" {
+		a.aeUI.urlErr = errorText
 		return
 	}
 	a.updateGroup(id, func(group *appctx.Group) { group.URLs = append(group.URLs, pattern) })
@@ -228,8 +224,8 @@ func (a *app) setAppEnhancementAutoKey(id, keys string) {
 }
 
 func (a *app) commitAppEnhancementCustomAutoKey(id, keys string) {
-	if _, err := appctx.ParseAutoKey(keys); err != nil || strings.TrimSpace(keys) == "" {
-		a.aeUI.keyErr = i18n.T("Enter one key, with or without modifiers: Return, Command+Return, Tab.")
+	if errorText := appEnhancementCustomAutoKeyError(i18n.CurrentTranslator(), keys); errorText != "" {
+		a.aeUI.keyErr = errorText
 		return
 	}
 	canonical := appctx.CanonicalAutoKey(keys)

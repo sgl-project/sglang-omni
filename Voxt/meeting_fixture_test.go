@@ -91,6 +91,9 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "history-access":
 		state := buildHistoryAccessViewState(translator, scenario.historyAccess)
 		fixture.HistoryAccess = &state
+	case "appenhance":
+		state := buildAppEnhancementViewState(translator, scenario.appEnhancement)
+		fixture.AppEnhancement = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

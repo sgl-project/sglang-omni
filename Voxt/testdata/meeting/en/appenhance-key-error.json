@@ -1,0 +1,152 @@
+{
+  "name": "appenhance-key-error",
+  "kind": "appenhance",
+  "appenhance": {
+    "enabled": true,
+    "enabled_text": "On",
+    "selected": "g-chat",
+    "groups": [
+      {
+        "id": "g-chat",
+        "name": "Team chat",
+        "summary": "2 apps",
+        "enabled": true,
+        "selected": true,
+        "matches": true
+      },
+      {
+        "id": "g-code",
+        "name": "Code review",
+        "summary": "2 websites",
+        "enabled": true,
+        "selected": false,
+        "matches": false
+      },
+      {
+        "id": "g-work",
+        "name": "Work browser",
+        "summary": "1 app",
+        "enabled": false,
+        "selected": false,
+        "matches": false
+      }
+    ],
+    "detail": {
+      "id": "g-chat",
+      "name": "Team chat",
+      "enabled": true,
+      "prompt": "This is a team chat: short and casual, no greetings or sign-offs.",
+      "features": [
+        {
+          "id": "transcribe",
+          "label": "Transcribe",
+          "checked": true
+        },
+        {
+          "id": "translate",
+          "label": "Translate",
+          "checked": false
+        },
+        {
+          "id": "rewrite",
+          "label": "Rewrite",
+          "checked": true
+        }
+      ],
+      "variables": [
+        {
+          "name": "USER_MAIN_LANGUAGE",
+          "token": "{{USER_MAIN_LANGUAGE}}",
+          "tooltip": "Your main language, from General settings. Every feature."
+        },
+        {
+          "name": "USER_OTHER_LANGUAGES",
+          "token": "{{USER_OTHER_LANGUAGES}}",
+          "tooltip": "Your other languages, from General settings. Every feature."
+        },
+        {
+          "name": "TARGET_LANGUAGE",
+          "token": "{{TARGET_LANGUAGE}}",
+          "tooltip": "The Target language menu on the Translate page. Translate only."
+        },
+        {
+          "name": "APP_NAME",
+          "token": "{{APP_NAME}}",
+          "tooltip": "The app in front, when an App enhancement group matches it. The features that group applies to."
+        }
+      ],
+      "apps": [
+        {
+          "ref": {
+            "bundle_id": "com.tinyspeck.slackmacgap",
+            "name": "Slack"
+          },
+          "browser": false
+        },
+        {
+          "ref": {
+            "bundle_id": "com.tencent.xinWeChat",
+            "name": "WeChat"
+          },
+          "browser": false
+        }
+      ],
+      "urls": [],
+      "url_input": "",
+      "auto_key": {
+        "options": [
+          {
+            "label": "None",
+            "value": ""
+          },
+          {
+            "label": "Return ↩",
+            "value": "Return"
+          },
+          {
+            "label": "⌘Return",
+            "value": "Command+Return"
+          },
+          {
+            "label": "⇧Return",
+            "value": "Shift+Return"
+          },
+          {
+            "label": "⌃Return",
+            "value": "Control+Return"
+          },
+          {
+            "label": "⌥Return",
+            "value": "Option+Return"
+          },
+          {
+            "label": "Custom…",
+            "value": ""
+          }
+        ],
+        "current_label": "Return ↩",
+        "custom_label": "Custom…",
+        "custom": true,
+        "text": "Shift+Fn",
+        "error": "Enter one key, with or without modifiers: Return, Command+Return, Tab.",
+        "error_code": "autoKey"
+      }
+    },
+    "preview": {
+      "app": {
+        "bundle_id": "com.tinyspeck.slackmacgap",
+        "name": "Slack"
+      },
+      "empty": false,
+      "front_text": "Frontmost: Slack",
+      "browser": false,
+      "address_status": "none",
+      "matched": true,
+      "match_source": "app",
+      "match_text": "Matches Team chat, by the app",
+      "can_refresh": true,
+      "add_app": false,
+      "add_site": false
+    }
+  }
+}

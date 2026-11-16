@@ -1,0 +1,25 @@
+{
+  "name": "appenhance-empty",
+  "kind": "appenhance",
+  "appenhance": {
+    "enabled": true,
+    "enabled_text": "On",
+    "selected": "",
+    "groups": [],
+    "preview": {
+      "app": {
+        "bundle_id": ""
+      },
+      "empty": true,
+      "front_text": "Switch to another app to see which group it falls in.",
+      "browser": false,
+      "address_status": "none",
+      "matched": false,
+      "match_source": "global",
+      "match_text": "No group matches, so only the features' own rules apply.",
+      "can_refresh": false,
+      "add_app": false,
+      "add_site": false
+    }
+  }
+}
