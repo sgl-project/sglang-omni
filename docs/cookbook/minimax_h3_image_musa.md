@@ -1,6 +1,7 @@
 # MiniMax-H3-Image on Moore Threads MUSA
 
-This recipe runs MiniMax-H3-Image text-to-image inference on one MTT S5000.
+This recipe runs MiniMax-H3-Image text-to-image and image editing on MTT S5000.
+It covers one-card offline generation and two-card Ulysses serving.
 
 ## Prerequisites
 
@@ -8,8 +9,11 @@ This recipe runs MiniMax-H3-Image text-to-image inference on one MTT S5000.
 - A local MiniMax-H3-Image checkpoint.
 - The SGLang MUSA compatibility changes in
   [sgl-project/sglang#50713](https://github.com/sgl-project/sglang/pull/50713).
+- MiniMax-H3 VAE graph decoding requires PyTorch 2.11 or newer on MUSA.
+  PyTorch 2.9 remains functional through the eager VAE fast path and logs that
+  graph decoding is disabled.
 
-## Generate an image
+## Generate an image on one card
 
 ```bash
 export MODEL_PATH=/path/to/MiniMax-H3-Image
@@ -42,24 +46,104 @@ sglang generate \
   --dit-offload-prefetch-size 16
 ```
 
-The CPU offload options are required on a 96 GB device because the model components do not fit resident at the same time. `TORCHDYNAMO_DISABLE=1` keeps this example on the functional eager path.
+The CPU offload options are required on one 96 GB device because the model
+components do not fit resident at the same time. `TORCHDYNAMO_DISABLE=1` keeps
+this example on the functional eager path.
 
-`generator_device: "cpu"` fixes the initial-noise generator so the same seed produces the same initial latent across machines. It does not change the inference device.
+`generator_device: "cpu"` fixes the initial-noise generator so the same seed
+produces the same initial latent across machines. It does not change the
+inference device.
+
+## Serve with two-card Ulysses
+
+SGLang uses Ulysses sequence parallelism for multi-card H3-Image serving.
+`OMP_NUM_THREADS=1` is required for the replicated MUSA text-encoder workers.
+
+```bash
+export MODEL_PATH=/path/to/MiniMax-H3-Image
+export PYTHONUNBUFFERED=1
+export TORCHDYNAMO_DISABLE=1
+export HF_HUB_OFFLINE=1
+export SGLANG_DIFFUSION_PLATFORM_OVERRIDE=musa
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export TOKENIZERS_PARALLELISM=false
+
+sglang serve \
+  --model-path "${MODEL_PATH}" \
+  --served-model-name MiniMax-H3-Image \
+  --host 127.0.0.1 \
+  --port 30000 \
+  --backend sglang \
+  --num-gpus 2 \
+  --ulysses-degree 2 \
+  --ring-degree 1 \
+  --encoder-parallel replicate \
+  --dit-cpu-offload \
+  --vae-cpu-offload \
+  --text-encoder-cpu-offload \
+  --dit-offload-prefetch-size 16 \
+  --attention-backend fa \
+  --component-attention-backends text_encoder=torch_sdpa,transformer=fa \
+  --warmup-mode off
+```
+
+Generate an image through the OpenAI-compatible image API:
+
+```bash
+curl http://127.0.0.1:30000/v1/images/generations \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "MiniMax-H3-Image",
+    "prompt": "A sunlit still life of a cobalt-blue ceramic vase holding magenta peonies on a warm oak table",
+    "size": "1024x1024",
+    "seed": 42,
+    "response_format": "b64_json"
+  }' \
+  -o /tmp/h3-t2i.json
+```
+
+Edit an existing image:
+
+```bash
+curl http://127.0.0.1:30000/v1/images/edits \
+  -F model=MiniMax-H3-Image \
+  --form-string 'prompt=<Picture 1> is the still life. Add a small brass key beside the vase and keep the composition unchanged.' \
+  -F size=1024x1024 \
+  -F seed=7 \
+  -F response_format=b64_json \
+  -F image=@input.png \
+  -o /tmp/h3-edit.json
+```
 
 ## Validate
 
 1. `sglang generate` exits with status 0.
-2. `output.png` is a valid RGB PNG.
-3. Logs contain `Pipeline instantiated` and `MiniMax-H3 VAE: installed quality-gated fast path`.
-4. Logs do not contain `Failed to build JIT module`, `Pipeline class 'MiniMaxH3ImagePipeline' not found`, or `Segfault`.
+2. `/v1/images/generations` and `/v1/images/edits` return status 200.
+3. Returned images decode as 1024 x 1024 RGB PNGs and are visually coherent.
+4. Logs contain `Pipeline instantiated` and
+   `MiniMax-H3 VAE: installed quality-gated fast path`.
+5. On PyTorch 2.11, VAE decoding logs either
+   `captured decode graph for tile batch shape` or uses a previously captured
+   graph.
+6. Logs do not contain `Pipeline class 'MiniMaxH3ImagePipeline' not found` or
+   `Segfault`.
 
 ## Known limitations
 
-- Use TP1 for reproducibility checks. TP4 can run but does not produce reproducible images with the same seed.
+- Use one-card execution for reproducibility checks. Same-seed reproducibility
+  has not been established for multi-card execution.
+- Use Ulysses sequence parallelism for multi-card MUSA serving. Tensor
+  parallelism must not be enabled with `--tp-size` on MUSA until it has separate
+  end-to-end image validation.
+- Two-card Ulysses requires component offload. Keeping all H3 components
+  resident exceeds one S5000 device.
 - Do not enable `PYTORCH_MUSA_ALLOC_CONF=expandable_segments:True` during component loading.
 - The H3-specific fused Triton norm+RoPE block currently uses the unfused fallback on MUSA.
-- MATE RMSNorm reuse and fused QK-Norm+RoPE optimization are follow-up work.
-- Image editing through `/v1/images/edits` is not covered by this recipe.
-- HTTP serving through `/v1/images/generations` is not covered by this offline recipe.
+- MATE provides RMSNorm primitives, but currently has no drop-in replacement for
+  the H3 fused QK-Norm+RoPE interface.
+- Component-offload transitions can invalidate and recapture the VAE decode
+  graph. This recipe does not claim persistent graph reuse across component
+  moves.
 
-This recipe uses the eager functional path and is not a throughput or compiled-serving benchmark.
+This recipe is a functional validation, not a throughput benchmark.
