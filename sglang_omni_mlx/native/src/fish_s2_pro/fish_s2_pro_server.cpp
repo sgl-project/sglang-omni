@@ -36,6 +36,7 @@
 #include <string_view>
 #include <vector>
 
+#include "common/generation.h"
 #include "common/reference_audio.h"
 #include "common/text.h"
 #include "fish_s2_pro/fish_s2_pro_model.h"
@@ -446,7 +447,7 @@ private:
     for (const ParsedReference &reference : request.references) {
       context.check_deadline();
       if (context.cancel.load()) {
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
       if (reference.codes.empty()) {
@@ -468,7 +469,7 @@ private:
     fish_s2_pro::VocoderStream stream(model_.codec());
     std::vector<mlx::core::array> frames;
     int frame_count = 0;
-    const qwen3_asr::FinishReason finish_reason =
+    const omni_common::FinishReason finish_reason =
         model_.Generate(prompt, request.max_frames, request.sampling,
                         context.cancel, [&](const mlx::core::array &codes) {
                           context.check_deadline();

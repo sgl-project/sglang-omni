@@ -385,6 +385,30 @@ func TestOnboardingComesBack(t *testing.T) {
 	}
 }
 
+// TestOnboardingTryStepLeaves: #3917, Set up a language model on the
+// Translate and Rewrite try steps navigated behind the guide, so it
+// seemed to do nothing. It leaves like the Models step's button.
+func TestOnboardingTryStepLeaves(t *testing.T) {
+	for _, c := range []struct {
+		step  int
+		title string
+	}{{obTranslate, "Translate"}, {obRewrite, "Rewrite"}} {
+		a, tt := obTester(t)
+		readyASROnly(a)
+		a.obGo(c.step)
+		frames(tt)
+		tt.Scroll(windowWidth*0.6, windowHeight*0.5, 0, 600) // the notice is under the fold
+		click(t, tt, "Set up a language model")
+		if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide is paused at the "+c.title+" step.") {
+			t.Fatalf("%s: open %v, %s, %q", c.title, a.ob.open, a.shownPath(), tt.Texts())
+		}
+		click(t, tt, "Back to the setup guide")
+		if !a.ob.open || a.ob.step != c.step {
+			t.Fatalf("%s back: open %v, step %d", c.title, a.ob.open, a.ob.step)
+		}
+	}
+}
+
 // TestKeyboardLit: the setup guide's keyboard lights the keys of the
 // shortcut: a modifier on its side, on both sides when either does, fn,
 // the space bar (#3644: "Right ⌥" did not say which physical key).

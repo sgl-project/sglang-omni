@@ -35,15 +35,11 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	m.mu.Unlock()
 
 	tx, err := m.newTrackTranscriber(ctx, src, job)
-	if err != nil {
-		guidance := "meeting.mic.unavailable"
-		if src == SourceSystem {
-			guidance = "meeting.system.unavailable"
-		}
+	if err != nil { // the speech model, not the capture
 		m.mu.Lock()
 		delete(m.tracks, src)
 		m.mu.Unlock()
-		return &StartError{Source: src, Err: err, Guidance: guidance}
+		return &StartError{Source: src, Err: err, Guidance: GuidanceModel}
 	}
 	if tx != nil {
 		m.mu.Lock()
@@ -96,13 +92,14 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 					return
 				}
 				m.mu.Lock()
-				level := map[Source]float64{src: ev.Level.RMS}
-				for k, v := range m.snap.Level {
-					if k != src {
-						level[k] = v
-					}
+				levels := map[Source][]float64{}
+				for k, v := range m.snap.Levels {
+					levels[k] = v
 				}
-				m.snap.Level = level // a new map: snapshots handed out keep theirs
+				// A new map and slice: snapshots handed out keep theirs.
+				h := append(append([]float64(nil), levels[src]...), session.Level(ev.Level.RMS))
+				levels[src] = h[max(len(h)-session.Bars, 0):]
+				m.snap.Levels = levels
 				m.snap.Elapsed = m.timeline.Elapsed()
 				m.mu.Unlock()
 				m.noteLevel(src, ev.Level.RMS)

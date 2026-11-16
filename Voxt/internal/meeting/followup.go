@@ -225,12 +225,12 @@ func RenderFollowUpSystem(mainLanguage string, summary *Summary, transcriptConte
 	out := DefaultFollowUpPrompt
 	lang := strings.TrimSpace(mainLanguage)
 	if lang == "" {
-		lang = "English"
+		lang = transcriptLanguage
 	}
 	out = strings.ReplaceAll(out, asr.VarUserMainLanguage, lang)
 	out = strings.ReplaceAll(out, "{{CURRENT_SUMMARY}}", formatFollowUpSummary(summary))
 	out = strings.ReplaceAll(out, "{{TRANSCRIPT}}", strings.TrimSpace(transcriptContext))
-	return strings.TrimSpace(out)
+	return strings.TrimSpace(out) + "\n\n" + OwnWordsRule
 }
 
 func formatFollowUpSummary(summary *Summary) string {

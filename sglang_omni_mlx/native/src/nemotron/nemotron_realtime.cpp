@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdint>
 
+#include "common/transcription.h"
+
 namespace nemotron {
 
 namespace {
@@ -77,11 +79,11 @@ bool NemotronRealtimeSession::Handle(const nlohmann::json &message) {
   } else if (type == "transcription.done") {
     Finish();
     std::unique_lock<std::mutex> lock(mutex_);
-    const qwen3_asr::TranscriptionResult result = final_result_;
+    const omni_common::TranscriptionResult result = final_result_;
     lock.unlock();
     Send({{"type", "transcription.completed"},
           {"text", result.text},
-          {"segments", qwen3_asr::SpeakerSegmentsJson(result.segments)}});
+          {"segments", omni_common::SpeakerSegmentsJson(result.segments)}});
     return false;
   } else {
     SendError("invalid_request_error", "invalid_event", "Unknown event type.");
@@ -134,12 +136,12 @@ void NemotronRealtimeSession::SubmitDecode() {
       [stream = stream_,
        samples = std::move(samples)](const std::atomic<bool> &cancel) {
         stream->Append(samples, cancel);
-        qwen3_asr::TranscriptionResult preview;
+        omni_common::TranscriptionResult preview;
         preview.text = stream->Text();
         return preview;
       },
       cancel_,
-      [weak_self](std::optional<qwen3_asr::TranscriptionResult> result,
+      [weak_self](std::optional<omni_common::TranscriptionResult> result,
                   std::exception_ptr error) {
         const std::shared_ptr<NemotronRealtimeSession> self = weak_self.lock();
         if (!self) {
@@ -192,7 +194,7 @@ void NemotronRealtimeSession::Finish() {
   pending_samples_.clear();
   lock.unlock();
   try {
-    const qwen3_asr::TranscriptionResult result = worker_.Transcribe(
+    const omni_common::TranscriptionResult result = worker_.Transcribe(
         [stream = stream_,
          samples = std::move(samples)](const std::atomic<bool> &cancel) {
           stream->Finish(samples, cancel);
@@ -206,7 +208,7 @@ void NemotronRealtimeSession::Finish() {
           {"segment_id", 0},
           {"text", result.text},
           {"is_final", true},
-          {"segments", qwen3_asr::SpeakerSegmentsJson(result.segments)}});
+          {"segments", omni_common::SpeakerSegmentsJson(result.segments)}});
   } catch (...) {
     lock.lock();
     failed_ = true;

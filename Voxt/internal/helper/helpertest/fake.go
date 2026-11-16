@@ -92,6 +92,7 @@ package helpertest
 //	no-screen        no Screen Recording until permissions.request asks for it:
 //	                 screen.window fails with permission_denied (else it answers
 //	                 Shot(pid) for any pid but 0)
+//	clipboard-image  clipboard.image answers ClipImage (else no picture)
 //
 // A capture.start whose first device is "crash" exits 3 after its first
 // frame; one whose first device is "gone" fails with device_unavailable;
@@ -408,7 +409,7 @@ func (f *fake) serve(m proto.Message) {
 				f.mic = proto.PermGranted
 			}
 			f.mu.Unlock()
-		case proto.PermissionAccessibility:
+		case proto.PermissionAccessibility, proto.PermissionSystemAudio:
 		case proto.PermissionScreenRecording:
 			f.mu.Lock()
 			f.screen = true
@@ -505,6 +506,12 @@ func (f *fake) serve(m proto.Message) {
 		default:
 			f.result(m.ID, proto.ScreenWindowResult{JPEG: Shot(p.PID)})
 		}
+	case proto.MethodClipboardImage:
+		var r proto.ClipboardImageResult
+		if f.has("clipboard-image") {
+			r.JPEG = ClipImage
+		}
+		f.result(m.ID, r)
 	case proto.MethodAppIcons:
 		var p proto.AppIconsParams
 		m.DecodeParams(&p)

@@ -6,7 +6,6 @@ from __future__ import annotations
 import torch
 
 from sglang_omni.models.fishaudio_drama3.tower_tiles import (
-    FUSED_BLOCK_M,
     GATE_UP_BLOCK_N,
     GEMV_BLOCK_K,
     GEMV_WARPS,
@@ -15,6 +14,7 @@ from sglang_omni.models.fishaudio_drama3.tower_tiles import (
     SplitScratch,
     TowerLayerShape,
     TowerLayerWeights,
+    fused_block_m,
 )
 
 try:
@@ -299,7 +299,7 @@ def gate_o_proj_add(
         DIM=shape.dim,
         QUERY_WIDTH=shape.query_width,
         SPLIT=shape.o_proj_split,
-        BLOCK_M=FUSED_BLOCK_M,
+        BLOCK_M=fused_block_m(residual_out.shape[0]),
         BLOCK_N=O_PROJ_BLOCK_N,
         BLOCK_K=GEMV_BLOCK_K,
         num_warps=GEMV_WARPS,
@@ -332,7 +332,7 @@ def norm_gate_up_silu(
         NORM_TILES=norm_tiles,
         NORM_TILE_BLOCK=triton.next_power_of_2(norm_tiles),
         SPLIT=shape.gate_up_split,
-        BLOCK_M=FUSED_BLOCK_M,
+        BLOCK_M=fused_block_m(scaled.shape[0]),
         BLOCK_N=GATE_UP_BLOCK_N,
         BLOCK_K=GEMV_BLOCK_K,
         num_warps=GEMV_WARPS,

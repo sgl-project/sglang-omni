@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -30,12 +32,19 @@ type run struct {
 	ctx       context.Context // the session's: cancelled by Cancel and at the end
 	cancel    context.CancelFunc
 	cancelled atomic.Bool
-	// llmCtx is the language model's requests': SkipLLM cancels it
-	// (llmStop), and skipped says so; the session goes on.
+	// llmCtx is the language model's requests': SkipLLM, StopLLM and
+	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
+	// again), and skipped, stopped or rethink says which; the session goes
+	// on.
 	llmCtx  context.Context
 	llmStop context.CancelFunc
 	skipped atomic.Bool
-	stop    chan struct{}
+	stopped atomic.Bool
+	rethink atomic.Bool
+	// think is the level the requests ask with: StartRequest.Thinking,
+	// then Rethink's (guarded by m.mu).
+	think *llm.Thinking
+	stop  chan struct{}
 	// recorded is closed once listen's recording loop has the capture's
 	// end: the stream's Finish waits for it, so that the Final's answer
 	// never comes while that loop still runs.
@@ -71,6 +80,9 @@ type run struct {
 	// shot is the picture of the target's window for the language model
 	// (window.go); nil: none.
 	shot func() []byte
+	// clip is the picture on the clipboard for Rewrite's language model
+	// (window.go), read before the selection; nil: none.
+	clip []byte
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
@@ -183,7 +195,10 @@ func (r *run) main() {
 		r.m.update(r, func(s *Snapshot) { s.State = Recording })
 	case kind == store.KindRewrite && r.canSelect():
 		selDone = make(chan string, 1)
-		go func() { selDone <- r.readSelection() }()
+		go func() {
+			r.readClipboardImage() // first: reading the selection may ⌘C over the clipboard
+			selDone <- r.readSelection()
+		}()
 	}
 
 	raw, ok := r.listen()
@@ -391,7 +406,7 @@ func (r *run) keep(s Snapshot, status store.Status) {
 		return
 	}
 	e := store.Entry{
-		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status,
+		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status, Conversation: cmp.Or(r.req.Conversation, r.id),
 		AppBundle: s.Target.BundleID, AppName: s.Target.Name,
 		RawText: s.Raw, Result: s.Result, SourceText: s.Selection, TargetLang: s.TargetLanguage,
 		ASRProvider: s.ASR.ID, ASRModel: s.ASR.Model, LLMProvider: s.LLM.ID, LLMModel: s.LLM.Model,

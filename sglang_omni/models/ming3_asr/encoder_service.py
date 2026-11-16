@@ -19,6 +19,7 @@ from sglang_omni.scheduling.pre_lm_encoder import (
     QueueEntry,
     QueueSignal,
 )
+from sglang_omni.utils.device import supports_device_streams
 
 MelBatch = list[torch.Tensor]
 
@@ -44,9 +45,16 @@ class Ming3ASRPreLMEncoderService(
         self.encoder = encoder
         reference = next(encoder.parameters())
         self.device = reference.device
+        self.device_module = torch.get_device_module(self.device)
         self.stream = (
-            torch.cuda.Stream(device=self.device)
-            if self.device.type == "cuda"
+            self.device_module.Stream(device=self.device)
+            if supports_device_streams(self.device)
+            else None
+        )
+        # Named here because attach_embedding runs with the encoder stream current.
+        self.consumer_stream = (
+            self.device_module.current_stream(self.device)
+            if self.stream is not None
             else None
         )
         self.max_batch_size = max_batch_size
@@ -56,7 +64,7 @@ class Ming3ASRPreLMEncoderService(
         super().__init__(worker_name="ming3-asr-audio-encode")
 
     def close(self) -> None:
-        """Join the worker so a batch still inside CUDA cannot outlive the encoder stream."""
+        """Join the worker so a batch still on the device cannot outlive the encoder stream."""
         with self.lifecycle_lock:
             if self.closed:
                 return
@@ -121,7 +129,7 @@ class Ming3ASRPreLMEncoderService(
             if self.stream is None:
                 yield
             else:
-                with torch.cuda.stream(self.stream):
+                with self.device_module.stream(self.stream):
                     yield
 
     def encode_batch(self, requests: list[MelBatch]) -> EncodedMelBatch:
@@ -160,8 +168,8 @@ class Ming3ASRPreLMEncoderService(
         return embeddings
 
     def attach_embedding(self, mels: MelBatch, embedding: torch.Tensor) -> None:
-        if self.stream is not None and embedding.is_cuda:
-            embedding.record_stream(torch.cuda.default_stream(self.device))
+        if self.consumer_stream is not None:
+            embedding.record_stream(self.consumer_stream)
         else:
             pass
 

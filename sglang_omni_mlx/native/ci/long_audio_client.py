@@ -68,18 +68,30 @@ class TranscriptScore:
     errors: int
     reference_tokens: int
     hypothesis_tokens: int
+    deleted_reference_tokens: int
+    longest_deleted_reference_token_run: int
     error_rate: float
 
 
 def score(reference: str, hypothesis: str, language: str) -> TranscriptScore:
     reference_tokens = tokens(reference, language)
     hypothesis_tokens = tokens(hypothesis, language)
-    errors = Levenshtein.distance(reference_tokens, hypothesis_tokens)
+    operations = Levenshtein.editops(reference_tokens, hypothesis_tokens)
+    deleted_reference_token_run_lengths = [
+        block.src_end - block.src_start
+        for block in operations.as_opcodes()
+        if block.tag == "delete"
+    ]
+    errors = len(operations)
     return TranscriptScore(
         metric="wer_en" if language == "en" else "cer_zh",
         errors=errors,
         reference_tokens=len(reference_tokens),
         hypothesis_tokens=len(hypothesis_tokens),
+        deleted_reference_tokens=sum(deleted_reference_token_run_lengths),
+        longest_deleted_reference_token_run=max(
+            deleted_reference_token_run_lengths, default=0
+        ),
         error_rate=errors / len(reference_tokens),
     )
 
