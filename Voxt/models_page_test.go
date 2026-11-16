@@ -546,26 +546,23 @@ func TestModelCardsLineUp(t *testing.T) {
 	}
 }
 
-// TestSpeechContextHiddenWithoutTaker: with MOSS-Transcribe-Diarize, which
-// takes no context, as every feature's speech model, the page does not
-// offer the Speech context field; one feature on Qwen3-ASR brings it back
-// (#4067).
-func TestSpeechContextHiddenWithoutTaker(t *testing.T) {
+// TestSpeechContextNoteWithoutTaker: with MOSS-Transcribe-Diarize, which
+// takes no context, as every feature's speech model, the Speech context
+// says so and keeps its field, which meeting correction reads; one
+// feature on Qwen3-ASR drops the note (#4067).
+func TestSpeechContextNoteWithoutTaker(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 4800)
 	seedModels(t, a, models.ASRMoss, models.ASRAccurate, models.VADSilero)
 	a.navigate(modelsPath)
 	frames(tt)
-	unused := "The speech models in use do not take a speech context. Your dictionary still guides the language model's clean-up."
-	if _, ok := tt.Find("Speech context"); !ok {
-		t.Fatalf("no section: %q", tt.Texts())
-	}
-	if !has(tt, unused) || has(tt, "Tell the speech model who is speaking and about what.") {
-		t.Errorf("MOSS everywhere still offers the field: %q", tt.Texts())
+	note := "The speech models in use do not take it while they recognise. The language model still gets it when it corrects a meeting's transcript, and your dictionary still guides its clean-up."
+	if !has(tt, note) || !has(tt, "Tell the speech model who is speaking and about what.") {
+		t.Errorf("MOSS everywhere: no note, or no field: %q", tt.Texts())
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Features.Rewrite.ASR = models.ASRAccurate })
 	frames(tt)
-	if has(tt, unused) || !has(tt, "Tell the speech model who is speaking and about what.") {
-		t.Errorf("Rewrite on Qwen3-ASR has no field: %q", tt.Texts())
+	if has(tt, note) {
+		t.Errorf("Rewrite on Qwen3-ASR still has the note: %q", tt.Texts())
 	}
 }

@@ -4,7 +4,7 @@ package main
 // text the speech model gets with every recording, before the
 // dictionary's terms. It is saved as Your rules are (feature_prompts.go):
 // promptSaveDelay after the last key, or when the field loses the focus.
-// While no feature's speech model takes it, the field is not offered.
+// While no feature's speech model takes it, a caption says so.
 
 import (
 	"strings"
@@ -45,11 +45,10 @@ func (a *app) speechContextSection(c *ui.Context) {
 		sc.text, sc.seen = saved, saved
 	}
 	sectionTitle(c, i18n.T("Speech context"))
-	if a.speechContextUnused() {
-		caption(c, i18n.T("The speech models in use do not take a speech context. Your dictionary still guides the language model's clean-up."))
-		return
-	}
 	caption(c, i18n.T("Tell the speech model who is speaking and about what."))
+	if a.speechContextUnused() { // still offered: meeting transcript correction reads it (meeting_link.go)
+		caption(c, i18n.T("The speech models in use do not take it while they recognise. The language model still gets it when it corrects a meeting's transcript, and your dictionary still guides its clean-up."))
+	}
 	in := ui.TextArea(c.Key("models-speech-context"), &sc.text).Label(i18n.T("Speech context")).
 		Placeholder(i18n.T("For example: I work on LLM serving and speak Chinese with English technical terms.")).MinHeight(px(t, 72))
 	a.autosave(in, sc, a.saveSpeechContext)
