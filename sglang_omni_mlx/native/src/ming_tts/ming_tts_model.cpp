@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "ming_tts/ming_tts_model.h"
+#include "common/kv_cache.h"
 
 #include <cassert>
 #include <cmath>
@@ -247,8 +248,9 @@ mx::array MingBackbone::Moe(const mx::array &x,
   }
 }
 
-mx::array MingBackbone::Forward(const mx::array &embeddings,
-                                std::vector<qwen3_asr::KVCache> &caches) const {
+mx::array
+MingBackbone::Forward(const mx::array &embeddings,
+                      std::vector<omni_common::KVCache> &caches) const {
   assert(embeddings.ndim() == 3 && embeddings.shape(2) == config_.hidden_size);
   assert(caches.size() == static_cast<size_t>(config_.num_hidden_layers));
   const int batch = embeddings.shape(0), length = embeddings.shape(1);
@@ -298,8 +300,8 @@ mx::array MingBackbone::Forward(const mx::array &embeddings,
   return checkpoint_.RmsNorm(hidden, "norm", config_.rms_norm_eps);
 }
 
-std::vector<qwen3_asr::KVCache> MingBackbone::NewCaches() const {
-  return std::vector<qwen3_asr::KVCache>(config_.num_hidden_layers);
+std::vector<omni_common::KVCache> MingBackbone::NewCaches() const {
+  return std::vector<omni_common::KVCache>(config_.num_hidden_layers);
 }
 
 } // namespace ming_tts

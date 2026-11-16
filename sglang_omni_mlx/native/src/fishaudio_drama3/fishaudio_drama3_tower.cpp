@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "fishaudio_drama3/fishaudio_drama3_model.h"
 
 namespace fishaudio_drama3 {
@@ -37,7 +38,7 @@ mx::array Drama3Model::EmbeddingSum(const mx::array &frames, int first,
 
 mx::array Drama3Model::TowerLayer(
     const mx::array &hidden, const mx::array &codes,
-    const mx::array &is_semantic, int layer, qwen3_asr::KVCache &cache,
+    const mx::array &is_semantic, int layer, omni_common::KVCache &cache,
     const std::optional<mx::array> &unseen_embedding) const {
   const bool is_shared = layer < shared_tower_layer_count_;
   const std::string prefix =
@@ -121,7 +122,7 @@ mx::array Drama3Model::TowerLayer(
 mx::array Drama3Model::Enrich(mx::array hidden, const mx::array &semantic_codes,
                               const mx::array &is_semantic,
                               const mx::array &frames,
-                              std::vector<qwen3_asr::KVCache> &caches) const {
+                              std::vector<omni_common::KVCache> &caches) const {
   const mx::array unseen =
       EmbeddingSum(frames, 1 + backbone_codebook_count_, codebook_count_);
   const mx::array frame_is_semantic =

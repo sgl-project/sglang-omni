@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "mlx/mlx.h"
 #include "nlohmann/json.hpp"
@@ -35,26 +36,6 @@ struct Qwen3DecoderConfig {
   int vocab_size = 0;
 
   static Qwen3DecoderConfig FromJson(const nlohmann::json &text_config);
-};
-
-// Per-layer key/value cache that grows in fixed steps. Keys and values may
-// differ in head width, as in MLA.
-class KVCache {
-public:
-  std::pair<mlx::core::array, mlx::core::array>
-  UpdateAndFetch(const mlx::core::array &keys, const mlx::core::array &values);
-  // Drops the newest token_count positions; the next update overwrites them.
-  void Trim(int token_count);
-  int offset() const { return offset_; }
-  // The cache's buffers, to evaluate; empty before the first update.
-  std::vector<mlx::core::array> Arrays() const;
-  // The filled keys and values, [1, kv_heads, offset, head_dim].
-  std::pair<mlx::core::array, mlx::core::array> Filled() const;
-
-private:
-  std::optional<mlx::core::array> keys_;
-  std::optional<mlx::core::array> values_;
-  int offset_ = 0;
 };
 
 // Key/value cache for sequences decoded in lockstep. Rows are left-padded to
@@ -91,14 +72,15 @@ public:
   // the last layer's hidden states. The hidden states entering each layer in
   // capture_layers are appended to captured, in that order.
   mlx::core::array
-  Forward(const mlx::core::array &embeddings, std::vector<KVCache> &caches,
+  Forward(const mlx::core::array &embeddings,
+          std::vector<omni_common::KVCache> &caches,
           const std::vector<int> &capture_layers = {},
           std::vector<mlx::core::array> *captured = nullptr) const;
   // Appends every layer's keys and values of hidden_states [1, length,
   // hidden] to the caches, for later queries to attend to. The hidden states
   // are projected as given, without the layers' input norms.
   void AppendKeysValues(const mlx::core::array &hidden_states,
-                        std::vector<KVCache> &caches) const;
+                        std::vector<omni_common::KVCache> &caches) const;
   // Logits of the last position of the hidden states, [vocab].
   mlx::core::array LastLogits(const mlx::core::array &hidden_states) const;
   // Logits of every position of the hidden states, [length, vocab].
@@ -106,12 +88,12 @@ public:
   // Continues the queued next token; leaves its successor queued when commit
   // stops. Probes capture hidden states to resume the draft without prefill.
   void DecodePlain(
-      mlx::core::array &next_token, std::vector<KVCache> &caches,
+      mlx::core::array &next_token, std::vector<omni_common::KVCache> &caches,
       float repetition_penalty, const std::function<bool(int)> &commit,
       const std::atomic<bool> &cancel,
       const std::vector<int> &capture_layers = {},
       std::vector<std::vector<mlx::core::array>> *captured = nullptr) const;
-  std::vector<KVCache> NewCaches() const;
+  std::vector<omni_common::KVCache> NewCaches() const;
   const Qwen3DecoderConfig &config() const { return config_; }
   // One decode step for a batch, embeddings [batch, 1, hidden]. offsets is
   // each row's true position, int32 [batch]; pads is each row's count of
@@ -133,7 +115,8 @@ private:
   std::string Name(const std::string &suffix) const;
   mlx::core::array Project(const mlx::core::array &x, const std::string &prefix,
                            bool tied_embedding = false) const;
-  mlx::core::array Layer(const mlx::core::array &x, int layer, KVCache &cache,
+  mlx::core::array Layer(const mlx::core::array &x, int layer,
+                         omni_common::KVCache &cache,
                          const std::optional<RotaryInputs> &rotary) const;
   mlx::core::array BatchLayer(const mlx::core::array &x, int layer,
                               BatchedKVCache &cache,
@@ -142,13 +125,14 @@ private:
   RotaryInputs Rotary(int length, int offset, mlx::core::Dtype dtype) const;
   // Rotates heads [batch, heads, length, head_dim] at the cache's next
   // positions: with the step's tables when given, else with the fused rope.
-  mlx::core::array Rotated(const mlx::core::array &heads, const KVCache &cache,
+  mlx::core::array Rotated(const mlx::core::array &heads,
+                           const omni_common::KVCache &cache,
                            const std::optional<RotaryInputs> &rotary) const;
   // One layer's keys, rotated at the cache's next positions, and values of x,
   // each [batch, kv_heads, length, head_dim].
   std::pair<mlx::core::array, mlx::core::array>
   KeysValues(const mlx::core::array &x, const std::string &prefix,
-             const KVCache &cache,
+             const omni_common::KVCache &cache,
              const std::optional<RotaryInputs> &rotary) const;
 
   const omni_common::Checkpoint &checkpoint_;

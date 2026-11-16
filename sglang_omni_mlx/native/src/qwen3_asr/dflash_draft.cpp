@@ -12,9 +12,12 @@
 #include <vector>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "qwen3_asr/draft_backoff.h"
 
 namespace qwen3_asr {
+
+using omni_common::KVCache;
 
 using omni_common::GenerationCancelled;
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/qwen3_asr_model.h"
+#include "common/kv_cache.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,6 +10,8 @@
 #include <vector>
 
 namespace qwen3_asr {
+
+using omni_common::KVCache;
 
 namespace mx = mlx::core;
 

@@ -10,6 +10,7 @@
 #include <stdexcept>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
 
 namespace qwen3_tts {
 
@@ -304,7 +305,7 @@ mx::array Qwen3TtsModel::PredictCodes(const mx::array &hidden,
                                       const mx::array &first_code,
                                       const SamplerConfig &sampler,
                                       mx::random::KeySequence &keys) const {
-  std::vector<qwen3_asr::KVCache> caches = code_predictor_.NewCaches();
+  std::vector<omni_common::KVCache> caches = code_predictor_.NewCaches();
   std::vector<mx::array> codes = {first_code};
   mx::array input = mx::concatenate(
       {hidden, checkpoint_.Embed(first_code, std::string(kTalkerPrefix) +
@@ -420,7 +421,7 @@ omni_common::FinishReason Qwen3TtsModel::Generate(
     }
   }
   std::vector<int> history;
-  std::vector<qwen3_asr::KVCache> caches = talker_.NewCaches();
+  std::vector<omni_common::KVCache> caches = talker_.NewCaches();
   for (int frame = 0; frame < max_frames; ++frame) {
     if (cancel.load()) {
       throw omni_common::GenerationCancelled();

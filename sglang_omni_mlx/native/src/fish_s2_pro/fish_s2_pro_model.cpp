@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
 
 namespace fish_s2_pro {
 
@@ -202,7 +203,7 @@ mx::array FishS2ProModel::Embed(const mx::array &ids,
 
 mx::array
 FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
-                        std::vector<qwen3_asr::KVCache> &caches) const {
+                        std::vector<omni_common::KVCache> &caches) const {
   const int batch = x.shape(0);
   const int length = x.shape(1);
   const int query_size = config.head_count * config.head_dim;
@@ -283,8 +284,8 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
 std::vector<mx::array>
 FishS2ProModel::ResidualCodes(const mx::array &hidden,
                               const mx::array &semantic_code,
-                              std::vector<qwen3_asr::KVCache> &caches) const {
-  for (qwen3_asr::KVCache &cache : caches) {
+                              std::vector<omni_common::KVCache> &caches) const {
+  for (omni_common::KVCache &cache : caches) {
     cache.Trim(cache.offset());
   }
   // The slow hidden state fills the first position; its logits are unused.
@@ -422,8 +423,8 @@ omni_common::FinishReason FishS2ProModel::Generate(
   }
   std::vector<uint8_t> audio_flags(prompt.is_audio.begin(),
                                    prompt.is_audio.end());
-  std::vector<qwen3_asr::KVCache> caches(slow_.layer_count);
-  std::vector<qwen3_asr::KVCache> fast_caches(fast_.layer_count);
+  std::vector<omni_common::KVCache> caches(slow_.layer_count);
+  std::vector<omni_common::KVCache> fast_caches(fast_.layer_count);
   mx::array hidden = Forward(
       Embed(mx::array(prompt.ids.begin(), {1, length}, mx::int32),
             mx::array(rows.begin(), {codebook_count_, length}, mx::int32),

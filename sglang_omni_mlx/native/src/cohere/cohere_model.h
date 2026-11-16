@@ -10,8 +10,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace cohere_transcribe {
 
@@ -31,7 +31,7 @@ struct CohereConfig {
 // Self-attention keys and values grow by one token per step; cross-attention
 // keys and values are projected once from the encoder output.
 struct DecoderLayerCache {
-  qwen3_asr::KVCache self_attention;
+  omni_common::KVCache self_attention;
   std::optional<mlx::core::array> cross_keys;
   std::optional<mlx::core::array> cross_values;
 };

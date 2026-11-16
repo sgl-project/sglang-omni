@@ -64,6 +64,7 @@ add_library(common STATIC
   src/common/audio_chunks.cpp
   src/common/campplus.cpp
   src/common/form.cpp
+  src/common/kv_cache.cpp
   src/common/layers.cpp
   src/common/npz.cpp
   src/common/reference_audio.cpp
@@ -180,7 +181,7 @@ install(TARGETS whisper_server whisper_transcribe RUNTIME DESTINATION bin)
 # Note (khazic): Cohere Transcribe: cohere_transcribe_server, with qwen3_asr_server's API
 # without realtime, and its parity tool; Silero VAD cuts long audio at speech.
 add_library(cohere_asr STATIC src/cohere/cohere_model.cpp src/cohere/cohere_transcriber.cpp)
-target_link_libraries(cohere_asr PUBLIC qwen3_asr swift_port silero_vad)
+target_link_libraries(cohere_asr PUBLIC common swift_port silero_vad)
 # Note (khazic): CPU float math rounds each operation, as Swift does: no fused multiply-add.
 target_compile_options(cohere_asr PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(cohere_transcribe_server src/cohere/cohere_transcribe_server.cpp)
@@ -298,7 +299,7 @@ install(FILES ../../LICENSE DESTINATION share/licenses/auk RENAME Apache-2.0.txt
 add_library(ming_tts STATIC src/ming_tts/ming_tts_model.cpp src/ming_tts/ming_tts_acoustic.cpp
   src/ming_tts/ming_tts_audio.cpp src/ming_tts/ming_tts_generator.cpp
   src/ming_tts/ming_tts_reference.cpp)
-target_link_libraries(ming_tts PUBLIC qwen3_asr)
+target_link_libraries(ming_tts PUBLIC common)
 target_compile_options(ming_tts PRIVATE -Wall -Wextra)
 # Its request parsing, which stub_server shares.
 add_library(ming_tts_request STATIC src/ming_tts/ming_tts_request.cpp)
@@ -392,11 +393,11 @@ add_library(fishaudio_drama3 STATIC
   src/fishaudio_drama3/fishaudio_drama3_backbone.cpp
   src/fishaudio_drama3/fishaudio_drama3_tower.cpp
   src/fishaudio_drama3/fishaudio_drama3_generation.cpp)
-target_link_libraries(fishaudio_drama3 PUBLIC qwen3_asr fish_dac)
+target_link_libraries(fishaudio_drama3 PUBLIC common fish_dac)
 target_compile_options(fishaudio_drama3 PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(fishaudio_drama3_experts_test EXCLUDE_FROM_ALL
   ci/fishaudio_drama3_experts_test.cpp)
-target_link_libraries(fishaudio_drama3_experts_test PRIVATE fishaudio_drama3)
+target_link_libraries(fishaudio_drama3_experts_test PRIVATE fishaudio_drama3 qwen3_asr)
 
 add_executable(fishaudio_drama3_server src/fishaudio_drama3/fishaudio_drama3_server.cpp)
 target_link_libraries(fishaudio_drama3_server PRIVATE fishaudio_drama3 speech_service)
@@ -411,7 +412,7 @@ install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DEST
 add_library(ming3_audio STATIC src/ming3_audio/ming3_audio_model.cpp
   src/ming3_audio/ming3_audio_attention.cpp
   src/ming3_audio/ming3_audio_mtp.cpp)
-target_link_libraries(ming3_audio PUBLIC qwen3_asr)
+target_link_libraries(ming3_audio PUBLIC common)
 target_compile_options(ming3_audio PRIVATE -Wall -Wextra)
 add_library(ming3_audio_service STATIC src/ming3_audio/ming3_audio_service.cpp)
 target_link_libraries(ming3_audio_service PUBLIC omni_service)
@@ -437,7 +438,7 @@ target_link_libraries(fishaudio_drama3_codec_test PRIVATE fish_dac)
 # /v1/audio/speech API and reference-audio voice cloning, and its parity tool.
 add_library(fish_s2_pro STATIC src/fish_s2_pro/fish_s2_pro_stream.cpp
   src/fish_s2_pro/fish_s2_pro_model.cpp)
-target_link_libraries(fish_s2_pro PUBLIC qwen3_asr fish_dac)
+target_link_libraries(fish_s2_pro PUBLIC common fish_dac)
 target_compile_options(fish_s2_pro PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(fish_s2_pro_server src/fish_s2_pro/fish_s2_pro_server.cpp)
 target_link_libraries(fish_s2_pro_server PRIVATE fish_s2_pro speech_service)

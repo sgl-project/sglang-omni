@@ -15,6 +15,7 @@
 
 #include "common/campplus.h"
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "common/text.h"
 #include "common/tokenizer.h"
@@ -119,7 +120,7 @@ public:
   // caches.
   mlx::core::array
   ForwardEmbeddings(const mlx::core::array &embeddings,
-                    std::vector<qwen3_asr::KVCache> &caches) const;
+                    std::vector<omni_common::KVCache> &caches) const;
   // [SOS, text, TASK, prompt speech] embeddings.
   mlx::core::array
   BuildPromptEmbeddings(const std::vector<int> &text_token_ids,
@@ -127,7 +128,7 @@ public:
   // Includes the extended control-token vocabulary for teacher forcing.
   mlx::core::array
   SpeechEmbeddings(const std::vector<int> &speech_token_ids) const;
-  std::vector<qwen3_asr::KVCache> NewCaches() const;
+  std::vector<omni_common::KVCache> NewCaches() const;
 
 private:
   // Ids of text with the checkpoint's special tokens split out.

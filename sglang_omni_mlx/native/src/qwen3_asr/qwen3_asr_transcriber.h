@@ -12,6 +12,7 @@
 
 #include "common/audio.h"
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/tokenizer.h"
 #include "common/transcription.h"
 #include "qwen3_asr/dflash_draft.h"
@@ -66,9 +67,9 @@ struct RefreshReuse {
   // The prompt's tokens before the audio.
   std::vector<int> head_ids;
   // Keys and values of head_ids and audio_rows.
-  std::vector<KVCache> caches;
+  std::vector<omni_common::KVCache> caches;
   // The draft's context over them; empty without the draft.
-  std::vector<KVCache> draft_caches;
+  std::vector<omni_common::KVCache> draft_caches;
 };
 
 struct BatchRequest {

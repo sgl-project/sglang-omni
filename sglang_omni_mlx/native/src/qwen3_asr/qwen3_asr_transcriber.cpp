@@ -10,10 +10,13 @@
 
 #include "common/audio.h"
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/text.h"
 #include "common/transcription.h"
 
 namespace qwen3_asr {
+
+using omni_common::KVCache;
 
 using omni_common::CollapseTokenLoop;
 using omni_common::FinishReason;

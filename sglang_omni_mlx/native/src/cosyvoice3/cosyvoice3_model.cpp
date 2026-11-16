@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/reference_audio.h"
 
 namespace cosyvoice3 {
@@ -680,7 +681,7 @@ mx::array CosyVoice3Model::SpeechEmbeddings(
 
 mx::array CosyVoice3Model::ForwardEmbeddings(
     const mx::array &embeddings,
-    std::vector<qwen3_asr::KVCache> &caches) const {
+    std::vector<omni_common::KVCache> &caches) const {
   if (embeddings.ndim() != 3 || embeddings.shape(0) != 1 ||
       embeddings.shape(1) == 0 || embeddings.shape(2) != kHiddenSize ||
       caches.size() != kLayerCount) {
@@ -702,7 +703,7 @@ mx::array CosyVoice3Model::ForwardEmbeddings(
   return checkpoint_.Linear(last, "llm_decoder");
 }
 
-std::vector<qwen3_asr::KVCache> CosyVoice3Model::NewCaches() const {
+std::vector<omni_common::KVCache> CosyVoice3Model::NewCaches() const {
   return decoder_.NewCaches();
 }
 
@@ -729,7 +730,7 @@ CosyVoice3Model::Generate(const std::vector<int> &prompt_text_ids,
   std::vector<int> text_ids = prompt_text_ids;
   text_ids.insert(text_ids.end(), target_text_ids.begin(),
                   target_text_ids.end());
-  std::vector<qwen3_asr::KVCache> caches = NewCaches();
+  std::vector<omni_common::KVCache> caches = NewCaches();
   mx::array logits = ForwardEmbeddings(
       BuildPromptEmbeddings(text_ids, prompt_speech_tokens), caches);
   const mx::array vocabulary =

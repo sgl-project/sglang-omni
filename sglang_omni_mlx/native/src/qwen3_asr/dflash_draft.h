@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_decoder.h"
@@ -62,10 +63,12 @@ public:
                          int max_new_tokens, int prefill_step_tokens,
                          const std::function<bool(int)> &commit,
                          const std::atomic<bool> &cancel, DraftPolicy policy,
-                         std::vector<KVCache> &caches,
-                         std::vector<KVCache> &draft_caches) const;
+                         std::vector<omni_common::KVCache> &caches,
+                         std::vector<omni_common::KVCache> &draft_caches) const;
   // Empty caches for the draft's context.
-  std::vector<KVCache> NewCaches() const { return decoder_.NewCaches(); }
+  std::vector<omni_common::KVCache> NewCaches() const {
+    return decoder_.NewCaches();
+  }
 
 private:
   DFlashDraft(LoadedDraft draft, int quantization_bits);
@@ -73,12 +76,14 @@ private:
   // Appends the first token_count positions of the target hidden states
   // entering each aux layer, each [1, length, hidden], as context.
   void AppendContext(const std::vector<mlx::core::array> &aux_hidden_states,
-                     int token_count, std::vector<KVCache> &caches) const;
+                     int token_count,
+                     std::vector<omni_common::KVCache> &caches) const;
   // Proposes the target token ids after the anchor, [block_size - 1], from
   // the block's embeddings [1, block_size, hidden]: the anchor, then mask
   // tokens, at the positions after the context.
-  mlx::core::array ProposeBlock(const mlx::core::array &block_embeddings,
-                                std::vector<KVCache> &caches) const;
+  mlx::core::array
+  ProposeBlock(const mlx::core::array &block_embeddings,
+               std::vector<omni_common::KVCache> &caches) const;
 
   omni_common::Checkpoint checkpoint_;
   Qwen3Decoder decoder_;

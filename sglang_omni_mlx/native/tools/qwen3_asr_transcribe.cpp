@@ -12,6 +12,7 @@
 
 #include "common/audio.h"
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/tokenizer.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/qwen3_asr_model.h"
@@ -141,7 +142,7 @@ int main(int argc, char **argv) {
       const std::vector<int> ids = tokenizer.Encode(prompt);
       const mx::array input(ids.data(), {1, static_cast<int>(ids.size())},
                             mx::int32);
-      std::vector<qwen3_asr::KVCache> caches = model.NewCaches();
+      std::vector<omni_common::KVCache> caches = model.NewCaches();
       mx::array token =
           mx::argmax(model.Decode(model.EmbedTokens(input), caches));
       mx::eval(token);
