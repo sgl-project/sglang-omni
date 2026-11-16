@@ -29,12 +29,20 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// obSpeech is the pack's speech model, the same on every Mac: 1.7B (8bit)
-// runs well with 8 GB of memory too.
-func (a *app) obSpeech() string { return models.ASRAccurate }
+// obSpeech is the pack's speech model, the same on every Mac: the
+// catalogue's recommended one, MOSS-Transcribe-Diarize (#4067).
+func (a *app) obSpeech() string { return models.ASRMoss }
 
-// obPack is the recommended pack: what the guide downloads.
-func (a *app) obPack() []string { return []string{a.obSpeech(), models.VADSilero} }
+// obPack is the recommended pack: what the guide downloads. The speech
+// model's draft comes with it, so that Faster transcription is on from
+// the start (settings.Models.FasterOn).
+func (a *app) obPack() []string { return []string{a.obSpeech(), models.ASRMossDraft, models.VADSilero} }
+
+// obDownload downloads the pack's speech model and its draft.
+func (a *app) obDownload() {
+	a.downloadModel(a.obSpeech())
+	a.downloadModel(models.ASRMossDraft)
+}
 
 // downloadPercent is how much of a download has come, in percent.
 func downloadPercent(st models.Status) int {
@@ -44,12 +52,17 @@ func downloadPercent(st models.Status) int {
 	return int(100 * float64(st.Done) / float64(st.Total))
 }
 
-// obDownloadLeft is what the recommended speech model still has to
-// download, for the buttons that start it.
+// obDownloadLeft is what the recommended speech model and its draft still
+// have to download, for the buttons that start it.
 func (a *app) obDownloadLeft() string {
-	id := a.obSpeech()
-	m, _ := models.Lookup(id)
-	return uitext.HumanBytes(m.Size() - a.modelStatus[id].Done)
+	var left int64
+	for _, id := range []string{a.obSpeech(), models.ASRMossDraft} {
+		if st := a.modelStatus[id]; !st.Installed {
+			m, _ := models.Lookup(id)
+			left += m.Size() - st.Done
+		}
+	}
+	return uitext.HumanBytes(left)
 }
 
 // obNeedsDownload says that the models step has nothing but the download
@@ -169,7 +182,7 @@ func (a *app) obModelsStep(c *ui.Context) {
 			label := i18n.T("Download (%s)", a.obDownloadLeft())
 			ui.Row(c).Margin(px(t, sp2), 0, 0, 0).Children(func() {
 				if secondaryIconButton(c.Key("ob-download"), icons.DownloadMinimalistic, label).Clicked() {
-					a.downloadModel(id)
+					a.obDownload()
 				}
 			})
 		}
@@ -323,7 +336,7 @@ func (a *app) obAlternativeLine(c *ui.Context, want string, alt models.Found) {
 		ui.Text(c, msg).FontSize(px(t, fsCaption))
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			if secondaryIconButton(c.Key("ob-alt-download"), icons.DownloadMinimalistic, i18n.T("Download %s", wantName)).Clicked() {
-				a.downloadModel(want)
+				a.obDownload() // want is the pack's speech model (obAlternative)
 			}
 			if ghostButton(c.Key("ob-alt-use"), i18n.X("alternative", "Use %s", altName)).Clicked() {
 				a.obUse(alt.ID)

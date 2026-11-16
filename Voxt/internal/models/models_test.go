@@ -92,8 +92,8 @@ func TestCatalog(t *testing.T) {
 			t.Errorf("%s missing", id)
 		}
 	}
-	if m, _ := Lookup(ASRAccurate); !m.Default || m.Repo != "mlx-community/Qwen3-ASR-1.7B-8bit" {
-		t.Errorf("accurate: %+v", m)
+	if m, _ := Lookup(ASRMoss); !m.Default || m.Repo != "OpenMOSS-Team/MOSS-Transcribe-Diarize" || m.Draft != ASRMossDraft {
+		t.Errorf("moss: %+v", m)
 	}
 	if _, ok := Lookup("nope"); ok {
 		t.Error("Lookup(nope)")

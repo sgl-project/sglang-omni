@@ -4,13 +4,17 @@ package main
 // text the speech model gets with every recording, before the
 // dictionary's terms. It is saved as Your rules are (feature_prompts.go):
 // promptSaveDelay after the last key, or when the field loses the focus.
+// While no feature's speech model takes it, the field is not offered.
 
 import (
 	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -41,6 +45,10 @@ func (a *app) speechContextSection(c *ui.Context) {
 		sc.text, sc.seen = saved, saved
 	}
 	sectionTitle(c, i18n.T("Speech context"))
+	if a.speechContextUnused() {
+		caption(c, i18n.T("The speech models in use do not take a speech context. Your dictionary still guides the language model's clean-up."))
+		return
+	}
 	caption(c, i18n.T("Tell the speech model who is speaking and about what."))
 	in := ui.TextArea(c.Key("models-speech-context"), &sc.text).Label(i18n.T("Speech context")).
 		Placeholder(i18n.T("For example: I work on LLM serving and speak Chinese with English technical terms.")).MinHeight(px(t, 72))
@@ -65,4 +73,21 @@ func (a *app) autosave(in ui.Element, st *speechContextState, save func()) {
 	} else if st.dirty && !in.Focused() {
 		save() // it lost the focus
 	}
+}
+
+// speechContextUnused says that Transcribe, Translate and Rewrite all use
+// a local speech model that takes no context (MOSS-Transcribe-Diarize,
+// Whisper…), so a speech context would reach none of them (#4067).
+func (a *app) speechContextUnused() bool {
+	for _, f := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
+		m, ok := a.featureModel(local.ASR, f)
+		if !ok {
+			return false
+		}
+		spec, curated := omni.Lookup(m.ID)
+		if !curated || spec.ASR == nil || spec.ASR.ContextTerms > 0 {
+			return false
+		}
+	}
+	return true
 }
