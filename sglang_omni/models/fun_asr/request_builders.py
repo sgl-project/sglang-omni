@@ -72,6 +72,10 @@ class FunASRRequestData(SGLangARRequestData):
     streaming_prefix_text: str = ""
 
 
+class FunASRResultAdapter(Protocol):
+    def __call__(self, data: FunASRRequestData) -> StagePayload: ...
+
+
 def default_token_budget(audio_duration_s: float, max_new_tokens: int) -> int:
     proportional = math.ceil(
         audio_duration_s
@@ -242,42 +246,53 @@ def fun_asr_prompt_overhead_tokens(
     )
 
 
-def make_fun_asr_scheduler_adapters(
-    *,
-    tokenizer: PreTrainedTokenizerBase,
-    max_new_tokens: int,
-    feature_extractor: FunAsrNanoFeatureExtractor | None = None,
-    context_length: int | None = None,
-    audio_encoder_service: FunASRPreLMEncoderService | None = None,
-    greedy_only: bool = False,
-) -> tuple[
-    Callable[[StagePayload], FunASRRequestData],
-    Callable[[FunASRRequestData], StagePayload],
-]:
-    if feature_extractor is None:
-        raise ValueError("Fun-ASR processor is missing a feature_extractor")
-    else:
-        pass
-    max_new_tokens = int(max_new_tokens)
-    if max_new_tokens < 1:
-        raise ValueError("max_new_tokens must be at least 1")
-    else:
-        pass
+@dataclass(frozen=True, kw_only=True)
+class PreparedFunASRInput:
+    """Private CPU inputs transferred once to the request builder."""
 
-    audio_pad_token_id = int(tokenizer.convert_tokens_to_ids(_AUDIO_PAD))
-    eos_token_id = int(tokenizer.eos_token_id)
-    vocab_size = int(tokenizer.vocab_size)
+    prompt_token_ids: list[int]
+    multimodal_inputs: MultimodalInputs
+    sampling_params: SamplingParams
+    fingerprint: str
+    max_new_tokens: int
+    temperature: float
+    num_audio_tokens: int
+    audio_duration_s: float
+    language: str | None
+    streaming_prefix_text: str
 
-    def _build_prompt_ids(num_audio_tokens: int, prompt_text: str) -> list[int]:
-        return tokenizer(
-            prompt_template(prompt_text, num_audio_tokens),
-            add_special_tokens=False,
-        ).input_ids
 
-    def request_builder(payload: StagePayload) -> FunASRRequestData:
+class FunASRRequestBuilder:
+    """Separate CPU preparation from encoder submission and request construction."""
+
+    def __init__(
+        self,
+        *,
+        tokenizer: PreTrainedTokenizerBase,
+        max_new_tokens: int,
+        feature_extractor: FunAsrNanoFeatureExtractor,
+        context_length: int | None,
+        audio_encoder_service: FunASRPreLMEncoderService | None,
+        greedy_only: bool,
+    ) -> None:
+        self.tokenizer = tokenizer
+        self.max_new_tokens = int(max_new_tokens)
+        if self.max_new_tokens < 1:
+            raise ValueError("max_new_tokens must be at least 1")
+        else:
+            pass
+        self.feature_extractor = feature_extractor
+        self.context_length = context_length
+        self.audio_encoder_service = audio_encoder_service
+        self.greedy_only = greedy_only
+        self.audio_pad_token_id = int(tokenizer.convert_tokens_to_ids(_AUDIO_PAD))
+        self.eos_token_id = int(tokenizer.eos_token_id)
+        self.vocab_size = int(tokenizer.vocab_size)
+
+    def prepare_cpu_input(self, payload: StagePayload) -> PreparedFunASRInput:
         params = payload.request.params or {}
         temperature = float(params.get("temperature") or 0.0)
-        if greedy_only and temperature != 0.0:
+        if self.greedy_only and temperature != 0.0:
             raise ValueError(
                 "Fun-ASR Apple currently requires temperature=0 (greedy decoding)"
             )
@@ -294,7 +309,7 @@ def make_fun_asr_scheduler_adapters(
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
 
-        extracted = feature_extractor(
+        extracted = self.feature_extractor(
             audio,
             sampling_rate=_SAMPLE_RATE,
             return_tensors="pt",
@@ -305,7 +320,7 @@ def make_fun_asr_scheduler_adapters(
         feature_attention_mask = extracted.get("attention_mask")
         if feature_attention_mask is None:
             feature_attention_mask = torch.ones(
-                (features.shape[0], features.shape[-1]), dtype=torch.long
+                (features.shape[0], features.shape[-1]), dtype=torch.long, device="cpu"
             )
         else:
             pass
@@ -339,7 +354,9 @@ def make_fun_asr_scheduler_adapters(
         else:
             pass
         prompt_text = build_prompt_text(language, itn, hotwords)
-        input_ids = _build_prompt_ids(num_audio_tokens, prompt_text)
+        input_ids = self.tokenizer(
+            prompt_template(prompt_text, num_audio_tokens), add_special_tokens=False
+        ).input_ids
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
@@ -353,16 +370,16 @@ def make_fun_asr_scheduler_adapters(
         )
 
         audio_item.set_pad_value()
-        if audio_pad_token_id not in input_ids:
+        if self.audio_pad_token_id not in input_ids:
             raise RuntimeError(
                 f"Fun-ASR prompt missing audio placeholder {_AUDIO_PAD!r} "
-                f"(id {audio_pad_token_id}); prompt_text={prompt_text!r}"
+                f"(id {self.audio_pad_token_id}); prompt_text={prompt_text!r}"
             )
         else:
             pass
-        audio_start = input_ids.index(audio_pad_token_id)
+        audio_start = input_ids.index(self.audio_pad_token_id)
         input_ids = [
-            audio_item.pad_value if tok == audio_pad_token_id else tok
+            audio_item.pad_value if tok == self.audio_pad_token_id else tok
             for tok in input_ids
         ]
         audio_item.offsets = [(audio_start, audio_start + num_audio_tokens - 1)]
@@ -371,7 +388,7 @@ def make_fun_asr_scheduler_adapters(
         streaming_prefix = params.get("_asr_streaming_prefix_text")
         rollback_chars = int(params.get("_asr_streaming_rollback_chars", 0))
         streaming_prefix_token_ids, retained_prefix_text = (
-            retained_streaming_prefix(tokenizer, streaming_prefix, rollback_chars)
+            retained_streaming_prefix(self.tokenizer, streaming_prefix, rollback_chars)
             if is_streaming_refresh and streaming_prefix
             else ([], "")
         )
@@ -381,24 +398,26 @@ def make_fun_asr_scheduler_adapters(
             mm_items=[audio_item],
             num_image_tokens=num_audio_tokens,
         )
-        mm_inputs.audio_token_id = audio_pad_token_id
+        mm_inputs.audio_token_id = self.audio_pad_token_id
 
         seq_len = len(input_ids)
-        positions = torch.arange(seq_len, dtype=torch.long)
+        positions = torch.arange(seq_len, dtype=torch.long, device="cpu")
         mm_inputs.mrope_positions = positions.unsqueeze(0).expand(3, -1).clone()
-        mm_inputs.mrope_position_delta = torch.tensor([0], dtype=torch.long)
+        mm_inputs.mrope_position_delta = torch.tensor(
+            [0], dtype=torch.long, device="cpu"
+        )
 
         request_max_new_tokens = request_token_budget(
-            params, audio_duration_s, max_new_tokens
+            params, audio_duration_s, self.max_new_tokens
         )
         if (
-            context_length is not None
-            and len(input_ids) + request_max_new_tokens > context_length
+            self.context_length is not None
+            and len(input_ids) + request_max_new_tokens > self.context_length
         ):
             raise ValueError(
                 f"Fun-ASR request is longer than the model's context length "
                 f"({len(input_ids)} prompt/audio tokens + {request_max_new_tokens} "
-                f"max_new_tokens > {context_length}); reduce hotwords or split the audio"
+                f"max_new_tokens > {self.context_length}); reduce hotwords or split the audio"
             )
         else:
             pass
@@ -411,40 +430,89 @@ def make_fun_asr_scheduler_adapters(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
             top_p=1.0,
-            stop_token_ids=[eos_token_id],
+            stop_token_ids=[self.eos_token_id],
             repetition_penalty=float(params.get("repetition_penalty", 1.0)),
         )
         sampling_params.normalize(tokenizer=None)
 
-        if audio_encoder_service is not None:
-            audio_encoder_service.encode_item(audio_item)
-        else:
-            pass
-
-        req = Req(
-            rid=payload.request_id,
-            origin_input_text="",
-            origin_input_ids=input_ids,
-            sampling_params=sampling_params,
-            vocab_size=vocab_size,
-            extra_key=fingerprint,
-        )
-        req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-
-        return FunASRRequestData(
-            input_ids=torch.tensor(input_ids, dtype=torch.long),
-            req=req,
+        return PreparedFunASRInput(
             prompt_token_ids=input_ids,
+            multimodal_inputs=mm_inputs,
+            sampling_params=sampling_params,
+            fingerprint=fingerprint,
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
             num_audio_tokens=num_audio_tokens,
             audio_duration_s=audio_duration_s,
             language=lang_raw,
-            engine_start_s=time.perf_counter(),
             streaming_prefix_text=retained_prefix_text,
+        )
+
+    def finish_request(
+        self, payload: StagePayload, prepared: PreparedFunASRInput
+    ) -> FunASRRequestData:
+        if self.audio_encoder_service is not None:
+            self.audio_encoder_service.encode_item(
+                prepared.multimodal_inputs.mm_items[0]
+            )
+        else:
+            pass
+        request = Req(
+            rid=payload.request_id,
+            origin_input_text="",
+            origin_input_ids=prepared.prompt_token_ids,
+            sampling_params=prepared.sampling_params,
+            vocab_size=self.vocab_size,
+            extra_key=prepared.fingerprint,
+        )
+        request.multimodal_inputs = prepared.multimodal_inputs
+        request._codec_suppress_tokens = (
+            None  # noqa: leading-underscore  # upstream spelling
+        )
+        return FunASRRequestData(
+            input_ids=torch.tensor(
+                prepared.prompt_token_ids, dtype=torch.long, device="cpu"
+            ),
+            req=request,
+            prompt_token_ids=prepared.prompt_token_ids,
+            max_new_tokens=prepared.max_new_tokens,
+            temperature=prepared.temperature,
+            num_audio_tokens=prepared.num_audio_tokens,
+            audio_duration_s=prepared.audio_duration_s,
+            language=prepared.language,
+            engine_start_s=time.perf_counter(),
+            streaming_prefix_text=prepared.streaming_prefix_text,
             stage_payload=payload,
         )
+
+    def __call__(self, payload: StagePayload) -> FunASRRequestData:
+        return self.finish_request(payload, self.prepare_cpu_input(payload))
+
+
+def make_fun_asr_scheduler_adapters(
+    *,
+    tokenizer: PreTrainedTokenizerBase,
+    max_new_tokens: int,
+    feature_extractor: FunAsrNanoFeatureExtractor | None = None,
+    context_length: int | None = None,
+    audio_encoder_service: FunASRPreLMEncoderService | None = None,
+    greedy_only: bool = False,
+) -> tuple[
+    FunASRRequestBuilder,
+    FunASRResultAdapter,
+]:
+    if feature_extractor is None:
+        raise ValueError("Fun-ASR processor is missing a feature_extractor")
+    else:
+        pass
+    request_builder = FunASRRequestBuilder(
+        tokenizer=tokenizer,
+        max_new_tokens=max_new_tokens,
+        feature_extractor=feature_extractor,
+        context_length=context_length,
+        audio_encoder_service=audio_encoder_service,
+        greedy_only=greedy_only,
+    )
 
     def result_adapter(data: FunASRRequestData) -> StagePayload:
         payload = data.stage_payload
