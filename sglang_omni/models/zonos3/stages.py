@@ -143,7 +143,7 @@ def create_vocoder_executor(
         snapshot_directory, resolve_concrete_device(device, gpu_id)
     )
     # note (zhaochenyang20): A fresh server otherwise captures or eagerly decodes about 40 single-request trunk lengths and builds a synthesis plan per new length while serving SeedTTS EN non-streaming; capturing them first served 3.5% more requests per second on one H100 (4 ABBA pairs, streaming unchanged) for about 2.5 s more startup and 0.25 GB.
-    if decoder.to_external_kernel.is_cuda:
+    if decoder.graph_backend is not None:
         decoder.capture_decode_graphs()
     else:
         pass

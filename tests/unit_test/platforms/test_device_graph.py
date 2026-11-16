@@ -357,3 +357,48 @@ def test_captures_in_either_mode_leave_later_captures_working(
 
     for output in outputs:
         assert float(output) == pytest.approx(8.0, abs=1e-4)
+
+
+@pytest.mark.accelerator
+def test_a_non_reclaiming_capture_replays_and_leaves_later_captures_working() -> None:
+    device = require_device_streams()
+    backend = current_platform.get_device_graph_backend(device)
+    assert backend is not None
+    if not backend.supports_non_reclaiming_capture():
+        pytest.skip(f"{device.type} reclaims on every capture")
+    else:
+        pass
+    device_module = torch.get_device_module(device)
+    static = torch.zeros(8, device=device)
+    pool = backend.graph_pool_handle()
+    stream = device_module.Stream(device=device)
+
+    with torch.inference_mode():
+        stream.wait_stream(device_module.current_stream(device))
+        with device_module.stream(stream):
+            for _ in range(2):
+                static.cos().sum()
+        device_module.current_stream(device).wait_stream(stream)
+        entry_stream = device_module.current_stream(device)
+        with backend.capture(
+            pool=pool, stream=stream, thread_local_errors=True, reclaim_memory=False
+        ) as graph:
+            assert device_module.current_stream(device) == stream
+            replayed = static.cos().sum()
+        device_module.synchronize(device)
+        assert device_module.current_stream(device) == entry_stream
+
+        static.fill_(1.0)
+        graph.replay()
+        device_module.synchronize(device)
+        eager = static.cos().sum()
+        assert float(replayed) == pytest.approx(float(eager), abs=1e-4)
+
+    later = []
+    for mode in (torch.inference_mode(), torch.no_grad()):
+        with mode, backend.capture(pool=pool, stream=stream) as later_graph:
+            later.append(static.cos().sum())
+        later_graph.replay()
+    device_module.synchronize(device)
+    for output in later:
+        assert float(output) == pytest.approx(float(eager), abs=1e-4)
