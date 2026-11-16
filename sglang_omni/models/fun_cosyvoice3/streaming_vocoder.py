@@ -111,6 +111,14 @@ class CosyVoice3StreamState:
 
 
 @dataclass(kw_only=True, frozen=True)
+class VocoderEventParticipant:
+    request_id: str
+    token_offset: int
+    ready_since_seconds: float | None
+    is_first_audio: bool
+
+
+@dataclass(kw_only=True, frozen=True)
 class LaunchedStep:
     """A step whose Flow and HiFT are queued on the vocoder's stream and whose streams
     have advanced; its audio is read at its completion."""
@@ -118,6 +126,7 @@ class LaunchedStep:
     participants: list[tuple[str, CosyVoice3StreamState]]
     plan: Literal["causal_window", "leftover"]
     samples: HiftStepSamples
+    event_participants: tuple[VocoderEventParticipant, ...]
 
 
 def record_vocoder_batch_event(
@@ -127,28 +136,28 @@ def record_vocoder_batch_event(
         "vocoder_hift_submitted",
         "vocoder_audio_ready",
     ],
-    participants: list[tuple[str, CosyVoice3StreamState]],
+    participants: tuple[VocoderEventParticipant, ...],
 ) -> None:
     """Record host boundaries without synchronizing the vocoder CUDA stream."""
-    if not get_recorder().is_active():
+    if not participants or not get_recorder().is_active():
         return
     else:
         timestamp_nanoseconds = time.time_ns()
         monotonic_seconds = time.monotonic()
         first_audio_count = sum(
-            state.first_emit_at is None for _, state in participants
+            participant.is_first_audio for participant in participants
         )
-        for request_id, state in participants:
+        for participant in participants:
             emit(
-                request_id=request_id,
+                request_id=participant.request_id,
                 stage="vocoder",
                 event_name=event_name,
                 timestamp_ns=timestamp_nanoseconds,
                 metadata={
                     "batch_size": len(participants),
                     "first_audio_count": first_audio_count,
-                    "token_offset": state.token_offset,
-                    "ready_since_seconds": state.ready_since,
+                    "token_offset": participant.token_offset,
+                    "ready_since_seconds": participant.ready_since_seconds,
                     "monotonic_seconds": monotonic_seconds,
                 },
             )
@@ -789,7 +798,19 @@ class FunCosyVoice3StreamingVocoderScheduler(
             self.complete_stream_request(request_id, self.finish_stream(request_id))
             return None
         else:
-            record_vocoder_batch_event("vocoder_launch_start", participants)
+            if get_recorder().is_active():
+                event_participants = tuple(
+                    VocoderEventParticipant(
+                        request_id=request_id,
+                        token_offset=state.token_offset,
+                        ready_since_seconds=state.ready_since,
+                        is_first_audio=state.first_emit_at is None,
+                    )
+                    for request_id, state in participants
+                )
+            else:
+                event_participants = ()
+            record_vocoder_batch_event("vocoder_launch_start", event_participants)
         if plan == "leftover":
             items = [
                 FlowBatchInput(
@@ -804,15 +825,20 @@ class FunCosyVoice3StreamingVocoderScheduler(
             ]
             logger.info(f"Fun-CosyVoice3 leftover Flow batch size={len(items)}")
             mels = self.vocoder.leftover_batch(items)
-            record_vocoder_batch_event("vocoder_flow_submitted", participants)
+            record_vocoder_batch_event("vocoder_flow_submitted", event_participants)
             samples = self.hift_step(participants, mels, is_final=True)
-            record_vocoder_batch_event("vocoder_hift_submitted", participants)
+            record_vocoder_batch_event("vocoder_hift_submitted", event_participants)
             for (_, state), offset in zip(
                 participants, samples.emitted_samples, strict=True
             ):
                 state.speech_offset = offset
                 state.is_final_launched = True
-            return LaunchedStep(participants=participants, plan=plan, samples=samples)
+            return LaunchedStep(
+                participants=participants,
+                plan=plan,
+                samples=samples,
+                event_participants=event_participants,
+            )
         else:
             items = [
                 FlowBatchInput(
@@ -831,9 +857,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             ]
             logger.info(f"Fun-CosyVoice3 causal Flow batch size={len(items)}")
             mels = self.hop_batch_with_prefix(participants, items)
-            record_vocoder_batch_event("vocoder_flow_submitted", participants)
+            record_vocoder_batch_event("vocoder_flow_submitted", event_participants)
             samples = self.hift_step(participants, mels, is_final=False)
-            record_vocoder_batch_event("vocoder_hift_submitted", participants)
+            record_vocoder_batch_event("vocoder_hift_submitted", event_participants)
             now = self.clock()
             for (_, state), new_samples, offset in zip(
                 participants, samples.new_samples, samples.emitted_samples, strict=True
@@ -855,14 +881,21 @@ class FunCosyVoice3StreamingVocoderScheduler(
                     state.ready_since = now
                 else:
                     state.ready_since = None
-            return LaunchedStep(participants=participants, plan=plan, samples=samples)
+            return LaunchedStep(
+                participants=participants,
+                plan=plan,
+                samples=samples,
+                event_participants=event_participants,
+            )
 
     def complete_step(self, launched: LaunchedStep) -> list[str]:
         """Read a launched step's audio and send it: a hop's chunk, or a final's last
         chunk and then its result. Streams cleared since the launch get nothing."""
         try:
             deltas = launched.samples.wait()
-            record_vocoder_batch_event("vocoder_audio_ready", launched.participants)
+            record_vocoder_batch_event(
+                "vocoder_audio_ready", launched.event_participants
+            )
             for (request_id, state), delta in zip(
                 launched.participants, deltas, strict=True
             ):

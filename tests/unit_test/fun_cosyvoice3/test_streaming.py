@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 from queue import Empty, Queue
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -658,6 +659,55 @@ def test_a_final_launched_behind_its_hop_leaves_after_it_with_its_result_last(
     assert "req-a" not in scheduler.stream_states
 
 
+@pytest.mark.parametrize("final_step", [False, True])
+def test_audio_ready_retains_launch_metadata_after_next_step(
+    monkeypatch: pytest.MonkeyPatch, final_step: bool
+) -> None:
+    """Overlap previously attributed completed audio to the advanced stream state."""
+    _, scheduler = make_scheduler()
+    log = pending_copies(scheduler, monkeypatch)
+    recorded = Mock()
+    monkeypatch.setattr(streaming_vocoder, "emit", recorded)
+    monkeypatch.setattr(
+        streaming_vocoder,
+        "get_recorder",
+        lambda: SimpleNamespace(is_active=lambda: True),
+    )
+    scheduler.clock = lambda: 1.0
+    scheduler.handle_streaming_new_request("req-a", stream_payload("req-a"))
+    scheduler.ingest_stream_item("req-a", item(list(range(30 if final_step else 78))))
+    if final_step:
+        scheduler.handle_stream_done("req-a")
+    else:
+        pass
+    scheduler.clock = lambda: 2.0
+    with scheduler.state_lock:
+        assert scheduler.pump_one_step() == []
+        scheduler.clock = lambda: 3.0
+        assert scheduler.pump_one_step() == []
+        assert scheduler.pump_one_step() == []
+    assert log == ["launch 1", "launch 2", "read 1", "read 2"]
+    for event_name in (
+        "vocoder_launch_start",
+        "vocoder_flow_submitted",
+        "vocoder_hift_submitted",
+        "vocoder_audio_ready",
+    ):
+        events = [
+            call.kwargs
+            for call in recorded.call_args_list
+            if call.kwargs["event_name"] == event_name
+        ]
+        assert len(events) == 2
+        for event, offset, first_audio_count, ready_seconds in zip(
+            events, (0, TOKEN_HOP_LEN), (1, 0), (1.0, 2.0), strict=True
+        ):
+            assert event["request_id"] == "req-a"
+            assert event["metadata"]["token_offset"] == offset
+            assert event["metadata"]["first_audio_count"] == first_audio_count
+            assert event["metadata"]["ready_since_seconds"] == ready_seconds
+
+
 @pytest.mark.parametrize(
     "maximum_frames,expected_ids",
     [(200, ["req-a", "req-b"]), (199, ["req-a"]), (99, ["req-a"])],
@@ -1287,6 +1337,7 @@ def test_first_audio_in_mixed_batch_controls_completion(
     if complete_first_audio:
         assert set(stream_ids(drain(scheduler))) == {"existing", "new"}
         assert log == ["launch 1", "read 1"]
+
         assert scheduler.launched_step is None
     else:
         assert drain(scheduler) == []
@@ -1295,3 +1346,16 @@ def test_first_audio_in_mixed_batch_controls_completion(
             assert scheduler.pump_one_step() == []
         assert set(stream_ids(drain(scheduler))) == {"existing", "new"}
         assert log == ["launch 1", "read 1"]
+
+    for request_id in ("existing", "new"):
+        request_events = [
+            event for event in events if event["request_id"] == request_id
+        ]
+        assert len(request_events) == 4
+        for event in request_events:
+            metadata = event["metadata"]
+            assert isinstance(metadata, dict)
+            assert metadata["first_audio_count"] == 1
+            assert metadata["token_offset"] == (
+                TOKEN_HOP_LEN if request_id == "existing" else 0
+            )
