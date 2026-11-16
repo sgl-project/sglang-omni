@@ -65,9 +65,6 @@ func (a *app) seekMeetingPlayback(id string, startMS int64) {
 	}
 	at := time.Duration(startMS) * time.Millisecond
 	directory := filepath.Join(a.dataDir(), "meetings", detail.meeting.Audio)
-	if !meeting.AudioFolderReady(filepath.Join(a.dataDir(), "meetings"), detail.meeting.Audio) {
-		return
-	}
 	a.stopMeetingPlayback()
 	segments := playbackSegments(detail.segments)
 	detail.playback.seq++
@@ -76,50 +73,68 @@ func (a *app) seekMeetingPlayback(id string, startMS int64) {
 	detail.playback.playing = true
 	detail.playback.highlight = meeting.SegmentIndexAt(segments, at)
 	a.refreshMeetingPlaybackState()
-
-	players, err := openMeetingAudio(meeting.TrackPaths(directory), at)
-	if err != nil {
-		detail.playback.playing = false
-		a.refreshMeetingPlaybackState()
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	a.mtPlayer.mu.Lock()
-	a.mtPlayer.players = players
-	a.mtPlayer.cancel = cancel
-	a.mtPlayer.mu.Unlock()
-
-	duration := meeting.MaxTrackDuration(directory)
-	for _, player := range players {
-		player.Play()
-	}
 	a.async(func() {
-		defer cancel()
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				position, playing := meetingAudioPosition(players)
-				done := !playing || duration > 0 && position >= duration
-				a.post(func() {
-					current := a.mv.detail
-					if current == nil || current.id != detail.id || current.playback.seq != seq {
-						return
-					}
-					current.playback.pos = position
-					current.playback.highlight = meeting.SegmentIndexAt(segments, position)
-					current.playback.playing = !done
+		if !meeting.AudioFolderReady(filepath.Join(a.dataDir(), "meetings"), detail.meeting.Audio) {
+			a.post(func() {
+				if current := a.mv.detail; current != nil && current.id == id && current.playback.seq == seq {
+					current.playback.playing = false
 					a.refreshMeetingPlaybackState()
-				})
-				if done {
-					a.post(a.stopMeetingPlayback)
-					return
 				}
-			}
+			})
+			return
 		}
+		players, err := openMeetingAudio(meeting.TrackPaths(directory), at)
+		duration := meeting.MaxTrackDuration(directory)
+		a.post(func() {
+			current := a.mv.detail
+			if current == nil || current.id != id || current.playback.seq != seq {
+				for _, player := range players {
+					player.Close()
+				}
+				return
+			}
+			if err != nil {
+				current.playback.playing = false
+				a.refreshMeetingPlaybackState()
+				return
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			a.mtPlayer.mu.Lock()
+			a.mtPlayer.players = players
+			a.mtPlayer.cancel = cancel
+			a.mtPlayer.mu.Unlock()
+			for _, player := range players {
+				player.Play()
+			}
+			a.async(func() {
+				defer cancel()
+				ticker := time.NewTicker(100 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						position, playing := meetingAudioPosition(players)
+						done := !playing || duration > 0 && position >= duration
+						a.post(func() {
+							current := a.mv.detail
+							if current == nil || current.id != id || current.playback.seq != seq {
+								return
+							}
+							current.playback.pos = position
+							current.playback.highlight = meeting.SegmentIndexAt(segments, position)
+							current.playback.playing = !done
+							a.refreshMeetingPlaybackState()
+						})
+						if done {
+							a.post(a.stopMeetingPlayback)
+							return
+						}
+					}
+				}
+			})
+		})
 	})
 }
 

@@ -64,4 +64,4 @@ go test -count=1 -run '^TestMeetingDemo(ActionControls|SwitchesFixtures)$' .
 
 这些测试使用 `ui.Tester`，不需要窗口、辅助进程二进制、模型、麦克风、网络或 Voxt 数据目录，也能在 Linux 上运行。
 
-demo 不能验证原生浮窗位置、材质、防共享、真实音频采集、辅助进程行为、模型输出、全局快捷键、持久化或文件输出。这些仍要在 Mac 上用正式 app 检查。
+demo 不能验证原生浮窗位置、材质、防共享、真实音频采集、辅助进程行为、模型输出、全局快捷键、持久化或文件输出。这些仍要在 Mac 上用正式 app 检查。设置区域的对话框不在本次试点范围内，所以 demo 隐藏了对应按钮。

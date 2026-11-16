@@ -29,6 +29,7 @@ type meetingDetail struct {
 	audioReady   bool
 	audioProbing bool
 	audioProbe   int
+	audioDone    chan struct{}
 }
 
 func (a *app) openMeetingDetail(id string) {
@@ -36,6 +37,7 @@ func (a *app) openMeetingDetail(id string) {
 		return
 	}
 	a.stopMeetingPlayback()
+	a.stopMeetingAudioWatch(a.mv.detail)
 	a.mv.detail = &meetingDetail{id: id, loading: true, audioProbe: 1}
 	a.mv.detail.playback.highlight = -1
 	a.mv.detailView = nil
@@ -48,8 +50,8 @@ func (a *app) loadMeetingDetail(id string) {
 	repo := a.lib.store.Meetings()
 	version := 0
 	if detail := a.mv.detail; detail != nil && detail.id == id {
+		a.stopMeetingAudioWatch(detail)
 		detail.audioProbe++
-		detail.audioProbing = false
 		version = detail.audioProbe
 	}
 	a.async(func() {
@@ -100,20 +102,26 @@ func (a *app) followMeeting(snapshot, previous meeting.Snapshot) {
 	for index, row := range detail.segments {
 		at[row.Idx] = index
 	}
-	changed := false
+	if a.mv.detailView == nil {
+		a.rebuildMeetingDetail()
+	}
+	view := a.mv.detailView
 	for _, segment := range snapshot.Segments {
 		if index, ok := at[segment.StoreIdx]; ok {
 			if detail.segments[index].Translation != segment.Translation {
 				detail.segments[index].Translation = segment.Translation
-				changed = true
+				if view != nil {
+					view.Segments[index].Translation = segment.Translation
+				}
 			}
 		} else {
-			detail.segments = append(detail.segments, segment.Row())
-			changed = true
+			stored := segment.Row()
+			detail.segments = append(detail.segments, stored)
+			if view != nil {
+				view.Segments = append(view.Segments, meetingSegmentViewStateFromStore(a.mv.translator, stored, meetingViewSpeakerNameMap(detail.meeting.Speakers)))
+				view.HasTranscript = true
+			}
 		}
-	}
-	if changed {
-		a.rebuildMeetingDetail()
 	}
 }
 
@@ -132,7 +140,10 @@ func (a *app) rebuildMeetingDetail() {
 		a.mv.detailView = nil
 		return
 	}
-	a.mv.detailView = buildMeetingDetailViewState(meetingDetailStateInput{
+	if a.mv.translator == nil || a.mv.locale != i18n.Locale() {
+		a.mv.translator = i18n.NewTranslator(i18n.Locale())
+	}
+	a.mv.detailView = buildMeetingDetailViewState(a.mv.translator, meetingDetailStateInput{
 		Meeting: detail.meeting, Segments: detail.segments, Chat: detail.chat,
 		Loading: detail.loading, Answering: detail.busy, Correcting: detail.correcting,
 		Error: detail.err, CanUseLLM: len(a.installed(local.LLM)) > 0,
@@ -243,10 +254,6 @@ func (a *app) saveMeetingExport(id string, format meetingExportFormat) {
 	default:
 		return
 	}
-	a.saveMeetingExportFile(name, text)
-}
-
-func (a *app) saveMeetingExportFile(name, text string) {
 	chooseExportFile(a, i18n.T("Export transcript"), name, func(destination string) {
 		a.async(func() {
 			err := os.WriteFile(destination, []byte(text), 0o644)

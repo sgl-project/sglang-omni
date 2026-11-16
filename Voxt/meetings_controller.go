@@ -43,6 +43,7 @@ type meetingsView struct {
 	detail     *meetingDetail
 	detailView *meetingDetailViewState
 	locale     string
+	translator *i18n.Translator
 	listItems  []meetingItemViewState
 	listKey    meetingListCacheKey
 }
@@ -142,7 +143,10 @@ func (a *app) prepareMeetingsPage() {
 }
 
 func (a *app) meetingsPageModel(now time.Time) meetingsViewState {
-	selectedID := meetingDetailID(a.mv.detail)
+	selectedID := ""
+	if a.mv.detail != nil {
+		selectedID = a.mv.detail.id
+	}
 	year, month, day := now.Date()
 	key := meetingListCacheKey{
 		seq: a.mv.seq, listLen: len(a.mv.list), selectedID: selectedID, locale: i18n.Locale(),
@@ -156,7 +160,7 @@ func (a *app) meetingsPageModel(now time.Time) meetingsViewState {
 		key.elapsedMinutes = int64((a.meetSnap.Elapsed + 30*time.Second) / time.Minute)
 	}
 	if key != a.mv.listKey {
-		built := buildMeetingsViewState(meetingsViewStateInput{
+		built := buildMeetingsViewState(i18n.NewTranslator(i18n.Locale()), meetingsViewStateInput{
 			List: a.mv.list, Lines: a.mv.lines, Read: a.mv.read, Loading: a.mv.loading,
 			Error: a.mv.err, Query: a.mvUI.query, Page: a.mvUI.page, HasMore: a.mv.hasMore,
 			Active: a.meetingActive(), SelectedID: selectedID, Live: a.meetSnap, Now: now,
@@ -165,21 +169,15 @@ func (a *app) meetingsPageModel(now time.Time) meetingsViewState {
 	}
 	state := meetingsViewState{
 		Read: a.mv.read, Loading: a.mv.loading, Error: a.mv.err, Query: a.mvUI.query,
-		Page: a.mvUI.page, HasMore: a.mv.hasMore, Active: a.meetingActive(),
+		Page: a.mvUI.page, HasMore: a.mv.hasMore, Active: a.meetingActive(), SettingsAvailable: true,
 		MeetingCount: len(a.mv.list), Items: a.mv.listItems, Detail: a.mv.detailView,
 	}
 	return state
 }
 
-func meetingDetailID(detail *meetingDetail) string {
-	if detail == nil {
-		return ""
-	}
-	return detail.id
-}
-
 func (a *app) closeMeetingDetail() {
 	a.stopMeetingPlayback()
+	a.stopMeetingAudioWatch(a.mv.detail)
 	a.mv.detail, a.mv.detailView = nil, nil
 	a.mvUI.detail = nil
 }
@@ -212,15 +210,42 @@ func (a *app) refreshMeetingAudio() {
 	probe := detail.audioProbe
 	detail.audioProbing = true
 	id, audio := detail.id, detail.meeting.Audio
+	done := make(chan struct{})
+	detail.audioDone = done
+	previous := detail.audioReady
 	a.async(func() {
-		ready := meeting.AudioFolderReady(filepath.Join(a.dataDir(), "meetings"), audio)
-		a.post(func() {
-			current := a.mv.detail
-			if current == nil || current.id != id || current.meeting.Audio != audio || current.audioProbe != probe {
+		for {
+			ready := meeting.AudioFolderReady(filepath.Join(a.dataDir(), "meetings"), audio)
+			if ready != previous {
+				a.post(func() {
+					current := a.mv.detail
+					if current == nil || current.id != id || current.meeting.Audio != audio || current.audioProbe != probe {
+						return
+					}
+					current.audioReady = ready
+					a.refreshMeetingPlaybackState()
+				})
+				previous = ready
+			}
+			if a.win == nil {
 				return
 			}
-			current.audioReady, current.audioProbing = ready, false
-			a.refreshMeetingPlaybackState()
-		})
+			select {
+			case <-done:
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
 	})
+}
+
+func (a *app) stopMeetingAudioWatch(detail *meetingDetail) {
+	if detail == nil {
+		return
+	}
+	detail.audioProbing = false
+	if detail.audioDone != nil {
+		close(detail.audioDone)
+		detail.audioDone = nil
+	}
 }

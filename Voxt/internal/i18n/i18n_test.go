@@ -44,6 +44,20 @@ func TestChinese(t *testing.T) {
 	}
 }
 
+func TestTranslatorUsesExplicitLocale(t *testing.T) {
+	SetLocale("en")
+	translator := NewTranslator("zh-Hans")
+	if got := translator.T("Settings"); got != "设置" {
+		t.Errorf("explicit translation %q", got)
+	}
+	if got := translator.Locale(); got != "zh-Hans" {
+		t.Errorf("translator locale %q", got)
+	}
+	if got := Locale(); got != "en" {
+		t.Errorf("translator changed global locale to %q", got)
+	}
+}
+
 func TestMatch(t *testing.T) {
 	for in, want := range map[string]string{
 		"": "en", "en": "en", "en-GB": "en", "fr-FR": "en",

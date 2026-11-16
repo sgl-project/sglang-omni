@@ -35,10 +35,6 @@
       0.5,
       0.7
     ],
-    "sources": [
-      "mic",
-      "system"
-    ],
     "rows": [
       {
         "key": "segment-mic",

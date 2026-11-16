@@ -54,7 +54,7 @@ func meetingsPage(c *ui.Context, state *meetingsViewState, actions meetingsActio
 				local.find.count(c, query, hits[len(state.Items)])
 			}
 		}
-		if iconButton(c.Key("mt-settings"), icons.Tuning2, i18n.T("Meeting settings")).Shrink(0).Clicked() {
+		if state.SettingsAvailable && iconButton(c.Key("mt-settings"), icons.Tuning2, i18n.T("Meeting settings")).Shrink(0).Clicked() {
 			local.setOpen = true
 		}
 		if state.Active {

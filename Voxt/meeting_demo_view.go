@@ -6,8 +6,13 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
-func meetingDemoContent(host *meetingDemoHost) mygo.Content {
-	return ui.View(func(c *ui.Context) { meetingDemoView(c, host) })
+func meetingDemoContent(host *meetingDemoHost, localize func()) mygo.Content {
+	return ui.View(func(c *ui.Context) {
+		if localize != nil {
+			localize()
+		}
+		meetingDemoView(c, host)
+	})
 }
 
 func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
@@ -29,6 +34,8 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				meetingDeleteDialog(c, &host.pageUI, host)
 			case "overlay":
 				state := *fixture.state.Overlay
+				state.Collapsed = host.overlayUI.collapsed
+				state.ShowExpanded = state.ShowExpanded && !state.Collapsed
 				if state.Visible {
 					model := meetingOverlayLayoutModel(state, host.overlayUI.menu)
 					meetingOverlayView(c, state, model, host, &host.overlayUI, meetingOverlayAnimation{}, host.faceStyle(model))

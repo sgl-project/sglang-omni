@@ -7,7 +7,6 @@ package main
 import (
 	"math"
 	"slices"
-	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -151,22 +150,7 @@ func (a *app) ovText(k ovSized) (ovMeasured, bool) {
 	return ovMeasured{w, h}, false
 }
 
-// guessText guesses k's size: its width (textWidth), and its lines
-// (each paragraph's width over k.wrap) of 1.3 times its size.
-func guessText(k ovSized) (float32, float32) {
-	w := float32(textWidth(k.text, float64(k.size)))
-	line := float32(math.Ceil(float64(k.size) * 1.3))
-	if k.wrap <= 0 {
-		return w, line
-	}
-	lines := 0
-	for _, p := range strings.Split(k.text, "\n") {
-		pw := float32(textWidth(p, float64(k.size)))
-		lines += max(1, int(math.Ceil(float64(pw/k.wrap))))
-	}
-	return min(w, k.wrap), float32(lines) * line
-}
-
+// Text measurement lives in ui_text_measure.go.
 // overlayTexts are the texts the face's size depends on in its mode.
 func (a *app) overlayTexts() []ovSized {
 	var out []ovSized
@@ -228,23 +212,7 @@ func (a *app) overlayMeasure(c *ui.Context) {
 	})
 }
 
-// textWidth guesses how wide text is at size DIPs: a wide (CJK) letter
-// takes the size, any other about 0.56 of it; a little more than less.
-func textWidth(text string, size float64) int {
-	w := 0.0
-	for _, r := range text {
-		switch {
-		case uitext.WideRune(r):
-			w += size
-		case r == ' ' || r == 'i' || r == 'l' || r == '.' || r == ',' || r == ':':
-			w += 0.32 * size
-		default:
-			w += 0.58 * size
-		}
-	}
-	return int(math.Ceil(w))
-}
-
+// Text measurement lives in ui_text_measure.go.
 // ovTestArea is the work area the overlay takes without a display
 // (tests): a 1440 × 900 one under a menu bar.
 var ovTestArea = mygo.Rectangle{X: 0, Y: 25, Width: 1440, Height: 875}

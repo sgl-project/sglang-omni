@@ -2,9 +2,8 @@ package main
 
 import (
 	"math"
-	"strings"
-	"unicode"
 
+	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
@@ -79,44 +78,10 @@ func meetingOverlayBodyHeight(rows []meetingOverlayTranscriptRow, textWidth int)
 		if row.First {
 			height += meetingOvWhoH + 2
 		}
-		_, textHeight := meetingOverlayGuessText(ovSized{row.Text, layout.CardTextSize, layout.CardTextWeight, float32(textWidth)})
+		_, textHeight := guessText(ovSized{row.Text, layout.CardTextSize, layout.CardTextWeight, float32(textWidth)})
 		height += int(math.Ceil(float64(textHeight)))
 	}
 	return height
-}
-
-func meetingOverlayGuessText(text ovSized) (float32, float32) {
-	width := float32(meetingOverlayTextWidth(text.text, float64(text.size)))
-	lineHeight := float32(math.Ceil(float64(text.size) * 1.3))
-	if text.wrap <= 0 {
-		return width, lineHeight
-	}
-	lines := 0
-	for _, paragraph := range strings.Split(text.text, "\n") {
-		paragraphWidth := float32(meetingOverlayTextWidth(paragraph, float64(text.size)))
-		lines += max(1, int(math.Ceil(float64(paragraphWidth/text.wrap))))
-	}
-	return min(width, text.wrap), float32(lines) * lineHeight
-}
-
-func meetingOverlayTextWidth(text string, size float64) int {
-	width := 0.0
-	for _, r := range text {
-		switch {
-		case meetingOverlayWideRune(r):
-			width += size
-		case r == ' ' || r == 'i' || r == 'l' || r == '.' || r == ',' || r == ':':
-			width += 0.32 * size
-		default:
-			width += 0.58 * size
-		}
-	}
-	return int(math.Ceil(width))
-}
-
-func meetingOverlayWideRune(r rune) bool {
-	return unicode.Is(unicode.Han, r) || unicode.In(r, unicode.Hiragana, unicode.Katakana, unicode.Hangul) ||
-		r >= 0xFF00 && r <= 0xFFEF || r >= 0x3000 && r <= 0x303F
 }
 
 // meetingMenu is the local menu shown in place of the transcript.
@@ -138,6 +103,19 @@ func menuHeight(menu meetingMenu, state meetingOverlayViewState) int {
 	default:
 		return 0
 	}
+}
+
+func meetingOverlayFrame(at, area mygo.Rectangle, width, height int) mygo.Rectangle {
+	if at.Width == 0 {
+		return mygo.Rectangle{X: area.X + (area.Width-width)/2, Y: area.Y + area.Height - height - 28, Width: width, Height: height}
+	}
+	x := max(min(at.X, area.X+area.Width-width+layout.Pad), area.X-layout.Pad)
+	y := at.Y
+	if at.Y+at.Height/2 > area.Y+area.Height/2 {
+		y = at.Y + at.Height - height
+	}
+	y = max(min(y, area.Y+area.Height-height+layout.Pad), area.Y-layout.Pad)
+	return mygo.Rectangle{X: x, Y: y, Width: width, Height: height}
 }
 
 func meetingOverlayFace(model meetingOverlayModel) (overlayMode, int) {

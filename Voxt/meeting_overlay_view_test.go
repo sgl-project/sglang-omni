@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
 func overlayModel(snapshot meeting.Snapshot, collapsed bool, size int, menu meetingMenu) meetingOverlayModel {
-	return meetingOverlayLayoutModel(buildMeetingOverlayViewState(snapshot, collapsed, size), menu)
+	return meetingOverlayLayoutModel(buildMeetingOverlayViewState(i18n.NewTranslator(i18n.Locale()), snapshot, collapsed, size), menu)
 }
 
 func (a *app) meetingOverlayView(c *ui.Context) {
@@ -32,11 +33,11 @@ func (a *app) meetingOverlayBenchmarkView(c *ui.Context) {
 }
 
 func meetingOverlayRows(snapshot meeting.Snapshot) []meetingOverlayTranscriptRow {
-	return meetingOverlayTranscriptRows(snapshot)
+	return meetingOverlayTranscriptRows(i18n.NewTranslator(i18n.Locale()), snapshot)
 }
 
 func meetingOverlayProblemText(key string) string {
-	return meetingOverlayStateProblemText(key)
+	return meetingOverlayStateProblemText(i18n.NewTranslator(i18n.Locale()), key)
 }
 
 func formatMeetingElapsed(duration time.Duration) string {
@@ -111,7 +112,7 @@ func TestMeetingOverlayGrowsWithText(t *testing.T) {
 		t.Fatalf("size 2: %d wide", w)
 	}
 	// The modes' menu fits before any text.
-	if h := overlayModel(meeting.Snapshot{State: meeting.StateRecording}, false, 0, meetingMenuMode).Layout.Height; h < meetingOvChrome+menuHeight(meetingMenuMode, buildMeetingOverlayViewState(s, false, 0))+2*layout.Pad {
+	if h := overlayModel(meeting.Snapshot{State: meeting.StateRecording}, false, 0, meetingMenuMode).Layout.Height; h < meetingOvChrome+menuHeight(meetingMenuMode, buildMeetingOverlayViewState(i18n.NewTranslator(i18n.Locale()), s, false, 0))+2*layout.Pad {
 		t.Fatalf("menu height %d", h)
 	}
 }

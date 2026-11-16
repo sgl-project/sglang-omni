@@ -133,6 +133,7 @@ func benchmarkFirstFrame(b *testing.B, a *app, sentinel string) {
 		fresh.hist.listUI = ui.ListState{}
 		fresh.dv.listUI = ui.ListState{}
 		fresh.mvUI.listUI = ui.ListState{}
+		fresh.mv.listItems, fresh.mv.listKey, fresh.mv.detailView = nil, meetingListCacheKey{}, nil
 		fresh.nv.listUI = ui.ListState{}
 		return fresh
 	}

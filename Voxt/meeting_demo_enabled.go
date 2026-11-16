@@ -12,7 +12,7 @@ func runMeetingDemo(directory string) error {
 	mygo.App.WhenReady(func() {
 		mygo.NewWindow(mygo.WindowOptions{
 			Title: "Voxt UI Demo", Width: 1000, Height: 700,
-			Content: meetingDemoContent(host),
+			Content: meetingDemoContent(host, func() { showLanguage(host.current().locale) }),
 		})
 	})
 	mygo.App.Run()

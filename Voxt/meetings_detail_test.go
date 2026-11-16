@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -139,23 +140,24 @@ func TestMeetingLongTranscriptBuildsRowsInView(t *testing.T) {
 
 func TestMeetingGroupAndDuration(t *testing.T) {
 	now := time.Date(2026, 11, 8, 23, 0, 0, 0, time.Local)
+	translator := i18n.NewTranslator("en")
 	for at, want := range map[time.Time]string{
 		time.Date(2026, 11, 8, 0, 0, 0, 0, time.Local):   "Today",
 		time.Date(2026, 11, 7, 23, 59, 0, 0, time.Local): "Yesterday",
 		time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local):   "Previous 7 days",
 		time.Date(2026, 10, 31, 23, 0, 0, 0, time.Local): "2026-10",
 	} {
-		if got := meetingGroup(at, now); got != want {
+		if got := meetingGroup(translator, at, now); got != want {
 			t.Errorf("meetingGroup(%v) = %q, want %q", at, got, want)
 		}
 	}
 	for ms, want := range map[int64]string{20_000: "Under a minute", 31 * 60_000: "31 min", 95 * 60_000: "1 h 35 min"} {
-		if got := meetingDuration(ms); got != want {
+		if got := meetingDuration(translator, ms); got != want {
 			t.Errorf("meetingDuration(%d) = %q, want %q", ms, got, want)
 		}
 	}
 	// An untitled meeting's header says "Untitled meeting", so the line under it keeps the date.
-	if got, want := meetingMeta(store.Meeting{CreatedAt: now, DurationMS: 6 * 60_000}), "2026-11-08 23:00 · 6 min · Microphone and system audio"; got != want {
+	if got, want := meetingMeta(translator, store.Meeting{CreatedAt: now, DurationMS: 6 * 60_000}), "2026-11-08 23:00 · 6 min · Microphone and system audio"; got != want {
 		t.Errorf("meetingMeta = %q, want %q", got, want)
 	}
 }

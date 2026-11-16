@@ -9,12 +9,13 @@ import (
 )
 
 type meetingOverlayState struct {
-	meetOvWin    *mygo.Window
-	meetOvShown  bool
-	meetOvView   meetingOverlayViewState
-	meetOvModel  meetingOverlayModel
-	meetOvLocale string
-	meetOvUI     meetingOverlayLocalUI
+	meetOvWin        *mygo.Window
+	meetOvShown      bool
+	meetOvView       meetingOverlayViewState
+	meetOvModel      meetingOverlayModel
+	meetOvTranslator *i18n.Translator
+	meetOvLocale     string
+	meetOvUI         meetingOverlayLocalUI
 }
 
 // meetingContentProtectionHook is set in tests to observe SetContentProtection.
@@ -27,9 +28,12 @@ func (a *app) meetingOverlayCollapsed() bool {
 }
 
 func (a *app) rebuildMeetingOverlay() {
-	a.meetOvView = buildMeetingOverlayViewState(a.meetSnap, a.meetingOverlayCollapsed(), a.prefs.Features.CardSize(meetingCardSize))
+	if a.meetOvTranslator == nil || a.meetOvLocale != i18n.Locale() {
+		a.meetOvTranslator = i18n.NewTranslator(i18n.Locale())
+		a.meetOvLocale = i18n.Locale()
+	}
+	a.meetOvView = buildMeetingOverlayViewState(a.meetOvTranslator, a.meetSnap, a.meetingOverlayCollapsed(), a.prefs.Features.CardSize(meetingCardSize))
 	a.meetOvModel = meetingOverlayLayoutModel(a.meetOvView, a.meetOvUI.menu)
-	a.meetOvLocale = i18n.Locale()
 }
 
 func (a *app) meetingOverlayModel() meetingOverlayModel {
@@ -95,19 +99,7 @@ func (a *app) syncMeetingOverlay() {
 	}
 }
 
-func meetingOverlayFrame(at, area mygo.Rectangle, width, height int) mygo.Rectangle {
-	if at.Width == 0 {
-		return mygo.Rectangle{X: area.X + (area.Width-width)/2, Y: area.Y + area.Height - height - 28, Width: width, Height: height}
-	}
-	x := max(min(at.X, area.X+area.Width-width+layout.Pad), area.X-layout.Pad)
-	y := at.Y
-	if at.Y+at.Height/2 > area.Y+area.Height/2 {
-		y = at.Y + at.Height - height
-	}
-	y = max(min(y, area.Y+area.Height-height+layout.Pad), area.Y-layout.Pad)
-	return mygo.Rectangle{X: x, Y: y, Width: width, Height: height}
-}
-
+// Native window code applies the frame computed by the view.
 func (a *app) applyMeetingOverlayProtection() {
 	hide := a.prefs.Features.Meeting.HideFromSharing
 	if meetingContentProtectionHook != nil {

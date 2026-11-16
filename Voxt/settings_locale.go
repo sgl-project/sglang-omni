@@ -18,6 +18,7 @@ func (a *app) applyLocale() {
 		tag = a.systemLocale
 	}
 	i18n.SetLocale(tag)
+	a.syncMeetingOverlay()
 	if a.hasMenu { // the app runs: MyGo's locale waits for its main loop
 		showLanguage(i18n.Locale())
 	}

@@ -9,6 +9,7 @@
     "page": 0,
     "has_more": true,
     "active": true,
+    "settings_available": true,
     "meeting_count": 6,
     "items": [
       {
@@ -137,7 +138,7 @@
         "todos": null
       },
       "chat": null,
-      "segments": null,
+      "segments": [],
       "playback": {
         "available": false,
         "playing": false,

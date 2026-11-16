@@ -8,9 +8,11 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // The capsule's controls fit in its window, with a long warning too.
@@ -238,6 +240,17 @@ func TestMeetingOverlayMenus(t *testing.T) {
 	click("Subtitles")
 	if a.meetOvUI.menu != meetingMenuNone {
 		t.Fatal("the menu stays after a mode is picked")
+	}
+}
+
+func TestMeetingOverlayRebuildsAfterLocaleChange(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.meetSnap = meeting.Snapshot{ID: "m-locale", State: meeting.StatePaused, Mode: meeting.ModeMeeting}
+	a.meetingOverlayModel()
+	a.updateSettings(func(state *settings.Settings) { state.General.Language = "zh-Hans" })
+	want := i18n.NewTranslator("zh-Hans").T("Meeting paused")
+	if a.meetOvView.StatusText != want {
+		t.Fatalf("status after locale change %q, want %q", a.meetOvView.StatusText, want)
 	}
 }
 

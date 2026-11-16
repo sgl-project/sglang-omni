@@ -59,6 +59,8 @@ type meetingPlaybackViewState struct {
 	Highlight    int    `json:"highlight"`
 }
 
+const meetingLiveSegmentCap = 200
+
 type meetingDetailViewState struct {
 	ID             string                    `json:"id"`
 	Title          string                    `json:"title"`
@@ -82,16 +84,17 @@ type meetingDetailViewState struct {
 }
 
 type meetingsViewState struct {
-	Read         bool                    `json:"read"`
-	Loading      bool                    `json:"loading"`
-	Error        string                  `json:"error"`
-	Query        string                  `json:"query"`
-	Page         int                     `json:"page"`
-	HasMore      bool                    `json:"has_more"`
-	Active       bool                    `json:"active"`
-	MeetingCount int                     `json:"meeting_count"`
-	Items        []meetingItemViewState  `json:"items"`
-	Detail       *meetingDetailViewState `json:"detail,omitempty"`
+	Read              bool                    `json:"read"`
+	Loading           bool                    `json:"loading"`
+	Error             string                  `json:"error"`
+	Query             string                  `json:"query"`
+	Page              int                     `json:"page"`
+	HasMore           bool                    `json:"has_more"`
+	Active            bool                    `json:"active"`
+	SettingsAvailable bool                    `json:"settings_available"`
+	MeetingCount      int                     `json:"meeting_count"`
+	Items             []meetingItemViewState  `json:"items"`
+	Detail            *meetingDetailViewState `json:"detail,omitempty"`
 }
 
 type meetingPlaybackStateInput struct {
@@ -130,22 +133,22 @@ type meetingsViewStateInput struct {
 	Detail     *meetingDetailStateInput
 }
 
-func buildMeetingsViewState(input meetingsViewStateInput) meetingsViewState {
+func buildMeetingsViewState(translator *i18n.Translator, input meetingsViewStateInput) meetingsViewState {
 	state := meetingsViewState{
 		Read: input.Read, Loading: input.Loading, Error: input.Error, Query: input.Query,
-		Page: input.Page, HasMore: input.HasMore, Active: input.Active, MeetingCount: len(input.List),
+		Page: input.Page, HasMore: input.HasMore, Active: input.Active, SettingsAvailable: true, MeetingCount: len(input.List),
 	}
 	lastGroup := ""
 	for index := range input.List {
 		stored := input.List[index]
-		group := meetingGroup(stored.CreatedAt, input.Now)
+		group := meetingGroup(translator, stored.CreatedAt, input.Now)
 		if group != lastGroup {
 			state.Items = append(state.Items, meetingItemViewState{Key: "head/" + group, Heading: group})
 			lastGroup = group
 		}
 		snippet := input.Lines[stored.ID]
 		if snippet == "" {
-			snippet = meetingSnippet(stored)
+			snippet = meetingSnippet(translator, stored)
 		}
 		milliseconds := stored.DurationMS
 		if stored.ID == input.Live.ID && input.Live.State.Active() {
@@ -153,26 +156,26 @@ func buildMeetingsViewState(input meetingsViewStateInput) meetingsViewState {
 		}
 		duration := ""
 		if milliseconds > 0 {
-			duration = meetingDuration(milliseconds)
+			duration = meetingDuration(translator, milliseconds)
 		}
 		row := &meetingRowViewState{
-			ID: stored.ID, Title: meetingDisplayTitle(stored), Snippet: snippet,
-			StatusCode: string(stored.Status), StatusLabel: meetingStatusLabel(stored.Status),
+			ID: stored.ID, Title: meetingDisplayTitle(translator, stored), Snippet: snippet,
+			StatusCode: string(stored.Status), StatusLabel: meetingStatusLabel(translator, stored.Status),
 			ModeCode: string(stored.Mode), ClockText: stored.CreatedAt.Format("15:04"),
 			DurationText: duration, Selected: input.SelectedID == stored.ID,
 		}
 		state.Items = append(state.Items, meetingItemViewState{Key: stored.ID, Meeting: row})
 	}
 	if input.Detail != nil {
-		state.Detail = buildMeetingDetailViewState(*input.Detail)
+		state.Detail = buildMeetingDetailViewState(translator, *input.Detail)
 	}
 	return state
 }
 
-func buildMeetingDetailViewState(input meetingDetailStateInput) *meetingDetailViewState {
+func buildMeetingDetailViewState(translator *i18n.Translator, input meetingDetailStateInput) *meetingDetailViewState {
 	stored := input.Meeting
 	state := &meetingDetailViewState{
-		ID: stored.ID, Title: meetingDisplayTitle(stored), Meta: meetingMeta(stored),
+		ID: stored.ID, Title: meetingDisplayTitle(translator, stored), Meta: meetingMeta(translator, stored),
 		Loading: input.Loading, Error: input.Error, Correcting: input.Correcting,
 		Answering: input.Answering, CanUseLLM: input.CanUseLLM,
 		ShowMore:       stored.Status == store.MeetingDone || stored.Audio != "",
@@ -196,15 +199,20 @@ func buildMeetingDetailViewState(input meetingDetailStateInput) *meetingDetailVi
 		state.Chat = append(state.Chat, meetingChatViewState{User: message.Role == "user", Text: message.Content})
 	}
 	names := meetingViewSpeakerNameMap(stored.Speakers)
+	state.Segments = make([]meetingSegmentViewState, 0, len(input.Segments)+meetingLiveSegmentCap)
 	for _, segment := range input.Segments {
-		start := time.Duration(segment.StartMS) * time.Millisecond
-		state.Segments = append(state.Segments, meetingSegmentViewState{
-			Key: "seg/" + itoa(segment.Idx), Index: segment.Idx, StartMS: segment.StartMS,
-			TimeText: meeting.FormatPlaybackTime(start), Speaker: meetingViewSpeakerText(segment.Speaker, names),
-			Me: segment.Speaker == "me", Text: segment.Text, Translation: segment.Translation, Source: string(segment.Source),
-		})
+		state.Segments = append(state.Segments, meetingSegmentViewStateFromStore(translator, segment, names))
 	}
 	return state
+}
+
+func meetingSegmentViewStateFromStore(translator *i18n.Translator, segment store.MeetingSegment, names map[string]string) meetingSegmentViewState {
+	start := time.Duration(segment.StartMS) * time.Millisecond
+	return meetingSegmentViewState{
+		Key: "seg/" + itoa(segment.Idx), Index: segment.Idx, StartMS: segment.StartMS,
+		TimeText: meeting.FormatPlaybackTime(start), Speaker: meetingViewSpeakerText(translator, segment.Speaker, names),
+		Me: segment.Speaker == "me", Text: segment.Text, Translation: segment.Translation, Source: string(segment.Source),
+	}
 }
 
 func meetingTitle(stored store.Meeting) string {
@@ -214,72 +222,72 @@ func meetingTitle(stored store.Meeting) string {
 	return stored.CreatedAt.Format("2006-01-02 15:04")
 }
 
-func meetingDisplayTitle(stored store.Meeting) string {
+func meetingDisplayTitle(translator *i18n.Translator, stored store.Meeting) string {
 	if stored.Title != "" {
 		return stored.Title
 	}
-	return i18n.T("Untitled meeting")
+	return translator.T("Untitled meeting")
 }
 
-func meetingStatusLabel(status store.MeetingStatus) string {
+func meetingStatusLabel(translator *i18n.Translator, status store.MeetingStatus) string {
 	switch status {
 	case store.MeetingRecording, store.MeetingAsking:
-		return i18n.T("In progress")
+		return translator.T("In progress")
 	case store.MeetingInterrupted:
-		return i18n.T("Interrupted")
+		return translator.T("Interrupted")
 	case store.MeetingFinishing:
-		return i18n.T("Finishing")
+		return translator.T("Finishing")
 	case store.MeetingFailed:
-		return i18n.T("Failed")
+		return translator.T("Failed")
 	default:
 		return ""
 	}
 }
 
-func meetingMeta(stored store.Meeting) string {
+func meetingMeta(translator *i18n.Translator, stored store.Meeting) string {
 	parts := []string{stored.CreatedAt.Format("2006-01-02 15:04")}
 	if stored.DurationMS > 0 {
-		parts = append(parts, meetingDuration(stored.DurationMS))
+		parts = append(parts, meetingDuration(translator, stored.DurationMS))
 	}
 	switch stored.Mode {
 	case store.MeetingModeSubtitles:
-		parts = append(parts, i18n.T("System audio only"))
+		parts = append(parts, translator.T("System audio only"))
 	case store.MeetingModeRecording:
-		parts = append(parts, i18n.T("Microphone only"))
+		parts = append(parts, translator.T("Microphone only"))
 	default:
-		parts = append(parts, i18n.T("Microphone and system audio"))
+		parts = append(parts, translator.T("Microphone and system audio"))
 	}
 	return strings.Join(parts, " · ")
 }
 
-func meetingDuration(milliseconds int64) string {
+func meetingDuration(translator *i18n.Translator, milliseconds int64) string {
 	minutes := int((time.Duration(milliseconds)*time.Millisecond + 30*time.Second) / time.Minute)
 	switch {
 	case minutes < 1:
-		return i18n.T("Under a minute")
+		return translator.T("Under a minute")
 	case minutes < 60:
-		return i18n.T("%d min", minutes)
+		return translator.T("%d min", minutes)
 	default:
-		return i18n.T("%d h %d min", minutes/60, minutes%60)
+		return translator.T("%d h %d min", minutes/60, minutes%60)
 	}
 }
 
-func meetingGroup(at, now time.Time) string {
+func meetingGroup(translator *i18n.Translator, at, now time.Time) string {
 	year, month, day := now.Date()
 	today := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
 	switch {
 	case !at.Before(today):
-		return i18n.T("Today")
+		return translator.T("Today")
 	case !at.Before(today.AddDate(0, 0, -1)):
-		return i18n.T("Yesterday")
+		return translator.T("Yesterday")
 	case !at.Before(today.AddDate(0, 0, -7)):
-		return i18n.T("Previous 7 days")
+		return translator.T("Previous 7 days")
 	default:
 		return at.Format("2006-01")
 	}
 }
 
-func meetingSnippet(stored store.Meeting) string {
+func meetingSnippet(translator *i18n.Translator, stored store.Meeting) string {
 	if summary, ok := meeting.ParseStoredSummary(stored.Summary); ok {
 		if line, _, _ := strings.Cut(strings.TrimSpace(summary.Body), "\n"); line != "" {
 			return strings.TrimLeft(line, "-*# ")
@@ -287,11 +295,11 @@ func meetingSnippet(stored store.Meeting) string {
 	}
 	switch stored.Mode {
 	case store.MeetingModeSubtitles:
-		return i18n.T("System audio only")
+		return translator.T("System audio only")
 	case store.MeetingModeRecording:
-		return i18n.T("Microphone only")
+		return translator.T("Microphone only")
 	default:
-		return i18n.T("Microphone and system audio")
+		return translator.T("Microphone and system audio")
 	}
 }
 
@@ -301,15 +309,15 @@ func meetingViewSpeakerNameMap(raw string) map[string]string {
 	return names
 }
 
-func meetingViewSpeakerText(speaker string, names map[string]string) string {
+func meetingViewSpeakerText(translator *i18n.Translator, speaker string, names map[string]string) string {
 	label := meeting.SpeakerLabel(speaker, names)
 	switch label {
 	case "Me":
-		return i18n.T("You")
+		return translator.T("You")
 	case "Them":
-		return i18n.T("Others")
+		return translator.T("Others")
 	case "Speaker " + speaker[1:]:
-		return i18n.T("Speaker %s", speaker[1:])
+		return translator.T("Speaker %s", speaker[1:])
 	default:
 		return label
 	}

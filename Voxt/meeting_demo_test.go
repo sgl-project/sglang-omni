@@ -206,8 +206,6 @@ func TestMeetingDemoActionControls(t *testing.T) {
 		{name: "cancel live", fixture: "en/state-recording-meeting", steps: steps("More", "Cancel meeting", "Cancel meeting"), want: []string{"toggleMeetingMenu 2", "requestMeetingDiscard", "meetingDiscard"}},
 		{name: "collapse", fixture: "en/state-recording-meeting", steps: steps("Collapse"), want: []string{"setMeetingOverlayCollapsed true"}},
 		{name: "expand", fixture: "en/state-recording-meeting", prepare: func(host *meetingDemoHost) {
-			state := host.current().state.Overlay
-			state.Collapsed, state.ShowExpanded = true, false
 			host.overlayUI.collapsed = true
 		}, steps: steps("Expand"), want: []string{"setMeetingOverlayCollapsed false"}},
 		{name: "card size", fixture: "en/state-recording-meeting", steps: steps("Make the card larger"), want: []string{"setMeetingOverlayCardSize 2"}},
@@ -234,6 +232,16 @@ func TestMeetingDemoActionControls(t *testing.T) {
 			}
 			if !slices.Equal(host.calls, test.want) {
 				t.Fatalf("calls %q, want %q", host.calls, test.want)
+			}
+			switch test.name {
+			case "collapse":
+				if !tester.HasText("Expand") {
+					t.Fatal("collapse did not collapse the overlay")
+				}
+			case "expand":
+				if !tester.HasText("Collapse") {
+					t.Fatal("expand did not expand the overlay")
+				}
 			}
 		})
 	}

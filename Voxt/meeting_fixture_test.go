@@ -31,7 +31,7 @@ func TestMeetingViewStateGolden(t *testing.T) {
 		i18n.SetLocale(locale)
 		for _, scenario := range scenarios {
 			t.Run(locale+"/"+scenario.name, func(t *testing.T) {
-				fixture := buildMeetingFixture(t, scenario)
+				fixture := buildMeetingFixture(t, scenario, locale)
 				data, err := json.MarshalIndent(fixture, "", "  ")
 				if err != nil {
 					t.Fatal(err)
@@ -59,18 +59,19 @@ func TestMeetingViewStateGolden(t *testing.T) {
 	}
 }
 
-func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario) meetingFixtureState {
+func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale string) meetingFixtureState {
 	t.Helper()
 	fixture := meetingFixtureState{Name: scenario.name, Kind: scenario.kind}
+	translator := i18n.NewTranslator(locale)
 	switch scenario.kind {
 	case "overlay":
-		state := buildMeetingOverlayViewState(scenario.snapshot, false, 1)
+		state := buildMeetingOverlayViewState(translator, scenario.snapshot, false, 1)
 		fixture.Overlay = &state
 	case "page":
-		state := buildMeetingsViewState(scenario.page)
+		state := buildMeetingsViewState(translator, scenario.page)
 		fixture.Page = &state
 	case "start":
-		state := buildMeetingStartViewState(scenario.err)
+		state := buildMeetingStartViewState(translator, scenario.err)
 		fixture.Start = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
@@ -159,8 +160,8 @@ func checkMeetingFixtureValues(t *testing.T, locale string, fixtures map[string]
 			if overlay.Mode != "" {
 				modes[overlay.Mode] = true
 			}
-			for _, source := range overlay.Sources {
-				sources[source] = true
+			for _, row := range overlay.Rows {
+				sources[row.Source] = true
 			}
 			if overlay.ProblemKey != "" {
 				problems[overlay.ProblemKey] = true

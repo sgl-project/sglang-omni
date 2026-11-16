@@ -66,21 +66,46 @@ func Locale() string { return current.Load().tag }
 // supported exactly) and returns the tag in use.
 func SetLocale(tag string) string {
 	tag = Match(tag)
+	current.Store(newCatalog(tag))
+	return tag
+}
+
+// Translator reads messages for one explicit locale without changing the
+// process-wide catalog used by views.
+type Translator struct {
+	catalog *catalog
+}
+
+func NewTranslator(tag string) *Translator {
+	return &Translator{catalog: newCatalog(Match(tag))}
+}
+
+func (t *Translator) Locale() string {
+	return t.catalog.tag
+}
+
+func (t *Translator) T(msg string, args ...any) string {
+	if translated, ok := t.catalog.messages[msg]; ok && translated != "" {
+		msg = translated
+	}
+	return format(msg, args)
+}
+
+func newCatalog(tag string) *catalog {
 	c := &catalog{tag: tag, messages: map[string]string{}}
 	if data, err := localeFS.ReadFile("locales/" + tag + ".json"); err == nil {
 		if err := json.Unmarshal(data, &c.messages); err != nil {
-			panic("i18n: locales/" + tag + ".json: " + err.Error()) // caught by tests
+			panic("i18n: locales/" + tag + ".json: " + err.Error())
 		}
 	}
 	c.sources = make(map[string]string, len(c.messages))
-	for k, v := range c.messages {
-		if _, msg, ok := strings.Cut(k, "\x04"); ok { // X's context goes
-			k = msg
+	for key, translated := range c.messages {
+		if _, msg, ok := strings.Cut(key, "\x04"); ok {
+			key = msg
 		}
-		c.sources[v] = k
+		c.sources[translated] = key
 	}
-	current.Store(c)
-	return tag
+	return c
 }
 
 // Match maps a system or user locale ("zh-CN", "zh_Hans_CN", "en-GB") to

@@ -19,7 +19,7 @@ import (
 const moduleRoot = "../.."
 
 // sourceKeys scans every non-test .go file of the module for calls to
-// i18n.T, i18n.N and i18n.X whose message arguments are string literals,
+// i18n.T, i18n.N, i18n.X and an explicit translator's T whose message arguments are string literals,
 // and returns the catalog keys they need, with a position for each.
 // Calls with computed messages (i18n.T(name)) are returned in dynamic:
 // their texts must be literal T calls somewhere else.
@@ -69,7 +69,7 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string) {
 			if !ok {
 				return true
 			}
-			if id, ok := sel.X.(*ast.Ident); !ok || id.Name != local {
+			if id, ok := sel.X.(*ast.Ident); !ok || id.Name != local && id.Name != "translator" {
 				return true
 			}
 			pos := fset.Position(call.Pos()).String()

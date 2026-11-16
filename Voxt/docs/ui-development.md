@@ -64,4 +64,4 @@ go test -count=1 -run '^TestMeetingDemo(ActionControls|SwitchesFixtures)$' .
 
 These tests use `ui.Tester`. They need no window, helper binary, model, microphone, network, or Voxt data directory. They also run on Linux.
 
-The demo does not verify native overlay placement, vibrancy, content protection, real audio capture, helper behavior, model output, global shortcuts, persistence, or file output. Check those on a Mac with the real app.
+The demo does not verify native overlay placement, vibrancy, content protection, real audio capture, helper behavior, model output, global shortcuts, persistence, or file output. Check those on a Mac with the real app. The settings-area dialog is outside this pilot, so the demo hides its button.

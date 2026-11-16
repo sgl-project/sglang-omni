@@ -107,6 +107,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	i18n.SetLocale(fixture.locale)
 	host.pageUI = meetingsLocalUI{}
 	if fixture.state.Page != nil {
+		fixture.state.Page.SettingsAvailable = false
 		host.pageUI.query = fixture.state.Page.Query
 		host.pageUI.page = fixture.state.Page.Page
 	}
