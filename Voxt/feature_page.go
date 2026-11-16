@@ -117,6 +117,7 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 	if a.sess.Try && a.sess.State == session.Recording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
+	models := a.featureModelsModel(feature)
 	left := func() {
 		switch feature {
 		case hotkey.Translate:
@@ -127,7 +128,7 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 			caption(c, i18n.T("Press a shortcut anywhere, speak, and the text is typed where your cursor is."))
 		}
 		a.featureShortcuts(c, feature)
-		a.featureModels(c, feature)
+		featureModels(c, feature, &models, a, a.fui(feature))
 	}
 	right := func() {
 		switch feature {
@@ -136,7 +137,7 @@ func (a *app) featurePage(c *ui.Context, feature string) {
 		case hotkey.Rewrite:
 			a.rewriteSettings(c)
 		default:
-			a.trEnhance(c)
+			trEnhance(c, &models.Cleanup, a)
 		}
 		a.cardSetting(c, p, feature)
 		a.featureRules(c, feature)
