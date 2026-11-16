@@ -231,6 +231,7 @@ jobs:
 
   voxt2:
     name: Voxt 2 update manifest
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'voxt-v')
     runs-on: macos-15
     timeout-minutes: 15
     environment: voxt-release
