@@ -200,7 +200,7 @@ func (a *app) endWork() {
 	}
 	hs.busy, hs.cancel = "", nil
 	hs.usageFor = ""
-	a.stReport = nil // Settings → Storage measures again
+	a.storageInvalidated() // Settings → Storage measures again
 }
 
 // moveRecordings moves the recordings to dir ("" = the default folder).
@@ -299,7 +299,7 @@ func (a *app) deleteRecordings() {
 		n, err := h.DeleteAudio(context.Background())
 		a.post(func() {
 			a.histSet.usageFor = ""
-			a.stReport = nil
+			a.storageInvalidated()
 			if err != nil {
 				a.toast(i18n.T("Could not delete the recordings: %v", err))
 			} else {

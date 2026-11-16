@@ -26,7 +26,7 @@ import (
 // settingsState is the settings dialog's sections' view state, embedded
 // in app: each section keeps its own struct in its file.
 type settingsState struct {
-	storageState // settings_storage.go
+	storageState // settings_storage_controller.go
 	aboutState   // settings_about.go
 	settingsForm // shell_settings.go: the controls that edit a setting
 }
@@ -254,6 +254,8 @@ func (a *app) settingsShown(sub string) {
 	case "/audio":
 		a.loadDevices()         // settings_audio_controller.go
 		a.prepareSoundChoices() // settings_soundchoice_controller.go
+	case "/storage":
+		a.loadStorage() // settings_storage_controller.go
 	}
 }
 
@@ -421,8 +423,10 @@ func (a *app) settingsSection(c *ui.Context, r *ui.Route) {
 		"privacy": func(c *ui.Context) {
 			privacySettings(c, a.privacySettingsModel(time.Now()), a, &a.settingsForm.settingsPrivacyLocalUI, &a.histAccessUI)
 		},
-		"storage": a.storageSettings, // settings_storage.go
-		"about":   a.aboutSettings,   // settings_about.go
+		"storage": func(c *ui.Context) {
+			storageSettings(c, a.storageSettingsModel(), a, &a.storageState.settingsStorageLocalUI)
+		},
+		"about": a.aboutSettings, // settings_about.go
 	}
 	for _, s := range settingsSections() {
 		if r.Match("/" + s.id) {

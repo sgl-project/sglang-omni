@@ -124,7 +124,7 @@ func (a *app) modelsChanged() {
 	}
 	for id, s := range a.modelStatus {
 		if before[id].Installed != s.Installed {
-			a.stReport = nil // Settings → Storage measures again
+			a.storageInvalidated()
 		}
 	}
 	a.checkModels()

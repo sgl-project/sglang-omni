@@ -40,6 +40,22 @@ type settingsMeetingActions interface {
 	setMeetingLLM(languageModelID string)
 }
 
+type settingsStorageActions interface {
+	openStorageFolder(directory string)
+	chooseStorageDataFolder()
+	chooseStorageModelFolder()
+	showHistorySettings()
+	removePrevious()
+	dismissMoveFailure()
+	cancelStorageDataMove()
+	cancelStorageModelMove()
+	resetLook()
+	resetSettings()
+	askErase()
+	eraseAll()
+	setStorageModelBackup(on bool)
+}
+
 type settingsOverlayActions interface {
 	overlayEdited()
 }
