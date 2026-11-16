@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
+from sglang_omni.utils.cuda_staging import PinnedTransferSlot
 from tests.unit_test.fixtures.accelerator import require_device_streams
 
 LLM_HIDDEN = 48
@@ -509,24 +510,19 @@ def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
     assert flow.resolve_batched_eos() == []
 
 
-def test_prepare_batched_eos_staging_uses_is_cuda(monkeypatch) -> None:
+@pytest.mark.accelerator
+def test_batched_eos_staging_uses_native_device_event() -> None:
+    device = require_device_streams()
     flow = DotsTTSFlowHead.__new__(DotsTTSFlowHead)
-    flow.batched_eos_pending = 1
-    flow.batched_eos_host = []
-    flow.batched_eos_pinned = None
-    flow.batched_eos_event = None
+    flow.batched_eos_pending = 0
+    flow.batched_eos_host = None
+    flow.batched_eos_transfer_slot = PinnedTransferSlot(
+        device, torch.bool, initial_capacity=2
+    )
 
-    pinned = torch.zeros(4, dtype=torch.bool)
-    event = object()
-    monkeypatch.setattr(torch, "zeros", lambda *_args, **_kwargs: pinned)
-    monkeypatch.setattr(torch.cuda, "Event", lambda: event)
+    flow.stage_batched_eos(torch.tensor([True, False], device=device))
 
-    flow.prepare_batched_eos_staging(4, is_cuda=True)
-
-    assert flow.batched_eos_pending == 0
-    assert flow.batched_eos_host is None
-    assert flow.batched_eos_pinned is pinned
-    assert flow.batched_eos_event is event
+    assert flow.resolve_batched_eos() == [True, False]
 
 
 def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
