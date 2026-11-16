@@ -46,9 +46,9 @@ MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh  # the real model
 scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HOME/voxtnew-runtime/omni go test -run TestEval -v .'  # the eval (docs/eval.md)
 scripts/vendor-mygo.sh --check                               # third_party/mygo is MyGo + our patches
 scripts/snapshots.sh check                                   # every snapshot, pixel for pixel, against the merge base
-VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .  # regenerate meeting and history fixtures in English and Chinese
-VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -count=1 -run '^TestMeetingDemoScreenshots$' .  # every meeting and history fixture as PNG
-go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls)$' .  # fixture switching and exact action records for every action-bearing control
+VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .  # regenerate meeting, history, and app enhancement fixtures in English and Chinese
+VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -count=1 -run '^TestMeetingDemoScreenshots$' .  # every meeting, history, and app enhancement fixture as PNG
+go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|AppEnhancementDemoActionControls)$' .  # fixture switching and exact action records for every action-bearing control
 MYGO_LOCALE=en VOXTNEW_DEMO_DIR="$PWD/testdata/meeting" GOFLAGS='-tags=meetingdemo' go tool mygo dev ./demo  # fixture demo with hot reload, no helper or models
 GOFLAGS='-tags=meetingdemo' go tool mygo build -skip-dmg ./demo  # build the fixture demo without opening a window
 scripts/benchmarks.sh /tmp/voxt-bench-change && benchstat /tmp/voxt-bench-base/a.txt /tmp/voxt-bench-change/a.txt  # compare benchmarks; run the base first
