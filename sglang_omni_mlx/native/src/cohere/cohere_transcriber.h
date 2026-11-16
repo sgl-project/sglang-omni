@@ -14,7 +14,7 @@
 
 #include "cohere/cohere_model.h"
 #include "common/swift_port.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/transcription.h"
 #include "silero_vad/speech_segments.h"
 
 namespace cohere_transcribe {
@@ -42,7 +42,7 @@ public:
   // Reads the checkpoint, tokenizer.model and tokenizer_config.json.
   explicit CohereTranscriber(const std::filesystem::path &model_directory);
 
-  qwen3_asr::TranscriptionResult
+  omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const CohereOptions &options,
              const std::atomic<bool> &cancel) const;
 

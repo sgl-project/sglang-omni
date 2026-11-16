@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/worker.h"
 
@@ -108,7 +109,8 @@ private:
   // A preview passes its segment's encoder; a final decode encodes anew.
   Transcription Decode(std::vector<float> samples, TranscriptionOptions options,
                        std::shared_ptr<StreamingEncoder> encoder) const;
-  void ApplyResult(Segment &segment, const TranscriptionResult &result);
+  void ApplyResult(Segment &segment,
+                   const omni_common::TranscriptionResult &result);
   void MaybeStartRefresh();
   void FinalizeThrough(long end_sample);
 
