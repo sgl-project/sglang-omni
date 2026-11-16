@@ -39,7 +39,7 @@ func TestCardThinkingLevel(t *testing.T) {
 	}
 	tt := cardTester(t, a.app)
 	frames(tt)
-	if has(tt, "Thinking") {
+	if has(tt, "Thinking level") {
 		t.Errorf("button shows: %q", firstTexts(tt))
 	}
 
@@ -48,10 +48,10 @@ func TestCardThinkingLevel(t *testing.T) {
 	a.answer.llmID = "deepseek"
 	a.overlaySync()
 	frames(tt)
-	if v := a.cardNow(); !v.thinks || !v.canThink || v.think != nil || !has(tt, "Thinking") {
+	if v := a.cardNow(); !v.thinks || !v.canThink || v.think != nil || !has(tt, "Thinking level") {
 		t.Fatalf("no button: %+v %q", v, firstTexts(tt))
 	}
-	click(t, tt, "Thinking")
+	click(t, tt, "Thinking level")
 	if !a.answer.langOpen || !a.answer.thinkMenu || !a.ov.lang.shown {
 		t.Fatalf("menu: open %v think %v shown %v", a.answer.langOpen, a.answer.thinkMenu, a.ov.lang.shown)
 	}
@@ -60,13 +60,13 @@ func TestCardThinkingLevel(t *testing.T) {
 	}
 	mt := hudTester(a.langMenuView, a.ov.lang.frame.Width, a.ov.lang.frame.Height)
 	frames(mt)
-	for _, s := range []string{"As in settings", "Off", "On", "None", "Low", "High", "Max"} {
+	for _, s := range []string{"Default", "Off", "On", "None", "Low", "High", "Max"} {
 		if !has(mt, s) {
 			t.Errorf("menu: no %q in %q", s, firstTexts(mt))
 		}
 	}
 	// The same level: nothing is asked.
-	if err := mt.Click("As in settings"); err != nil {
+	if err := mt.Click("Default"); err != nil {
 		t.Fatal(err)
 	}
 	if a.answer.langOpen || a.sess.State.Live() || len(chat.requests()) != 1 {
@@ -77,7 +77,7 @@ func TestCardThinkingLevel(t *testing.T) {
 	chat.delay = 150 * time.Millisecond
 	chat.mu.Unlock()
 	first := a.sess.ID
-	click(t, tt, "Thinking")
+	click(t, tt, "Thinking level")
 	frames(mt)
 	if err := mt.Click("Low"); err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestCardThinkingLevel(t *testing.T) {
 	if body := chat.requests()[1]; body["thinking"] != low || chatMessages(body)[len(chatMessages(body))-1][1] != "<input>\n周四见\n</input>" {
 		t.Errorf("second request %v", body)
 	}
-	if tip := thinkText(a.cardNow().think); tip != "Thinking: Low" {
+	if tip := askAgainText(a.cardNow().think, settings.Generation{}); tip != "Ask again: Thinking (Low)" {
 		t.Errorf("tip %q", tip)
 	}
 	if a.prefs.Providers.LLM[0].Generation.Thinking != "" {

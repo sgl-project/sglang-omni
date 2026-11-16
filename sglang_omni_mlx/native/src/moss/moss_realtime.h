@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "common/transcription.h"
 #include "moss/moss_transcriber.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/realtime.h"
@@ -49,7 +50,7 @@ private:
   // Note (Dayuxiaoshui): a final window is committed before its event is sent,
   // so a client that has seen every window has seen everything committed.
   void Publish(const Decode &decode,
-               const qwen3_asr::TranscriptionResult &result);
+               const omni_common::TranscriptionResult &result);
   // Note (Dayuxiaoshui): waits out a decode in flight first, since it reads
   // the pending audio this finalizes.
   void Flush();
@@ -67,7 +68,7 @@ private:
   bool decoding_ = false;
   std::optional<std::chrono::steady_clock::time_point> last_decode_time_;
   std::vector<std::string> committed_texts_;
-  std::vector<qwen3_asr::SpeakerSegment> committed_segments_;
+  std::vector<omni_common::SpeakerSegment> committed_segments_;
 };
 
 } // namespace moss

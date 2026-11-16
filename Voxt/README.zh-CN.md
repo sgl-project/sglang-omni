@@ -61,6 +61,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 - **应用增强**：把 App 和网站分组，每组有自己的提示词和插入后的按键，比如聊天时口语一些，插入后按回车发送。
 - **词典**：人名和专业术语，语音识别模型提前知道，语言模型照你的写法输出。Voxt 还会从历史和你的改正里建议新词。
+- **会议**：在菜单栏菜单或「会议」页选“开始会议”。Voxt 录你的麦克风、对方的声音，或两路都录，并实时显示字幕。会后语言模型参考你的词典校对转录稿，再写一份总结，你可以接着追问。录对方的声音需要“系统录音”权限。
 - **笔记**：单按右 ⌘ 说话，Voxt 把说的话存成笔记，不输入到 App 里。
 - **历史**：每一条结果都在，可以搜索、从录音“重试”、导出。
 
@@ -70,7 +71,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 ### 第一次用 Voxt
 
-1. **下载** [`Voxt-2.0.3-arm64.dmg`][download]，打开后把 **Voxt** 拖进“应用程序”。
+1. **下载** [`Voxt-2.1.0-arm64.dmg`][download]，打开后把 **Voxt** 拖进“应用程序”。
 
 2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（Qwen3-ASR 1.7B (8bit)，2.5 GB），再配置一个语言模型用于整理、翻译和改写。
 3. 在任意 App 里**单按右 Option**，说话，再按一下。
@@ -129,9 +130,9 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 ## 隐私
 
 - **语音留在你的 Mac 上**，除非你给某个功能设置了云端语音 API：这个功能的录音只会发给那个服务。
-- **文字只发给你设置的语言模型。** 用本机的服务时，文字也留在本机。音频从不发给语言模型。
+- **文字只发给你设置的语言模型。** 用本机的服务时，文字也留在本机。音频从不发给语言模型。只有在“设置 → 隐私”里打开发送窗口截图或复制的图片（默认都关）时，图片才会发给它。
 - **API Key 保存在 macOS 钥匙串里**，不会写进 Voxt 的设置或日志。
-- **不需要账号，也不做统计。** Voxt 没有接收你音频或文字的服务器。除此之外，它只在下载你选择的模型和读取 Voxt 的公告时联网，读取公告的请求不带任何关于你的信息。
+- **不需要账号，也不做统计。** Voxt 没有接收你音频或文字的服务器。除此之外，它只在下载你选择的模型、读取 Voxt 的公告和向 GitHub 查询最新版本时联网，这些请求除了 Voxt 的版本号不带任何关于你的信息。
 - **数据在两个文件夹里**：历史、可选保存的录音、词典和设置在 `~/Library/Application Support/VoxtNew/`，模型在 `~/Library/Application Support/SGLang Omni/models`。
 
 ## 帮助与社区
@@ -159,7 +160,7 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 
 [![回到顶部][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.0/Voxt-2.1.0-arm64.dmg
 [beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
 [beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
 [beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml

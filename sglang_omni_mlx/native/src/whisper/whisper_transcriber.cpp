@@ -6,7 +6,9 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "common/generation.h"
 #include "common/swift_port.h"
+#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 
 namespace whisper {
@@ -290,7 +292,7 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
   std::vector<int> generated_ids;
   for (int step = 0;; ++step) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else if (step == max_new_tokens) {
       result.reached_token_limit = true;
       break;
@@ -339,7 +341,7 @@ WhisperTranscriber::WindowResult WhisperTranscriber::DecodeWithDraft(
   int anchor = static_cast<int>(first_token.item<uint32_t>());
   while (true) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else if (anchor == end_of_text_id_) {
       break;
     } else {
@@ -418,12 +420,12 @@ WhisperTranscriber::WindowResult WhisperTranscriber::DecodeWithDraft(
   return result;
 }
 
-qwen3_asr::TranscriptionResult
+omni_common::TranscriptionResult
 WhisperTranscriber::Transcribe(const std::vector<float> &samples,
                                const WhisperOptions &options,
                                const std::atomic<bool> &cancel) const {
-  qwen3_asr::TranscriptionResult result;
-  result.finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::TranscriptionResult result;
+  result.finish_reason = omni_common::FinishReason::kStop;
   // Note (khazic): start of transcript, then for multilingual checkpoints the
   // language (when it resolves) and the transcribe task, then no timestamps.
   std::vector<int> prompt_ids = {start_of_transcript_id_};
@@ -459,7 +461,7 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
     // Note (khazic): a request cancelled between windows skips the next encoder
     // pass.
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const size_t start = window_index * kWindowSampleCount;
@@ -480,7 +482,7 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
     result.proposed_draft_token_count += window.proposed_draft_token_count;
     result.accepted_draft_token_count += window.accepted_draft_token_count;
     if (window.reached_token_limit) {
-      result.finish_reason = qwen3_asr::FinishReason::kLength;
+      result.finish_reason = omni_common::FinishReason::kLength;
     } else {
     }
   }
