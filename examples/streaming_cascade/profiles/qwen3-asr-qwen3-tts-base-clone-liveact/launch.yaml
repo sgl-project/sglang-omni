@@ -1,4 +1,4 @@
-# The qwen3-asr-qwen3-tts-base-clone cascade with a SoulX-LiveAct talking head: the agent's reply audio animates one portrait, 32 frames of 416x720 JPEG per 1.6 s chunk at 20 fps published as jpeg_frame, the picture held while the agent is silent; rendered by a worker started beforehand on port 9520 over two GPUs (examples/speech_avatar_workers/liveact_worker.py, torchrun --nproc_per_node=2).
+# The qwen3-asr-qwen3-tts-base-clone cascade with a SoulX-LiveAct talking head: the agent's reply audio animates one portrait, 32 frames of 416x720 JPEG per 1.6 s chunk at 20 fps published as jpeg_frame, the picture held while the agent is silent; rendered by a worker started beforehand on port 9520 over two GPUs (examples/speech_avatar_workers/liveact_worker.py, torchrun --nproc_per_node=2, --fp8-gemm --sp-cache heads --attention fa3 --vae-stream --vae-compile --cuda-graphs).
 config_cls: StreamingCascadePipelineConfig
 model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone-liveact
 
@@ -18,9 +18,9 @@ stages:
       # LiveAct's streaming block (generate.py --steam_audio): 8 latent frames, 32 video frames at 20 fps; its window reads 1.05 s of speech before the chunk and 0.1 s after it.
       chunk_ms: 1600
       lookahead_ms: 100
-      # A chunk renders in 1.52 s (p95 1.53 s) on two H200s with --fp8-gemm, JPEG encoding included, a Session's first one in 2.4 s (block 0 runs first); a reply starts this far past the frame the node reached, the render's budget for that first chunk.
-      render_lead_ms: 2600
-      # A 1.6 s chunk is long against the render lead: the frames up to a placed reply go out at once, so its first chunk starts on its first frame.
+      # With those flags a chunk renders in 1.19 s on two H100s and a Session's first one in 1.12 s (block 0 is run once at start); a reply starts this far past the frame the node reached, the render's budget for that first chunk. Measured through the cascade: 1050 ms leaves the latest frame on time to the millisecond, 1150 keeps 100 ms of margin (the authors' setup without those flags needs 2600).
+      render_lead_ms: 1150
+      # A 1.6 s chunk (0.8 s half block) is long against the render lead: the frames up to a placed reply go out at once, so its first chunk starts on its first frame.
       reply_starts_chunk: true
       # The model keeps the KV cache of one Session on its GPUs, so a worker holds one Session.
       sessions_per_worker: 1

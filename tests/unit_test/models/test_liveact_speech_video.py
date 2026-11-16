@@ -359,3 +359,81 @@ def test_an_interrupt_stops_liveact_at_the_next_chunk(talk):
     assert len(talk.worker.requests) == 1
     assert turns[last + 1 :] == [None] * (319 - last)
     assert all(frame.payload == b"" for frame in talk.frames[last + 1 : 320])
+
+
+def test_half_blocks_split_each_block_into_two_chunks():
+    info = liveact_worker.geometry_info(416, 720, half_blocks=True)
+    # 16 frames a chunk; the window reaches back to the block's 21 frames of speech before it, so 37 before a block's second half.
+    assert (
+        info["chunk_frames"],
+        info["context_samples"],
+        info["lookahead_samples"],
+    ) == (16, 37 * 800, 2 * 800)
+    units = [liveact_worker.model_unit(unit, True) for unit in range(6)]
+    assert units == [(0, None), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0)]
+    assert liveact_worker.model_unit(3, False) == (3, None)
+
+
+def test_a_first_half_reads_its_blocks_window_up_to_its_own_lookahead():
+    speech = np.arange(55 * 800, dtype=np.float32)
+    first = liveact_worker.model_window(1, speech, True)
+    second = liveact_worker.model_window(2, speech, True)
+    assert first.shape == second.shape == (55 * 800,)
+    # the first half's request window starts 16 frames later in the Session than its block's model window
+    np.testing.assert_array_equal(first[: 39 * 800], speech[16 * 800 :])
+    assert not first[39 * 800 :].any()
+    np.testing.assert_array_equal(second, speech)
+
+
+def _two_rank_memory_update(rank_caches, fs, conv):
+    """model_memory_sp.WanSelfAttention's update (update_cache=True) on the two ranks' sequence-split caches, as the authors wrote it."""
+    k0, k1 = rank_caches
+    compress = (
+        lambda x: conv(x.flatten(2).transpose(1, 2))
+        .view(x.shape[0], x.shape[2], x.shape[3], -1)
+        .permute(0, 3, 1, 2)
+    )
+    k1[:, :fs].copy_(compress(k1[:, : 5 * fs]))
+    k1[:, fs : 3 * fs].copy_(k1[:, 5 * fs : 7 * fs])
+    k0[:, 2 * fs : 3 * fs].copy_(compress(k0[:, 2 * fs : 7 * fs]))
+
+
+def test_head_split_memory_update_matches_the_two_rank_sequence_split_one():
+    torch = pytest.importorskip("torch")
+    liveact_sp = importlib.import_module("liveact_sp")
+    fs, heads, dim = 10, 4, 8
+    conv = torch.nn.Conv1d(
+        heads * dim,
+        heads * dim,
+        kernel_size=5,
+        stride=5,
+        groups=heads * dim,
+        bias=False,
+    )
+    torch.nn.init.normal_(conv.weight)
+    # the full window: memory m0..m5, then the previous block c0..c7, every frame fs tokens
+    full = torch.randn(1, 14 * fs, heads, dim)
+    # the authors' layout: rank r holds memory frames 3r..3r+2, then block frames 4r..4r+3
+    ranks = [
+        torch.cat(
+            [
+                full[:, 3 * r * fs : (3 * r + 3) * fs],
+                full[:, (6 + 4 * r) * fs : (10 + 4 * r) * fs],
+            ],
+            dim=1,
+        ).clone()
+        for r in range(2)
+    ]
+    with torch.no_grad():
+        _two_rank_memory_update(ranks, fs, conv)
+        expected = torch.cat([ranks[0][:, : 3 * fs], ranks[1][:, : 3 * fs]], dim=1)
+        for sp in (1, 2, 4):
+            per = heads // sp
+            for r in range(sp):
+                mine = full[:, :, r * per : (r + 1) * per].clone()
+                liveact_sp.update_memory(
+                    mine, fs, conv.weight[r * per * dim : (r + 1) * per * dim]
+                )
+                torch.testing.assert_close(
+                    mine[:, : 6 * fs], expected[:, :, r * per : (r + 1) * per]
+                )
