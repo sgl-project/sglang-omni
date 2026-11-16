@@ -174,37 +174,14 @@ Qwen3Decoder::Qwen3Decoder(const omni_common::Checkpoint &checkpoint,
                            std::string prefix, Qwen3DecoderConfig config)
     : checkpoint_(checkpoint), prefix_(std::move(prefix)), config_(config) {}
 
-Qwen3Decoder::Qwen3Decoder(const Qwen3Decoder &other,
-                           bool batch_single_row_projections)
-    : checkpoint_(other.checkpoint_), prefix_(other.prefix_),
-      config_(other.config_),
-      batch_single_row_projections_(batch_single_row_projections) {}
-
 std::string Qwen3Decoder::Name(const std::string &suffix) const {
   return prefix_.empty() ? suffix : prefix_ + "." + suffix;
 }
 
 mx::array Qwen3Decoder::Project(const mx::array &x, const std::string &prefix,
                                 bool tied_embedding) const {
-  mx::array input = x;
-  if (batch_single_row_projections_ && x.size() == x.shape(-1) &&
-      checkpoint_.Has(prefix + ".scales") &&
-      checkpoint_.Quantization(prefix).mode == "affine") {
-    // note (ZaneZhang-67): MLX 0.32.3's single-row affine kernel rounds
-    // differently from block verification. Batch only the projection, not KV
-    // positions, to retain the block kernel's arithmetic after a fallback.
-    input = mx::concatenate({x, x}, 1);
-  } else {
-  }
-  const mx::array output = tied_embedding
-                               ? checkpoint_.TiedProjection(input, prefix)
-                               : checkpoint_.Linear(input, prefix);
-  if (input.shape(1) != x.shape(1)) {
-    return mx::slice(output, {0, 0, 0},
-                     {x.shape(0), x.shape(1), output.shape(2)});
-  } else {
-    return output;
-  }
+  return tied_embedding ? checkpoint_.TiedProjection(x, prefix)
+                        : checkpoint_.Linear(x, prefix);
 }
 
 mx::array Qwen3Decoder::EmbedTokens(const mx::array &ids) const {

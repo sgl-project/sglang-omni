@@ -84,7 +84,6 @@ public:
   // table.
   Qwen3Decoder(const omni_common::Checkpoint &checkpoint, std::string prefix,
                Qwen3DecoderConfig config);
-  Qwen3Decoder(const Qwen3Decoder &other, bool batch_single_row_projections);
 
   // Token ids [1, length] to embeddings [1, length, hidden].
   mlx::core::array EmbedTokens(const mlx::core::array &ids) const;
@@ -155,7 +154,6 @@ private:
   const omni_common::Checkpoint &checkpoint_;
   std::string prefix_;
   Qwen3DecoderConfig config_;
-  bool batch_single_row_projections_ = false;
 };
 
 } // namespace qwen3_asr
