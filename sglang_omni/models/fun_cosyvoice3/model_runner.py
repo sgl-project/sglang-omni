@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import AbstractContextManager, nullcontext
 from queue import Queue
 
@@ -53,6 +54,9 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     model: FunCosyVoice3SGLangModel
     # The DSpark worker verifies against this runner's own sampler, penalty included.
     speculative_verifies_repetition_penalty: bool = True
+    supports_speculative_async_decode: bool = (
+        os.environ.get("COSYVOICE3_PROTO_OVERLAP") == "1"
+    )
 
     def __init__(
         self,

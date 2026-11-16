@@ -58,6 +58,11 @@ else:
 
 logger = logging.getLogger(__name__)
 
+# note (measurement only): the DSpark step reads its repetition window, presence
+# mask and output length from host output_ids, which lag one round under overlap,
+# so this switch gives the speed ceiling of overlap, not the stage's distribution.
+PROTO_OVERLAP = os.environ.get("COSYVOICE3_PROTO_OVERLAP") == "1"
+
 _ENGINE_HEADROOM_BYTES = 0
 
 
@@ -137,7 +142,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             "torch_compile_max_bs": 32,
             "dtype": dtype,
             "disable_cuda_graph": False,
-            "disable_overlap_schedule": True,
+            "disable_overlap_schedule": not PROTO_OVERLAP,
             "enable_torch_compile": False,
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
@@ -359,7 +364,10 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
     def extra_scheduler_kwargs(self) -> SchedulerExtras[CosyVoice3SGLangRequestData]:
         # note (ratish): the vocoder shares this process and card on its own stream, and
         # at equal priority the AR's decode replays wait behind its kernels.
-        return {"should_run_top_priority_stream": current_platform.is_cuda()}
+        return {
+            "should_run_top_priority_stream": current_platform.is_cuda(),
+            "enable_async_decode": PROTO_OVERLAP and self.has_draft_model,
+        }
 
     def infra_kwargs(self) -> InfrastructureOptions:
         if not self.has_draft_model:
@@ -373,6 +381,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         return {
             "supports_speculative_decoding": True,
             "speculative_worker_class": FunCosyVoice3DSparkWorker,
+            "enable_async_decode": PROTO_OVERLAP,
         }
 
     def make_abort_callback(self) -> Callable[[str], None]:
@@ -384,3 +393,4 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         model_runner: FunCosyVoice3ModelRunner,
     ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)
+        logger.info("Fun-CosyVoice3 speculative overlap: %s", scheduler.enable_overlap)
