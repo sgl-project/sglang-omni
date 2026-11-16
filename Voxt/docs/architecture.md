@@ -110,6 +110,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     helper's output.* (helperio.go; Auralink's)
 │   ├── appbundle/        the version of the app bundle on disk (Info.plist), to tell an update      (leaf)
 │   │                     installed while the app runs (updates.go, helper.Config.Stale)
+│   ├── updates/          the update backend of a build: its signed feed, GitHub, or none             (leaf)
 │   ├── overlay/
 │   │   ├── layout/       the overlay's geometry as numbers: the pill's, the live text's, a notice's and
 │   │   │                 the answer card's sizes (Voxt's), the shadow's margin, the frame anchored to an
@@ -157,7 +158,7 @@ compose ──▶ lang              deliver ──▶ helper/proto      hotkey �
 appctx ──▶ helper/proto, hotkey, settings                    dict ──▶ store
 appicons ──▶ helper/proto        outmute ──▶ helper/proto
 actnow ──▶ models (HubIn: VoxtNew's own model folder), settings
-core, settings, helper/proto, i18n, lang, permission, macx, vad, appbundle, models, resident, secrets ──▶ (nothing internal)
+core, settings, helper/proto, i18n, lang, permission, macx, vad, appbundle, updates, models, resident, secrets ──▶ (nothing internal)
 actnow, models, local, uitext ──▶ github.com/hehehai/actnowkit (archtest: actnowUsers; its conformance package only in tests)
 icons ──▶ mygo/ui
 ```
