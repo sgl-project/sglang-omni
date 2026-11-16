@@ -104,7 +104,7 @@
       ],
       "show_keep_alive": true,
       "show_usage": true,
-      "advanced": true,
+      "advanced": false,
       "api_options": [
         {
           "title": "Chat Completions",
@@ -148,7 +148,6 @@
         "format": "纯文本",
         "verbosity": "默认",
         "usage": true,
-        "advanced": true,
         "api": "Chat Completions"
       }
     },
@@ -169,7 +168,6 @@
         "format": "纯文本",
         "verbosity": "默认",
         "usage": true,
-        "advanced": true,
         "api": "Chat Completions"
       }
     }

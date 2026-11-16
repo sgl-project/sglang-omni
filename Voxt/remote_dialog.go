@@ -73,8 +73,8 @@ func remoteProviderDialogView(c *ui.Context, state *remoteDialogViewState, actio
 		if state.Generation != nil {
 			remoteGenerationFields(c, state.Generation, &local.gen)
 		}
-		if state.Error != "" {
-			notice(c, "remote-dlg-err", noticeError, state.Error, state.ErrorMore, nil, func() { local.err, local.errMore = "", "" })
+		if local.err != "" {
+			notice(c, "remote-dlg-err", noticeError, local.err, local.errMore, nil, func() { local.err, local.errMore = "", "" })
 		}
 	}, func() {
 		if ui.Button(c.Key("remote-dlg-test"), i18n.T("Test connection")).Disabled(!state.CanTest).Shrink(0).Clicked() {

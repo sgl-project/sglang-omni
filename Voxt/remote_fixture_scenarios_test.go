@@ -62,7 +62,7 @@ func remoteFixtureScenarios() []meetingFixtureScenario {
 	addDialog("remote-dialog-loading", func(input *remoteDialogStateInput) { input.Dialog.test = providerTest{running: true} })
 	addDialog("remote-dialog-saving", func(input *remoteDialogStateInput) { input.Dialog.saving = true })
 	addDialog("remote-dialog-normal", func(input *remoteDialogStateInput) {})
-	addDialog("remote-dialog-error", func(input *remoteDialogStateInput) {})
+	addDialog("remote-dialog-error", func(input *remoteDialogStateInput) { input.Dialog.gen.advanced = false })
 	scenarios[len(scenarios)-1].err = &llm.Error{Code: llm.CodeConfig}
 	addDialog("remote-dialog-unsaved", func(input *remoteDialogStateInput) {
 		input.Dialog.endpoint, input.Unsaved = "changed", true

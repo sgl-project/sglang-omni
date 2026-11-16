@@ -170,6 +170,66 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return access.LastRead
 		}
 		return i18n.T("Other programs")
+	case "remote":
+		remote := state.Remote
+		if remote.BackBar != nil {
+			return remote.BackBar.Text
+		}
+		for _, group := range remote.Cards.Groups {
+			for _, card := range group.Cards {
+				if card.Test != nil && card.Test.State == "failure" {
+					return card.Test.Text
+				}
+				if card.Missing != "" {
+					return card.StatusText
+				}
+				if card.KeyStatus == remoteStatusWarning {
+					return card.KeyText
+				}
+				if card.Name != "" {
+					return card.Name
+				}
+			}
+		}
+		return remote.Wait.Selected
+	case "remote-dialog":
+		dialog := state.RemoteDialog
+		if dialog.ChatGPT != nil {
+			if dialog.ChatGPT.Error != "" {
+				return dialog.ChatGPT.Error
+			}
+			if dialog.ChatGPT.Running {
+				return i18n.T("Waiting for the browser…")
+			}
+			if dialog.ChatGPT.Email != "" {
+				return dialog.ChatGPT.Email
+			}
+		}
+		if dialog.Error != "" {
+			return dialog.Error
+		}
+		if dialog.Test.Text != "" {
+			return dialog.Test.Text
+		}
+		if dialog.Key != nil && dialog.Key.Warning != "" {
+			return dialog.Key.Warning
+		}
+		return dialog.Subtitle
+	case "remote-debug":
+		debug := state.RemoteDebug
+		if !debug.Ready {
+			return i18n.T("Set up a language model first.")
+		}
+		if debug.Running {
+			return i18n.T("Waiting for the answer…")
+		}
+		if debug.Result != nil {
+			if debug.Result.Error != "" {
+				return debug.Result.Error
+			}
+			return debug.Result.Answer
+		}
+		return debug.Form.Prompt
 	default:
 		return ""
 	}
@@ -189,6 +249,9 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.historyUI.query, host.historyUI.sel = "stale", "stale"
 	host.historySettingsUI.exportSel = "stale"
 	host.historyAccessUI.listOpen = true
+	host.remoteWaitUI.llmWaitSel = "stale"
+	host.remoteDialogUI.endpoint = "stale"
+	host.remoteDebugUI.prompt = "stale"
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -201,7 +264,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 		t.Fatalf("next fixture does not show %q", want)
 	}
 	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" ||
-		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen {
+		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen ||
+		host.remoteWaitUI.llmWaitSel == "stale" || host.remoteDialogUI.endpoint == "stale" || host.remoteDebugUI.prompt == "stale" {
 		t.Fatal("fixture switch kept local UI state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {

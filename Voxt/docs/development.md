@@ -60,12 +60,12 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 
 ## Change fixture-backed view state and actions
 
-The [UI development guide](ui-development.md) explains how to render fixtures and change meeting or history views without the helper or models. Feature-side changes use the same boundary:
+The [UI development guide](ui-development.md) explains how to render fixtures and change meeting, history, or remote views without the helper or models. Feature-side changes use the same boundary:
 
-1. Add display data to the input and result of the meeting builders or of `buildHistoryViewState`, `buildHistorySettingsViewState`, and `buildHistoryAccessViewState`. Keep domain types and I/O out of the view state.
-2. Add a scenario to `meeting_fixture_scenarios_test.go` or `history_fixture_scenarios_test.go` and regenerate the fixtures with `VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .`.
-3. For a new user intent, add the method to the area's actions in `meeting_actions.go` or `history_actions.go`, implement it on `app`, and record it on `meetingDemoHost`. Views call one intent instead of assembling a business workflow.
-4. Add a click test to `TestMeetingDemoActionControls` or `TestHistoryDemoActionControls`, then run `go test ./internal/archtest` and `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage)$' .`.
+1. Add display data to the input and result of the meeting builders, the history builders, or `buildRemotePageViewState`, `buildRemoteDialogViewState`, and `buildLLMDebugViewState`. Keep domain types and I/O out of the view state.
+2. Add a scenario to the area's fixture scenario file and regenerate the fixtures with `VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .`.
+3. For a new user intent, add the method to the area's `*_actions.go` file, implement it on `app`, and record it on `meetingDemoHost`. Views call one intent instead of assembling a business workflow.
+4. Add a click test to the area's demo action test, then run `go test ./internal/archtest` and `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage|TestRemoteFixtureCoverage)$' .`.
 
 - [docs/architecture.md](architecture.md): packages, threading, the session, the runtimes, data on disk, tests.
 - [docs/plan.md](plan.md): what the app is and its milestones.

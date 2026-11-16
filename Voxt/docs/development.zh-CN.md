@@ -60,12 +60,12 @@ scripts/mac.sh scripts/mac-regress.sh   # Mac 上的真实模型：运行时、�
 
 ## 修改 fixture 驱动的 view state 和 actions
 
-[UI 开发指南](ui-development.zh-CN.md) 说明了如何在不使用辅助进程和模型的情况下渲染 fixture、修改会议或历史视图。功能侧改动遵守同一条边界：
+[UI 开发指南](ui-development.zh-CN.md) 说明了如何在不使用辅助进程和模型的情况下渲染 fixture、修改会议、历史或语言模型视图。功能侧改动遵守同一条边界：
 
-1. 把显示数据加入会议构造器，或者 `buildHistoryViewState`、`buildHistorySettingsViewState`、`buildHistoryAccessViewState` 的输入和结果。view state 里不放领域类型，也不做 I/O。
-2. 在 `meeting_fixture_scenarios_test.go` 或 `history_fixture_scenarios_test.go` 中加入场景，然后执行 `VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .` 重新生成 fixture。
-3. 新增用户意图时，在 `meeting_actions.go` 或 `history_actions.go` 中加入所属区域的 action，在 `app` 上实现，并在 `meetingDemoHost` 上记录。视图只调用一个意图，不在视图里拼装业务流程。
-4. 在 `TestMeetingDemoActionControls` 或 `TestHistoryDemoActionControls` 中加入点击测试，然后运行 `go test ./internal/archtest` 和 `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage)$' .`。
+1. 把显示数据加入会议或历史构造器，或者 `buildRemotePageViewState`、`buildRemoteDialogViewState`、`buildLLMDebugViewState` 的输入和结果。view state 里不放领域类型，也不做 I/O。
+2. 在所属区域的 fixture 场景文件中加入场景，然后执行 `VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .` 重新生成 fixture。
+3. 新增用户意图时，在所属区域的 `*_actions.go` 中加入 action，在 `app` 上实现，并在 `meetingDemoHost` 上记录。视图只调用一个意图，不在视图里拼装业务流程。
+4. 在所属区域的 demo action 测试中加入点击测试，然后运行 `go test ./internal/archtest` 和 `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage|TestRemoteFixtureCoverage)$' .`。
 
 - [docs/architecture.md](architecture.md)：包结构、线程、会话、运行时、磁盘上的数据、测试。
 - [docs/plan.md](plan.md)：这个 app 是什么，以及里程碑。
