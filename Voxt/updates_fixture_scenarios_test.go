@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"time"
 )
 
@@ -55,6 +56,7 @@ func updatesFixtureScenarios() []meetingFixtureScenario {
 		{name: "error-generic", err: errors.New("fixture release list failed")},
 		{name: "error-rate-limit", err: errRateLimited},
 		{name: "error-timeout", err: context.DeadlineExceeded},
+		{name: "error-net-timeout", err: &net.DNSError{IsTimeout: true}},
 	} {
 		addRelease(scenario.name, func(input *releaseViewStateInput) {
 			input.Done, input.Err = true, scenario.err

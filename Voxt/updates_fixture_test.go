@@ -17,7 +17,7 @@ func TestUpdatesFixtureCoverage(t *testing.T) {
 		"updates-about-check-only", "updates-about-installed", "updates-about-beta", "updates-about-beta-off",
 		"updates-release-checking", "updates-release-available", "updates-release-available-no-notes",
 		"updates-release-up-to-date", "updates-release-error-generic", "updates-release-error-rate-limit",
-		"updates-release-error-timeout",
+		"updates-release-error-timeout", "updates-release-error-net-timeout",
 	} {
 		required[name] = true
 	}
