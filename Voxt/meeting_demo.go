@@ -31,6 +31,7 @@ type meetingDemoHost struct {
 	historyUI         historyLocalUI
 	historySettingsUI historySettingsLocalUI
 	historyAccessUI   historyAccessLocalUI
+	homeUI            homeLocalUI
 	overlayLook       settings.Overlay
 }
 
@@ -148,6 +149,10 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		host.historyAccessUI = historyAccessLocalUI{
 			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
 		}
+	}
+	host.homeUI = homeLocalUI{}
+	if fixture.state.Home != nil {
+		fixture.state.Home.TryAvailable = false
 	}
 }
 
@@ -314,3 +319,16 @@ func (host *meetingDemoHost) copyHistoryAccessCommand() {
 	host.record("copyHistoryAccessCommand")
 }
 func (host *meetingDemoHost) openHistoryAccessDocs() { host.record("openHistoryAccessDocs") }
+
+func (host *meetingDemoHost) openHomeGuide()   { host.record("openHomeGuide") }
+func (host *meetingDemoHost) openHomeHistory() { host.record("openHomeHistory") }
+func (host *meetingDemoHost) openHomeRecent(id string) {
+	host.record("openHomeRecent %s", id)
+}
+func (host *meetingDemoHost) copyHomeRecent(id string) {
+	host.record("copyHomeRecent %s", id)
+}
+func (host *meetingDemoHost) addHomeShortcut() { host.record("addHomeShortcut") }
+func (host *meetingDemoHost) fixHomeReadiness(fix string) {
+	host.record("fixHomeReadiness %s", fix)
+}

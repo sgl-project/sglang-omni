@@ -115,7 +115,7 @@ func homeFixtureScenarios() []meetingFixtureScenario {
 		})
 	}
 	add("home-shortcut-waiting", func(_ *homeViewStateInput, readiness *homeReadinessInput) {
-		readiness.HotkeysInstalled = false
+		readiness.HotkeysInstalled, readiness.Accessibility = false, false
 	})
 	add("home-shortcut-carbon", func(input *homeViewStateInput, readiness *homeReadinessInput) {
 		input.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Control+Option+A", Trigger: settings.TriggerTap}}

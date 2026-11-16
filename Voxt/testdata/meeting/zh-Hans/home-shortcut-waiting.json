@@ -11,7 +11,18 @@
       "keys": "右 ⌥",
       "after": " 开始"
     },
-    "missing": null,
+    "missing": [
+      {
+        "key": "home-access",
+        "title": "辅助功能",
+        "ok": false,
+        "warn": false,
+        "text": "没有辅助功能权限时，结果只会复制供你粘贴，右 ⌥ 这样的快捷键也不能用。",
+        "kind": "warn",
+        "action": "打开权限页",
+        "fix": "permissions"
+      }
+    ],
     "ready": [
       {
         "key": "home-asr",
@@ -36,16 +47,6 @@
       {
         "key": "home-mic",
         "title": "麦克风",
-        "ok": true,
-        "warn": false,
-        "text": "已允许",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      },
-      {
-        "key": "home-access",
-        "title": "辅助功能",
         "ok": true,
         "warn": false,
         "text": "已允许",

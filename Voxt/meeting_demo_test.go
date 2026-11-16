@@ -170,6 +170,29 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return access.LastRead
 		}
 		return i18n.T("Other programs")
+	case "home":
+		home := state.Home
+		if home.Error != "" {
+			return home.Error
+		}
+		if !home.KeepHistory {
+			return i18n.T("History is off, so nothing is counted.")
+		}
+		for _, readiness := range home.Ready {
+			if readiness.Warn {
+				return readiness.Text
+			}
+		}
+		for _, readiness := range home.Missing {
+			return readiness.Text
+		}
+		if len(home.Recent) > 0 {
+			return home.Recent[0].Row.Title
+		}
+		if home.Read {
+			return i18n.T("Results appear here after you use a shortcut.")
+		}
+		return i18n.T("Home")
 	default:
 		return ""
 	}
@@ -189,6 +212,7 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.historyUI.query, host.historyUI.sel = "stale", "stale"
 	host.historySettingsUI.exportSel = "stale"
 	host.historyAccessUI.listOpen = true
+	host.homeUI.tryOn, host.homeUI.block = true, &sessionNotice{}
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -201,7 +225,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 		t.Fatalf("next fixture does not show %q", want)
 	}
 	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" ||
-		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen {
+		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen ||
+		host.homeUI.tryOn || host.homeUI.block != nil {
 		t.Fatal("fixture switch kept local UI state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {

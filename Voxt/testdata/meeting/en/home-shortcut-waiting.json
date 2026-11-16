@@ -11,7 +11,18 @@
       "keys": "Right ⌥",
       "after": " to start"
     },
-    "missing": null,
+    "missing": [
+      {
+        "key": "home-access",
+        "title": "Accessibility",
+        "ok": false,
+        "warn": false,
+        "text": "Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
+        "kind": "warn",
+        "action": "Open Permissions",
+        "fix": "permissions"
+      }
+    ],
     "ready": [
       {
         "key": "home-asr",
@@ -36,16 +47,6 @@
       {
         "key": "home-mic",
         "title": "Microphone",
-        "ok": true,
-        "warn": false,
-        "text": "Allowed",
-        "kind": "",
-        "action": "",
-        "fix": ""
-      },
-      {
-        "key": "home-access",
-        "title": "Accessibility",
         "ok": true,
         "warn": false,
         "text": "Allowed",
