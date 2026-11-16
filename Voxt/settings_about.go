@@ -313,7 +313,7 @@ func (a *app) aboutSettings(c *ui.Context) {
 		ui.Link(c, i18n.T("Licence"), "https://creativecommons.org/licenses/by/4.0/").FontSize(px(t, fsCaption))
 	})
 
-	a.updateSettingsSection(c) // updates.go
+	updateSettingsSection(c, a.updatesSettingsModel(), a, &a.updUI) // updates_view.go
 
 	sectionTitle(c, i18n.T("Self-check"))
 	settingRow(c, "about-check", i18n.T("Check Voxt"), "", func() {
