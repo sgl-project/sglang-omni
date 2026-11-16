@@ -1,6 +1,6 @@
 # Develop views with fixtures
 
-Use this guide to change a meeting or history view without starting Voxt's helper, loading a model, granting microphone permission, or opening Voxt's data directory.
+Use this guide to change a meeting, history, or updates view without starting Voxt's helper, loading a model, granting microphone permission, or opening Voxt's data directory.
 
 ## Open the first fixture
 
@@ -36,27 +36,28 @@ To render fixtures without a window, use [the screenshot command](#render-screen
 
 ## Change a view
 
-The meeting views are `meetings_page.go`, `meetings_detail.go`, `meetings_playback.go`, `meeting_overlay.go`, and `meeting_overlay_view.go`. History uses `history_page.go`, `history_detail.go`, `history_menu.go`, `history_retry.go`, `history_settings.go`, `history_export.go`, and `history_access.go`. These files read view state, call actions, and own local widget state such as scroll position and open menus. They do not read stores, snapshots, settings, or `app`.
+The meeting views are `meetings_page.go`, `meetings_detail.go`, `meetings_playback.go`, `meeting_overlay.go`, and `meeting_overlay_view.go`. History uses `history_page.go`, `history_detail.go`, `history_menu.go`, `history_retry.go`, `history_settings.go`, `history_export.go`, and `history_access.go`. Updates uses `updates_view.go` for Settings → About and the release dialog. These files read view state, call actions, and own local widget state such as scroll position and open menus. They do not read stores, snapshots, settings, or `app`.
 
 The matching logic files build view state and implement actions:
 
 - `meetings_view_state.go` and `meeting_overlay_state.go` build meeting display data. `meetings_controller.go`, `meetings_detail_controller.go`, `meetings_playback_controller.go`, and `meeting_overlay_window.go` own store reads, detail updates, audio work, and native resources.
 - `history_view_state.go`, `history_settings_view_state.go`, and `history_access_view_state.go` build history display data. The history controllers own store reads, retries, recording jobs, exports, and the access socket.
-- `meeting_actions.go` and `history_actions.go` define user intents. `app` implements them in production. `meetingDemoHost` records them in the demo.
+- `updates_view_state.go` builds Settings → About and release-dialog display data. `updates.go` and `updates_github.go` own updater I/O, release checks, watchers, and cards.
+- `meeting_actions.go`, `history_actions.go`, and `updates_actions.go` define user intents. `app` implements them in production. `meetingDemoHost` records them in the demo.
 
 Keep dimensions, colors, and widget choices in the view files. Run `go tool mygo vet .` and `go test ./internal/archtest` after moving code.
 
 ## Add or change fixture data
 
-Do not edit fixture JSON by hand. Change the production builder and its scenario in `meeting_fixture_scenarios_test.go` or `history_fixture_scenarios_test.go`, then regenerate both languages:
+Do not edit fixture JSON by hand. Change the production builder and its scenario in `meeting_fixture_scenarios_test.go`, `history_fixture_scenarios_test.go`, or `updates_fixture_scenarios_test.go`, then regenerate both languages:
 
 ```sh
 VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 ```
 
-`TestMeetingViewStateGolden` builds every fixture through the production view-state builders. `TestMeetingFixtureCoverage` and `TestHistoryFixtureCoverage` derive required states and problem codes from the domain declarations and fail when a fixture is missing.
+`TestMeetingViewStateGolden` builds every fixture through the production view-state builders. `TestMeetingFixtureCoverage` and `TestHistoryFixtureCoverage` derive required states and problem codes from the domain declarations. `TestUpdatesFixtureCoverage` enumerates the updates display and release-check error branches. These tests fail when a fixture is missing.
 
-If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to `meeting_actions.go` or `history_actions.go`, implement it on `app`, record it on `meetingDemoHost`, and add a click test to `TestMeetingDemoActionControls` or `TestHistoryDemoActionControls`.
+If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to `meeting_actions.go`, `history_actions.go`, or `updates_actions.go`, implement it on `app`, record it on `meetingDemoHost`, and add a click test to `TestMeetingDemoActionControls`, `TestHistoryDemoActionControls`, or `TestUpdatesDemoActionControls`.
 
 ## Add the next area or a fixture-backed page
 
@@ -85,11 +86,11 @@ The test writes one PNG per fixture as `<locale>-<scenario>.png` and checks each
 Check fixture switching and control-to-action wiring:
 
 ```sh
-go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls)$' .
-go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History)Demo' .
+go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|UpdatesDemoActionControls)$' .
+go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History|Updates)Demo' .
 ```
 
-The first command clicks every action-bearing meeting and history control and the local cancellation controls, then compares the exact recorded calls. It covers menus, confirmation dialogs, playback, search, settings, exports, cleanup, and Privacy access. The second command also compiles the enabled demo entry point.
+The first command clicks every action-bearing meeting, history, and updates control and the local cancellation controls, then compares the exact recorded calls. It covers menus, confirmation dialogs, playback, search, settings, exports, cleanup, Privacy access, update preferences, and the release dialog. The second command also compiles the enabled demo entry point.
 
 These tests use `ui.Tester`. They need no window, helper binary, model, microphone, network, or Voxt data directory. They also run on Linux.
 
