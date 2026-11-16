@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Builds the native Qwen3-ASR runtime into a self-contained directory.
 # Note (XXXXRT666): MLX is built from a pinned main commit, since no release has
-# ml-explore/mlx#4791 yet; the build is kept per commit under $work/mlx.
+# ml-explore/mlx#4791 yet, with scripts/mlx-patches applied in name order: each
+# is the MLX source change of the ml-explore/mlx pull request its name starts
+# with. The build is kept per commit and patch set under $work/mlx.
 set -euo pipefail
 
 output="${1:?usage: build_runtime.sh <output-directory> [<work-directory>]}"
@@ -13,7 +15,15 @@ command -v uv >/dev/null || { echo "uv is required" >&2; exit 1; }
 
 deployment_target="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
 mlx_commit=fc344c986c4169d99f76b5d95ae6b4a58a359a63
-mlx_prefix="$work/mlx/$mlx_commit-macos$deployment_target"
+shopt -s nullglob
+mlx_patches=("$native_dir"/scripts/mlx-patches/*.patch)
+shopt -u nullglob
+if [[ ${#mlx_patches[@]} -gt 0 ]]; then
+  mlx_patch_set="$(cat "${mlx_patches[@]}" | shasum -a 256 | cut -c 1-12)"
+else
+  mlx_patch_set=unpatched
+fi
+mlx_prefix="$work/mlx/$mlx_commit-$mlx_patch_set-macos$deployment_target"
 
 mkdir -p "$work"
 uv venv -q -p 3.12 --allow-existing "$work/venv"
@@ -24,7 +34,12 @@ export PATH="$work/venv/bin:$PATH"
 if [[ ! -f "$mlx_prefix/share/cmake/MLX/MLXConfig.cmake" ]]; then
   git init -q "$work/mlx-source"
   git -C "$work/mlx-source" fetch -q --depth 1 https://github.com/ml-explore/mlx.git "$mlx_commit"
-  git -C "$work/mlx-source" checkout -q --detach FETCH_HEAD
+  git -C "$work/mlx-source" checkout -q -f --detach FETCH_HEAD
+  git -C "$work/mlx-source" clean -q -f -d
+  for mlx_patch in ${mlx_patches[@]+"${mlx_patches[@]}"}; do
+    git -C "$work/mlx-source" apply "$mlx_patch"
+  done
+  rm -rf "$work/mlx-build"
   cmake -S "$work/mlx-source" -B "$work/mlx-build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=ON -DMLX_BUILD_TESTS=OFF -DMLX_BUILD_EXAMPLES=OFF \
     -DMLX_BUILD_BENCHMARKS=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF \

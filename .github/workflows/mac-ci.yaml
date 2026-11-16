@@ -133,12 +133,12 @@ jobs:
           key: voxt-native-ccache-${{ env.DEVELOPER_DIR }}-${{ github.run_id }}
           restore-keys: voxt-native-ccache-${{ env.DEVELOPER_DIR }}-
 
-      # build_runtime.sh builds MLX from the commit it pins, Metal kernels included, which ccache does not keep: this keeps the installed build.
+      # build_runtime.sh builds MLX from the commit and patches it pins, Metal kernels included, which ccache does not keep: this keeps the installed build.
       - name: Restore the MLX build
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/runtime-build/mlx
-          key: voxt-native-mlx-${{ env.DEVELOPER_DIR }}-${{ hashFiles('sglang_omni_mlx/native/scripts/build_runtime.sh') }}
+          key: voxt-native-mlx-${{ env.DEVELOPER_DIR }}-${{ hashFiles('sglang_omni_mlx/native/scripts/build_runtime.sh', 'sglang_omni_mlx/native/scripts/mlx-patches/**') }}
 
       - name: Build the runtime and checkpoint-free tests
         env:
