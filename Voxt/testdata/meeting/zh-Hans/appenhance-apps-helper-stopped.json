@@ -136,6 +136,7 @@
         "bundle_id": "com.tinyspeck.slackmacgap",
         "name": "Slack"
       },
+      "app_name": "Slack",
       "empty": false,
       "has_bundle_id": true,
       "front_text": "前台：Slack",
@@ -155,6 +156,7 @@
       "error": "辅助进程没有运行，只能用 Bundle ID 添加 App。",
       "rows": null,
       "has_catalog": false,
+      "no_matches": false,
       "query": "",
       "bundle_input": ""
     }

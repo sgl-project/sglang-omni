@@ -137,6 +137,7 @@
         "bundle_id": "com.tinyspeck.slackmacgap",
         "name": "Slack"
       },
+      "app_name": "Slack",
       "empty": false,
       "has_bundle_id": true,
       "front_text": "Frontmost: Slack",
@@ -153,45 +154,9 @@
       "group_id": "g-chat",
       "title": "Add apps to Team chat",
       "loading": false,
-      "rows": [
-        {
-          "ref": {
-            "bundle_id": "com.google.Chrome",
-            "name": "Google Chrome",
-            "path": "/fixtures/Chrome.app"
-          },
-          "running": true,
-          "member": false
-        },
-        {
-          "ref": {
-            "bundle_id": "com.tinyspeck.slackmacgap",
-            "name": "Slack",
-            "path": "/fixtures/Slack.app"
-          },
-          "running": true,
-          "member": true
-        },
-        {
-          "ref": {
-            "bundle_id": "com.apple.Safari",
-            "name": "Safari",
-            "path": "/fixtures/Safari.app"
-          },
-          "running": false,
-          "member": false
-        },
-        {
-          "ref": {
-            "bundle_id": "org.mozilla.firefox",
-            "name": "Firefox",
-            "path": "/fixtures/Firefox.app"
-          },
-          "running": false,
-          "member": false
-        }
-      ],
+      "rows": [],
       "has_catalog": true,
+      "no_matches": true,
       "query": "no such app",
       "bundle_input": ""
     }

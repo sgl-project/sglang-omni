@@ -136,6 +136,7 @@
         "bundle_id": "com.tinyspeck.slackmacgap",
         "name": "Slack"
       },
+      "app_name": "Slack",
       "empty": false,
       "has_bundle_id": true,
       "front_text": "Frontmost: Slack",
@@ -155,6 +156,7 @@
       "error": "The helper is not running. Add an app by its bundle ID instead.",
       "rows": null,
       "has_catalog": false,
+      "no_matches": false,
       "query": "",
       "bundle_input": ""
     }

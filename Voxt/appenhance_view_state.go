@@ -83,12 +83,15 @@ type appEnhancementGroupDetail struct {
 
 type appEnhancementPreview struct {
 	App           appEnhancementIconRef `json:"app"`
+	AppName       string                `json:"app_name"`
 	Empty         bool                  `json:"empty"`
 	HasBundleID   bool                  `json:"has_bundle_id"`
 	FrontText     string                `json:"front_text"`
 	Browser       bool                  `json:"browser"`
 	Address       string                `json:"address,omitempty"`
 	AddressStatus string                `json:"address_status"`
+	AddressHost   string                `json:"address_host,omitempty"`
+	AddressPath   string                `json:"address_path,omitempty"`
 	Matched       bool                  `json:"matched"`
 	MatchSource   string                `json:"match_source"`
 	MatchPattern  string                `json:"match_pattern,omitempty"`
@@ -113,6 +116,7 @@ type appEnhancementAppsDialog struct {
 	Error       string                    `json:"error,omitempty"`
 	Rows        []appEnhancementAppChoice `json:"rows"`
 	HasCatalog  bool                      `json:"has_catalog"`
+	NoMatches   bool                      `json:"no_matches"`
 	Query       string                    `json:"query"`
 	BundleInput string                    `json:"bundle_input"`
 }
@@ -221,7 +225,7 @@ func buildAppEnhancementViewState(translator *i18n.Translator, input appEnhancem
 		detail := buildAppEnhancementGroupDetail(translator, *selected, detailInput)
 		state.Detail = &detail
 	}
-	state.Preview = buildAppEnhancementPreview(translator, input, selected, match)
+	state.Preview = buildAppEnhancementPreview(translator, input, match, state.Detail)
 	if input.AppsOpen && selected != nil {
 		apps := buildAppEnhancementAppsDialog(translator, input, *selected)
 		state.Apps = &apps
@@ -337,14 +341,14 @@ func buildAppEnhancementAutoKey(translator *i18n.Translator, current string, inp
 	return state
 }
 
-func buildAppEnhancementPreview(translator *i18n.Translator, input appEnhancementViewStateInput, selected *appctx.Group, match appctx.Match) appEnhancementPreview {
+func buildAppEnhancementPreview(translator *i18n.Translator, input appEnhancementViewStateInput, match appctx.Match, detail *appEnhancementGroupDetail) appEnhancementPreview {
 	app := input.PreviewApp
 	name := app.Name
 	if name == "" {
 		name = app.BundleID
 	}
 	state := appEnhancementPreview{
-		App: appEnhancementIconRef{BundleID: app.BundleID, Name: name}, Empty: name == "", HasBundleID: app.BundleID != "",
+		App: appEnhancementIconRef{BundleID: app.BundleID, Name: name}, AppName: app.Name, Empty: name == "", HasBundleID: app.BundleID != "",
 		Browser: appctx.IsBrowser(app.BundleID, input.CustomBrowsers), CanRefresh: app.BundleID != "", AddressStatus: "none",
 	}
 	if state.Empty {
@@ -361,6 +365,7 @@ func buildAppEnhancementPreview(translator *i18n.Translator, input appEnhancemen
 			if address, ok := appctx.ParseAddress(input.Preview.url); ok {
 				state.Address = address.String()
 				state.AddressStatus = "address"
+				state.AddressHost, state.AddressPath = address.Host, address.Path
 			} else {
 				state.Address = input.Preview.url
 				state.AddressStatus = "raw-address"
@@ -380,21 +385,31 @@ func buildAppEnhancementPreview(translator *i18n.Translator, input appEnhancemen
 	} else {
 		state.MatchText = translator.T("No group matches, so only the features' own rules apply.")
 	}
-	if selected == nil || !state.HasBundleID {
-		return state
+	appEnhancementPreviewActionsFor(translator, &state, detail)
+	return state
+}
+
+func appEnhancementPreviewActionsFor(translator *i18n.Translator, state *appEnhancementPreview, detail *appEnhancementGroupDetail) {
+	state.AddApp, state.AddAppLabel, state.AddSite, state.AddSiteLabel = false, "", false, ""
+	if detail == nil || !state.HasBundleID {
+		return
 	}
-	state.AddApp = !selected.HasApp(app.BundleID)
+	state.AddApp = !slices.ContainsFunc(detail.Apps, func(app appEnhancementAppRow) bool {
+		return strings.EqualFold(app.Ref.BundleID, state.App.BundleID)
+	})
 	if state.AddApp {
-		state.AddAppLabel = translator.T("Add %s to %s", app.Name, selected.Name)
+		state.AddAppLabel = translator.T("Add %s to %s", state.AppName, detail.Name)
 	}
-	address, hasAddress := appctx.ParseAddress(input.Preview.url)
-	state.AddSite = hasAddress && state.Browser && input.Preview.app == app && !slices.ContainsFunc(selected.URLs, func(pattern string) bool {
-		return appctx.MatchPattern(pattern, address)
+	if state.AddressStatus != "address" || !state.Browser {
+		return
+	}
+	address := appctx.Address{Host: state.AddressHost, Path: state.AddressPath}
+	state.AddSite = !slices.ContainsFunc(detail.URLs, func(pattern appEnhancementURLRow) bool {
+		return appctx.MatchPattern(pattern.Text, address)
 	})
 	if state.AddSite {
-		state.AddSiteLabel = translator.T("Add %s to %s", address.Host, selected.Name)
+		state.AddSiteLabel = translator.T("Add %s to %s", state.AddressHost, detail.Name)
 	}
-	return state
 }
 
 func buildAppEnhancementAppsDialog(translator *i18n.Translator, input appEnhancementViewStateInput, selected appctx.Group) appEnhancementAppsDialog {
@@ -421,7 +436,23 @@ func buildAppEnhancementAppsDialog(translator *i18n.Translator, input appEnhance
 			Ref: appEnhancementIconRef{BundleID: app.BundleID, Name: app.Name, Path: app.Path}, Running: app.Running, Member: selected.HasApp(app.BundleID),
 		})
 	}
+	state.Rows = filterAppEnhancementApps(state.Rows, input.AppsQuery)
+	state.NoMatches = len(state.Rows) == 0 && !state.Loading && state.HasCatalog
 	return state
+}
+
+func filterAppEnhancementApps(rows []appEnhancementAppChoice, query string) []appEnhancementAppChoice {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return rows
+	}
+	filtered := make([]appEnhancementAppChoice, 0, len(rows))
+	for _, row := range rows {
+		if strings.Contains(strings.ToLower(row.Ref.Name), query) || strings.Contains(strings.ToLower(row.Ref.BundleID), query) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
 }
 
 func buildAppEnhancementBrowsersDialog(translator *i18n.Translator, input appEnhancementViewStateInput) appEnhancementBrowsersDialog {

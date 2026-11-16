@@ -136,6 +136,7 @@
         "bundle_id": "",
         "name": "Background Agent"
       },
+      "app_name": "Background Agent",
       "empty": false,
       "has_bundle_id": false,
       "front_text": "前台：Background Agent",

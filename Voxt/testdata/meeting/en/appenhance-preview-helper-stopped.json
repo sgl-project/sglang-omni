@@ -136,6 +136,7 @@
         "bundle_id": "com.google.Chrome",
         "name": "Google Chrome"
       },
+      "app_name": "Google Chrome",
       "empty": false,
       "has_bundle_id": true,
       "front_text": "Frontmost: Google Chrome",

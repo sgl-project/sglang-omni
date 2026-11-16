@@ -182,7 +182,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			if enhancement.Apps.Error != "" {
 				return enhancement.Apps.Error
 			}
-			if enhancement.Apps.Query != "" && enhancement.Apps.HasCatalog {
+			if enhancement.Apps.NoMatches {
 				return i18n.T("No app matches.")
 			}
 			return enhancement.Apps.Title

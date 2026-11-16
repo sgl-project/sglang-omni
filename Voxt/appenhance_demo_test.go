@@ -23,6 +23,7 @@ func TestAppEnhancementDemoActionControls(t *testing.T) {
 		steps      []appEnhancementDemoStep
 		want       []string
 		wantText   string
+		otherText  string
 		rejectText string
 		check      func(*testing.T, *meetingDemoHost)
 	}{
@@ -65,12 +66,25 @@ func TestAppEnhancementDemoActionControls(t *testing.T) {
 		{name: "refresh preview", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Read again"), want: []string{"refreshAppEnhancementPreview"}},
 		{name: "add preview app", fixture: "en/appenhance-preview-add-actions", steps: appEnhancementSteps("Add Google Chrome to Team chat"), want: []string{"addAppEnhancementPreviewApp"}},
 		{name: "add preview site", fixture: "en/appenhance-preview-add-actions", steps: appEnhancementSteps("Add example.com to Team chat"), want: []string{"addAppEnhancementPreviewSite"}},
-		{name: "select group", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Code review"), wantText: "gitlab.com/acme/*", check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "select group", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Code review"), wantText: "gitlab.com/acme/*", otherText: "Add Slack to Code review", check: func(t *testing.T, host *meetingDemoHost) {
 			if host.appEnhancementUI.sel != "g-code" {
 				t.Fatalf("selected group %q", host.appEnhancementUI.sel)
 			}
 		}},
+		{name: "selection updates preview actions", fixture: "en/appenhance-preview-add-actions", steps: appEnhancementSteps("Code review"), wantText: "Add Google Chrome to Code review", otherText: "Add example.com to Code review"},
+		{name: "selection updates app membership", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Code review", "Add apps…"), want: []string{"openAppEnhancementApps"}, wantText: "Add apps to Code review", check: func(t *testing.T, host *meetingDemoHost) {
+			for _, row := range host.appEnhancementState().Apps.Rows {
+				if row.Ref.BundleID == "com.tinyspeck.slackmacgap" && row.Member {
+					t.Fatal("Slack stayed checked after Code review was selected")
+				}
+			}
+		}},
 		{name: "search apps", fixture: "en/appenhance-apps-normal", steps: []appEnhancementDemoStep{{label: "Search apps", text: "missing"}}, wantText: "No app matches."},
+		{name: "empty catalog stays empty", fixture: "en/appenhance-apps-empty", steps: []appEnhancementDemoStep{{label: "Search apps", text: "Chrome"}}, rejectText: "Google Chrome", check: func(t *testing.T, host *meetingDemoHost) {
+			if apps := host.appEnhancementState().Apps; apps.HasCatalog || len(apps.Rows) != 0 {
+				t.Fatalf("search populated the empty catalog: %+v", apps)
+			}
+		}},
 		{name: "apps done", fixture: "en/appenhance-apps-normal", steps: appEnhancementSteps("Done"), rejectText: "Add apps to Team chat", check: func(t *testing.T, host *meetingDemoHost) {
 			if host.appEnhancementUI.appsOpen {
 				t.Fatal("Done did not close Add apps")
@@ -124,6 +138,9 @@ func TestAppEnhancementDemoActionControls(t *testing.T) {
 			}
 			if test.wantText != "" && !tester.HasText(test.wantText) {
 				t.Fatalf("control did not show %q; texts %q", test.wantText, tester.Texts())
+			}
+			if test.otherText != "" && !tester.HasText(test.otherText) {
+				t.Fatalf("control did not show %q; texts %q", test.otherText, tester.Texts())
 			}
 			if test.rejectText != "" && tester.HasText(test.rejectText) {
 				t.Fatalf("control still shows %q; texts %q", test.rejectText, tester.Texts())

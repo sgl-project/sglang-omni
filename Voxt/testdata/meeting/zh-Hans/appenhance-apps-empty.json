@@ -136,6 +136,7 @@
         "bundle_id": "com.tinyspeck.slackmacgap",
         "name": "Slack"
       },
+      "app_name": "Slack",
       "empty": false,
       "has_bundle_id": true,
       "front_text": "前台：Slack",
@@ -154,6 +155,7 @@
       "loading": false,
       "rows": null,
       "has_catalog": false,
+      "no_matches": false,
       "query": "",
       "bundle_input": ""
     }

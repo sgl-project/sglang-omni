@@ -104,6 +104,7 @@
       "app": {
         "bundle_id": ""
       },
+      "app_name": "",
       "empty": true,
       "has_bundle_id": false,
       "front_text": "Switch to another app to see which group it falls in.",

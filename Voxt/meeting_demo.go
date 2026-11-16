@@ -33,6 +33,7 @@ type meetingDemoHost struct {
 	historyAccessUI       historyAccessLocalUI
 	appEnhancementUI      appEnhancementLocalUI
 	appEnhancementDetails map[string][]appEnhancementGroupDetail
+	appEnhancementApps    map[string][]appEnhancementAppChoice
 	overlayLook           settings.Overlay
 }
 
@@ -41,7 +42,11 @@ func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
 	if err != nil {
 		return nil, err
 	}
-	host := &meetingDemoHost{overlayLook: settings.Defaults().Overlay, appEnhancementDetails: map[string][]appEnhancementGroupDetail{}}
+	host := &meetingDemoHost{
+		overlayLook:           settings.Defaults().Overlay,
+		appEnhancementDetails: map[string][]appEnhancementGroupDetail{},
+		appEnhancementApps:    map[string][]appEnhancementAppChoice{},
+	}
 	for _, localeEntry := range entries {
 		if !localeEntry.IsDir() || !slices.Contains(i18n.Supported(), localeEntry.Name()) {
 			return nil, fmt.Errorf("meeting demo: unsupported entry %s", localeEntry.Name())
@@ -67,6 +72,9 @@ func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
 			host.fixtures = append(host.fixtures, meetingDemoFixture{locale: locale, name: locale + "/" + name, state: fixture})
 			if fixture.AppEnhancementDetails != nil {
 				host.appEnhancementDetails[locale] = fixture.AppEnhancementDetails
+			}
+			if name == "appenhance-apps-normal" {
+				host.appEnhancementApps[locale] = fixture.AppEnhancement.Apps.Rows
 			}
 		}
 	}
@@ -416,4 +424,69 @@ func (host *meetingDemoHost) addAppEnhancementPreviewSite() {
 }
 func (host *meetingDemoHost) appEnhancementIcon(ref appEnhancementIconRef, want bool) (*appIconBitmap, bool) {
 	return nil, true
+}
+
+func (host *meetingDemoHost) appEnhancementState() *appEnhancementViewState {
+	fixture := host.current()
+	state := *fixture.state.AppEnhancement
+	local := &host.appEnhancementUI
+	if local.sel != state.Selected {
+		state.Selected = local.sel
+		state.Groups = append([]appEnhancementGroupRow(nil), state.Groups...)
+		for index := range state.Groups {
+			state.Groups[index].Selected = state.Groups[index].ID == local.sel
+		}
+		for _, detail := range host.appEnhancementDetails[fixture.locale] {
+			if detail.ID == local.sel {
+				detail := detail
+				state.Detail = &detail
+				break
+			}
+		}
+	}
+	synthesizedApps := false
+	if !local.appsOpen {
+		state.Apps = nil
+	} else if state.Apps == nil && state.Detail != nil {
+		synthesizedApps = true
+		state.Apps = &appEnhancementAppsDialog{
+			GroupID: state.Detail.ID, Title: i18n.T("Add apps to %s", state.Detail.Name), BundleInput: local.bundleIn,
+		}
+	}
+	if state.Apps != nil && (synthesizedApps || local.appsQuery != state.Apps.Query) {
+		catalog := state.Apps.Rows
+		if library := host.appEnhancementApps[fixture.locale]; len(library) > 0 && (synthesizedApps || state.Apps.HasCatalog) {
+			catalog = library
+		}
+		catalog = append([]appEnhancementAppChoice(nil), catalog...)
+		for index := range catalog {
+			catalog[index].Member = false
+			if state.Detail != nil {
+				for _, app := range state.Detail.Apps {
+					if strings.EqualFold(app.Ref.BundleID, catalog[index].Ref.BundleID) {
+						catalog[index].Member = true
+						break
+					}
+				}
+			}
+		}
+		apps := *state.Apps
+		apps.Rows = filterAppEnhancementApps(catalog, local.appsQuery)
+		apps.HasCatalog = len(catalog) > 0
+		apps.NoMatches = len(apps.Rows) == 0 && !apps.Loading && apps.HasCatalog
+		apps.Query = local.appsQuery
+		state.Apps = &apps
+	}
+	if !local.browsersOpen {
+		state.Browsers = nil
+	} else if state.Browsers == nil {
+		state.Browsers = &appEnhancementBrowsersDialog{BundleInput: local.brID, NameInput: local.brName, AddDisabled: true}
+	}
+	if !local.delAsk {
+		state.Delete = nil
+	} else if state.Delete == nil && state.Detail != nil {
+		state.Delete = &appEnhancementDeleteDialog{GroupID: state.Detail.ID, Title: i18n.T("Delete “%s”?", state.Detail.Name)}
+	}
+	appEnhancementPreviewActionsFor(i18n.CurrentTranslator(), &state.Preview, state.Detail)
+	return &state
 }

@@ -136,6 +136,7 @@
         "bundle_id": "com.google.Chrome",
         "name": "Google Chrome"
       },
+      "app_name": "Google Chrome",
       "empty": false,
       "has_bundle_id": true,
       "front_text": "前台：Google Chrome",
@@ -149,8 +150,7 @@
       "can_refresh": true,
       "add_app": true,
       "add_app_label": "把 Google Chrome 加入“Team chat”",
-      "add_site": true,
-      "add_site_label": "把 github.com 加入“Team chat”"
+      "add_site": false
     }
   }
 }

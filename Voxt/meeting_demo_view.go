@@ -58,46 +58,8 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 					})
 				})
 			case "appenhance":
-				appEnhancementPage(c, appEnhancementDemoState(host), host, &host.appEnhancementUI, 800, host)
+				appEnhancementPage(c, host.appEnhancementState(), host, &host.appEnhancementUI, 800, host)
 			}
 		})
 	})
-}
-
-func appEnhancementDemoState(host *meetingDemoHost) *appEnhancementViewState {
-	fixture := host.current()
-	state := *fixture.state.AppEnhancement
-	local := &host.appEnhancementUI
-	if local.sel != state.Selected {
-		state.Selected = local.sel
-		state.Groups = append([]appEnhancementGroupRow(nil), state.Groups...)
-		for index := range state.Groups {
-			state.Groups[index].Selected = state.Groups[index].ID == local.sel
-		}
-		for _, detail := range host.appEnhancementDetails[fixture.locale] {
-			if detail.ID == local.sel {
-				detail := detail
-				state.Detail = &detail
-				break
-			}
-		}
-	}
-	if !local.appsOpen {
-		state.Apps = nil
-	} else if state.Apps == nil && state.Detail != nil {
-		state.Apps = &appEnhancementAppsDialog{
-			GroupID: state.Detail.ID, Title: i18n.T("Add apps to %s", state.Detail.Name), BundleInput: local.bundleIn,
-		}
-	}
-	if !local.browsersOpen {
-		state.Browsers = nil
-	} else if state.Browsers == nil {
-		state.Browsers = &appEnhancementBrowsersDialog{BundleInput: local.brID, NameInput: local.brName, AddDisabled: true}
-	}
-	if !local.delAsk {
-		state.Delete = nil
-	} else if state.Delete == nil && state.Detail != nil {
-		state.Delete = &appEnhancementDeleteDialog{GroupID: state.Detail.ID, Title: i18n.T("Delete “%s”?", state.Detail.Name)}
-	}
-	return &state
 }
