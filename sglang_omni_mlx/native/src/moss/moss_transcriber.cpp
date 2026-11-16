@@ -11,6 +11,7 @@
 
 #include "common/audio.h"
 #include "common/audio_chunks.h"
+#include "common/generation.h"
 #include "common/text.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
@@ -19,13 +20,13 @@ namespace moss {
 
 namespace mx = mlx::core;
 using omni_common::FinishReason;
+using omni_common::GenerationCancelled;
 using omni_common::IsTokenLoop;
 using omni_common::kHopLength;
 using omni_common::kSampleRate;
 using omni_common::kWhisperWindowSampleCount;
 using omni_common::SpeakerSegment;
 using omni_common::StripUnicodeWhitespace;
-using omni_common::TranscriptionCancelled;
 using omni_common::TranscriptionResult;
 using omni_common::WhisperWindowFeatures;
 using qwen3_asr::DraftStatistics;
@@ -409,7 +410,7 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
     int processed = 0;
     while (prompt_length - processed > 1) {
       if (cancel.load()) {
-        throw TranscriptionCancelled();
+        throw GenerationCancelled();
       } else {
       }
       const int step =
@@ -428,7 +429,7 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
     bool finished = false;
     while (!finished) {
       if (cancel.load()) {
-        throw TranscriptionCancelled();
+        throw GenerationCancelled();
       } else {
       }
       const mx::array token = next_token;

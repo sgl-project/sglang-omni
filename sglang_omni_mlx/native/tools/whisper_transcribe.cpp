@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "common/audio.h"
-#include "common/transcription.h"
+#include "common/generation.h"
 #include "nlohmann/json.hpp"
 #include "whisper/whisper_transcriber.h"
 

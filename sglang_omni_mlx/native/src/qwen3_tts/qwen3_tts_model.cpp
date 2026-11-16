@@ -9,7 +9,7 @@
 #include <set>
 #include <stdexcept>
 
-#include "common/transcription.h"
+#include "common/generation.h"
 
 namespace qwen3_tts {
 
@@ -423,7 +423,7 @@ omni_common::FinishReason Qwen3TtsModel::Generate(
   std::vector<qwen3_asr::KVCache> caches = talker_.NewCaches();
   for (int frame = 0; frame < max_frames; ++frame) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const mx::array hidden = checkpoint_.RmsNorm(

@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "common/audio.h"
-#include "common/transcription.h"
+#include "common/generation.h"
 #include "nlohmann/json.hpp"
 #include "voxtral_tts/voxtral_tts_model.h"
 

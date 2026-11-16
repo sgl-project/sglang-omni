@@ -14,7 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "common/transcription.h"
+#include "common/generation.h"
 
 namespace fishaudio_drama3 {
 namespace mx = mlx::core;
@@ -24,7 +24,7 @@ namespace {
 void CheckCancelled(const std::atomic<bool> *cancel) {
   if (cancel != nullptr && cancel->load()) {
     mx::synchronize();
-    throw omni_common::TranscriptionCancelled();
+    throw omni_common::GenerationCancelled();
   } else {
   }
 }

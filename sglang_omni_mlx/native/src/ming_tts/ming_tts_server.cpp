@@ -23,7 +23,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "common/transcription.h"
+#include "common/generation.h"
 #include "ming_tts/ming_tts_audio.h"
 #include "ming_tts/ming_tts_generator.h"
 #include "ming_tts/ming_tts_reference.h"
@@ -103,7 +103,7 @@ private:
              const speech_service::SpeechContext &context) const {
     const auto stop_if_cancelled = [&context]() {
       if (context.cancel.load()) {
-        throw omni_common::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
       context.check_deadline();

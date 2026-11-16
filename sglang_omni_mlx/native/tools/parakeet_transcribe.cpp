@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
 #include "parakeet/parakeet_transcriber.h"

@@ -13,9 +13,9 @@
 #include <string>
 #include <vector>
 
+#include "common/generation.h"
 #include "common/layers.h"
 #include "common/tokenizer.h"
-#include "common/transcription.h"
 #include "fish_dac/fish_dac.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_decoder.h"
@@ -78,7 +78,7 @@ public:
 
   // Generates up to max_frames frames, or as many as fit in max_positions()
   // after the prompt, passing each frame's evaluated int32 codes [codebooks] to
-  // on_frame. Stops at <|im_end|>; throws TranscriptionCancelled once cancel is
+  // on_frame. Stops at <|im_end|>; throws GenerationCancelled once cancel is
   // set, and std::invalid_argument for a prompt that leaves no position.
   omni_common::FinishReason
   Generate(const SpeechPrompt &prompt, int max_frames,

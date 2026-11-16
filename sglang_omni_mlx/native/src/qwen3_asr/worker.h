@@ -28,7 +28,7 @@ inline CancelFlag NewCancelFlag() {
 }
 
 // One transcription bound to its audio and options; runs on the worker
-// thread and stops with TranscriptionCancelled once its flag is set.
+// thread and stops with GenerationCancelled once its flag is set.
 using Transcription =
     std::function<omni_common::TranscriptionResult(const std::atomic<bool> &)>;
 
@@ -38,7 +38,7 @@ using Transcription =
 class TranscriptionWorker {
 public:
   // Called on the worker thread with the result, or with the exception the
-  // transcription raised (TranscriptionCancelled included).
+  // transcription raised (GenerationCancelled included).
   using Completion = std::function<void(
       std::optional<omni_common::TranscriptionResult>, std::exception_ptr)>;
 

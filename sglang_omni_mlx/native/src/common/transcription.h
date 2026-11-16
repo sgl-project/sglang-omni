@@ -1,19 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// Model-independent transcription results and cancellation.
+// Model-independent transcription results and their JSON form.
 #pragma once
 
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "common/generation.h"
 #include "nlohmann/json.hpp"
 
 namespace omni_common {
-
-enum class FinishReason { kStop, kLength };
-
-const char *FinishReasonName(FinishReason reason);
 
 struct SpeakerSegment {
   double start_seconds = 0.0;
@@ -40,11 +36,6 @@ struct TranscriptionResult {
   int verify_round_count = 0;
   int proposed_draft_token_count = 0;
   int accepted_draft_token_count = 0;
-};
-
-class TranscriptionCancelled : public std::runtime_error {
-public:
-  TranscriptionCancelled() : std::runtime_error("transcription cancelled") {}
 };
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,

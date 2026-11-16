@@ -6,7 +6,7 @@
 #include <cmath>
 #include <limits>
 
-#include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/generation.h"
 
 namespace qwen3_asr {
 
@@ -472,7 +472,7 @@ void Qwen3Decoder::DecodePlain(
   bool finished = false;
   while (!finished) {
     if (cancel.load()) {
-      throw TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const mx::array token = next_token;

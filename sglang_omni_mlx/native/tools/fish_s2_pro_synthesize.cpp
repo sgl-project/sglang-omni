@@ -17,8 +17,8 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/reference_audio.h"
-#include "common/transcription.h"
 #include "fish_s2_pro/fish_s2_pro_model.h"
 #include "nlohmann/json.hpp"
 

@@ -13,9 +13,9 @@
 #include <string>
 #include <vector>
 
+#include "common/generation.h"
 #include "common/layers.h"
 #include "common/tokenizer.h"
-#include "common/transcription.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_decoder.h"
 #include "qwen3_tts/qwen3_tts_codec.h"
@@ -82,7 +82,7 @@ public:
   int PromptLength(const SpeechPrompt &prompt) const;
   // Generates up to max_frames frames, passing each frame's evaluated int32
   // codes [codebooks] to on_frame. Stops at the end-of-speech code; throws
-  // TranscriptionCancelled once cancel is set.
+  // GenerationCancelled once cancel is set.
   omni_common::FinishReason
   Generate(const SpeechPrompt &prompt, const SamplingConfig &sampling,
            int max_frames, const std::atomic<bool> &cancel,

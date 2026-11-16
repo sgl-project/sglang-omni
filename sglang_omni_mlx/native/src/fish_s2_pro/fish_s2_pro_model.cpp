@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
-#include "common/transcription.h"
+#include "common/generation.h"
 
 namespace fish_s2_pro {
 
@@ -446,7 +446,7 @@ omni_common::FinishReason FishS2ProModel::Generate(
   std::vector<int> history;
   for (int frame = 0; frame < frame_limit; ++frame) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     mx::eval(candidate_logits);

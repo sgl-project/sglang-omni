@@ -11,7 +11,7 @@
 #include <limits>
 #include <stdexcept>
 
-#include "common/transcription.h"
+#include "common/generation.h"
 #include "fishaudio_drama3/fishaudio_drama3_model.h"
 #include "fishaudio_drama3/fishaudio_drama3_text.h"
 
@@ -95,7 +95,7 @@ mx::array Drama3Model::Prefill(const mx::array &frames, ModelCaches &caches,
   std::optional<mx::array> hidden;
   for (int begin = start; begin < stop; begin += kPrefillChunkRows) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const int end = std::min(begin + kPrefillChunkRows, stop);
@@ -248,7 +248,7 @@ bool Drama3Model::GenerateChunk(
   std::optional<mx::array> held;
   for (int frame_index = 0; frame_index < max_frames; ++frame_index) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const Step current = pending;

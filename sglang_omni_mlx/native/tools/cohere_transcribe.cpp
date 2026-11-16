@@ -19,7 +19,7 @@
 #include "cohere/cohere_transcriber.h"
 #include "common/audio.h"
 #include "common/form.h"
-#include "common/transcription.h"
+#include "common/generation.h"
 #include "nlohmann/json.hpp"
 #include "silero_vad/speech_segments.h"
 

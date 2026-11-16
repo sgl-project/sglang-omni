@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include "common/generation.h"
 #include "common/transcription.h"
 #include "qwen3_asr/worker.h"
 
@@ -152,7 +153,7 @@ void VerifyCancelledWorker(const std::filesystem::path &directory,
   bool rejected = false;
   try {
     std::rethrow_exception(error);
-  } catch (const omni_common::TranscriptionCancelled &) {
+  } catch (const omni_common::GenerationCancelled &) {
     rejected = true;
   }
   Require(rejected && next_future.get().text == "next request finished",
@@ -175,7 +176,7 @@ void VerifyAlreadyCancelled(const std::filesystem::path &directory,
   try {
     cache.Routed(loaded.at("input"), mx::zeros({1, 1, 1}, mx::uint32),
                  mx::ones({1, 1, 1}), kPrefix, checkpoint, &cancel);
-  } catch (const omni_common::TranscriptionCancelled &) {
+  } catch (const omni_common::GenerationCancelled &) {
     rejected = true;
   }
   Require(rejected && reader->payload_bytes == 0 && cache.misses() == 0 &&

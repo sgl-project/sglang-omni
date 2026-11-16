@@ -6,6 +6,7 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "common/generation.h"
 #include "common/swift_port.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
@@ -291,7 +292,7 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
   std::vector<int> generated_ids;
   for (int step = 0;; ++step) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else if (step == max_new_tokens) {
       result.reached_token_limit = true;
       break;
@@ -340,7 +341,7 @@ WhisperTranscriber::WindowResult WhisperTranscriber::DecodeWithDraft(
   int anchor = static_cast<int>(first_token.item<uint32_t>());
   while (true) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else if (anchor == end_of_text_id_) {
       break;
     } else {
@@ -460,7 +461,7 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
     // Note (khazic): a request cancelled between windows skips the next encoder
     // pass.
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const size_t start = window_index * kWindowSampleCount;

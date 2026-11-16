@@ -11,6 +11,7 @@
 
 #include "civetweb.h"
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/http.h"
 #include "common/service.h"
 #include "common/transcription.h"
@@ -152,7 +153,7 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
   try {
     const TranscriptionResult result = future.get();
     WriteSse(connection, DoneEvent(result, include_generation_metadata).dump());
-  } catch (const omni_common::TranscriptionCancelled &) {
+  } catch (const omni_common::GenerationCancelled &) {
     return 200;
   } catch (const std::exception &error) {
     std::cerr << "transcription failed: " << typeid(error).name() << "\n";

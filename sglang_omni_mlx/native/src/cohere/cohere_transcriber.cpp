@@ -9,6 +9,7 @@
 
 #include "common/audio.h"
 #include "common/audio_chunks.h"
+#include "common/generation.h"
 #include "common/swift_port.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
@@ -147,7 +148,7 @@ CohereTranscriber::TranscribeChunk(const std::vector<float> &samples,
   std::vector<int> generated_ids;
   for (int step = 0;; ++step) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else if (step == token_budget) {
       result.reached_token_limit = true;
       break;

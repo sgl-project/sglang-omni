@@ -6,6 +6,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
+#include "common/generation.h"
 #include "common/swift_port.h"
 #include "common/text.h"
 #include "common/transcription.h"
@@ -185,7 +186,7 @@ void NemotronStream::Decode(int mel_frame_limit, bool flush,
                  mx::bfloat16);
   while (consumed_mel_frames_ < limit) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const int end = std::min(consumed_mel_frames_ + chunk_mel_frames, limit);

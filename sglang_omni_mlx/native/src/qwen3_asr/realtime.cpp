@@ -6,6 +6,7 @@
 #include <random>
 
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/text.h"
 #include "common/transcription.h"
 
@@ -13,9 +14,9 @@ namespace qwen3_asr {
 
 using omni_common::CodePoints;
 using omni_common::DecodeBase64;
+using omni_common::GenerationCancelled;
 using omni_common::IsUnicodeSpace;
 using omni_common::StripUnicodeWhitespace;
-using omni_common::TranscriptionCancelled;
 using omni_common::TranscriptionResult;
 
 namespace {
@@ -149,7 +150,7 @@ RealtimeConnection::ManualTurnSession(const nlohmann::json &message) {
 void RealtimeConnection::ReportDecodeFailure(std::exception_ptr error) {
   try {
     std::rethrow_exception(error);
-  } catch (const TranscriptionCancelled &) {
+  } catch (const GenerationCancelled &) {
     return;
   } catch (const std::exception &failure) {
     // Note (Jiaxin Deng): log the type alone, never the audio or text.

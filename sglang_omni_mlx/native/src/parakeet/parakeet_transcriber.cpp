@@ -10,6 +10,7 @@
 
 #include "common/audio.h"
 #include "common/audio_chunks.h"
+#include "common/generation.h"
 #include "common/swift_port.h"
 #include "common/text.h"
 #include "common/transcription.h"
@@ -281,7 +282,7 @@ std::vector<AlignedToken>
 ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
                                  const std::atomic<bool> &cancel) const {
   if (cancel.load()) {
-    throw omni_common::TranscriptionCancelled();
+    throw omni_common::GenerationCancelled();
   } else {
   }
   const ParakeetConfig &config = model_.config();
@@ -295,7 +296,7 @@ ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
   std::vector<AlignedToken> tokens;
   for (int frame = 0; frame < frame_count;) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const DecoderStep step = model_.Decode(

@@ -18,6 +18,7 @@
 
 #include "common/audio.h"
 #include "common/form.h"
+#include "common/generation.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
 #include "sensevoice/sensevoice_transcriber.h"

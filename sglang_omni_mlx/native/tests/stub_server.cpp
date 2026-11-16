@@ -30,6 +30,7 @@
 #include <thread>
 #include <vector>
 
+#include "common/generation.h"
 #include "common/http.h"
 #include "common/service.h"
 #include "common/transcription.h"
@@ -103,7 +104,7 @@ public:
         while (!cancel.load()) {
           std::this_thread::sleep_for(kBlockPollInterval);
         }
-        throw omni_common::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
       omni_common::TranscriptionResult result;
@@ -176,7 +177,7 @@ protected:
           context.check_deadline();
           std::this_thread::sleep_for(kBlockPollInterval);
         }
-        throw omni_common::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
       speech_service::SpeechResult result;

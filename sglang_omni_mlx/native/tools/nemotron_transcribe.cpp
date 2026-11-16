@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/transcription.h"
 #include "nemotron/nemotron_transcriber.h"
 #include "nlohmann/json.hpp"

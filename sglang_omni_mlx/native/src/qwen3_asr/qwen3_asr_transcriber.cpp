@@ -8,6 +8,7 @@
 #include <map>
 
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/text.h"
 #include "common/transcription.h"
 
@@ -15,9 +16,9 @@ namespace qwen3_asr {
 
 using omni_common::CollapseTokenLoop;
 using omni_common::FinishReason;
+using omni_common::GenerationCancelled;
 using omni_common::IsTokenLoop;
 using omni_common::IsUnicodeSpace;
-using omni_common::TranscriptionCancelled;
 using omni_common::TranscriptionResult;
 
 namespace mx = mlx::core;
@@ -210,7 +211,7 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
                                 const TranscriptionOptions &options,
                                 const std::atomic<bool> &cancel) const {
   if (cancel.load()) {
-    throw TranscriptionCancelled();
+    throw GenerationCancelled();
   } else {
   }
   const Prompt prompt = BuildPrompt(samples, options);
@@ -313,7 +314,7 @@ Qwen3ASRTranscriber::PrefillRows(const std::vector<BatchRequest> &requests,
   for (size_t i = 0; i < requests.size(); ++i) {
     try {
       if (requests[i].cancel->load()) {
-        throw TranscriptionCancelled();
+        throw GenerationCancelled();
       } else {
       }
       const Prompt prompt =
@@ -421,7 +422,7 @@ void Qwen3ASRTranscriber::DecodeRows(const std::vector<BatchRequest> &requests,
       const BatchRequest &request = requests[row.request_index];
       BatchOutcome outcome;
       if (request.cancel->load()) {
-        outcome.error = std::make_exception_ptr(TranscriptionCancelled());
+        outcome.error = std::make_exception_ptr(GenerationCancelled());
         row.is_done = true;
       } else if (AcceptToken(row, static_cast<int>(token_ids[i]),
                              *request.options, outcome)) {

@@ -13,6 +13,7 @@
 
 #include "civetweb.h"
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/http.h"
 #include "common/text.h"
 #include "common/transcription.h"
@@ -47,7 +48,7 @@ std::string NewRequestId() {
 
 // Thrown by a generation that reaches its request's deadline; a cancellation,
 // so it is never logged as a failure.
-class DeadlineReached : public omni_common::TranscriptionCancelled {};
+class DeadlineReached : public omni_common::GenerationCancelled {};
 
 // Whether error is a generation stopping at its request's deadline.
 bool ReachedDeadline(std::exception_ptr error) {
@@ -67,7 +68,7 @@ bool ReachedDeadline(std::exception_ptr error) {
 void LogFailure(std::exception_ptr error) {
   try {
     std::rethrow_exception(error);
-  } catch (const omni_common::TranscriptionCancelled &) {
+  } catch (const omni_common::GenerationCancelled &) {
   } catch (const std::exception &failure) {
     // Note (Minyi Tang): only the exception type is logged, never the text.
     std::cerr << "speech generation failed: " << typeid(failure).name() << "\n";

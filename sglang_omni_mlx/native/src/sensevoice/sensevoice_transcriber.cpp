@@ -9,6 +9,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/text.h"
 #include "common/transcription.h"
 
@@ -311,7 +312,7 @@ SenseVoiceTranscriber::Transcribe(const std::vector<float> &samples,
   };
   if (options.voice_activity_detector == nullptr) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const Pass pass = TranscribePass(samples, language_id, options.use_itn);
@@ -338,7 +339,7 @@ SenseVoiceTranscriber::Transcribe(const std::vector<float> &samples,
     for (const auto &[chunk_start, chunk_end] :
          SplitRange(start, end, max_samples, overlap_samples)) {
       if (cancel.load()) {
-        throw omni_common::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
       const Pass pass =

@@ -11,8 +11,8 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/tokenizer.h"
-#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/qwen3_asr_model.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"

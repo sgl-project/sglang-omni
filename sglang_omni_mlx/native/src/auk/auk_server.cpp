@@ -27,7 +27,7 @@
 
 #include "auk/auk_model.h"
 #include "auk/auk_request.h"
-#include "common/transcription.h"
+#include "common/generation.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/speech_service.h"
 
@@ -86,7 +86,7 @@ private:
                const speech_service::SpeechContext &context) {
       const auto check_cancelled = [&context] {
         if (context.cancel.load()) {
-          throw omni_common::TranscriptionCancelled();
+          throw omni_common::GenerationCancelled();
         } else {
         }
         context.check_deadline();

@@ -11,8 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "common/generation.h"
 #include "common/layers.h"
-#include "common/transcription.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_decoder.h"
 #include "voxtral_tts/voxtral_tts_codec.h"
@@ -30,7 +30,7 @@ public:
   // Generates up to max_frames frames for prompt ids from
   // SpeechTokenizer::EncodeSpeechRequest in voice, passing each frame's
   // evaluated int32 codes [1 + acoustic codebooks] to on_frame. Stops at the
-  // end-of-audio code; throws TranscriptionCancelled once cancel is set.
+  // end-of-audio code; throws GenerationCancelled once cancel is set.
   omni_common::FinishReason
   Generate(const std::vector<int> &prompt_ids, const std::string &voice,
            int max_frames, const std::atomic<bool> &cancel,

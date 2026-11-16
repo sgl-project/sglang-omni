@@ -29,7 +29,7 @@
 #include <vector>
 
 #include "common/audio.h"
-#include "common/transcription.h"
+#include "common/generation.h"
 #include "fishaudio_drama3/fishaudio_drama3_model.h"
 #include "fishaudio_drama3/fishaudio_drama3_prompt.h"
 #include "fishaudio_drama3/fishaudio_drama3_text.h"

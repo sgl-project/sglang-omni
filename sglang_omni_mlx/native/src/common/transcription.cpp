@@ -5,10 +5,6 @@
 
 namespace omni_common {
 
-const char *FinishReasonName(FinishReason reason) {
-  return reason == FinishReason::kStop ? "stop" : "length";
-}
-
 nlohmann::ordered_json
 SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments) {
   nlohmann::ordered_json array = nlohmann::ordered_json::array();

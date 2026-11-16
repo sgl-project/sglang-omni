@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
-#include "common/transcription.h"
+#include "common/generation.h"
 
 namespace voxtral_tts {
 
@@ -151,7 +151,7 @@ omni_common::FinishReason VoxtralTtsModel::Generate(
   mx::array hidden = LastHidden(prompt_embeddings, caches);
   for (int frame = 0; frame < max_frames; ++frame) {
     if (cancel.load()) {
-      throw omni_common::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const mx::array codes = PredictFrame(hidden);

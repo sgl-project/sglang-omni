@@ -14,10 +14,10 @@
 #include <vector>
 
 #include "common/campplus.h"
+#include "common/generation.h"
 #include "common/layers.h"
 #include "common/text.h"
 #include "common/tokenizer.h"
-#include "common/transcription.h"
 #include "cosyvoice3/cosyvoice3_audio.h"
 #include "cosyvoice3/cosyvoice3_speech_tokenizer.h"
 #include "cosyvoice3/cosyvoice3_vocoder.h"
@@ -94,7 +94,7 @@ public:
   Reference EncodeReference(const ReferenceAudio &audio) const;
 
   // Samples speech tokens after the text ids and the prompt speech tokens;
-  // calls on_token with each one and throws TranscriptionCancelled once
+  // calls on_token with each one and throws GenerationCancelled once
   // cancel is set.
   GeneratedSpeech Generate(const std::vector<int> &prompt_text_ids,
                            const std::vector<int> &target_text_ids,

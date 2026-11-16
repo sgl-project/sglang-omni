@@ -17,8 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "common/generation.h"
 #include "common/http.h"
-#include "common/transcription.h"
 #include "qwen3_asr/asr_service.h"
 
 namespace speech_service {

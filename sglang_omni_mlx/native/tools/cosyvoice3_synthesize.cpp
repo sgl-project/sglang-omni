@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "common/audio.h"
-#include "common/transcription.h"
+#include "common/generation.h"
 #include "cosyvoice3/cosyvoice3_model.h"
 #include "nlohmann/json.hpp"
 

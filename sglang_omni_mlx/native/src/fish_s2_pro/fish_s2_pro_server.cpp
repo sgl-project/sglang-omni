@@ -36,9 +36,9 @@
 #include <string_view>
 #include <vector>
 
+#include "common/generation.h"
 #include "common/reference_audio.h"
 #include "common/text.h"
-#include "common/transcription.h"
 #include "fish_s2_pro/fish_s2_pro_model.h"
 #include "fish_s2_pro/fish_s2_pro_stream.h"
 #include "qwen3_asr/asr_service.h"
@@ -447,7 +447,7 @@ private:
     for (const ParsedReference &reference : request.references) {
       context.check_deadline();
       if (context.cancel.load()) {
-        throw omni_common::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
       if (reference.codes.empty()) {

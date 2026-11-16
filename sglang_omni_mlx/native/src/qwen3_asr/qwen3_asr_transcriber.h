@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/tokenizer.h"
 #include "common/transcription.h"
 #include "qwen3_asr/dflash_draft.h"
@@ -94,12 +95,10 @@ private:
   bool IsStopToken(int token_id, const TranscriptionOptions &options) const;
   // The result for a finished output; a stop on a token loop keeps one copy
   // of the looping unit.
-  omni_common::TranscriptionResult
-  FinishedResult(const std::vector<int> &output_ids,
-                 const TranscriptionOptions &options,
-                 omni_common::FinishReason finish_reason,
-                 bool stopped_on_token_loop,
-                 const DraftStatistics &draft_statistics = {}) const;
+  omni_common::TranscriptionResult FinishedResult(
+      const std::vector<int> &output_ids, const TranscriptionOptions &options,
+      omni_common::FinishReason finish_reason, bool stopped_on_token_loop,
+      const DraftStatistics &draft_statistics = {}) const;
 
   struct BatchRow;
   // Prefills every request; one that fails is reported finished with its
