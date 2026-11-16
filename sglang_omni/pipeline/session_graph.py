@@ -656,7 +656,7 @@ class SessionGraphRunner(CoordinatorSessions):
             else:
                 pass
             if is_published and graph.graph.shared_timeline:
-                output = self.time_graph_output(graph, output)
+                output = self.time_graph_output(graph, name, output)
                 chunk = output_chunk(output)
             else:
                 pass
@@ -730,12 +730,14 @@ class SessionGraphRunner(CoordinatorSessions):
             return True
 
     def time_graph_output(
-        self, graph: SessionGraphRuntime, output: OutputChunk
+        self, graph: SessionGraphRuntime, name: str, output: OutputChunk
     ) -> OutputChunk:
-        """Timestamp published reply chunks on the graph's shared media clock."""
+        """Timestamp published reply chunks on the graph's shared media clock; a stream node `name` stamps on the input timeline keeps its stamps and moves no clock."""
         input_end_ms = graph.modality_end_ms.get(AUDIO, 0.0)
         event = control_type(output)
-        if output.format in AUDIO_FORMATS:
+        if (name, output.format) in graph.graph.input_timed:
+            return output
+        elif output.format in AUDIO_FORMATS:
             start = max(graph.output_end_ms, graph.reply_start_ms)
             graph.output_end_ms = start + output.duration_ms
         elif output.format in graph.graph.plugin_formats and output.duration_ms > 0:

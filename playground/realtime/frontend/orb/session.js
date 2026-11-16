@@ -35,6 +35,10 @@ export function registerPluginRenderer(format, render) {
   pluginRenderers.set(format, render);
 }
 
+export function drawsPluginFormat(format) {
+  return pluginRenderers.has(format);
+}
+
 export function base64ToBytes(encoded) {
   const binary = atob(encoded);
   const bytes = new Uint8Array(binary.length);
@@ -57,6 +61,7 @@ export class DuplexSession {
     this.state = "connecting";
     this.sessionId = null;
     this.granted = null;
+    this.pluginOutputPorts = [];
     this.eventSequence = 0;
     this.trace = [];
     this.packets = [];
@@ -326,6 +331,7 @@ export class DuplexSession {
       }
       case "session.updated": {
         this.granted = event.session.sglang.granted;
+        this.pluginOutputPorts = event.session.sglang.plugin_output_ports || [];
         for (const rejection of this.granted.rejections || []) {
           this.emit("warning", `setting ${rejection.field} not applied: ${rejection.reason}`);
         }

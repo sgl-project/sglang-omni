@@ -704,6 +704,7 @@ def timeline_runtime(
     sessions: SessionGraphRunner,
     publish: tuple[str, ...],
     plugin_formats: frozenset[str],
+    input_timed: frozenset[tuple[str, str]] = frozenset(),
 ) -> SessionGraphRuntime:
     """The `reply` graph with a shared timeline, publishing `publish`, after 600 ms of input."""
     graph = reply_runtime(sessions)
@@ -712,6 +713,7 @@ def timeline_runtime(
         publish={"reply": publish},
         shared_timeline=True,
         plugin_formats=plugin_formats,
+        input_timed=input_timed,
     )
     graph.modality_end_ms[AUDIO] = 600.0
     return graph
@@ -823,6 +825,96 @@ async def test_a_shared_timeline_gives_each_plugin_format_a_clock_and_ends_the_t
         (PCM16, 1000.0),
         ("smplx_motion", 1000.0),
         ("turn.done", 1100.0),
+    ]
+
+
+def stamped_motion(t_start_ms: float, turn: int | None) -> OutputChunk:
+    """An 800 ms block of a continuous motion stream its node stamps on the input timeline, with the reply turn it shows or none while it listens."""
+    return OutputChunk(
+        SessionIdentity("graph:reply"),
+        0,
+        0,
+        "motion",
+        t_start_ms,
+        800,
+        b"pose",
+        "stamped_motion",
+        turn=turn,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stream_on_the_input_timeline_keeps_its_stamps_and_moves_no_reply_clock():
+    """Motion produced while the user speaks too was restamped to the reply clock, so each reply start left a gap in it and its blocks pushed the next reply and turn.done back."""
+
+    def audio(turn: int) -> OutputChunk:
+        return media_output(AUDIO, PCM16, 100, turn)
+
+    sessions = NodeOutputsRunner(
+        [
+            stamped_motion(0.0, None),
+            stamped_motion(800.0, None),
+            reply_output("session", {"type": "turn.started"}, 1),
+            audio(1),
+            stamped_motion(1600.0, 1),
+            audio(1),
+            stamped_motion(2400.0, 1),
+            reply_output("session", {"type": "turn.done"}, 1),
+        ]
+    )
+    graph = timeline_runtime(
+        sessions,
+        (PCM16, "stamped_motion", "session"),
+        frozenset(),
+        frozenset({("reply", "stamped_motion")}),
+    )
+    graph.modality_end_ms[AUDIO] = 1000.0
+    await sessions.route_graph_outputs(graph, "reply")
+    assert published_timeline(graph) == [
+        ("stamped_motion", 0.0),
+        ("stamped_motion", 800.0),
+        ("turn.started", 1000.0),
+        (PCM16, 1000.0),
+        ("stamped_motion", 1600.0),
+        (PCM16, 1100.0),
+        ("stamped_motion", 2400.0),
+        ("turn.done", 1200.0),
+    ]
+    graph.modality_end_ms[AUDIO] = 2000.0
+    sessions.node_outputs = [
+        reply_output("session", {"type": "turn.started"}, 2),
+        audio(2),
+        stamped_motion(3200.0, 2),
+    ]
+    await sessions.route_graph_outputs(graph, "reply")
+    assert published_timeline(graph) == [
+        ("turn.started", 2000.0),
+        (PCM16, 2000.0),
+        ("stamped_motion", 3200.0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_drops_the_interrupted_turn_of_a_stream_on_the_input_timeline():
+    sessions = NodeOutputsRunner(
+        [
+            stamped_motion(1600.0, 1),
+            reply_output("session", {"type": "turn.interrupted"}, 1),
+            stamped_motion(2400.0, None),
+        ]
+    )
+    graph = timeline_runtime(
+        sessions,
+        ("stamped_motion", "session"),
+        frozenset(),
+        frozenset({("reply", "stamped_motion")}),
+    )
+    interrupt = TimedChunk("control", 0, 0, 0, {"type": "interrupt"}, "session", turn=1)
+    await sessions.control_graph(graph, interrupt, None, False)
+    await sessions.route_graph_outputs(graph, "reply")
+    assert published_timeline(graph) == [
+        ("turn.interrupted", 600.0),
+        ("stamped_motion", 2400.0),
     ]
 
 
