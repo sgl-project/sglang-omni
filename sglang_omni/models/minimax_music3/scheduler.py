@@ -23,7 +23,18 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler, OmniSchedulerAr
 
 
 class MiniMaxMusic3SchedulePolicy(SchedulePolicy):
-    """Order the waiting queue by the configured policy, keeping each CFG pair together."""
+    """Order and admit complete CFG pairs under the configured scheduling policy."""
+
+    def __init__(self, scheduler: MiniMaxMusic3Scheduler) -> None:
+        policy = scheduler.policy
+        super().__init__(
+            scheduler.schedule_policy,
+            policy.tree_cache,
+            policy.enable_hierarchical_cache,
+            policy.enable_priority_scheduling,
+            policy.schedule_low_priority_values_first,
+        )
+        self.scheduler: MiniMaxMusic3Scheduler = scheduler
 
     def calc_priority(
         self,
@@ -47,6 +58,25 @@ class MiniMaxMusic3SchedulePolicy(SchedulePolicy):
             else:
                 pass
         waiting_queue[:] = ordered
+        if running_batch is None:
+            return
+        else:
+            pass
+        scheduler = self.scheduler
+        limit = scheduler.pair_admission_limit(waiting_queue, running_batch)
+        if limit:
+            first_pair_tokens = sum(
+                -(-len(request.origin_input_ids) // scheduler.page_size)
+                * scheduler.page_size
+                for request in waiting_queue[:2]
+            )
+            scheduler.max_prefill_tokens = max(
+                scheduler.max_prefill_tokens, first_pair_tokens + 1
+            )
+        else:
+            pass
+        scheduler.deferred_prefill_requests.extend(waiting_queue[limit:])
+        del waiting_queue[limit:]
 
 
 class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
@@ -57,14 +87,7 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
         **kwargs: Unpack[OmniSchedulerArguments[MiniMaxMusic3SGLangRequestData]],
     ) -> None:
         super().__init__(**kwargs)
-        policy = self.policy
-        self.policy = MiniMaxMusic3SchedulePolicy(
-            self.schedule_policy,
-            policy.tree_cache,
-            policy.enable_hierarchical_cache,
-            policy.enable_priority_scheduling,
-            policy.schedule_low_priority_values_first,
-        )
+        self.policy = MiniMaxMusic3SchedulePolicy(self)
 
     def enqueue_built_request(
         self,
@@ -116,24 +139,14 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
         self.waiting_queue.append(req)
 
     def get_new_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
-        queue = self.waiting_queue
-        limit = self.pair_admission_limit(queue, running_batch)
         input_budget = self.max_prefill_tokens
-        if limit:
-            first_pair_tokens = sum(
-                -(-len(request.origin_input_ids) // self.page_size) * self.page_size
-                for request in queue[:2]
-            )
-            self.max_prefill_tokens = max(input_budget, first_pair_tokens + 1)
-        else:
-            pass
-        deferred = queue[limit:]
-        del queue[limit:]
+        self.deferred_prefill_requests: list[Req] = []
         try:
             return super().get_new_batch_prefill(running_batch)
         finally:
             self.max_prefill_tokens = input_budget
-            self.waiting_queue.extend(deferred)
+            self.waiting_queue.extend(self.deferred_prefill_requests)
+            self.deferred_prefill_requests.clear()
 
     def request_kv_capacity_error(
         self,

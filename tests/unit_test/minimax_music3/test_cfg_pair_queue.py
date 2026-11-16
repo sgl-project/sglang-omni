@@ -65,7 +65,7 @@ def test_cfg_pairs_stay_together_when_the_policy_reorders_the_queue(
 
     monkeypatch.setattr(SchedulePolicy, "calc_priority", calc_priority)
     policy = MiniMaxMusic3SchedulePolicy.__new__(MiniMaxMusic3SchedulePolicy)
-    policy.calc_priority(queue)
+    policy.calc_priority(queue, None, 0)
     assert [req.rid for req in queue] == ["a", "a-cfg", "b", "b-cfg"]
 
 
@@ -94,5 +94,6 @@ def test_finished_unconditioned_row_ends_its_model_path(
     scheduler.close_completed_request = (
         lambda req: scheduler.prefill_start_done.discard(req.rid)
     )
+    scheduler.stream_output([twin])
     scheduler.stream_output([twin])
     assert ended == [("a-cfg", "success")]

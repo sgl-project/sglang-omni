@@ -12,7 +12,12 @@ from unittest.mock import Mock
 import pytest
 import torch
 from sglang.srt.managers.schedule_batch import NextBatchPlan, Req, ScheduleBatch
-from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
+from sglang.srt.managers.schedule_policy import (
+    AddReqResult,
+    CacheAgnosticPolicy,
+    PrefillAdder,
+    SchedulePolicy,
+)
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
@@ -21,6 +26,7 @@ from sglang.srt.runtime_context import get_context, get_schedule
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.minimax_music3.scheduler import MiniMaxMusic3Scheduler
+from sglang_omni.models.minimax_music3.serial_offload import SerialOffloadCoordinator
 from sglang_omni.models.minimax_music3.sglang_request_builder import (
     MiniMaxMusic3SGLangRequestData,
 )
@@ -72,6 +78,12 @@ def scheduler(
                 page_size=page_size,
             )
         )
+        model_scheduler.schedule_policy = "fcfs"
+        model_scheduler.policy = SchedulePolicy(
+            "fcfs", model_scheduler.tree_cache, False, False, False
+        )
+        monkeypatch.setattr(OmniScheduler, "__init__", lambda self, **kwargs: None)
+        MiniMaxMusic3Scheduler.__init__(model_scheduler)
         monkeypatch.setattr(
             model_scheduler, "get_num_allocatable_reqs", lambda count: 32
         )
@@ -94,7 +106,8 @@ def paired_requests(prompt_lengths: list[int], max_new_tokens: int) -> list[Req]
 def admit_prefill(
     scheduler: MiniMaxMusic3Scheduler, running_batch: ScheduleBatch
 ) -> NextBatchPlan:
-    """Run the real adder while excluding model execution and accelerator allocation."""
+    """Run real ordering and admission without model execution or device batches."""
+    scheduler.policy.calc_priority(scheduler.waiting_queue, running_batch)
     adder = PrefillAdder(
         scheduler.page_size,
         scheduler.tree_cache,
@@ -208,6 +221,159 @@ def test_running_long_song_reservation_blocks_then_releases_next_pair(
         scheduler.token_to_kv_pool_allocator.free(pages)
     running_batch.reqs = []
     assert scheduler.pair_admission_limit(waiting_requests, running_batch) == 2
+
+
+def test_priority_orders_all_waiting_pairs_before_capacity_admission(
+    scheduler: MiniMaxMusic3Scheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clipping before sorting hid a higher-priority pair behind the queue head."""
+    monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", admit_prefill)
+    scheduler.policy.enable_priority_scheduling = True
+    requests = paired_requests([128, 128], 10)
+    for index, request in enumerate(requests):
+        request.priority = index // 2
+        request.time_stats.wait_queue_entry_time = float(index // 2 + 1)
+    scheduler.waiting_queue = requests.copy()
+    with get_context().override_server_args(prefill_max_requests=2):
+        plan = scheduler.get_new_batch_prefill(
+            ScheduleBatch(reqs=[], batch_is_full=False)
+        )
+    assert plan.batch_to_run.reqs == requests[2:]
+    assert scheduler.waiting_queue == requests[:2]
+
+
+def test_serial_offload_owns_the_pair_selected_after_sorting(
+    scheduler: MiniMaxMusic3Scheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offload ownership must follow the selected pair, not the unsorted queue head."""
+    coordinator = SerialOffloadCoordinator()
+    coordinator.register_ar(torch.nn.Linear(2, 2), torch.device("cpu"))
+    monkeypatch.setattr(
+        "sglang_omni.models.minimax_music3.scheduler.get_coordinator",
+        lambda: coordinator,
+    )
+    monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", admit_prefill)
+    scheduler.policy.enable_priority_scheduling = True
+    requests = paired_requests([128, 128], 10)
+    for index, request in enumerate(requests):
+        request.priority = index // 2
+        request.time_stats.wait_queue_entry_time = float(index // 2 + 1)
+    scheduler.waiting_queue = requests.copy()
+    plan = scheduler.get_new_batch_prefill(ScheduleBatch(reqs=[], batch_is_full=False))
+    assert plan.batch_to_run.reqs == requests[2:]
+    assert scheduler.waiting_queue == requests[:2]
+    coordinator.begin_dit_handoff(requests[2].rid)
+    plan = scheduler.get_new_batch_prefill(ScheduleBatch(reqs=[], batch_is_full=False))
+    assert plan.batch_to_run.reqs == []
+    assert scheduler.waiting_queue == requests[:2]
+
+
+@pytest.mark.parametrize("prefill_max_requests", [3, 5])
+def test_random_order_and_request_cap_preserve_pairs_until_queue_drains(
+    scheduler: MiniMaxMusic3Scheduler,
+    monkeypatch: pytest.MonkeyPatch,
+    prefill_max_requests: int,
+) -> None:
+    """Random sorting must see every waiting pair once before row-cap admission."""
+    monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", admit_prefill)
+    scheduler.policy.policy = CacheAgnosticPolicy.RANDOM
+    shuffled_queues: list[list[Req]] = []
+
+    def reverse_rows(waiting_queue: list[Req]) -> None:
+        shuffled_queues.append(waiting_queue.copy())
+        waiting_queue.reverse()
+
+    monkeypatch.setattr(
+        "sglang.srt.managers.schedule_policy.random.shuffle", reverse_rows
+    )
+    requests = paired_requests([128] * 3, 10)
+    scheduler.waiting_queue = requests.copy()
+    admitted: list[Req] = []
+    with get_context().override_server_args(prefill_max_requests=prefill_max_requests):
+        for _ in range(3):
+            before = scheduler.waiting_queue.copy()
+            if not before:
+                break
+            expected_order = [
+                request
+                for index in range(len(before) - 2, -1, -2)
+                for request in before[index : index + 2]
+            ]
+            plan = scheduler.get_new_batch_prefill(
+                ScheduleBatch(reqs=[], batch_is_full=False)
+            )
+            assert shuffled_queues.pop() == before
+            assert shuffled_queues == []
+            batch_rows = prefill_max_requests - prefill_max_requests % 2
+            assert plan.batch_to_run.reqs == expected_order[:batch_rows]
+            assert scheduler.waiting_queue == expected_order[batch_rows:]
+            admitted.extend(plan.batch_to_run.reqs)
+    assert scheduler.waiting_queue == []
+    assert len(admitted) == len(requests)
+    assert set(admitted) == set(requests)
+
+
+def test_sorted_pairs_wait_for_running_kv_then_resume(
+    scheduler: MiniMaxMusic3Scheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sorting must preserve full decode reservations and the deferred queue."""
+    monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", admit_prefill)
+    scheduler.policy.enable_priority_scheduling = True
+    running_requests = paired_requests([697], 9001)
+    allocated_pages = []
+    for request in running_requests:
+        request.output_ids = [1] * 4500
+        token_count = len(request.origin_input_ids) + len(request.output_ids) - 1
+        allocated_pages.append(
+            scheduler.token_to_kv_pool_allocator.alloc(
+                -(-token_count // scheduler.page_size) * scheduler.page_size
+            )
+        )
+    requests = paired_requests([847, 847], 9001)
+    for index, request in enumerate(requests):
+        request.priority = index // 2
+        request.time_stats.wait_queue_entry_time = float(index // 2 + 1)
+    scheduler.waiting_queue = requests.copy()
+    running_batch = ScheduleBatch(reqs=running_requests, batch_is_full=False)
+    plan = scheduler.get_new_batch_prefill(running_batch)
+    assert plan.batch_to_run.reqs == []
+    assert scheduler.waiting_queue == requests[2:] + requests[:2]
+    for pages in allocated_pages:
+        scheduler.token_to_kv_pool_allocator.free(pages)
+    running_batch.reqs = []
+    plan = scheduler.get_new_batch_prefill(running_batch)
+    assert plan.batch_to_run.reqs == requests[2:]
+    assert scheduler.waiting_queue == requests[:2]
+
+
+@pytest.mark.parametrize("raise_after_ordering", [False, True])
+def test_deferred_pairs_and_input_budget_restored_on_early_exit(
+    scheduler: MiniMaxMusic3Scheduler,
+    monkeypatch: pytest.MonkeyPatch,
+    raise_after_ordering: bool,
+) -> None:
+    """An early exit after ordering must not lose parked pairs or enlarged budgets."""
+    requests = paired_requests([128, 128], 10)
+    scheduler.waiting_queue = requests.copy()
+    scheduler.max_prefill_tokens = 100
+
+    def stop_after_ordering(
+        scheduler: MiniMaxMusic3Scheduler, running_batch: ScheduleBatch
+    ) -> NextBatchPlan:
+        scheduler.policy.calc_priority(scheduler.waiting_queue, running_batch)
+        if raise_after_ordering:
+            raise RuntimeError("Prefill interrupted")
+        return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
+
+    monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", stop_after_ordering)
+    running_batch = ScheduleBatch(reqs=[], batch_is_full=False)
+    if raise_after_ordering:
+        with pytest.raises(RuntimeError, match="Prefill interrupted"):
+            scheduler.get_new_batch_prefill(running_batch)
+    else:
+        assert scheduler.get_new_batch_prefill(running_batch).batch_to_run is None
+    assert scheduler.waiting_queue == requests
+    assert scheduler.max_prefill_tokens == 100
 
 
 @pytest.mark.parametrize("input_budget", [100, 512])
