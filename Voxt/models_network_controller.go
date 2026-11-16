@@ -52,25 +52,32 @@ func (a *app) fillNetwork(key string) {
 	}
 }
 
+func networkProxyValueFor(form networkForm) (string, string) {
+	switch form.proxyMode {
+	case proxyNone:
+		return famsettings.ProxyDirect, ""
+	case proxyCustom:
+		proxy, err := famsettings.Normalize(actnow.KeyProxy, form.proxyURL)
+		if err != nil || proxy == famsettings.ProxyAuto || proxy == famsettings.ProxyDirect {
+			return "", "proxy"
+		}
+		if strings.ContainsAny(form.proxyPassword, "\"\\\n\r") { // what the Keychain's security tool cannot take (internal/secrets)
+			return "", "password"
+		}
+		return proxy, ""
+	default:
+		return famsettings.ProxyAuto, ""
+	}
+}
+
 // saveNetwork checks the form and makes it VoxtNew's settings (the
 // family's, for the keys VoxtNew follows); it reports whether it did.
 func (a *app) saveNetwork() bool {
 	f := &a.netForm
-	proxy := famsettings.ProxyAuto
-	switch f.proxyMode {
-	case proxyNone:
-		proxy = famsettings.ProxyDirect
-	case proxyCustom:
-		v, err := famsettings.Normalize(actnow.KeyProxy, f.proxyURL)
-		if err != nil || v == famsettings.ProxyAuto || v == famsettings.ProxyDirect {
-			f.proxyErr = networkProxyProblemTextFor(i18n.CurrentTranslator(), "proxy")
-			return false
-		}
-		if strings.ContainsAny(f.proxyPassword, "\"\\\n\r") { // what the Keychain's security tool cannot take (internal/secrets)
-			f.proxyErr = networkProxyProblemTextFor(i18n.CurrentTranslator(), "password")
-			return false
-		}
-		proxy = v
+	proxy, problem := networkProxyValueFor(*f)
+	if problem != "" {
+		f.proxyErr = networkProxyProblemTextFor(i18n.CurrentTranslator(), problem)
+		return false
 	}
 	source := f.sourceURL
 	if f.source < len(networkSources) {

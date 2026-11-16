@@ -222,11 +222,14 @@ func modelsFixtureScenarios() []meetingFixtureScenario {
 	add("models-network-custom-validation", func(input *modelsViewStateInput) {
 		input.NetworkOpen = true
 		input.NetworkForm.proxyMode = proxyCustom
+		input.NetworkForm.proxyURL = "not-a-proxy"
 	})
 	scenarios[len(scenarios)-1].modelsProblem = "proxy"
 	add("models-network-password-validation", func(input *modelsViewStateInput) {
 		input.NetworkOpen = true
 		input.NetworkForm.proxyMode = proxyCustom
+		input.NetworkForm.proxyURL = "http://fixture"
+		input.NetworkForm.proxyPassword = "bad\"password"
 	})
 	scenarios[len(scenarios)-1].modelsProblem = "password"
 	for index, name := range []string{"official", "mirror"} {
