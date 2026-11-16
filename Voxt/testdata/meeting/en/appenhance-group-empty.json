@@ -93,6 +93,7 @@
             "value": ""
           }
         ],
+        "value": "",
         "current_label": "None",
         "custom_label": "Custom…",
         "custom": false,
@@ -104,6 +105,7 @@
         "bundle_id": ""
       },
       "empty": true,
+      "has_bundle_id": false,
       "front_text": "Switch to another app to see which group it falls in.",
       "browser": false,
       "address_status": "none",

@@ -124,6 +124,7 @@
             "value": ""
           }
         ],
+        "value": "Return",
         "current_label": "Return ↩",
         "custom_label": "Custom…",
         "custom": false,
@@ -136,6 +137,7 @@
         "name": "Slack"
       },
       "empty": false,
+      "has_bundle_id": true,
       "front_text": "Frontmost: Slack",
       "browser": false,
       "address_status": "none",
@@ -153,10 +155,8 @@
       "error": "The helper is not running. Add an app by its bundle ID instead.",
       "rows": null,
       "has_catalog": false,
-      "no_matches": false,
       "query": "",
-      "bundle_input": "",
-      "add_disabled": true
+      "bundle_input": ""
     }
   }
 }

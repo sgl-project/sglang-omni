@@ -92,8 +92,23 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 		state := buildHistoryAccessViewState(translator, scenario.historyAccess)
 		fixture.HistoryAccess = &state
 	case "appenhance":
+		if scenario.appEnhancementURLCheck {
+			group, _ := scenario.appEnhancement.Rules.Group(scenario.appEnhancement.SelectedID)
+			scenario.appEnhancement.URLError = appEnhancementURLError(translator, group, scenario.appEnhancement.URLInput)
+		}
+		if scenario.appEnhancementAutoKeyCheck {
+			scenario.appEnhancement.AutoKeyError = appEnhancementCustomAutoKeyError(translator, scenario.appEnhancement.AutoKeyText)
+		}
 		state := buildAppEnhancementViewState(translator, scenario.appEnhancement)
 		fixture.AppEnhancement = &state
+		if scenario.appEnhancementLibrary {
+			for _, group := range scenario.appEnhancement.Rules.Groups {
+				detailInput := appEnhancementViewStateInput{
+					CustomBrowsers: scenario.appEnhancement.CustomBrowsers, Apps: scenario.appEnhancement.Apps, AutoKeyText: group.AutoKey,
+				}
+				fixture.AppEnhancementDetails = append(fixture.AppEnhancementDetails, buildAppEnhancementGroupDetail(translator, group, detailInput))
+			}
+		}
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

@@ -14,7 +14,7 @@ func appEnhancementPreviewCard(c *ui.Context, state *appEnhancementPreview, acti
 	colors := tok(theme)
 	fillCard(c.Key("ae-preview")).Padding(px(theme, sp3), px(theme, sp4)).Gap(px(theme, sp2)).Children(func() {
 		ui.Row(c).Gap(px(theme, sp2)).AlignItems(ui.Center).Children(func() {
-			if state.Empty {
+			if !state.HasBundleID {
 				ui.Icon(c, icons.WindowFrame.Linear).Size(px(theme, 16), px(theme, 16)).TextColor(colors.Text2).Shrink(0)
 			} else {
 				appIcon(c, iconSource, state.App, 20, true)
@@ -32,7 +32,7 @@ func appEnhancementPreviewCard(c *ui.Context, state *appEnhancementPreview, acti
 				actions.refreshAppEnhancementPreview()
 			}
 		})
-		if state.Empty {
+		if !state.HasBundleID {
 			return
 		}
 		if state.Browser {

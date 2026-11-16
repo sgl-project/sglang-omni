@@ -19,6 +19,7 @@ func appEnhancementFixtureScenarios() []meetingFixtureScenario {
 		input.PreviewApp = proto.App{}
 	})
 	add("normal", func(input *appEnhancementViewStateInput) {})
+	scenarios[len(scenarios)-1].appEnhancementLibrary = true
 	add("off", func(input *appEnhancementViewStateInput) { input.Enabled = false })
 	add("error", func(input *appEnhancementViewStateInput) { input.Error = "fixture document read failed" })
 	add("preview-loading", func(input *appEnhancementViewStateInput) {
@@ -54,6 +55,10 @@ func appEnhancementFixtureScenarios() []meetingFixtureScenario {
 	add("preview-invalid-address", func(input *appEnhancementViewStateInput) {
 		appEnhancementFixturePreview(input, "about:blank")
 	})
+	add("preview-named-bundleless", func(input *appEnhancementViewStateInput) {
+		input.PreviewApp = proto.App{PID: 42, Name: "Background Agent"}
+		input.Preview = aePreview{}
+	})
 	add("preview-add-actions", func(input *appEnhancementViewStateInput) {
 		appEnhancementFixturePreview(input, "https://example.com/chat")
 	})
@@ -68,9 +73,6 @@ func appEnhancementFixtureScenarios() []meetingFixtureScenario {
 		input.SelectedID = "g-code"
 		input.Rules.Groups[1].URLs = []string{"HTTPS://GitHub.com/"}
 	})
-	add("url-error-empty", func(input *appEnhancementViewStateInput) {
-		appEnhancementFixturePattern(input, "")
-	})
 	add("url-error-space", func(input *appEnhancementViewStateInput) {
 		appEnhancementFixturePattern(input, "bad host")
 	})
@@ -82,9 +84,10 @@ func appEnhancementFixtureScenarios() []meetingFixtureScenario {
 	})
 	add("url-duplicate", func(input *appEnhancementViewStateInput) {
 		input.SelectedID = "g-code"
+		input.EditorGroupID = "g-code"
 		input.URLInput = "GitHub.com/"
-		input.URLCheck = true
 	})
+	scenarios[len(scenarios)-1].appEnhancementURLCheck = true
 	add("key-custom-existing", func(input *appEnhancementViewStateInput) {
 		input.Rules.Groups[0].AutoKey = "Control+Shift+Return"
 		input.AutoKeyText = "Control+Shift+Return"
@@ -96,8 +99,8 @@ func appEnhancementFixtureScenarios() []meetingFixtureScenario {
 	add("key-error", func(input *appEnhancementViewStateInput) {
 		input.AutoKeyCustom = true
 		input.AutoKeyText = "Shift+Fn"
-		input.AutoKeyCheck = true
 	})
+	scenarios[len(scenarios)-1].appEnhancementAutoKeyCheck = true
 	add("apps-loading", func(input *appEnhancementViewStateInput) {
 		input.AppsOpen = true
 		input.Apps = appEnhancementFixtureApps()
@@ -145,7 +148,7 @@ func appEnhancementFixtureScenarios() []meetingFixtureScenario {
 
 func appEnhancementFixtureInput() appEnhancementViewStateInput {
 	return appEnhancementViewStateInput{
-		Enabled: true, Rules: sampleRules(), SelectedID: "g-chat", HelperReady: true,
+		Enabled: true, Rules: sampleRules(), SelectedID: "g-chat", EditorGroupID: "g-chat", HelperReady: true,
 		PreviewApp: proto.App{PID: 903, BundleID: "com.tinyspeck.slackmacgap", Name: "Slack"},
 		Apps:       nil, URLReads: map[string]urlRead{},
 	}

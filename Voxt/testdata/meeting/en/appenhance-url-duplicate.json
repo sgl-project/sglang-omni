@@ -118,6 +118,7 @@
             "value": ""
           }
         ],
+        "value": "",
         "current_label": "None",
         "custom_label": "Custom…",
         "custom": false,
@@ -130,6 +131,7 @@
         "name": "Slack"
       },
       "empty": false,
+      "has_bundle_id": true,
       "front_text": "Frontmost: Slack",
       "browser": false,
       "address_status": "none",

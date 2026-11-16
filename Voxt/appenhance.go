@@ -106,6 +106,7 @@ type appEnhanceState struct {
 	urlReads  map[string]urlRead
 	aePrev    aePreview
 	aeSaveSeq int
+	aeCache   appEnhancementModelCache
 	aeUI      appEnhancementLocalUI
 	aeCatalog appEnhancementCatalog
 	// treesSent is the app.configure last sent (its bundle ids), so the
@@ -284,16 +285,6 @@ func (a *app) refreshPreview(force bool) {
 				a.aePrev.err = err.Error()
 			}
 		})
-}
-
-// previewMatch is the group the preview app falls in, for Transcribe.
-func (a *app) previewMatch() appctx.Match {
-	app := a.previewApp()
-	in := appctx.Context{App: app, Browser: appctx.IsBrowser(app.BundleID, a.prefs.AppEnhancement.Browsers)}
-	if in.Browser && a.aePrev.app == app {
-		in.URL = a.aePrev.url
-	}
-	return appctx.Resolve(a.aeRules, in, appctx.Transcribe)
 }
 
 // newGroupID makes a group's id.

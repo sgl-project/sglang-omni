@@ -124,6 +124,7 @@
             "value": ""
           }
         ],
+        "value": "Return",
         "current_label": "Return ↩",
         "custom_label": "自定义…",
         "custom": false,
@@ -136,6 +137,7 @@
         "name": "Google Chrome"
       },
       "empty": false,
+      "has_bundle_id": true,
       "front_text": "前台：Google Chrome",
       "browser": true,
       "address": "辅助进程没有运行，无法读取网址。",

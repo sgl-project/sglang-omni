@@ -124,6 +124,7 @@
             "value": ""
           }
         ],
+        "value": "Return",
         "current_label": "Return ↩",
         "custom_label": "Custom…",
         "custom": false,
@@ -136,6 +137,7 @@
         "name": "Google Chrome"
       },
       "empty": false,
+      "has_bundle_id": true,
       "front_text": "Frontmost: Google Chrome",
       "browser": true,
       "address": "Reading the address…",

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -189,6 +190,94 @@ func TestAppEnhancementAutoKey(t *testing.T) {
 	frames(tt)
 	if g, _ := storedRules(t, a).Group("g-chat"); g.AutoKey != "Command+Return" {
 		t.Errorf("auto key %q", g.AutoKey)
+	}
+}
+
+func TestAppEnhancementDraftReset(t *testing.T) {
+	a, _, tt := aeTester(t)
+	a.setRules(sampleRules())
+	a.aeUI.editFor = "g-chat"
+	a.aeUI.urlIn = "draft.example.com"
+	a.aeUI.keyCustom = true
+	a.aeUI.keyText = "Command+Return"
+	a.aeUI.sel = "g-code"
+	frames(tt)
+	if a.aeUI.urlIn != "" || a.aeUI.keyCustom || a.aeUI.keyText != "" {
+		t.Fatalf("drafts followed the selection: %+v", a.aeUI)
+	}
+	a.aeUI.sel = "g-chat"
+	frames(tt)
+	click(t, tt, "Key after inserting")
+	click(t, tt, "Custom…")
+	a.aeUI.keyText = "Command+Return"
+	frames(tt)
+	click(t, tt, "Key after inserting")
+	click(t, tt, "None")
+	frames(tt)
+	click(t, tt, "Key after inserting")
+	click(t, tt, "Custom…")
+	frames(tt)
+	if a.aeUI.keyText != "" {
+		t.Fatalf("reopened custom key with %q, want the committed empty key", a.aeUI.keyText)
+	}
+}
+
+func TestAppEnhancementVariableClipboard(t *testing.T) {
+	a, _, _ := aeTester(t)
+	copied := ""
+	a.copyText = func(text string) error {
+		copied = text
+		return errors.New("clipboard unavailable")
+	}
+	a.copyAppEnhancementVariable("{{APP_NAME}}")
+	if copied != "{{APP_NAME}}" || len(a.toasts) != 1 || a.toasts[0] != "Copied" {
+		t.Fatalf("clipboard %q, toasts %q", copied, a.toasts)
+	}
+}
+
+func TestAppEnhancementAppListLateReply(t *testing.T) {
+	a, _, _ := aeTester(t)
+	a.aeCatalog.seq = 2
+	a.aeCatalog.loading = true
+	a.finishAppList(2, proto.AppListResult{Apps: []proto.AppInfo{{BundleID: "com.example.new", Name: "New"}}}, nil)
+	a.finishAppList(1, proto.AppListResult{Apps: []proto.AppInfo{{BundleID: "com.example.old", Name: "Old"}}}, nil)
+	if a.aeCatalog.loading || len(a.aeCatalog.apps) != 1 || a.aeCatalog.apps[0].BundleID != "com.example.new" {
+		t.Fatalf("late reply replaced the newer catalog: %+v", a.aeCatalog)
+	}
+}
+
+func TestAppEnhancementModelCache(t *testing.T) {
+	a, _, _ := aeTester(t)
+	a.setRules(sampleRules())
+	first := a.appEnhancementModel()
+	second := a.appEnhancementModel()
+	if &first.Groups[0] != &second.Groups[0] {
+		t.Fatal("unchanged input rebuilt the view state")
+	}
+	a.aeUI.sel = "g-code"
+	selected := a.appEnhancementModel()
+	if selected.Detail.ID != "g-code" || &first.Groups[0] == &selected.Groups[0] {
+		t.Fatal("selection did not invalidate the view state")
+	}
+	previousLocale := i18n.Locale()
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	i18n.SetLocale("zh-Hans")
+	localized := a.appEnhancementModel()
+	if localized.Detail.Features[0].Label != "转录" {
+		t.Fatalf("locale did not invalidate the view state: %+v", localized.Detail.Features[0])
+	}
+	i18n.SetLocale("en")
+	a.aeUI.browsersOpen = true
+	a.urlReads["com.apple.Safari"] = urlRead{ok: true}
+	browsers := a.appEnhancementModel()
+	found := false
+	for _, browser := range browsers.Browsers.Rows {
+		if browser.Ref.BundleID == "com.apple.Safari" && browser.StatusText == "Address read" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("browser read did not invalidate the view state")
 	}
 }
 

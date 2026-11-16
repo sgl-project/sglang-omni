@@ -10,18 +10,21 @@ import (
 )
 
 type meetingFixtureScenario struct {
-	name            string
-	kind            string
-	snapshot        meeting.Snapshot
-	page            meetingsViewStateInput
-	err             error
-	collapsed       bool
-	cardSize        int
-	history         historyViewStateInput
-	historySettings historySettingsStateInput
-	historyAccess   historyAccessStateInput
-	appEnhancement  appEnhancementViewStateInput
-	historyProblem  string
+	name                       string
+	kind                       string
+	snapshot                   meeting.Snapshot
+	page                       meetingsViewStateInput
+	err                        error
+	collapsed                  bool
+	cardSize                   int
+	history                    historyViewStateInput
+	historySettings            historySettingsStateInput
+	historyAccess              historyAccessStateInput
+	appEnhancement             appEnhancementViewStateInput
+	appEnhancementURLCheck     bool
+	appEnhancementAutoKeyCheck bool
+	appEnhancementLibrary      bool
+	historyProblem             string
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)

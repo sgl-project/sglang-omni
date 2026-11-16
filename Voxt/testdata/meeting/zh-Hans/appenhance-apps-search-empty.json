@@ -125,6 +125,7 @@
             "value": ""
           }
         ],
+        "value": "Return",
         "current_label": "Return ↩",
         "custom_label": "自定义…",
         "custom": false,
@@ -137,6 +138,7 @@
         "name": "Slack"
       },
       "empty": false,
+      "has_bundle_id": true,
       "front_text": "前台：Slack",
       "browser": false,
       "address_status": "none",
@@ -151,12 +153,47 @@
       "group_id": "g-chat",
       "title": "把 App 加入“Team chat”",
       "loading": false,
-      "rows": null,
+      "rows": [
+        {
+          "ref": {
+            "bundle_id": "com.google.Chrome",
+            "name": "Google Chrome",
+            "path": "/fixtures/Chrome.app"
+          },
+          "running": true,
+          "member": false
+        },
+        {
+          "ref": {
+            "bundle_id": "com.tinyspeck.slackmacgap",
+            "name": "Slack",
+            "path": "/fixtures/Slack.app"
+          },
+          "running": true,
+          "member": true
+        },
+        {
+          "ref": {
+            "bundle_id": "com.apple.Safari",
+            "name": "Safari",
+            "path": "/fixtures/Safari.app"
+          },
+          "running": false,
+          "member": false
+        },
+        {
+          "ref": {
+            "bundle_id": "org.mozilla.firefox",
+            "name": "Firefox",
+            "path": "/fixtures/Firefox.app"
+          },
+          "running": false,
+          "member": false
+        }
+      ],
       "has_catalog": true,
-      "no_matches": true,
       "query": "no such app",
-      "bundle_input": "",
-      "add_disabled": true
+      "bundle_input": ""
     }
   }
 }

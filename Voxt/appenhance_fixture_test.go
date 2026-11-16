@@ -70,7 +70,9 @@ func checkAppEnhancementFixtureValues(t *testing.T, locale string, fixtures map[
 		}
 	}
 	assertMeetingFixtureSet(t, locale+" app enhancement match sources", meetingTypedConstants(t, "internal/appctx/match.go", "Source"), sources)
-	assertMeetingFixtureSet(t, locale+" app enhancement pattern problems", appEnhancementPatternProblemCodes(t), patternProblems)
+	requiredPatternProblems := appEnhancementPatternProblemCodes(t)
+	delete(requiredPatternProblems, "empty") // Empty input never reaches the Add URL action or a normalized document.
+	assertMeetingFixtureSet(t, locale+" app enhancement pattern problems", requiredPatternProblems, patternProblems)
 	assertMeetingFixtureSet(t, locale+" app enhancement auto-key problems", map[string]bool{"autoKey": true}, autoKeyProblems)
 	assertMeetingFixtureSet(t, locale+" app enhancement browser engines", map[string]bool{appctx.WebKit: true, appctx.Chromium: true, appctx.Gecko: true, "": true}, engines)
 	assertMeetingFixtureSet(t, locale+" app enhancement address states", map[string]bool{
@@ -87,6 +89,18 @@ func checkAppEnhancementFixtureValues(t *testing.T, locale string, fixtures map[
 		requiredKeys[keys] = true
 	}
 	assertMeetingFixtureSet(t, locale+" app enhancement auto-key options", requiredKeys, autoKeyOptions)
+}
+
+func TestAppEnhancementPatternErrors(t *testing.T) {
+	patterns := map[string]string{"empty": "", "space": "bad host", "scheme": "ftp://example.com", "host": "*"}
+	for code := range appEnhancementPatternProblemCodes(t) {
+		input := appEnhancementFixtureInput()
+		appEnhancementFixturePattern(&input, patterns[code])
+		state := buildAppEnhancementViewState(i18n.NewTranslator("en"), input)
+		if len(state.Detail.URLs) != 1 || state.Detail.URLs[0].WarningCode != code {
+			t.Errorf("pattern %q produced %+v, want warning code %q", patterns[code], state.Detail.URLs, code)
+		}
+	}
 }
 
 func appEnhancementPatternProblemCodes(t *testing.T) map[string]bool {

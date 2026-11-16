@@ -117,6 +117,7 @@
             "value": ""
           }
         ],
+        "value": "",
         "current_label": "None",
         "custom_label": "Custom…",
         "custom": false,
@@ -129,6 +130,7 @@
         "name": "Google Chrome"
       },
       "empty": false,
+      "has_bundle_id": true,
       "front_text": "Frontmost: Google Chrome",
       "browser": true,
       "address": "Google Chrome does not show its address right now, so it matches as an app.",

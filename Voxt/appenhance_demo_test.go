@@ -17,17 +17,19 @@ type appEnhancementDemoStep struct {
 
 func TestAppEnhancementDemoActionControls(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		fixture string
-		prepare func(*meetingDemoHost)
-		steps   []appEnhancementDemoStep
-		want    []string
-		check   func(*testing.T, *meetingDemoHost)
+		name       string
+		fixture    string
+		prepare    func(*meetingDemoHost)
+		steps      []appEnhancementDemoStep
+		want       []string
+		wantText   string
+		rejectText string
+		check      func(*testing.T, *meetingDemoHost)
 	}{
 		{name: "master switch", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Use App enhancement"), want: []string{"setAppEnhancementEnabled false"}},
 		{name: "new group", fixture: "en/appenhance-normal", steps: appEnhancementSteps("New group"), want: []string{"addAppEnhancementGroup"}},
 		{name: "empty new group", fixture: "en/appenhance-empty", steps: appEnhancementSteps("New group"), want: []string{"addAppEnhancementGroup"}},
-		{name: "open browsers", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Browsers"), want: []string{"openAppEnhancementBrowsers"}},
+		{name: "open browsers", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Browsers"), want: []string{"openAppEnhancementBrowsers"}, wantText: "Voxt reads the current tab's address when you press a shortcut."},
 		{name: "group enabled", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Group enabled"), want: []string{"setAppEnhancementGroupEnabled g-chat false"}},
 		{name: "transcribe feature", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Use the group for Transcribe"), want: []string{"setAppEnhancementGroupFeature g-chat transcribe false"}},
 		{name: "translate feature", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Use the group for Translate"), want: []string{"setAppEnhancementGroupFeature g-chat translate true"}},
@@ -38,20 +40,21 @@ func TestAppEnhancementDemoActionControls(t *testing.T) {
 			host.appEnhancementUI.name = "Team chat"
 		}, steps: []appEnhancementDemoStep{{label: "Prompt for this group", text: "New prompt"}}, want: []string{`setAppEnhancementGroupPrompt g-chat "New prompt"`}},
 		{name: "copy variable", fixture: "en/appenhance-normal", steps: appEnhancementSteps("{{APP_NAME}}"), want: []string{`copyAppEnhancementVariable "{{APP_NAME}}"`}},
+		{name: "delete ask", fixture: "en/appenhance-normal", steps: []appEnhancementDemoStep{{label: "More actions"}, {label: "Delete group…", menu: true}}, wantText: "Delete “Team chat”?"},
 		{name: "delete", fixture: "en/appenhance-delete-ask", steps: appEnhancementSteps("Delete"), want: []string{"deleteAppEnhancementGroup g-chat"}},
-		{name: "delete cancel", fixture: "en/appenhance-delete-ask", steps: appEnhancementSteps("Cancel"), check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "delete cancel", fixture: "en/appenhance-delete-ask", steps: appEnhancementSteps("Cancel"), rejectText: "Delete “Team chat”?", check: func(t *testing.T, host *meetingDemoHost) {
 			if host.appEnhancementUI.delAsk {
 				t.Fatal("cancel did not close the delete dialog")
 			}
 		}},
-		{name: "open apps", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Add apps…"), want: []string{"openAppEnhancementApps"}},
+		{name: "open apps", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Add apps…"), want: []string{"openAppEnhancementApps"}, wantText: "Add apps to Team chat"},
 		{name: "toggle app", fixture: "en/appenhance-apps-normal", steps: appEnhancementSteps("Google Chrome"), want: []string{"toggleAppEnhancementApp com.google.Chrome"}},
 		{name: "add bundle", fixture: "en/appenhance-apps-normal", steps: []appEnhancementDemoStep{{label: "Bundle ID", text: "com.example.editor"}, {label: "Add bundle ID"}}, want: []string{"addAppEnhancementBundle g-chat com.example.editor"}},
 		{name: "remove app", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Remove Slack"), want: []string{"removeAppEnhancementApp g-chat com.tinyspeck.slackmacgap"}},
 		{name: "add website", fixture: "en/appenhance-normal", steps: []appEnhancementDemoStep{{label: "New website rule", text: "example.com"}, {label: "Add website rule"}}, want: []string{`addAppEnhancementURL g-chat "example.com"`}},
 		{name: "remove website", fixture: "en/appenhance-preview-url", steps: appEnhancementSteps("Remove gitlab.com/acme/*"), want: []string{"removeAppEnhancementURL g-code 1"}},
 		{name: "auto key none", fixture: "en/appenhance-normal", steps: []appEnhancementDemoStep{{label: "Key after inserting"}, {label: "None", point: true}}, want: []string{`setAppEnhancementAutoKey g-chat ""`}},
-		{name: "auto key custom", fixture: "en/appenhance-normal", steps: []appEnhancementDemoStep{{label: "Key after inserting"}, {label: "Custom…", point: true}}, check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "auto key custom", fixture: "en/appenhance-normal", steps: []appEnhancementDemoStep{{label: "Key after inserting"}, {label: "Custom…", point: true}}, wantText: "Custom key after inserting", check: func(t *testing.T, host *meetingDemoHost) {
 			if !host.appEnhancementUI.keyCustom {
 				t.Fatal("custom key editor did not open")
 			}
@@ -62,18 +65,18 @@ func TestAppEnhancementDemoActionControls(t *testing.T) {
 		{name: "refresh preview", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Read again"), want: []string{"refreshAppEnhancementPreview"}},
 		{name: "add preview app", fixture: "en/appenhance-preview-add-actions", steps: appEnhancementSteps("Add Google Chrome to Team chat"), want: []string{"addAppEnhancementPreviewApp"}},
 		{name: "add preview site", fixture: "en/appenhance-preview-add-actions", steps: appEnhancementSteps("Add example.com to Team chat"), want: []string{"addAppEnhancementPreviewSite"}},
-		{name: "select group", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Code review"), check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "select group", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Code review"), wantText: "gitlab.com/acme/*", check: func(t *testing.T, host *meetingDemoHost) {
 			if host.appEnhancementUI.sel != "g-code" {
 				t.Fatalf("selected group %q", host.appEnhancementUI.sel)
 			}
 		}},
-		{name: "search apps", fixture: "en/appenhance-apps-normal", steps: []appEnhancementDemoStep{{label: "Search apps", text: "missing"}}},
-		{name: "apps done", fixture: "en/appenhance-apps-normal", steps: appEnhancementSteps("Done"), check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "search apps", fixture: "en/appenhance-apps-normal", steps: []appEnhancementDemoStep{{label: "Search apps", text: "missing"}}, wantText: "No app matches."},
+		{name: "apps done", fixture: "en/appenhance-apps-normal", steps: appEnhancementSteps("Done"), rejectText: "Add apps to Team chat", check: func(t *testing.T, host *meetingDemoHost) {
 			if host.appEnhancementUI.appsOpen {
 				t.Fatal("Done did not close Add apps")
 			}
 		}},
-		{name: "browsers done", fixture: "en/appenhance-browsers-normal", steps: appEnhancementSteps("Done"), check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "browsers done", fixture: "en/appenhance-browsers-normal", steps: appEnhancementSteps("Done"), rejectText: "Voxt reads the current tab's address when you press a shortcut.", check: func(t *testing.T, host *meetingDemoHost) {
 			if host.appEnhancementUI.browsersOpen {
 				t.Fatal("Done did not close Browsers")
 			}
@@ -118,6 +121,12 @@ func TestAppEnhancementDemoActionControls(t *testing.T) {
 			}
 			if !slices.Equal(host.calls, test.want) {
 				t.Fatalf("calls %q, want %q", host.calls, test.want)
+			}
+			if test.wantText != "" && !tester.HasText(test.wantText) {
+				t.Fatalf("control did not show %q; texts %q", test.wantText, tester.Texts())
+			}
+			if test.rejectText != "" && tester.HasText(test.rejectText) {
+				t.Fatalf("control still shows %q; texts %q", test.rejectText, tester.Texts())
 			}
 			if test.check != nil {
 				test.check(t, host)

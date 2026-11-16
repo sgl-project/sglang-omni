@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -18,6 +20,32 @@ type appEnhancementCatalog struct {
 	err           string
 	helperStopped bool
 	seq           int
+}
+
+type appEnhancementModelKey struct {
+	locale, readError, selected, browsers string
+	urlReads                              string
+	rulesSeq, catalogSeq, previewSeq      int
+	enabled, helperReady                  bool
+	previewApp                            proto.App
+	previewReading, previewRead           bool
+	previewURL, previewErr                string
+	appsLoading, appsHelperStopped        bool
+	appsError                             string
+	appsOpen                              bool
+	appsQuery, bundleInput                string
+	browsersOpen                          bool
+	browserIDInput, browserNameInput      string
+	deleteAsk                             bool
+	urlInput, urlError                    string
+	autoKeyCustom                         bool
+	autoKeyText, autoKeyError             string
+}
+
+type appEnhancementModelCache struct {
+	valid bool
+	key   appEnhancementModelKey
+	state appEnhancementViewState
 }
 
 func (a *app) aeShown() { a.refreshPreview(true) }
@@ -54,16 +82,72 @@ func (a *app) appEnhancementModel() appEnhancementViewState {
 	if index >= 0 {
 		selected = group.ID
 	}
-	return buildAppEnhancementViewState(i18n.CurrentTranslator(), appEnhancementViewStateInput{
-		Enabled: a.prefs.AppEnhancement.Enabled, Error: a.aeErr, Rules: a.aeRules, SelectedID: selected,
-		CustomBrowsers: a.prefs.AppEnhancement.Browsers, PreviewApp: a.previewApp(), Preview: a.aePrev,
-		HelperReady: a.helperReady(), Apps: a.aeCatalog.apps, URLReads: a.urlReads,
+	previewApp, helperReady := a.previewApp(), a.helperReady()
+	key := appEnhancementModelKey{
+		locale: i18n.Locale(), readError: a.aeErr, selected: selected, browsers: appEnhancementBrowsersKey(a.prefs.AppEnhancement.Browsers),
+		rulesSeq: a.aeSaveSeq, catalogSeq: a.aeCatalog.seq, previewSeq: a.aePrev.seq,
+		enabled: a.prefs.AppEnhancement.Enabled, helperReady: helperReady,
+		previewApp: previewApp, previewReading: a.aePrev.reading, previewRead: a.aePrev.read,
+		previewURL: a.aePrev.url, previewErr: a.aePrev.err,
+		appsLoading: a.aeCatalog.loading, appsHelperStopped: a.aeCatalog.helperStopped, appsError: a.aeCatalog.err,
+		appsOpen: a.aeUI.appsOpen, appsQuery: a.aeUI.appsQuery, bundleInput: a.aeUI.bundleIn,
+		browsersOpen: a.aeUI.browsersOpen, browserIDInput: a.aeUI.brID, browserNameInput: a.aeUI.brName,
+		deleteAsk: a.aeUI.delAsk, urlInput: a.aeUI.urlIn, urlError: a.aeUI.urlErr,
+		autoKeyCustom: a.aeUI.keyCustom, autoKeyText: a.aeUI.keyText, autoKeyError: a.aeUI.keyErr,
+	}
+	if a.aeUI.browsersOpen {
+		key.urlReads = appEnhancementURLReadsKey(a.urlReads)
+	}
+	if a.aeCache.valid && a.aeCache.key == key {
+		return a.aeCache.state
+	}
+	state := buildAppEnhancementViewState(i18n.CurrentTranslator(), appEnhancementViewStateInput{
+		Enabled: a.prefs.AppEnhancement.Enabled, Error: a.aeErr, Rules: a.aeRules, SelectedID: selected, EditorGroupID: a.aeUI.editFor,
+		CustomBrowsers: a.prefs.AppEnhancement.Browsers, PreviewApp: previewApp, Preview: a.aePrev,
+		HelperReady: helperReady, Apps: a.aeCatalog.apps, URLReads: a.urlReads,
 		AppsLoading: a.aeCatalog.loading, AppsError: a.aeCatalog.err, AppsHelperStopped: a.aeCatalog.helperStopped,
 		AppsOpen: a.aeUI.appsOpen, AppsQuery: a.aeUI.appsQuery, BundleInput: a.aeUI.bundleIn,
 		BrowsersOpen: a.aeUI.browsersOpen, BrowserIDInput: a.aeUI.brID, BrowserNameInput: a.aeUI.brName,
 		DeleteAsk: a.aeUI.delAsk, URLInput: a.aeUI.urlIn, URLError: a.aeUI.urlErr,
 		AutoKeyCustom: a.aeUI.keyCustom, AutoKeyText: a.aeUI.keyText, AutoKeyError: a.aeUI.keyErr,
 	})
+	a.aeCache = appEnhancementModelCache{valid: true, key: key, state: state}
+	return state
+}
+
+func appEnhancementBrowsersKey(browsers []settings.Browser) string {
+	var key strings.Builder
+	for _, browser := range browsers {
+		key.WriteString(browser.BundleID)
+		key.WriteByte(0)
+		key.WriteString(browser.Name)
+		key.WriteByte(1)
+	}
+	return key.String()
+}
+
+func appEnhancementURLReadsKey(reads map[string]urlRead) string {
+	ids := make([]string, 0, len(reads))
+	for id := range reads {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	var key strings.Builder
+	for _, id := range ids {
+		read := reads[id]
+		key.WriteString(id)
+		key.WriteByte(0)
+		key.WriteString(read.err)
+		key.WriteByte(0)
+		key.WriteString(read.at.String())
+		key.WriteByte(0)
+		if read.ok {
+			key.WriteByte(1)
+		} else {
+			key.WriteByte(0)
+		}
+	}
+	return key.String()
 }
 
 func (a *app) setAppEnhancementEnabled(on bool) {
@@ -112,17 +196,21 @@ func (a *app) loadApps() {
 	}
 	a.aeCatalog.loading, a.aeCatalog.err, a.aeCatalog.helperStopped = true, "", false
 	helperCall(a, proto.MethodAppList, proto.AppListParams{Installed: true}, 10*time.Second, func(result proto.AppListResult, err error) {
-		if a.aeCatalog.seq != sequence {
-			return
-		}
-		a.aeCatalog.loading = false
-		if err != nil {
-			a.aeCatalog.err = err.Error()
-			return
-		}
-		a.aeCatalog.apps = slices.DeleteFunc(result.Apps, func(info proto.AppInfo) bool {
-			return isSelf(proto.App{PID: info.PID, BundleID: info.BundleID})
-		})
+		a.finishAppList(sequence, result, err)
+	})
+}
+
+func (a *app) finishAppList(sequence int, result proto.AppListResult, err error) {
+	if a.aeCatalog.seq != sequence {
+		return
+	}
+	a.aeCatalog.loading = false
+	if err != nil {
+		a.aeCatalog.err = err.Error()
+		return
+	}
+	a.aeCatalog.apps = slices.DeleteFunc(result.Apps, func(info proto.AppInfo) bool {
+		return isSelf(proto.App{PID: info.PID, BundleID: info.BundleID})
 	})
 }
 
@@ -151,7 +239,14 @@ func (a *app) setAppEnhancementGroupPrompt(id, prompt string) {
 	a.updateGroup(id, func(group *appctx.Group) { group.Prompt = prompt })
 }
 
-func (a *app) copyAppEnhancementVariable(token string) { a.copyHistoryText(token) }
+func (a *app) copyAppEnhancementVariable(token string) {
+	if a.copyText != nil {
+		_ = a.copyText(token)
+	} else {
+		_ = mygo.Clipboard.Write(transfer.TextData(token))
+	}
+	a.toast(i18n.T("Copied"))
+}
 
 func (a *app) toggleAppEnhancementApp(bundleID string) {
 	group, index := a.aeGroup()

@@ -128,6 +128,7 @@
             "value": ""
           }
         ],
+        "value": "Control+Shift+Return",
         "current_label": "⌃⇧Return",
         "custom_label": "Custom…",
         "custom": false,
@@ -140,6 +141,7 @@
         "name": "Slack"
       },
       "empty": false,
+      "has_bundle_id": true,
       "front_text": "Frontmost: Slack",
       "browser": false,
       "address_status": "none",

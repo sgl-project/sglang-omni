@@ -182,7 +182,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			if enhancement.Apps.Error != "" {
 				return enhancement.Apps.Error
 			}
-			if enhancement.Apps.NoMatches {
+			if enhancement.Apps.Query != "" && enhancement.Apps.HasCatalog {
 				return i18n.T("No app matches.")
 			}
 			return enhancement.Apps.Title
@@ -215,7 +215,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 				}
 			}
 		}
-		if enhancement.Preview.Empty {
+		if enhancement.Preview.Empty || !enhancement.Preview.HasBundleID {
 			return enhancement.Preview.FrontText
 		}
 		if enhancement.Preview.Address != "" {

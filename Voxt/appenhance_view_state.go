@@ -58,6 +58,7 @@ type appEnhancementAutoKeyOption struct {
 
 type appEnhancementAutoKey struct {
 	Options      []appEnhancementAutoKeyOption `json:"options"`
+	Value        string                        `json:"value"`
 	CurrentLabel string                        `json:"current_label"`
 	CustomLabel  string                        `json:"custom_label"`
 	Custom       bool                          `json:"custom"`
@@ -83,6 +84,7 @@ type appEnhancementGroupDetail struct {
 type appEnhancementPreview struct {
 	App           appEnhancementIconRef `json:"app"`
 	Empty         bool                  `json:"empty"`
+	HasBundleID   bool                  `json:"has_bundle_id"`
 	FrontText     string                `json:"front_text"`
 	Browser       bool                  `json:"browser"`
 	Address       string                `json:"address,omitempty"`
@@ -111,10 +113,8 @@ type appEnhancementAppsDialog struct {
 	Error       string                    `json:"error,omitempty"`
 	Rows        []appEnhancementAppChoice `json:"rows"`
 	HasCatalog  bool                      `json:"has_catalog"`
-	NoMatches   bool                      `json:"no_matches"`
 	Query       string                    `json:"query"`
 	BundleInput string                    `json:"bundle_input"`
-	AddDisabled bool                      `json:"add_disabled"`
 }
 
 type appEnhancementBrowserRow struct {
@@ -156,6 +156,7 @@ type appEnhancementViewStateInput struct {
 	Error             string
 	Rules             appctx.Rules
 	SelectedID        string
+	EditorGroupID     string
 	CustomBrowsers    []settings.Browser
 	PreviewApp        proto.App
 	Preview           aePreview
@@ -174,11 +175,9 @@ type appEnhancementViewStateInput struct {
 	DeleteAsk         bool
 	URLInput          string
 	URLError          string
-	URLCheck          bool
 	AutoKeyCustom     bool
 	AutoKeyText       string
 	AutoKeyError      string
-	AutoKeyCheck      bool
 }
 
 var autoKeys = []string{"Return", "Command+Return", "Shift+Return", "Control+Return", "Option+Return"}
@@ -213,7 +212,13 @@ func buildAppEnhancementViewState(translator *i18n.Translator, input appEnhancem
 		}
 	}
 	if selected != nil {
-		detail := buildAppEnhancementGroupDetail(translator, *selected, input)
+		detailInput := input
+		if input.EditorGroupID != selected.ID {
+			detailInput.URLInput, detailInput.URLError = "", ""
+			detailInput.AutoKeyCustom, detailInput.AutoKeyError = false, ""
+			detailInput.AutoKeyText = selected.AutoKey
+		}
+		detail := buildAppEnhancementGroupDetail(translator, *selected, detailInput)
 		state.Detail = &detail
 	}
 	state.Preview = buildAppEnhancementPreview(translator, input, selected, match)
@@ -290,9 +295,6 @@ func buildAppEnhancementGroupDetail(translator *i18n.Translator, group appctx.Gr
 		}
 		detail.URLs[index] = row
 	}
-	if input.URLCheck {
-		detail.URLError = appEnhancementURLError(translator, group, input.URLInput)
-	}
 	detail.AutoKey = buildAppEnhancementAutoKey(translator, group.AutoKey, input)
 	return detail
 }
@@ -317,11 +319,8 @@ func buildAppEnhancementAutoKey(translator *i18n.Translator, current string, inp
 		text = current
 	}
 	state := appEnhancementAutoKey{
-		CurrentLabel: uitext.AutoKeyLabelFor(translator, current), CustomLabel: translator.T("Custom…"),
+		Value: current, CurrentLabel: uitext.AutoKeyLabelFor(translator, current), CustomLabel: translator.T("Custom…"),
 		Custom: input.AutoKeyCustom, Text: text, Error: input.AutoKeyError,
-	}
-	if input.AutoKeyCheck {
-		state.Error = appEnhancementCustomAutoKeyError(translator, text)
 	}
 	if state.Error != "" {
 		state.ErrorCode = "autoKey"
@@ -345,7 +344,7 @@ func buildAppEnhancementPreview(translator *i18n.Translator, input appEnhancemen
 		name = app.BundleID
 	}
 	state := appEnhancementPreview{
-		App: appEnhancementIconRef{BundleID: app.BundleID, Name: name}, Empty: app.BundleID == "",
+		App: appEnhancementIconRef{BundleID: app.BundleID, Name: name}, Empty: name == "", HasBundleID: app.BundleID != "",
 		Browser: appctx.IsBrowser(app.BundleID, input.CustomBrowsers), CanRefresh: app.BundleID != "", AddressStatus: "none",
 	}
 	if state.Empty {
@@ -381,7 +380,7 @@ func buildAppEnhancementPreview(translator *i18n.Translator, input appEnhancemen
 	} else {
 		state.MatchText = translator.T("No group matches, so only the features' own rules apply.")
 	}
-	if selected == nil || state.Empty {
+	if selected == nil || !state.HasBundleID {
 		return state
 	}
 	state.AddApp = !selected.HasApp(app.BundleID)
@@ -417,18 +416,11 @@ func buildAppEnhancementAppsDialog(translator *i18n.Translator, input appEnhance
 		}
 		return 1
 	})
-	query := strings.ToLower(strings.TrimSpace(input.AppsQuery))
 	for _, app := range apps {
-		if query != "" && !strings.Contains(strings.ToLower(app.Name), query) && !strings.Contains(strings.ToLower(app.BundleID), query) {
-			continue
-		}
 		state.Rows = append(state.Rows, appEnhancementAppChoice{
 			Ref: appEnhancementIconRef{BundleID: app.BundleID, Name: app.Name, Path: app.Path}, Running: app.Running, Member: selected.HasApp(app.BundleID),
 		})
 	}
-	state.NoMatches = len(state.Rows) == 0 && !state.Loading && state.HasCatalog
-	bundleID := strings.TrimSpace(input.BundleInput)
-	state.AddDisabled = bundleID == "" || strings.ContainsAny(bundleID, " /")
 	return state
 }
 

@@ -173,7 +173,7 @@ func appEnhancementAutoKeyEditor(c *ui.Context, state *appEnhancementGroupDetail
 		}
 		if ui.Select(c.Key("ae-key-sel"), &local.keySel, options).Label(i18n.T("Key after inserting")).Width(px(theme, 180)).Changed() {
 			if local.keySel == state.AutoKey.CustomLabel {
-				local.keyCustom, local.keyText, local.keyErr = true, state.AutoKey.Text, ""
+				local.keyCustom, local.keyText, local.keyErr = true, state.AutoKey.Value, ""
 				return
 			}
 			actions.setAppEnhancementAutoKey(state.ID, labels[local.keySel])

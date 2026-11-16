@@ -93,6 +93,7 @@
             "value": ""
           }
         ],
+        "value": "",
         "current_label": "无",
         "custom_label": "自定义…",
         "custom": false,
@@ -104,6 +105,7 @@
         "bundle_id": ""
       },
       "empty": true,
+      "has_bundle_id": false,
       "front_text": "切换到其他 App，查看它会命中哪个分组。",
       "browser": false,
       "address_status": "none",

@@ -23,16 +23,17 @@ type meetingDemoFixture struct {
 }
 
 type meetingDemoHost struct {
-	fixtures          []meetingDemoFixture
-	selected          int
-	calls             []string
-	pageUI            meetingsLocalUI
-	overlayUI         meetingOverlayLocalUI
-	historyUI         historyLocalUI
-	historySettingsUI historySettingsLocalUI
-	historyAccessUI   historyAccessLocalUI
-	appEnhancementUI  appEnhancementLocalUI
-	overlayLook       settings.Overlay
+	fixtures              []meetingDemoFixture
+	selected              int
+	calls                 []string
+	pageUI                meetingsLocalUI
+	overlayUI             meetingOverlayLocalUI
+	historyUI             historyLocalUI
+	historySettingsUI     historySettingsLocalUI
+	historyAccessUI       historyAccessLocalUI
+	appEnhancementUI      appEnhancementLocalUI
+	appEnhancementDetails map[string][]appEnhancementGroupDetail
+	overlayLook           settings.Overlay
 }
 
 func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
@@ -40,7 +41,7 @@ func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
 	if err != nil {
 		return nil, err
 	}
-	host := &meetingDemoHost{overlayLook: settings.Defaults().Overlay}
+	host := &meetingDemoHost{overlayLook: settings.Defaults().Overlay, appEnhancementDetails: map[string][]appEnhancementGroupDetail{}}
 	for _, localeEntry := range entries {
 		if !localeEntry.IsDir() || !slices.Contains(i18n.Supported(), localeEntry.Name()) {
 			return nil, fmt.Errorf("meeting demo: unsupported entry %s", localeEntry.Name())
@@ -64,6 +65,9 @@ func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
 				return nil, fmt.Errorf("meeting demo: %s has name %q", path, fixture.Name)
 			}
 			host.fixtures = append(host.fixtures, meetingDemoFixture{locale: locale, name: locale + "/" + name, state: fixture})
+			if fixture.AppEnhancementDetails != nil {
+				host.appEnhancementDetails[locale] = fixture.AppEnhancementDetails
+			}
 		}
 	}
 	if len(host.fixtures) == 0 {

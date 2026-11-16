@@ -28,10 +28,17 @@ func appEnhancementAppsDialogView(c *ui.Context, state *appEnhancementAppsDialog
 		case state.Error != "":
 			warnLine(c, state.Error)
 		}
+		query := strings.ToLower(strings.TrimSpace(local.appsQuery))
+		shown := 0
 		ui.Column(c.Key("ae-apps-list")).Gap(px(theme, 2)).Children(func() {
 			// Icons load as rows show: the first screenful at once, the others as they scroll into view.
 			const eager = 12
-			for index, app := range state.Rows {
+			for _, app := range state.Rows {
+				if query != "" && !strings.Contains(strings.ToLower(app.Ref.Name), query) && !strings.Contains(strings.ToLower(app.Ref.BundleID), query) {
+					continue
+				}
+				index := shown
+				shown++
 				row := ui.ButtonBase(c.Key("ae-pick-"+app.Ref.BundleID)).Padding(px(theme, 6), px(theme, sp2)).Radius(px(theme, radiusControl)).
 					Label(app.Ref.Name).Gap(px(theme, sp2)).AlignItems(ui.Center).Checked(app.Member)
 				if row.Hovered() {
@@ -57,7 +64,7 @@ func appEnhancementAppsDialogView(c *ui.Context, state *appEnhancementAppsDialog
 				})
 			}
 		})
-		if state.NoMatches {
+		if shown == 0 && !state.Loading && state.HasCatalog {
 			caption(c, i18n.T("No app matches."))
 		}
 		ui.Box(c).Height(1).Background(colors.Line).Shrink(0).Margin(px(theme, sp1), 0)

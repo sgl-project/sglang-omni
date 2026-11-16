@@ -101,6 +101,7 @@
             "value": ""
           }
         ],
+        "value": "",
         "current_label": "无",
         "custom_label": "自定义…",
         "custom": false,
@@ -113,6 +114,7 @@
         "name": "Google Chrome"
       },
       "empty": false,
+      "has_bundle_id": true,
       "front_text": "前台：Google Chrome",
       "browser": true,
       "address": "example.com/",
