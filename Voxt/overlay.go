@@ -45,18 +45,21 @@ import (
 )
 
 // overlayMode is what the overlay shows.
-type overlayMode int
+type overlayMode string
 
 const (
-	ovHidden overlayMode = iota
-	ovRecording
-	ovWorking
-	ovNotice
-	ovAnswer
+	ovHidden    overlayMode = ""
+	ovRecording overlayMode = "recording"
+	ovWorking   overlayMode = "working"
+	ovNotice    overlayMode = "notice"
+	ovAnswer    overlayMode = "answer"
 )
 
 func (m overlayMode) String() string {
-	return [...]string{"hidden", "recording", "working", "notice", "answer"}[m]
+	if m == ovHidden {
+		return "hidden"
+	}
+	return string(m)
 }
 
 // overlayState is the overlay's window and what it shows.
@@ -127,6 +130,8 @@ type overlayState struct {
 		// stream is how much of the draft streaming into it the card
 		// shows (overlay_stream.go).
 		stream streamReveal
+		// projection is the pill or notice's cached display state.
+		projection sessionOverlayProjection
 		// lang is the card's language menu (overlay_lang.go).
 		lang langMenuState
 	}
@@ -262,6 +267,54 @@ func (a *app) overlaySync() {
 	}
 }
 
+// overlayView is the overlay window's content. The answer card keeps its
+// existing controller-backed path during the pill and notice migration.
+func (a *app) overlayView(c *ui.Context) {
+	a.refreshSessionOverlay(time.Now())
+	c.SetTheme(overlayTheme())
+	// The root draws the theme's background unless told not to: in this
+	// transparent window only the face may show. Last, once the view is
+	// built: the kit's ink buttons swap the theme while they build
+	// (AudioSmith's pill).
+	defer c.Root().Background(ui.Transparent)
+	a.overlayMeasure(c)
+	if a.ov.reveal {
+		// This frame draws the new face: opaque from the next one.
+		a.ov.reveal = false
+		a.post(a.revealOverlay)
+	}
+	motion := a.overlayMotion()
+	if !motion {
+		c.DisableAnimations()
+	}
+	switch {
+	case motion && (a.ov.mode == ovRecording || a.ov.mode == ovWorking || a.ov.mode == ovAnswer && (a.cardRecording() || a.cardNow().spinning())):
+		c.After(layout.Tick)
+	case a.ov.mode == ovRecording && a.prefs.Overlay.ShowTime:
+		c.After(250 * time.Millisecond) // the time
+	}
+	look := pillLook{time: a.prefs.Overlay.ShowTime, lines: a.prefs.Overlay.LiveLines, scroll: &a.ov.lines, motion: motion, phase: a.overlayPhase(), w: a.ov.w}
+	state := a.ov.projection.view
+	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
+		o := a.prefs.Overlay
+		radius, alpha := faceRadius(o, a.ov.mode, a.ov.h), layout.FaceAlpha(o)
+		switch a.ov.mode {
+		case ovAnswer:
+			// Voxt's card does not move (isMovableByWindowBackground off):
+			// its text is selectable.
+			faceStyle(ui.Column(c.Key("ov-face")), radius, alpha).Children(func() { a.overlayCard(c) })
+		case ovNotice:
+			overlayNotice(c, state.Notice, radius, alpha, a)
+		default:
+			// In lines it moves where it is dragged, as the card; the small
+			// pill lets the pointer through (syncPassThrough).
+			faceStyle(ui.Column(c.Key("ov-face")), radius, alpha).DragWindow().Children(func() {
+				overlayPill(c, state, look, a)
+			})
+		}
+	})
+}
+
 // overlayFrame is the window's frame for a face of w × h: its anchored
 // place (layout.Frame), moved as far as the user dragged it, the face
 // kept in the work area.
@@ -292,7 +345,8 @@ func (a *app) overlayDragged() {
 // live text in lines (Overlay.LiveLines): it is dragged as the card is,
 // and the wheel scrolls its text.
 func (a *app) syncPassThrough() {
-	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking && !canSkip(a.sess, ovWorking) && !a.pillThinks(ovWorking)) && !a.prefs.Overlay.LiveLines
+	pill := a.ov.projection.view.Pill
+	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking && !pill.CanSkip && !pill.CanThink) && !a.prefs.Overlay.LiveLines
 	if pass == a.ov.passThrough {
 		return
 	}

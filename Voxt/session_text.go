@@ -106,21 +106,25 @@ func llmAction(err error, other string) string {
 }
 
 func noticeActionLabel(action string) string {
+	return noticeActionLabelFor(i18n.CurrentTranslator(), action)
+}
+
+func noticeActionLabelFor(translator *i18n.Translator, action string) string {
 	switch action {
 	case actionSignIn:
-		return i18n.T("Sign in")
+		return translator.T("Sign in")
 	case actionUsage:
-		return i18n.T("Manage usage")
+		return translator.T("Manage usage")
 	case actionModels:
-		return i18n.T("Open Speech models")
+		return translator.T("Open Speech models")
 	case actionLanguage:
-		return i18n.T("Open Language models")
+		return translator.T("Open Language models")
 	case actionPermissions:
-		return i18n.T("Open Permissions")
+		return translator.T("Open Permissions")
 	case actionHelper:
-		return i18n.T("Restart helper")
+		return translator.T("Restart helper")
 	case actionRetry:
-		return i18n.T("Retry")
+		return translator.T("Retry")
 	}
 	return ""
 }

@@ -74,48 +74,60 @@ func SceneShort(s session.Snapshot) string {
 // WorkingText says what a session does after recording (the loader's
 // description).
 func WorkingText(s session.Snapshot) string {
+	return WorkingTextFor(i18n.CurrentTranslator(), s)
+}
+
+func WorkingTextFor(translator *i18n.Translator, s session.Snapshot) string {
 	switch s.State {
 	case session.Reading:
-		return i18n.T("Reading the selection…")
+		return translator.T("Reading the selection…")
 	case session.Composing:
 		switch {
 		case s.Kind == store.KindTranslate && s.Selection != "":
-			return i18n.T("Translating the selection…")
+			return translator.T("Translating the selection…")
 		case s.Kind == store.KindTranslate:
-			return i18n.T("Translating…")
+			return translator.T("Translating…")
 		case s.Kind == store.KindRewrite && s.Selection != "":
-			return i18n.T("Rewriting the selection…")
+			return translator.T("Rewriting the selection…")
 		case s.Kind == store.KindRewrite:
-			return i18n.T("Writing…")
+			return translator.T("Writing…")
 		}
-		return i18n.T("Cleaning up…")
+		return translator.T("Cleaning up…")
 	case session.Delivering:
-		return i18n.T("Inserting…")
+		return translator.T("Inserting…")
 	}
-	return i18n.T("Recognising…")
+	return translator.T("Recognising…")
 }
 
 // WaitText says what a session waits for (session.Snapshot.Waiting): the
 // starting icon's accessibility label, and the pill's line for WaitMic
 // until the live text comes; "" for nothing.
 func WaitText(s session.Snapshot) string {
+	return WaitTextFor(i18n.CurrentTranslator(), s)
+}
+
+func WaitTextFor(translator *i18n.Translator, s session.Snapshot) string {
 	switch {
 	case s.Waiting == session.WaitMic && s.State == session.Recording:
-		return i18n.T("Starting the microphone…")
+		return translator.T("Starting the microphone…")
 	case s.Waiting == session.WaitModel && (s.State == session.Recording || s.State == session.Recognizing):
-		return i18n.T("Loading the speech model…")
+		return translator.T("Loading the speech model…")
 	}
 	return ""
 }
 
 func KindTitle(k store.Kind) string {
+	return KindTitleFor(i18n.CurrentTranslator(), k)
+}
+
+func KindTitleFor(translator *i18n.Translator, k store.Kind) string {
 	switch k {
 	case store.KindTranslate:
-		return i18n.T("Translate")
+		return translator.T("Translate")
 	case store.KindRewrite:
-		return i18n.T("Rewrite")
+		return translator.T("Rewrite")
 	}
-	return i18n.T("Transcribe")
+	return translator.T("Transcribe")
 }
 
 // TimingsText is a try's stage times and models: "Recording 3.2 s ·

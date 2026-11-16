@@ -7,45 +7,51 @@ package main
 import (
 	"math"
 	"slices"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // overlaySize is the face's size for mode, and whether its width is the
 // measured texts' (not guessed).
 func (a *app) overlaySize(mode overlayMode) (w, h int, exact bool) {
+	if mode != ovAnswer {
+		a.refreshSessionOverlay(time.Now())
+	}
 	switch mode {
 	case ovAnswer:
 		return a.cardSize() // overlay_card.go
 	case ovNotice:
-		if a.notice == nil {
+		notice := a.ov.projection.view.Notice
+		if notice == nil {
 			return layout.NoticeW, layout.PillH, true
 		}
-		tw, exact := a.ovTextWidth(noticeText(a.notice.text))
-		return layout.NoticeWidth(tw, a.notice.action != actionNone), layout.PillH, exact
+		tw, exact := a.ovTextWidth(noticeText(notice.Text))
+		return layout.NoticeWidth(tw, notice.Action != actionNone), layout.PillH, exact
 	case ovRecording, ovWorking:
+		pill := a.ov.projection.view.Pill
 		scene, exact := float32(0), true
-		if name := uitext.SceneShort(a.sess); name != "" {
-			scene, exact = a.ovTextWidth(sceneText(name))
+		if pill.SceneText != "" {
+			scene, exact = a.ovTextWidth(sceneText(pill.SceneText))
 		}
-		row, rowExact := recordingPillRow(a.sess, mode == ovRecording, mode == ovRecording && a.prefs.Overlay.ShowTime, scene, a.ovTextWidth)
+		row, rowExact := recordingPillRow(pill, mode == ovRecording, mode == ovRecording && a.prefs.Overlay.ShowTime, scene, a.ovTextWidth)
 		exact = exact && rowExact
-		if canSkip(a.sess, mode) {
-			w, ok := a.ovTextWidth(skipText())
+		if pill.CanSkip {
+			w, ok := a.ovTextWidth(capsuleText(pill.SkipLabel))
 			row += layout.Gap + 2*10 + int(math.Ceil(float64(w))) // cardCapsule's padding
 			exact = exact && ok
 		}
-		if a.pillThinks(mode) {
-			w, ok := a.ovTextWidth(a.pillThinkText())
+		if pill.CanThink {
+			w, ok := a.ovTextWidth(capsuleText(pill.ThinkingLabel))
 			row += layout.Gap + 2*10 + int(math.Ceil(float64(w)))
 			exact = exact && ok
 		}
-		text, hint := pillLine(a.pillSession())
+		text, hint := pill.LiveText, pill.LiveHint
 		if a.prefs.Overlay.LiveLines {
 			// Wide from the start, before any text: the face does not jump
 			// from the small pill at the first word (the user, 11-09).
@@ -97,13 +103,15 @@ func liveLinesKey(text string) ovSized {
 
 func sceneText(name string) ovSized { return ovSized{name, layout.SceneSize, 0, 0} }
 
-func kindTitleText(k store.Kind) ovSized { return ovSized{uitext.KindTitle(k), 12, 500, 0} }
+func kindTitleText(title string) ovSized { return ovSized{title, 12, 500, 0} }
 
-func recordingPillRow(s session.Snapshot, label, showTime bool, scene float32, measure func(ovSized) (float32, bool)) (int, bool) {
+func capsuleText(text string) ovSized { return ovSized{text, 11, 600, 0} }
+
+func recordingPillRow(pill sessionPillViewState, label, showTime bool, scene float32, measure func(ovSized) (float32, bool)) (int, bool) {
 	modeLabel := float32(0)
 	exact := true
-	if label && s.Waiting == session.WaitNone {
-		w, ok := measure(kindTitleText(s.Kind))
+	if label && !pill.Starting {
+		w, ok := measure(kindTitleText(pill.Title))
 		modeLabel = w + float32(layout.Gap)
 		exact = ok
 	}
@@ -112,17 +120,28 @@ func recordingPillRow(s session.Snapshot, label, showTime bool, scene float32, m
 
 // recordingPillFaceW is the face width of a recording pill without live text.
 func recordingPillFaceW(s session.Snapshot, showTime bool) int {
+	pill := sessionPillViewState{Title: uitext.KindTitle(s.Kind), Starting: s.Waiting != session.WaitNone}
 	scene := float32(0)
 	if name := uitext.SceneShort(s); name != "" {
 		scene = float32(textWidth(name, float64(layout.SceneSize)))
 	}
-	row, _ := recordingPillRow(s, true, showTime, scene, func(k ovSized) (float32, bool) {
+	row, _ := recordingPillRow(pill, true, showTime, scene, func(k ovSized) (float32, bool) {
 		return float32(textWidth(k.text, float64(k.size))), true
 	})
 	return row + 2*layout.PillPadX
 }
 
 func noticeText(text string) ovSized { return ovSized{text, layout.NoticeSize, 0, 0} }
+
+// faceRadius is the face's corner radius in mode, h DIPs high: the
+// setting's, at most a capsule for the pill.
+func faceRadius(o settings.Overlay, mode overlayMode, h int) float32 {
+	radius := float32(o.Radius)
+	if mode != ovAnswer {
+		radius = min(radius, float32(h)/2)
+	}
+	return radius
+}
 
 // ovTextWidth is how wide k draws: as measured, or guessed (false)
 // until the overlay's view measured it.
@@ -156,26 +175,27 @@ func (a *app) overlayTexts() []ovSized {
 	var out []ovSized
 	switch a.ov.mode {
 	case ovNotice:
-		if a.notice != nil {
-			out = append(out, noticeText(a.notice.text))
+		if notice := a.ov.projection.view.Notice; notice != nil {
+			out = append(out, noticeText(notice.Text))
 		}
 	case ovRecording, ovWorking:
-		if name := uitext.SceneShort(a.sess); name != "" {
-			out = append(out, sceneText(name))
+		pill := a.ov.projection.view.Pill
+		if pill.SceneText != "" {
+			out = append(out, sceneText(pill.SceneText))
 		}
-		if a.ov.mode == ovRecording && a.sess.Waiting == session.WaitNone {
-			out = append(out, kindTitleText(a.sess.Kind))
+		if a.ov.mode == ovRecording && !pill.Starting {
+			out = append(out, kindTitleText(pill.Title))
 		}
-		if canSkip(a.sess, a.ov.mode) {
-			out = append(out, skipText())
+		if pill.CanSkip {
+			out = append(out, capsuleText(pill.SkipLabel))
 		}
-		if a.pillThinks(a.ov.mode) {
-			out = append(out, a.pillThinkText())
+		if pill.CanThink {
+			out = append(out, capsuleText(pill.ThinkingLabel))
 		}
-		if text, hint := pillLine(a.pillSession()); text != "" && a.prefs.Overlay.LiveLines && !hint {
-			out = append(out, liveLinesKey(text))
-		} else if text != "" {
-			out = append(out, liveTextKey(text))
+		if pill.LiveText != "" && a.prefs.Overlay.LiveLines && !pill.LiveHint {
+			out = append(out, liveLinesKey(pill.LiveText))
+		} else if pill.LiveText != "" {
+			out = append(out, liveTextKey(pill.LiveText))
 		}
 	case ovAnswer:
 		out = cardTexts(a.cardNow()) // overlay_card.go

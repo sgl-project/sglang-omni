@@ -19,6 +19,17 @@ import (
 
 // ---- Try it ----
 
+// kindIcon is a feature's icon; uitext.KindTitle its name.
+func kindIcon(k store.Kind) icons.Icon {
+	switch k {
+	case store.KindTranslate:
+		return translateIcon
+	case store.KindRewrite:
+		return rewriteIcon
+	}
+	return transcribeIcon
+}
+
 // trySessionOf reports whether the current session is a try of feature.
 func (a *app) trySessionOf(feature string) bool {
 	s := a.sess
