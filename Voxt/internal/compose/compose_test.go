@@ -619,3 +619,30 @@ func TestScanGolden(t *testing.T) {
 		t.Errorf("a line for no other languages: %s", out.System)
 	}
 }
+
+// TestTranslateBackLine: with a back language the task says to write in
+// it when all of the text is already in the target; without one, or when
+// it is the target, the line is left out (#4024).
+func TestTranslateBackLine(t *testing.T) {
+	for _, tc := range []struct {
+		main, back, want string
+	}{
+		{"es", "es", "if all of it is already in English, translate it into Spanish instead"},
+		{"zh", "zh", "如果全部已经是英语，就改为翻译成中文"},
+		{"es", "", ""},
+		{"en", "en", ""},
+	} {
+		out, err := Build(Input{Task: Translate, MainLanguage: tc.main, TargetLanguage: "en", BackLanguage: tc.back, Text: "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sys := out.Messages()[0].Content
+		if tc.want == "" {
+			if strings.Contains(sys, "instead") || strings.Contains(sys, "改为翻译成") {
+				t.Errorf("%+v: unexpected switch line:\n%s", tc, sys)
+			}
+		} else if !strings.Contains(sys, tc.want) {
+			t.Errorf("%+v: no %q in:\n%s", tc, tc.want, sys)
+		}
+	}
+}

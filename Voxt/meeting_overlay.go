@@ -13,7 +13,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -21,8 +20,9 @@ import (
 type meetingOverlayState struct {
 	meetOvWin       *mygo.Window
 	meetOvShown     bool
-	meetOvFrame     mygo.Rectangle
 	meetOvCollapsed bool
+	meetOvList      ui.ListState // the live transcript's place
+	meetOvMenu      meetingMenu  // the menu over the transcript
 }
 
 // meetingContentProtectionHook is set in tests to observe SetContentProtection.
@@ -35,8 +35,16 @@ func (a *app) meetingOverlayCollapsed() bool {
 	return a.prefs.Features.Meeting.Collapsed
 }
 
+// meetingOverlayModel is the overlay's model now.
+func (a *app) meetingOverlayModel() meetingOverlayModel {
+	return overlayModel(a.meetSnap, a.meetingOverlayCollapsed(), a.prefs.Features.CardSize(meetingCardSize), a.meetOvMenu)
+}
+
+// meetingCardSize is the meeting window's key in Features.CardSizes.
+const meetingCardSize = "meeting"
+
 func (a *app) syncMeetingOverlay() {
-	if !a.overlayNative() || !a.meetingEnabled() {
+	if !a.overlayNative() {
 		return
 	}
 	show := a.meetingActive() || a.meetSnap.State == meeting.StateFinishing
@@ -47,7 +55,7 @@ func (a *app) syncMeetingOverlay() {
 		}
 		return
 	}
-	model := overlayModel(a.meetSnap, a.meetingOverlayCollapsed())
+	model := a.meetingOverlayModel()
 	w, h := model.Layout.Width, model.Layout.Height
 	if a.meetOvWin == nil {
 		opts := floatingWindowOptions("Voxt meeting", w, h, hudContent(a.meetingOverlayView))
@@ -56,15 +64,19 @@ func (a *app) syncMeetingOverlay() {
 		a.meetOvWin = mygo.NewWindow(opts)
 		a.meetOvWin.SetMovable(true)
 	}
-	area := a.overlayArea()
-	x := area.X + (area.Width-w)/2
-	y := area.Y + area.Height - h - 28
-	if a.meetOvFrame.Width > 0 {
-		x, y = a.meetOvFrame.X, a.meetOvFrame.Y
+	at := mygo.Rectangle{}
+	if a.meetOvShown {
+		at = a.meetOvWin.ContentBounds() // where the user dragged it
 	}
-	frame := mygo.Rectangle{X: x, Y: y, Width: w, Height: h}
-	a.meetOvFrame = frame
-	a.meetOvWin.SetContentBounds(frame)
+	area := a.overlayArea()
+	if at.Width > 0 {
+		area = mygo.Screen.DisplayMatching(at).WorkArea
+	}
+	frame := meetingOverlayFrame(at, area, w, h)
+	x, y := frame.X, frame.Y
+	if frame != at {
+		a.meetOvWin.SetContentBounds(frame)
+	}
 	mode, faceH := meetingOverlayFace(model)
 	a.meetOvWin.SetVibrancyStyle(mygo.VibrancyStyle{Top: layout.Pad, Right: layout.Pad, Bottom: layout.Pad, Left: layout.Pad,
 		Radius: float64(faceRadius(a.prefs.Overlay, mode, faceH)), Dark: true})
@@ -74,6 +86,24 @@ func (a *app) syncMeetingOverlay() {
 		showFloating(a.meetOvWin, x, y)
 		a.meetOvShown = true
 	}
+}
+
+// meetingOverlayFrame is the overlay's frame for w × h: where the window
+// is now (at, zero before it shows), else at the bottom centre of the
+// work area, the face kept inside the work area as it grows (the
+// window's transparent margin, layout.Pad, may go past it, as
+// overlayFrame's).
+func meetingOverlayFrame(at, area mygo.Rectangle, w, h int) mygo.Rectangle {
+	if at.Width == 0 {
+		return mygo.Rectangle{X: area.X + (area.Width-w)/2, Y: area.Y + area.Height - h - 28, Width: w, Height: h}
+	}
+	x := max(min(at.X, area.X+area.Width-w+layout.Pad), area.X-layout.Pad)
+	y := at.Y
+	if at.Y+at.Height/2 > area.Y+area.Height/2 {
+		y = at.Y + at.Height - h // in the lower half it grows upward: its bottom stays, as the text grows (11-15)
+	}
+	y = max(min(y, area.Y+area.Height-h+layout.Pad), area.Y-layout.Pad)
+	return mygo.Rectangle{X: x, Y: y, Width: w, Height: h}
 }
 
 func (a *app) applyMeetingOverlayProtection() {
@@ -91,7 +121,7 @@ func (a *app) meetingOverlayView(c *ui.Context) {
 	// Only the face shows in this transparent window (overlayView's).
 	defer c.Root().Background(ui.Transparent)
 	s := a.meetSnap
-	model := overlayModel(s, a.meetingOverlayCollapsed())
+	model := a.meetingOverlayModel()
 	motion := a.overlayMotion()
 	if !motion {
 		c.DisableAnimations()
@@ -100,7 +130,14 @@ func (a *app) meetingOverlayView(c *ui.Context) {
 	}
 	mode, faceH := meetingOverlayFace(model)
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
-		faceStyle(ui.Column(c.Key("mt-face")), a.prefs.Overlay, mode, faceH).Padding(0, 14-layout.Border).Children(func() {
+		// The face is the handle that moves the window (syncMeetingOverlay
+		// keeps it where it is dragged): it may cover the meeting's window.
+		// The dictation pill's padding, or the answer card's when expanded (#3986).
+		face := faceStyle(ui.Column(c.Key("mt-face")), a.prefs.Overlay, mode, faceH).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
+		if model.ShowExpanded {
+			face.Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border)
+		}
+		face.DragWindow().Children(func() {
 			switch {
 			case model.ShowAsking:
 				a.meetingOverlayAsking(c)
@@ -134,39 +171,62 @@ var (
 	mtWarn   = ui.RGB(255, 196, 92)
 )
 
+// meetingOverlayBar is the capsule's row, or the expanded card's header,
+// in the dictation pill's order: the feature's icon and name, the
+// tracks' waveforms, the time; then the actions.
 func (a *app) meetingOverlayBar(c *ui.Context, s meeting.Snapshot, model meetingOverlayModel) {
 	live := s.State == meeting.StateRecording || s.State == meeting.StatePaused
-	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(10).AlignItems(ui.Center).Children(func() {
-		dot, status := mtRecDot, i18n.T("Meeting in progress")
-		if s.State == meeting.StatePaused {
-			dot, status = ovText2, i18n.T("Meeting paused")
+	paused := s.State == meeting.StatePaused
+	var rowH, gap float32 = layout.RowH, layout.Gap // the pill's row, or the card's header
+	if model.ShowExpanded {
+		rowH, gap = layout.CardHeadH, layout.CardHeadGap
+	}
+	ui.Row(c).Height(rowH).Shrink(0).Gap(gap).AlignItems(ui.Center).Children(func() {
+		// The icon is red while it records, as the menu bar's.
+		col, status := mtRecDot, i18n.T("Meeting in progress")
+		if paused {
+			col, status = ovText2, i18n.T("Meeting paused")
 		}
-		ui.Box(c).Size(8, 8).Radius(4).Background(dot).Shrink(0).Label(status)
-		ui.Text(c, formatMeetingElapsed(s.Elapsed)).FontSize(13).Font("monospace").TextColor(ovText).SingleLine().Shrink(0)
-		if s.State == meeting.StatePaused {
-			ui.Text(c, i18n.T("Meeting paused")).FontSize(12).TextColor(ovText2).SingleLine().Shrink(0)
+		ui.Box(c).Size(layout.IconSlot, rowH).Shrink(0).Center().Children(func() {
+			ui.Icon(c, meetingIcon.Bold).Size(layout.IconSize, layout.IconSize).TextColor(col).Shrink(0).Label(status)
+		})
+		if model.ShowExpanded && live {
+			a.meetingModeCapsule(c, s)
 		} else {
-			if s.Mode != meeting.ModeSubtitles {
-				meetingLevel(c, icons.MicrophoneLarge, i18n.T("Microphone"), s.Level[meeting.SourceMic])
-			}
-			if s.Mode != meeting.ModeRecording {
-				meetingLevel(c, icons.VolumeLoud, i18n.T("System audio"), s.Level[meeting.SourceSystem])
-			}
+			ui.Text(c, meetingModeTitle(s.Mode)).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0)
 		}
+		if paused {
+			ui.Text(c, i18n.T("Paused")).FontSize(12).TextColor(ovText2).SingleLine().Shrink(0)
+		} else {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
+				if s.Mode != meeting.ModeSubtitles {
+					meetingWave(c.Key("mt-wave-mic"), icons.MicrophoneLarge, i18n.T("Microphone"), s.Levels[meeting.SourceMic])
+				}
+				if s.Mode != meeting.ModeRecording {
+					meetingWave(c.Key("mt-wave-system"), icons.VolumeLoud, i18n.T("System audio"), s.Levels[meeting.SourceSystem])
+				}
+			})
+		}
+		ui.Text(c, formatMeetingElapsed(s.Elapsed)).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
 		ui.Box(c).Grow(1)
 		if live {
 			label, icon := i18n.T("Pause meeting"), icons.Pause
-			if s.State == meeting.StatePaused {
+			if paused {
 				label, icon = i18n.T("Resume meeting"), icons.Play
 			}
 			if cardIconButton(c.Key("mt-pause"), label, label, icon, true) {
+				a.meetOvMenu = meetingMenuNone
 				a.meetingPauseResume()
 			}
 		}
 		if live || s.State == meeting.StateStarting { // a start that hangs can be ended
 			if cardIconButton(c.Key("mt-end"), i18n.T("End meeting"), i18n.T("End meeting"), icons.Stop, true) {
+				a.meetOvMenu = meetingMenuNone
 				a.meetingFinish()
 			}
+		}
+		if model.ShowExpanded && live && cardIconButton(c.Key("mt-more"), i18n.T("More"), i18n.T("More"), icons.MenuDots, true) {
+			a.toggleMeetingMenu(meetingMenuMore)
 		}
 		label, icon := i18n.T("Collapse"), icons.MinimizeSquareMinimalistic
 		if model.Layout.Collapsed {
@@ -174,26 +234,70 @@ func (a *app) meetingOverlayBar(c *ui.Context, s meeting.Snapshot, model meeting
 		}
 		if cardIconButton(c.Key("mt-ov-collapse"), label, label, icon, true) {
 			next := !model.Layout.Collapsed
-			a.meetOvCollapsed = next
+			a.meetOvCollapsed, a.meetOvMenu = next, meetingMenuNone
 			a.updateSettings(func(st *settings.Settings) { st.Features.Meeting.Collapsed = next })
 			a.syncMeetingOverlay()
 		}
 	})
 }
 
-// meetingLevel is one track's input level: its icon and four bars that
-// light up with it.
-func meetingLevel(c *ui.Context, icon icons.Icon, label string, rms float64) {
-	v := session.Level(rms)
-	ui.Row(c).Gap(3).AlignItems(ui.Center).Shrink(0).Label(label).Children(func() {
-		ui.Icon(c, icon.Linear).Size(13, 13).TextColor(ovText2).Shrink(0)
-		for i := range 4 {
-			alpha := float32(0.22)
-			if v > float64(i)/4 {
-				alpha = 0.92
+// meetingModeTitle is the name of a meeting's mode.
+func meetingModeTitle(m meeting.Mode) string {
+	switch m {
+	case meeting.ModeSubtitles:
+		return i18n.T("Subtitles")
+	case meeting.ModeRecording:
+		return i18n.T("Recording")
+	}
+	return i18n.T("Meeting")
+}
+
+// meetingModeCapsule is the mode in the card's header, a capsule with a
+// chevron (the answer card's language capsule): it opens the modes.
+func (a *app) meetingModeCapsule(c *ui.Context, s meeting.Snapshot) {
+	open := a.meetOvMenu == meetingMenuMode
+	b := ui.ButtonBase(c.Key("mt-mode")).Height(layout.CardBtn).Padding(0, 10-layout.Border).Radius(layout.CardBtn / 2).Shrink(0).
+		Label(i18n.T("Meeting mode")).Checked(open).Tooltip(meetingModeHint(s.Mode))
+	bg, line := ui.RGBA(255, 255, 255, 0.08), ui.RGBA(255, 255, 255, 0.1)
+	if open || b.Hovered() {
+		bg, line = ui.RGBA(255, 255, 255, 0.16), ui.RGBA(255, 255, 255, 0.18)
+	}
+	b.Background(bg).Border(1, line)
+	chevron := icons.AltArrowDown
+	if open {
+		chevron = icons.AltArrowUp
+	}
+	if b.Children(func() {
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, meetingModeTitle(s.Mode)).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.92)).SingleLine()
+			ui.Icon(c, chevron.Bold).Size(10, 10).TextColor(ui.RGBA(255, 255, 255, 0.72)).Shrink(0)
+		})
+	}).Clicked() {
+		a.toggleMeetingMenu(meetingMenuMode)
+	}
+}
+
+func (a *app) toggleMeetingMenu(m meetingMenu) {
+	if a.meetOvMenu == m {
+		m = meetingMenuNone
+	}
+	a.meetOvMenu = m
+	a.syncMeetingOverlay()
+}
+
+// meetingWave is one track's waveform: its icon and the dictation pill's
+// 16 bars, smaller, that follow the track's levels.
+func meetingWave(c *ui.Context, icon icons.Icon, label string, levels []float64) {
+	const sx, sy = 0.6, 0.7
+	bars := layout.WaveBars(levels)
+	ui.Row(c).Gap(4).AlignItems(ui.Center).Shrink(0).Label(label).Children(func() {
+		ui.Icon(c, icon.Linear).Size(12, 12).TextColor(ovText2).Shrink(0)
+		ui.Row(c).Height(layout.WaveBarMaxH * sy).Gap(layout.WaveBarGap * sx).AlignItems(ui.Center).Shrink(0).Children(func() {
+			for _, v := range bars {
+				h := (layout.WaveBarMinH + (layout.WaveBarMaxH-layout.WaveBarMinH)*float32(v)) * sy
+				ui.Box(c).Width(layout.WaveBarW*sx).Height(h).Radius(layout.WaveBarR).Gradient(ui.RGBA(255, 255, 255, 0.98), ui.RGBA(255, 255, 255, 0.8), 180).Shrink(0)
 			}
-			ui.Box(c).Size(3, 5+float32(i)*2.5).Radius(1.5).Background(ui.RGBA(255, 255, 255, alpha)).Shrink(0)
-		}
+		})
 	})
 }
 
@@ -204,7 +308,7 @@ func meetingOverlayProblem(c *ui.Context, key string, short bool) {
 	if msg == "" {
 		return
 	}
-	ui.Row(c.Key("mt-problem")).Gap(6).AlignItems(ui.Start).Shrink(0).Padding(0, 0, 10, 0).Children(func() {
+	ui.Row(c.Key("mt-problem")).Gap(6).AlignItems(ui.Start).Shrink(0).Margin(layout.LiveGap, 0, 0, 0).Children(func() {
 		ui.Icon(c, icons.DangerTriangle.Linear).Size(14, 14).TextColor(mtWarn).Shrink(0)
 		text := ui.Text(c, msg).FontSize(12).TextColor(mtWarn).Grow(1).Shrink(1).MinWidth(0)
 		if short {
@@ -213,83 +317,142 @@ func meetingOverlayProblem(c *ui.Context, key string, short bool) {
 	})
 }
 
+// meetingOverlayExpanded is the card under the header: the rule, then the
+// live transcript, or the menu the header opened in its place; the size
+// button in the corner.
 func (a *app) meetingOverlayExpanded(c *ui.Context, s meeting.Snapshot) {
-	if s.State == meeting.StateRecording || s.State == meeting.StatePaused {
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Padding(0, 0, 10, 0).Children(func() {
-			modes := []meeting.Mode{meeting.ModeMeeting, meeting.ModeSubtitles, meeting.ModeRecording}
-			for i, label := range []string{i18n.T("Meeting"), i18n.T("Subtitles"), i18n.T("Recording")} {
-				if meetingChip(c.Key("mt-mode-"+string(modes[i])), label, meetingModeHint(modes[i]), s.Mode == modes[i]) && s.Mode != modes[i] {
-					a.meetingSetMode(modes[i])
-				}
-			}
-			ui.Box(c).Grow(1)
-			translate := i18n.T("Live translation")
-			if s.Translate != "" {
-				translate = i18n.T("Translating to %s", uitext.TargetLanguageLabel(s.Translate))
-			}
-			if meetingChip(c.Key("mt-translate"), translate, "", s.Translate != "") {
-				a.toggleMeetingTranslation(s.ID)
-			}
-			if s.State == meeting.StatePaused && cardIconButton(c.Key("mt-copy"), i18n.T("Copy transcript"), i18n.T("Copy transcript"), icons.Copy, true) {
-				a.copyLiveMeetingExport()
-				a.toast(i18n.T("Copied"))
-			}
-			if cardIconButton(c.Key("mt-abandon"), i18n.T("Cancel meeting"), i18n.T("Cancel meeting"), icons.TrashBinMinimalistic, true) {
-				a.meetingAbandon = true
-			}
-		})
+	// The answer card's rule and text (#3986).
+	ui.Box(c).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+	live := s.State == meeting.StateRecording || s.State == meeting.StatePaused
+	if a.meetOvMenu != meetingMenuNone && live {
+		a.meetingOverlayMenu(c, s)
+	} else {
+		a.meetingOverlayTranscript(c, s)
 	}
-	ui.Scroll(c.Key("mt-live")).Grow(1).MinHeight(0).Padding(0, 0, 12, 0).Children(func() {
-		ui.Column(c).Gap(8).Children(func() {
-			if len(s.Segments) == 0 && s.Live[meeting.SourceMic] == "" && s.Live[meeting.SourceSystem] == "" {
-				ui.Text(c, i18n.T("Listening…")).FontSize(13).TextColor(ovText2)
+	if next, ok := sizeStepButton(c.Key("mt-size"), a.prefs.Features.CardSize(meetingCardSize)); ok {
+		a.setCardSize(meetingCardSize, next)
+		a.syncMeetingOverlay()
+	}
+}
+
+// meetingOverlayTranscript is the live transcript: a List builds only the
+// rows in view and follows the newest while it shows the end (#3985).
+// Keyed by segment, a user reading stays on their line as the snapshot
+// drops its oldest ones. One row says Voxt is listening while there is
+// nothing yet.
+func (a *app) meetingOverlayTranscript(c *ui.Context, s meeting.Snapshot) {
+	rows := meetingOverlayRows(s)
+	n := max(len(rows), 1)
+	a.meetOvList.FollowEnd = true
+	ui.List(c.Key("mt-live"), &a.meetOvList, n).Grow(1).MinHeight(0).Margin(layout.CardRuleGap, 0, 0, 0).Gap(meetingOvRowGap).Padding(0, layout.CardInset, 0, 0).
+		ItemKey(func(i int) any {
+			if i < len(rows) {
+				return rows[i].Key
 			}
-			for _, seg := range s.Segments {
-				me := seg.Speaker == "me" || seg.Speaker == "" && seg.Source == meeting.SourceMic
-				meetingOverlayLine(c, meetingSpeaker(seg.Speaker, seg.Source), seg.Text, me, false)
-			}
-			for _, src := range []meeting.Source{meeting.SourceMic, meeting.SourceSystem} {
-				if live := s.Live[src]; live != "" {
-					meetingOverlayLine(c, meetingSpeaker("", src), live, src == meeting.SourceMic, true)
-				}
-			}
-		})
+			return nil
+		}).Rows(func(r ui.ListRow) {
+		if r.Index >= len(rows) {
+			ui.Text(c, i18n.T("Listening…")).FontSize(layout.CardTextSize).TextColor(ovText2)
+			return
+		}
+		meetingOverlayLine(c, rows[r.Index])
 	})
 }
 
-// meetingChip is a capsule that shows whether it is on; it reports a click.
-func meetingChip(c *ui.Context, label, tip string, on bool) bool {
-	b := ui.ButtonBase(c).Height(layout.CardBtn).Padding(0, 10-layout.Border).Radius(layout.CardBtn / 2).Center().Shrink(0).Label(label)
-	if tip != "" {
-		b.Tooltip(tip)
-	}
-	bg, line, text := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08), ovText2
-	switch {
-	case on:
-		bg, line, text = ui.RGBA(255, 255, 255, 0.2), ui.RGBA(255, 255, 255, 0.24), ovText
-	case b.Hovered():
-		bg, line = ui.RGBA(255, 255, 255, 0.14), ui.RGBA(255, 255, 255, 0.18)
-	}
-	b.Background(bg).Border(1, line)
-	return b.Children(func() {
-		ui.Text(c, label).FontSize(11).FontWeight(600).TextColor(text).SingleLine()
-	}).Clicked()
-}
-
-// meetingOverlayLine is one line of the live transcript; live is the
-// sentence still being heard; me brightens the speaker, as the details do.
-func meetingOverlayLine(c *ui.Context, who, text string, me, live bool) {
+// meetingOverlayLine is one row of the live transcript, the speaker's
+// name over the first of theirs; the sentence still heard is dimmer, as
+// dictation's live text, upright (CJK has no true italic).
+func meetingOverlayLine(c *ui.Context, r meetingOverlayRow) {
 	ui.Column(c).Gap(2).Shrink(0).Children(func() {
-		whoColor := ovText2
-		if me {
-			whoColor = ovText
+		if r.First {
+			whoColor := ovText2
+			if r.Me {
+				whoColor = ovText
+			}
+			ui.Text(c, r.Who).FontSize(11).FontWeight(600).TextColor(whoColor)
 		}
-		ui.Text(c, who).FontSize(11).FontWeight(600).TextColor(whoColor)
-		line := ui.Text(c, text).FontSize(13).TextColor(ovText)
-		if live {
-			line.Italic().TextColor(ovLiveColor)
+		color := ovText
+		if r.Live {
+			color = ovLiveColor
+		}
+		ui.Text(c, r.Text).FontSize(layout.CardTextSize).FontWeight(layout.CardTextWeight).TextColor(color)
+	})
+}
+
+// meetingOverlayMenu is the menu the header opened, over the transcript:
+// the modes with what each records, or More's actions.
+func (a *app) meetingOverlayMenu(c *ui.Context, s meeting.Snapshot) {
+	ui.Column(c.Key("mt-menu")).Gap(4).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).Children(func() {
+		if a.meetOvMenu == meetingMenuMode {
+			for _, m := range []meeting.Mode{meeting.ModeMeeting, meeting.ModeSubtitles, meeting.ModeRecording} {
+				if meetingMenuRow(c.Key("mt-mode-"+string(m)), meetingModeTitle(m), meetingModeHint(m), s.Mode == m, false) {
+					a.meetOvMenu = meetingMenuNone
+					if s.Mode != m {
+						a.meetingSetMode(m)
+					}
+					a.syncMeetingOverlay()
+				}
+			}
+			return
+		}
+		for _, it := range meetingMoreItems(s) {
+			switch it {
+			case moreTranslate:
+				label := i18n.T("Live translation")
+				if s.Translate != "" {
+					label = i18n.T("Translating to %s", uitext.TargetLanguageLabel(s.Translate))
+				}
+				if meetingMenuRow(c.Key("mt-translate"), label, "", s.Translate != "", false) {
+					a.meetOvMenu = meetingMenuNone
+					a.toggleMeetingTranslation(s.ID)
+					a.syncMeetingOverlay()
+				}
+			case moreCopy:
+				if meetingMenuRow(c.Key("mt-copy"), i18n.T("Copy transcript"), "", false, false) {
+					a.meetOvMenu = meetingMenuNone
+					a.copyLiveMeetingExport()
+					a.toast(i18n.T("Copied"))
+					a.syncMeetingOverlay()
+				}
+			case moreCancel:
+				if meetingMenuRow(c.Key("mt-abandon"), i18n.T("Cancel meeting"), "", false, true) {
+					a.meetOvMenu = meetingMenuNone
+					a.meetingAbandon = true
+					a.syncMeetingOverlay()
+				}
+			}
 		}
 	})
+}
+
+// meetingMenuRow is one item of the overlay's menus: its name, a hint
+// under it, a check when on; danger is red. It reports a click.
+func meetingMenuRow(c *ui.Context, label, hint string, on, danger bool) bool {
+	h := float32(30)
+	if hint != "" {
+		h = meetingOvMenuRowH
+	}
+	b := ui.ButtonBase(c).Height(h).Padding(0, 10).Radius(8).Shrink(0).Label(label).Checked(on)
+	if b.Hovered() {
+		b.Background(ui.RGBA(255, 255, 255, 0.1))
+	}
+	text := ovText
+	if danger {
+		text = mtRecDot
+	}
+	return b.Children(func() {
+		ui.Row(c).Fill().Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+				ui.Text(c, label).FontSize(13).FontWeight(500).TextColor(text).SingleLine().Ellipsis("…")
+				if hint != "" {
+					ui.Text(c, hint).FontSize(11).TextColor(ovText2).SingleLine().Ellipsis("…")
+				}
+			})
+			if on {
+				ui.Icon(c, icons.Check.Linear).Size(14, 14).TextColor(ovText).Shrink(0)
+			}
+		})
+	}).Clicked()
 }
 
 func meetingModeHint(m meeting.Mode) string {
@@ -304,17 +467,17 @@ func meetingModeHint(m meeting.Mode) string {
 }
 
 // meetingSpeaker is who said a line, as the meeting's details say it;
-// a line without a speaker is Me from the microphone, else Other.
+// a line without a speaker is You from the microphone, else Others.
 func meetingSpeaker(name string, src meeting.Source) string {
 	if name == "" && src == meeting.SourceMic {
-		return i18n.T("Me")
+		return i18n.T("You")
 	}
 	return meetingSpeakerText(name, nil)
 }
 
 func (a *app) meetingOverlayAsking(c *ui.Context) {
-	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, i18n.T("Save this meeting?")).FontSize(13).FontWeight(500).TextColor(ovText).SingleLine().Grow(1).MinWidth(0)
+	ui.Row(c).Height(layout.RowH).Shrink(0).Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, i18n.T("Save this meeting?")).FontSize(layout.NoticeSize).FontWeight(500).TextColor(ovText).SingleLine().Grow(1).MinWidth(0)
 		if cardCapsule(c.Key("mt-save"), i18n.T("Save"), "") {
 			a.meetingSave()
 		}
@@ -337,9 +500,9 @@ func meetingOverlayFinishing(c *ui.Context, s meeting.Snapshot, look pillLook) {
 	case meeting.StageSummary:
 		msg = i18n.T("Summarising…")
 	}
-	ui.Row(c).Height(meetingOvBarH).Shrink(0).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+	ui.Row(c).Height(layout.RowH).Shrink(0).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 		overlayLoader(c, msg, look, 0)
-		ui.Text(c, msg).FontSize(13).TextColor(ovText).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		ui.Text(c, msg).FontSize(layout.NoticeSize).TextColor(ovText).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 	})
 }
 
@@ -360,15 +523,14 @@ func (a *app) meetingAbandonDialog(c *ui.Context) {
 	})
 }
 
+// formatMeetingElapsed is the meeting's time as the dictation pill's
+// (clock): m:ss, h:mm:ss from an hour.
 func formatMeetingElapsed(d time.Duration) string {
 	d = d.Round(time.Second)
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	sec := int(d.Seconds()) % 60
-	if h > 0 {
-		return fmt.Sprintf("%d:%02d:%02d", h, m, sec)
+	if d < time.Hour {
+		return clock(d)
 	}
-	return fmt.Sprintf("%02d:%02d", m, sec)
+	return fmt.Sprintf("%d:%02d:%02d", int(d.Hours()), int(d.Minutes())%60, int(d.Seconds())%60)
 }
 
 func (a *app) destroyMeetingOverlay() {
@@ -376,7 +538,6 @@ func (a *app) destroyMeetingOverlay() {
 		a.meetOvWin.Destroy()
 		a.meetOvWin = nil
 		a.meetOvShown = false
-		a.meetOvFrame = mygo.Rectangle{}
 		a.meetOvCollapsed = false
 	}
 }

@@ -28,7 +28,7 @@ func TestTranslatePage(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
 	for _, s := range []string{
 		"Translate", "Shortcuts", "Right ⌥ ⇧", "Models", "No speech model is installed, so only selected text can be translated.",
-		"No language model is set up. Set one up to translate.", "Translation", "Translate into", "Automatic (now: Simplified Chinese)",
+		"No language model is set up. Set one up to translate.", "Translation", "Target language", "Automatic (now: Simplified Chinese)",
 		"Basic clean-up", "Show the result in a card", "Your rules", "Try it",
 	} {
 		if !has(tt, s) {
@@ -46,12 +46,12 @@ func TestTranslatePage(t *testing.T) {
 	if a.lib.settings.Get().Features.Translate.Cleanup {
 		t.Error("clean-up not saved")
 	}
-	click(t, tt, "Target language")
+	click(t, tt, "Target language for Translate")
 	click(t, tt, "Japanese")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "ja" {
 		t.Errorf("target %q", got)
 	}
-	click(t, tt, "Target language")
+	click(t, tt, "Target language for Translate")
 	click(t, tt, "Automatic (now: Simplified Chinese)")
 	if got := a.lib.settings.Get().Features.Translate.Target; got != "" {
 		t.Errorf("target %q", got)
@@ -66,7 +66,7 @@ func TestTranslatePage(t *testing.T) {
 	a.fui(hotkey.Translate).prompt = "Use British spelling."
 	a.fui(hotkey.Translate).promptDirty = true
 	a.savePrompt(hotkey.Translate)
-	click(t, tt, "Example user message")
+	click(t, tt, "What the language model receives")
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != "Use British spelling." || a.lib.settings.Get().Features.Transcribe.Prompt != "" {
 		t.Errorf("rules %q", p)
 	}
@@ -97,7 +97,7 @@ func TestRewritePage(t *testing.T) {
 		t.Error("0.1.0's card length setting is back")
 	}
 	click(t, tt, "Your rules")
-	click(t, tt, "Example user message")
+	click(t, tt, "What the language model receives")
 	// A try that is blocked says why, here.
 	click(t, tt, "Start a test")
 	if a.sess.State.Live() || !has(tt, "No speech model is installed.") {

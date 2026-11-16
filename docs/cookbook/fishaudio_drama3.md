@@ -217,6 +217,31 @@ sgl-omni serve \
 
 When the engine and the vocoder share one GPU, `--mps on` lets their processes share it through CUDA MPS (see [Same-GPU Data Parallelism with CUDA MPS](../basic_usage/mps_dp.md)). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.
 
+### Tensor Parallelism
+
+When the FP8 checkpoint does not fit one GPU, `--tts_engine.tp_size` splits the engine across 2 or 4 GPUs: SGLang shards the backbone, and each GPU holds its share of the codebook tower's attention heads and MLP width; with 4 GPUs, pairs of GPUs share each of the tower's two key/value heads, as they share the backbone's. The FP8 routed experts are stored in 128-wide blocks, so their 512-wide intermediate splits across at most 4 GPUs. On two 32 GB GPUs, such as two RTX 5090:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/drama-3 \
+  --tts_engine.tp_size 2 \
+  --tts_engine.gpu "[0, 1]" \
+  --tts_engine.gpu_memory_fraction 0.75 \
+  --preprocessing.gpu 0 \
+  --vocoder.gpu 1 \
+  --vocoder.gpu_memory_fraction 0.2
+```
+
+Each GPU then holds 18.5 GB of engine weights, and 9.7 GB with `--tts_engine.tp_size 4 --tts_engine.gpu "[0, 1, 2, 3]"`. The vocoder's default share of 0.10 is sized for an H200: on a 32 GB GPU it cannot hold one non-streaming decode of `max_new_tokens` frames, so the command raises it to 0.2. The fused codebook tower layers stay off under tensor parallelism. Table 4 compares these layouts with one H200 on the Seed-TTS English workload of Table 3, all measured with checkpoint revision `78e5ab7`; compare its rows with each other rather than with Table 3.
+
+| Setup | Latency mean | Latency p95 | RTF mean | Throughput (req/s) | WER (corpus) | Samples above 50% WER |
+|---|---:|---:|---:|---:|---:|---:|
+| One H200 | 1.048 s | 1.551 s | 0.237 | 7.62 | 0.85% | 0 |
+| Two RTX 5090, tensor parallel | 1.255 s | 1.876 s | 0.283 | 6.37 | 0.90% | 0 |
+| Four RTX 5090, tensor parallel | 1.403 s | 2.081 s | 0.316 | 5.69 | 0.87% | 0 |
+
+*Table 4. Drama 3 FP8 checkpoint on Seed-TTS English, non-streaming requests at concurrency 8.*
+
 ### High Concurrency
 
 The defaults run at most 16 requests at a time on the engine and give it 0.70 of the GPU's memory. For more streams at once, raise the request cap; the measurements below also raise the engine's share:
@@ -277,14 +302,16 @@ The limit does not count the memory the vocoder process holds outside PyTorch's 
 |---|---|---|
 | Decode CUDA graph | Replays decode steps as CUDA graphs. | `--tts_engine.engine.cuda_graph_backend_decode disabled`; `--tts_engine.engine.disable_cuda_graph true` turns off every engine CUDA graph |
 | Breakable prefill CUDA graph, up to 2048 tokens | Replays prefill batches of up to 2048 tokens, backbone and codebook tower together, as one breakable CUDA graph; larger batches run eagerly. Shortens the time to the first audio at the cost of startup time and GPU memory; the KV cache keeps its size. | `--tts_engine.engine.cuda_graph_backend_prefill disabled`; the token cap with `--tts_engine.engine.cuda_graph_max_bs_prefill` |
+| GDN extend inside the breakable prefill graph | The breakable prefill CUDA graph also runs the extend of the linear-attention (GDN) layers for prefills of up to `max_running_requests` requests, instead of breaking the graph at each of those layers and launching their kernels from Python. Its outputs and states equal the eager extend bit for bit. | `--tts_engine.factory.gdn_prefill_cuda_graphs false` |
 | First-frame CUDA graphs, up to 16 requests | Replays the step that samples each request's first frame as a CUDA graph for prefills of up to 16 requests (at most the decode CUDA graph's largest batch); larger prefills sample eagerly. Needs the decode CUDA graph; shortens each prefill at the cost of startup time and GPU memory. | `--tts_engine.factory.first_frame_cuda_graphs false`; the request cap with `--tts_engine.factory.first_frame_cuda_graph_max_requests` |
 | `prefill_decode_interval` 4 | After a prefill, new prefills wait for the next 4 scheduling rounds, so running streams keep decoding. | `--tts_engine.engine.prefill_decode_interval 0` schedules prefills without the wait |
 | Sampling: `temperature` 1.0, `top_p` 0.9, no `top_k` cap | Without a request `top_k`, the main token is drawn with no top-k cap; a cap of 30 there lets a stream fall silent after its first phrase. The codebook heads draw with top-k 30 at most whatever the request asks, since wider caps there cost speaker similarity. | The request's `temperature`, `top_p` and `top_k`; a request `top_k` caps the main token, and the codebook heads up to 30 |
 | Triton sampling | Samples each frame's main token and codes with Triton kernels instead of the PyTorch sampler, under the same top-k, top-p and repetition-aware rules. Using the same seed does not guarantee the same tokens as the PyTorch sampler. Rounding can keep or drop a candidate whose cumulative probability lies at top_p. | `--tts_engine.factory.triton_sampling false` |
 | Reference sampling, off | Samples each frame with Fish Audio's reference sampling for Drama 3, in PyTorch, instead of the samplers above. The main token's first draw keeps only candidates whose probability reaches the request's `epsilon_cutoff` (1e-3 when unset, 0 turns it off) and top-p drops the token that crosses it; a first draw that repeats one of the last 16 main tokens, end of speech included, becomes the most probable candidate. The codebook heads take the request's `temperature`, `top_k` and `top_p` with no epsilon cutoff and never return a code the codec's 1024-entry residual codebooks lack. Its recommended request parameters are `temperature` 1.0, `top_p` 1.0, no `top_k` and `epsilon_cutoff` 1e-3. With it off, a request that sets a non-zero `epsilon_cutoff` is refused. | `--tts_engine.factory.reference_sampling true`; `--tts_engine.factory.reference_sampling_fallback ras` replaces a repeated first draw with a second draw at temperature 1.0, top-p 0.95 and top-k 30 instead |
-| Fused codebook tower layers, up to 16 rows | Runs the codebook tower layers of decode and first-frame steps of up to 16 rows as fused Triton kernels, eagerly or inside the CUDA graphs; larger steps and the tower's prefill keep the module path. The kernels add in a different order, so the tower's outputs can differ in the last bits and the sampled frames can differ. | `--tts_engine.factory.tower_fused_layers false` |
+| Fused codebook tower layers, up to 32 rows | Runs the codebook tower layers of decode and first-frame steps of up to 32 rows as fused Triton kernels (row tiles of 16 and 32), eagerly or inside the CUDA graphs; larger steps and the tower's prefill keep the module path. The kernels add in a different order, so the tower's outputs can differ in the last bits and the sampled frames can differ. | `--tts_engine.factory.tower_fused_layers false` |
 | Vocoder window CUDA graphs | Replays the decode of each streaming window length at batch 1 as a CUDA graph; batches and longer windows decode eagerly. | `--vocoder.factory.window_cuda_graphs false` |
 | Vocoder fp16 decoding | Decodes frames into audio in fp16. | `--vocoder.factory.decode_dtype float32` |
+| Reference encode CUDA graphs, up to 20 s | Encodes each reference by replaying a CUDA graph captured for its length rounded up to a multiple of 22 codec frames (1.02 s); the longest of the 20 graphs holds 440 frames (20.43 s), and longer references encode eagerly. The encoder is causal, so the zeros after a reference feed none of its codes, but the padded encode rounds differently from an unpadded one: on H100 about 4.5% of a reference's code elements differ in bf16 and under 0.3% in fp32. Costs startup time and preprocessing GPU memory. | `--preprocessing.factory.reference_encode_graph_max_seconds 0` encodes every reference eagerly; another value moves the cap |
 
 The same settings in a config file:
 
@@ -300,7 +327,7 @@ stages:
       decode_dtype: float32
 ```
 
-Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:
+Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference, under tensor parallelism, or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:
 
 ```text
 Drama 3 codebook sampling: PyTorch, untested GPU sm_120
@@ -401,3 +428,7 @@ Loading takes 6.4 to 6.8 s native and 6.9 to 7.2 s for the reference. Peak MLX m
 - [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
 - [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
 - [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
+
+## Incremental streaming codec
+
+The incremental codec is opt-in: set `--vocoder.factory.stateful_decode true` to reuse per-request convolution and attention history. While it is on, it replaces the vocoder's default batched incremental stream decoding (`--vocoder.factory.stream_decode incremental`). GEMM upsampling, folded codebooks, Snake/history fusion and compiled attention follow this setting unless individually overridden. Slot capacity follows `tts_engine.engine.max_running_requests` when set, otherwise `tts_engine.factory.max_running_requests`; it does not add an HTTP admission limit. Streams that cannot acquire a slot use window decoding for their entire lifetime. Fixed routing, single replicas, a dedicated TP1 vocoder process and zero crossfade are required. Enabling the feature adds state memory and compilation/capture startup cost. It targets sustained concurrent workloads, especially shared-GPU deployments; benefits with a dedicated vocoder GPU are workload-dependent.

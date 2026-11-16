@@ -179,7 +179,7 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	llmStart := r.now()
 	var llmErr error
 	if e.Kind == store.KindTranscribe {
-		e.Result, _, llmErr = r.cleanUp(text)
+		e.Result, _, llmErr = r.cleanUp(text, nil)
 		if llmErr != nil {
 			// As a session: the text as recognised, with the warning.
 			e.LLMMS = r.now().Sub(llmStart).Milliseconds()
