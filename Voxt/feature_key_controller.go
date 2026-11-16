@@ -122,6 +122,13 @@ func newHotkey(features settings.Features) settings.Hotkey {
 
 func (a *app) featureShortcutsModel(feature string) featureShortcutsViewState {
 	a.featureSync(feature)
+	return buildFeatureShortcutsViewState(i18n.CurrentTranslator(), featureShortcutsStateInput{
+		Feature: feature, Settings: a.prefs, Local: a.fui(feature), HotkeysInstalled: a.hotkeys.Installed,
+		HelperRecordsKeys: a.helperRecordsKeys(), UsedBy: a.featureUsedBy(feature), EndWord: a.featureEndWordModel(),
+	})
+}
+
+func (a *app) featureUsedBy(feature string) map[string][]string {
 	local := a.fui(feature)
 	usedBy := map[string][]string{}
 	remember := func(row keyRow, saved string) {
@@ -137,10 +144,7 @@ func (a *app) featureShortcutsModel(feature string) featureShortcutsViewState {
 	}
 	remember(local.paste, a.prefs.Features.PasteLast.Keys)
 	remember(local.cancel, a.prefs.Features.Cancel.Keys)
-	return buildFeatureShortcutsViewState(i18n.CurrentTranslator(), featureShortcutsStateInput{
-		Feature: feature, Settings: a.prefs, Local: local, HotkeysInstalled: a.hotkeys.Installed,
-		HelperRecordsKeys: a.helperRecordsKeys(), UsedBy: usedBy, EndWord: a.featureEndWordModel(),
-	})
+	return usedBy
 }
 
 func (a *app) openFeaturePermissions() {

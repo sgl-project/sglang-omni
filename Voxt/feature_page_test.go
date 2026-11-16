@@ -42,6 +42,37 @@ func readyModels(a *app) {
 	a.checkModels() // as installing does: the models' card goes
 }
 
+func TestFeaturePageModelCache(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	_, _ = a.featurePageModel(hotkey.Transcribe)
+	first, _ := a.featurePageModel(hotkey.Transcribe)
+	second, _ := a.featurePageModel(hotkey.Transcribe)
+	if &first.Shortcuts.Rows[0] != &second.Shortcuts.Rows[0] {
+		t.Fatal("stable frame rebuilt the feature page")
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Structure = true })
+	changed, _ := a.featurePageModel(hotkey.Transcribe)
+	if &first.Shortcuts.Rows[0] == &changed.Shortcuts.Rows[0] {
+		t.Fatal("settings change kept stale feature state")
+	}
+	again, _ := a.featurePageModel(hotkey.Transcribe)
+	settled, _ := a.featurePageModel(hotkey.Transcribe)
+	if &again.Shortcuts.Rows[0] != &settled.Shortcuts.Rows[0] {
+		t.Fatal("synchronized settings did not reuse feature state")
+	}
+	local := a.fui(hotkey.Transcribe)
+	local.rules, local.find = true, "meeting"
+	find, _ := a.featurePageModel(hotkey.Transcribe)
+	if &settled.Shortcuts.Rows[0] == &find.Shortcuts.Rows[0] {
+		t.Fatal("local find change kept stale feature state")
+	}
+	a.sessionChanged(trySnapshot(a, session.Done))
+	ended, _ := a.featurePageModel(hotkey.Transcribe)
+	if &find.Shortcuts.Rows[0] == &ended.Shortcuts.Rows[0] {
+		t.Fatal("session revision kept stale feature state")
+	}
+}
+
 func TestTranscribePageRenders(t *testing.T) {
 	a, tt := trTester(t)
 	for _, s := range []string{

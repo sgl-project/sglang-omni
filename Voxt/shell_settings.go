@@ -117,6 +117,7 @@ func settingsSectionIcon(id string) icons.Icon {
 // fn must only set fields, as it runs on both.
 func (a *app) updateSettings(fn func(*settings.Settings)) {
 	fn(&a.prefs)
+	a.featureRevision++
 	st := a.settings
 	a.async(func() {
 		if err := st.Update(context.Background(), fn); err != nil {
@@ -128,6 +129,7 @@ func (a *app) updateSettings(fn func(*settings.Settings)) {
 // settingsChanged applies saved settings to the app.
 func (a *app) settingsChanged(old, new settings.Settings) {
 	a.prefs = new
+	a.featureRevision++
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
 	if (old.Dictionary.Learn && !new.Dictionary.Learn) || (old.Dictionary.Enabled && !new.Dictionary.Enabled) {
 		a.learner.Stop() // learn_link.go: nothing read from now on, nothing proposed
