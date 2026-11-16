@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The speech-avatar nodes of a Session graph (FlashHead): pictures or motion on the input timeline from the agent's speech, rendered by a pool of chunk workers."""
+"""The speech-avatar nodes of a Session graph (FlashHead, MuseTalk): pictures or motion on the input timeline from the agent's speech, rendered by a pool of chunk workers."""
 
 import socket
 import struct
@@ -215,6 +215,7 @@ def motion():
     "profile, stage, node, port_format, size",
     [
         ("flashhead", SPEECH_VIDEO_STAGE, "speech_video", JPEG_FRAME, (512, 512)),
+        ("musetalk", SPEECH_VIDEO_STAGE, "speech_video", JPEG_FRAME, (512, 512)),
     ],
 )
 def test_each_profile_feeds_the_agents_speech_to_its_node_and_publishes_an_input_timeline_port(
