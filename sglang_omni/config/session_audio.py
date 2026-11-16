@@ -8,6 +8,9 @@ from typing import ClassVar
 from pydantic import Field, model_validator
 
 from sglang_omni.config.schema import PipelineConfig, SessionNodeConfig, StageConfig
+from sglang_omni.models.ellsa2.node import MOTION_STAGE
+from sglang_omni.models.ellsa2.node import SESSION_PORTS as MOTION_PORTS
+from sglang_omni.models.ellsa2.node import MotionStageConfig, motion_stage
 from sglang_omni.models.turn_detection.node import SESSION_PORTS as TURN_DETECTION_PORTS
 from sglang_omni.models.turn_detection.node import (
     TURN_DETECTION_STAGE,
@@ -52,10 +55,12 @@ class AudioSessionPipelineConfig(PipelineConfig):
     stage_groups: ClassVar[tuple[StageGroup, ...]] = (
         StageGroup(lambda: [vad_stage()], None, VAD_PORTS),
         StageGroup(lambda: [turn_detection_stage()], None, TURN_DETECTION_PORTS),
+        StageGroup(lambda: [motion_stage()], None, MOTION_PORTS),
     )
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         VAD_STAGE: VADStageConfig,
         TURN_DETECTION_STAGE: TurnDetectionStageConfig,
+        MOTION_STAGE: MotionStageConfig,
     }
     session_nodes: dict[str, SessionNodeConfig]
     session_publish: dict[str, list[str]]

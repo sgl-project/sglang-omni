@@ -383,6 +383,7 @@ Every profile is a `launch.yaml` under `examples/streaming_cascade/profiles/`.
 | `qwen3-asr-qwen3-tts-vivian` (default) | Qwen3-ASR-1.7B service on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `qwen3-asr-streaming-qwen3-tts-vivian` | Qwen3-ASR-1.7B service on 8002 started with `--enable-realtime` (`streaming_transcription`, a partial transcript every 1000 ms of speech) | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
+| `qwen3-asr-qwen3-tts-base-clone-motion` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the `qwen3-asr-qwen3-tts-base-clone` directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published), `motion` (stage `ellsa2_motion`, published `smplh_flame_motion`) | Alignment worker on 8010 |
 | `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR service on 8001 (`realtime_transcription`) | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 | `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the `asr` stage on GPU 0, with `running_transcript` | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr` (stage), `transcript`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 
@@ -738,6 +739,25 @@ Declared as `turn_detection: {stages: [turn_detection], inputs: ["input:pcm16", 
 
 
 Declared as `asr: {stages: [asr], inputs: ["input:pcm16"]}`; runs Nemotron 3.5 streaming ASR on the GPU set by `stages.asr.gpu` (default 0) and produces the running `text` a `running_transcript` node reads.
+
+(stage-ellsa2_motion)=
+
+**Stage `ellsa2_motion`**
+
+
+Declared as `motion: {stages: [ellsa2_motion], inputs: ["input:pcm16", "tts:pcm_f32le", {kind: control, source: dialog, event: interrupt}]}` with `session_publish: {motion: [smplh_flame_motion]}`; runs the ELLSA 2 Standalone generator (`tsinghua-ee/ELLSA2`, Apache-2.0) on the GPU set by `stages.ellsa2_motion.gpu` (default 0) and publishes the agent's upper-body, hand and face motion, listening included, on the port `("motion", "smplh_flame_motion", {"fps": 30, "timeline": "input", "follows_replies": true, "reply_media_wait_ms": 1000})`: one chunk of 24 frames per 0.8 s block, stamped with the block's start on the Session input timeline, each frame 264 float32 values (SMPL-H axis-angle pose in joint order, root and legs at rest, then the 108-D FLAME motion code), with the turn of the reply audio it shows. The user's audio is the model's partner stream and the reply audio its target stream; a reply starts on a block boundary, and an interrupt cuts it at the next block, so the interrupted turn's blocks the Session still holds are dropped and the client keeps the last pose until the next listening block. A block needs the user's audio up to its end, so its motion arrives one block plus the generation time (about 0.1 s on an H100) after the audio it belongs to starts; under the `hold` A/V sync policy a reply's audio waits for the reply's first motion frame, at most `reply_media_wait_ms`. The cascade playground draws a stick figure and a jaw bar; a body or face mesh needs the SMPL-H, SMPL-X or FLAME model files, which have their own registration. `qwen3-asr-qwen3-tts-base-clone-motion` is the bundled profile.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `model_path` | string | `tsinghua-ee/ELLSA2` | The checkpoint, a Hub repository or a local copy with `standalone_generator/` and `tokenizers/`. |
+| `data_path` | string | `tsinghua-ee/ELLSA2_data` | Where the style clip is read: the Hub dataset or a local directory with `testset/style/` and `testset/style_flame/`. The dataset's clips come from Seamless Interaction (CC BY-NC 4.0) and are downloaded at startup, not shipped. |
+| `style` | string | `r2d_00073` | The style clip whose first 612 frames every session of the stage moves like. |
+| `speech_sample_rate_hz` | integer > 0 | required | The rate of the speech node's `pcm_f32le` audio; 24000 for `openai_speech`. |
+| `encoder_attn_implementation` | `sdpa` or `flash_attention_2` | `sdpa` | The audio encoder's attention; `flash_attention_2` needs the `flash-attn` package and is what the reference runs. |
+| `cudnn_attention` | boolean | `false` | Let the backbone's attention use cuDNN as the reference does. Needed for bit-for-bit parity with the reference under its libraries; a block then takes about 105 ms instead of 96 ms on an H100. |
+| `max_open_sessions` | integer ≥ 1 | `1` | Sessions the node holds at once; every block of every session runs, in order, on one worker. The bundled profile sets 8, what one H100 80GB keeps up with at about 96 ms a block; with `cudnn_attention` it is 7. |
+
+To verify, run `python -m benchmarks.eval.ellsa2_parity` against the reference implementation's outputs, `python -m benchmarks.eval.ellsa2_streaming` for the per-block latency and the session capacity of a GPU, and `python -m benchmarks.eval.ellsa2_motion_e2e` against a running profile for one conversation over `/v1/realtime` or `/v1/session`.
 
 (compatibility-and-constraints)=
 
