@@ -83,7 +83,8 @@ func (a *app) privacySettings(c *ui.Context) {
 		}
 	})
 
-	a.historyAccessSection(c) // history_access.go
+	accessModel := a.historyAccessModel(time.Now())
+	historyAccessSection(c, &accessModel, a, &a.histAccessUI) // history_access.go
 
 	sectionTitle(c, i18n.T("Logs"))
 	settingRow(c, "priv-log-text", i18n.T("Write text to the log"), i18n.T("When off, the log has no text, only lengths and timings. Turn it on only to report a problem."), func() {

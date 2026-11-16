@@ -25,7 +25,7 @@ import (
 //	sessionState      session_link.go  sessions, shortcuts, the answer card
 //	overlayState      overlay.go      the recording overlay
 //	transcribeState   feature_page.go  the feature pages (Transcribe, Translate, Rewrite)
-//	historyState      history_page.go the History page
+//	historyState      history_controller.go the History page
 //	appEnhanceState   appenhance.go   App enhancement: the groups, address reads, the page
 //	dictionaryState   dictionary_page.go  the Dictionary page
 //	homeState         home_page.go    Home: readiness, today, recent results
@@ -37,7 +37,7 @@ import (
 //	updateState       updates.go      the updater, an update installed while running
 //	notesState        notes_page.go   the Notes page
 //	learnState        learn_link.go   the watch that learns from the user's corrections
-//	historyAccessState history_access.go  other programs reading the history
+//	historyAccessState history_access_controller.go  other programs reading the history
 //	transcribeSocketState transcribe_socket.go  `Voxt transcribe`'s socket
 //	meetingState        meeting_link.go meetings (dev builds)
 //	meetingOverlayState meeting_overlay_window.go the meeting floating window
