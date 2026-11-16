@@ -384,6 +384,7 @@ Every profile is a `launch.yaml` under `examples/streaming_cascade/profiles/`.
 | `qwen3-asr-streaming-qwen3-tts-vivian` | Qwen3-ASR-1.7B service on 8002 started with `--enable-realtime` (`streaming_transcription`, a partial transcript every 1000 ms of speech) | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-base-clone-motion` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the `qwen3-asr-qwen3-tts-base-clone` directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published), `motion` (stage `ellsa2_motion`, published `smplh_flame_motion`) | Alignment worker on 8010 |
+| `qwen3-asr-qwen3-tts-base-clone-avatar` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the `qwen3-asr-qwen3-tts-base-clone` directory | 1, plus the GPU of the AVTR-1 renderer workers | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published), `avatar` (stage `avatar`, published `jpeg_frame`) | Alignment worker on 8010; an AVTR-1 renderer worker on 8020 |
 | `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR service on 8001 (`realtime_transcription`) | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 | `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the `asr` stage on GPU 0, with `running_transcript` | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr` (stage), `transcript`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 
@@ -760,6 +761,39 @@ Declared as `motion: {stages: [ellsa2_motion], inputs: ["input:pcm16", "tts:pcm_
 | `max_open_sessions` | integer ≥ 1 | `1` | Sessions the node holds at once, and the most blocks one batch generates. With `kv_batch`, one H100 80GB of its own keeps 176 sessions within the 0.8 s block (p95 about 0.6 s; 128 at 0.23–0.43 s; 64 at 0.16 s), each holding about 155 MB of caches (the stage takes about 25 GB at 64, 43 GB at 128); with `kv_batch: false`, 7 or 8. The bundled profile sets 64, sharing its GPU with the services. |
 
 To verify, run `python -m benchmarks.eval.ellsa2_parity` against the reference implementation's outputs, `python -m benchmarks.eval.ellsa2_streaming` for the per-block latency and the session capacity of a GPU, and `python -m benchmarks.eval.ellsa2_motion_e2e` against a running profile for one conversation over `/v1/realtime` or `/v1/session`.
+
+(stage-avatar)=
+
+**Stage `avatar`**
+
+
+Declared as `avatar: {stages: [avatar], inputs: ["input:pcm16", "tts:pcm_f32le", "tts:session", {kind: control, source: dialog, event: interrupt}]}` with `session_publish: {avatar: [jpeg_frame]}`; a CPU stage that animates a portrait with AVTR-1 (`avaturn-live/avtr-1`), talking with the reply audio and listening to the user, and publishes it on the port `("video", "jpeg_frame", {"fps": 25, "timeline": "input", "follows_replies": true, "reply_media_wait_ms": 1000, "width": 640, "height": 360})`: one JPEG per 40 ms frame at the stage's `width` and `height`, stamped on the Session input timeline, listening frames included, with the turn of the reply audio it shows; an empty payload keeps the previous picture. The user's audio is the model's listening track and the reply audio its speaking track. A chunk of five frames is ready once the user's audio reaches its start, so the listening reaction lags the user by the model's 405 ms window; a reply starts at a frame at or after the next chunk to render, once 405 ms of it arrived or its turn ended, and an interrupt returns the face to listening at the next chunk. Under the `hold` A/V sync policy a reply's audio waits for the reply's first frame, at most `reply_media_wait_ms`. When a Session falls behind, its newest ready chunk renders and the older ones are published as empty frames, so the picture freezes instead of lagging.
+
+The frames come from AVTR-1 renderer service workers, started beforehand from the AVTR-1 repository in its own environment (it pins torch below 2.8 and TensorRT 10.12 or older, so it does not share the server's), one process per worker:
+
+```bash
+git clone https://github.com/avaturn-live/avtr-1.git && cd avtr-1 && git checkout eb1e5a89 && pixi install -e renderer
+export AVTR1_LOCAL_STORAGE=/data/avtr1   # about 10 GB; the engines are built here
+pixi run -e renderer python scripts/download_artifacts.py   # gated: accept the AVTR-1 Community License on Hugging Face and log in first
+pixi run -e renderer python scripts/build_engines.py        # once per GPU model, about 14 minutes on an H100
+CUDA_VISIBLE_DEVICES=1 LOAD_BALANCER_URL=disabled pixi run -e renderer python -m uvicorn avtr1_renderer.api.app:app --host 127.0.0.1 --port 8020
+```
+
+`curl http://127.0.0.1:8020/avatars` lists the portraits (the PNGs in its `reference_frames` directory) and backgrounds a worker loaded. A worker renders one chunk at a time and keeps no Session state: each chunk carries its Session's state blob and the next one comes back with the frames, so a Session's chunks render in order on whichever worker is free. A chunk whose worker fails (a 5xx answer, a broken connection, a timeout) is published as empty frames, the Session keeps its last state, and the worker takes chunks again once its `/health` answers; a Session fails when a chunk failed on as many workers in a row as the pool has, or at once on a 4xx answer. The stage fails its start with `the AVTR-1 renderer at ... serves the avatars [...]` when a worker lacks the portrait or background.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `renderer_urls` | list of strings | required | The renderer workers, `http://host:port` each. |
+| `avatar` | string | required | The portrait every Session animates, loaded by every worker. |
+| `background` | string | required | One of the backgrounds the workers list at `/avatars`, such as `plain_white`. |
+| `speech_sample_rate_hz` | integer > 0 | required | The rate of the speech node's `pcm_f32le` audio; 24000 for `openai_speech`. |
+| `width`, `height` | integers ≥ 16 | 640, 360 | The frame size the stage encodes and its port advertises; the renderer's 1280x720 picture is scaled and center-cropped to it. |
+| `jpeg_quality` | 1–95 | 75 | About 25 KB a frame at 640x360. |
+| `sessions_per_renderer` | integer ≥ 1 | 1 | Sessions the stage holds per worker: `max_open_sessions` is this times the number of workers. On an H100 80GB one worker (about 4.7 GB) keeps 3 Sessions at real time, at a p95 of 178 ms per 200 ms chunk; a fourth falls behind, and more workers on the same GPU do not raise that. For more Sessions, add a worker on another GPU. |
+
+Licences: the renderer service code (`src/avtr1_renderer/`) is PolyForm Noncommercial 1.0.0, non-commercial use only; the weights and scripts are under the AVTR-1 Community License (commercial use only below USD 10M annual revenue); the InsightFace SCRFD and 2D106 models the renderer loads for portraits are for non-commercial research only. sglang-omni imports none of it and talks to the workers over HTTP, which keeps the code in its own process but does not change the terms of a deployment that uses it. `qwen3-asr-qwen3-tts-base-clone-avatar` is the bundled profile.
+
+To verify, run `python -m benchmarks.eval.avtr_avatar_streaming` against running workers for the per-chunk latency and the Session capacity of a GPU, and `python -m benchmarks.eval.avtr_avatar_e2e` against a running profile for one conversation over `/v1/realtime` or `/v1/session`.
 
 (compatibility-and-constraints)=
 

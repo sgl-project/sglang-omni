@@ -71,6 +71,7 @@
     .orb { position: relative; flex: none; width: min(58vw, 38dvh, 280px); aspect-ratio: 1; border: 0; padding: 0; background: none; cursor: pointer; border-radius: 50%; }
     .orb canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
     .motion-view { position: absolute; left: 16px; top: 16px; width: 120px; height: 160px; pointer-events: none; }
+    .avatar-view { flex: none; width: min(92vw, 640px); max-height: 60dvh; object-fit: contain; border-radius: 16px; }
     /* CSS fallback when WebGL is unavailable. */
     .orb::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: linear-gradient(180deg, #edf3f0 0 45%, #74b3ab 60%, #3f7f7e 100%); }
     .orb.has-gl::before { display: none; }
@@ -177,6 +178,7 @@
   <main class="stage">
     <div id="warning" class="warning" role="alert" hidden></div>
     <canvas id="motionView" class="motion-view" width="240" height="320" aria-label="Body motion" hidden></canvas>
+    <canvas id="avatarView" class="avatar-view" aria-label="Avatar" hidden></canvas>
     <button id="orb" class="orb" type="button" aria-label="Start conversation">
       <canvas id="orbCanvas" aria-hidden="true"></canvas>
     </button>

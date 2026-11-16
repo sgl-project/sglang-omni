@@ -6,6 +6,7 @@ import vm from "node:vm";
 import { ReplyMediaGate } from "../../../realtime/frontend/orb/reply_media_gate.js";
 import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
 import { MotionView, SMPLH_FLAME_MOTION, smplhFlameMotionRenderer } from "./smplh_flame_motion.js";
+import { JPEG_FRAME, VideoFrameView, jpegFrameRenderer } from "./video_frame.js";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
 // The settings panel is the realtime page's module, served under this page's path by playground/cascade/app.py.
@@ -28,6 +29,9 @@ function createApp(sessionOptions, search = "") {
     MotionView,
     SMPLH_FLAME_MOTION,
     smplhFlameMotionRenderer,
+    JPEG_FRAME,
+    VideoFrameView,
+    jpegFrameRenderer,
     window: { DEMO_WS_URL: "ws://localhost/v1/realtime", addEventListener() {} },
     location: { search },
     URLSearchParams,
@@ -190,4 +194,29 @@ test("with the ELLSA 2 motion port, a reply's audio waits for the reply's first 
   socket.receive({ type: "response.done", response: { id: "resp_1", status: "cancelled" } });
   await app.settled();
   assert.equal(app.run('motionView.queue.filter((entry) => entry.responseId === "resp_1").length'), 0);
+});
+
+test("with the AVTR-1 video port, a reply's audio waits for the reply's first frame, ?av_sync=free plays it on arrival, and an interrupt drops the reply's frames", async () => {
+  const video = { modality: "video", format: "jpeg_frame", params: { fps: 25, timeline: "input", follows_replies: true, reply_media_wait_ms: 1000, width: 640, height: 360 } };
+  for (const [search, beforeShown] of [["", 0], ["?av_sync=free", 1]]) {
+    const app = createApp({ instructions: "", outputModalities: ["audio"], extension: {}, turnDetection: null }, search);
+    const { socket } = await firstSessionUpdate(app);
+    socket.receive({ type: "session.updated", session: { sglang: { granted: { input_audio_format: { rate: 16000 }, output_audio_format: { rate: 24000 } }, plugin_output_ports: [video] } } });
+    socket.receive({ type: "response.created", response: { id: "resp_1" } });
+    socket.receive({ type: "response.output_audio.delta", response_id: "resp_1", item_id: "item_1", delta: Buffer.alloc(480).toString("base64") });
+    await app.settled();
+    const pushes = () => app.posted.filter((message) => message.type === "push" && message.responseId === "resp_1");
+    assert.equal(pushes().length, beforeShown, search);
+    assert.equal(app.run("mediaGate.waitMs"), 1000);
+    const jpeg = Buffer.from("jpeg").toString("base64");
+    socket.receive({ type: "sglang.output_chunk", response_id: "resp_1", turn: 1, modality: "video", format: "jpeg_frame", t_start_ms: 0, duration_ms: 40, payload_b64: jpeg });
+    socket.receive({ type: "sglang.output_chunk", response_id: "resp_1", turn: 1, modality: "video", format: "jpeg_frame", t_start_ms: 40, duration_ms: 40, payload_b64: jpeg });
+    await app.settled();
+    assert.equal(pushes().length, beforeShown, search);
+    app.run("videoView.due()");
+    assert.equal(pushes().length, 1, search);
+    socket.receive({ type: "response.done", response: { id: "resp_1", status: "cancelled" } });
+    await app.settled();
+    assert.equal(app.run('videoView.queue.filter((entry) => entry.responseId === "resp_1").length'), 0);
+  }
 });
