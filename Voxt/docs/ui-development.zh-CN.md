@@ -48,6 +48,18 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 视图需要新数据时，由功能侧把数据加入构造器输入和 view state，并增加一个能证明该值来自真实逻辑的场景。新增用户意图时，在 `meeting_actions.go` 中加入 action，在 `app` 上实现，在 `meetingDemoHost` 上记录，并在 `TestMeetingDemoActionControls` 中加入点击测试。
 
+## 新增一个 fixture 驱动的小页面
+
+给新页面选一个简短的 kind，例如 `note`。视图放在 `*_page.go` 中，只接收 view state、actions 和界面本地状态。然后接好以下各处：
+
+1. 在 `meeting_fixture.go` 的 `meetingFixtureState` 中加入对应字段，并在 `meeting_fixture_test.go` 的 `buildMeetingFixture` 中加入构造分支。在 `meeting_fixture_scenarios_test.go` 中加入场景，然后重新生成 fixture。
+2. 在 `meeting_demo.go` 的 `readMeetingDemoFixture` 中接受这个 kind，并在 `meeting_demo_view.go` 的 `meetingDemoView` 中加入渲染分支。在 `selectMeetingFixture` 中初始化和重置界面本地状态。
+3. 在 `meeting_actions.go` 中加入 action，在 `app` 上实现，并在 `meetingDemoHost` 上记录。
+4. 在 `meeting_demo_test.go` 的 `meetingDemoSentinel` 中加入预期可见文字，并在 `TestMeetingDemoActionControls` 中加入控件测试。
+5. 正式页面还要由所属控制器构造状态，并在 `pages.go` 中注册视图。只做 demo 练习时，完成 fixture、视图和 action 测试即可。
+
+运行 `go test ./internal/archtest` 检查新视图的 import，运行 `go test -run '^TestMeeting(ViewStateGolden|FixtureCoverage|Demo)' .` 检查 fixture、渲染和 action。
+
 ## 出截图并检查操作
 
 生成中英文全部 fixture 的截图：

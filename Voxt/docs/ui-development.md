@@ -48,6 +48,18 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to `meeting_actions.go`, implement it on `app`, record it on `meetingDemoHost`, and add a click test to `TestMeetingDemoActionControls`.
 
+## Add a small fixture-backed page
+
+Use a short kind such as `note` for the new page. Keep the view in a `*_page.go` file with only its view state, actions, and local UI state. Then wire each required path:
+
+1. Add an optional field for the new kind to `meetingFixtureState` in `meeting_fixture.go` and a matching case to `buildMeetingFixture` in `meeting_fixture_test.go`. Add a scenario to `meeting_fixture_scenarios_test.go` and regenerate the fixtures.
+2. Accept the kind in `readMeetingDemoFixture` in `meeting_demo.go` and add its render branch to `meetingDemoView` in `meeting_demo_view.go`. Initialize and reset any local widget state in `selectMeetingFixture`.
+3. Add the action methods to `meeting_actions.go`, implement them on `app`, and record them on `meetingDemoHost`.
+4. Add the expected visible text to `meetingDemoSentinel` in `meeting_demo_test.go` and add controls to `TestMeetingDemoActionControls`.
+5. For a production page, construct its state in the owning controller and register the view in `pages.go`. A demo-only exercise can stop after the fixture, view, and action tests.
+
+Run `go test ./internal/archtest` to check the new view's imports and `go test -run '^TestMeeting(ViewStateGolden|FixtureCoverage|Demo)' .` to check its fixtures, rendering, and actions.
+
 ## Render screenshots and check actions
 
 Render every fixture in both languages:
