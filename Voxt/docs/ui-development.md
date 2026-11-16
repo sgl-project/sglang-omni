@@ -1,6 +1,6 @@
-# Develop meeting views with fixtures
+# Develop views with fixtures
 
-Use this guide to change a meeting view without starting Voxt's helper, loading a model, granting microphone permission, or opening Voxt's data directory.
+Use this guide to change a meeting or history view without starting Voxt's helper, loading a model, granting microphone permission, or opening Voxt's data directory.
 
 ## Open the first fixture
 
@@ -36,33 +36,31 @@ To render fixtures without a window, use [the screenshot command](#render-screen
 
 ## Change a view
 
-The meeting views are `meetings_page.go`, `meetings_detail.go`, `meetings_playback.go`, `meeting_overlay.go`, and `meeting_overlay_view.go`. They read view state, call actions, and own local widget state such as scroll position and open menus. They do not read stores, snapshots, settings, or `app`.
+The meeting views are `meetings_page.go`, `meetings_detail.go`, `meetings_playback.go`, `meeting_overlay.go`, and `meeting_overlay_view.go`. History uses `history_page.go`, `history_detail.go`, `history_menu.go`, `history_retry.go`, `history_settings.go`, `history_export.go`, and `history_access.go`. These files read view state, call actions, and own local widget state such as scroll position and open menus. They do not read stores, snapshots, settings, or `app`.
 
 The matching logic files build view state and implement actions:
 
-- `meetings_view_state.go` builds list, detail, and playback display data.
-- `meeting_overlay_state.go` builds overlay display data.
-- `meetings_controller.go`, `meetings_detail_controller.go`, and `meetings_playback_controller.go` own store reads, detail updates, and audio work.
-- `meeting_overlay_window.go` owns the native overlay window and cached overlay state.
-- `meeting_actions.go` defines the user intents. `app` implements them in production. `meetingDemoHost` records them in the demo.
+- `meetings_view_state.go` and `meeting_overlay_state.go` build meeting display data. `meetings_controller.go`, `meetings_detail_controller.go`, `meetings_playback_controller.go`, and `meeting_overlay_window.go` own store reads, detail updates, audio work, and native resources.
+- `history_view_state.go`, `history_settings_view_state.go`, and `history_access_view_state.go` build history display data. The history controllers own store reads, retries, recording jobs, exports, and the access socket.
+- `meeting_actions.go` and `history_actions.go` define user intents. `app` implements them in production. `meetingDemoHost` records them in the demo.
 
 Keep dimensions, colors, and widget choices in the view files. Run `go tool mygo vet .` and `go test ./internal/archtest` after moving code.
 
 ## Add or change fixture data
 
-Do not edit fixture JSON by hand. Change the production builder and its scenario in `meeting_fixture_scenarios_test.go`, then regenerate both languages:
+Do not edit fixture JSON by hand. Change the production builder and its scenario in `meeting_fixture_scenarios_test.go` or `history_fixture_scenarios_test.go`, then regenerate both languages:
 
 ```sh
 VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 ```
 
-`TestMeetingViewStateGolden` builds every fixture through the production view-state builders. `TestMeetingFixtureCoverage` derives required states and problem codes from the domain declarations and fails when a fixture is missing.
+`TestMeetingViewStateGolden` builds every fixture through the production view-state builders. `TestMeetingFixtureCoverage` and `TestHistoryFixtureCoverage` derive required states and problem codes from the domain declarations and fail when a fixture is missing.
 
-If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to `meeting_actions.go`, implement it on `app`, record it on `meetingDemoHost`, and add a click test to `TestMeetingDemoActionControls`.
+If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to `meeting_actions.go` or `history_actions.go`, implement it on `app`, record it on `meetingDemoHost`, and add a click test to `TestMeetingDemoActionControls` or `TestHistoryDemoActionControls`.
 
 ## Add the next area or a fixture-backed page
 
-Extend the existing fixture window instead of adding another startup path. A new area supplies its view state, actions, scenarios, and views. The integration points below are the only demo changes; `main.go`, `meeting_demo_enabled.go`, `meeting_demo_disabled.go`, and `demo/mygo.json` stay unchanged. Extract shared loading or selection code when the second area needs it, and do not add a UI-version selector.
+Extend the existing fixture window instead of adding another startup path. A new area supplies its view state, actions, scenarios, and views. The integration points below are the only demo changes; `main.go`, `meeting_demo_enabled.go`, `meeting_demo_disabled.go`, and `demo/mygo.json` stay unchanged. Extract shared loading or selection code when another area needs it, and do not add a UI-version selector.
 
 Use a short kind such as `note` for the new page. Keep the view in a `*_page.go` file with only its view state, actions, and local UI state. Then wire each required path:
 
@@ -87,12 +85,12 @@ The test writes one PNG per fixture as `<locale>-<scenario>.png` and checks each
 Check fixture switching and control-to-action wiring:
 
 ```sh
-go test -count=1 -run '^TestMeetingDemo(ActionControls|SwitchesFixtures)$' .
-go test -tags=meetingdemo -count=1 -run '^TestMeetingDemo' .
+go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls)$' .
+go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History)Demo' .
 ```
 
-The first command clicks every action-bearing meeting control and the local cancellation controls, then compares the exact recorded calls. It covers menus, confirmation dialogs, playback, and search. The second command also compiles the enabled demo entry point.
+The first command clicks every action-bearing meeting and history control and the local cancellation controls, then compares the exact recorded calls. It covers menus, confirmation dialogs, playback, search, settings, exports, cleanup, and Privacy access. The second command also compiles the enabled demo entry point.
 
 These tests use `ui.Tester`. They need no window, helper binary, model, microphone, network, or Voxt data directory. They also run on Linux.
 
-The demo does not verify native overlay placement, vibrancy, content protection, real audio capture, helper behavior, model output, global shortcuts, persistence, or file output. Check those on a Mac with the real app. The settings-area dialog is outside this pilot, so the demo hides its button.
+The demo does not verify native overlay placement, vibrancy, content protection, real audio capture, helper behavior, model output, global shortcuts, persistence, or file output. Check those on a Mac with the real app. The meeting settings-area dialog remains outside the demo, so meeting page fixtures hide its button.
