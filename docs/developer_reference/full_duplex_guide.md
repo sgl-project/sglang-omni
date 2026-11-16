@@ -837,6 +837,8 @@ The wire, one request per chunk: `POST /render` with a 4-byte little-endian stat
 
 The bundled profiles are `qwen3-asr-qwen3-tts-base-clone-{avatarforcing,avatarforcing-ki}`, and `examples/configs/personaplex_session_avatarforcing_ki.yaml` carries the listening model behind PersonaPlex. Licences: Avatar Forcing (TaekyungKi) is CC BY-NC 4.0; Avatar Forcing (KlingAIResearch) says Apache-2.0 in its README while its LICENSE.txt carries Tencent's academic-use RollingForcing terms. sglang-omni imports none of their code.
 
+The Kling Avatar Forcing worker reaches real time on one H100 with its speed options: `--fuse` (the blocks' RoPE, norms, modulation and residuals compiled with the q/k/v projections, and the KV-cache offsets kept on the host), `--compile-blocks`, `--cuda-graph` (the steady-state forwards replayed from CUDA graphs captured at warm-up; one Session at a time), `--jpeg-threads 8`, and `--taehv taew2_1.pth`, which decodes with TAEHV's small Wan 2.1 decoder (madebyollin/taehv, MIT) instead of the Wan VAE: 441 ms per 640 ms chunk (p95 446 ms) with `lookahead_ms: 2240`, the profile's setting. To keep the Wan VAE's own pictures, decode on a second GPU (`--vae-device cuda:1 --vae-compile`, without `--taehv` and `--cuda-graph`): p95 427 ms with `lookahead_ms: 2880`. `--attention sage` and `--fp8` bring no speed there, and SageAttention 2.2.0 cannot run under `--cuda-graph` (its sm90 kernel replays as noise; the worker refuses the pair).
+
 (compatibility-and-constraints)=
 
 **Compatibility and Constraints**

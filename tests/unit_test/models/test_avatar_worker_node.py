@@ -46,7 +46,7 @@ WORKERS = ROOT / "examples/avatar_workers"
 SPEECH_RATE_HZ = 24000
 # name: (media, fps, chunk frames, look-ahead ms, listens)
 MODELS = {
-    "avatarforcing": (JPEG_FRAME, 25, 16, 2880, False),
+    "avatarforcing": (JPEG_FRAME, 25, 16, 2240, False),
     "avatarforcing-ki": (JPEG_FRAME, 25, 10, 80, True),
 }
 SKELETON = {
