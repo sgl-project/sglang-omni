@@ -42,12 +42,12 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 """
 
 
-def _labeler_script() -> str:
+def labeler_script() -> str:
     workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
     return workflow["jobs"]["label"]["steps"][0]["with"]["script"]
 
 
-def _run_labeler(
+def run_labeler(
     *,
     title: str,
     branch: str,
@@ -61,7 +61,7 @@ def _run_labeler(
         "labels": [{"name": name} for name in (existing_labels or [])],
     }
     payload = {
-        "script": _labeler_script(),
+        "script": labeler_script(),
         "pullRequest": pull_request,
         "files": files,
     }
@@ -201,12 +201,9 @@ def test_suggested_labels(
     existing_labels: list[str] | None,
     expected_labels: list[str],
 ) -> None:
-    assert (
-        _run_labeler(
-            title=title,
-            branch=branch,
-            files=files,
-            existing_labels=existing_labels,
-        )
-        == sorted(expected_labels)
-    )
+    assert run_labeler(
+        title=title,
+        branch=branch,
+        files=files,
+        existing_labels=existing_labels,
+    ) == sorted(expected_labels)
