@@ -290,8 +290,11 @@ func (a *app) view(c *ui.Context) {
 			}
 		})
 	})
-	a.settingsDialog(c)       // shell_settings.go
-	a.onboarding(c)           // onboarding_view.go
+	a.settingsDialog(c) // shell_settings.go
+	if a.ob.open {
+		obState := a.onboardingViewState()
+		onboardingView(c, obState, a, &onboardingLocalUI{open: obState.Open})
+	}
 	a.shortcutPromptDialog(c) // settings_shortcuts_family.go
 	a.announcementDialog(c)   // announcements.go
 	m, u := a.releaseDialogModel(), &a.updUI

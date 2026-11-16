@@ -60,12 +60,13 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 
 ## Change fixture-backed view state and actions
 
-The [UI development guide](ui-development.md) explains how to render fixtures and change meeting, history, session-overlay, updates, or home views without the helper or models. Feature-side changes use the same boundary:
+The [UI development guide](ui-development.md) explains how to render fixtures and change meeting, history, session-overlay, updates, home, or onboarding views without the helper or models. Feature-side changes use the same boundary:
 
-1. Add display data to the input and result of the meeting builders, the history builders, the session builders in `session_overlay_state.go`, `session_overlay_card_state.go`, and `session_overlay_menu_state.go`, `buildUpdatesViewState` and `buildReleaseViewState`, or `buildHomeViewState`. Keep domain types and I/O out of the view state.
-2. Add a scenario to `meeting_fixture_scenarios_test.go`, `history_fixture_scenarios_test.go`, `session_fixture_scenarios_test.go`, `updates_fixture_scenarios_test.go`, or `home_fixture_scenarios_test.go` and regenerate the fixtures with `VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .`.
-3. For a new user intent, add the method to the area's actions in `meeting_actions.go`, `history_actions.go`, `sessionOverlayActions`, `updates_actions.go`, or `home_actions.go`, implement it on `app`, and record it on `meetingDemoHost`. Views call one intent instead of assembling a business workflow.
-4. Add a click test to `TestMeetingDemoActionControls`, `TestHistoryDemoActionControls`, `TestSessionDemoActionControls`, `TestUpdatesDemoActionControls`, or `TestHomeDemoActionControls`, then run `go test ./internal/archtest` and `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage|TestSessionFixtureCoverage|TestUpdatesFixtureCoverage|TestHomeFixtureCoverage)$' .`.
+1. Add display data to the input and result of the meeting builders, the history builders, the session builders in `session_overlay_state.go`, `session_overlay_card_state.go`, and `session_overlay_menu_state.go`, `buildUpdatesViewState` and `buildReleaseViewState`, `buildHomeViewState`, or `buildOnboardingViewState`. Keep domain types and I/O out of the view state.
+2. Add a scenario to `meeting_fixture_scenarios_test.go`, `history_fixture_scenarios_test.go`, `session_fixture_scenarios_test.go`, `updates_fixture_scenarios_test.go`, `home_fixture_scenarios_test.go`, or `onboarding_fixture_scenarios_test.go` and regenerate the fixtures with `VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .`.
+3. For a new user intent, add the method to the area's actions in `meeting_actions.go`, `history_actions.go`, `sessionOverlayActions`, `updates_actions.go`, `home_actions.go`, or `onboarding_actions.go`, implement it on `app`, and record it on `meetingDemoHost`. Views call one intent instead of assembling a business workflow.
+4. Add a click test to `TestMeetingDemoActionControls`, `TestHistoryDemoActionControls`, `TestSessionDemoActionControls`, `TestUpdatesDemoActionControls`, `TestHomeDemoActionControls`, or `TestOnboardingDemoActionControls`, then run `go test ./internal/archtest` and `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage|TestSessionFixtureCoverage|TestUpdatesFixtureCoverage|TestHomeFixtureCoverage|TestOnboardingFixtureCoverage)$' .`.
+
 
 - [docs/architecture.md](architecture.md): packages, threading, the session, the runtimes, data on disk, tests.
 - [docs/plan.md](plan.md): what the app is and its milestones.

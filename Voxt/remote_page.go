@@ -30,7 +30,7 @@ func (a *app) remotePage(c *ui.Context) {
 	columnPageHeader(c, i18n.T("Language models"), nil)
 	ui.Scroll(c.Key("remote-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp4)).Children(func() {
-			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
+			onboardingBackBar(c, a.onboardingBackViewState(remotePath), a) // onboarding_view.go: left from the setup guide
 			caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
 			a.llmWaitRow(c) // llm_wait.go; above the cards, seen without scrolling (#3821)
 			a.providerCards(c, local.LLM)

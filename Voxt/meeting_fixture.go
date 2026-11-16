@@ -16,6 +16,7 @@ type meetingFixtureState struct {
 	UpdatesSettings *updatesViewState         `json:"updates_settings,omitempty"`
 	UpdatesRelease  *releaseViewState         `json:"updates_release,omitempty"`
 	Home            *homeViewState            `json:"home,omitempty"`
+	Onboarding      *onboardingViewState      `json:"onboarding,omitempty"`
 }
 
 type sessionOverlayFixtureUI struct {

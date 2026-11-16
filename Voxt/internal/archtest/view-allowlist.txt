@@ -32,12 +32,6 @@ models_keep.go  # models
 models_network.go  # models
 models_page.go  # models
 notes_page.go  # dictionary
-onboarding.go  # onboarding
-onboarding_keys.go  # onboarding
-onboarding_models.go  # onboarding
-onboarding_steps.go  # onboarding
-onboarding_try_guide.go  # onboarding
-onboarding_view.go  # onboarding
 pages.go  # shell
 permissions.go  # settings
 remote_chatgpt.go  # remote

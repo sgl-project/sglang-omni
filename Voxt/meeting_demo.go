@@ -32,6 +32,7 @@ type meetingDemoHost struct {
 	historySettingsUI   historySettingsLocalUI
 	historyAccessUI     historyAccessLocalUI
 	updatesUI           updatesLocalUI
+	onboardingUI        onboardingLocalUI
 	overlayLook         settings.Overlay
 	sessionState        sessionOverlayViewState
 	sessionSeed         sessionOverlayFixtureUI
@@ -110,7 +111,8 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "session-overlay" && fixture.Session != nil && fixture.SessionUI != nil ||
 		fixture.Kind == "updates-settings" && fixture.UpdatesSettings != nil ||
 		fixture.Kind == "updates-release" && fixture.UpdatesRelease != nil ||
-		fixture.Kind == "home" && fixture.Home != nil
+		fixture.Kind == "home" && fixture.Home != nil ||
+		fixture.Kind == "onboarding" && fixture.Onboarding != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -173,6 +175,10 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	host.updatesUI = updatesLocalUI{relOpen: fixture.state.UpdatesRelease != nil}
 	if state := fixture.state.UpdatesSettings; state != nil {
 		host.updatesUI.autoCheck, host.updatesUI.autoInstall, host.updatesUI.beta = state.AutoCheck, state.AutoInstall, state.Beta
+	}
+	host.onboardingUI = onboardingLocalUI{}
+	if state := fixture.state.Onboarding; state != nil {
+		host.onboardingUI.open = state.Open
 	}
 }
 
@@ -373,4 +379,49 @@ func (host *meetingDemoHost) copyHomeRecent(id string) {
 func (host *meetingDemoHost) addHomeShortcut() { host.record("addHomeShortcut") }
 func (host *meetingDemoHost) fixHomeReadiness(fix string) {
 	host.record("fixHomeReadiness %s", fix)
+}
+
+func (host *meetingDemoHost) openOnboarding()  { host.record("openOnboarding") }
+func (host *meetingDemoHost) closeOnboarding() { host.record("closeOnboarding") }
+func (host *meetingDemoHost) finishOnboarding(path string) {
+	host.record("finishOnboarding %s", path)
+}
+func (host *meetingDemoHost) dismissOnboardingBack() { host.record("dismissOnboardingBack") }
+func (host *meetingDemoHost) obGo(step int)          { host.record("obGo %d", step) }
+func (host *meetingDemoHost) obLeave(path string)    { host.record("obLeave %s", path) }
+func (host *meetingDemoHost) obTry(text string) *sessionNotice {
+	host.record("obTry %q", text)
+	return nil
+}
+func (host *meetingDemoHost) cancelSession() { host.record("cancelSession") }
+func (host *meetingDemoHost) copyOnboardingResult(text string) {
+	host.record("copyOnboardingResult %q", text)
+}
+func (host *meetingDemoHost) clearOnboardingBlock() { host.record("clearOnboardingBlock") }
+func (host *meetingDemoHost) onboardingNoticeAction(action string) {
+	host.record("onboardingNoticeAction %s", action)
+}
+func (host *meetingDemoHost) onboardingTryLanguage() { host.record("onboardingTryLanguage") }
+func (host *meetingDemoHost) onboardingDownloadAndContinue() {
+	host.record("onboardingDownloadAndContinue")
+}
+func (host *meetingDemoHost) downloadModel(id string) { host.record("downloadModel %s", id) }
+func (host *meetingDemoHost) obUse(ids ...string) {
+	host.record("obUse %s", strings.Join(ids, ","))
+}
+func (host *meetingDemoHost) askRequired() { host.record("askRequired") }
+func (host *meetingDemoHost) askPermission(which string, then func()) {
+	host.record("askPermission %s", which)
+}
+func (host *meetingDemoHost) recheckPermissions() { host.record("recheckPermissions") }
+func (host *meetingDemoHost) onboardingOpenPrivacy(url string) {
+	host.record("onboardingOpenPrivacy %s", url)
+}
+func (host *meetingDemoHost) importLegacy() { host.record("importLegacy") }
+func (host *meetingDemoHost) completeOnboardingLegacyTodo(kind, id string) {
+	host.record("completeOnboardingLegacyTodo %s %s", kind, id)
+}
+func (host *meetingDemoHost) applyShortcutPreset(preset string) {
+	host.record("applyShortcutPreset %s", preset)
+
 }

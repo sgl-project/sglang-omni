@@ -1,0 +1,60 @@
+{
+  "name": "models-downloading",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 2,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Models",
+    "subtitle": "Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, and the Speech models page has others.",
+    "recording": false,
+    "models": {
+      "reuse_shown": false,
+      "reuse_ids": null,
+      "reuse_subtitle": "",
+      "reuse_names": "",
+      "speech": {
+        "id": "asr.accurate",
+        "name": "Qwen3-ASR 1.7B (8bit)",
+        "ready": false,
+        "on_disk": false,
+        "installed_by": "",
+        "size_label": "2.5 GB",
+        "show_download": false,
+        "download_label": "",
+        "downloading": true,
+        "download_fraction": 0.33333333319826336,
+        "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak."
+      },
+      "language_ready": false,
+      "language_name": "",
+      "needs_download": false,
+      "download_left": "1.6 GB"
+    },
+    "footer": {
+      "mode": "downloading",
+      "busy": false,
+      "back": true,
+      "continue_label": "Continue",
+      "continue_tooltip": "The speech model is still downloading. Later steps work once it is ready, or you can skip them.",
+      "continue_disabled": false
+    }
+  }
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -12,8 +13,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hehehai/actnowkit/shortcuts"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 func TestMeetingViewStateGolden(t *testing.T) {
@@ -104,6 +108,31 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 		scenario.home.Readiness = buildHomeReadinessList(translator, scenario.home.Features, scenario.homeReadiness)
 		state := buildHomeViewState(translator, scenario.home)
 		fixture.Home = &state
+	case "onboarding":
+		input := scenario.onboarding
+		switch scenario.onboardingBlocker {
+		case "language":
+			input.Blocker = &sessionNotice{text: translator.T("No language model is set up."), action: actionLanguage}
+		case "speech-wait":
+			notice := &sessionNotice{text: translator.T("The speech model is still downloading (%d%%).", 33), action: actionModels}
+			input.Blocker, input.SpeechWait = notice, notice
+		case "blocked":
+			input.Block = &sessionNotice{text: translator.T("No speech model is installed."), more: "fixture blocker detail", action: actionModels}
+		}
+		if scenario.onboardingConflict {
+			input.Conflicts = []shortcuts.Conflict{{
+				Mine: shortcuts.Shortcut{ID: string(store.KindTranscribe)}, Other: shortcuts.Holder{Name: "AudioSmith"}, Theirs: shortcuts.Shortcut{ID: string(store.KindTranscribe)},
+			}}
+		}
+		if scenario.onboardingHint {
+			input.Hint = translator.T("That was the %s shortcut. This step tests %s (%s).", onboardingKindTitle(translator, store.KindTranslate), onboardingKindTitle(translator, store.KindTranscribe), "Right ⌥")
+		}
+		if problem := input.Session.Problem; problem != nil && problem.Code == session.ProblemSpeechWait {
+			problem.Err = errors.New(translator.T("The speech model is still downloading (%d%%).", 33))
+		}
+		localizeOnboardingViewStateInput(translator, &input)
+		state := buildOnboardingViewState(translator, input)
+		fixture.Onboarding = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

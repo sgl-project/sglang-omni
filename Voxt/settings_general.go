@@ -103,7 +103,7 @@ func (a *app) generalSettings(c *ui.Context) {
 	})
 
 	sectionTitle(c, i18n.T("Getting started"))
-	a.onboardingRow(c) // onboarding.go
+	onboardingRow(c, a) // onboarding_view.go
 }
 
 // setMainLanguage sets the main language (a lang code, "" = the app's)
