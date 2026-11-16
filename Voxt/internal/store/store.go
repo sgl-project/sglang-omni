@@ -240,6 +240,7 @@ type Note struct {
 	ID        string
 	Text      string
 	CreatedAt time.Time
+	AppName   string // app in front when the shortcut was pressed; "" for old notes or unknown
 }
 
 // Notes stores the user's notes.

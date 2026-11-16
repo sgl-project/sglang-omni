@@ -2,6 +2,18 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Added
+
+- **Copy and edit notes in place, and see their source app**: each note has Copy and Edit buttons. Save writes the edit back to the note, and Cancel leaves it unchanged. If Voxt knows the frontmost app at capture time, new notes show its name.
+
+### 中文
+
+#### 新增
+
+- **笔记可以一键复制、原地编辑，并显示来源 App**：每条笔记都有“复制”和“编辑”按钮。编辑后点“保存”会写回这条笔记，点“取消”则不改内容。Voxt 能确定按下快捷键时的前台 App 时，新笔记也会显示这个 App。
+
 ## [2.1.0] - 2026-11-15
 
 ### Added

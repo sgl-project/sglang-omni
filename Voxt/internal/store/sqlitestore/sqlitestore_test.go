@@ -74,6 +74,26 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 	}
 }
 
+func TestNotesMigrateWithoutAppName(t *testing.T) {
+	dir := t.TempDir()
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = saved[:8]
+	s := openTest(t, dir)
+	at := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
+	if _, err := s.db.Execute(ctx, `INSERT INTO notes (id, text, created_at) VALUES (?, ?, ?)`, "old", "buy milk", at.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	migrations = saved
+	s = openTest(t, dir)
+	list, err := s.Notes().List(ctx)
+	if err != nil || len(list) != 1 || list[0].Text != "buy milk" || !list[0].CreatedAt.Equal(at) || list[0].AppName != "" {
+		t.Fatalf("old note %+v, %v", list, err)
+	}
+}
+
 func TestBackupBeforeMigrating(t *testing.T) {
 	dir := t.TempDir()
 	saved := migrations
@@ -378,7 +398,7 @@ func TestNotes(t *testing.T) {
 	n := s.Notes()
 	t0 := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
 	for i, text := range []string{" buy milk ", "call Ana", "写周报"} {
-		if err := n.Put(ctx, store.Note{ID: strconv.Itoa(i + 1), Text: text, CreatedAt: t0.Add(time.Duration(i) * time.Minute)}); err != nil {
+		if err := n.Put(ctx, store.Note{ID: strconv.Itoa(i + 1), Text: text, CreatedAt: t0.Add(time.Duration(i) * time.Minute), AppName: []string{"Notes", "", ""}[i]}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -399,7 +419,7 @@ func TestNotes(t *testing.T) {
 	if got := texts(); got != "写周报,call Ana,buy milk" { // newest first, trimmed
 		t.Errorf("list: %q", got)
 	}
-	if list, _ := n.List(ctx); !list[2].CreatedAt.Equal(t0) || list[2].ID != "1" {
+	if list, _ := n.List(ctx); !list[2].CreatedAt.Equal(t0) || list[2].ID != "1" || list[2].AppName != "Notes" {
 		t.Errorf("oldest %+v", list[2])
 	}
 	if err := n.Delete(ctx, "2"); err != nil {
