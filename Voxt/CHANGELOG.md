@@ -4,12 +4,20 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Transcribe shows and inserts only the cleaned text, never the model's commentary about its edits** (#4086): with the language-model step on, a model that explains what it changed ("I removed the filler…") had that explanation inserted as if it were part of the transcript. The clean-up now asks for the final text between <output> tags and only the text between them is streamed into the card, shown and inserted; an answer without the tags is used as before.
+
 ### Changed
 
 - **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 
 ### 中文
+
+#### 修复
+
+- **转录只显示和插入整理后的文字，不再混入模型对自己改动的说明**（#4086）：打开语言模型整理时，有的模型会在整理结果后面解释自己改了什么（“我删掉了……”），这段说明会被当成转录稿插入。现在转录的整理要求模型把最终文本放在 <output> 标签之间，只有标签里的内容会边写边进入卡片、显示和插入；没有标签的回答照原来的方式使用。
 
 #### 变更
 

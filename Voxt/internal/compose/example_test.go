@@ -41,8 +41,14 @@ func TestExample(t *testing.T) {
 		if !ok || !strings.Contains(answer, c.answer) {
 			t.Errorf("%+v: example %q, want %q", c.in, answer, c.answer)
 		}
+		// Transcribe's contract asks for the <output> tags, so its
+		// example turn answers with them.
+		inHistory := answer
+		if c.in.Task == Transcribe {
+			inHistory = "<output>\n" + answer + "\n</output>"
+		}
 		if len(out.History) != 2 || out.History[0].Role != "user" || !strings.HasPrefix(out.History[0].Content, "<input>") ||
-			out.History[1].Role != "assistant" || out.History[1].Content != answer {
+			out.History[1].Role != "assistant" || out.History[1].Content != inHistory {
 			t.Errorf("%+v: history %+v", c.in, out.History)
 		}
 		if m := out.Messages(); len(m) != 4 || m[3].Content != UserMessage("x") {

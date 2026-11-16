@@ -24,6 +24,51 @@ func (a Answer) reply(asJSON bool) string {
 	return string(b)
 }
 
+// outputOpen and outputClose are the tags the clean-up's output contract
+// asks the final text to sit between, so the model's commentary about
+// its edits stays outside what is shown and inserted (#4086).
+const (
+	outputOpen  = "<output>"
+	outputClose = "</output>"
+)
+
+// taggedOutput is the content of the first outputOpen…outputClose pair
+// in s (of outputOpen alone when the answer was cut short). ok is false
+// when s has no outputOpen; the caller then takes the text as it is.
+func taggedOutput(s string) (string, bool) {
+	i := strings.Index(s, outputOpen)
+	if i < 0 {
+		return "", false
+	}
+	rest := s[i+len(outputOpen):]
+	if j := strings.Index(rest, outputClose); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest, true
+}
+
+// PartialOutput is a streaming clean-up answer's text so far, for the
+// card: without the contract's <output> tags, whole or as far as they
+// came, and nothing of the commentary that follows them.
+func PartialOutput(s string) string {
+	t := strings.TrimLeft(s, " \t\r\n")
+	if t == "" || strings.HasPrefix(outputOpen, t) {
+		return "" // nothing yet, or the opening tag is still coming
+	}
+	if strings.HasPrefix(t, outputOpen) {
+		t = strings.TrimLeft(t[len(outputOpen):], " \t\r\n")
+	}
+	if i := strings.Index(t, outputClose); i >= 0 {
+		return strings.TrimRight(t[:i], " \t\r\n")
+	}
+	for i := len(outputClose) - 1; i > 0; i-- {
+		if strings.HasSuffix(t, outputClose[:i]) {
+			return strings.TrimRight(t[:len(t)-i], " \t\r\n")
+		}
+	}
+	return t
+}
+
 // ParseAnswer reads a model's JSON answer {title, content}: the object
 // may sit in a code fence or among other text. ok is false when there is
 // no such object; the caller then takes the text as it is (Clean),

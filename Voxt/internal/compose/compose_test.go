@@ -551,9 +551,47 @@ func TestClean(t *testing.T) {
 		{`"Hello," she said, "bye."`, "x", `"Hello," she said, "bye."`},
 		{`"Quoted."`, `"quoted"`, `"Quoted."`},
 		{"", "x", ""},
+		// The <output> tags the clean-up's contract asks for: only their
+		// content, never the model's commentary about its edits (#4086).
+		{"<output>\nHello.\n</output>", "hello", "Hello."},
+		{"<output>\nHello.\n</output>\n\nI removed the filler “um”.", "hello", "Hello."},
+		{"Here you go: <output>Hello.</output> Hope it helps.", "hello", "Hello."},
+		{"<output>\n算计算量（FLOPs）—— 用 bf16 算和 int8 有区别吗？\n</output>\n\n清理时删掉了“就是说”。", "x", "算计算量（FLOPs）—— 用 bf16 算和 int8 有区别吗？"},
+		{"<output>\nHello.", "hello", "Hello."}, // cut short: the rest is the text
+		{"<output></output>", "hello", ""},
+		{"<output>“你好。”</output>", "你好", "你好。"},
+		// The tags were in the input itself (dictated literally): the
+		// answer is used as it is.
+		{`use <output> and </output> here`, "use <output> and </output> here", `use <output> and </output> here`},
 	} {
 		if got := Clean(tc.out, tc.in); got != tc.want {
 			t.Errorf("Clean(%q) = %q, want %q", tc.out, got, tc.want)
+		}
+	}
+}
+
+// TestPartialOutput: a streaming clean-up answer never shows the
+// contract's <output> tags, whole or as far as they came.
+func TestPartialOutput(t *testing.T) {
+	full := "<output>\n大家好，周五发布。\n</output>\n\n我删掉了语气词。"
+	for i := 1; i <= len(full); i++ {
+		got := PartialOutput(full[:i])
+		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
+			t.Fatalf("at %d: a tag in %q", i, got)
+		}
+	}
+	for text, want := range map[string]string{
+		"":                          "",
+		"<":                         "",
+		"<outpu":                    "",
+		"<output>":                  "",
+		"plain text":                "plain text",
+		"<output>\nHello.":          "Hello.",
+		"Hello.</out":               "Hello.",
+		"<output>Hello.</output>\n": "Hello.",
+	} {
+		if got := PartialOutput(text); got != want {
+			t.Errorf("PartialOutput(%q) = %q, want %q", text, got, want)
 		}
 	}
 }

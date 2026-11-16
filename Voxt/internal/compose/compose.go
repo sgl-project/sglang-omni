@@ -359,6 +359,11 @@ func Build(in Input) (Output, error) {
 	} else {
 		out.User = out.withGlossary(UserMessage(in.Text))
 		if input, answer, ok := Example(in); ok {
+			if in.Task == Transcribe {
+				// The example answers in the form the output contract
+				// asks for: the final text between <output> tags.
+				answer = outputOpen + "\n" + answer + "\n" + outputClose
+			}
 			out.History = []Message{{Role: "user", Content: UserMessage(input)}, {Role: "assistant", Content: answer}}
 		}
 	}
@@ -546,11 +551,16 @@ func distinctTerms(terms []Term) []Term {
 	return out
 }
 
-// Clean tidies a model's answer to input: without the <input> tags a
-// model echoed, or the quotes it wrapped the whole answer in (unless the
-// input was quoted so itself).
+// Clean tidies a model's answer to input: the content of the <output>
+// tags the clean-up's contract asks for when they are there and the
+// input did not have them (never the model's commentary outside them,
+// #4086), without the <input> tags a model echoed, or the quotes it
+// wrapped the whole answer in (unless the input was quoted so itself).
 func Clean(out, input string) string {
 	s := strings.TrimSpace(out)
+	if content, ok := taggedOutput(s); ok && !strings.Contains(input, outputOpen) {
+		s = strings.TrimSpace(content) // unless the tags came from the input itself
+	}
 	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "<input>"), "</input>"))
 	in := strings.TrimSpace(input)
 	for _, q := range [][2]string{{`"`, `"`}, {"“", "”"}, {"「", "」"}} {

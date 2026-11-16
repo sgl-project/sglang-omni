@@ -14,7 +14,7 @@ Scene: the text goes into Slack. The user's rules for it:
 Casual chat in Slack: no trailing period.
 Use the scene to choose wording and form only; do not add facts that were not said.
 
-Output: only the final text, without quotes, labels, explanations or <input> tags. If nothing meaningful was said, return an empty string.
+Output: the final text between <output> and </output>, with nothing outside those tags: no quotes, labels, explanations or <input> tags. If nothing meaningful was said, return an empty string.
 
 ---- user ----
 <input>
@@ -22,7 +22,9 @@ Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, befor
 </input>
 
 ---- assistant ----
+<output>
 Can you send the weekly report to Anna before 5? I really need it before 5.
+</output>
 
 ---- user ----
 <input>

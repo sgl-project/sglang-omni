@@ -116,6 +116,37 @@ func TestLongDictation(t *testing.T) {
 	}
 }
 
+// TestOnlyTheCleanedText (#4086): the model wraps the cleaned text in
+// the <output> tags the contract asks for and adds its own commentary
+// about the edits outside them; only the tags' content is streamed into
+// the card, shown and inserted. The request asks for the tags and the
+// example turn answers with them.
+func TestOnlyTheCleanedText(t *testing.T) {
+	text := "算计算量，就是说，用 bf16 单元算和 int8 有区别吗"
+	cleaned := "算计算量（FLOPs）—— 用 bf16 单元算和 int8 有区别吗？"
+	commentary := "清理时我删掉了“就是说”这个语气词。"
+	model := &fakeLLM{text: "<output>\n" + cleaned + "\n</output>\n\n" + commentary, chunk: 3, pause: 5 * time.Millisecond}
+	h := newHarness(t, &fakeFile{text: text}, model, nil)
+	h.speak(h.start(), 5)
+	end := h.rec.wait(t)
+	if end.Result != cleaned {
+		t.Errorf("result %q", end.Result)
+	}
+	for _, s := range h.rec.all() {
+		if strings.Contains(s.Draft, "<output") || strings.Contains(s.Draft, commentary) {
+			t.Errorf("a draft with the tags or the commentary: %q", s.Draft)
+		}
+	}
+	reqs := model.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	m := reqs[0].Messages
+	if !strings.Contains(m[0].Content, "<output>") || len(m) != 4 || !strings.Contains(m[2].Content, "<output>") {
+		t.Errorf("the contract or the example lacks the tags: %d messages", len(m))
+	}
+}
+
 // TestLongTranslate: long spoken Translate stays one request (its
 // target is one language; in pieces it was no better, docs/eval.md).
 func TestLongTranslate(t *testing.T) {
