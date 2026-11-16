@@ -1,4 +1,4 @@
-# The qwen3-asr-qwen3-tts-base-clone cascade with a Live Avatar node: a talking head (Wan2.2-S2V-14B distilled to 4 steps) from the reply audio, one 384x704 JPEG per 40 ms published as jpeg_frame, rendered by a Live Avatar worker started beforehand on port 8040 over five GPUs (examples/speech_avatar_workers/liveavatar_worker.py). The avatar listens with a still picture; one worker serves one Session.
+# The qwen3-asr-qwen3-tts-base-clone cascade with a Live Avatar node: a talking head (Wan2.2-S2V-14B distilled to 4 steps) from the reply audio, one 384x704 JPEG per 40 ms published as jpeg_frame, rendered by a Live Avatar worker started beforehand on port 8040 over five GPUs (examples/speech_avatar_workers/liveavatar_worker.py --stages 1 --sp 4 --gpu-jpeg: four sequence-parallel DiT ranks and a decoding rank). The avatar listens with a still picture; one worker serves one Session.
 config_cls: StreamingCascadePipelineConfig
 model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone-liveavatar
 
@@ -15,14 +15,14 @@ stages:
       # The worker's picture for a portrait reference at the authors' 720*400 area; its /info must match.
       width: 384
       height: 704
-      # A reply's first block waits for 480 ms of its speech plus the 240 ms look-ahead, then takes about 1.4 s through the four DiT ranks and the decoder on five H200s; the reply starts this far past the frame the node reached.
-      render_lead_ms: 2400
-      # Silent blocks the Session starts with, so the slow first block of its first and second clip come before the first reply.
+      # A reply's first block waits for 480 ms of its speech plus the 240 ms look-ahead, then takes about 0.6 s (p95) through the four sequence-parallel DiT ranks and the decoder on five H100s; the reply starts this far past the frame the node reached.
+      render_lead_ms: 1600
+      # Silent blocks the Session starts with, so the slow first block of its second clip (the fifth: its sink is filled then) comes before the first reply.
       prime_chunks: 5
       # Blocks keep rendering one block past a reply so the mouth closes before the picture holds.
       tail_ms: 480
-      # Blocks of the Session in flight: one per GPU of the worker's pipeline.
-      pipeline_depth: 5
+      # Blocks of the Session in flight: one in the DiT ranks, one in the decoder.
+      pipeline_depth: 2
       # Loading the 14B model on five ranks and compiling it takes up to about half an hour.
       startup_timeout_s: 3600
 
