@@ -224,7 +224,6 @@ class MotionDecoder:
     @torch.no_grad()
     def decode(self, codes: torch.Tensor) -> np.ndarray:
         """Codes [BLOCK_STEPS, NUM_CODEBOOKS] → float32 smplh_flame_motion rows [BLOCK_STEPS * FRAMES_PER_CODE, FEATURES_PER_FRAME]."""
-        stats = self.normalization
         upper = self.upper.decode(codes[None, :, UPPER_CODES])[0].cpu()
         hands = self.hands.decode(codes[None, :, HAND_CODES])[0].cpu()
         face = (
@@ -235,6 +234,45 @@ class MotionDecoder:
             .cpu()
             .numpy()
         )
+        return self.rows(upper, hands, face)
+
+    @staticmethod
+    @torch.no_grad()
+    def decode_together(
+        decoders: list[MotionDecoder], codes: torch.Tensor
+    ) -> list[np.ndarray]:
+        """Each Session's block of codes [len(decoders), BLOCK_STEPS, NUM_CODEBOOKS] → its rows, as decode gives them, decoding the Sessions as one batch."""
+        first = decoders[0]
+        upper = StreamingDecoder.decode_together(
+            [decoder.upper for decoder in decoders], codes[:, :, UPPER_CODES]
+        ).cpu()
+        hands = StreamingDecoder.decode_together(
+            [decoder.hands for decoder in decoders], codes[:, :, HAND_CODES]
+        ).cpu()
+        face = (
+            first.flame.merge(
+                StreamingDecoder.decode_together(
+                    [decoder.nonmouth for decoder in decoders],
+                    codes[:, :, NONMOUTH_CODES],
+                ),
+                StreamingDecoder.decode_together(
+                    [decoder.mouth for decoder in decoders], codes[:, :, MOUTH_CODES]
+                ),
+            )
+            .cpu()
+            .numpy()
+        )
+        # Each frame's row reads that frame alone: all Sessions' frames convert at once.
+        rows = first.rows(
+            upper.flatten(0, 1), hands.flatten(0, 1), face.reshape(-1, face.shape[-1])
+        )
+        return list(rows.reshape(len(decoders), -1, rows.shape[-1]))
+
+    def rows(
+        self, upper: torch.Tensor, hands: torch.Tensor, face: np.ndarray
+    ) -> np.ndarray:
+        """One block's decoded, normalized upper body, hands [frames, 6D features] and FLAME motion [frames, 108] → its smplh_flame_motion rows."""
+        stats = self.normalization
         face = (face * (stats.flame_std + 1e-8) + stats.flame_mean).astype(np.float32)
         frames = upper.shape[0]
         body = torch.zeros(frames, BODY_JOINTS, 3, dtype=torch.float32)

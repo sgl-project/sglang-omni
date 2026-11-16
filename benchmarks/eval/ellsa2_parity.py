@@ -6,7 +6,10 @@ decode, one 0.8 s block at a time) on each clip's target and partner audio
 with the clip's own style reference, runs the official `infer.py` on the same
 clips (or reads its outputs), and compares the 18 codes of every step and the
 decoded SMPL-H pose and FLAME motion code. Release decoding is greedy, so the
-same inputs must give the same codes.
+same inputs must give the same codes on the reference's path. The serving
+path (--kv-batch, several clips per batch with --batch) rounds differently and
+is compared in distribution: the share of codes equal to the reference's and
+the motion's error against it.
 
     python -m benchmarks.eval.ellsa2_parity \\
         --checkpoint /path/to/ELLSA2/checkpoints --data /path/to/ELLSA2/data \\
@@ -31,7 +34,8 @@ from sglang_omni.models.ellsa2.formats import POSE_FEATURES
 from sglang_omni.models.ellsa2.generator import BLOCK_SAMPLES
 from sglang_omni.models.ellsa2.loading import load_motion_models
 from sglang_omni.models.ellsa2.motion import MotionDecoder, style_codes
-from sglang_omni.models.ellsa2.session import MotionHooks, MotionSession
+from sglang_omni.models.ellsa2.session import BlockWork, MotionHooks, MotionSession
+from sglang_omni.proto.session import SessionIdentity
 from sglang_omni.proto.streams import SESSION_INPUT_SAMPLE_RATE_HZ
 
 
@@ -169,6 +173,28 @@ def main() -> None:
         default=True,
         help="let the backbone's attention use cuDNN, as the reference does; bit-for-bit parity needs it",
     )
+    parser.add_argument(
+        "--kv-batch",
+        action="store_true",
+        help="the serving path: blocks generated as one batch, each block's steps decoding from a KV cache",
+    )
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=1,
+        help="with --kv-batch, the clips generated together, as that many Sessions",
+    )
+    parser.add_argument(
+        "--reuse-history",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="with --kv-batch, keep each Session's keys and values across blocks and recompute only what a block changes; --no-reuse-history recomputes the whole history every block",
+    )
+    parser.add_argument(
+        "--teacher-forcing",
+        action="store_true",
+        help="condition every block on the reference's codes of the blocks before it, so each block's codes measure the path's rounding alone rather than a diverged history",
+    )
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--save-outputs", action="store_true")
     parser.add_argument(
@@ -204,80 +230,148 @@ def main() -> None:
         cudnn_attention=args.cudnn_attention,
         device=torch.device(args.device),
     )
-    hooks = MotionHooks(models, SESSION_INPUT_SAMPLE_RATE_HZ)
+    hooks = MotionHooks(
+        models,
+        SESSION_INPUT_SAMPLE_RATE_HZ,
+        kv_batch=args.kv_batch,
+        max_batch=args.batch,
+        reuse_history=args.reuse_history,
+    )
+    group_size = args.batch if args.kv_batch else 1
     results = []
-    for row in rows:
-        gid = row["group_id"]
-        ours_style = style_codes(
-            args.data / row["motion_style_pose_path"],
-            args.data / row["motion_style_flame_path"],
-            models.tokenizers,
-            models.normalization,
-        )
-        reference_style_path = args.reference_dir / f"{gid}_style.npy"
-        reference_style = (
-            torch.from_numpy(np.load(reference_style_path)).to(models.device)
-            if reference_style_path.is_file()
-            else None
-        )
-        models.style = (
-            reference_style if args.style_codes == "reference" else ours_style
-        )
-        target = read_wav(args.data / row["audio20_target"])
-        partner = read_wav(args.data / row["audio20_partner"])
-        session = MotionSession(
-            decoder=MotionDecoder(models.tokenizers, models.normalization)
-        )
-        codes, motion, block_ms = [], [], []
-        for start in range(
-            0,
-            min(len(target), len(partner)) // BLOCK_SAMPLES * BLOCK_SAMPLES,
-            BLOCK_SAMPLES,
-        ):
+    for group_start in range(0, len(rows), group_size):
+        group = rows[group_start : group_start + group_size]
+        clips = []
+        for row in group:
+            gid = row["group_id"]
+            ours_style = style_codes(
+                args.data / row["motion_style_pose_path"],
+                args.data / row["motion_style_flame_path"],
+                models.tokenizers,
+                models.normalization,
+            )
+            reference_style_path = args.reference_dir / f"{gid}_style.npy"
+            reference_style = (
+                torch.from_numpy(np.load(reference_style_path)).to(models.device)
+                if reference_style_path.is_file()
+                else None
+            )
+            target = read_wav(args.data / row["audio20_target"])
+            partner = read_wav(args.data / row["audio20_partner"])
+            clips.append(
+                {
+                    "gid": gid,
+                    "target": target,
+                    "partner": partner,
+                    "blocks": min(len(target), len(partner)) // BLOCK_SAMPLES,
+                    "session": MotionSession(
+                        decoder=MotionDecoder(models.tokenizers, models.normalization),
+                        style=(
+                            reference_style
+                            if args.style_codes == "reference"
+                            else ours_style
+                        ),
+                    ),
+                    "codes": [],
+                    "motion": [],
+                    "reference": reference_motion(args.reference_dir / f"{gid}.npz"),
+                }
+            )
+        block_ms = []
+        for block in range(max(clip["blocks"] for clip in clips)):
+            window = slice(block * BLOCK_SAMPLES, (block + 1) * BLOCK_SAMPLES)
+            active = [clip for clip in clips if block < clip["blocks"]]
             torch.cuda.synchronize(models.device)
             began = time.perf_counter()
-            motion.append(
-                hooks.generate(
-                    session,
-                    target[start : start + BLOCK_SAMPLES],
-                    partner[start : start + BLOCK_SAMPLES],
+            if args.kv_batch:
+                motion = hooks.generate_together(
+                    [
+                        BlockWork(
+                            session_identity=SessionIdentity(clip["gid"]),
+                            session=clip["session"],
+                            start=block * BLOCK_SAMPLES,
+                            turn=None,
+                            target_audio=clip["target"][window],
+                            partner_audio=clip["partner"][window],
+                        )
+                        for clip in active
+                    ]
                 )
-            )
+            else:
+                motion = [
+                    hooks.generate(
+                        clip["session"], clip["target"][window], clip["partner"][window]
+                    )
+                    for clip in active
+                ]
             torch.cuda.synchronize(models.device)
-            block_ms.append((time.perf_counter() - began) * 1000)
-            codes.append(session.history[-1].codes.cpu().numpy())
-        codes = np.concatenate(codes)
-        motion = np.concatenate(motion)
-        reference_codes, reference_rows = reference_motion(
-            args.reference_dir / f"{gid}.npz"
-        )
-        divergence = first_divergence(codes, reference_codes)
-        difference = np.abs(motion - reference_rows)
-        results.append(
-            {
-                "group_id": gid,
-                "blocks": len(codes) // 6,
-                "codes_identical": divergence is None
-                and codes.shape == reference_codes.shape,
-                "first_divergence": divergence,
-                "pose_max_abs_diff": float(difference[:, :POSE_FEATURES].max()),
-                "flame_max_abs_diff": float(difference[:, POSE_FEATURES:].max()),
-                "block_ms_p50": float(np.percentile(block_ms, 50)),
-            }
-        )
-        print(json.dumps(results[-1]), flush=True)
-        if args.save_outputs:
-            np.savez(args.output_dir / f"{gid}.npz", codes=codes, rows=motion)
-        else:
-            pass
+            block_ms.append((time.perf_counter() - began) * 1000 / len(active))
+            for clip, rows_of_block in zip(active, motion):
+                clip["motion"].append(rows_of_block)
+                clip["codes"].append(clip["session"].history[-1].codes.cpu().numpy())
+                if args.teacher_forcing:
+                    clip["session"].history[-1].codes = torch.from_numpy(
+                        clip["reference"][0][block * 6 : (block + 1) * 6]
+                    ).to(models.device, torch.long)
+                else:
+                    pass
+        for clip in clips:
+            hooks.release(clip["session"])
+            gid = clip["gid"]
+            codes = np.concatenate(clip["codes"])
+            motion = np.concatenate(clip["motion"])
+            reference_codes, reference_rows = clip["reference"]
+            divergence = first_divergence(codes, reference_codes)
+            steps = min(len(codes), len(reference_codes))
+            frames = min(len(motion), len(reference_rows))
+            difference = np.abs(motion[:frames] - reference_rows[:frames])
+            results.append(
+                {
+                    "group_id": gid,
+                    "blocks": len(codes) // 6,
+                    "codes_identical": divergence is None
+                    and codes.shape == reference_codes.shape,
+                    "codes_equal_share": float(
+                        (codes[:steps] == reference_codes[:steps]).mean()
+                    ),
+                    "first_step_equal_share": float(
+                        (codes[:steps:6] == reference_codes[:steps:6]).mean()
+                    ),
+                    "first_divergence": divergence,
+                    "pose_max_abs_diff": float(difference[:, :POSE_FEATURES].max()),
+                    "flame_max_abs_diff": float(difference[:, POSE_FEATURES:].max()),
+                    "pose_mean_abs_diff": float(difference[:, :POSE_FEATURES].mean()),
+                    "flame_mean_abs_diff": float(difference[:, POSE_FEATURES:].mean()),
+                    "block_ms_p50": float(np.percentile(block_ms, 50)),
+                }
+            )
+            print(json.dumps(results[-1]), flush=True)
+            if args.save_outputs:
+                np.savez(args.output_dir / f"{gid}.npz", codes=codes, rows=motion)
+            else:
+                pass
     summary = {
         "encoder_attn_implementation": args.encoder_attn_implementation,
         "cudnn_attention": args.cudnn_attention,
         "style_codes": args.style_codes,
+        "kv_batch": args.kv_batch,
+        "reuse_history": args.reuse_history,
+        "batch": group_size,
         "clips": len(results),
         "clips_codes_identical": sum(r["codes_identical"] for r in results),
         "pose_max_abs_diff": max(r["pose_max_abs_diff"] for r in results),
         "flame_max_abs_diff": max(r["flame_max_abs_diff"] for r in results),
+        "teacher_forcing": args.teacher_forcing,
+        "codes_equal_share": float(np.mean([r["codes_equal_share"] for r in results])),
+        "first_step_equal_share": float(
+            np.mean([r["first_step_equal_share"] for r in results])
+        ),
+        "pose_mean_abs_diff": float(
+            np.mean([r["pose_mean_abs_diff"] for r in results])
+        ),
+        "flame_mean_abs_diff": float(
+            np.mean([r["flame_mean_abs_diff"] for r in results])
+        ),
         "pose_max_abs_diff_identical_clips": max(
             (r["pose_max_abs_diff"] for r in results if r["codes_identical"]),
             default=None,

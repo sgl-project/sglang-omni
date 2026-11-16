@@ -11,8 +11,8 @@ stages:
     factory:
       # The rate of the tts node's openai_speech audio.
       speech_sample_rate_hz: 24000
-      # Sessions one H100 80GB keeps up with (p95 block latency within the 0.8 s block): benchmarks/eval/ellsa2_streaming.py measured 8 at about 96 ms a block. With cudnn_attention: true, which matches the reference bit for bit, a block takes about 105 ms and 7 is the most.
-      max_open_sessions: 8
+      # Sessions the stage holds, and the most blocks one batch generates. On an H100 80GB of its own the kv_batch path keeps 176 within the 0.8 s block (benchmarks/eval/ellsa2_streaming.py, p95 about 0.6 s; 128 at 0.23-0.43 s); here it shares the GPU with the services below, so it takes 64, about 25 GB, p95 about 0.16 s. With kv_batch: false, 7 or 8.
+      max_open_sessions: 64
 
 services:
   - name: chat

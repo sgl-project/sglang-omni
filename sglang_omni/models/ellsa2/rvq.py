@@ -184,7 +184,12 @@ class RVQVAE(nn.Module):
 
 
 def bounded(
-    x: torch.Tensor, module: nn.Module, window: int, stride: int, output_stride: int
+    x: torch.Tensor,
+    module: nn.Module,
+    window: int,
+    stride: int,
+    output_stride: int,
+    chunk: int = 128,
 ) -> torch.Tensor:
     """Run module on x [batch, channels, length] so each output of the last stride reads at most window inputs: the first window as is, then each later stride from its own fresh window."""
     prefix = module(x[..., :window])
@@ -196,8 +201,8 @@ def bounded(
     windows = windows.permute(0, 2, 1, 3).reshape(batch * count, channels, window)
     # Note (Junnan Li): The reference runs the windows 128 at a time; batch size changes convolution rounding.
     tails = [
-        module(windows[start : start + 128])[..., -output_stride:]
-        for start in range(0, len(windows), 128)
+        module(windows[start : start + chunk])[..., -output_stride:]
+        for start in range(0, len(windows), chunk)
     ]
     tail = torch.cat(tails, dim=0).reshape(batch, count, -1, output_stride)
     tail = tail.permute(0, 2, 1, 3).reshape(batch, -1, count * output_stride)
@@ -265,22 +270,47 @@ class StreamingDecoder:
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
         """Codes [1, steps, num_quantizers] → frames [1, steps * FRAMES_PER_CODE, features]."""
-        latents = self.model.quantizer.latents(codes)
-        cached = 0 if self.history is None else self.history.shape[-1]
-        joined = (
-            latents
-            if self.history is None
-            else torch.cat([self.history, latents], dim=-1)
-        )
-        decoded = bounded(
-            joined,
-            lambda steps: self.model.decoder(steps).permute(0, 2, 1),
-            self.window,
-            1,
-            FRAMES_PER_CODE,
-        )
-        self.history = joined[..., -(self.window - 1) :].clone()
-        return decoded[..., cached * FRAMES_PER_CODE :].permute(0, 2, 1)
+        return StreamingDecoder.decode_together([self], codes)
+
+    @staticmethod
+    def decode_together(
+        decoders: list[StreamingDecoder], codes: torch.Tensor
+    ) -> torch.Tensor:
+        """Codes [len(decoders), steps, num_quantizers], one row per decoder of the same model → frames [len(decoders), steps * FRAMES_PER_CODE, features]; decoders whose kept latents are as long decode as one batch."""
+        model = decoders[0].model
+        window = decoders[0].window
+        latents = model.quantizer.latents(codes)
+        groups: dict[int, list[int]] = {}
+        for row, decoder in enumerate(decoders):
+            cached = 0 if decoder.history is None else decoder.history.shape[-1]
+            groups.setdefault(cached, []).append(row)
+        frames: list[torch.Tensor | None] = [None] * len(decoders)
+        for cached, rows in groups.items():
+            joined = (
+                latents[rows]
+                if cached == 0
+                else torch.cat(
+                    [torch.cat([decoders[row].history for row in rows]), latents[rows]],
+                    dim=-1,
+                )
+            )
+            decoded = bounded(
+                joined,
+                lambda steps: model.decoder(steps).permute(0, 2, 1),
+                window,
+                1,
+                FRAMES_PER_CODE,
+                # One Session's windows run 128 at a time as the reference runs them; several Sessions' all at once.
+                chunk=128 if len(decoders) == 1 else len(rows) * joined.shape[-1],
+            )
+            kept = joined[..., -(window - 1) :]
+            for index, row in enumerate(rows):
+                decoders[row].history = kept[index : index + 1].clone()
+                frames[row] = decoded[
+                    index : index + 1, :, cached * FRAMES_PER_CODE :
+                ].permute(0, 2, 1)
+        # Note (Junnan Li): One decoder's frames keep the reference's layout, which sets how the axis-angle conversion after rounds.
+        return frames[0] if len(frames) == 1 else torch.cat(frames)
 
 
 __all__ = [

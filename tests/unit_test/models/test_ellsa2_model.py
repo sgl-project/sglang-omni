@@ -6,9 +6,11 @@ import torch
 import torchaudio
 from transformers import LlamaConfig, Qwen2Config
 
+from sglang_omni.models.ellsa2.batching import BatchedBlocks, BlockRequest
 from sglang_omni.models.ellsa2.fbank import NUM_MEL_BINS, LogMelFilterbank, mel_banks
 from sglang_omni.models.ellsa2.formats import FEATURES_PER_FRAME, POSE_FEATURES
 from sglang_omni.models.ellsa2.generator import (
+    BLOCK_SAMPLES,
     BLOCK_STEPS,
     MAX_HISTORY_BLOCKS,
     NUM_CODEBOOKS,
@@ -125,6 +127,90 @@ def test_a_block_is_six_greedy_steps_of_eighteen_codes():
     assert first.shape == (BLOCK_STEPS, NUM_CODEBOOKS)
     assert torch.equal(first, again)
     assert 0 <= int(first.min()) and int(first.max()) < CODEBOOK_SIZE
+
+
+def test_sessions_generated_together_from_their_kept_caches_get_the_codes_each_gets_alone():
+    generator = tiny_generator().double()
+    filterbank = LogMelFilterbank()
+    prompt = PromptTokens(head=torch.tensor([1, 2, 3]), audio_start=4, audio_end=5)
+    style = torch.randint(0, CODEBOOK_SIZE, (12, NUM_CODEBOOKS))
+    batched = BatchedBlocks(generator, filterbank, max_batch=4, cache_positions=512)
+    blocks = MAX_HISTORY_BLOCKS + 3
+    # Sessions start a block apart, so a batch mixes Sessions starting over (their first block, or past twelve seconds) with Sessions reusing their caches.
+    starts = (0, 1, 3)
+    audio = [
+        (
+            torch.randn(blocks * BLOCK_SAMPLES).numpy() * 0.1,
+            torch.randn(blocks * BLOCK_SAMPLES).numpy() * 0.1,
+        )
+        for _ in starts
+    ]
+    together = [[] for _ in starts]
+    alone = [[] for _ in starts]
+    caches = [batched.acquire(set()) for _ in starts]
+    for round_ in range(blocks + max(starts)):
+        requests, rows = [], []
+        for row, start in enumerate(starts):
+            block = round_ - start
+            if not 0 <= block < blocks:
+                continue
+            else:
+                rows.append(row)
+            history = retained_history(alone[row])
+            first = block - len(history)
+            window = slice(first * BLOCK_SAMPLES, (block + 1) * BLOCK_SAMPLES)
+            target, partner = (
+                stream[window].astype(np.float32) for stream in audio[row]
+            )
+            known = torch.cat([style] + [codes for codes in history])
+            requests.append(
+                BlockRequest(
+                    target_audio=np.split(target, len(history) + 1),
+                    partner_audio=np.split(partner, len(history) + 1),
+                    known_codes=known,
+                    style_steps=12,
+                    num_blocks=len(history) + 1,
+                    cache=caches[row],
+                )
+            )
+            alone[row].append(
+                generator.generate_block(
+                    prompt,
+                    filterbank(torch.from_numpy(target))[None].double(),
+                    filterbank(torch.from_numpy(partner))[None].double(),
+                    known,
+                    12,
+                    len(history) + 1,
+                )
+            )
+        for row, codes in zip(rows, batched.generate(prompt, requests)):
+            together[row].append(codes)
+    for row in range(len(starts)):
+        assert len(together[row]) == blocks
+        assert all(torch.equal(a, b) for a, b in zip(together[row], alone[row]))
+
+
+def test_decoding_sessions_together_equals_decoding_each_alone():
+    torch.manual_seed(0)
+    model = RVQVAE(9, 2, 40).eval()
+    random_codebooks(model)
+    codes = torch.randint(0, CODEBOOK_SIZE, (3, 3 * BLOCK_STEPS, 2))
+    alone = [StreamingDecoder(model) for _ in range(3)]
+    together = [StreamingDecoder(model) for _ in range(3)]
+    with torch.no_grad():
+        # The third Session starts a block late, so its kept latents are shorter for a block.
+        for start in range(0, codes.shape[1], BLOCK_STEPS):
+            block = slice(start, start + BLOCK_STEPS)
+            rows = [0, 1] if start == 0 else [0, 1, 2]
+            joint = StreamingDecoder.decode_together(
+                [together[row] for row in rows], codes[rows, block]
+            )
+            for index, row in enumerate(rows):
+                assert torch.allclose(
+                    joint[index],
+                    alone[row].decode(codes[row : row + 1, block])[0],
+                    atol=1e-5,
+                )
 
 
 def test_past_twelve_seconds_the_history_keeps_the_last_three_blocks():
