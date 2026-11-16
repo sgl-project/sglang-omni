@@ -42,7 +42,14 @@ func (a *app) commands() []command {
 	}
 	add("go/settings", nav, i18n.T("Settings"), "Settings", "⌘,", true, func() { a.navigate("/settings") })
 	for _, s := range settingsSections() {
-		add("go/settings/"+s.id, i18n.T("Settings"), s.title, s.en, "", true, func() { a.navigate("/settings/" + s.id) })
+		id := "go/settings/" + s.id
+		switch s.id {
+		case "models":
+			id = "go/models"
+		case "language-models":
+			id = "go/language-models"
+		}
+		add(id, i18n.T("Settings"), s.title, s.en, "", true, func() { a.navigate("/settings/" + s.id) })
 	}
 
 	view := i18n.T("View")

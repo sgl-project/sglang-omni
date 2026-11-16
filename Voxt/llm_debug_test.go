@@ -118,14 +118,14 @@ func TestLLMDebugCloses(t *testing.T) {
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
-	if p := a.router.Path(); p != remotePath {
+	if p := a.shownPath(); p != remotePath {
 		t.Fatalf("Esc: at %q", p)
 	}
 	a.navigate(llmDebugPath)
 	frames(tt)
 	click(t, tt, "Close")
 	frames(tt)
-	if p := a.router.Path(); p != remotePath {
+	if p := a.shownPath(); p != remotePath {
 		t.Fatalf("Close: at %q", p)
 	}
 }

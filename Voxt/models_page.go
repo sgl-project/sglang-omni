@@ -1,7 +1,7 @@
 package main
 
-// The Speech models page (/models; Local models until 2.1): the speech
-// models of this Mac, each a card that says in plain words what it is good
+// The Speech models section in Settings (/settings/models; /models before):
+// the speech models of this Mac, each a card that says in plain words what it is good
 // at and which languages it knows, its size,
 // whether it is installed or downloading, with Download, Cancel and
 // Delete, and, while it is loaded, the memory it uses (models_memory.go).
@@ -33,8 +33,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// modelsPath is the Speech models page's path.
-const modelsPath = "/models"
+// modelsPath is the Speech models section's path in Settings.
+const modelsPath = "/settings/models"
 
 // modelsState is the local models and the Speech models page's state.
 type modelsState struct {
@@ -128,7 +128,7 @@ func (a *app) modelsChanged() {
 		}
 	}
 	a.checkModels()
-	if a.currentPage() == modelsPath[1:] {
+	if a.shownPath() == modelsPath {
 		a.readModelMemory() // models_memory.go: a deleted model was unloaded
 	}
 }

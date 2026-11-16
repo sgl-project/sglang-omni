@@ -334,7 +334,7 @@ func TestSessionEscapeAndFailures(t *testing.T) {
 			t.Errorf("session %s, notice %+v", a.sess.State, a.notice)
 		}
 		a.noticeAction(a.notice.action)
-		if a.router.Path() != modelsPath || a.ov.mode != ovHidden {
+		if a.shownPath() != modelsPath || a.ov.mode != ovHidden {
 			t.Errorf("went to %s, overlay %s", a.router.Path(), a.ov.mode)
 		}
 	})

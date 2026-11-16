@@ -32,35 +32,27 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-func (a *app) modelsPage(c *ui.Context) {
-	t := c.Theme()
-	columnPageHeader(c, i18n.T("Speech models"), func() {
+func (a *app) modelsSettings(c *ui.Context) {
+	a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
+	ui.Row(c).Justify(ui.End).Children(func() {
 		if ghostButton(c.Key("models-network"), i18n.T("Network…")).Tooltip(i18n.T("How model downloads reach Hugging Face")).Clicked() {
 			a.openNetwork()
 		}
 	})
-	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
-		pageColumn(c).Gap(px(t, sp3)).Children(func() {
-			a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
-			sectionTitle(c, i18n.T("On this Mac"))
-			caption(c, i18n.T("Free, and your audio stays on this Mac."))
-			a.modelCards(c, models.ASR)
-			if !a.modelHidden(dictation.ModelID) {
-				a.dictationCard(c)
-			}
-			a.providerCards(c, local.ASR) // remote_page.go
-			a.speechContextSection(c)     // models_context.go
-			if a.anyModelShown(models.LLM) {
-				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt no longer uses these. Delete them to free up space."))
-				a.modelCards(c, models.LLM)
-			}
-			a.hiddenModelCards(c)
-			a.modelsAdvanced(c) // models_keep.go
-		})
-	})
-	a.modelDeleteDialogs(c) // models_delete.go
-	a.networkDialog(c)      // models_network.go
-	a.providerDialogView(c) // remote_dialog.go
+	sectionTitle(c, i18n.T("On this Mac"))
+	caption(c, i18n.T("Free, and your audio stays on this Mac."))
+	a.modelCards(c, models.ASR)
+	if !a.modelHidden(dictation.ModelID) {
+		a.dictationCard(c)
+	}
+	a.providerCards(c, local.ASR) // remote_page.go
+	a.speechContextSection(c)     // models_context.go
+	if a.anyModelShown(models.LLM) {
+		sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt no longer uses these. Delete them to free up space."))
+		a.modelCards(c, models.LLM)
+	}
+	a.hiddenModelCards(c)
+	a.modelsAdvanced(c) // models_keep.go
 }
 
 // modelCards groups visible speech models by family and shows the other

@@ -38,8 +38,6 @@ var navGroups = []navGroup{
 		{"/app-enhancement", "App enhancement", appEnhancementIcon},
 	}},
 	{"Resources", []navPage{
-		{modelsPath, "Speech models", modelsIcon},
-		{remotePath, "Language models", remoteIcon},
 		{"/dictionary", "Dictionary", dictionaryIcon},
 	}},
 	{"System", []navPage{
@@ -143,7 +141,10 @@ func pageTitle(path string) string {
 // movedPaths are pages that moved, and where they are now: links,
 // notifications and old settings may still name them.
 var movedPaths = map[string]string{
-	"/permissions": "/settings/permissions", // a page of the sidebar until 10-2026
+	"/permissions":     "/settings/permissions", // a page of the sidebar until 10-2026
+	"/models":          modelsPath,
+	"/models/network":  networkPath,
+	"/language-models": remotePath,
 }
 
 // The pages' and the shell's icons (Solar; internal/icons/names.txt).

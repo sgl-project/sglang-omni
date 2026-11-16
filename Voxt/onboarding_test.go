@@ -370,6 +370,7 @@ func TestOnboardingComesBack(t *testing.T) {
 		t.Fatalf("back: open %v, step %d", a.ob.open, a.ob.step)
 	}
 	a.closeOnboarding() // its ×
+	a.navigate("/logs") // no Open setup guide under the Settings dialog too
 	a.navigate("/settings/general")
 	frames(tt)
 	tt.Scroll(windowWidth*0.7, windowHeight*0.6, 0, 600) // the row is under the fold

@@ -228,10 +228,11 @@ func TestModelDeleteCancelShared(t *testing.T) {
 	claimFor(t, a, dictaID, models.LLMTranslate)
 	claimFor(t, a, audioSmithID, models.LLMTranslate)
 	a.navigate(modelsPath)
+	scrollSettingsToText(tt, "Made for translation: quick and natural. Only Translate uses it.")
 	if !has(tt, "Shared with AudioSmith and Dicta") {
 		t.Fatalf("no Shared with: %q", tt.Texts())
 	}
-	click(t, tt, "Delete Hy-MT2 1.8B (Q4_K_M)…")
+	clickControl(t, tt, "Delete Hy-MT2 1.8B (Q4_K_M)…")
 	if !has(tt, "AudioSmith and Dicta also use this model, so its files (1.1 GB) stay on this Mac.") {
 		t.Fatalf("dialog: %q", tt.Texts())
 	}
