@@ -11,12 +11,18 @@ import glob
 import json
 import os
 from collections.abc import Iterable
+from functools import partial
 from tempfile import TemporaryDirectory
 from typing import Protocol
 
 import torch
+from flashinfer import BatchDecodeWithPagedKVCacheWrapper
 from huggingface_hub import snapshot_download
 from safetensors import safe_open
+from sglang.srt.layers.attention.flashinfer_backend import (
+    FlashInferAttnBackend,
+    FlashInferIndicesUpdaterDecode,
+)
 from sglang.srt.layers.moe.utils import draft_model_build_scope
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.schedule_batch import ScheduleBatch
@@ -252,6 +258,36 @@ def install_verify_graph_input(
             return upstream_get_spec_info(runner, num_tokens)
 
     DecodeCudaGraphRunner.get_spec_info = get_spec_info
+
+
+def plan_decode_self_attention(
+    decode_indices_updater: FlashInferIndicesUpdaterDecode,
+    seq_lens: torch.Tensor,
+    seq_lens_cpu: torch.Tensor | None,
+    seq_lens_sum: int,
+    decode_wrappers: list[BatchDecodeWithPagedKVCacheWrapper],
+    encoder_lens: torch.Tensor,
+    spec_info: SpecInput | None,
+    fixed_split_size: int | None = None,
+    disable_split_kv: bool | None = None,
+    *,
+    plan: KVLocPlan,
+    req_pool_indices: torch.Tensor,
+) -> None:
+    """FlashInferIndicesUpdaterDecode.update_cross_attention for its self-attention wrapper alone."""
+    decode_indices_updater.call_begin_forward(
+        decode_wrappers[0],
+        seq_lens,
+        seq_lens_sum,
+        decode_indices_updater.kv_indptr[0],
+        encoder_lens,
+        spec_info,
+        seq_lens_cpu=seq_lens_cpu,
+        fixed_split_size=fixed_split_size,
+        disable_split_kv=disable_split_kv,
+        plan=plan,
+        req_pool_indices=req_pool_indices,
+    )
 
 
 class WhisperDraftWorker(EagleDraftWorkerBase):
@@ -596,6 +632,7 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
                 token_ids=drafts[-1],
                 offset=step + 1,
                 slots=slots[:, step + 1],
+                should_plan_cross_attention=step == 1,
             )
             drafts.append(sampler.draw(logits))
         draft_token_ids = torch.stack(drafts, dim=1)
@@ -727,6 +764,7 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
         token_ids: torch.Tensor,
         offset: int,
         slots: torch.Tensor,
+        should_plan_cross_attention: bool,
     ) -> torch.Tensor:
         step = self.step_batch(
             batch,
@@ -741,4 +779,18 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             capture_hidden_mode=CaptureHiddenMode.NULL,
             return_hidden_states_before_norm=False,
         )
-        return runner.forward(forward_batch).logits_output.next_token_logits
+        attention_backend = runner.attn_backend
+        if should_plan_cross_attention or not isinstance(
+            attention_backend, FlashInferAttnBackend
+        ):
+            return runner.forward(forward_batch).logits_output.next_token_logits
+        else:
+            # note (Haoling Pu): every draft step of a round reads the same encoder slots, so the first decode step's cross-attention plan still holds.
+            decode_indices_updater = attention_backend.indices_updater_decode
+            full_update = decode_indices_updater.update
+            decode_indices_updater.update = partial(
+                plan_decode_self_attention, decode_indices_updater
+            )
+            logits = runner.forward(forward_batch).logits_output.next_token_logits
+            decode_indices_updater.update = full_update
+            return logits

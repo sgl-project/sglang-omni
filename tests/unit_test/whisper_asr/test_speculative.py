@@ -11,6 +11,8 @@ import pytest
 import torch
 from safetensors.torch import save_file
 from sglang.srt.layers.attention.flashinfer_backend import (
+    FlashInferAttnBackend,
+    FlashInferIndicesUpdaterDecode,
     FlashInferIndicesUpdaterPrefill,
 )
 from sglang.srt.mem_cache.kv_loc_plan import IdSpaceKind
@@ -118,8 +120,13 @@ class ReqToTokenTranslator:
             ]
 
 
-def planned_kv_slots(plan_wrapper: SimpleNamespace) -> list[list[int]]:
-    _, kv_indptr, kv_indices = plan_wrapper.begin_forward.call_args.args[:3]
+def planned_kv_slots(
+    plan_wrapper: SimpleNamespace, *, kv_indptr_position: int = 1
+) -> list[list[int]]:
+    """The KV slots of each row in a wrapper's last plan; a prefill plan passes its query indptr first, a decode plan does not."""
+    kv_indptr, kv_indices = plan_wrapper.begin_forward.call_args.args[
+        kv_indptr_position : kv_indptr_position + 2
+    ]
     return [
         kv_indices[kv_indptr[row] : kv_indptr[row + 1]].tolist()
         for row in range(kv_indptr.numel() - 1)
@@ -182,6 +189,141 @@ def test_verify_reads_the_encoder_slots_in_cross_attention_and_the_chain_in_self
             planned_kv_slots(self_attention)[row]
             == slots[encoder_len : encoder_len + decoder_len + draft_token_num].tolist()
         )
+
+
+def graph_decode_updater(
+    req_to_token: torch.Tensor,
+) -> tuple[FlashInferIndicesUpdaterDecode, list[SimpleNamespace]]:
+    """A decode updater over graph-mode self-attention and cross-attention wrappers, whose indices buffers the replayed kernels read."""
+    updater = object.__new__(FlashInferIndicesUpdaterDecode)
+    updater.attn_backend = SimpleNamespace(
+        kv_index_translator=ReqToTokenTranslator(req_to_token)
+    )
+    updater.kv_indptr = [torch.zeros(11, dtype=torch.int32) for _ in range(2)]
+    updater.kv_last_page_len = torch.ones(10, dtype=torch.int32)
+    updater.num_qo_heads = updater.num_kv_heads = updater.head_dim = 1
+    updater.q_data_type = updater.data_type = torch.float16
+    updater.update = updater.update_cross_attention
+    wrappers = [
+        SimpleNamespace(
+            begin_forward=Mock(spec=[]),
+            is_cuda_graph_enabled=True,
+            _paged_kv_indices_buf=torch.zeros(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                64, dtype=torch.int32
+            ),
+        )
+        for _ in range(2)
+    ]
+    return updater, wrappers
+
+
+def test_later_draft_steps_keep_the_cross_attention_inputs_a_full_plan_would_write() -> (
+    None
+):
+    """A later step plans self-attention as a full update does, and the first step's cross-attention inputs equal what a full update at the later step writes."""
+    req_to_token = torch.arange(10 * 16).view(10, 16)
+    req_pool_indices = torch.tensor([3, 1, 4])
+    encoder_lens = torch.tensor([4, 2, 5], dtype=torch.int32)
+    first_step_lens = torch.tensor([2, 5, 3], dtype=torch.int32)
+    later_step_lens = first_step_lens + 1
+    updater, wrappers = graph_decode_updater(req_to_token)
+    reference_updater, reference_wrappers = graph_decode_updater(req_to_token)
+
+    updater.update_cross_attention(
+        first_step_lens,
+        first_step_lens,
+        int(first_step_lens.sum()),
+        wrappers,
+        encoder_lens,
+        None,
+        plan=None,
+        req_pool_indices=req_pool_indices,
+    )
+    speculative.plan_decode_self_attention(
+        updater,
+        later_step_lens,
+        later_step_lens,
+        int(later_step_lens.sum()),
+        wrappers,
+        encoder_lens,
+        None,
+        plan=None,
+        req_pool_indices=req_pool_indices,
+    )
+    reference_updater.update_cross_attention(
+        later_step_lens,
+        later_step_lens,
+        int(later_step_lens.sum()),
+        reference_wrappers,
+        encoder_lens,
+        None,
+        plan=None,
+        req_pool_indices=req_pool_indices,
+    )
+
+    self_attention, cross_attention = wrappers
+    reference_self_attention, reference_cross_attention = reference_wrappers
+    assert planned_kv_slots(self_attention, kv_indptr_position=0) == planned_kv_slots(
+        reference_self_attention, kv_indptr_position=0
+    )
+    assert cross_attention.begin_forward.call_count == 1
+    assert torch.equal(updater.kv_indptr[1], reference_updater.kv_indptr[1])
+    assert torch.equal(
+        cross_attention._paged_kv_indices_buf,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        reference_cross_attention._paged_kv_indices_buf,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    )
+
+
+@pytest.mark.parametrize("should_plan_cross_attention", [True, False])
+def test_a_draft_step_plans_cross_attention_only_when_asked_and_puts_the_full_update_back(
+    monkeypatch, should_plan_cross_attention: bool
+) -> None:
+    """A round's first step must plan cross-attention, and a later step must not leave the next round without it."""
+    req_pool_indices = torch.tensor([2])
+    seq_lens = torch.tensor([5], dtype=torch.int32)
+    updater, wrappers = graph_decode_updater(torch.arange(10 * 16).view(10, 16))
+    full_update = updater.update
+    attention_backend = object.__new__(FlashInferAttnBackend)
+    attention_backend.indices_updater_decode = updater
+    logits = torch.zeros(1, 32)
+
+    def forward(forward_batch: SimpleNamespace) -> SimpleNamespace:
+        updater.update(
+            seq_lens,
+            seq_lens,
+            int(seq_lens.sum()),
+            wrappers,
+            torch.tensor([4], dtype=torch.int32),
+            None,
+            plan=None,
+            req_pool_indices=req_pool_indices,
+        )
+        return SimpleNamespace(logits_output=SimpleNamespace(next_token_logits=logits))
+
+    monkeypatch.setattr(
+        speculative.ForwardBatch, "init_new", lambda step, runner, **options: step
+    )
+    worker = object.__new__(speculative.WhisperSpeculativeWorker)
+    batch = SimpleNamespace(
+        reqs=[None],
+        seq_lens=seq_lens,
+        seq_lens_cpu=seq_lens,
+    )
+
+    output = worker.decode_forward(
+        batch,
+        SimpleNamespace(attn_backend=attention_backend, forward=forward),
+        token_ids=torch.tensor([7]),
+        offset=3,
+        slots=torch.tensor([20]),
+        should_plan_cross_attention=should_plan_cross_attention,
+    )
+
+    self_attention, cross_attention = wrappers
+    assert output is logits
+    assert self_attention.begin_forward.call_count == 1
+    assert cross_attention.begin_forward.call_count == int(should_plan_cross_attention)
+    assert updater.update == full_update
 
 
 def tiny_target() -> nn.Module:
