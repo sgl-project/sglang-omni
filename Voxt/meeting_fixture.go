@@ -9,4 +9,5 @@ type meetingFixtureState struct {
 	History         *historyViewState         `json:"history,omitempty"`
 	HistorySettings *historySettingsViewState `json:"history_settings,omitempty"`
 	HistoryAccess   *historyAccessViewState   `json:"history_access,omitempty"`
+	Onboarding      *onboardingViewState      `json:"onboarding,omitempty"`
 }

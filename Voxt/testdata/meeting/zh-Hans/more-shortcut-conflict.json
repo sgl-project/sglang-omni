@@ -1,0 +1,196 @@
+{
+  "name": "more-shortcut-conflict",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 6,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "更多功能",
+    "subtitle": "Voxt 已经可以用了。下面两项能让它更顺手。",
+    "recording": false,
+    "welcome": {
+      "legacy_available": false,
+      "legacy": {
+        "done": false,
+        "failed": "",
+        "imported": null,
+        "skipped": null,
+        "todos": null
+      }
+    },
+    "permissions": {
+      "ask_required": false,
+      "microphone": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      },
+      "access": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      },
+      "speech": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      }
+    },
+    "models": {
+      "reuse_shown": false,
+      "reuse_ids": null,
+      "reuse_subtitle": "",
+      "reuse_names": "",
+      "speech": {
+        "id": "",
+        "name": "",
+        "ready": false,
+        "on_disk": false,
+        "installed_by": "",
+        "size_label": "",
+        "under_card": false,
+        "show_download": false,
+        "download_label": "",
+        "downloading": false,
+        "download_fraction": 0,
+        "about": ""
+      },
+      "language_ready": false,
+      "language_name": "",
+      "needs_download": false,
+      "download_left": ""
+    },
+    "try": {
+      "feature": "",
+      "prefix": "",
+      "shortcut": {
+        "present": false,
+        "feature_title": "",
+        "text": "",
+        "how": "",
+        "accessibility_warning": false,
+        "keyboard": {
+          "visible": false,
+          "lit_keys": null,
+          "extra_key": ""
+        }
+      },
+      "conflicts": null,
+      "passed": false,
+      "sample_title": "",
+      "sample_text": "",
+      "sample_action": false,
+      "hint": "",
+      "card": {
+        "mine": false,
+        "state": "",
+        "session_kind": "",
+        "live": false,
+        "ended": false,
+        "recording": false,
+        "composing": false,
+        "cancelled": false,
+        "failed": false,
+        "levels": null,
+        "heard": false,
+        "elapsed_text": "",
+        "partial": "",
+        "draft": "",
+        "working_text": "",
+        "busy_text": "",
+        "failure_text": "",
+        "show_result": false,
+        "result": "",
+        "raw": "",
+        "show_raw": false,
+        "raw_title": "",
+        "timings": "",
+        "problem_code": ""
+      }
+    },
+    "more": {
+      "preset_options": [
+        {
+          "id": "option",
+          "label": "右 ⌥（默认）"
+        },
+        {
+          "id": "fn",
+          "label": "fn（和 Auralink 相同）"
+        },
+        {
+          "id": "command",
+          "label": "⌘ 组合"
+        },
+        {
+          "id": "mouseMiddle",
+          "label": "鼠标中键 + fn⇧"
+        }
+      ],
+      "preset_selected": "右 ⌥（默认）",
+      "preset_about": "右 ⌥：单手就能按，是 Voxt 的默认方案。fn 是地球键或与 Auralink 共用时，选它更合适。",
+      "preset_warnings": null,
+      "shortcuts": [
+        {
+          "title": "转录",
+          "keys": "右 ⌥",
+          "problems": [
+            "AudioSmith 的“转录”也在用"
+          ]
+        },
+        {
+          "title": "翻译",
+          "keys": "右 ⌥ ⇧",
+          "problems": null
+        },
+        {
+          "title": "改写",
+          "keys": "⌃ 右 ⌥",
+          "problems": null
+        },
+        {
+          "title": "粘贴最近结果",
+          "keys": "⌃⌥V",
+          "problems": null
+        }
+      ]
+    },
+    "footer": {
+      "mode": "finish",
+      "busy": false,
+      "back": true,
+      "continue_label": "开始使用 Voxt",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

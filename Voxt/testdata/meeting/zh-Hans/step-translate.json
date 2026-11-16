@@ -1,0 +1,160 @@
+{
+  "name": "step-translate",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 4,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "试一试翻译",
+    "subtitle": "翻译把选中的文字或你说的话译成你选的语言。翻译下面的示例，或按快捷键（或点“开始”）说一句话。",
+    "recording": false,
+    "welcome": {
+      "legacy_available": false,
+      "legacy": {
+        "done": false,
+        "failed": "",
+        "imported": null,
+        "skipped": null,
+        "todos": null
+      }
+    },
+    "permissions": {
+      "ask_required": false,
+      "microphone": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      },
+      "access": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      },
+      "speech": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      }
+    },
+    "models": {
+      "reuse_shown": false,
+      "reuse_ids": null,
+      "reuse_subtitle": "",
+      "reuse_names": "",
+      "speech": {
+        "id": "",
+        "name": "",
+        "ready": false,
+        "on_disk": false,
+        "installed_by": "",
+        "size_label": "",
+        "under_card": false,
+        "show_download": false,
+        "download_label": "",
+        "downloading": false,
+        "download_fraction": 0,
+        "about": ""
+      },
+      "language_ready": false,
+      "language_name": "",
+      "needs_download": false,
+      "download_left": ""
+    },
+    "try": {
+      "feature": "translate",
+      "prefix": "ob-tl",
+      "shortcut": {
+        "present": true,
+        "feature_title": "翻译",
+        "text": "右 ⌥ ⇧",
+        "how": "按一下开始，再按一下停止。",
+        "accessibility_warning": false,
+        "keyboard": {
+          "visible": true,
+          "lit_keys": {
+            "option-right": true,
+            "shift-left": true,
+            "shift-right": true
+          },
+          "extra_key": ""
+        }
+      },
+      "conflicts": null,
+      "passed": false,
+      "sample_title": "示例文本 · 译为英语",
+      "sample_text": "这个周末我们去山里露营吧，记得带上厚外套和手电筒。",
+      "sample_action": true,
+      "hint": "",
+      "card": {
+        "mine": false,
+        "state": "",
+        "session_kind": "",
+        "live": false,
+        "ended": false,
+        "recording": false,
+        "composing": false,
+        "cancelled": false,
+        "failed": false,
+        "levels": null,
+        "heard": false,
+        "elapsed_text": "",
+        "partial": "",
+        "draft": "",
+        "working_text": "",
+        "busy_text": "",
+        "failure_text": "",
+        "show_result": false,
+        "result": "",
+        "raw": "",
+        "show_raw": false,
+        "raw_title": "",
+        "timings": "",
+        "problem_code": ""
+      }
+    },
+    "more": {
+      "preset_options": null,
+      "preset_selected": "",
+      "preset_about": "",
+      "preset_warnings": null,
+      "shortcuts": null
+    },
+    "footer": {
+      "mode": "try-wait",
+      "busy": false,
+      "back": true,
+      "continue_label": "继续",
+      "continue_tooltip": "试一次并得到结果后才能继续",
+      "continue_disabled": true
+    }
+  }
+}

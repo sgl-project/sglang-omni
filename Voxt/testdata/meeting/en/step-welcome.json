@@ -1,0 +1,156 @@
+{
+  "name": "step-welcome",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 0,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Welcome to Voxt",
+    "subtitle": "Speak in any app and get text where your cursor is: transcribe, translate and rewrite. There are a few short steps, and you can skip any of them.",
+    "recording": false,
+    "welcome": {
+      "legacy_available": false,
+      "legacy": {
+        "done": false,
+        "failed": "",
+        "imported": null,
+        "skipped": null,
+        "todos": null
+      }
+    },
+    "permissions": {
+      "ask_required": false,
+      "microphone": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      },
+      "access": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      },
+      "speech": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      }
+    },
+    "models": {
+      "reuse_shown": false,
+      "reuse_ids": null,
+      "reuse_subtitle": "",
+      "reuse_names": "",
+      "speech": {
+        "id": "",
+        "name": "",
+        "ready": false,
+        "on_disk": false,
+        "installed_by": "",
+        "size_label": "",
+        "under_card": false,
+        "show_download": false,
+        "download_label": "",
+        "downloading": false,
+        "download_fraction": 0,
+        "about": ""
+      },
+      "language_ready": false,
+      "language_name": "",
+      "needs_download": false,
+      "download_left": ""
+    },
+    "try": {
+      "feature": "",
+      "prefix": "",
+      "shortcut": {
+        "present": false,
+        "feature_title": "",
+        "text": "",
+        "how": "",
+        "accessibility_warning": false,
+        "keyboard": {
+          "visible": false,
+          "lit_keys": null,
+          "extra_key": ""
+        }
+      },
+      "conflicts": null,
+      "passed": false,
+      "sample_title": "",
+      "sample_text": "",
+      "sample_action": false,
+      "hint": "",
+      "card": {
+        "mine": false,
+        "state": "",
+        "session_kind": "",
+        "live": false,
+        "ended": false,
+        "recording": false,
+        "composing": false,
+        "cancelled": false,
+        "failed": false,
+        "levels": null,
+        "heard": false,
+        "elapsed_text": "",
+        "partial": "",
+        "draft": "",
+        "working_text": "",
+        "busy_text": "",
+        "failure_text": "",
+        "show_result": false,
+        "result": "",
+        "raw": "",
+        "show_raw": false,
+        "raw_title": "",
+        "timings": "",
+        "problem_code": ""
+      }
+    },
+    "more": {
+      "preset_options": null,
+      "preset_selected": "",
+      "preset_about": "",
+      "preset_warnings": null,
+      "shortcuts": null
+    },
+    "footer": {
+      "mode": "welcome",
+      "busy": false,
+      "back": false,
+      "continue_label": "Get started",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

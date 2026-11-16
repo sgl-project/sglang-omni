@@ -10,17 +10,21 @@ import (
 )
 
 type meetingFixtureScenario struct {
-	name            string
-	kind            string
-	snapshot        meeting.Snapshot
-	page            meetingsViewStateInput
-	err             error
-	collapsed       bool
-	cardSize        int
-	history         historyViewStateInput
-	historySettings historySettingsStateInput
-	historyAccess   historyAccessStateInput
-	historyProblem  string
+	name               string
+	kind               string
+	snapshot           meeting.Snapshot
+	page               meetingsViewStateInput
+	err                error
+	collapsed          bool
+	cardSize           int
+	history            historyViewStateInput
+	historySettings    historySettingsStateInput
+	historyAccess      historyAccessStateInput
+	historyProblem     string
+	onboarding         onboardingViewStateInput
+	onboardingBlocker  string
+	onboardingConflict bool
+	onboardingHint     bool
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
@@ -134,6 +138,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 		scenarios = append(scenarios, meetingFixtureScenario{name: scenario.name, kind: "page", page: input})
 	}
 	scenarios = append(scenarios, historyFixtureScenarios()...)
+	scenarios = append(scenarios, onboardingFixtureScenarios()...)
 	return scenarios
 }
 

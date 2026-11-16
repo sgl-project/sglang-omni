@@ -1,0 +1,169 @@
+{
+  "name": "problem-internal",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 3,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "试一试转录",
+    "subtitle": "转录把你说的话写成文字。按下快捷键（或点“开始”），读下面这句话，再按一次结束。",
+    "recording": false,
+    "welcome": {
+      "legacy_available": false,
+      "legacy": {
+        "done": false,
+        "failed": "",
+        "imported": null,
+        "skipped": null,
+        "todos": null
+      }
+    },
+    "permissions": {
+      "ask_required": false,
+      "microphone": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      },
+      "access": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      },
+      "speech": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      }
+    },
+    "models": {
+      "reuse_shown": false,
+      "reuse_ids": null,
+      "reuse_subtitle": "",
+      "reuse_names": "",
+      "speech": {
+        "id": "",
+        "name": "",
+        "ready": false,
+        "on_disk": false,
+        "installed_by": "",
+        "size_label": "",
+        "under_card": false,
+        "show_download": false,
+        "download_label": "",
+        "downloading": false,
+        "download_fraction": 0,
+        "about": ""
+      },
+      "language_ready": false,
+      "language_name": "",
+      "needs_download": false,
+      "download_left": ""
+    },
+    "try": {
+      "feature": "transcribe",
+      "prefix": "ob-tr",
+      "shortcut": {
+        "present": true,
+        "feature_title": "转录",
+        "text": "右 ⌥",
+        "how": "按一下开始，再按一下停止。",
+        "accessibility_warning": false,
+        "keyboard": {
+          "visible": true,
+          "lit_keys": {
+            "option-right": true
+          },
+          "extra_key": ""
+        }
+      },
+      "conflicts": null,
+      "passed": false,
+      "sample_title": "读这句话，或者随便说点什么",
+      "sample_text": "嗯，那个设计评审改到周四下午，不对，周五上午，议程我今晚发出来。",
+      "sample_action": false,
+      "hint": "",
+      "card": {
+        "mine": true,
+        "state": "failed",
+        "session_kind": "transcribe",
+        "live": false,
+        "ended": true,
+        "recording": false,
+        "composing": false,
+        "cancelled": false,
+        "failed": true,
+        "levels": [
+          0.1,
+          0.4,
+          0.8
+        ],
+        "heard": true,
+        "elapsed_text": "",
+        "partial": "fixture live text",
+        "draft": "",
+        "working_text": "",
+        "busy_text": "",
+        "failure": {
+          "text": "出错了：fixture problem",
+          "more": "",
+          "action": "",
+          "action_label": "",
+          "warning": false
+        },
+        "failure_text": "",
+        "show_result": false,
+        "result": "Fixture cleaned result",
+        "raw": "fixture raw speech",
+        "show_raw": true,
+        "raw_title": "识别原文",
+        "timings": "录音 3.0 秒 · 识别 0.8 秒 · 整理 1.1 秒 · 总计 5.0 秒 · Fixture speech model · Fixture language model",
+        "problem_code": "internal"
+      }
+    },
+    "more": {
+      "preset_options": null,
+      "preset_selected": "",
+      "preset_about": "",
+      "preset_warnings": null,
+      "shortcuts": null
+    },
+    "footer": {
+      "mode": "try-wait",
+      "busy": false,
+      "back": true,
+      "continue_label": "继续",
+      "continue_tooltip": "试一次并得到结果后才能继续",
+      "continue_disabled": true
+    }
+  }
+}

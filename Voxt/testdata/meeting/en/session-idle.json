@@ -1,0 +1,162 @@
+{
+  "name": "session-idle",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 3,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Try Transcribe",
+    "subtitle": "Transcribe writes down what you say. Press the shortcut (or Start), read the sentence below, then press it again to stop.",
+    "recording": false,
+    "welcome": {
+      "legacy_available": false,
+      "legacy": {
+        "done": false,
+        "failed": "",
+        "imported": null,
+        "skipped": null,
+        "todos": null
+      }
+    },
+    "permissions": {
+      "ask_required": false,
+      "microphone": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      },
+      "access": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      },
+      "speech": {
+        "code": "",
+        "text": "",
+        "ok": false,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "",
+        "ask_tooltip": ""
+      }
+    },
+    "models": {
+      "reuse_shown": false,
+      "reuse_ids": null,
+      "reuse_subtitle": "",
+      "reuse_names": "",
+      "speech": {
+        "id": "",
+        "name": "",
+        "ready": false,
+        "on_disk": false,
+        "installed_by": "",
+        "size_label": "",
+        "under_card": false,
+        "show_download": false,
+        "download_label": "",
+        "downloading": false,
+        "download_fraction": 0,
+        "about": ""
+      },
+      "language_ready": false,
+      "language_name": "",
+      "needs_download": false,
+      "download_left": ""
+    },
+    "try": {
+      "feature": "transcribe",
+      "prefix": "ob-tr",
+      "shortcut": {
+        "present": true,
+        "feature_title": "Transcribe",
+        "text": "Right ⌥",
+        "how": "Press to start, press again to stop.",
+        "accessibility_warning": false,
+        "keyboard": {
+          "visible": true,
+          "lit_keys": {
+            "option-right": true
+          },
+          "extra_key": ""
+        }
+      },
+      "conflicts": null,
+      "passed": false,
+      "sample_title": "Read this, or say anything",
+      "sample_text": "Um, so the design review moves to Thursday afternoon, no, Friday morning, and I'll send the agenda tonight.",
+      "sample_action": false,
+      "hint": "",
+      "card": {
+        "mine": true,
+        "state": "idle",
+        "session_kind": "transcribe",
+        "live": false,
+        "ended": false,
+        "recording": false,
+        "composing": false,
+        "cancelled": false,
+        "failed": false,
+        "levels": [
+          0.1,
+          0.4,
+          0.8
+        ],
+        "heard": true,
+        "elapsed_text": "",
+        "partial": "fixture live text",
+        "draft": "",
+        "working_text": "",
+        "busy_text": "",
+        "failure_text": "",
+        "show_result": false,
+        "result": "",
+        "raw": "",
+        "show_raw": false,
+        "raw_title": "",
+        "timings": "",
+        "problem_code": ""
+      }
+    },
+    "more": {
+      "preset_options": null,
+      "preset_selected": "",
+      "preset_about": "",
+      "preset_warnings": null,
+      "shortcuts": null
+    },
+    "footer": {
+      "mode": "try-wait",
+      "busy": false,
+      "back": true,
+      "continue_label": "Continue",
+      "continue_tooltip": "Continue is available once a test gives a result",
+      "continue_disabled": true
+    }
+  }
+}

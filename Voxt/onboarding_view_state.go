@@ -431,10 +431,8 @@ func (a *app) onboardingViewState() onboardingViewState {
 		input.TryConflicts = a.conflictLines(string(kind), 0)
 	}
 	if a.ob.step == obMore {
-		input.MoreKeys = map[string]string{}
 		input.MoreConflicts = map[string][]string{}
 		for _, feature := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast) {
-			input.MoreKeys[feature] = a.featureKeys(feature)
 			input.MoreConflicts[feature] = a.conflictLines(feature, 0)
 		}
 	}
@@ -465,6 +463,14 @@ func localizeOnboardingViewStateInput(input *onboardingViewStateInput) {
 		if kind == store.KindTranslate {
 			target := session.TranslateTarget(input.Settings, i18n.Locale(), "")
 			input.TargetLanguage = uitext.TargetLanguageLabel(target)
+		}
+	}
+	if input.Step == obMore && input.MoreKeys == nil {
+		input.MoreKeys = map[string]string{}
+		for _, feature := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast) {
+			if hotkeys := hotkey.HotkeysOf(input.Settings.Features, feature); len(hotkeys) > 0 {
+				input.MoreKeys[feature] = uitext.HotkeyText(hotkeys[0].Keys)
+			}
 		}
 	}
 }

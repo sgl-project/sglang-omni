@@ -125,9 +125,11 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 		}
 	}
 	state.ReuseNames = strings.Join(names, " · ")
-	state.ReuseSubtitle = translator.T("%s · no download needed", uitext.HumanBytes(size))
-	if installedBy != "" {
-		state.ReuseSubtitle = translator.T("Installed by %s · %s · no download needed", installedBy, uitext.HumanBytes(size))
+	if len(reuse) > 0 {
+		state.ReuseSubtitle = translator.T("%s · no download needed", uitext.HumanBytes(size))
+		if installedBy != "" {
+			state.ReuseSubtitle = translator.T("Installed by %s · %s · no download needed", installedBy, uitext.HumanBytes(size))
+		}
 	}
 	return state
 }
