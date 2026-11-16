@@ -1,0 +1,92 @@
+{
+  "name": "models-runtime-gguf",
+  "kind": "models",
+  "models": {
+    "asr": null,
+    "llm": [
+      {
+        "key": "model-llm.translate",
+        "rows": [
+          {
+            "id": "llm.translate",
+            "kind": "llm",
+            "name": "Hy-MT2 1.8B (Q4_K_M)",
+            "default": false,
+            "installed": true,
+            "size_text": "1.1 GB on disk",
+            "about": "Made for translation: quick and natural. Only Translate uses it.",
+            "languages": "Translates between 33 languages, including Chinese, English, Japanese, Korean and Cantonese",
+            "tags": null,
+            "actions": [
+              {
+                "kind": "delete",
+                "model_id": "llm.translate",
+                "label": "Delete",
+                "accessibility_label": "Delete Hy-MT2 1.8B (Q4_K_M)…",
+                "style": "ghost"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "hidden": null,
+    "hidden_open": false,
+    "advanced": {
+      "open": false,
+      "locale": "en",
+      "value": "",
+      "selection": "Automatic",
+      "options": [
+        {
+          "label": "Automatic",
+          "value": ""
+        },
+        {
+          "label": "5 minutes",
+          "value": "5m"
+        },
+        {
+          "label": "15 minutes",
+          "value": "15m"
+        },
+        {
+          "label": "30 minutes",
+          "value": "30m"
+        },
+        {
+          "label": "1 hour",
+          "value": "1h"
+        },
+        {
+          "label": "Until Voxt quits",
+          "value": "quit"
+        }
+      ]
+    },
+    "delete": {},
+    "network": {
+      "open": false,
+      "proxy_mode": 0,
+      "proxy_caption": "The proxy in this Mac's network settings, or one set by an environment variable.",
+      "source": 0,
+      "source_labels": [
+        "Automatic",
+        "Hugging Face only",
+        "hf-mirror.com only"
+      ],
+      "source_caption": "Whichever answers first. Every file is checked.",
+      "proxy_family": {
+        "key": "network.proxy",
+        "kind": "",
+        "text": ""
+      },
+      "source_family": {
+        "key": "network.hfEndpoints",
+        "kind": "",
+        "text": ""
+      }
+    },
+    "speech_context": ""
+  }
+}

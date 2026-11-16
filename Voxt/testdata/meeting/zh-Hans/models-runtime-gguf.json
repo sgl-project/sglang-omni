@@ -1,0 +1,92 @@
+{
+  "name": "models-runtime-gguf",
+  "kind": "models",
+  "models": {
+    "asr": null,
+    "llm": [
+      {
+        "key": "model-llm.translate",
+        "rows": [
+          {
+            "id": "llm.translate",
+            "kind": "llm",
+            "name": "Hy-MT2 1.8B (Q4_K_M)",
+            "default": false,
+            "installed": true,
+            "size_text": "占用 1.1 GB",
+            "about": "专门做翻译，快而自然。只有翻译功能用它。",
+            "languages": "33 种语言互译，包括中文、英语、日语、韩语和粤语",
+            "tags": null,
+            "actions": [
+              {
+                "kind": "delete",
+                "model_id": "llm.translate",
+                "label": "删除",
+                "accessibility_label": "删除 Hy-MT2 1.8B (Q4_K_M)…",
+                "style": "ghost"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "hidden": null,
+    "hidden_open": false,
+    "advanced": {
+      "open": false,
+      "locale": "zh-Hans",
+      "value": "",
+      "selection": "自动",
+      "options": [
+        {
+          "label": "自动",
+          "value": ""
+        },
+        {
+          "label": "5 分钟",
+          "value": "5m"
+        },
+        {
+          "label": "15 分钟",
+          "value": "15m"
+        },
+        {
+          "label": "30 分钟",
+          "value": "30m"
+        },
+        {
+          "label": "1 小时",
+          "value": "1h"
+        },
+        {
+          "label": "直到退出 Voxt",
+          "value": "quit"
+        }
+      ]
+    },
+    "delete": {},
+    "network": {
+      "open": false,
+      "proxy_mode": 0,
+      "proxy_caption": "使用这台 Mac 网络设置里的代理，或环境变量指定的代理。",
+      "source": 0,
+      "source_labels": [
+        "自动",
+        "只用 Hugging Face",
+        "只用 hf-mirror.com"
+      ],
+      "source_caption": "哪个先响应用哪个，每个文件都会校验。",
+      "proxy_family": {
+        "key": "network.proxy",
+        "kind": "",
+        "text": ""
+      },
+      "source_family": {
+        "key": "network.hfEndpoints",
+        "kind": "",
+        "text": ""
+      }
+    },
+    "speech_context": ""
+  }
+}

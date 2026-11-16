@@ -63,11 +63,11 @@ func (a *app) saveNetwork() bool {
 	case proxyCustom:
 		v, err := famsettings.Normalize(actnow.KeyProxy, f.proxyURL)
 		if err != nil || v == famsettings.ProxyAuto || v == famsettings.ProxyDirect {
-			f.proxyErr = i18n.T("Enter a proxy address that starts with http://, https:// or socks5://, such as http://127.0.0.1:7890.")
+			f.proxyErr = networkProxyProblemTextFor(i18n.CurrentTranslator(), "proxy")
 			return false
 		}
 		if strings.ContainsAny(f.proxyPassword, "\"\\\n\r") { // what the Keychain's security tool cannot take (internal/secrets)
-			f.proxyErr = i18n.T("The password cannot have quotes, backslashes or line breaks.")
+			f.proxyErr = networkProxyProblemTextFor(i18n.CurrentTranslator(), "password")
 			return false
 		}
 		proxy = v
@@ -106,3 +106,10 @@ func (a *app) closeNetwork() {
 }
 
 func isNetworkKey(key string) bool { return key == actnow.KeyProxy || key == actnow.KeyHFEndpoints }
+
+func networkProxyProblemTextFor(translator *i18n.Translator, code string) string {
+	if code == "password" {
+		return translator.T("The password cannot have quotes, backslashes or line breaks.")
+	}
+	return translator.T("Enter a proxy address that starts with http://, https:// or socks5://, such as http://127.0.0.1:7890.")
+}

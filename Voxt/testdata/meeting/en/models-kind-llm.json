@@ -1,0 +1,92 @@
+{
+  "name": "models-kind-llm",
+  "kind": "models",
+  "models": {
+    "asr": null,
+    "llm": [
+      {
+        "key": "model-llm.balanced",
+        "rows": [
+          {
+            "id": "llm.balanced",
+            "kind": "llm",
+            "name": "Qwen3.5 4B OptiQ (4bit)",
+            "default": false,
+            "installed": true,
+            "size_text": "3.3 GB on disk",
+            "about": "Cleans up dictation, translates and rewrites well, with the best balance of quality and speed.",
+            "languages": "Over 200 languages, best in Chinese and English",
+            "tags": null,
+            "actions": [
+              {
+                "kind": "delete",
+                "model_id": "llm.balanced",
+                "label": "Delete",
+                "accessibility_label": "Delete Qwen3.5 4B OptiQ (4bit)…",
+                "style": "ghost"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "hidden": null,
+    "hidden_open": false,
+    "advanced": {
+      "open": false,
+      "locale": "en",
+      "value": "",
+      "selection": "Automatic",
+      "options": [
+        {
+          "label": "Automatic",
+          "value": ""
+        },
+        {
+          "label": "5 minutes",
+          "value": "5m"
+        },
+        {
+          "label": "15 minutes",
+          "value": "15m"
+        },
+        {
+          "label": "30 minutes",
+          "value": "30m"
+        },
+        {
+          "label": "1 hour",
+          "value": "1h"
+        },
+        {
+          "label": "Until Voxt quits",
+          "value": "quit"
+        }
+      ]
+    },
+    "delete": {},
+    "network": {
+      "open": false,
+      "proxy_mode": 0,
+      "proxy_caption": "The proxy in this Mac's network settings, or one set by an environment variable.",
+      "source": 0,
+      "source_labels": [
+        "Automatic",
+        "Hugging Face only",
+        "hf-mirror.com only"
+      ],
+      "source_caption": "Whichever answers first. Every file is checked.",
+      "proxy_family": {
+        "key": "network.proxy",
+        "kind": "",
+        "text": ""
+      },
+      "source_family": {
+        "key": "network.hfEndpoints",
+        "kind": "",
+        "text": ""
+      }
+    },
+    "speech_context": ""
+  }
+}

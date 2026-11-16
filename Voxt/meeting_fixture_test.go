@@ -91,6 +91,12 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "history-access":
 		state := buildHistoryAccessViewState(translator, scenario.historyAccess)
 		fixture.HistoryAccess = &state
+	case "models":
+		if scenario.modelsProblem != "" {
+			scenario.models.NetworkForm.proxyErr = networkProxyProblemTextFor(translator, scenario.modelsProblem)
+		}
+		state := buildModelsViewState(translator, scenario.models)
+		fixture.Models = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}
