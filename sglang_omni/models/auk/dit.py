@@ -70,6 +70,58 @@ class ConvPositionEmbedding(nn.Module):
         self.layer_need_mask_idx = [
             i for i, layer in enumerate(self.conv1d) if isinstance(layer, nn.Conv1d)
         ]
+        self.use_grouped_matmul: bool = False
+
+    def enable_grouped_matmul(self) -> None:
+        """Compile the short BF16 grouped convolutions on Blackwell."""
+        convolution = self.conv1d[0]
+        if (
+            convolution.weight.device.type == "cuda"
+            and convolution.weight.dtype == torch.bfloat16
+            and convolution.in_channels == convolution.out_channels == 1536
+            and convolution.groups == 16
+            and convolution.kernel_size == (31,)
+            and torch.cuda.get_device_capability(convolution.weight.device)[0] == 10
+        ):
+            self.grouped_convolution = torch.compile(
+                self.grouped_convolution,
+                fullgraph=True,
+                dynamic=True,
+                options={"triton.cudagraphs": False},
+            )
+            self.use_grouped_matmul = True
+        else:
+            pass
+
+    def grouped_convolution(
+        self, value: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
+    ) -> torch.Tensor:
+        batch_size, channels, frames = value.shape
+        channels_per_group = weight.shape[1]
+        groups = channels // channels_per_group
+        taps = weight.shape[2]
+        padding = taps // 2
+        windows = F.pad(value, (padding, padding)).unfold(2, taps, 1)
+        patches = (
+            windows.reshape(batch_size, groups, channels_per_group, frames, taps)
+            .permute(0, 1, 3, 2, 4)
+            .reshape(batch_size * groups, frames, channels_per_group * taps)
+        )
+        packed_weight = (
+            weight.reshape(groups, channels_per_group, channels_per_group * taps)
+            .unsqueeze(0)
+            .expand(batch_size, -1, -1, -1)
+            .reshape(batch_size * groups, channels_per_group, channels_per_group * taps)
+            .transpose(1, 2)
+        )
+        # note (BBuf): cuDNN rounds the convolution to BF16 before the bias add.
+        product = torch.bmm(patches, packed_weight)
+        output = (
+            product.reshape(batch_size, groups, frames, channels_per_group)
+            .permute(0, 1, 3, 2)
+            .reshape(batch_size, channels, frames)
+        )
+        return output + bias[None, :, None]
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None
@@ -85,7 +137,18 @@ class ConvPositionEmbedding(nn.Module):
         else:
             pass
         for i, block in enumerate(self.conv1d):
-            x = block(x)
+            if (
+                self.use_grouped_matmul
+                and not self.training
+                and x.is_cuda
+                and x.dtype == torch.bfloat16
+                and x.shape[0] <= 2
+                and x.shape[2] <= 768
+                and isinstance(block, nn.Conv1d)
+            ):
+                x = self.grouped_convolution(x, block.weight, block.bias)
+            else:
+                x = block(x)
             if mask is not None and i in self.layer_need_mask_idx:
                 x = x.masked_fill(~mask, 0.0)
             else:
@@ -117,8 +180,16 @@ class AdaLayerNorm(nn.Module):
         self.linear = nn.Linear(dim, dim * 6)
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor | None = None):
-        emb = self.linear(self.silu(emb))
+    def forward(
+        self,
+        x: torch.Tensor,
+        emb: torch.Tensor | None = None,
+        modulation: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if modulation is None:
+            emb = self.linear(self.silu(emb))
+        else:
+            emb = modulation
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(
             emb, 6, dim=1
         )
@@ -136,8 +207,16 @@ class AdaLayerNormFinal(nn.Module):
         self.linear = nn.Linear(dim, dim * 2)
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
-        emb = self.linear(self.silu(emb))
+    def forward(
+        self,
+        x: torch.Tensor,
+        emb: torch.Tensor | None,
+        modulation: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if modulation is None:
+            emb = self.linear(self.silu(emb))
+        else:
+            emb = modulation
         scale, shift = torch.chunk(emb, 2, dim=1)
         return self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
 
@@ -333,12 +412,15 @@ class DiTBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        t: torch.Tensor,
+        t: torch.Tensor | None,
         mask: torch.Tensor | None = None,
         rope=None,
         bias: torch.Tensor | None = None,
+        modulation: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
+        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(
+            x, emb=t, modulation=modulation
+        )
         x = x + gate_msa.unsqueeze(1) * self.attn(
             x=norm, mask=mask, rope=rope, bias=bias
         )
@@ -383,18 +465,23 @@ class MMDiTBlock(nn.Module):
         self,
         x: torch.Tensor,
         c: torch.Tensor,
-        t: torch.Tensor,
+        t: torch.Tensor | None,
         mask: torch.Tensor | None = None,
         rope=None,
         c_rope=None,
         c_mask: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
-    ):
+        modulation: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if modulation is None:
+            context_modulation = audio_modulation = None
+        else:
+            context_modulation, audio_modulation = modulation.unbind(0)
         norm_c, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.attn_norm_c(
-            c, emb=t
+            c, emb=t, modulation=context_modulation
         )
         norm_x, x_gate_msa, x_shift_mlp, x_scale_mlp, x_gate_mlp = self.attn_norm_x(
-            x, emb=t
+            x, emb=t, modulation=audio_modulation
         )
         x_attn, c_attn = self.attn(
             x=norm_x,
@@ -566,6 +653,7 @@ class AuKDit(nn.Module):
             compiled = torch.compile(type(blocks[0]).forward, dynamic=True)
             for block in blocks:
                 block.forward = MethodType(compiled, block)
+        self.audio_embed.conv_pos_embed.enable_grouped_matmul()
 
     @property
     def dtype(self) -> torch.dtype:
@@ -653,13 +741,17 @@ class AuKDit(nn.Module):
         ref_mask: torch.Tensor | None = None,
         audio_positions: torch.Tensor | None = None,
         joint_positions: torch.Tensor | None = None,
+        time_modulations: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch = x.shape[0]
         if time.ndim == 0:
             time = time.repeat(batch)
         else:
             pass
-        t = self.time_embed(time)
+        if time_modulations is None:
+            t = self.time_embed(time)
+        else:
+            t = None
 
         if c_mask is None:
             c_mask = text.abs().sum(-1) > 0
@@ -687,13 +779,20 @@ class AuKDit(nn.Module):
                     self.text_uncond = c_uncond
                 else:
                     pass
-            x_uncond, a_mask_uncond, _ = self.embed_audio(
-                x, ref, drop_audio_cond=True, mask=mask, ref_mask=ref_mask
-            )
+            if ref is None or ref.shape[1] == 0:
+                # note (BBuf): CFG drops reference audio, so noisy audio stays identical.
+                x_uncond, a_mask_uncond = x_cond, a_mask_cond
+            else:
+                x_uncond, a_mask_uncond, _ = self.embed_audio(
+                    x, ref, drop_audio_cond=True, mask=mask, ref_mask=ref_mask
+                )
 
             x = torch.cat((x_cond, x_uncond), dim=0)
             c = torch.cat((c_cond, c_uncond), dim=0)
-            t = torch.cat((t, t), dim=0)
+            if t is not None:
+                t = torch.cat((t, t), dim=0)
+            else:
+                pass
             audio_mask = (
                 torch.cat((a_mask_cond, a_mask_uncond), dim=0)
                 if a_mask_cond is not None and a_mask_uncond is not None
@@ -729,7 +828,12 @@ class AuKDit(nn.Module):
         else:
             pass
 
-        for block in self.transformer_blocks:
+        for index, block in enumerate(self.transformer_blocks):
+            modulation = (
+                None
+                if time_modulations is None
+                else time_modulations[2 * index : 2 * index + 2]
+            )
             c, x = block(
                 x,
                 c,
@@ -739,12 +843,30 @@ class AuKDit(nn.Module):
                 c_rope=rope_text,
                 c_mask=c_mask,
                 bias=joint_bias,
+                modulation=modulation,
             )
 
         x = torch.cat([c, x], dim=1)
         rope = self.build_rope(text_len + seq_len, joint_positions)
-        for block in self.single_transformer_blocks:
-            x = block(x, t, mask=single_mask, rope=rope, bias=single_bias)
+        for index, block in enumerate(self.single_transformer_blocks):
+            modulation = (
+                None
+                if time_modulations is None
+                else time_modulations[2 * len(self.transformer_blocks) + index]
+            )
+            x = block(
+                x,
+                t,
+                mask=single_mask,
+                rope=rope,
+                bias=single_bias,
+                modulation=modulation,
+            )
 
         x = x[:, text_len + prompt_len :]
-        return self.proj_out(self.norm_out(x, t))
+        modulation = (
+            None
+            if time_modulations is None
+            else time_modulations[-1, :, : self.norm_out.linear.out_features]
+        )
+        return self.proj_out(self.norm_out(x, t, modulation=modulation))
