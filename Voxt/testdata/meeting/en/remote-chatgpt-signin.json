@@ -1,0 +1,43 @@
+{
+  "name": "remote-chatgpt-signin",
+  "kind": "remote-dialog",
+  "remote_dialog": {
+    "open": true,
+    "kind": "llm",
+    "id": "fixture",
+    "account": "llm.fixture",
+    "name": "Fixture service",
+    "subtitle": "Remote language model · your ChatGPT plan",
+    "what": "Recognised and selected text is sent to the server at the address below.",
+    "has_key_url": true,
+    "chatgpt": {
+      "running": false,
+      "signed_in": false
+    },
+    "model_options": [
+      "fixture-model",
+      "other-model",
+      "Other model…"
+    ],
+    "other_model": "Other model…",
+    "can_test": false,
+    "test": {
+      "state": "empty",
+      "long": true
+    },
+    "show_remove": true,
+    "saving": false,
+    "unsaved": false,
+    "form": {
+      "model": "fixture-model",
+      "generation": {
+        "think": "Thinking on",
+        "format": "Plain text",
+        "verbosity": "Default",
+        "usage": true,
+        "advanced": true,
+        "api": "Chat Completions"
+      }
+    }
+  }
+}

@@ -129,24 +129,28 @@ func (a *app) chatgptLoginDone(email string, err error) {
 
 // chatgptLoginText says why the sign-in failed, and its detail.
 func chatgptLoginText(err error) (msg, more string) {
+	return chatgptLoginTextFor(i18n.CurrentTranslator(), err)
+}
+
+func chatgptLoginTextFor(translator *i18n.Translator, err error) (msg, more string) {
 	more = err.Error()
 	var e *codexauth.Error
 	if !errors.As(err, &e) {
-		return i18n.T("The sign-in failed."), more
+		return translator.T("The sign-in failed."), more
 	}
 	switch e.Kind {
 	case codexauth.KindPortInUse:
-		return i18n.T("The sign-in needs port %d, but another program is using it (perhaps a running `codex login`). Close it and try again.", e.Port), more
+		return translator.T("The sign-in needs port %d, but another program is using it (perhaps a running `codex login`). Close it and try again.", e.Port), more
 	case codexauth.KindDenied:
-		return i18n.T("The sign-in was refused in the browser."), more
+		return translator.T("The sign-in was refused in the browser."), more
 	case codexauth.KindTimeout:
-		return i18n.T("The sign-in timed out before the browser came back to Voxt."), more
+		return translator.T("The sign-in timed out before the browser came back to Voxt."), more
 	case codexauth.KindNetwork:
-		return i18n.T("Could not reach ChatGPT's sign-in service. Check your network and proxy."), more
+		return translator.T("Could not reach ChatGPT's sign-in service. Check your network and proxy."), more
 	case codexauth.KindStore:
-		return i18n.T("Could not save the sign-in in the Keychain."), more
+		return translator.T("Could not save the sign-in in the Keychain."), more
 	}
-	return i18n.T("ChatGPT did not finish the sign-in. Try again."), more
+	return translator.T("ChatGPT did not finish the sign-in. Try again."), more
 }
 
 // signOutChatGPT deletes the sign-in from this Mac; the setup stays.

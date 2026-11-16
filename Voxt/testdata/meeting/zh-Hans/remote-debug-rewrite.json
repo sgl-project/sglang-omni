@@ -1,0 +1,45 @@
+{
+  "name": "remote-debug-rewrite",
+  "kind": "remote-debug",
+  "remote_debug": {
+    "ready": true,
+    "models": [
+      "Fixture service · fixture-model"
+    ],
+    "presets": [
+      "转录",
+      "翻译",
+      "改写"
+    ],
+    "selected_model": "Fixture service · fixture-model",
+    "selected_preset": "转录",
+    "saved_prompt": "Fixture saved prompt",
+    "prompt_label": "系统提示词",
+    "input_label": "识别原文",
+    "edited": true,
+    "can_run": true,
+    "running": false,
+    "result": {
+      "answer": "Fixture answer",
+      "answer_title": "回答（用时 1.2 s）",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Fixture system"
+        },
+        {
+          "role": "user",
+          "content": "Fixture input"
+        }
+      ]
+    },
+    "form": {
+      "model": "Fixture service · fixture-model",
+      "preset": "转录",
+      "filled": "转录",
+      "prompt": "Fixture edited prompt",
+      "input": "Fixture input",
+      "instruction": "Make it shorter"
+    }
+  }
+}

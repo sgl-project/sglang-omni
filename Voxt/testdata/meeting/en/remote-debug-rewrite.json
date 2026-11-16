@@ -1,0 +1,46 @@
+{
+  "name": "remote-debug-rewrite",
+  "kind": "remote-debug",
+  "remote_debug": {
+    "ready": true,
+    "models": [
+      "Fixture service · fixture-model"
+    ],
+    "presets": [
+      "Transcribe",
+      "Translate",
+      "Rewrite"
+    ],
+    "selected_model": "Fixture service · fixture-model",
+    "selected_preset": "Rewrite",
+    "saved_prompt": "Fixture saved prompt",
+    "prompt_label": "System prompt",
+    "input_label": "Selected text (optional)",
+    "instruction": true,
+    "edited": true,
+    "can_run": true,
+    "running": false,
+    "result": {
+      "answer": "Fixture answer",
+      "answer_title": "Answer in 1.2 s",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Fixture system"
+        },
+        {
+          "role": "user",
+          "content": "Fixture input"
+        }
+      ]
+    },
+    "form": {
+      "model": "Fixture service · fixture-model",
+      "preset": "Rewrite",
+      "filled": "Rewrite",
+      "prompt": "Fixture edited prompt",
+      "input": "Fixture input",
+      "instruction": "Make it shorter"
+    }
+  }
+}

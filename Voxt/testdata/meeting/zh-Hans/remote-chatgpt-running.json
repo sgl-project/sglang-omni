@@ -1,0 +1,43 @@
+{
+  "name": "remote-chatgpt-running",
+  "kind": "remote-dialog",
+  "remote_dialog": {
+    "open": true,
+    "kind": "llm",
+    "id": "fixture",
+    "account": "llm.fixture",
+    "name": "Fixture service",
+    "subtitle": "远程语言模型 · 使用你的 ChatGPT 套餐",
+    "what": "识别出的文字和选中的文字会发送到下面地址的服务。",
+    "has_key_url": true,
+    "chatgpt": {
+      "running": true,
+      "signed_in": false
+    },
+    "model_options": [
+      "fixture-model",
+      "other-model",
+      "其他模型…"
+    ],
+    "other_model": "其他模型…",
+    "can_test": false,
+    "test": {
+      "state": "empty",
+      "long": true
+    },
+    "show_remove": true,
+    "saving": false,
+    "unsaved": false,
+    "form": {
+      "model": "fixture-model",
+      "generation": {
+        "think": "开启",
+        "format": "纯文本",
+        "verbosity": "默认",
+        "usage": true,
+        "advanced": true,
+        "api": "Chat Completions"
+      }
+    }
+  }
+}

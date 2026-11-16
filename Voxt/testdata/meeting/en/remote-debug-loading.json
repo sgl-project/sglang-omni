@@ -1,0 +1,31 @@
+{
+  "name": "remote-debug-loading",
+  "kind": "remote-debug",
+  "remote_debug": {
+    "ready": true,
+    "models": [
+      "Fixture service · fixture-model"
+    ],
+    "presets": [
+      "Transcribe",
+      "Translate",
+      "Rewrite"
+    ],
+    "selected_model": "Fixture service · fixture-model",
+    "selected_preset": "Transcribe",
+    "saved_prompt": "Fixture saved prompt",
+    "prompt_label": "System prompt",
+    "input_label": "Recognised text",
+    "edited": true,
+    "can_run": false,
+    "running": true,
+    "form": {
+      "model": "Fixture service · fixture-model",
+      "preset": "Transcribe",
+      "filled": "Transcribe",
+      "prompt": "Fixture edited prompt",
+      "input": "Fixture input",
+      "instruction": "Make it shorter"
+    }
+  }
+}

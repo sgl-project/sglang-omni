@@ -9,4 +9,7 @@ type meetingFixtureState struct {
 	History         *historyViewState         `json:"history,omitempty"`
 	HistorySettings *historySettingsViewState `json:"history_settings,omitempty"`
 	HistoryAccess   *historyAccessViewState   `json:"history_access,omitempty"`
+	Remote          *remoteViewState          `json:"remote,omitempty"`
+	RemoteDialog    *remoteDialogViewState    `json:"remote_dialog,omitempty"`
+	RemoteDebug     *llmDebugViewState        `json:"remote_debug,omitempty"`
 }

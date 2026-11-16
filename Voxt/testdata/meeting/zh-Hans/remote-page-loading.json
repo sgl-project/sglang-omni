@@ -1,0 +1,115 @@
+{
+  "name": "remote-page-loading",
+  "kind": "remote",
+  "remote": {
+    "wait": {
+      "value": "",
+      "options": [
+        {
+          "title": "自动",
+          "value": ""
+        },
+        {
+          "title": "1 分钟",
+          "value": "1m"
+        },
+        {
+          "title": "2 分钟",
+          "value": "2m"
+        },
+        {
+          "title": "5 分钟",
+          "value": "5m"
+        },
+        {
+          "title": "10 分钟",
+          "value": "10m"
+        },
+        {
+          "title": "不限",
+          "value": "none"
+        },
+        {
+          "title": "自定义…",
+          "value": "",
+          "custom": true
+        }
+      ],
+      "selected": "自动",
+      "custom": false,
+      "minutes": 0,
+      "current_minutes": 0,
+      "max_minutes": 60,
+      "token": "\u0000zh-Hans"
+    },
+    "cards": {
+      "kind": "llm",
+      "groups": [
+        {
+          "key": "remote-mine",
+          "title": "已设置",
+          "cards": [
+            {
+              "kind": "llm",
+              "id": "fixture",
+              "account": "llm.fixture",
+              "name": "Fixture service",
+              "model": "fixture-model",
+              "used": "Rewrite",
+              "where": "远程",
+              "configured": true,
+              "status": "success",
+              "status_text": "就绪",
+              "key_text": "…",
+              "key_status": "neutral",
+              "test": {
+                "state": "running",
+                "long": false
+              },
+              "test_disabled": true
+            }
+          ]
+        },
+        {
+          "key": "remote-here",
+          "title": "本机",
+          "caption": "免费，文字不离开这台 Mac。",
+          "cards": [
+            {
+              "kind": "llm",
+              "id": "local-fixture",
+              "account": "llm.local-fixture",
+              "name": "Local fixture",
+              "model": "fixture-model",
+              "where": "本机",
+              "configured": false,
+              "status": "neutral",
+              "status_text": "未设置",
+              "key_text": "…",
+              "key_status": "neutral"
+            }
+          ]
+        },
+        {
+          "key": "remote-online",
+          "title": "在线服务",
+          "cards": [
+            {
+              "kind": "llm",
+              "id": "online-fixture",
+              "account": "llm.online-fixture",
+              "name": "Online fixture",
+              "model": "fixture-model",
+              "where": "远程",
+              "configured": false,
+              "status": "neutral",
+              "status_text": "未设置",
+              "key_text": "…",
+              "key_status": "neutral"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

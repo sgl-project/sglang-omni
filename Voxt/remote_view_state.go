@@ -35,6 +35,7 @@ type remoteBackBarViewState struct {
 }
 
 type remoteWaitViewState struct {
+	Value          string                  `json:"value"`
 	Options        []remoteOptionViewState `json:"options"`
 	Selected       string                  `json:"selected"`
 	Custom         bool                    `json:"custom"`
@@ -138,7 +139,7 @@ func buildRemotePageViewState(translator *i18n.Translator, input remotePageState
 
 func buildRemoteWaitViewState(translator *i18n.Translator, input remoteWaitStateInput) remoteWaitViewState {
 	labels := []string{translator.T("Automatic"), translator.T("1 minute"), translator.T("2 minutes"), translator.T("5 minutes"), translator.T("10 minutes"), translator.T("No limit")}
-	state := remoteWaitViewState{MaxMinutes: settings.WaitMaxMinutes, Token: input.Value + "\x00" + input.Locale}
+	state := remoteWaitViewState{Value: input.Value, MaxMinutes: settings.WaitMaxMinutes, Token: input.Value + "\x00" + input.Locale}
 	for index, value := range settings.WaitChoices {
 		state.Options = append(state.Options, remoteOptionViewState{Title: labels[index], Value: value})
 	}
