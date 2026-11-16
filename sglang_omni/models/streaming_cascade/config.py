@@ -40,12 +40,14 @@ from sglang_omni.proto.streams import (
     AUDIO_FORMATS,
     COMMIT,
     CONFIGURE,
+    INPUT_TIMELINE,
     INTERRUPT,
     PCM16,
     REPLY_DELIVERED,
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SESSION_INPUT_SAMPLE_RATE_HZ,
+    TIMELINE,
     TRUNCATE,
     AudioPort,
     PluginPort,
@@ -653,6 +655,12 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
                     if isinstance(entry, SessionControlEdgeConfig)
                 ),
             )
+        published_ports = [
+            (name, port)
+            for name, node in self.session_nodes.items()
+            for port in self.plugin_output_ports(name, node)
+            if port.format in self.session_publish.get(name, ())
+        ]
         return SessionGraph(
             shared_timeline=True,
             nodes=nodes,
@@ -661,10 +669,13 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
             },
             plugin_formats=frozenset(
                 port.format
-                for name, node in self.session_nodes.items()
-                if node.kind is not None
-                for port in COMPONENTS.kind(node.kind).plugin_ports
-                if port.format in self.session_publish.get(name, ())
+                for _, port in published_ports
+                if port.params.get(TIMELINE) != INPUT_TIMELINE
+            ),
+            input_timed=frozenset(
+                (name, port.format)
+                for name, port in published_ports
+                if port.params.get(TIMELINE) == INPUT_TIMELINE
             ),
         )
 
@@ -715,6 +726,16 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
             return self.component_graph().ports(self.unit_ms)
         else:
             return super().node_ports(name, node)
+
+    def plugin_output_ports(
+        self, name: str, node: CascadeSessionNodeConfig
+    ) -> tuple[PluginPort, ...]:
+        """The plugin output ports of one node: its component kind's, or those of its stage group."""
+        if node.kind is not None:
+            return COMPONENTS.kind(node.kind).plugin_ports
+        else:
+            ports = self.node_ports(name, node)
+            return () if ports is None else ports.plugin_output
 
 
 EntryClass = StreamingCascadePipelineConfig

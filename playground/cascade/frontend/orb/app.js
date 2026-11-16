@@ -1,5 +1,6 @@
 // Voice page for a /v1/realtime session (native full duplex or turn based), proxied by playground/realtime/app.py.
-import { DuplexSession } from "./session.js";
+import { DuplexSession, drawsPluginFormat } from "./session.js";
+import { ReplyMediaGate } from "./reply_media_gate.js";
 import { Orb } from "./orb.js";
 import { Settings } from "./settings.js";
 
@@ -50,6 +51,12 @@ let captureNode = null;
 let micAnalyser = null;
 let playbackContext = null;
 let playbackNode = null;
+// A renderer of a format whose port follows replies calls mediaGate.shown(responseId) once it shows a reply's first frame; ?av_sync=free plays the audio unheld.
+const mediaGate = new ReplyMediaGate({
+  policy: new URLSearchParams(location.search).get("av_sync") || "hold",
+  now: () => performance.now(),
+  post: (message, transfer) => playbackNode.port.postMessage(message, transfer),
+});
 let playbackAnalyser = null;
 let playbackRate = 24000;
 let eventChain = Promise.resolve();
@@ -172,6 +179,7 @@ function render(now) {
   const state = mood(micLevel, modelLevel, now);
   if (state.mood === "speaking") lastSpokeAt = now;
   orb.frame(now, state.level, state.mood);
+  mediaGate.tick();
   if (ui.statusLine.textContent !== state.line) ui.statusLine.textContent = state.line;
   ui.caption.dataset.fade = String(!(session && session.responseOpen) && now - lastSpokeAt > CAPTION_FADE_MS);
   requestAnimationFrame(render);
@@ -343,6 +351,7 @@ function sessionListeners() {
     granted: async () => {
       sessionStart = performance.now();
       await ensurePlayback(session.outputRate);
+      mediaGate.follow(session.pluginOutputPorts, drawsPluginFormat);
       setButtons();
       // One tap starts everything: the microphone follows the grant.
       startMic().catch((error) => warn(`Microphone: ${error.message}`, true));
@@ -360,14 +369,14 @@ function sessionListeners() {
         if (mutedQuietMs < UNMUTE_QUIET_MS) return;
         mutedResponse = false;
       }
-      playbackNode.port.postMessage({ type: "push", samples, responseId }, [samples.buffer]);
+      mediaGate.audio(samples, responseId);
     },
     response: ({ open, id, status }) => {
       if (open) mutedResponse = false;
       awaitingAudio = open;
       setButtons();
       // A cancelled reply stops now; a completed one plays out what is buffered.
-      if (playbackNode && !open) playbackNode.port.postMessage({ type: status === "cancelled" ? "cancel" : "flush", responseId: id });
+      if (playbackNode && !open) mediaGate.end(id, status);
       renderTranscript();
     },
     text: renderTranscript,
@@ -389,6 +398,7 @@ async function connect() {
   renderTranscript();
   warn("");
   if (playbackNode) playbackNode.port.postMessage({ type: "reset" });
+  mediaGate.reset();
   setButtons();
   let activeSocket = null;
   try {

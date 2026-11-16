@@ -276,6 +276,8 @@ class SessionGraph:
     shared_timeline: bool = False
     # Note (Junnan Li): The formats of the plugin output ports; their chunks with a duration take a shared timeline clock beside the audio's, and a node's pacer holds them to the reply clock.
     plugin_formats: frozenset[str] = frozenset()
+    # Note (Junnan Li): (node, format) of the published plugin streams their node stamps on the input timeline, kept out of plugin_formats: they keep their stamps, move no clock and pass the pacer on arrival.
+    input_timed: frozenset[tuple[str, str]] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.nodes or GRAPH_INPUT in self.nodes:

@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-import { DuplexSession, registerPluginRenderer } from "./session.js";
+import { ReplyMediaGate } from "./reply_media_gate.js";
+import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
 const workletSource = readFileSync(new URL("./worklet.js", import.meta.url), "utf8");
@@ -17,6 +18,8 @@ function createApp({ actualSampleRate, loadModule = async () => {}, sessionOptio
   let microphoneRequests = 0;
   const context = vm.createContext({
     DuplexSession,
+    drawsPluginFormat,
+    ReplyMediaGate,
     window: { DEMO_WS_URL: "ws://localhost/v1/realtime", addEventListener() {} },
     location: { search: "" },
     URLSearchParams,

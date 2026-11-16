@@ -1,5 +1,6 @@
 // Voice page for a /v1/realtime session (native full duplex or turn based), proxied by playground/realtime/app.py.
-import { DuplexSession } from "./session.js";
+import { DuplexSession, drawsPluginFormat } from "./session.js";
+import { ReplyMediaGate } from "./reply_media_gate.js";
 import { Camera } from "./camera.js";
 import { Orb } from "./orb.js";
 import { Settings } from "./settings.js";
@@ -50,6 +51,12 @@ let captureNode = null;
 let micAnalyser = null;
 let playbackContext = null;
 let playbackNode = null;
+// A renderer of a format whose port follows replies calls mediaGate.shown(responseId) once it shows a reply's first frame; ?av_sync=free plays the audio unheld.
+const mediaGate = new ReplyMediaGate({
+  policy: new URLSearchParams(location.search).get("av_sync") || "hold",
+  now: () => performance.now(),
+  post: (message, transfer) => playbackNode.port.postMessage(message, transfer),
+});
 let playbackGeneration = 0;
 let playbackAnalyser = null;
 let playbackRate = 24000;
@@ -203,6 +210,7 @@ function render(now) {
   const state = mood(micLevel, modelLevel, now);
   if (state.mood === "speaking") lastSpokeAt = now;
   orb.frame(now, state.level, state.mood);
+  mediaGate.tick();
   if (ui.statusLine.textContent !== state.line) ui.statusLine.textContent = state.line;
   ui.caption.dataset.fade = String(!(session && session.responseOpen) && now - lastSpokeAt > CAPTION_FADE_MS);
   requestAnimationFrame(render);
@@ -384,6 +392,7 @@ function sessionListeners(activeSession) {
       await ensurePlayback(activeSession.outputRate);
       if (session !== activeSession || !isOpen()) return;
       configurePlayback(activeSession.unitMs, activeSession.turnBased);
+      mediaGate.follow(activeSession.pluginOutputPorts, drawsPluginFormat);
       const node = playbackNode;
       if (node !== boundPlaybackNode) {
         boundPlaybackNode = node;
@@ -408,7 +417,7 @@ function sessionListeners(activeSession) {
         if (!spokeSinceMute(activeSession)) return;
         mutedResponse = false;
       }
-      playbackNode.port.postMessage({ type: "push", samples, responseId }, [samples.buffer]);
+      mediaGate.audio(samples, responseId);
     },
     response: ({ open, id, status, stopConfirmed }) => {
       // Only the server's cancelled response.done confirms a stop.
@@ -417,11 +426,10 @@ function sessionListeners(activeSession) {
       setButtons();
       if (playbackNode) {
         // note (luojiaxuan): turn-based playback never trims, so once the user has taken the turn the previous reply's leftovers are dropped by its id.
-        if (open && activeSession.turnBased && lastResponseId !== null) playbackNode.port.postMessage({ type: "cancel", responseId: lastResponseId });
+        if (open && activeSession.turnBased && lastResponseId !== null) mediaGate.end(lastResponseId, "cancelled");
         if (open) playbackNode.port.postMessage({ type: "open" });
         // A cancelled reply stops now; a completed one plays out what is buffered.
-        else if (status === "cancelled") playbackNode.port.postMessage({ type: "cancel", responseId: id });
-        else playbackNode.port.postMessage({ type: "flush" });
+        else mediaGate.end(id, status);
       }
       // A new answer means whatever is still queued belongs to the previous one.
       if (open && playbackNode && !activeSession.turnBased) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 0.5) });
@@ -456,6 +464,7 @@ async function connect() {
   renderTranscript();
   warn("");
   if (playbackNode) playbackNode.port.postMessage({ type: "reset", generation: ++playbackGeneration });
+  mediaGate.reset();
   setButtons();
   let activeSocket = null;
   try {

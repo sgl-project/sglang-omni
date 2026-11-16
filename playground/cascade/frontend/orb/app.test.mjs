@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-import { DuplexSession } from "./session.js";
+import { ReplyMediaGate } from "../../../realtime/frontend/orb/reply_media_gate.js";
+import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
 // The settings panel is the realtime page's module, served under this page's path by playground/cascade/app.py.
@@ -11,16 +12,19 @@ const settingsSource = readFileSync(new URL("../../../realtime/frontend/orb/sett
 const pageSource = readFileSync(new URL("./index.html", import.meta.url), "utf8");
 
 // The page with a settings panel that answers the given session options; locks records what the page asked the panel to lock
-// and panelOptions what it constructed the panel with.
-function createApp(sessionOptions) {
+// and panelOptions what it constructed the panel with; posted is every message the page sent the playback worklet.
+function createApp(sessionOptions, search = "") {
   const sockets = [];
+  const posted = [];
   const locks = [];
   const panelOptions = [];
   const elements = new Map();
   const context = vm.createContext({
     DuplexSession,
+    drawsPluginFormat,
+    ReplyMediaGate,
     window: { DEMO_WS_URL: "ws://localhost/v1/realtime", addEventListener() {} },
-    location: { search: "" },
+    location: { search },
     URLSearchParams,
     performance: { now: () => 12345 },
     navigator: { mediaDevices: { getUserMedia: async () => { throw new Error("No microphone in playback test"); } } },
@@ -59,7 +63,7 @@ function createApp(sessionOptions) {
     },
     AudioWorkletNode: class {
       constructor() {
-        this.port = { onmessage: null, postMessage() {} };
+        this.port = { onmessage: null, postMessage: (message) => posted.push(message) };
       }
       connect() { return this; }
     },
@@ -88,6 +92,8 @@ function createApp(sessionOptions) {
     sockets,
     locks,
     panelOptions,
+    posted,
+    run: (source) => vm.runInContext(source, context),
     connect: () => vm.runInContext("connect()", context),
     settled: () => vm.runInContext("eventChain", context),
   };
@@ -139,4 +145,21 @@ test("the page sends only output_modalities while the panel is empty and the cho
     audio: { input: { turn_detection: { type: "semantic_vad", eagerness: "high" } } },
     sglang: { sampling: { temperature: 0.2, max_new_tokens_per_unit: 128 } },
   });
+});
+
+test("a reply's audio waits for its first frame of a drawn port that follows replies, and plays on arrival with ?av_sync=free", async () => {
+  registerPluginRenderer("test_frame", () => {});
+  const port = { modality: "video", format: "test_frame", params: { fps: 25, timeline: "input", follows_replies: true } };
+  const pushes = (app) => app.posted.filter((message) => message.type === "push").map((message) => message.responseId);
+  for (const [search, beforeShown] of [["", []], ["?av_sync=free", ["resp_1"]]]) {
+    const app = createApp({ instructions: "", outputModalities: ["audio"], extension: {}, turnDetection: null }, search);
+    const { socket } = await firstSessionUpdate(app);
+    socket.receive({ type: "session.updated", session: { sglang: { granted: { input_audio_format: { rate: 16000 }, output_audio_format: { rate: 24000 } }, plugin_output_ports: [port] } } });
+    socket.receive({ type: "response.created", response: { id: "resp_1" } });
+    socket.receive({ type: "response.output_audio.delta", response_id: "resp_1", item_id: "item_1", delta: Buffer.alloc(480).toString("base64") });
+    await app.settled();
+    assert.deepEqual(pushes(app), beforeShown, search);
+    app.run('mediaGate.shown("resp_1")');
+    assert.deepEqual(pushes(app), ["resp_1"], search);
+  }
 });

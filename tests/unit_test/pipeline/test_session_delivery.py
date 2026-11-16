@@ -202,6 +202,42 @@ def test_a_chunk_of_no_declared_plugin_format_passes_on_arrival(plugin_pacer):
     assert [item.t_start_ms for item, _ in pacer.items] == [400]
 
 
+def test_a_stream_on_the_input_timeline_passes_the_pacer_and_an_interrupt_drops_its_unsent_turn(
+    plugin_pacer,
+):
+    """A graph keeps its input-timed streams out of plugin_formats: held to the reply clock, a listening block (no turn) would restart that clock and a reply's block would wait for the reply's horizon and hold its turn.done."""
+    pacer = plugin_pacer
+
+    def stamped_motion(t_start_ms: float, turn: int | None) -> OutputChunk:
+        return output(
+            t_start_ms, 800, b"pose", "stamped_motion", modality="motion", turn=turn
+        )
+
+    offer_reply(pacer, 5, done=False)
+    pacer.offer(stamped_motion(-800, None), 20)
+    pacer.offer(stamped_motion(1600, 1), 20)
+    pacer.offer(control("turn.done", 500), 10)
+    released = pacer.release(100.0)
+    assert labels(released) == [
+        "turn.started",
+        "pcm16",
+        "stamped_motion",
+        "stamped_motion",
+    ]
+    assert [item.turn for item, _ in released[2:]] == [None, 1]
+    pacer.unsent.extend(released)
+    later = pacer.release(100.25)
+    assert labels(later) == ["pcm16"]
+    assert later[-1][0].t_start_ms + later[-1][0].duration_ms == 500
+    assert labels(pacer.release(100.5)) == ["turn.done"]
+    pacer.offer(control("turn.interrupted"), 10)
+    assert [
+        (item.format, item.turn)
+        for item, _ in pacer.unsent
+        if item.modality == "motion"
+    ] == [("stamped_motion", None)]
+
+
 def test_a_turns_done_waits_until_the_client_has_played_its_audio(pacer):
     """A turn.done left with the turn's last audio, so a reply the client was still playing could no longer be interrupted."""
     offer_reply(pacer, 5)

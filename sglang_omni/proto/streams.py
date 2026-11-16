@@ -135,6 +135,11 @@ class ImagePort:
     format: str
 
 
+# Port param: the node stamps the stream's chunks on the Session input timeline, as one that also produces while the user speaks does; a shared timeline keeps those stamps and keeps the stream off the reply clocks.
+TIMELINE = "timeline"
+INPUT_TIMELINE = "input"
+
+
 @dataclass(frozen=True)
 class PluginPort:
     """A stream of a format neither the framework nor the realtime protocol interprets, such as PluginPort("motion", "smplx_motion", {"fps": 25}); a client renders or sends the formats it knows."""

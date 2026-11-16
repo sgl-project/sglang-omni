@@ -21,6 +21,7 @@ from sglang_omni.admission import QueueFullError
 from sglang_omni.audio.segmentation import UtteranceSegmenter
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
+from sglang_omni.config.session_audio import StageGroup
 from sglang_omni.models.streaming_cascade.alignment import AlignmentConfig
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
@@ -53,6 +54,7 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscriptConfig,
 )
 from sglang_omni.models.streaming_cascade.session import ComponentHooks
+from sglang_omni.models.vad.node import vad_stage
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
@@ -60,6 +62,7 @@ from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
     CONFIGURE,
+    INPUT_TIMELINE,
     INTERRUPT,
     MESSAGES,
     PCM16,
@@ -72,6 +75,7 @@ from sglang_omni.proto.streams import (
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TEXT_DELTA,
+    TIMELINE,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
     TURN_DONE,
@@ -1276,6 +1280,44 @@ def test_a_kind_s_plugin_ports_join_the_session_ports_and_the_graph_once_publish
     ports = gesturing.session_ports()
     assert (ports.output, ports.plugin_output) == (CASCADE_PORTS.output, (motion,))
     assert gesturing.session_graph().plugin_formats == {"smplx_motion"}
+
+
+def test_a_stage_group_s_plugin_ports_join_the_graph_on_their_timeline(monkeypatch):
+    """The graph took plugin formats from component kinds only, so a stage-route node's published media were restamped to the input's end and never paced."""
+    reply_motion = PluginPort("motion", "smplx_motion", {"fps": 25})
+    input_motion = PluginPort(
+        "motion", "smplh_flame_motion", {"fps": 30, TIMELINE: INPUT_TIMELINE}
+    )
+    motion_stage = vad_stage().model_copy(
+        update={"name": "motion", "process": "motion"}
+    )
+    monkeypatch.setattr(
+        StreamingCascadePipelineConfig,
+        "stage_groups",
+        (
+            *StreamingCascadePipelineConfig.stage_groups,
+            StageGroup(
+                lambda: [motion_stage],
+                None,
+                SessionPorts(
+                    input=(CASCADE_PORTS.audio_input,),
+                    output=None,
+                    unit_ms=200,
+                    plugin_output=(reply_motion, input_motion),
+                ),
+            ),
+        ),
+    )
+    motion_node = {"motion": {"stages": ["motion"], "inputs": ["input:pcm16"]}}
+    assert declared(nodes=motion_node).session_graph().input_timed == frozenset()
+    moving = declared(
+        nodes=motion_node,
+        publish={"motion": ["smplx_motion", "smplh_flame_motion"]},
+    )
+    graph = moving.session_graph()
+    assert graph.plugin_formats == {"smplx_motion"}
+    assert graph.input_timed == {("motion", "smplh_flame_motion")}
+    assert moving.session_ports().plugin_output == (reply_motion, input_motion)
 
 
 def test_a_dialog_without_the_input_interrupt_edge_grants_no_client_stop():
