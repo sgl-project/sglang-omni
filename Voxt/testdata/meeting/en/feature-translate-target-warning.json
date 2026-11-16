@@ -17,6 +17,10 @@
         {
           "keys": "RightOption+Shift",
           "value": "Right ⌥ ⇧",
+          "trigger": 0,
+          "custom_editing": false,
+          "typing": false,
+          "edited": false,
           "options": [
             {
               "label": "Right ⌥",
@@ -277,6 +281,9 @@
         "size": 0
       },
       "rules": {
+        "open": true,
+        "preview_open": true,
+        "find_query": "",
         "settings_open": false,
         "prompt": "Translate Chinese into English.",
         "summary": "31 characters",

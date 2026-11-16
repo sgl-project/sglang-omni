@@ -29,6 +29,9 @@ type featureVariableViewState struct {
 }
 
 type featureRulesViewState struct {
+	Open            bool                            `json:"open"`
+	PreviewOpen     bool                            `json:"preview_open"`
+	FindQuery       string                          `json:"find_query"`
 	SettingsOpen    bool                            `json:"settings_open"`
 	Prompt          string                          `json:"prompt"`
 	Summary         string                          `json:"summary"`
@@ -102,7 +105,7 @@ func buildFeatureRulesViewState(translator *i18n.Translator, input featurePrompt
 	if local == nil {
 		local = &featureUI{}
 	}
-	state := featureRulesViewState{SettingsOpen: input.SettingsOpen, Prompt: local.prompt, Summary: translator.T("Not set")}
+	state := featureRulesViewState{Open: local.rules, PreviewOpen: local.preview, FindQuery: local.find, SettingsOpen: input.SettingsOpen, Prompt: local.prompt, Summary: translator.T("Not set")}
 	if count := utf8.RuneCountInString(strings.TrimSpace(local.prompt)); count > 0 {
 		state.Summary = translator.N(count, "%d character", "%d characters", count)
 	}

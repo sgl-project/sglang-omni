@@ -16,6 +16,9 @@ func newMeetingDemoTester(t *testing.T, host *meetingDemoHost) *ui.Tester {
 	t.Helper()
 	fixture := host.current()
 	width, height := 1000, 700
+	if fixture.state.Kind == "feature" {
+		height = 2400
+	}
 	if fixture.state.Kind == "overlay" && fixture.state.Overlay.Visible {
 		model := meetingOverlayLayoutModel(*fixture.state.Overlay, host.overlayUI.menu)
 		width, height = model.Layout.Width, model.Layout.Height+48
@@ -158,6 +161,32 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return settings.MissingNotice
 		}
 		return i18n.T("History settings")
+	case "feature":
+		feature := state.Feature
+		if feature.Try.Ended != nil {
+			if feature.Try.Ended.Failure != nil {
+				return feature.Try.Ended.Failure.Text
+			}
+			if feature.Try.Ended.FailureText != "" {
+				return feature.Try.Ended.FailureText
+			}
+			if feature.Try.Ended.Result != "" {
+				return feature.Try.Ended.Result
+			}
+			if feature.Try.Ended.Cancelled {
+				return i18n.T("Cancelled.")
+			}
+		}
+		if feature.Try.WorkingText != "" {
+			return feature.Try.WorkingText
+		}
+		if feature.Try.Recording != nil {
+			return feature.Try.Recording.ElapsedText
+		}
+		if feature.Try.Block != nil {
+			return feature.Try.Block.Text
+		}
+		return feature.Title
 	case "history-access":
 		access := state.HistoryAccess
 		if access.Ask {
@@ -189,6 +218,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.historyUI.query, host.historyUI.sel = "stale", "stale"
 	host.historySettingsUI.exportSel = "stale"
 	host.historyAccessUI.listOpen = true
+	host.feature.local.prompt = "stale"
+	host.feature.block = &tryNoticeViewState{Text: "stale"}
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -201,7 +232,8 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 		t.Fatalf("next fixture does not show %q", want)
 	}
 	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" ||
-		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen {
+		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen ||
+		host.feature.local.prompt != "" || host.feature.block != nil {
 		t.Fatal("fixture switch kept local UI state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {

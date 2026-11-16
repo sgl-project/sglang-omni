@@ -31,6 +31,7 @@ type meetingDemoHost struct {
 	historyUI         historyLocalUI
 	historySettingsUI historySettingsLocalUI
 	historyAccessUI   historyAccessLocalUI
+	feature           featureDemoState
 	overlayLook       settings.Overlay
 }
 
@@ -98,7 +99,8 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "start" && fixture.Start != nil ||
 		fixture.Kind == "history" && fixture.History != nil ||
 		fixture.Kind == "history-settings" && fixture.HistorySettings != nil ||
-		fixture.Kind == "history-access" && fixture.HistoryAccess != nil
+		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||
+		fixture.Kind == "feature" && fixture.Feature != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -142,12 +144,36 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 			textScope: state.TextScope, textFormat: state.TextFormat,
 		}
 	}
+	host.selectFeatureFixture(fixture.state.Feature)
 	host.historyAccessUI = historyAccessLocalUI{}
 	if state := fixture.state.HistoryAccess; state != nil {
 		host.historyAccessUI = historyAccessLocalUI{
 			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
 		}
 	}
+}
+
+func (host *meetingDemoHost) featureViewState(fixture *featureViewState) featureViewState {
+	state := *fixture
+	state.Try.Block = host.feature.block
+	state.Shortcuts.Rows = slices.Clone(state.Shortcuts.Rows)
+	for index := range state.Shortcuts.Rows {
+		if index < len(host.feature.local.rows) {
+			state.Shortcuts.Rows[index].Custom = buildFeatureCustomKeysViewState(host.feature.local.rows[index])
+		}
+	}
+	if state.Shortcuts.Paste != nil {
+		row := *state.Shortcuts.Paste
+		row.Custom = buildFeatureCustomKeysViewState(host.feature.local.paste)
+		state.Shortcuts.Paste = &row
+	}
+	if state.Shortcuts.Cancel != nil {
+		row := *state.Shortcuts.Cancel
+		row.Custom = buildFeatureCustomKeysViewState(host.feature.local.cancel)
+		state.Shortcuts.Cancel = &row
+	}
+	state.Prompt.Rules.Matches = findFolded(host.feature.local.prompt, host.feature.local.find)
+	return state
 }
 
 func (host *meetingDemoHost) faceStyle(model meetingOverlayModel) meetingOverlayFaceStyle {

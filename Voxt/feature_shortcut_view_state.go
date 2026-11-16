@@ -20,6 +20,10 @@ type featureCustomKeysViewState struct {
 type featureKeyRowViewState struct {
 	Keys               string                     `json:"keys"`
 	Value              string                     `json:"value"`
+	Trigger            int                        `json:"trigger"`
+	CustomEditing      bool                       `json:"custom_editing"`
+	Typing             bool                       `json:"typing"`
+	Edited             bool                       `json:"edited"`
 	Options            []featureOptionViewState   `json:"options"`
 	Custom             featureCustomKeysViewState `json:"custom"`
 	NeedsAccessibility bool                       `json:"needs_accessibility"`
@@ -113,8 +117,10 @@ func buildFeatureKeyRowViewState(translator *i18n.Translator, input featureKeyRo
 		value = translator.T("Off")
 	}
 	state := featureKeyRowViewState{
-		Keys: keys, Value: value, NeedsAccessibility: hotkey.NeedsTap(input.Hotkey),
-		Problems: input.Problems, ProblemCodes: input.ProblemCodes,
+		Keys: keys, Value: value, Trigger: triggerIndex(input.Hotkey.Trigger),
+		CustomEditing: input.Local.custom, Typing: input.Local.typing, Edited: input.Local.edited,
+		NeedsAccessibility: hotkey.NeedsTap(input.Hotkey),
+		Problems:           input.Problems, ProblemCodes: input.ProblemCodes,
 		UsedBy: input.UsedBy[recordedKeys(input.Local, keys)], Custom: buildFeatureCustomKeysViewState(input.Local),
 	}
 	labels, byLabel := keyOptionsFor(translator, keys, input.Off, input.First...)

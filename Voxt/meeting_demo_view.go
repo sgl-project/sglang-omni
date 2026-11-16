@@ -57,6 +57,9 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 						historyAccessSection(c, fixture.state.HistoryAccess, host, &host.historyAccessUI)
 					})
 				})
+			case "feature":
+				state := host.featureViewState(fixture.state.Feature)
+				featurePage(c, &state, host, &host.feature.local, host)
 			}
 		})
 	})
