@@ -1,0 +1,97 @@
+# Root view files with existing boundary violations (TestViewFiles). One line
+# per file; migrate the area, then remove the file's line. Do not add lines.
+# Views may depend on view state, actions, local UI state, the UI kit, MyGo,
+# internal/icons, internal/i18n and internal/overlay/layout. They do no I/O,
+# start no goroutines and do not take app or call logic functions directly.
+#
+# path  # area
+
+announcements.go  # shell
+appenhance_dialogs.go  # appenhance
+appenhance_group.go  # appenhance
+appenhance_page.go  # appenhance
+appenhance_preview.go  # appenhance
+appicons.go  # appenhance
+dictionary_notes.go  # dictionary
+dictionary_page.go  # dictionary
+dictionary_scan.go  # dictionary
+dictionary_suggest.go  # dictionary
+feature_endword.go  # feature
+feature_keys.go  # feature
+feature_models.go  # feature
+feature_page.go  # feature
+feature_prompts.go  # feature
+floating.go  # overlay
+history_access.go  # history
+history_detail.go  # history
+history_export.go  # history
+history_menu.go  # history
+history_page.go  # history
+history_retry.go  # history
+history_settings.go  # history
+home_page.go  # home
+home_ready.go  # home
+key_recorder.go  # settings
+legacy_report.go  # legacy: exempt one-time 1.x import reporting
+llm_debug.go  # remote
+llm_wait.go  # remote
+meeting_overlay.go  # meeting
+meeting_overlay_view.go  # meeting
+meetings_detail.go  # meeting
+meetings_page.go  # meeting
+meetings_playback.go  # meeting
+models_cards.go  # models
+models_context.go  # models
+models_delete.go  # models
+models_keep.go  # models
+models_network.go  # models
+models_page.go  # models
+notes_page.go  # dictionary
+onboarding.go  # onboarding
+onboarding_keys.go  # onboarding
+onboarding_models.go  # onboarding
+onboarding_steps.go  # onboarding
+onboarding_try_guide.go  # onboarding
+onboarding_view.go  # onboarding
+overlay.go  # overlay
+overlay_card.go  # overlay
+overlay_card_view.go  # overlay
+overlay_check.go  # overlay
+overlay_check_sheet.go  # overlay
+overlay_face.go  # overlay
+overlay_lang.go  # overlay
+overlay_size.go  # overlay
+overlay_stream.go  # overlay
+overlay_think.go  # overlay
+overlay_wave.go  # overlay
+pages.go  # shell
+permissions.go  # settings
+remote_chatgpt.go  # remote
+remote_dialog.go  # remote
+remote_generation.go  # remote
+remote_page.go  # remote
+settings_about.go  # settings
+settings_appearance.go  # settings
+settings_audio.go  # settings
+settings_general.go  # settings
+settings_meeting.go  # settings
+settings_overlay.go  # settings
+settings_privacy.go  # settings
+settings_shortcuts.go  # settings
+settings_shortcuts_family.go  # settings
+settings_soundchoice.go  # settings
+settings_sounds.go  # settings
+settings_storage.go  # settings
+settings_storage_erase.go  # settings
+shell.go  # shell
+shell_commands.go  # shell
+shell_logs.go  # shell
+shell_logs_order.go  # shell
+shell_logs_select.go  # shell
+shell_nav.go  # shell
+shell_notices.go  # shell
+shell_settings.go  # shell
+try_card.go  # feature
+ui_panels.go  # ui kit
+updates.go  # updates
+updates_github.go  # updates
