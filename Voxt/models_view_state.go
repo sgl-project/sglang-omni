@@ -24,7 +24,6 @@ type modelActionViewState struct {
 	Label              string          `json:"label"`
 	AccessibilityLabel string          `json:"accessibility_label"`
 	Tooltip            string          `json:"tooltip,omitempty"`
-	Style              string          `json:"style"`
 	Disabled           bool            `json:"disabled,omitempty"`
 }
 
@@ -273,12 +272,12 @@ func buildHideAction(translator *i18n.Translator, input modelsViewStateInput, id
 	if slices.Contains(input.Settings.Models.Hidden, id) {
 		return []modelActionViewState{{
 			Kind: modelActionShow, ModelID: id, Label: translator.T("Show"), AccessibilityLabel: translator.T("Show %s", name),
-			Tooltip: translator.T("Show it in the features' menus again"), Style: "ghost",
+			Tooltip: translator.T("Show it in the features' menus again"),
 		}}
 	}
 	return []modelActionViewState{{
 		Kind: modelActionHide, ModelID: id, Label: translator.T("Hide"), AccessibilityLabel: translator.T("Hide %s", name),
-		Tooltip: translator.T("Hide it from the features' menus"), Style: "ghost",
+		Tooltip: translator.T("Hide it from the features' menus"),
 	}}
 }
 
@@ -341,26 +340,26 @@ func buildModelActions(translator *i18n.Translator, input modelsViewStateInput, 
 	name := uitext.ModelNameFor(translator, model.ID)
 	switch {
 	case status.Downloading:
-		return []modelActionViewState{{Kind: modelActionCancel, ModelID: model.ID, Label: translator.T("Cancel"), AccessibilityLabel: translator.T("Cancel downloading %s", name), Style: "button"}}
+		return []modelActionViewState{{Kind: modelActionCancel, ModelID: model.ID, Label: translator.T("Cancel"), AccessibilityLabel: translator.T("Cancel downloading %s", name)}}
 	case status.Installed:
-		label, tooltip, kind := translator.T("Delete"), translator.T("Delete %s…", name), modelActionDelete
+		label, tooltip := translator.T("Delete"), translator.T("Delete %s…", name)
 		if model.Borrowed {
 			label, tooltip = translator.T("Remove"), translator.T("Remove %s…", name)
 		}
-		return []modelActionViewState{{Kind: kind, ModelID: model.ID, Label: label, AccessibilityLabel: tooltip, Style: "ghost", Disabled: input.ModelDeciding == model.ID}}
+		return []modelActionViewState{{Kind: modelActionDelete, ModelID: model.ID, Label: label, AccessibilityLabel: tooltip, Disabled: input.ModelDeciding == model.ID}}
 	case model.Retired:
 		if status.Done > 0 {
-			return []modelActionViewState{{Kind: modelActionDiscard, ModelID: model.ID, Label: translator.T("Delete"), AccessibilityLabel: translator.T("Delete the partial download of %s", name), Style: "ghost"}}
+			return []modelActionViewState{{Kind: modelActionDiscard, ModelID: model.ID, Label: translator.T("Delete"), AccessibilityLabel: translator.T("Delete the partial download of %s", name)}}
 		}
 	case model.Borrowed || status.OnDisk:
 		if status.OnDisk {
-			return []modelActionViewState{{Kind: modelActionUse, ModelID: model.ID, Label: translator.T("Use it"), AccessibilityLabel: translator.T("Use %s", name), Style: "button"}}
+			return []modelActionViewState{{Kind: modelActionUse, ModelID: model.ID, Label: translator.T("Use it"), AccessibilityLabel: translator.T("Use %s", name)}}
 		}
 	default:
 		var actions []modelActionViewState
 		elsewhere := status.Elsewhere != ""
 		if status.Done > 0 && !elsewhere {
-			actions = append(actions, modelActionViewState{Kind: modelActionDiscard, ModelID: model.ID, Label: translator.T("Delete"), AccessibilityLabel: translator.T("Delete the partial download of %s", name), Style: "ghost"})
+			actions = append(actions, modelActionViewState{Kind: modelActionDiscard, ModelID: model.ID, Label: translator.T("Delete"), AccessibilityLabel: translator.T("Delete the partial download of %s", name)})
 		}
 		label := translator.T("Download")
 		switch {
@@ -370,7 +369,7 @@ func buildModelActions(translator *i18n.Translator, input modelsViewStateInput, 
 			label = translator.T("Resume")
 		}
 		if status.Err == nil {
-			actions = append(actions, modelActionViewState{Kind: modelActionDownload, ModelID: model.ID, Label: label, AccessibilityLabel: translator.T("Download %s", name), Style: "secondary-icon", Disabled: elsewhere})
+			actions = append(actions, modelActionViewState{Kind: modelActionDownload, ModelID: model.ID, Label: label, AccessibilityLabel: translator.T("Download %s", name), Disabled: elsewhere})
 		}
 		return actions
 	}

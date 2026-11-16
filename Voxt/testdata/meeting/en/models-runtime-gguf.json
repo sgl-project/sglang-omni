@@ -22,8 +22,7 @@
                 "kind": "delete",
                 "model_id": "llm.translate",
                 "label": "Delete",
-                "accessibility_label": "Delete Hy-MT2 1.8B (Q4_K_M)…",
-                "style": "ghost"
+                "accessibility_label": "Delete Hy-MT2 1.8B (Q4_K_M)…"
               }
             ]
           }

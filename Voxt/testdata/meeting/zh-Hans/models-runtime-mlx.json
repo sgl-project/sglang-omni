@@ -22,8 +22,7 @@
                 "kind": "delete",
                 "model_id": "llm.balanced",
                 "label": "删除",
-                "accessibility_label": "删除 Qwen3.5 4B OptiQ (4bit)…",
-                "style": "ghost"
+                "accessibility_label": "删除 Qwen3.5 4B OptiQ (4bit)…"
               }
             ]
           }

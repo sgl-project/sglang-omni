@@ -29,8 +29,7 @@
                 "kind": "download",
                 "model_id": "asr.accurate",
                 "label": "下载",
-                "accessibility_label": "下载 Qwen3-ASR 1.7B (8bit)",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 Qwen3-ASR 1.7B (8bit)"
               }
             ],
             "draft": {
@@ -47,8 +46,7 @@
                   "kind": "use",
                   "model_id": "asr.accurate.draft",
                   "label": "使用",
-                  "accessibility_label": "使用 Qwen3-ASR 1.7B DFlash draft",
-                  "style": "button"
+                  "accessibility_label": "使用 Qwen3-ASR 1.7B DFlash draft"
                 }
               ]
             }
@@ -73,15 +71,13 @@
                 "model_id": "asr.fast",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 0.6B (4bit)",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
                 "model_id": "asr.fast",
                 "label": "下载",
-                "accessibility_label": "下载 Qwen3-ASR 0.6B (4bit)",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 Qwen3-ASR 0.6B (4bit)"
               }
             ]
           },
@@ -105,15 +101,13 @@
                 "model_id": "asr.qwen3-6bit",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 1.7B (6bit)",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
                 "model_id": "asr.qwen3-6bit",
                 "label": "下载",
-                "accessibility_label": "下载 Qwen3-ASR 1.7B (6bit)",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 Qwen3-ASR 1.7B (6bit)"
               }
             ]
           }
@@ -145,15 +139,13 @@
                 "model_id": "asr.whisper-turbo",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Whisper Large v3 Turbo",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
                 "model_id": "asr.whisper-turbo",
                 "label": "下载",
-                "accessibility_label": "下载 Whisper Large v3 Turbo",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 Whisper Large v3 Turbo"
               }
             ]
           },
@@ -177,15 +169,13 @@
                 "model_id": "asr.whisper-large",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Whisper Large v3",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
                 "model_id": "asr.whisper-large",
                 "label": "下载",
-                "accessibility_label": "下载 Whisper Large v3",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 Whisper Large v3"
               }
             ]
           },
@@ -209,15 +199,13 @@
                 "model_id": "asr.whisper-small",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Whisper Small",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
                 "model_id": "asr.whisper-small",
                 "label": "下载",
-                "accessibility_label": "下载 Whisper Small",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 Whisper Small"
               }
             ]
           }
@@ -247,15 +235,13 @@
                 "model_id": "asr.parakeet",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Parakeet TDT 0.6B v3",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
                 "model_id": "asr.parakeet",
                 "label": "下载",
-                "accessibility_label": "下载 Parakeet TDT 0.6B v3",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 Parakeet TDT 0.6B v3"
               }
             ]
           }
@@ -285,15 +271,13 @@
                 "model_id": "asr.sensevoice",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 SenseVoice Small",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
                 "model_id": "asr.sensevoice",
                 "label": "下载",
-                "accessibility_label": "下载 SenseVoice Small",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 SenseVoice Small"
               }
             ]
           }
@@ -323,15 +307,13 @@
                 "model_id": "asr.cohere",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Cohere Transcribe 03-2026 (fp16)",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
                 "model_id": "asr.cohere",
                 "label": "下载",
-                "accessibility_label": "下载 Cohere Transcribe 03-2026 (fp16)",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 Cohere Transcribe 03-2026 (fp16)"
               }
             ]
           }
@@ -362,15 +344,13 @@
                 "model_id": "asr.nemotron",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Nemotron 3.5 ASR 0.6B (8bit)",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
                 "model_id": "asr.nemotron",
                 "label": "下载",
-                "accessibility_label": "下载 Nemotron 3.5 ASR 0.6B (8bit)",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 Nemotron 3.5 ASR 0.6B (8bit)"
               }
             ]
           }
@@ -400,15 +380,13 @@
                 "model_id": "asr.moss",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
                 "model_id": "asr.moss",
                 "label": "下载",
-                "accessibility_label": "下载 MOSS-Transcribe-Diarize",
-                "style": "secondary-icon"
+                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
               }
             ]
           }
@@ -438,8 +416,7 @@
               "model_id": "asr.system",
               "label": "隐藏",
               "accessibility_label": "隐藏 系统听写",
-              "tooltip": "不在功能页的模型菜单里列出",
-              "style": "ghost"
+              "tooltip": "不在功能页的模型菜单里列出"
             }
           ]
         }
@@ -464,8 +441,7 @@
                 "kind": "delete",
                 "model_id": "llm.translate",
                 "label": "删除",
-                "accessibility_label": "删除 Hy-MT2 1.8B (Q4_K_M)…",
-                "style": "ghost"
+                "accessibility_label": "删除 Hy-MT2 1.8B (Q4_K_M)…"
               }
             ]
           }

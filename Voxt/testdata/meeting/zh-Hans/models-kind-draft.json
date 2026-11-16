@@ -27,15 +27,13 @@
                 "model_id": "asr.accurate",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 1.7B (8bit)",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "delete",
                 "model_id": "asr.accurate",
                 "label": "删除",
-                "accessibility_label": "删除 Qwen3-ASR 1.7B (8bit)…",
-                "style": "ghost"
+                "accessibility_label": "删除 Qwen3-ASR 1.7B (8bit)…"
               }
             ],
             "draft": {
@@ -52,8 +50,7 @@
                   "kind": "use",
                   "model_id": "asr.accurate.draft",
                   "label": "使用",
-                  "accessibility_label": "使用 Qwen3-ASR 1.7B DFlash draft",
-                  "style": "button"
+                  "accessibility_label": "使用 Qwen3-ASR 1.7B DFlash draft"
                 }
               ]
             }

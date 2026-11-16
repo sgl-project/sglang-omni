@@ -27,8 +27,7 @@
                 "model_id": "asr.fast",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 0.6B (4bit)",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               }
             ],
             "error": {

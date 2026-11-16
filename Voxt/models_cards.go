@@ -139,10 +139,10 @@ func modelProgress(c *ui.Context, key, modelID string, progress *modelProgressVi
 func modelActions(c *ui.Context, actions []modelActionViewState, intents modelsActions) {
 	for _, action := range actions {
 		clicked := false
-		switch action.Style {
-		case "ghost":
+		switch action.Kind {
+		case modelActionHide, modelActionShow, modelActionDelete, modelActionDiscard:
 			clicked = ghostButton(c.Key(string(action.Kind)), action.Label).Label(action.AccessibilityLabel).Tooltip(action.Tooltip).Disabled(action.Disabled).Clicked()
-		case "secondary-icon":
+		case modelActionDownload:
 			clicked = secondaryIconButton(c.Key(string(action.Kind)), icons.DownloadMinimalistic, action.Label).Label(action.AccessibilityLabel).Disabled(action.Disabled).Clicked()
 		default:
 			clicked = ui.Button(c.Key(string(action.Kind)), action.Label).Label(action.AccessibilityLabel).Disabled(action.Disabled).Clicked()

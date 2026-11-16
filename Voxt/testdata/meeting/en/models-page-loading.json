@@ -27,15 +27,13 @@
                 "model_id": "asr.fast",
                 "label": "Hide",
                 "accessibility_label": "Hide Qwen3-ASR 0.6B (4bit)",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "cancel",
                 "model_id": "asr.fast",
                 "label": "Cancel",
-                "accessibility_label": "Cancel downloading Qwen3-ASR 0.6B (4bit)",
-                "style": "button"
+                "accessibility_label": "Cancel downloading Qwen3-ASR 0.6B (4bit)"
               }
             ],
             "progress": {

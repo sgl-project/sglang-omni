@@ -46,11 +46,7 @@ func modelsUsedBy(translator *i18n.Translator, prefs settings.Settings, installe
 	return translator.T("Used by %s", strings.Join(names, " · "))
 }
 
-// modelSizeText is a model's size, or how much of it came.
-func modelSizeText(m models.Model, status models.Status) string {
-	return modelSizeTextFor(i18n.CurrentTranslator(), m, status)
-}
-
+// modelSizeTextFor returns a model's size, or how much of it came.
 func modelSizeTextFor(translator *i18n.Translator, m models.Model, status models.Status) string {
 	size := uitext.HumanBytes(m.Size())
 	switch {
@@ -110,11 +106,7 @@ func ownerNameFor(translator *i18n.Translator, bundleID string) string {
 	return actnow.AppName(bundleID)
 }
 
-// modelMemText says a loaded model's memory use (0: not measured).
-func modelMemText(bytes int64) string {
-	return modelMemTextFor(i18n.CurrentTranslator(), bytes)
-}
-
+// modelMemTextFor says a loaded model's memory use (0: not measured).
 func modelMemTextFor(translator *i18n.Translator, bytes int64) string {
 	if bytes <= 0 {
 		return translator.T("Loaded")

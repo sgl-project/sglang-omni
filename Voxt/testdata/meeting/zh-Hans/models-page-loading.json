@@ -27,15 +27,13 @@
                 "model_id": "asr.fast",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 0.6B (4bit)",
-                "tooltip": "不在功能页的模型菜单里列出",
-                "style": "ghost"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "cancel",
                 "model_id": "asr.fast",
                 "label": "取消",
-                "accessibility_label": "取消下载 Qwen3-ASR 0.6B (4bit)",
-                "style": "button"
+                "accessibility_label": "取消下载 Qwen3-ASR 0.6B (4bit)"
               }
             ],
             "progress": {

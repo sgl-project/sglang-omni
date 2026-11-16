@@ -29,8 +29,7 @@
                 "kind": "download",
                 "model_id": "asr.accurate",
                 "label": "Download",
-                "accessibility_label": "Download Qwen3-ASR 1.7B (8bit)",
-                "style": "secondary-icon"
+                "accessibility_label": "Download Qwen3-ASR 1.7B (8bit)"
               }
             ],
             "draft": {
@@ -47,8 +46,7 @@
                   "kind": "use",
                   "model_id": "asr.accurate.draft",
                   "label": "Use it",
-                  "accessibility_label": "Use Qwen3-ASR 1.7B DFlash draft",
-                  "style": "button"
+                  "accessibility_label": "Use Qwen3-ASR 1.7B DFlash draft"
                 }
               ]
             }
@@ -73,15 +71,13 @@
                 "model_id": "asr.fast",
                 "label": "Hide",
                 "accessibility_label": "Hide Qwen3-ASR 0.6B (4bit)",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
                 "model_id": "asr.fast",
                 "label": "Download",
-                "accessibility_label": "Download Qwen3-ASR 0.6B (4bit)",
-                "style": "secondary-icon"
+                "accessibility_label": "Download Qwen3-ASR 0.6B (4bit)"
               }
             ]
           },
@@ -105,15 +101,13 @@
                 "model_id": "asr.qwen3-6bit",
                 "label": "Hide",
                 "accessibility_label": "Hide Qwen3-ASR 1.7B (6bit)",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
                 "model_id": "asr.qwen3-6bit",
                 "label": "Download",
-                "accessibility_label": "Download Qwen3-ASR 1.7B (6bit)",
-                "style": "secondary-icon"
+                "accessibility_label": "Download Qwen3-ASR 1.7B (6bit)"
               }
             ]
           }
@@ -145,15 +139,13 @@
                 "model_id": "asr.whisper-turbo",
                 "label": "Hide",
                 "accessibility_label": "Hide Whisper Large v3 Turbo",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
                 "model_id": "asr.whisper-turbo",
                 "label": "Download",
-                "accessibility_label": "Download Whisper Large v3 Turbo",
-                "style": "secondary-icon"
+                "accessibility_label": "Download Whisper Large v3 Turbo"
               }
             ]
           },
@@ -177,15 +169,13 @@
                 "model_id": "asr.whisper-large",
                 "label": "Hide",
                 "accessibility_label": "Hide Whisper Large v3",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
                 "model_id": "asr.whisper-large",
                 "label": "Download",
-                "accessibility_label": "Download Whisper Large v3",
-                "style": "secondary-icon"
+                "accessibility_label": "Download Whisper Large v3"
               }
             ]
           },
@@ -209,15 +199,13 @@
                 "model_id": "asr.whisper-small",
                 "label": "Hide",
                 "accessibility_label": "Hide Whisper Small",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
                 "model_id": "asr.whisper-small",
                 "label": "Download",
-                "accessibility_label": "Download Whisper Small",
-                "style": "secondary-icon"
+                "accessibility_label": "Download Whisper Small"
               }
             ]
           }
@@ -247,15 +235,13 @@
                 "model_id": "asr.parakeet",
                 "label": "Hide",
                 "accessibility_label": "Hide Parakeet TDT 0.6B v3",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
                 "model_id": "asr.parakeet",
                 "label": "Download",
-                "accessibility_label": "Download Parakeet TDT 0.6B v3",
-                "style": "secondary-icon"
+                "accessibility_label": "Download Parakeet TDT 0.6B v3"
               }
             ]
           }
@@ -285,15 +271,13 @@
                 "model_id": "asr.sensevoice",
                 "label": "Hide",
                 "accessibility_label": "Hide SenseVoice Small",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
                 "model_id": "asr.sensevoice",
                 "label": "Download",
-                "accessibility_label": "Download SenseVoice Small",
-                "style": "secondary-icon"
+                "accessibility_label": "Download SenseVoice Small"
               }
             ]
           }
@@ -323,15 +307,13 @@
                 "model_id": "asr.cohere",
                 "label": "Hide",
                 "accessibility_label": "Hide Cohere Transcribe 03-2026 (fp16)",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
                 "model_id": "asr.cohere",
                 "label": "Download",
-                "accessibility_label": "Download Cohere Transcribe 03-2026 (fp16)",
-                "style": "secondary-icon"
+                "accessibility_label": "Download Cohere Transcribe 03-2026 (fp16)"
               }
             ]
           }
@@ -362,15 +344,13 @@
                 "model_id": "asr.nemotron",
                 "label": "Hide",
                 "accessibility_label": "Hide Nemotron 3.5 ASR 0.6B (8bit)",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
                 "model_id": "asr.nemotron",
                 "label": "Download",
-                "accessibility_label": "Download Nemotron 3.5 ASR 0.6B (8bit)",
-                "style": "secondary-icon"
+                "accessibility_label": "Download Nemotron 3.5 ASR 0.6B (8bit)"
               }
             ]
           }
@@ -400,15 +380,13 @@
                 "model_id": "asr.moss",
                 "label": "Hide",
                 "accessibility_label": "Hide MOSS-Transcribe-Diarize",
-                "tooltip": "Hide it from the features' menus",
-                "style": "ghost"
+                "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "download",
                 "model_id": "asr.moss",
                 "label": "Download",
-                "accessibility_label": "Download MOSS-Transcribe-Diarize",
-                "style": "secondary-icon"
+                "accessibility_label": "Download MOSS-Transcribe-Diarize"
               }
             ]
           }
@@ -438,8 +416,7 @@
               "model_id": "asr.system",
               "label": "Hide",
               "accessibility_label": "Hide System dictation",
-              "tooltip": "Hide it from the features' menus",
-              "style": "ghost"
+              "tooltip": "Hide it from the features' menus"
             }
           ]
         }
@@ -464,8 +441,7 @@
                 "kind": "delete",
                 "model_id": "llm.translate",
                 "label": "Delete",
-                "accessibility_label": "Delete Hy-MT2 1.8B (Q4_K_M)…",
-                "style": "ghost"
+                "accessibility_label": "Delete Hy-MT2 1.8B (Q4_K_M)…"
               }
             ]
           }
