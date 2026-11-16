@@ -1,7 +1,8 @@
 # MiniMax-H3-Image on Moore Threads MUSA
 
 This recipe runs MiniMax-H3-Image text-to-image and image editing on MTT S5000.
-It covers one-card offline generation and two-card Ulysses serving.
+It covers one-card offline generation plus two-card Ulysses and
+tensor-parallel serving.
 
 ## Prerequisites
 
@@ -116,11 +117,41 @@ curl http://127.0.0.1:30000/v1/images/edits \
   -o /tmp/h3-edit.json
 ```
 
+## Serve with tensor parallelism
+
+Pure tensor parallelism shards the DiT and uses native MCCL all-reduce on
+MUSA. Component offload keeps the text encoder, DiT, and VAE from remaining
+resident together.
+
+```bash
+export MODEL_PATH=/path/to/MiniMax-H3-Image
+export GPUS=2  # Validated values: 2 and 4
+
+sglang serve \
+  --model-path "${MODEL_PATH}" \
+  --served-model-name MiniMax-H3-Image \
+  --host 127.0.0.1 \
+  --port 30000 \
+  --backend auto \
+  --num-gpus "${GPUS}" \
+  --tp-size "${GPUS}" \
+  --dit-cpu-offload \
+  --vae-cpu-offload \
+  --text-encoder-cpu-offload \
+  --attention-backend fa \
+  --component-attention-backends transformer=fa \
+  --warmup-mode off
+```
+
+Use the same `/v1/images/generations` and `/v1/images/edits` requests shown
+above.
+
 ## Validate
 
 1. `sglang generate` exits with status 0.
 2. `/v1/images/generations` and `/v1/images/edits` return status 200.
-3. Returned images decode as 1024 x 1024 RGB PNGs and are visually coherent.
+3. Returned images decode as the requested RGB resolution and are visually
+   coherent.
 4. Logs contain `Pipeline instantiated` and
    `MiniMax-H3 VAE: installed quality-gated fast path`.
 5. On PyTorch 2.11, VAE decoding logs either
@@ -133,11 +164,10 @@ curl http://127.0.0.1:30000/v1/images/edits \
 
 - Use one-card execution for reproducibility checks. Same-seed reproducibility
   has not been established for multi-card execution.
-- Use Ulysses sequence parallelism for multi-card MUSA serving. Tensor
-  parallelism must not be enabled with `--tp-size` on MUSA until it has separate
-  end-to-end image validation.
 - Two-card Ulysses requires component offload. Keeping all H3 components
   resident exceeds one S5000 device.
+- SGLang disables its CUDA-only `srt_custom_allreduce` path outside CUDA.
+  MUSA tensor groups use native MCCL collectives.
 - Do not enable `PYTORCH_MUSA_ALLOC_CONF=expandable_segments:True` during component loading.
 - The H3-specific fused Triton norm+RoPE block currently uses the unfused fallback on MUSA.
 - MATE provides RMSNorm primitives, but currently has no drop-in replacement for
