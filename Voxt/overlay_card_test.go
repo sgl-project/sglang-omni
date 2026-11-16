@@ -141,6 +141,13 @@ func cardSteps() []cardStep {
 				Title: "Running late", Result: "Sorry, I am running about ten minutes late: please start without me.", LLM: session.Model{ID: "deepseek"}})
 			a.answer.think = &llm.Thinking{Mode: llm.ThinkOff}
 		}, body: -1, insert: true, copy: true, followUp: true, think: true},
+		{name: "transcribe-dictionary", apply: func(a *app) {
+			a.closeAnswer()
+			const result = "Voxt uses SGLang."
+			snap(a, session.Snapshot{ID: "d1", Kind: store.KindTranscribe, State: session.Recording})
+			snap(a, session.Snapshot{ID: "d1", Kind: store.KindTranscribe, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+				Result: result, Highlights: testDictionaryHighlights(result)})
+		}, insert: true, copy: true},
 	}
 }
 

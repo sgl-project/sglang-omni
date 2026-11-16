@@ -37,6 +37,19 @@ func TestAliases(t *testing.T) {
 			if end.Result != c.result || end.Raw != "hello aura link" || len(e) != 1 || e[0].RawText != "hello aura link" || e[0].Result != c.result {
 				t.Errorf("result %q, raw %q, entries %+v", end.Result, end.Raw, e)
 			}
+			wantMatches := 0
+			if c.result == "hello VoxtNew" {
+				wantMatches = 1
+			}
+			if len(end.Highlights) != wantMatches {
+				t.Fatalf("%d highlight spans, want %d", len(end.Highlights), wantMatches)
+			}
+			if wantMatches == 1 {
+				span := end.Highlights[0]
+				if got := end.Result[span.Start:span.End]; got != "VoxtNew" {
+					t.Errorf("highlighted %q, want VoxtNew", got)
+				}
+			}
 		})
 	}
 }

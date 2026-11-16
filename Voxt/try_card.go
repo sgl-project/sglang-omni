@@ -223,7 +223,7 @@ func (a *app) tryEnded(c *ui.Context, p string, s session.Snapshot, clear func()
 		}
 	})
 	fillCard(c.Key(p + "-try-result")).Padding(px(t, sp3)).Children(func() {
-		ui.Text(c, s.Result).Selectable()
+		dictionaryText(c, s.Result, s.Highlights).Selectable()
 	})
 	if raw := strings.TrimSpace(s.Raw); raw != "" && raw != strings.TrimSpace(s.Result) {
 		title := i18n.T("As recognised")

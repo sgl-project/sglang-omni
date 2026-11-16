@@ -324,7 +324,7 @@ func (a *app) cardBlockView(c *ui.Context, b cardBlock) {
 			ui.Text(c, b.text.text).FontSize(b.text.size).FontWeight(b.text.weight).TextColor(b.color).Grow(1).MinWidth(0)
 		})
 	default:
-		t := ui.Text(c, b.text.text).FontSize(b.text.size).TextColor(b.color).Margin(b.gap, 0, 0, 0)
+		t := dictionaryText(c, b.text.text, b.highlights).FontSize(b.text.size).TextColor(b.color).Margin(b.gap, 0, 0, 0)
 		if b.text.weight != 0 {
 			t.FontWeight(b.text.weight)
 		}

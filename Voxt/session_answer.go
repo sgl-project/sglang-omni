@@ -24,7 +24,7 @@ import (
 func (a *app) openAnswer(s session.Snapshot) {
 	card := answerCard{
 		open: true, id: s.ID, conv: s.ID, kind: s.Kind, text: s.Result, title: s.Title, target: s.Target,
-		input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage, llmID: s.LLM.ID,
+		highlights: s.Highlights, input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage, llmID: s.LLM.ID,
 		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name),
 	}
 	if s.State == session.Failed {
@@ -75,6 +75,7 @@ func (a *app) endRedo(s session.Snapshot) {
 	switch {
 	case s.State == session.Done && s.Result != "":
 		a.answer.id, a.answer.text, a.answer.lang, a.answer.think = s.ID, s.Result, s.TargetLanguage, think
+		a.answer.highlights = s.Highlights
 		a.answer.title, a.answer.msg, a.answer.copied = s.Title, "", false
 		if a.answer.kind == store.KindRewrite && len(a.answer.turns) == 1 {
 			a.answer.turns[0].Answer = compose.Answer{Title: s.Title, Content: s.Result}
