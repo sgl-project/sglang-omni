@@ -57,6 +57,14 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 						historyAccessSection(c, fixture.state.HistoryAccess, host, &host.historyAccessUI)
 					})
 				})
+			case "updates-settings":
+				ui.Scroll(c.Key("demo-updates-settings")).Grow(1).Children(func() {
+					pageColumn(c).Children(func() {
+						updateSettingsSection(c, *fixture.state.UpdatesSettings, host, &host.updatesUI)
+					})
+				})
+			case "updates-release":
+				releaseDialog(c, *fixture.state.UpdatesRelease, host, &host.updatesUI)
 			}
 		})
 	})

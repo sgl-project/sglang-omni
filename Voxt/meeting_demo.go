@@ -31,6 +31,7 @@ type meetingDemoHost struct {
 	historyUI         historyLocalUI
 	historySettingsUI historySettingsLocalUI
 	historyAccessUI   historyAccessLocalUI
+	updatesUI         updatesLocalUI
 	overlayLook       settings.Overlay
 }
 
@@ -98,7 +99,9 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "start" && fixture.Start != nil ||
 		fixture.Kind == "history" && fixture.History != nil ||
 		fixture.Kind == "history-settings" && fixture.HistorySettings != nil ||
-		fixture.Kind == "history-access" && fixture.HistoryAccess != nil
+		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||
+		fixture.Kind == "updates-settings" && fixture.UpdatesSettings != nil ||
+		fixture.Kind == "updates-release" && fixture.UpdatesRelease != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -147,6 +150,10 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		host.historyAccessUI = historyAccessLocalUI{
 			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
 		}
+	}
+	host.updatesUI = updatesLocalUI{relOpen: fixture.state.UpdatesRelease != nil}
+	if state := fixture.state.UpdatesSettings; state != nil {
+		host.updatesUI.autoCheck, host.updatesUI.autoInstall, host.updatesUI.beta = state.AutoCheck, state.AutoInstall, state.Beta
 	}
 }
 
@@ -313,3 +320,25 @@ func (host *meetingDemoHost) copyHistoryAccessCommand() {
 	host.record("copyHistoryAccessCommand")
 }
 func (host *meetingDemoHost) openHistoryAccessDocs() { host.record("openHistoryAccessDocs") }
+
+func (host *meetingDemoHost) checkForUpdates() { host.record("checkForUpdates") }
+func (host *meetingDemoHost) setAutoCheck(on bool) {
+	host.updatesUI.autoCheck = on
+	host.record("setAutoCheck %t", on)
+}
+func (host *meetingDemoHost) setAutoInstall(on bool) {
+	host.updatesUI.autoInstall = on
+	host.record("setAutoInstall %t", on)
+}
+func (host *meetingDemoHost) setBeta(on bool) {
+	host.updatesUI.beta = on
+	host.record("setBeta %t", on)
+}
+func (host *meetingDemoHost) relaunch() { host.record("relaunch") }
+func (host *meetingDemoHost) checkReleasesNow() {
+	host.updatesUI.relOpen = true
+	host.record("checkReleasesNow")
+}
+func (host *meetingDemoHost) downloadRelease(address string) {
+	host.record("downloadRelease %q", address)
+}
