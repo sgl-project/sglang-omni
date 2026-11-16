@@ -394,6 +394,77 @@ func (f *fakeTimers) advance(d time.Duration) {
 // overlay view (measureHook is guessText).
 func guessWidth(k ovSized) float32 { w, _ := guessText(k); return w }
 
+func (a *app) cachedCard() sessionCardViewState {
+	a.refreshSessionOverlay(time.Now())
+	if a.ov.projection.view.Card == nil {
+		return sessionCardViewState{}
+	}
+	return *a.ov.projection.view.Card
+}
+
+func (a *app) cachedCardRef() *sessionCardViewState {
+	a.refreshSessionOverlay(time.Now())
+	return a.ov.projection.view.Card
+}
+
+func cardTextForTest(card sessionCardViewState) string {
+	if len(card.Blocks) > 0 && card.Blocks[0].Kind == sessionCardBody {
+		return card.Blocks[0].Text
+	}
+	for index := sessionCardBlockCount(&card) - 1; index >= 0; index-- {
+		block := sessionCardBlockAt(&card, index)
+		if block.Kind == sessionCardBody || block.Kind == sessionCardBubble && !block.User {
+			return block.Text
+		}
+	}
+	return ""
+}
+
+type cardBubbleForTest struct {
+	user        bool
+	title, text string
+	live        bool
+	quote       string
+	cut, open   bool
+	turn        int
+}
+
+func cardBubblesForTest(card sessionCardViewState) []cardBubbleForTest {
+	blocks := make([]cardBubbleForTest, 0, sessionCardBlockCount(&card))
+	for index := 0; index < sessionCardBlockCount(&card); index++ {
+		block := sessionCardBlockAt(&card, index)
+		blocks = append(blocks, cardBubbleForTest{user: block.User, title: block.Title, text: block.Text,
+			live: block.Live, quote: block.Quote, cut: block.Cut, open: block.Open, turn: block.Turn})
+	}
+	return blocks
+}
+
+func (a *app) overlayView(context *ui.Context) {
+	previousCopy := a.copyText
+	a.copyText = func(text string) error { context.Services().WriteClipboard(text); return nil }
+	defer func() { a.copyText = previousCopy }()
+	a.overlayBenchmarkView(context)
+}
+
+// overlayBenchmarkView skips the interactive HUD clipboard adapter so the
+// timed path matches the production content closure.
+func (a *app) overlayBenchmarkView(context *ui.Context) {
+	a.refreshSessionOverlay(time.Now())
+	sessionOverlayView(context, a.ov.projection.view, a.currentSessionOverlayLayout(), a,
+		sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
+		sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase()},
+		a.postSessionOverlayMeasurements, func() { a.ov.reveal = false; a.post(a.revealOverlay) })
+}
+
+func (a *app) langMenuView(context *ui.Context) {
+	a.refreshSessionOverlay(time.Now())
+	if a.ov.projection.view.Menu == nil {
+		sessionLanguageMenuView(context, sessionMenuViewState{SelectedIndex: -1}, a, &a.ov.ui)
+		return
+	}
+	sessionLanguageMenuView(context, *a.ov.projection.view.Menu, a, &a.ov.ui)
+}
+
 // hudTester tests a view of a floating window (floating.go), whose text
 // is drawn as hudContent draws it.
 func hudTester(view func(*ui.Context), w, h int) *ui.Tester {

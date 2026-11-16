@@ -216,7 +216,7 @@ func TestAnswerCardButtons(t *testing.T) {
 // mustBody is the card's text's height now.
 func (a *app) mustBody(t *testing.T) int {
 	t.Helper()
-	h, _ := a.cardBodyHeight(a.cardNow())
+	h, _ := a.cardBodyHeight(a.cachedCardRef())
 	return h
 }
 

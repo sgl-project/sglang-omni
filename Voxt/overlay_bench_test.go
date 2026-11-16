@@ -98,7 +98,7 @@ func settledOverlayBenchmarkTester(tb testing.TB, a *app) *ui.Tester {
 	tb.Helper()
 	for range 2 {
 		width, height := a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad
-		tt := hudTester(a.overlayView, width, height)
+		tt := hudTester(a.overlayBenchmarkView, width, height)
 		tt.SetScale(2)
 		frames(tt)
 		if a.ov.w+2*layout.Pad == width && a.ov.h+2*layout.Pad == height {
@@ -111,8 +111,8 @@ func settledOverlayBenchmarkTester(tb testing.TB, a *app) *ui.Tester {
 
 func overlayBenchmarkSentinel(a *app) string {
 	if a.ov.mode == ovAnswer {
-		view := a.cardNow()
-		for _, candidate := range []string{view.text, view.msg, view.title} {
+		view := a.cachedCard()
+		for _, candidate := range []string{cardTextForTest(view), view.Message, view.Title} {
 			if candidate != "" {
 				return candidate
 			}
@@ -284,7 +284,7 @@ func BenchmarkW0WaveformUpdate(b *testing.B) {
 	partial := "Benchmark stable partial"
 	snapshot := session.Snapshot{ID: "benchmark-waveform", State: session.Recording, StartedAt: now, HeardAt: now, Partial: partial, Levels: wave()}
 	snap(a, snapshot)
-	tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
+	tt := hudTester(a.overlayBenchmarkView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 	frames(tt)
 	// The helper's capture.level input defaults to 20 Hz.
 	levels := make([]float64, waveformLevelsPerSecond)
@@ -315,7 +315,7 @@ func runW0AnswerStreamPath(tb testing.TB, recordPath string) []int {
 	a := newBenchmarkSessionApp(tb, helpertest.Opt("selection", "Benchmark selection")+","+events, func(s *settings.Settings) {
 		s.Features.Translate.Target, s.Features.Translate.ShowCard = "en", true
 	}, &fakeLocal{Chat: &llm.Client{Backend: chat}})
-	tt := hudTester(a.overlayView, layout.AnswerW+2*layout.Pad, layout.CardMaxH+2*layout.Pad)
+	tt := hudTester(a.overlayBenchmarkView, layout.AnswerW+2*layout.Pad, layout.CardMaxH+2*layout.Pad)
 	var lengths []int
 	var received strings.Builder
 	chat.onDelta = func(text string) { received.WriteString(text) }
@@ -391,7 +391,7 @@ func BenchmarkW0AnswerStreaming(b *testing.B) {
 	fullDraft := strings.Repeat(answerStreamChunk, 6*answerStreamChunks)
 	a, _, _ := newRenderBenchmarkApp(b)
 	snapshot := session.Snapshot{ID: "benchmark-stream", Kind: store.KindTranslate, State: session.Composing, Card: true, Delivery: deliver.ReasonCard, TargetLanguage: "en"}
-	tt := hudTester(a.overlayView, layout.AnswerW+2*layout.Pad, layout.CardMaxH+2*layout.Pad)
+	tt := hudTester(a.overlayBenchmarkView, layout.AnswerW+2*layout.Pad, layout.CardMaxH+2*layout.Pad)
 	frames(tt)
 	b.ReportAllocs()
 	b.ResetTimer()

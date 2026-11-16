@@ -58,7 +58,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	if a.pressDuringSelection(e) { // dictionary_selection.go
 		return
 	}
-	if e.Binding == proto.HotkeyCancel && a.answer.langOpen {
+	if e.Binding == proto.HotkeyCancel && a.answer.ui.langOpen {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
 		return
 	}

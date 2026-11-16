@@ -134,9 +134,9 @@ func cardCheckSteps(lang string) []ovCheckStep {
 		}, true},
 		{"card-short", end(tr(lang+"-t1", session.Done, short, short, lang)), true},
 		// Our language menu, a window of its own over the card.
-		{"card-menu", func(a *app) { a.answer.langOpen = true }, true},
+		{"card-menu", func(a *app) { a.answer.ui.langOpen = true }, true},
 		{"card-redo", func(a *app) {
-			a.answer.langOpen = false
+			a.answer.ui.langOpen = false
 			a.answer.redo, a.answer.redoLang = lang+"-t2", "ja"
 			a.sess = tr(lang+"-t2", session.Composing, "", "", "ja")
 		}, true},
@@ -340,7 +340,8 @@ func abs(v int) int { return max(v, -v) }
 func (a *app) overlayInkWant() ink.Want {
 	w := ink.Want{W: a.ov.w, H: a.ov.h}
 	if a.ov.mode == ovAnswer {
-		return cardInkWant(w, a.cardNow())
+		a.refreshSessionOverlay(time.Now())
+		return cardInkWant(w, a.ov.projection.view.Card)
 	}
 	if a.ov.mode != ovRecording && a.ov.mode != ovWorking {
 		return w
@@ -364,9 +365,9 @@ func (a *app) overlayInkWant() ink.Want {
 // left padding down to its text's last line (a text's line, 14 at most
 // 22 high, and the small line under it when there is one, whose ink may
 // be too dim to count), or to its bottom padding when it scrolls.
-func cardInkWant(w ink.Want, v cardView) ink.Want {
+func cardInkWant(w ink.Want, card *sessionCardViewState) ink.Want {
 	w.Card, w.Gap = true, 8
-	if !v.conversation {
+	if card == nil || !card.Conversation {
 		w.Gap = 22
 	} else {
 		// A bubble's fill is not ink: its padding, and the room under its
@@ -374,7 +375,7 @@ func cardInkWant(w ink.Want, v cardView) ink.Want {
 		// Mac, 10-15, for Latin text without descenders).
 		w.Gap = layout.BubblePadY + 12
 	}
-	if v.msg != "" {
+	if card != nil && card.Message != "" {
 		w.Gap += layout.CardMsgGap + layout.CardMsgH
 	}
 	return w

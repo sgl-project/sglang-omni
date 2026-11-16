@@ -40,12 +40,6 @@ onboarding_models.go  # onboarding
 onboarding_steps.go  # onboarding
 onboarding_try_guide.go  # onboarding
 onboarding_view.go  # onboarding
-overlay.go  # overlay
-overlay_card.go  # overlay
-overlay_card_view.go  # overlay
-overlay_lang.go  # overlay
-overlay_size.go  # overlay
-overlay_think.go  # overlay
 pages.go  # shell
 permissions.go  # settings
 remote_chatgpt.go  # remote

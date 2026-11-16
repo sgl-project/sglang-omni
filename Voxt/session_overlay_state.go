@@ -25,15 +25,29 @@ func (m *overlayMode) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// sessionOverlayActions are the intents the pill and notice can originate.
+// sessionOverlayActions are the intents the overlay controls can originate.
 type sessionOverlayActions interface {
 	skipLLM()
+	stopSession()
+	stopLLM()
+	followUpAnswer(hold string) bool
+	retryAnswer(language string)
+	insertAnswer()
+	copyAnswer()
+	closeAnswer()
 	noticeAction(action string)
+	toggleLangMenu()
+	chooseLanguage(code string)
+	toggleThinkMenu()
 	togglePillThinkMenu()
+	chooseThinking(value sessionThinkingValue)
+	cycleOverlayCardSize()
+	toggleQuote(turn int)
+	copyBubble(block sessionCardBlock)
 }
 
-// sessionOverlayViewState is the serializable display state of a session pill
-// or notice. Controller inputs and native state stay outside this DTO.
+// sessionOverlayViewState is the serializable display state of a session
+// pill, notice, answer card, or menu. Controller inputs and native state stay outside this DTO.
 type sessionOverlayViewState struct {
 	Revision    uint64                  `json:"revision"`
 	SessionID   string                  `json:"session_id"`
@@ -42,6 +56,8 @@ type sessionOverlayViewState struct {
 	Mode        overlayMode             `json:"mode"`
 	Pill        sessionPillViewState    `json:"pill"`
 	Notice      *sessionNoticeViewState `json:"notice,omitempty"`
+	Card        *sessionCardViewState   `json:"card,omitempty"`
+	Menu        *sessionMenuViewState   `json:"menu,omitempty"`
 }
 
 type sessionPillViewState struct {
@@ -90,6 +106,8 @@ type sessionOverlayProjectionInput struct {
 	CanThink      bool
 	ThinkingLabel string
 	Notice        *sessionNotice
+	Card          sessionCardProjectionInput
+	Menu          *sessionMenuProjectionInput
 }
 
 func buildSessionOverlayViewState(translator *i18n.Translator, input sessionOverlayProjectionInput, now time.Time) sessionOverlayViewState {
@@ -111,6 +129,13 @@ func buildSessionOverlayViewState(translator *i18n.Translator, input sessionOver
 			notice := buildSessionNoticeViewState(translator, *input.Notice)
 			state.Notice = &notice
 		}
+	case ovAnswer:
+		card := buildSessionCardViewState(translator, input.Card)
+		state.Card = &card
+	}
+	if input.Menu != nil {
+		menu := buildSessionMenuViewState(translator, *input.Menu)
+		state.Menu = &menu
 	}
 	return state
 }
@@ -290,11 +315,18 @@ type sessionOverlayProjection struct {
 	view        sessionOverlayViewState
 	pillKey     sessionPillProjectionKey
 	noticeKey   sessionNoticeProjectionKey
+	cardKey     sessionCardProjectionKey
+	cardLiveKey sessionCardLiveProjectionKey
+	menuKey     sessionMenuProjectionKey
 	notice      sessionNoticeViewState
+	card        sessionCardViewState
+	menu        sessionMenuViewState
 	translator  *i18n.Translator
 	locale      string
 	pillReady   bool
 	noticeReady bool
+	cardReady   bool
+	menuReady   bool
 }
 
 func sessionPillKeyFor(input sessionOverlayProjectionInput, locale string, now time.Time) sessionPillProjectionKey {
@@ -332,6 +364,7 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 	if projection.translator == nil || projection.locale != locale {
 		projection.locale = locale
 		projection.translator = i18n.NewTranslator(locale)
+		projection.cardReady, projection.menuReady = false, false
 	}
 	input := sessionOverlayProjectionInput{
 		Snapshot: a.sess, Mode: a.overlayModeNow(),
@@ -358,6 +391,12 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 		}
 		copySessionLevels(&next.Pill.Levels, a.sess.Levels)
 	}
+	next.Card = nil
+	if input.Mode == ovAnswer {
+		a.refreshSessionCardProjection(projection, &next)
+	}
+	next.Menu = nil
+	a.refreshSessionMenuProjection(projection, &next, locale)
 	next.Notice = nil
 	if input.Mode == ovNotice && a.notice != nil {
 		key := sessionNoticeProjectionKey{
