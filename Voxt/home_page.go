@@ -17,7 +17,6 @@ import (
 	"context"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
@@ -48,13 +47,6 @@ type homeState struct {
 		// tryOn: the Try area showed in this visit to Home (homeShowsTry).
 		tryOn bool
 	}
-}
-
-// dayStats are a day's finished results: how many, and their characters
-// (without spaces), by feature too.
-type dayStats struct {
-	count, chars int
-	byKind       map[store.Kind]int
 }
 
 // readHome reads the recent results and today's numbers (since midnight
@@ -170,31 +162,6 @@ func (a *app) homePage(c *ui.Context) {
 }
 
 // ---- The slogan ----
-
-// sloganMark stands for the keys in a translated hint, which is cut
-// around it to put a key cap there.
-const sloganMark = "\x00"
-
-// sloganHint is the slogan's second half, how to start Transcribe with
-// its first shortcut (h, nil for none), cut around the keys: "Press ",
-// "fn", " to start". keys is "" without a shortcut: then before is the
-// whole hint.
-func sloganHint(h *settings.Hotkey) (before, keys, after string) {
-	if h == nil {
-		return i18n.T("Add a shortcut to start"), "", ""
-	}
-	var hint string
-	switch h.Trigger {
-	case settings.TriggerDouble:
-		hint = i18n.T("Double-press %s to start", sloganMark)
-	case settings.TriggerLong:
-		hint = i18n.T("Hold %s and speak", sloganMark)
-	default:
-		hint = i18n.T("Press %s to start", sloganMark)
-	}
-	before, after, _ = strings.Cut(hint, sloganMark)
-	return before, uitext.HotkeyText(h.Keys), after
-}
 
 // homeSlogan is the line under Home's title: what VoxtNew does, then how
 // to start it (Transcribe's shortcut in a key cap, or a link to add one).
@@ -325,31 +292,4 @@ func (a *app) homeRecentList(c *ui.Context) {
 			entryMenu(c, row, &entryState, a, &a.histUI, false, func() { a.openHistoryEntry(e) }) // history_menu.go
 		}
 	})
-}
-
-// countChars counts the characters of s that are not spaces.
-func countChars(s string) int {
-	n := 0
-	for _, r := range s {
-		if !unicode.IsSpace(r) {
-			n++
-		}
-	}
-	return n
-}
-
-// groupDigits writes n with thousands separators: 12,345.
-func groupDigits(n int) string {
-	s := itoa(n)
-	if n < 0 || len(s) <= 3 {
-		return s
-	}
-	var b strings.Builder
-	for i, r := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			b.WriteByte(',')
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
 }

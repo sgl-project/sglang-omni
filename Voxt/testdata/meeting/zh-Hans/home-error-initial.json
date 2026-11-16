@@ -1,0 +1,95 @@
+{
+  "name": "home-error-initial",
+  "kind": "home",
+  "home": {
+    "read": true,
+    "loading": false,
+    "error": "fixture read failed",
+    "keep_history": true,
+    "slogan": {
+      "before": "按 ",
+      "keys": "右 ⌥",
+      "after": " 开始"
+    },
+    "missing": null,
+    "ready": [
+      {
+        "key": "home-asr",
+        "title": "语音识别",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture speech model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-llm",
+        "title": "语言模型",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture language model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-mic",
+        "title": "麦克风",
+        "ok": true,
+        "warn": false,
+        "text": "已允许",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-access",
+        "title": "辅助功能",
+        "ok": true,
+        "warn": false,
+        "text": "已允许",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-keys",
+        "title": "快捷键",
+        "ok": true,
+        "warn": false,
+        "text": "右 ⌥",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      }
+    ],
+    "show_try": false,
+    "try_available": false,
+    "try_recording": false,
+    "today": {
+      "count": "0",
+      "count_label": "次",
+      "characters": "0",
+      "characters_label": "字",
+      "kinds": [
+        {
+          "kind": "transcribe",
+          "title": "转录",
+          "count": "0"
+        },
+        {
+          "kind": "translate",
+          "title": "翻译",
+          "count": "0"
+        },
+        {
+          "kind": "rewrite",
+          "title": "改写",
+          "count": "0"
+        }
+      ]
+    },
+    "recent": []
+  }
+}
