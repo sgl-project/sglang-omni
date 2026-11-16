@@ -205,13 +205,24 @@ class FunASRScheduler(OmniScheduler[FunASRRequestData]):
             raise
 
     def process_input_requests(self, recv_reqs: list[StagePayload]) -> None:
+        with self.preparation_shutdown_lock:
+            if self.cpu_preparation_closed:
+                return
+            else:
+                pass
+            with self.request_admission_lock:
+                self.is_processing_inputs = True
+            try:
+                super().process_input_requests(recv_reqs)
+            finally:
+                with self.request_admission_lock:
+                    self.is_processing_inputs = False
+
+    def sleep_during_idle(self) -> None:
+        # note (Codex): idle receive owns the next input before publishing idle_wait_message; keep ingress reserved until that input pass finishes.
         with self.request_admission_lock:
             self.is_processing_inputs = True
-        try:
-            super().process_input_requests(recv_reqs)
-        finally:
-            with self.request_admission_lock:
-                self.is_processing_inputs = False
+        super().sleep_during_idle()
 
     def stage_request_build_payloads(
         self, recv_reqs: list[StagePayload]
