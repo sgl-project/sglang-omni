@@ -28,7 +28,7 @@ The processor ships with the checkpoint, so no extra TTS package is needed. Deco
 
 ### Ascend NPU
 
-For single-NPU BF16 inference, select your allocated device and launch with the shared [MOSS configuration](../../examples/configs/moss_tts.yaml):
+For BF16 inference on one Ascend 910 A3, select your allocated device and launch with the shared [MOSS configuration](../../examples/configs/moss_tts.yaml):
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0
@@ -40,9 +40,7 @@ sgl-omni serve --model-path OpenMOSS-Team/MOSS-TTS-v1.5 --config examples/config
 
 `PER_STREAM_QUEUE` is an [experimental torch_npu option](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md).
 
-The configuration uses `OpenMOSS-Team/MOSS-Audio-Tokenizer` by default. For offline weights, override `model_path` and the preprocessing and vocoder factories' `codec_model_path` in your local configuration.
-
-If NPU sampling graph capture is incomplete, startup reports the device and missing batch sizes. Check the preceding capture traceback first. For an out-of-memory error or insufficient capture headroom, free device memory or reduce `stages.tts_engine.engine.cuda_graph_bs` in your configuration. For other capture errors, check the runtime dependencies against [Installation — NPU](../other_platforms/installation_npu.md). If the error persists, include the original traceback, runtime versions and reported batch sizes in a bug report. Both audio and mixed sampling require all configured buckets; an incomplete capture stops NPU startup.
+Incomplete NPU sampling graph capture stops startup. Check the preceding traceback; for out-of-memory or insufficient-headroom errors, free device memory or reduce `stages.tts_engine.engine.cuda_graph_bs` in your configuration.
 
 ## Server Configuration
 
@@ -298,13 +296,7 @@ A handful of utterances in the H200 reference run away into a repetition loop (>
 micro-average; excluding them, corpus WER is ~1.3% in both languages, and per-sample median WER
 is 0.00%.
 
-Single-NPU BF16 results on Ascend910_9362 with SGLang 0.5.22, CANN 9.1.0 and torch_npu 2.10.0.post6: all 1088 EN samples generated and scored successfully using reference audio/text, automatic duration tokens, concurrency 8, seed 1234 and eight warmup requests. Scoring used HF Whisper-large-v3 FP32 with `EnglishTextNormalizer({})`; backbone decode and sampling graphs were enabled.
-
-| Device | WER (all samples) | Latency mean / p95 (s) | Throughput (qps) |
-| --- | --- | --- | --- |
-| Ascend910_9362 | 203/11943 = 1.6997% | 7.502 / 9.761 | 1.065 |
-
-The corpus WER includes all four samples above 50% WER. The historical H200 result uses a different software revision and seed conditions, so the figures describe separate runs.
+Ascend measurements and validation conditions are recorded in [PR #2278](https://github.com/sgl-project/sglang-omni/pull/2278).
 
 ## Known Limitations
 
