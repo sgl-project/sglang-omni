@@ -2,6 +2,8 @@
 import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
 import { ReplyMediaGate, playoutDelayFrom } from "./reply_media_gate.js";
 import { SMPLH_FLAME_MOTION, MotionView, smplhFlameMotionRenderer } from "./smplh_flame_motion.js";
+import { SMPLX_MOTION, SmplxMotionView, smplxMotionRenderer } from "./smplx_motion.js";
+import { attachSmplxMesh } from "./smplx_mesh.js";
 import { JPEG_FRAME, VideoFrameView, jpegFrameRenderer } from "./video_frame.js";
 import { Orb } from "./orb.js";
 import { Settings } from "./settings.js";
@@ -24,7 +26,7 @@ const INTERRUPT_WINDOW_MS = 1500;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset", "motionView", "avatarView"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset", "motionView", "avatarView", "meshView"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -65,6 +67,11 @@ const mediaGate = new ReplyMediaGate({
 // A turnless reply stream (a native full-duplex model) plays its audio and its pictures on one media clock, the gate's.
 const motionView = new MotionView(ui.motionView, { now: () => performance.now(), onReplyShown: (responseId) => mediaGate.shown(responseId), playoutDelayMs, clock: mediaGate });
 registerPluginRenderer(SMPLH_FLAME_MOTION, smplhFlameMotionRenderer(motionView));
+// A Session publishes one motion format; SMPL-X motion draws on the same canvas.
+const smplxView = new SmplxMotionView(ui.motionView, { now: () => performance.now(), onReplyShown: (responseId) => mediaGate.shown(responseId), playoutDelayMs, clock: mediaGate });
+registerPluginRenderer(SMPLX_MOTION, smplxMotionRenderer(smplxView));
+// With the server's SMPL-X model (app.py --smplx-model) both motion formats draw on the mesh; without it, stick figures.
+attachSmplxMesh({ canvas: ui.meshView, views: [motionView, smplxView] });
 const videoView = new VideoFrameView(ui.avatarView, { now: () => performance.now(), onReplyShown: (responseId) => mediaGate.shown(responseId), playoutDelayMs, clock: mediaGate });
 registerPluginRenderer(JPEG_FRAME, jpegFrameRenderer(videoView));
 let playbackAnalyser = null;
@@ -190,9 +197,10 @@ function render(now) {
   if (state.mood === "speaking") lastSpokeAt = now;
   orb.frame(now, state.level, state.mood);
   motionView.draw();
+  smplxView.draw();
   videoView.draw();
-  // The avatar's picture takes the orb's place once it shows.
-  if (!ui.avatarView.hidden && !ui.orb.hidden) ui.orb.hidden = true;
+  // The avatar's picture or body mesh takes the orb's place once it shows.
+  if ((!ui.avatarView.hidden || !ui.meshView.hidden) && !ui.orb.hidden) ui.orb.hidden = true;
   mediaGate.tick();
   if (ui.statusLine.textContent !== state.line) ui.statusLine.textContent = state.line;
   ui.caption.dataset.fade = String(!(session && session.responseOpen) && now - lastSpokeAt > CAPTION_FADE_MS);
@@ -398,6 +406,7 @@ function sessionListeners() {
       // An interrupted reply's motion stops where it was cut: its frames not yet shown go and the figure keeps its last pose.
       if (!open && status === "cancelled") {
         motionView.drop(id);
+        smplxView.drop(id);
         videoView.drop(id);
       }
       renderTranscript();
@@ -423,8 +432,10 @@ async function connect() {
   if (playbackNode) playbackNode.port.postMessage({ type: "reset" });
   mediaGate.reset();
   motionView.reset();
+  smplxView.reset();
   videoView.reset();
   ui.avatarView.hidden = true;
+  ui.meshView.hidden = true;
   ui.orb.hidden = false;
   setButtons();
   let activeSocket = null;

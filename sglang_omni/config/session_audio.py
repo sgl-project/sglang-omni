@@ -14,6 +14,22 @@ from sglang_omni.models.avtr.node import AvatarStageConfig, avatar_stage
 from sglang_omni.models.ellsa2.node import MOTION_STAGE
 from sglang_omni.models.ellsa2.node import SESSION_PORTS as MOTION_PORTS
 from sglang_omni.models.ellsa2.node import MotionStageConfig, motion_stage
+from sglang_omni.models.speech_avatar.node import (
+    MOTION_SESSION_PORTS as SPEECH_MOTION_PORTS,
+)
+from sglang_omni.models.speech_avatar.node import (
+    SPEECH_MOTION_STAGE,
+    SPEECH_VIDEO_STAGE,
+)
+from sglang_omni.models.speech_avatar.node import (
+    VIDEO_SESSION_PORTS as SPEECH_VIDEO_PORTS,
+)
+from sglang_omni.models.speech_avatar.node import (
+    SpeechMotionStageConfig,
+    SpeechVideoStageConfig,
+    speech_motion_stage,
+    speech_video_stage,
+)
 from sglang_omni.models.turn_detection.node import SESSION_PORTS as TURN_DETECTION_PORTS
 from sglang_omni.models.turn_detection.node import (
     TURN_DETECTION_STAGE,
@@ -60,10 +76,29 @@ AVATAR_GROUP = StageGroup(
     AVATAR_PORTS,
     stage_ports=AvatarStageConfig.session_ports,
 )
-PLUGIN_STAGE_GROUPS = (MOTION_GROUP, AVATAR_GROUP)
+SPEECH_VIDEO_GROUP = StageGroup(
+    lambda: [speech_video_stage()],
+    None,
+    SPEECH_VIDEO_PORTS,
+    stage_ports=SpeechVideoStageConfig.session_ports,
+)
+SPEECH_MOTION_GROUP = StageGroup(
+    lambda: [speech_motion_stage()],
+    None,
+    SPEECH_MOTION_PORTS,
+    stage_ports=SpeechMotionStageConfig.session_ports,
+)
+PLUGIN_STAGE_GROUPS = (
+    MOTION_GROUP,
+    AVATAR_GROUP,
+    SPEECH_VIDEO_GROUP,
+    SPEECH_MOTION_GROUP,
+)
 PLUGIN_STAGE_CONFIG_TYPES: dict[str, type[StageConfig]] = {
     MOTION_STAGE: MotionStageConfig,
     AVATAR_STAGE: AvatarStageConfig,
+    SPEECH_VIDEO_STAGE: SpeechVideoStageConfig,
+    SPEECH_MOTION_STAGE: SpeechMotionStageConfig,
 }
 
 

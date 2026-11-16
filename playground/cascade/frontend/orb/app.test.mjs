@@ -7,6 +7,7 @@ import { DEFAULT_PLAYOUT_DELAY_MS, ReplyMediaGate, playoutDelayFrom } from "../.
 import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
 import { MotionView, SMPLH_FLAME_MOTION, smplhFlameMotionRenderer } from "./smplh_flame_motion.js";
 import { JPEG_FRAME, VideoFrameView, jpegFrameRenderer } from "./video_frame.js";
+import { SMPLX_MOTION, SmplxMotionView, smplxMotionRenderer } from "./smplx_motion.js";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
 // The settings panel is the realtime page's module, served under this page's path by playground/cascade/app.py.
@@ -16,6 +17,7 @@ const pageSource = readFileSync(new URL("./index.html", import.meta.url), "utf8"
 // The page with a settings panel that answers the given session options; locks records what the page asked the panel to lock
 // and panelOptions what it constructed the panel with; posted is every message the page sent the playback worklet.
 function createApp(sessionOptions, search = "") {
+  const meshes = [];
   const sockets = [];
   const posted = [];
   const locks = [];
@@ -31,6 +33,10 @@ function createApp(sessionOptions, search = "") {
     MotionView,
     SMPLH_FLAME_MOTION,
     smplhFlameMotionRenderer,
+    SMPLX_MOTION,
+    SmplxMotionView,
+    smplxMotionRenderer,
+    attachSmplxMesh: (options) => { meshes.push(options); return Promise.resolve(null); },
     JPEG_FRAME,
     VideoFrameView,
     jpegFrameRenderer,
@@ -100,6 +106,7 @@ function createApp(sessionOptions, search = "") {
   });
   vm.runInContext(appSource, context);
   return {
+    meshes,
     sockets,
     locks,
     panelOptions,
@@ -129,6 +136,14 @@ test("the page has every element and every session.js export the shared settings
   const session = await import("./session.js");
   assert.ok(importedNames.length > 0);
   assert.deepEqual(importedNames.filter((name) => typeof session[name] !== "function"), []);
+});
+
+test("the page offers both motion views the SMPL-X mesh on its own canvas", () => {
+  const app = createApp({ instructions: "", outputModalities: ["audio"], extension: {}, turnDetection: null });
+  assert.equal(app.meshes.length, 1);
+  assert.equal(app.meshes[0].views.length, 2);
+  assert.ok(app.meshes[0].views.every((view) => view instanceof MotionView));
+  assert.ok(/id="meshView"/.test(pageSource) && /"three": "https:\/\/cdn\.jsdelivr\.net\/npm\/three@[0-9.]+\//.test(pageSource));
 });
 
 test("the page offers no text-only replies, since its captions and truncate follow audio playback", () => {
