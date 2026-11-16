@@ -71,6 +71,35 @@ func TestMeetingAudioProbeWaitsForLoadAndPage(t *testing.T) {
 	}
 }
 
+func TestMeetingAudioProbeWaitsForReload(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	const id = "m-watch-reload"
+	if _, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{ID: id, Status: store.MeetingDone, Mode: store.MeetingModeMeeting, Audio: "watch-audio"}); err != nil {
+		t.Fatal(err)
+	}
+	a.openMeetingDetail(id)
+	detail := a.mv.detail
+	a.refreshMeetingAudio()
+	var queued []func()
+	a.postQueue = func(fn func()) { queued = append(queued, fn) }
+	a.loadMeetingDetail(id)
+	if !detail.loadPending {
+		t.Fatal("reload is not pending")
+	}
+	pendingProbe := detail.audioProbe
+	a.prepareMeetingsPage()
+	if detail.audioProbe != pendingProbe {
+		t.Fatalf("reload started a probe: generation %d, want %d", detail.audioProbe, pendingProbe)
+	}
+	for _, fn := range queued {
+		fn()
+	}
+	a.prepareMeetingsPage()
+	if !detail.audioProbing {
+		t.Fatal("no watch after reload")
+	}
+}
+
 func TestMeetingAudioProbeStartsOnce(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	const id = "m-watch"

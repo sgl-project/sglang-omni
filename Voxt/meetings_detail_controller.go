@@ -24,6 +24,7 @@ type meetingDetail struct {
 	segmentIndex map[int]int
 	chat         []meeting.ChatMessage
 	loading      bool
+	loadPending  bool
 	busy         bool
 	correcting   bool
 	err          string
@@ -54,6 +55,7 @@ func (a *app) loadMeetingDetail(id string) {
 	if detail := a.mv.detail; detail != nil && detail.id == id {
 		a.stopMeetingAudioWatch(detail)
 		detail.audioProbe++
+		detail.loadPending = true
 		version = detail.audioProbe
 	}
 	a.async(func() {
@@ -70,6 +72,7 @@ func (a *app) loadMeetingDetail(id string) {
 				return
 			}
 			detail.loading = false
+			detail.loadPending = false
 			if err != nil {
 				detail.err = err.Error()
 				a.rebuildMeetingDetail()
