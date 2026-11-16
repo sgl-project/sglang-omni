@@ -46,6 +46,12 @@ MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh  # the real model
 scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HOME/voxtnew-runtime/omni go test -run TestEval -v .'  # the eval (docs/eval.md)
 scripts/vendor-mygo.sh --check                               # third_party/mygo is MyGo + our patches
 scripts/snapshots.sh check                                   # every snapshot, pixel for pixel, against the merge base
+VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .  # regenerate meeting fixtures in English and Chinese
+VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -count=1 -run '^TestMeetingDemoScreenshots$' .  # every meeting fixture as PNG
+MYGO_LOCALE=en VOXTNEW_DEMO_DIR="$PWD/testdata/meeting" GOFLAGS='-tags=meetingdemo' go tool mygo dev ./demo  # fixture demo with hot reload, no helper or models
+GOFLAGS='-tags=meetingdemo' go tool mygo build -skip-dmg ./demo  # build the fixture demo without opening a window
+scripts/benchmarks.sh /tmp/voxt-bench-change && benchstat /tmp/voxt-bench-base/a.txt /tmp/voxt-bench-change/a.txt  # compare benchmarks; run the base first
+python3 scripts/overlap.py 3856 3965 3966                    # view/logic overlap of pull requests (read-only GitHub access)
 go run ./internal/tools/declhash . ./internal/...            # a hash per declaration: equal before and after a pure move
 go vet -tags updatecheck .                                   # the update-check build
 ```

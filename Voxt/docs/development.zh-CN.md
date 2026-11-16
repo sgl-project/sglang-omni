@@ -58,6 +58,15 @@ scripts/mac.sh scripts/mac-regress.sh   # Mac 上的真实模型：运行时、�
 
 存储的测试用 MyGo 的 SQLite 插件，它会下载一次自己的库（按 SHA-256 校验），或者用 `MYGO_SQLITE_LIBRARY`。在 Linux 上，浮窗中文文字的像素检查需要 CJK 字体（Ubuntu：`fonts-noto-cjk`）。
 
+## 修改会议的 view state 和 actions
+
+[UI 开发指南](ui-development.zh-CN.md) 说明了如何在不使用辅助进程和模型的情况下渲染 fixture、修改会议视图。功能侧改动遵守同一条边界：
+
+1. 把显示数据加入 `buildMeetingsViewState`、`buildMeetingDetailViewState` 或 `buildMeetingOverlayViewState` 的输入和结果。view state 里不放领域类型，也不做 I/O。
+2. 在 `meeting_fixture_scenarios_test.go` 中加入场景，然后执行 `VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .` 重新生成 fixture。
+3. 新增用户意图时，在 `meetingsActions` 或 `meetingOverlayActions` 中加入方法，在 `app` 上实现，并在 `meetingDemoHost` 上记录。视图只调用一个意图，不在视图里拼装业务流程。
+4. 在 `TestMeetingDemoActionControls` 中加入点击测试，然后运行 `go test ./internal/archtest` 和 `go test -run '^TestMeeting(ViewStateGolden|FixtureCoverage|DemoActionControls)$' .`。
+
 - [docs/architecture.md](architecture.md)：包结构、线程、会话、运行时、磁盘上的数据、测试。
 - [docs/plan.md](plan.md)：这个 app 是什么，以及里程碑。
 - [docs/behavior.md](behavior.md)：这个 app 和 Swift 版 Voxt（[hehehai/voxt](https://github.com/hehehai/voxt)）行为上的不同，以及原因。

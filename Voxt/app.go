@@ -40,8 +40,8 @@ import (
 //	historyAccessState history_access.go  other programs reading the history
 //	transcribeSocketState transcribe_socket.go  `Voxt transcribe`'s socket
 //	meetingState        meeting_link.go meetings (dev builds)
-//	meetingOverlayState meeting_overlay.go the meeting floating window
-//	meetingsState       meetings_page.go the Meetings page (dev builds)
+//	meetingOverlayState meeting_overlay_window.go the meeting floating window
+//	meetingsState       meetings_controller.go the Meetings page (dev builds)
 //
 // Add fields to your area's struct, not here.
 type app struct {

@@ -58,6 +58,15 @@ scripts/mac.sh scripts/mac-regress.sh   # the real models on a Mac: runtimes, ev
 
 The store's tests use MyGo's SQLite plugin, which downloads its library once (checked against its SHA-256) or uses `MYGO_SQLITE_LIBRARY`. On Linux the overlay's pixel checks of Chinese text need a CJK font (Ubuntu: `fonts-noto-cjk`).
 
+## Change meeting view state and actions
+
+The [UI development guide](ui-development.md) explains how to render fixtures and change meeting views without the helper or models. Feature-side changes use the same boundary:
+
+1. Add display data to the input and result of `buildMeetingsViewState`, `buildMeetingDetailViewState`, or `buildMeetingOverlayViewState`. Keep domain types and I/O out of the view state.
+2. Add a scenario to `meeting_fixture_scenarios_test.go` and regenerate the fixtures with `VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .`.
+3. For a new user intent, add the method to `meetingsActions` or `meetingOverlayActions`, implement it on `app`, and record it on `meetingDemoHost`. Views call one intent instead of assembling a business workflow.
+4. Add a click test to `TestMeetingDemoActionControls`, then run `go test ./internal/archtest` and `go test -run '^TestMeeting(ViewStateGolden|FixtureCoverage|DemoActionControls)$' .`.
+
 - [docs/architecture.md](architecture.md): packages, threading, the session, the runtimes, data on disk, tests.
 - [docs/plan.md](plan.md): what the app is and its milestones.
 - [docs/behavior.md](behavior.md): what the app does differently from the Swift Voxt ([hehehai/voxt](https://github.com/hehehai/voxt)), and why.

@@ -129,7 +129,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── eval/             the models' quality evaluation: the eval set (testdata/eval: synthesised
 │   │                     dictations, their words, the expected clean-up, checks), error rates,
 │   │                     dictionary terms found, clean-up checks (docs/eval.md)
-│   ├── archtest/         tests of the code's structure only: file sizes, import layering ("Code structure rules")
+│   ├── archtest/         tests of the code's structure only: file sizes, import layering and view-file boundaries ("Code structure rules")
 │   └── tools/            developer commands (standard library only): snapcmp (snapshot comparison),
 │                         declhash (pure-move check), evalsynth (the speech fixtures, Qwen3-TTS on a Mac)
 ├── helper/               the Swift helper (helper/README.md): Sources/, Tests/, Fixtures/, Support/
@@ -176,12 +176,15 @@ Event types live next to their publisher, and their topic starts with the publis
 
 MyGo builds the root `main` package (`mygo dev`, `mygo build`, `ui.View`); views need the window and its main thread. The domain, which must be goroutine-safe and testable, is in `internal/`. Each area of the UI keeps its fields in a struct of its own, embedded in `app` (app.go).
 
+The meeting area separates those fields again. `meetings_view_state.go` and `meeting_overlay_state.go` turn store rows and meeting snapshots into serializable display data. Controllers in `meetings_controller.go`, `meetings_detail_controller.go`, `meetings_playback_controller.go`, and `meeting_overlay_window.go` own I/O and native resources. The five view files consume that data, user-intent actions from `meeting_actions.go`, and local widget state. `meeting_demo.go` loads the same view state from JSON fixtures without constructing `app`.
+
 ### Code structure rules
 
 `internal/archtest` checks these with every `go test ./...`; each failure says how to fix it (the rules from AudioSmith's refactor, the plan of refactor R0–R8).
 
 - **File size.** A Go file has at most 600 lines, a test file 800; code should keep to about 400 (files over it are reported by `go test -v -run TestFileSizes ./internal/archtest`, not failed). Generated files, `third_party/`, `testdata/`, `build/` and the Swift helper are not counted. The files over the limit today are listed in `internal/archtest/allowlist.txt` with their size as a ceiling, why they are long and the batch that splits them: they may shrink, not grow, and leave the list once split. Functions over 150 lines are reported (`-run TestLongFuncs`).
 - **Layering.** Leaves (above) import nothing internal; only `icons` uses `mygo/ui`, and only `store/sqlitestore` (`plugins/sqlite`) and `overlay/layout` (`mygo`, for `mygo.Rectangle`) another MyGo package; only `uitext` may import `i18n` (the domain returns codes and errors, package main and `uitext` say them); fakes (packages whose name ends in `test`) are for tests; `internal/tools` is standard library only. The rules and their reasons are in `internal/archtest/imports_test.go`.
+- **View files stay on the UI side.** `TestViewFiles` rejects domain imports, `app` access, I/O, goroutines, and direct calls into logic from unlisted views. Existing violations occupy one line per file in `internal/archtest/view-allowlist.txt`, which only shrinks as areas migrate. Meeting views receive view state, actions, and local UI state. `TestMeetingViewStateGolden` and `TestMeetingFixtureCoverage` check their display data and fixture coverage.
 - **Every internal → internal import is listed** in `internal/archtest/imports.txt` (`from to`, paths under `internal/`). A new dependency adds a line there, so that review sees it; a line no import needs fails until removed.
 - **Refactors that only move code** prove it: `go run ./internal/tools/declhash . ./internal/...` on the base and on the branch print the same lines (a hash per top-level declaration, comments and build constraints included; `-nocomments` tells a move that also updated the file names comments mention), and `scripts/snapshots.sh check` renders every set of UI snapshots of both and compares them pixel for pixel (§6). Snapshots are reproducible: `snapshot_env_test.go` pins the clock (a `testing/synctest` bubble), the data directories, the free disk space and the sizes Settings → Storage measures.
 
@@ -242,7 +245,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 
 ## 3. Threading and state rules
 
-1. **The build pass does no I/O.** A view reads only `app` fields, snapshots and memory-only getters (`settings.Service.Get`, `i18n.T`). Store, model runtime and helper calls happen in handlers that start a goroutine (`a.async`, `helperCall`).
+1. **The build pass does no I/O.** An allowlisted view reads `app` fields, snapshots and memory-only getters (`settings.Service.Get`, `i18n.T`). A migrated view reads only its view state. Meeting controllers construct that state on the main thread after store reads, snapshot callbacks, and playback updates; constructors do no I/O. Store, model runtime and helper calls happen in handlers that start a goroutine (`a.async`, `helperCall`).
 2. **`app` is main-thread only.** Goroutines reach it through `a.post(fn)` (`Window.Update`). In tests `post` runs fn at once, or queues it (`postQueue`) in tests that run real goroutines (the supervisor against the fake helper process).
 3. **Bus subscriptions are set up once, in wiring code** (`openShell`, `connectHelper`), never in a build pass. Handlers must not block. Publishers publish after their change is durable, never while holding a lock.
 4. **Domain packages are goroutine-safe**, take a `context.Context` when they may block, return copies, and wrap `core.Err*` sentinels.
@@ -285,6 +288,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | `a.textIO()` (the text I/O every paste goes through: the family's paste rule), `a.modelEvents(worker)` and `a.beforeLoad()` (a runtime's `OnModel` and `BeforeLoad`), `a.unloadIdleModel(id)` (the family's memory requests), `a.famRuntime()` | family_runtime.go | session_link.go, session_control.go, session_answer.go; models_omni.go; family.go (`openFamily`) |
 | `a.notices` (the centre's, newest first), `a.noticeStack(c)` (the cards at the foot of the sidebar; the rail's popover), `a.setProblem(id, code, n)` (a problem's card: shown once, withdrawn when solved, kept away this run once dismissed), `a.checkModels()`, `a.checkHelper()` | shell_notices.go | the sidebar, the rail; `openModels`, `settingsChanged`, `helperChanged` |
 | `uitext.HotkeyGlyphs(keys)` | internal/uitext (keys.go) | ? sheet, menu bar, feature pages |
+| `meetingsViewState`, `meetingDetailViewState`, `meetingOverlayViewState`; `meetingsActions`, `meetingOverlayActions` | meetings_view_state.go, meeting_overlay_state.go (builders); meeting_actions.go (intents); the meeting controllers (implementations) | pages.go and the native meeting overlay; the fixture demo |
 | Design tokens: `tok(t)`, `px`, `fs*`, `sp*`, `radius*`; `accentName` (teal) | ui_tokens.go | every view |
 | UI kit (AudioSmith 0.3): buttons by rank, `pageHeader`, `card`, `formRow`, `settingRow`, `emptyState`, `notice`, `sidePanel`, `dialogFrame`… | ui_kit.go (its overview), ui_buttons.go, ui_marks.go, ui_layout.go, ui_panels.go, ui_forms.go (AudioSmith's split), ui_rows.go (`settingRow`, `sectionTitle`) | every view |
 
@@ -338,6 +342,8 @@ Not taken: jobs, hub (downloads), catalog, licence, engine's MLX side, services,
 | MyGo vet | `go tool mygo vet .` | `go vet ./...` and the UI-lifetime checks |
 | Race | `CGO_ENABLED=1 go test -race ./...` | needs cgo |
 | Snapshots, compared | `scripts/snapshots.sh check [BASE]` (`twice`: is it reproducible?; `render DIR`) | every set below (main, min, home, overlay, ink) of BASE (default: the merge base with origin/main) and of the working tree, compared pixel for pixel by `internal/tools/snapcmp`; about a minute; the pictures of what differs in `$SNAP_TMP/diff`. New snapshot tests call `runSnapshots` and make their directories with `testDir` (snapshot_env_test.go). The overlay's flows (`VOXTNEW_FLOW_SHOTS`) are left out: they run real goroutines, and their tests check the steps |
+| Meeting view-state fixtures | `VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .`; `go test -run '^TestMeetingFixtureCoverage$' .` | production builders generate `testdata/meeting/<locale>/<scenario>.json` in English and Chinese; coverage derives every meeting state, stage, mode, source, stored status, and problem code from the domain declarations |
+| Meeting fixture demo | `MYGO_LOCALE=en VOXTNEW_DEMO_DIR="$PWD/testdata/meeting" GOFLAGS='-tags=meetingdemo' go tool mygo dev ./demo`; `VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -run '^TestMeetingDemoScreenshots$' .`; `go test -run '^TestMeetingDemoActionControls$' .` | fixture switching without restart; recording-only actions; screenshots and control wiring through `ui.Tester`, with no helper, models, permissions, network, or Voxt data directory. `GOFLAGS='-tags=meetingdemo' go tool mygo build -skip-dmg ./demo` checks the native package |
 | Snapshots | `VOXTNEW_SNAPSHOTS=/tmp/shots go test -run TestSnapshots .` | every page, the settings sections and the overlays, light/dark, en/zh-Hans, 2×; the window's default size (800×520); `VOXTNEW_SNAPSHOTS_SIZE=680x440` (or `min`) for the smallest; the foot of the sidebar with none, one and three notifications and the rail's dot and popover (`sidebar-notices-*`, `rail-notices*`) |
 | Swift helper | `scripts/mac.sh 'cd helper && swift test'` | the wire types against helper/Fixtures (the same lines the Go tests decode), the hotkey recognizer, the PCM framer; `scripts/mac-regress.sh` runs it on mac-air (CI is Linux only) |
 | Mac checks | `scripts/mac.sh 'VOXTNEW_MAC=1 go test -run "TestNative|TestActivate|TestPlay|TestSystemProxies" -v ./internal/permission ./internal/macx'` | the permission calls, activation, the recording's sounds, the system's proxies (as `scutil --proxy` shows them) |
