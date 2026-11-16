@@ -10,21 +10,23 @@ import (
 
 func TestModelsDemoActionControls(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		fixture string
-		steps   []historyDemoStep
-		want    []string
-		check   func(*testing.T, *meetingDemoHost)
+		name     string
+		fixture  string
+		steps    []historyDemoStep
+		want     []string
+		wantText string
+		check    func(*testing.T, *meetingDemoHost)
 	}{
 		{name: "network open", fixture: "en/models-page-normal", steps: historySteps("Network…"), want: []string{"openNetwork"}},
 		{name: "network cancel", fixture: "en/models-network-automatic", steps: historySteps("Cancel"), want: []string{"closeNetwork"}},
 		{name: "network save", fixture: "en/models-network-no-proxy", steps: historySteps("Save"), want: []string{"saveNetwork", "closeNetwork"}},
-		{name: "network custom", fixture: "en/models-network-automatic", steps: historySteps("Custom"), check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "network custom", fixture: "en/models-network-automatic", steps: historySteps("Custom"), wantText: "The password is kept in the Keychain.", check: func(t *testing.T, host *meetingDemoHost) {
 			if host.modelsUI.netForm.proxyMode != proxyCustom {
 				t.Fatalf("proxy mode %d", host.modelsUI.netForm.proxyMode)
 			}
 		}},
-		{name: "network source", fixture: "en/models-network-automatic", steps: historySteps("hf-mirror.com only"), check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "network no proxy", fixture: "en/models-network-automatic", steps: historySteps("No proxy"), wantText: "Downloads connect to the server directly."},
+		{name: "network source", fixture: "en/models-network-automatic", steps: historySteps("hf-mirror.com only"), wantText: "Only this server. If it cannot be reached, downloads fail.", check: func(t *testing.T, host *meetingDemoHost) {
 			if host.modelsUI.netForm.source != 2 {
 				t.Fatalf("source %d", host.modelsUI.netForm.source)
 			}
@@ -117,6 +119,9 @@ func TestModelsDemoActionControls(t *testing.T) {
 					t.Fatalf("%s: %v (controls %q)", step.label, err, tester.AccessLabels())
 				}
 				frames(tester)
+			}
+			if test.wantText != "" && !tester.HasText(test.wantText) {
+				t.Fatalf("frame does not show %q: %q", test.wantText, tester.Texts())
 			}
 			if !slices.Equal(host.calls, test.want) {
 				t.Fatalf("calls %q, want %q", host.calls, test.want)

@@ -172,6 +172,13 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	}
 }
 
+func (host *meetingDemoHost) modelsViewState() *modelsViewState {
+	state := *host.current().state.Models
+	updateModelsNetworkFormViewState(i18n.CurrentTranslator(), &state.Network, host.modelsUI.netForm)
+	state.Network.Open = host.modelsUI.netOpen
+	return &state
+}
+
 func (host *meetingDemoHost) faceStyle(model meetingOverlayModel) meetingOverlayFaceStyle {
 	mode, height := meetingOverlayFace(model)
 	return meetingOverlayFaceStyle{radius: faceRadius(host.overlayLook, mode, height), alpha: layout.FaceAlpha(host.overlayLook)}

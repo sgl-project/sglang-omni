@@ -437,12 +437,18 @@ func buildModelsDeleteViewState(translator *i18n.Translator, input modelsViewSta
 }
 
 func buildModelsNetworkViewState(translator *i18n.Translator, input modelsViewStateInput) modelsNetworkViewState {
-	form := input.NetworkForm
-	state := modelsNetworkViewState{
-		Open: input.NetworkOpen, ProxyMode: form.proxyMode, ProxyError: form.proxyErr,
-		Source: form.source, SourceURL: form.sourceURL,
-		SourceLabels: []string{translator.T("Automatic"), translator.T("Hugging Face only"), translator.T("hf-mirror.com only")},
-	}
+	state := modelsNetworkViewState{Open: input.NetworkOpen}
+	updateModelsNetworkFormViewState(translator, &state, input.NetworkForm)
+	state.ProxyFamily = buildModelsNetworkFamilyViewState(translator, input, actnow.KeyProxy, translator.T("Other apps that share this model library use a different proxy."))
+	state.SourceFamily = buildModelsNetworkFamilyViewState(translator, input, actnow.KeyHFEndpoints, translator.T("Other apps that share this model library use a different download source."))
+	return state
+}
+
+func updateModelsNetworkFormViewState(translator *i18n.Translator, state *modelsNetworkViewState, form networkForm) {
+	state.ProxyMode, state.ProxyError = form.proxyMode, form.proxyErr
+	state.Source, state.SourceURL = form.source, form.sourceURL
+	state.SourceLabels = []string{translator.T("Automatic"), translator.T("Hugging Face only"), translator.T("hf-mirror.com only")}
+	state.ProxyCaption = ""
 	switch form.proxyMode {
 	case proxyAuto:
 		state.ProxyCaption = translator.T("The proxy in this Mac's network settings, or one set by an environment variable.")
@@ -460,9 +466,6 @@ func buildModelsNetworkViewState(translator *i18n.Translator, input modelsViewSt
 	default:
 		state.SourceCaption = translator.T("Custom servers: %s", form.sourceURL)
 	}
-	state.ProxyFamily = buildModelsNetworkFamilyViewState(translator, input, actnow.KeyProxy, translator.T("Other apps that share this model library use a different proxy."))
-	state.SourceFamily = buildModelsNetworkFamilyViewState(translator, input, actnow.KeyHFEndpoints, translator.T("Other apps that share this model library use a different download source."))
-	return state
 }
 
 func buildModelsNetworkFamilyViewState(translator *i18n.Translator, input modelsViewStateInput, key, conflictText string) modelsNetworkFamilyViewState {

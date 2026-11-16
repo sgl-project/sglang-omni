@@ -58,7 +58,7 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 					})
 				})
 			case "models":
-				modelsPage(c, fixture.state.Models, host, &host.modelsUI, modelsPageViews{})
+				modelsPage(c, host.modelsViewState(), host, &host.modelsUI, modelsPageViews{})
 			}
 		})
 	})
