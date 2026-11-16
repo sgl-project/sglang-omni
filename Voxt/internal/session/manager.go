@@ -225,7 +225,17 @@ func (m *Manager) Rethink(id string, t *llm.Thinking) {
 func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
 	m.mu.Lock()
 	if m.cur != r || r.ended {
+		changed := false
+		if r.onDraft != nil { // a history retry: its own snapshot
+			was := r.own.Draft
+			fn(&r.own)
+			changed = r.own.Draft != was
+		}
+		draft := r.own.Draft
 		m.mu.Unlock()
+		if changed {
+			r.onDraft(draft)
+		}
 		return false
 	}
 	fn(&m.snap)

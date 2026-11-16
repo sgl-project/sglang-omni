@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include "common/generation.h"
 #include "common/reference_audio.h"
 
 namespace cosyvoice3 {
@@ -746,10 +747,10 @@ CosyVoice3Model::Generate(const std::vector<int> &prompt_text_ids,
   };
 
   GeneratedSpeech generated;
-  generated.finish_reason = qwen3_asr::FinishReason::kLength;
+  generated.finish_reason = omni_common::FinishReason::kLength;
   while (static_cast<int>(generated.speech_tokens.size()) < max_tokens) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     mx::array row = mx::astype(mx::reshape(logits, {-1}), mx::float32);
@@ -807,7 +808,7 @@ CosyVoice3Model::Generate(const std::vector<int> &prompt_text_ids,
       }
     }
     if (token >= kSpeechTokenSize) {
-      generated.finish_reason = qwen3_asr::FinishReason::kStop;
+      generated.finish_reason = omni_common::FinishReason::kStop;
       break;
     } else {
     }
