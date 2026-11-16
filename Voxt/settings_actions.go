@@ -31,3 +31,28 @@ type settingsPrivacyActions interface {
 	clearHistory()
 	setLogText(on bool)
 }
+
+type settingsAudioActions interface {
+	settingsSoundsActions
+	loadDevices()
+	restartHelper()
+	addDevice(deviceID string)
+	moveDevice(deviceID string, delta int)
+	removeDevice(deviceID string)
+	setSkipSilence(on bool)
+	setCleanSound(on bool)
+	setLiveResult(on bool)
+	setUploadMB(megabytes float64)
+	setMaxMinutes(minutes float64)
+	setMuteOutput(on bool)
+}
+
+type settingsSoundsActions interface {
+	chooseSoundSource(sourceID string)
+	chooseSoundPair(start, stop string)
+	previewSoundPair(start, stop string)
+	stopPreview()
+	chooseSystemSound(eventID, choice string)
+	tryCueSound(eventID string)
+	setSoundVolume(volume int)
+}

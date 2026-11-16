@@ -58,13 +58,10 @@ remote_dialog.go  # remote
 remote_generation.go  # remote
 remote_page.go  # remote
 settings_about.go  # settings
-settings_audio.go  # settings
 settings_meeting.go  # settings
 settings_overlay.go  # settings
 settings_shortcuts.go  # settings
 settings_shortcuts_family.go  # settings
-settings_soundchoice.go  # settings
-settings_sounds.go  # settings
 settings_storage.go  # settings
 settings_storage_erase.go  # settings
 shell.go  # shell

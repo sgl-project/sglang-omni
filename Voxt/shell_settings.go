@@ -39,13 +39,8 @@ type settingsForm struct {
 	settingsGeneralLocalUI
 	settingsAppearanceLocalUI
 	settingsPrivacyLocalUI
+	settingsAudioLocalUI
 	strictShortcuts bool        // Features.StrictShortcuts
-	skipSilence     bool        // !Audio.VAD.Off
-	liveResult      bool        // Audio.LiveResult
-	cleanSound      bool        // !Audio.Clean.Off
-	muteOutput      bool        // Audio.MuteOn()
-	uploadMB        float64     // Audio.UploadMB
-	maxMinutes      float64     // Audio.MaxSeconds, in minutes
 	ovStyle         overlayForm // settings_overlay.go
 
 	// loginIs is whether macOS opens VoxtNew at login, as last read or
@@ -257,7 +252,8 @@ func (a *app) settingsShown(sub string) {
 	case "/permissions":
 		a.recheckPermissions() // permissions.go
 	case "/audio":
-		a.loadDevices() // settings_audio.go
+		a.loadDevices()         // settings_audio_controller.go
+		a.prepareSoundChoices() // settings_soundchoice_controller.go
 	}
 }
 
@@ -410,7 +406,9 @@ func (a *app) settingsSection(c *ui.Context, r *ui.Route) {
 		"permissions": func(c *ui.Context) {
 			permissionsSettings(c, a.permissionsModel(), a)
 		},
-		"audio":     a.audioSettings,     // settings_audio.go
+		"audio": func(c *ui.Context) {
+			audioSettings(c, a.audioSettingsModel(time.Now()), a, &a.settingsForm.settingsAudioLocalUI)
+		},
 		"overlay":   a.overlaySettings,   // settings_overlay.go
 		"shortcuts": a.shortcutsSettings, // settings_shortcuts.go
 		"appearance": func(c *ui.Context) {

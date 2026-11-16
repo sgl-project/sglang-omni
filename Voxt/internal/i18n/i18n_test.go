@@ -57,6 +57,9 @@ func TestTranslatorUsesExplicitLocale(t *testing.T) {
 	if got := translator.N(1, "%d line", "%d lines", 1); got != "1 行" {
 		t.Errorf("explicit plural translation %q", got)
 	}
+	if got := translator.X("sound source", "Built-in"); got != "自带" {
+		t.Errorf("explicit contextual translation %q", got)
+	}
 	if got := NewTranslator("en").N(1, "%d line", "%d lines", 1); got != "1 line" {
 		t.Errorf("explicit English singular %q", got)
 	}
