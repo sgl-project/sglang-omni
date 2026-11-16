@@ -160,14 +160,18 @@ def test_checkpoint_config_drives_pipeline_topology(
         / "configs"
         / f"firered_tts3_{variant}.yaml"
     )
-    resolved = resolve_sources(
-        model_path=str(checkpoint_directory),
-        config_file=str(config_path),
-        text_only=False,
-        variant=None,
-        mem_fraction_static=None,
-        argv=[],
-    ).resolved.config
+    with mock.patch(
+        "sglang_omni.models.firered_tts3.hf_config.hf_hub_download",
+        return_value=str(checkpoint_directory / "config.json"),
+    ):
+        resolved = resolve_sources(
+            model_path=str(checkpoint_directory),
+            config_file=str(config_path),
+            text_only=False,
+            variant=None,
+            mem_fraction_static=None,
+            argv=[],
+        ).resolved.config
     assert resolved.model_path == str(checkpoint_directory)
     assert [stage.name for stage in resolved.stages] == stage_names
     service = import_string(pipeline.speech_request_validator_factory)(

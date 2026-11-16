@@ -34,14 +34,14 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ```bash
 sgl-omni serve \
-  --model-path /path/to/FireRedTTS3-Base \
+  --model-path FireRedTeam/FireRedTTS3-Base-HF \
   --model-name FireRedTTS3-Base \
   --config examples/configs/firered_tts3_base.yaml \
   --allowed-local-media-path docs/_static/audio \
   --port 8000
 ```
 
-The Base and Instruct examples use the SGLang Omni checkpoints [CKermit/FireRedTTS3-Base](https://huggingface.co/CKermit/FireRedTTS3-Base) and [CKermit/FireRedTTS3-Instruct](https://huggingface.co/CKermit/FireRedTTS3-Instruct). Each repository contains the model, tokenizer and RedAE assets; Base also includes CAM++. The original `FireRedTeam/FireRedTTS3` repository has a different directory layout and cannot be used as the model path directly. Use `--model-path` to select a complete compatible checkpoint at another location.
+The Base and Instruct examples use the official Hugging Face checkpoints [FireRedTeam/FireRedTTS3-Base-HF](https://huggingface.co/FireRedTeam/FireRedTTS3-Base-HF) and [FireRedTeam/FireRedTTS3-Instruct-HF](https://huggingface.co/FireRedTeam/FireRedTTS3-Instruct-HF). Each repository contains the model, tokenizer and RedAE assets; Base also includes CAM++. The original `FireRedTeam/FireRedTTS3` repository has a different directory layout and cannot be used as the model path directly. Use `--model-path` to select a complete compatible checkpoint at another location.
 
 For Instruct or Speaker, use the matching `firered_tts3_instruct.yaml` or `firered_tts3_speaker.yaml` config and set `--model-name` to `FireRedTTS3-Instruct` or `FireRedTTS3-Speaker` to match the requests below. The Speaker example expects a complete compatible local checkpoint at `./models/FireRedTTS3-Speaker`; provide one there or pass its path with `--model-path`. The examples pin the variant so request validation and stage selection also work when a checkpoint is downloaded from a remote repository.
 

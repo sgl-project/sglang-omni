@@ -1,5 +1,5 @@
 config_cls: FireRedTTS3PipelineConfig
-model_path: CKermit/FireRedTTS3-Instruct
+model_path: FireRedTeam/FireRedTTS3-Instruct-HF
 variant: instruct
 
 shared:
