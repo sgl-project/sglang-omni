@@ -1,0 +1,94 @@
+{
+  "name": "settings-appearance-dark-icons-reduce-motion",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/appearance",
+    "shown_path": "/settings/appearance",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "appearance": {
+      "theme": 2,
+      "theme_options": [
+        "系统",
+        "浅色",
+        "深色"
+      ],
+      "theme_values": [
+        "system",
+        "light",
+        "dark"
+      ],
+      "scale": 3,
+      "scale_options": [
+        "90%",
+        "100%",
+        "110%",
+        "125%"
+      ],
+      "scale_values": [
+        0.9,
+        1,
+        1.1,
+        1.25
+      ],
+      "sidebar": 2,
+      "sidebar_options": [
+        "自动",
+        "名称和图标",
+        "只显示图标"
+      ],
+      "sidebar_values": [
+        "automatic",
+        "names",
+        "icons"
+      ],
+      "reduce_motion": true
+    }
+  }
+}

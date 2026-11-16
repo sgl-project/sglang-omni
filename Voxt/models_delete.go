@@ -219,6 +219,10 @@ func (a *app) modelSharedDialog(c *ui.Context) {
 // keptModelsText is the erase confirmation's line on the models other
 // apps use, which stay (spec §7.6 step 3; "" none).
 func keptModelsText(ids []string, bytes int64) string {
+	return keptModelsTextWithTranslator(i18n.CurrentTranslator(), ids, bytes)
+}
+
+func keptModelsTextWithTranslator(translator *i18n.Translator, ids []string, bytes int64) string {
 	if len(ids) == 0 {
 		return ""
 	}
@@ -226,6 +230,6 @@ func keptModelsText(ids []string, bytes int64) string {
 	for _, id := range ids {
 		names = append(names, uitext.ModelName(id))
 	}
-	return i18n.T("Other apps also use these models, so they are kept: %s (%s)",
-		strings.Join(names, i18n.X("list", ", ")), uitext.HumanBytes(bytes))
+	return translator.T("Other apps also use these models, so they are kept: %s (%s)",
+		strings.Join(names, translator.X("list", ", ")), uitext.HumanBytes(bytes))
 }

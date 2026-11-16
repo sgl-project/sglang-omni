@@ -11,7 +11,8 @@ import (
 
 func (a *app) privacySettingsModel(now time.Time) settingsPrivacyViewState {
 	return buildSettingsPrivacyViewState(i18n.CurrentTranslator(), settingsPrivacyStateInput{
-		Privacy: a.prefs.Privacy, HasUpdateFeed: a.upd != nil, HistoryAccess: a.historyAccessModel(now),
+		Privacy: a.prefs.Privacy, HasUpdateFeed: a.upd != nil, ClearHistoryAsk: a.clearHistoryAsk,
+		HistoryAccess: a.historyAccessModel(now),
 	})
 }
 

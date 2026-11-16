@@ -13,13 +13,15 @@ type settingsPrivacyViewState struct {
 	KeepAudio        bool                   `json:"keep_audio"`
 	KeepAudioEnabled bool                   `json:"keep_audio_enabled"`
 	LogText          bool                   `json:"log_text"`
+	ClearHistoryAsk  bool                   `json:"clear_history_ask"`
 	HistoryAccess    historyAccessViewState `json:"history_access"`
 }
 
 type settingsPrivacyStateInput struct {
-	Privacy       settings.Privacy
-	HasUpdateFeed bool
-	HistoryAccess historyAccessViewState
+	Privacy         settings.Privacy
+	HasUpdateFeed   bool
+	ClearHistoryAsk bool
+	HistoryAccess   historyAccessViewState
 }
 
 func buildSettingsPrivacyViewState(translator *i18n.Translator, input settingsPrivacyStateInput) settingsPrivacyViewState {
@@ -30,6 +32,6 @@ func buildSettingsPrivacyViewState(translator *i18n.Translator, input settingsPr
 	return settingsPrivacyViewState{
 		Online: online, SendWindow: input.Privacy.SendWindow, SendClipboard: input.Privacy.SendClipboardImage,
 		KeepHistory: input.Privacy.KeepHistory, KeepAudio: input.Privacy.KeepAudio, KeepAudioEnabled: input.Privacy.KeepHistory,
-		LogText: input.Privacy.LogText, HistoryAccess: input.HistoryAccess,
+		LogText: input.Privacy.LogText, ClearHistoryAsk: input.ClearHistoryAsk, HistoryAccess: input.HistoryAccess,
 	}
 }

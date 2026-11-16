@@ -216,18 +216,21 @@ func conflictKeysFor(translator *i18n.Translator, features settings.Features, co
 	return uitext.HotkeyTextFor(translator, conflict.Mine.Keys)
 }
 
+func buildShortcutPromptViewState(translator *i18n.Translator, features settings.Features, conflict shortcuts.Conflict) shortcutPromptViewState {
+	feature, _ := shortcutOf(conflict.Mine.ID)
+	return shortcutPromptViewState{
+		Keys: conflictKeysFor(translator, features, conflict), OtherApp: familyAppName(conflict.Other),
+		Function: familyFunctionFor(translator, conflict.Theirs), Link: conflict.Other.Links[registry.LinkShortcuts],
+		FeaturePath: featurePath(feature),
+	}
+}
+
 func (a *app) shortcutPromptModel() *shortcutPromptViewState {
 	if a.scPrompt == nil || a.ob.open {
 		return nil
 	}
-	conflict := *a.scPrompt
-	feature, _ := shortcutOf(conflict.Mine.ID)
-	translator := i18n.CurrentTranslator()
-	return &shortcutPromptViewState{
-		Keys: conflictKeysFor(translator, a.prefs.Features, conflict), OtherApp: familyAppName(conflict.Other),
-		Function: familyFunctionFor(translator, conflict.Theirs), Link: conflict.Other.Links[registry.LinkShortcuts],
-		FeaturePath: featurePath(feature),
-	}
+	state := buildShortcutPromptViewState(i18n.CurrentTranslator(), a.prefs.Features, *a.scPrompt)
+	return &state
 }
 
 // openLink opens a URL with the system (another app's deep link).

@@ -91,6 +91,15 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "history-access":
 		state := buildHistoryAccessViewState(translator, scenario.historyAccess)
 		fixture.HistoryAccess = &state
+	case "settings":
+		state := buildSettingsFixture(t, translator, scenario.settings)
+		fixture.Settings = &state
+	case "meeting-settings":
+		state := buildSettingsMeetingViewState(translator, scenario.meetingSettings)
+		fixture.MeetingSettings = &state
+	case "shortcut-prompt":
+		state := buildShortcutPromptViewState(translator, scenario.shortcutPrompt.features, scenario.shortcutPrompt.conflict)
+		fixture.ShortcutPrompt = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}
