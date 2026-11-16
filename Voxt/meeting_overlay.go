@@ -473,7 +473,7 @@ func meetingSpeaker(name string, src meeting.Source) string {
 	if name == "" && src == meeting.SourceMic {
 		return i18n.T("You")
 	}
-	return meetingSpeakerText(name, nil)
+	return meetingViewSpeakerText(name, nil)
 }
 
 func (a *app) meetingOverlayAsking(c *ui.Context) {

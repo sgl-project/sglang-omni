@@ -85,10 +85,10 @@ func snapshotsMeetings(t *testing.T, out string) {
 			a.local = readyLocal()
 			a.openMeetingDetail("m-0")
 			save("meetings-detail-llm")
-			a.mv.delID = "m-0"
+			a.mvUI.delID = "m-0"
 			save("meetings-delete")
-			a.mv.delID, a.mv.detail = "", nil
-			a.mv.setOpen = true
+			a.mvUI.delID, a.mv.detail = "", nil
+			a.mvUI.setOpen = true
 			save("meetings-settings")
 		}
 	}

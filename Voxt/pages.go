@@ -9,6 +9,8 @@ package main
 // (permissions.go).
 
 import (
+	"time"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
@@ -90,7 +92,10 @@ func (a *app) page(c *ui.Context, p navPage) {
 		a.dictionaryPage(c) // dictionary_page.go
 		return
 	case "/meetings":
-		a.meetingsPage(c) // meetings_page.go
+		a.prepareMeetingsPage()
+		meetingsPage(c, a.meetingsPageModel(time.Now()), a, &a.mvUI, a.pageWidth(c))
+		a.meetingSettingsDialog(c)
+		meetingDeleteDialog(c, &a.mvUI, a)
 		return
 	case "/notes":
 		a.notesPage(c) // notes_page.go

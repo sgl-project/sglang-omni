@@ -90,14 +90,14 @@ func TestMeetingsPageSearchPaginationEmpty(t *testing.T) {
 	}
 
 	a.navigate("/meetings")
-	a.mv.query = "budget"
-	a.mv.page = 0
+	a.mvUI.query = "budget"
+	a.mvUI.page = 0
 	a.loadMeetings()
 	frames(tt)
 	if !hasExact(tt, "sync 3") || hasExact(tt, "sync 20") {
 		t.Fatalf("search: %q", firstTexts(tt))
 	}
-	a.mv.query = "missing-xyz"
+	a.mvUI.query = "missing-xyz"
 	a.loadMeetings()
 	frames(tt)
 	if !has(tt, "Nothing matches") {

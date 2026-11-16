@@ -1,278 +1,129 @@
 package main
 
-// The Meetings page (/meetings): past meetings newest first, laid out
-// like History: a search, the list, and the details of one in a side
-// panel beside it, or over it when the window is narrow. The meeting
-// settings open in a dialog from the header.
+// The Meetings page: a searchable list and an optional detail panel.
 
 import (
-	"context"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-const meetingsPageSize = 20
-
-// With a meeting open, the list is a column meetingListW wide (DIPs at
-// 100 %) beside its details, when they get at least meetingDetailMinW;
-// else the details take the page alone (#4019).
 const (
 	meetingListW      = 300
 	meetingDetailMinW = 520
 )
 
-type meetingsView struct {
-	list    []store.Meeting
-	read    bool
-	loading bool
-	err     string
-	seq     int
+type meetingsLocalUI struct {
 	query   string
-	find    finder // Return steps through the matches (find_marks.go)
-	// lines are, while searching, the transcript line holding the search
-	// of each meeting listed (by ID), for its row.
-	lines   map[string]string
 	page    int
-	hasMore bool
+	find    finder
 	listUI  ui.ListState
-	detail  *meetingDetail
-	setOpen bool   // the meeting settings dialog
-	delID   string // the meeting the Delete dialog deletes, "" for none
+	setOpen bool
+	delID   string
+	detail  *meetingDetailLocalUI
 }
 
-type meetingsState struct {
-	mv       meetingsView
-	mtPlayer meetingPlayer
-}
-
-func (n *meetingsView) wants() string {
-	return strings.TrimSpace(n.query) + "\x00" + string(rune('0'+n.page))
-}
-
-func (a *app) loadMeetings() {
-	n := &a.mv
-	n.seq++
-	n.loading = true
-	seq := n.seq
-	want := n.wants()
-	q := store.MeetingQuery{
-		Search: strings.TrimSpace(n.query),
-		Limit:  meetingsPageSize + 1,
-		Offset: n.page * meetingsPageSize,
-	}
-	repo := a.lib.store.Meetings()
-	a.async(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		list, err := repo.ListMeetings(ctx, q)
-		var lines map[string]string
-		if q.Search != "" && err == nil {
-			lines = map[string]string{}
-			for _, mt := range list {
-				if _, segs, err := repo.Meeting(ctx, mt.ID); err == nil {
-					lines[mt.ID] = meetingLine(segs, q.Search)
-				}
-			}
-		}
-		a.post(func() {
-			n := &a.mv
-			if seq != n.seq || want != n.wants() {
-				return
-			}
-			n.loading, n.read = false, true
-			if err != nil {
-				n.err = err.Error()
-				return
-			}
-			n.hasMore = len(list) > meetingsPageSize
-			if n.hasMore {
-				list = list[:meetingsPageSize]
-			}
-			n.list, n.lines, n.err = list, lines, ""
-		})
-	})
-}
-
-// meetingLine is the first line of segs' texts or translations holding
-// q, "" for none (the store's search also finds words in other forms).
-func meetingLine(segs []store.MeetingSegment, q string) string {
-	for _, sg := range segs {
-		for _, s := range []string{sg.Text, sg.Translation} {
-			for l := range strings.SplitSeq(s, "\n") {
-				if l = strings.TrimSpace(l); len(findFolded(l, q)) > 0 {
-					return l
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// meetingRowTexts are the texts a meeting's row shows, where the search
-// marks its matches: its title, and the transcript line holding the
-// search, else the first line of its summary (meetingSnippet).
-func (n *meetingsView) meetingRowTexts(mt store.Meeting) []string {
-	line := n.lines[mt.ID]
-	if line == "" {
-		line = meetingSnippet(mt)
-	}
-	return []string{meetingDisplayTitle(mt), line}
-}
-
-// meetingItem is a row of the list: a day's heading, or a meeting.
-type meetingItem struct {
-	head string
-	mt   *store.Meeting
-}
-
-func meetingItems(list []store.Meeting, now time.Time) []meetingItem {
-	var out []meetingItem
-	last := ""
-	for i := range list {
-		if g := meetingGroup(list[i].CreatedAt, now); g != last {
-			out = append(out, meetingItem{head: g})
-			last = g
-		}
-		out = append(out, meetingItem{mt: &list[i]})
-	}
-	return out
-}
-
-func (a *app) meetingsPage(c *ui.Context) {
+func meetingsPage(c *ui.Context, state meetingsViewState, actions meetingsActions, local *meetingsLocalUI, pageWidth float32) {
 	t := c.Theme()
-	n := &a.mv
-	if !n.read && !n.loading {
-		a.loadMeetings()
-	}
-	active := a.meetingActive()
-	items := meetingItems(n.list, time.Now())
-	q := strings.TrimSpace(n.query)
-	hits := findHits(q, len(items), func(i int) []string {
-		if mt := items[i].mt; mt != nil {
-			return n.meetingRowTexts(*mt)
+	query := strings.TrimSpace(local.query)
+	hits := findHits(query, len(state.Items), func(index int) []string {
+		if row := state.Items[index].Meeting; row != nil {
+			return []string{row.Title, row.Snippet}
 		}
-		return nil // a day's heading
+		return nil
 	})
-	if n.find.advance(hits[len(items)]) {
-		row, _ := rowOf(hits, n.find.cur)
-		n.listUI.ScrollIntoView(row)
+	if local.find.advance(hits[len(state.Items)]) {
+		row, _ := rowOf(hits, local.find.cur)
+		local.listUI.ScrollIntoView(row)
 	}
-	cur, curAt := rowOf(hits, n.find.cur)
+	current, currentAt := rowOf(hits, local.find.cur)
 	widePageHeader(c, i18n.T("Meetings"), func() {
-		if len(n.list) > 0 || n.query != "" || n.page > 0 {
-			if n.find.field(c, "meetings-search", &n.query, i18n.T("Search"), px(t, 240)).
+		if state.MeetingCount > 0 || local.query != "" || local.page > 0 {
+			if local.find.field(c, "meetings-search", &local.query, i18n.T("Search"), px(t, 240)).
 				Label(i18n.T("Search meetings")).Changed() {
-				n.page = 0
-				a.loadMeetings()
+				actions.searchMeetings(local.query)
 			}
-			if hits[len(items)] > 0 { // none: the list says nothing matches, or the store found other word forms
-				n.find.count(c, q, hits[len(items)])
+			if hits[len(state.Items)] > 0 {
+				local.find.count(c, query, hits[len(state.Items)])
 			}
 		}
 		if iconButton(c.Key("mt-settings"), icons.Tuning2, i18n.T("Meeting settings")).Shrink(0).Clicked() {
-			n.setOpen = true
+			local.setOpen = true
 		}
-		if active {
+		if state.Active {
 			if primaryButton(c.Key("mt-end"), i18n.T("End meeting")).Clicked() {
-				a.meetingFinish()
+				actions.meetingFinish()
 			}
 		} else if primaryButton(c.Key("mt-start"), i18n.T("Start meeting")).Clicked() {
-			a.startMeeting()
+			actions.startMeeting()
 		}
 	})
 	pageBody(c).Children(func() {
-		pad := func(fn func()) {
-			ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(fn)
-		}
-		if n.err != "" {
-			pad(func() {
-				notice(c, "mt-err", noticeError, i18n.T("Could not read the meetings."), n.err, func() {
+		if state.Error != "" {
+			ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
+				notice(c, "mt-err", noticeError, i18n.T("Could not read the meetings."), state.Error, func() {
 					if ghostButton(c.Key("mt-retry"), i18n.T("Try again")).Clicked() {
-						a.loadMeetings()
+						actions.loadMeetings()
 					}
 				}, nil)
 			})
 		}
-		d := n.detail
-		split := a.pageWidth(c)-px(t, meetingListW) >= px(t, meetingDetailMinW)
+		split := pageWidth-px(t, meetingListW) >= px(t, meetingDetailMinW)
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-			if d == nil || split {
-				col := ui.Column(c).MinWidth(0)
-				if d != nil {
-					col = col.Width(px(t, meetingListW)).Shrink(0)
+			if state.Detail == nil || split {
+				column := ui.Column(c).MinWidth(0)
+				if state.Detail != nil {
+					column = column.Width(px(t, meetingListW)).Shrink(0)
 				} else {
-					col = col.Grow(1)
+					column = column.Grow(1)
 				}
-				col.Children(func() { a.meetingsList(c, items, q, cur, curAt) })
+				column.Children(func() { meetingsList(c, state, actions, local, query, current, currentAt) })
 			}
-			if d != nil {
+			if state.Detail != nil {
 				if split {
 					ui.Box(c).Width(1).Background(tok(t).Line).Shrink(0)
 				}
-				a.meetingDetailSection(c, func() {
-					a.stopMeetingPlayback()
-					n.detail = nil
-				})
+				meetingDetailSection(c, *state.Detail, actions, local)
 			}
 		})
 	})
-	a.meetingSettingsDialog(c)
-	a.meetingDeleteDialog(c)
 }
 
-// meetingsList is the meetings, by day, and the pager; the row at cur
-// has the current search match at curAt.
-func (a *app) meetingsList(c *ui.Context, items []meetingItem, q string, cur, curAt int) {
+func meetingsList(c *ui.Context, state meetingsViewState, actions meetingsActions, local *meetingsLocalUI, query string, current, currentAt int) {
 	t := c.Theme()
-	n := &a.mv
 	switch {
-	case !n.read:
-		// The first read is on its way: no empty state yet.
-	case len(n.list) == 0:
-		a.meetingsEmpty(c)
+	case !state.Read:
+	case state.MeetingCount == 0:
+		meetingsEmpty(c, local, actions)
 	default:
-		ui.List(c.Key("meetings-list"), &n.listUI, len(items)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp2)).
-			ItemKey(func(i int) any {
-				if it := items[i]; it.mt != nil {
-					return it.mt.ID
-				}
-				return "head/" + items[i].head
-			}).Rows(func(r ui.ListRow) {
-			if it := items[r.Index]; it.mt != nil {
+		ui.List(c.Key("meetings-list"), &local.listUI, len(state.Items)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp2)).
+			ItemKey(func(index int) any { return state.Items[index].Key }).Rows(func(row ui.ListRow) {
+			item := state.Items[row.Index]
+			if item.Meeting != nil {
 				at := -1
-				if r.Index == cur {
-					at = curAt
+				if row.Index == current {
+					at = currentAt
 				}
-				a.meetingRow(c, *it.mt, q, at)
+				meetingRow(c, *item.Meeting, query, at, actions)
 			} else {
-				ui.Text(c, it.head).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text3).
+				ui.Text(c, item.Heading).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text3).
 					Padding(px(t, sp4), px(t, sp6), px(t, sp1))
 			}
 		})
-		if n.page > 0 || n.hasMore {
-			a.meetingsPager(c)
+		if local.page > 0 || state.HasMore {
+			meetingsPager(c, state, actions, local)
 		}
 	}
 }
 
-// meetingsEmpty is the list's empty state: no meeting yet, or none
-// matching the search.
-func (a *app) meetingsEmpty(c *ui.Context) {
-	n := &a.mv
-	if q := strings.TrimSpace(n.query); q != "" {
-		emptyState(c, icons.Magnifer, i18n.T("Nothing matches “%s”", q),
+func meetingsEmpty(c *ui.Context, local *meetingsLocalUI, actions meetingsActions) {
+	if query := strings.TrimSpace(local.query); query != "" {
+		emptyState(c, icons.Magnifer, i18n.T("Nothing matches “%s”", query),
 			i18n.T("Try another search, or clear the field to see every meeting."), func() {
 				if ghostButton(c.Key("meetings-clear"), i18n.T("Clear search")).Clicked() {
-					n.query, n.page = "", 0
-					a.loadMeetings()
+					actions.searchMeetings("")
 				}
 			})
 		return
@@ -281,122 +132,58 @@ func (a *app) meetingsEmpty(c *ui.Context) {
 		i18n.T("Start a meeting to record your microphone and, when supported, audio from other apps."), nil)
 }
 
-// meetingRow is a meeting in the list: its title and status, and when,
-// how long and what it captured. A click shows its details, or hides them.
-// The matches of the search q are marked, at the current one (-1 for none).
-func (a *app) meetingRow(c *ui.Context, mt store.Meeting, q string, at int) {
+func meetingRow(c *ui.Context, row meetingRowViewState, query string, at int, actions meetingsActions) {
 	t := c.Theme()
-	k := tok(t)
-	n := &a.mv
-	texts := n.meetingRowTexts(mt)
-	title := texts[0] // the day heads the group, the time ends the row
-	sel := n.detail != nil && n.detail.id == mt.ID
-	row := ui.ButtonBase(c.Key("mt-row-"+mt.ID)).Padding(px(t, sp3), px(t, sp3)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
-		Label(title).Gap(px(t, sp2)).AlignItems(ui.Start)
+	colors := tok(t)
+	button := ui.ButtonBase(c.Key("mt-row-"+row.ID)).Padding(px(t, sp3), px(t, sp3)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
+		Label(row.Title).Gap(px(t, sp2)).AlignItems(ui.Start)
 	switch {
-	case sel:
-		row.Background(k.Pressed)
-	case row.Hovered():
-		row.Background(k.Hover)
+	case row.Selected:
+		button.Background(colors.Pressed)
+	case button.Hovered():
+		button.Background(colors.Hover)
 	}
-	if row.Clicked() {
-		if sel {
-			a.stopMeetingPlayback()
-			n.detail = nil
+	if button.Clicked() {
+		if row.Selected {
+			actions.closeMeetingDetail()
 		} else {
-			a.openMeetingDetail(mt.ID)
+			actions.openMeetingDetail(row.ID)
 		}
 	}
-	row.Children(func() {
+	button.Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				markedText(c, title, q, curIn(at, 0)).FontSize(px(t, fsBody+1)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
-				if s := meetingStatusLabel(mt.Status); s != "" {
-					tagChip(c, s)
+				markedText(c, row.Title, query, curIn(at, 0)).FontSize(px(t, fsBody+1)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+				if row.StatusLabel != "" {
+					tagChip(c, row.StatusLabel)
 				}
-				ui.Text(c, mt.CreatedAt.Format("15:04")).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Shrink(0)
+				ui.Text(c, row.ClockText).FontSize(px(t, fsCaption)).TextColor(colors.Text3).SingleLine().Shrink(0)
 			})
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				markedText(c, texts[1], q, curIn(at, len(findFolded(title, q)))).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
-				ms := mt.DurationMS
-				if mt.ID == a.meetSnap.ID && a.meetSnap.State.Active() {
-					ms = a.meetSnap.Elapsed.Milliseconds() // the store has no length until it ends
-				}
-				if ms > 0 {
-					ui.Text(c, meetingDuration(ms)).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Shrink(0)
+				markedText(c, row.Snippet, query, curIn(at, len(findFolded(row.Title, query)))).FontSize(px(t, fsCaption)).TextColor(colors.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+				if row.DurationText != "" {
+					ui.Text(c, row.DurationText).FontSize(px(t, fsCaption)).TextColor(colors.Text3).SingleLine().Shrink(0)
 				}
 			})
 		})
 	})
 }
 
-func (a *app) meetingsPager(c *ui.Context) {
+func meetingsPager(c *ui.Context, state meetingsViewState, actions meetingsActions, local *meetingsLocalUI) {
 	t := c.Theme()
-	n := &a.mv
 	ui.Row(c).Padding(0, px(t, sp6), px(t, sp3)).Gap(px(t, sp2)).AlignItems(ui.Center).Justify(ui.End).Shrink(0).Children(func() {
-		if ghostButton(c.Key("mt-page-prev"), i18n.T("Previous page")).Disabled(n.page == 0).Clicked() {
-			n.page--
-			a.loadMeetings()
+		if ghostButton(c.Key("mt-page-prev"), i18n.T("Previous page")).Disabled(local.page == 0).Clicked() {
+			actions.showMeetingsPage(local.page - 1)
 		}
-		caption(c, i18n.T("Page %d", n.page+1))
-		if ghostButton(c.Key("mt-page-next"), i18n.T("Next page")).Disabled(!n.hasMore).Clicked() {
-			n.page++
-			a.loadMeetings()
+		caption(c, i18n.T("Page %d", local.page+1))
+		if ghostButton(c.Key("mt-page-next"), i18n.T("Next page")).Disabled(!state.HasMore).Clicked() {
+			actions.showMeetingsPage(local.page + 1)
 		}
 	})
 }
 
-// meetingDetailHeader is the detail panel's title row (title, then More
-// with Reprocess and Show in Finder, Delete and Close), its facts, and
-// Continue for a meeting whose final pass did not finish.
-func (a *app) meetingDetailHeader(c *ui.Context, mt store.Meeting, close func()) {
-	t := c.Theme()
-	ui.Column(c).Gap(px(t, sp1)).Children(func() { a.meetingDetailTitle(c, mt, close) })
-}
-
-func (a *app) meetingDetailTitle(c *ui.Context, mt store.Meeting, close func()) {
-	t := c.Theme()
-	ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-		sectionHeading(c, meetingDisplayTitle(mt)).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
-		if mt.Status == store.MeetingDone || mt.Audio != "" {
-			moreMenu(c.Key("mt-more"), "", func(m *ui.Menu) {
-				if mt.Status == store.MeetingDone && m.Item(i18n.T("Reprocess transcript")).Chosen() {
-					a.meetingReprocess(mt.ID)
-				}
-				d := a.mv.detail
-				if mt.Status == store.MeetingDone && len(a.installed(local.LLM)) > 0 && d != nil && !d.correcting &&
-					m.Item(i18n.T("Correct with the language model")).Chosen() {
-					a.meetingCorrect(mt.ID)
-				}
-				if mt.Audio != "" && m.Item(i18n.T("Show in Finder")).Chosen() {
-					revealInFinder(filepath.Join(a.dataDir(), "meetings", mt.Audio))
-				}
-			})
-		}
-		active := a.meetingActive() && mt.Status == store.MeetingRecording
-		if iconButton(c.Key("mt-del"), icons.TrashBinMinimalistic, i18n.T("Delete meeting…")).Disabled(active).Clicked() {
-			a.mv.delID = mt.ID
-		}
-		if iconButton(c.Key("panel-close"), icons.Close, i18n.T("Close")).Clicked() {
-			close()
-		}
-	})
-	caption(c, meetingMeta(mt))
-	if d := a.mv.detail; d != nil && d.correcting {
-		caption(c, i18n.T("Correcting the transcript with the language model…"))
-	}
-	if mt.Status == store.MeetingInterrupted || mt.Status == store.MeetingFinishing {
-		ui.Row(c).Margin(px(t, sp2), 0, 0, 0).Children(func() {
-			if ui.Button(c.Key("mt-continue"), i18n.T("Continue processing")).Clicked() {
-				a.meetingReprocess(mt.ID)
-			}
-		})
-	}
-}
-
-func (a *app) meetingDeleteDialog(c *ui.Context) {
-	n := &a.mv
-	open := n.delID != ""
+func meetingDeleteDialog(c *ui.Context, local *meetingsLocalUI, actions meetingsActions) {
+	open := local.delID != ""
 	if !open {
 		return
 	}
@@ -409,47 +196,10 @@ func (a *app) meetingDeleteDialog(c *ui.Context) {
 		}
 		if recordButton(c.Key("mt-del-ok"), i18n.T("Delete meeting")).Clicked() {
 			open = false
-			a.deleteMeeting(n.delID)
+			actions.deleteMeeting(local.delID)
 		}
 	})
 	if !open {
-		n.delID = ""
+		local.delID = ""
 	}
-}
-
-// deleteMeeting deletes a meeting and its audio in the background.
-func (a *app) deleteMeeting(id string) {
-	n := &a.mv
-	audio := ""
-	for _, mt := range n.list {
-		if mt.ID == id {
-			audio = mt.Audio
-		}
-	}
-	if n.detail != nil && n.detail.id == id {
-		a.stopMeetingPlayback()
-		n.detail = nil
-	}
-	a.async(func() {
-		_ = a.lib.store.Meetings().DeleteMeeting(context.Background(), id)
-		if audio != "" {
-			_ = os.RemoveAll(filepath.Join(a.dataDir(), "meetings", audio))
-		}
-		a.post(a.loadMeetings)
-	})
-}
-
-func (a *app) meetingSettingsDialog(c *ui.Context) {
-	n := &a.mv
-	if !n.setOpen {
-		return
-	}
-	dialogFrame(c, "mt-set", &n.setOpen, i18n.T("Meeting settings"), "", 560, func() {
-		a.meetingSettings(c)
-	}, func() {
-		ui.Spacer(c)
-		if primaryButton(c.Key("mt-set-done"), i18n.T("Done")).Clicked() {
-			n.setOpen = false
-		}
-	})
 }

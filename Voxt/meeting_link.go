@@ -229,6 +229,7 @@ func (a *app) meetingCorrect(id string) {
 	n := &a.mv
 	if n.detail != nil && n.detail.id == id {
 		n.detail.correcting = true
+		a.rebuildMeetingDetail()
 	}
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)

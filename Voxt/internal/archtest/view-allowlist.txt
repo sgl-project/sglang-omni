@@ -37,9 +37,6 @@ llm_debug.go  # remote
 llm_wait.go  # remote
 meeting_overlay.go  # meeting
 meeting_overlay_view.go  # meeting
-meetings_detail.go  # meeting
-meetings_page.go  # meeting
-meetings_playback.go  # meeting
 models_cards.go  # models
 models_context.go  # models
 models_delete.go  # models

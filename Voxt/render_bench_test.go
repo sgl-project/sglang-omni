@@ -132,7 +132,7 @@ func benchmarkFirstFrame(b *testing.B, a *app, sentinel string) {
 		fresh.hist, fresh.dv, fresh.mv, fresh.nv = a.hist, a.dv, a.mv, a.nv
 		fresh.hist.listUI = ui.ListState{}
 		fresh.dv.listUI = ui.ListState{}
-		fresh.mv.listUI = ui.ListState{}
+		fresh.mvUI.listUI = ui.ListState{}
 		fresh.nv.listUI = ui.ListState{}
 		return fresh
 	}
@@ -228,13 +228,13 @@ func BenchmarkW0LongLists(b *testing.B) {
 					tt.Scroll(float32(windowWidth)*0.5, float32(windowHeight)*0.6, 0, dy)
 				}
 				b.StopTimer()
-				page := a.mv.page + 1
+				page := a.mvUI.page + 1
 				if err := tt.ClickControl("Next page"); err != nil {
 					b.Fatal(err)
 				}
 				frames(tt)
 				next := fmt.Sprintf("Meeting %05d", count-20*page-1)
-				if a.mv.page != page || len(a.mv.list) == 0 || a.mv.list[0].Title != next || !tt.HasText(fmt.Sprintf("Page %d", page+1)) {
+				if a.mvUI.page != page || len(a.mv.list) == 0 || a.mv.list[0].Title != next || !tt.HasText(fmt.Sprintf("Page %d", page+1)) {
 					b.Fatalf("meetings did not reach page %d at %q: %q", page+1, next, tt.Texts())
 				}
 			})

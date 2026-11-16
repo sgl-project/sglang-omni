@@ -154,6 +154,20 @@ func (a *app) meetingLLMSettings(c *ui.Context) {
 		})
 }
 
+func (a *app) meetingSettingsDialog(c *ui.Context) {
+	if !a.mvUI.setOpen {
+		return
+	}
+	dialogFrame(c, "mt-set", &a.mvUI.setOpen, i18n.T("Meeting settings"), "", 560, func() {
+		a.meetingSettings(c)
+	}, func() {
+		ui.Spacer(c)
+		if primaryButton(c.Key("mt-set-done"), i18n.T("Done")).Clicked() {
+			a.mvUI.setOpen = false
+		}
+	})
+}
+
 func b2s(v bool) string {
 	if v {
 		return "1"
