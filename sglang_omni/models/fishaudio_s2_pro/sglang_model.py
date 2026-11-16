@@ -350,6 +350,7 @@ class S2ProSGLangTextModel(nn.Module):
             pass
         return int(self.vq_codes.shape[0])
 
+    @torch.no_grad()
     def forward(
         self,
         input_ids: Tensor,
