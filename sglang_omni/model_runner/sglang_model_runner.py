@@ -684,6 +684,8 @@ class SGLModelRunner(ModelRunner):
         with contextlib.ExitStack() as pins:
             if current_platform.is_xpu():
                 pins.enter_context(current_platform.graph_capture_attention())
+            elif current_platform.is_musa():
+                pins.enter_context(torch.no_grad())
             else:
                 pass
             result = super().init_cuda_graphs(capture_decode_cuda_graph)
