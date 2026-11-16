@@ -23,7 +23,7 @@ from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache, TreeLock
-from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
+from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.runtime_context import get_parallel, get_schedule
@@ -903,8 +903,10 @@ class DllmScheduler:
             else:
                 pass
             # A row waiting for its group has not advanced this round.
+            # note (qiujiawei): rows match the tree only at admission, which waits for staging to empty, so the
+            # tree takes a row once at release instead of walking its whole path every round.
             if req in batch.reqs:
-                checkpoint_kv_cache(req, self.tree_cache)
+                req.prefix_len = req.extend_end
             else:
                 pass
             # Keep the row until finish/abort so release_kv_cache owns both

@@ -866,6 +866,26 @@ def test_next_phase_resumes_from_the_prefix_the_last_phase_pinned(
     assert scheduler.token_to_kv_pool_allocator.available_size() == PHASE_POOL_TOKENS
 
 
+def test_phase_reaches_the_tree_once_when_it_ends(
+    radix_scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Publishing every block walked the row's whole path each round, for blocks nothing could match yet."""
+    scheduler = radix_scheduler
+    published = []
+    checkpoint = scheduler.tree_cache.checkpoint
+
+    def record_checkpoint(req: DllmRequest, *, up_to: int) -> None:
+        published.append(up_to)
+        checkpoint(req, up_to=up_to)
+
+    monkeypatch.setattr(scheduler.tree_cache, "checkpoint", record_checkpoint)
+
+    spans = run_phase(scheduler, PROMPT_IDS, 6)
+
+    assert len(spans) == 4
+    assert published == [16]
+
+
 def test_abort_between_phases_releases_the_pinned_prefix(
     radix_scheduler: DllmScheduler,
 ) -> None:
