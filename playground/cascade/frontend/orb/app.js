@@ -5,6 +5,7 @@ import { SMPLH_FLAME_MOTION, MotionView, smplhFlameMotionRenderer } from "./smpl
 import { SMPLX_MOTION, SmplxMotionView, smplxMotionRenderer } from "./smplx_motion.js";
 import { attachSmplxMesh } from "./smplx_mesh.js";
 import { JPEG_FRAME, VideoFrameView, jpegFrameRenderer } from "./video_frame.js";
+import { BVH_MOTION, BvhMotionView, bvhMotionRenderer, bvhSkeletonOf } from "./bvh_motion.js";
 import { Orb } from "./orb.js";
 import { Settings } from "./settings.js";
 
@@ -74,6 +75,9 @@ registerPluginRenderer(SMPLX_MOTION, smplxMotionRenderer(smplxView));
 attachSmplxMesh({ canvas: ui.meshView, views: [motionView, smplxView] });
 const videoView = new VideoFrameView(ui.avatarView, { now: () => performance.now(), onReplyShown: (responseId) => mediaGate.shown(responseId), playoutDelayMs, clock: mediaGate });
 registerPluginRenderer(JPEG_FRAME, jpegFrameRenderer(videoView));
+// A bvh_motion port draws its own skeleton, from the params the session granted, on the motion canvas.
+const bvhView = new BvhMotionView(ui.motionView, { now: () => performance.now(), onReplyShown: (responseId) => mediaGate.shown(responseId), playoutDelayMs, clock: mediaGate, skeleton: () => bvhSkeletonOf(session && session.pluginOutputPorts) });
+registerPluginRenderer(BVH_MOTION, bvhMotionRenderer(bvhView));
 let playbackAnalyser = null;
 let playbackRate = 24000;
 let eventChain = Promise.resolve();
@@ -198,6 +202,7 @@ function render(now) {
   orb.frame(now, state.level, state.mood);
   motionView.draw();
   smplxView.draw();
+  bvhView.draw();
   videoView.draw();
   // The avatar's picture or body mesh takes the orb's place once it shows.
   if ((!ui.avatarView.hidden || !ui.meshView.hidden) && !ui.orb.hidden) ui.orb.hidden = true;
@@ -407,6 +412,7 @@ function sessionListeners() {
       if (!open && status === "cancelled") {
         motionView.drop(id);
         smplxView.drop(id);
+        bvhView.drop(id);
         videoView.drop(id);
       }
       renderTranscript();
@@ -433,6 +439,7 @@ async function connect() {
   mediaGate.reset();
   motionView.reset();
   smplxView.reset();
+  bvhView.reset();
   videoView.reset();
   ui.avatarView.hidden = true;
   ui.meshView.hidden = true;
