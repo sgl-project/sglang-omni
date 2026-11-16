@@ -36,7 +36,7 @@ Voice input built on speech recognition plus a language model's polish. Any-to-a
 - **Nothing you said is lost.** When recognition fails, the recording is kept and **Retry** in History recognises it again.
 - **A conversation in the answer card.** A result can wait in a floating card: keep asking follow-ups by voice, then copy or insert the answer.
 - **Your models, your data.** Speech runs on your Mac with Qwen3-ASR or MOSS-Transcribe-Diarize, served by the SGLang-Omni MLX runtime, or goes to a cloud speech API you set up. The language model is anything with an OpenAI-compatible API: SGLang MLX or Ollama on your Mac, or a service such as DeepSeek V4.1 and Kimi K3.1, the two our team uses most. Where your data goes is yours to decide.
-- **Optional DFlash acceleration for Qwen3-ASR.** **Faster transcription** adds a small draft model, and the speech model transcribes faster by speculative decoding.
+- **Optional DFlash acceleration for Qwen3-ASR and MOSS-Transcribe-Diarize.** **Faster transcription** adds a small draft model, and the speech model transcribes faster by speculative decoding.
 - **And more**: sign in with ChatGPT instead of pasting an API key, a fallback model for Translate, your own prompts, and History export to Markdown or JSONL.
 
 Already on Voxt 1.x? See [Coming from Voxt 1.x](#coming-from-voxt-1x). Every change, version by version: [CHANGELOG.md](CHANGELOG.md).
@@ -61,7 +61,7 @@ Tap **right ⌥ Option**. What you say is typed where your cursor is. The text s
 
 - **App enhancement**: groups of apps and websites with their own prompt and a key pressed after inserting, such as a casual tone in chats and Return to send.
 - **Dictionary**: names and jargon that the speech model expects and the language model writes as you spell them. Voxt suggests new terms from your history and from the corrections you make.
-- **Meetings**: choose Start meeting in the menu bar menu or on the Meetings page. Voxt records your microphone, the other side's audio, or both, and shows live captions. After the meeting, a language model corrects the transcript with your dictionary and writes a summary you can ask follow-up questions about. Recording the other side needs System Audio Recording permission.
+- **Meetings**: choose Start meeting in the menu bar menu or on the Meetings page. Voxt records your microphone, the other side's audio, or both, and shows live captions. With MOSS-Transcribe-Diarize installed, the finished transcript labels the other side as Speaker 1–4 while your lines stay Me. After the meeting, a language model corrects the transcript with your dictionary and writes a summary you can ask follow-up questions about. Recording the other side needs System Audio Recording permission.
 - **Notes**: tap right ⌘, speak, and Voxt saves what you said as a note instead of typing it.
 - **History**: every result, with search, **Retry** from the recording, and export.
 
@@ -114,7 +114,7 @@ Speech is recognised **on your Mac** by the [SGLang-Omni MLX runtime](../sglang_
 
 - **More local models**: MOSS-Transcribe-Diarize (Chinese and English, live text), Nemotron 3.5 ASR 0.6B (28 languages, live text), Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Large v3 and Small (about 100 languages), Parakeet TDT 0.6B v3 (25 European languages), SenseVoice Small (Chinese, Cantonese, English, Japanese, Korean) and Cohere Transcribe 03-2026 (14 languages). macOS's own System dictation is there too, with nothing to download.
 - **Qwen3-ASR** knows 30 languages and 22 Chinese dialects, and uses your dictionary; the other models you download do not.
-- **Faster transcription** (DFlash): on the Qwen3-ASR 1.7B (8bit) and 0.6B (4bit) cards, turn on its switch and download a draft model (726 MB and 262 MB). It proposes several words at a time for the speech model to check. Turn the switch off and the model works as before; the draft stays on disk until you delete it.
+- **Faster transcription** (DFlash): on the Qwen3-ASR 1.7B (8bit), 0.6B (4bit) and MOSS-Transcribe-Diarize cards, turn on its switch and download a draft model (726 MB for 1.7B, 262 MB for 0.6B and MOSS). It proposes several words at a time for the speech model to check. Turn the switch off and the model works as before; the draft stays on disk until you delete it.
 - **Cloud speech APIs**, if you prefer one: OpenAI Transcribe, Doubao (Volcengine), Zhipu GLM-ASR, Aliyun Bailian, StepFun, Xiaomi MiMo and Google Gemini.
 
 ### Language models

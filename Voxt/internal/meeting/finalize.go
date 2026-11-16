@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -36,14 +37,23 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 	var holdRelease func()
 	if cfg.ModelHold != nil {
 		holdRelease = cfg.ModelHold.Hold()
-		defer holdRelease()
+		defer func() {
+			if holdRelease != nil {
+				holdRelease()
+			}
+		}()
 	}
 	var first error
 	trackN := len(sources)
 	done := map[Source][]Segment{}
 	for i, src := range sources {
+		if src == SourceSystem && mode.Diarize() && holdRelease != nil {
+			// MTD cannot start until the selected speech model's hold lets its server stop.
+			holdRelease()
+			holdRelease = nil
+		}
 		base := float64(i) / float64(trackN)
-		segs, err := finalizeTrack(ctx, cfg, audioDir, src, func(p float64) {
+		segs, err := finalizeTrack(ctx, cfg, audioDir, src, mode.Diarize(), func(p float64) {
 			if onProgress != nil {
 				onProgress(base + p/float64(trackN))
 			}
@@ -93,7 +103,7 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 
 // finalizeTrack transcribes one track's WAV again; nil segments mean the
 // track has nothing to replace (no file, or no audio).
-func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, onProgress func(float64)) ([]Segment, error) {
+func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diarize bool, onProgress func(float64)) ([]Segment, error) {
 	path := filepath.Join(dir, string(src)+".wav")
 	pcm, rate, err := readTrackPCM(path)
 	if err != nil {
@@ -127,6 +137,22 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, onPr
 		req := asr.FileRequest{
 			SampleRate: rate, Lang: ta.Lang, Prompt: ta.Prompt, Hints: ta.Hints, Format: "pcm",
 		}
+		if diarize && src == SourceSystem && cfg.Diarizer != nil {
+			d, err := cfg.Diarizer(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if d != nil {
+				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, onProgress)
+				if err != nil {
+					return nil, err
+				}
+				if segs == nil {
+					segs = []Segment{}
+				}
+				return segs, nil
+			}
+		}
 		segs, err := transcribeChunks(ctx, src, ta.File, req, rate, pcm, chunks, onProgress)
 		if err != nil {
 			return nil, err
@@ -137,6 +163,48 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, onPr
 		return segs, nil
 	}
 	return nil, fmt.Errorf("meeting: ASR not configured")
+}
+
+func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileRequest, rate int, pcm []byte, onProgress func(float64)) ([]Segment, error) {
+	req.Audio = pcm
+	res, err := d.Diarize(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var out []Segment
+	for _, part := range res.Segments {
+		text := strings.TrimSpace(part.Text)
+		if text == "" {
+			continue
+		}
+		start := max(part.Start, time.Duration(0))
+		out = append(out, Segment{
+			ID: core.NewID(time.Now()), Source: src, Speaker: mtdSpeaker(part.Speaker),
+			Start: start, End: max(part.End, start), Text: text, Final: true,
+		})
+	}
+	if len(out) == 0 && strings.TrimSpace(res.Text) != "" {
+		out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, End: asr.Duration(pcm, rate), Text: strings.TrimSpace(res.Text), Final: true})
+	}
+	if onProgress != nil {
+		onProgress(1)
+	}
+	return out, nil
+}
+
+func mtdSpeaker(speaker string) string {
+	switch speaker {
+	case "S01", "S1":
+		return "s1"
+	case "S02", "S2":
+		return "s2"
+	case "S03", "S3":
+		return "s3"
+	case "S04", "S4":
+		return "s4"
+	default:
+		return ""
+	}
 }
 
 func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, req asr.FileRequest, rate int, pcm []byte, chunks []Chunk, onProgress func(float64)) ([]Segment, error) {

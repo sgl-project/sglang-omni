@@ -42,6 +42,12 @@ type finalResult struct {
 	tokens   int    // generated
 	language string // detected (or the hint), "" when none
 	length   bool   // the budget ended it
+	segments []struct {
+		Start   float64 `json:"start"`
+		End     float64 `json:"end"`
+		Speaker string  `json:"speaker"`
+		Text    string  `json:"text"`
+	}
 }
 
 // body is the request's multipart form (Voxt's OmniMultipartBody for
@@ -150,6 +156,12 @@ func parseEvent(payload string) (*finalResult, error) {
 	var ev struct {
 		Type     string `json:"type"`
 		Text     string `json:"text"`
+		Segments []struct {
+			Start   float64 `json:"start"`
+			End     float64 `json:"end"`
+			Speaker string  `json:"speaker"`
+			Text    string  `json:"text"`
+		} `json:"segments"`
 		Metadata *struct {
 			Tokens   *int    `json:"generated_token_count"`
 			Language *string `json:"language"`
@@ -165,7 +177,7 @@ func parseEvent(payload string) (*finalResult, error) {
 	}
 	switch ev.Type {
 	case "transcript.text.done":
-		r := &finalResult{text: ev.Text}
+		r := &finalResult{text: ev.Text, segments: ev.Segments}
 		if m := ev.Metadata; m != nil {
 			if m.Tokens == nil || m.Finish == "" {
 				return nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "the generation metadata is incomplete"}
