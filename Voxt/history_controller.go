@@ -187,7 +187,11 @@ func (a *app) copyHistoryText(text string) {
 }
 
 func (a *app) historyEntryByID(id string) (store.Entry, bool) {
-	for _, entries := range [][]store.Entry{a.hist.list, a.hm.recent} {
+	visible := [][]store.Entry{a.hist.list, a.hm.recent}
+	if a.currentPage() == "home" {
+		visible = [][]store.Entry{a.hm.recent, a.hist.list}
+	}
+	for _, entries := range visible {
 		for _, entry := range entries {
 			if entry.ID == id {
 				return entry, true

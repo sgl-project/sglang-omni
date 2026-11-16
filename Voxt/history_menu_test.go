@@ -217,6 +217,22 @@ func TestHomeRecentMenu(t *testing.T) {
 	}
 }
 
+func TestHomeRecentMenuUsesVisibleEntry(t *testing.T) {
+	a, _ := homeTester(t)
+	a.hist.stale = true
+	a.hist.list = []store.Entry{{ID: "same", Audio: "stale.wav"}}
+	a.hm.recent = []store.Entry{{ID: "same", Audio: "fresh.wav"}}
+	var revealed []string
+	previous := revealInFinder
+	revealInFinder = func(path string) { revealed = append(revealed, path) }
+	t.Cleanup(func() { revealInFinder = previous })
+	a.showHistoryRecording("same")
+	want := a.lib.store.History().AudioPath("fresh.wav")
+	if len(revealed) != 1 || revealed[0] != want {
+		t.Fatalf("revealed %v, want visible Home recording %s", revealed, want)
+	}
+}
+
 func TestHistoryRowKeys(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	seedHistory(t, a)
