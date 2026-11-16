@@ -17,6 +17,7 @@ import pytest
 import torch
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.mem_cache.prefill_budget import PrefillBudget
+from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 try:
@@ -497,12 +498,13 @@ def test_scheduler_admits_only_the_owning_cfg_pair(
     running_batch = ScheduleBatch.__new__(ScheduleBatch)
     running_batch.reqs = []
 
-    assert scheduler.pair_admission_limit(queue, running_batch) == 2
-    assert scheduler.pair_admission_limit(queue[2:], running_batch) == 0
-    coordinator.begin_dit_handoff("first")
-    assert scheduler.pair_admission_limit(queue[2:], running_batch) == 0
-    coordinator.end_dit_handoff("first")
-    assert scheduler.pair_admission_limit(queue[2:], running_batch) == 2
+    with get_context().override_server_args(prefill_max_requests=None):
+        assert scheduler.pair_admission_limit(queue, running_batch) == 2
+        assert scheduler.pair_admission_limit(queue[2:], running_batch) == 0
+        coordinator.begin_dit_handoff("first")
+        assert scheduler.pair_admission_limit(queue[2:], running_batch) == 0
+        coordinator.end_dit_handoff("first")
+        assert scheduler.pair_admission_limit(queue[2:], running_batch) == 2
 
 
 @pytest.mark.parametrize("source", ["mmap", "ram"])

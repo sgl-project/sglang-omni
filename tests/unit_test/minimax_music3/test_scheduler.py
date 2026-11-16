@@ -17,7 +17,7 @@ from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixCache
-from sglang.srt.runtime_context import get_context
+from sglang.srt.runtime_context import get_context, get_schedule
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.minimax_music3.scheduler import MiniMaxMusic3Scheduler
@@ -103,6 +103,7 @@ def admit_prefill(
         0.1,
         scheduler.max_prefill_tokens,
         None,
+        prefill_max_requests=get_schedule().prefill_max_requests,
     )
     for request in scheduler.waiting_queue:
         scheduler.normalize_req_token_arrays(request)
@@ -157,6 +158,31 @@ def test_short_requests_still_share_one_prefill_batch(
     plan = scheduler.get_new_batch_prefill(ScheduleBatch(reqs=[], batch_is_full=False))
 
     assert plan.batch_to_run.reqs == requests
+    assert scheduler.waiting_queue == []
+
+
+@pytest.mark.parametrize(
+    ("prefill_max_requests", "batch_rows"),
+    [(None, 6), (2, 2), (3, 2), (5, 4)],
+)
+def test_prefill_request_cap_keeps_pairs_across_batches(
+    scheduler: MiniMaxMusic3Scheduler,
+    monkeypatch: pytest.MonkeyPatch,
+    prefill_max_requests: int | None,
+    batch_rows: int,
+) -> None:
+    """An odd prefill request cap split a CFG pair inside the real adder."""
+    monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", admit_prefill)
+    requests = paired_requests([128] * 3, 10)
+    scheduler.waiting_queue = requests.copy()
+    with get_context().override_server_args(prefill_max_requests=prefill_max_requests):
+        for offset in range(0, len(requests), batch_rows):
+            plan = scheduler.get_new_batch_prefill(
+                ScheduleBatch(reqs=[], batch_is_full=False)
+            )
+            assert plan.batch_to_run.reqs == requests[offset : offset + batch_rows]
+            assert scheduler.waiting_queue == requests[offset + batch_rows :]
+            assert get_schedule().prefill_max_requests == prefill_max_requests
     assert scheduler.waiting_queue == []
 
 
@@ -222,13 +248,22 @@ def test_impossible_pair_rejected_but_busy_pool_only_defers(
     )
 
 
-@pytest.mark.parametrize("pool_size", [16000, 29056])
+@pytest.mark.parametrize(
+    ("pool_size", "prefill_max_requests", "expected_error"),
+    [
+        (16000, None, "full CFG pair"),
+        (29056, None, None),
+        (29056, 1, "prefill_max_requests"),
+    ],
+)
 def test_enqueue_checks_pair_capacity_before_queueing_both_rows(
     scheduler: MiniMaxMusic3Scheduler,
     monkeypatch: pytest.MonkeyPatch,
     pool_size: int,
+    prefill_max_requests: int | None,
+    expected_error: str | None,
 ) -> None:
-    """The shared enqueue's decode_path keyword used to reject every CFG pair."""
+    """Real enqueue must reject impossible pairs before either row is queued."""
     scheduler.token_to_kv_pool_allocator.size = pool_size
     scheduler.session_bridge = None
     scheduler.deferred_request_payloads = {}
@@ -249,15 +284,16 @@ def test_enqueue_checks_pair_capacity_before_queueing_both_rows(
         enforce_request_limits=False,
         cfg_uncond=MiniMaxMusic3SGLangRequestData(req=uncond, is_cfg_uncond=True),
     )
-    scheduler.enqueue_built_request(payload, False, req_data)
+    with get_context().override_server_args(prefill_max_requests=prefill_max_requests):
+        scheduler.enqueue_built_request(payload, False, req_data)
 
     assert req_data.decode_path == "plain"
-    if pool_size == 16000:
+    if expected_error is not None:
         assert scheduler.waiting_queue == []
         message = scheduler.outbox.get_nowait()
         assert message.request_id == cond.rid and message.type == "error"
         assert isinstance(message.data, ValueError)
-        assert "full CFG pair" in str(message.data)
+        assert expected_error in str(message.data)
         abort.assert_called_once_with(cond.rid)
     else:
         assert scheduler.waiting_queue == [cond, uncond]

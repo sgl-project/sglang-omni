@@ -8,6 +8,7 @@ from typing import Literal
 
 from sglang.srt.managers.schedule_batch import NextBatchPlan, Req, ScheduleBatch
 from sglang.srt.mem_cache.prefill_budget import PrefillBudget
+from sglang.srt.runtime_context import get_schedule
 
 from sglang_omni.models.minimax_music3.serial_offload import get_coordinator
 from sglang_omni.models.minimax_music3.sglang_request_builder import (
@@ -104,6 +105,15 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
             return error
         else:
             pass
+        prefill_max_requests = get_schedule().prefill_max_requests
+        if prefill_max_requests is not None and prefill_max_requests < 2:
+            return (
+                "MiniMax Music 3 requires at least 2 prefill rows for a CFG pair. "
+                f"prefill_max_requests={prefill_max_requests} cannot admit a pair. "
+                "Set prefill_max_requests to at least 2 or leave it unset."
+            )
+        else:
+            pass
         memory_budget = self.token_to_kv_pool_allocator.create_prefill_budget(
             self.tree_cache
         )
@@ -141,6 +151,11 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
         """
         allocatable = int(self.get_num_allocatable_reqs(len(running_batch.reqs)))
         limit = min(len(queue), max(0, allocatable))
+        prefill_max_requests = get_schedule().prefill_max_requests
+        if prefill_max_requests is not None:
+            limit = min(limit, max(0, prefill_max_requests))
+        else:
+            pass
         limit -= limit % 2
         budget = int(self.max_prefill_tokens)
         tokens = 0
