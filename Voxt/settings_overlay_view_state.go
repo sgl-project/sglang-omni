@@ -60,13 +60,10 @@ func (f *overlayForm) overlay() settings.Overlay {
 	}
 }
 
-func previewStateFromOverlay(overlay settings.Overlay) settingsOverlayPreviewState {
+func (f *overlayForm) previewState() settingsOverlayPreviewState {
+	overlay := f.overlay()
 	return settingsOverlayPreviewState{
 		Position: overlay.Position, Opacity: overlay.Opacity, Radius: overlay.Radius,
 		Margin: overlay.Margin, ShowTime: overlay.ShowTime,
 	}
-}
-
-func (f *overlayForm) previewState() settingsOverlayPreviewState {
-	return previewStateFromOverlay(f.overlay())
 }

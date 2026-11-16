@@ -99,7 +99,7 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 		state := buildMeetingSettingsFixture(t, scenario.meetingSettings)
 		fixture.MeetingSettings = &state
 	case "shortcut-prompt":
-		state := buildShortcutPromptFixture(t, scenario.shortcutPrompt)
+		state := buildShortcutPromptViewState(translator, scenario.shortcutPrompt.features, scenario.shortcutPrompt.conflict)
 		fixture.ShortcutPrompt = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)

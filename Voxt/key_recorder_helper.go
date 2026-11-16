@@ -6,6 +6,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
@@ -61,11 +62,7 @@ func (a *app) saveShortcutRecorderKeys(keys string, r *keyRow, save func(keys st
 }
 
 func (a *app) customShortcutKeysState(keys string) customKeysViewState {
-	chord, err := hotkey.Parse(keys)
-	if err != nil {
-		return customKeysViewState{ErrorText: uitext.ParseErrorText(err)}
-	}
-	return customKeysViewState{Valid: true, CanonicalKeys: chord.String(), FormattedKeys: uitext.HotkeyText(keys)}
+	return buildCustomKeysViewState(i18n.CurrentTranslator(), keys)
 }
 
 func (a *app) typeShortcutKeys(r *keyRow) customKeysViewState {

@@ -13,10 +13,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
-// shortcutPromptUIContext keeps link opening in the controller without
-// making that controller a view file.
-type shortcutPromptUIContext = ui.Context
-
 // usedByView is the recorder's warning: the lines of usedByLines.
 func usedByView(c *ui.Context, lines []string) {
 	for _, line := range lines {
@@ -44,7 +40,7 @@ func shortcutPromptDialog(c *ui.Context, state *shortcutPromptViewState, actions
 			}
 			if state.Link != "" && ui.Button(c.Key("sc-prompt-other"), i18n.T("Open %s settings", state.OtherApp)).Clicked() {
 				answered = true
-				actions.openShortcutPromptLink(c, state.Link)
+				actions.openShortcutPromptLink(c.Services(), state.Link)
 			}
 			if primaryButton(c.Key("sc-prompt-change"), i18n.T("Change shortcut")).AutoFocus().Clicked() {
 				answered = true

@@ -17,14 +17,11 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
-// permissionUIContext preserves openPrivacy's UI signature without importing ui in its controller.
-type permissionUIContext = ui.Context
-
 type permissionsActions interface {
 	askRequired()
 	requestPermission(which string)
 	recheckPermissions()
-	openPrivacy(c *ui.Context, url string)
+	openPrivacy(services permissionServices, url string)
 }
 
 // permissionsSettings is the Permissions section of the settings dialog.
@@ -64,7 +61,7 @@ func permissionRows(c *ui.Context, state permissionsViewState, actions permissio
 		}
 		if state.Microphone.Open {
 			if ghostIconButton(c.Key("perm-mic-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
-				actions.openPrivacy(c, state.Microphone.SettingsURL)
+				actions.openPrivacy(c.Services(), state.Microphone.SettingsURL)
 			}
 		}
 	})
@@ -77,7 +74,7 @@ func permissionRows(c *ui.Context, state permissionsViewState, actions permissio
 		}
 		if state.Accessibility.Open {
 			if ghostIconButton(c.Key("perm-access-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
-				actions.openPrivacy(c, state.Accessibility.SettingsURL)
+				actions.openPrivacy(c.Services(), state.Accessibility.SettingsURL)
 			}
 		}
 	})
@@ -92,7 +89,7 @@ func permissionRows(c *ui.Context, state permissionsViewState, actions permissio
 		}
 		if state.SystemAudio.Open {
 			if ghostIconButton(c.Key("perm-system-audio-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
-				actions.openPrivacy(c, state.SystemAudio.SettingsURL)
+				actions.openPrivacy(c.Services(), state.SystemAudio.SettingsURL)
 			}
 		}
 	})
@@ -105,7 +102,7 @@ func permissionRows(c *ui.Context, state permissionsViewState, actions permissio
 		}
 		if state.SpeechRecognition.Open {
 			if ghostIconButton(c.Key("perm-speech-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
-				actions.openPrivacy(c, state.SpeechRecognition.SettingsURL)
+				actions.openPrivacy(c.Services(), state.SpeechRecognition.SettingsURL)
 			}
 		}
 	})

@@ -214,13 +214,8 @@ func (a *app) stopPreview() {
 	a.async(func() { player.play(seq, sounds.Target{}, start) })
 }
 
-// previewPlaying is the choice a preview plays and how long it has left
-// (a pair's ▶).
-func (a *app) previewPlaying() (string, time.Duration) {
-	return a.previewPlayingAt(time.Now())
-}
-
-// previewPlayingAt is previewPlaying at a caller-supplied time.
+// previewPlayingAt is the choice a preview plays at now and how long it has
+// left (a pair's ▶).
 func (a *app) previewPlayingAt(now time.Time) (string, time.Duration) {
 	if a.sounds.playing == "" {
 		return "", 0

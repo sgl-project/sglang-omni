@@ -15,19 +15,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
-type keyRecorderViewState struct {
-	HelperRecordsKeys bool                `json:"helper_records_keys"`
-	DisplayedKeys     string              `json:"displayed_keys"`
-	Typed             customKeysViewState `json:"typed"`
-}
-
-type customKeysViewState struct {
-	Valid         bool   `json:"valid"`
-	CanonicalKeys string `json:"canonical_keys"`
-	FormattedKeys string `json:"formatted_keys"`
-	ErrorText     string `json:"error_text"`
-}
-
 // uiKeyNames are the window's keys in internal/hotkey's grammar.
 var uiKeyNames = map[ui.Key]string{
 	ui.KeyA: "A", ui.KeyB: "B", ui.KeyC: "C", ui.KeyD: "D", ui.KeyE: "E", ui.KeyF: "F", ui.KeyG: "G",

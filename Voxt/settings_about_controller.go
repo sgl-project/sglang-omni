@@ -25,6 +25,11 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
+type aboutServices interface {
+	WriteClipboard(text string)
+	OpenURL(url string)
+}
+
 // The project's addresses: issuesURL is where bugs are reported; the
 // licence, the source and the third-party notices are linked from
 // Settings → About.
@@ -275,15 +280,15 @@ func (a *app) aboutSettingsModel() settingsAboutViewState {
 	})
 }
 
-func (a *app) copyDiagnostics(context *aboutUIContext) {
-	context.WriteClipboard(a.diagnosticsText())
+func (a *app) copyDiagnostics(services aboutServices) {
+	services.WriteClipboard(a.diagnosticsText())
 	a.toast(i18n.T("Diagnostics copied"))
 }
 
-func (a *app) reportBug(context *aboutUIContext) {
+func (a *app) reportBug(services aboutServices) {
 	reportURL := a.bugReportURL()
 	if a.win == nil {
-		context.Services().OpenURL(reportURL)
+		services.OpenURL(reportURL)
 	} else {
 		go mygo.Shell.OpenExternal(reportURL)
 	}

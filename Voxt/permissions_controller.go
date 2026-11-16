@@ -9,6 +9,10 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 )
 
+type permissionServices interface {
+	OpenURL(url string)
+}
+
 // permissionsState is what the section last read.
 type permissionsState struct {
 	permSys permission.System
@@ -122,9 +126,9 @@ func (a *app) askRequired() {
 }
 
 // openPrivacy opens a pane of System Settings.
-func (a *app) openPrivacy(c *permissionUIContext, url string) {
+func (a *app) openPrivacy(services permissionServices, url string) {
 	if a.win == nil {
-		c.Services().OpenURL(url)
+		services.OpenURL(url)
 		return
 	}
 	go mygo.Shell.OpenExternal(url)

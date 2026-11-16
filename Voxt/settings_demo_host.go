@@ -108,7 +108,7 @@ func (host *meetingDemoHost) requestPermission(which string) {
 	host.record("requestPermission %s", which)
 }
 func (host *meetingDemoHost) recheckPermissions() { host.record("recheckPermissions") }
-func (host *meetingDemoHost) openPrivacy(_ *permissionUIContext, url string) {
+func (host *meetingDemoHost) openPrivacy(_ permissionServices, url string) {
 	host.record("openPrivacy %s", url)
 }
 
@@ -196,16 +196,16 @@ func (host *meetingDemoHost) setStorageModelBackup(on bool) {
 
 func (host *meetingDemoHost) runSelfCheck() { host.record("runSelfCheck") }
 func (host *meetingDemoHost) saveBundle()   { host.record("saveBundle") }
-func (host *meetingDemoHost) copyDiagnostics(_ *aboutUIContext) {
+func (host *meetingDemoHost) copyDiagnostics(_ aboutServices) {
 	host.record("copyDiagnostics")
 }
-func (host *meetingDemoHost) reportBug(_ *aboutUIContext) { host.record("reportBug") }
-func (host *meetingDemoHost) checkForUpdates()            { host.record("checkForUpdates") }
-func (host *meetingDemoHost) relaunch()                   { host.record("relaunch") }
-func (host *meetingDemoHost) setAutoCheck(on bool)        { host.record("setAutoCheck %t", on) }
-func (host *meetingDemoHost) setBeta(on bool)             { host.record("setBeta %t", on) }
-func (host *meetingDemoHost) setAutoInstall(on bool)      { host.record("setAutoInstall %t", on) }
-func (host *meetingDemoHost) navigate(path string)        { host.record("navigate %s", path) }
+func (host *meetingDemoHost) reportBug(_ aboutServices) { host.record("reportBug") }
+func (host *meetingDemoHost) checkForUpdates()          { host.record("checkForUpdates") }
+func (host *meetingDemoHost) relaunch()                 { host.record("relaunch") }
+func (host *meetingDemoHost) setAutoCheck(on bool)      { host.record("setAutoCheck %t", on) }
+func (host *meetingDemoHost) setBeta(on bool)           { host.record("setBeta %t", on) }
+func (host *meetingDemoHost) setAutoInstall(on bool)    { host.record("setAutoInstall %t", on) }
+func (host *meetingDemoHost) navigate(path string)      { host.record("navigate %s", path) }
 
 func (host *meetingDemoHost) setMeetingCaptureMode(captureMode string) {
 	host.record("setMeetingCaptureMode %s", captureMode)
@@ -224,7 +224,7 @@ func (host *meetingDemoHost) setMeetingLLM(languageModelID string) {
 }
 
 func (host *meetingDemoHost) answerShortcutPrompt() { host.record("answerShortcutPrompt") }
-func (host *meetingDemoHost) openShortcutPromptLink(_ *shortcutPromptUIContext, link string) {
+func (host *meetingDemoHost) openShortcutPromptLink(_ shortcutPromptServices, link string) {
 	host.record("openShortcutPromptLink %s", link)
 }
 func (host *meetingDemoHost) changeShortcutPrompt(path string) {

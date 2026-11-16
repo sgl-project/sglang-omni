@@ -334,7 +334,7 @@ func (a *app) chooseKeys(feature string, i int, r *keyRow, byLabel map[string]st
 }
 
 func (a *app) keysField(c *ui.Context, r *keyRow, label string, save func(keys string)) {
-	state := keyRecorderViewState{HelperRecordsKeys: a.helperRecordsKeys(), DisplayedKeys: uitext.HotkeyText(r.text), Typed: a.customShortcutKeysState(r.text)}
+	state := buildKeyRecorderViewState(i18n.CurrentTranslator(), a.helperRecordsKeys(), r.text)
 	keysField(c, r, label, save, state, a)
 }
 

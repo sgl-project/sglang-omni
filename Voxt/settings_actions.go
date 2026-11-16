@@ -83,7 +83,7 @@ type keyRecorderActions interface {
 
 type shortcutPromptActions interface {
 	answerShortcutPrompt()
-	openShortcutPromptLink(context *shortcutPromptUIContext, link string)
+	openShortcutPromptLink(services shortcutPromptServices, link string)
 	changeShortcutPrompt(path string)
 }
 

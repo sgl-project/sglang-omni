@@ -9,10 +9,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
-// aboutUIContext keeps clipboard and link opening in the controller without
-// making that controller a view file.
-type aboutUIContext = ui.Context
-
 // aboutDetails is Settings → About's version, system and legal information.
 func aboutDetails(c *ui.Context, state settingsAboutViewState) {
 	t := c.Theme()
@@ -68,7 +64,7 @@ func aboutDiagnostics(c *ui.Context, state settingsAboutViewState, actions setti
 	sectionTitle(c, i18n.T("Report a problem"))
 	settingRow(c, "about-copy", i18n.T("Copy diagnostics"), i18n.T("Versions, the Mac, models, folders and self-check results. No text or audio."), func() {
 		if ui.Button(c.Key("about-copy"), i18n.T("Copy")).Clicked() {
-			actions.copyDiagnostics(c)
+			actions.copyDiagnostics(c.Services())
 		}
 	})
 	settingRow(c, "about-bundle", i18n.T("Save a diagnostic bundle"), i18n.T("A ZIP of the diagnostics, logs and settings to attach to a report."), func() {
@@ -78,7 +74,7 @@ func aboutDiagnostics(c *ui.Context, state settingsAboutViewState, actions setti
 	})
 	settingRow(c, "about-bug", i18n.T("Report a bug"), i18n.T("Opens a new issue on GitHub in your browser, with the diagnostics filled in. Nothing is sent until you submit it."), func() {
 		if ui.Button(c.Key("about-bug"), i18n.T("Report…")).Clicked() {
-			actions.reportBug(c)
+			actions.reportBug(c.Services())
 		}
 	})
 }
