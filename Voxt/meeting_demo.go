@@ -31,6 +31,7 @@ type meetingDemoHost struct {
 	historyUI         historyLocalUI
 	historySettingsUI historySettingsLocalUI
 	historyAccessUI   historyAccessLocalUI
+	modelsUI          modelsLocalUI
 	overlayLook       settings.Overlay
 }
 
@@ -98,7 +99,8 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "start" && fixture.Start != nil ||
 		fixture.Kind == "history" && fixture.History != nil ||
 		fixture.Kind == "history-settings" && fixture.HistorySettings != nil ||
-		fixture.Kind == "history-access" && fixture.HistoryAccess != nil
+		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||
+		fixture.Kind == "models" && fixture.Models != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -146,6 +148,26 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	if state := fixture.state.HistoryAccess; state != nil {
 		host.historyAccessUI = historyAccessLocalUI{
 			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
+		}
+	}
+	host.modelsUI = modelsLocalUI{}
+	if state := fixture.state.Models; state != nil {
+		host.modelsUI.modelAdvanced = state.Advanced.Open
+		host.modelsUI.modelKeepSel = state.Advanced.Selection
+		host.modelsUI.modelKeepFor = state.Advanced.Value + "\x00" + state.Advanced.Locale
+		host.modelsUI.modelHiddenOpen = state.HiddenOpen
+		host.modelsUI.netOpen = state.Network.Open
+		host.modelsUI.netForm = networkForm{
+			proxyMode: state.Network.ProxyMode, proxyErr: state.Network.ProxyError,
+			source: state.Network.Source, sourceURL: state.Network.SourceURL,
+		}
+		host.modelsUI.netWas = host.modelsUI.netForm
+		host.modelsUI.speechContext = speechContextState{text: state.SpeechContext, seen: state.SpeechContext}
+		if state.Delete.Plain != nil {
+			host.modelsUI.modelAsk = state.Delete.Plain.ID
+		}
+		if state.Delete.Shared != nil {
+			host.modelsUI.modelShared = &sharedDelete{id: state.Delete.Shared.ID, forAll: state.Delete.Shared.ForAll}
 		}
 	}
 }
@@ -313,3 +335,56 @@ func (host *meetingDemoHost) copyHistoryAccessCommand() {
 	host.record("copyHistoryAccessCommand")
 }
 func (host *meetingDemoHost) openHistoryAccessDocs() { host.record("openHistoryAccessDocs") }
+
+func (host *meetingDemoHost) openNetwork() {
+	host.modelsUI.netOpen = true
+	host.modelsUI.netWas = host.modelsUI.netForm
+	host.record("openNetwork")
+}
+func (host *meetingDemoHost) saveNetwork() bool {
+	host.record("saveNetwork")
+	return true
+}
+func (host *meetingDemoHost) closeNetwork() {
+	host.modelsUI.netOpen = false
+	host.record("closeNetwork")
+}
+func (host *meetingDemoHost) followNetwork(key string, on bool) {
+	host.record("followNetwork %s %t", key, on)
+}
+func (host *meetingDemoHost) downloadModel(id string) { host.record("downloadModel %s", id) }
+func (host *meetingDemoHost) cancelModel(id string)   { host.record("cancelModel %s", id) }
+func (host *meetingDemoHost) askDeleteModel(id string) {
+	host.record("askDeleteModel %s", id)
+}
+func (host *meetingDemoHost) discardModelDownload(id string) {
+	host.record("discardModelDownload %s", id)
+}
+func (host *meetingDemoHost) useModel(id string) { host.record("useModel %s", id) }
+func (host *meetingDemoHost) confirmModelDelete(id string, allApps bool) {
+	host.record("confirmModelDelete %s %t", id, allApps)
+}
+func (host *meetingDemoHost) setModelHidden(id string, hidden bool) {
+	host.record("setModelHidden %s %t", id, hidden)
+}
+func (host *meetingDemoHost) setModelFaster(id string, on bool) {
+	host.record("setModelFaster %s %t", id, on)
+}
+func (host *meetingDemoHost) setModelsKeepLoaded(value string) {
+	host.record("setModelsKeepLoaded %q", value)
+}
+func (host *meetingDemoHost) autosaveSpeechContext(changed, focused bool) {
+	state := &host.modelsUI.speechContext
+	if changed {
+		state.dirty = true
+		state.seq++
+		host.record("autosaveSpeechContext %t %t", changed, focused)
+		return
+	}
+	if state.dirty && !focused {
+		state.text = strings.TrimSpace(state.text)
+		state.seen = state.text
+		state.dirty = false
+		host.record("autosaveSpeechContext %t %t", changed, focused)
+	}
+}
