@@ -27,7 +27,7 @@ import (
 // in app: each section keeps its own struct in its file.
 type settingsState struct {
 	storageState // settings_storage_controller.go
-	aboutState   // settings_about.go
+	aboutState   // settings_about_controller.go
 	settingsForm // shell_settings.go: the controls that edit a setting
 }
 
@@ -256,6 +256,8 @@ func (a *app) settingsShown(sub string) {
 		a.prepareSoundChoices() // settings_soundchoice_controller.go
 	case "/storage":
 		a.loadStorage() // settings_storage_controller.go
+	case "/about":
+		a.loadSysInfo() // sysinfo.go
 	}
 }
 
@@ -426,7 +428,12 @@ func (a *app) settingsSection(c *ui.Context, r *ui.Route) {
 		"storage": func(c *ui.Context) {
 			storageSettings(c, a.storageSettingsModel(), a, &a.storageState.settingsStorageLocalUI)
 		},
-		"about": a.aboutSettings, // settings_about.go
+		"about": func(c *ui.Context) {
+			state := a.aboutSettingsModel()
+			aboutDetails(c, state)
+			a.updateSettingsSection(c) // updates.go
+			aboutDiagnostics(c, state, a)
+		},
 	}
 	for _, s := range settingsSections() {
 		if r.Match("/" + s.id) {

@@ -56,7 +56,6 @@ remote_chatgpt.go  # remote
 remote_dialog.go  # remote
 remote_generation.go  # remote
 remote_page.go  # remote
-settings_about.go  # settings
 shell.go  # shell
 shell_commands.go  # shell
 shell_logs.go  # shell
