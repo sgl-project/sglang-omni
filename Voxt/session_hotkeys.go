@@ -143,6 +143,9 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 // hotkeyPlan is what the settings' shortcuts become.
 func (a *app) hotkeyPlan() hotkey.Plan {
 	shown := slices.DeleteFunc(slices.Clone(liveFeatures), a.prefs.Features.IsHidden)
+	if a.sess.State == session.Recording && a.sess.Kind == store.KindTranscribe && !a.sess.Note && a.prefs.Features.Transcribe.ReturnFinishes {
+		shown = append(shown, hotkey.FinishID)
+	}
 	return hotkey.Build(a.prefs.Features, shown)
 }
 

@@ -70,6 +70,12 @@ type Decision struct {
 // none); strict is the feature that started it with Strict shortcuts on
 // ("": off).
 func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string) Decision {
+	if e.Binding == FinishID {
+		if phase == Recording && e.Phase == proto.PhaseTrigger {
+			return Decision{Action: Stop}
+		}
+		return Decision{}
+	}
 	if e.Binding == proto.HotkeyCancel {
 		if phase != Idle {
 			return Decision{Action: Cancel}

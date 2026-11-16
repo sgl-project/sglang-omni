@@ -261,6 +261,38 @@ func TestBuildCancel(t *testing.T) {
 	}
 }
 
+// TestBuildFinish: Return is an active-only binding when the app asks for
+// it during Transcribe recording. It never becomes a Carbon shortcut,
+// which would take Return from other apps while idle.
+func TestBuildFinish(t *testing.T) {
+	p := Build(settings.Defaults().Features, []string{"finish"})
+	for _, active := range []bool{false, true} {
+		for range 2 { // configuring again must not add another Return
+			cfg := p.Configure(active)
+			var finish []proto.HotkeyBinding
+			for _, b := range cfg.Bindings {
+				if b.ID == "finish" {
+					finish = append(finish, b)
+				}
+			}
+			if !active {
+				if len(finish) != 0 {
+					t.Errorf("idle: Return is bound: %+v", finish)
+				}
+				continue
+			}
+			if len(finish) != 1 || finish[0].Key == nil || *finish[0].Key != 36 || finish[0].Behavior != proto.BehaviorTap || len(finish[0].Modifiers) != 0 {
+				t.Fatalf("active: Return binding %+v", finish)
+			}
+		}
+	}
+	for _, c := range p.Carbon {
+		if c.ID == "finish" {
+			t.Errorf("Return became a global Carbon shortcut: %+v", c)
+		}
+	}
+}
+
 func TestParseID(t *testing.T) {
 	for id, want := range map[string]struct {
 		f  string
@@ -378,6 +410,29 @@ func TestRoute(t *testing.T) {
 	} {
 		if got := Route(tc.e, tc.phase, tc.hold, ""); got != tc.want {
 			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestRouteFinish: Return stops only a recording, whether Voxt's own
+// dictation card or another app is in front. Idle and busy sessions leave
+// the key alone.
+func TestRouteFinish(t *testing.T) {
+	voxt := proto.App{PID: 1, BundleID: "dev.hehehai.voxtnew", Name: "Voxt"}
+	other := proto.App{PID: 2, BundleID: "com.apple.TextEdit", Name: "TextEdit"}
+	for _, front := range []proto.App{voxt, other} {
+		for _, tc := range []struct {
+			phase Phase
+			want  Decision
+		}{
+			{Recording, Decision{Action: Stop}},
+			{Idle, Decision{}},
+			{Busy, Decision{}},
+		} {
+			e := proto.HotkeyEventParams{Binding: "finish", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front}
+			if got := Route(e, tc.phase, "", ""); got != tc.want {
+				t.Errorf("%s, %v: %+v, want %+v", front.Name, tc.phase, got, tc.want)
+			}
 		}
 	}
 }

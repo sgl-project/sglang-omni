@@ -287,6 +287,9 @@ const (
 	// CancelID is the binding id of Features.Cancel: the helper reports
 	// it only while active (proto.HotkeyCancel).
 	CancelID = proto.HotkeyCancel
+	// FinishID is the fixed Return binding that finishes a Transcribe
+	// recording. Build includes it only when the app asks for it.
+	FinishID = "finish"
 	// Note is the binding id of Features.Note: it starts a Transcribe
 	// session whose text becomes a note.
 	Note = "note"
@@ -370,6 +373,9 @@ type Plan struct {
 	// while nothing records. Nil when it is off or clashes with an
 	// earlier binding.
 	Cancel *proto.HotkeyBinding
+	// Finish is the fixed Return binding that stops a Transcribe
+	// recording. Configure includes it only while active.
+	Finish *proto.HotkeyBinding
 	// Carbon are the bindings that work without Accessibility, through
 	// MyGo's Carbon shortcuts: keys with ⌃⌥⇧⌘ (no fn, no sides). They
 	// fire on key down only, so a long press there acts as a tap.
@@ -426,6 +432,19 @@ func Build(f settings.Features, enabled []string) Plan {
 			add(ID(Meeting, i), h, Behavior(h.Trigger))
 		}
 	}
+	if slices.Contains(enabled, FinishID) {
+		c, _ := Parse("Return")
+		dup := false
+		for _, s := range taken {
+			if s.c.Equal(c) && s.b == proto.BehaviorTap {
+				dup = true // an existing Return binding already stops the recording
+			}
+		}
+		if !dup {
+			b := binding(FinishID, c, proto.BehaviorTap)
+			p.Finish = &b
+		}
+	}
 	if f.Cancel.Keys != "" {
 		if c, err := Parse(f.Cancel.Keys); err == nil {
 			dup := false
@@ -469,9 +488,12 @@ func (p Plan) UsesFn() bool {
 
 // Configure is the hotkey.configure of the plan; active while a session
 // runs or the answer card shows (taps fire at once, the cancel shortcut
-// is reported).
+// is reported). Finish joins the ordinary bindings only while active.
 func (p Plan) Configure(active bool) proto.HotkeyConfigureParams {
-	bs := p.Bindings
+	bs := slices.Clone(p.Bindings)
+	if active && p.Finish != nil {
+		bs = append(bs, *p.Finish)
+	}
 	if bs == nil {
 		bs = []proto.HotkeyBinding{}
 	}
