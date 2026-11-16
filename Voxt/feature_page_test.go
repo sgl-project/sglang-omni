@@ -73,6 +73,68 @@ func TestFeaturePageModelCache(t *testing.T) {
 	}
 }
 
+type featureCacheLocal struct {
+	*fakeLocal
+	alternate local.Model
+}
+
+func (f *featureCacheLocal) Installed(kind local.Kind) []local.Model {
+	models := f.fakeLocal.Installed(kind)
+	if kind == local.ASR {
+		models = append(models, f.alternate)
+	}
+	return models
+}
+
+func TestFeaturePageModelCacheContent(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	readyModels(a)
+	a.local = &featureCacheLocal{fakeLocal: a.local.(*fakeLocal), alternate: local.Model{Kind: local.ASR, ID: "fixture-unused-speech", Name: "Fixture unused speech model", Stream: true}}
+	ready, _ := a.featurePageModel(hotkey.Transcribe)
+	if len(ready.Models.ASR.Options) != 3 || ready.Shortcuts.EndWord == nil {
+		t.Fatalf("ready model state %+v", ready.Models.ASR)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = []string{"fixture-unused-speech"} })
+	hidden, _ := a.featurePageModel(hotkey.Transcribe)
+	if len(hidden.Models.ASR.Options) != 2 {
+		t.Fatalf("hidden model options %+v", hidden.Models.ASR.Options)
+	}
+	if hidden.Shortcuts.EndWord == nil {
+		t.Fatal("hiding an installed streaming model removed its end-word row")
+	}
+	local := a.fui(hotkey.Transcribe)
+	local.block = &sessionNotice{text: "first block"}
+	blocked, _ := a.featurePageModel(hotkey.Transcribe)
+	if blocked.Try.Block.Text != "first block" {
+		t.Fatalf("block text %q", blocked.Try.Block.Text)
+	}
+	local.block = &sessionNotice{text: "second block"}
+	blockedAgain, _ := a.featurePageModel(hotkey.Transcribe)
+	if blockedAgain.Try.Block.Text != "second block" {
+		t.Fatalf("updated block text %q", blockedAgain.Try.Block.Text)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	localized, _ := a.featurePageModel(hotkey.Transcribe)
+	if localized.Title != "转录" {
+		t.Fatalf("locale title %q", localized.Title)
+	}
+	a.sessionChanged(trySnapshot(a, session.Recording))
+	recording, _ := a.featurePageModel(hotkey.Transcribe)
+	if recording.Try.Recording.ElapsedText != "0:03" {
+		t.Fatalf("elapsed text %q", recording.Try.Recording.ElapsedText)
+	}
+	a.sess.HeardAt = a.sess.HeardAt.Add(-time.Second)
+	later, _ := a.featurePageModel(hotkey.Transcribe)
+	if later.Try.Recording.ElapsedText != "0:04" {
+		t.Fatalf("later elapsed text %q", later.Try.Recording.ElapsedText)
+	}
+	a.sessionChanged(trySnapshot(a, session.Done))
+	done, _ := a.featurePageModel(hotkey.Transcribe)
+	if done.Try.Ended.Result != "The meeting moves to Thursday at four." {
+		t.Fatalf("session result %q", done.Try.Ended.Result)
+	}
+}
+
 func TestTranscribePageRenders(t *testing.T) {
 	a, tt := trTester(t)
 	for _, s := range []string{
