@@ -19,6 +19,7 @@ func TestFeatureDemoActionControls(t *testing.T) {
 		{name: "add shortcut", fixture: "en/feature-normal", steps: historySteps("Add a shortcut"), want: []string{"addFeatureShortcut transcribe"}},
 		{name: "permissions", fixture: "en/feature-no-accessibility", steps: historySteps("Open Permissions"), want: []string{"openFeaturePermissions"}},
 		{name: "choose shortcut", fixture: "en/feature-normal", steps: []historyDemoStep{{label: "Keys of shortcut 1"}, {label: "Right ⌘", click: true}}, want: []string{`chooseFeatureShortcut transcribe 0 "RightCommand"`}},
+		{name: "choose custom shortcut", fixture: "en/feature-normal", steps: []historyDemoStep{{label: "Keys of shortcut 1"}, {label: "Custom…", click: true}, {label: "Type the keys instead"}, {label: "Custom keys of shortcut 1", click: true}, {command: "replace", text: "Control+Option+K"}, {key: ui.KeyEnter}}, want: []string{"beginHotkeyRecord", "markFeatureKeysHeard", "cancelHotkeyRecord", `saveFeatureShortcutKeys transcribe 0 "Control+Option+K"`}},
 		{name: "custom shortcut", fixture: "en/feature-shortcut-custom-error", prepare: func(host *meetingDemoHost) {
 			host.feature.local.rows[0].text = ""
 		}, steps: []historyDemoStep{{label: "Custom keys of shortcut 1", text: "Control+Option+K"}, {key: ui.KeyEnter}}, want: []string{`saveFeatureShortcutKeys transcribe 0 "Control+Option+K"`}},
@@ -92,6 +93,9 @@ func TestFeatureDemoActionControls(t *testing.T) {
 			for _, step := range test.steps {
 				var err error
 				switch {
+				case step.command == "replace":
+					tester.Command("selectAll")
+					tester.Type(step.text)
 				case step.context:
 					err = tester.RightClick(step.label)
 				case step.menu:

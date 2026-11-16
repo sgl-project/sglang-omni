@@ -59,6 +59,12 @@ func checkFeatureFixtureValues(t *testing.T, locale string, fixtures map[string]
 	problems := map[string]bool{}
 	shortcutProblems := map[string]bool{}
 	cardSizes := map[int]bool{}
+	streaming := map[string]bool{}
+	for _, scenario := range meetingFixtureScenarios() {
+		if scenario.kind == "feature" {
+			streaming[scenario.name] = featureFixtureStreams(scenario.feature)
+		}
+	}
 	for name, fixture := range fixtures {
 		feature := fixture.Feature
 		if feature == nil {
@@ -73,8 +79,8 @@ func checkFeatureFixtureValues(t *testing.T, locale string, fixtures map[string]
 			}
 		}
 		cardSizes[feature.Prompt.Card.Size] = true
-		if len(feature.Models.ASR.Options) == 1 && feature.Shortcuts.EndWord != nil {
-			t.Errorf("%s/%s: end word is shown without an installed speech model", locale, name)
+		if feature.Feature == hotkey.Transcribe && streaming[name] != (feature.Shortcuts.EndWord != nil) {
+			t.Errorf("%s/%s: end word visibility does not match the selected model", locale, name)
 		}
 		for _, row := range feature.Shortcuts.Rows {
 			for _, code := range row.ProblemCodes {

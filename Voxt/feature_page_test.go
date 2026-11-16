@@ -89,8 +89,8 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 
 	// Custom keys: invalid ones show why and are not saved; valid ones are
 	// saved in canonical spelling.
-	a.fui(hotkey.Transcribe).rows[1].sel = "Custom…"
-	a.fui(hotkey.Transcribe).rows[1].custom = true
+	click(t, tt, "Keys of shortcut 2")
+	click(t, tt, "Custom…")
 	frames(tt)
 	if !a.fui(hotkey.Transcribe).rows[1].custom || a.fui(hotkey.Transcribe).rows[1].text != "RightShift" {
 		t.Fatalf("custom row %+v", a.fui(hotkey.Transcribe).rows[1])
