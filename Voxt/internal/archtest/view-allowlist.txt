@@ -53,7 +53,6 @@ overlay_stream.go  # overlay
 overlay_think.go  # overlay
 overlay_wave.go  # overlay
 pages.go  # shell
-permissions.go  # settings
 remote_chatgpt.go  # remote
 remote_dialog.go  # remote
 remote_generation.go  # remote
@@ -62,7 +61,6 @@ settings_about.go  # settings
 settings_audio.go  # settings
 settings_meeting.go  # settings
 settings_overlay.go  # settings
-settings_privacy.go  # settings
 settings_shortcuts.go  # settings
 settings_shortcuts_family.go  # settings
 settings_soundchoice.go  # settings

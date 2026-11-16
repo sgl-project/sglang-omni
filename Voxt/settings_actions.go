@@ -20,3 +20,14 @@ type settingsAppearanceActions interface {
 	setSidebarChoice(choice string)
 	setReduceMotion(on bool)
 }
+
+type settingsPrivacyActions interface {
+	historyAccessActions
+	setSendWindow(on bool)
+	setSendClipboardImage(on bool)
+	setKeepHistory(on bool)
+	setKeepAudio(on bool)
+	showHistorySettings()
+	clearHistory()
+	setLogText(on bool)
+}

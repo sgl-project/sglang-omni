@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -37,12 +38,8 @@ type settingsForm struct {
 
 	settingsGeneralLocalUI
 	settingsAppearanceLocalUI
-	strictShortcuts bool // Features.StrictShortcuts
-	keepHistory     bool
-	keepAudio       bool
-	logText         bool
-	sendWindow      bool
-	sendClipboard   bool
+	settingsPrivacyLocalUI
+	strictShortcuts bool        // Features.StrictShortcuts
 	skipSilence     bool        // !Audio.VAD.Off
 	liveResult      bool        // Audio.LiveResult
 	cleanSound      bool        // !Audio.Clean.Off
@@ -51,7 +48,6 @@ type settingsForm struct {
 	maxMinutes      float64     // Audio.MaxSeconds, in minutes
 	ovStyle         overlayForm // settings_overlay.go
 
-	clearHistoryAsk bool // Privacy's Clear the history… dialog
 	// loginIs is whether macOS opens VoxtNew at login, as last read or
 	// set: the setting changes it only when they differ.
 	loginIs     bool
@@ -411,14 +407,18 @@ func (a *app) settingsSection(c *ui.Context, r *ui.Route) {
 		"general": func(c *ui.Context) {
 			generalSettings(c, a.generalSettingsModel(), a, &a.settingsForm.settingsGeneralLocalUI)
 		},
-		"permissions": a.permissionsSettings, // permissions.go
-		"audio":       a.audioSettings,       // settings_audio.go
-		"overlay":     a.overlaySettings,     // settings_overlay.go
-		"shortcuts":   a.shortcutsSettings,   // settings_shortcuts.go
+		"permissions": func(c *ui.Context) {
+			permissionsSettings(c, a.permissionsModel(), a)
+		},
+		"audio":     a.audioSettings,     // settings_audio.go
+		"overlay":   a.overlaySettings,   // settings_overlay.go
+		"shortcuts": a.shortcutsSettings, // settings_shortcuts.go
 		"appearance": func(c *ui.Context) {
 			appearanceSettings(c, a.appearanceSettingsModel(), a, &a.settingsForm.settingsAppearanceLocalUI)
 		},
-		"privacy": a.privacySettings, // settings_privacy.go
+		"privacy": func(c *ui.Context) {
+			privacySettings(c, a.privacySettingsModel(time.Now()), a, &a.settingsForm.settingsPrivacyLocalUI, &a.histAccessUI)
+		},
 		"storage": a.storageSettings, // settings_storage.go
 		"about":   a.aboutSettings,   // settings_about.go
 	}

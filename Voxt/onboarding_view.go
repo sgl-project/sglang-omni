@@ -42,7 +42,7 @@ func (a *app) onboarding(c *ui.Context) {
 					case obWelcome:
 						a.obWelcomeStep(c)
 					case obPermissions:
-						a.permissionRows(c, settingRow) // permissions.go
+						permissionRows(c, a.permissionsModel(), a, settingRow) // permissions.go
 					case obModels:
 						a.obModelsStep(c)
 					case obTranscribe, obTranslate, obRewrite:
