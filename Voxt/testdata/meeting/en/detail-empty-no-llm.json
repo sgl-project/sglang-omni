@@ -131,12 +131,10 @@
       "delete_disabled": false,
       "has_transcript": false,
       "summary": {
-        "present": true,
-        "title": "Fixture summary",
-        "body": "A generated summary.\nSecond line.",
-        "todos": [
-          "Follow up"
-        ]
+        "present": false,
+        "title": "",
+        "body": "",
+        "todos": null
       },
       "chat": null,
       "segments": null,

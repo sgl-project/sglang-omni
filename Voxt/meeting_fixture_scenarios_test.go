@@ -82,7 +82,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 		mutate func(*meetingsViewStateInput)
 	}{
 		{"page-loading", func(input *meetingsViewStateInput) { input.Read, input.Loading = false, true }},
-		{"page-empty", func(input *meetingsViewStateInput) { input.List = nil }},
+		{"page-empty", func(input *meetingsViewStateInput) { input.List, input.Active = nil, false }},
 		{"page-normal", func(input *meetingsViewStateInput) {}},
 		{"page-error", func(input *meetingsViewStateInput) { input.Error = "fixture read failed" }},
 		{"page-search-empty", func(input *meetingsViewStateInput) { input.Query, input.List = "missing", nil }},
@@ -97,7 +97,9 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 			input.Detail = &meetingDetailStateInput{Meeting: meetingFixtureDetailMeeting(), Error: "fixture detail failed"}
 		}},
 		{"detail-empty-no-llm", func(input *meetingsViewStateInput) {
-			input.Detail = &meetingDetailStateInput{Meeting: meetingFixtureDetailMeeting()}
+			stored := meetingFixtureDetailMeeting()
+			stored.Summary, stored.Chat = "", ""
+			input.Detail = &meetingDetailStateInput{Meeting: stored}
 		}},
 		{"detail-normal", func(input *meetingsViewStateInput) { input.Detail = meetingFixtureDetailInput() }},
 		{"detail-correcting", func(input *meetingsViewStateInput) {

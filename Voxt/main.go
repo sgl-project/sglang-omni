@@ -30,6 +30,13 @@ import (
 )
 
 func main() {
+	// Fixture demo builds return before any application data or service wiring.
+	if directory := os.Getenv("VOXTNEW_DEMO_DIR"); directory != "" {
+		if err := runMeetingDemo(directory); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	// `Voxt history …` (history_cli.go) only talks to the running app: no
 	// window, no data, no lock.
 	if len(os.Args) > 1 && os.Args[1] == "history" {
