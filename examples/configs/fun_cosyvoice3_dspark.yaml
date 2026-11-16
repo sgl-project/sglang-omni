@@ -1,7 +1,6 @@
 config_cls: FunCosyVoice3PipelineConfig
 name: fun-cosyvoice3-dspark
 model_path: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
-python_thread_switch_interval_seconds: 0.001
 
 stages:
   tts_engine:

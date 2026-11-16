@@ -728,12 +728,18 @@ def test_first_hop_batches_respect_graph_coverage_without_starving_a_row(
     assert set(scheduler.stream_states) == {"req-a", "req-b", "req-c"}
 
 
-def test_graph_coverage_counts_only_new_frames_and_preserves_playback_priority() -> (
-    None
-):
-    """A cached follow-up retains priority and shares its frame budget with first audio."""
+@pytest.mark.parametrize(
+    "maximum_frames,expected_ids",
+    [(150, ["req-followup", "req-first"]), (149, ["req-followup"])],
+)
+def test_graph_coverage_counts_only_new_frames_and_preserves_playback_priority(
+    maximum_frames: int, expected_ids: list[str]
+) -> None:
+    """First audio shares the remaining budget or stays queued until the next step."""
     _, scheduler = make_scheduler(max_batch_size=8)
-    scheduler.vocoder.flow.prefix_cuda_graph_runner = SimpleNamespace(tier_frames=[150])
+    scheduler.vocoder.flow.prefix_cuda_graph_runner = SimpleNamespace(
+        tier_frames=[maximum_frames]
+    )
     for request_id in ("req-first", "req-followup"):
         scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
         scheduler.ingest_stream_item(request_id, item(list(range(53))))
@@ -745,7 +751,10 @@ def test_graph_coverage_counts_only_new_frames_and_preserves_playback_priority()
         PrefixCacheRow(committed_frames=100),
     )
     selected = scheduler.select_step_participants()
-    assert [request_id for request_id, _ in selected] == ["req-followup", "req-first"]
+    assert [request_id for request_id, _ in selected] == expected_ids
+    state.token_offset += state.hop_len
+    selected = scheduler.select_step_participants()
+    assert [request_id for request_id, _ in selected] == ["req-first"]
 
 
 def test_a_stream_whose_first_hop_is_in_flight_ranks_started(

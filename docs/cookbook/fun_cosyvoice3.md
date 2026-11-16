@@ -409,7 +409,7 @@ Use a dedicated GPU for this MPS instance. Setting only the stage's environment 
 
 The preset enables `vocoder.factory.should_complete_first_chunk_immediately`: a step containing first audio completes before the next step is launched, while batches containing only subsequent chunks keep launch/read overlap. The regular pipeline leaves this option off.
 
-The [DSpark configuration](../../examples/configs/fun_cosyvoice3_dspark.yaml) and H100 preset select `python_thread_switch_interval_seconds: 0.001`, the recommended 1 ms starting point for CosyVoice3 DSpark. This controls Python thread scheduling in the API and stage worker processes and applies across GPU models. Override the value in the YAML to tune it for your workload, or remove it to preserve the interpreter setting. The framework default remains unset. Each process logs the effective interval at startup. Compare draft and no-draft runs with the same interval.
+The H100 preset selects `python_thread_switch_interval_seconds: 0.001`, a 1 ms target interval for Python thread switching in the API and stage worker processes. This setting was evaluated on H100 hosts with the recorded CosyVoice3 workloads. Tune it for your hardware and workload by comparing 1 ms with the interpreter setting, using the same interval in each draft/no-draft pair. The general DSpark configuration and framework default leave it unset. Each process logs its effective interval at startup.
 
 ### Profiling First Audio
 
