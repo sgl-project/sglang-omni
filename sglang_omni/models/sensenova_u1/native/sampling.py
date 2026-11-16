@@ -11,7 +11,10 @@ from sglang.multimodal_gen.configs.sample.sampling_params import (
     SamplingParams,
 )
 
-from sglang_omni.models.sensenova_u1.native.image_edit import MAX_REFERENCE_COUNT
+from sglang_omni.models.sensenova_u1.native.image_edit import (
+    MIN_REFERENCE_PIXELS,
+    TOTAL_REFERENCE_MAX_PIXELS,
+)
 from sglang_omni.models.sensenova_u1.native.options import (
     DEFAULT_CFG_INTERVAL,
     DEFAULT_CFG_NORM,
@@ -25,6 +28,7 @@ from sglang_omni.models.sensenova_u1.native.options import (
     ClassifierFreeGuidanceNormalization,
 )
 
+MAX_REFERENCE_COUNT = TOTAL_REFERENCE_MAX_PIXELS // MIN_REFERENCE_PIXELS
 PUBLIC_OVERRIDE_FIELDS = {
     "prompt",
     "prompt_path",

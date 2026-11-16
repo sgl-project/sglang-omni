@@ -192,11 +192,13 @@ def test_edit_prefix_memory_budget_boundary(
 
 
 @pytest.mark.parametrize(
-    "reference_count,reference_size_pixels,prompt,output_size_pixels",
+    "reference_count,reference_size_pixels,prompt,output_size_pixels,"
+    "budget_output_size_pixels,img_cfg_scale",
     [
-        (64, (512, 512), "edit", (64, 64)),
-        (1, (32, 32), "edit " * 1024, (64, 64)),
-        (1, (32, 32), "edit", (4096, 4096)),
+        (64, (512, 512), "edit", (64, 64), (64, 64), 1.0),
+        (1, (32, 32), "edit " * 1024, (64, 64), (64, 64), 1.0),
+        (1, (32, 32), "edit", (4096, 4096), (64, 64), 1.0),
+        (1, (32, 32), "edit", (4096, 4096), (4096, 4096), 1.5),
     ],
 )
 def test_edit_prefix_budget_accounts_for_references_text_and_output(
@@ -206,13 +208,15 @@ def test_edit_prefix_budget_accounts_for_references_text_and_output(
     reference_size_pixels: tuple[int, int],
     prompt: str,
     output_size_pixels: tuple[int, int],
+    budget_output_size_pixels: tuple[int, int],
+    img_cfg_scale: float,
 ) -> None:
     model, tokenizer = edit_model_and_tokenizer
     queries = build_it2i_queries(model, "edit", [(32, 32)], 4.0, 1.0)
     memory_budget_bytes = estimate_it2i_prefix_memory_bytes(
         model,
         [len(tokenizer.encode(query)) for query in queries],
-        (64, 64),
+        budget_output_size_pixels,
         [(32, 32)],
     )
     references = [Image.new("RGB", reference_size_pixels)] * reference_count
@@ -228,7 +232,7 @@ def test_edit_prefix_budget_accounts_for_references_text_and_output(
             num_steps=2,
             steps=range(2),
             cfg_scale=4.0,
-            img_cfg_scale=1.0,
+            img_cfg_scale=img_cfg_scale,
             seed=7,
             timestep_shift=3.0,
             t_eps=0.02,

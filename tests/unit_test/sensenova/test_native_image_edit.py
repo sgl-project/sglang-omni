@@ -22,14 +22,14 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_ba
 
 from sglang_omni.models.sensenova_u1.native import generation
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
-from sglang_omni.models.sensenova_u1.native.image_edit import (
-    MAX_REFERENCE_COUNT,
-    SenseNovaU1InputStage,
-)
+from sglang_omni.models.sensenova_u1.native.image_edit import SenseNovaU1InputStage
 from sglang_omni.models.sensenova_u1.native.pipeline_config import (
     SenseNovaU1PipelineConfig,
 )
-from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
+from sglang_omni.models.sensenova_u1.native.sampling import (
+    MAX_REFERENCE_COUNT,
+    SenseNovaU1SamplingParams,
+)
 
 
 @pytest.mark.parametrize("explicit_size", [False, True])
