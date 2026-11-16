@@ -339,7 +339,7 @@ func localizeRemoteDebugInput(input *llmDebugStateInput, translator *i18n.Transl
 	}
 	input.SavedPrompts = map[string]string{}
 	for _, preset := range input.Presets {
-		input.SavedPrompts[llmDebugPresetKey(preset)] = input.SavedPrompt
+		input.SavedPrompts[llmDebugPresetKey(preset)] = input.SavedPrompt + " · " + preset.title
 	}
 	if selected != nil {
 		if len(input.ModelNames) > 0 {

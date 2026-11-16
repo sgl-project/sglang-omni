@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -119,6 +120,18 @@ func TestRemoteFixtureCoverage(t *testing.T) {
 		requiredWaits := remoteStringSet(settings.WaitChoices)
 		requiredWaits["45m"] = true
 		assertMeetingFixtureSet(t, locale+" remote waits", requiredWaits, waits)
+	}
+}
+
+func TestRemoteNoKeyTestVariants(t *testing.T) {
+	translator := i18n.NewTranslator("en")
+	test := providerTest{res: providers.TestResult{Err: &llm.Error{Code: llm.CodeNoKey}, At: meetingFixtureNow}, detail: "redacted"}
+	state := buildRemoteTestViewState(translator, test)
+	if !strings.Contains(state.Tooltip, "No API key is saved for the remote model") || strings.Contains(state.Tooltip, "above") {
+		t.Fatalf("card tooltip %q", state.Tooltip)
+	}
+	if !strings.Contains(state.LongTooltip, "above") {
+		t.Fatalf("dialog tooltip %q", state.LongTooltip)
 	}
 }
 

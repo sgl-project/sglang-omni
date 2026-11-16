@@ -277,19 +277,21 @@ func buildRemoteTestViewState(translator *i18n.Translator, test providerTest) re
 		if state.Code == "" {
 			state.Code = string(asr.KindOf(test.res.Err))
 		}
-		state.LongText, _ = uitext.ModelErrorTextFor(translator, test.res.Err)
+		reason, _ := uitext.ModelErrorTextFor(translator, test.res.Err)
+		state.LongText = reason
 		if models := test.res.Models; len(models) > 0 {
 			if len(models) > 8 {
 				models = append(models[:8:8], "…")
 			}
-			state.LongText = translator.T("The server does not have this model. It has: %s", strings.Join(models, ", "))
+			reason = translator.T("The server does not have this model. It has: %s", strings.Join(models, ", "))
+			state.LongText = reason
 		}
+		state.Tooltip = reason + "\n\n" + test.detail
 		if llm.Code(test.res.Err) == llm.CodeNoKey {
 			state.LongText = translator.T("Paste the service's API key above, then test again.")
 		}
 		state.Text = translator.T("Failed")
-		state.Tooltip = state.LongText + "\n\n" + test.detail
-		state.LongTooltip = state.Tooltip
+		state.LongTooltip = state.LongText + "\n\n" + test.detail
 	}
 	return state
 }

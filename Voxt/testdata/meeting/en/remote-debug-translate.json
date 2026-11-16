@@ -15,7 +15,7 @@
       {
         "title": "Transcribe",
         "feature": "transcribe",
-        "saved_prompt": "Fixture saved prompt",
+        "saved_prompt": "Fixture saved prompt · Transcribe",
         "prompt_label": "System prompt",
         "input_label": "Recognised text",
         "instruction": false
@@ -23,7 +23,7 @@
       {
         "title": "Translate",
         "feature": "translate",
-        "saved_prompt": "Fixture saved prompt",
+        "saved_prompt": "Fixture saved prompt · Translate",
         "prompt_label": "System prompt",
         "input_label": "Text to translate",
         "instruction": false
@@ -31,7 +31,7 @@
       {
         "title": "Rewrite",
         "feature": "rewrite",
-        "saved_prompt": "Fixture saved prompt",
+        "saved_prompt": "Fixture saved prompt · Rewrite",
         "prompt_label": "System prompt",
         "input_label": "Selected text (optional)",
         "instruction": true

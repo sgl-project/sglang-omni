@@ -15,7 +15,7 @@
       {
         "title": "转录",
         "feature": "transcribe",
-        "saved_prompt": "Fixture saved prompt",
+        "saved_prompt": "Fixture saved prompt · 转录",
         "prompt_label": "系统提示词",
         "input_label": "识别原文",
         "instruction": false
@@ -23,7 +23,7 @@
       {
         "title": "翻译",
         "feature": "translate",
-        "saved_prompt": "Fixture saved prompt",
+        "saved_prompt": "Fixture saved prompt · 翻译",
         "prompt_label": "系统提示词",
         "input_label": "要翻译的文字",
         "instruction": false
@@ -31,7 +31,7 @@
       {
         "title": "改写",
         "feature": "rewrite",
-        "saved_prompt": "Fixture saved prompt",
+        "saved_prompt": "Fixture saved prompt · 改写",
         "prompt_label": "系统提示词",
         "input_label": "选中的文字（可选）",
         "instruction": true

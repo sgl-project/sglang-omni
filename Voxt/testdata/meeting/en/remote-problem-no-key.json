@@ -152,7 +152,7 @@
       "code": "llm.no_key",
       "text": "Failed",
       "long_text": "Paste the service's API key above, then test again.",
-      "tooltip": "Paste the service's API key above, then test again.\n\nredacted fixture detail",
+      "tooltip": "No API key is saved for the remote model. Add one on the Language models page.\n\nredacted fixture detail",
       "long_tooltip": "Paste the service's API key above, then test again.\n\nredacted fixture detail"
     },
     "show_remove": true,

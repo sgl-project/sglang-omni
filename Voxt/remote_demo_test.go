@@ -74,16 +74,17 @@ func TestRemoteDemoActionControls(t *testing.T) {
 				t.Fatal("dialog error stayed visible")
 			}
 		}},
-		{name: "disabled running test", fixture: "en/remote-dialog-loading", check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
+		{name: "disabled running test", fixture: "en/remote-dialog-loading", steps: remoteSteps(remoteDemoStep{label: "Test connection", click: true}), check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
 			if !tester.HasText("Testing…") {
 				t.Fatal("running test state is not visible")
 			}
 		}},
-		{name: "disabled saving", fixture: "en/remote-dialog-saving", check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
+		{name: "disabled saving", fixture: "en/remote-dialog-saving", steps: remoteSteps(remoteDemoStep{label: "Save", click: true}, remoteDemoStep{label: "Remove Fixture service", click: true}), check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
 			if !tester.HasText("Save") {
 				t.Fatal("saving state is not visible")
 			}
 		}},
+		{name: "disabled signed out test", fixture: "en/remote-chatgpt-signin", steps: remoteSteps(remoteDemoStep{label: "Test connection", click: true})},
 		{name: "chat sign in", fixture: "en/remote-chatgpt-signin", steps: remoteSteps(remoteDemoStep{label: "Sign in with ChatGPT"}), want: []string{"signInChatGPT"}},
 		{name: "chat cancel", fixture: "en/remote-chatgpt-running", steps: remoteSteps(remoteDemoStep{label: "Cancel sign-in"}), want: []string{"cancelChatGPTLogin"}},
 		{name: "chat usage", fixture: "en/remote-chatgpt-signed-in", steps: remoteSteps(remoteDemoStep{label: "Manage usage"}), want: []string{"openChatGPTUsage"}},
@@ -92,14 +93,20 @@ func TestRemoteDemoActionControls(t *testing.T) {
 		{name: "debug close", fixture: "en/remote-debug-empty", steps: remoteSteps(remoteDemoStep{label: "Close"}), want: []string{"openRemoteLanguageModels"}},
 		{name: "debug open models", fixture: "en/remote-debug-empty", steps: remoteSteps(remoteDemoStep{label: "Open Language models"}), want: []string{"openRemoteLanguageModels"}},
 		{name: "debug preset", fixture: "en/remote-debug-transcribe", steps: remoteSteps(remoteDemoStep{label: "Request", click: true}, remoteDemoStep{label: "Rewrite", click: true}), check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
-			if host.remoteDebugUI.filled != "Rewrite" || host.remoteDebugUI.prompt != host.current().state.RemoteDebug.SavedPrompt || !tester.HasText("Spoken instruction") {
+			saved := ""
+			for _, preset := range host.current().state.RemoteDebug.PresetStates {
+				if preset.Title == "Rewrite" {
+					saved = preset.SavedPrompt
+				}
+			}
+			if host.remoteDebugUI.filled != "Rewrite" || saved == "" || host.remoteDebugUI.prompt != saved || !tester.HasText("Spoken instruction") {
 				t.Fatalf("preset did not rebuild the debug state: %+v", host.remoteDebugUI)
 			}
 		}},
 		{name: "debug run", fixture: "en/remote-debug-transcribe", steps: remoteSteps(remoteDemoStep{label: "Run"}), want: []string{"runRemoteDebug"}},
 		{name: "debug use prompt", fixture: "en/remote-debug-transcribe", steps: remoteSteps(remoteDemoStep{label: "Use this prompt"}), want: []string{"useRemoteDebugPrompt"}},
 		{name: "debug reset prompt", fixture: "en/remote-debug-transcribe", steps: remoteSteps(remoteDemoStep{label: "Back to the saved prompt"}), check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
-			if host.remoteDebugUI.prompt != host.current().state.RemoteDebug.SavedPrompt {
+			if host.remoteDebugUI.prompt != remoteDebugSavedPrompt(host) {
 				t.Fatal("prompt was not reset")
 			}
 		}},
@@ -145,6 +152,15 @@ func TestRemoteDemoActionControls(t *testing.T) {
 }
 
 func remoteSteps(steps ...remoteDemoStep) []remoteDemoStep { return steps }
+
+func remoteDebugSavedPrompt(host *meetingDemoHost) string {
+	for _, preset := range host.current().state.RemoteDebug.PresetStates {
+		if preset.Title == host.remoteDebugUI.preset {
+			return preset.SavedPrompt
+		}
+	}
+	return ""
+}
 
 func remoteDialogClosed(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
 	if host.remoteDialogUI.open {
