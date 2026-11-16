@@ -87,12 +87,12 @@ func TestCatalog(t *testing.T) {
 	}
 	for _, id := range []string{ASRAccurate, ASRFast, VADSilero, LLMBalanced, LLMFast, LLMTranslate, LLMQwen3, LLMGemma4,
 		ASRQwen6bit, ASRWhisperTurbo, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall,
-		ASRAccurateDraft, ASRFastDraft, ASRMossDraft} {
+		ASRAccurateDraft, ASRFastDraft} {
 		if !seen[id] {
 			t.Errorf("%s missing", id)
 		}
 	}
-	if m, _ := Lookup(ASRMoss); !m.Default || m.Repo != "OpenMOSS-Team/MOSS-Transcribe-Diarize" || m.Draft != ASRMossDraft {
+	if m, _ := Lookup(ASRMoss); !m.Default || m.Repo != "OpenMOSS-Team/MOSS-Transcribe-Diarize" {
 		t.Errorf("moss: %+v", m)
 	}
 	if _, ok := Lookup("nope"); ok {
@@ -111,7 +111,7 @@ func TestFamilyPins(t *testing.T) {
 	// The drafts are proposed to the family pins table too; until an
 	// actnowkit release lists them, TestOmniPins alone checks their pins.
 	unpinned := []string{ASRQwen6bit, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall,
-		ASRAccurateDraft, ASRFastDraft, ASRMossDraft}
+		ASRAccurateDraft, ASRFastDraft}
 	mine := map[string]fammodels.Pin{}
 	for _, p := range fammodels.PinsOfApp("voxtnew") {
 		mine[p.Repo] = p
