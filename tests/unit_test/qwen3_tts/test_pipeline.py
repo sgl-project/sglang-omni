@@ -4890,6 +4890,36 @@ def test_qwen3_tts_new_stream_waits_behind_streams_already_waiting_for_a_slot(
     assert first.is_waiting_for_codec_slot is False
 
 
+def test_qwen3_tts_waiting_stream_leaves_the_queue_when_incremental_planning_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+    scheduler.initial_worker = object()
+    arena = scheduler.codec_arena
+    held = [arena.acquire() for _ in range(arena.num_slots)]
+    waiting = admit_reference_stream(
+        scheduler,
+        "waiting",
+        torch.tensor([[10, 1], [20, 2]], dtype=torch.long),
+        ref_code_len=0,
+    )
+    scheduler.run_initial_batch([("waiting", waiting)])
+    owner = scheduler.create_stream_state("owner")
+    owner.codec_slot = held[0]
+    scheduler.release_codec_slot(owner)
+
+    def fail_zero_slot(slot: int) -> None:
+        raise RuntimeError("device fault")
+
+    monkeypatch.setattr(arena, "zero_slot", fail_zero_slot)
+
+    scheduler.run_initial_batch([("waiting", waiting)])
+
+    assert waiting.incremental_codec_fallback is True
+    assert waiting.is_waiting_for_codec_slot is False
+    assert scheduler.codec_slot_waiting_queue == {}
+
+
 def test_qwen3_tts_waiting_stream_keeps_async_finish_when_generation_ends(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
