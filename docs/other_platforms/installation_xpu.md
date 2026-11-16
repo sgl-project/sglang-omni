@@ -270,6 +270,42 @@ Decode graphs capture on XPU for this model and stay on by default, as on CUDA. 
 
 **Expected result:** The JSON response contains the translated text in `text`.
 
+### Nemotron Transcribe (speech-to-text, multi-XPU tensor parallel)
+
+The 62.9 GiB bf16 checkpoint does not fit one 24 GB card, so the single-GPU configuration in the [cookbook](../cookbook/nemotron_transcribe.md) needs tensor parallelism here. Four cards are the minimum: each rank then holds 16.11 GiB of weights, which includes its own copy of the audio perception encoder, and `--mem-fraction-static 0.75` leaves room for the 0.74 GiB mamba cache and a 1.08 GiB KV cache (378101 tokens), measured on Arc Pro B60. Without that fraction the stage refuses to start with "Loaded weights leave no GPU memory for the KV cache".
+
+**Launch**
+
+```bash
+sgl-omni serve \
+  --model-path /path/to/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
+  --asr.tp_size 4 --asr.gpu "[0, 1, 2, 3]" \
+  --mem-fraction-static 0.75 \
+  --host 0.0.0.0 --port 8000
+```
+
+The published checkpoint renames its architecture to `Nemotron3_5TranscribeForConditionalGeneration`. Until the pipeline registry accepts that name, point `--config` at a file naming the pipeline instead of relying on architecture detection:
+
+```yaml
+config_cls: NemotronTranscribePipelineConfig
+model_path: /path/to/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B
+```
+
+**Request**
+
+```bash
+curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "file=@tests/data/query_to_cars.wav" \
+  -F "model=/path/to/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B" \
+  -F "response_format=json"
+```
+
+Decode graphs capture on XPU for this model and stay on by default, as on CUDA; the four ranks capture batch sizes 1 to 64 in 14 seconds. The pre-LM audio encoder stays off above one rank, because admission waits on each rank's own encode and the ranks would otherwise admit a request in different steps; each rank encodes inside the forward instead, so a four-rank server encodes the same waveform four times.
+
+Triton compiles and tunes the decoder's mamba kernels on the first request, which takes about 108 seconds on an idle host and is not a hang. Those results live in `~/.cache/sglang/triton`, so a later server answers its first request in under 2 seconds. Exclude the first request of a fresh cache from any measurement.
+
+**Expected result:** The JSON response contains `How many cars are there in the picture?` under `text`.
+
 ### Qwen3-TTS (text-to-speech, single XPU)
 
 Qwen3-TTS automatically selects the `intel_xpu` attention backend when the platform and the engine stage device are both XPU. Setting any of `attention_backend`, `prefill_attention_backend`, or `decode_attention_backend` in `server_args_overrides` takes precedence over this default. CPU stages on an XPU host are unaffected.

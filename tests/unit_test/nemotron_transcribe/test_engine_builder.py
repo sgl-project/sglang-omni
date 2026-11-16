@@ -32,6 +32,8 @@ def make_builder(
         compile_perception=compile_perception,
         perception_cuda_graphs=cuda_graphs,
         mem_fraction_static=None,
+        tp_rank=0,
+        nccl_port=None,
     )
     return NemotronTranscribeEngineBuilder(**parameters)
 
@@ -107,7 +109,7 @@ def test_pre_lm_encoder_starts_after_model_setup(
     builder = make_builder()
     builder.checkpoint_dir = "checkpoint"
     model = SimpleNamespace()
-    builder.setup_runtime_resources(model, SimpleNamespace())
+    builder.setup_runtime_resources(model, SimpleNamespace(tp_size=1))
     assert created["model"] is model
     assert created["kwargs"] == {
         "cache_namespace": "checkpoint:ns",

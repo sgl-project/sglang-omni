@@ -12,6 +12,8 @@ Install SGLang-Omni following [Installation](../get_started/installation.md), th
 hf download nvidia/Nemotron-3.5-Transcribe-30B-A4B
 ```
 
+For Intel GPUs, follow the [Nemotron Transcribe XPU recipe](../other_platforms/installation_xpu.md#nemotron-transcribe-speech-to-text-multi-xpu-tensor-parallel): 24 GB cards need the stage sharded across four of them.
+
 The BF16 30B-A4B checkpoint was validated on one H100 80 GB. Leave memory for audio encoding and graph workspaces in addition to the weights and KV cache:
 
 ```bash
