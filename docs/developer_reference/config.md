@@ -200,6 +200,7 @@ overrode. Both run the same merge as `serve`.
 | `tp_size` | `int` | `1` | Number of tensor-parallel ranks. Must match `len(gpu)` when `gpu` is a list. |
 | `gpu_memory_fraction` | `float` or `None` | `None` | Per-stage-rank budget as a fraction of total physical GPU memory. Required per stage when multiple processes share one GPU. |
 | `process` | `str` or `None` | `None` | OS process group identifier. Non-TP stages with the same `process` value share a single OS process; every non-TP stage must declare one explicitly. For TP stages, `process` is optional and acts as a prefix for the derived rank-process names (`{process}_tp{rank}`); if unset, the stage name is used as the prefix. |
+| `start_after` | `list[str]` or `None` | `None` | Stages whose processes must report ready before this stage's process spawns. Startup runs in waves, so stages without an order still start together. Use it when stages that share a GPU size themselves from the memory free when they load. A stage cannot name a stage in its own process, and config loading refuses an order that waits in a cycle. |
 | `env` | `dict[str, str]` | `{}` | Per-stage env defaults applied in this stage's worker process at spawn; never overrides `os.environ`. |
 | `wait_for` | `list[str]` or `None` | `None` | Upstream stages required before this stage can execute a request. |
 | `wait_for_fn` | `str` or `None` | `None` | Dotted function path for request-aware fan-in source selection. |

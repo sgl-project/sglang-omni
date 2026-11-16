@@ -973,21 +973,59 @@ class MultiProcessPipelineRunner:
             await asyncio.gather(*waits, return_exceptions=True)
 
     def spawn_waves(self) -> list[list[StageGroup]]:
-        """Partition groups so every weight-share follower starts last.
+        """Partition groups into waves that start one after another.
+
+        A group starts after every group hosting a stage that one of its
+        stages names in start_after, and every weight-share follower starts
+        after all other groups.
 
         # Note (Jiaxin Deng): a follower waits for the leader's export inside
         # the per-GPU startup lock, so a follower that wins that lock first
         # would block the leader that has to release it.
         """
-        if self.weight_share is None:
-            return [list(self.groups)]
-        else:
-            pass
+        hosts: dict[str, list[StageGroup]] = {}
+        group_stages: dict[int, set[str]] = {}
+        for group in self.groups:
+            for process_spec in group.process_specs:
+                for stage_spec in process_spec.stage_specs:
+                    logical_name = parse_replica_instance_name(stage_spec.stage_name)[0]
+                    hosts.setdefault(logical_name, []).append(group)
+                    group_stages.setdefault(id(group), set()).add(logical_name)
+        start_after = {
+            stage.name: stage.start_after or [] for stage in self.config.stages
+        }
         followers = [g for g in self.groups if self.is_weight_share_follower(g)]
         leaders_and_rest = [
             g for g in self.groups if not self.is_weight_share_follower(g)
         ]
-        return [leaders_and_rest, followers]
+        prerequisites = {
+            id(group): {
+                id(prerequisite_group)
+                for logical_name in group_stages.get(id(group), set())
+                for prerequisite in start_after.get(logical_name, [])
+                for prerequisite_group in hosts.get(prerequisite, [])
+            }
+            for group in self.groups
+        }
+        for follower in followers:
+            prerequisites[id(follower)] |= {id(g) for g in leaders_and_rest}
+        waves: list[list[StageGroup]] = []
+        started: set[int] = set()
+        remaining = list(self.groups)
+        while remaining:
+            wave = [g for g in remaining if prerequisites[id(g)] <= started]
+            if not wave:
+                raise RuntimeError(
+                    "start_after makes groups "
+                    f"{sorted(g.group_name for g in remaining)} wait for a "
+                    "weight-share follower that starts after them"
+                )
+            else:
+                pass
+            waves.append(wave)
+            started.update(id(g) for g in wave)
+            remaining = [g for g in remaining if id(g) not in started]
+        return waves
 
     def shutdown_waves(self) -> list[list[StageGroup]]:
         """Retire followers before their leader.

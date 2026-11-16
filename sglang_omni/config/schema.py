@@ -434,6 +434,8 @@ class StageConfig(BaseModel):
     gpu: int | list[int] | None = None
     tp_size: int = Field(default=1, ge=1)
     process: str | None = None
+    start_after: list[str] | None = None
+    """Stages whose processes must be ready before this stage's process spawns."""
     allow_child_processes: bool = False
     """Allow a native engine to own subprocesses inside this stage process."""
     runtime_gpu_ids: list[int] | None = None
@@ -1270,6 +1272,40 @@ class PipelineConfig(BaseModel):
             )
         else:
             pass
+        stage_processes = {s.name: stage_process_name(s) for s in self.stages}
+        process_prerequisites: dict[str, set[str]] = {
+            process_name: set() for process_name in stage_processes.values()
+        }
+        for s in self.stages:
+            for prerequisite in s.start_after or []:
+                if prerequisite not in stage_processes:
+                    raise ValueError(
+                        f"Stage {s.name!r} start_after references unknown stage {prerequisite!r}"
+                    )
+                elif stage_processes[prerequisite] == stage_processes[s.name]:
+                    raise ValueError(
+                        f"Stage {s.name!r} start_after names {prerequisite!r}, which runs in the same process {stage_processes[s.name]!r}; a process cannot start after itself"
+                    )
+                else:
+                    process_prerequisites[stage_processes[s.name]].add(
+                        stage_processes[prerequisite]
+                    )
+        started: set[str] = set()
+        while process_prerequisites:
+            ready = [
+                process_name
+                for process_name, prerequisites in process_prerequisites.items()
+                if prerequisites <= started
+            ]
+            if not ready:
+                raise ValueError(
+                    f"start_after waits in a cycle, so processes {sorted(process_prerequisites)} can never start"
+                )
+            else:
+                pass
+            started.update(ready)
+            for process_name in ready:
+                process_prerequisites.pop(process_name)
 
     def validate_processes(self) -> None:
         """Check Process Names and the sparse ``processes`` replica policy.

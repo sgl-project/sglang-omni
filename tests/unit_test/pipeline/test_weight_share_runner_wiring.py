@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Runner-to-weight-share integration: spawn order, env merge, teardown order."""
+"""Runner spawn order (weight-share and start_after waves), env merge, teardown order."""
 
 from __future__ import annotations
 
@@ -116,6 +116,7 @@ class FakeGroup:
         *,
         gpu_id: int = 0,
         ready_error: BaseException | None = None,
+        stage_name: str | None = None,
     ) -> None:
         self.events = events
         self.group_name = process_name
@@ -125,15 +126,17 @@ class FakeGroup:
         self.ready_timeout: float | None = None
         self.failure: str = ""
         self.dead = False
-        self.stage_control_endpoints = {
-            f"engine@r{process_name[-1]}": f"ipc://{process_name}"
-        }
+        if stage_name is None:
+            stage_name = f"engine@r{process_name[-1]}"
+        else:
+            pass
+        self.stage_control_endpoints = {stage_name: f"ipc://{process_name}"}
         self.process_specs = [
             StageWorkerProcessSpec(
                 process_name=process_name,
                 stage_specs=[
                     StageLaunchConfig(
-                        stage_name=f"engine@r{process_name[-1]}",
+                        stage_name=stage_name,
                         factory=f"{__name__}.noop_factory",
                         placement_gpu_id=gpu_id,
                         gpu_id=gpu_id,
@@ -230,6 +233,61 @@ async def test_a_dead_leader_stops_the_run_before_any_follower_spawns(
 
     assert "spawn gen@r1" not in events
     assert follower.spawn_env is None
+
+
+@pytest.mark.asyncio
+async def test_a_stage_spawns_only_after_its_start_after_stages_are_ready(
+    tmp_path, monkeypatch
+) -> None:
+    """Co-located stages that size themselves from free GPU memory load in a fixed order."""
+    events: list[str] = []
+    reasoner = FakeGroup(events, "reasoner", stage_name="reasoner")
+    generation = FakeGroup(events, "generation", stage_name="generation")
+    orchestrator = FakeGroup(events, "orchestrator", stage_name="orchestrator")
+    patch(monkeypatch, events, [reasoner, generation, orchestrator])
+    config = PipelineConfig(
+        model_path="model",
+        entry_stage="orchestrator",
+        stages=[
+            StageConfig(
+                name="orchestrator",
+                process="orchestrator",
+                factory_path=f"{__name__}.noop_factory",
+                next=["reasoner", "generation"],
+            ),
+            StageConfig(
+                name="reasoner",
+                process="reasoner",
+                factory_path=f"{__name__}.noop_factory",
+                gpu=0,
+                gpu_memory_fraction=0.35,
+                start_after=["generation"],
+                terminal=True,
+            ),
+            StageConfig(
+                name="generation",
+                process="generation",
+                factory_path=f"{__name__}.noop_factory",
+                gpu=0,
+                gpu_memory_fraction=0.6,
+                terminal=True,
+            ),
+        ],
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+    )
+    runner = MultiProcessPipelineRunner(config)
+
+    await runner.start(timeout=5.0)
+    await runner.stop()
+
+    # Stages without an order still start together.
+    assert [event for event in events if event.startswith("spawn")] == [
+        "spawn generation",
+        "spawn orchestrator",
+        "spawn reasoner",
+    ]
+    assert events.index("ready generation") < events.index("spawn reasoner")
+    assert events.index("shutdown reasoner") < events.index("shutdown generation")
 
 
 class StillStartingGroup(FakeGroup):

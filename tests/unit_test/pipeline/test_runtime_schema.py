@@ -108,6 +108,41 @@ def test_stage_rejects_terminal_with_next() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("start_after", "error"),
+    [
+        ({"sink": ["missing"]}, "unknown stage 'missing'"),
+        ({"sink": ["source"]}, "same process 'pipeline'"),
+        ({"relay": ["source"], "sink": ["relay"]}, "waits in a cycle"),
+    ],
+    ids=["unknown", "same_process", "cycle_across_processes"],
+)
+def test_start_after_that_can_never_start_is_rejected_at_load(
+    start_after: dict[str, list[str]], error: str
+) -> None:
+    """A start order that cannot be met would hang startup instead of failing."""
+    with pytest.raises(ValueError, match=error):
+        PipelineConfig(
+            model_path="dummy",
+            stages=[
+                make_stage(
+                    name="source",
+                    next="sink",
+                    terminal=False,
+                    start_after=start_after.get("source"),
+                ),
+                make_stage(
+                    name="relay",
+                    process="relay",
+                    next="sink",
+                    terminal=False,
+                    start_after=start_after.get("relay"),
+                ),
+                make_stage(name="sink", start_after=start_after.get("sink")),
+            ],
+        )
+
+
 def test_tp_size_below_one_raises() -> None:
     with pytest.raises(ValueError, match="tp_size"):
         make_stage(tp_size=0)
