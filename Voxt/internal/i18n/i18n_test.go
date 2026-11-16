@@ -66,6 +66,9 @@ func TestTranslatorUsesExplicitLocale(t *testing.T) {
 	if got := translator.X("alternative", "Use %s", "Fast"); got != "先用 Fast" {
 		t.Errorf("explicit context translation %q", got)
 	}
+	if got := NewTranslator("en").X("alternative", "Use %s", "Fast"); got != "Use Fast" {
+		t.Errorf("explicit context fallback %q", got)
+	}
 	if got := Locale(); got != "en" {
 		t.Errorf("translator changed global locale to %q", got)
 	}
