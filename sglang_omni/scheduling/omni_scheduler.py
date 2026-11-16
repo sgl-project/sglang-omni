@@ -414,6 +414,8 @@ class OmniScheduler(Generic[RequestDataT]):
         self.continuation_aware_admission = continuation_aware_admission
         if session_adapter is not None and not server_args.enable_streaming_session:
             raise ValueError("session_adapter requires enable_streaming_session")
+        elif session_adapter is not None and enable_plain_fallback:
+            raise ValueError("Plain fallback does not support sessions")
         else:
             pass
         self.request_builder = request_builder
@@ -1934,14 +1936,25 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         if req_data.enforce_request_limits:
-            error_msg = self.prepare_request_limits(req_data)
+            speculative_reserve_tokens = (
+                self.session_bridge.speculative_reserve_tokens
+                if session_unit is not None and self.session_bridge is not None
+                else 0
+            )
+            error_msg = self.prepare_request_limits(
+                req_data,
+                speculative_reserve_tokens=speculative_reserve_tokens,
+            )
             if error_msg:
                 if session_unit is not None:
+                    max_input_tokens = max(
+                        0, self.max_req_input_len - speculative_reserve_tokens
+                    )
                     error = ContextExhaustedError(
                         f"{ContextExhaustedError.CODE}: the session reached the "
                         f"thinker context length of {self.model_config.context_len} "
                         f"tokens (the next unit needs {len(req.origin_input_ids)} "
-                        f"tokens, limit {self.max_req_input_len}). "
+                        f"tokens, limit {max_input_tokens}). "
                         "Start a new session."
                     )
                 else:
@@ -2074,12 +2087,35 @@ class OmniScheduler(Generic[RequestDataT]):
     def prepare_request_limits(
         self,
         req_data: RequestDataT | SGLangARRequestData,
+         *,
+        speculative_reserve_tokens: int = 0,
     ) -> str | None:
         req = req_data.req
         self.init_req_max_new_tokens(req)
+        if speculative_reserve_tokens > 0:
+            available_new_tokens = max(
+                0,
+                self.max_req_len
+                - len(req.origin_input_ids)
+                - 1
+                - speculative_reserve_tokens,
+            )
+            if int(req.sampling_params.max_new_tokens) > available_new_tokens:
+                req.sampling_params.max_new_tokens = available_new_tokens
+                if req.sampling_params.min_new_tokens > available_new_tokens:
+                    req.sampling_params.min_new_tokens = available_new_tokens
+                else:
+                    pass
+            else:
+                pass
+            max_input_tokens = max(
+                0, self.max_req_input_len - speculative_reserve_tokens
+            )
+        else:
+            max_input_tokens = self.max_req_input_len
         error_msg = validate_input_length(
             req,
-            self.max_req_input_len,
+            max_input_tokens,
             allow_auto_truncate=False,
         )
         if error_msg:
