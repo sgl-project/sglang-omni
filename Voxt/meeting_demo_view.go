@@ -25,7 +25,7 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 		ui.Box(c).Grow(1).Children(func() {
 			switch fixture.state.Kind {
 			case "page":
-				meetingsPage(c, *fixture.state.Page, host, &host.pageUI, 800)
+				meetingsPage(c, fixture.state.Page, host, &host.pageUI, 800)
 				meetingDeleteDialog(c, &host.pageUI, host)
 			case "overlay":
 				state := *fixture.state.Overlay

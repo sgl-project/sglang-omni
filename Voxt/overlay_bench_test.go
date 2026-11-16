@@ -261,8 +261,8 @@ func BenchmarkW0MeetingOverlayStates(b *testing.B) {
 	for _, state := range states {
 		b.Run(state.name, func(b *testing.B) {
 			a.meetSnap, a.meetOvUI.collapsed, a.meetOvUI.menu = state.snapshot, state.collapsed, state.menu
-			model := overlayModel(state.snapshot, state.collapsed, 0, state.menu)
-			tt := hudTester(a.meetingOverlayView, model.Layout.Width, model.Layout.Height)
+			model := a.meetingOverlayModel()
+			tt := hudTester(a.meetingOverlayBenchmarkView, model.Layout.Width, model.Layout.Height)
 			tt.SetScale(2)
 			benchmarkRenderFrames(b, tt, state.sentinel)
 		})
@@ -415,8 +415,8 @@ func BenchmarkW0MeetingOverlayHour(b *testing.B) {
 	a, _, _ := newRenderBenchmarkApp(b)
 	snapshot := meeting.Snapshot{ID: "benchmark-hour", Mode: meeting.ModeMeeting, State: meeting.StateRecording}
 	a.meetSnap = snapshot
-	model := overlayModel(snapshot, false, 0, meetingMenuNone)
-	tt := hudTester(a.meetingOverlayView, model.Layout.Width, meetingOvMaxFaceH+2*layout.Pad)
+	model := a.meetingOverlayModel()
+	tt := hudTester(a.meetingOverlayBenchmarkView, model.Layout.Width, meetingOvMaxFaceH+2*layout.Pad)
 	frames(tt)
 	// Two tracks at the committer's 8 s cap produce 450 segments each in one hour.
 	segments := make([]meeting.Segment, meetingUpdatesPerHour)

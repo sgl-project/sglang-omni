@@ -121,8 +121,8 @@ func TestW0ResourceBaseline(t *testing.T) {
 		installW0Hotkeys(t, a, fake)
 		snapshot := meeting.Snapshot{ID: "resource-hour", Mode: meeting.ModeMeeting, State: meeting.StateRecording}
 		a.meetSnap = snapshot
-		model := overlayModel(snapshot, false, 0, meetingMenuNone)
-		tester := hudTester(a.meetingOverlayView, model.Layout.Width, meetingOvMaxFaceH+2*layout.Pad)
+		model := a.meetingOverlayModel()
+		tester := hudTester(a.meetingOverlayBenchmarkView, model.Layout.Width, meetingOvMaxFaceH+2*layout.Pad)
 		frames(tester)
 
 		// No real one-hour meeting or model runs; two synthetic tracks commit at the production 8-second cap.

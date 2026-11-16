@@ -25,15 +25,20 @@ type meetingsLocalUI struct {
 	detail  *meetingDetailLocalUI
 }
 
-func meetingsPage(c *ui.Context, state meetingsViewState, actions meetingsActions, local *meetingsLocalUI, pageWidth float32) {
+func meetingsPage(c *ui.Context, state *meetingsViewState, actions meetingsActions, local *meetingsLocalUI, pageWidth float32) {
 	t := c.Theme()
 	query := strings.TrimSpace(local.query)
-	hits := findHits(query, len(state.Items), func(index int) []string {
-		if row := state.Items[index].Meeting; row != nil {
-			return []string{row.Title, row.Snippet}
-		}
-		return nil
-	})
+	var hits []int
+	if query == "" {
+		hits = make([]int, len(state.Items)+1)
+	} else {
+		hits = findHits(query, len(state.Items), func(index int) []string {
+			if row := state.Items[index].Meeting; row != nil {
+				return []string{row.Title, row.Snippet}
+			}
+			return nil
+		})
+	}
 	if local.find.advance(hits[len(state.Items)]) {
 		row, _ := rowOf(hits, local.find.cur)
 		local.listUI.ScrollIntoView(row)
@@ -91,7 +96,7 @@ func meetingsPage(c *ui.Context, state meetingsViewState, actions meetingsAction
 	})
 }
 
-func meetingsList(c *ui.Context, state meetingsViewState, actions meetingsActions, local *meetingsLocalUI, query string, current, currentAt int) {
+func meetingsList(c *ui.Context, state *meetingsViewState, actions meetingsActions, local *meetingsLocalUI, query string, current, currentAt int) {
 	t := c.Theme()
 	switch {
 	case !state.Read:
@@ -106,7 +111,7 @@ func meetingsList(c *ui.Context, state meetingsViewState, actions meetingsAction
 				if row.Index == current {
 					at = currentAt
 				}
-				meetingRow(c, *item.Meeting, query, at, actions)
+				meetingRow(c, item.Meeting, query, at, actions)
 			} else {
 				ui.Text(c, item.Heading).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(tok(t).Text3).
 					Padding(px(t, sp4), px(t, sp6), px(t, sp1))
@@ -132,7 +137,7 @@ func meetingsEmpty(c *ui.Context, local *meetingsLocalUI, actions meetingsAction
 		i18n.T("Start a meeting to record your microphone and, when supported, audio from other apps."), nil)
 }
 
-func meetingRow(c *ui.Context, row meetingRowViewState, query string, at int, actions meetingsActions) {
+func meetingRow(c *ui.Context, row *meetingRowViewState, query string, at int, actions meetingsActions) {
 	t := c.Theme()
 	colors := tok(t)
 	button := ui.ButtonBase(c.Key("mt-row-"+row.ID)).Padding(px(t, sp3), px(t, sp3)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
@@ -169,7 +174,7 @@ func meetingRow(c *ui.Context, row meetingRowViewState, query string, at int, ac
 	})
 }
 
-func meetingsPager(c *ui.Context, state meetingsViewState, actions meetingsActions, local *meetingsLocalUI) {
+func meetingsPager(c *ui.Context, state *meetingsViewState, actions meetingsActions, local *meetingsLocalUI) {
 	t := c.Theme()
 	ui.Row(c).Padding(0, px(t, sp6), px(t, sp3)).Gap(px(t, sp2)).AlignItems(ui.Center).Justify(ui.End).Shrink(0).Children(func() {
 		if ghostButton(c.Key("mt-page-prev"), i18n.T("Previous page")).Disabled(local.page == 0).Clicked() {

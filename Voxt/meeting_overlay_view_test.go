@@ -23,6 +23,14 @@ func (a *app) meetingOverlayView(c *ui.Context) {
 	meetingOverlayView(c, a.meetOvView, model, a, &a.meetOvUI, animation, style)
 }
 
+func (a *app) meetingOverlayBenchmarkView(c *ui.Context) {
+	model := a.meetOvModel
+	mode, faceHeight := meetingOverlayFace(model)
+	style := meetingOverlayFaceStyle{radius: faceRadius(a.prefs.Overlay, mode, faceHeight), alpha: layout.FaceAlpha(a.prefs.Overlay)}
+	animation := meetingOverlayAnimation{motion: a.overlayMotion(), phase: a.overlayPhase()}
+	meetingOverlayView(c, a.meetOvView, model, a, &a.meetOvUI, animation, style)
+}
+
 func meetingOverlayRows(snapshot meeting.Snapshot) []meetingOverlayTranscriptRow {
 	return meetingOverlayTranscriptRows(snapshot)
 }

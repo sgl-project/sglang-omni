@@ -135,6 +135,9 @@ func markSpans(red ui.Color, base ui.Span, text, query string, cur int) []ui.Spa
 // markedText is text as a RichText with the matches of query marked
 // (markSpans), labelled with the text for assistive technology.
 func markedText(c *ui.Context, text, query string, cur int) ui.Element {
+	if query == "" {
+		return ui.RichText(c, ui.Span{Text: text}).Label(text)
+	}
 	return ui.RichText(c, markSpans(tok(c.Theme()).Danger, ui.Span{}, text, query, cur)...).Label(text)
 }
 

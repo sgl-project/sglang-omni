@@ -15,6 +15,23 @@ import (
 
 const meetingsPageSize = 20
 
+type meetingListCacheKey struct {
+	seq            int
+	listLen        int
+	firstID        string
+	lastID         string
+	selectedID     string
+	locale         string
+	liveID         string
+	liveState      string
+	elapsedMinutes int64
+	year           int
+	month          time.Month
+	day            int
+	read           bool
+	loading        bool
+}
+
 type meetingsView struct {
 	list       []store.Meeting
 	read       bool
@@ -26,6 +43,8 @@ type meetingsView struct {
 	detail     *meetingDetail
 	detailView *meetingDetailViewState
 	locale     string
+	listItems  []meetingItemViewState
+	listKey    meetingListCacheKey
 }
 
 type meetingsState struct {
@@ -111,22 +130,44 @@ func (a *app) prepareMeetingsPage() {
 		a.loadMeetings()
 	}
 	a.refreshMeetingAudio()
-	canUseLLM := len(a.installed(local.LLM)) > 0
-	if a.mv.detail != nil && (a.mv.detailView == nil || a.mv.detailView.CanUseLLM != canUseLLM || a.mv.locale != i18n.Locale()) {
-		a.rebuildMeetingDetail()
-	}
-	if a.mv.detail != nil && a.mvUI.detail == nil {
-		a.mvUI.detail = &meetingDetailLocalUI{}
+	if a.mv.detail != nil {
+		canUseLLM := len(a.installed(local.LLM)) > 0
+		if a.mv.detailView == nil || a.mv.detailView.CanUseLLM != canUseLLM || a.mv.locale != i18n.Locale() {
+			a.rebuildMeetingDetail()
+		}
+		if a.mvUI.detail == nil {
+			a.mvUI.detail = &meetingDetailLocalUI{}
+		}
 	}
 }
 
 func (a *app) meetingsPageModel(now time.Time) meetingsViewState {
-	state := buildMeetingsViewState(meetingsViewStateInput{
-		List: a.mv.list, Lines: a.mv.lines, Read: a.mv.read, Loading: a.mv.loading,
-		Error: a.mv.err, Query: a.mvUI.query, Page: a.mvUI.page, HasMore: a.mv.hasMore,
-		Active: a.meetingActive(), SelectedID: meetingDetailID(a.mv.detail), Live: a.meetSnap, Now: now,
-	})
-	state.Detail = a.mv.detailView
+	selectedID := meetingDetailID(a.mv.detail)
+	year, month, day := now.Date()
+	key := meetingListCacheKey{
+		seq: a.mv.seq, listLen: len(a.mv.list), selectedID: selectedID, locale: i18n.Locale(),
+		liveID: a.meetSnap.ID, liveState: string(a.meetSnap.State), year: year, month: month, day: day,
+		read: a.mv.read, loading: a.mv.loading,
+	}
+	if len(a.mv.list) > 0 {
+		key.firstID, key.lastID = a.mv.list[0].ID, a.mv.list[len(a.mv.list)-1].ID
+	}
+	if a.meetSnap.State.Active() {
+		key.elapsedMinutes = int64((a.meetSnap.Elapsed + 30*time.Second) / time.Minute)
+	}
+	if key != a.mv.listKey {
+		built := buildMeetingsViewState(meetingsViewStateInput{
+			List: a.mv.list, Lines: a.mv.lines, Read: a.mv.read, Loading: a.mv.loading,
+			Error: a.mv.err, Query: a.mvUI.query, Page: a.mvUI.page, HasMore: a.mv.hasMore,
+			Active: a.meetingActive(), SelectedID: selectedID, Live: a.meetSnap, Now: now,
+		})
+		a.mv.listItems, a.mv.listKey = built.Items, key
+	}
+	state := meetingsViewState{
+		Read: a.mv.read, Loading: a.mv.loading, Error: a.mv.err, Query: a.mvUI.query,
+		Page: a.mvUI.page, HasMore: a.mv.hasMore, Active: a.meetingActive(),
+		MeetingCount: len(a.mv.list), Items: a.mv.listItems, Detail: a.mv.detailView,
+	}
 	return state
 }
 

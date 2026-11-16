@@ -93,7 +93,8 @@ func (a *app) page(c *ui.Context, p navPage) {
 		return
 	case "/meetings":
 		a.prepareMeetingsPage()
-		meetingsPage(c, a.meetingsPageModel(time.Now()), a, &a.mvUI, a.pageWidth(c))
+		model := a.meetingsPageModel(time.Now())
+		meetingsPage(c, &model, a, &a.mvUI, a.pageWidth(c))
 		a.meetingSettingsDialog(c)
 		meetingDeleteDialog(c, &a.mvUI, a)
 		return
