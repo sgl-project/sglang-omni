@@ -98,6 +98,27 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 			case "feature":
 				state := host.featureViewState(fixture.state.Feature)
 				featurePage(c, &state, host, &host.feature.local, host)
+			case "settings":
+				settingsDialog(c, *fixture.state.Settings, host, host.settingsDialogUI)
+			case "meeting-settings":
+				dialogFrame(c, "mt-set", &host.pageUI.setOpen, i18n.T("Meeting settings"), "", 560, func() {
+					state := *fixture.state.MeetingSettings
+					meetingCaptureSettings(c, state, host, &host.settingsMeetingUI)
+					meetingASRSettings(c, state, host)
+					meetingLLMSettings(c, state, host)
+					meetingConsent(c)
+				}, func() {
+					ui.Spacer(c)
+					if primaryButton(c.Key("mt-set-done"), i18n.T("Done")).Clicked() {
+						host.pageUI.setOpen = false
+					}
+				})
+			case "shortcut-prompt":
+				shortcutPromptDialog(c, fixture.state.ShortcutPrompt, host)
+			case "key-recorder":
+				ui.Column(c).Padding(24).Children(func() {
+					keysField(c, &host.keyRow, i18n.T("Custom keys of shortcut %d", 1), host.saveKeys, *fixture.state.KeyRecorder, host)
+				})
 			}
 		})
 	})

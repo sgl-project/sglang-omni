@@ -30,7 +30,7 @@ import (
 //	dictionaryState   dictionary_controller.go  the Dictionary page
 //	homeState         home_controller.go Home: readiness, today, recent results
 //	onboardingState   onboarding.go   the setup guide
-//	scPromptState     settings_shortcuts_family.go  a shortcut another ActNow app uses too: the prompt
+//	scPromptState     settings_shortcuts_family_controller.go  a shortcut another ActNow app uses too: the prompt
 //	audioState        settings_audio.go   Settings → Audio, the recording's sounds
 //	soundsState       settings_sounds.go  the sounds' presets and previews
 //	muteState         mute_link.go    the system's output, muted while recording

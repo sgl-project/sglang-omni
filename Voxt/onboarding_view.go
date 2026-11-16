@@ -76,7 +76,7 @@ func onboardingBackBar(c *ui.Context, state onboardingBackViewState, actions onb
 }
 
 // onboardingRow is Settings → General's way back to the guide.
-func onboardingRow(c *ui.Context, actions onboardingActions) {
+func onboardingRow(c *ui.Context, actions interface{ openOnboarding() }) {
 	settingRow(c, "setup-guide", i18n.T("Setup guide"), "", func() {
 		if ui.Button(c.Key("setup-guide-open"), i18n.T("Open setup guide")).Clicked() {
 			actions.openOnboarding()

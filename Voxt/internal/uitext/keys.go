@@ -195,13 +195,17 @@ func HotkeyGlyphs(keys string) string {
 
 // TriggerText names a trigger.
 func TriggerText(trigger string) string {
+	return TriggerTextFor(i18n.CurrentTranslator(), trigger)
+}
+
+func TriggerTextFor(translator *i18n.Translator, trigger string) string {
 	switch trigger {
 	case settings.TriggerDouble:
-		return i18n.T("Double tap")
+		return translator.T("Double tap")
 	case settings.TriggerLong:
-		return i18n.T("Long press")
+		return translator.T("Long press")
 	}
-	return i18n.T("Tap")
+	return translator.T("Tap")
 }
 
 // TriggerHowText says how a shortcut's trigger is used.

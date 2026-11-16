@@ -51,6 +51,14 @@ type meetingDemoHost struct {
 	sessionLayout         sessionOverlayLayout
 	sessionMemory         sessionOverlayLayoutMemory
 	sessionMeasurements   map[ovSized]ovMeasured
+	settingsOpen          bool
+	settingsRouter        *settingsDemoRouter
+	settingsForm          settingsForm
+	settingsStorageUI     settingsStorageLocalUI
+	settingsMeetingUI     meetingSettingsUI
+	settingsDialogUI      settingsDialogLocalUI
+	keyRow                keyRow
+	recorderActive        bool
 }
 
 func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
@@ -150,7 +158,11 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "remote-dialog" && fixture.RemoteDialog != nil ||
 		fixture.Kind == "remote-debug" && fixture.RemoteDebug != nil ||
 		fixture.Kind == "models" && fixture.Models != nil ||
-		fixture.Kind == "feature" && fixture.Feature != nil
+		fixture.Kind == "feature" && fixture.Feature != nil ||
+		fixture.Kind == "settings" && fixture.Settings != nil ||
+		fixture.Kind == "meeting-settings" && fixture.MeetingSettings != nil ||
+		fixture.Kind == "shortcut-prompt" && fixture.ShortcutPrompt != nil ||
+		fixture.Kind == "key-recorder" && fixture.KeyRecorder != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -303,6 +315,15 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 			host.modelsUI.modelShared = &sharedDelete{id: state.Delete.Shared.ID, forAll: state.Delete.Shared.ForAll}
 		}
 	}
+	host.keyRow = keyRow{}
+	host.recorderActive = false
+	if state := fixture.state.KeyRecorder; state != nil {
+		host.keyRow = keyRow{
+			custom: state.Custom, typing: state.Typing, text: state.RawKeys, edited: state.Edited,
+			unknown: state.Unknown, recordDenied: state.RecordDenied, recFocused: state.Focused,
+		}
+	}
+	host.resetSettingsDemo(fixture)
 }
 
 func (host *meetingDemoHost) featureViewState(fixture *featureViewState) featureViewState {

@@ -13,7 +13,7 @@ type featureActions interface {
 	saveFeaturePasteLast(keys string)
 	chooseFeatureCancelKeys(keys string)
 	saveFeatureCancelKeys(keys string)
-	beginHotkeyRecord(row *keyRow, save func(string))
+	beginHotkeyRecord(row *keyRow, save func(string)) string
 	cancelHotkeyRecord()
 	recordFeatureKeys(row *keyRow, event ui.InputEvent, save func(string))
 	markFeatureKeysHeard()

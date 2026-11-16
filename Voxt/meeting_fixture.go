@@ -27,6 +27,10 @@ type meetingFixtureState struct {
 	RemoteDebug           *llmDebugViewState          `json:"remote_debug,omitempty"`
 	Models                *modelsViewState            `json:"models,omitempty"`
 	Feature               *featureViewState           `json:"feature,omitempty"`
+	Settings              *settingsDialogViewState    `json:"settings,omitempty"`
+	MeetingSettings       *settingsMeetingViewState   `json:"meeting_settings,omitempty"`
+	ShortcutPrompt        *shortcutPromptViewState    `json:"shortcut_prompt,omitempty"`
+	KeyRecorder           *keyRecorderViewState       `json:"key_recorder,omitempty"`
 }
 
 type sessionOverlayFixtureUI struct {

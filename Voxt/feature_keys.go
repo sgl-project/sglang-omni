@@ -201,6 +201,7 @@ func featureCustomKeys(c *ui.Context, local *keyRow, label string, state *featur
 		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
 	}
 	caption(c, i18n.T("Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."))
+
 }
 
 func featureKeyRecorder(c *ui.Context, local *keyRow, label string, state *featureCustomKeysViewState, helperRecords bool, actions featureActions, save func(string)) {

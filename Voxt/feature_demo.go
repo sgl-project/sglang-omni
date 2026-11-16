@@ -86,14 +86,6 @@ func (host *meetingDemoHost) chooseFeatureCancelKeys(keys string) {
 func (host *meetingDemoHost) saveFeatureCancelKeys(keys string) {
 	host.record("saveFeatureCancelKeys %q", keys)
 }
-func (host *meetingDemoHost) beginHotkeyRecord(row *keyRow, save func(string)) {
-	host.feature.keysHeard = false
-	host.record("beginHotkeyRecord")
-}
-func (host *meetingDemoHost) cancelHotkeyRecord() {
-	host.feature.keysHeard = false
-	host.record("cancelHotkeyRecord")
-}
 func (host *meetingDemoHost) recordFeatureKeys(row *keyRow, event ui.InputEvent, save func(string)) {
 	host.record("recordFeatureKeys")
 }

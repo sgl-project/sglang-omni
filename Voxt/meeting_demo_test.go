@@ -4,6 +4,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -485,6 +486,19 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			}
 		}
 		return i18n.T("Speech models")
+
+	case "settings":
+		return settingsDemoExpectedText(state.Settings)
+	case "meeting-settings":
+		meeting := state.MeetingSettings
+		if meeting.NoLLM {
+			return i18n.T("No language model is set up, so summaries and translation are off.")
+		}
+		return meeting.CaptureModeSelected
+	case "shortcut-prompt":
+		return state.ShortcutPrompt.OtherApp
+	case "key-recorder":
+		return keyRecorderDemoExpectedText(state.KeyRecorder)
 	default:
 		return ""
 	}
@@ -523,6 +537,17 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.modelsUI.modelShared = &sharedDelete{id: "stale"}
 	host.feature.local.prompt = "stale"
 	host.feature.block = &tryNoticeViewState{Text: "stale"}
+	host.settingsForm.search = "stale"
+	host.settingsForm.findN = 3
+	host.settingsForm.clearHistoryAsk = true
+	host.settingsForm.ovStyle.margin = 42
+	host.settingsStorageUI.resetAsk, host.settingsStorageUI.resetText = "everything", "stale"
+	host.updatesUI.autoCheck = true
+	host.settingsMeetingUI.hide = true
+	host.settingsOpen = true
+	host.keyRow = keyRow{custom: true, typing: true, text: "stale", edited: true, unknown: true, recordDenied: true, recFocused: true}
+	host.recorderActive = true
+	host.settingsRouter.Replace("/about")
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -547,6 +572,25 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	}
 	if state := host.current().state.Onboarding; state != nil && host.onboardingUI.open != state.Open {
 		t.Fatal("fixture switch kept the onboarding dialog state")
+	}
+	if !reflect.DeepEqual(host.settingsForm, settingsForm{}) {
+		t.Fatalf("fixture switch kept settings form state: %+v", host.settingsForm)
+	}
+	if host.settingsStorageUI != (settingsStorageLocalUI{}) ||
+		host.updatesUI.autoCheck || host.updatesUI.autoInstall || host.updatesUI.beta ||
+		host.settingsMeetingUI != (meetingSettingsUI{}) || host.settingsOpen || host.pageUI.setOpen {
+		t.Fatal("fixture switch kept settings dialog state")
+	}
+	if host.settingsRouter.Path() != "/general" {
+		t.Fatal("fixture switch kept settings router")
+	}
+	if host.keyRow != (keyRow{}) || host.recorderActive {
+		t.Fatalf("fixture switch kept key recorder state: %+v, active=%t", host.keyRow, host.recorderActive)
+	}
+	if host.settingsDialogUI.Open != &host.settingsOpen || host.settingsDialogUI.Router != host.settingsRouter ||
+		host.settingsDialogUI.Form != &host.settingsForm || host.settingsDialogUI.HistoryAccess != &host.historyAccessUI ||
+		host.settingsDialogUI.Storage != &host.settingsStorageUI || host.settingsDialogUI.Updates != &host.updatesUI {
+		t.Fatal("settings dialog pointers do not address the host's local state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {
 		t.Fatal(err)

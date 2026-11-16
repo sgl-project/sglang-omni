@@ -1,0 +1,222 @@
+{
+  "name": "settings-normal",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/general",
+    "shown_path": "/settings/general",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "general": {
+      "language": "跟随系统",
+      "language_options": [
+        {
+          "code": "",
+          "label": "跟随系统"
+        },
+        {
+          "code": "en",
+          "label": "English"
+        },
+        {
+          "code": "zh-Hans",
+          "label": "简体中文"
+        }
+      ],
+      "main_language": "英语 · English",
+      "main_language_options": [
+        {
+          "code": "",
+          "label": "与界面语言相同"
+        },
+        {
+          "code": "zh",
+          "label": "中文"
+        },
+        {
+          "code": "en",
+          "label": "英语 · English"
+        },
+        {
+          "code": "ja",
+          "label": "日语 · 日本語"
+        },
+        {
+          "code": "ko",
+          "label": "韩语 · 한국어"
+        },
+        {
+          "code": "yue",
+          "label": "粤语 · 粵語"
+        },
+        {
+          "code": "fr",
+          "label": "法语 · Français"
+        },
+        {
+          "code": "de",
+          "label": "德语 · Deutsch"
+        },
+        {
+          "code": "es",
+          "label": "西班牙语 · Español"
+        },
+        {
+          "code": "pt",
+          "label": "葡萄牙语 · Português"
+        },
+        {
+          "code": "ru",
+          "label": "俄语 · Русский"
+        },
+        {
+          "code": "it",
+          "label": "意大利语 · Italiano"
+        },
+        {
+          "code": "vi",
+          "label": "越南语 · Tiếng Việt"
+        },
+        {
+          "code": "th",
+          "label": "泰语 · ไทย"
+        },
+        {
+          "code": "id",
+          "label": "印度尼西亚语 · Indonesia"
+        },
+        {
+          "code": "ar",
+          "label": "阿拉伯语 · العربية"
+        }
+      ],
+      "other_languages": [
+        {
+          "code": "ja",
+          "label": "日语 · 日本語"
+        },
+        {
+          "code": "fr",
+          "label": "法语 · Français"
+        }
+      ],
+      "available_languages": [
+        {
+          "code": "zh",
+          "label": "中文"
+        },
+        {
+          "code": "ko",
+          "label": "韩语 · 한국어"
+        },
+        {
+          "code": "yue",
+          "label": "粤语 · 粵語"
+        },
+        {
+          "code": "de",
+          "label": "德语 · Deutsch"
+        },
+        {
+          "code": "es",
+          "label": "西班牙语 · Español"
+        },
+        {
+          "code": "pt",
+          "label": "葡萄牙语 · Português"
+        },
+        {
+          "code": "ru",
+          "label": "俄语 · Русский"
+        },
+        {
+          "code": "it",
+          "label": "意大利语 · Italiano"
+        },
+        {
+          "code": "vi",
+          "label": "越南语 · Tiếng Việt"
+        },
+        {
+          "code": "th",
+          "label": "泰语 · ไทย"
+        },
+        {
+          "code": "id",
+          "label": "印度尼西亚语 · Indonesia"
+        },
+        {
+          "code": "ar",
+          "label": "阿拉伯语 · العربية"
+        }
+      ],
+      "copy_result": false,
+      "menu_bar": true,
+      "dock": true,
+      "close_to_tray": true,
+      "open_at_login": false,
+      "features": [
+        {
+          "id": "translate",
+          "title": "翻译",
+          "shown": false
+        },
+        {
+          "id": "rewrite",
+          "title": "改写",
+          "shown": true
+        },
+        {
+          "id": "app-enhancement",
+          "title": "应用增强",
+          "shown": true
+        }
+      ]
+    }
+  }
+}

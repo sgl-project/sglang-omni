@@ -7,23 +7,8 @@
 # path  # area
 
 announcements.go  # shell
-key_recorder.go  # settings
 legacy_report.go  # legacy: exempt one-time 1.x import reporting
 pages.go  # shell
-permissions.go  # settings
-settings_about.go  # settings
-settings_appearance.go  # settings
-settings_audio.go  # settings
-settings_general.go  # settings
-settings_meeting.go  # settings
-settings_overlay.go  # settings
-settings_privacy.go  # settings
-settings_shortcuts.go  # settings
-settings_shortcuts_family.go  # settings
-settings_soundchoice.go  # settings
-settings_sounds.go  # settings
-settings_storage.go  # settings
-settings_storage_erase.go  # settings
 shell.go  # shell
 shell_commands.go  # shell
 shell_logs.go  # shell
@@ -31,5 +16,4 @@ shell_logs_order.go  # shell
 shell_logs_select.go  # shell
 shell_nav.go  # shell
 shell_notices.go  # shell
-shell_settings.go  # shell
 ui_panels.go  # ui kit

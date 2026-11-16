@@ -16,7 +16,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // pages builds the page the router shows.
@@ -178,28 +177,23 @@ func (a *app) recordFeatureKeys(row *keyRow, event ui.InputEvent, save func(stri
 	}
 }
 
-func (a *app) customKeys(c *ui.Context, row *keyRow, label string, save func(string)) {
-	t := c.Theme()
-	input := ui.TextInput(c.Key("custom"), &row.text).Placeholder("Control+Option+Space").Label(label).Font("monospace").MaxWidth(px(t, 360))
-	if input.Changed() {
-		row.edited = true
-	}
-	chord, err := hotkey.Parse(row.text)
-	if row.edited && err == nil && (input.Submitted() || !input.Focused()) {
-		row.edited = false
-		row.text = chord.String()
-		save(row.text)
-	}
-	switch {
-	case err != nil:
-		warnLine(c, uitext.ParseErrorText(err))
-	case row.edited:
-		caption(c, i18n.T("Press Return to use %s.", uitext.HotkeyText(row.text)))
+func (a *app) meetingSettingsDialog(c *ui.Context) {
+	if !a.mvUI.setOpen {
 		return
-	default:
-		caption(c, i18n.T("Modifiers first, then one key: Fn, RightCommand, Control+Option+Space, Fn+F5."))
 	}
-	caption(c, i18n.T("Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."))
+	dialogFrame(c, "mt-set", &a.mvUI.setOpen, i18n.T("Meeting settings"), "", 560, func() {
+		state := a.meetingSettingsModel()
+		meetingCaptureSettings(c, state, a, a.meetingUI)
+		a.featureShortcuts(c, hotkey.Meeting)
+		meetingASRSettings(c, state, a)
+		meetingLLMSettings(c, state, a)
+		meetingConsent(c)
+	}, func() {
+		ui.Spacer(c)
+		if primaryButton(c.Key("mt-set-done"), i18n.T("Done")).Clicked() {
+			a.mvUI.setOpen = false
+		}
+	})
 }
 
 func (a *app) notFoundPage(c *ui.Context, path string) {

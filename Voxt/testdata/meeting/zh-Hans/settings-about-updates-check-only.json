@@ -1,0 +1,99 @@
+{
+  "name": "settings-about-updates-check-only",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/about",
+    "shown_path": "/settings/about",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "about": {
+      "rows": [
+        {
+          "title": "Voxt",
+          "value": "1.2.3"
+        },
+        {
+          "title": "辅助进程",
+          "value": "fixture-helper-version"
+        },
+        {
+          "title": "辅助进程协议",
+          "value": "1"
+        },
+        {
+          "title": "系统",
+          "value": "Fixture OS"
+        },
+        {
+          "title": "芯片",
+          "value": "Fixture Chip"
+        },
+        {
+          "title": "内存",
+          "value": "16 GB"
+        }
+      ],
+      "self_checking": false,
+      "checks": null
+    },
+    "updates": {
+      "available": true,
+      "known": true,
+      "enabled": true,
+      "check_only": true,
+      "bundle_updated": true,
+      "auto_check": true,
+      "auto_install": false,
+      "beta": true,
+      "check_description": "上次检查：2 小时前。",
+      "automatic_description": "每天一次。有新版本时侧边栏会出现提示卡片。",
+      "beta_note": "接收 beta 版和正式版，哪个新用哪个。"
+    }
+  }
+}

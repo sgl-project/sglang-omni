@@ -43,6 +43,10 @@ type meetingFixtureScenario struct {
 	models                     modelsViewStateInput
 	modelsProblem              string
 	feature                    featureFixtureScenarioInput
+	settings                   settingsFixtureInput
+	meetingSettings            settingsMeetingStateInput
+	shortcutPrompt             shortcutPromptFixtureInput
+	keyRecorder                keyRecorderViewState
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
@@ -166,6 +170,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, remoteFixtureScenarios()...)
 	scenarios = append(scenarios, modelsFixtureScenarios()...)
 	scenarios = append(scenarios, featureFixtureScenarios()...)
+	scenarios = append(scenarios, settingsFixtureScenarios()...)
 	return scenarios
 }
 

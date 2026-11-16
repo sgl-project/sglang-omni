@@ -67,6 +67,7 @@ func TestMeetingViewStateGolden(t *testing.T) {
 
 func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale string) meetingFixtureState {
 	t.Helper()
+	i18n.SetLocale(locale)
 	fixture := meetingFixtureState{Name: scenario.name, Kind: scenario.kind}
 	translator := i18n.NewTranslator(locale)
 	switch scenario.kind {
@@ -207,6 +208,26 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "feature":
 		state := buildFeatureFixtureViewState(translator, scenario.feature)
 		fixture.Feature = &state
+	case "settings":
+		state := buildSettingsFixture(t, scenario.settings)
+		fixture.Settings = &state
+	case "meeting-settings":
+		state := buildMeetingSettingsFixture(t, scenario.meetingSettings)
+		fixture.MeetingSettings = &state
+	case "shortcut-prompt":
+		state := buildShortcutPromptFixture(t, scenario.shortcutPrompt)
+		fixture.ShortcutPrompt = &state
+	case "key-recorder":
+		input := scenario.keyRecorder
+		state := buildKeyRecorderViewState(translator, input.HelperRecordsKeys, input.RawKeys)
+		state.RawKeys = input.RawKeys
+		state.Custom = input.Custom
+		state.Typing = input.Typing
+		state.Edited = input.Edited
+		state.Unknown = input.Unknown
+		state.RecordDenied = input.RecordDenied
+		state.Focused = input.Focused
+		fixture.KeyRecorder = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

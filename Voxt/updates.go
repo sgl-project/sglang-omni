@@ -145,7 +145,7 @@ func (a *app) loadUpdates() {
 	})
 }
 
-func (a *app) updatesSettingsModel() updatesViewState {
+func (a *app) updatesSettingsModel(now time.Time) updatesViewState {
 	a.loadUpdates()
 	beta := false
 	if a.upd != nil {
@@ -153,7 +153,7 @@ func (a *app) updatesSettingsModel() updatesViewState {
 	}
 	state := buildUpdatesViewState(i18n.CurrentTranslator(), updatesViewStateInput{
 		Available: a.upd != nil, Known: a.updKnown, Prefs: a.updPrefs,
-		BundleUpdated: a.bundleUpdated, Beta: beta, RunningVersion: a.version, Now: time.Now(),
+		BundleUpdated: a.bundleUpdated, Beta: beta, RunningVersion: a.version, Now: now,
 	})
 	a.updUI.autoCheck, a.updUI.autoInstall, a.updUI.beta = state.AutoCheck, state.AutoInstall, state.Beta
 	return state
