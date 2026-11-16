@@ -50,9 +50,12 @@ from tests.unit_test.fishaudio_drama3.test_vocoder import (
     FrameNumberCodec,
     RecordingBatchDecoder,
     chunk_message,
+    drained,
     final_audio,
     final_payload,
     numbered_frames,
+    random_codec_frames,
+    streamed_audio,
 )
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
 from tests.unit_test.fixtures.fishaudio_codec import (
@@ -509,9 +512,11 @@ def factory_vocoder(
     *,
     device: str = "cpu",
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS_CAP,
+    total_gpu_memory_fraction: float | None = None,
 ) -> Drama3VocoderScheduler:
     return stages.create_vocoder_executor(
         device=device,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
         codec_path=factory_args.codec_path,
         stream_stride=factory_args.stream_stride,
         stream_followup_stride_ramp=factory_args.stream_followup_stride_ramp,
@@ -962,6 +967,49 @@ def test_non_streaming_requests_replay_the_graphs_that_fit_beside_the_streams(
     with torch.no_grad():
         eager_audio = graph_decoder.decode(codebook_codes[None].cuda())
     assert torch.equal(torch.from_numpy(audio), eager_audio[0, 0].float().cpu())
+
+
+@pytest.mark.accelerator
+def test_a_stateful_stream_decodes_through_its_state_beside_the_window_graphs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Batched overlap windows take every stream chunk, so beside stateful decoding
+    the factory builds none and a chunk reaches its stream's state."""
+    codec_file = tmp_path / "codec.pth"
+    codec_file.write_bytes(b"")
+    monkeypatch.setattr(
+        stages,
+        "load_codec",
+        lambda checkpoint_dir, device: tiny_fishaudio_codec().to(device),
+    )
+    vocoder = factory_vocoder(
+        Drama3VocoderFactoryArgs(
+            codec_path=str(codec_file),
+            stateful_decode=True,
+            non_streaming_cuda_graph_max_frames=16,
+        ),
+        device="cuda",
+        max_new_tokens=64,
+        total_gpu_memory_fraction=0.5,
+    )
+    frames = random_codec_frames(14)
+
+    vocoder.inbox.put(chunk_message("request-a", 0, frames[:4]))
+    vocoder.handle_message(vocoder.get_batch_message(), None)
+    assert set(vocoder.request_slots) == {"request-a"}
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("request-a")
+
+    with torch.no_grad():
+        expected = vocoder.codec.from_indices(frames[:, 1:].T[None].cuda())[0, 0]
+    torch.testing.assert_close(
+        torch.from_numpy(streamed_audio(drained(vocoder)).copy()),
+        expected.float().cpu(),
+        atol=0.02,
+        rtol=0.02,
+    )
 
 
 @pytest.mark.accelerator
