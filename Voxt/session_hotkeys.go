@@ -126,7 +126,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	case hotkey.Stop:
 		a.stopSession()
 	case hotkey.Cancel:
-		if a.writingAnswer() {
+		if a.writingAnswer() && a.sess.CanStop() {
 			a.stopLLM() // the writing card's Stop: the answer so far stays (#3886)
 			return
 		}
