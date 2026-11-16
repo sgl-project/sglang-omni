@@ -10,7 +10,7 @@ package main
 // (models_cards.go); deleting follows the family's rules
 // (models_delete.go); Network… sets how downloads reach the Hub
 // (models_network.go). The remote speech services follow, as the
-// Language models page's cards (remote_page.go), and the language models
+// Language models section's cards (remote_page.go), and the language models
 // Voxt 2.0 ran on this Mac close it while they are on disk.
 //
 // The models on disk and their downloads are internal/models' (a.models);
@@ -36,7 +36,7 @@ import (
 // modelsPath is the Speech models section's path in Settings.
 const modelsPath = "/settings/models"
 
-// modelsState is the local models and the Speech models page's state.
+// modelsState is the local models and the state of Settings → Speech models.
 type modelsState struct {
 	local local.Services
 	// localLib is the Library under local (nil when tests swap in fakes):
@@ -70,7 +70,7 @@ type modelsState struct {
 	modelAdvanced bool
 	modelKeepSel  string
 	modelKeepFor  string
-	// llmWaitSel and llmWaitFor are the Language models page's wait
+	// llmWaitSel and llmWaitFor are the Language models section's wait
 	// select, as modelKeepSel and modelKeepFor (llm_wait.go);
 	// llmWaitCustom: Custom… is chosen, llmWaitMin is its minutes field.
 	llmWaitSel, llmWaitFor string

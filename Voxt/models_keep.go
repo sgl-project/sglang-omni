@@ -1,7 +1,7 @@
 package main
 
 // How long the speech models' servers keep a model loaded unused
-// (settings.Models, the Speech models page's Advanced section): Automatic
+// (settings.Models, the Advanced section in Settings → Speech models): Automatic
 // leaves their own idle time (10 min); the other choices set another, or
 // keep them until VoxtNew quits. A change applies to the running servers
 // at once (their idle timers start again). The ActNow family's memory rules stay above it: another app's
@@ -63,7 +63,7 @@ func keepLabel(v string) string {
 	return keepLabels()[i]
 }
 
-// modelsAdvanced is the Speech models page's Advanced section, folded
+// modelsAdvanced is the Advanced section in Settings → Speech models, folded
 // until opened: how long models stay loaded.
 func (a *app) modelsAdvanced(c *ui.Context) {
 	t := c.Theme()

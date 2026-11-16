@@ -33,7 +33,7 @@ func (a *app) obLanguageGuide(c *ui.Context, kind store.Kind, prefix string) {
 	default:
 		detail = i18n.T("No language model is set up.")
 	}
-	more := i18n.T("Set one up on the Language models page, then come back and try again. You can also skip this step.")
+	more := i18n.T("Set one up in Settings → Language models, then come back and try again. You can also skip this step.")
 	notice(c, prefix+"-llm-guide", noticeWarn, detail, more, setUp, nil)
 }
 

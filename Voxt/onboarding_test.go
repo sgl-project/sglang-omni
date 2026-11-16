@@ -48,7 +48,7 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	for _, s := range []string{
 		"No language model is set up. Set one up to translate.",
 		"Set up a language model",
-		"Set one up on the Language models page",
+		"Set one up in Settings → Language models",
 		"Skip this step",
 	} {
 		if !has(tt, s) {
@@ -60,7 +60,7 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	}
 	readyModels(a)
 	frames(tt)
-	if has(tt, "set one up on the Language models page") {
+	if has(tt, "set one up in Settings → Language models") {
 		t.Errorf("guide still shown with LLM: %q", tt.Texts())
 	}
 	if n := a.obTry(""); n != nil {

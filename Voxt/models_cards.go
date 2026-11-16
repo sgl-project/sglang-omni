@@ -1,6 +1,6 @@
 package main
 
-// The Speech models page's view (models_page.go): a card per model, with
+// The Settings → Speech models view (models_page.go): a card per model, with
 // what the ActNow family says of it (family spec §7.10.2–§7.10.4): the
 // other apps that share it, another app downloading it, the app that
 // deleted it for all apps; and the models of other family apps VoxtNew
@@ -8,7 +8,7 @@ package main
 // System dictation has a card of its own: built into macOS, with nothing
 // to download or delete. A speech model's card hides it from the
 // features' menus (Voxt 1.x's Hide): the card then waits, folded, in
-// Hidden models at the foot of the page, to be shown again.
+// Hidden models at the foot of the section, to be shown again.
 
 import (
 	"fmt"
