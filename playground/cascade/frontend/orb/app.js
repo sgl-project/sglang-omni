@@ -2,6 +2,7 @@
 import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
 import { ReplyMediaGate } from "./reply_media_gate.js";
 import { SMPLH_FLAME_MOTION, MotionView, smplhFlameMotionRenderer } from "./smplh_flame_motion.js";
+import { JPEG_FRAME, VideoFrameView, jpegFrameRenderer } from "./video_frame.js";
 import { Orb } from "./orb.js";
 import { Settings } from "./settings.js";
 
@@ -23,7 +24,7 @@ const INTERRUPT_WINDOW_MS = 1500;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset", "motionView"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset", "motionView", "avatarView"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -60,6 +61,8 @@ const mediaGate = new ReplyMediaGate({
 });
 const motionView = new MotionView(ui.motionView, { onReplyShown: (responseId) => mediaGate.shown(responseId) });
 registerPluginRenderer(SMPLH_FLAME_MOTION, smplhFlameMotionRenderer(motionView));
+const videoView = new VideoFrameView(ui.avatarView, { onReplyShown: (responseId) => mediaGate.shown(responseId) });
+registerPluginRenderer(JPEG_FRAME, jpegFrameRenderer(videoView));
 let playbackAnalyser = null;
 let playbackRate = 24000;
 let eventChain = Promise.resolve();
@@ -183,6 +186,9 @@ function render(now) {
   if (state.mood === "speaking") lastSpokeAt = now;
   orb.frame(now, state.level, state.mood);
   motionView.draw();
+  videoView.draw();
+  // The avatar's picture takes the orb's place once it shows.
+  if (!ui.avatarView.hidden && !ui.orb.hidden) ui.orb.hidden = true;
   mediaGate.tick();
   if (ui.statusLine.textContent !== state.line) ui.statusLine.textContent = state.line;
   ui.caption.dataset.fade = String(!(session && session.responseOpen) && now - lastSpokeAt > CAPTION_FADE_MS);
@@ -382,7 +388,10 @@ function sessionListeners() {
       // A cancelled reply stops now; a completed one plays out what is buffered.
       if (playbackNode && !open) mediaGate.end(id, status);
       // An interrupted reply's motion stops where it was cut: its frames not yet shown go and the figure keeps its last pose.
-      if (!open && status === "cancelled") motionView.drop(id);
+      if (!open && status === "cancelled") {
+        motionView.drop(id);
+        videoView.drop(id);
+      }
       renderTranscript();
     },
     text: renderTranscript,
@@ -406,6 +415,9 @@ async function connect() {
   if (playbackNode) playbackNode.port.postMessage({ type: "reset" });
   mediaGate.reset();
   motionView.reset();
+  videoView.reset();
+  ui.avatarView.hidden = true;
+  ui.orb.hidden = false;
   setButtons();
   let activeSocket = null;
   try {

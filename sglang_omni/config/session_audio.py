@@ -8,6 +8,9 @@ from typing import ClassVar
 from pydantic import Field, model_validator
 
 from sglang_omni.config.schema import PipelineConfig, SessionNodeConfig, StageConfig
+from sglang_omni.models.avtr.node import AVATAR_STAGE
+from sglang_omni.models.avtr.node import SESSION_PORTS as AVATAR_PORTS
+from sglang_omni.models.avtr.node import AvatarStageConfig, avatar_stage
 from sglang_omni.models.ellsa2.node import MOTION_STAGE
 from sglang_omni.models.ellsa2.node import SESSION_PORTS as MOTION_PORTS
 from sglang_omni.models.ellsa2.node import MotionStageConfig, motion_stage
@@ -37,13 +40,16 @@ class StageGroup:
     `pipeline` is the config class of the model serving them: its factory
     kwargs for these stages and its pipeline defaults apply here.
     `model_path` is their checkpoint when it is not the pipeline's
-    `model_path`; `ports` is what a node over them accepts and publishes.
+    `model_path`; `ports` is what a node over them accepts and publishes,
+    or `stage_ports` when that depends on the configured first stage, such
+    as the frame size of a video port.
     """
 
     stages: Callable[[], list[StageConfig]]
     pipeline: type[PipelineConfig] | None
     ports: SessionPorts | None
     model_path: str | None = None
+    stage_ports: Callable[[StageConfig], SessionPorts] | None = None
 
 
 class AudioSessionPipelineConfig(PipelineConfig):
@@ -56,11 +62,18 @@ class AudioSessionPipelineConfig(PipelineConfig):
         StageGroup(lambda: [vad_stage()], None, VAD_PORTS),
         StageGroup(lambda: [turn_detection_stage()], None, TURN_DETECTION_PORTS),
         StageGroup(lambda: [motion_stage()], None, MOTION_PORTS),
+        StageGroup(
+            lambda: [avatar_stage()],
+            None,
+            AVATAR_PORTS,
+            stage_ports=AvatarStageConfig.session_ports,
+        ),
     )
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         VAD_STAGE: VADStageConfig,
         TURN_DETECTION_STAGE: TurnDetectionStageConfig,
         MOTION_STAGE: MotionStageConfig,
+        AVATAR_STAGE: AvatarStageConfig,
     }
     session_nodes: dict[str, SessionNodeConfig]
     session_publish: dict[str, list[str]]
@@ -174,7 +187,11 @@ class AudioSessionPipelineConfig(PipelineConfig):
             return model.stage_factory_kwargs(stage_name)
 
     def node_ports(self, name: str, node: SessionNodeConfig) -> SessionPorts | None:
-        return self.groups_by_stage()[node.stages[0]].ports
+        group = self.groups_by_stage()[node.stages[0]]
+        if group.stage_ports is not None:
+            return group.stage_ports(self.stage_named(node.stages[0]))
+        else:
+            return group.ports
 
     def session_ports(self) -> SessionPorts:
         by_node = {
