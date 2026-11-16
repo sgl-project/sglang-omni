@@ -32,10 +32,26 @@ func writeTestPNG(t *testing.T, directory, name string, width, height int, pixel
 func TestCompareMeasuredNoise(t *testing.T) {
 	before, after := t.TempDir(), t.TempDir()
 	base := color.NRGBA{R: 10, G: 20, B: 30, A: 255}
-	for _, name := range []string{"same.png", "listed-1.png", "listed-2.png", "outside-1.png", "alpha.png", "size.png"} {
+	for _, name := range []string{"same.png", "listed-encoding.png", "listed-1.png", "listed-2.png", "outside-1.png", "alpha.png", "size.png"} {
 		writeTestPNG(t, before, name, 4, 4, base)
 	}
 	writeTestPNG(t, after, "same.png", 4, 4, base)
+	writeTestPNG(t, after, "listed-encoding.png", 4, 4, base)
+	encodingSource, err := os.ReadFile(filepath.Join(before, "listed-encoding.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodingImage, err := png.Decode(bytes.NewReader(encodingSource))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reencoded bytes.Buffer
+	if err := (&png.Encoder{CompressionLevel: png.NoCompression}).Encode(&reencoded, encodingImage); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(after, "listed-encoding.png"), reencoded.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	writeTestPNG(t, after, "listed-1.png", 4, 4, color.NRGBA{R: 11, G: 21, B: 31, A: 255})
 	writeTestPNG(t, after, "listed-2.png", 4, 4, color.NRGBA{R: 12, G: 20, B: 30, A: 255})
 	writeTestPNG(t, after, "outside-1.png", 4, 4, color.NRGBA{R: 11, G: 20, B: 30, A: 255})
@@ -43,7 +59,7 @@ func TestCompareMeasuredNoise(t *testing.T) {
 	writeTestPNG(t, after, "size.png", 5, 4, base)
 
 	noisyPath := filepath.Join(t.TempDir(), "noisy.list")
-	noisyList := "# measured noise\nmain/listed-1.png\nmain/listed-2.png\nmain/alpha.png\nmain/size.png\n"
+	noisyList := "# measured noise\nmain/listed-encoding.png\nmain/listed-1.png\nmain/listed-2.png\nmain/alpha.png\nmain/size.png\n"
 	if err := os.WriteFile(noisyPath, []byte(noisyList), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +71,7 @@ func TestCompareMeasuredNoise(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.files != 6 || result.identical != 1 || result.tolerated != 1 || len(result.failures) != 4 {
+	if result.files != 7 || result.identical != 1 || result.tolerated != 2 || len(result.failures) != 4 {
 		t.Fatalf("unexpected comparison result: %+v", result)
 	}
 	failures := strings.Join(result.failures, "\n")
@@ -75,7 +91,7 @@ func TestCompareMeasuredNoise(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if measured.identical != 1 || measured.tolerated != 2 || len(measured.failures) != 3 {
+	if measured.identical != 1 || measured.tolerated != 3 || len(measured.failures) != 3 {
 		t.Fatalf("measurement accepted an invalid difference: %+v", measured)
 	}
 	if err := writeReport(reportPath, measured.observed); err != nil {
@@ -85,7 +101,7 @@ func TestCompareMeasuredNoise(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(report) != "main/listed-1.png\nmain/outside-1.png\n" {
+	if string(report) != "main/listed-1.png\nmain/listed-encoding.png\nmain/outside-1.png\n" {
 		t.Fatalf("unexpected noise report:\n%s", report)
 	}
 }

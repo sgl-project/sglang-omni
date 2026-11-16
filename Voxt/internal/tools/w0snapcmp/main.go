@@ -219,7 +219,7 @@ func comparePNG(name, qualifiedName string, beforeBytes, afterBytes []byte, opts
 			}
 		}
 	}
-	qualifies := count > 0 && !alphaDiffers && most <= 1
+	qualifies := !alphaDiffers && most <= 1
 	listed := opts.noisy[qualifiedName]
 	if qualifies && (opts.measure || listed) {
 		return true, true, "", nil
