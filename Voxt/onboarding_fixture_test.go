@@ -1,13 +1,20 @@
 package main
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/hehehai/actnowkit/shortcuts"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -33,16 +40,18 @@ func TestOnboardingFixtureCoverage(t *testing.T) {
 				continue
 			}
 			steps[state.Step] = true
-			if state.Try.Card.State != "" {
-				states[state.Try.Card.State] = true
-			}
-			if state.Try.Card.ProblemCode != "" {
-				problems[state.Try.Card.ProblemCode] = true
-				if name != "problem-"+state.Try.Card.ProblemCode {
-					t.Errorf("%s/%s: problem code is %s", locale, name, state.Try.Card.ProblemCode)
+			if state.Try != nil {
+				if state.Try.Card.State != "" {
+					states[state.Try.Card.State] = true
+				}
+				if state.Try.Card.ProblemCode != "" {
+					problems[state.Try.Card.ProblemCode] = true
+					if name != "problem-"+state.Try.Card.ProblemCode {
+						t.Errorf("%s/%s: problem code is %s", locale, name, state.Try.Card.ProblemCode)
+					}
 				}
 			}
-			if state.Permissions.Microphone.Code != "" {
+			if state.Permissions != nil && state.Permissions.Microphone.Code != "" {
 				permissions[state.Permissions.Microphone.Code] = true
 			}
 		}
@@ -64,6 +73,34 @@ func TestOnboardingFixtureCoverage(t *testing.T) {
 			}
 			if _, ok := fixtures["more-preset-"+name]; !ok {
 				t.Errorf("%s: missing fixture for shortcut preset %q", locale, preset)
+			}
+		}
+	}
+}
+
+func TestOnboardingViewStateIgnoresGlobalLocale(t *testing.T) {
+	previousLocale := i18n.Locale()
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	for _, step := range []int{obModels, obTranslate, obMore} {
+		input := onboardingFixtureInput()
+		input.Step = step
+		input.Models.Found = []models.Found{{ID: models.ASRFast, Bytes: 1}}
+		input.Models.Status[models.ASRAccurate] = models.Status{Err: errors.New("fixture download error")}
+		input.Session = onboardingFixtureSession(session.Done)
+		input.Session.Problem = &session.Problem{Code: session.ProblemNoASR, Err: errors.New("fixture problem")}
+		input.Tries[step] = input.Session.ID
+		input.LegacyAvailable = true
+		input.Legacy.todo = []legacyTodo{{text: "Finish custom setup", kind: local.LLM, id: llm.Custom}}
+		input.Conflicts = []shortcuts.Conflict{{Mine: shortcuts.Shortcut{ID: "transcribe"}, Other: shortcuts.Holder{Name: "AudioSmith"}, Theirs: shortcuts.Shortcut{ID: "transcribe"}}}
+		translator := i18n.NewTranslator("en")
+		localizeOnboardingViewStateInput(translator, &input)
+		want := buildOnboardingViewState(translator, input)
+		for _, globalLocale := range []string{"zh-Hans", "en"} {
+			i18n.SetLocale(globalLocale)
+			input.MoreKeys = nil
+			localizeOnboardingViewStateInput(translator, &input)
+			if got := buildOnboardingViewState(translator, input); !reflect.DeepEqual(got, want) {
+				t.Errorf("step %d changed with global locale %s:\nwant %+v\ngot %+v", step, globalLocale, want, got)
 			}
 		}
 	}

@@ -25,72 +25,7 @@
     "title": "Try Transcribe",
     "subtitle": "Transcribe writes down what you say. Press the shortcut (or Start), read the sentence below, then press it again to stop.",
     "recording": false,
-    "welcome": {
-      "legacy_available": false,
-      "legacy": {
-        "done": false,
-        "failed": "",
-        "imported": null,
-        "skipped": null,
-        "todos": null
-      }
-    },
-    "permissions": {
-      "ask_required": false,
-      "microphone": {
-        "code": "",
-        "text": "",
-        "ok": false,
-        "can_ask": false,
-        "can_open": false,
-        "ask_action": "",
-        "ask_tooltip": ""
-      },
-      "access": {
-        "code": "",
-        "text": "",
-        "ok": false,
-        "can_ask": false,
-        "can_open": false,
-        "ask_action": "",
-        "ask_tooltip": ""
-      },
-      "speech": {
-        "code": "",
-        "text": "",
-        "ok": false,
-        "can_ask": false,
-        "can_open": false,
-        "ask_action": "",
-        "ask_tooltip": ""
-      }
-    },
-    "models": {
-      "reuse_shown": false,
-      "reuse_ids": null,
-      "reuse_subtitle": "",
-      "reuse_names": "",
-      "speech": {
-        "id": "",
-        "name": "",
-        "ready": false,
-        "on_disk": false,
-        "installed_by": "",
-        "size_label": "",
-        "under_card": false,
-        "show_download": false,
-        "download_label": "",
-        "downloading": false,
-        "download_fraction": 0,
-        "about": ""
-      },
-      "language_ready": false,
-      "language_name": "",
-      "needs_download": false,
-      "download_left": ""
-    },
     "try": {
-      "feature": "transcribe",
       "prefix": "ob-tr",
       "shortcut": {
         "present": true,
@@ -139,16 +74,9 @@
         "raw": "fixture raw speech",
         "show_raw": true,
         "raw_title": "As recognised",
-        "timings": "Recording 3.0 s · Recognition 0.8 s · Clean-up 1.1 s · Total 5.0 s · Fixture speech model · Fixture language model",
+        "timings": "Recording 3.0 s · Recognition 0.8 s · Clean-up 1.1 s · Total 5.0 s · Fixture speech model, Fixture language model",
         "problem_code": "tooShort"
       }
-    },
-    "more": {
-      "preset_options": null,
-      "preset_selected": "",
-      "preset_about": "",
-      "preset_warnings": null,
-      "shortcuts": null
     },
     "footer": {
       "mode": "try-wait",

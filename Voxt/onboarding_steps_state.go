@@ -86,7 +86,7 @@ func buildOnboardingMore(translator *i18n.Translator, input onboardingViewStateI
 			keys = translator.T("None")
 		}
 		state.Shortcuts = append(state.Shortcuts, onboardingShortcutRowViewState{
-			Title: onboardingFeatureTitle(translator, feature), Keys: keys, Problems: input.MoreConflicts[feature],
+			Title: onboardingFeatureTitle(translator, feature), Keys: keys, Problems: onboardingConflictLines(translator, input.Conflicts, feature, 0),
 		})
 	}
 	return state

@@ -25,72 +25,7 @@
     "title": "试一试转录",
     "subtitle": "转录把你说的话写成文字。按下快捷键（或点“开始”），读下面这句话，再按一次结束。",
     "recording": false,
-    "welcome": {
-      "legacy_available": false,
-      "legacy": {
-        "done": false,
-        "failed": "",
-        "imported": null,
-        "skipped": null,
-        "todos": null
-      }
-    },
-    "permissions": {
-      "ask_required": false,
-      "microphone": {
-        "code": "",
-        "text": "",
-        "ok": false,
-        "can_ask": false,
-        "can_open": false,
-        "ask_action": "",
-        "ask_tooltip": ""
-      },
-      "access": {
-        "code": "",
-        "text": "",
-        "ok": false,
-        "can_ask": false,
-        "can_open": false,
-        "ask_action": "",
-        "ask_tooltip": ""
-      },
-      "speech": {
-        "code": "",
-        "text": "",
-        "ok": false,
-        "can_ask": false,
-        "can_open": false,
-        "ask_action": "",
-        "ask_tooltip": ""
-      }
-    },
-    "models": {
-      "reuse_shown": false,
-      "reuse_ids": null,
-      "reuse_subtitle": "",
-      "reuse_names": "",
-      "speech": {
-        "id": "",
-        "name": "",
-        "ready": false,
-        "on_disk": false,
-        "installed_by": "",
-        "size_label": "",
-        "under_card": false,
-        "show_download": false,
-        "download_label": "",
-        "downloading": false,
-        "download_fraction": 0,
-        "about": ""
-      },
-      "language_ready": false,
-      "language_name": "",
-      "needs_download": false,
-      "download_left": ""
-    },
     "try": {
-      "feature": "transcribe",
       "prefix": "ob-tr",
       "shortcut": {
         "present": true,
@@ -140,13 +75,6 @@
         "timings": "",
         "problem_code": ""
       }
-    },
-    "more": {
-      "preset_options": null,
-      "preset_selected": "",
-      "preset_about": "",
-      "preset_warnings": null,
-      "shortcuts": null
     },
     "footer": {
       "mode": "try-wait",

@@ -106,6 +106,13 @@ func (t *Translator) N(n int, one, other string, args ...any) string {
 	return format(msg, args)
 }
 
+func (t *Translator) X(context, msg string, args ...any) string {
+	if translated, ok := t.catalog.messages[context+"\x04"+msg]; ok {
+		return format(translated, args)
+	}
+	return format(msg, args)
+}
+
 func newCatalog(tag string) *catalog {
 	c := &catalog{tag: tag, messages: map[string]string{}}
 	if data, err := localeFS.ReadFile("locales/" + tag + ".json"); err == nil {

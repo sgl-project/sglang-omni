@@ -2,13 +2,17 @@ package main
 
 import (
 	"math"
+	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/hehehai/actnowkit/shortcuts"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -412,6 +416,63 @@ func TestOnboardingTryStepLeaves(t *testing.T) {
 // TestKeyboardLit: the setup guide's keyboard lights the keys of the
 // shortcut: a modifier on its side, on both sides when either does, fn,
 // the space bar (#3644: "Right ⌥" did not say which physical key).
+func TestOnboardingViewStateAdapterUsesExplicitLocale(t *testing.T) {
+	previousLocale := i18n.Locale()
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	a, _ := obTester(t)
+	a.ob.legacyAvailable, a.ob.legacyDone = true, true
+	a.ob.legacy.todo = []legacyTodo{{text: "Finish custom setup", kind: local.LLM, id: llm.Custom}}
+	a.famConflicts = []shortcuts.Conflict{{Mine: shortcuts.Shortcut{ID: "transcribe"}, Other: shortcuts.Holder{Name: "AudioSmith"}, Theirs: shortcuts.Shortcut{ID: "transcribe"}}}
+	translator := i18n.NewTranslator("en")
+	for _, step := range []int{obWelcome, obTranscribe, obMore} {
+		a.ob.step = step
+		for _, globalLocale := range []string{"zh-Hans", "en"} {
+			i18n.SetLocale(globalLocale)
+			state := a.onboardingViewStateForTranslator(translator)
+			switch step {
+			case obWelcome:
+				if got := state.Welcome.Legacy.Todos[0].ServiceName; got != "Custom (OpenAI-compatible)" {
+					t.Errorf("global locale %s changed service name to %q", globalLocale, got)
+				}
+			case obTranscribe:
+				if got := state.Try.Conflicts[0]; got != "Also used by AudioSmith (Transcribe)" {
+					t.Errorf("global locale %s changed conflict to %q", globalLocale, got)
+				}
+			case obMore:
+				if got := state.More.Shortcuts[0].Problems[0]; got != "Also used by AudioSmith (Transcribe)" {
+					t.Errorf("global locale %s changed conflict to %q", globalLocale, got)
+				}
+			}
+		}
+	}
+}
+
+func TestOnboardingWelcomeViewStateCache(t *testing.T) {
+	a, _ := obTester(t)
+	first := a.onboardingViewState()
+	if second := a.onboardingViewState(); !reflect.DeepEqual(second, first) {
+		t.Fatal("unchanged welcome state differs")
+	}
+	a.ob.tries[obTranscribe] = "mine"
+	snapshot := obSnap(a, "mine", store.KindTranscribe, session.Done)
+	snapshot.Rev = a.sess.Rev + 1
+	a.sessionChanged(snapshot)
+	if third := a.onboardingViewState(); !third.Passed[obTranscribe] {
+		t.Fatal("cached welcome kept stale breadcrumbs")
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	if fourth := a.onboardingViewState(); fourth.StepTitles[obWelcome] != "欢迎" {
+		t.Fatalf("cached welcome kept the old locale: %q", fourth.StepTitles[obWelcome])
+	}
+}
+
+func TestOnboardingTimingsText(t *testing.T) {
+	snapshot := session.Snapshot{ASR: session.Model{Name: "Speech One"}, LLM: session.Model{Name: "Language Two"}}
+	if got := onboardingTimingsText(i18n.NewTranslator("en"), snapshot); got != "Speech One, Language Two" {
+		t.Fatalf("model names %q", got)
+	}
+}
+
 func TestKeyboardLit(t *testing.T) {
 	for _, c := range []struct {
 		keys string

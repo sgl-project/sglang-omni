@@ -85,6 +85,10 @@ type onboardingState struct {
 		// awayTo is the page one of the guide's links left it for: that
 		// page offers the way back ("" none).
 		awayTo string
+		// view caches the welcome step while its inputs stay unchanged.
+		view       onboardingViewState
+		viewKey    onboardingWelcomeCacheKey
+		viewCached bool
 	}
 }
 
@@ -264,19 +268,6 @@ func (a *app) obDownloadLeft() string {
 	return uitext.HumanBytes(m.Size() - a.modelStatus[id].Done)
 }
 
-// obNeedsDownload says that the models step has nothing but the download
-// to offer, so its primary button is Download and continue: no speech
-// model in use, the recommended one neither on this Mac nor downloading,
-// and no alternative to choose instead.
-func (a *app) obNeedsDownload() bool {
-	if a.ob.step != obModels || len(a.obReady(local.ASR)) > 0 {
-		return false
-	}
-	st := a.modelStatus[a.obSpeech()]
-	_, alt := a.obAlternative()
-	return !alt && !st.Downloading && !st.OnDisk
-}
-
 // obSurvey looks for the pack's models and their alternatives in the
 // family's library, off the main thread (when the models step shows).
 func (a *app) obSurvey() {
@@ -295,38 +286,6 @@ func (a *app) obSurvey() {
 		found := m.Survey(ids...)
 		a.post(func() { a.ob.found = found })
 	})
-}
-
-// obFound is model id as the survey found it on disk, while VoxtNew does
-// not claim it yet (it would be VoxtNew's model then, no longer an offer).
-func (a *app) obFound(id string) (models.Found, bool) {
-	return onboardingModelFound(a.onboardingModelsInput(), id)
-}
-
-// obReuse are the pack's models on this Mac that VoxtNew could use
-// without downloading: the reuse card's.
-func (a *app) obReuse() []models.Found { return onboardingModelReuse(a.onboardingModelsInput()) }
-
-// obReuseShown says whether the reuse card shows (its Use them is then
-// the step's primary button).
-func (a *app) obReuseShown() bool { return a.ob.step == obModels && len(a.obReuse()) > 0 }
-
-// obAlternative is the model on this Mac that may stand in for the
-// recommended speech model, which is not: "" when there is none, or the
-// recommended one is on disk or downloading.
-func (a *app) obAlternative() (models.Found, bool) {
-	return onboardingModelAlternative(a.onboardingModelsInput())
-}
-
-// obReady are the installed models of kind VoxtNew uses already: a model
-// another app installed counts once VoxtNew claims it (until then it is
-// an offer of the card or of an alternative line). System dictation does
-// not: the step still offers the recommended speech model.
-func (a *app) obReady(kind local.Kind) []local.Model {
-	if kind != local.ASR {
-		return nil
-	}
-	return onboardingReadySpeech(a.onboardingModelsInput())
 }
 
 // obUse claims the models ids for VoxtNew ("Use them", "Use … for now"),

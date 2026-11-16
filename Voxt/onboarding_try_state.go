@@ -59,12 +59,93 @@ func onboardingTimingsText(translator *i18n.Translator, snapshot session.Snapsho
 	if timings.Total > 0 {
 		parts = append(parts, translator.T("Total %s", seconds(timings.Total)))
 	}
+	var serviceNames []string
 	for _, model := range []session.Model{snapshot.ASR, snapshot.LLM} {
 		if model.Name != "" {
-			parts = append(parts, model.Name)
+			serviceNames = append(serviceNames, model.Name)
 		}
 	}
+	if len(serviceNames) > 0 {
+		parts = append(parts, strings.Join(serviceNames, ", "))
+	}
 	return strings.Join(parts, " · ")
+}
+
+func onboardingHotkeyText(translator *i18n.Translator, keys string) string {
+	chord, err := hotkey.Parse(keys)
+	if err != nil {
+		return strings.TrimSpace(keys)
+	}
+	glyphs := map[string]string{proto.ModControl: "⌃", proto.ModOption: "⌥", proto.ModShift: "⇧", proto.ModCommand: "⌘"}
+	var parts []string
+	if _, ok := chord.Mods[proto.ModFn]; ok {
+		parts = append(parts, "fn")
+	}
+	for _, family := range []string{proto.ModControl, proto.ModOption, proto.ModShift, proto.ModCommand} {
+		side, ok := chord.Mods[family]
+		if !ok {
+			continue
+		}
+		switch side {
+		case proto.SideLeft:
+			parts = append(parts, translator.T("Left %s", glyphs[family]))
+		case proto.SideRight:
+			parts = append(parts, translator.T("Right %s", glyphs[family]))
+		default:
+			parts = append(parts, glyphs[family])
+		}
+	}
+	if chord.Key != "" {
+		parts = append(parts, onboardingKeyGlyph(translator, chord.Key))
+	}
+	var text strings.Builder
+	for index, part := range parts {
+		key := index == len(parts)-1 && chord.Key != "" && !chord.Mouse()
+		if index > 0 && (len([]rune(part)) > 1 && !key || len([]rune(parts[index-1])) > 1) {
+			text.WriteString(" ")
+		}
+		text.WriteString(part)
+	}
+	return text.String()
+}
+
+func onboardingKeyGlyph(translator *i18n.Translator, key string) string {
+	switch key {
+	case "Space":
+		return translator.T("Space")
+	case "Return":
+		return translator.T("Return")
+	case "Tab":
+		return translator.T("Tab")
+	case "Escape":
+		return translator.T("Esc")
+	case "Delete":
+		return translator.T("Delete")
+	case "ForwardDelete":
+		return "⌦"
+	case "Left":
+		return "←"
+	case "Right":
+		return "→"
+	case "Up":
+		return "↑"
+	case "Down":
+		return "↓"
+	case "PageUp":
+		return "⇞"
+	case "PageDown":
+		return "⇟"
+	case "Home":
+		return "↖"
+	case "End":
+		return "↘"
+	case "Mouse3":
+		return translator.T("Middle mouse button")
+	}
+	if number, ok := strings.CutPrefix(key, "Mouse"); ok {
+		return translator.T("Mouse button %s", number)
+	}
+	return key
 }
 
 func keyboardLit(chord hotkey.Chord) map[string]bool {
@@ -103,7 +184,7 @@ func buildOnboardingTry(translator *i18n.Translator, input onboardingViewStateIn
 	kind, _ := obStepKind(input.Step)
 	feature := string(kind)
 	prefix := "ob-" + uitext.FeaturePrefix(feature)
-	state := onboardingTryViewState{Feature: feature, Prefix: prefix, Passed: input.Passed[input.Step], Hint: input.Hint, Conflicts: input.TryConflicts}
+	state := onboardingTryViewState{Prefix: prefix, Passed: input.Passed[input.Step], Hint: input.Hint, Conflicts: onboardingConflictLines(translator, input.Conflicts, feature, 0)}
 	hotkeys := hotkey.HotkeysOf(input.Settings.Features, feature)
 	state.Shortcut.FeatureTitle = onboardingKindTitle(translator, kind)
 	if len(hotkeys) > 0 {
@@ -141,7 +222,7 @@ func buildOnboardingTry(translator *i18n.Translator, input onboardingViewStateIn
 		}
 		state.LanguageGuide = &onboardingNoticeViewState{
 			Text: detail, More: translator.T("Set one up on the Language models page, then come back and try again. You can also skip this step."),
-			Action: actionLanguage, ActionLabel: translator.T("Set up a language model"), Warning: true,
+			Action: actionLanguage, ActionLabel: translator.T("Set up a language model"),
 		}
 	} else if kind != store.KindTranslate && input.SpeechWait != nil {
 		state.SpeechGuide = &onboardingNoticeViewState{
@@ -156,7 +237,7 @@ func buildOnboardingTry(translator *i18n.Translator, input onboardingViewStateIn
 		Recording: snapshot.State == session.Recording, Composing: snapshot.State == session.Composing,
 		Cancelled: snapshot.State == session.Cancelled, Failed: snapshot.State == session.Failed,
 		Levels: snapshot.Levels, Heard: !snapshot.HeardAt.IsZero(), Partial: strings.TrimSpace(snapshot.Partial),
-		Block: onboardingNotice(translator, input.Block, false),
+		Block: onboardingNotice(translator, input.Block),
 	}
 	if mine && card.Recording {
 		elapsed := snapshot.Elapsed(input.Now)
@@ -186,7 +267,7 @@ func buildOnboardingTry(translator *i18n.Translator, input onboardingViewStateIn
 		if snapshot.Problem != nil {
 			card.ProblemCode = snapshot.Problem.Code
 		}
-		problem := onboardingNotice(translator, input.SessionProblem, !card.Failed)
+		problem := onboardingNotice(translator, input.SessionProblem)
 		switch {
 		case card.Cancelled:
 		case card.Failed && problem != nil && problem.Text != "":

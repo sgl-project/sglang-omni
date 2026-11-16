@@ -3,6 +3,8 @@ package main
 import (
 	"time"
 
+	"github.com/hehehai/actnowkit/shortcuts"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -11,7 +13,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 type onboardingNoticeViewState struct {
@@ -19,7 +20,6 @@ type onboardingNoticeViewState struct {
 	More        string `json:"more"`
 	Action      string `json:"action"`
 	ActionLabel string `json:"action_label"`
-	Warning     bool   `json:"warning"`
 }
 
 type onboardingLegacyTodoViewState struct {
@@ -68,13 +68,13 @@ type onboardingAlternativeViewState struct {
 }
 
 type onboardingSpeechViewState struct {
-	ID               string                          `json:"id"`
-	Name             string                          `json:"name"`
-	Ready            bool                            `json:"ready"`
-	OnDisk           bool                            `json:"on_disk"`
-	InstalledBy      string                          `json:"installed_by"`
-	SizeLabel        string                          `json:"size_label"`
-	UnderCard        bool                            `json:"under_card"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Ready       bool   `json:"ready"`
+	OnDisk      bool   `json:"on_disk"`
+	InstalledBy string `json:"installed_by"`
+	SizeLabel   string `json:"size_label"`
+
 	ShowDownload     bool                            `json:"show_download"`
 	DownloadLabel    string                          `json:"download_label"`
 	Downloading      bool                            `json:"downloading"`
@@ -142,7 +142,6 @@ type onboardingTryCardViewState struct {
 }
 
 type onboardingTryViewState struct {
-	Feature       string                      `json:"feature"`
 	Prefix        string                      `json:"prefix"`
 	Shortcut      onboardingShortcutViewState `json:"shortcut"`
 	Conflicts     []string                    `json:"conflicts"`
@@ -185,19 +184,19 @@ type onboardingFooterViewState struct {
 }
 
 type onboardingViewState struct {
-	Open        bool                           `json:"open"`
-	Step        int                            `json:"step"`
-	StepTitles  [obSteps]string                `json:"step_titles"`
-	Passed      [obSteps]bool                  `json:"passed"`
-	Title       string                         `json:"title"`
-	Subtitle    string                         `json:"subtitle"`
-	Recording   bool                           `json:"recording"`
-	Welcome     onboardingWelcomeViewState     `json:"welcome"`
-	Permissions onboardingPermissionsViewState `json:"permissions"`
-	Models      onboardingModelsViewState      `json:"models"`
-	Try         onboardingTryViewState         `json:"try"`
-	More        onboardingMoreViewState        `json:"more"`
-	Footer      onboardingFooterViewState      `json:"footer"`
+	Open        bool                            `json:"open"`
+	Step        int                             `json:"step"`
+	StepTitles  [obSteps]string                 `json:"step_titles"`
+	Passed      [obSteps]bool                   `json:"passed"`
+	Title       string                          `json:"title"`
+	Subtitle    string                          `json:"subtitle"`
+	Recording   bool                            `json:"recording"`
+	Welcome     *onboardingWelcomeViewState     `json:"welcome,omitempty"`
+	Permissions *onboardingPermissionsViewState `json:"permissions,omitempty"`
+	Models      *onboardingModelsViewState      `json:"models,omitempty"`
+	Try         *onboardingTryViewState         `json:"try,omitempty"`
+	More        *onboardingMoreViewState        `json:"more,omitempty"`
+	Footer      onboardingFooterViewState       `json:"footer"`
 }
 
 type onboardingBackViewState struct {
@@ -213,6 +212,13 @@ type onboardingModelStateInput struct {
 	InstalledASR  []local.Model
 	Language      local.Model
 	LanguageReady bool
+}
+
+type onboardingWelcomeCacheKey struct {
+	locale   string
+	revision uint64
+	step     int
+	triesNil bool
 }
 
 type onboardingViewStateInput struct {
@@ -238,9 +244,8 @@ type onboardingViewStateInput struct {
 	LegacyAvailable     bool
 	LegacyDone          bool
 	TryKeys             string
-	TryConflicts        []string
+	Conflicts           []shortcuts.Conflict
 	MoreKeys            map[string]string
-	MoreConflicts       map[string][]string
 	TargetLanguage      string
 	HotkeysInstalled    bool
 	Now                 time.Time
@@ -301,13 +306,13 @@ func onboardingNoticeActionLabel(translator *i18n.Translator, action string) str
 	return ""
 }
 
-func onboardingNotice(translator *i18n.Translator, notice *sessionNotice, warning bool) *onboardingNoticeViewState {
+func onboardingNotice(translator *i18n.Translator, notice *sessionNotice) *onboardingNoticeViewState {
 	if notice == nil {
 		return nil
 	}
 	return &onboardingNoticeViewState{
 		Text: notice.text, More: notice.more, Action: notice.action,
-		ActionLabel: onboardingNoticeActionLabel(translator, notice.action), Warning: warning,
+		ActionLabel: onboardingNoticeActionLabel(translator, notice.action),
 	}
 }
 
@@ -339,22 +344,28 @@ func buildOnboardingViewState(translator *i18n.Translator, input onboardingViewS
 		state.Title = translator.T("More to explore")
 		state.Subtitle = translator.T("Voxt is ready. Two more things make it yours.")
 	}
-	state.Welcome.LegacyAvailable = input.LegacyAvailable
-	state.Welcome.Legacy = onboardingLegacyViewState{Done: input.LegacyDone, Failed: input.Legacy.failed, Imported: input.Legacy.imported, Skipped: input.Legacy.skipped}
-	for _, todo := range input.Legacy.todo {
-		state.Welcome.Legacy.Todos = append(state.Welcome.Legacy.Todos, onboardingLegacyTodoViewState{
-			Text: todo.text, Kind: string(todo.kind), ID: todo.id, ServiceName: lookupService(todo.kind, todo.id).name,
-		})
+	if input.Step == obWelcome {
+		state.Welcome = &onboardingWelcomeViewState{LegacyAvailable: input.LegacyAvailable}
+		state.Welcome.Legacy = onboardingLegacyViewState{Done: input.LegacyDone, Failed: input.Legacy.failed, Imported: input.Legacy.imported, Skipped: input.Legacy.skipped}
+		for _, todo := range input.Legacy.todo {
+			state.Welcome.Legacy.Todos = append(state.Welcome.Legacy.Todos, onboardingLegacyTodoViewState{
+				Text: todo.text, Kind: string(todo.kind), ID: todo.id, ServiceName: onboardingServiceName(translator, todo.kind, todo.id),
+			})
+		}
 	}
 	switch input.Step {
 	case obPermissions:
-		state.Permissions = buildOnboardingPermissions(translator, input)
+		permissions := buildOnboardingPermissions(translator, input)
+		state.Permissions = &permissions
 	case obModels:
-		state.Models = buildOnboardingModels(translator, input)
+		models := buildOnboardingModels(translator, input)
+		state.Models = &models
 	case obTranscribe, obTranslate, obRewrite:
-		state.Try = buildOnboardingTry(translator, input)
+		tryState := buildOnboardingTry(translator, input)
+		state.Try = &tryState
 	case obMore:
-		state.More = buildOnboardingMore(translator, input)
+		more := buildOnboardingMore(translator, input)
+		state.More = &more
 	}
 	ownsSession := false
 	for _, id := range input.Tries {
@@ -376,10 +387,10 @@ func buildOnboardingViewState(translator *i18n.Translator, input onboardingViewS
 		state.Footer.ContinueLabel = translator.T("Continue")
 		state.Footer.ContinueTooltip = translator.T("Continue is available once a test gives a result")
 		state.Footer.ContinueDisabled = true
-	case state.Models.ReuseShown && input.Step == obModels:
+	case input.Step == obModels && state.Models.ReuseShown:
 		state.Footer.Mode = "reuse"
 		state.Footer.ContinueLabel = translator.T("Continue")
-	case state.Models.NeedsDownload && input.Step == obModels:
+	case input.Step == obModels && state.Models.NeedsDownload:
 		state.Footer.Mode = "download"
 		state.Footer.ContinueLabel = translator.T("Download and continue (%s)", state.Models.DownloadLeft)
 		state.Footer.ContinueDisabled = state.Footer.Busy
@@ -416,6 +427,15 @@ func (a *app) onboardingModelsInput() onboardingModelStateInput {
 }
 
 func (a *app) onboardingViewState() onboardingViewState {
+	return a.onboardingViewStateForTranslator(i18n.CurrentTranslator())
+}
+
+func (a *app) onboardingViewStateForTranslator(translator *i18n.Translator) onboardingViewState {
+	cacheWelcome := a.ob.step == obWelcome && !a.ob.legacyAvailable
+	cacheKey := onboardingWelcomeCacheKey{locale: translator.Locale(), revision: a.sess.Rev, step: a.ob.step, triesNil: a.ob.tries == nil}
+	if cacheWelcome && a.ob.viewCached && a.ob.viewKey == cacheKey {
+		return a.ob.view
+	}
 	input := onboardingViewStateInput{
 		Open: a.ob.open, Step: a.ob.step, Passed: a.ob.passed, Tries: a.ob.tries, Session: a.sess,
 		Settings: a.prefs, PermissionMic: a.perms.mic, PermissionSpeech: a.perms.speech, PermissionAccess: a.perms.access,
@@ -428,48 +448,54 @@ func (a *app) onboardingViewState() onboardingViewState {
 	if kind, ok := obStepKind(a.ob.step); ok {
 		input.Blocker = a.sessionBlocker(kind)
 		input.SpeechWait = a.speechWaits(kind)
-		input.TryConflicts = a.conflictLines(string(kind), 0)
+		if input.SpeechWait != nil {
+			wait := *input.SpeechWait
+			wait.text = translator.T("The speech model is still downloading (%d%%).", downloadPercent(a.modelStatus[a.obSpeech()]))
+			input.SpeechWait = &wait
+		}
+		input.Blocker = onboardingStartNotice(translator, input.Blocker, input.SpeechWait)
+		input.Block = onboardingStartNotice(translator, input.Block, input.SpeechWait)
+		input.Conflicts = a.famConflicts
 	}
 	if a.ob.step == obMore {
-		input.MoreConflicts = map[string][]string{}
-		for _, feature := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast) {
-			input.MoreConflicts[feature] = a.conflictLines(feature, 0)
-		}
+		input.Conflicts = a.famConflicts
 	}
-	localizeOnboardingViewStateInput(&input)
-	return buildOnboardingViewState(i18n.CurrentTranslator(), input)
+	localizeOnboardingViewStateInput(translator, &input)
+	state := buildOnboardingViewState(translator, input)
+	if cacheWelcome {
+		a.ob.view, a.ob.viewKey, a.ob.viewCached = state, cacheKey, true
+	}
+	return state
 }
 
-func localizeOnboardingViewStateInput(input *onboardingViewStateInput) {
+func localizeOnboardingViewStateInput(translator *i18n.Translator, input *onboardingViewStateInput) {
 	if input.Step == obModels {
-		input.SpeechAbout = uitext.ModelAbout(input.Models.SpeechID)
+		input.SpeechAbout = onboardingModelAbout(translator, input.Models.SpeechID)
 		if alternative, ok := onboardingModelAlternative(input.Models); ok {
-			input.AlternativeUseLabel = i18n.X("alternative", "Use %s", onboardingModelName(alternative.ID))
+			input.AlternativeUseLabel = translator.X("alternative", "Use %s", onboardingModelName(alternative.ID))
 		}
 		if input.Models.Status[input.Models.SpeechID].Err != nil {
-			text, more := uitext.DownloadErrorText(input.Models.Status[input.Models.SpeechID].Err)
-			input.SpeechError = &sessionNotice{text: text, more: more}
+			input.SpeechError = onboardingDownloadErrorNotice(translator, input.Models.Status[input.Models.SpeechID].Err)
 		}
 	}
 	if input.Session.Problem != nil {
-		text, more, action := sessionProblemText(input.Session.Problem)
-		input.SessionProblem = &sessionNotice{text: text, more: more, action: action}
+		input.SessionProblem = onboardingSessionProblemNotice(translator, input.Session.Problem)
 	}
 	if kind, ok := obStepKind(input.Step); ok {
 		input.TryKeys = ""
 		if hotkeys := hotkey.HotkeysOf(input.Settings.Features, string(kind)); len(hotkeys) > 0 {
-			input.TryKeys = uitext.HotkeyText(hotkeys[0].Keys)
+			input.TryKeys = onboardingHotkeyText(translator, hotkeys[0].Keys)
 		}
 		if kind == store.KindTranslate {
-			target := session.TranslateTarget(input.Settings, i18n.Locale(), "")
-			input.TargetLanguage = uitext.TargetLanguageLabel(target)
+			target := session.TranslateTarget(input.Settings, translator.Locale(), "")
+			input.TargetLanguage = compose.LanguageName(target, translator.Locale())
 		}
 	}
 	if input.Step == obMore && input.MoreKeys == nil {
 		input.MoreKeys = map[string]string{}
 		for _, feature := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast) {
 			if hotkeys := hotkey.HotkeysOf(input.Settings.Features, feature); len(hotkeys) > 0 {
-				input.MoreKeys[feature] = uitext.HotkeyText(hotkeys[0].Keys)
+				input.MoreKeys[feature] = onboardingHotkeyText(translator, hotkeys[0].Keys)
 			}
 		}
 	}

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"strings"
 
+	"github.com/hehehai/actnowkit/hfhub"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -73,7 +76,7 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 		LanguageName: modelInput.Language.Name, NeedsDownload: len(ready) == 0 && !hasAlternative && !speechStatus.Downloading && !speechStatus.OnDisk,
 	}
 	state.Speech = onboardingSpeechViewState{
-		ID: modelInput.SpeechID, Name: onboardingModelName(modelInput.SpeechID), UnderCard: len(reuse) > 0,
+		ID: modelInput.SpeechID, Name: onboardingModelName(modelInput.SpeechID),
 		About: input.SpeechAbout,
 	}
 	if len(ready) > 0 {
@@ -111,7 +114,7 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 			}
 			state.Speech.Alternative = alternativeState
 		}
-		state.Speech.Error = onboardingNotice(translator, input.SpeechError, false)
+		state.Speech.Error = onboardingNotice(translator, input.SpeechError)
 	}
 	var size int64
 	var names []string
@@ -132,4 +135,38 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 		}
 	}
 	return state
+}
+
+func onboardingModelAbout(translator *i18n.Translator, id string) string {
+	if id == models.ASRAccurate {
+		return translator.T("The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.")
+	}
+	return ""
+}
+
+func onboardingDownloadErrorNotice(translator *i18n.Translator, err error) *sessionNotice {
+	if err == nil {
+		return nil
+	}
+	notice := &sessionNotice{more: err.Error()}
+	var pathError *fs.PathError
+	switch hfhub.Code(err) {
+	case hfhub.CodeDiskSpace:
+		notice.text = translator.T("Not enough disk space. Free some space, then try again.")
+	case hfhub.CodeChecksum:
+		notice.text = translator.T("A downloaded file was damaged. Try again.")
+	case hfhub.CodeNotFound, hfhub.CodeGated:
+		notice.text = translator.T("The download server does not have this model.")
+	case hfhub.CodeOffline:
+		notice.text = translator.T("The download failed. Check the internet connection, then try again.")
+	case hfhub.CodeBusy:
+		notice.text = translator.T("Another app is using this model. Try again later.")
+	default:
+		if errors.As(err, &pathError) {
+			notice.text = translator.T("The model could not be saved to the disk.")
+		} else {
+			notice.text = translator.T("The download failed. Check the internet connection, then try again.")
+		}
+	}
+	return notice
 }

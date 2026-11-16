@@ -13,11 +13,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hehehai/actnowkit/shortcuts"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 func TestMeetingViewStateGolden(t *testing.T) {
@@ -99,25 +99,25 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 		input := scenario.onboarding
 		switch scenario.onboardingBlocker {
 		case "language":
-			input.Blocker = &sessionNotice{text: i18n.T("No language model is set up."), action: actionLanguage}
+			input.Blocker = &sessionNotice{text: translator.T("No language model is set up."), action: actionLanguage}
 		case "speech-wait":
-			notice := &sessionNotice{text: i18n.T("The speech model is still downloading (%d%%).", 33), action: actionModels}
+			notice := &sessionNotice{text: translator.T("The speech model is still downloading (%d%%).", 33), action: actionModels}
 			input.Blocker, input.SpeechWait = notice, notice
 		case "blocked":
-			input.Block = &sessionNotice{text: i18n.T("No speech model is installed."), more: "fixture blocker detail", action: actionModels}
+			input.Block = &sessionNotice{text: translator.T("No speech model is installed."), more: "fixture blocker detail", action: actionModels}
 		}
 		if scenario.onboardingConflict {
-			line := i18n.T("Also used by %s (%s)", "AudioSmith", uitext.FeatureTitle(string(store.KindTranscribe)))
-			input.TryConflicts = []string{line}
-			input.MoreConflicts = map[string][]string{string(store.KindTranscribe): {line}}
+			input.Conflicts = []shortcuts.Conflict{{
+				Mine: shortcuts.Shortcut{ID: string(store.KindTranscribe)}, Other: shortcuts.Holder{Name: "AudioSmith"}, Theirs: shortcuts.Shortcut{ID: string(store.KindTranscribe)},
+			}}
 		}
 		if scenario.onboardingHint {
-			input.Hint = i18n.T("That was the %s shortcut. This step tests %s (%s).", uitext.KindTitle(store.KindTranslate), uitext.KindTitle(store.KindTranscribe), "Right ⌥")
+			input.Hint = translator.T("That was the %s shortcut. This step tests %s (%s).", onboardingKindTitle(translator, store.KindTranslate), onboardingKindTitle(translator, store.KindTranscribe), "Right ⌥")
 		}
 		if problem := input.Session.Problem; problem != nil && problem.Code == session.ProblemSpeechWait {
-			problem.Err = errors.New(i18n.T("The speech model is still downloading (%d%%).", 33))
+			problem.Err = errors.New(translator.T("The speech model is still downloading (%d%%).", 33))
 		}
-		localizeOnboardingViewStateInput(&input)
+		localizeOnboardingViewStateInput(translator, &input)
 		state := buildOnboardingViewState(translator, input)
 		fixture.Onboarding = &state
 	default:

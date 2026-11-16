@@ -6,6 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 )
 
@@ -46,6 +47,10 @@ func TestOnboardingDemoActionControls(t *testing.T) {
 		{name: "try blocked dismiss", fixture: "en/try-blocked", steps: historySteps("Dismiss"), want: []string{"clearOnboardingBlock"}},
 		{name: "try language setup", fixture: "en/try-language-model", steps: historySteps("Set up a language model"), want: []string{"onboardingTryLanguage"}},
 		{name: "try failure action", fixture: "en/problem-noASR", steps: historySteps("Open Speech models"), want: []string{"onboardingNoticeAction models"}},
+		{name: "try microphone action", fixture: "en/problem-microphone", steps: historySteps("Open Permissions"), want: []string{"onboardingNoticeAction permissions"}},
+		{name: "try helper action", fixture: "en/problem-helper", steps: historySteps("Restart helper"), want: []string{"onboardingNoticeAction helper"}},
+		{name: "try language action", fixture: "en/problem-noLLM", steps: historySteps("Open Language models"), want: []string{"onboardingNoticeAction language"}},
+		{name: "try speech wait action", fixture: "en/problem-speechWait", steps: historySteps("Open Speech models"), want: []string{"onboardingNoticeAction models"}},
 		{name: "try skip", fixture: "en/step-transcribe", steps: historySteps("Skip this step"), want: []string{"obGo 4"}},
 		{name: "more app enhancement", fixture: "en/step-more", steps: historySteps("Open App enhancement"), want: []string{"finishOnboarding /app-enhancement"}},
 		{name: "more dictionary", fixture: "en/step-more", steps: historySteps("Open Dictionary"), want: []string{"finishOnboarding /dictionary"}},
@@ -68,6 +73,40 @@ func TestOnboardingDemoActionControls(t *testing.T) {
 				frames(tester)
 			}
 			if !slices.Equal(host.calls, test.want) {
+				t.Fatalf("calls %q, want %q", host.calls, test.want)
+			}
+		})
+	}
+}
+
+func TestOnboardingDemoNavigationControls(t *testing.T) {
+	for _, test := range []struct {
+		name, label, want string
+		backBar           bool
+	}{
+		{name: "back to guide", label: "Back to the setup guide", want: "openOnboarding", backBar: true},
+		{name: "dismiss back bar", label: "Dismiss", want: "dismissOnboardingBack", backBar: true},
+		{name: "settings row", label: "Open setup guide", want: "openOnboarding"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host, err := loadMeetingDemoHost("testdata/meeting")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tester := ui.NewTester(func(c *ui.Context) {
+				if test.backBar {
+					state := buildOnboardingBackViewState(i18n.NewTranslator("en"), false, remotePath, remotePath, obModels)
+					onboardingBackBar(c, state, host)
+					return
+				}
+				onboardingRow(c, host)
+			}, 800, 300)
+			tester.SetLocale("en")
+			frames(tester)
+			if err := tester.Click(test.label); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(host.calls, []string{test.want}) {
 				t.Fatalf("calls %q, want %q", host.calls, test.want)
 			}
 		})

@@ -106,7 +106,7 @@ func TestOnboardingReuse(t *testing.T) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
 	}
-	if !a.obReuseShown() {
+	if !a.onboardingViewState().Models.ReuseShown {
 		t.Error("Continue stays the primary button")
 	}
 	click(t, tt, "Use them")

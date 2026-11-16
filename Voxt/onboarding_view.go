@@ -41,15 +41,15 @@ func onboardingView(c *ui.Context, state onboardingViewState, actions onboarding
 					obTitle(c, state.Title, state.Subtitle)
 					switch state.Step {
 					case obWelcome:
-						obWelcomeStep(c, state.Welcome, actions)
+						obWelcomeStep(c, *state.Welcome, actions)
 					case obPermissions:
-						onboardingPermissionRows(c, state.Permissions, actions)
+						onboardingPermissionRows(c, *state.Permissions, actions)
 					case obModels:
-						obModelsStep(c, state.Models, actions)
+						obModelsStep(c, *state.Models, actions)
 					case obTranscribe, obTranslate, obRewrite:
-						obTryStep(c, state.Try, actions)
+						obTryStep(c, *state.Try, actions)
 					default:
-						obMoreStep(c, state.More, actions)
+						obMoreStep(c, *state.More, actions)
 					}
 				})
 			})

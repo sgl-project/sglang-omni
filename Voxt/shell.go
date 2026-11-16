@@ -291,8 +291,10 @@ func (a *app) view(c *ui.Context) {
 		})
 	})
 	a.settingsDialog(c) // shell_settings.go
-	obState := a.onboardingViewState()
-	onboardingView(c, obState, a, &onboardingLocalUI{open: obState.Open})
+	if a.ob.open {
+		obState := a.onboardingViewState()
+		onboardingView(c, obState, a, &onboardingLocalUI{open: obState.Open})
+	}
 	a.shortcutPromptDialog(c) // settings_shortcuts_family.go
 	a.announcementDialog(c)   // announcements.go
 	a.releaseDialog(c)        // updates_github.go
