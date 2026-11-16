@@ -13,8 +13,7 @@
     "key": {
       "info": "本机上的服务可不填。保存在这台 Mac 的钥匙串里。",
       "placeholder": "已保存：•••• · 粘贴新的密钥即可替换",
-      "has_saved": true,
-      "has_typed": false
+      "has_saved": true
     },
     "endpoint": {
       "info": "留空则使用服务自己的地址。只能用 https://，或指向本机的 http://。",
@@ -31,9 +30,10 @@
     "test": {
       "state": "failure",
       "code": "cancelled",
-      "text": "已取消。",
+      "text": "失败",
+      "long_text": "已取消。",
       "tooltip": "已取消。\n\nredacted fixture detail",
-      "long": true
+      "long_tooltip": "已取消。\n\nredacted fixture detail"
     },
     "show_remove": true,
     "saving": false,

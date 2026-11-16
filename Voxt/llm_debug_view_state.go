@@ -11,20 +11,18 @@ import (
 )
 
 type llmDebugViewState struct {
-	Ready          bool                     `json:"ready"`
-	Models         []string                 `json:"models,omitempty"`
-	Presets        []string                 `json:"presets,omitempty"`
-	SelectedModel  string                   `json:"selected_model,omitempty"`
-	SelectedPreset string                   `json:"selected_preset,omitempty"`
-	SavedPrompt    string                   `json:"saved_prompt,omitempty"`
-	PromptLabel    string                   `json:"prompt_label,omitempty"`
-	InputLabel     string                   `json:"input_label,omitempty"`
-	Instruction    bool                     `json:"instruction,omitempty"`
-	Edited         bool                     `json:"edited"`
-	CanRun         bool                     `json:"can_run"`
-	Running        bool                     `json:"running"`
-	Result         *llmDebugResultViewState `json:"result,omitempty"`
-	Form           llmDebugFormViewState    `json:"form"`
+	Ready       bool                     `json:"ready"`
+	Models      []string                 `json:"models,omitempty"`
+	Presets     []string                 `json:"presets,omitempty"`
+	SavedPrompt string                   `json:"saved_prompt,omitempty"`
+	PromptLabel string                   `json:"prompt_label,omitempty"`
+	InputLabel  string                   `json:"input_label,omitempty"`
+	Instruction bool                     `json:"instruction,omitempty"`
+	Edited      bool                     `json:"edited"`
+	CanRun      bool                     `json:"can_run"`
+	Running     bool                     `json:"running"`
+	Result      *llmDebugResultViewState `json:"result,omitempty"`
+	Form        llmDebugFormViewState    `json:"form"`
 }
 
 type llmDebugFormViewState struct {
@@ -60,7 +58,7 @@ func buildLLMDebugViewState(translator *i18n.Translator, input llmDebugStateInpu
 	ui := input.UI
 	state := llmDebugViewState{
 		Ready: len(input.ModelNames) > 0, Models: input.ModelNames, SavedPrompt: input.SavedPrompt,
-		SelectedModel: ui.model, SelectedPreset: ui.preset, Edited: ui.prompt != input.SavedPrompt,
+		Edited:  ui.prompt != input.SavedPrompt,
 		Running: ui.running, PromptLabel: translator.T("System prompt"), InputLabel: translator.T("Recognised text"),
 		Form: llmDebugFormViewState{Model: ui.model, Preset: ui.preset, Filled: ui.filled, Prompt: ui.prompt, Input: ui.input, Instruction: ui.instruction},
 	}

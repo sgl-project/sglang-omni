@@ -64,7 +64,7 @@
               "key_status": "neutral",
               "test": {
                 "state": "running",
-                "long": false
+                "long_text": "Testing…"
               },
               "test_disabled": true
             }

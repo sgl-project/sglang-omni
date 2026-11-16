@@ -66,8 +66,9 @@
                 "state": "failure",
                 "code": "llm.network",
                 "text": "失败",
+                "long_text": "语言模型已停止或没有响应。请稍后再试。",
                 "tooltip": "语言模型已停止或没有响应。请稍后再试。\n\nredacted fixture detail",
-                "long": false
+                "long_tooltip": "语言模型已停止或没有响应。请稍后再试。\n\nredacted fixture detail"
               }
             }
           ]

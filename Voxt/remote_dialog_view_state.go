@@ -9,7 +9,6 @@ import (
 	"strconv"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/secrets"
@@ -30,7 +29,6 @@ type remoteDialogViewState struct {
 	Endpoint          *remoteEndpointViewState   `json:"endpoint,omitempty"`
 	ModelOptions      []string                   `json:"model_options"`
 	OtherModel        string                     `json:"other_model"`
-	CustomModel       bool                       `json:"custom_model,omitempty"`
 	RecognitionPrompt bool                       `json:"recognition_prompt,omitempty"`
 	Generation        *remoteGenerationViewState `json:"generation,omitempty"`
 	Error             string                     `json:"error,omitempty"`
@@ -61,7 +59,6 @@ type remoteKeyViewState struct {
 	Placeholder string `json:"placeholder"`
 	Warning     string `json:"warning,omitempty"`
 	HasSaved    bool   `json:"has_saved"`
-	HasTyped    bool   `json:"has_typed"`
 }
 
 type remoteEndpointViewState struct {
@@ -83,18 +80,12 @@ type remoteGenerationViewState struct {
 	Thinking              string                        `json:"thinking"`
 	EffortOptions         []remoteOptionViewState       `json:"effort_options,omitempty"`
 	EffortSelection       string                        `json:"effort_selection,omitempty"`
-	ShowEffortInput       bool                          `json:"show_effort_input,omitempty"`
-	ShowEffortSelect      bool                          `json:"show_effort_select,omitempty"`
-	ShowBudget            bool                          `json:"show_budget,omitempty"`
-	ShowShort             bool                          `json:"show_short,omitempty"`
 	ShortUnderPlaceholder string                        `json:"short_under_placeholder,omitempty"`
 	ShowMax               bool                          `json:"show_max,omitempty"`
 	VerbosityOptions      []remoteOptionViewState       `json:"verbosity_options,omitempty"`
 	ShowKeepAlive         bool                          `json:"show_keep_alive,omitempty"`
 	ShowUsage             bool                          `json:"show_usage,omitempty"`
-	Advanced              bool                          `json:"advanced"`
 	APIOptions            []remoteOptionViewState       `json:"api_options,omitempty"`
-	Responses             bool                          `json:"responses"`
 	ServiceDefault        string                        `json:"service_default"`
 	ShowTemperature       bool                          `json:"show_temperature,omitempty"`
 	ShowTopP              bool                          `json:"show_top_p,omitempty"`
@@ -104,10 +95,7 @@ type remoteGenerationViewState struct {
 	ShowPenalties         bool                          `json:"show_penalties,omitempty"`
 	ShowSeed              bool                          `json:"show_seed,omitempty"`
 	ResponseFormatOptions []remoteOptionViewState       `json:"response_format_options,omitempty"`
-	ShowSchema            bool                          `json:"show_schema,omitempty"`
-	ShowLogprobs          bool                          `json:"show_logprobs,omitempty"`
 	LogprobsCap           bool                          `json:"logprobs_cap,omitempty"`
-	ShowStop              bool                          `json:"show_stop,omitempty"`
 	StopCap               bool                          `json:"stop_cap,omitempty"`
 	ShowExtraBody         bool                          `json:"show_extra_body,omitempty"`
 	ExtraBodyExample      string                        `json:"extra_body_example,omitempty"`
@@ -164,9 +152,9 @@ func buildRemoteDialogViewState(translator *i18n.Translator, input remoteDialogS
 		What:      translator.T("Recognised and selected text is sent to %s.", sv.name),
 		HasKeyURL: sv.keyURL != "", ShowAppID: sv.appID,
 		ModelOptions: remoteModelOptions(sv.models, d.served, d.model, otherModelFor(translator)), OtherModel: otherModelFor(translator),
-		CustomModel: d.model == otherModelFor(translator), RecognitionPrompt: d.kind == local.ASR,
-		Error: d.err, ErrorMore: d.errMore, CanTest: !d.test.running && !d.saving && (!sv.signIn || input.ChatEmail != ""),
-		Test: buildRemoteTestViewState(translator, d.test, true), ShowRemove: d.exists, Saving: d.saving, Unsaved: input.Unsaved,
+		RecognitionPrompt: d.kind == local.ASR,
+		Error:             d.err, ErrorMore: d.errMore, CanTest: !d.test.running && !d.saving && (!sv.signIn || input.ChatEmail != ""),
+		Test: buildRemoteTestViewState(translator, d.test), ShowRemove: d.exists, Saving: d.saving, Unsaved: input.Unsaved,
 		Form: remoteDialogFormStateOf(d),
 	}
 	switch {
@@ -194,7 +182,7 @@ func buildRemoteDialogViewState(translator *i18n.Translator, input remoteDialogS
 		if input.Mask != "" && !d.removeKey {
 			placeholder = translator.T("Saved: %s · paste a new one to replace it", input.Mask)
 		}
-		state.Key = &remoteKeyViewState{Info: keyInfo, Placeholder: placeholder, HasSaved: input.Mask != "" && !d.removeKey, HasTyped: d.key != ""}
+		state.Key = &remoteKeyViewState{Info: keyInfo, Placeholder: placeholder, HasSaved: input.Mask != "" && !d.removeKey}
 		_, inner := secrets.Clean(d.key)
 		switch {
 		case d.removeKey:
@@ -260,13 +248,13 @@ func buildRemoteGenerationViewState(translator *i18n.Translator, form genForm, c
 		EffortOptions:         remoteOptions(caps.Efforts, func(value string) string { return effortTitleFor(translator, value) }),
 		ShortUnderPlaceholder: strconv.Itoa(shortUnderDefault), ShowMax: caps.MaxOutputTokens,
 		VerbosityOptions: remoteOptions(verbosities, func(value string) string { return verbosityTitleFor(translator, value) }),
-		ShowKeepAlive:    caps.KeepAlive, ShowUsage: caps.IncludeUsage, Advanced: form.advanced,
+		ShowKeepAlive:    caps.KeepAlive, ShowUsage: caps.IncludeUsage,
 		APIOptions: remoteOptions(apiFormats, apiFormatTitle), ServiceDefault: translator.T("Service default"),
 		ShowTemperature: caps.Temperature, ShowTopP: caps.TopP, ShowTopK: caps.TopK, ShowMinP: caps.MinP,
 		FrequencyOnly: caps.FrequencyOnly, ShowPenalties: caps.Penalties, ShowSeed: caps.Seed,
 		ShowExtraBody: caps.ExtraBody, Form: remoteGenerationFormStateOf(form),
 	}
-	state.Thinking = valueOf(form.think, caps.ThinkModes, thinkTitle)
+	state.Thinking = valueOf(form.think, caps.ThinkModes, func(value string) string { return thinkTitleFor(translator, value) })
 	state.EffortSelection = effortTitleFor(translator, form.effort)
 	if len(caps.Efforts) > 0 {
 		effort := form.effort
@@ -275,29 +263,21 @@ func buildRemoteGenerationViewState(translator *i18n.Translator, form genForm, c
 		}
 		state.EffortSelection = effortTitleFor(translator, effort)
 	}
-	state.ShowEffortInput = state.Thinking == llm.ThinkEffort && len(caps.Efforts) == 0
-	state.ShowEffortSelect = state.Thinking == llm.ThinkEffort && len(caps.Efforts) > 0
-	state.ShowBudget = state.Thinking == llm.ThinkBudget
-	state.ShowShort = thinks(state.Thinking)
 	if !caps.Verbosity {
 		state.VerbosityOptions = nil
 	}
 	if !caps.APIFormat {
 		state.APIOptions = nil
 	}
-	state.Responses = valueOf(form.api, apiFormats, apiFormatTitle) == llm.APIResponses
 	formats := responseFormats[:2]
 	if caps.JSONSchema {
 		formats = responseFormats
 	}
 	if caps.ResponseFormat {
 		state.ResponseFormatOptions = remoteOptions(formats, func(value string) string { return formatTitleFor(translator, value) })
-		state.ShowSchema = caps.JSONSchema && valueOf(form.format, formats, formatTitle) == llm.ResponseJSONSchema
 	}
 	state.LogprobsCap = caps.Logprobs
 	state.StopCap = caps.Stop
-	state.ShowLogprobs = caps.Logprobs && !state.Responses
-	state.ShowStop = caps.Stop && !state.Responses
 	if caps.ExtraBody {
 		state.ExtraBodyExample = `{"user": "me"}`
 		if caps.KeepAlive {

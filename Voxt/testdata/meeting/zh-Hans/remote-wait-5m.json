@@ -65,8 +65,9 @@
               "test": {
                 "state": "success",
                 "text": "412 毫秒",
+                "long_text": "连接正常 · 412 毫秒",
                 "tooltip": "412 毫秒",
-                "long": false
+                "long_tooltip": "连接正常 · 412 毫秒"
               }
             }
           ]

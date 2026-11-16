@@ -208,8 +208,8 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 		if dialog.Error != "" {
 			return dialog.Error
 		}
-		if dialog.Test.Text != "" {
-			return dialog.Test.Text
+		if dialog.Test.LongText != "" {
+			return dialog.Test.LongText
 		}
 		if dialog.Key != nil && dialog.Key.Warning != "" {
 			return dialog.Key.Warning

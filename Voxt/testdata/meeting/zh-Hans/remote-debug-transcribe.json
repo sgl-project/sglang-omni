@@ -11,8 +11,6 @@
       "翻译",
       "改写"
     ],
-    "selected_model": "Fixture service · fixture-model",
-    "selected_preset": "转录",
     "saved_prompt": "Fixture saved prompt",
     "prompt_label": "系统提示词",
     "input_label": "识别原文",

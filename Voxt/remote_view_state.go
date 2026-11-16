@@ -97,11 +97,12 @@ type remoteProviderCardState struct {
 }
 
 type remoteTestViewState struct {
-	State   string `json:"state"`
-	Code    string `json:"code,omitempty"`
-	Text    string `json:"text,omitempty"`
-	Tooltip string `json:"tooltip,omitempty"`
-	Long    bool   `json:"long"`
+	State       string `json:"state"`
+	Code        string `json:"code,omitempty"`
+	Text        string `json:"text,omitempty"`
+	LongText    string `json:"long_text,omitempty"`
+	Tooltip     string `json:"tooltip,omitempty"`
+	LongTooltip string `json:"long_tooltip,omitempty"`
 }
 
 type remoteCardsStateInput struct {
@@ -251,49 +252,44 @@ func buildRemoteProviderCardState(translator *i18n.Translator, input remoteServi
 		card.KeyText, card.KeyStatus = translator.T("No key"), "muted"
 	}
 	if input.Configured && input.Missing == "" && input.HasTest {
-		test := buildRemoteTestViewState(translator, input.Test, false)
+		test := buildRemoteTestViewState(translator, input.Test)
 		card.Test = &test
 		card.TestDisabled = input.Test.running
 	}
 	return card
 }
 
-func buildRemoteTestViewState(translator *i18n.Translator, test providerTest, long bool) remoteTestViewState {
-	state := remoteTestViewState{State: "empty", Long: long}
+func buildRemoteTestViewState(translator *i18n.Translator, test providerTest) remoteTestViewState {
+	state := remoteTestViewState{State: "empty"}
 	switch {
 	case test.running:
 		state.State = "running"
-		if long {
-			state.Text = translator.T("Testing…")
-		}
+		state.LongText = translator.T("Testing…")
 	case test.res.At.IsZero():
 	case test.res.Err == nil:
 		state.State = "success"
 		state.Text = translator.T("%d ms", test.res.Latency.Milliseconds())
-		if long {
-			state.Text = translator.T("Connection OK · %d ms", test.res.Latency.Milliseconds())
-		}
-		state.Tooltip = state.Text
+		state.LongText = translator.T("Connection OK · %d ms", test.res.Latency.Milliseconds())
+		state.Tooltip, state.LongTooltip = state.Text, state.LongText
 	default:
 		state.State = "failure"
 		state.Code = llm.Code(test.res.Err)
 		if state.Code == "" {
 			state.Code = string(asr.KindOf(test.res.Err))
 		}
-		state.Text, _ = uitext.ModelErrorTextFor(translator, test.res.Err)
+		state.LongText, _ = uitext.ModelErrorTextFor(translator, test.res.Err)
 		if models := test.res.Models; len(models) > 0 {
 			if len(models) > 8 {
 				models = append(models[:8:8], "…")
 			}
-			state.Text = translator.T("The server does not have this model. It has: %s", strings.Join(models, ", "))
+			state.LongText = translator.T("The server does not have this model. It has: %s", strings.Join(models, ", "))
 		}
-		if long && llm.Code(test.res.Err) == llm.CodeNoKey {
-			state.Text = translator.T("Paste the service's API key above, then test again.")
+		if llm.Code(test.res.Err) == llm.CodeNoKey {
+			state.LongText = translator.T("Paste the service's API key above, then test again.")
 		}
-		state.Tooltip = state.Text + "\n\n" + test.detail
-		if !long {
-			state.Text = translator.T("Failed")
-		}
+		state.Text = translator.T("Failed")
+		state.Tooltip = state.LongText + "\n\n" + test.detail
+		state.LongTooltip = state.Tooltip
 	}
 	return state
 }
@@ -308,10 +304,6 @@ func whereTextFor(translator *i18n.Translator, sv service, p settings.Provider) 
 		return translator.T("On this Mac")
 	}
 	return translator.T("Remote")
-}
-
-func whereText(sv service, p settings.Provider) string {
-	return whereTextFor(i18n.CurrentTranslator(), sv, p)
 }
 
 // onThisMac says whether a service's address is a server on this Mac.

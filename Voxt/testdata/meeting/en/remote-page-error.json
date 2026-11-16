@@ -66,8 +66,9 @@
                 "state": "failure",
                 "code": "llm.network",
                 "text": "Failed",
+                "long_text": "The language model stopped or did not answer. Try again in a moment.",
                 "tooltip": "The language model stopped or did not answer. Try again in a moment.\n\nredacted fixture detail",
-                "long": false
+                "long_tooltip": "The language model stopped or did not answer. Try again in a moment.\n\nredacted fixture detail"
               }
             }
           ]

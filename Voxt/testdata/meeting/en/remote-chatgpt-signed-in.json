@@ -23,8 +23,7 @@
     "other_model": "Other model…",
     "can_test": true,
     "test": {
-      "state": "empty",
-      "long": true
+      "state": "empty"
     },
     "show_remove": true,
     "saving": false,

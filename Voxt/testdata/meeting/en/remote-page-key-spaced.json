@@ -65,8 +65,9 @@
               "test": {
                 "state": "success",
                 "text": "412 ms",
+                "long_text": "Connection OK · 412 ms",
                 "tooltip": "412 ms",
-                "long": false
+                "long_tooltip": "Connection OK · 412 ms"
               }
             }
           ]

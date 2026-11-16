@@ -11,8 +11,6 @@
       "Translate",
       "Rewrite"
     ],
-    "selected_model": "Fixture service · fixture-model",
-    "selected_preset": "Translate",
     "saved_prompt": "Fixture saved prompt",
     "prompt_label": "System prompt",
     "input_label": "Text to translate",

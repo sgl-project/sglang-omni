@@ -81,7 +81,7 @@ func remoteProviderDialogView(c *ui.Context, state *remoteDialogViewState, actio
 			actions.testDialog()
 		}
 		ui.Row(c.Key("remote-dlg-status")).Gap(px(t, sp1)).AlignItems(ui.Center).Grow(1).Shrink(1).Basis(0).MinWidth(0).Children(func() {
-			remoteTestStatus(c, state.Test)
+			remoteTestStatus(c, state.Test, true)
 		})
 		if state.ShowRemove && ghostButton(c.Key("remote-dlg-remove"), i18n.T("Remove")).Label(i18n.T("Remove %s", state.Name)).Disabled(state.Saving).Shrink(0).Clicked() {
 			actions.removeProvider()

@@ -95,7 +95,7 @@ func remoteProviderCard(c *ui.Context, state remoteProviderCardState, actions re
 			ui.Text(c, state.KeyText).FontSize(px(t, fsCaption)).TextColor(remoteKeyColor(c, state.KeyStatus)).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
 			if state.Missing == "" {
 				if state.Test != nil {
-					remoteTestStatus(c, *state.Test)
+					remoteTestStatus(c, *state.Test, false)
 				}
 				if ghostButton(c.Key("remote-test-"+state.Account), i18n.T("Test")).Label(i18n.T("Test %s", state.Name)).Disabled(state.TestDisabled).Clicked() {
 					actions.testRemoteProvider(state.Kind, state.ID)
@@ -151,24 +151,28 @@ func remoteProviderCard(c *ui.Context, state remoteProviderCardState, actions re
 }
 
 // remoteTestStatus renders a predetermined connection-test state and its
-// redacted detail. Long is the dialog form, short the card form.
-func remoteTestStatus(c *ui.Context, state remoteTestViewState) {
+// redacted detail. The view chooses the dialog's long or the card's short form.
+func remoteTestStatus(c *ui.Context, state remoteTestViewState, long bool) {
 	t := c.Theme()
 	colors := tok(t)
+	text, tooltip := state.Text, state.Tooltip
+	if long {
+		text, tooltip = state.LongText, state.LongTooltip
+	}
 	switch state.State {
 	case "running":
 		ui.Spinner(c).Size(px(t, 14), px(t, 14)).Shrink(0)
-		if state.Long {
-			caption(c, state.Text).SingleLine().Ellipsis("…").MinWidth(0)
+		if long {
+			caption(c, text).SingleLine().Ellipsis("…").MinWidth(0)
 		}
 	case "success":
-		statusMark(c, icons.CheckCircle, colors.Success, state.Text).Shrink(1).Tooltip(state.Tooltip)
+		statusMark(c, icons.CheckCircle, colors.Success, text).Shrink(1).Tooltip(tooltip)
 	case "failure":
-		if !state.Long {
-			statusMark(c, icons.CloseCircle, colors.Danger, state.Text).Shrink(0).Tooltip(state.Tooltip)
+		if !long {
+			statusMark(c, icons.CloseCircle, colors.Danger, text).Shrink(0).Tooltip(tooltip)
 			return
 		}
-		statusMark(c, icons.CloseCircle, colors.Danger, state.Text).Shrink(1).Tooltip(state.Tooltip)
-		infoTip(c, state.Tooltip).Shrink(0)
+		statusMark(c, icons.CloseCircle, colors.Danger, text).Shrink(1).Tooltip(tooltip)
+		infoTip(c, tooltip).Shrink(0)
 	}
 }

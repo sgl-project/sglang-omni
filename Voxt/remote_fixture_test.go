@@ -93,6 +93,18 @@ func TestRemoteFixtureCoverage(t *testing.T) {
 	}
 }
 
+func TestRemoteGenerationUsesExplicitLocale(t *testing.T) {
+	previous := i18n.Locale()
+	t.Cleanup(func() { i18n.SetLocale(previous) })
+	translator := i18n.NewTranslator("zh-Hans")
+	form := genForm{think: thinkTitleFor(translator, llm.ThinkOn), format: formatTitleFor(translator, llm.ResponseJSONSchema)}
+	i18n.SetLocale("en")
+	state := buildRemoteGenerationViewState(translator, form, remoteFixtureCaps())
+	if state.Thinking != llm.ThinkOn {
+		t.Fatalf("thinking %q with an explicit Chinese translator and English global locale", state.Thinking)
+	}
+}
+
 func remoteStringSet(values []string) map[string]bool {
 	set := make(map[string]bool, len(values))
 	for _, value := range values {

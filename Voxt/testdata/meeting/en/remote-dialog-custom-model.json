@@ -13,8 +13,7 @@
     "key": {
       "info": "Optional for a server on this Mac. Saved in this Mac's Keychain.",
       "placeholder": "Saved: •••• · paste a new one to replace it",
-      "has_saved": true,
-      "has_typed": false
+      "has_saved": true
     },
     "endpoint": {
       "info": "The API root of any OpenAI-compatible server, ending in /v1. Only https://, or http:// to this Mac.",
@@ -26,7 +25,6 @@
       "Other model…"
     ],
     "other_model": "Other model…",
-    "custom_model": true,
     "generation": {
       "think_options": [
         {
@@ -82,7 +80,6 @@
         }
       ],
       "effort_selection": "None",
-      "show_short": true,
       "short_under_placeholder": "200",
       "show_max": true,
       "verbosity_options": [
@@ -105,7 +102,6 @@
       ],
       "show_keep_alive": true,
       "show_usage": true,
-      "advanced": true,
       "api_options": [
         {
           "title": "Chat Completions",
@@ -116,7 +112,6 @@
           "value": "responses"
         }
       ],
-      "responses": false,
       "service_default": "Service default",
       "show_temperature": true,
       "show_top_p": true,
@@ -138,9 +133,7 @@
           "value": "jsonSchema"
         }
       ],
-      "show_logprobs": true,
       "logprobs_cap": true,
-      "show_stop": true,
       "stop_cap": true,
       "show_extra_body": true,
       "extra_body_example": "{\"options\": {\"num_ctx\": 8192}}",
@@ -155,8 +148,7 @@
     },
     "can_test": true,
     "test": {
-      "state": "empty",
-      "long": true
+      "state": "empty"
     },
     "show_remove": true,
     "saving": false,
