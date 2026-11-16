@@ -4,7 +4,7 @@ FireRedASR2-LLM uses a Kaldi fbank/CMVN frontend, Conformer encoder, frame adapt
 
 ## Installation
 
-Follow the [installation guide](../get_started/installation.md), or the [Ascend guide](../get_started/installation_npu.md), then install the frontend:
+Follow the [installation guide](../get_started/installation.md), or the [Ascend guide](../other_platforms/installation_npu.md), then install the frontend:
 
 ```bash
 pip install kaldi-native-fbank

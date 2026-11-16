@@ -155,26 +155,6 @@ def cleanup_prepared_moss_tts_local_request(request_id: str) -> None:
     _QUEUE.abort(str(request_id))
 
 
-def pop_prepared_moss_tts_local_request(
-    payload: StagePayload,
-) -> MossTTSLocalPreparedRequest | None:
-    data = payload.data if isinstance(payload.data, dict) else {}
-    marker = data.get(_MOSS_TTS_LOCAL_PREPARED_MARKER)
-    if marker is None:
-        return None
-    else:
-        pass
-    prepared = _QUEUE.pop(str(marker))
-    if prepared is None:
-        raise RuntimeError(
-            "MOSS-TTS Local preprocessing state is missing for prepared payload "
-            f"{marker!r}; the AR scheduler must not rebuild it"
-        )
-    else:
-        pass
-    return prepared
-
-
 def build_moss_tts_local_state(payload: StagePayload) -> MossTTSLocalState:
     inputs = payload.request.inputs or {}
     params = payload.request.params or {}
@@ -217,12 +197,6 @@ def build_generation_kwargs(
     *,
     tts_params: Mapping[str, object],
 ) -> dict[str, int | float]:
-    explicit_generation_params = tts_params.get("explicit_generation_params")
-    if isinstance(explicit_generation_params, (list, tuple, set)):
-        explicit_fields = {str(field) for field in explicit_generation_params}
-    else:
-        explicit_fields = set()
-
     raw_max_new_tokens = params.get("max_new_tokens")
     if raw_max_new_tokens is None:
         max_new_tokens = MOSS_TTS_DEFAULT_MAX_NEW_TOKENS
@@ -255,25 +229,22 @@ def build_generation_kwargs(
         "audio_repetition_penalty": 1.0,
     }
 
-    if "temperature" in explicit_fields and params.get("temperature") is not None:
+    if params.get("temperature") is not None:
         generation_kwargs["text_temperature"] = float(params["temperature"])
         generation_kwargs["audio_temperature"] = float(params["temperature"])
     else:
         pass
-    if "top_p" in explicit_fields and params.get("top_p") is not None:
+    if params.get("top_p") is not None:
         generation_kwargs["text_top_p"] = float(params["top_p"])
         generation_kwargs["audio_top_p"] = float(params["top_p"])
     else:
         pass
-    if "top_k" in explicit_fields and params.get("top_k") is not None:
+    if params.get("top_k") is not None:
         generation_kwargs["text_top_k"] = int(params["top_k"])
         generation_kwargs["audio_top_k"] = int(params["top_k"])
     else:
         pass
-    if (
-        "repetition_penalty" in explicit_fields
-        and params.get("repetition_penalty") is not None
-    ):
+    if params.get("repetition_penalty") is not None:
         generation_kwargs["audio_repetition_penalty"] = float(
             params["repetition_penalty"]
         )
@@ -381,14 +352,12 @@ def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
     except BaseException:
         _QUEUE.fail_inflight(rid)
         raise
-    # note (Yue Yin): publish fails closed; when it drops the handoff (aborted
-    # mid-flight or context reset) skip the marker, so the AR stage never pops a
-    # marker whose prepared state no longer exists.
     published = _QUEUE.publish(rid, prepared)
-
     data = prepared.state.to_dict()
-    if published:
-        data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = payload.request_id
+    prepared = _QUEUE.pop(rid) if published else None
+    if prepared is not None:
+        # note (Zhang Yiyang): A dict exposes prepared tensors to the stage relay.
+        data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = vars(prepared)
     else:
         pass
     return StagePayload(
@@ -429,14 +398,16 @@ def build_sglang_moss_tts_local_request(
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
-    prepared = pop_prepared_moss_tts_local_request(payload)
-    if prepared is None:
+    payload_data = payload.data if isinstance(payload.data, dict) else {}
+    prepared_fields = payload_data.pop(_MOSS_TTS_LOCAL_PREPARED_MARKER, None)
+    if prepared_fields is None:
         raise RuntimeError(
             "MOSS-TTS Local AR request builder requires a payload prepared by "
             "preprocess_moss_tts_local_payload"
         )
     else:
         pass
+    prepared = MossTTSLocalPreparedRequest(**prepared_fields)
 
     cfg = model.config
     gen_kwargs = prepared.gen_kwargs

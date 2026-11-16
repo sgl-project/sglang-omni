@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 from transformers import AutoConfig, AutoTokenizer
@@ -17,6 +17,7 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     load_moss_audio_vocoder,
     resolve_moss_audio_dtype,
 )
+from sglang_omni.models.moss_tts.config import resolve_vocoder_cuda_graph
 from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
 from sglang_omni.models.moss_tts.hf_loading import (
     MossDelayReferences,
@@ -223,6 +224,9 @@ def create_sglang_tts_engine_executor(
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
+    enable_async_decode: bool = True,
+    async_decode_min_batch_size: int = 2,
+    async_decode_mode: Literal["all", "nonstream"] | None = None,
 ) -> OmniScheduler[MossTTSSGLangRequestData]:
     overrides = dict(server_args_overrides or {})
     # Note (Jiaxin Deng): a declared stage fraction only reserves the card on paper, so
@@ -240,7 +244,12 @@ def create_sglang_tts_engine_executor(
         )
     else:
         pass
-    return MossTtsEngineBuilder(total_gpu_memory_fraction=engine_fraction).build(
+    return MossTtsEngineBuilder(
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
+        async_decode_mode=async_decode_mode,
+        total_gpu_memory_fraction=engine_fraction,
+    ).build(
         model_path,
         device=device,
         gpu_id=gpu_id,
@@ -261,11 +270,12 @@ def create_vocoder_executor(
     codec_model_path: str | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
-    stream_stride: int = 8,
-    stream_followup_stride: int = 8,
-    stream_overlap_tokens: int = 8,
-    stream_holdback_tokens: int = 1,
-    initial_chunk_frames: int = 0,
+    stream_chunk_frames: int = 16,
+    initial_chunk_frames: int = 4,
+    coalesce_floor_frames: int = 4,
+    stream_slots: int = 32,
+    vocoder_cuda_graph: bool | None = None,
+    segment_graph_max_frames: int = 0,
     compute_dtype: str | torch.dtype | None = "bfloat16",
     attention_backend: str = "auto",
 ) -> MossStreamingVocoderScheduler:
@@ -296,13 +306,20 @@ def create_vocoder_executor(
         compute_dtype=resolved_compute_dtype,
         max_segment_batch_size=max_batch_size,
     )
-    return MossStreamingVocoderScheduler(
+    use_vocoder_cuda_graph = resolve_vocoder_cuda_graph(vocoder_cuda_graph)
+    scheduler = MossStreamingVocoderScheduler(
         vocoder,
-        stream_stride=stream_stride,
-        stream_followup_stride=stream_followup_stride,
-        stream_overlap_tokens=stream_overlap_tokens,
-        stream_holdback_tokens=stream_holdback_tokens,
+        stream_chunk_frames=stream_chunk_frames,
         initial_chunk_frames=initial_chunk_frames,
+        coalesce_floor_frames=coalesce_floor_frames,
+        stream_slots=stream_slots,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
+        vocoder_cuda_graph=use_vocoder_cuda_graph,
     )
+    scheduler.warmup_now()
+    if use_vocoder_cuda_graph:
+        vocoder.capture_segment_graphs(segment_graph_max_frames)
+    else:
+        pass
+    return scheduler

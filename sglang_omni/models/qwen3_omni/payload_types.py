@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypedDict
 
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
+
 if TYPE_CHECKING:
     import torch
 
@@ -14,6 +16,14 @@ if TYPE_CHECKING:
     )
 else:
     pass
+
+
+# A talker result whose reply was too short to speak; code2wav ends it without audio.
+NO_SPEECH = "no_speech"
+# The dialog's unit of one user turn; the model route answers it with one whole reply.
+UNIT_FORMAT = "qwen.unit"
+# The session's input audio, 16 kHz PCM16.
+INPUT_BYTES_PER_SECOND = 32000
 
 
 class PromptInputs(TypedDict):
@@ -33,6 +43,7 @@ class ThinkerOutput(TypedDict, total=False):
     extra_model_outputs: dict[str, torch.Tensor | list[torch.Tensor] | list[int]]
     finish_reason: str
     weight_version: str
+    spec_tokens_details: SpecTokensDetailsDict
     output_token_logprobs: list[list[float | int]]
 
 

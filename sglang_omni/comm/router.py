@@ -438,7 +438,8 @@ def tensor_devices(obj: object, seen: set[int] | None = None) -> set[str]:
         pass
     seen.add(obj_id)
     if isinstance(obj, torch.Tensor):
-        if obj.device.type in ("cpu", "musa"):
+        if obj.device.type in ("cpu", "musa", "npu"):
+            # note (guomangmang): NPU reports is_cuda=True; match the type first.
             return {obj.device.type}
         else:
             pass

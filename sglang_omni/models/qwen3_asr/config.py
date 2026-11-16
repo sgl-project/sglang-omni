@@ -20,6 +20,7 @@ from sglang_omni.config import (
 )
 from sglang_omni.models.qwen3_asr.audio_lengths import QWEN3_ASR_MAX_INPUT_SECONDS
 from sglang_omni.models.qwen3_asr.streaming import Qwen3ASRStreamingStrategy
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.qwen3_asr"
 
@@ -89,7 +90,6 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
                 prefill_coalesce_wait_ms=40,
                 prefill_coalesce_when_idle=True,
                 prefill_coalesce_requires_pending_builds=True,
-                prefill_coalesce_after_builds_during_decode=True,
             ),
             engine=EngineArgs(
                 max_running_requests=64,
@@ -101,14 +101,24 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
         )
     ]
 
+    def resolved_env_defaults(self) -> dict[str, str]:
+        # Set before worker startup: torch_npu caches its Host queue settings.
+        if current_platform.is_npu():
+            return {"PER_STREAM_QUEUE": "1", **self.env_defaults}
+        else:
+            return dict(self.env_defaults)
+
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        env_defaults = super().resolved_stage_env_defaults(stage_name)
+        env_defaults.setdefault("SGLANG_ENABLE_METADATA_GLUE_GRAPH", "1")
+        # note (ratish): max-autotune races each kernel's configs at boot; the post-attention norm times 5 to 15 us per boot whatever the config, so a slower config can win and serve until restart.
+        env_defaults.setdefault("SGLANG_TORCH_COMPILE_MODE", "default")
+        return env_defaults
+
     @property
     def resolved_audio_chunking(self) -> ResolvedAudioChunking:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        from sglang_omni.platforms import current_platform
-
         policy = super().resolved_audio_chunking
-        if not current_platform.is_mps() or use_mlx():
+        if not current_platform.is_mps():
             return policy
         else:
             pass
@@ -125,7 +135,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
         # Note (yexiaodong): Torch MPS currently uses one clip shape for the
         # encoder path. Keep its native and whole-upload limits within the
         # qualified cap, while retaining the independently configurable chunk
-        # size for non-streaming scheduling. MLX retains the model-native cap.
+        # size for non-streaming scheduling.
         max_total_audio_s = policy.max_total_audio_s
         if (
             max_total_audio_s is None

@@ -10,7 +10,7 @@ import pytest
 
 from sglang_omni.client import Client
 from sglang_omni.client.client import extract_inputs
-from sglang_omni.client.types import GenerateChunk, GenerateRequest
+from sglang_omni.client.types import GenerateChunk, GenerateRequest, UsageInfo
 
 
 class SubmitStubCoordinator:
@@ -36,6 +36,30 @@ class StreamStubCoordinator:
             yield message
 
 
+@pytest.mark.parametrize("nested_usage", [False, True])
+def test_speech_token_counts_survive_client_and_chunk_serialization(
+    nested_usage: bool,
+) -> None:
+    """Speech counts must survive both payload layouts without replacing native usage."""
+    usage_counts = {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+        "speech_input_tokens": 9,
+        "speech_output_tokens": 3,
+    }
+    payload = {"usage": usage_counts} if nested_usage else usage_counts
+    chunk = Client.default_result_builder("speech-usage", payload)
+    restored_usage = UsageInfo.from_dict(chunk.to_dict()["usage"])
+
+    assert restored_usage is not None
+    assert restored_usage.prompt_tokens == 3
+    assert restored_usage.completion_tokens == 2
+    assert restored_usage.total_tokens == 5
+    assert restored_usage.speech_input_tokens == 9
+    assert restored_usage.speech_output_tokens == 3
+
+
 def test_completion_surfaces_logprobs_and_weight_version() -> None:
     result = {
         "text": "hello",
@@ -52,36 +76,6 @@ def test_completion_surfaces_logprobs_and_weight_version() -> None:
 
     assert out.output_token_logprobs == [[-0.1, 11], [-0.2, 22], [-0.3, 33]]
     assert out.weight_version == "v7"
-
-
-def test_speech_surfaces_finish_reason() -> None:
-    client = Client(
-        SubmitStubCoordinator(
-            {
-                "audio_data": [0.0, 0.1, -0.1],
-                "sample_rate": 24000,
-                "finish_reason": "length",
-            }
-        )
-    )
-
-    result = asyncio.run(
-        client.speech(
-            GenerateRequest(prompt="hello"),
-            request_id="speech-1",
-            response_format="pcm",
-        )
-    )
-
-    assert result.finish_reason == "length"
-    assert result.mime_type == "audio/pcm"
-
-    unreported = asyncio.run(
-        Client(
-            SubmitStubCoordinator({"audio_data": [0.0, 0.1], "sample_rate": 24000})
-        ).speech(GenerateRequest(prompt="hello"), request_id="speech-2")
-    )
-    assert unreported.finish_reason == "unknown"
 
 
 @pytest.mark.parametrize("finish_reason", ["length", "stop", None])

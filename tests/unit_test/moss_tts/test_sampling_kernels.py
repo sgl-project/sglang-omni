@@ -3,15 +3,21 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 from sglang.kernels.ops.sampling.murmur_hash import murmur_hash32
 from sglang.srt.layers.sampler import multinomial_with_seed
+from sglang.srt.utils import DynamicGradMode
+from torch._dynamo.utils import counters
 
+from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts.sampling_kernels import (
     multinomial_with_seed_and_token_ids,
     seeded_gumbel_argmax,
 )
+from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
 
 pytestmark = pytest.mark.accelerator
 
@@ -537,3 +543,29 @@ def test_tied_two_token_head_agrees_across_sampling_paths() -> None:
         assert int(fused.item()) == 0
         assert torch.equal(fused, branchless), f"branchless seed={seed}"
         assert torch.equal(fused, eager), f"eager seed={seed}"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_moss_precompile_leaves_the_eager_samples_nothing_to_compile() -> None:
+    device = torch.device("cuda")
+    vocab_sizes = [4096, 1025]
+    torch.compiler.reset()
+    MossTTSDelaySGLangModel.precompile_kernels_after_loading(
+        SimpleNamespace(
+            device=device, config=SimpleNamespace(vocab_size_list=vocab_sizes)
+        )
+    )
+    compiled = counters["stats"]["unique_graphs"]
+
+    with DynamicGradMode():
+        for vocab in vocab_sizes:
+            for rows in (1, 3, 16):
+                MossTTSModelRunner.sample_tokens(
+                    torch.randn(rows, vocab, device=device),
+                    temperature=torch.full((rows,), 1.5, device=device),
+                    top_p=torch.full((rows,), 0.8, device=device),
+                    top_k=torch.full((rows,), 25, dtype=torch.long, device=device),
+                    seeds=torch.arange(rows, device=device),
+                    positions=torch.arange(rows, device=device),
+                )
+    assert counters["stats"]["unique_graphs"] == compiled

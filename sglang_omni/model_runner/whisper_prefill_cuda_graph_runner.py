@@ -6,12 +6,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, TypedDict
 
 import torch
-from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
+from sglang.srt.layers.attention.base_attn_backend import (
+    AttentionBackend,
+    SharedReadEnds,
+)
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 from typing_extensions import Unpack
+
+from sglang_omni.models.whisper_asr.dense_prefill import WhisperDensePrefillRunner
 
 if TYPE_CHECKING:
     from sglang.srt.model_executor.model_runner import ModelRunner
@@ -29,6 +35,7 @@ class WhisperPrefillCudaGraphRunner(PrefillCudaGraphRunner):
     """Preserve encoder-decoder metadata omitted by SGLang's generic runner."""
 
     def __init__(self, model_runner: "ModelRunner") -> None:
+        self.dense_prefill_runner: WhisperDensePrefillRunner | None = None
         decoder = model_runner.model.model.decoder
         self_attention_layers = [layer.self_attn.attn for layer in decoder.layers]
         cross_attention_layers = [layer.encoder_attn.attn for layer in decoder.layers]
@@ -51,16 +58,34 @@ class WhisperPrefillCudaGraphRunner(PrefillCudaGraphRunner):
         forward_batch.encoder_out_cache_loc = None
         return forward_batch, attn_backend
 
+    def execute(
+        self,
+        forward_batch: ForwardBatch,
+        **kwargs: Unpack[PrefillReplayKwargs],
+    ) -> LogitsProcessorOutput:
+        if self.dense_prefill_runner is None or any(
+            value is not None and value is not False for value in kwargs.values()
+        ):
+            return super().execute(forward_batch, **kwargs)
+        else:
+            prompt_length = self.dense_prefill_runner.prompt_length_of(forward_batch)
+            if prompt_length is None:
+                return super().execute(forward_batch, **kwargs)
+            else:
+                return self.dense_prefill_runner.run(forward_batch, prompt_length)
+
     def load_batch(
         self,
         forward_batch: ForwardBatch,
         **kwargs: Unpack[PrefillReplayKwargs],
-    ) -> ForwardBatch:
-        static_forward_batch = super().load_batch(forward_batch, **kwargs)
+    ) -> tuple[ForwardBatch, SharedReadEnds]:
+        static_forward_batch, shared_read_ends = super().load_batch(
+            forward_batch, **kwargs
+        )
         static_forward_batch.encoder_lens_cpu = forward_batch.encoder_lens_cpu
         static_forward_batch.encoder_cached = forward_batch.encoder_cached
         static_forward_batch.encoder_out_cache_loc = forward_batch.encoder_out_cache_loc
-        return static_forward_batch
+        return static_forward_batch, shared_read_ends
 
 
 __all__ = ["WhisperPrefillCudaGraphRunner"]

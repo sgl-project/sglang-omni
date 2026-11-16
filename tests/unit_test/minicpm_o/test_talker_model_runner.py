@@ -172,6 +172,43 @@ def test_device_history_matches_host_penalty_and_min_new_tokens() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("masks_chunk_boundary_eos", "masked_steps"),
+    [(True, [25, 29, 50]), (False, [])],
+    ids=["several-chunks", "one-chunk"],
+)
+def test_a_request_of_several_chunks_stops_only_at_an_eos_off_the_chunk_boundaries(
+    masks_chunk_boundary_eos: bool, masked_steps: list[int]
+) -> None:
+    """A request that speaks several chunks of owed text ended at the codec EOS the talker samples at its first chunk boundary; it must still stop at an EOS between boundaries."""
+    runner = MiniCPMOTalkerModelRunner.__new__(MiniCPMOTalkerModelRunner)
+    runner.model = SimpleNamespace(codec_eos_id=CODEC_EOS_ID)
+    steps = [0, 24, 25, 29, 30, 50]
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(output_ids=[0] * step),
+                talker_model_inputs={
+                    "rep_penalty": 1.0,
+                    "masks_chunk_boundary_eos": masks_chunk_boundary_eos,
+                },
+            )
+        )
+        for step in steps
+    ]
+    logits = torch.zeros(len(steps), VOCAB_SIZE)
+
+    runner.process_sampling_logits(
+        LogitsProcessorOutput(next_token_logits=logits, hidden_states=None), requests
+    )
+
+    assert [
+        step
+        for step, row_logits in zip(steps, logits, strict=True)
+        if row_logits[CODEC_EOS_ID] == float("-inf")
+    ] == masked_steps
+
+
 def test_a_failed_sampling_graph_capture_falls_back_to_eager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -198,6 +235,36 @@ def test_a_failed_sampling_graph_capture_falls_back_to_eager(
     )
 
     assert runner.slot_state is not None and runner.sample_graphs is None
+
+
+def test_npu_sampling_skips_capture_with_decode_graphs_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = build_device_sampling_runner(
+        SimpleNamespace(
+            req_to_token_pool=SimpleNamespace(req_to_token=torch.zeros(SLOT_COUNT, 1)),
+            decode_cuda_graph_runner=None,
+            sampler=None,
+        ),
+        torch.device("cpu"),
+    )
+    runner.device = SimpleNamespace(type="npu")
+    runner.tp_worker.model_runner.decode_cuda_graph_runner = SimpleNamespace(
+        capture_bs=[1, 2]
+    )
+    capture = Mock()
+    monkeypatch.setattr(talker_model_runner, "TalkerSampleGraphs", capture)
+    monkeypatch.setattr(
+        talker_model_runner.current_platform,
+        "get_device_graph_backend",
+        lambda device: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        talker_model_runner, "current_sglang_sampling_backend", lambda: "pytorch"
+    )
+
+    assert runner.capture_sample_graphs() is None
+    capture.assert_not_called()
 
 
 def test_reset_keeps_the_seeds_of_deterministic_inference() -> None:

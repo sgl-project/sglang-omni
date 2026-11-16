@@ -10,9 +10,9 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
+#include "common/audio.h"
 #include "nlohmann/json.hpp"
-#include "silero_vad.h"
+#include "silero_vad/silero_vad.h"
 
 namespace {
 
@@ -57,7 +57,7 @@ int main(int argc, char **argv) {
     std::ifstream stream(file, std::ios::binary);
     std::ostringstream bytes;
     bytes << stream.rdbuf();
-    const std::vector<float> samples = qwen3_asr::DecodeWav(bytes.str());
+    const std::vector<float> samples = omni_common::DecodeWav(bytes.str());
     silero_vad::StreamState state;
     std::vector<float> streamed;
     for (size_t offset = 0;

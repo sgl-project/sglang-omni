@@ -1,0 +1,6 @@
+{"@":"note","text":"Messages shaped after Model Studio, Fun-ASR-Realtime server events (help.aliyun.com/zh/model-studio/fun-asr-server-events: task-started, result-generated, task-finished, task-failed examples) and Voxt RemoteASRAliyunStreaming.swift; texts are made up."}
+{"@":"note","text":"The service drops the connection with 1011 in the middle of the task."}
+{"@":"wait","for":"start"}
+{"header":{"task_id":"<task-id>","event":"task-started","attributes":{}},"payload":{}}
+{"@":"wait","for":"audio","n":10}
+{"@":"close","code":1011,"reason":"Internal server error"}

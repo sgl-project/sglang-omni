@@ -96,6 +96,7 @@ def accounting(
             )
             for sample in samples
         ),
+        "load": run.get("load"),
         "failures": [
             {
                 "sample_id": sample_id,

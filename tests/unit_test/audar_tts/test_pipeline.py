@@ -11,11 +11,15 @@ import threading
 import time
 import types
 import wave
-from typing import Any
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, NoReturn
 
 import numpy as np
 import pytest
 import torch
+from transformers import AutoFeatureExtractor, Wav2Vec2BertModel
 
 from sglang_omni.client.client import Client
 from sglang_omni.comm import stage_io
@@ -33,6 +37,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.serve.speech_errors import SpeechAPIError
@@ -251,17 +256,9 @@ def test_config_dispatch_injects_model_path_and_gpu(tmp_path: Any) -> None:
     }
 
 
-def test_request_lowering_keeps_audar_defaults_unless_explicit() -> None:
+def test_request_lowering_keeps_audar_defaults_unless_set() -> None:
     reference = {"bytes": five_second_wav(), "text": "reference transcript"}
-    implicit = make_payload(
-        inputs={"text": "target", "references": [reference]},
-        params={
-            "temperature": 0.8,
-            "top_p": 0.8,
-            "top_k": 30,
-            "repetition_penalty": 1.1,
-        },
-    )
+    implicit = make_payload(inputs={"text": "target", "references": [reference]})
     implicit_state = build_audar_state(implicit)
     assert implicit_state.generation_kwargs == {
         "max_new_tokens": 2048,
@@ -274,14 +271,7 @@ def test_request_lowering_keeps_audar_defaults_unless_explicit() -> None:
     explicit = make_payload(
         inputs={"text": "target", "references": [reference]},
         params={"temperature": 0.6, "top_k": 20, "max_new_tokens": 128},
-        tts_params={
-            "explicit_generation_params": [
-                "temperature",
-                "top_k",
-                "max_new_tokens",
-            ],
-            "seed": 17,
-        },
+        tts_params={"seed": 17},
     )
     explicit_state = build_audar_state(explicit)
     assert explicit_state.generation_kwargs == {
@@ -318,13 +308,6 @@ def test_openai_speech_request_lowers_to_audar_state() -> None:
         validate=False,
         reference_descriptors=prepared.reference_descriptors,
     )
-    assert isinstance(generation_request.metadata["tts_params"], dict)
-    assert generation_request.metadata["tts_params"]["explicit_generation_params"] == [
-        "max_new_tokens",
-        "seed",
-        "temperature",
-        "top_k",
-    ]
     payload = StagePayload(
         request_id="request",
         request=Client.build_omni_request(generation_request),
@@ -459,62 +442,6 @@ def test_reference_encoder_builds_prompt_and_caches(
     assert first.reference_audio is None
 
 
-def test_reference_encoder_singleflights_same_reference(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    codec = FakeCodec()
-    encode_started = threading.Event()
-    release_encode = threading.Event()
-    second_normalized = threading.Event()
-    normalize_lock = threading.Lock()
-    normalize_calls = 0
-    original_normalize = stages.normalize_reference
-
-    def normalize(raw_input: Any):
-        nonlocal normalize_calls
-        item = original_normalize(raw_input)
-        with normalize_lock:
-            normalize_calls += 1
-            if normalize_calls == 2:
-                second_normalized.set()
-        return item
-
-    def encode_code(waveform: torch.Tensor) -> torch.Tensor:
-        codec.encode_calls += 1
-        encode_started.set()
-        assert release_encode.wait(timeout=2)
-        return torch.tensor([[[7, 8, 9]]])
-
-    monkeypatch.setattr(stages, "normalize_reference", normalize)
-    monkeypatch.setattr(codec, "encode_code", encode_code)
-    monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
-    scheduler = stages.create_reference_encoder_executor(gpu_id=None, max_concurrency=2)
-    reference_audio: dict[str, object] = {"bytes": five_second_wav()}
-
-    def encode(request_id: str) -> AudarTTSState:
-        payload = make_payload(
-            state=AudarTTSState(
-                target_text="target",
-                reference_text="reference",
-                reference_audio=reference_audio,
-            ),
-            request_id=request_id,
-        )
-        return AudarTTSState.from_dict(scheduler.fn(payload).data)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(encode, "first")
-        assert encode_started.wait(timeout=2)
-        second = executor.submit(encode, "second")
-        assert second_normalized.wait(timeout=2)
-        release_encode.set()
-        results = [first.result(timeout=2), second.result(timeout=2)]
-
-    assert scheduler.max_concurrency == 2
-    assert codec.encode_calls == 1
-    assert results[0].prompt == results[1].prompt
-
-
 def test_reference_encoder_serializes_codec_for_different_references(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -587,10 +514,25 @@ def test_reference_hook_preserves_key_and_tensor_contract(
         model_id="codec",
         model_revision="revision",
         encoder_id="neucodec",
-        encoder_config_hash=stages.hash_bytes(b"sample_rate:16000"),
+        encoder_config_hash=stages.hash_bytes(
+            b"sample_rate:16000;w2v:facebook/w2v-bert-2.0"
+        ),
         artifact_kind="audar_reference_codes",
         input_key=stages.reference_key(item),
     )
+
+    local_hook = stages.AudarReferenceEncodeHook(
+        codec=FakeCodec(),
+        device="cpu",
+        codec_model="codec",
+        codec_revision="revision",
+        codec_w2v_model_path="/models/w2v-a",
+    )
+    local_key = local_hook.cache_key(item)
+    assert local_key.encoder_config_hash == stages.hash_bytes(
+        b"sample_rate:16000;w2v:/models/w2v-a"
+    )
+    assert local_key.encoder_config_hash != key.encoder_config_hash
 
     stored = hook.store_artifact(torch.tensor([7, 8, 9], dtype=torch.long))
     first = hook.load_artifact(stored)
@@ -603,38 +545,6 @@ def test_reference_hook_preserves_key_and_tensor_contract(
 
     monkeypatch.setattr(stages, "reference_key", lambda item: None)
     assert hook.cache_key(item) is None
-
-
-def test_reference_encoder_propagates_singleflight_failure() -> None:
-    codec = FakeCodec()
-    encode_started = threading.Event()
-    release_encode = threading.Event()
-
-    def encode_code(waveform: torch.Tensor) -> torch.Tensor:
-        codec.encode_calls += 1
-        encode_started.set()
-        assert release_encode.wait(timeout=2)
-        raise RuntimeError("codec failed")
-
-    codec.encode_code = encode_code
-    service = reference_service(codec)
-    reference_audio = {"bytes": five_second_wav()}
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        leader = executor.submit(service.get_or_encode, reference_audio)
-        assert encode_started.wait(timeout=2)
-        follower = executor.submit(service.get_or_encode, reference_audio)
-        deadline = time.monotonic() + 2
-        while service.stats()["merged"] < 1 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert service.stats()["merged"] == 1
-        release_encode.set()
-        for future in (leader, follower):
-            with pytest.raises(RuntimeError, match="codec failed"):
-                future.result(timeout=2)
-
-    assert codec.encode_calls == 1
-    assert service.stats()["failed"] == 1
 
 
 def test_reference_encoder_revalidates_changed_path(tmp_path) -> None:
@@ -671,28 +581,6 @@ def test_reference_encoder_revalidates_changed_path(tmp_path) -> None:
     assert codec.encode_calls == 3
 
 
-def test_reference_encoder_reports_cache_stats() -> None:
-    codec = FakeCodec()
-    service = reference_service(codec)
-    reference_audio = {"bytes": five_second_wav()}
-
-    service.get_or_encode(reference_audio)
-    service.get_or_encode(reference_audio)
-
-    assert service.stats() == {
-        "hits": 1,
-        "misses": 1,
-        "merged": 0,
-        "entries": 1,
-        "bytes": 12,
-        "evictions": 0,
-        "failed": 0,
-        "uncacheable": 0,
-        "batches": 0,
-        "batched_items": 0,
-    }
-
-
 def test_codec_model_and_lock_are_shared_between_stages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -701,14 +589,14 @@ def test_codec_model_and_lock_are_shared_between_stages(
 
     class FakeNeuCodec:
         @classmethod
-        def from_pretrained(cls, *args: Any, **kwargs: Any) -> FakeCodec:
+        def from_pretrained(cls, model: str, *, revision: str) -> FakeCodec:
             nonlocal loads
             loads += 1
             return codec
 
-    monkeypatch.setitem(
-        sys.modules, "neucodec", types.SimpleNamespace(NeuCodec=FakeNeuCodec)
-    )
+    neucodec_module = types.ModuleType("neucodec")
+    neucodec_module.NeuCodec = FakeNeuCodec
+    monkeypatch.setitem(sys.modules, "neucodec", neucodec_module)
     stages.load_codec.cache_clear()
     stages.codec_lock.cache_clear()
     try:
@@ -725,61 +613,516 @@ def test_codec_model_and_lock_are_shared_between_stages(
     assert loads == 1
 
 
+def test_optional_dependencies_fail_in_consuming_factories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(stages, "llama_cpp", None)
+    monkeypatch.setattr(stages, "llama_cpp_ggml", None)
+    monkeypatch.setitem(sys.modules, "llama_cpp", None)
+    monkeypatch.setitem(sys.modules, "neucodec", None)
+    stages.load_codec.cache_clear()
+
+    with pytest.raises(RuntimeError, match="optional dependencies"):
+        stages.load_codec("codec", "revision", "cpu")
+    with pytest.raises(RuntimeError, match="optional dependencies"):
+        stages.create_tts_engine_executor("unused", device="cpu")
+
+
+@dataclass(frozen=True)
+class LlamaInit:
+    model_path: str
+    n_ctx: int
+    n_gpu_layers: int
+    n_ubatch: int | None
+    split_mode: int
+    main_gpu: int
+    verbose: bool
+
+
+@dataclass(frozen=True)
+class LlamaGenerateArgs:
+    temp: float
+    top_k: int
+    top_p: float
+    repeat_penalty: float
+
+
+def test_load_codec_constructs_a_local_directory_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    codec_dir = tmp_path / "neucodec"
+    w2v_dir = tmp_path / "w2v-bert-2.0"
+    codec_dir.mkdir()
+    w2v_dir.mkdir()
+    weights_path = codec_dir / "pytorch_model.bin"
+    weights_path.touch()
+    constructed: list[tuple[int, int]] = []
+    pretrained_calls: list[tuple[str, str, bool, bool | None]] = []
+    loaded: list[tuple[dict[str, torch.Tensor], bool]] = []
+    devices: list[str] = []
+
+    class RecordingFeatureExtractor(AutoFeatureExtractor):
+        @classmethod
+        def from_pretrained(
+            cls,
+            model_name_or_path: str,
+            *,
+            local_files_only: bool = False,
+        ) -> "RecordingFeatureExtractor":
+            pretrained_calls.append(
+                ("feature_extractor", model_name_or_path, local_files_only, None)
+            )
+            return cls.__new__(cls)
+
+    class RecordingW2VModel(Wav2Vec2BertModel):
+        @classmethod
+        def from_pretrained(
+            cls,
+            model_name_or_path: str,
+            *,
+            output_hidden_states: bool = False,
+            local_files_only: bool = False,
+        ) -> "RecordingW2VModel":
+            pretrained_calls.append(
+                ("w2v", model_name_or_path, local_files_only, output_hidden_states)
+            )
+            return cls.__new__(cls)
+
+    class RecordingCodec:
+        def __init__(self, sample_rate: int, hop_length: int) -> None:
+            constructed.append((sample_rate, hop_length))
+            model_module.Wav2Vec2BertModel.from_pretrained(
+                "facebook/w2v-bert-2.0",
+                output_hidden_states=True,
+            )
+            model_module.AutoFeatureExtractor.from_pretrained("facebook/w2v-bert-2.0")
+
+        def load_state_dict(
+            self, state_dict: dict[str, torch.Tensor], strict: bool
+        ) -> None:
+            loaded.append((state_dict, strict))
+
+        def eval(self) -> "RecordingCodec":
+            return self
+
+        def to(self, device: str) -> "RecordingCodec":
+            devices.append(device)
+            return self
+
+    model_module = types.ModuleType("neucodec.model")
+    model_module.NeuCodec = RecordingCodec
+    model_module.AutoFeatureExtractor = RecordingFeatureExtractor
+    model_module.Wav2Vec2BertModel = RecordingW2VModel
+    package = types.ModuleType("neucodec")
+    package.__path__ = []
+    package.NeuCodec = RecordingCodec
+    package.model = model_module
+    monkeypatch.setitem(sys.modules, "neucodec", package)
+    monkeypatch.setitem(sys.modules, "neucodec.model", model_module)
+    state_dict = {
+        "kept": torch.tensor([1.0]),
+        "unexpected": torch.tensor([2.0]),
+    }
+    torch_loads: list[tuple[Path, str | torch.device, bool]] = []
+
+    def fake_torch_load(
+        weights_path: Path,
+        *,
+        map_location: str | torch.device,
+        weights_only: bool,
+    ) -> dict[str, torch.Tensor]:
+        torch_loads.append((weights_path, map_location, weights_only))
+        return state_dict
+
+    monkeypatch.setattr(stages.torch, "load", fake_torch_load)
+    stages.load_codec.cache_clear()
+    try:
+        codec = stages.load_codec(
+            "~/neucodec",
+            "ignored",
+            "cpu",
+            codec_w2v_model_path="~/w2v-bert-2.0",
+        )
+        assert isinstance(codec, RecordingCodec)
+        assert constructed == [(24000, 480)]
+        assert torch_loads == [(weights_path, "cpu", True)]
+        assert loaded == [(state_dict, False)]
+        assert devices == ["cpu"]
+        assert pretrained_calls == [
+            ("w2v", str(w2v_dir), True, True),
+            ("feature_extractor", str(w2v_dir), True, None),
+        ]
+        assert model_module.AutoFeatureExtractor is RecordingFeatureExtractor
+        assert model_module.Wav2Vec2BertModel is RecordingW2VModel
+
+        class FailingCodec:
+            def __init__(self, sample_rate: int, hop_length: int) -> None:
+                raise RuntimeError("constructor failed")
+
+        sys.modules["neucodec"].NeuCodec = FailingCodec
+        model_module.NeuCodec = FailingCodec
+        stages.load_codec.cache_clear()
+        with pytest.raises(RuntimeError, match="constructor failed"):
+            stages.load_codec(
+                "~/neucodec",
+                "ignored",
+                "cpu",
+                codec_w2v_model_path="~/w2v-bert-2.0",
+            )
+        assert model_module.AutoFeatureExtractor is RecordingFeatureExtractor
+        assert model_module.Wav2Vec2BertModel is RecordingW2VModel
+    finally:
+        stages.load_codec.cache_clear()
+
+
+def test_load_codec_serializes_remote_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class TrackingLock:
+        def __enter__(self) -> None:
+            events.append("enter")
+
+        def __exit__(self, *args: object) -> None:
+            events.append("exit")
+
+    class RemoteCodecInstance:
+        def eval(self) -> "RemoteCodecInstance":
+            events.append("eval")
+            return self
+
+        def to(self, device: str) -> "RemoteCodecInstance":
+            events.append("to")
+            return self
+
+    class RemoteCodec:
+        @classmethod
+        def from_pretrained(cls, model: str, revision: str) -> RemoteCodecInstance:
+            events.append("construct")
+            return RemoteCodecInstance()
+
+    fake_package = types.ModuleType("neucodec")
+    fake_package.NeuCodec = RemoteCodec
+    monkeypatch.setitem(sys.modules, "neucodec", fake_package)
+    monkeypatch.setattr(stages, "_local_codec_construction_lock", TrackingLock())
+    stages.load_codec.cache_clear()
+    try:
+        codec = stages.load_codec("remote/codec", "main", "cpu")
+    finally:
+        stages.load_codec.cache_clear()
+
+    assert isinstance(codec, RemoteCodecInstance)
+    assert events == ["enter", "construct", "exit", "eval", "to"]
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["pytorch_model.bin", "w2v snapshot"],
+)
+def test_load_codec_rejects_incomplete_local_snapshot(
+    tmp_path: Path,
+    missing: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codec_dir = tmp_path / "neucodec"
+    w2v_dir = tmp_path / "w2v"
+    codec_dir.mkdir()
+    if missing != "pytorch_model.bin":
+        (codec_dir / "pytorch_model.bin").touch()
+    else:
+        pass
+    if missing != "w2v snapshot":
+        w2v_dir.mkdir()
+    else:
+        pass
+    monkeypatch.setitem(sys.modules, "neucodec", types.SimpleNamespace(NeuCodec=object))
+    stages.load_codec.cache_clear()
+    try:
+        with pytest.raises(FileNotFoundError, match="local NeuCodec"):
+            stages.load_codec(
+                str(codec_dir),
+                "ignored",
+                "cpu",
+                codec_w2v_model_path=str(w2v_dir),
+            )
+    finally:
+        stages.load_codec.cache_clear()
+
+
 def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """n_gpu_layers defaults to -1 (offload everything); a cpu resolution must
     zero it or the stage silently runs on GPU 0 anyway."""
-    captured: dict[str, object] = {}
+    captured: LlamaInit | None = None
 
-    class FakeLlama:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-            raise RuntimeError("stop after capture")
+    class StopAfterCapture(RuntimeError):
+        pass
 
-    from sglang_omni.platforms import current_platform
+    def fake_llama(
+        *,
+        model_path: str,
+        n_ctx: int,
+        n_gpu_layers: int,
+        split_mode: int,
+        main_gpu: int,
+        verbose: bool,
+        n_ubatch: int | None = None,
+    ) -> NoReturn:
+        nonlocal captured
+        captured = LlamaInit(
+            model_path=model_path,
+            n_ctx=n_ctx,
+            n_gpu_layers=n_gpu_layers,
+            n_ubatch=n_ubatch,
+            split_mode=split_mode,
+            main_gpu=main_gpu,
+            verbose=verbose,
+        )
+        raise StopAfterCapture
 
-    monkeypatch.setitem(
-        sys.modules,
+    def unexpected_backend_probe(name: bytes) -> None:
+        raise AssertionError("an explicit CPU resolution must not probe llama.cpp GPUs")
+
+    monkeypatch.setattr(
+        stages,
         "llama_cpp",
-        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=fake_llama),
+    )
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp_ggml",
+        types.SimpleNamespace(
+            libggml=types.SimpleNamespace(
+                ggml_backend_reg_by_name=unexpected_backend_probe
+            )
+        ),
     )
     monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
     monkeypatch.setattr(current_platform, "device_type", "cpu", raising=False)
+    monkeypatch.setattr(current_platform, "is_musa", lambda: True, raising=False)
 
-    with pytest.raises(RuntimeError, match="stop after capture"):
+    with pytest.raises(StopAfterCapture):
         stages.create_tts_engine_executor("unused", device="cpu")
 
-    assert captured["n_gpu_layers"] == 0
-    assert captured["main_gpu"] == 0
+    assert captured is not None
+    assert captured.n_gpu_layers == 0
+    assert captured.main_gpu == 0
+    assert captured.n_ubatch is None
+
+
+@pytest.mark.parametrize(
+    (
+        "backend_available",
+        "requested_gpu_layers",
+        "expected_gpu_layers",
+        "expected_main_gpu",
+        "expected_n_ubatch",
+        "expect_warning",
+    ),
+    [
+        (False, -1, 0, 0, None, True),
+        (True, 17, 17, 1, 8, False),
+    ],
+)
+def test_llama_cpp_stage_selects_musa_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    backend_available: bool,
+    requested_gpu_layers: int,
+    expected_gpu_layers: int,
+    expected_main_gpu: int,
+    expected_n_ubatch: int | None,
+    expect_warning: bool,
+) -> None:
+    captured: LlamaInit | None = None
+
+    class StopAfterCapture(RuntimeError):
+        pass
+
+    def fake_llama(
+        *,
+        model_path: str,
+        n_ctx: int,
+        n_gpu_layers: int,
+        split_mode: int,
+        main_gpu: int,
+        verbose: bool,
+        n_ubatch: int | None = None,
+    ) -> NoReturn:
+        nonlocal captured
+        captured = LlamaInit(
+            model_path=model_path,
+            n_ctx=n_ctx,
+            n_gpu_layers=n_gpu_layers,
+            n_ubatch=n_ubatch,
+            split_mode=split_mode,
+            main_gpu=main_gpu,
+            verbose=verbose,
+        )
+        raise StopAfterCapture
+
+    backend_queries: list[bytes] = []
+
+    def backend_registry(name: bytes) -> int | None:
+        backend_queries.append(name)
+        return 1 if backend_available else None
+
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=fake_llama),
+    )
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp_ggml",
+        types.SimpleNamespace(
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=backend_registry)
+        ),
+    )
+    monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(stages.current_platform, "is_musa", lambda: True)
+    monkeypatch.setattr(
+        "sglang_omni.utils.device.resolve_concrete_device",
+        lambda device, gpu_id: types.SimpleNamespace(type="musa", index=gpu_id),
+    )
+
+    with pytest.raises(StopAfterCapture):
+        stages.create_tts_engine_executor(
+            "unused", gpu_id=1, n_gpu_layers=requested_gpu_layers
+        )
+
+    assert captured is not None
+    assert captured.n_gpu_layers == expected_gpu_layers
+    assert captured.main_gpu == expected_main_gpu
+    assert captured.n_ubatch == expected_n_ubatch
+    assert backend_queries == [b"MUSA"]
+    assert ("llama.cpp MUSA backend not detected" in caplog.text) is expect_warning
 
 
 def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """llama.cpp binds a bare main_gpu index; a non-cuda/cpu device intent would
-    be silently mapped onto the wrong backend's card numbering."""
-    from sglang_omni.platforms import current_platform
-
-    monkeypatch.setitem(
-        sys.modules,
+    """llama.cpp must not silently map an unsupported device to another backend."""
+    monkeypatch.setattr(
+        stages,
         "llama_cpp",
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
     )
+    monkeypatch.setattr(current_platform, "device_type", "mps", raising=False)
+    with pytest.raises(ValueError, match="cuda, xpu, musa or cpu"):
+        stages.create_tts_engine_executor("unused", device="mps", gpu_id=1)
+
+
+def test_llama_cpp_stage_refuses_xpu_without_a_sycl_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
+    )
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp_ggml",
+        types.SimpleNamespace(
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: None)
+        ),
+    )
     monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
-    with pytest.raises(ValueError, match="cuda or cpu"):
+    with pytest.raises(RuntimeError, match="GGML_SYCL=ON"):
         stages.create_tts_engine_executor("unused", device="xpu", gpu_id=1)
 
 
-def test_llama_cpp_stage_matches_official_generation_loop(
+def test_llama_cpp_stage_offloads_to_the_xpu_and_warms_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeLlama:
         instance: "FakeLlama"
 
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-            self.generate_kwargs: dict[str, Any] | None = None
+        def __init__(
+            self,
+            *,
+            model_path: str,
+            n_ctx: int,
+            n_gpu_layers: int,
+            split_mode: int,
+            main_gpu: int,
+            verbose: bool,
+            n_ubatch: int | None = None,
+        ) -> None:
+            self.init = LlamaInit(
+                model_path=model_path,
+                n_ctx=n_ctx,
+                n_gpu_layers=n_gpu_layers,
+                n_ubatch=n_ubatch,
+                split_mode=split_mode,
+                main_gpu=main_gpu,
+                verbose=verbose,
+            )
+            self.calls: list[list[int]] = []
+            FakeLlama.instance = self
+
+        def tokenize(self, text: bytes, *, add_bos: bool, special: bool) -> list[int]:
+            return [99]
+
+        def eval(self, tokens: list[int]) -> None:
+            self.calls.append(tokens)
+
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
+    )
+    monkeypatch.setattr(
+        stages,
+        "llama_cpp_ggml",
+        types.SimpleNamespace(
+            libggml=types.SimpleNamespace(ggml_backend_reg_by_name=lambda name: 1)
+        ),
+    )
+    monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
+
+    stages.create_tts_engine_executor("unused", device="xpu", gpu_id=1)
+
+    assert FakeLlama.instance.init.main_gpu == 1
+    assert FakeLlama.instance.init.n_gpu_layers == -1
+    assert FakeLlama.instance.calls[0] == [99]
+
+
+def test_llama_cpp_stage_matches_official_generation_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(stages.current_platform, "is_musa", lambda: False)
+
+    class FakeLlama:
+        instance: "FakeLlama"
+
+        def __init__(
+            self,
+            *,
+            model_path: str,
+            n_ctx: int,
+            n_gpu_layers: int,
+            split_mode: int,
+            main_gpu: int,
+            verbose: bool,
+            n_ubatch: int | None = None,
+        ) -> None:
+            self.init = LlamaInit(
+                model_path=model_path,
+                n_ctx=n_ctx,
+                n_gpu_layers=n_gpu_layers,
+                n_ubatch=n_ubatch,
+                split_mode=split_mode,
+                main_gpu=main_gpu,
+                verbose=verbose,
+            )
+            self.generate_kwargs: LlamaGenerateArgs | None = None
             self.seed: int | None = None
             self.reset_calls = 0
             FakeLlama.instance = self
@@ -789,9 +1132,22 @@ def test_llama_cpp_stage_matches_official_generation_loop(
             assert special is True
             return [99] if text == b"<|TARGET_CODES_END|>" else [1, 2, 3]
 
-        def generate(self, tokens: list[int], **kwargs: Any):
+        def generate(
+            self,
+            tokens: list[int],
+            *,
+            temp: float,
+            top_k: int,
+            top_p: float,
+            repeat_penalty: float,
+        ) -> Iterator[int]:
             assert tokens == [1, 2, 3]
-            self.generate_kwargs = kwargs
+            self.generate_kwargs = LlamaGenerateArgs(
+                temp=temp,
+                top_k=top_k,
+                top_p=top_p,
+                repeat_penalty=repeat_penalty,
+            )
             yield 10
             yield 11
             yield 99
@@ -806,15 +1162,16 @@ def test_llama_cpp_stage_matches_official_generation_loop(
         def reset(self) -> None:
             self.reset_calls += 1
 
-    monkeypatch.setitem(
-        sys.modules,
+    monkeypatch.setattr(
+        stages,
         "llama_cpp",
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
     )
     monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
-    from sglang_omni.platforms import current_platform
-
-    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
+    monkeypatch.setattr(
+        "sglang_omni.utils.device.resolve_concrete_device",
+        lambda device, gpu_id: types.SimpleNamespace(type="cuda", index=gpu_id),
+    )
     payload = make_payload(
         state=AudarTTSState(
             prompt="prompt",
@@ -840,13 +1197,13 @@ def test_llama_cpp_stage_matches_official_generation_loop(
     assert result.completion_tokens == 2
     assert FakeLlama.instance.seed == 23
     assert FakeLlama.instance.reset_calls == 1
-    assert FakeLlama.instance.kwargs["main_gpu"] == 2
-    assert FakeLlama.instance.generate_kwargs == {
-        "temp": 1.0,
-        "top_k": 40,
-        "top_p": 0.9,
-        "repeat_penalty": 1.1,
-    }
+    assert FakeLlama.instance.init.main_gpu == 2
+    assert FakeLlama.instance.generate_kwargs == LlamaGenerateArgs(
+        temp=1.0,
+        top_k=40,
+        top_p=0.9,
+        repeat_penalty=1.1,
+    )
     assert scheduler.max_concurrency == 1
 
 

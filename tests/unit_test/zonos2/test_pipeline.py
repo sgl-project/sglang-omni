@@ -8,6 +8,8 @@ import torch
 
 from sglang_omni.client import Client
 from sglang_omni.config import resolve_stage_factory_args
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.zonos2 import callbacks
 from sglang_omni.models.zonos2 import engine_builder as eb
 from sglang_omni.models.zonos2 import stages
@@ -25,6 +27,7 @@ from sglang_omni.models.zonos2.request_builders import (
     build_zonos2_state,
     build_zonos2_stream_metadata,
 )
+from sglang_omni.models.zonos2.sglang_model import Zonos2SGLangModel
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
@@ -213,6 +216,7 @@ def test_zonos2_engine_builder_disables_chunked_prefill() -> None:
 
 def test_zonos2_engine_builder_declares_model_arch_override() -> None:
     assert Zonos2EngineBuilder.model_arch_override == "Zonos2SGLangModel"
+    assert Zonos2EngineBuilder.model_arch_override == Zonos2SGLangModel.__name__
 
 
 def test_zonos2_engine_builder_resolves_context_length(monkeypatch) -> None:
@@ -334,6 +338,55 @@ def test_zonos2_factories_reject_unknown_config_options() -> None:
             {"max_new_tokens": 100},
             stage_name="tts_engine",
         )
+
+
+def test_factory_config_reaches_the_speaker_encoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    speaker_encoder_kwargs: dict[str, str | int | bool | None] = {}
+
+    class Recorder:
+        def __init__(
+            self,
+            *,
+            device: str,
+            cache_max_items: int,
+            compile_forward: bool,
+            speaker_embedding_model_name_or_path: str | None,
+        ) -> None:
+            speaker_encoder_kwargs.update(
+                {
+                    "device": device,
+                    "cache_max_items": cache_max_items,
+                    "compile_forward": compile_forward,
+                    "speaker_embedding_model_name_or_path": (
+                        speaker_embedding_model_name_or_path
+                    ),
+                }
+            )
+
+    monkeypatch.setattr(
+        "sglang_omni.models.zonos2.components.speaker_encoder.SpeakerEncoder",
+        Recorder,
+    )
+    stage = StageConfig(
+        name="speaker_encode",
+        factory_path="sglang_omni.models.zonos2.stages.create_speaker_encode_executor",
+        factory={
+            "speaker_embedding_model_name_or_path": ("/models/qwen3_voice_embedding")
+        },
+    )
+
+    stages.create_speaker_encode_executor(
+        "/models/zonos2",
+        device="cpu",
+        **resolve_stage_typed_kwargs(stage),
+    )
+
+    assert (
+        speaker_encoder_kwargs["speaker_embedding_model_name_or_path"]
+        == "/models/qwen3_voice_embedding"
+    )
 
 
 TENSOR_REFERENCE = torch.zeros(4)

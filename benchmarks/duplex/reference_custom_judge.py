@@ -6,9 +6,11 @@ from __future__ import annotations
 import copy
 import fcntl
 import math
+import threading
 import time
 from argparse import Namespace
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from statistics import NormalDist
 
@@ -340,6 +342,7 @@ def run_custom(
                     "timeout_s": args.timeout_s,
                     "retry_sleep_s": args.retry_sleep_s,
                     "sdk_max_retries": 0,
+                    "concurrency": args.concurrency,
                 },
             )
             if pending_requests:
@@ -348,7 +351,17 @@ def run_custom(
                 )
             else:
                 pass
-            for result_path, request, previous_result, sample_state in pending_requests:
+            progress_lock = threading.Lock()
+
+            def judge(
+                pending: tuple[
+                    Path,
+                    dict[str, JsonValue],
+                    dict[str, JsonValue] | None,
+                    dict[str, JsonValue],
+                ],
+            ) -> None:
+                result_path, request, previous_result, sample_state = pending
                 result = run_judgment(
                     custom_behavior,
                     request["body"],
@@ -375,12 +388,18 @@ def run_custom(
                 else:
                     pass
                 atomic_write_json(result_path, result)
+                # note (luojiaxuan): each sample_state and result file belongs to
+                # one request; only the progress file is shared between threads.
                 sample_state.update(
                     status=result["status"],
                     label=result["label"],
                     attempts=len(result["attempts"]),
                 )
-                progress.add(result["status"])
+                with progress_lock:
+                    progress.add(result["status"])
+
+            with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+                list(executor.map(judge, pending_requests))
             progress.write(finished=True)
         else:
             pass

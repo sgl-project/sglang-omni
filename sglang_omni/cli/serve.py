@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
+import click
 import typer
 import yaml
+from typer.core import TyperCommand
 
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
@@ -17,23 +19,44 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
 )
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
+from sglang_omni.serve.realtime.types import RuntimeLimits
 from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 from sglang_omni.utils.logging import configure_dependency_loggers
+from sglang_omni.utils.process import exit_without_teardown
 
 logger = logging.getLogger(__name__)
 
 
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
 
-def launch_server(*args: object, **kwargs: object) -> object:
+class ServeCommand(TyperCommand):
+    """Serve command that also takes the model path as its first argument."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        # note (Chenyang): sglang serve rewrites a leading positional the same
+        # way, so both CLIs parse one command line identically.
+        if args and not args[0].startswith("-"):
+            args = ["--model-path", *args]
+        else:
+            pass
+        return super().parse_args(ctx, args)
+
+
+def launch_server(*args: object, **kwargs: object) -> NoReturn:
     from sglang_omni.serve.launcher import launch_server as _launch_server
 
-    return _launch_server(*args, **kwargs)
+    _launch_server(*args, **kwargs)
+    # note (Richard Wang): the launcher has stopped the pipeline and joined
+    # every stage by now. Tearing down the modules and objects the CLI
+    # imported took about a second more, and the server's stop waited for it.
+    exit_without_teardown(0)
 
 
 def validate_colocate_cli_request(
@@ -117,6 +140,17 @@ def normalize_allowed_media_domains(values: list[str] | None) -> list[str]:
             part.strip().lower() for part in value.split(",") if part.strip()
         )
     return domains
+
+
+def validate_realtime_timeout(timeout_seconds: float | None) -> float | None:
+    if timeout_seconds is None:
+        return None
+    else:
+        try:
+            RuntimeLimits(idle_timeout_s=timeout_seconds)
+        except ValueError as error:
+            raise typer.BadParameter(str(error)) from error
+        return timeout_seconds
 
 
 def validate_tts_batch_max_items(value: int) -> int:
@@ -299,6 +333,42 @@ def apply_tensor_parallel_engine_overrides(
     return config_cls(**data)
 
 
+def parse_stage_offload_components(value: str | None) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    else:
+        pass
+    components = frozenset(
+        part.strip().lower() for part in value.split(",") if part.strip()
+    )
+    if not components:
+        raise typer.BadParameter("--stage-offload-components must not be empty")
+    else:
+        pass
+    return components
+
+
+def apply_stage_offload_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_offload_components: str | None,
+) -> PipelineConfig:
+    components = parse_stage_offload_components(stage_offload_components)
+    if not components:
+        return pipeline_config
+    else:
+        pass
+
+    if not isinstance(pipeline_config, MiniMaxMusic3PipelineConfig):
+        raise typer.BadParameter(
+            "--stage-offload-components is not supported by this pipeline"
+        )
+    else:
+        pass
+
+    return pipeline_config.with_serial_offload(components)
+
+
 def serve(
     ctx: typer.Context,
     model_path: Annotated[
@@ -306,6 +376,7 @@ def serve(
         typer.Option(
             help=(
                 "The Hugging Face model ID or the path to the model directory. "
+                "May also be given as the first positional argument. "
                 "Required unless --config provides model_path."
             )
         ),
@@ -317,7 +388,10 @@ def serve(
         bool,
         typer.Option(
             "--text-only",
-            help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
+            help=(
+                "Use the model's text output variant on 1 GPU, such as the "
+                "Qwen3-Omni thinker without talker or the Cosmos3 Reasoner."
+            ),
         ),
     ] = False,
     variant: Annotated[
@@ -376,6 +450,17 @@ def serve(
             help="Maximum number of items accepted by /v1/audio/speech/batch.",
         ),
     ] = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    enable_speech_sse_named_events: Annotated[
+        bool,
+        typer.Option(
+            "--enable-speech-sse-named-events",
+            help=(
+                "Enable named SSE events for /v1/audio/speech with "
+                "stream_format=sse. Adds event lines and reports failures as "
+                "speech.audio.error. Omit to preserve data-only frames."
+            ),
+        ),
+    ] = False,
     mem_fraction_static: Annotated[
         float | None,
         typer.Option(
@@ -385,6 +470,17 @@ def serve(
                 "A dotted per-stage flag (--<stage>.engine.mem_fraction_static) "
                 "overrides this for that stage. If omitted, SGLang chooses "
                 "the value automatically."
+            ),
+        ),
+    ] = None,
+    stage_offload_components: Annotated[
+        str | None,
+        typer.Option(
+            "--stage-offload-components",
+            "--stage_offload_components",
+            help=(
+                "Comma-separated components to run request-serially, each "
+                "offloading itself from the GPU before the next one runs."
             ),
         ),
     ] = None,
@@ -405,9 +501,33 @@ def serve(
         typer.Option(
             "--skip-server-warmup",
             "--skip_server_warmup",
-            help="Report ready without sending the pipeline's warmup requests first.",
+            help="Report ready without running the pipeline's warmup first.",
         ),
     ] = False,
+    realtime_session_update_timeout_s: Annotated[
+        float | None,
+        typer.Option(
+            "--realtime-session-update-timeout-s",
+            callback=validate_realtime_timeout,
+            help=(
+                "Set the timeout for the first session.update, in seconds. "
+                "Use --enable-realtime with this option. "
+                "If you do not set this option, the server uses the pipeline configuration."
+            ),
+        ),
+    ] = None,
+    realtime_idle_timeout_s: Annotated[
+        float | None,
+        typer.Option(
+            "--realtime-idle-timeout-s",
+            callback=validate_realtime_timeout,
+            help=(
+                "Set the idle timeout for shared sessions, in seconds. "
+                "Use --enable-realtime with this option. "
+                "If you do not set this option, the server uses the pipeline configuration."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Serve the pipeline.
 
@@ -417,10 +537,17 @@ def serve(
     ``--vocoder.factory.max_concurrency 8``, ``--talker_ar.gpu 1``,
     ``--thinker.process thinker``.
     """
-    logging.basicConfig(
-        level=getattr(logging, log_level.upper()),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    root_logger = logging.getLogger()
+    logging.basicConfig(level=log_level.upper(), format=LOG_FORMAT)
+    # note (Chenyang): sglang serve installs a root console handler before this
+    # runs, which makes basicConfig a no-op. Set the level and the console
+    # format directly so both CLIs log alike, and keep plugin handlers intact.
+    root_logger.setLevel(log_level.upper())
+    for root_handler in root_logger.handlers:
+        if type(root_handler) is logging.StreamHandler:
+            root_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        else:
+            pass
     configure_dependency_loggers()
 
     validate_colocate_cli_request(
@@ -507,6 +634,10 @@ def serve(
         validate_colocate_config(merged_config)
     else:
         pass
+    merged_config = apply_stage_offload_cli_overrides(
+        merged_config,
+        stage_offload_components=stage_offload_components,
+    )
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 
     if should_print_merged_config(colocate=colocate, log_level=log_level):
@@ -521,10 +652,13 @@ def serve(
         model_name=model_name,
         log_level=log_level,
         enable_realtime=enable_realtime,
+        realtime_session_update_timeout_s=realtime_session_update_timeout_s,
+        realtime_idle_timeout_s=realtime_idle_timeout_s,
         allowed_local_media_path=validate_allowed_local_media_path(
             allowed_local_media_path
         ),
         allowed_media_domains=normalize_allowed_media_domains(allowed_media_domain),
         tts_batch_max_items=validate_tts_batch_max_items(tts_batch_max_items),
+        enable_speech_sse_named_events=enable_speech_sse_named_events,
         skip_server_warmup=skip_server_warmup,
     )

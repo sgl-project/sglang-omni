@@ -53,7 +53,6 @@ class HiggsSGLangRequestData(SGLangARRequestData):
     engine_start_s: float = 0.0
     stream_metadata: dict[str, str | int | bool] | None = None
     stream_code_buffer: list[torch.Tensor] = field(default_factory=list)
-    stream_code_first_flush_done: bool = False
     stream_code_seen_rows: int = 0
     stream_code_next_flush_rows: int = 0
 

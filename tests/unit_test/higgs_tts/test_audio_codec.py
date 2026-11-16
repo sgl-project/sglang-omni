@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import threading
-from types import SimpleNamespace
+from types import SimpleNamespace, TracebackType
 
+import pytest
 import torch
 from transformers import HiggsAudioV2TokenizerConfig, HiggsAudioV2TokenizerModel
 
@@ -241,3 +242,109 @@ def test_codec_capture_records_through_the_platform_backend(monkeypatch) -> None
         for frame_count, graph in codec.decode_cuda_graphs.items()
     } == {2: backend.captures[0][2], 1: backend.captures[1][2]}
     assert codec.model.quantizer.decode is quantizer_decode
+
+
+def test_reference_encode_keeps_cudnn_out_on_cuda_only() -> None:
+    codec = object.__new__(audio_codec.HiggsAudioCodec)
+    cudnn_before = torch.backends.cudnn.enabled
+    cudnn_sdp_before = torch.backends.cuda.cudnn_sdp_enabled()
+
+    codec.device = torch.device("cuda", 0)
+    with codec.encode_kernel_context():
+        assert not torch.backends.cudnn.enabled
+        assert not torch.backends.cuda.cudnn_sdp_enabled()
+        assert torch.backends.cuda.flash_sdp_enabled()
+    assert torch.backends.cudnn.enabled == cudnn_before
+    assert torch.backends.cuda.cudnn_sdp_enabled() == cudnn_sdp_before
+
+    codec.device = torch.device("cpu")
+    with codec.encode_kernel_context():
+        assert torch.backends.cudnn.enabled == cudnn_before
+
+
+def test_overlapping_reference_encodes_restore_cudnn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A waiting encode cannot save another encode's disabled backend state."""
+    first_codec = object.__new__(audio_codec.HiggsAudioCodec)
+    second_codec = object.__new__(audio_codec.HiggsAudioCodec)
+    first_codec.device = torch.device("cuda", 0)
+    second_codec.device = torch.device("cuda", 1)
+    cudnn_before = torch.backends.cudnn.enabled
+    cudnn_sdp_before = torch.backends.cuda.cudnn_sdp_enabled()
+    encode_lock = audio_codec.HiggsAudioCodec.encode_kernel_lock
+    second_attempted = threading.Event()
+    second_inside = threading.Event()
+    failures: list[BaseException] = []
+
+    class ObservedLock:
+        def __enter__(self) -> None:
+            if threading.current_thread() is second_thread:
+                second_attempted.set()
+            else:
+                pass
+            encode_lock.acquire()
+
+        def __exit__(
+            self,
+            exception_type: type[BaseException] | None,
+            exception: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            encode_lock.release()
+
+    def second() -> None:
+        try:
+            with second_codec.encode_kernel_context():
+                second_inside.set()
+                assert not torch.backends.cudnn.enabled
+                assert not torch.backends.cuda.cudnn_sdp_enabled()
+        except BaseException as exception:
+            failures.append(exception)
+
+    second_thread = threading.Thread(target=second)
+    monkeypatch.setattr(
+        audio_codec.HiggsAudioCodec, "encode_kernel_lock", ObservedLock()
+    )
+    try:
+        with first_codec.encode_kernel_context():
+            second_thread.start()
+            assert second_attempted.wait(timeout=5)
+            assert not second_inside.is_set()
+            assert not torch.backends.cudnn.enabled
+            assert not torch.backends.cuda.cudnn_sdp_enabled()
+    finally:
+        second_thread.join(timeout=5)
+
+    assert not second_thread.is_alive()
+    assert second_inside.is_set()
+    assert failures == []
+    assert torch.backends.cudnn.enabled == cudnn_before
+    assert torch.backends.cuda.cudnn_sdp_enabled() == cudnn_sdp_before
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.parametrize("is_cudnn_enabled", [False, True])
+def test_reference_encodes_run_without_cudnn(is_cudnn_enabled: bool) -> None:
+    seen: list[bool] = []
+
+    class FakeModel:
+        def encode(self, wav: torch.Tensor) -> SimpleNamespace:
+            seen.append(torch.backends.cudnn.enabled)
+            return SimpleNamespace(
+                audio_codes=torch.zeros(wav.shape[0], 8, 3, device=wav.device)
+            )
+
+    codec = object.__new__(audio_codec.HiggsAudioCodec)
+    codec.model = FakeModel()
+    codec.device = torch.device("cuda", torch.cuda.current_device())
+    codec.dtype = torch.float32
+    one_second = torch.zeros(codec.SAMPLE_RATE)
+
+    with torch.backends.cudnn.flags(enabled=is_cudnn_enabled):
+        codec.encode_reference(one_second)
+        assert torch.backends.cudnn.enabled == is_cudnn_enabled
+        codec.encode_batch([one_second, one_second])
+        assert torch.backends.cudnn.enabled == is_cudnn_enabled
+
+    assert seen == [False, False]

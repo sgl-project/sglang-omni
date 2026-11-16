@@ -12,9 +12,9 @@ Three groups, each a function of the trace alone:
   - first_partial_latency_s: per segment, from the send time of the first
     packet whose cumulative audio reached ``segment_start + decode_interval``
     (the server's first refresh point) to the first non-final
-    transcription.segment for that segment. Segment start is
-    speech_started.audio_start_ms under server VAD, 0 for the first
-    segment without VAD, and unknown (skipped) otherwise.
+    transcription.segment for that segment. Segment start is the
+    audio_start_ms every transcription.segment carries, so segments opened
+    by a hard cut are measured from the cut, not from an earlier VAD start.
   - partial_interval_s: receive-time gaps between consecutive partials of
     the same segment.
   - final_latency_s: per segment, input_audio_buffer.committed to its
@@ -84,6 +84,7 @@ def check_invariants(trace: SessionTrace) -> list[str]:
 
     committed: set[JsonValue] = set()
     finalized: set[JsonValue] = set()
+    starts_ms: dict[JsonValue, int] = {}
     completed_count = 0
     for record in trace.received:
         if record.type == "input_audio_buffer.committed":
@@ -100,6 +101,25 @@ def check_invariants(trace: SessionTrace) -> list[str]:
                 pass
             if segment_id in finalized:
                 violations.append(f"segment {segment_id} updated after its final event")
+            else:
+                pass
+            start_ms = record.event.get("audio_start_ms")
+            end_ms = record.event.get("audio_end_ms")
+            if type(start_ms) is not int or type(end_ms) is not int:
+                violations.append(
+                    f"segment {segment_id} audio_start_ms or audio_end_ms "
+                    "missing or non-integer"
+                )
+            elif end_ms <= start_ms:
+                violations.append(
+                    f"segment {segment_id} audio_end_ms {end_ms} not after "
+                    f"audio_start_ms {start_ms}"
+                )
+            elif starts_ms.setdefault(segment_id, start_ms) != start_ms:
+                violations.append(
+                    f"segment {segment_id} audio_start_ms changed: "
+                    f"{starts_ms[segment_id]} -> {start_ms}"
+                )
             else:
                 pass
             if record.event.get("is_final"):
@@ -131,15 +151,13 @@ def _sort_key(value: Any) -> tuple[int, str]:
 
 
 def _segment_starts_ms(trace: SessionTrace) -> dict[Any, float]:
-    """Audio offset (ms) at which each segment started, where knowable."""
+    """Audio offset (ms) at which each segment started, from its first event."""
     starts: dict[Any, float] = {}
-    for item in trace.events("input_audio_buffer.speech_started"):
+    for item in trace.events("transcription.segment"):
         segment_id = item.event.get("segment_id")
-        if segment_id not in starts:
-            starts[segment_id] = float(item.event.get("audio_start_ms", 0))
-    if not starts and trace.session.get("turn_detection") is None:
-        # Manual mode: the first segment starts with the first sample.
-        starts[0] = 0.0
+        start_ms = item.event.get("audio_start_ms")
+        if segment_id not in starts and isinstance(start_ms, (int, float)):
+            starts[segment_id] = float(start_ms)
     return starts
 
 

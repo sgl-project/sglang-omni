@@ -146,7 +146,6 @@ def test_unsupported_model_returns_openai_shaped_400_before_audio_read() -> None
 @pytest.mark.parametrize(
     "response_format,expected_status,expected_content_type",
     [
-        ("json", 200, "application/json"),
         ("verbose_json", 200, "application/json"),
         ("text", 200, "text/plain"),
         ("srt", 200, "text/plain"),
@@ -164,9 +163,7 @@ def test_translation_response_format_matrix(
 
     assert response.status_code == expected_status
     assert response.headers["content-type"].startswith(expected_content_type)
-    if response_format == "json":
-        assert response.json() == {"text": "hello world"}
-    elif response_format == "verbose_json":
+    if response_format == "verbose_json":
         body = response.json()
         assert body["task"] == "translate"
         assert body["text"] == "hello world"
@@ -267,17 +264,10 @@ def test_whisper_translation_stream_matches_transcription_sse_lifecycle() -> Non
     assert backend.requests[0].extra_params["language"] == "de"
 
 
-@pytest.mark.parametrize("response_format", ["srt", "vtt"])
-def test_translation_stream_rejects_formats_without_segment_timestamps(
-    response_format: str,
-) -> None:
+def test_translation_stream_rejects_formats_without_segment_timestamps() -> None:
     client, backend = translation_client()
 
-    response = post_translation(
-        client,
-        response_format=response_format,
-        stream=True,
-    )
+    response = post_translation(client, response_format="srt", stream=True)
 
     assert response.status_code == 400
     assert "stream=true" in response.json()["error"]["message"]

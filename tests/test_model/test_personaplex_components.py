@@ -37,8 +37,8 @@ from sglang_omni.models.personaplex.components.depformer import (
     DepformerLayer,
     rms_norm_f32,
 )
-from sglang_omni.models.personaplex.components.mimi import (
-    MimiCodec,
+from sglang_omni.models.personaplex.components.mimi import MimiCodec
+from sglang_omni.models.personaplex.components.mimi_loader import (
     load_mimi_codec,
     resolve_mimi_weights,
 )
@@ -196,7 +196,7 @@ def test_mimi_decode_matches_reference(
 ) -> None:
     codes = reference_tensors["codes"]
     whole = codec.decode(codes)
-    state = codec.init_decode_state(batch_size=codes.shape[0])
+    state = codec.init_decode_state(batch_size=codes.shape[0], max_chunk_frames=1)
     chunked = torch.cat(
         [
             codec.decode_step(codes[:, :, f : f + 1], state)

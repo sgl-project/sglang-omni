@@ -11,6 +11,7 @@ from typing import Iterable, List, Optional, Tuple
 import torch
 import torch.nn as nn
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from sglang.srt.managers.mm_utils import (
     MultiModalityDataPaddingPatternMultimodalTokens,
     general_mm_embed_routine,
@@ -55,6 +56,17 @@ class ArkasrForConditionalGeneration(nn.Module):
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
         self.encoder_max_batch_size = self.DEFAULT_ENCODER_MAX_BATCH_SIZE
         self.encoder_cuda_graph_runner = None
+
+    def get_input_embeddings(self) -> VocabParallelEmbedding:
+        return self.language_model.get_input_embeddings()
+
+    @property
+    def lm_head(self) -> VocabParallelEmbedding:
+        return self.language_model.lm_head
+
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        # note (Ruilin Gao): Qwen2 exposes pre-layer capture through its EAGLE3 hook.
+        self.language_model.set_eagle3_layers_to_capture(layer_ids)
 
     def set_encoder_max_batch_size(self, max_batch_size: int) -> None:
         if max_batch_size < 1:

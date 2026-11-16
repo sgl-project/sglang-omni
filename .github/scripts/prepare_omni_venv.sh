@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Full rebuild of OMNI_CI_HOME (never reuses an existing tree).
+# Full rebuild of OMNI_CI_HOME. It reuses the existing tree only when another
+# job of the same PR rebuilt it while this one waited for the lock.
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
@@ -31,11 +32,22 @@ if ! flock -w 3600 200; then
   exit 1
 fi
 
+# Jobs of one PR share OMNI_CI_HOME and can run at the same time. When another
+# job rebuilt it while this one waited for the lock, rebuilding again would
+# delete the venv that job is already testing with.
+if bash "${SCRIPT_DIR}/validate_omni_env_reusable.sh" "${VENV_NAME}" > /dev/null 2>&1; then
+  echo "Reusing ${HOST}: another job prepared it while this one waited for the lock"
+  rm -rf "./${VENV_NAME}"
+  ln -sfn "${HOST}" "./${VENV_NAME}"
+  exit 0
+fi
+
 echo "Preparing fresh ${HOST} (full rebuild)"
 rm -f "${OMNI_CI_HOME}/.omni-env-complete"
 rm -rf "${OMNI_CI_HOME}"
 mkdir -p "${OMNI_CI_HOME}"
-uv venv --system-site-packages "${HOST}" -p /usr/bin/python3.12
+# The image installs Python with uv; /usr/bin/python3 is a wrapper for this interpreter.
+uv venv --system-site-packages "${HOST}" -p /opt/sglang/bin/python3
 # Process the image's .pth files too: SGLang is installed editable upstream.
 echo 'import site; site.addsitedir("/opt/sglang/lib/python3.12/site-packages")' > "${HOST}/lib/python3.12/site-packages/sglang-image.pth"
 

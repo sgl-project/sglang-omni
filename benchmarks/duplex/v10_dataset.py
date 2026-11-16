@@ -24,6 +24,7 @@ SUBSET_TASKS: dict[str, Task] = {
     "synthetic_user_interruption": "user_interruption",
     "icc_backchannel": "backchannel",
 }
+RUN_KIND = "full-duplex-bench-v1.0"
 SUBSETS = tuple(SUBSET_TASKS)
 DECLARED_COUNTS = {
     "synthetic_pause_handling": 137,

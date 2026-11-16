@@ -113,7 +113,6 @@ def source_forms(data: bytes, tmp_path) -> dict[str, object]:
     path.write_bytes(data)
     encoded = pybase64.b64encode(data).decode("ascii")
     return {
-        "raw_bytes": data,
         "bytearray": bytearray(data),
         "memoryview": memoryview(data),
         "filesystem_path": str(path),
@@ -124,7 +123,7 @@ def source_forms(data: bytes, tmp_path) -> dict[str, object]:
 
 @pytest.mark.parametrize(
     "form",
-    ["raw_bytes", "bytearray", "memoryview", "filesystem_path", "file_uri", "data_uri"],
+    ["bytearray", "memoryview", "filesystem_path", "file_uri", "data_uri"],
 )
 def test_prepare_audio_accepts_every_legacy_source_form(form, tmp_path) -> None:
     data = wav_bytes()

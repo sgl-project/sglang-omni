@@ -208,19 +208,23 @@ def test_block_compilation_is_chosen_when_the_flow_is_loaded(stages, monkeypatch
     """Compiling mutates the backbone, so a cached flow must not be reused."""
     requested = []
     warmups = []
+    flows = {True: stub_flow(), False: stub_flow()}
 
     def load_flow(checkpoint, device, backbone_dtype, compile_blocks):
         requested.append(compile_blocks)
-        return stub_flow()
+        return flows[compile_blocks]
 
     monkeypatch.setattr(stages, "load_flow", load_flow)
     monkeypatch.setattr(stages, "warmup_flow", lambda *args: warmups.append(args[0]))
     for compile_blocks in (True, False):
-        create_auk_engine_executor(
+        scheduler = create_auk_engine_executor(
             "stub", device="cpu", enable_dit_torch_compile=compile_blocks
         )
+        scheduler.fn(engine_payload())
     assert requested == [True, False]
-    assert len(warmups) == 1
+    assert warmups == [flows[True]]
+    assert flows[True].sample_batch.call_count == 1
+    assert flows[False].sample_batch.call_count == 1
 
 
 def test_the_step_graph_is_skipped_where_the_platform_records_none(stages, monkeypatch):

@@ -38,7 +38,6 @@ from sglang_omni.models.personaplex.prompts import (
     resolve_voice_path,
 )
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
-from sglang_omni.proto.request import EXPLICIT_GENERATION_PARAMS_KEY
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 pytestmark = pytest.mark.accelerator
@@ -291,9 +290,6 @@ async def generate_replies(parity_inputs: ParityInputs) -> dict[str, Reply]:
                     SamplingParams(temperature=0.0) if greedy else SamplingParams()
                 ),
                 extra_params=extra,
-                metadata={
-                    EXPLICIT_GENERATION_PARAMS_KEY: ["temperature"] if greedy else []
-                },
                 output_modalities=["text", "audio"],
                 stream=False,
             )
