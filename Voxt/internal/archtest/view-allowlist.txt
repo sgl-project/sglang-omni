@@ -12,10 +12,6 @@ appenhance_group.go  # appenhance
 appenhance_page.go  # appenhance
 appenhance_preview.go  # appenhance
 appicons.go  # appenhance
-dictionary_notes.go  # dictionary
-dictionary_page.go  # dictionary
-dictionary_scan.go  # dictionary
-dictionary_suggest.go  # dictionary
 feature_endword.go  # feature
 feature_keys.go  # feature
 feature_models.go  # feature
@@ -34,7 +30,6 @@ models_delete.go  # models
 models_keep.go  # models
 models_network.go  # models
 models_page.go  # models
-notes_page.go  # dictionary
 onboarding.go  # onboarding
 onboarding_keys.go  # onboarding
 onboarding_models.go  # onboarding

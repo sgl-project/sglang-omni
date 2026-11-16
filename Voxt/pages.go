@@ -100,7 +100,9 @@ func (a *app) page(c *ui.Context, p navPage) {
 		a.appEnhancementPage(c) // appenhance_page.go
 		return
 	case "/dictionary":
-		a.dictionaryPage(c) // dictionary_page.go
+		a.prepareDictionaryPage()
+		model := a.dictionaryPageModel()
+		dictionaryPage(c, &model, a, &a.dictUI)
 		return
 	case "/meetings":
 		a.prepareMeetingsPage()
@@ -110,7 +112,9 @@ func (a *app) page(c *ui.Context, p navPage) {
 		meetingDeleteDialog(c, &a.mvUI, a)
 		return
 	case "/notes":
-		a.notesPage(c) // notes_page.go
+		a.prepareNotesPage()
+		model := a.notesPageModel(time.Now())
+		notesPage(c, &model, a, &a.nvUI)
 		return
 	}
 	pageHeader(c, pageTitle(p.path), nil)

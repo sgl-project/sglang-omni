@@ -71,7 +71,7 @@ func TestDictionaryAddEditDelete(t *testing.T) {
 	tt.Type("aura link，奥拉林克, aura link")
 	click(t, tt, "Save")
 	ts := terms(t, a)
-	if len(ts) != 1 || ts[0].Term != "VoxtNew" || strings.Join(ts[0].Aliases, "|") != "aura link|奥拉林克" || !ts[0].Enabled || a.dv.editOpen {
+	if len(ts) != 1 || ts[0].Term != "VoxtNew" || strings.Join(ts[0].Aliases, "|") != "aura link|奥拉林克" || !ts[0].Enabled || a.dictUI.editOpen {
 		t.Fatalf("terms %+v", ts)
 	}
 	if !has(tt, "VoxtNew") || !tt.HasText("heard as aura link, 奥拉林克") || !has(tt, "1 term") {
@@ -156,7 +156,7 @@ func TestDictionarySearchAndSwitches(t *testing.T) {
 	if len(a.dv.list) != 1 || a.dv.list[0].Term != "Kubernetes" {
 		t.Errorf("search %+v", a.dv.list)
 	}
-	a.dv.query = "nothing"
+	a.dictUI.query = "nothing"
 	a.loadDict()
 	if !has(tt, "No term matches “nothing”") {
 		t.Errorf("no empty search state %q", firstTexts(tt))
@@ -236,23 +236,25 @@ func dictShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	}
 	save("page-dictionary-suggestions")
 	a.suggestions = nil
-	a.dv.scan = scanState{open: true, model: fakeLLMModel, counted: true, count: 24}
+	a.dv.scan = scanState{model: fakeLLMModel, counted: true, count: 24}
+	a.dictUI.scanOpen = true
 	save("dictionary-scan")
-	a.dv.scan = scanState{open: true, running: true, read: 12, total: 24, found: 3, model: fakeLLMModel}
+	a.dv.scan = scanState{running: true, read: 12, total: 24, found: 3, model: fakeLLMModel}
 	save("dictionary-scan-running")
 	a.dv.scan = scanState{}
+	a.dictUI.scanOpen = false
 	a.openTerm(a.dv.list[0])
 	save("dictionary-edit")
-	a.dv.editOpen = false
+	a.dictUI.editOpen = false
 	// The Personal dictionary view: empty, the reporter's table and its
 	// example, 200 rows.
-	a.dv.tab = dictNotesTab
+	a.dictUI.tab = dictNotesTab
 	save("page-dictionary-notes-empty")
 	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = reporterNotes(t) })
 	save("page-dictionary-notes")
-	a.dv.notesQuery, a.dv.notesFind = "401", finder{cur: 2}
+	a.dictUI.notesQuery, a.dictUI.notesFind = "401", finder{cur: 2}
 	save("page-dictionary-notes-find")
-	a.dv.notesQuery, a.dv.notesFind = "", finder{}
+	a.dictUI.notesQuery, a.dictUI.notesFind = "", finder{}
 	scrollToText(tt, i18n.T("How it is used"))
 	save("page-dictionary-notes-example")
 	// The parts of Transcribe's request, with a short dictionary so they fit.
@@ -265,7 +267,7 @@ func dictShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	scrollToText(tt, "| Term199 |")
 	save("page-dictionary-notes-long")
 	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = "" })
-	a.dv.tab = dictTermsTab
+	a.dictUI.tab = dictTermsTab
 }
 
 // reporterNotes is issue #3815's personal dictionary.
@@ -341,9 +343,9 @@ func TestDictionaryNotes(t *testing.T) {
 	}
 	clickControl(t, tt, "Add to the language model prompt")
 	// Shown again from the settings, as after a restart.
-	a.dv.notes = speechContextState{}
-	if !has(tt, "| 401(k); Roth |") || a.dv.notes.text != notes {
-		t.Errorf("not read back: %q", a.dv.notes.text)
+	a.dictUI.notes = speechContextState{}
+	if !has(tt, "| 401(k); Roth |") || a.dictUI.notes.text != notes {
+		t.Errorf("not read back: %q", a.dictUI.notes.text)
 	}
 	// 200 rows: whole in the prompt, and the page still draws quickly.
 	long := longNotes(200)
@@ -400,20 +402,20 @@ func TestDictionaryNotesExampleCached(t *testing.T) {
 	system := func() string {
 		t.Helper()
 		frames(tt)
-		if len(a.dv.example.msgs) == 0 {
+		if len(a.dv.example.example.Messages) == 0 {
 			t.Fatal("no example")
 		}
-		return a.dv.example.msgs[0].Content
+		return a.dv.example.example.Messages[0].Content
 	}
 	// An empty dictionary: nothing to send, and frames reuse the build.
 	if !has(tt, "(not sent: empty or switched off)") {
 		t.Fatalf("empty: %q", firstTexts(tt))
 	}
-	built := &a.dv.example.msgs[0]
+	built := &a.dv.example.example.Messages[0]
 	for range 10 {
 		tt.Frame()
 	}
-	if &a.dv.example.msgs[0] != built {
+	if &a.dv.example.example.Messages[0] != built {
 		t.Fatal("the example is built again on a frame that changes nothing")
 	}
 	// Terms read back join the glossary.

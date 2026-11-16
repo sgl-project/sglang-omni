@@ -131,12 +131,13 @@ func benchmarkFirstFrame(b *testing.B, a *app, sentinel string) {
 		fresh.book, fresh.suggestions = a.book, a.suggestions
 		fresh.hist, fresh.dv, fresh.mv, fresh.nv = a.hist, a.dv, a.mv, a.nv
 		fresh.histUI, fresh.homeDir, fresh.defaultAudioDir = a.histUI, a.homeDir, a.defaultAudioDir
+		fresh.dictUI, fresh.nvUI = a.dictUI, a.nvUI
 		fresh.histUI.listUI = ui.ListState{}
 		fresh.hist.view, fresh.hist.viewKey = historyViewState{}, historyViewCacheKey{}
-		fresh.dv.listUI = ui.ListState{}
+		fresh.dictUI.listUI = ui.ListState{}
 		fresh.mvUI.listUI = ui.ListState{}
 		fresh.mv.listItems, fresh.mv.listKey, fresh.mv.detailView = nil, meetingListCacheKey{}, nil
-		fresh.nv.listUI = ui.ListState{}
+		fresh.nvUI.listUI = ui.ListState{}
 		return fresh
 	}
 	b.ReportAllocs()
