@@ -1,0 +1,153 @@
+{
+  "name": "history-detail-failed-raw",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "1 entry",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [
+      {
+        "id": "history-failed",
+        "kind": "transcribe",
+        "status": "failed",
+        "delivery": "",
+        "rule_source": "",
+        "dsp": "",
+        "title": "speech service failed",
+        "failed_title": true,
+        "meta": "5 minutes ago · Notes · 0:08",
+        "selected": true,
+        "copy_text": "recognised before the failure",
+        "raw_copy_text": "",
+        "can_reveal": false,
+        "retry": {
+          "available": false,
+          "wanted": true,
+          "active": false,
+          "label": "Retry",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": ""
+        },
+        "marks": [
+          {
+            "label": "Failed",
+            "tooltip": "No recording was kept, so it cannot be retried",
+            "tone": "danger"
+          }
+        ]
+      }
+    ],
+    "detail": {
+      "id": "history-failed",
+      "kind": "transcribe",
+      "status": "failed",
+      "delivery": "",
+      "rule_source": "",
+      "dsp": "",
+      "error_text": "Failed: speech service failed",
+      "error_detail": "speech service failed",
+      "error_warning": false,
+      "can_reveal": false,
+      "retry": {
+        "available": false,
+        "wanted": true,
+        "active": false,
+        "label": "Retry",
+        "disabled": false,
+        "stage": "",
+        "stage_text": "",
+        "tooltip": ""
+      },
+      "recording_kept_text": "",
+      "text_blocks": [
+        {
+          "key": "hist-raw",
+          "title": "Recognised text",
+          "copy_label": "Copy recognised text",
+          "text": "recognised before the failure"
+        }
+      ],
+      "sections": [
+        {
+          "title": "Details",
+          "facts": [
+            {
+              "label": "Time",
+              "value": "Jan 2 14:59",
+              "empty": false
+            },
+            {
+              "label": "App",
+              "value": "Notes",
+              "empty": false
+            },
+            {
+              "label": "Delivery",
+              "value": "—",
+              "empty": true
+            },
+            {
+              "label": "Speech recognition",
+              "value": "Fixture speech model",
+              "empty": false
+            },
+            {
+              "label": "Sound optimisation",
+              "value": "—",
+              "empty": true
+            },
+            {
+              "label": "Language model",
+              "value": "Fixture language model",
+              "empty": false
+            },
+            {
+              "label": "App rule",
+              "value": "—",
+              "empty": true
+            }
+          ]
+        },
+        {
+          "title": "Timing",
+          "facts": [
+            {
+              "label": "Recording",
+              "value": "7.5 s, 2.5 s sent",
+              "empty": false
+            },
+            {
+              "label": "Recognition",
+              "value": "850 ms",
+              "empty": false
+            },
+            {
+              "label": "Language model",
+              "value": "1.2 s",
+              "empty": false
+            },
+            {
+              "label": "Total",
+              "value": "2.4 s",
+              "empty": false
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

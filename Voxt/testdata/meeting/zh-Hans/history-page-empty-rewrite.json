@@ -1,0 +1,29 @@
+{
+  "name": "history-page-empty-rewrite",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "kind": "rewrite",
+    "query": "",
+    "tabs": [
+      "转录",
+      "翻译",
+      "改写",
+      "全部"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": null,
+    "empty": {
+      "search": false,
+      "kind": "rewrite",
+      "title": "还没有改写记录",
+      "body": "改写结果会和你的指令一起显示在这里。",
+      "action_label": "设置改写"
+    }
+  }
+}

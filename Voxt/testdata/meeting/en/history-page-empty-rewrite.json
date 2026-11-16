@@ -1,0 +1,29 @@
+{
+  "name": "history-page-empty-rewrite",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "kind": "rewrite",
+    "query": "",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": null,
+    "empty": {
+      "search": false,
+      "kind": "rewrite",
+      "title": "No rewrites yet",
+      "body": "Rewrites show up here with your instruction.",
+      "action_label": "Set up Rewrite"
+    }
+  }
+}

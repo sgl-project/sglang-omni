@@ -14,7 +14,7 @@ func DateTime(t time.Time) string {
 }
 
 func (t *Translator) DateTimeAt(value, now time.Time) string {
-	value = value.Local()
+	value = value.In(now.Location())
 	sameYear := value.Year() == now.Year()
 	switch t.Locale() {
 	case "zh-Hans":

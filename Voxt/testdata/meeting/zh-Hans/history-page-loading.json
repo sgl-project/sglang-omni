@@ -1,0 +1,22 @@
+{
+  "name": "history-page-loading",
+  "kind": "history",
+  "history": {
+    "read": false,
+    "loading": true,
+    "error": "",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "转录",
+      "翻译",
+      "改写",
+      "全部"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": null
+  }
+}

@@ -1,0 +1,203 @@
+{
+  "name": "history-page-error",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "loading": false,
+    "error": "fixture read failed",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "转录",
+      "翻译",
+      "改写",
+      "全部"
+    ],
+    "count_label": "6 条记录",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [
+      {
+        "id": "history-inserted",
+        "kind": "transcribe",
+        "status": "done",
+        "delivery": "insert",
+        "rule_source": "app",
+        "dsp": "highpass+level",
+        "title": "Weekly plan",
+        "failed_title": false,
+        "meta": "5 分钟前 · Notes · 0:08",
+        "selected": false,
+        "copy_text": "Weekly plan\nI'll send the new agenda tonight.",
+        "raw_copy_text": "weekly plan\nI'll send the new agenda tonight",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "重新识别",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "用保存的录音重新识别，不会插入文字。"
+        },
+        "marks": null
+      },
+      {
+        "id": "history-translated",
+        "kind": "translate",
+        "status": "done",
+        "delivery": "card",
+        "rule_source": "url",
+        "dsp": "highpass",
+        "title": "晚上好",
+        "failed_title": false,
+        "meta": "5 分钟前 · Notes · → 简体中文 · 0:08",
+        "selected": false,
+        "copy_text": "晚上好",
+        "raw_copy_text": "good evening",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "重新识别",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "用保存的录音重新识别，不会插入文字。"
+        },
+        "marks": [
+          {
+            "label": "未插入",
+            "tooltip": "显示在答案卡片中，没有插入",
+            "tone": ""
+          }
+        ]
+      },
+      {
+        "id": "history-rewritten",
+        "kind": "rewrite",
+        "status": "done",
+        "delivery": "copy",
+        "rule_source": "browserApp",
+        "dsp": "level",
+        "title": "A formal answer",
+        "failed_title": false,
+        "meta": "5 分钟前 · Notes · 选中文字 · 0:08",
+        "selected": false,
+        "copy_text": "A formal answer",
+        "raw_copy_text": "make this formal",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "重新识别",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "用保存的录音重新识别，不会插入文字。"
+        },
+        "marks": [
+          {
+            "label": "已复制",
+            "tooltip": "从答案卡片复制",
+            "tone": ""
+          }
+        ]
+      },
+      {
+        "id": "history-failed",
+        "kind": "transcribe",
+        "status": "failed",
+        "delivery": "",
+        "rule_source": "",
+        "dsp": "",
+        "title": "speech service failed",
+        "failed_title": true,
+        "meta": "5 分钟前 · Notes · 0:08",
+        "selected": false,
+        "copy_text": "",
+        "raw_copy_text": "",
+        "can_reveal": false,
+        "retry": {
+          "available": false,
+          "wanted": true,
+          "active": false,
+          "label": "重试",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": ""
+        },
+        "marks": [
+          {
+            "label": "失败",
+            "tooltip": "没有保存录音，无法重试",
+            "tone": "danger"
+          }
+        ]
+      },
+      {
+        "id": "history-cancelled",
+        "kind": "transcribe",
+        "status": "cancelled",
+        "delivery": "",
+        "rule_source": "app",
+        "dsp": "highpass+level",
+        "title": "没有文字",
+        "failed_title": true,
+        "meta": "5 分钟前 · Notes · 0:08",
+        "selected": false,
+        "copy_text": "",
+        "raw_copy_text": "",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": true,
+          "active": false,
+          "label": "重试",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": ""
+        },
+        "marks": null
+      },
+      {
+        "id": "history-degraded",
+        "kind": "translate",
+        "status": "done",
+        "delivery": "card",
+        "rule_source": "url",
+        "dsp": "highpass",
+        "title": "晚上好",
+        "failed_title": false,
+        "meta": "5 分钟前 · Notes · → 简体中文 · 0:08",
+        "selected": false,
+        "copy_text": "晚上好",
+        "raw_copy_text": "good evening",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "重新识别",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "用保存的录音重新识别，不会插入文字。"
+        },
+        "marks": [
+          {
+            "label": "未插入",
+            "tooltip": "显示在答案卡片中，没有插入",
+            "tone": ""
+          }
+        ]
+      }
+    ]
+  }
+}

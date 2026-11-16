@@ -1,0 +1,29 @@
+{
+  "name": "history-page-search-empty-long",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "kind": "transcribe",
+    "query": "a query whose visible form is longer than forty runes",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": null,
+    "empty": {
+      "search": true,
+      "kind": "",
+      "title": "Nothing matches “a query whose visible form is longer tha…”",
+      "body": "",
+      "action_label": "Clear search"
+    }
+  }
+}

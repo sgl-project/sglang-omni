@@ -73,6 +73,24 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "start":
 		state := buildMeetingStartViewState(translator, scenario.err)
 		fixture.Start = &state
+	case "history":
+		if scenario.historyProblem != "" {
+			scenario.history = historyFixtureProblemInput(scenario.historyProblem)
+		}
+		state := buildHistoryViewState(translator, scenario.history)
+		fixture.History = &state
+	case "history-settings":
+		if scenario.historySettings.DaysSelection == "" {
+			scenario.historySettings.DaysSelection = historyKeepDayOptions(translator)[3].Label
+		}
+		if scenario.historySettings.CountSelection == "" {
+			scenario.historySettings.CountSelection = historyKeepCountOptions(translator)[0].Label
+		}
+		state := buildHistorySettingsViewState(translator, scenario.historySettings)
+		fixture.HistorySettings = &state
+	case "history-access":
+		state := buildHistoryAccessViewState(translator, scenario.historyAccess)
+		fixture.HistoryAccess = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

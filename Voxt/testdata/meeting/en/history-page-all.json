@@ -1,0 +1,203 @@
+{
+  "name": "history-page-all",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "kind": "",
+    "query": "",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "6 entries",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [
+      {
+        "id": "history-inserted",
+        "kind": "transcribe",
+        "status": "done",
+        "delivery": "insert",
+        "rule_source": "app",
+        "dsp": "highpass+level",
+        "title": "Weekly plan",
+        "failed_title": false,
+        "meta": "Transcribe · 5 minutes ago · Notes · 0:08",
+        "selected": false,
+        "copy_text": "Weekly plan\nI'll send the new agenda tonight.",
+        "raw_copy_text": "weekly plan\nI'll send the new agenda tonight",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "Transcribe again",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "Recognise the recording again. Nothing is inserted."
+        },
+        "marks": null
+      },
+      {
+        "id": "history-translated",
+        "kind": "translate",
+        "status": "done",
+        "delivery": "card",
+        "rule_source": "url",
+        "dsp": "highpass",
+        "title": "晚上好",
+        "failed_title": false,
+        "meta": "Translate · 5 minutes ago · Notes · → Simplified Chinese · 0:08",
+        "selected": false,
+        "copy_text": "晚上好",
+        "raw_copy_text": "good evening",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "Transcribe again",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "Recognise the recording again. Nothing is inserted."
+        },
+        "marks": [
+          {
+            "label": "Not inserted",
+            "tooltip": "Shown in the answer card, not inserted",
+            "tone": ""
+          }
+        ]
+      },
+      {
+        "id": "history-rewritten",
+        "kind": "rewrite",
+        "status": "done",
+        "delivery": "copy",
+        "rule_source": "browserApp",
+        "dsp": "level",
+        "title": "A formal answer",
+        "failed_title": false,
+        "meta": "Rewrite · 5 minutes ago · Notes · Selection · 0:08",
+        "selected": false,
+        "copy_text": "A formal answer",
+        "raw_copy_text": "make this formal",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "Transcribe again",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "Recognise the recording again. Nothing is inserted."
+        },
+        "marks": [
+          {
+            "label": "Copied",
+            "tooltip": "Copied from the answer card",
+            "tone": ""
+          }
+        ]
+      },
+      {
+        "id": "history-failed",
+        "kind": "transcribe",
+        "status": "failed",
+        "delivery": "",
+        "rule_source": "",
+        "dsp": "",
+        "title": "speech service failed",
+        "failed_title": true,
+        "meta": "Transcribe · 5 minutes ago · Notes · 0:08",
+        "selected": false,
+        "copy_text": "",
+        "raw_copy_text": "",
+        "can_reveal": false,
+        "retry": {
+          "available": false,
+          "wanted": true,
+          "active": false,
+          "label": "Retry",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": ""
+        },
+        "marks": [
+          {
+            "label": "Failed",
+            "tooltip": "No recording was kept, so it cannot be retried",
+            "tone": "danger"
+          }
+        ]
+      },
+      {
+        "id": "history-cancelled",
+        "kind": "transcribe",
+        "status": "cancelled",
+        "delivery": "",
+        "rule_source": "app",
+        "dsp": "highpass+level",
+        "title": "No text",
+        "failed_title": true,
+        "meta": "Transcribe · 5 minutes ago · Notes · 0:08",
+        "selected": false,
+        "copy_text": "",
+        "raw_copy_text": "",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": true,
+          "active": false,
+          "label": "Retry",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": ""
+        },
+        "marks": null
+      },
+      {
+        "id": "history-degraded",
+        "kind": "translate",
+        "status": "done",
+        "delivery": "card",
+        "rule_source": "url",
+        "dsp": "highpass",
+        "title": "晚上好",
+        "failed_title": false,
+        "meta": "Translate · 5 minutes ago · Notes · → Simplified Chinese · 0:08",
+        "selected": false,
+        "copy_text": "晚上好",
+        "raw_copy_text": "good evening",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "Transcribe again",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "Recognise the recording again. Nothing is inserted."
+        },
+        "marks": [
+          {
+            "label": "Not inserted",
+            "tooltip": "Shown in the answer card, not inserted",
+            "tone": ""
+          }
+        ]
+      }
+    ]
+  }
+}

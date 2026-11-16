@@ -1,0 +1,29 @@
+{
+  "name": "history-page-empty-translate",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "kind": "translate",
+    "query": "",
+    "tabs": [
+      "转录",
+      "翻译",
+      "改写",
+      "全部"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": null,
+    "empty": {
+      "search": false,
+      "kind": "translate",
+      "title": "还没有翻译记录",
+      "body": "译文会和原文一起显示在这里。",
+      "action_label": "设置翻译"
+    }
+  }
+}

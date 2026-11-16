@@ -1,0 +1,171 @@
+{
+  "name": "history-detail-rewrite-selection",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "kind": "rewrite",
+    "query": "",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "1 entry",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [
+      {
+        "id": "history-rewritten",
+        "kind": "rewrite",
+        "status": "done",
+        "delivery": "copy",
+        "rule_source": "browserApp",
+        "dsp": "level",
+        "title": "A formal answer",
+        "failed_title": false,
+        "meta": "5 minutes ago · Notes · Selection · 0:08",
+        "selected": true,
+        "copy_text": "A formal answer",
+        "raw_copy_text": "make this formal",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "Transcribe again",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "Recognise the recording again. Nothing is inserted."
+        },
+        "marks": [
+          {
+            "label": "Copied",
+            "tooltip": "Copied from the answer card",
+            "tone": ""
+          }
+        ]
+      }
+    ],
+    "detail": {
+      "id": "history-rewritten",
+      "kind": "rewrite",
+      "status": "done",
+      "delivery": "copy",
+      "rule_source": "browserApp",
+      "dsp": "level",
+      "error_text": "",
+      "error_detail": "",
+      "error_warning": false,
+      "can_reveal": true,
+      "retry": {
+        "available": true,
+        "wanted": false,
+        "active": false,
+        "label": "Transcribe again",
+        "disabled": false,
+        "stage": "",
+        "stage_text": "",
+        "tooltip": "Recognise the recording again. Nothing is inserted."
+      },
+      "recording_kept_text": "",
+      "text_blocks": [
+        {
+          "key": "hist-result",
+          "title": "Result",
+          "copy_label": "Copy result",
+          "text": "A formal answer"
+        },
+        {
+          "key": "hist-prompt",
+          "title": "Instruction",
+          "copy_label": "Copy instruction",
+          "text": "Rewrite formally"
+        },
+        {
+          "key": "hist-source",
+          "title": "Selected text",
+          "copy_label": "Copy selected text",
+          "text": "an informal source"
+        },
+        {
+          "key": "hist-raw",
+          "title": "Recognised text",
+          "copy_label": "Copy recognised text",
+          "text": "make this formal"
+        }
+      ],
+      "sections": [
+        {
+          "title": "Details",
+          "facts": [
+            {
+              "label": "Time",
+              "value": "Jan 2 14:59",
+              "empty": false
+            },
+            {
+              "label": "App",
+              "value": "Notes",
+              "empty": false
+            },
+            {
+              "label": "Delivery",
+              "value": "Copied",
+              "empty": false
+            },
+            {
+              "label": "Speech recognition",
+              "value": "Fixture speech model",
+              "empty": false
+            },
+            {
+              "label": "Sound optimisation",
+              "value": "Volume +2.0 dB",
+              "empty": false
+            },
+            {
+              "label": "Language model",
+              "value": "Fixture language model",
+              "empty": false
+            },
+            {
+              "label": "App rule",
+              "value": "Fixture rule (browser)",
+              "empty": false
+            }
+          ]
+        },
+        {
+          "title": "Timing",
+          "facts": [
+            {
+              "label": "Recording",
+              "value": "7.5 s, 2.5 s sent",
+              "empty": false
+            },
+            {
+              "label": "Recognition",
+              "value": "850 ms",
+              "empty": false
+            },
+            {
+              "label": "Language model",
+              "value": "1.2 s",
+              "empty": false
+            },
+            {
+              "label": "Total",
+              "value": "2.4 s",
+              "empty": false
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

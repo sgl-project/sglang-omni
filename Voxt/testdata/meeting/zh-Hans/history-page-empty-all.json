@@ -1,0 +1,29 @@
+{
+  "name": "history-page-empty-all",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "kind": "",
+    "query": "",
+    "tabs": [
+      "转录",
+      "翻译",
+      "改写",
+      "全部"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": null,
+    "empty": {
+      "search": false,
+      "kind": "",
+      "title": "还没有历史记录",
+      "body": "转录、翻译和改写的结果都会显示在这里。",
+      "action_label": ""
+    }
+  }
+}

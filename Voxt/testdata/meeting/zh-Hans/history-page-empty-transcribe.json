@@ -1,0 +1,29 @@
+{
+  "name": "history-page-empty-transcribe",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "转录",
+      "翻译",
+      "改写",
+      "全部"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": null,
+    "empty": {
+      "search": false,
+      "kind": "transcribe",
+      "title": "还没有转录记录",
+      "body": "每次的结果都会显示在这里。",
+      "action_label": "设置转录"
+    }
+  }
+}
