@@ -60,7 +60,7 @@ func (a *app) syncHistForm() {
 
 func (a *app) historySettingsModel() historySettingsViewState {
 	return buildHistorySettingsViewState(i18n.CurrentTranslator(), historySettingsStateInput{
-		Open: a.histSetUI.open, AudioDir: a.prefs.History.AudioDir, DefaultAudioDir: a.lib.store.History().DefaultAudioDir(),
+		Open: a.histSetUI.open, AudioDir: a.prefs.History.AudioDir, DefaultAudioDir: a.defaultAudioDir,
 		HomeDir: a.homeDir, AudioMissing: a.histSet.audioMissing, UsageN: a.histSet.usageN, UsageBytes: a.histSet.usageBytes,
 		UsageFor: a.histSet.usageFor, Busy: a.histSet.busy, Done: a.histSet.done, Total: a.histSet.total,
 		CanCancel: a.histSet.cancel != nil, Kind: a.histUI.kind(), Query: a.histUI.query,

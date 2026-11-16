@@ -19,11 +19,6 @@
     "rows": [
       {
         "id": "history-translated",
-        "kind": "translate",
-        "status": "done",
-        "delivery": "card",
-        "rule_source": "url",
-        "dsp": "highpass",
         "title": "晚上好",
         "failed_title": false,
         "meta": "5 分钟前 · Notes · → 简体中文 · 0:08",

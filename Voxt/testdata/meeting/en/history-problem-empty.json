@@ -19,11 +19,6 @@
     "rows": [
       {
         "id": "history-problem-empty",
-        "kind": "transcribe",
-        "status": "failed",
-        "delivery": "insert",
-        "rule_source": "app",
-        "dsp": "highpass+level",
         "title": "The language model returned an empty answer.",
         "failed_title": true,
         "meta": "5 minutes ago · Notes · 0:08",

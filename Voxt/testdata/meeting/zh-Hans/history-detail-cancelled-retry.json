@@ -19,11 +19,6 @@
     "rows": [
       {
         "id": "history-retry",
-        "kind": "transcribe",
-        "status": "cancelled",
-        "delivery": "insert",
-        "rule_source": "app",
-        "dsp": "highpass+level",
         "title": "weekly plan",
         "failed_title": false,
         "meta": "5 分钟前 · Notes · 0:08",

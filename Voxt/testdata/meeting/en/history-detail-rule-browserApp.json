@@ -19,11 +19,6 @@
     "rows": [
       {
         "id": "history-inserted",
-        "kind": "transcribe",
-        "status": "done",
-        "delivery": "insert",
-        "rule_source": "browserApp",
-        "dsp": "highpass+level",
         "title": "Weekly plan",
         "failed_title": false,
         "meta": "5 minutes ago · Notes · 0:08",

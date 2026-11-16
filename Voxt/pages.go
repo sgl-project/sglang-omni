@@ -91,8 +91,10 @@ func (a *app) page(c *ui.Context, p navPage) {
 		historyPage(c, &model, a, &a.histUI, a.pageWidth(c))
 		historyDeleteDialog(c, &a.histUI, a)
 		a.prepareHistorySettings()
-		settingsModel := a.historySettingsModel()
-		historySettingsDialog(c, &settingsModel, a, &a.histSetUI)
+		if a.histSetUI.open {
+			settingsModel := a.historySettingsModel()
+			historySettingsDialog(c, &settingsModel, a, &a.histSetUI)
+		}
 		return
 	case "/app-enhancement":
 		a.appEnhancementPage(c) // appenhance_page.go

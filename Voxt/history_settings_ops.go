@@ -48,6 +48,7 @@ func retention(h settings.History, now time.Time) store.Retention {
 // clean-up once, as the app starts (newApp).
 func (a *app) openHistorySettings() {
 	a.homeDir, _ = os.UserHomeDir()
+	a.defaultAudioDir = a.lib.store.History().DefaultAudioDir()
 	a.applyAudioDir()
 	a.pruneHistory()
 }

@@ -19,11 +19,6 @@
     "rows": [
       {
         "id": "history-failed",
-        "kind": "transcribe",
-        "status": "failed",
-        "delivery": "",
-        "rule_source": "",
-        "dsp": "",
         "title": "speech service failed",
         "failed_title": true,
         "meta": "5 分钟前 · Notes · 0:08",

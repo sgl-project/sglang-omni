@@ -28,11 +28,6 @@ type historyRetryViewState struct {
 
 type historyRowViewState struct {
 	ID          string                 `json:"id"`
-	Kind        string                 `json:"kind"`
-	Status      string                 `json:"status"`
-	Delivery    string                 `json:"delivery"`
-	RuleSource  string                 `json:"rule_source"`
-	DSP         string                 `json:"dsp"`
 	Title       string                 `json:"title"`
 	FailedTitle bool                   `json:"failed_title"`
 	Meta        string                 `json:"meta"`
@@ -150,8 +145,9 @@ func buildHistoryViewState(translator *i18n.Translator, input historyViewStateIn
 			uitext.ShortPathAt(input.AudioMissing, input.HomeDir), uitext.ShortPathAt(input.DefaultAudioDir, input.HomeDir))
 	}
 	query := strings.TrimSpace(input.Query)
-	for _, entry := range input.Entries {
-		state.Rows = append(state.Rows, buildHistoryRowViewState(translator, entry, query, input.SelectedID, input.Kind == "", input.Retry, input.Now))
+	state.Rows = make([]historyRowViewState, len(input.Entries))
+	for index, entry := range input.Entries {
+		state.Rows[index] = buildHistoryRowViewState(translator, entry, query, input.SelectedID, input.Kind == "", input.Retry, input.Now)
 	}
 	if input.Read && len(input.Entries) == 0 {
 		state.Empty = buildHistoryEmptyViewState(translator, input.Kind, query)
@@ -169,8 +165,7 @@ func buildHistoryRowViewState(translator *i18n.Translator, entry store.Entry, qu
 		meta = historyKindName(translator, entry.Kind) + " · " + meta
 	}
 	state := historyRowViewState{
-		ID: entry.ID, Kind: string(entry.Kind), Status: string(entry.Status), Delivery: entry.Delivery,
-		RuleSource: entry.RuleSource, DSP: entry.DSP, Title: title, FailedTitle: failed, Meta: meta,
+		ID: entry.ID, Title: title, FailedTitle: failed, Meta: meta,
 		Selected: selectedID == entry.ID, CopyText: historyEntryCopyText(entry), RawCopyText: historyEntryRawCopy(entry),
 		CanReveal: entry.Audio != "", Retry: buildHistoryRetryViewState(translator, entry, retry),
 	}

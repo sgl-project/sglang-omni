@@ -19,11 +19,6 @@
     "rows": [
       {
         "id": "history-rewritten",
-        "kind": "rewrite",
-        "status": "done",
-        "delivery": "copy",
-        "rule_source": "browserApp",
-        "dsp": "level",
         "title": "A formal answer",
         "failed_title": false,
         "meta": "5 minutes ago · Notes · Selection · 0:08",

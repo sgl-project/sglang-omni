@@ -18,11 +18,12 @@ import (
 const historyLimit = 500
 
 type historyState struct {
-	hist      historyView
-	histUI    historyLocalUI
-	histSet   histSettingsState
-	histSetUI historySettingsLocalUI
-	homeDir   string
+	hist            historyView
+	histUI          historyLocalUI
+	histSet         histSettingsState
+	histSetUI       historySettingsLocalUI
+	homeDir         string
+	defaultAudioDir string
 }
 
 type historyView struct {
@@ -143,12 +144,11 @@ func (a *app) historyPageModel(now time.Time) historyViewState {
 		llmModel = a.entryModel(local.LLM, selected.LLMProvider, selected.LLMModel)
 		detail = &historyDetailStateInput{Entry: *selected, Retry: a.hist.retry, ASRModel: asrModel, LLMModel: llmModel}
 	}
-	defaultAudioDir := a.lib.store.History().DefaultAudioDir()
 	_, zoneOffset := now.Zone()
 	key := historyViewCacheKey{
 		seq: a.hist.seq, listFor: a.hist.listFor, loading: a.hist.loading, stale: a.hist.stale, err: a.hist.err,
 		tab: a.histUI.tab, query: a.histUI.query, selectedID: a.histUI.sel, retryID: a.hist.retry.id, retryStage: string(a.hist.retry.stage),
-		keepHistory: a.prefs.Privacy.KeepHistory, audioMissing: a.histSet.audioMissing, defaultAudioDir: defaultAudioDir,
+		keepHistory: a.prefs.Privacy.KeepHistory, audioMissing: a.histSet.audioMissing, defaultAudioDir: a.defaultAudioDir,
 		homeDir: a.homeDir, locale: i18n.Locale(), location: now.Location().String(), zoneOffset: zoneOffset,
 		minute: now.Unix() / 60, asrModel: asrModel, llmModel: llmModel,
 	}
@@ -157,7 +157,7 @@ func (a *app) historyPageModel(now time.Time) historyViewState {
 			Entries: a.hist.list, Kind: a.histUI.kind(), Read: a.hist.listFor != "",
 			Error: a.hist.err, Query: a.histUI.query, SelectedID: a.histUI.sel, Retry: a.hist.retry,
 			KeepHistory: a.prefs.Privacy.KeepHistory, SettingsAvailable: true, AudioMissing: a.histSet.audioMissing,
-			DefaultAudioDir: defaultAudioDir, HomeDir: a.homeDir, Now: now, Detail: detail,
+			DefaultAudioDir: a.defaultAudioDir, HomeDir: a.homeDir, Now: now, Detail: detail,
 		})
 		a.hist.viewKey = key
 	}

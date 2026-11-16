@@ -25,16 +25,16 @@ func checkHistoryFixtureValues(t *testing.T, locale string, fixtures map[string]
 	}
 	kinds, statuses, deliveries := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	ruleSources, soundProcesses, retryStages := map[string]bool{}, map[string]bool{}, map[string]bool{}
-	for _, fixture := range fixtures {
-		if fixture.History == nil {
-			continue
+	for _, scenario := range meetingFixtureScenarios() {
+		if scenario.historyProblem != "" {
+			scenario.history = historyFixtureProblemInput(scenario.historyProblem)
 		}
-		for _, row := range fixture.History.Rows {
-			kinds[row.Kind], statuses[row.Status], deliveries[row.Delivery] = true, true, true
-			ruleSources[row.RuleSource], soundProcesses[row.DSP] = true, true
-			if row.Retry.Stage != "" {
-				retryStages[row.Retry.Stage] = true
-			}
+		for _, entry := range scenario.history.Entries {
+			kinds[string(entry.Kind)], statuses[string(entry.Status)], deliveries[entry.Delivery] = true, true, true
+			ruleSources[entry.RuleSource], soundProcesses[entry.DSP] = true, true
+		}
+		if stage := scenario.history.Retry.stage; stage != "" {
+			retryStages[string(stage)] = true
 		}
 	}
 	assertMeetingFixtureSet(t, locale+" history kinds", meetingTypedConstants(t, "internal/store/store.go", "Kind"), kinds)

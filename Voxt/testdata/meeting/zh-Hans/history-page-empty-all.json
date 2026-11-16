@@ -16,7 +16,7 @@
     "keep_history": true,
     "settings_available": true,
     "folder_notice": "",
-    "rows": null,
+    "rows": [],
     "empty": {
       "search": false,
       "kind": "",
