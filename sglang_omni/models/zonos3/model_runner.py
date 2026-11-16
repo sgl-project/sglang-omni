@@ -104,15 +104,6 @@ class Zonos3ModelRunner(ModelRunner[Zonos3RequestData]):
         )
         self.top_ks = torch.ones(pool_row_count, dtype=torch.int64, device=device)
         self.seeds = torch.zeros(pool_row_count, dtype=torch.int64, device=device)
-        # note (0xtoward): The fused frame-embedding kernel reads the bfloat16 embedding tables by address and writes bfloat16 decode inputs.
-        self.codebook_table_addresses = torch.tensor(
-            [
-                embedder.weight.data_ptr()
-                for embedder in model.embedders[: self.codebook_count]
-            ],
-            dtype=torch.int64,
-            device=device,
-        )
         self.text_pad_embedding = model.embedders[self.codebook_count].weight[
             self.text_pad_id
         ]
@@ -122,6 +113,20 @@ class Zonos3ModelRunner(ModelRunner[Zonos3RequestData]):
                 embedder.weight.dtype == torch.bfloat16 for embedder in model.embedders
             )
             and decode_buffer.dtype == torch.bfloat16
+        )
+        # note (0xtoward): The fused frame-embedding kernel reads the bfloat16 embedding tables by address and writes bfloat16 decode inputs.
+        # An XPU device pointer occupies all 64 bits, which no int64 tensor holds, so the table is built only for the kernel that reads it.
+        self.codebook_table_addresses = (
+            torch.tensor(
+                [
+                    embedder.weight.data_ptr()
+                    for embedder in model.embedders[: self.codebook_count]
+                ],
+                dtype=torch.int64,
+                device=device,
+            )
+            if self.is_fused_embedding
+            else None
         )
         # A prefill's first rows on the GPU until a lookahead launch stages them or a synchronous step records them.
         self.prefill_rows: torch.Tensor | None = None
