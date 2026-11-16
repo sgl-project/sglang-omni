@@ -17,6 +17,7 @@ from pydantic import (
     field_validator,
 )
 
+from sglang_omni.models.firered_tts3.task_prompts import FireRedTTS3AcousticParameters
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.speech_errors import bad_request
 from sglang_omni.serve.speech_service import (
@@ -65,6 +66,7 @@ class FireRedTTS3SpeechRequestValidator(SpeechRequestValidator):
     """Validate native speed, generation settings and Base task admission."""
 
     supports_dual_stream: ClassVar[bool] = False
+    requires_explicit_language: ClassVar[bool] = True
     supported_task_types: ClassVar[frozenset[FireRedTTS3SpeechTask]] = frozenset(
         {"Base"}
     )
@@ -136,6 +138,15 @@ class FireRedTTS3SpeechRequestValidator(SpeechRequestValidator):
         # note (kermit): FireRed consumes speed natively; encode-time resampling would apply it twice.
         return 1.0
 
+    def normalize_language(self, value: str) -> str:
+        language = super().normalize_language(value)
+        if language == "Auto" and self.requires_explicit_language:
+            raise bad_request(
+                "FireRedTTS3-Base requires an explicit language", param="language"
+            )
+        else:
+            return language
+
     def validate_speech_references(
         self,
         request: CreateSpeechRequest,
@@ -154,6 +165,7 @@ class FireRedTTS3SpeechRequestValidator(SpeechRequestValidator):
 class FireRedTTS3InstructSpeechRequestValidator(FireRedTTS3SpeechRequestValidator):
     """Validate Instruct task requirements before backend dispatch."""
 
+    requires_explicit_language: ClassVar[bool] = False
     supported_task_types: ClassVar[frozenset[FireRedTTS3SpeechTask]] = frozenset(
         {"Base", "VoiceDesign", "SemanticEdit", "AcousticEdit"}
     )
@@ -182,8 +194,29 @@ class FireRedTTS3InstructSpeechRequestValidator(FireRedTTS3SpeechRequestValidato
             raise bad_request(
                 "instructions are required for this task", param="instructions"
             )
+        elif updates.get("task_type") == "AcousticEdit" and not (
+            request.instructions and request.instructions.strip()
+        ):
+            preprocessing_parameters = (request.stage_params or {}).get(
+                "preprocessing", {}
+            )
+            acoustic_values = {
+                parameter_name: value
+                for parameter_name, value in preprocessing_parameters.items()
+                if value is not None
+            }
+            acoustic_values.setdefault("acoustic_value", request.speed)
+            try:
+                FireRedTTS3AcousticParameters.model_validate(acoustic_values)
+            except ValidationError as error:
+                detail = error.errors()[0]
+                parameter_path = f"stage_params.preprocessing.{detail['loc'][0]}"
+                raise bad_request(
+                    f"{parameter_path}: {detail['msg']}", param=parameter_path
+                ) from error
         else:
-            return updates
+            pass
+        return updates
 
     def validate_speech_references(
         self,
@@ -222,6 +255,7 @@ class FireRedTTS3SpeakerSpeechRequestValidator(FireRedTTS3SpeechRequestValidator
     """Speaker checkpoints use speaker tokens and cannot consume reference audio."""
 
     supports_dual_stream: ClassVar[bool] = True
+    requires_explicit_language: ClassVar[bool] = False
 
     def validate_speech_references(
         self,

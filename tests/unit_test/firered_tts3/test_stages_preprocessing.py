@@ -174,6 +174,9 @@ def test_preprocessing_preserves_generation_parameter_precedence() -> None:
 
 
 def test_preprocessing_requires_text_and_reference() -> None:
+    payload = make_preprocessing_payload(inputs={"text": "a" * 401})
+    with pytest.raises(ValueError, match="at most 400 characters"):
+        preprocess_payload(payload)
     payload = make_preprocessing_payload(inputs={"text": "  "})
     with pytest.raises(ValueError, match="non-empty input text"):
         preprocess_payload(payload)

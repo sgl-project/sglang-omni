@@ -158,13 +158,13 @@ def test_audio_prompt_slots_follow_resampled_patch_boundaries(
         (
             {},
             {},
-            {"acoustic_attribute": "Pitch", "acoustic_value": -1},
+            {"acoustic_attribute": " pItCh ", "acoustic_value": "-1"},
             "shift the pitch by -1 step",
         ),
         (
             {"instructions": "adjust the volume to 0.5"},
             {},
-            {"acoustic_attribute": "Pitch", "acoustic_value": 2},
+            {"acoustic_attribute": "unused", "acoustic_value": "not-a-number"},
             "adjust the volume to 0.5",
         ),
     ],

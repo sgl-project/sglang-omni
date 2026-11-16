@@ -121,6 +121,31 @@ REFERENCE_AUDIO = "data:audio/wav;base64," + base64.b64encode(b"RIFF").decode("a
             "references",
             "single",
         ),
+        *[
+            (
+                "instruct",
+                {
+                    "task_type": "AcousticEdit",
+                    "ref_audio": REFERENCE_AUDIO,
+                    "stage_params": {"preprocessing": {parameter_name: value}},
+                },
+                f"stage_params.preprocessing.{parameter_name}",
+                delivery,
+            )
+            for parameter_name, value, delivery in (
+                ("acoustic_attribute", "Tone", "single"),
+                ("acoustic_value", "fast", "batch"),
+                ("acoustic_value", "nan", "websocket"),
+                ("acoustic_value", True, "single"),
+            )
+        ],
+        ("speaker", {"input": "a" * 401}, "input", "batch"),
+        (
+            "base",
+            {"language": "Auto", "ref_audio": REFERENCE_AUDIO, "ref_text": "reference"},
+            "language",
+            "single",
+        ),
     ],
 )
 def test_speech_parameters_rejected_before_generation(
@@ -137,6 +162,7 @@ def test_speech_parameters_rejected_before_generation(
         create_app(
             backend,
             model_name="tts",
+            max_speech_input_chars=pipeline.max_speech_input_chars,
             speech_request_validator_cls=import_string(
                 pipeline.speech_request_validator_factory
             ),
@@ -170,11 +196,11 @@ def test_stage_options_reach_preprocessing_without_overwriting_sampling(
     """An unknown HTTP extra_params bag must not overwrite validated sampling or stage fields."""
     pipeline = FireRedTTS3PipelineConfig(model_path=str(tmp_path), variant="speaker")
     service = import_string(pipeline.speech_request_validator_factory)(
-        default_model="tts"
+        default_model="tts", max_speech_input_chars=pipeline.max_speech_input_chars
     )
     prepared = service.parse_generation_request(
         {
-            "input": "hello",
+            "input": "a" * 400,
             "temperature": 0.5,
             "stage_params": {
                 "talker": {"n_timesteps": "3", "min_patches": 0, "seed": -1},
@@ -205,6 +231,7 @@ def test_stage_options_reach_preprocessing_without_overwriting_sampling(
     assert state.n_timesteps == 3
     assert state.min_patches == 0
     assert state.seed == 7
+    assert state.text == "a" * 400
 
     generated.extra_params["seed"] = 11
     assert Client.build_omni_request(generated).params["seed"] == 11
@@ -245,7 +272,7 @@ def test_speaker_rejects_reference_audio(tmp_path: Path) -> None:
             service.parse_request({"input": "hello", **fields})
         assert failure.value.status_code == 400
         assert "does not accept speech references" in failure.value.message
-    service.parse_request({"input": "hello"})
+    service.parse_request({"input": "hello", "language": "Auto"})
 
 
 @pytest.mark.parametrize("task_type", ["semantic_edit", "AcousticEdit"])
@@ -262,6 +289,10 @@ def test_editing_policy_is_scoped_to_firered(tmp_path: Path, task_type: str) -> 
         "speed": 0.8,
         "ref_audio": REFERENCE_AUDIO,
         "instructions": "adjust the speed to 0.8x",
+        "language": "Auto",
+        "stage_params": {
+            "preprocessing": {"acoustic_attribute": "unused", "acoustic_value": "nan"}
+        },
     }
     prepared = editing.parse_generation_request(payload)
     assert prepared.request.task_type in {"SemanticEdit", "AcousticEdit"}
@@ -272,8 +303,11 @@ def test_editing_policy_is_scoped_to_firered(tmp_path: Path, task_type: str) -> 
     with pytest.raises(SpeechAPIError) as failure:
         generic.parse_generation_request({**payload, "input": "hello"})
     assert failure.value.param == "task_type"
-    prepared = generic.parse_generation_request({"input": "hello", "speed": 0.8})
+    prepared = generic.parse_generation_request(
+        {"input": "hello", "speed": 0.8, "language": "Auto"}
+    )
     assert generic.resolve_encode_speed(prepared.request) == 0.8
+    assert prepared.request.language == "Auto"
 
 
 def test_remote_checkpoint_revision_selects_reference_validation(

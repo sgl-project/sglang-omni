@@ -243,7 +243,7 @@ Speaker-only options under `stage_params.preprocessing` (validated at the servin
 | `dual_stream` | bool | `false` | Dual-stream decode form (2:1 text/latent interleave); 400 on non-speaker checkpoints |
 | `style` | string | `null` | Style prefix for the dual-stream prompt; applies to the dual-stream form only |
 
-AcousticEdit composition knobs under `stage_params.preprocessing`: `acoustic_attribute` (`Speed` / `Pitch` / `Volume`) and `acoustic_value` (float). An explicit `instructions` string overrides composition entirely.
+AcousticEdit composition knobs under `stage_params.preprocessing`: `acoustic_attribute` (`Speed` / `Pitch` / `Volume`) and `acoustic_value` (float). An explicit `instructions` string overrides composition entirely. Without explicit instructions, unsupported attributes and nonnumeric or non-finite values return HTTP 400 before generation.
 
 The HTTP, batch, and WebSocket APIs use `stage_params` for model options. The offline SDK also retains `GenerateRequest.extra_params` for existing callers.
 

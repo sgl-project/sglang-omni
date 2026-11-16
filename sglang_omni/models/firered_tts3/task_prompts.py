@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, field_validator
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.firered_tts3.hf_config import FireRedTTS3Config
@@ -17,7 +20,6 @@ from sglang_omni.models.firered_tts3.payload_types import (
 )
 from sglang_omni.utils.json import JsonValue
 
-ACOUSTIC_ATTRIBUTES = ("Speed", "Pitch", "Volume")
 CHATML_LATENT_IN_PAD_SYM = "<|image_pad|>"
 CHATML_LATENT_OUT_PAD_SYM = "<|video_pad|>"
 
@@ -77,6 +79,31 @@ MULTI_DIALECT_TAGS = tuple(
 )
 
 
+class FireRedTTS3AcousticParameters(BaseModel):
+    """Validate native acoustic-edit composition for serving and SDK requests."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    acoustic_attribute: Literal["Speed", "Pitch", "Volume"] = "Speed"
+    acoustic_value: float = 1.0
+
+    @field_validator("acoustic_attribute", mode="before")
+    @classmethod
+    def normalize_acoustic_attribute(cls, value: JsonValue) -> JsonValue:
+        if isinstance(value, str):
+            return value.strip().capitalize()
+        else:
+            return value
+
+    @field_validator("acoustic_value", mode="before")
+    @classmethod
+    def validate_acoustic_value(cls, value: JsonValue) -> JsonValue:
+        if isinstance(value, bool):
+            raise ValueError("acoustic_value must be numeric")
+        else:
+            return value
+
+
 def convert_to_chatml(
     input_text: str,
     audio_input_patch_count: int = 0,
@@ -111,31 +138,28 @@ def resolve_acoustic_instruction(
         return instruction_text.strip()
     else:
         pass
-    attribute = str(
-        first_not_none(
-            preprocessing_parameters.get("acoustic_attribute"),
-            tts_parameters.get("acoustic_attribute"),
-            default="Speed",
-        )
+    acoustic_parameters = FireRedTTS3AcousticParameters.model_validate(
+        {
+            parameter_name: value
+            for parameter_name, value in {
+                "acoustic_attribute": first_not_none(
+                    preprocessing_parameters.get("acoustic_attribute"),
+                    tts_parameters.get("acoustic_attribute"),
+                ),
+                "acoustic_value": first_not_none(
+                    preprocessing_parameters.get("acoustic_value"),
+                    tts_parameters.get("acoustic_value"),
+                    request_inputs.get("speed"),
+                    tts_parameters.get("speed"),
+                ),
+            }.items()
+            if value is not None
+        }
     )
-    attribute = attribute.strip().capitalize()
-    if attribute not in ACOUSTIC_ATTRIBUTES:
-        raise ValueError(
-            f"acoustic_attribute must be one of {ACOUSTIC_ATTRIBUTES}, got {attribute!r}"
-        )
-    else:
-        pass
-    value = first_not_none(
-        preprocessing_parameters.get("acoustic_value"),
-        tts_parameters.get("acoustic_value"),
-        request_inputs.get("speed"),
-        tts_parameters.get("speed"),
-        default=1.0,
-    )
-    acoustic_value = float(value)
-    if attribute == "Speed":
+    acoustic_value = acoustic_parameters.acoustic_value
+    if acoustic_parameters.acoustic_attribute == "Speed":
         return f"adjust the speed to {acoustic_value:.1f}x"
-    elif attribute == "Volume":
+    elif acoustic_parameters.acoustic_attribute == "Volume":
         return f"adjust the volume to {acoustic_value:.1f}"
     else:
         steps = int(round(acoustic_value))

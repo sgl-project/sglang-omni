@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.models.firered_tts3.config import MAX_TEXT_CHARS
 from sglang_omni.models.firered_tts3.hf_config import (
     FireRedTTS3Config,
     detect_fireredtts3_variant,
@@ -61,9 +62,6 @@ __all__ = [
     "preprocess_firered_tts3_payload",
     "resolve_speaker_token_id",
 ]
-
-MAX_TEXT_CHARS = 400
-
 
 TASK_GUIDANCE_SCALES: dict[str, float] = {
     "tts": 2.0,

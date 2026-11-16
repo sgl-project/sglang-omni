@@ -29,6 +29,7 @@ __all__ = [
     "FireRedTTS3StageFactoryKwargs",
     "FireRedTTS3VocoderFactoryArgs",
     "FireRedTTS3VocoderStageConfig",
+    "MAX_TEXT_CHARS",
     "PACKAGE_PATH",
     "SPEAKER_MAX_PATCHES",
     "TALKER_FACTORY_DEFAULTS",
@@ -41,6 +42,7 @@ DEFAULT_N_TIMESTEPS = 10
 DEFAULT_MAX_PATCHES = 400
 SPEAKER_MAX_PATCHES = 600
 DEFAULT_MAX_RUNNING_REQUESTS = 16
+MAX_TEXT_CHARS = 400
 
 
 class FireRedTTS3StageFactoryKwargs(TypedDict, total=False):
@@ -127,6 +129,7 @@ class FireRedTTS3PipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "FireRedTTS3ForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
+    max_speech_input_chars: ClassVar[int] = MAX_TEXT_CHARS
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "fireredtts3",
         "firered_tts3",
