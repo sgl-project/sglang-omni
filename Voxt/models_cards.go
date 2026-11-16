@@ -41,7 +41,7 @@ func (a *app) modelsPage(c *ui.Context) {
 	})
 	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp3)).Children(func() {
-			a.obBackBar(c, modelsPath) // onboarding.go: left from the setup guide
+			onboardingBackBar(c, a.onboardingBackViewState(modelsPath), a) // onboarding_view.go: left from the setup guide
 			sectionTitle(c, i18n.T("On this Mac"))
 			caption(c, i18n.T("Free, and your audio stays on this Mac."))
 			a.modelCards(c, models.ASR)
