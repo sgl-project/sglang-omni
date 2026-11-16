@@ -1,0 +1,25 @@
+# PersonaPlex full-duplex sessions with an ELLSA 2 motion node: the agent's upper-body, hand and face motion from its own audio and the user's, one 0.8 s block at a time on the Session input timeline, published as smplh_flame_motion beside the reply.
+# The speech node is PersonaPlex's session route; the motion node reads the user's 24 kHz input and the speech node's personaplex_reply units, which play at their own stamps, silence included, so a block waits until both reach its end.
+# Serve with: sgl-omni serve --config examples/configs/personaplex_session_motion.yaml --enable-realtime
+config_cls: PersonaPlexSessionGraphPipelineConfig
+model_path: nvidia/personaplex-7b-v1
+
+stages:
+  ellsa2_motion:
+    # The LM keeps its GPU busy every 80 ms; the motion stage on another GPU keeps its blocks on time and the LM's.
+    gpu: 1
+    factory:
+      # PersonaPlex streams the agent's units from the Session's start: blocks wait for them from the first one on.
+      reply_stream: true
+
+session_nodes:
+  speech:
+    stages: [preprocessing, mimi_encode, lm, code2wav]
+    inputs: [input]
+  motion:
+    stages: [ellsa2_motion]
+    inputs: ["input:pcm16", "speech:personaplex_reply"]
+
+session_publish:
+  speech: [personaplex_reply]
+  motion: [smplh_flame_motion]

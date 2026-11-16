@@ -13,6 +13,8 @@ DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 360
 # A reply's first frame comes after 405 ms of its audio or its end, at most one 200 ms chunk later, plus the render; a client holding the audio for it stops waiting a little past that.
 REPLY_MEDIA_WAIT_MS = 1000
+# A chunk's first frame hears the reply audio 405 ms past it, the checkpoint's window of the chunk, five more frames and 80 samples; a client aligning a turnless reply stream plays the audio that much (plus its playout delay) behind its arrival.
+REPLY_LOOKAHEAD_MS = 405
 
 
 def jpeg_frame_port(width: int, height: int) -> PluginPort:
@@ -25,6 +27,7 @@ def jpeg_frame_port(width: int, height: int) -> PluginPort:
             TIMELINE: INPUT_TIMELINE,
             "follows_replies": True,
             "reply_media_wait_ms": REPLY_MEDIA_WAIT_MS,
+            "reply_lookahead_ms": REPLY_LOOKAHEAD_MS,
             "width": width,
             "height": height,
         },
@@ -38,6 +41,7 @@ __all__ = [
     "DEFAULT_WIDTH",
     "JPEG_FRAME",
     "JPEG_FRAME_PORT",
+    "REPLY_LOOKAHEAD_MS",
     "REPLY_MEDIA_WAIT_MS",
     "VIDEO",
     "VIDEO_FPS",

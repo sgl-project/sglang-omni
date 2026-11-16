@@ -52,6 +52,29 @@ class StageGroup:
     stage_ports: Callable[[StageConfig], SessionPorts] | None = None
 
 
+# Nodes that read a speech node's audio and publish plugin media; any speech pipeline with Session nodes may carry them.
+MOTION_GROUP = StageGroup(lambda: [motion_stage()], None, MOTION_PORTS)
+AVATAR_GROUP = StageGroup(
+    lambda: [avatar_stage()],
+    None,
+    AVATAR_PORTS,
+    stage_ports=AvatarStageConfig.session_ports,
+)
+PLUGIN_STAGE_GROUPS = (MOTION_GROUP, AVATAR_GROUP)
+PLUGIN_STAGE_CONFIG_TYPES: dict[str, type[StageConfig]] = {
+    MOTION_STAGE: MotionStageConfig,
+    AVATAR_STAGE: AvatarStageConfig,
+}
+
+
+def group_ports(group: StageGroup, stage: StageConfig) -> SessionPorts | None:
+    """What a node over the group's stages accepts and publishes, given its configured first stage."""
+    if group.stage_ports is not None:
+        return group.stage_ports(stage)
+    else:
+        return group.ports
+
+
 class AudioSessionPipelineConfig(PipelineConfig):
     """Assemble model stage groups and combine their Session ports."""
 
@@ -61,19 +84,12 @@ class AudioSessionPipelineConfig(PipelineConfig):
     stage_groups: ClassVar[tuple[StageGroup, ...]] = (
         StageGroup(lambda: [vad_stage()], None, VAD_PORTS),
         StageGroup(lambda: [turn_detection_stage()], None, TURN_DETECTION_PORTS),
-        StageGroup(lambda: [motion_stage()], None, MOTION_PORTS),
-        StageGroup(
-            lambda: [avatar_stage()],
-            None,
-            AVATAR_PORTS,
-            stage_ports=AvatarStageConfig.session_ports,
-        ),
+        *PLUGIN_STAGE_GROUPS,
     )
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         VAD_STAGE: VADStageConfig,
         TURN_DETECTION_STAGE: TurnDetectionStageConfig,
-        MOTION_STAGE: MotionStageConfig,
-        AVATAR_STAGE: AvatarStageConfig,
+        **PLUGIN_STAGE_CONFIG_TYPES,
     }
     session_nodes: dict[str, SessionNodeConfig]
     session_publish: dict[str, list[str]]
@@ -187,11 +203,9 @@ class AudioSessionPipelineConfig(PipelineConfig):
             return model.stage_factory_kwargs(stage_name)
 
     def node_ports(self, name: str, node: SessionNodeConfig) -> SessionPorts | None:
-        group = self.groups_by_stage()[node.stages[0]]
-        if group.stage_ports is not None:
-            return group.stage_ports(self.stage_named(node.stages[0]))
-        else:
-            return group.ports
+        return group_ports(
+            self.groups_by_stage()[node.stages[0]], self.stage_named(node.stages[0])
+        )
 
     def session_ports(self) -> SessionPorts:
         by_node = {

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-import { ReplyMediaGate } from "../../../realtime/frontend/orb/reply_media_gate.js";
+import { DEFAULT_PLAYOUT_DELAY_MS, ReplyMediaGate, playoutDelayFrom } from "../../../realtime/frontend/orb/reply_media_gate.js";
 import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
 import { MotionView, SMPLH_FLAME_MOTION, smplhFlameMotionRenderer } from "./smplh_flame_motion.js";
 import { JPEG_FRAME, VideoFrameView, jpegFrameRenderer } from "./video_frame.js";
@@ -21,11 +21,13 @@ function createApp(sessionOptions, search = "") {
   const locks = [];
   const panelOptions = [];
   const elements = new Map();
+  const clock = { ms: 12345 };
   const context = vm.createContext({
     DuplexSession,
     drawsPluginFormat,
     registerPluginRenderer,
     ReplyMediaGate,
+    playoutDelayFrom,
     MotionView,
     SMPLH_FLAME_MOTION,
     smplhFlameMotionRenderer,
@@ -35,7 +37,7 @@ function createApp(sessionOptions, search = "") {
     window: { DEMO_WS_URL: "ws://localhost/v1/realtime", addEventListener() {} },
     location: { search },
     URLSearchParams,
-    performance: { now: () => 12345 },
+    performance: { now: () => clock.ms },
     navigator: { mediaDevices: { getUserMedia: async () => { throw new Error("No microphone in playback test"); } } },
     document: {
       documentElement: { dataset: {} },
@@ -102,6 +104,7 @@ function createApp(sessionOptions, search = "") {
     locks,
     panelOptions,
     posted,
+    clock,
     run: (source) => vm.runInContext(source, context),
     connect: () => vm.runInContext("connect()", context),
     settled: () => vm.runInContext("eventChain", context),
@@ -183,12 +186,16 @@ test("with the ELLSA 2 motion port, a reply's audio waits for the reply's first 
   await app.settled();
   const pushes = () => app.posted.filter((message) => message.type === "push" && message.responseId === "resp_1");
   assert.equal(pushes().length, 0);
-  assert.equal(app.run("mediaGate.waitMs"), 1000);
+  assert.equal(app.run("mediaGate.waitMs"), 1000 + DEFAULT_PLAYOUT_DELAY_MS);
   const frames = Buffer.from(new Float32Array(24 * 264).buffer).toString("base64");
   socket.receive({ type: "sglang.output_chunk", response_id: "resp_1", turn: 1, modality: "motion", format: "smplh_flame_motion", t_start_ms: 0, duration_ms: 800, payload_b64: frames });
   socket.receive({ type: "sglang.output_chunk", response_id: "resp_1", turn: 1, modality: "motion", format: "smplh_flame_motion", t_start_ms: 800, duration_ms: 800, payload_b64: frames });
   await app.settled();
   assert.equal(pushes().length, 0);
+  app.clock.ms += DEFAULT_PLAYOUT_DELAY_MS - 1;
+  app.run("motionView.due()");
+  assert.equal(pushes().length, 0);
+  app.clock.ms += 1;
   app.run("motionView.due()");
   assert.equal(pushes().length, 1);
   socket.receive({ type: "response.done", response: { id: "resp_1", status: "cancelled" } });
@@ -207,16 +214,69 @@ test("with the AVTR-1 video port, a reply's audio waits for the reply's first fr
     await app.settled();
     const pushes = () => app.posted.filter((message) => message.type === "push" && message.responseId === "resp_1");
     assert.equal(pushes().length, beforeShown, search);
-    assert.equal(app.run("mediaGate.waitMs"), 1000);
+    assert.equal(app.run("mediaGate.waitMs"), 1000 + DEFAULT_PLAYOUT_DELAY_MS);
     const jpeg = Buffer.from("jpeg").toString("base64");
     socket.receive({ type: "sglang.output_chunk", response_id: "resp_1", turn: 1, modality: "video", format: "jpeg_frame", t_start_ms: 0, duration_ms: 40, payload_b64: jpeg });
     socket.receive({ type: "sglang.output_chunk", response_id: "resp_1", turn: 1, modality: "video", format: "jpeg_frame", t_start_ms: 40, duration_ms: 40, payload_b64: jpeg });
     await app.settled();
     assert.equal(pushes().length, beforeShown, search);
     app.run("videoView.due()");
+    assert.equal(pushes().length, beforeShown, search);
+    app.clock.ms += DEFAULT_PLAYOUT_DELAY_MS;
+    app.run("videoView.due()");
     assert.equal(pushes().length, 1, search);
     socket.receive({ type: "response.done", response: { id: "resp_1", status: "cancelled" } });
     await app.settled();
     assert.equal(app.run('videoView.queue.filter((entry) => entry.responseId === "resp_1").length'), 0);
+  }
+});
+
+test("?playout_delay_ms sets the renderers' playout delay and the media gate's wait with it", async () => {
+  const motion = { modality: "motion", format: "smplh_flame_motion", params: { fps: 30, timeline: "input", follows_replies: true, reply_media_wait_ms: 1000 } };
+  for (const [search, delayMs] of [["", DEFAULT_PLAYOUT_DELAY_MS], ["?playout_delay_ms=250", 250], ["?playout_delay_ms=0", 0], ["?playout_delay_ms=-5", DEFAULT_PLAYOUT_DELAY_MS]]) {
+    const app = createApp({ instructions: "", outputModalities: ["audio"], extension: {}, turnDetection: null }, search);
+    const { socket } = await firstSessionUpdate(app);
+    socket.receive({ type: "session.updated", session: { sglang: { granted: { input_audio_format: { rate: 16000 }, output_audio_format: { rate: 24000 } }, plugin_output_ports: [motion] } } });
+    await app.settled();
+    assert.equal(app.run("mediaGate.waitMs"), 1000 + delayMs, search);
+    assert.equal(app.run("motionView.playoutDelayMs"), delayMs, search);
+    assert.equal(app.run("videoView.playoutDelayMs"), delayMs, search);
+  }
+});
+
+test("with a native full-duplex model, the reply audio and the motion play on one clock, the port's lookahead plus the playout delay behind the audio, and ?av_sync=free plays the audio on arrival", async () => {
+  const motion = { modality: "motion", format: "smplh_flame_motion", params: { fps: 30, timeline: "input", follows_replies: true, reply_media_wait_ms: 1000, reply_lookahead_ms: 800 } };
+  const frames = Buffer.from(new Float32Array(24 * 264).buffer).toString("base64");
+  for (const search of ["", "?av_sync=free"]) {
+    const app = createApp({ instructions: "", outputModalities: ["audio"], extension: {}, turnDetection: null }, search);
+    const { socket } = await firstSessionUpdate(app);
+    socket.receive({ type: "session.updated", session: { sglang: { granted: { interaction: "native", native_full_duplex: true, input_audio_format: { rate: 24000 }, output_audio_format: { rate: 24000 } }, plugin_output_ports: [motion] } } });
+    await app.settled();
+    const start = app.clock.ms;
+    socket.receive({ type: "response.created", response: { id: "resp_s" } });
+    // 160 ms of agent audio, the first unit's.
+    socket.receive({ type: "response.output_audio.delta", response_id: "resp_s", item_id: "item_s", delta: Buffer.alloc(2 * 3840).toString("base64") });
+    await app.settled();
+    const pushes = () => app.posted.filter((message) => message.type === "push" && message.responseId === "resp_s").length;
+    if (search) {
+      assert.equal(app.run("mediaGate.isAligning"), false);
+      assert.equal(pushes(), 1, search);
+      continue;
+    }
+    assert.equal(app.run("mediaGate.isAligning"), true);
+    assert.equal(pushes(), 0);
+    // The first motion chunk arrives one block later; it plays on the audio's clock, not from its own arrival.
+    app.clock.ms += 900;
+    socket.receive({ type: "sglang.output_chunk", response_id: null, turn: null, modality: "motion", format: "smplh_flame_motion", t_start_ms: 0, duration_ms: 800, payload_b64: frames });
+    await app.settled();
+    assert.equal(app.run("motionView.origin()"), start + 800 + DEFAULT_PLAYOUT_DELAY_MS);
+    app.clock.ms = start + 800 + DEFAULT_PLAYOUT_DELAY_MS - 1;
+    app.run("mediaGate.tick()");
+    assert.equal(pushes(), 0);
+    assert.equal(app.run("motionView.due()"), null);
+    app.clock.ms += 1;
+    app.run("mediaGate.tick()");
+    assert.equal(pushes(), 1);
+    assert.notEqual(app.run("motionView.due()"), null);
   }
 });

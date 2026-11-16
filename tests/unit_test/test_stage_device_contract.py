@@ -16,6 +16,7 @@ from huggingface_hub.errors import LocalEntryNotFoundError, RepositoryNotFoundEr
 import sglang_omni.platforms as platforms
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.models.personaplex.config import PersonaPlexSessionGraphPipelineConfig
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSessionPipelineConfig
 from sglang_omni.models.registry import resolve_variant
 from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
@@ -36,6 +37,8 @@ def pipeline_config(config_cls: type[PipelineConfig]) -> PipelineConfig:
     profiles = {
         Qwen3OmniSessionPipelineConfig: "examples/qwen3_omni/session_h200.yaml",
         StreamingCascadePipelineConfig: "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone/launch.yaml",
+        # The session graph variant's nodes come from a config file; the motion example places a GPU stage beside PersonaPlex's.
+        PersonaPlexSessionGraphPipelineConfig: "examples/configs/personaplex_session_motion.yaml",
     }
     if config_cls in profiles:
         profile = MODELS_DIR.parent.parent / profiles[config_cls]

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-import { ReplyMediaGate } from "./reply_media_gate.js";
+import { ReplyMediaGate, playoutDelayFrom } from "./reply_media_gate.js";
 import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
@@ -20,6 +20,7 @@ function createApp({ actualSampleRate, loadModule = async () => {}, sessionOptio
     DuplexSession,
     drawsPluginFormat,
     ReplyMediaGate,
+    playoutDelayFrom,
     window: { DEMO_WS_URL: "ws://localhost/v1/realtime", addEventListener() {} },
     location: { search: "" },
     URLSearchParams,

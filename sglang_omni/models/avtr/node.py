@@ -44,7 +44,11 @@ class AvatarFactoryArgs(FactoryArgs):
     background: str | None = None
     "One of the backgrounds every worker lists at /avatars, such as plain_white."
     speech_sample_rate_hz: int | None = Field(default=None, gt=0)
-    "The rate of the speech node's pcm_f32le audio the avatar lip-syncs."
+    "The rate of the speech node's audio the avatar lip-syncs: pcm_f32le replies, or personaplex_reply units."
+    input_sample_rate_hz: int | None = Field(default=None, gt=0)
+    "The rate of the Session input's pcm16 audio, 16 kHz unless the speech node takes another, such as PersonaPlex's 24 kHz."
+    reply_stream: bool | None = None
+    "The speech node streams the agent's audio as units from the Session's start (PersonaPlex's personaplex_reply): every chunk waits until the units reach its lip-sync window's end, the first ones included; unset, chunks wait for units only once the first unit arrived."
     width: int | None = Field(default=None, ge=16)
     height: int | None = Field(default=None, ge=16)
     jpeg_quality: int | None = Field(default=None, ge=1, le=95)
