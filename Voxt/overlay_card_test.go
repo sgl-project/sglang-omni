@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -344,6 +345,107 @@ func TestAnswerCardInteraction(t *testing.T) {
 	if a.answer.open {
 		t.Error("the second Escape left the card")
 	}
+}
+
+// TestRewriteInputBubbleFitsText: the input bubble grows with one word and
+// then one line instead of leaving the rest of its maximum width empty. A
+// long paragraph takes that width, and the card still scrolls it.
+func TestRewriteInputBubbleFitsText(t *testing.T) {
+	inputs := []struct {
+		name, text string
+	}{
+		{name: "word", text: "Short"},
+		{name: "line", text: "Make this paragraph sound more professional"},
+		{name: "long", text: strings.Repeat("Make this paragraph sound more professional and keep every detail. ", 12)},
+	}
+	widths := map[string]int{}
+	for _, tc := range inputs {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			v := cardView{conversation: true, size: layout.CardSizes[0], bubbles: []cardBubble{{user: true, title: "You", text: tc.text}}}
+			block := cardBlocks(v)[0]
+			tt := hudTester(func(c *ui.Context) {
+				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { a.cardBlockView(c, block) })
+			}, layout.AnswerW, 500)
+			frames(tt)
+			title, ok := tt.Find("You")
+			if !ok {
+				t.Fatalf("no input heading in %q", firstTexts(tt))
+			}
+			img, y, left, right := tt.Image(), int(title.Y)/2, -1, -1
+			background := img.RGBAAt(0, y)
+			for x := range img.Bounds().Dx() {
+				if img.RGBAAt(x, y) == background {
+					continue
+				}
+				if left < 0 {
+					left = x
+				}
+				right = x
+			}
+			if left < 0 {
+				t.Fatal("no bubble pixels above its heading")
+			}
+			widths[tc.name] = right - left + 1
+			if tc.name != "long" {
+				return
+			}
+			shortScreen(t, a)
+			a.answer = answerCard{open: true, id: "rewrite-input", kind: store.KindRewrite, conversation: true,
+				turns: []compose.Turn{{Instruction: tc.text, Answer: compose.Answer{Content: "Done."}}}}
+			a.overlaySync()
+			renderOverlay(t, a)
+			body, _ := a.cardBodyHeight(a.cardNow())
+			if body != layout.CardBodyMax || a.ov.cardScroll.MaxY <= 0 {
+				t.Errorf("long input body %d high, scroll limit %v", body, a.ov.cardScroll.MaxY)
+			}
+		})
+	}
+	if widths["word"] >= widths["line"] || widths["line"] >= widths["long"] {
+		t.Errorf("bubble widths for a word, a line and a paragraph are %v; want them to grow", widths)
+	}
+	if widths["long"] < layout.BubbleW-4 || widths["long"] > layout.BubbleW {
+		t.Errorf("long input bubble %d wide, want the usual %d", widths["long"], layout.BubbleW)
+	}
+	t.Logf("word, line and paragraph bubble widths: %v", widths)
+}
+
+// TestOverlayShotsRewriteInput renders the input's fit in English and
+// Chinese: one word, one line, and a paragraph long enough to scroll.
+func TestOverlayShotsRewriteInput(t *testing.T) {
+	runSnapshots(t, "VOXTNEW_OVERLAY_SHOTS", func(t *testing.T, out string) {
+		for _, tc := range []struct {
+			name, lang, text string
+		}{
+			{name: "rewrite-input-word-en", text: "Short"},
+			{name: "rewrite-input-word-zh", lang: "zh-Hans", text: "短"},
+			{name: "rewrite-input-line-en", text: "Make this paragraph sound more professional"},
+			{name: "rewrite-input-long-zh", lang: "zh-Hans", text: strings.Repeat("请把这段文字改得更简洁、更正式，同时保留所有事实、数字和负责的人，不要遗漏任何重要信息。", 12)},
+		} {
+			a, _, _ := newTestApp(t)
+			shortScreen(t, a)
+			answer := "Done."
+			if tc.lang != "" {
+				a.updateSettings(func(s *settings.Settings) { s.General.Language = tc.lang })
+				answer = "已完成。"
+			}
+			a.answer = answerCard{open: true, id: "rewrite-input", kind: store.KindRewrite, conversation: true,
+				turns: []compose.Turn{{Instruction: tc.text, Answer: compose.Answer{Content: answer}}}}
+			a.overlaySync()
+			img := renderOverlay(t, a)
+			f, err := os.Create(filepath.Join(out, tc.name+".png"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := png.Encode(f, img); err != nil {
+				f.Close()
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
 }
 
 // TestLanguageMenuPlace: the language menu opens over the card when the

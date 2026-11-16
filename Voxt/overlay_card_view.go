@@ -335,9 +335,9 @@ func (a *app) cardBlockView(c *ui.Context, b cardBlock) {
 }
 
 // cardBubbleView is a conversation's turn (Voxt's
-// RewriteConversationBubble): 340 wide in the small card (its text's
-// wrap, and the padding), the user's on the right; an answer shows Copy
-// under the pointer.
+// RewriteConversationBubble): the user's input fits its text on the right,
+// up to 340 wide in the small card; an answer takes that width and shows
+// Copy under the pointer.
 func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 	justify := ui.Start
 	bg, line := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08)
@@ -350,6 +350,13 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 		if !b.user {
 			titleA = 0.54
 		}
+	}
+	if b.user {
+		textWidth, _ := c.MeasureText(0, b.text.span())
+		titleWidth, _ := c.MeasureText(0, b.title.span())
+		quoteWidth, _ := c.MeasureText(0, b.quote.span())
+		b.text.wrap = layout.BubbleTextWidth(textWidth, titleWidth, quoteWidth, b.text.wrap)
+		b.quote.wrap = b.text.wrap
 	}
 	ui.Row(c).Justify(justify).Margin(b.gap, 0, 0, 0).Children(func() {
 		col := ui.Column(c.Key("bubble")).Width(b.text.wrap+2*layout.BubblePadX).Shrink(0).Padding(layout.BubblePadY-layout.Border, layout.BubblePadX-layout.Border).Gap(layout.BubbleTitleGap).
