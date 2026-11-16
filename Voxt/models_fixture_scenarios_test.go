@@ -180,6 +180,9 @@ func modelsFixtureScenarios() []meetingFixtureScenario {
 		input.Settings.Models.Hidden = []string{models.ASRFast}
 		input.HiddenOpen = true
 	})
+	add("models-hidden-retired-legacy", func(input *modelsViewStateInput) {
+		input.Settings.Models.Hidden = []string{models.LLMTranslate}
+	})
 	add("models-main-language-unsupported", func(input *modelsViewStateInput) {
 		input.Settings.General.MainLanguage = "zz"
 	})

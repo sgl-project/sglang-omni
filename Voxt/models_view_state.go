@@ -181,7 +181,7 @@ func buildModelCards(translator *i18n.Translator, input modelsViewStateInput, ki
 	if kind != models.ASR {
 		var cards []modelCardViewState
 		for _, model := range input.Catalog {
-			if model.Kind == kind && modelShown(model, input.Status[model.ID]) {
+			if model.Kind == kind && modelShown(model, input.Status[model.ID]) && !modelHiddenFor(translator, input, model.ID) {
 				cards = append(cards, buildSingleModelCard(translator, input, model))
 			}
 		}

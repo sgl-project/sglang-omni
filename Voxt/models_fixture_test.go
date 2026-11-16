@@ -54,17 +54,20 @@ func TestModelsFixtureCoverage(t *testing.T) {
 		for _, name := range []string{
 			"models-page-empty", "models-page-loading", "models-page-normal", "models-page-error",
 			"models-error-path", "models-error-generic", "models-network-custom-validation", "models-network-password-validation",
-			"models-delete-plain", "models-delete-shared", "models-delete-all",
+			"models-delete-plain", "models-delete-shared", "models-delete-all", "models-hidden-retired-legacy",
 		} {
 			if _, ok := fixtures[name]; !ok {
 				t.Errorf("%s: missing required models fixture %s", locale, name)
 			}
 		}
 		actions, familyKinds := map[string]bool{}, map[string]bool{}
-		for _, fixture := range fixtures {
+		for name, fixture := range fixtures {
 			state := fixture.Models
 			if state == nil {
 				continue
+			}
+			if name == "models-hidden-retired-legacy" && len(state.LLM) != 0 {
+				t.Errorf("%s: legacy hidden retired model is visible", locale)
 			}
 			cards := append(append(append([]modelCardViewState{}, state.ASR...), state.LLM...), state.Hidden...)
 			if state.Dictation != nil {
