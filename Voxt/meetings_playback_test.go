@@ -36,6 +36,41 @@ func TestMeetingDetailPlaybackButtonNeedsAudio(t *testing.T) {
 	}
 }
 
+func TestMeetingAudioProbeWaitsForLoadAndPage(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	const id = "m-watch-load"
+	if _, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{ID: id, Status: store.MeetingDone, Mode: store.MeetingModeMeeting, Audio: "watch-audio"}); err != nil {
+		t.Fatal(err)
+	}
+	var queued []func()
+	a.postQueue = func(fn func()) { queued = append(queued, fn) }
+	a.openMeetingDetail(id)
+	detail := a.mv.detail
+	if !detail.loading {
+		t.Fatal("detail load did not start")
+	}
+	a.prepareMeetingsPage()
+	if detail.audioProbe != 2 {
+		t.Fatalf("probe started during load: generation %d", detail.audioProbe)
+	}
+	for _, fn := range queued {
+		fn()
+	}
+	a.prepareMeetingsPage()
+	if !detail.audioProbing {
+		t.Fatal("no watch after load")
+	}
+	a.pageShown("/home")
+	if detail.audioProbing {
+		t.Fatal("watch continued off page")
+	}
+	a.navigate("/meetings")
+	a.prepareMeetingsPage()
+	if !detail.audioProbing {
+		t.Fatal("watch did not restart on return")
+	}
+}
+
 func TestMeetingAudioProbeStartsOnce(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	const id = "m-watch"

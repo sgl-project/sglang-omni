@@ -203,7 +203,7 @@ func (a *app) deleteMeeting(id string) {
 
 func (a *app) refreshMeetingAudio() {
 	detail := a.mv.detail
-	if detail == nil || detail.meeting.Audio == "" || detail.audioProbing {
+	if detail == nil || detail.loading || detail.meeting.Audio == "" || detail.audioProbing {
 		return
 	}
 	detail.audioProbe++

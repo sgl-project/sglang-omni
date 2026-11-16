@@ -25,37 +25,35 @@ type meetingMoreOptionState struct {
 }
 
 type meetingOverlayViewState struct {
-	Visible           bool                          `json:"visible"`
-	ID                string                        `json:"id"`
-	State             string                        `json:"state"`
-	Stage             string                        `json:"stage"`
-	Mode              string                        `json:"mode"`
-	Progress          float64                       `json:"progress"`
-	Collapsed         bool                          `json:"collapsed"`
-	ShowBar           bool                          `json:"show_bar"`
-	ShowExpanded      bool                          `json:"show_expanded"`
-	ShowAsking        bool                          `json:"show_asking"`
-	ShowFinishing     bool                          `json:"show_finishing"`
-	Live              bool                          `json:"live"`
-	Paused            bool                          `json:"paused"`
-	Starting          bool                          `json:"starting"`
-	StatusText        string                        `json:"status_text"`
-	ElapsedText       string                        `json:"elapsed_text"`
-	ModeTitle         string                        `json:"mode_title"`
-	ModeHint          string                        `json:"mode_hint"`
-	FinishingText     string                        `json:"finishing_text"`
-	ProblemKey        string                        `json:"problem_key"`
-	ProblemText       string                        `json:"problem_text"`
-	ShowMicrophone    bool                          `json:"show_microphone"`
-	ShowSystem        bool                          `json:"show_system"`
-	MicrophoneLevels  []float64                     `json:"microphone_levels"`
-	SystemLevels      []float64                     `json:"system_levels"`
-	Rows              []meetingOverlayTranscriptRow `json:"rows"`
-	Modes             []meetingModeOptionState      `json:"modes"`
-	MoreItems         []meetingMoreOptionState      `json:"more_items"`
-	TranslationActive bool                          `json:"translation_active"`
-	TranslationLabel  string                        `json:"translation_label"`
-	CardSize          int                           `json:"card_size"`
+	Visible          bool                          `json:"visible"`
+	ID               string                        `json:"id"`
+	State            string                        `json:"state"`
+	Stage            string                        `json:"stage"`
+	Mode             string                        `json:"mode"`
+	Progress         float64                       `json:"progress"`
+	Collapsed        bool                          `json:"collapsed"`
+	ShowBar          bool                          `json:"show_bar"`
+	ShowExpanded     bool                          `json:"show_expanded"`
+	ShowAsking       bool                          `json:"show_asking"`
+	ShowFinishing    bool                          `json:"show_finishing"`
+	Live             bool                          `json:"live"`
+	Paused           bool                          `json:"paused"`
+	Starting         bool                          `json:"starting"`
+	StatusText       string                        `json:"status_text"`
+	ElapsedText      string                        `json:"elapsed_text"`
+	ModeTitle        string                        `json:"mode_title"`
+	ModeHint         string                        `json:"mode_hint"`
+	FinishingText    string                        `json:"finishing_text"`
+	ProblemKey       string                        `json:"problem_key"`
+	ProblemText      string                        `json:"problem_text"`
+	ShowMicrophone   bool                          `json:"show_microphone"`
+	ShowSystem       bool                          `json:"show_system"`
+	MicrophoneLevels []float64                     `json:"microphone_levels"`
+	SystemLevels     []float64                     `json:"system_levels"`
+	Rows             []meetingOverlayTranscriptRow `json:"rows"`
+	Modes            []meetingModeOptionState      `json:"modes"`
+	MoreItems        []meetingMoreOptionState      `json:"more_items"`
+	CardSize         int                           `json:"card_size"`
 }
 
 func buildMeetingOverlayViewState(translator *i18n.Translator, snapshot meeting.Snapshot, collapsed bool, cardSize int) meetingOverlayViewState {
@@ -64,32 +62,31 @@ func buildMeetingOverlayViewState(translator *i18n.Translator, snapshot meeting.
 	live := snapshot.State == meeting.StateRecording || snapshot.State == meeting.StatePaused
 	paused := snapshot.State == meeting.StatePaused
 	state := meetingOverlayViewState{
-		Visible:           snapshot.State.Active(),
-		ID:                snapshot.ID,
-		State:             string(snapshot.State),
-		Stage:             string(snapshot.Stage),
-		Mode:              string(snapshot.Mode),
-		Progress:          snapshot.Progress,
-		Collapsed:         collapsed,
-		ShowBar:           live || snapshot.State == meeting.StateStarting || finishing,
-		ShowExpanded:      !collapsed && !asking && !finishing && snapshot.State.Active(),
-		ShowAsking:        asking,
-		ShowFinishing:     finishing,
-		Live:              live,
-		Paused:            paused,
-		Starting:          snapshot.State == meeting.StateStarting,
-		StatusText:        translator.T("Meeting in progress"),
-		ElapsedText:       formatMeetingOverlayElapsed(snapshot.Elapsed),
-		ModeTitle:         meetingOverlayModeTitle(translator, snapshot.Mode),
-		ModeHint:          meetingOverlayModeHint(translator, snapshot.Mode),
-		FinishingText:     meetingOverlayFinishingText(translator, snapshot),
-		ShowMicrophone:    snapshot.Mode != meeting.ModeSubtitles,
-		ShowSystem:        snapshot.Mode != meeting.ModeRecording,
-		MicrophoneLevels:  snapshot.Levels[meeting.SourceMic],
-		SystemLevels:      snapshot.Levels[meeting.SourceSystem],
-		Rows:              meetingOverlayTranscriptRows(translator, snapshot),
-		TranslationActive: snapshot.Translate != "",
-		CardSize:          cardSize,
+		Visible:          snapshot.State.Active(),
+		ID:               snapshot.ID,
+		State:            string(snapshot.State),
+		Stage:            string(snapshot.Stage),
+		Mode:             string(snapshot.Mode),
+		Progress:         snapshot.Progress,
+		Collapsed:        collapsed,
+		ShowBar:          live || snapshot.State == meeting.StateStarting || finishing,
+		ShowExpanded:     !collapsed && !asking && !finishing && snapshot.State.Active(),
+		ShowAsking:       asking,
+		ShowFinishing:    finishing,
+		Live:             live,
+		Paused:           paused,
+		Starting:         snapshot.State == meeting.StateStarting,
+		StatusText:       translator.T("Meeting in progress"),
+		ElapsedText:      formatMeetingOverlayElapsed(snapshot.Elapsed),
+		ModeTitle:        meetingOverlayModeTitle(translator, snapshot.Mode),
+		ModeHint:         meetingOverlayModeHint(translator, snapshot.Mode),
+		FinishingText:    meetingOverlayFinishingText(translator, snapshot),
+		ShowMicrophone:   snapshot.Mode != meeting.ModeSubtitles,
+		ShowSystem:       snapshot.Mode != meeting.ModeRecording,
+		MicrophoneLevels: snapshot.Levels[meeting.SourceMic],
+		SystemLevels:     snapshot.Levels[meeting.SourceSystem],
+		Rows:             meetingOverlayTranscriptRows(translator, snapshot),
+		CardSize:         cardSize,
 	}
 	if paused {
 		state.StatusText = translator.T("Meeting paused")
@@ -107,7 +104,6 @@ func buildMeetingOverlayViewState(translator *i18n.Translator, snapshot meeting.
 	if snapshot.Translate != "" {
 		translationLabel = translator.T("Translating to %s", compose.LanguageName(snapshot.Translate, translator.Locale()))
 	}
-	state.TranslationLabel = translationLabel
 	state.MoreItems = append(state.MoreItems, meetingMoreOptionState{ID: "translate", Label: translationLabel, Selected: snapshot.Translate != ""})
 	if paused {
 		state.MoreItems = append(state.MoreItems, meetingMoreOptionState{ID: "copy", Label: translator.T("Copy transcript")})

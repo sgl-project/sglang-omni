@@ -39,6 +39,9 @@ func (a *app) pages(c *ui.Context) {
 // pageShown runs when the router goes to path: pages that read something
 // when they show start it here.
 func (a *app) pageShown(path string) {
+	if path != "/meetings" {
+		a.stopMeetingAudioWatch(a.mv.detail)
+	}
 	switch path {
 	case "/home":
 		a.hm.tryOn = false // a new visit (homeShowsTry)

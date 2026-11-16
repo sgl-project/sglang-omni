@@ -113,8 +113,6 @@
         "danger": true
       }
     ],
-    "translation_active": false,
-    "translation_label": "实时翻译",
     "card_size": 1
   }
 }

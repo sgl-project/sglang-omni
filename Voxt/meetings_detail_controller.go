@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ type meetingDetail struct {
 	id           string
 	meeting      store.Meeting
 	segments     []store.MeetingSegment
+	segmentIndex map[int]int
 	chat         []meeting.ChatMessage
 	loading      bool
 	busy         bool
@@ -76,6 +78,10 @@ func (a *app) loadMeetingDetail(id string) {
 			detail.meeting = stored
 			detail.segments = segments
 			detail.chat, _ = meeting.ParseChatMessages(stored.Chat)
+			detail.segmentIndex = make(map[int]int, len(segments))
+			for index, segment := range segments {
+				detail.segmentIndex[segment.Idx] = index
+			}
 			detail.audioReady = audioReady
 			a.rebuildMeetingDetail()
 		})
@@ -98,16 +104,18 @@ func (a *app) followMeeting(snapshot, previous meeting.Snapshot) {
 		a.loadMeetingDetail(snapshot.ID)
 		return
 	}
-	at := make(map[int]int, len(detail.segments))
-	for index, row := range detail.segments {
-		at[row.Idx] = index
+	if slices.Equal(snapshot.Segments, previous.Segments) {
+		return
 	}
 	if a.mv.detailView == nil {
 		a.rebuildMeetingDetail()
 	}
 	view := a.mv.detailView
+	if detail.segmentIndex == nil {
+		detail.segmentIndex = make(map[int]int, len(detail.segments))
+	}
 	for _, segment := range snapshot.Segments {
-		if index, ok := at[segment.StoreIdx]; ok {
+		if index, ok := detail.segmentIndex[segment.StoreIdx]; ok {
 			if detail.segments[index].Translation != segment.Translation {
 				detail.segments[index].Translation = segment.Translation
 				if view != nil {
@@ -117,6 +125,7 @@ func (a *app) followMeeting(snapshot, previous meeting.Snapshot) {
 		} else {
 			stored := segment.Row()
 			detail.segments = append(detail.segments, stored)
+			detail.segmentIndex[stored.Idx] = len(detail.segments) - 1
 			if view != nil {
 				view.Segments = append(view.Segments, meetingSegmentViewStateFromStore(a.mv.translator, stored, meetingViewSpeakerNameMap(detail.meeting.Speakers)))
 				view.HasTranscript = true

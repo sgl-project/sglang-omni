@@ -107,8 +107,6 @@
         "danger": true
       }
     ],
-    "translation_active": false,
-    "translation_label": "Live translation",
     "card_size": 1
   }
 }
