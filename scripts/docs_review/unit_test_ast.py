@@ -52,6 +52,32 @@ def case_start(definition: TestFunction) -> int:
     )
 
 
+def class_test_metadata(module: ast.Module) -> dict[str, tuple[str, ...]]:
+    metadata: dict[str, tuple[str, ...]] = {}
+    for statement in module.body:
+        if not isinstance(statement, ast.ClassDef) or not test_definitions(statement):
+            continue
+        else:
+            pass
+        class_nodes = [
+            *statement.decorator_list,
+            *statement.bases,
+            *statement.keywords,
+            *[
+                member
+                for member in statement.body
+                if not isinstance(
+                    member, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                )
+            ],
+        ]
+        if class_nodes:
+            metadata[statement.name] = tuple(ast.dump(node) for node in class_nodes)
+        else:
+            pass
+    return metadata
+
+
 def functions(module: ast.Module) -> dict[str, TestFunction]:
     return {
         statement.name: statement
@@ -91,6 +117,30 @@ def fixture_settings(definition: TestFunction) -> tuple[str, bool]:
         else:
             pass
     return "", False
+
+
+def has_dynamic_fixture_settings(definition: TestFunction) -> bool:
+    if not fixture_settings(definition)[0]:
+        return False
+    else:
+        pass
+    for decorator in definition.decorator_list:
+        if isinstance(decorator, ast.Call) and any(
+            keyword.arg in {"autouse", "name"}
+            and (
+                not isinstance(keyword.value, ast.Constant)
+                or (
+                    keyword.arg == "autouse"
+                    and not isinstance(keyword.value.value, bool)
+                )
+                or (keyword.arg == "name" and not isinstance(keyword.value.value, str))
+            )
+            for keyword in decorator.keywords
+        ):
+            return True
+        else:
+            pass
+    return False
 
 
 def referenced_names(definition: TestFunction) -> set[str]:

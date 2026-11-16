@@ -246,6 +246,7 @@ def publish_reports(
     *,
     expected_base_sha: str = "",
     expected_head_sha: str = "",
+    publish_incomplete: bool = False,
 ) -> bool:
     run_url = f"{repository_url}/actions/runs/{run_id}/attempts/{run_attempt}"
     if any(artifact.stale for artifact in artifacts):
@@ -253,18 +254,28 @@ def publish_reports(
     else:
         pass
     publishable = [artifact for artifact in artifacts if artifact.publishable]
-    if not publishable:
+    incomplete = (
+        [
+            artifact
+            for artifact in artifacts
+            if artifact.report.execution == "incomplete"
+        ]
+        if publish_incomplete
+        else []
+    )
+    if not publishable and not incomplete:
         return True
     else:
         pass
-    head_commit_sha = publishable[0].report.head_commit_sha
+    anchor = (publishable or incomplete)[0]
+    head_commit_sha = anchor.report.head_commit_sha
     if any(
         artifact.report.head_commit_sha != head_commit_sha for artifact in artifacts
     ):
         return False
     else:
         pass
-    comments = list_issue_comments(repository_name, publishable[0].pull_request_number)
+    comments = list_issue_comments(repository_name, anchor.pull_request_number)
     comment_id = find_advisory_comment_id(comments)
     previous = next(
         (comment["body"] for comment in comments if comment.get("id") == comment_id), ""
@@ -338,7 +349,7 @@ def publish_reports(
     parts.append(f"Review run: {run_url}")
     return upsert_advisory_comment(
         repository_name,
-        publishable[0].pull_request_number,
+        anchor.pull_request_number,
         "\n\n".join(parts),
         expected_base_sha=expected_base_sha,
         expected_head_sha=expected_head_sha,

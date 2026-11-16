@@ -7,7 +7,6 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -30,9 +29,7 @@ class PullRequest(BaseModel):
     head: Revision
 
 
-def github_api(
-    endpoint: str, *, body: str | None = None, method: str = "GET"
-) -> str:
+def github_api(endpoint: str, *, body: str | None = None, method: str = "GET") -> str:
     arguments = ["gh", "api", endpoint]
     input_text: str | None = None
     if body is not None:

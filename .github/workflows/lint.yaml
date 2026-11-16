@@ -24,11 +24,14 @@ jobs:
 
       - name: Install pre-commit hook
         run: |
-          python -m pip install pre-commit
+          python -m pip install pre-commit pytest 'pydantic==2.12.5' 'emoji==2.15.0'
           pre-commit install
 
       - name: Linting
         run: pre-commit run --all-files --show-diff-on-failure
+
+      - name: Test repository tooling
+        run: python -m pytest tests/unit_test/scripts/ -q
 
   playback-test:
     runs-on: ubuntu-latest

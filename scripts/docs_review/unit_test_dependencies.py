@@ -6,7 +6,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from scripts.docs_review.models import SourceCitation
 from scripts.docs_review.snapshot import git_show, require_git
@@ -14,12 +14,14 @@ from scripts.docs_review.unit_test_ast import (
     UNIT_TEST_ROOT,
     TestFunction,
     case_start,
+    class_test_metadata,
     fixture_settings,
     functions,
+    has_dynamic_fixture_settings,
     is_unit_test_file,
-    referenced_names,
     test_definitions,
 )
+from scripts.docs_review.unit_test_fixtures import case_dependencies
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -78,6 +80,12 @@ def changed_helpers(
             ]
             previous_tests = test_definitions(previous_module)
             current_tests = test_definitions(head_module)
+            if class_test_metadata(previous_module) != class_test_metadata(head_module):
+                limitations.append(
+                    f"{head_path}: class-level test dependencies require review"
+                )
+            else:
+                pass
             unchanged_tests = any(
                 name in previous_tests
                 and ast.dump(previous_tests[name]) == ast.dump(definition)
@@ -91,29 +99,23 @@ def changed_helpers(
                 )
             else:
                 pass
-            previous_classes = [
-                ast.dump(statement)
+            previous_classes = {
+                (statement.name, member.name): ast.dump(member)
                 for statement in previous_module.body
                 if isinstance(statement, ast.ClassDef)
-                and any(
-                    isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and fixture_settings(member)[0]
-                    for member in statement.body
-                )
-            ]
-            current_classes = [
-                ast.dump(statement)
+                for member in statement.body
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and fixture_settings(member)[0]
+            }
+            current_classes = {
+                (statement.name, member.name): ast.dump(member)
                 for statement in head_module.body
                 if isinstance(statement, ast.ClassDef)
-                and any(
-                    isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and fixture_settings(member)[0]
-                    for member in statement.body
-                )
-            ]
-            if previous_classes != current_classes and (
-                not is_unit_test_file(head_path) or unchanged_tests
-            ):
+                for member in statement.body
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and fixture_settings(member)[0]
+            }
+            if previous_classes != current_classes:
                 limitations.append(
                     f"{head_path}: class fixture dependencies require review"
                 )
@@ -126,6 +128,7 @@ def changed_helpers(
                 for member in statement.body
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and not member.name.startswith("test_")
+                and not fixture_settings(member)[0]
             }
             current_class_helpers = {
                 (statement.name, member.name): ast.dump(member)
@@ -134,6 +137,7 @@ def changed_helpers(
                 for member in statement.body
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and not member.name.startswith("test_")
+                and not fixture_settings(member)[0]
             }
             if previous_class_helpers != current_class_helpers and (
                 not is_unit_test_file(head_path) or unchanged_tests
@@ -155,22 +159,13 @@ def changed_helpers(
                 continue
             else:
                 pass
-            for decorator in definition.decorator_list:
-                if (
-                    fixture_settings(definition)[0]
-                    and isinstance(decorator, ast.Call)
-                    and any(
-                        keyword.arg in {"autouse", "name"}
-                        and not isinstance(keyword.value, ast.Constant)
-                        for keyword in decorator.keywords
-                    )
-                ):
-                    limitations.append(
-                        f"{head_path}:{definition.lineno}: dynamic fixture settings "
-                        "could not be resolved statically"
-                    )
-                else:
-                    pass
+            if has_dynamic_fixture_settings(definition):
+                limitations.append(
+                    f"{head_path}:{definition.lineno}: dynamic fixture settings "
+                    "could not be resolved statically"
+                )
+            else:
+                pass
             assert definition.end_lineno is not None
             head_lines = head_source.splitlines()
             first_line = case_start(definition)
@@ -242,6 +237,7 @@ def affected_test_cases(
         ["ls-tree", "-r", "--name-only", "-z", head_commit_sha, "--", UNIT_TEST_ROOT],
     ).split("\0")
     affected: dict[tuple[str, str], list[SourceCitation]] = {}
+    module_cache: dict[str, ast.Module | None] = {}
     for test_path in filter(is_unit_test_file, files):
         source = git_show(repository, head_commit_sha, test_path)
         if source is None:
@@ -256,123 +252,18 @@ def affected_test_cases(
             continue
         else:
             pass
-        visible: dict[str, tuple[str, TestFunction]] = {}
-        test_parent = PurePosixPath(test_path).parent
-        for parent in reversed([test_parent, *test_parent.parents]):
-            conftest = (parent / "conftest.py").as_posix()
-            if not conftest.startswith(UNIT_TEST_ROOT) and conftest not in {
-                "conftest.py",
-                "tests/conftest.py",
-            }:
-                continue
-            else:
-                pass
-            conftest_source = git_show(repository, head_commit_sha, conftest)
-            if conftest_source is None:
-                continue
-            else:
-                pass
-            try:
-                conftest_module = ast.parse(conftest_source)
-            except (SyntaxError, ValueError):
-                limitations.append(f"{conftest}: fixture source could not be parsed")
-                continue
-            else:
-                pass
-            for name, definition in functions(conftest_module).items():
-                fixture_name, _autouse = fixture_settings(definition)
-                visible[fixture_name or name] = (conftest, definition)
-        for name, definition in functions(module).items():
-            fixture_name, _autouse = fixture_settings(definition)
-            visible[fixture_name or name] = (test_path, definition)
-        for statement in module.body:
-            if isinstance(statement, ast.ImportFrom) and statement.module:
-                if statement.level:
-                    package_parts = list(PurePosixPath(test_path).parent.parts)
-                    keep = len(package_parts) - statement.level + 1
-                    imported_path = (
-                        "/".join([*package_parts[:keep], *statement.module.split(".")])
-                        + ".py"
-                    )
-                else:
-                    imported_path = statement.module.replace(".", "/") + ".py"
-                for alias in statement.names:
-                    for helper in helpers:
-                        if (
-                            helper.file_path == imported_path
-                            and helper.definition.name == alias.name
-                        ):
-                            visible[alias.asname or alias.name] = (
-                                helper.file_path,
-                                helper.definition,
-                            )
-                        else:
-                            pass
-            else:
-                pass
-            if isinstance(statement, ast.Import):
-                for alias in statement.names:
-                    imported_path = alias.name.replace(".", "/") + ".py"
-                    prefix = alias.asname or alias.name.split(".")[0]
-                    for helper in helpers:
-                        if helper.file_path == imported_path:
-                            for node in ast.walk(module):
-                                if (
-                                    isinstance(node, ast.Attribute)
-                                    and isinstance(node.value, ast.Name)
-                                    and node.value.id == prefix
-                                    and node.attr == helper.definition.name
-                                ):
-                                    visible[prefix] = (
-                                        helper.file_path,
-                                        helper.definition,
-                                    )
-                                else:
-                                    pass
-                        else:
-                            pass
-            else:
-                pass
         for case_name, definition in test_definitions(module).items():
-            if any(
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "getfixturevalue"
-                and (not node.args or not isinstance(node.args[0], ast.Constant))
-                for node in ast.walk(definition)
-            ):
-                limitations.append(
-                    f"{test_path}:{definition.lineno}: dynamic fixture lookup cannot be resolved statically"
-                )
-            else:
-                pass
-            pending = referenced_names(definition)
-            pending.update(
-                fixture_name
-                for fixture_name, (file_path, fixture) in visible.items()
-                if fixture_settings(fixture)[1]
+            contexts, case_limitations = case_dependencies(
+                repository, head_commit_sha, test_path, module, definition, module_cache
             )
-            seen: set[str] = set()
-            citations: list[SourceCitation] = []
-            while pending:
-                name = min(pending)
-                pending.remove(name)
-                if name in seen:
-                    continue
-                else:
-                    seen.add(name)
-                dependency = visible.get(name)
-                if dependency is None:
-                    continue
-                else:
-                    dependency_path, dependency_definition = dependency
-                pending.update(referenced_names(dependency_definition) - seen)
-                citations.extend(
-                    helper.citation
-                    for helper in helpers
-                    if helper.file_path == dependency_path
-                    and helper.definition.name == dependency_definition.name
+            citations = [
+                helper.citation
+                for helper in helpers
+                if any(
+                    helper.file_path == file_path and helper.definition.name in names
+                    for file_path, _module, names in contexts
                 )
+            ]
             if citations:
                 affected[(test_path, case_name)] = sorted(
                     {
@@ -382,6 +273,20 @@ def affected_test_cases(
                 )
             else:
                 pass
+            limitations.extend(
+                f"{test_path}:{definition.lineno}: {limitation}"
+                for limitation in case_limitations
+                if any(
+                    marker in limitation
+                    for marker in (
+                        "dynamic fixture",
+                        "imported test helper",
+                        "imported helper",
+                        "plugin dependencies",
+                        "wildcard test dependencies",
+                    )
+                )
+            )
     matched_citations = {
         citation.model_dump_json()
         for citations in affected.values()

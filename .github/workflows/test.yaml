@@ -51,7 +51,7 @@ jobs:
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -v -m "not benchmark and not accelerator" -x
+            pytest tests/ --ignore=tests/unit_test/scripts -v -m "not benchmark and not accelerator" -x
 
   unit-test-accelerator:
     name: unit-test-accelerator
@@ -81,4 +81,4 @@ jobs:
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -v -m "accelerator and not benchmark" -x
+            pytest tests/ --ignore=tests/unit_test/scripts -v -m "accelerator and not benchmark" -x

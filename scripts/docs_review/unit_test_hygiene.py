@@ -5,17 +5,17 @@ from __future__ import annotations
 
 import ast
 import re
+from collections import Counter
 from pathlib import Path
 
-from scripts.docs_review.models import UnitTestCase
 from scripts.docs_review.snapshot import git_show, require_git
-from scripts.docs_review.unit_tests import CONTRACT_MODULES
+from scripts.docs_review.unit_tests import CONTRACT_MODULES, changed_test_paths
 
 INTERNAL_MOCK_RULE_ID = "UNIT_TEST_INTERNAL_MOCK"
 TEST_VOLUME_RULE_ID = "UNIT_TEST_VOLUME"
 TEST_VOLUME_RATIO = 2
 TEST_VOLUME_MINIMUM_LINES = 100
-TEST_VOLUME_JUSTIFICATION = re.compile(r"^\s*Test volume:\s*\S", re.MULTILINE)
+TEST_VOLUME_JUSTIFICATION = re.compile(r"^[ \t]*Test volume:[ \t]*\S", re.MULTILINE)
 INTERNAL_ROOTS = CONTRACT_MODULES | {"scripts"}
 BOUNDARY_NAMES = {
     "aiohttp",
@@ -36,7 +36,6 @@ BOUNDARY_NAMES = {
     "uuid",
 }
 RENAME_DESTINATION = re.compile(r"\{(.*) => (.*)\}")
-ADDED_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
 
 def dotted_name(expression: ast.expr) -> str:
@@ -86,67 +85,86 @@ def is_object_patch(callee: str) -> bool:
 
 def patch_target(call: ast.Call, names: dict[str, str]) -> str:
     callee = resolve_name(call.func, names)
-    arguments = call.args
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    first = call.args[0] if call.args else keywords.get("target")
+    second = call.args[1] if len(call.args) > 1 else keywords.get("attribute")
+    if callee == "monkeypatch.setattr" and second is None:
+        second = keywords.get("name")
+    else:
+        pass
     if (
         callee == "monkeypatch.setattr"
-        and arguments
-        and isinstance(arguments[0], ast.Constant)
-        and isinstance(arguments[0].value, str)
+        and isinstance(first, ast.Constant)
+        and isinstance(first.value, str)
     ):
-        return arguments[0].value
+        return first.value
     elif (
         (callee == "monkeypatch.setattr" or is_object_patch(callee))
-        and len(arguments) >= 2
-        and isinstance(arguments[1], ast.Constant)
-        and isinstance(arguments[1].value, str)
+        and first is not None
+        and isinstance(second, ast.Constant)
+        and isinstance(second.value, str)
     ):
-        owner = resolve_name(arguments[0], names)
-        return f"{owner}.{arguments[1].value}" if owner else ""
+        owner = resolve_name(first, names)
+        return f"{owner}.{second.value}" if owner else ""
     elif (
         is_string_patch(callee)
-        and arguments
-        and isinstance(arguments[0], ast.Constant)
-        and isinstance(arguments[0].value, str)
+        and isinstance(first, ast.Constant)
+        and isinstance(first.value, str)
     ):
-        return arguments[0].value
+        return first.value
     else:
         return ""
 
 
 def is_internal_target(target: str) -> bool:
     parts = [part for part in target.split(".") if part]
-    if not parts or parts[0] not in INTERNAL_ROOTS:
-        return False
-    else:
-        return not any(part in BOUNDARY_NAMES for part in parts[1:])
+    return bool(parts and parts[0] in INTERNAL_ROOTS)
 
 
-def added_line_numbers(
-    repository: Path, merge_base: str, head_commit_sha: str, file_path: str
-) -> set[int]:
-    diff = require_git(
-        repository,
-        ["diff", "-U0", merge_base, head_commit_sha, "--", file_path],
-    )
-    added: set[int] = set()
-    for match in ADDED_HUNK.finditer(diff):
-        start = int(match.group(1))
-        count = int(match.group(2) or "1")
-        if count == 0:
+def is_boundary_target(repository: Path, head_commit_sha: str, target: str) -> bool:
+    parts = target.split(".")
+    for index, name in enumerate(parts[1:], 1):
+        child = "/".join(parts[: index + 1])
+        if (
+            git_show(repository, head_commit_sha, f"{child}.py") is not None
+            or git_show(repository, head_commit_sha, f"{child}/__init__.py") is not None
+        ):
             continue
         else:
-            added.update(range(start, start + count))
-    return added
+            pass
+        owner = "/".join(parts[:index])
+        source = git_show(repository, head_commit_sha, f"{owner}.py")
+        if source is None:
+            source = git_show(repository, head_commit_sha, f"{owner}/__init__.py")
+        else:
+            pass
+        if source is None:
+            continue
+        else:
+            pass
+        try:
+            imports = imported_names(ast.parse(source))
+        except (SyntaxError, ValueError):
+            continue
+        else:
+            pass
+        if imports.get(name, "").split(".")[0] in BOUNDARY_NAMES:
+            return True
+        else:
+            pass
+    return False
 
 
 def internal_mock_notes(
     repository: Path,
     merge_base: str,
     head_commit_sha: str,
-    cases: list[UnitTestCase],
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     notes: list[str] = []
-    for file_path in dict.fromkeys(case.file_path for case in cases):
+    limitations: list[str] = []
+    for previous_path, file_path in changed_test_paths(
+        repository, merge_base, head_commit_sha
+    ):
         source = git_show(repository, head_commit_sha, file_path)
         if source is None:
             continue
@@ -159,15 +177,45 @@ def internal_mock_notes(
         else:
             pass
         names = imported_names(module)
-        added = added_line_numbers(repository, merge_base, head_commit_sha, file_path)
+        previous_source = (
+            git_show(repository, merge_base, previous_path)
+            if previous_path is not None
+            else ""
+        )
+        try:
+            previous_module = ast.parse(previous_source or "")
+        except (SyntaxError, ValueError):
+            continue
+        else:
+            pass
+        previous_names = imported_names(previous_module)
+        previous_calls = Counter(
+            (patch_target(call, previous_names), ast.dump(call))
+            for call in ast.walk(previous_module)
+            if isinstance(call, ast.Call)
+        )
         targets: set[tuple[int, str]] = set()
         for call in ast.walk(module):
-            if isinstance(call, ast.Call) and call.lineno in added:
-                target = patch_target(call, names)
-                if is_internal_target(target):
-                    targets.add((call.lineno, target))
-                else:
-                    pass
+            if not isinstance(call, ast.Call):
+                continue
+            else:
+                pass
+            target = patch_target(call, names)
+            signature = (target, ast.dump(call))
+            if previous_calls[signature]:
+                previous_calls[signature] -= 1
+            elif not target and (
+                resolve_name(call.func, names) == "monkeypatch.setattr"
+                or is_string_patch(resolve_name(call.func, names))
+                or is_object_patch(resolve_name(call.func, names))
+            ):
+                limitations.append(
+                    f"{file_path}:{call.lineno}: mock target could not be resolved statically"
+                )
+            elif is_internal_target(target) and not is_boundary_target(
+                repository, head_commit_sha, target
+            ):
+                targets.add((call.lineno, target))
             else:
                 pass
         notes.extend(
@@ -176,7 +224,7 @@ def internal_mock_notes(
             "filesystem boundaries and assert the caller-visible result."
             for line, target in sorted(targets)
         )
-    return notes
+    return notes, limitations
 
 
 def renamed_destination(file_path: str) -> str:
@@ -204,8 +252,10 @@ def unit_test_volume_notes(
             continue
         elif destination.startswith("tests/unit_test/"):
             test_lines += int(added)
-        else:
+        elif destination.split("/", 1)[0] in INTERNAL_ROOTS:
             product_lines += int(added)
+        else:
+            pass
     if (
         test_lines >= TEST_VOLUME_MINIMUM_LINES
         and test_lines > TEST_VOLUME_RATIO * product_lines

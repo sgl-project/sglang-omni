@@ -133,6 +133,16 @@ def historical_revisions(
             "sglang_omni_router/python/worker.py",
             "def build_workers(configs):\n    return configs\n",
         )
+        write_file(
+            repository,
+            "sglang_omni_router/python/config.py",
+            "class RouterConfig:\n    pass\n\nclass WorkerConfig:\n    pass\n",
+        )
+        write_file(
+            repository,
+            "sglang_omni_router/python/control_plane.py",
+            "def create_control_plane_app(config):\n    return config\n",
+        )
     else:
         pass
     base_commit = commit(repository, "contract")
@@ -255,7 +265,7 @@ def test_replays_weak_and_strengthened_contract_cases(
     after_request = request_for(tmp_path, before_commit, after_commit, 2)
     after_request.include_paths.append(example.contract_path)
     after = run_review(after_request, after_reviewer, SystemClock())
-    assert after.report.outcome == "no_findings"
+    assert after.report.outcome == "no_findings", after.report.incomplete_reason
     assert [case.name for case in after.payload.unit_test_cases] == [example.name]
     assert test_quote in after.payload.unit_test_cases[0].previous_source
     assert strong_assertion in after_reviewer.inputs[0]
@@ -628,18 +638,18 @@ def test_changed_fixture_selects_its_test_even_when_the_body_is_unchanged(
     git(tmp_path, "init", "-q")
     file_path = "tests/unit_test/test_output.py"
     original = (
-        "import pytest\n\n"
-        "@pytest.fixture\ndef default_voice():\n    return 'first'\n\n"
+        "import pytest\nfrom sglang_omni.api import speak\n\n"
+        "@pytest.fixture\ndef default_voice():\n    return speak()[:1]\n\n"
         "def test_output(default_voice):\n    assert default_voice\n"
     )
     contract_path = "sglang_omni/api.py"
     write_file(tmp_path, file_path, original)
     write_file(tmp_path, contract_path, "def speak():\n    return b'RIFF'\n")
     base = commit(tmp_path, "base")
-    edited = original.replace("'first'", "'second'")
+    edited = original.replace("speak()[:1]", "speak()")
     if edit_test:
         edited = edited.replace(
-            "assert default_voice", "assert default_voice == 'second'"
+            "assert default_voice", "assert default_voice == b'RIFF'"
         )
     else:
         pass
@@ -868,3 +878,519 @@ def test_hygiene_note_is_posted_when_the_model_reports_nothing(
     assert len(posted) == 1
     assert "UNIT_TEST_VOLUME" in posted[0]
     assert github_comment.ADVISORY_REVIEW_MARKER in posted[0]
+
+
+def test_deleted_case_cannot_report_a_clean_review(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    path = "tests/unit_test/test_output.py"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    original = (
+        "from sglang_omni.api import speak\n\n"
+        "def test_remaining():\n    assert speak()\n\n"
+        "def test_deleted():\n    assert speak() == b'RIFF'\n"
+    )
+    write_file(tmp_path, path, original)
+    base = commit(tmp_path, "two test cases")
+    write_file(tmp_path, path, original.split("def test_deleted")[0])
+    head = commit(tmp_path, "delete one case")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "incomplete"
+    assert "test_deleted" in report.incomplete_reason
+    assert not reviewer.inputs
+
+
+def test_dynamic_lookup_in_a_changed_case_is_incomplete(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    path = "tests/unit_test/test_audio.py"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    write_file(
+        tmp_path,
+        path,
+        "from sglang_omni.api import speak\n\ndef test_audio(request):\n    assert speak()\n",
+    )
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        path,
+        "from sglang_omni.api import speak\n\ndef test_audio(request):\n    name = 'audio'\n    assert speak() == request.getfixturevalue(name)\n",
+    )
+    head = commit(tmp_path, "dynamic fixture")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "incomplete"
+    assert "dynamic fixture" in report.incomplete_reason
+    assert not reviewer.inputs
+
+
+def test_changed_helper_selects_direct_and_fixture_consumers(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    helper = "tests/unit_test/helpers/audio.py"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    write_file(
+        tmp_path,
+        helper,
+        "from sglang_omni.api import speak\n\ndef audio():\n    return speak()\n",
+    )
+    write_file(
+        tmp_path,
+        "tests/unit_test/helpers/wrapper.py",
+        "from tests.unit_test.helpers.audio import audio as get_audio\n\ndef wrapped():\n    return get_audio()\n",
+    )
+    write_file(
+        tmp_path,
+        "tests/unit_test/conftest.py",
+        "import pytest\nfrom tests.unit_test.helpers.wrapper import wrapped\n\n@pytest.fixture\ndef speech():\n    return wrapped()\n",
+    )
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_direct.py",
+        "from tests.unit_test.helpers.audio import audio\n\ndef test_direct():\n    assert audio()\n",
+    )
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_fixture.py",
+        "def test_fixture(speech):\n    assert speech\n",
+    )
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        helper,
+        "from sglang_omni.api import speak\n\ndef audio():\n    return speak()[:1]\n",
+    )
+    head = commit(tmp_path, "change shared helper")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert {case.name for case in report.unit_test_cases} == {
+        "test_direct",
+        "test_fixture",
+    }
+    assert report.execution == "complete", report.incomplete_reason
+    assert len(reviewer.inputs) == 1
+    assert "tests/unit_test/conftest.py" in reviewer.inputs[0]
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "call"),
+    [
+        ("from tests.unit_test.helpers.audio import audio", "audio()"),
+        ("from .helpers.audio import audio", "audio()"),
+        ("import tests.unit_test.helpers.audio as helper", "helper.audio()"),
+        (
+            "import tests.unit_test.helpers.audio",
+            "tests.unit_test.helpers.audio.audio()",
+        ),
+    ],
+)
+def test_changed_case_includes_unchanged_imported_helper(
+    tmp_path: Path, import_statement: str, call: str
+) -> None:
+    git(tmp_path, "init", "-q")
+    helper = "tests/unit_test/helpers/audio.py"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    write_file(tmp_path, helper, "def audio():\n    return b'RIFF'\n")
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_audio.py",
+        f"from sglang_omni.api import speak\n{import_statement}\n\ndef test_audio():\n    assert speak() == {call}\n",
+    )
+    head = commit(tmp_path, "test with helper")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "complete", report.incomplete_reason
+    assert f"File {helper}" in reviewer.inputs[0]
+
+
+def test_unrelated_explicit_context_does_not_hide_missing_contract(
+    tmp_path: Path,
+) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, "docs/unrelated.md", "# Unrelated style notes\n")
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_audio.py",
+        "from sglang_omni.missing import speak\n\ndef test_audio():\n    assert speak()\n",
+    )
+    head = commit(tmp_path, "missing contract")
+    request = request_for(tmp_path, base, head, 1)
+    request.include_paths = ["docs/unrelated.md"]
+    reviewer = OfflineReviewer([])
+    report = run_review(request, reviewer, SystemClock()).report
+    assert report.execution == "incomplete"
+    assert "sglang_omni.missing" in report.incomplete_reason
+    assert not reviewer.inputs
+
+
+def test_internal_mock_in_changed_conftest_is_reported(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    fixture = "tests/unit_test/conftest.py"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    write_file(
+        tmp_path,
+        fixture,
+        "import pytest\nfrom unittest.mock import patch\nfrom sglang_omni.api import speak\n\n@pytest.fixture\ndef audio():\n    return speak()\n",
+    )
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_audio.py",
+        "def test_audio(audio):\n    assert audio == b'RIFF'\n",
+    )
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        fixture,
+        "import pytest\nfrom unittest.mock import patch\nfrom sglang_omni.api import speak\n\n@pytest.fixture\ndef audio():\n    with patch(target='sglang_omni.api.speak'):\n        return speak()\n",
+    )
+    head = commit(tmp_path, "mock in fixture")
+    report = run_review(
+        request_for(tmp_path, base, head, 1), OfflineReviewer([]), SystemClock()
+    ).report
+    assert any(
+        fixture in note and "sglang_omni.api.speak" in note
+        for note in report.test_hygiene_notes
+    )
+
+
+def test_unchanged_mock_after_rename_is_not_reported(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    old = "tests/unit_test/test_old.py"
+    new = "tests/unit_test/test_new.py"
+    source = "from unittest.mock import patch\nfrom sglang_omni.api import speak\n\ndef test_audio():\n    with patch('sglang_omni.api.speak'):\n        result = speak()\n        assert result is not None\n        assert result != b''\n        assert len(result) > 0\n"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    write_file(tmp_path, old, source)
+    base = commit(tmp_path, "before")
+    git(tmp_path, "mv", old, new)
+    write_file(tmp_path, new, source.replace("len(result) > 0", "len(result) > 1"))
+    head = commit(tmp_path, "rename and change assertion")
+    report = run_review(
+        request_for(tmp_path, base, head, 1), OfflineReviewer([]), SystemClock()
+    ).report
+    assert not report.test_hygiene_notes
+
+
+def test_changed_multiline_target_is_reported(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    path = "tests/unit_test/test_audio.py"
+    source = "from unittest.mock import patch\nfrom sglang_omni.api import speak\n\ndef test_audio():\n    with patch(\n        'time.sleep',\n    ):\n        assert speak()\n"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    write_file(tmp_path, path, source)
+    base = commit(tmp_path, "before")
+    write_file(tmp_path, path, source.replace("time.sleep", "sglang_omni.api.speak"))
+    head = commit(tmp_path, "change target")
+    report = run_review(
+        request_for(tmp_path, base, head, 1), OfflineReviewer([]), SystemClock()
+    ).report
+    assert any("sglang_omni.api.speak" in note for note in report.test_hygiene_notes)
+
+
+def test_internal_http_module_is_not_mistaken_for_external_boundary(
+    tmp_path: Path,
+) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(
+        tmp_path,
+        "sglang_omni/http/admin_auth.py",
+        "def resolve_admin_api_key():\n    return 'key'\n",
+    )
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_http.py",
+        "from unittest.mock import patch\nfrom sglang_omni.http.admin_auth import resolve_admin_api_key\n\ndef test_key():\n    with patch('sglang_omni.http.admin_auth.resolve_admin_api_key'):\n        assert resolve_admin_api_key()\n",
+    )
+    head = commit(tmp_path, "add internal mock")
+    report = run_review(
+        request_for(tmp_path, base, head, 1), OfflineReviewer([]), SystemClock()
+    ).report
+    assert any(
+        "sglang_omni.http.admin_auth.resolve_admin_api_key" in note
+        for note in report.test_hygiene_notes
+    )
+
+
+def test_test_volume_excludes_other_tests_and_requires_an_explanation(
+    tmp_path: Path,
+) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, "README.md", "Base\n")
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_rows.py",
+        "".join(f"value_{i} = {i}\n" for i in range(110)),
+    )
+    write_file(
+        tmp_path,
+        "tests/test_model/test_rows.py",
+        "".join(f"value_{i} = {i}\n" for i in range(60)),
+    )
+    head = commit(tmp_path, "grow tests")
+    request = request_for(tmp_path, base, head, 1)
+    request.pull_request_text = "Test volume:\n## Summary\n"
+    report = run_review(request, None, SystemClock()).report
+    assert any("UNIT_TEST_VOLUME" in note for note in report.test_hygiene_notes)
+
+
+def test_unresolved_new_patch_is_an_explicit_coverage_limit(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_audio.py",
+        "from unittest.mock import patch\nfrom sglang_omni.api import speak\n\ndef test_audio():\n    target = 'sglang_omni.api.speak'\n    with patch(target):\n        assert speak()\n",
+    )
+    head = commit(tmp_path, "dynamic patch")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "incomplete"
+    assert "mock target could not be resolved" in report.incomplete_reason
+    assert len(reviewer.inputs) == 1
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "call", "patch_target"),
+    [
+        ("import subprocess", "subprocess.run([])", "sglang_omni.api.subprocess.run"),
+        ("from subprocess import run", "run([])", "sglang_omni.api.run"),
+    ],
+)
+def test_imported_external_process_boundary_is_not_reported_as_internal(
+    tmp_path: Path, import_statement: str, call: str, patch_target: str
+) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(
+        tmp_path,
+        "sglang_omni/api.py",
+        f"{import_statement}\n\ndef speak():\n    return {call}\n",
+    )
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_audio.py",
+        f"from unittest.mock import patch\nfrom sglang_omni.api import speak\n\ndef test_audio():\n    with patch('{patch_target}'):\n        assert speak()\n",
+    )
+    head = commit(tmp_path, "patch process boundary")
+    report = run_review(
+        request_for(tmp_path, base, head, 1), OfflineReviewer([]), SystemClock()
+    ).report
+    assert not report.test_hygiene_notes
+
+
+def test_unrelated_explicit_context_without_a_linked_module_is_incomplete(
+    tmp_path: Path,
+) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, "docs/unrelated.md", "# Unrelated\n")
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_audio.py",
+        "def test_audio():\n    assert True\n",
+    )
+    head = commit(tmp_path, "no linked module")
+    request = request_for(tmp_path, base, head, 1)
+    request.include_paths = ["docs/unrelated.md"]
+    reviewer = OfflineReviewer([])
+    report = run_review(request, reviewer, SystemClock()).report
+    assert report.execution == "incomplete"
+    assert "No contract source" in report.incomplete_reason
+    assert not reviewer.inputs
+
+
+def test_named_missing_fixture_lookup_is_not_treated_as_reviewed(
+    tmp_path: Path,
+) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_audio.py",
+        "from sglang_omni.api import speak\n\ndef test_audio(request):\n    assert speak() == request.getfixturevalue('external_audio')\n",
+    )
+    head = commit(tmp_path, "missing plugin fixture")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "incomplete"
+    assert "fixture external_audio" in report.incomplete_reason
+    assert not reviewer.inputs
+
+
+def test_unchanged_plugin_declaration_keeps_changed_test_incomplete(
+    tmp_path: Path,
+) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    write_file(
+        tmp_path,
+        "tests/unit_test/conftest.py",
+        "pytest_plugins = ['external_plugin']\n",
+    )
+    path = "tests/unit_test/test_audio.py"
+    write_file(
+        tmp_path,
+        path,
+        "from sglang_omni.api import speak\n\ndef test_audio():\n    assert speak()\n",
+    )
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        path,
+        "from sglang_omni.api import speak\n\ndef test_audio():\n    assert speak() == b'RIFF'\n",
+    )
+    head = commit(tmp_path, "change test")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "incomplete"
+    assert "plugin dependencies" in report.incomplete_reason
+    assert not reviewer.inputs
+
+
+def test_changed_case_includes_unchanged_class_autouse_fixture(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    path = "tests/unit_test/test_audio.py"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    source = "import pytest\nfrom sglang_omni.api import speak\n\nclass TestAudio:\n    @pytest.fixture(autouse=True)\n    def audio(self):\n        return speak()\n\n    def test_audio(self):\n        assert True\n"
+    write_file(tmp_path, path, source)
+    base = commit(tmp_path, "before")
+    write_file(tmp_path, path, source.replace("assert True", "assert 1 == 1"))
+    head = commit(tmp_path, "change test")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "complete", report.incomplete_reason
+    assert "File sglang_omni/api.py" in reviewer.inputs[0]
+
+
+def test_changed_class_fixture_never_silently_reports_clean(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    path = "tests/unit_test/test_audio.py"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    source = "import pytest\nfrom sglang_omni.api import speak\n\nclass TestAudio:\n    @pytest.fixture(autouse=True)\n    def audio(self):\n        return speak()[:1]\n\n    def test_audio(self):\n        assert True\n"
+    write_file(tmp_path, path, source)
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        path,
+        source.replace("speak()[:1]", "speak()").replace(
+            "assert True", "assert 1 == 1"
+        ),
+    )
+    head = commit(tmp_path, "change fixture and test")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "incomplete"
+    assert "class fixture dependencies" in report.incomplete_reason
+    assert len(reviewer.inputs) == 1
+
+
+def test_changed_shared_test_utility_selects_its_unit_test(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    helper = "tests/utils.py"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    write_file(
+        tmp_path,
+        helper,
+        "from sglang_omni.api import speak\n\ndef audio():\n    return speak()\n",
+    )
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_audio.py",
+        "from tests.utils import audio\n\ndef test_audio():\n    assert audio()\n",
+    )
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        helper,
+        "from sglang_omni.api import speak\n\ndef audio():\n    return speak()[:1]\n",
+    )
+    head = commit(tmp_path, "change shared utility")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert detect_review_scopes([helper]) == ["unit_tests"]
+    assert [case.name for case in report.unit_test_cases] == ["test_audio"]
+    assert report.execution == "complete", report.incomplete_reason
+    assert f"File {helper}" in reviewer.inputs[0]
+
+
+def test_class_fixture_marker_change_is_reported_as_incomplete(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    path = "tests/unit_test/test_audio.py"
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    source = "import pytest\nfrom sglang_omni.api import speak\n\n@pytest.fixture\ndef audio():\n    return speak()\n\nclass TestAudio:\n    def test_audio(self):\n        assert speak()\n"
+    write_file(tmp_path, path, source)
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        path,
+        source.replace(
+            "class TestAudio:", "@pytest.mark.usefixtures('audio')\nclass TestAudio:"
+        ),
+    )
+    head = commit(tmp_path, "change class fixture marker")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "incomplete"
+    assert "class-level test dependencies" in report.incomplete_reason
+    assert not reviewer.inputs
+
+
+def test_test_helper_class_contributes_contract_source(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_audio.py",
+        "from sglang_omni.api import speak\n\nclass AudioHelper:\n    def audio(self):\n        return speak()\n\ndef test_audio():\n    assert AudioHelper().audio() == b'RIFF'\n",
+    )
+    head = commit(tmp_path, "add helper-backed case")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "complete", report.incomplete_reason
+    assert "File sglang_omni/api.py" in reviewer.inputs[0]
+
+
+def test_unresolved_shared_test_import_is_explicitly_incomplete(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, "sglang_omni/api.py", "def speak():\n    return b'RIFF'\n")
+    base = commit(tmp_path, "before")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_audio.py",
+        "from tests import missing_helper\nfrom sglang_omni.api import speak\n\ndef test_audio():\n    assert speak() == missing_helper.audio()\n",
+    )
+    head = commit(tmp_path, "unknown shared helper")
+    reviewer = OfflineReviewer([])
+    report = run_review(
+        request_for(tmp_path, base, head, 1), reviewer, SystemClock()
+    ).report
+    assert report.execution == "incomplete"
+    assert "imported test helper" in report.incomplete_reason
+    assert not reviewer.inputs

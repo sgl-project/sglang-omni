@@ -325,7 +325,8 @@ def detect_review_scopes(changed_paths: list[str]) -> list[ReviewScope]:
         pass
     if any(
         (path.startswith("tests/unit_test/") and path.endswith(".py"))
-        or path in {"conftest.py", "tests/conftest.py"}
+        or path in {"conftest.py", "tests/conftest.py", "tests/utils.py"}
+        or (path.startswith("tests/utils/") and path.endswith(".py"))
         for path in changed_paths
     ):
         scopes.append("unit_tests")
@@ -670,6 +671,7 @@ def run_github_review() -> None:
                 artifacts,
                 expected_base_sha=pull_request.base.sha,
                 expected_head_sha=pull_request.head.sha,
+                publish_incomplete=not offline,
             )
             if published is False:
                 for artifact in artifacts:

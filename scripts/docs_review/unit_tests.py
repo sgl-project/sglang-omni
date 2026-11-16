@@ -17,7 +17,7 @@ from scripts.docs_review.unit_test_ast import (
 from scripts.docs_review.unit_test_dependencies import affected_test_cases
 from scripts.docs_review.unit_test_fixtures import case_dependencies
 
-UNIT_TEST_POLICY_VERSION = "unit-tests-6"
+UNIT_TEST_POLICY_VERSION = "unit-tests-7"
 UNIT_TEST_ROOT = "tests/unit_test/"
 AUTOMATIC_CONTEXT_BYTES = 36_000
 EXPLICIT_CONTEXT_BYTES = 16_000
@@ -67,6 +67,8 @@ def changed_test_paths(
             head_commit_sha,
             "--",
             UNIT_TEST_ROOT,
+            "tests/utils.py",
+            "tests/utils/",
             "tests/conftest.py",
             "conftest.py",
         ],
@@ -200,7 +202,16 @@ def collect_unit_test_inputs(
         before_lines = before_source.splitlines()
         head_lines = head_source.splitlines()
         has_changed_case = False
-        for name, definition in test_definitions(head_module).items():
+        head_definitions = test_definitions(head_module)
+        removed_cases = sorted(before_definitions.keys() - head_definitions.keys())
+        if removed_cases:
+            limitations.append(
+                f"{head_path}: deleted test cases were not reviewed: "
+                + ", ".join(removed_cases)
+            )
+        else:
+            pass
+        for name, definition in head_definitions.items():
             previous = before_definitions.get(name)
             citations = affected.get((head_path, name), [])
             if (
@@ -428,7 +439,11 @@ def collect_unit_test_inputs(
                 f"{module.replace('.', '/')}/__init__.py",
             )
         }
-        if not explicit_contracts and not any(
+        if not modules:
+            case.evidence_limitations.append(
+                "No contract source could be statically linked to this case."
+            )
+        elif not explicit_contracts and not any(
             path in files and not files[path].truncated for path in module_paths
         ):
             case.evidence_limitations.append(
@@ -436,18 +451,15 @@ def collect_unit_test_inputs(
             )
         else:
             pass
-        if not explicit_contracts:
-            for module in modules:
-                module_path = module.replace(".", "/")
-                if not any(
-                    path in files and not files[path].truncated
-                    for path in (f"{module_path}.py", f"{module_path}/__init__.py")
-                ):
-                    case.evidence_limitations.append(
-                        f"Contract source for {module} could not be collected."
-                    )
-                else:
-                    pass
-        else:
-            pass
+        for module in modules:
+            module_path = module.replace(".", "/")
+            if not any(
+                path in files and not files[path].truncated
+                for path in (f"{module_path}.py", f"{module_path}/__init__.py")
+            ):
+                case.evidence_limitations.append(
+                    f"Contract source for {module} could not be collected."
+                )
+            else:
+                pass
     return list(files.values()), cases, limitations

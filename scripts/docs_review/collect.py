@@ -50,10 +50,11 @@ def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
         test_files, cases, limitations = collect_unit_test_inputs(
             repository, merge_base, request.head_commit_sha, request.include_paths
         )
+        mock_notes, mock_limitations = internal_mock_notes(
+            repository, merge_base, request.head_commit_sha
+        )
         test_hygiene_notes = [
-            *internal_mock_notes(
-                repository, merge_base, request.head_commit_sha, cases
-            ),
+            *mock_notes,
             *unit_test_volume_notes(
                 repository,
                 merge_base,
@@ -78,7 +79,11 @@ def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
             style_guide_limitation="",
             review_scope=request.review_scope,
             unit_test_cases=cases,
-            collection_limitations=[*request.collection_limitations, *limitations],
+            collection_limitations=[
+                *request.collection_limitations,
+                *limitations,
+                *mock_limitations,
+            ],
             test_hygiene_notes=test_hygiene_notes,
         )
     else:

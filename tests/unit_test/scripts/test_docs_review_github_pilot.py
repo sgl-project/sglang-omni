@@ -828,3 +828,72 @@ def test_automatic_review_posts_sticky_comment(
 
 def test_safe_text_strips_mentions() -> None:
     assert "@" not in github_comment.safe_text("@team [click](https://example.invalid)")
+
+
+@pytest.mark.parametrize("publish_incomplete", [True, False])
+def test_incomplete_only_review_replaces_prior_same_revision_status(
+    monkeypatch: pytest.MonkeyPatch, publish_incomplete: bool
+) -> None:
+    writes: list[str] = []
+    head = "a" * 40
+    previous = (
+        github_comment.ADVISORY_REVIEW_MARKER
+        + f"\n<!-- advisory-head:{head} -->\n"
+        + "<!-- advisory-scope:docs:start -->\nprevious documentation finding\n"
+        + "<!-- advisory-scope:docs:end -->\n"
+        + "<!-- advisory-scope:unit_tests:start -->\nNo findings.\n"
+        + "<!-- advisory-scope:unit_tests:end -->"
+    )
+
+    def api(endpoint: str, *, body: str | None = None, method: str = "GET") -> str:
+        if method == "GET":
+            return (
+                json.dumps(
+                    [
+                        {
+                            "id": 10,
+                            "body": previous,
+                            "user": {"login": "github-actions[bot]"},
+                        }
+                    ]
+                )
+                if endpoint.endswith("&page=1")
+                else "[]"
+            )
+        else:
+            assert method == "PATCH" and body is not None
+            writes.append(json.loads(body)["body"])
+            return "{}"
+
+    monkeypatch.setattr(github_comment, "github_api", api)
+    report = Report.model_construct(
+        execution="incomplete",
+        head_commit_sha=head,
+        findings=[],
+        test_hygiene_notes=[],
+        review_scope="unit_tests",
+    )
+    artifact = ReviewArtifact.model_construct(
+        pull_request_number=1,
+        run_id="123",
+        run_attempt=1,
+        stale=False,
+        publishable=False,
+        review_scope="unit_tests",
+        report=report,
+    )
+    github_comment.publish_reports(
+        "owner/repo",
+        "https://github.com/owner/repo",
+        "123",
+        1,
+        [artifact],
+        publish_incomplete=publish_incomplete,
+    )
+    if publish_incomplete:
+        assert len(writes) == 1
+        assert "Review incomplete" in writes[0]
+        assert "No findings." not in writes[0]
+        assert "previous documentation finding" in writes[0]
+    else:
+        assert not writes
