@@ -249,12 +249,12 @@ class MossTranscribeDiarizeEngineBuilder(
             overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
             overrides["speculative_draft_model_revision"] = None
             self.speculative_worker_class = ReducedVocabularyDFlashWorker
-            # note (wilsonzheng0327): async decode under a draft means speculative overlap, so it stays off unless the operator asks for it.
             if self.enable_async_decode is None:
-                self.enable_async_decode = False
+                self.enable_async_decode = not self.enable_plain_fallback
             else:
                 pass
             overrides["disable_overlap_schedule"] = not self.enable_async_decode
+            overrides.setdefault("speculative_num_draft_tokens", 16)
             # note (wilsonzheng0327): on SGLang 0.5.23 the compiled path makes each DFlash verify step about four times slower, while decode without a draft still gains from it.
             overrides["enable_torch_compile"] = False
 

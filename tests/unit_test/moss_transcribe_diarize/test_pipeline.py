@@ -496,13 +496,10 @@ def write_speculators_config(directory: Path) -> None:
 
 
 @pytest.mark.parametrize("enable_plain_fallback", [False, True])
-def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
+def test_factory_serves_a_draft_on_the_overlapped_verify_loop(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enable_plain_fallback: bool
 ) -> None:
-    """Unset, async decode stays off under a draft, where it means speculative overlap;
-    SGLang cannot read the speculators config, so the worker class and the flat copy must
-    both reach the build, and the copy must not outlive it.
-    """
+    """Unset, speculative overlap runs unless plain fallback requires the synchronous loop."""
     calls = stub_factory_env(monkeypatch, want_cuda_graph=False)
     monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
     monkeypatch.setattr(engine_builder, "get_alloc_reserve_per_decode", lambda: 16)
@@ -569,13 +566,15 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
         is ReducedVocabularyDFlashWorker
     )
     assert server_args_kwargs["enable_torch_compile"] is False
-    assert infrastructure_kwargs["enable_async_decode"] is False
-    assert server_args_kwargs["disable_overlap_schedule"] is True
+    expected_async = not enable_plain_fallback
+    assert infrastructure_kwargs["enable_async_decode"] is expected_async
+    assert server_args_kwargs["disable_overlap_schedule"] is not expected_async
+    assert server_args_kwargs["speculative_num_draft_tokens"] == 16
     assert adapter_kwargs["speculative_reserve_tokens"] == (
         0 if enable_plain_fallback else 16
     )
     scheduler_kwargs = calls["scheduler_kwargs"][0]
-    assert scheduler_kwargs["enable_async_decode"] is False
+    assert scheduler_kwargs["enable_async_decode"] is expected_async
     assert scheduler_kwargs["async_prefill"] is False
     assert scheduler_kwargs["model_runner"].speculative_ignores_request_seed is True
 
@@ -680,19 +679,20 @@ def test_torch_compile_is_turned_off_only_under_the_draft(
     ("requested", "with_draft", "expected"),
     [
         (None, False, True),
-        (None, True, False),
+        (None, True, True),
         (True, True, True),
+        (False, True, False),
         (False, False, False),
     ],
 )
-def test_speculative_overlap_is_an_explicit_opt_in(
+def test_speculative_overlap_defaults_on_and_respects_opt_out(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     requested: bool | None,
     with_draft: bool,
     expected: bool,
 ) -> None:
-    """Ordinary decode defaults to async; under a draft async decode means speculative overlap, so it runs only when the operator asks for it."""
+    """Ordinary decode and DFlash default to async; an explicit opt-out still wins."""
     monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
     monkeypatch.setattr(
         engine_builder.request_builders,
@@ -719,11 +719,30 @@ def test_speculative_overlap_is_an_explicit_opt_in(
     if with_draft:
         assert builder.infra_kwargs()["enable_async_decode"] is expected
         assert overrides["disable_overlap_schedule"] is not expected
+        assert overrides["speculative_num_draft_tokens"] == 16
         assert scheduler_kwargs["async_prefill"] is False
         builder.draft_checkpoint.cleanup()
     else:
         assert builder.infra_kwargs() == {}
         assert scheduler_kwargs["async_prefill"] is expected
+
+
+def test_explicit_draft_width_overrides_the_tuned_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    builder = make_moss_engine_builder()
+    overrides: dict[str, object] = {
+        "speculative_algorithm": "DFLASH",
+        "speculative_draft_model_path": str(tmp_path),
+        "speculative_num_draft_tokens": 8,
+    }
+
+    builder.adjust_overrides(overrides)
+
+    assert overrides["speculative_num_draft_tokens"] == 8
+    builder.draft_checkpoint.cleanup()
 
 
 def test_builder_runner_opts_into_speculative_overlap(

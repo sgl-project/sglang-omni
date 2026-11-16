@@ -59,6 +59,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         algorithm="DFLASH",
         draft_model_path="wilsonzheng0327/MOSS-Transcribe-Diarize-dflash",
         draft_model_revision="2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
+        engine_settings={"speculative_num_draft_tokens": 16},
         license="apache-2.0",
     ),
     PinnedDraft(
