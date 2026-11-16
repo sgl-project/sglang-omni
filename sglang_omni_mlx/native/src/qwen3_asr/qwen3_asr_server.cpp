@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "qwen3_asr/asr_service.h"
+#include "common/asr_service.h"
 #include "qwen3_asr/realtime.h"
 #include "silero_vad/vad_service.h"
 #include "sortformer/sortformer_service.h"
@@ -83,7 +83,7 @@ public:
   }
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
+                   omni_server::TranscriptionWorker &worker) override {
     realtime_sessions_ = [this,
                           &worker](qwen3_asr::RealtimeSession::Sender sender) {
       return std::make_shared<qwen3_asr::RealtimeSession>(
@@ -113,11 +113,11 @@ public:
   }
   bool Transcribes() const override { return false; }
   std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &) const override {
+  RequestStates(const omni_server::TranscriptionWorker &) const override {
     return service_.RequestStates();
   }
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &) override {
+                   omni_server::TranscriptionWorker &) override {
     service_.Register(context);
   }
 
@@ -138,11 +138,11 @@ public:
   }
   bool Transcribes() const override { return false; }
   std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &) const override {
+  RequestStates(const omni_server::TranscriptionWorker &) const override {
     return service_.RequestStates();
   }
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &) override {
+                   omni_server::TranscriptionWorker &) override {
     service_.Register(context);
   }
 
@@ -214,6 +214,7 @@ int main(int argc, char **argv) {
     }
   };
   qwen3_asr.max_batch = [&]() { return max_batch; };
+  qwen3_asr.batch_runner = qwen3_asr::BatchableTranscriptionRunner();
   qwen3_asr.load = [&](const std::filesystem::path &model_directory) {
     auto model = std::make_unique<Qwen3ASRModel>(
         model_directory,

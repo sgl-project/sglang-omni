@@ -15,6 +15,7 @@
 #include "common/kv_cache.h"
 #include "common/tokenizer.h"
 #include "common/transcription.h"
+#include "common/worker.h"
 #include "qwen3_asr/dflash_draft.h"
 #include "qwen3_asr/qwen3_asr_model.h"
 
@@ -180,7 +181,7 @@ private:
 };
 
 // One request the worker may decode together with others. Called alone it
-// transcribes serially; the worker finds it through
+// transcribes serially; BatchableTranscriptionRunner finds it through
 // std::function::target<BatchableTranscription>().
 struct BatchableTranscription {
   const Qwen3ASRTranscriber *transcriber;
@@ -192,5 +193,9 @@ struct BatchableTranscription {
     return transcriber->Transcribe(samples, options, cancel);
   }
 };
+
+// The worker's batching of consecutive BatchableTranscription requests,
+// decoded together by their transcriber's TranscribeBatch.
+omni_server::BatchRunner BatchableTranscriptionRunner();
 
 } // namespace qwen3_asr

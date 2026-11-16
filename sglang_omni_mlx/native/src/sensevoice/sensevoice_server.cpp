@@ -18,7 +18,7 @@
 #include <memory>
 #include <stdexcept>
 
-#include "qwen3_asr/asr_service.h"
+#include "common/asr_service.h"
 #include "sensevoice/sensevoice_transcriber.h"
 
 namespace {

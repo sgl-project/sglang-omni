@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "qwen3_asr/speech_service.h"
+#include "common/speech_service.h"
 
 #include <cctype>
 #include <condition_variable>
@@ -159,8 +159,8 @@ SpeechServedModel::Prepare(std::vector<float>,
 // Note (Minyi Tang): /health counts the slots admission holds, which the
 // worker frees only after it marks a request done; once /health shows the
 // server idle, it admits a full queue.
-std::map<std::string, int>
-SpeechServedModel::RequestStates(const qwen3_asr::TranscriptionWorker &) const {
+std::map<std::string, int> SpeechServedModel::RequestStates(
+    const omni_server::TranscriptionWorker &) const {
   std::lock_guard<std::mutex> lock(admission_mutex_);
   std::map<std::string, int> states;
   if (admitted_requests_ > 0) {
@@ -175,7 +175,7 @@ SpeechServedModel::RequestStates(const qwen3_asr::TranscriptionWorker &) const {
 }
 
 void SpeechServedModel::AddHandlers(mg_context *context,
-                                    qwen3_asr::TranscriptionWorker &worker) {
+                                    omni_server::TranscriptionWorker &worker) {
   worker_ = &worker;
   mg_set_request_handler(context, "/v1/audio/speech$", HandleSpeech, this);
 }
@@ -239,7 +239,7 @@ int SpeechServedModel::Speak(
   const auto deadline = std::chrono::steady_clock::now() + request_timeout_;
   const std::string request_id = NewRequestId();
   auto channel = std::make_shared<AudioChannel>();
-  const qwen3_asr::CancelFlag cancel = qwen3_asr::NewCancelFlag();
+  const omni_server::CancelFlag cancel = omni_server::NewCancelFlag();
   worker_->Submit(
       [synthesize = job.synthesize, channel,
        deadline](const std::atomic<bool> &cancelled) {

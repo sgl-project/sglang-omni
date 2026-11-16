@@ -642,4 +642,26 @@ Qwen3ASRTranscriber::SplitOutput(const std::vector<int> &output_ids,
   return {text, language};
 }
 
+omni_server::BatchRunner BatchableTranscriptionRunner() {
+  return {[](const omni_server::Transcription &transcription) {
+            return transcription.target<BatchableTranscription>() != nullptr;
+          },
+          [](const std::vector<omni_server::BatchItem> &items,
+             const omni_server::BatchCompletion &finish) {
+            std::vector<BatchRequest> requests;
+            const Qwen3ASRTranscriber *transcriber = nullptr;
+            for (const omni_server::BatchItem &item : items) {
+              const auto *batchable =
+                  item.transcription->target<BatchableTranscription>();
+              transcriber = batchable->transcriber;
+              requests.push_back(
+                  {&batchable->samples, &batchable->options, item.cancel});
+            }
+            transcriber->TranscribeBatch(
+                requests, [&](size_t i, BatchOutcome outcome) {
+                  finish(i, std::move(outcome.result), outcome.error);
+                });
+          }};
+}
+
 } // namespace qwen3_asr

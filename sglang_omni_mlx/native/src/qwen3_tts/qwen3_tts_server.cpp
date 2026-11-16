@@ -45,12 +45,12 @@
 #include <vector>
 
 #include "civetweb.h"
+#include "common/asr_service.h"
 #include "common/audio.h"
 #include "common/generation.h"
 #include "common/http.h"
 #include "common/text.h"
 #include "common/transcription.h"
-#include "qwen3_asr/asr_service.h"
 #include "qwen3_tts/qwen3_tts_model.h"
 
 namespace {
@@ -665,7 +665,7 @@ public:
   // worker frees only after it marks a request done; once /health shows the
   // server idle, it admits a full queue.
   std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &) const override {
+  RequestStates(const omni_server::TranscriptionWorker &) const override {
     std::lock_guard<std::mutex> lock(admission_mutex_);
     std::map<std::string, int> states;
     if (admitted_requests_ > 0) {
@@ -679,7 +679,7 @@ public:
     return states;
   }
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
+                   omni_server::TranscriptionWorker &worker) override {
     worker_ = &worker;
     mg_set_request_handler(context, "/v1/audio/speech$", HandleSpeech, this);
   }
@@ -737,7 +737,7 @@ private:
     const std::string request_id = NewRequestId();
     const int sample_rate = model_.speech_decoder().sample_rate();
     auto channel = std::make_shared<AudioChannel>();
-    const qwen3_asr::CancelFlag cancel = qwen3_asr::NewCancelFlag();
+    const omni_server::CancelFlag cancel = omni_server::NewCancelFlag();
     bool admitted = false;
     {
       std::lock_guard<std::mutex> lock(admission_mutex_);
@@ -881,7 +881,7 @@ private:
   // Hands request to the worker, whose completion frees its admission slot.
   void Submit(const SpeechRequest &request,
               const std::shared_ptr<AudioChannel> &channel,
-              const qwen3_asr::CancelFlag &cancel,
+              const omni_server::CancelFlag &cancel,
               std::chrono::steady_clock::time_point deadline) {
     worker_->Submit(
         [this, request, channel, deadline](const std::atomic<bool> &cancelled) {
@@ -964,7 +964,7 @@ private:
   mutable std::mutex admission_mutex_;
   // Requests the worker holds: running, queued, or finishing.
   int admitted_requests_ = 0;
-  qwen3_asr::TranscriptionWorker *worker_ = nullptr;
+  omni_server::TranscriptionWorker *worker_ = nullptr;
 };
 
 } // namespace

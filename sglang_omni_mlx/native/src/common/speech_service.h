@@ -17,9 +17,9 @@
 #include <string>
 #include <vector>
 
+#include "common/asr_service.h"
 #include "common/generation.h"
 #include "common/http.h"
-#include "qwen3_asr/asr_service.h"
 
 namespace speech_service {
 
@@ -73,9 +73,9 @@ public:
   Prepare(std::vector<float>, const asr_service::FormFields &) const override;
   bool Transcribes() const override { return false; }
   std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &) const override;
+  RequestStates(const omni_server::TranscriptionWorker &) const override;
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override;
+                   omni_server::TranscriptionWorker &worker) override;
 
 protected:
   // The job of a request body; throws std::invalid_argument for a request
@@ -97,7 +97,7 @@ private:
   mutable std::mutex admission_mutex_;
   // Requests the worker holds: running, queued, or finishing.
   int admitted_requests_ = 0;
-  qwen3_asr::TranscriptionWorker *worker_ = nullptr;
+  omni_server::TranscriptionWorker *worker_ = nullptr;
 };
 
 // Adds --max-queued-requests and --request-timeout-s to kind; load then

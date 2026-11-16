@@ -25,9 +25,9 @@
 #include <string>
 #include <vector>
 
+#include "common/asr_service.h"
+#include "common/speech_service.h"
 #include "common/text.h"
-#include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/speech_service.h"
 #include "voxtral_tts/voxtral_tts_model.h"
 
 namespace {

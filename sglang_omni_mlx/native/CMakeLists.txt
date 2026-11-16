@@ -67,10 +67,12 @@ add_library(common STATIC
   src/common/kv_cache.cpp
   src/common/layers.cpp
   src/common/npz.cpp
+  src/common/realtime_connection.cpp
   src/common/reference_audio.cpp
   src/common/text.cpp
   src/common/tokenizer.cpp
-  src/common/transcription.cpp)
+  src/common/transcription.cpp
+  src/common/worker.cpp)
 target_include_directories(common PUBLIC src)
 target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-static
   "-framework CoreFoundation" PRIVATE yaml-cpp::yaml-cpp)
@@ -94,7 +96,6 @@ add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_decoder.cpp
   src/qwen3_asr/dflash_draft.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
-  src/qwen3_asr/worker.cpp
   src/qwen3_asr/realtime.cpp)
 target_link_libraries(qwen3_asr PUBLIC common)
 target_compile_options(qwen3_asr PRIVATE -Wall -Wextra)
@@ -120,18 +121,18 @@ add_library(omni_service STATIC src/common/service.cpp src/common/http.cpp)
 target_link_libraries(omni_service PUBLIC common civetweb-c-library)
 target_compile_options(omni_service PRIVATE -Wall -Wextra)
 
-add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
-target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
+add_library(asr_service STATIC src/common/asr_service.cpp)
+target_link_libraries(asr_service PUBLIC omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
 
 # The /v1/audio/speech API the TTS servers share.
-add_library(speech_service STATIC src/qwen3_asr/speech_service.cpp)
+add_library(speech_service STATIC src/common/speech_service.cpp)
 target_link_libraries(speech_service PUBLIC asr_service)
 target_compile_options(speech_service PRIVATE -Wall -Wextra)
 
 add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_vad/vad_service.cpp
   src/sortformer/sortformer_service.cpp)
-target_link_libraries(qwen3_asr_server PRIVATE asr_service silero_vad sortformer)
+target_link_libraries(qwen3_asr_server PRIVATE qwen3_asr asr_service silero_vad sortformer)
 
 add_executable(silero_vad_probe tools/silero_vad_probe.cpp)
 target_link_libraries(silero_vad_probe PRIVATE silero_vad)
@@ -212,7 +213,7 @@ install(TARGETS moss_transcribe_diarize_server moss_transcribe RUNTIME DESTINATI
 # and Qwen3-ASR's checkpoint loading, with its own server and parity tool.
 add_library(nemotron_asr STATIC src/nemotron/nemotron_model.cpp src/nemotron/nemotron_transcriber.cpp
   src/nemotron/nemotron_realtime.cpp)
-target_link_libraries(nemotron_asr PUBLIC qwen3_asr sortformer swift_port)
+target_link_libraries(nemotron_asr PUBLIC common sortformer swift_port)
 # Note (Dayuxiaoshui): the positional table is float math that must round as
 # Swift's does, so no fused multiply-add.
 target_compile_options(nemotron_asr PRIVATE -Wall -Wextra -ffp-contract=off)
@@ -397,7 +398,7 @@ target_link_libraries(fishaudio_drama3 PUBLIC common fish_dac)
 target_compile_options(fishaudio_drama3 PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(fishaudio_drama3_experts_test EXCLUDE_FROM_ALL
   ci/fishaudio_drama3_experts_test.cpp)
-target_link_libraries(fishaudio_drama3_experts_test PRIVATE fishaudio_drama3 qwen3_asr)
+target_link_libraries(fishaudio_drama3_experts_test PRIVATE fishaudio_drama3)
 
 add_executable(fishaudio_drama3_server src/fishaudio_drama3/fishaudio_drama3_server.cpp)
 target_link_libraries(fishaudio_drama3_server PRIVATE fishaudio_drama3 speech_service)

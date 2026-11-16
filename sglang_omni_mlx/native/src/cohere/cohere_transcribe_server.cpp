@@ -19,7 +19,7 @@
 #include <stdexcept>
 
 #include "cohere/cohere_transcriber.h"
-#include "qwen3_asr/asr_service.h"
+#include "common/asr_service.h"
 #include "silero_vad/speech_segments.h"
 
 namespace {
