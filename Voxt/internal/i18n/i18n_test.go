@@ -45,6 +45,7 @@ func TestChinese(t *testing.T) {
 }
 
 func TestTranslatorUsesExplicitLocale(t *testing.T) {
+	defer SetLocale("en")
 	SetLocale("en")
 	translator := NewTranslator("zh-Hans")
 	if got := translator.T("Settings"); got != "设置" {
@@ -53,8 +54,21 @@ func TestTranslatorUsesExplicitLocale(t *testing.T) {
 	if got := translator.Locale(); got != "zh-Hans" {
 		t.Errorf("translator locale %q", got)
 	}
+	if got := translator.N(1, "%d line", "%d lines", 1); got != "1 行" {
+		t.Errorf("explicit plural translation %q", got)
+	}
+	if got := NewTranslator("en").N(1, "%d line", "%d lines", 1); got != "1 line" {
+		t.Errorf("explicit English singular %q", got)
+	}
+	if got := NewTranslator("en").N(2, "%d line", "%d lines", 2); got != "2 lines" {
+		t.Errorf("explicit English plural %q", got)
+	}
 	if got := Locale(); got != "en" {
 		t.Errorf("translator changed global locale to %q", got)
+	}
+	SetLocale("zh-Hans")
+	if got := CurrentTranslator().T("Settings"); got != "设置" {
+		t.Errorf("current translator %q", got)
 	}
 }
 
@@ -105,5 +119,14 @@ func TestDates(t *testing.T) {
 	}
 	if got := Date(old); got != "2024年11月22日" {
 		t.Errorf("zh date: %q", got)
+	}
+	zone := time.FixedZone("UTC+8", 8*60*60)
+	now = time.Date(2026, 1, 2, 15, 4, 0, 0, zone)
+	value := now.Add(-48 * time.Hour)
+	if got := NewTranslator("en").DateTimeAt(value, now); got != "Dec 31, 2025 15:04" {
+		t.Errorf("explicit zone: %q", got)
+	}
+	if got := NewTranslator("zh-Hans").DateTimeAt(value, now); got != "2025年12月31日 15:04" {
+		t.Errorf("explicit zone and locale: %q", got)
 	}
 }
