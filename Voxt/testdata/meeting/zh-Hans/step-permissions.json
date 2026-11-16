@@ -56,10 +56,10 @@
         "ask_tooltip": "把 Voxt 加入系统设置中的列表"
       },
       "speech": {
-        "code": "unknown",
-        "text": "未知",
+        "code": "notDetermined",
+        "text": "还没请求",
         "ok": false,
-        "can_ask": false,
+        "can_ask": true,
         "can_open": true,
         "ask_action": "speechRecognition",
         "ask_tooltip": ""

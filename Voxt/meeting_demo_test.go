@@ -158,6 +158,11 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return settings.MissingNotice
 		}
 		return i18n.T("History settings")
+	case "onboarding":
+		if !state.Onboarding.Open {
+			return fixture.name
+		}
+		return state.Onboarding.Title
 	case "history-access":
 		access := state.HistoryAccess
 		if access.Ask {
@@ -189,6 +194,7 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.historyUI.query, host.historyUI.sel = "stale", "stale"
 	host.historySettingsUI.exportSel = "stale"
 	host.historyAccessUI.listOpen = true
+	host.onboardingUI.open = !host.onboardingUI.open
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -203,6 +209,9 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" ||
 		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen {
 		t.Fatal("fixture switch kept local UI state")
+	}
+	if state := host.current().state.Onboarding; state != nil && host.onboardingUI.open != state.Open {
+		t.Fatal("fixture switch kept the onboarding dialog state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {
 		t.Fatal(err)

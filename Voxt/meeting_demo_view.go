@@ -57,6 +57,8 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 						historyAccessSection(c, fixture.state.HistoryAccess, host, &host.historyAccessUI)
 					})
 				})
+			case "onboarding":
+				onboardingView(c, *fixture.state.Onboarding, host, &host.onboardingUI)
 			}
 		})
 	})

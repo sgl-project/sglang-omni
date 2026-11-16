@@ -56,10 +56,10 @@
         "ask_tooltip": "Adds Voxt to the list in System Settings"
       },
       "speech": {
-        "code": "unknown",
-        "text": "Unknown",
+        "code": "notDetermined",
+        "text": "Not asked yet",
         "ok": false,
-        "can_ask": false,
+        "can_ask": true,
         "can_open": true,
         "ask_action": "speechRecognition",
         "ask_tooltip": ""

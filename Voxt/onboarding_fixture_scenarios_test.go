@@ -22,7 +22,7 @@ func onboardingFixtureScenarios() []meetingFixtureScenario {
 	}
 	add("empty-closed", obWelcome, func(input *onboardingViewStateInput) { input.Open = false })
 	add("step-welcome", obWelcome, func(input *onboardingViewStateInput) {})
-	add("step-permissions", obPermissions, func(input *onboardingViewStateInput) {})
+	add("step-permissions", obPermissions, func(input *onboardingViewStateInput) { input.PermissionSpeech = permission.NotDetermined })
 	add("models-loading", obModels, func(input *onboardingViewStateInput) {})
 	add("models-normal", obModels, func(input *onboardingViewStateInput) {
 		model := onboardingFixtureModel(models.ASRAccurate)
