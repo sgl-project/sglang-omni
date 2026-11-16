@@ -231,8 +231,12 @@ def make_talker_scheduler_adapters(
             codec = torch.empty(0, dtype=torch.long)
         else:
             output_ids = [int(t) for t in data.output_ids]
-            while output_ids and output_ids[-1] == int(codec_eos_id):
-                output_ids.pop()
+            # note (0xtoward): a speculative block can commit tokens past the stop, so the
+            # codes end at the first stop rather than at trailing ones.
+            if int(codec_eos_id) in output_ids:
+                output_ids = output_ids[: output_ids.index(int(codec_eos_id))]
+            else:
+                pass
             codec = torch.tensor(output_ids, dtype=torch.long)
         state.engine_outputs[TALKER_STAGE] = {"codec_tokens": codec}
         return payload_with_state(payload, state)

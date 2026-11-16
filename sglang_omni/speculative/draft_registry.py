@@ -125,6 +125,14 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         license=None,
     ),
     PinnedDraft(
+        model_path="openbmb/MiniCPM-o-4_5",
+        stage="talker",
+        algorithm="DSPARK",
+        draft_model_path="Qun1023/MiniCPM-o-4_5-talker-DSpark",
+        draft_model_revision="0457ffd6980c2d1f19ebd3f1775f49764fa821af",
+        license=None,
+    ),
+    PinnedDraft(
         model_path="inclusionAI/Ming-3.0-audio-flash",
         stage="thinker",
         algorithm="NEXTN",

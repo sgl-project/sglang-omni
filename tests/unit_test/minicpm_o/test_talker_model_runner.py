@@ -13,13 +13,19 @@ from sglang.srt.layers.sampler import Sampler
 from sglang.srt.runtime_context import get_context, get_parallel
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.sampling.sampling_params import TOP_K_ALL, SamplingParams
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.base import rank_shared_unseeded_sampling_seed
+from sglang_omni.models.minicpm_o import bootstrap as bootstrap_module
 from sglang_omni.models.minicpm_o import talker_model_runner
 from sglang_omni.models.minicpm_o.talker_model_runner import (
     MiniCPMOTalkerModelRunner,
     TalkerSlotState,
 )
+from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.vendor.sglang.server_args import override_server_args
 from tests.unit_test.fixtures.accelerator import require_cuda
 
 VOCAB_SIZE = 64
@@ -28,6 +34,51 @@ MIN_NEW_TOKENS = 5
 SEED = 7
 SLOT_COUNT = 12
 SUPPRESSED_ROW_AND_TOKEN = (1, 3)
+
+
+@pytest.mark.parametrize("speculative", [False, True])
+@pytest.mark.parametrize("session_mode", [False, True])
+@pytest.mark.parametrize("enable_async_decode", [False, True])
+def test_talker_overlap_mode_reaches_worker_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    speculative: bool,
+    session_mode: bool,
+    enable_async_decode: bool,
+) -> None:
+    server_args = SimpleNamespace(
+        disable_cuda_graph=True,
+        speculative_algorithm="DSPARK" if speculative else None,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.generation_batch_policy.get_prefill_cuda_graph_backend",
+        lambda value: CudaGraphBackend.DISABLED,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.vendor.sglang.server_args.override_server_args",
+        Mock(spec=override_server_args),
+    )
+    create_infrastructure = Mock(
+        spec=create_sglang_infrastructure,
+        side_effect=RuntimeError("worker construction reached"),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
+        create_infrastructure,
+    )
+
+    with pytest.raises(RuntimeError, match="worker construction reached"):
+        bootstrap_module.create_talker_scheduler(
+            server_args,
+            enable_async_decode=enable_async_decode,
+            session_mode=session_mode,
+        )
+
+    assert create_infrastructure.call_args.kwargs["enable_async_decode"] is (
+        enable_async_decode and not session_mode
+    )
 
 
 def make_talker_request(
@@ -41,6 +92,27 @@ def make_talker_request(
         req=request, talker_model_inputs=inputs, return_logprob=False
     )
     return SimpleNamespace(data=data, request_id=f"request-{index}")
+
+
+@pytest.mark.parametrize("greedy", [False, True])
+def test_talker_speculation_refuses_only_sampled_request_seeds(greedy: bool) -> None:
+    """The rejection sampler has no request-seeded random stream."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.draft_algorithm = SpeculativeAlgorithm.DSPARK
+    scheduler.model_runner = object.__new__(MiniCPMOTalkerModelRunner)
+    request = SimpleNamespace(
+        sampling_params=SamplingParams(
+            sampling_seed=SEED, top_k=1 if greedy else 10, max_new_tokens=8
+        ),
+        return_hidden_states=False,
+    )
+    request_data = SimpleNamespace(return_logprob=False)
+    error = scheduler.speculative_request_error(request, request_data)
+    if greedy:
+        assert error is None
+    else:
+        assert "seed" in error
 
 
 def suppress_one_token(
@@ -449,3 +521,19 @@ def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
         sampling_info = build_batch_sampling_info(sampling_params, device)
         assert graph_runner.samples_in_graph(len(rows), sampling_info) is is_graph_used
         assert not graph_runner.samples_in_graph(9, sampling_info), "above the top size"
+
+
+def test_speculative_verify_rows_reach_the_draft_worker_unshaped() -> None:
+    runner = MiniCPMOTalkerModelRunner.__new__(MiniCPMOTalkerModelRunner)
+    requests = [make_talker_request(index, 1.5, SamplingParams()) for index in range(2)]
+    for request in requests:
+        request.data.req.output_ids = [1, 2, 2]
+        request.data.suppress_tokens = None
+    logits = torch.randn(6, VOCAB_SIZE)
+    logits_output = LogitsProcessorOutput(
+        next_token_logits=logits.clone(), hidden_states=None
+    )
+
+    runner.apply_speculative_verify_logits(logits_output, requests, 3)
+
+    assert torch.equal(logits_output.next_token_logits, logits)

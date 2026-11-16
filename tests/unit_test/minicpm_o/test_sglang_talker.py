@@ -83,12 +83,14 @@ def test_prefill_graphs_resolve_the_talker_decoder():
         ({}, False, "disabled", False),
     ],
 )
+@pytest.mark.parametrize("async_override", [None, False, True])
 def test_talker_stage_defaults_breakable_prefill_graphs_on_nvidia(
     monkeypatch: pytest.MonkeyPatch,
     server_args_overrides: dict[str, object],
     is_cuda: bool,
     backend: str,
     operator_selected: bool,
+    async_override: bool | None,
 ) -> None:
     built: dict[str, object] = {}
     monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
@@ -118,7 +120,9 @@ def test_talker_stage_defaults_breakable_prefill_graphs_on_nvidia(
     )
 
     stages.create_sglang_talker_executor_from_config(
-        "model", server_args_overrides=server_args_overrides
+        "model",
+        server_args_overrides=server_args_overrides,
+        **({} if async_override is None else {"enable_async_decode": async_override}),
     )
 
     assert built["cuda_graph_backend_prefill"] == backend
@@ -127,6 +131,23 @@ def test_talker_stage_defaults_breakable_prefill_graphs_on_nvidia(
         == stages.TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS
     )
     assert built["scheduler"]["operator_selected_prefill_backend"] is operator_selected
+    assert built["scheduler"]["enable_async_decode"] is (
+        True if async_override is None else async_override
+    )
+
+
+@pytest.mark.parametrize("sampling_backend", [None, "flashinfer"])
+def test_talker_speculation_rejects_other_sampling_backends_before_loading(
+    sampling_backend: str | None,
+) -> None:
+    overrides = {
+        "speculative_algorithm": "DSPARK",
+        "speculative_draft_model_path": "missing-draft",
+        "sampling_backend": sampling_backend,
+    }
+
+    with pytest.raises(ValueError, match="requires the pytorch sampling backend"):
+        stages.prepare_talker_draft("missing-target", overrides, session_mode=False)
 
 
 def test_talker_request_builder_returns_inference_conditioning() -> None:
