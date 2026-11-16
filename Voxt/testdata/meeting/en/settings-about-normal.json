@@ -90,7 +90,7 @@
       "bundle_updated": false,
       "description": "",
       "auto_check_text": "Once a day. Voxt asks before installing.",
-      "beta_note": "Releases only.",
+      "beta_note": "Releases only. This beta stays until a newer release comes out.",
       "auto_install_disabled": true,
       "auto_check": false,
       "auto_install": false,

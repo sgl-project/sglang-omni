@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"time"
 
 	"github.com/hehehai/actnowkit/registry"
@@ -14,10 +15,13 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-const settingsFixtureSoundRemaining = 1250 * time.Millisecond
+const (
+	settingsFixtureSoundRemaining = 1250 * time.Millisecond
+	settingsFixtureHome           = "testdata/fixture-home"
+)
 
 var (
-	settingsFixtureNow       = time.Date(2026, time.November, 16, 12, 0, 0, 0, time.UTC)
+	settingsFixtureNow       = meetingFixtureNow
 	settingsFixtureLastCheck = settingsFixtureNow.Add(-2 * time.Hour)
 )
 
@@ -33,7 +37,6 @@ type settingsFixtureInput struct {
 	storage        settingsStorageStateInput
 	about          settingsAboutStateInput
 	updates        settingsUpdatesStateInput
-	now            time.Time
 	keptModelIDs   []string
 	keptModelBytes int64
 }
@@ -119,6 +122,15 @@ func settingsFixtureScenarios() []meetingFixtureScenario {
 	appearance.settings.preferences.Appearance.RailChosen = true
 	appearance.settings.preferences.Appearance.ReduceMotion = true
 	scenarios = append(scenarios, appearance)
+	lightAppearance := newSettingsFixtureScenario("settings-appearance-light", "appearance")
+	lightAppearance.settings.preferences.Appearance.Theme = "light"
+	scenarios = append(scenarios, lightAppearance)
+	scale90 := newSettingsFixtureScenario("settings-appearance-scale-90", "appearance")
+	scale90.settings.preferences.Appearance.Scale = 0.9
+	scenarios = append(scenarios, scale90)
+	scale110 := newSettingsFixtureScenario("settings-appearance-scale-110", "appearance")
+	scale110.settings.preferences.Appearance.Scale = 1.1
+	scenarios = append(scenarios, scale110)
 
 	overlay := newSettingsFixtureScenario("settings-overlay-top-live-lines", "overlay")
 	overlay.settings.preferences.Overlay.Position = "top"
@@ -126,12 +138,7 @@ func settingsFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, overlay)
 
 	shortcutProblems := newSettingsFixtureScenario("settings-shortcuts-duplicate-problem-strict-fn-no-accessibility", "shortcuts")
-	features := settings.Defaults().Features
-	settings.ApplyPreset(&features, settings.PresetFn)
-	features.Transcribe.Hotkeys = append(features.Transcribe.Hotkeys, features.Transcribe.Hotkeys[0])
-	features.Rewrite.Hotkeys = []settings.Hotkey{{Keys: "A"}}
-	features.StrictShortcuts = true
-	shortcutProblems.settings.shortcuts.Features = features
+	shortcutProblems.settings.shortcuts.Features = settingsFixtureProblemFeatures()
 	shortcutProblems.settings.shortcuts.AccessibilityInstalled = false
 	scenarios = append(scenarios, shortcutProblems)
 
@@ -159,12 +166,12 @@ func settingsFixtureScenarios() []meetingFixtureScenario {
 	dataMove.settings.storage.Moving = true
 	dataMove.settings.storage.MoveDone = 4096
 	dataMove.settings.storage.MoveTotal = 8192
-	dataMove.settings.storage.MoveTo = "/fixture/home/moved-data"
+	dataMove.settings.storage.MoveTo = filepath.Join(settingsFixtureHome, "moved-data")
 	dataMove.settings.storage.CanCancelMove = true
 	scenarios = append(scenarios, dataMove)
 	modelMove := newSettingsFixtureScenario("settings-storage-model-move-progress", "storage")
 	modelMove.settings.storage.ModelMoving = true
-	modelMove.settings.storage.ModelMoveTo = "/fixture/home/moved-models"
+	modelMove.settings.storage.ModelMoveTo = filepath.Join(settingsFixtureHome, "moved-models")
 	modelMove.settings.storage.CanCancelModelMove = true
 	scenarios = append(scenarios, modelMove)
 	resetSettings := newSettingsFixtureScenario("settings-storage-reset-settings", "storage")
@@ -193,14 +200,14 @@ func settingsFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, aboutResults)
 
 	updates := newSettingsFixtureScenario("settings-about-updates", "about")
-	updates.settings.now = settingsFixtureNow
+	updates.settings.about.Version = "1.2.3"
 	updates.settings.updates = settingsUpdatesStateInput{
 		Present: true, Known: true, Version: "1.2.3",
 		Prefs: updatePrefs{Enabled: true, AutoCheck: true, LastCheck: settingsFixtureLastCheck},
 	}
 	scenarios = append(scenarios, updates)
 	checkOnly := newSettingsFixtureScenario("settings-about-updates-check-only", "about")
-	checkOnly.settings.now = settingsFixtureNow
+	checkOnly.settings.about.Version = "1.2.3"
 	checkOnly.settings.updates = settingsUpdatesStateInput{
 		Present: true, Known: true, BundleUpdated: true, Beta: true, Version: "1.2.3",
 		Prefs: updatePrefs{Enabled: true, CheckOnly: true, AutoCheck: true, LastCheck: settingsFixtureLastCheck},
@@ -296,6 +303,18 @@ func settingsPermissionStateName(state permission.State) string {
 	return []string{"unknown", "not-determined", "denied", "restricted", "granted"}[state]
 }
 
+func settingsFixtureProblemFeatures() settings.Features {
+	features := settings.Defaults().Features
+	settings.ApplyPreset(&features, settings.PresetFn)
+	features.Transcribe.Hotkeys = append(features.Transcribe.Hotkeys, features.Transcribe.Hotkeys[0])
+	features.Translate.Hotkeys = []settings.Hotkey{{Keys: "Bad+"}}
+	features.Rewrite.Hotkeys = []settings.Hotkey{{Keys: "A"}}
+	features.PasteLast = features.Transcribe.Hotkeys[0]
+	features.Cancel = settings.Hotkey{Keys: "Command+C"}
+	features.StrictShortcuts = true
+	return features
+}
+
 func settingsFixtureConflict() shortcuts.Conflict {
 	theirs := shortcuts.Shortcut{
 		ID: "fixture-transcription", Title: "Fixture transcription", Keys: settings.DefaultTranscribe,
@@ -314,17 +333,20 @@ func settingsFixtureConflict() shortcuts.Conflict {
 }
 
 func settingsFixtureStorageInput() settingsStorageStateInput {
+	dataDirectory := filepath.Join(settingsFixtureHome, "data")
+	recordingsDirectory := filepath.Join(settingsFixtureHome, "recordings")
+	modelDirectory := filepath.Join(settingsFixtureHome, "models")
 	return settingsStorageStateInput{
-		HomeDir: "/fixture/home", DataDirectory: "/fixture/home/data", RecordingsDirectory: "/fixture/home/recordings",
-		PreviousDirectory: "/fixture/home/previous-data", CanOpen: true,
+		HomeDir: settingsFixtureHome, DataDirectory: dataDirectory, RecordingsDirectory: recordingsDirectory,
+		PreviousDirectory: filepath.Join(settingsFixtureHome, "previous-data"), CanOpen: true,
 		Report: &storageReport{
 			cats: []storageCat{
-				{id: "audio", title: "Fixture recordings", bytes: 2048, dir: "/fixture/home/recordings"},
-				{id: "database", title: "Fixture database", bytes: 4096, dir: "/fixture/home/data"},
+				{id: "audio", title: "Fixture recordings", bytes: 2048, dir: recordingsDirectory},
+				{id: "database", title: "Fixture database", bytes: 4096, dir: dataDirectory},
 			},
-			data: 8192, free: 65536, models: "/fixture/home/models", modelsMine: 4096, modelsShared: 2048, shared: true,
+			data: 8192, free: 65536, models: modelDirectory, modelsMine: 4096, modelsShared: 2048, shared: true,
 		},
-		ModelDirectory: "/fixture/home/models", FamilyOthers: true, CanChangeModelFolder: true, ModelBackup: true,
+		ModelDirectory: modelDirectory, FamilyOthers: true, CanChangeModelFolder: true, ModelBackup: true,
 	}
 }
 

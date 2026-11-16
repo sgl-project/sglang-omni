@@ -61,6 +61,7 @@ func TestMeetingViewStateGolden(t *testing.T) {
 
 func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale string) meetingFixtureState {
 	t.Helper()
+	i18n.SetLocale(locale)
 	fixture := meetingFixtureState{Name: scenario.name, Kind: scenario.kind}
 	translator := i18n.NewTranslator(locale)
 	switch scenario.kind {
@@ -92,13 +93,13 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 		state := buildHistoryAccessViewState(translator, scenario.historyAccess)
 		fixture.HistoryAccess = &state
 	case "settings":
-		state := buildSettingsFixture(t, translator, scenario.settings)
+		state := buildSettingsFixture(t, scenario.settings)
 		fixture.Settings = &state
 	case "meeting-settings":
-		state := buildSettingsMeetingViewState(translator, scenario.meetingSettings)
+		state := buildMeetingSettingsFixture(t, scenario.meetingSettings)
 		fixture.MeetingSettings = &state
 	case "shortcut-prompt":
-		state := buildShortcutPromptViewState(translator, scenario.shortcutPrompt.features, scenario.shortcutPrompt.conflict)
+		state := buildShortcutPromptFixture(t, scenario.shortcutPrompt)
 		fixture.ShortcutPrompt = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)

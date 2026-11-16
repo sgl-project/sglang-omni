@@ -99,7 +99,9 @@
           "trigger_text": "点按",
           "has_shortcut": true,
           "needs_accessibility": true,
-          "problems": null
+          "problems": [
+            "粘贴最近结果 用了相同的按键和触发方式，两者只有一个会生效。"
+          ]
         },
         {
           "feature": "transcribe",
@@ -123,11 +125,13 @@
           "title": "翻译",
           "page_title": "翻译",
           "icon": "translate",
-          "key_text": "fn ⇧",
+          "key_text": "Bad+",
           "trigger_text": "点按",
           "has_shortcut": true,
-          "needs_accessibility": true,
-          "problems": null
+          "needs_accessibility": false,
+          "problems": [
+            "有无法识别的按键。先输入修饰键，再输入一个键，例如 Fn、RightCommand、Control+Option+Space 或 Fn+F5。"
+          ]
         },
         {
           "feature": "rewrite",
@@ -151,11 +155,13 @@
           "title": "粘贴最近结果",
           "page_title": "转录",
           "icon": "paste",
-          "key_text": "⌃⌘V",
+          "key_text": "fn",
           "trigger_text": "点按",
           "has_shortcut": true,
-          "needs_accessibility": false,
-          "problems": null
+          "needs_accessibility": true,
+          "problems": [
+            "转录 用了相同的按键和触发方式，两者只有一个会生效。"
+          ]
         },
         {
           "feature": "cancel",
@@ -164,11 +170,13 @@
           "title": "取消录音",
           "page_title": "转录",
           "icon": "cancel",
-          "key_text": "Esc",
+          "key_text": "⌘C",
           "trigger_text": "点按",
           "has_shortcut": true,
           "needs_accessibility": true,
-          "problems": null
+          "problems": [
+            "macOS 已把这组按键用于复制、粘贴等编辑命令。"
+          ]
         },
         {
           "feature": "note",

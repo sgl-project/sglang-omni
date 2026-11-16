@@ -191,7 +191,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 				return audio.Sounds.SystemCues[0].Selected
 			}
 			if audio.DevicesLoading || audio.Sounds.SourceID == soundNoneID {
-				return fixture.name
+				return i18n.T("Microphones")
 			}
 			if len(audio.Devices) > 0 {
 				return audio.Devices[0].Name
@@ -202,19 +202,19 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return i18n.T("No microphone chosen, so Voxt records from the system's default input.")
 		case dialog.General != nil:
 			if len(dialog.General.OtherLanguages) == 0 {
-				return fixture.name
+				return i18n.T("Other languages")
 			}
 			return dialog.General.OtherLanguages[0].Label
 		case dialog.Permissions != nil:
 			return dialog.Permissions.Microphone.Status
 		case dialog.Appearance != nil:
 			if dialog.Appearance.ReduceMotion {
-				return fixture.name
+				return i18n.T("Reduce motion")
 			}
 			return i18n.T("Appearance")
 		case dialog.Overlay != nil:
 			if dialog.Overlay.Position == 1 && dialog.Overlay.LiveLayout == 1 {
-				return fixture.name
+				return i18n.T("Live text layout")
 			}
 			return i18n.T("Preview")
 		case dialog.Shortcuts != nil:
@@ -260,7 +260,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 		case dialog.About != nil:
 			about := dialog.About
 			if about.SelfChecking {
-				return fixture.name
+				return i18n.T("Self-check")
 			}
 			if len(about.Checks) > 0 {
 				return about.Checks[0].Detail

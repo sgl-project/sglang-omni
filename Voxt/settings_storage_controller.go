@@ -122,7 +122,7 @@ var diskFree = func(path string) int64 {
 
 // loadStorage measures the folders in the background.
 func (a *app) loadStorage() {
-	if a.stLoading {
+	if a.stReport != nil || a.stLoading {
 		return
 	}
 	a.stLoading = true

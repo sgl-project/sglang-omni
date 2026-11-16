@@ -189,11 +189,11 @@ func checkSettingsAppearanceFixtures(t *testing.T, locale string, fixtures map[s
 			continue
 		}
 		appearance := fixture.Settings.Appearance
-		for _, theme := range appearance.ThemeValues {
-			themes[theme] = true
+		if appearance.Theme >= 0 && appearance.Theme < len(appearance.ThemeValues) {
+			themes[appearance.ThemeValues[appearance.Theme]] = true
 		}
-		for _, scale := range appearance.ScaleValues {
-			scales[scale] = true
+		if appearance.Scale >= 0 && appearance.Scale < len(appearance.ScaleValues) {
+			scales[appearance.ScaleValues[appearance.Scale]] = true
 		}
 	}
 	requiredThemes, requiredScales := map[string]bool{}, map[float64]bool{}
@@ -224,26 +224,46 @@ func checkSettingsAppearanceFixtures(t *testing.T, locale string, fixtures map[s
 
 func checkSettingsShortcutFixtures(t *testing.T, locale string, fixtures map[string]meetingFixtureState) {
 	t.Helper()
+	translator := i18n.NewTranslator(locale)
 	variant := requireSettingsDialogFixture(t, locale, fixtures, "settings-shortcuts-duplicate-problem-strict-fn-no-accessibility").Shortcuts
 	if !variant.StrictShortcuts || variant.AccessibilityInstalled {
 		t.Errorf("%s: shortcut variant has strict=%t and accessibility=%t", locale, variant.StrictShortcuts, variant.AccessibilityInstalled)
 	}
-	problemRows, fnRows := 0, 0
-	for _, row := range variant.Rows {
-		if len(row.Problems) > 0 {
-			problemRows++
+	problems := hotkey.Check(settingsFixtureProblemFeatures())
+	problemCodes := map[string]bool{}
+	expectedProblems := map[string][]string{}
+	for _, problem := range problems {
+		problemCodes[problem.Code] = true
+		expectedProblems[hotkey.ID(problem.Feature, problem.Index)] = append(
+			expectedProblems[hotkey.ID(problem.Feature, problem.Index)], uitext.HotkeyProblemTextFor(translator, problem))
+		if problem.Code == hotkey.ProblemConflict {
+			id := hotkey.ID(problem.Other, problem.OtherIndex)
+			expectedProblems[id] = append(expectedProblems[id], translator.T(
+				"%s has the same keys and trigger, so only one of them works.", uitext.FeatureTitleFor(translator, problem.Feature)))
 		}
+	}
+	assertSettingsFixtureSet(t, locale+" shortcut problem codes", map[string]bool{
+		hotkey.ProblemInvalid: true, hotkey.ProblemDuplicate: true, hotkey.ProblemConflict: true,
+		hotkey.ProblemSystem: true, hotkey.ProblemBareKey: true,
+	}, problemCodes)
+	fnRows := 0
+	for _, row := range variant.Rows {
+		id := hotkey.ID(row.Feature, row.Index)
+		if !slices.Equal(row.Problems, expectedProblems[id]) {
+			t.Errorf("%s: shortcut row %s has problems %q, want %q", locale, id, row.Problems, expectedProblems[id])
+		}
+		delete(expectedProblems, id)
 		if strings.Contains(strings.ToLower(row.KeyText), "fn") {
 			fnRows++
 		}
 	}
-	if problemRows < 2 || fnRows == 0 {
-		t.Errorf("%s: shortcut variant has %d problem rows and %d fn rows", locale, problemRows, fnRows)
+	if len(expectedProblems) > 0 || fnRows == 0 {
+		t.Errorf("%s: shortcut variant is missing problem rows %v and has %d fn rows", locale, expectedProblems, fnRows)
 	}
 
 	family := requireSettingsDialogFixture(t, locale, fixtures, "settings-shortcuts-family-conflict").Shortcuts
 	conflict := settingsFixtureConflict()
-	expectedLine := alsoUsedByFor(i18n.NewTranslator(locale), conflict.Other, conflict.Theirs)
+	expectedLine := alsoUsedByFor(translator, conflict.Other, conflict.Theirs)
 	if !slices.ContainsFunc(family.Rows, func(row settingsShortcutRowViewState) bool {
 		return row.Feature == hotkey.Transcribe && slices.Contains(row.Problems, expectedLine)
 	}) {

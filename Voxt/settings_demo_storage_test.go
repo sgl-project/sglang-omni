@@ -8,10 +8,10 @@ import (
 
 func settingsDemoStorageCases() []settingsDemoCase {
 	return []settingsDemoCase{
-		{name: "open data folder", fixture: "en/settings-storage-normal", prepare: settingsDemoSearch("~/data"), steps: historySteps("Open"), want: []string{"openStorageFolder /fixture/home/data"}},
-		{name: "open model folder", fixture: "en/settings-storage-normal", prepare: settingsDemoSearch("~/models"), steps: historySteps("Open"), want: []string{"openStorageFolder /fixture/home/models"}},
-		{name: "open recordings category", fixture: "en/settings-storage-normal", prepare: settingsDemoSearch("Reset look"), row: "Fixture recordings", want: []string{"openStorageFolder /fixture/home/recordings"}},
-		{name: "open database category", fixture: "en/settings-storage-normal", prepare: settingsDemoSearch("Reset look"), row: "Fixture database", want: []string{"openStorageFolder /fixture/home/data"}},
+		{name: "open data folder", fixture: "en/settings-storage-normal", prepare: settingsDemoSearch("~/data"), steps: historySteps("Open"), want: []string{"openStorageFolder " + settingsFixtureHome + "/data"}},
+		{name: "open model folder", fixture: "en/settings-storage-normal", prepare: settingsDemoSearch("~/models"), steps: historySteps("Open"), want: []string{"openStorageFolder " + settingsFixtureHome + "/models"}},
+		{name: "open recordings category", fixture: "en/settings-storage-normal", prepare: settingsDemoSearch("Reset look"), row: "Fixture recordings", want: []string{"openStorageFolder " + settingsFixtureHome + "/recordings"}},
+		{name: "open database category", fixture: "en/settings-storage-normal", prepare: settingsDemoSearch("Reset look"), row: "Fixture database", want: []string{"openStorageFolder " + settingsFixtureHome + "/data"}},
 		{name: "choose data folder", fixture: "en/settings-storage-normal", steps: historySteps("Move…"), want: []string{"chooseStorageDataFolder"}},
 		{name: "choose model folder", fixture: "en/settings-storage-normal", steps: historySteps("Change…"), want: []string{"chooseStorageModelFolder"}},
 		{name: "storage history settings", fixture: "en/settings-storage-normal", steps: historySteps("History settings…"), want: []string{"showHistorySettings"}},

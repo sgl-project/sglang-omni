@@ -53,7 +53,7 @@
       }
     ],
     "storage": {
-      "data_directory": "/fixture/home/data",
+      "data_directory": "testdata/fixture-home/data",
       "data_path": "~/data",
       "recordings_path": "~/recordings",
       "previous_path": "~/previous-data",
@@ -67,13 +67,13 @@
             "id": "audio",
             "title": "Fixture recordings",
             "size": "2 KB",
-            "directory": "/fixture/home/recordings"
+            "directory": "testdata/fixture-home/recordings"
           },
           {
             "id": "database",
             "title": "Fixture database",
             "size": "4 KB",
-            "directory": "/fixture/home/data"
+            "directory": "testdata/fixture-home/data"
           }
         ]
       },
@@ -87,7 +87,7 @@
       "reset_text": "DELETE",
       "erasing": false,
       "kept_models_text": "Other apps also use these models, so they are kept: fixture-shared-model (4 KB)",
-      "model_directory": "/fixture/home/models",
+      "model_directory": "testdata/fixture-home/models",
       "model_path": "~/models",
       "model_note": "Shared by all apps that use this model library",
       "can_change_model_folder": true,

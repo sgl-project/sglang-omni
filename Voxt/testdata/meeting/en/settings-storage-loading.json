@@ -53,7 +53,7 @@
       }
     ],
     "storage": {
-      "data_directory": "/fixture/home/data",
+      "data_directory": "testdata/fixture-home/data",
       "data_path": "~/data",
       "recordings_path": "~/recordings",
       "previous_path": "~/previous-data",
@@ -70,7 +70,7 @@
       "reset_text": "",
       "erasing": false,
       "kept_models_text": "",
-      "model_directory": "/fixture/home/models",
+      "model_directory": "testdata/fixture-home/models",
       "model_path": "~/models",
       "model_note": "",
       "can_change_model_folder": true,

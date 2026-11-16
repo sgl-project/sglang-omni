@@ -32,11 +32,16 @@ import (
 // test runs a.familyFound(a.fam.Discover()).
 func addPeer(t *testing.T, a *app, bundleID string, links map[string]string, sc ...shortcuts.Shortcut) *fammodels.Store {
 	t.Helper()
+	return addPeerIn(t, a, bundleID, t.TempDir(), links, sc...)
+}
+
+func addPeerIn(t *testing.T, a *app, bundleID, directory string, links map[string]string, sc ...shortcuts.Shortcut) *fammodels.Store {
+	t.Helper()
 	fa, _, err := family.ParseBundleID(bundleID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path, err := conformance.FakeApp(t.TempDir(), fa.Name, bundleID)
+	path, err := conformance.FakeApp(directory, fa.Name, bundleID)
 	if err != nil {
 		t.Fatal(err)
 	}
