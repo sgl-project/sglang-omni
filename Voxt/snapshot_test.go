@@ -14,6 +14,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -115,6 +116,23 @@ func snapshotsMain(t *testing.T, out string) {
 		save("page-llm-debug-ready")
 		delete(a.keyMasks, acct)
 		a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = oldLLM })
+		// Translate's whole prompt, with a personal dictionary (#4032).
+		oldDict := a.prefs.Dictionary
+		a.updateSettings(func(s *settings.Settings) {
+			s.Dictionary.Enabled, s.Dictionary.Notes = true, "| Roth | `wrath` → Roth | retirement accounts |"
+		})
+		a.navigate("/translate")
+		tu := a.fui(hotkey.Translate)
+		tu.rules, tu.preview = true, true
+		scrollToText(tt, i18n.T("What the language model receives"))
+		save("page-translate-preview")
+		{
+			w, h := snapshotSize()
+			tt.Scroll(float32(w)*0.6, float32(h)*0.5, 0, float32(h)*0.6) // down to the dictionary
+		}
+		save("page-translate-preview-dictionary")
+		tu.rules, tu.preview = false, false
+		a.updateSettings(func(s *settings.Settings) { s.Dictionary = oldDict })
 		snapshotHistoryDetail(a, save)   // history_page_test.go
 		historySettingsShots(a, save)    // history_settings_test.go
 		historyAccessShots(a, tt, save)  // history_access_test.go

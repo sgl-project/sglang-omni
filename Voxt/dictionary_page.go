@@ -73,19 +73,12 @@ type dictView struct {
 	// scan is the history scan's dialog (dictionary_scan.go).
 	scan scanState
 	// tab is the view: the terms or the personal dictionary
-	// (dictionary_notes.go), whose editor is notes and whose example is
-	// of notesFeatures[notesFeature].
-	tab          int
-	notes        speechContextState
-	notesFeature int
+	// (dictionary_notes.go), whose editor is notes.
+	tab   int
+	notes speechContextState
 	// notesQuery and notesFind are the view's search (find_marks.go).
 	notesQuery string
 	notesFind  finder
-	// all are the terms of the last read without a search, for the
-	// example's glossary.
-	all []store.Term
-	// example is the personal dictionary's example, as last built.
-	example notesExampleCache
 }
 
 // termEdit is the term dialog's fields: a new term when id is "".
@@ -151,7 +144,7 @@ func (a *app) loadDict() {
 			}
 			d.list, d.err = list, ""
 			if q == "" {
-				d.total, d.all = len(list), list
+				d.total = len(list)
 			}
 		})
 	})
