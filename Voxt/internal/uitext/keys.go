@@ -214,19 +214,23 @@ func FeaturePrefix(feature string) string {
 
 // FeatureTitle names a feature (or paste-last) in a problem.
 func FeatureTitle(feature string) string {
+	return FeatureTitleFor(i18n.CurrentTranslator(), feature)
+}
+
+func FeatureTitleFor(translator *i18n.Translator, feature string) string {
 	switch feature {
 	case hotkey.Translate:
-		return i18n.T("Translate")
+		return translator.T("Translate")
 	case hotkey.Rewrite:
-		return i18n.T("Rewrite")
+		return translator.T("Rewrite")
 	case hotkey.PasteLast:
-		return i18n.T("Paste the last result")
+		return translator.T("Paste the last result")
 	case hotkey.CancelID:
-		return i18n.T("Cancel recording")
+		return translator.T("Cancel recording")
 	case hotkey.Note:
-		return i18n.T("Notes")
+		return translator.T("Notes")
 	case hotkey.Meeting:
-		return i18n.T("Meetings")
+		return translator.T("Meetings")
 	}
-	return i18n.T("Transcribe")
+	return translator.T("Transcribe")
 }

@@ -28,12 +28,6 @@ key_recorder.go  # settings
 legacy_report.go  # legacy: exempt one-time 1.x import reporting
 llm_debug.go  # remote
 llm_wait.go  # remote
-models_cards.go  # models
-models_context.go  # models
-models_delete.go  # models
-models_keep.go  # models
-models_network.go  # models
-models_page.go  # models
 notes_page.go  # dictionary
 onboarding.go  # onboarding
 onboarding_keys.go  # onboarding

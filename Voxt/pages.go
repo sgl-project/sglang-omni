@@ -14,6 +14,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 )
 
 // pages builds the page the router shows.
@@ -71,7 +72,12 @@ func (a *app) page(c *ui.Context, p navPage) {
 		a.logsPage(c)
 		return
 	case modelsPath:
-		a.modelsPage(c) // models_page.go
+		model := a.modelsPageModel()
+		modelsPage(c, &model, a, &a.modelsLocalUI, modelsPageViews{
+			onboardingBackBar: func() { a.obBackBar(c, modelsPath) },
+			remoteASRCards:    func() { a.providerCards(c, local.ASR) },
+			remoteDialog:      func() { a.providerDialogView(c) },
+		})
 		return
 	case remotePath:
 		a.remotePage(c) // remote_page.go
