@@ -96,7 +96,7 @@ func histCleanupSection(c *ui.Context, state *historySettingsViewState, actions 
 	sectionTitleText(c, i18n.T("Automatic clean-up")).Margin(px(t, sp4), 0, 0, 0)
 	settingRow(c, "hist-set-clean", i18n.T("Clean up automatically"), "", func() {
 		if ui.Switch(c.Key("hist-set-clean"), &local.cleanOn).Label(i18n.T("Clean up history")).Changed() {
-			actions.setHistoryCleanup(local.cleanOn, historyChoiceValue(local.daysSel, state.DayOptions), historyChoiceValue(local.countSel, state.CountOptions))
+			actions.setHistoryCleanup(local.cleanOn)
 		}
 	})
 	if !local.cleanOn {
@@ -105,13 +105,13 @@ func histCleanupSection(c *ui.Context, state *historySettingsViewState, actions 
 	settingRow(c, "hist-set-days", i18n.T("Keep entries for"), "", func() {
 		options := historyChoiceLabels(state.DayOptions)
 		if ui.Select(c.Key("hist-set-days"), &local.daysSel, options).Label(i18n.T("Keep entries for")).Width(px(t, 160)).Changed() {
-			actions.setHistoryCleanup(true, historyChoiceValue(local.daysSel, state.DayOptions), historyChoiceValue(local.countSel, state.CountOptions))
+			actions.setHistoryCleanupDays(historyChoiceValue(local.daysSel, state.DayOptions))
 		}
 	})
 	settingRow(c, "hist-set-count", i18n.T("Keep at most"), i18n.T("For each feature."), func() {
 		options := historyChoiceLabels(state.CountOptions)
 		if ui.Select(c.Key("hist-set-count"), &local.countSel, options).Label(i18n.T("Keep at most")).Width(px(t, 160)).Changed() {
-			actions.setHistoryCleanup(true, historyChoiceValue(local.daysSel, state.DayOptions), historyChoiceValue(local.countSel, state.CountOptions))
+			actions.setHistoryCleanupCount(historyChoiceValue(local.countSel, state.CountOptions))
 		}
 	})
 }

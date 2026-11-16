@@ -80,9 +80,9 @@ func TestHistoryDemoActionControls(t *testing.T) {
 			}
 		}},
 		{name: "cancel move", fixture: "en/history-settings-move", steps: historySteps("Cancel"), want: []string{"cancelHistoryWork"}},
-		{name: "cleanup off", fixture: "en/history-settings-normal", steps: historySteps("Clean up history"), want: []string{"setHistoryCleanup false 30 0"}},
-		{name: "cleanup days", fixture: "en/history-settings-normal", steps: []historyDemoStep{{label: "30 days", click: true}, {label: "1 week", click: true}}, want: []string{"setHistoryCleanup true 7 0"}},
-		{name: "cleanup count", fixture: "en/history-settings-normal", steps: []historyDemoStep{{label: "No limit", click: true}, {label: "100", click: true}}, want: []string{"setHistoryCleanup true 30 100"}},
+		{name: "cleanup off", fixture: "en/history-settings-normal", steps: historySteps("Clean up history"), want: []string{"setHistoryCleanup false"}},
+		{name: "cleanup days", fixture: "en/history-settings-normal", steps: []historyDemoStep{{label: "30 days", click: true}, {label: "1 week", click: true}}, want: []string{"setHistoryCleanupDays 7"}},
+		{name: "cleanup count", fixture: "en/history-settings-normal", steps: []historyDemoStep{{label: "No limit", click: true}, {label: "100", click: true}}, want: []string{"setHistoryCleanupCount 100"}},
 		{name: "cleanup confirm", fixture: "en/history-settings-prune-ask", steps: historySteps("Delete"), want: []string{"savePendingHistoryCleanup"}},
 		{name: "cleanup cancel", fixture: "en/history-settings-prune-ask", steps: historySteps("Cancel"), check: func(t *testing.T, host *meetingDemoHost) {
 			if host.historySettingsUI.pruneAsk {

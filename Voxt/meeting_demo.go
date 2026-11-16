@@ -284,9 +284,15 @@ func (host *meetingDemoHost) exportHistoryRecordings(shown bool) {
 func (host *meetingDemoHost) exportShownHistoryText(shown bool, format historyTextFormat) {
 	host.record("exportShownHistoryText %t %s", shown, format)
 }
-func (host *meetingDemoHost) setHistoryCleanup(on bool, keepDays, keepCount int) {
+func (host *meetingDemoHost) setHistoryCleanup(on bool) {
 	host.historySettingsUI.cleanOn = on
-	host.record("setHistoryCleanup %t %d %d", on, keepDays, keepCount)
+	host.record("setHistoryCleanup %t", on)
+}
+func (host *meetingDemoHost) setHistoryCleanupDays(keepDays int) {
+	host.record("setHistoryCleanupDays %d", keepDays)
+}
+func (host *meetingDemoHost) setHistoryCleanupCount(keepCount int) {
+	host.record("setHistoryCleanupCount %d", keepCount)
 }
 func (host *meetingDemoHost) savePendingHistoryCleanup() {
 	host.record("savePendingHistoryCleanup")

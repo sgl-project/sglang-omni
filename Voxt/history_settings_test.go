@@ -152,6 +152,19 @@ func TestHistoryCleanupAsks(t *testing.T) {
 	}
 }
 
+func TestHistoryCleanupSwitchKeepsPendingLimits(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) {
+		s.History.CleanupOff, s.History.KeepDays, s.History.KeepCount = false, 90, 0
+	})
+	a.histSetUI.cleanOn = false
+	a.histSetUI.daysSel = "1 week"
+	a.setHistoryCleanup(false)
+	if got := a.settings.Get().History; !got.CleanupOff || got.KeepDays != 90 || got.KeepCount != 0 {
+		t.Fatalf("cleanup switch saved pending limits: %+v", got)
+	}
+}
+
 // TestHistoryCleanupRuns: at the start, and after a new entry.
 func TestHistoryCleanupRuns(t *testing.T) {
 	dir := testDir(t)

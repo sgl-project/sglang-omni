@@ -91,14 +91,27 @@ func (a *app) exportHistoryRecordings(shown bool) {
 	})
 }
 
-func (a *app) setHistoryCleanup(on bool, keepDays, keepCount int) {
+func (a *app) setHistoryCleanup(on bool) {
 	next := a.prefs.History
 	next.CleanupOff = !on
-	next.KeepDays, next.KeepCount = keepDays, keepCount
 	if !on {
 		a.saveCleanup(next)
 		return
 	}
+	a.histSetUI.formFor = "asking"
+	a.askCleanup(next)
+}
+
+func (a *app) setHistoryCleanupDays(keepDays int) {
+	next := a.prefs.History
+	next.KeepDays = keepDays
+	a.histSetUI.formFor = "asking"
+	a.askCleanup(next)
+}
+
+func (a *app) setHistoryCleanupCount(keepCount int) {
+	next := a.prefs.History
+	next.KeepCount = keepCount
 	a.histSetUI.formFor = "asking"
 	a.askCleanup(next)
 }
