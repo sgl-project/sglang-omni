@@ -73,7 +73,6 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
         limit = self.pair_admission_limit(queue, running_batch)
         input_budget = self.max_prefill_tokens
         if limit:
-            # note (Codex): The first-input exception must cover both CFG rows.
             first_pair_tokens = sum(
                 -(-len(request.origin_input_ids) // self.page_size) * self.page_size
                 for request in queue[:2]
@@ -136,7 +135,10 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
     def pair_admission_limit(
         self, queue: list[Req], running_batch: ScheduleBatch
     ) -> int:
-        """How many leading queue entries the adder may see, always whole pairs."""
+        """Limit prefill to whole CFG pairs.
+
+        Reserve running rows because retraction cannot replay Music3 audio feedback.
+        """
         allocatable = int(self.get_num_allocatable_reqs(len(running_batch.reqs)))
         limit = min(len(queue), max(0, allocatable))
         limit -= limit % 2
@@ -145,7 +147,6 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
         memory_budget = self.token_to_kv_pool_allocator.create_prefill_budget(
             self.tree_cache
         )
-        # note (Codex): Music3 cannot replay a retracted row's audio feedback.
         for request in running_batch.reqs:
             if request.finished():
                 continue

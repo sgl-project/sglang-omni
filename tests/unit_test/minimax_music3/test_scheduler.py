@@ -246,7 +246,6 @@ def test_enqueue_checks_pair_capacity_before_queueing_both_rows(
     payload = StagePayload(cond.rid, OmniRequest(inputs=None), None)
     req_data = MiniMaxMusic3SGLangRequestData(
         req=cond,
-        # note (Codex): The fixture supplies the already-clamped token budget.
         enforce_request_limits=False,
         cfg_uncond=MiniMaxMusic3SGLangRequestData(req=uncond, is_cfg_uncond=True),
     )

@@ -262,8 +262,4 @@ fallback because torchcodec is not usable in NPU images. Validated on Ascend
 
 ### MiniMax-Music3
 
-Use this command to launch MiniMax-Music3 on Ascend NPU:
-
-```bash
-sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --dit_dav.factory.compile_acoustic False --minimax_music3_ar.engine.enable_deterministic_inference False
-```
+See the [MiniMax Music 3 cookbook](../cookbook/minimax_music3.md#ascend-npu) for the Ascend NPU launch command.
