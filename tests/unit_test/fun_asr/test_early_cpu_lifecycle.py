@@ -13,6 +13,129 @@ from tests.unit_test.fixtures.fun_asr import harness  # noqa: F401
 from tests.unit_test.fixtures.fun_asr import await_build, enqueue, payload, process
 
 
+@pytest.mark.parametrize("handoff", ["detached", "stored"])
+def test_idle_receive_does_not_orphan_a_duplicate_preparation(
+    harness, monkeypatch, handoff
+):
+    """A duplicate arriving during idle receive used to retain an unclaimed preparation."""
+    scheduler = harness.scheduler
+    first = payload()
+    # The first arrival uses the ordinary path while another input pass owns ingress.
+    scheduler.is_processing_inputs = True
+    enqueue(scheduler, first)
+    scheduler.is_processing_inputs = False
+    received, release = threading.Event(), threading.Event()
+    original_get = scheduler.inbox.get
+    errors = []
+
+    def receive(*args, **kwargs):
+        message = original_get(*args, **kwargs)
+        received.set()
+        assert release.wait(10)
+        return message
+
+    def idle():
+        try:
+            scheduler.sleep_during_idle()
+        except Exception as error:
+            errors.append(error)
+
+    monkeypatch.setattr(scheduler.inbox, "get", receive)
+    thread = threading.Thread(target=idle)
+    thread.start()
+    try:
+        assert received.wait(10)
+        if handoff == "stored":
+            release.set()
+            thread.join(10)
+            assert scheduler.idle_wait_message is not None
+        enqueue(scheduler, payload(first.request_id))
+    finally:
+        release.set()
+        thread.join(10)
+        monkeypatch.setattr(scheduler.inbox, "get", original_get)
+    assert not thread.is_alive()
+    assert not errors
+    process(scheduler)
+    await_build(scheduler, first.request_id)
+    assert scheduler.cpu_preparation is None
+    assert harness.frontend.calls == harness.encoder.calls == 1
+    assert [result.req.rid for result in harness.admitted] == [first.request_id]
+
+
+def test_shutdown_during_input_dispatch_never_builds_after_encoder_close(harness):
+    """Closing between selection and submission used to run a builder after encoder close."""
+    scheduler = harness.scheduler
+    selected, release = threading.Event(), threading.Event()
+    closing = threading.Event()
+    original_stage = scheduler.stage_request_build_payloads
+    original_shutdown_lock = scheduler.preparation_shutdown_lock
+    errors = []
+
+    class ShutdownLock:
+        def __enter__(self):
+            if threading.current_thread() is closer:
+                if original_shutdown_lock.acquire(blocking=False):
+                    return self
+                closing.set()
+            original_shutdown_lock.acquire()
+            return self
+
+        def __exit__(self, *exception):
+            original_shutdown_lock.release()
+
+    def close_encoder():
+        harness.encoder.close()
+        closing.set()
+
+    def stage(requests):
+        result = original_stage(requests)
+        selected.set()
+        assert release.wait(10)
+        return result
+
+    def dispatch():
+        try:
+            process(scheduler)
+        except Exception as error:
+            errors.append(error)
+
+    def shutdown():
+        scheduler.shutdown_resources()
+
+    scheduler.stage_request_build_payloads = stage
+    scheduler.is_processing_inputs = True
+    enqueue(scheduler, payload())
+    scheduler.is_processing_inputs = False
+    worker = threading.Thread(target=dispatch)
+    closer = threading.Thread(target=shutdown)
+    scheduler.preparation_shutdown_lock = ShutdownLock()
+    scheduler.shutdown_callback = close_encoder
+    worker.start()
+    try:
+        assert selected.wait(10)
+        closer.start()
+        assert closing.wait(10)
+        # Shutdown has either blocked on dispatch or closed the encoder already.
+        release.set()
+        worker.join(10)
+        closer.join(10)
+    finally:
+        release.set()
+        worker.join(10)
+        if closer.ident is not None:
+            closer.join(10)
+    assert not worker.is_alive() and not closer.is_alive()
+    assert not errors
+    assert scheduler.outbox.empty()
+    assert harness.encoder.closed.is_set()
+    encoder_calls = harness.encoder.calls
+    enqueue(scheduler, payload("after-close"))
+    process(scheduler)
+    assert harness.encoder.calls == encoder_calls
+    assert scheduler.outbox.empty()
+
+
 @pytest.mark.parametrize("claimed", [False, True])
 def test_abort_running_preparation_discards_result_and_frees_slot(harness, claimed):
     scheduler = harness.scheduler
