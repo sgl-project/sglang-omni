@@ -211,6 +211,8 @@ func TestMeetingDemoActionControls(t *testing.T) {
 		{name: "open detail", fixture: "en/page-normal", steps: steps("Fixture recording"), want: []string{"openMeetingDetail meeting-recording"}},
 		{name: "close selected row", fixture: "en/page-normal", steps: steps("Fixture done"), want: []string{"closeMeetingDetail"}},
 		{name: "close detail", fixture: "en/detail-normal", steps: steps("Close"), want: []string{"closeMeetingDetail"}},
+		{name: "close loading detail", fixture: "en/detail-loading", steps: steps("Close"), want: []string{"closeMeetingDetail"}},
+		{name: "close error detail", fixture: "en/detail-error", steps: steps("Close"), want: []string{"closeMeetingDetail"}},
 		{name: "delete", fixture: "en/detail-normal", steps: steps("Delete meeting…", "Delete meeting"), want: []string{"deleteMeeting detail-1"}},
 		{name: "delete cancel", fixture: "en/detail-normal", steps: steps("Delete meeting…", "Cancel")},
 		{name: "continue", fixture: "en/detail-interrupted", steps: steps("Continue processing"), want: []string{"meetingReprocess detail-1"}},
