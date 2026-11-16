@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -52,10 +53,17 @@ const (
 	Wait2Min  = "2m"
 	Wait5Min  = "5m"
 	Wait10Min = "10m"
+	// WaitNoLimit sets no overall deadline (#3978): a stalled answer
+	// still fails, and the user can still skip the language model.
+	WaitNoLimit = "none"
 )
 
 // WaitChoices are Models.LLMWait's choices in the order the UI lists them.
-var WaitChoices = []string{WaitAuto, Wait1Min, Wait2Min, Wait5Min, Wait10Min}
+var WaitChoices = []string{WaitAuto, Wait1Min, Wait2Min, Wait5Min, Wait10Min, WaitNoLimit}
+
+// NoLimit is LLMWaitFor's WaitNoLimit: longer than any request runs
+// (about 292 years), so every deadline built on it never passes.
+const NoLimit = time.Duration(math.MaxInt64)
 
 // WaitMaxMinutes is the most minutes a custom LLMWait may be (#3941).
 const WaitMaxMinutes = 60
@@ -64,8 +72,12 @@ const WaitMaxMinutes = 60
 func WaitMinutes(n int) string { return strconv.Itoa(n) + "m" }
 
 // LLMWaitFor is the least time LLMWait gives a language model's answer:
-// a whole number of minutes in 1..WaitMaxMinutes; 0 for Automatic.
+// a whole number of minutes in 1..WaitMaxMinutes, NoLimit, or 0 for
+// Automatic.
 func (m Models) LLMWaitFor() time.Duration {
+	if m.LLMWait == WaitNoLimit {
+		return NoLimit
+	}
 	s, ok := strings.CutSuffix(m.LLMWait, "m")
 	n, err := strconv.Atoi(s)
 	if !ok || err != nil || n < 1 || n > WaitMaxMinutes || WaitMinutes(n) != m.LLMWait { // WaitMinutes: no "+5m" or "05m"

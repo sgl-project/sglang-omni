@@ -295,7 +295,7 @@ jobs:
           notes="$RUNNER_TEMP/release-notes.md"
           # The version's section of CHANGELOG.md, else Unreleased (a tag on a commit that did not name the version).
           section="$(awk -v v="$VERSION" '/^## /{f = index($0, "[" v "]") || $2 == v; next} f' CHANGELOG.md)"
-          if [[ -z "${section//[[:space:]]/}" ]]; then
+          if [[ ! "$section" =~ [^[:space:]] ]]; then
             section="$(awk '/^## /{f = index($0, "[Unreleased]") > 0; next} f' CHANGELOG.md)"
           else
             :

@@ -206,8 +206,8 @@ type Snapshot struct {
 	// CanSkip: while Composing, SkipLLM inserts the recognised text in
 	// place of the model's answer (Transcribe, and Translate of speech).
 	CanSkip bool
-	// Thinking is the thinking level chosen for Transcribe's clean-up in
-	// the preview (Manager.Rethink); nil: the service's setting.
+	// Thinking is the thinking level chosen in the preview while the
+	// language model works (Manager.Rethink); nil: the service's setting.
 	Thinking *llm.Thinking
 	// Inserted: the result was pasted; Card: it shows in the answer card
 	// (Delivery says why it was not inserted). While the model writes,
@@ -467,6 +467,9 @@ type StartRequest struct {
 	// Previous are a Rewrite conversation's earlier turns: the session is
 	// a follow-up to the answer card.
 	Previous []compose.Turn
+	// Conversation is the first session of the card's conversation this
+	// one continues (store.Entry.Conversation); "": it begins one.
+	Conversation string
 	// SpeechWait, when set, ends the session with these words instead of
 	// recording: the speech model it should use is still downloading.
 	// Translating a selection needs none and goes on.

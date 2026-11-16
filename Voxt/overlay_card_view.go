@@ -52,23 +52,28 @@ func (a *app) overlayCard(c *ui.Context) {
 // medium, large and back, as the feature's page does. It sits in the
 // corner under the text, where the header has no room left at 440.
 func (a *app) cardSizeButton(c *ui.Context, v cardView) {
-	step := a.prefs.Features.CardSize(string(v.kind))
+	if next, ok := sizeStepButton(c.Key("ov-card-size"), a.prefs.Features.CardSize(string(v.kind))); ok {
+		a.closeLangMenu()
+		a.setCardSize(string(v.kind), next)
+	}
+}
+
+// sizeStepButton is the corner button that steps a card from size step
+// to the next, and from the largest back to the smallest.
+func sizeStepButton(c *ui.Context, step int) (next int, clicked bool) {
 	label, icon, next := i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic, step+1
 	if next == settings.CardSizeSteps {
 		label, icon, next = i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic, 0
 	}
-	b := ui.ButtonBase(c.Key("ov-card-size")).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
+	b := ui.ButtonBase(c).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
 		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
 	alpha := float32(0.42)
 	if b.Hovered() {
 		alpha = 0.92
 	}
-	if b.Children(func() {
+	return next, b.Children(func() {
 		ui.Icon(c, icon.Linear).Size(layout.CardSizeBtnIcon, layout.CardSizeBtnIcon).TextColor(ui.RGBA(255, 255, 255, alpha))
-	}).Clicked() {
-		a.closeLangMenu()
-		a.setCardSize(string(v.kind), next)
-	}
+	}).Clicked()
 }
 
 // cardHeader is the card's header: what it is, then what it offers.
@@ -127,7 +132,7 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.retryAnswer("")
 		}
 	}
-	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking"), thinkText(v.think), icons.Tuning2, v.canThink) {
+	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking level"), askAgainText(v.think, a.llmGeneration(a.answer.llmID)), icons.Tuning2, v.canThink) {
 		a.toggleThinkMenu()
 	}
 	if v.failed == nil {
