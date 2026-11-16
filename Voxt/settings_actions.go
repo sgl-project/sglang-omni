@@ -32,6 +32,10 @@ type settingsPrivacyActions interface {
 	setLogText(on bool)
 }
 
+type settingsOverlayActions interface {
+	overlayEdited()
+}
+
 type settingsAudioActions interface {
 	settingsSoundsActions
 	loadDevices()

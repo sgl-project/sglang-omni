@@ -216,7 +216,7 @@ func (a *app) loadSettingsForm() {
 	f.cleanSound = !s.Audio.Clean.Off
 	f.muteOutput = s.Audio.MuteOn()
 	f.uploadMB, f.maxMinutes = float64(s.Audio.UploadMB), float64(s.Audio.MaxSeconds)/60
-	a.loadOverlayForm() // settings_overlay.go
+	a.loadOverlayForm() // settings_overlay_controller.go
 }
 
 // syncOpenAtLogin reads whether macOS opens VoxtNew at login (the user
@@ -409,7 +409,9 @@ func (a *app) settingsSection(c *ui.Context, r *ui.Route) {
 		"audio": func(c *ui.Context) {
 			audioSettings(c, a.audioSettingsModel(time.Now()), a, &a.settingsForm.settingsAudioLocalUI)
 		},
-		"overlay":   a.overlaySettings,   // settings_overlay.go
+		"overlay": func(c *ui.Context) {
+			overlaySettings(c, a.overlaySettingsModel(), a, &a.settingsForm.ovStyle)
+		},
 		"shortcuts": a.shortcutsSettings, // settings_shortcuts.go
 		"appearance": func(c *ui.Context) {
 			appearanceSettings(c, a.appearanceSettingsModel(), a, &a.settingsForm.settingsAppearanceLocalUI)
