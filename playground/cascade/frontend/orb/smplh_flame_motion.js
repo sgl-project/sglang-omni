@@ -1,5 +1,8 @@
-// The smplh_flame_motion output format drawn as a stick figure: the SMPL-H joint tree with hand-set rest offsets of plausible adult proportions, not the SMPL-H model's own joints, and a bar for the jaw; a body or face mesh needs the user's SMPL-H, SMPL-X or FLAME model files.
+// The smplh_flame_motion output format drawn on the SMPL-X body mesh when the page has the user's SMPL-X model (smplx_mesh.js; FLAME's expression,
+// jaw and eyes drive its face), otherwise as a stick figure: the SMPL-H joint tree with hand-set rest offsets of
+// plausible adult proportions, not the SMPL-H model's own joints, and a bar for the jaw.
 import { base64ToBytes } from "./session.js";
+import { smplhFlameFramePose } from "./smplx_mesh.js";
 
 export const SMPLH_FLAME_MOTION = "smplh_flame_motion";
 export const FEATURES_PER_FRAME = 264;
@@ -99,11 +102,13 @@ export function jointPositions(frame) {
 // so a later chunk arriving up to that much later than the first one's pace still plays on time; a frame due before its chunk arrived is skipped,
 // and draw() paints the frame due now, seen from the front.
 // onReplyShown(responseId) fires once, when the first frame of a reply's motion is due: the page's media gate plays that reply's audio from then on, so voice and motion start together.
+// mesh, when set (attachSmplxMesh), draws the frames on the SMPL-X mesh in place of the stick figure.
 // drop(responseId) ends an interrupted reply's motion where it was cut: its frames not yet due, and any that still arrive, are dropped, and the figure keeps its last pose until the next block is due.
 // clock.mediaOrigin(proposedMs), when given (the page's media gate), may move that origin or hold it back (null): a turnless reply stream plays its motion on the clock its audio plays on.
 export class MotionView {
   constructor(canvas, { now = () => performance.now(), onReplyShown = () => {}, playoutDelayMs = DEFAULT_PLAYOUT_DELAY_MS, clock = null } = {}) {
     this.canvas = canvas;
+    this.mesh = null;
     this.now = now;
     this.clock = clock;
     this.playoutDelayMs = playoutDelayMs;
@@ -141,6 +146,11 @@ export class MotionView {
     return frame;
   }
 
+  // A frame as the SMPL-X mesh's pose and expression.
+  posed(frame) {
+    return smplhFlameFramePose(frame);
+  }
+
   drop(responseId) {
     this.dropped.add(responseId);
     this.queue = this.queue.filter((entry) => entry.responseId !== responseId);
@@ -157,6 +167,11 @@ export class MotionView {
   draw() {
     const frame = this.due();
     if (frame === null) return;
+    if (this.mesh) {
+      const { pose, expression } = this.posed(frame);
+      this.mesh.show(pose, expression);
+      return;
+    }
     const positions = jointPositions(frame);
     this.canvas.hidden = false;
     const context = this.canvas.getContext("2d");

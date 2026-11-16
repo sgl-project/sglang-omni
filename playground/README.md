@@ -101,3 +101,28 @@ ssh -L 8000:localhost:8000 -L 7860:localhost:7860 user@host
 
 See the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_guide.md#browser-demo) to start
 microphone and camera chat with MiniCPM-o, including remote access from your browser.
+
+## Streaming cascade with body motion
+
+`cascade/app.py` serves the cascade page and proxies `/v1/realtime`. A
+Session that publishes `smplx_motion` (MIBURI) or
+`smplh_flame_motion` (ELLSA 2) is drawn as a stick figure, or on the SMPL-X
+body mesh when the playground is given an SMPL-X model:
+
+```bash
+python playground/cascade/app.py --api-base http://127.0.0.1:8000 --port 8080 \
+    --smplx-model /path/to/SMPLX_NEUTRAL_2020.npz   # or SMPLX_MODEL_PATH=...
+```
+
+- SMPL-X is licensed for non-commercial research only
+  (https://smpl-x.is.tue.mpg.de), so no model data is in this repository.
+  Download `SMPLX_NEUTRAL_2020.npz` yourself under its license; the
+  playground reads it from that local path at startup.
+- The page fetches `/smplx/mesh.bin` (built from the model: template, joints,
+  4 largest skinning weights per vertex, expression blend shapes), skins the
+  mesh in the browser and draws it with three.js from jsdelivr. Shape and
+  pose correctives are not applied.
+- `smplx_motion` drives the body, hands, jaw and the 100 expression
+  coefficients. `smplh_flame_motion` drives the body, hands and the face:
+  SMPL-X 2020's 100 expression coefficients are FLAME 2020's, so its FLAME
+  expression (entries 0-99), jaw (103) and eyes (104-107) apply as they are.
