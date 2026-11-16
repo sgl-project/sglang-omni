@@ -18,26 +18,34 @@ import (
 
 // PatternErrorText says why a website rule is not valid.
 func PatternErrorText(err error) string {
+	return PatternErrorTextFor(i18n.CurrentTranslator(), err)
+}
+
+func PatternErrorTextFor(translator *i18n.Translator, err error) string {
 	switch err {
 	case appctx.ErrPatternEmpty:
-		return i18n.T("Type a website, as in github.com.")
+		return translator.T("Type a website, as in github.com.")
 	case appctx.ErrPatternSpace:
-		return i18n.T("A website rule cannot contain spaces.")
+		return translator.T("A website rule cannot contain spaces.")
 	case appctx.ErrPatternScheme:
-		return i18n.T("Only web addresses (http and https).")
+		return translator.T("Only web addresses (http and https).")
 	}
-	return i18n.T("Start with a site, as in github.com or *.notion.so. * matches anything.")
+	return translator.T("Start with a site, as in github.com or *.notion.so. * matches anything.")
 }
 
 // AutoKeyLabel is the select's label of keys.
 func AutoKeyLabel(keys string) string {
+	return AutoKeyLabelFor(i18n.CurrentTranslator(), keys)
+}
+
+func AutoKeyLabelFor(translator *i18n.Translator, keys string) string {
 	switch c := appctx.CanonicalAutoKey(keys); c {
 	case "":
-		return i18n.T("None")
+		return translator.T("None")
 	case "Return":
-		return i18n.T("Return ↩")
+		return translator.T("Return ↩")
 	default:
-		return HotkeyText(c)
+		return HotkeyTextFor(translator, c)
 	}
 }
 

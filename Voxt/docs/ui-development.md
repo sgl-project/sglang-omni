@@ -1,6 +1,6 @@
 # Develop views with fixtures
 
-Use this guide to change a meeting, history, session-overlay, updates, home, or onboarding view without starting Voxt's helper, loading a model, granting microphone permission, or opening Voxt's data directory.
+Use this guide to change a meeting, history, session-overlay, updates, home, onboarding, or app enhancement view without starting Voxt's helper, loading a model, granting microphone permission, or opening Voxt's data directory.
 
 
 ## Open the first fixture
@@ -13,7 +13,8 @@ Install Go 1.27.1 or a newer Go 1.27 patch release as described in [the developm
    MYGO_LOCALE=en VOXTNEW_DEMO_DIR="$PWD/testdata/meeting" GOFLAGS='-tags=meetingdemo' go tool mygo dev ./demo
    ```
 
-2. Check that the **Voxt UI Demo** window shows `en/empty-closed`. This is the first fixture in sorted order.
+2. Check that the **Voxt UI Demo** window shows `en/appenhance-empty`. This is the first non-modal fixture in sorted order.
+
 3. Click **Continue** or **Back** to switch fixtures without restarting the window. The selector wraps at either end and resets local widget state.
 4. Click **Close** in a detail fixture. The terminal prints the recorded action without changing the fixture:
 
@@ -37,7 +38,7 @@ To render fixtures without a window, use [the screenshot command](#render-screen
 
 ## Change a view
 
-The meeting views are `meetings_page.go`, `meetings_detail.go`, `meetings_playback.go`, `meeting_overlay.go`, and `meeting_overlay_view.go`. History uses `history_page.go`, `history_detail.go`, `history_menu.go`, `history_retry.go`, `history_settings.go`, `history_export.go`, and `history_access.go`. Session overlay views use `overlay.go`, `overlay_face.go`, `overlay_card.go`, `overlay_card_view.go`, `overlay_lang.go`, `overlay_size.go`, `overlay_think.go`, and `overlay_wave.go`. Updates uses `updates_view.go` for Settings → About and the release dialog. Home uses `home_page.go` and `home_ready.go`. Onboarding uses `onboarding_keys.go`, `onboarding_models.go`, `onboarding_steps.go`, `onboarding_try_guide.go`, and `onboarding_view.go`. These files read view state, call actions, and own local widget state such as scroll position and open menus. They do not read stores, snapshots, settings, or `app`.
+The meeting views are `meetings_page.go`, `meetings_detail.go`, `meetings_playback.go`, `meeting_overlay.go`, and `meeting_overlay_view.go`. History uses `history_page.go`, `history_detail.go`, `history_menu.go`, `history_retry.go`, `history_settings.go`, `history_export.go`, and `history_access.go`. Session overlay views use `overlay.go`, `overlay_face.go`, `overlay_card.go`, `overlay_card_view.go`, `overlay_lang.go`, `overlay_size.go`, `overlay_think.go`, and `overlay_wave.go`. Updates uses `updates_view.go` for Settings → About and the release dialog. Home uses `home_page.go` and `home_ready.go`. Onboarding uses `onboarding_keys.go`, `onboarding_models.go`, `onboarding_steps.go`, `onboarding_try_guide.go`, and `onboarding_view.go`. App enhancement uses `appenhance_page.go`, `appenhance_group.go`, `appenhance_dialogs.go`, `appenhance_preview.go`, and `appicons.go`. These files read view state, call actions, and own local widget state such as scroll position and open menus. They do not read stores, snapshots, settings, or `app`.
 
 
 The matching logic files build view state and implement actions:
@@ -48,23 +49,24 @@ The matching logic files build view state and implement actions:
 - `updates_view_state.go` builds Settings → About and release-dialog display data. `updates.go` and `updates_github.go` own updater I/O, release checks, watchers, and cards.
 - `home_view_state.go` and `home_readiness_state.go` build home display data. `home_controller.go` owns history reads, readiness snapshots, and actions.
 - `onboarding_view_state.go`, `onboarding_models_state.go`, `onboarding_steps_state.go`, and `onboarding_try_state.go` build onboarding display data. `onboarding.go` owns the guide's lifecycle and model surveys.
-- `meeting_actions.go`, `history_actions.go`, `updates_actions.go`, `home_actions.go`, and `onboarding_actions.go` define user intents. `app` implements every intent in production. `meetingDemoHost` records them in the demo.
+- `appenhance_view_state.go` builds app enhancement display data. `appenhance_controller.go` owns rule edits, settings changes, and app-list reads. `appicons_controller.go` owns icon reads and bitmap decoding.
+- `meeting_actions.go`, `history_actions.go`, `updates_actions.go`, `home_actions.go`, `onboarding_actions.go`, and `appenhance_actions.go` define user intents. `app` implements every intent in production. `meetingDemoHost` records them in the demo.
 
 
 Keep dimensions, colors, and widget choices in the view files. Run `go tool mygo vet .` and `go test ./internal/archtest` after moving code.
 
 ## Add or change fixture data
 
-Do not edit fixture JSON by hand. Change the production builder and its scenario in `meeting_fixture_scenarios_test.go`, `history_fixture_scenarios_test.go`, `session_fixture_scenarios_test.go`, `updates_fixture_scenarios_test.go`, `home_fixture_scenarios_test.go`, or `onboarding_fixture_scenarios_test.go`, then regenerate both languages:
+Do not edit fixture JSON by hand. Change the production builder and its scenario in `meeting_fixture_scenarios_test.go`, `history_fixture_scenarios_test.go`, `session_fixture_scenarios_test.go`, `updates_fixture_scenarios_test.go`, `home_fixture_scenarios_test.go`, `onboarding_fixture_scenarios_test.go`, or `appenhance_fixture_scenarios_test.go`, then regenerate both languages:
 
 
 ```sh
 VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 ```
 
-`TestMeetingViewStateGolden` builds every fixture through the production view-state builders. `TestMeetingFixtureCoverage`, `TestHistoryFixtureCoverage`, and `TestSessionFixtureCoverage` derive required states and problem codes from the domain declarations. `TestUpdatesFixtureCoverage` enumerates the updates display and release-check error branches, `TestHomeFixtureCoverage` enumerates the home readiness actions, and `TestOnboardingFixtureCoverage` enumerates the onboarding steps, permission states, and shortcut presets. These tests fail when a fixture is missing.
+`TestMeetingViewStateGolden` builds every fixture through the production view-state builders. `TestMeetingFixtureCoverage`, `TestHistoryFixtureCoverage`, and `TestSessionFixtureCoverage` derive required states and problem codes from the domain declarations. `TestUpdatesFixtureCoverage` enumerates the updates display and release-check error branches, `TestHomeFixtureCoverage` enumerates the home readiness actions, `TestOnboardingFixtureCoverage` enumerates the onboarding steps, permission states, and shortcut presets, and `TestAppEnhancementFixtureCoverage` enumerates the app enhancement match sources. These tests fail when a fixture is missing.
 
-If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to `meeting_actions.go`, `history_actions.go`, `sessionOverlayActions`, `updates_actions.go`, `home_actions.go`, or `onboarding_actions.go`, implement it on `app`, record it on `meetingDemoHost`, and add a click test to `TestMeetingDemoActionControls`, `TestHistoryDemoActionControls`, `TestSessionDemoActionControls`, `TestUpdatesDemoActionControls`, `TestHomeDemoActionControls`, or `TestOnboardingDemoActionControls`.
+If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to `meeting_actions.go`, `history_actions.go`, `sessionOverlayActions`, `updates_actions.go`, `home_actions.go`, `onboarding_actions.go`, or `appenhance_actions.go`, implement it on `app`, record it on `meetingDemoHost`, and add a click test to `TestMeetingDemoActionControls`, `TestHistoryDemoActionControls`, `TestSessionDemoActionControls`, `TestUpdatesDemoActionControls`, `TestHomeDemoActionControls`, `TestOnboardingDemoActionControls`, or `TestAppEnhancementDemoActionControls`.
 
 
 ## Add the next area or a fixture-backed page
@@ -94,11 +96,11 @@ The test writes one PNG per fixture as `<locale>-<scenario>.png` and checks each
 Check fixture switching and control-to-action wiring:
 
 ```sh
-go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|SessionDemo.*|SessionOverlayDemoMatchesProduction|UpdatesDemoActionControls|HomeDemoActionControls|OnboardingDemo)$' .
-go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History|Session|Updates|Home|Onboarding)(Demo|OverlayDemoMatchesProduction)' .
+go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|SessionDemo.*|SessionOverlayDemoMatchesProduction|UpdatesDemoActionControls|HomeDemoActionControls|OnboardingDemo|AppEnhancementDemoActionControls)$' .
+go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History|Session|Updates|Home|Onboarding|AppEnhancement)(Demo|OverlayDemoMatchesProduction)' .
 ```
 
-The first command clicks every action-bearing meeting, history, session-overlay, updates, home, and onboarding control and the local cancellation controls, then compares the exact recorded calls. It covers menus, confirmation dialogs, playback, search, settings, exports, cleanup, Privacy access, pill controls, answer-card controls, update preferences, the release dialog, readiness fixes, recent results, permissions, model choices, and onboarding tries. It also compares production rendering with JSON fixtures. The second command compiles the enabled demo entry point.
+The first command clicks every action-bearing meeting, history, session-overlay, updates, home, onboarding, and app enhancement control and the local cancellation controls, then compares the exact recorded calls. It covers menus, confirmation dialogs, playback, search, settings, exports, cleanup, Privacy access, pill controls, answer-card controls, update preferences, the release dialog, readiness fixes, recent results, permissions, model choices, onboarding tries, rule editors, and browser lists. It also compares production rendering with JSON fixtures. The second command compiles the enabled demo entry point.
 
 
 These tests use `ui.Tester`. They need no window, helper binary, model, microphone, network, or Voxt data directory. They also run on Linux.

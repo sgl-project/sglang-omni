@@ -23,24 +23,27 @@ type meetingDemoFixture struct {
 }
 
 type meetingDemoHost struct {
-	fixtures            []meetingDemoFixture
-	selected            int
-	calls               []string
-	pageUI              meetingsLocalUI
-	overlayUI           meetingOverlayLocalUI
-	historyUI           historyLocalUI
-	historySettingsUI   historySettingsLocalUI
-	historyAccessUI     historyAccessLocalUI
-	updatesUI           updatesLocalUI
-	onboardingUI        onboardingLocalUI
-	overlayLook         settings.Overlay
-	sessionState        sessionOverlayViewState
-	sessionSeed         sessionOverlayFixtureUI
-	sessionUI           sessionOverlayLocalUI
-	sessionCardUI       answerCardUI
-	sessionLayout       sessionOverlayLayout
-	sessionMemory       sessionOverlayLayoutMemory
-	sessionMeasurements map[ovSized]ovMeasured
+	fixtures              []meetingDemoFixture
+	selected              int
+	calls                 []string
+	pageUI                meetingsLocalUI
+	overlayUI             meetingOverlayLocalUI
+	historyUI             historyLocalUI
+	historySettingsUI     historySettingsLocalUI
+	historyAccessUI       historyAccessLocalUI
+	updatesUI             updatesLocalUI
+	onboardingUI          onboardingLocalUI
+	appEnhancementUI      appEnhancementLocalUI
+	appEnhancementDetails map[string][]appEnhancementGroupDetail
+	appEnhancementApps    map[string][]appEnhancementAppChoice
+	overlayLook           settings.Overlay
+	sessionState          sessionOverlayViewState
+	sessionSeed           sessionOverlayFixtureUI
+	sessionUI             sessionOverlayLocalUI
+	sessionCardUI         answerCardUI
+	sessionLayout         sessionOverlayLayout
+	sessionMemory         sessionOverlayLayoutMemory
+	sessionMeasurements   map[ovSized]ovMeasured
 }
 
 func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
@@ -48,7 +51,11 @@ func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
 	if err != nil {
 		return nil, err
 	}
-	host := &meetingDemoHost{overlayLook: settings.Defaults().Overlay}
+	host := &meetingDemoHost{
+		overlayLook:           settings.Defaults().Overlay,
+		appEnhancementDetails: map[string][]appEnhancementGroupDetail{},
+		appEnhancementApps:    map[string][]appEnhancementAppChoice{},
+	}
 	for _, localeEntry := range entries {
 		if !localeEntry.IsDir() || !slices.Contains(i18n.Supported(), localeEntry.Name()) {
 			return nil, fmt.Errorf("meeting demo: unsupported entry %s", localeEntry.Name())
@@ -72,6 +79,12 @@ func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
 				return nil, fmt.Errorf("meeting demo: %s has name %q", path, fixture.Name)
 			}
 			host.fixtures = append(host.fixtures, meetingDemoFixture{locale: locale, name: locale + "/" + name, state: fixture})
+			if fixture.AppEnhancementDetails != nil {
+				host.appEnhancementDetails[locale] = fixture.AppEnhancementDetails
+			}
+			if name == "appenhance-apps-normal" {
+				host.appEnhancementApps[locale] = fixture.AppEnhancement.Apps.Rows
+			}
 		}
 	}
 	if len(host.fixtures) == 0 {
@@ -83,7 +96,16 @@ func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
 			return nil, fmt.Errorf("meeting demo: duplicate fixture %s", fixture.name)
 		}
 	}
-	host.selectMeetingFixture(0)
+	initial := 0
+	for index, fixture := range host.fixtures {
+		state := fixture.state.AppEnhancement
+		if state != nil && (state.Apps != nil || state.Browsers != nil || state.Delete != nil) {
+			continue
+		}
+		initial = index
+		break
+	}
+	host.selectMeetingFixture(initial)
 	return host, nil
 }
 
@@ -112,7 +134,9 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "updates-settings" && fixture.UpdatesSettings != nil ||
 		fixture.Kind == "updates-release" && fixture.UpdatesRelease != nil ||
 		fixture.Kind == "home" && fixture.Home != nil ||
-		fixture.Kind == "onboarding" && fixture.Onboarding != nil
+		fixture.Kind == "onboarding" && fixture.Onboarding != nil ||
+		fixture.Kind == "appenhance" && fixture.AppEnhancement != nil
+
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -179,6 +203,21 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	host.onboardingUI = onboardingLocalUI{}
 	if state := fixture.state.Onboarding; state != nil {
 		host.onboardingUI.open = state.Open
+	}
+	host.appEnhancementUI = appEnhancementLocalUI{}
+	if state := fixture.state.AppEnhancement; state != nil {
+		host.appEnhancementUI.sel = state.Selected
+		host.appEnhancementUI.appsOpen = state.Apps != nil
+		host.appEnhancementUI.browsersOpen = state.Browsers != nil
+		host.appEnhancementUI.delAsk = state.Delete != nil
+		if state.Apps != nil {
+			host.appEnhancementUI.appsQuery = state.Apps.Query
+			host.appEnhancementUI.bundleIn = state.Apps.BundleInput
+		}
+		if state.Browsers != nil {
+			host.appEnhancementUI.brID = state.Browsers.BundleInput
+			host.appEnhancementUI.brName = state.Browsers.NameInput
+		}
 	}
 }
 
@@ -423,5 +462,4 @@ func (host *meetingDemoHost) completeOnboardingLegacyTodo(kind, id string) {
 }
 func (host *meetingDemoHost) applyShortcutPreset(preset string) {
 	host.record("applyShortcutPreset %s", preset)
-
 }

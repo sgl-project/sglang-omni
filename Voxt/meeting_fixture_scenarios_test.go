@@ -10,26 +10,30 @@ import (
 )
 
 type meetingFixtureScenario struct {
-	name               string
-	kind               string
-	snapshot           meeting.Snapshot
-	page               meetingsViewStateInput
-	err                error
-	collapsed          bool
-	cardSize           int
-	history            historyViewStateInput
-	historySettings    historySettingsStateInput
-	historyAccess      historyAccessStateInput
-	historyProblem     string
-	session            *sessionFixtureScenario
-	updates            updatesViewStateInput
-	release            releaseViewStateInput
-	home               homeViewStateInput
-	homeReadiness      homeReadinessInput
-	onboarding         onboardingViewStateInput
-	onboardingBlocker  string
-	onboardingConflict bool
-	onboardingHint     bool
+	name                       string
+	kind                       string
+	snapshot                   meeting.Snapshot
+	page                       meetingsViewStateInput
+	err                        error
+	collapsed                  bool
+	cardSize                   int
+	history                    historyViewStateInput
+	historySettings            historySettingsStateInput
+	historyAccess              historyAccessStateInput
+	historyProblem             string
+	session                    *sessionFixtureScenario
+	updates                    updatesViewStateInput
+	release                    releaseViewStateInput
+	home                       homeViewStateInput
+	homeReadiness              homeReadinessInput
+	onboarding                 onboardingViewStateInput
+	onboardingBlocker          string
+	onboardingConflict         bool
+	onboardingHint             bool
+	appEnhancement             appEnhancementViewStateInput
+	appEnhancementURLCheck     bool
+	appEnhancementAutoKeyCheck bool
+	appEnhancementLibrary      bool
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
@@ -147,6 +151,8 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, updatesFixtureScenarios()...)
 	scenarios = append(scenarios, homeFixtureScenarios()...)
 	scenarios = append(scenarios, onboardingFixtureScenarios()...)
+	scenarios = append(scenarios, appEnhancementFixtureScenarios()...)
+
 	return scenarios
 }
 

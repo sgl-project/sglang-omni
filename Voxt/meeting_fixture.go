@@ -3,20 +3,22 @@ package main
 import "slices"
 
 type meetingFixtureState struct {
-	Name            string                    `json:"name"`
-	Kind            string                    `json:"kind"`
-	Overlay         *meetingOverlayViewState  `json:"overlay,omitempty"`
-	Page            *meetingsViewState        `json:"page,omitempty"`
-	Start           *meetingStartViewState    `json:"start,omitempty"`
-	History         *historyViewState         `json:"history,omitempty"`
-	HistorySettings *historySettingsViewState `json:"history_settings,omitempty"`
-	HistoryAccess   *historyAccessViewState   `json:"history_access,omitempty"`
-	Session         *sessionOverlayViewState  `json:"session,omitempty"`
-	SessionUI       *sessionOverlayFixtureUI  `json:"session_ui,omitempty"`
-	UpdatesSettings *updatesViewState         `json:"updates_settings,omitempty"`
-	UpdatesRelease  *releaseViewState         `json:"updates_release,omitempty"`
-	Home            *homeViewState            `json:"home,omitempty"`
-	Onboarding      *onboardingViewState      `json:"onboarding,omitempty"`
+	Name                  string                      `json:"name"`
+	Kind                  string                      `json:"kind"`
+	Overlay               *meetingOverlayViewState    `json:"overlay,omitempty"`
+	Page                  *meetingsViewState          `json:"page,omitempty"`
+	Start                 *meetingStartViewState      `json:"start,omitempty"`
+	History               *historyViewState           `json:"history,omitempty"`
+	HistorySettings       *historySettingsViewState   `json:"history_settings,omitempty"`
+	HistoryAccess         *historyAccessViewState     `json:"history_access,omitempty"`
+	Session               *sessionOverlayViewState    `json:"session,omitempty"`
+	SessionUI             *sessionOverlayFixtureUI    `json:"session_ui,omitempty"`
+	UpdatesSettings       *updatesViewState           `json:"updates_settings,omitempty"`
+	UpdatesRelease        *releaseViewState           `json:"updates_release,omitempty"`
+	Home                  *homeViewState              `json:"home,omitempty"`
+	Onboarding            *onboardingViewState        `json:"onboarding,omitempty"`
+	AppEnhancement        *appEnhancementViewState    `json:"appenhance,omitempty"`
+	AppEnhancementDetails []appEnhancementGroupDetail `json:"appenhance_details,omitempty"`
 }
 
 type sessionOverlayFixtureUI struct {
@@ -50,4 +52,5 @@ func cloneSessionMenuViewState(state *sessionMenuViewState) *sessionMenuViewStat
 	clone := *state
 	clone.Options = slices.Clone(state.Options)
 	return &clone
+
 }

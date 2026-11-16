@@ -151,13 +151,17 @@ func RuleTextFor(translator *i18n.Translator, e store.Entry) string {
 
 // SourceText says how a group matched.
 func SourceText(s appctx.Source, pattern string) string {
+	return SourceTextFor(i18n.CurrentTranslator(), s, pattern)
+}
+
+func SourceTextFor(translator *i18n.Translator, s appctx.Source, pattern string) string {
 	switch s {
 	case appctx.SourceURL:
-		return i18n.T("by the website rule %s", pattern)
+		return translator.T("by the website rule %s", pattern)
 	case appctx.SourceBrowserApp:
-		return i18n.T("by the browser")
+		return translator.T("by the browser")
 	case appctx.SourceApp:
-		return i18n.T("by the app")
+		return translator.T("by the app")
 	}
 	return ""
 }
