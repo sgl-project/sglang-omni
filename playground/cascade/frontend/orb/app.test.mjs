@@ -5,6 +5,7 @@ import vm from "node:vm";
 
 import { ReplyMediaGate } from "../../../realtime/frontend/orb/reply_media_gate.js";
 import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
+import { MotionView, SMPLH_FLAME_MOTION, smplhFlameMotionRenderer } from "./smplh_flame_motion.js";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
 // The settings panel is the realtime page's module, served under this page's path by playground/cascade/app.py.
@@ -22,7 +23,11 @@ function createApp(sessionOptions, search = "") {
   const context = vm.createContext({
     DuplexSession,
     drawsPluginFormat,
+    registerPluginRenderer,
     ReplyMediaGate,
+    MotionView,
+    SMPLH_FLAME_MOTION,
+    smplhFlameMotionRenderer,
     window: { DEMO_WS_URL: "ws://localhost/v1/realtime", addEventListener() {} },
     location: { search },
     URLSearchParams,
@@ -162,4 +167,27 @@ test("a reply's audio waits for its first frame of a drawn port that follows rep
     app.run('mediaGate.shown("resp_1")');
     assert.deepEqual(pushes(app), ["resp_1"], search);
   }
+});
+
+test("with the ELLSA 2 motion port, a reply's audio waits for the reply's first motion frame, and an interrupt drops the reply's motion", async () => {
+  const app = createApp({ instructions: "", outputModalities: ["audio"], extension: {}, turnDetection: null });
+  const { socket } = await firstSessionUpdate(app);
+  const motion = { modality: "motion", format: "smplh_flame_motion", params: { fps: 30, timeline: "input", follows_replies: true, reply_media_wait_ms: 1000 } };
+  socket.receive({ type: "session.updated", session: { sglang: { granted: { input_audio_format: { rate: 16000 }, output_audio_format: { rate: 24000 } }, plugin_output_ports: [motion] } } });
+  socket.receive({ type: "response.created", response: { id: "resp_1" } });
+  socket.receive({ type: "response.output_audio.delta", response_id: "resp_1", item_id: "item_1", delta: Buffer.alloc(480).toString("base64") });
+  await app.settled();
+  const pushes = () => app.posted.filter((message) => message.type === "push" && message.responseId === "resp_1");
+  assert.equal(pushes().length, 0);
+  assert.equal(app.run("mediaGate.waitMs"), 1000);
+  const frames = Buffer.from(new Float32Array(24 * 264).buffer).toString("base64");
+  socket.receive({ type: "sglang.output_chunk", response_id: "resp_1", turn: 1, modality: "motion", format: "smplh_flame_motion", t_start_ms: 0, duration_ms: 800, payload_b64: frames });
+  socket.receive({ type: "sglang.output_chunk", response_id: "resp_1", turn: 1, modality: "motion", format: "smplh_flame_motion", t_start_ms: 800, duration_ms: 800, payload_b64: frames });
+  await app.settled();
+  assert.equal(pushes().length, 0);
+  app.run("motionView.due()");
+  assert.equal(pushes().length, 1);
+  socket.receive({ type: "response.done", response: { id: "resp_1", status: "cancelled" } });
+  await app.settled();
+  assert.equal(app.run('motionView.queue.filter((entry) => entry.responseId === "resp_1").length'), 0);
 });

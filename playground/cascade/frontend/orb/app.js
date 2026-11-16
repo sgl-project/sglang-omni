@@ -1,6 +1,7 @@
 // Voice page for a /v1/realtime session (native full duplex or turn based), proxied by playground/realtime/app.py.
-import { DuplexSession, drawsPluginFormat } from "./session.js";
+import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./session.js";
 import { ReplyMediaGate } from "./reply_media_gate.js";
+import { SMPLH_FLAME_MOTION, MotionView, smplhFlameMotionRenderer } from "./smplh_flame_motion.js";
 import { Orb } from "./orb.js";
 import { Settings } from "./settings.js";
 
@@ -22,7 +23,7 @@ const INTERRUPT_WINDOW_MS = 1500;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset", "motionView"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -57,6 +58,8 @@ const mediaGate = new ReplyMediaGate({
   now: () => performance.now(),
   post: (message, transfer) => playbackNode.port.postMessage(message, transfer),
 });
+const motionView = new MotionView(ui.motionView, { onReplyShown: (responseId) => mediaGate.shown(responseId) });
+registerPluginRenderer(SMPLH_FLAME_MOTION, smplhFlameMotionRenderer(motionView));
 let playbackAnalyser = null;
 let playbackRate = 24000;
 let eventChain = Promise.resolve();
@@ -179,6 +182,7 @@ function render(now) {
   const state = mood(micLevel, modelLevel, now);
   if (state.mood === "speaking") lastSpokeAt = now;
   orb.frame(now, state.level, state.mood);
+  motionView.draw();
   mediaGate.tick();
   if (ui.statusLine.textContent !== state.line) ui.statusLine.textContent = state.line;
   ui.caption.dataset.fade = String(!(session && session.responseOpen) && now - lastSpokeAt > CAPTION_FADE_MS);
@@ -377,6 +381,8 @@ function sessionListeners() {
       setButtons();
       // A cancelled reply stops now; a completed one plays out what is buffered.
       if (playbackNode && !open) mediaGate.end(id, status);
+      // An interrupted reply's motion stops where it was cut: its frames not yet shown go and the figure keeps its last pose.
+      if (!open && status === "cancelled") motionView.drop(id);
       renderTranscript();
     },
     text: renderTranscript,
@@ -399,6 +405,7 @@ async function connect() {
   warn("");
   if (playbackNode) playbackNode.port.postMessage({ type: "reset" });
   mediaGate.reset();
+  motionView.reset();
   setButtons();
   let activeSocket = null;
   try {
