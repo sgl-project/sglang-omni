@@ -33,8 +33,7 @@ type remoteInputsCacheKey struct {
 	providers      settings.Providers
 	features       remoteFeatureCacheKey
 	groups         []appctx.Group
-	installedASR   []local.Model
-	installedLLM   []local.Model
+	installed      []local.Model
 	keyMasks       map[string]string
 	keySpaced      map[string]bool
 	tests          map[string]providerTest
@@ -88,28 +87,31 @@ func remoteFeatureInputs(prefs settings.Settings) remoteFeatureCacheKey {
 	}
 }
 
-func (a *app) remoteInputsCacheKey() remoteInputsCacheKey {
-	return remoteInputsCacheKey{
+func (a *app) remoteInputsCacheKey(kind local.Kind) remoteInputsCacheKey {
+	key := remoteInputsCacheKey{
 		locale: i18n.Locale(), mainLanguage: a.prefs.General.MainLanguage, otherLanguages: a.prefs.General.OtherLanguages,
 		providers: a.prefs.Providers, features: remoteFeatureInputs(a.prefs), groups: a.aeRules.Groups,
-		installedASR: a.installed(local.ASR), installedLLM: a.installed(local.LLM),
 		keyMasks: a.keyMasks, keySpaced: a.keySpaced, tests: a.provTests,
 	}
+	if kind != "" {
+		key.installed = a.installed(kind)
+	}
+	return key
 }
 
 func (a *app) remotePageCacheKey() remoteViewCacheKey {
 	return remoteViewCacheKey{
-		remoteInputsCacheKey: a.remoteInputsCacheKey(), wait: a.prefs.Models.LLMWait,
+		remoteInputsCacheKey: a.remoteInputsCacheKey(local.LLM), wait: a.prefs.Models.LLMWait,
 		awayTo: a.ob.awayTo, onboardingOpen: a.ob.open, onboardingStep: a.ob.step,
 	}
 }
 
 func (a *app) remoteCardsCacheKey(kind local.Kind) remoteCardsCacheKey {
-	return remoteCardsCacheKey{remoteInputsCacheKey: a.remoteInputsCacheKey(), kind: kind}
+	return remoteCardsCacheKey{remoteInputsCacheKey: a.remoteInputsCacheKey(kind), kind: kind}
 }
 
 func (a *app) llmDebugCacheKey() llmDebugCacheKey {
-	return llmDebugCacheKey{remoteInputsCacheKey: a.remoteInputsCacheKey(), ui: a.llmDbg}
+	return llmDebugCacheKey{remoteInputsCacheKey: a.remoteInputsCacheKey(""), ui: a.llmDbg}
 }
 
 func cloneLocalModels(models []local.Model) []local.Model {
@@ -125,8 +127,7 @@ func cloneRemoteInputsCacheKey(key remoteInputsCacheKey) remoteInputsCacheKey {
 	key.providers.LLM = slices.Clone(key.providers.LLM)
 	key.providers.ASR = slices.Clone(key.providers.ASR)
 	key.groups = slices.Clone(key.groups)
-	key.installedASR = cloneLocalModels(key.installedASR)
-	key.installedLLM = cloneLocalModels(key.installedLLM)
+	key.installed = cloneLocalModels(key.installed)
 	key.keyMasks = maps.Clone(key.keyMasks)
 	key.keySpaced = maps.Clone(key.keySpaced)
 	key.tests = maps.Clone(key.tests)
