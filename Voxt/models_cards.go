@@ -48,8 +48,9 @@ func (a *app) modelsPage(c *ui.Context) {
 			if !a.modelHidden(dictation.ModelID) {
 				a.dictationCard(c)
 			}
-			a.providerCards(c, local.ASR) // remote_page.go
-			a.speechContextSection(c)     // models_context.go
+			remoteCards := a.remoteCardsModel(local.ASR)
+			remoteProviderCards(c, &remoteCards, a, a.pageWidth(c))
+			a.speechContextSection(c) // models_context.go
 			if a.anyModelShown(models.LLM) {
 				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt no longer uses these. Delete them to free up space."))
 				a.modelCards(c, models.LLM)
@@ -60,7 +61,9 @@ func (a *app) modelsPage(c *ui.Context) {
 	})
 	a.modelDeleteDialogs(c) // models_delete.go
 	a.networkDialog(c)      // models_network.go
-	a.providerDialogView(c) // remote_dialog.go
+	if remoteDialog := a.remoteDialogModel(); remoteDialog != nil {
+		remoteProviderDialogView(c, remoteDialog, a, &a.provDlg.providerDialogLocalUI)
+	}
 }
 
 // modelCards groups visible speech models by family and shows the other

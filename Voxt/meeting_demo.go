@@ -38,6 +38,9 @@ type meetingDemoHost struct {
 	appEnhancementApps    map[string][]appEnhancementAppChoice
 	dictionaryUI          dictionaryLocalUI
 	notesUI               notesLocalUI
+	remoteWaitUI          llmWaitLocalUI
+	remoteDialogUI        providerDialogLocalUI
+	remoteDebugUI         llmDebugUI
 	overlayLook           settings.Overlay
 	sessionState          sessionOverlayViewState
 	sessionSeed           sessionOverlayFixtureUI
@@ -139,7 +142,11 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "onboarding" && fixture.Onboarding != nil ||
 		fixture.Kind == "appenhance" && fixture.AppEnhancement != nil ||
 		fixture.Kind == "dictionary" && fixture.Dictionary != nil ||
-		fixture.Kind == "notes" && fixture.Notes != nil
+		fixture.Kind == "notes" && fixture.Notes != nil ||
+		fixture.Kind == "remote" && fixture.Remote != nil ||
+		fixture.Kind == "remote-cards" && fixture.RemoteCards != nil ||
+		fixture.Kind == "remote-dialog" && fixture.RemoteDialog != nil ||
+		fixture.Kind == "remote-debug" && fixture.RemoteDebug != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -254,6 +261,22 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		if host.notesUI.keys.sel == "" {
 			host.notesUI.keys.sel = shortcut.CurrentText
 		}
+	}
+	host.remoteWaitUI = llmWaitLocalUI{}
+	host.remoteDialogUI = providerDialogLocalUI{}
+	if state := fixture.state.Remote; state != nil {
+		host.remoteWaitUI = llmWaitLocalUI{llmWaitSel: state.Wait.Selected, llmWaitFor: state.Wait.Token,
+			llmWaitCustom: state.Wait.Custom, llmWaitMin: state.Wait.Minutes}
+		if state.Dialog != nil {
+			host.remoteDialogUI = remoteDialogLocalState(*state.Dialog)
+		}
+	}
+	if state := fixture.state.RemoteDialog; state != nil {
+		host.remoteDialogUI = remoteDialogLocalState(*state)
+	}
+	host.remoteDebugUI = llmDebugUI{}
+	if state := fixture.state.RemoteDebug; state != nil {
+		host.remoteDebugUI = llmDebugLocalState(*state)
 	}
 }
 

@@ -14,8 +14,6 @@ feature_page.go  # feature
 feature_prompts.go  # feature
 key_recorder.go  # settings
 legacy_report.go  # legacy: exempt one-time 1.x import reporting
-llm_debug.go  # remote
-llm_wait.go  # remote
 models_cards.go  # models
 models_context.go  # models
 models_delete.go  # models
@@ -24,10 +22,6 @@ models_network.go  # models
 models_page.go  # models
 pages.go  # shell
 permissions.go  # settings
-remote_chatgpt.go  # remote
-remote_dialog.go  # remote
-remote_generation.go  # remote
-remote_page.go  # remote
 settings_about.go  # settings
 settings_appearance.go  # settings
 settings_audio.go  # settings

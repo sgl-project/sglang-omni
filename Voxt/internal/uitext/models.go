@@ -18,17 +18,18 @@ import (
 // SpeechName is a remote speech service's name: its brand, untranslated,
 // but in Chinese for the Chinese services (as PresetName).
 func SpeechName(id string) string {
+	translator := i18n.CurrentTranslator()
 	switch id {
 	case "doubao":
-		return i18n.T("Doubao (Volcengine)")
+		return translator.T("Doubao (Volcengine)")
 	case providers.ZhipuASR:
-		return i18n.T("Zhipu GLM-ASR")
+		return translator.T("Zhipu GLM-ASR")
 	case "aliyun":
-		return i18n.T("Aliyun Bailian ASR")
+		return translator.T("Aliyun Bailian ASR")
 	case providers.StepFunASR:
-		return i18n.T("StepFun")
+		return translator.T("StepFun")
 	case "mimo":
-		return i18n.T("Xiaomi MiMo")
+		return translator.T("Xiaomi MiMo")
 	}
 	if pr, ok := providers.LookupSpeech(id); ok {
 		return pr.Name
@@ -53,6 +54,7 @@ func ModelErrorText(err error) (msg, more string) {
 	return ModelErrorTextFor(i18n.CurrentTranslator(), err)
 }
 
+// ModelErrorTextFor is ModelErrorText with an explicit locale.
 func ModelErrorTextFor(translator *i18n.Translator, err error) (msg, more string) {
 	if err == nil {
 		return "", ""

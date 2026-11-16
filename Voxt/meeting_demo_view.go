@@ -79,6 +79,20 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				dictionaryPage(c, fixture.state.Dictionary, host, &host.dictionaryUI)
 			case "notes":
 				notesPage(c, fixture.state.Notes, host, &host.notesUI)
+			case "remote":
+				local := remoteLocalUI{wait: &host.remoteWaitUI, dialog: &host.remoteDialogUI}
+				remotePageView(c, fixture.state.Remote, host, &local, 800)
+			case "remote-cards":
+				ui.Scroll(c.Key("demo-remote-cards")).Grow(1).Children(func() {
+					pageColumn(c).Children(func() {
+						remoteProviderCards(c, fixture.state.RemoteCards, host, 800)
+					})
+				})
+			case "remote-dialog":
+				remoteProviderDialogView(c, fixture.state.RemoteDialog, host, &host.remoteDialogUI)
+			case "remote-debug":
+				state := host.remoteDebugState()
+				llmDebugView(c, &state, host, &host.remoteDebugUI)
 			}
 		})
 	})

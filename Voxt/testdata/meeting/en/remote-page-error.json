@@ -1,0 +1,118 @@
+{
+  "name": "remote-page-error",
+  "kind": "remote",
+  "remote": {
+    "wait": {
+      "value": "",
+      "options": [
+        {
+          "title": "Automatic",
+          "value": ""
+        },
+        {
+          "title": "1 minute",
+          "value": "1m"
+        },
+        {
+          "title": "2 minutes",
+          "value": "2m"
+        },
+        {
+          "title": "5 minutes",
+          "value": "5m"
+        },
+        {
+          "title": "10 minutes",
+          "value": "10m"
+        },
+        {
+          "title": "No limit",
+          "value": "none"
+        },
+        {
+          "title": "Custom…",
+          "value": "",
+          "custom": true
+        }
+      ],
+      "selected": "Automatic",
+      "custom": false,
+      "minutes": 0,
+      "current_minutes": 0,
+      "max_minutes": 60,
+      "token": "\u0000en"
+    },
+    "cards": {
+      "kind": "llm",
+      "groups": [
+        {
+          "key": "remote-mine",
+          "title": "Set up",
+          "cards": [
+            {
+              "kind": "llm",
+              "id": "fixture",
+              "account": "llm.fixture",
+              "name": "Fixture service",
+              "model": "fixture-model",
+              "used": "Used by Rewrite",
+              "where": "Remote",
+              "configured": true,
+              "status": "danger",
+              "status_text": "Test failed",
+              "key_text": "••••",
+              "key_status": "neutral",
+              "test": {
+                "state": "failure",
+                "code": "llm.network",
+                "text": "Failed",
+                "long_text": "The language model stopped or did not answer. Try again in a moment.",
+                "tooltip": "The language model stopped or did not answer. Try again in a moment.\n\nredacted fixture detail",
+                "long_tooltip": "The language model stopped or did not answer. Try again in a moment.\n\nredacted fixture detail"
+              }
+            }
+          ]
+        },
+        {
+          "key": "remote-here",
+          "title": "On this Mac",
+          "caption": "Free, and the text stays on this Mac.",
+          "cards": [
+            {
+              "kind": "llm",
+              "id": "local-fixture",
+              "account": "llm.local-fixture",
+              "name": "Local fixture",
+              "model": "fixture-model",
+              "where": "On this Mac",
+              "configured": false,
+              "status": "neutral",
+              "status_text": "Not set up",
+              "key_text": "…",
+              "key_status": "neutral"
+            }
+          ]
+        },
+        {
+          "key": "remote-online",
+          "title": "Online services",
+          "cards": [
+            {
+              "kind": "llm",
+              "id": "online-fixture",
+              "account": "llm.online-fixture",
+              "name": "Online fixture",
+              "model": "fixture-model",
+              "where": "Remote",
+              "configured": false,
+              "status": "neutral",
+              "status_text": "Not set up",
+              "key_text": "…",
+              "key_status": "neutral"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

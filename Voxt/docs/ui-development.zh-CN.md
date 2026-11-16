@@ -1,6 +1,6 @@
 # 用 fixture 开发视图
 
-这份指南帮助你在不启动 Voxt 辅助进程、不加载模型、不授予麦克风权限、不打开 Voxt 数据目录的情况下修改会议、历史、会话浮窗、更新、首页、引导、应用增强、词典或笔记视图。
+这份指南帮助你在不启动 Voxt 辅助进程、不加载模型、不授予麦克风权限、不打开 Voxt 数据目录的情况下修改会议、历史、会话浮窗、更新、首页、引导、应用增强、词典、笔记或语言模型视图。
 
 ## 打开第一个 fixture
 
@@ -37,7 +37,7 @@ GOFLAGS='-tags=meetingdemo' go tool mygo build -skip-dmg ./demo
 
 ## 修改视图
 
-会议视图包括 `meetings_page.go`、`meetings_detail.go`、`meetings_playback.go`、`meeting_overlay.go` 和 `meeting_overlay_view.go`。历史视图包括 `history_page.go`、`history_detail.go`、`history_menu.go`、`history_retry.go`、`history_settings.go`、`history_export.go` 和 `history_access.go`。会话浮窗视图包括 `overlay.go`、`overlay_face.go`、`overlay_card.go`、`overlay_card_view.go`、`overlay_lang.go`、`overlay_size.go`、`overlay_think.go` 和 `overlay_wave.go`。更新区域在 `updates_view.go` 中绘制设置 → 诊断与关于和更新对话框。首页视图包括 `home_page.go` 和 `home_ready.go`。引导视图包括 `onboarding_keys.go`、`onboarding_models.go`、`onboarding_steps.go`、`onboarding_try_guide.go` 和 `onboarding_view.go`。应用增强视图包括 `appenhance_page.go`、`appenhance_group.go`、`appenhance_dialogs.go`、`appenhance_preview.go` 和 `appicons.go`。词典视图包括 `dictionary_page.go`、`dictionary_notes.go`、`dictionary_scan.go`、`dictionary_suggest.go` 和 `notes_page.go`。视图只读取 view state、调用 actions，并持有滚动位置、打开的菜单等界面本地状态，不读取 store、snapshot、settings 或 `app`。
+会议视图包括 `meetings_page.go`、`meetings_detail.go`、`meetings_playback.go`、`meeting_overlay.go` 和 `meeting_overlay_view.go`。历史视图包括 `history_page.go`、`history_detail.go`、`history_menu.go`、`history_retry.go`、`history_settings.go`、`history_export.go` 和 `history_access.go`。会话浮窗视图包括 `overlay.go`、`overlay_face.go`、`overlay_card.go`、`overlay_card_view.go`、`overlay_lang.go`、`overlay_size.go`、`overlay_think.go` 和 `overlay_wave.go`。更新区域在 `updates_view.go` 中绘制设置 → 诊断与关于和更新对话框。首页视图包括 `home_page.go` 和 `home_ready.go`。引导视图包括 `onboarding_keys.go`、`onboarding_models.go`、`onboarding_steps.go`、`onboarding_try_guide.go` 和 `onboarding_view.go`。应用增强视图包括 `appenhance_page.go`、`appenhance_group.go`、`appenhance_dialogs.go`、`appenhance_preview.go` 和 `appicons.go`。词典视图包括 `dictionary_page.go`、`dictionary_notes.go`、`dictionary_scan.go`、`dictionary_suggest.go` 和 `notes_page.go`。语言模型区域视图包括 `remote_page.go`、`remote_dialog.go`、`remote_generation.go`、`remote_chatgpt.go`、`llm_wait.go` 和 `llm_debug.go`。视图只读取 view state、调用 actions，并持有滚动位置、打开的菜单等界面本地状态，不读取 store、snapshot、settings 或 `app`。
 
 对应的逻辑文件负责构造 view state 和实现 actions：
 
@@ -49,21 +49,22 @@ GOFLAGS='-tags=meetingdemo' go tool mygo build -skip-dmg ./demo
 - `onboarding_view_state.go`、`onboarding_models_state.go`、`onboarding_steps_state.go` 和 `onboarding_try_state.go` 构造引导显示数据。`onboarding.go` 负责引导生命周期和模型调查。
 - `appenhance_view_state.go` 构造应用增强显示数据。`appenhance_controller.go` 负责规则编辑、设置修改和 App 列表读取，`appicons_controller.go` 负责图标读取和位图解码。
 - `dictionary_view_state.go`、`dictionary_notes_state.go` 和 `notes_view_state.go` 构造词典和笔记显示数据。词典和笔记控制器负责 store 读取、设置写入、导入导出、扫描、自动保存和快捷键录制。
-- `meeting_actions.go`、`history_actions.go`、`updates_actions.go`、`home_actions.go`、`onboarding_actions.go`、`appenhance_actions.go` 和 `dictionary_actions.go` 定义用户意图。正式 app 由 `app` 实现全部意图，demo 由 `meetingDemoHost` 记录。
+- `remote_view_state.go`、`remote_dialog_view_state.go` 和 `llm_debug_view_state.go` 构造语言模型区域的显示数据。控制器负责 settings、凭据、模型发现、连接测试、登录和调试请求。
+- `meeting_actions.go`、`history_actions.go`、`updates_actions.go`、`home_actions.go`、`onboarding_actions.go`、`appenhance_actions.go`、`dictionary_actions.go` 和 `remote_actions.go` 定义用户意图。正式 app 由 `app` 实现全部意图，demo 由 `meetingDemoHost` 记录。
 
 尺寸、颜色和控件选择只放在视图文件里。移动代码后运行 `go tool mygo vet .` 和 `go test ./internal/archtest`。
 
 ## 新增或修改 fixture 数据
 
-不要手改 fixture JSON。先改生产代码里的构造器和 `meeting_fixture_scenarios_test.go`、`history_fixture_scenarios_test.go`、`session_fixture_scenarios_test.go`、`updates_fixture_scenarios_test.go`、`home_fixture_scenarios_test.go`、`onboarding_fixture_scenarios_test.go`、`appenhance_fixture_scenarios_test.go` 或 `dictionary_fixture_scenarios_test.go` 中的场景，再重新生成中英文 fixture：
+不要手改 fixture JSON。先改生产代码里的构造器和 `meeting_fixture_scenarios_test.go`、`history_fixture_scenarios_test.go`、`session_fixture_scenarios_test.go`、`updates_fixture_scenarios_test.go`、`home_fixture_scenarios_test.go`、`onboarding_fixture_scenarios_test.go`、`appenhance_fixture_scenarios_test.go`、`dictionary_fixture_scenarios_test.go` 或 `remote_fixture_scenarios_test.go` 中的场景，再重新生成中英文 fixture：
 
 ```sh
 VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 ```
 
-`TestMeetingViewStateGolden` 通过生产代码的 view state 构造器生成全部 fixture。`TestMeetingFixtureCoverage`、`TestHistoryFixtureCoverage` 和 `TestSessionFixtureCoverage` 从领域声明中读取状态和问题代码。`TestUpdatesFixtureCoverage` 枚举更新区域的显示分支和 Release 检查错误分支，`TestHomeFixtureCoverage` 枚举首页的就绪项动作，`TestOnboardingFixtureCoverage` 枚举引导的步骤、权限状态和快捷键预设，`TestAppEnhancementFixtureCoverage` 枚举应用增强的匹配来源，`TestDictionaryFixtureCoverage` 枚举词典的建议来源和扫描阶段。这些测试在缺 fixture 时都会失败。
+`TestMeetingViewStateGolden` 通过生产代码的 view state 构造器生成全部 fixture。`TestMeetingFixtureCoverage`、`TestHistoryFixtureCoverage` 和 `TestSessionFixtureCoverage` 从领域声明中读取状态和问题代码。`TestUpdatesFixtureCoverage` 枚举更新区域的显示分支和 Release 检查错误分支，`TestHomeFixtureCoverage` 枚举首页的就绪项动作，`TestOnboardingFixtureCoverage` 枚举引导的步骤、权限状态和快捷键预设，`TestAppEnhancementFixtureCoverage` 枚举应用增强的匹配来源，`TestDictionaryFixtureCoverage` 枚举词典的建议来源和扫描阶段，`TestRemoteFixtureCoverage` 枚举语言模型区域的缺失项、问题代码、生成方式和模型等待。这些测试在缺 fixture 时都会失败。
 
-视图需要新数据时，由功能侧把数据加入构造器输入和 view state，并增加一个能证明该值来自真实逻辑的场景。新增用户意图时，在 `meeting_actions.go`、`history_actions.go`、`sessionOverlayActions`、`updates_actions.go`、`home_actions.go`、`onboarding_actions.go`、`appenhance_actions.go` 或 `dictionary_actions.go` 中加入 action，在 `app` 上实现，在 `meetingDemoHost` 上记录，并在 `TestMeetingDemoActionControls`、`TestHistoryDemoActionControls`、`TestSessionDemoActionControls`、`TestUpdatesDemoActionControls`、`TestHomeDemoActionControls`、`TestOnboardingDemoActionControls`、`TestAppEnhancementDemoActionControls` 或 `TestDictionaryDemoActionControls` 中加入点击测试。
+视图需要新数据时，由功能侧把数据加入构造器输入和 view state，并增加一个能证明该值来自真实逻辑的场景。新增用户意图时，在所属区域的 `*_actions.go` 中加入 action，在 `app` 上实现，在 `meetingDemoHost` 上记录，并在该区域的 demo action 测试中加入点击测试。
 
 ## 接入下一个区域或 fixture 驱动的小页面
 
@@ -73,11 +74,11 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 1. 在 `meeting_fixture.go` 的 `meetingFixtureState` 中加入对应字段，并在 `meeting_fixture_test.go` 的 `buildMeetingFixture` 中加入构造分支。在 `meeting_fixture_scenarios_test.go` 中加入场景，然后重新生成 fixture。
 2. 在 `meeting_demo.go` 的 `readMeetingDemoFixture` 中接受这个 kind，并在 `meeting_demo_view.go` 的 `meetingDemoView` 中加入渲染分支。在 `selectMeetingFixture` 中初始化和重置界面本地状态。
-3. 在所属区域的 actions 文件中加入 action，在 `app` 上实现，并在 `meetingDemoHost` 上记录。
+3. 在所属区域的 `*_actions.go` 中加入 action，在 `app` 上实现，并在 `meetingDemoHost` 上记录。
 4. 在 `meeting_demo_test.go` 的 `meetingDemoSentinel` 中加入预期可见文字，并在该区域的 demo action 测试中加入控件测试。
 5. 正式页面还要由所属控制器构造状态，并在 `pages.go` 中注册视图。只做 demo 练习时，完成 fixture、视图和 action 测试即可。
 
-运行 `go test ./internal/archtest` 检查新视图的 import，运行 `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage|TestSessionFixtureCoverage|TestUpdatesFixtureCoverage|TestHomeFixtureCoverage|TestOnboardingFixtureCoverage|TestAppEnhancementFixtureCoverage|TestDictionaryFixtureCoverage)$' .` 检查现有 fixture 覆盖。新区域的 golden、渲染和 action 测试放在这些测试旁边。
+运行 `go test ./internal/archtest` 检查新视图的 import，运行 `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage|TestSessionFixtureCoverage|TestUpdatesFixtureCoverage|TestHomeFixtureCoverage|TestOnboardingFixtureCoverage|TestAppEnhancementFixtureCoverage|TestDictionaryFixtureCoverage|TestRemoteFixtureCoverage)$' .` 检查现有 fixture 覆盖。新区域的 golden、渲染和 action 测试放在这些测试旁边。
 
 ## 出截图并检查操作
 
@@ -92,11 +93,11 @@ VOXTNEW_DEMO_SHOTS=/tmp/voxt-meeting-demo go test -count=1 -run '^TestMeetingDem
 检查 fixture 切换和控件到 action 的接线：
 
 ```sh
-go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|SessionDemo.*|SessionOverlayDemoMatchesProduction|UpdatesDemoActionControls|HomeDemoActionControls|OnboardingDemo|AppEnhancementDemoActionControls|DictionaryDemoActionControls)$' .
-go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History|Session|Updates|Home|Onboarding|AppEnhancement|Dictionary)(Demo|OverlayDemoMatchesProduction)' .
+go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|SessionDemo.*|SessionOverlayDemoMatchesProduction|UpdatesDemoActionControls|HomeDemoActionControls|OnboardingDemo|AppEnhancementDemoActionControls|DictionaryDemoActionControls|RemoteDemoActionControls)$' .
+go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History|Session|Updates|Home|Onboarding|AppEnhancement|Dictionary|Remote)(Demo|OverlayDemoMatchesProduction)' .
 ```
 
-第一条命令点击每个会触发 action 的会议、历史、会话浮窗、更新、首页、引导、应用增强和词典控件以及本地取消控件，再比较完整的调用记录，覆盖菜单、确认对话框、播放、搜索、历史设置、导出、清理、“其他程序”、录音胶囊、答案卡片、更新偏好、Release 对话框、就绪项修复、最近结果、权限、模型选择、引导试用、规则编辑器、浏览器列表、词典词条和笔记。它还会比较正式代码和 JSON fixture 的渲染结果。第二条命令还会编译启用 demo 的入口。
+第一条命令点击每个会触发 action 的会议、历史、会话浮窗、更新、首页、引导、应用增强、词典和语言模型区域控件以及本地取消控件，再比较完整的调用记录，覆盖菜单、确认对话框、播放、搜索、历史设置、导出、清理、“其他程序”、录音胶囊、答案卡片、更新偏好、Release 对话框、就绪项修复、最近结果、权限、模型选择、引导试用、规则编辑器、浏览器列表、词典词条、笔记、服务卡片、服务对话框和 LLM 调试视图。它还会比较正式代码和 JSON fixture 的渲染结果。第二条命令还会编译启用 demo 的入口。
 
 这些测试使用 `ui.Tester`，不需要窗口、辅助进程二进制、模型、麦克风、网络或 Voxt 数据目录，也能在 Linux 上运行。
 

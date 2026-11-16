@@ -14,10 +14,12 @@ import (
 	"testing"
 
 	"github.com/hehehai/actnowkit/shortcuts"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/codexauth"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 func TestMeetingViewStateGolden(t *testing.T) {
@@ -158,6 +160,40 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "notes":
 		state := buildNotesViewState(translator, scenario.notes)
 		fixture.Notes = &state
+	case "remote":
+		scenario.remote.Wait.Locale = locale
+		localizeRemotePageInput(&scenario.remote, translator)
+		state := buildRemotePageViewState(translator, scenario.remote)
+		fixture.Remote = &state
+	case "remote-cards":
+		state := buildRemoteCardsViewState(translator, scenario.remoteCards)
+		fixture.RemoteCards = &state
+	case "remote-dialog":
+		input := *scenario.remoteDialog
+		dialog := *input.Dialog
+		input.Dialog = &dialog
+		localizeRemoteDialogInput(&input, translator)
+		if scenario.err != nil {
+			if input.Service.signIn {
+				input.ChatLogin.err, input.ChatLogin.more = chatgptLoginTextFor(translator, scenario.err)
+				var loginError *codexauth.Error
+				if errors.As(scenario.err, &loginError) {
+					input.ChatLogin.code = string(loginError.Kind)
+				}
+			} else {
+				dialog.err, dialog.errMore = uitext.ModelErrorTextFor(translator, scenario.err)
+			}
+		}
+		state := buildRemoteDialogViewState(translator, input)
+		fixture.RemoteDialog = &state
+	case "remote-debug":
+		input := scenario.remoteDebug
+		if input.UI == nil {
+			input.UI = &llmDebugState{}
+		}
+		localizeRemoteDebugInput(&input, translator)
+		state := buildLLMDebugViewState(translator, input)
+		fixture.RemoteDebug = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

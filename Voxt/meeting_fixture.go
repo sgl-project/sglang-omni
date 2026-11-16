@@ -21,6 +21,10 @@ type meetingFixtureState struct {
 	AppEnhancementDetails []appEnhancementGroupDetail `json:"appenhance_details,omitempty"`
 	Dictionary            *dictionaryViewState        `json:"dictionary,omitempty"`
 	Notes                 *notesViewState             `json:"notes,omitempty"`
+	Remote                *remoteViewState            `json:"remote,omitempty"`
+	RemoteCards           *remoteCardsViewState       `json:"remote_cards,omitempty"`
+	RemoteDialog          *remoteDialogViewState      `json:"remote_dialog,omitempty"`
+	RemoteDebug           *llmDebugViewState          `json:"remote_debug,omitempty"`
 }
 
 type sessionOverlayFixtureUI struct {

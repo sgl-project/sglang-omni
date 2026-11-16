@@ -36,6 +36,10 @@ type meetingFixtureScenario struct {
 	appEnhancementLibrary      bool
 	dictionary                 dictionaryViewStateInput
 	notes                      notesViewStateInput
+	remote                     remotePageStateInput
+	remoteCards                remoteCardsStateInput
+	remoteDialog               *remoteDialogStateInput
+	remoteDebug                llmDebugStateInput
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
@@ -156,6 +160,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, appEnhancementFixtureScenarios()...)
 
 	scenarios = append(scenarios, dictionaryFixtureScenarios()...)
+	scenarios = append(scenarios, remoteFixtureScenarios()...)
 	return scenarios
 }
 
