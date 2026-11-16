@@ -22,7 +22,6 @@ type tryNoticeViewState struct {
 type tryRecordingViewState struct {
 	Kind        string    `json:"kind"`
 	Levels      []float64 `json:"levels"`
-	BarCount    int       `json:"bar_count"`
 	Heard       bool      `json:"heard"`
 	ElapsedText string    `json:"elapsed_text"`
 	LiveText    string    `json:"live_text"`
@@ -121,7 +120,7 @@ func buildTryCardViewState(translator *i18n.Translator, input tryCardStateInput)
 	if input.Mine && snapshot.State == session.Recording {
 		state.Mode = "recording"
 		state.Recording = &tryRecordingViewState{
-			Kind: string(snapshot.Kind), Levels: snapshot.Levels, BarCount: session.Bars,
+			Kind: string(snapshot.Kind), Levels: snapshot.Levels,
 			Heard: !snapshot.HeardAt.IsZero(), ElapsedText: tryElapsedText(snapshot.Elapsed(input.Now)),
 			LiveText: strings.TrimSpace(snapshot.Partial),
 		}
@@ -129,7 +128,7 @@ func buildTryCardViewState(translator *i18n.Translator, input tryCardStateInput)
 	}
 	if input.Mine && snapshot.State.Live() {
 		state.Mode = "working"
-		state.WorkingText = uitext.WorkingText(snapshot)
+		state.WorkingText = uitext.WorkingTextFor(translator, snapshot)
 		if snapshot.State == session.Composing {
 			state.Draft = strings.TrimSpace(snapshot.Draft)
 		}
@@ -139,14 +138,14 @@ func buildTryCardViewState(translator *i18n.Translator, input tryCardStateInput)
 		return state
 	}
 	state.Mode = "ended"
-	ended := &tryEndedViewState{Result: snapshot.Result, TimingsText: uitext.TimingsText(snapshot)}
+	ended := &tryEndedViewState{Result: snapshot.Result, TimingsText: uitext.TimingsTextFor(translator, snapshot)}
 	state.Ended = ended
 	if snapshot.State == session.Cancelled {
 		ended.Cancelled = true
 		return state
 	}
 	if snapshot.Problem != nil {
-		text, more, action := sessionProblemText(snapshot.Problem)
+		text, more, action := sessionProblemTextFor(translator, snapshot.Problem)
 		notice := buildTryNotice(translator, &tryNoticeStateInput{Text: text, More: more, Action: action})
 		if snapshot.State == session.Failed {
 			if notice != nil && notice.Text != "" {

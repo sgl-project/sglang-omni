@@ -21,6 +21,9 @@
           "custom_editing": false,
           "typing": false,
           "edited": false,
+          "record_denied": false,
+          "unknown": false,
+          "recorder_focused": false,
           "options": [
             {
               "label": "Right ⌥",
@@ -98,6 +101,9 @@
         "custom_editing": false,
         "typing": false,
         "edited": false,
+        "record_denied": false,
+        "unknown": false,
+        "recorder_focused": false,
         "options": [
           {
             "label": "Off",
@@ -184,6 +190,9 @@
         "custom_editing": false,
         "typing": false,
         "edited": false,
+        "record_denied": false,
+        "unknown": false,
+        "recorder_focused": false,
         "options": [
           {
             "label": "Off",
@@ -392,7 +401,6 @@
           0.3,
           0.1
         ],
-        "bar_count": 16,
         "heard": true,
         "elapsed_text": "0:03",
         "live_text": "so the meeting moves to Thursday"

@@ -81,7 +81,7 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	}
 	// Choose a preset through the select's state, as the Select does.
 	a.fui(hotkey.Transcribe).rows[1].sel = uitext.HotkeyText("RightShift")
-	a.chooseKeys(hotkey.Transcribe, 1, &a.fui(hotkey.Transcribe).rows[1], func() map[string]string { _, m := keyOptions("RightCommand", false); return m }())
+	a.chooseFeatureShortcut(hotkey.Transcribe, 1, "RightShift")
 	frames(tt)
 	if hs := saved(); hs[1].Keys != "RightShift" {
 		t.Fatalf("preset not saved: %+v", hs)
@@ -90,7 +90,7 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	// Custom keys: invalid ones show why and are not saved; valid ones are
 	// saved in canonical spelling.
 	a.fui(hotkey.Transcribe).rows[1].sel = "Custom…"
-	a.chooseKeys(hotkey.Transcribe, 1, &a.fui(hotkey.Transcribe).rows[1], nil)
+	a.fui(hotkey.Transcribe).rows[1].custom = true
 	frames(tt)
 	if !a.fui(hotkey.Transcribe).rows[1].custom || a.fui(hotkey.Transcribe).rows[1].text != "RightShift" {
 		t.Fatalf("custom row %+v", a.fui(hotkey.Transcribe).rows[1])

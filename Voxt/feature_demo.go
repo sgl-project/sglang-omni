@@ -49,7 +49,7 @@ func featureDemoKeyRow(state featureKeyRowViewState) keyRow {
 	}
 	return keyRow{
 		sel: state.Value, text: text, trig: state.Trigger, custom: state.CustomEditing,
-		typing: state.Typing, edited: state.Edited,
+		typing: state.Typing, edited: state.Edited, recordDenied: state.RecordDenied, unknown: state.Unknown, recFocused: state.RecorderFocused,
 	}
 }
 
@@ -130,13 +130,13 @@ func (host *meetingDemoHost) setFeatureRewriteCleanup(on bool) {
 func (host *meetingDemoHost) setFeatureShowCard(feature string, on bool) {
 	host.record("setFeatureShowCard %s %t", feature, on)
 }
-func (host *meetingDemoHost) setFeatureCardSize(feature string, size int) {
-	host.record("setFeatureCardSize %s %d", feature, size)
+func (host *meetingDemoHost) setCardSize(feature string, size int) {
+	host.record("setCardSize %s %d", feature, size)
 }
 func (host *meetingDemoHost) addFeatureTargetVariable() { host.record("addFeatureTargetVariable") }
-func (host *meetingDemoHost) saveFeaturePrompt(feature string) {
+func (host *meetingDemoHost) savePrompt(feature string) {
 	host.feature.local.promptDirty = false
-	host.record("saveFeaturePrompt %s", feature)
+	host.record("savePrompt %s", feature)
 }
 func (host *meetingDemoHost) resetFeaturePrompt(feature string) {
 	host.record("resetFeaturePrompt %s", feature)

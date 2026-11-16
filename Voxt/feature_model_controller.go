@@ -20,9 +20,13 @@ func (a *app) featureModelsModel(feature string) featureModelsViewState {
 }
 
 func modelOptions(ready, shown []local.Model) (options []string, automatic string) {
-	automatic = i18n.T("Automatic")
+	return modelOptionsFor(i18n.CurrentTranslator(), ready, shown)
+}
+
+func modelOptionsFor(translator *i18n.Translator, ready, shown []local.Model) (options []string, automatic string) {
+	automatic = translator.T("Automatic")
 	if len(ready) > 0 {
-		automatic = i18n.T("Automatic (now: %s)", ready[0].Name)
+		automatic = translator.T("Automatic (now: %s)", ready[0].Name)
 	}
 	options = []string{automatic}
 	for _, model := range shown {

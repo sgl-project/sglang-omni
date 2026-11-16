@@ -29,7 +29,7 @@ type featurePageStateInput struct {
 
 func buildFeatureViewState(translator *i18n.Translator, input featurePageStateInput) featureViewState {
 	state := featureViewState{
-		Feature: input.Feature, Prefix: uitext.FeaturePrefix(input.Feature), Title: uitext.FeatureTitle(input.Feature),
+		Feature: input.Feature, Prefix: uitext.FeaturePrefix(input.Feature), Title: uitext.FeatureTitleFor(translator, input.Feature),
 		RefreshRecording: input.RefreshRecording, Shortcuts: input.Shortcuts, Models: input.Models, Prompt: input.Prompt, Try: input.Try,
 	}
 	switch input.Feature {

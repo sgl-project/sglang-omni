@@ -163,6 +163,17 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 		return i18n.T("History settings")
 	case "feature":
 		feature := state.Feature
+		for _, row := range feature.Shortcuts.Rows {
+			if row.RecordDenied {
+				return i18n.T("Recording a shortcut needs Accessibility access.")
+			}
+			if row.Unknown {
+				return i18n.T("Voxt cannot use that key. Press another, or type the keys instead.")
+			}
+			if len(row.UsedBy) > 0 {
+				return row.UsedBy[0]
+			}
+		}
 		if feature.Try.Ended != nil {
 			if feature.Try.Ended.Failure != nil {
 				return feature.Try.Ended.Failure.Text
@@ -182,6 +193,9 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 		}
 		if feature.Try.Recording != nil {
 			return feature.Try.Recording.ElapsedText
+		}
+		if feature.Try.BusyText != "" {
+			return feature.Try.BusyText
 		}
 		if feature.Try.Block != nil {
 			return feature.Try.Block.Text

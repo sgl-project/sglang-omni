@@ -333,7 +333,7 @@ func TestShortcutRecorderUsedBy(t *testing.T) {
 	}
 	row := &a.fui(hotkey.Rewrite).rows[0]
 	row.sel = "Custom…"
-	a.chooseKeys(hotkey.Rewrite, 0, row, nil)
+	row.custom = true
 	frames(tt)
 	click(t, tt, "Custom keys of shortcut 1")
 	tt.Key(ui.Ctrl|ui.Alt, ui.KeyK)

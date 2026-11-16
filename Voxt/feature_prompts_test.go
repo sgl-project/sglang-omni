@@ -9,8 +9,13 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
+
+func composedFeaturePreview(a *app, feature string) (compose.Output, error) {
+	return compose.Build(previewInputFor(a.prefs, feature, a.fui(feature).prompt, i18n.CurrentTranslator()))
+}
 
 func TestPromptSaveUsesFullSystem(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
@@ -24,7 +29,7 @@ func TestPromptSaveUsesFullSystem(t *testing.T) {
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != custom {
 		t.Fatalf("saved %q", p)
 	}
-	out, err := a.composedPreview(hotkey.Translate)
+	out, err := composedFeaturePreview(a, hotkey.Translate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +246,7 @@ func TestTranslateBuiltinPromptKeepsTarget(t *testing.T) {
 	a.savePrompt(hotkey.Translate)
 	click(t, tt, "Target language for Translate")
 	click(t, tt, "Japanese")
-	out, err := a.composedPreview(hotkey.Translate)
+	out, err := composedFeaturePreview(a, hotkey.Translate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +289,7 @@ func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
 		if has(tt, warning) {
 			t.Fatalf("warning after adding the variable to %q", own)
 		}
-		out, err := a.composedPreview(hotkey.Translate)
+		out, err := composedFeaturePreview(a, hotkey.Translate)
 		if err != nil || !strings.Contains(out.System, "into Simplified Chinese.") {
 			t.Fatalf("composed %q, %v", out.System, err)
 		}
@@ -328,13 +333,13 @@ func TestFeaturePageShowsFilledRequest(t *testing.T) {
 	if !strings.Contains(a.fui(hotkey.Translate).prompt, "{{TARGET_LANGUAGE}}") {
 		t.Fatalf("rules field %q", a.fui(hotkey.Translate).prompt)
 	}
-	in := a.previewInput(hotkey.Translate)
+	in := previewInputFor(a.prefs, hotkey.Translate, a.fui(hotkey.Translate).prompt, i18n.CurrentTranslator())
 	target := compose.LanguageName(in.TargetLanguage, compose.TemplateSet(in.MainLanguage))
 	if !has(tt, "The Target language menu on the Translate page. Translate only. Now: "+target) {
 		t.Errorf("no note for {{TARGET_LANGUAGE}} = %q", target)
 	}
 	click(t, tt, "What the language model receives")
-	out, err := a.composedPreview(hotkey.Translate)
+	out, err := composedFeaturePreview(a, hotkey.Translate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +367,7 @@ func TestFeaturePageFilledRequestEdges(t *testing.T) {
 		t.Errorf("empty variable not shown as none in %q", tt.Texts())
 	}
 	click(t, tt, "What the language model receives")
-	out, err := a.composedPreview(hotkey.Translate)
+	out, err := composedFeaturePreview(a, hotkey.Translate)
 	if err != nil {
 		t.Fatal(err)
 	}

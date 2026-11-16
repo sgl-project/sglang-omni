@@ -1,12 +1,45 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
+
+func TestFeatureViewStateUsesExplicitLocale(t *testing.T) {
+	previousLocale := i18n.Locale()
+	i18n.SetLocale("en")
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	input := featureFixtureTryInput(hotkey.Transcribe, session.Done, session.ProblemASR)
+	input.Snapshot.Problem.Degraded = true
+	input.Local.rules, input.Local.preview = true, true
+	state := buildFeatureFixtureViewState(i18n.NewTranslator("zh-Hans"), input)
+	if state.Title != "转录" {
+		t.Errorf("title %q", state.Title)
+	}
+	if got := state.Models.ASR.Options[0].Label; got != "自动（现在用：Fixture speech model）" {
+		t.Errorf("automatic model label %q", got)
+	}
+	if got := state.Shortcuts.Rows[0].Value; got != "右 ⌥" {
+		t.Errorf("shortcut label %q", got)
+	}
+	if got := state.Shortcuts.Rows[0].Custom.ErrorText; got != "请输入按键，例如 Control+Option+Space。" {
+		t.Errorf("shortcut parse error %q", got)
+	}
+	if got := state.Try.Ended.Warning.Text; got != "完整识别失败，用了实时识别的文字。" {
+		t.Errorf("problem text %q", got)
+	}
+	if got := state.Try.Ended.TimingsText; !strings.HasPrefix(got, "录音 3.2 秒") {
+		t.Errorf("timings %q", got)
+	}
+	if got := state.Prompt.Rules.Prompt; !strings.Contains(got, "你是语音输入应用 VoxtNew 的听写整理器") {
+		t.Errorf("prompt locale %q", got)
+	}
+}
 
 func TestFeatureFixtureCoverage(t *testing.T) {
 	for _, locale := range i18n.Supported() {
@@ -40,6 +73,9 @@ func checkFeatureFixtureValues(t *testing.T, locale string, fixtures map[string]
 			}
 		}
 		cardSizes[feature.Prompt.Card.Size] = true
+		if len(feature.Models.ASR.Options) == 1 && feature.Shortcuts.EndWord != nil {
+			t.Errorf("%s/%s: end word is shown without an installed speech model", locale, name)
+		}
 		for _, row := range feature.Shortcuts.Rows {
 			for _, code := range row.ProblemCodes {
 				shortcutProblems[code] = true

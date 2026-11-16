@@ -23,6 +23,10 @@ func TestFeatureDemoActionControls(t *testing.T) {
 			host.feature.local.rows[0].text = ""
 		}, steps: []historyDemoStep{{label: "Custom keys of shortcut 1", text: "Control+Option+K"}, {key: ui.KeyEnter}}, want: []string{`saveFeatureShortcutKeys transcribe 0 "Control+Option+K"`}},
 		{name: "record shortcut", fixture: "en/feature-shortcut-custom-error", steps: []historyDemoStep{{label: "Press the keys instead"}, {key: ui.KeyK}, {label: "Your rules"}}, want: []string{"beginHotkeyRecord", "markFeatureKeysHeard", "recordFeatureKeys", "cancelHotkeyRecord"}},
+		{name: "helper record shortcut", fixture: "en/feature-record-unknown", steps: []historyDemoStep{{key: ui.KeyK}}, want: []string{"beginHotkeyRecord", "markFeatureKeysHeard"}},
+		{name: "record permissions", fixture: "en/feature-record-denied", prepare: func(host *meetingDemoHost) {
+			host.feature.keysHeard = true
+		}, steps: historySteps("Open Permissions"), want: []string{"cancelHotkeyRecord", "openFeaturePermissions"}},
 		{name: "trigger", fixture: "en/feature-normal", steps: historySteps("Double tap"), want: []string{"setFeatureShortcutTrigger transcribe 0 1"}},
 		{name: "remove shortcut", fixture: "en/feature-normal", steps: historySteps("Remove shortcut 1"), want: []string{"removeFeatureShortcut transcribe 0"}},
 		{name: "paste off", fixture: "en/feature-normal", steps: []historyDemoStep{{label: "Keys to paste the last result"}, {key: ui.KeyHome}, {key: ui.KeyEnter}}, want: []string{`chooseFeaturePasteLast ""`}},
@@ -53,13 +57,13 @@ func TestFeatureDemoActionControls(t *testing.T) {
 		{name: "target", fixture: "en/feature-translate-normal", steps: []historyDemoStep{{label: "Target language for Translate"}, {label: "Japanese", click: true}}, want: []string{`selectFeatureTarget "ja"`}},
 		{name: "target warning", fixture: "en/feature-translate-target-warning", steps: historySteps("Add {{TARGET_LANGUAGE}} to the prompt"), want: []string{"addFeatureTargetVariable"}},
 		{name: "show card", fixture: "en/feature-translate-normal", steps: historySteps("Show the result in a card"), want: []string{"setFeatureShowCard translate true"}},
-		{name: "card size", fixture: "en/feature-rewrite-normal", steps: historySteps("Medium"), want: []string{"setFeatureCardSize rewrite 1"}},
+		{name: "card size", fixture: "en/feature-rewrite-normal", steps: historySteps("Medium"), want: []string{"setCardSize rewrite 1"}},
 		{name: "schedule prompt", fixture: "en/feature-rules-preview", prepare: func(host *meetingDemoHost) {
 			host.feature.local.prompt = ""
 		}, steps: []historyDemoStep{{label: "System prompt for Transcribe", text: "Be brief."}}, want: []string{"scheduleFeaturePromptSave transcribe 1"}},
 		{name: "save prompt", fixture: "en/feature-rules-preview", prepare: func(host *meetingDemoHost) {
 			host.feature.local.promptDirty = true
-		}, steps: []historyDemoStep{{label: "System prompt for Transcribe", click: true}, {label: "Your rules", click: true}}, want: []string{"saveFeaturePrompt transcribe"}},
+		}, steps: []historyDemoStep{{label: "System prompt for Transcribe", click: true}, {label: "Your rules", click: true}}, want: []string{"savePrompt transcribe"}},
 		{name: "reset prompt", fixture: "en/feature-translate-target-warning", steps: []historyDemoStep{{label: "Reset to default prompt", click: true}}, want: []string{"resetFeaturePrompt translate"}},
 		{name: "copy variable", fixture: "en/feature-rules-preview", steps: historySteps("{{USER_MAIN_LANGUAGE}}"), want: []string{`copyFeatureText "{{USER_MAIN_LANGUAGE}}"`}},
 		{name: "start", fixture: "en/feature-normal", steps: historySteps("Start a test"), want: []string{"startTry"}},

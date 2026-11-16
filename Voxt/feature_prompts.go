@@ -61,7 +61,7 @@ func cardSetting(c *ui.Context, prefix, feature string, state *featureCardViewSt
 	size := state.Size
 	settingRow(c, prefix+"-card-size", i18n.T("Card size"), "", func() {
 		if ui.Segmented(c.Key(prefix+"-card-size-seg"), &size, i18n.T("Small"), i18n.T("Medium"), i18n.T("Large")).Label(i18n.T("Card size")).Changed() {
-			actions.setFeatureCardSize(feature, size)
+			actions.setCardSize(feature, size)
 		}
 	})
 }
@@ -116,7 +116,7 @@ func featureRules(c *ui.Context, prefix, feature string, state *featureRulesView
 			local.promptSeq++
 			actions.scheduleFeaturePromptSave(feature, local.promptSeq)
 		} else if local.promptDirty && !input.Focused() {
-			actions.saveFeaturePrompt(feature)
+			actions.savePrompt(feature)
 		}
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			caption(c, i18n.T("Variables (click to copy):")).Grow(1).MinWidth(0)

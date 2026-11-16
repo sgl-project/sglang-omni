@@ -62,8 +62,8 @@ func buildFeatureModelsViewState(translator *i18n.Translator, input featureModel
 	feature := input.Feature
 	f := featureOf(input.Settings, feature)
 	enhance := feature != hotkey.Transcribe || input.Settings.Features.Transcribe.Enhance
-	optionsA, automaticA := modelOptions(input.ReadyASR, input.ShownASR)
-	optionsL, automaticL := modelOptions(input.ReadyLLM, input.ReadyLLM)
+	optionsA, automaticA := modelOptionsFor(translator, input.ReadyASR, input.ShownASR)
+	optionsL, automaticL := modelOptionsFor(translator, input.ReadyLLM, input.ReadyLLM)
 	state := featureModelsViewState{
 		Prefix: uitext.FeaturePrefix(feature),
 		ASR:    featureModelSelect(optionsA, input.ShownASR, modelLabel(input.ReadyASR, f.ASR, automaticA), len(input.ReadyASR) == 0),

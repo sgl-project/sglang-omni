@@ -56,10 +56,14 @@ func (a *app) featureKeysKey(feature string) string {
 }
 
 func chordLabel(keys string) string {
+	return chordLabelFor(i18n.CurrentTranslator(), keys)
+}
+
+func chordLabelFor(translator *i18n.Translator, keys string) string {
 	if preset := presetOf(keys); preset != "" {
-		return uitext.HotkeyText(preset)
+		return uitext.HotkeyTextFor(translator, preset)
 	}
-	return uitext.HotkeyText(keys)
+	return uitext.HotkeyTextFor(translator, keys)
 }
 
 func presetOf(keys string) string {
@@ -227,21 +231,6 @@ func (a *app) setCancelKeys(keys string) {
 	})
 	local := a.fui(hotkey.Transcribe)
 	local.seen = a.featureKeysKey(hotkey.Transcribe)
-}
-
-func (a *app) chooseKeys(feature string, index int, row *keyRow, byLabel map[string]string) {
-	if row.sel == i18n.T("Custom…") {
-		row.custom = true
-		if hotkeys := hotkey.HotkeysOf(a.prefs.Features, feature); index < len(hotkeys) {
-			row.text = hotkeys[index].Keys
-		}
-		return
-	}
-	keys, ok := byLabel[row.sel]
-	if !ok {
-		return
-	}
-	a.chooseFeatureShortcut(feature, index, keys)
 }
 
 func recordedKeys(row keyRow, saved string) string {

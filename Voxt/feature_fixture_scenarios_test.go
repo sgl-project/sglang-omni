@@ -22,11 +22,10 @@ type featureFixtureScenarioInput struct {
 	ReadyLLM          []local.Model
 	HotkeysInstalled  bool
 	HelperRecordsKeys bool
-	EndWordStreaming  bool
 	UsedBy            map[string][]string
 	Snapshot          session.Snapshot
 	Mine              bool
-	Block             *sessionNotice
+	BlockProblem      *session.Problem
 	Now               time.Time
 }
 
@@ -102,12 +101,31 @@ func featureFixtureScenarios() []meetingFixtureScenario {
 	endWord := featureFixtureBaseInput(hotkey.Transcribe)
 	endWord.Settings.Features.EndWord = "fixture ending phrase"
 	add("feature-end-word-custom", endWord)
+	recordDenied := featureFixtureBaseInput(hotkey.Transcribe)
+	recordDenied.HelperRecordsKeys = true
+	recordDenied.Local.rows = []keyRow{{custom: true, text: "RightOption", recordDenied: true, recFocused: true}}
+	add("feature-record-denied", recordDenied)
+	unknownKey := featureFixtureBaseInput(hotkey.Transcribe)
+	unknownKey.HelperRecordsKeys = true
+	unknownKey.Local.rows = []keyRow{{custom: true, text: "RightOption", unknown: true}}
+	add("feature-record-unknown", unknownKey)
+	usedBy := featureFixtureBaseInput(hotkey.Transcribe)
+	usedBy.UsedBy = map[string][]string{"RightOption": {"Also used by FixtureApp (Transcribe)"}}
+	add("feature-shortcut-used-by", usedBy)
+	busy := featureFixtureTryInput(hotkey.Transcribe, session.Recognizing, "")
+	busy.Mine, busy.Snapshot.Try = false, false
+	add("feature-busy-other-session", busy)
+	rewriteResult := featureFixtureTryInput(hotkey.Rewrite, session.Done, "")
+	rewriteResult.Snapshot.Raw = "make this more formal"
+	rewriteResult.Snapshot.Result = "A formal answer."
+	add("feature-rewrite-result", rewriteResult)
+	translateRecording := featureFixtureTryInput(hotkey.Translate, session.Recording, "")
+	add("feature-translate-recording", translateRecording)
 	noAccessibility := featureFixtureBaseInput(hotkey.Transcribe)
 	noAccessibility.HotkeysInstalled = false
 	add("feature-no-accessibility", noAccessibility)
 	blocked := featureFixtureBaseInput(hotkey.Transcribe)
-	text, more, action := sessionProblemText(&session.Problem{Code: session.ProblemNoASR, Err: errors.New("fixture missing speech model")})
-	blocked.Block = &sessionNotice{text: text, more: more, action: action}
+	blocked.BlockProblem = &session.Problem{Code: session.ProblemNoASR, Err: errors.New("fixture missing speech model")}
 	add("feature-blocked-start", blocked)
 	return scenarios
 }
@@ -117,7 +135,7 @@ func featureFixtureBaseInput(feature string) featureFixtureScenarioInput {
 	language := local.Model{Kind: local.LLM, ID: "fixture-language", Name: "Fixture language model"}
 	return featureFixtureScenarioInput{
 		Feature: feature, Settings: settings.Defaults(), ReadyASR: []local.Model{speech}, ShownASR: []local.Model{speech}, ReadyLLM: []local.Model{language},
-		HotkeysInstalled: true, EndWordStreaming: true, Now: meetingFixtureNow,
+		HotkeysInstalled: true, Now: meetingFixtureNow,
 	}
 }
 
@@ -155,6 +173,16 @@ func featureFixtureTryInput(feature string, state session.State, problemCode str
 	return input
 }
 
+func featureFixtureStreams(input featureFixtureScenarioInput) bool {
+	configured := input.Settings.Features.Transcribe.ASR
+	for _, model := range input.ReadyASR {
+		if configured == "" || model.ID == configured {
+			return model.Stream
+		}
+	}
+	return false
+}
+
 func buildFeatureFixtureViewState(translator *i18n.Translator, input featureFixtureScenarioInput) featureViewState {
 	local := input.Local
 	feature := input.Feature
@@ -166,7 +194,7 @@ func buildFeatureFixtureViewState(translator *i18n.Translator, input featureFixt
 		}
 	}
 	endWord := buildFeatureEndWordViewState(translator, featureEndWordStateInput{
-		Current: input.Settings.Features.EndWord, Streaming: input.EndWordStreaming, Local: &local.endWord,
+		Current: input.Settings.Features.EndWord, Streaming: featureFixtureStreams(input), Local: &local.endWord,
 	})
 	shortcuts := buildFeatureShortcutsViewState(translator, featureShortcutsStateInput{
 		Feature: feature, Settings: input.Settings, Local: &local, HotkeysInstalled: input.HotkeysInstalled,
@@ -178,9 +206,14 @@ func buildFeatureFixtureViewState(translator *i18n.Translator, input featureFixt
 	prompt := buildFeaturePromptViewState(translator, featurePromptStateInput{Feature: feature, Settings: input.Settings, Local: &local})
 	keys := ""
 	if hotkeys := hotkey.HotkeysOf(input.Settings.Features, feature); len(hotkeys) > 0 {
-		keys = uitext.HotkeyText(hotkeys[0].Keys)
+		keys = uitext.HotkeyTextFor(translator, hotkeys[0].Keys)
 	}
-	tryInput := newTryCardStateInput(uitext.FeaturePrefix(feature), feature, input.Mine, buildTryIntro(translator, feature, keys), input.Block, input.Snapshot, input.Now)
+	var block *sessionNotice
+	if input.BlockProblem != nil {
+		text, more, action := sessionProblemTextFor(translator, input.BlockProblem)
+		block = &sessionNotice{text: text, more: more, action: action}
+	}
+	tryInput := newTryCardStateInput(uitext.FeaturePrefix(feature), feature, input.Mine, buildTryIntro(translator, feature, keys), block, input.Snapshot, input.Now)
 	tryState := buildTryCardViewState(translator, tryInput)
 	return buildFeatureViewState(translator, featurePageStateInput{
 		Feature: feature, RefreshRecording: input.Snapshot.Try && input.Snapshot.State == session.Recording,

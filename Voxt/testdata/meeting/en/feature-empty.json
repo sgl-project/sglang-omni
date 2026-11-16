@@ -21,6 +21,9 @@
         "custom_editing": false,
         "typing": false,
         "edited": false,
+        "record_denied": false,
+        "unknown": false,
+        "recorder_focused": false,
         "options": [
           {
             "label": "Off",
@@ -107,6 +110,9 @@
         "custom_editing": false,
         "typing": false,
         "edited": false,
+        "record_denied": false,
+        "unknown": false,
+        "recorder_focused": false,
         "options": [
           {
             "label": "Off",
@@ -185,44 +191,6 @@
         "problems": null,
         "problem_codes": null,
         "used_by": null
-      },
-      "end_word": {
-        "value": "Off",
-        "current": "",
-        "custom": false,
-        "custom_text": "",
-        "options": [
-          {
-            "label": "Off",
-            "value": "",
-            "custom": false
-          },
-          {
-            "label": "over",
-            "value": "over",
-            "custom": false
-          },
-          {
-            "label": "end",
-            "value": "end",
-            "custom": false
-          },
-          {
-            "label": "完毕",
-            "value": "完毕",
-            "custom": false
-          },
-          {
-            "label": "好了",
-            "value": "好了",
-            "custom": false
-          },
-          {
-            "label": "Custom…",
-            "value": "",
-            "custom": true
-          }
-        ]
       }
     },
     "models": {

@@ -21,6 +21,9 @@
           "custom_editing": false,
           "typing": false,
           "edited": false,
+          "record_denied": false,
+          "unknown": false,
+          "recorder_focused": false,
           "options": [
             {
               "label": "右 ⌥",

@@ -21,6 +21,9 @@
           "custom_editing": false,
           "typing": false,
           "edited": false,
+          "record_denied": false,
+          "unknown": false,
+          "recorder_focused": false,
           "options": [
             {
               "label": "右 ⌥",
@@ -98,6 +101,9 @@
         "custom_editing": false,
         "typing": false,
         "edited": false,
+        "record_denied": false,
+        "unknown": false,
+        "recorder_focused": false,
         "options": [
           {
             "label": "已关闭",
@@ -184,6 +190,9 @@
         "custom_editing": false,
         "typing": false,
         "edited": false,
+        "record_denied": false,
+        "unknown": false,
+        "recorder_focused": false,
         "options": [
           {
             "label": "已关闭",
@@ -376,7 +385,7 @@
       "mode": "idle",
       "intro": "按 右 ⌥ 或点“开始”，说一两句话。结果显示在这里，不会输入到任何地方。",
       "block": {
-        "text": "No speech model is installed.",
+        "text": "没有安装语音识别模型。",
         "more": "",
         "action": "models",
         "action_label": "打开语音识别模型页",

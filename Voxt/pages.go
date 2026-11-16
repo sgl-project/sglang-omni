@@ -125,8 +125,8 @@ func (a *app) featureShortcuts(c *ui.Context, feature string) {
 }
 
 func (a *app) featurePage(c *ui.Context, feature string) {
-	state := a.featurePageModel(feature)
-	_, tryActions := a.tryCardState(a.featureTryOptions(feature))
+	tryState, tryActions := a.tryCardState(a.featureTryOptions(feature))
+	state := a.featurePageModel(feature, tryState)
 	featurePage(c, &state, a, a.fui(feature), tryActions)
 }
 

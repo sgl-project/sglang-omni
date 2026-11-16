@@ -19,50 +19,54 @@ import (
 // model's own message) and where the notice's button goes. "" for a
 // problem that needs no notice.
 func sessionProblemText(p *session.Problem) (text, more, action string) {
+	return sessionProblemTextFor(i18n.CurrentTranslator(), p)
+}
+
+func sessionProblemTextFor(translator *i18n.Translator, p *session.Problem) (text, more, action string) {
 	switch p.Code {
 	case session.ProblemNoASR:
-		return i18n.T("No speech model is installed."), "", actionModels
+		return translator.T("No speech model is installed."), "", actionModels
 	case session.ProblemSpeechWait:
 		return p.Err.Error(), "", actionModels
 	case session.ProblemMicrophone:
-		return i18n.T("Voxt does not have microphone access."), errText(p.Err), actionPermissions
+		return translator.T("Voxt does not have microphone access."), errText(p.Err), actionPermissions
 	case session.ProblemDevice:
-		return i18n.T("No sound came from any microphone."), errText(p.Err), actionNone
+		return translator.T("No sound came from any microphone."), errText(p.Err), actionNone
 	case session.ProblemHelper:
-		return i18n.T("The helper stopped. Try again in a moment."), errText(p.Err), actionHelper
+		return translator.T("The helper stopped. Try again in a moment."), errText(p.Err), actionHelper
 	case session.ProblemASR:
-		msg, more := uitext.ModelErrorText(p.Err)
+		msg, more := uitext.ModelErrorTextFor(translator, p.Err)
 		if p.Degraded {
 			if asr.KindOf(p.Err) == asr.KindTimeout {
-				return i18n.T("Full recognition took too long, so the live text was used."), more, actionNone
+				return translator.T("Full recognition took too long, so the live text was used."), more, actionNone
 			}
-			return i18n.T("Full recognition failed, so the live text was used."), more, actionNone
+			return translator.T("Full recognition failed, so the live text was used."), more, actionNone
 		}
 		if errors.Is(p.Err, dictation.ErrNotAllowed) {
-			return i18n.T("Speech recognition failed: %s", msg), more, actionPermissions
+			return translator.T("Speech recognition failed: %s", msg), more, actionPermissions
 		}
-		return i18n.T("Speech recognition failed: %s", msg), more, actionModels
+		return translator.T("Speech recognition failed: %s", msg), more, actionModels
 	case session.ProblemNoLLM:
-		return i18n.T("No language model is set up."), "", actionLanguage
+		return translator.T("No language model is set up."), "", actionLanguage
 	case session.ProblemEmpty:
-		return i18n.T("The language model returned an empty answer."), "", actionNone
+		return translator.T("The language model returned an empty answer."), "", actionNone
 	case session.ProblemTruncated:
-		return i18n.T("The model hit its length limit, so the answer may be incomplete."), "", actionNone
+		return translator.T("The model hit its length limit, so the answer may be incomplete."), "", actionNone
 	case session.ProblemLLM:
 		if !p.Degraded {
-			msg, more := uitext.ModelErrorText(p.Err)
-			return i18n.T("The language model failed: %s", msg), more, llmAction(p.Err, actionLanguage)
+			msg, more := uitext.ModelErrorTextFor(translator, p.Err)
+			return translator.T("The language model failed: %s", msg), more, llmAction(p.Err, actionLanguage)
 		}
-		_, more := uitext.ModelErrorText(p.Err)
-		return degradedLLMText(p, false), more, llmAction(p.Err, actionNone)
+		_, more := uitext.ModelErrorTextFor(translator, p.Err)
+		return degradedLLMTextFor(translator, p, false), more, llmAction(p.Err, actionNone)
 	case session.ProblemNoSpeech:
-		return i18n.T("Nothing was heard."), "", actionNone
+		return translator.T("Nothing was heard."), "", actionNone
 	case session.ProblemUnsupported:
-		return i18n.T("This feature is not available."), "", actionNone
+		return translator.T("This feature is not available."), "", actionNone
 	case session.ProblemTooShort:
 		return "", "", actionNone
 	}
-	return i18n.T("Something went wrong: %s", errText(p.Err)), "", actionNone
+	return translator.T("Something went wrong: %s", errText(p.Err)), "", actionNone
 }
 
 func errText(err error) string {
@@ -76,21 +80,25 @@ func errText(err error) string {
 // degradedLLMText says the recognised text went on past a failed language
 // model: inserted, or with note, saved to Notes.
 func degradedLLMText(p *session.Problem, note bool) string {
+	return degradedLLMTextFor(i18n.CurrentTranslator(), p, note)
+}
+
+func degradedLLMTextFor(translator *i18n.Translator, p *session.Problem, note bool) string {
 	timeout := session.TimedOut(p.Err)
 	usage := llm.Code(p.Err) == llm.CodeUsageLimit
 	switch {
 	case note && usage:
-		return i18n.T("Your ChatGPT plan has no usage left, so the recognised text was saved to Notes.")
+		return translator.T("Your ChatGPT plan has no usage left, so the recognised text was saved to Notes.")
 	case usage:
-		return i18n.T("Your ChatGPT plan has no usage left, so the recognised text was inserted.")
+		return translator.T("Your ChatGPT plan has no usage left, so the recognised text was inserted.")
 	case note && timeout:
-		return i18n.T("The language model did not answer in time, so the recognised text was saved to Notes.")
+		return translator.T("The language model did not answer in time, so the recognised text was saved to Notes.")
 	case note:
-		return i18n.T("The language model failed, so the recognised text was saved to Notes.")
+		return translator.T("The language model failed, so the recognised text was saved to Notes.")
 	case timeout:
-		return i18n.T("The language model did not answer in time, so the recognised text was inserted.")
+		return translator.T("The language model did not answer in time, so the recognised text was inserted.")
 	}
-	return i18n.T("The language model failed, so the recognised text was inserted.")
+	return translator.T("The language model failed, so the recognised text was inserted.")
 }
 
 // llmAction is the notice's button for a language model's failure: the

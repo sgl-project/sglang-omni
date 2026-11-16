@@ -86,14 +86,6 @@ func (a *app) savePrompt(feature string) {
 	})
 }
 
-func (a *app) composedPreview(feature string) (compose.Output, error) {
-	return compose.Build(a.previewInput(feature))
-}
-
-func (a *app) previewInput(feature string) compose.Input {
-	return previewInputFor(a.prefs, feature, a.fui(feature).prompt, i18n.CurrentTranslator())
-}
-
 func (a *app) setCardSize(feature string, step int) {
 	a.updateSettings(func(settingsValue *settings.Settings) {
 		if step == 0 {
@@ -139,18 +131,10 @@ func (a *app) setFeatureShowCard(feature string, on bool) {
 	})
 }
 
-func (a *app) setFeatureCardSize(feature string, size int) {
-	a.setCardSize(feature, size)
-}
-
 func (a *app) addFeatureTargetVariable() {
 	local := a.fui(hotkey.Translate)
 	local.prompt = strings.TrimRight(local.prompt, "\n") + "\n\n" + i18n.T("Translate the text into {{TARGET_LANGUAGE}}.")
 	a.savePrompt(hotkey.Translate)
-}
-
-func (a *app) saveFeaturePrompt(feature string) {
-	a.savePrompt(feature)
 }
 
 func (a *app) resetFeaturePrompt(feature string) {

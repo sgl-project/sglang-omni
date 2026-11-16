@@ -65,7 +65,7 @@ func TestKeyRecorderHidden(t *testing.T) {
 	a, tt := trTester(t)
 	row := &a.fui(hotkey.Transcribe).rows[0]
 	row.sel = "Custom…"
-	a.chooseKeys(hotkey.Transcribe, 0, row, nil)
+	row.custom = true
 	frames(tt)
 	if !a.keysListening {
 		t.Fatal("not listening")

@@ -159,17 +159,17 @@ func (host *meetingDemoHost) featureViewState(fixture *featureViewState) feature
 	state.Shortcuts.Rows = slices.Clone(state.Shortcuts.Rows)
 	for index := range state.Shortcuts.Rows {
 		if index < len(host.feature.local.rows) {
-			state.Shortcuts.Rows[index].Custom = buildFeatureCustomKeysViewState(host.feature.local.rows[index])
+			state.Shortcuts.Rows[index].Custom = buildFeatureCustomKeysViewState(i18n.CurrentTranslator(), host.feature.local.rows[index])
 		}
 	}
 	if state.Shortcuts.Paste != nil {
 		row := *state.Shortcuts.Paste
-		row.Custom = buildFeatureCustomKeysViewState(host.feature.local.paste)
+		row.Custom = buildFeatureCustomKeysViewState(i18n.CurrentTranslator(), host.feature.local.paste)
 		state.Shortcuts.Paste = &row
 	}
 	if state.Shortcuts.Cancel != nil {
 		row := *state.Shortcuts.Cancel
-		row.Custom = buildFeatureCustomKeysViewState(host.feature.local.cancel)
+		row.Custom = buildFeatureCustomKeysViewState(i18n.CurrentTranslator(), host.feature.local.cancel)
 		state.Shortcuts.Cancel = &row
 	}
 	state.Prompt.Rules.Matches = findFolded(host.feature.local.prompt, host.feature.local.find)

@@ -79,7 +79,7 @@ func tryRecording(c *ui.Context, prefix string, state *tryRecordingViewState, ac
 	}
 	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Children(func() {
 		ui.Icon(c, icon.Bold).Size(px(t, 18), px(t, 18)).TextColor(k.Record).Shrink(0)
-		levelBars(c, state.Levels, state.BarCount, state.Heard)
+		levelBars(c, state.Levels, state.Heard)
 		ui.Text(c, state.ElapsedText).FontSize(px(t, fsCaption)).Font("monospace").TextColor(k.Text2).Shrink(0)
 	})
 	if state.LiveText == "" {
@@ -97,16 +97,18 @@ func tryRecording(c *ui.Context, prefix string, state *tryRecordingViewState, ac
 	})
 }
 
-func levelBars(c *ui.Context, levels []float64, barCount int, heard bool) {
+const tryLevelBarCount = 16
+
+func levelBars(c *ui.Context, levels []float64, heard bool) {
 	t := c.Theme()
 	k := tok(t)
 	ui.Row(c.Key("tr-wave")).Grow(1).MinWidth(0).Height(px(t, 24)).Gap(px(t, 3)).AlignItems(ui.Center).Label(i18n.T("Input level")).Children(func() {
-		pad := barCount - len(levels)
+		pad := tryLevelBarCount - len(levels)
 		col := k.Record
 		if !heard {
 			col = k.G[5]
 		}
-		for index := range barCount {
+		for index := range tryLevelBarCount {
 			value := 0.0
 			if index >= pad {
 				value = levels[index-pad]

@@ -21,6 +21,9 @@
           "custom_editing": false,
           "typing": false,
           "edited": false,
+          "record_denied": false,
+          "unknown": false,
+          "recorder_focused": false,
           "options": [
             {
               "label": "右 ⌥",
@@ -98,6 +101,9 @@
         "custom_editing": false,
         "typing": false,
         "edited": false,
+        "record_denied": false,
+        "unknown": false,
+        "recorder_focused": false,
         "options": [
           {
             "label": "已关闭",
@@ -184,6 +190,9 @@
         "custom_editing": false,
         "typing": false,
         "edited": false,
+        "record_denied": false,
+        "unknown": false,
+        "recorder_focused": false,
         "options": [
           {
             "label": "已关闭",
@@ -262,44 +271,6 @@
         "problems": null,
         "problem_codes": null,
         "used_by": null
-      },
-      "end_word": {
-        "value": "已关闭",
-        "current": "",
-        "custom": false,
-        "custom_text": "",
-        "options": [
-          {
-            "label": "已关闭",
-            "value": "",
-            "custom": false
-          },
-          {
-            "label": "over",
-            "value": "over",
-            "custom": false
-          },
-          {
-            "label": "end",
-            "value": "end",
-            "custom": false
-          },
-          {
-            "label": "完毕",
-            "value": "完毕",
-            "custom": false
-          },
-          {
-            "label": "好了",
-            "value": "好了",
-            "custom": false
-          },
-          {
-            "label": "自定义…",
-            "value": "",
-            "custom": true
-          }
-        ]
       }
     },
     "models": {

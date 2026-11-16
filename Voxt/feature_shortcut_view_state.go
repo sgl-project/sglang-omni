@@ -24,6 +24,9 @@ type featureKeyRowViewState struct {
 	CustomEditing      bool                       `json:"custom_editing"`
 	Typing             bool                       `json:"typing"`
 	Edited             bool                       `json:"edited"`
+	RecordDenied       bool                       `json:"record_denied"`
+	Unknown            bool                       `json:"unknown"`
+	RecorderFocused    bool                       `json:"recorder_focused"`
 	Options            []featureOptionViewState   `json:"options"`
 	Custom             featureCustomKeysViewState `json:"custom"`
 	NeedsAccessibility bool                       `json:"needs_accessibility"`
@@ -65,7 +68,7 @@ func buildFeatureShortcutsViewState(translator *i18n.Translator, input featureSh
 		local = &featureUI{}
 	}
 	hotkeys := hotkey.HotkeysOf(input.Settings.Features, feature)
-	problems := uitext.HotkeyProblems(input.Settings.Features, feature)
+	problems := uitext.HotkeyProblemsFor(translator, input.Settings.Features, feature)
 	problemCodes := featureHotkeyProblemCodes(input.Settings.Features, feature)
 	state.Rows = make([]featureKeyRowViewState, len(hotkeys))
 	for index, hotkey := range hotkeys {
@@ -87,12 +90,12 @@ func buildFeatureShortcutsViewState(translator *i18n.Translator, input featureSh
 		state.EndWord = input.EndWord
 		paste := buildFeatureKeyRowViewState(translator, featureKeyRowStateInput{
 			Hotkey: input.Settings.Features.PasteLast, Local: local.paste, Off: true,
-			Problems:     uitext.HotkeyProblems(input.Settings.Features, hotkey.PasteLast)[0],
+			Problems:     uitext.HotkeyProblemsFor(translator, input.Settings.Features, hotkey.PasteLast)[0],
 			ProblemCodes: featureHotkeyProblemCodes(input.Settings.Features, hotkey.PasteLast)[0], UsedBy: input.UsedBy,
 		})
 		cancel := buildFeatureKeyRowViewState(translator, featureKeyRowStateInput{
 			Hotkey: input.Settings.Features.Cancel, Local: local.cancel, Off: true, First: []string{settings.DefaultCancel},
-			Problems:     uitext.HotkeyProblems(input.Settings.Features, hotkey.CancelID)[0],
+			Problems:     uitext.HotkeyProblemsFor(translator, input.Settings.Features, hotkey.CancelID)[0],
 			ProblemCodes: featureHotkeyProblemCodes(input.Settings.Features, hotkey.CancelID)[0], UsedBy: input.UsedBy,
 		})
 		state.Paste, state.Cancel = &paste, &cancel
@@ -112,16 +115,17 @@ type featureKeyRowStateInput struct {
 
 func buildFeatureKeyRowViewState(translator *i18n.Translator, input featureKeyRowStateInput) featureKeyRowViewState {
 	keys := input.Hotkey.Keys
-	value := chordLabel(keys)
+	value := chordLabelFor(translator, keys)
 	if input.Off && keys == "" {
 		value = translator.T("Off")
 	}
 	state := featureKeyRowViewState{
 		Keys: keys, Value: value, Trigger: triggerIndex(input.Hotkey.Trigger),
 		CustomEditing: input.Local.custom, Typing: input.Local.typing, Edited: input.Local.edited,
+		RecordDenied: input.Local.recordDenied, Unknown: input.Local.unknown, RecorderFocused: input.Local.recFocused,
 		NeedsAccessibility: hotkey.NeedsTap(input.Hotkey),
 		Problems:           input.Problems, ProblemCodes: input.ProblemCodes,
-		UsedBy: input.UsedBy[recordedKeys(input.Local, keys)], Custom: buildFeatureCustomKeysViewState(input.Local),
+		UsedBy: input.UsedBy[recordedKeys(input.Local, keys)], Custom: buildFeatureCustomKeysViewState(translator, input.Local),
 	}
 	labels, byLabel := keyOptionsFor(translator, keys, input.Off, input.First...)
 	for _, label := range labels {
@@ -137,12 +141,12 @@ func keyOptionsFor(translator *i18n.Translator, current string, off bool, first 
 		byLabel[translator.T("Off")] = ""
 	}
 	for _, preset := range slices.Concat(first, keyPresets) {
-		label := chordLabel(preset)
+		label := chordLabelFor(translator, preset)
 		labels = append(labels, label)
 		byLabel[label] = preset
 	}
 	if current != "" && presetOf(current) == "" {
-		label := chordLabel(current)
+		label := chordLabelFor(translator, current)
 		if _, duplicate := byLabel[label]; !duplicate {
 			labels = append(labels, label)
 			byLabel[label] = current
@@ -152,10 +156,10 @@ func keyOptionsFor(translator *i18n.Translator, current string, off bool, first 
 	return labels, byLabel
 }
 
-func buildFeatureCustomKeysViewState(local keyRow) featureCustomKeysViewState {
-	state := featureCustomKeysViewState{InputText: local.text, KeysText: uitext.HotkeyText(local.text)}
+func buildFeatureCustomKeysViewState(translator *i18n.Translator, local keyRow) featureCustomKeysViewState {
+	state := featureCustomKeysViewState{InputText: local.text, KeysText: uitext.HotkeyTextFor(translator, local.text)}
 	chord, err := hotkey.Parse(local.text)
-	state.ErrorText = uitext.ParseErrorText(err)
+	state.ErrorText = uitext.ParseErrorTextFor(translator, err)
 	if err == nil {
 		state.Parsed, state.Canonical = true, chord.String()
 	}
