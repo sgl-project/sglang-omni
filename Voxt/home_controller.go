@@ -121,7 +121,7 @@ func (a *app) homePageModel(now time.Time) homeViewState {
 	return buildHomeViewState(i18n.CurrentTranslator(), homeViewStateInput{
 		Read: a.hm.read, Loading: a.hm.loading, Today: a.hm.today, Recent: a.hm.recent, Error: a.hm.err,
 		KeepHistory: a.prefs.Privacy.KeepHistory, Features: a.prefs.Features, Readiness: a.readinessList(),
-		ShowTry: a.homeShowsTry(a.homeTrySession()), TryAvailable: true,
+		ShowTry:      a.homeShowsTry(a.homeTrySession()),
 		TryRecording: a.sess.Try && a.sess.State == session.Recording, Retry: a.hist.retry, Now: now,
 	})
 }

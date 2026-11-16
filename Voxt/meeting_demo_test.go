@@ -212,7 +212,7 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.historyUI.query, host.historyUI.sel = "stale", "stale"
 	host.historySettingsUI.exportSel = "stale"
 	host.historyAccessUI.listOpen = true
-	host.homeUI.tryOn, host.homeUI.block = true, &sessionNotice{}
+	host.historyUI.delAsk, host.historyUI.delID = true, "stale"
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -226,7 +226,7 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	}
 	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" ||
 		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen ||
-		host.homeUI.tryOn || host.homeUI.block != nil {
+		host.historyUI.delAsk || host.historyUI.delID != "" {
 		t.Fatal("fixture switch kept local UI state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {

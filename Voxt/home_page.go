@@ -38,7 +38,7 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions, local *h
 		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			homeSlogan(c, state.Slogan, actions)
 			homeReadiness(c, state, actions)
-			if state.ShowTry && state.TryAvailable && tryCard != nil {
+			if state.ShowTry && tryCard != nil {
 				sectionTitle(c, i18n.T("Try it"))
 				tryCard(c)
 			}

@@ -31,7 +31,6 @@ type meetingDemoHost struct {
 	historyUI         historyLocalUI
 	historySettingsUI historySettingsLocalUI
 	historyAccessUI   historyAccessLocalUI
-	homeUI            homeLocalUI
 	overlayLook       settings.Overlay
 }
 
@@ -149,10 +148,6 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		host.historyAccessUI = historyAccessLocalUI{
 			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
 		}
-	}
-	host.homeUI = homeLocalUI{}
-	if fixture.state.Home != nil {
-		fixture.state.Home.TryAvailable = false
 	}
 }
 

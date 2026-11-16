@@ -224,7 +224,7 @@ func TestHomeTryHistoryBeforeTheFlag(t *testing.T) {
 
 func TestSloganHint(t *testing.T) {
 	join := func(h *settings.Hotkey) string {
-		b, k, a := sloganHint(h)
+		b, k, a := sloganHintFor(i18n.CurrentTranslator(), h)
 		return b + "[" + k + "]" + a
 	}
 	for _, tc := range []struct {
@@ -339,6 +339,42 @@ func TestHomeRecent(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepHistory = false })
 	if !has(tt, "History is off, so nothing is counted.") {
 		t.Errorf("history off: %q", tt.Texts())
+	}
+}
+
+func TestHomeRecentActionsUseVisibleEntry(t *testing.T) {
+	a, tt := homeTester(t)
+	fresh := store.Entry{
+		ID: "same", Kind: store.KindTranscribe, Status: store.StatusDone,
+		CreatedAt: time.Now(), Result: "  fresh text  \n", RawText: "fresh raw",
+	}
+	stale := fresh
+	stale.Kind, stale.Result, stale.RawText = store.KindRewrite, "stale text", "stale raw"
+	if err := a.lib.store.History().Put(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	a.hist.stale = true
+	a.hist.list = []store.Entry{stale}
+	a.hm.recent = []store.Entry{fresh}
+	frames(tt)
+
+	click(t, tt, "Copy: fresh text")
+	if got := tt.Clipboard(); got != fresh.Result {
+		t.Fatalf("inline Copy = %q, want original result %q", got, fresh.Result)
+	}
+	openMenu(t, tt, "fresh text")
+	choose(t, tt, "Copy")
+	if got := tt.Clipboard(); got != "fresh text" {
+		t.Fatalf("menu Copy = %q, want trimmed result", got)
+	}
+
+	click(t, tt, "fresh text")
+	frames(tt)
+	if a.router.Path() != "/history" || a.histUI.sel != fresh.ID || a.histUI.kind() != fresh.Kind {
+		t.Fatalf("opened %s selection %q kind %q", a.router.Path(), a.histUI.sel, a.histUI.kind())
+	}
+	if !has(tt, "fresh text") || hasExact(tt, "stale text") {
+		t.Fatalf("opened the stale entry: %q", tt.Texts())
 	}
 }
 

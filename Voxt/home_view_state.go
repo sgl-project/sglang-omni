@@ -47,7 +47,6 @@ type homeViewState struct {
 	Missing      []homeReadinessViewState `json:"missing"`
 	Ready        []homeReadinessViewState `json:"ready"`
 	ShowTry      bool                     `json:"show_try"`
-	TryAvailable bool                     `json:"try_available"`
 	TryRecording bool                     `json:"try_recording"`
 	Today        homeTodayViewState       `json:"today"`
 	Recent       []homeRecentViewState    `json:"recent"`
@@ -63,7 +62,6 @@ type homeViewStateInput struct {
 	Features     settings.Features
 	Readiness    []homeReadinessViewState
 	ShowTry      bool
-	TryAvailable bool
 	TryRecording bool
 	Retry        entryRetry
 	Now          time.Time
@@ -81,7 +79,7 @@ func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) h
 	state := homeViewState{
 		Read: input.Read, Loading: input.Loading, Error: input.Error, KeepHistory: input.KeepHistory,
 		Slogan: buildHomeSloganViewState(translator, input.Features), Missing: missing, Ready: ready,
-		ShowTry: input.ShowTry, TryAvailable: input.TryAvailable, TryRecording: input.TryRecording,
+		ShowTry: input.ShowTry, TryRecording: input.TryRecording,
 		Today:  buildHomeTodayViewState(translator, input.Today, input.Features),
 		Recent: make([]homeRecentViewState, len(input.Recent)),
 	}
@@ -133,10 +131,6 @@ func buildHomeTodayViewState(translator *i18n.Translator, stats dayStats, featur
 // sloganMark stands for the keys in a translated hint, which is cut
 // around it to put a key cap there.
 const sloganMark = "\x00"
-
-func sloganHint(hotkey *settings.Hotkey) (before, keys, after string) {
-	return sloganHintFor(i18n.CurrentTranslator(), hotkey)
-}
 
 // sloganHintFor is the slogan's second half, how to start Transcribe with
 // its first shortcut (h, nil for none), cut around the keys: "Press ",
