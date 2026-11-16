@@ -39,7 +39,7 @@ public:
   HaruServedModel(const std::filesystem::path &model_directory,
                   int quantize_bits, std::string instructions,
                   std::vector<float> reference, int seed, int warmup_frames,
-                  int input_sample_rate)
+                  int input_sample_rate, int top_k, float temperature)
       : model_(model_directory, quantize_bits),
         codec_(model_.checkpoint(), model_.config().codec),
         head_(model_.checkpoint(), model_.config().head),
@@ -47,6 +47,8 @@ public:
         reference_(std::move(reference)), warmup_frames_(warmup_frames),
         input_sample_rate_(input_sample_rate) {
     session_config_.seed = seed;
+    session_config_.top_k = top_k;
+    session_config_.temperature = temperature;
     mlx::core::set_cache_limit(asr_service::kDecodeBufferCacheLimitBytes);
   }
 
@@ -124,6 +126,8 @@ int main(int argc, char **argv) {
   int seed = -1;
   int warmup_frames = 16;
   int input_sample_rate = 24000;
+  int top_k = 25;
+  float temperature = 0.7f;
   std::filesystem::path reference_audio;
   std::filesystem::path instructions_file;
 
@@ -141,6 +145,9 @@ int main(int argc, char **argv) {
        [&](const std::string &value) { warmup_frames = std::stoi(value); }},
       {"--input-sample-rate",
        [&](const std::string &value) { input_sample_rate = std::stoi(value); }},
+      {"--top-k", [&](const std::string &value) { top_k = std::stoi(value); }},
+      {"--temperature",
+       [&](const std::string &value) { temperature = std::stof(value); }},
   };
   haru.check_flags = [&]() {
     if (quantize_bits != 0 && quantize_bits != 8) {
@@ -152,6 +159,12 @@ int main(int argc, char **argv) {
     if (input_sample_rate != 16000 && input_sample_rate != 24000) {
       throw std::invalid_argument("--input-sample-rate must be 16000 or 24000");
     }
+    if (top_k < 1) {
+      throw std::invalid_argument("--top-k must be >= 1");
+    }
+    if (!(temperature >= 0.0f && temperature <= 2.0f)) {
+      throw std::invalid_argument("--temperature must be in [0, 2]");
+    }
   };
   haru.load = [&](const std::filesystem::path &model_directory) {
     std::string instructions;
@@ -159,6 +172,14 @@ int main(int argc, char **argv) {
       std::ifstream file(instructions_file);
       instructions.assign((std::istreambuf_iterator<char>(file)),
                           std::istreambuf_iterator<char>());
+      const auto visible = [](unsigned char c) { return std::isspace(c) == 0; };
+      instructions.erase(
+          instructions.begin(),
+          std::find_if(instructions.begin(), instructions.end(), visible));
+      instructions.erase(
+          std::find_if(instructions.rbegin(), instructions.rend(), visible)
+              .base(),
+          instructions.end());
     }
     std::vector<float> reference;
     if (!reference_audio.empty()) {
@@ -166,7 +187,8 @@ int main(int argc, char **argv) {
     }
     return std::make_unique<HaruServedModel>(
         model_directory, quantize_bits, std::move(instructions),
-        std::move(reference), seed, warmup_frames, input_sample_rate);
+        std::move(reference), seed, warmup_frames, input_sample_rate, top_k,
+        temperature);
   };
   return asr_service::Serve(argc, argv, haru);
 }

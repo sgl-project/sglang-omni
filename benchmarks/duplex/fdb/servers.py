@@ -65,6 +65,11 @@ def haru_server_command(settings: Settings) -> list[str]:
             "ERROR: ENGINE=haru needs HARU_SERVER_BIN (the haru_server binary "
             "built from sglang_omni_mlx/native)."
         )
+    sampling: list[str] = []
+    if os.environ.get("HARU_TOP_K"):
+        sampling += ["--top-k", os.environ["HARU_TOP_K"]]
+    if os.environ.get("HARU_TEMPERATURE"):
+        sampling += ["--temperature", os.environ["HARU_TEMPERATURE"]]
     return [
         binary,
         "--model-path",
@@ -81,6 +86,7 @@ def haru_server_command(settings: Settings) -> list[str]:
         str(HARU_INPUT_SAMPLE_RATE),
         "--port",
         str(settings.server_port),
+        *sampling,
     ]
 
 

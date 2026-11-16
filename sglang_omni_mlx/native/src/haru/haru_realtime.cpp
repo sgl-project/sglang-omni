@@ -19,18 +19,44 @@ constexpr int kSampleRate = 24000;
 constexpr int kNativeUnitMs = 400; // three 3200-sample frames
 constexpr int kNativeUnitFrames = 3;
 constexpr float kPcm16FullScale = 32768.0f;
-// Half the length of the 16 kHz resampling filter, in input samples.
-constexpr int kResampleHalfTaps = 12;
+// Modified Bessel function of the first kind, order zero, from its power
+// series in Abramowitz & Stegun 9.8.1:
+// I0(x) = sum_k (x^2/4)^k / (k!)^2,  term_{k+1} = term_k * (x/2k)^2.
+// The Kaiser window needs it and libc++ does not ship std::cyl_bessel_i.
+double BesselI0(double x) {
+  double term = 1.0;
+  double sum = 1.0;
+  for (int order = 1; order < 32; ++order) {
+    const double half = x / (2.0 * order);
+    term *= half * half;
+    sum += term;
+    if (term < sum * 1e-17) {
+      break;
+    }
+  }
+  return sum;
+}
 
-// Windowed sinc for the 3:2 upsampler, scaled so the interpolated signal keeps
-// the input amplitude.
+// Half the length of the 16 kHz resampling filter, in input samples. Ten taps
+// per side and sample, as scipy's resample_poly uses for a 3:2 ratio.
+constexpr int kResampleHalfTaps = 30;
+constexpr double kResampleKaiserBeta = 5.0;
+const double kBesselI0Beta = BesselI0(kResampleKaiserBeta);
+
+// Windowed sinc for the 3:2 upsampler. The kernel keeps the amplitude of the
+// input: a constant input comes out with the same constant, which is what the
+// reference resampler does and what the model was tuned on.
 double ResampleKernel(double t) {
   if (std::abs(t) >= kResampleHalfTaps) {
     return 0.0;
   }
   const double sinc = t == 0.0 ? 1.0 : std::sin(M_PI * t) / (M_PI * t);
-  const double window = 0.5 + 0.5 * std::cos(M_PI * t / kResampleHalfTaps);
-  return sinc * window * 2.0 / 3.0;
+  const double ratio = t / static_cast<double>(kResampleHalfTaps);
+  const double window =
+      BesselI0(kResampleKaiserBeta *
+               std::sqrt(std::max(0.0, 1.0 - ratio * ratio))) /
+      kBesselI0Beta;
+  return sinc * window;
 }
 
 } // namespace
