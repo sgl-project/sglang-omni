@@ -16,6 +16,7 @@ from sglang_omni.config.schema import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 
 PACKAGE = "sglang_omni.models.yue2"
 
@@ -81,7 +82,12 @@ class Yue2PipelineConfig(PipelineConfig):
         ar_stage, acoustic_stage = self.stage_named("yue2_ar"), self.stage_named(
             "yue2_acoustic"
         )
-        if replicated or ar_stage.gpu != acoustic_stage.gpu:
+        # note (anupa): sharing reduces a tensor to an IPC handle only on torch.device("cuda"), so elsewhere the acoustic stage loads its own AR copy instead of receiving 3.3 GiB by value.
+        if (
+            replicated
+            or ar_stage.gpu != acoustic_stage.gpu
+            or current_platform.device_type != "cuda"
+        ):
             return {}
         else:
             return {"shared_weights_dir": shared_weights_directory()}
