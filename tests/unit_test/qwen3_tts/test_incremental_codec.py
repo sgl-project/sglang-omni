@@ -1687,6 +1687,17 @@ def test_arena_slot_reuse_starts_from_a_cold_state() -> None:
     torch.testing.assert_close(again, cold)
 
 
+def test_arena_free_slots_counts_only_slots_acquire_can_hand_out() -> None:
+    _, arena = make_arena(Decoder(), slots=3)
+    retired = arena.acquire()
+    released = arena.acquire()
+    arena.retire(retired)
+    arena.release(released)
+
+    assert arena.free_slots() == 2
+    assert [arena.acquire(), arena.acquire(), arena.acquire()][-1] is None
+
+
 def test_arena_acquire_zeroes_only_the_acquired_slot() -> None:
     torch.manual_seed(16)
     _, arena = make_arena(Decoder(), slots=2)

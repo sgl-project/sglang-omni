@@ -2015,7 +2015,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         with self.state_lock:
-            free_slots = self.codec_arena.num_slots - self.codec_arena.active_slots()
+            free_slots = self.codec_arena.free_slots()
             for request_id, state in list(self.codec_slot_waiting_queue.items()):
                 if free_slots <= 0:
                     return

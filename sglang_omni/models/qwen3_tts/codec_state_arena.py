@@ -152,6 +152,11 @@ class Qwen3TTSCodecStateArena:
                 - sum(slot < self._num_slots for slot in self.retired)
             )  # noqa: leading-underscore
 
+    def free_slots(self) -> int:
+        """Slots an acquire can hand out now."""
+        with self.lock:
+            return len(self.free)
+
     def acquire(self) -> int | None:
         """Take a zeroed slot, or ``None`` when the arena is full."""
         with self.lock:
