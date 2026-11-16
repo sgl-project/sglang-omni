@@ -223,15 +223,32 @@ type Term struct {
 	UpdatedAt time.Time
 }
 
-// Dictionary stores the user's terms.
+// DictionaryProfile is a named set of dictionary terms. Active is true
+// for the one profile Transcribe, Translate and Rewrite use.
+type DictionaryProfile struct {
+	ID     string
+	Name   string
+	Active bool
+}
+
+// Dictionary stores the active profile's terms.
 type Dictionary interface {
-	// Put inserts or replaces a term (by ID); another term with the same
-	// spelling (ignoring case) is core.ErrExists.
+	// Put inserts or replaces a term (by ID); another term in this profile
+	// with the same spelling (ignoring case) is core.ErrExists.
 	Put(ctx context.Context, t Term) error
 	Get(ctx context.Context, id string) (Term, error)
-	// List returns the terms matching search ("" = all), A to Z.
+	// List returns the active profile's terms matching search ("" = all), A to Z.
 	List(ctx context.Context, search string) ([]Term, error)
 	Delete(ctx context.Context, id string) error
+	// Profiles lists every profile, A to Z.
+	Profiles(ctx context.Context) ([]DictionaryProfile, error)
+	// CreateProfile adds an inactive profile with a unique, non-empty name.
+	CreateProfile(ctx context.Context, profile DictionaryProfile) error
+	RenameProfile(ctx context.Context, id, name string) error
+	// DeleteProfile removes a profile and its terms, choosing another active
+	// profile when needed. Removing the last profile is core.ErrInvalid.
+	DeleteProfile(ctx context.Context, id string) error
+	ActivateProfile(ctx context.Context, id string) error
 }
 
 // Note is what the user said after the note shortcut (Voxt 1.x's notes):

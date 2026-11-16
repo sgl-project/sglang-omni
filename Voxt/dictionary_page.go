@@ -38,6 +38,7 @@ import (
 // dictionaryState is the Dictionary page's view state.
 type dictionaryState struct {
 	dv              dictView
+	dictProfiles    dictionaryProfileState
 	book            *learn.Book
 	suggestions     []learn.Suggestion // the sidebar's count and the page's section
 	suggestionReads int                // numbers the reads: only the last one lands
@@ -214,6 +215,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			d.listUI.ScrollIntoView(row)
 		}
 		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
+			a.dictionaryProfileBar(c)
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 				if d.find.field(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
 					a.loadDict()
@@ -262,6 +264,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	})
 	a.termDialog(c)
 	a.scanDialog(c)
+	a.dictionaryProfileDialogs(c)
 }
 
 // dictSwitches say where the terms go.

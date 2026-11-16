@@ -13,10 +13,11 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// dictionaryRepo stores the user's terms (dictionary_terms).
+// dictionaryRepo stores the active profile's terms (dictionary_terms).
 type dictionaryRepo struct{ db *sqlite.DB }
 
 const termColumns = `id, term, aliases, note, enabled, created_at, updated_at`
+const activeProfile = `(SELECT id FROM dictionary_profiles WHERE active = 1)`
 
 func (r *dictionaryRepo) Put(ctx context.Context, t store.Term) error {
 	if err := validID(t.ID); err != nil {
@@ -49,8 +50,8 @@ func (r *dictionaryRepo) Put(ctx context.Context, t store.Term) error {
 	if t.Enabled {
 		enabled = 1
 	}
-	_, err = r.db.Execute(ctx, `INSERT INTO dictionary_terms (`+termColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET term = excluded.term, aliases = excluded.aliases, note = excluded.note,
+	_, err = r.db.Execute(ctx, `INSERT INTO dictionary_terms (profile_id, `+termColumns+`) VALUES (`+activeProfile+`, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(profile_id, id) DO UPDATE SET term = excluded.term, aliases = excluded.aliases, note = excluded.note,
   enabled = excluded.enabled, created_at = excluded.created_at, updated_at = excluded.updated_at`,
 		t.ID, t.Term, string(data), t.Note, enabled, t.CreatedAt.UnixMilli(), t.UpdatedAt.UnixMilli())
 	return wrap("term "+t.Term, err)
@@ -67,7 +68,7 @@ func scanTerm(row []any) store.Term {
 }
 
 func (r *dictionaryRepo) Get(ctx context.Context, id string) (store.Term, error) {
-	rows, err := r.db.Query(ctx, `SELECT `+termColumns+` FROM dictionary_terms WHERE id = ?`, id)
+	rows, err := r.db.Query(ctx, `SELECT `+termColumns+` FROM dictionary_terms WHERE profile_id = `+activeProfile+` AND id = ?`, id)
 	if err != nil {
 		return store.Term{}, wrap("term "+id, err)
 	}
@@ -78,10 +79,10 @@ func (r *dictionaryRepo) Get(ctx context.Context, id string) (store.Term, error)
 }
 
 func (r *dictionaryRepo) List(ctx context.Context, search string) ([]store.Term, error) {
-	sql, args := `SELECT `+termColumns+` FROM dictionary_terms`, []any(nil)
+	sql, args := `SELECT `+termColumns+` FROM dictionary_terms WHERE profile_id = `+activeProfile, []any(nil)
 	if s := strings.TrimSpace(search); s != "" {
 		p := likePattern(s)
-		sql += ` WHERE term LIKE ? ESCAPE '\' OR aliases LIKE ? ESCAPE '\' OR note LIKE ? ESCAPE '\'`
+		sql += ` AND (term LIKE ? ESCAPE '\' OR aliases LIKE ? ESCAPE '\' OR note LIKE ? ESCAPE '\')`
 		args = []any{p, p, p}
 	}
 	rows, err := r.db.Query(ctx, sql+` ORDER BY term COLLATE NOCASE, id`, args...)
@@ -96,7 +97,7 @@ func (r *dictionaryRepo) List(ctx context.Context, search string) ([]store.Term,
 }
 
 func (r *dictionaryRepo) Delete(ctx context.Context, id string) error {
-	res, err := r.db.Execute(ctx, `DELETE FROM dictionary_terms WHERE id = ?`, id)
+	res, err := r.db.Execute(ctx, `DELETE FROM dictionary_terms WHERE profile_id = `+activeProfile+` AND id = ?`, id)
 	if err != nil {
 		return wrap("term "+id, err)
 	}

@@ -378,8 +378,9 @@ func (a *app) buildMenu() {
 }
 
 // openURL follows an voxtnew:// deep link: voxtnew://history,
-// voxtnew://settings/audio, voxtnew:///home, voxtnew://models/network. Router paths in
-// notifications go through it too.
+// voxtnew://settings/audio, voxtnew:///home, voxtnew://models/network, or
+// voxtnew://dictionary/profile?name=Work. Router paths in notifications go
+// through it too.
 func (a *app) openURL(raw string) {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "" && !strings.EqualFold(u.Scheme, "voxtnew")) {
@@ -395,6 +396,8 @@ func (a *app) openURL(raw string) {
 		path = to
 	}
 	switch sec := section(path); {
+	case path == "/dictionary/profile":
+		a.switchDictionaryProfileByName(u.Query().Get("name"))
 	case path == networkPath: // the Speech models page's Network dialog (models_network.go)
 		a.navigate(modelsPath)
 		a.openNetwork()

@@ -2,6 +2,12 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Added
+
+- **Dictionary profiles**: keep named sets of dictionary entries for different situations. Existing entries move into the active Default profile with their meaning unchanged. Create, rename, delete, and switch profiles on the Dictionary page; Transcribe, Translate, and Rewrite use only the active profile. Hammerspoon, macOS Shortcuts, and shell scripts can switch without opening the Dictionary page by running `open -g 'voxtnew://dictionary/profile?name=Work'`. See docs/dictionary-profiles.md.
+
 ## [2.1.0] - 2026-11-15
 
 ### Added

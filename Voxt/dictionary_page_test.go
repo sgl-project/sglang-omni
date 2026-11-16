@@ -229,6 +229,15 @@ func dictShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	seedTerms(t, a)
 	a.navigate("/dictionary")
 	a.loadDict()
+	if err := a.lib.store.Dictionary().CreateProfile(context.Background(), store.DictionaryProfile{ID: "work", Name: "Work"}); err != nil {
+		t.Fatal(err)
+	}
+	a.loadDictionaryProfiles()
+	save("page-dictionary-profiles")
+	if err := a.lib.store.Dictionary().DeleteProfile(context.Background(), "work"); err != nil {
+		t.Fatal(err)
+	}
+	a.loadDictionaryProfiles()
 	save("page-dictionary-terms")
 	a.suggestions = []learn.Suggestion{
 		{Term: "Claude Code", Heard: []string{"Cloud Code"}, Source: learn.FromEdit},
