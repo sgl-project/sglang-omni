@@ -79,7 +79,6 @@ shell_logs_select.go  # shell
 shell_nav.go  # shell
 shell_notices.go  # shell
 shell_settings.go  # shell
-try_card.go  # feature
 ui_panels.go  # ui kit
 updates.go  # updates
 updates_github.go  # updates

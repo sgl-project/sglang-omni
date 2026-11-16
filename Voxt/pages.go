@@ -14,6 +14,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // pages builds the page the router shows.
@@ -115,6 +116,21 @@ func (a *app) page(c *ui.Context, p navPage) {
 	}
 	pageHeader(c, pageTitle(p.path), nil)
 	emptyState(c, p.icon, pageTitle(p.path), "", nil)
+}
+
+func (a *app) featureTry(c *ui.Context, feature string) {
+	local := a.fui(feature)
+	sectionTitle(c, i18n.T("Try it"))
+	a.tryCard(c, tryOpts{
+		prefix: uitext.FeaturePrefix(feature), feature: feature, mine: a.trySessionOf(feature),
+		intro: a.tryIntro(feature), block: &local.block,
+		start: func() *sessionNotice { _, notice := a.startTry(featureKind(feature)); return notice },
+	})
+}
+
+func (a *app) tryCard(c *ui.Context, options tryOpts) {
+	state, actions := a.tryCardState(options)
+	tryCard(c, &state, actions)
 }
 
 func (a *app) notFoundPage(c *ui.Context, path string) {
