@@ -32,6 +32,12 @@ type meetingDemoHost struct {
 	historySettingsUI historySettingsLocalUI
 	historyAccessUI   historyAccessLocalUI
 	overlayLook       settings.Overlay
+	settingsOpen      bool
+	settingsRouter    *settingsDemoRouter
+	settingsForm      settingsForm
+	settingsStorageUI settingsStorageLocalUI
+	settingsMeetingUI meetingSettingsUI
+	settingsDialogUI  settingsDialogLocalUI
 }
 
 func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
@@ -98,7 +104,10 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "start" && fixture.Start != nil ||
 		fixture.Kind == "history" && fixture.History != nil ||
 		fixture.Kind == "history-settings" && fixture.HistorySettings != nil ||
-		fixture.Kind == "history-access" && fixture.HistoryAccess != nil
+		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||
+		fixture.Kind == "settings" && fixture.Settings != nil ||
+		fixture.Kind == "meeting-settings" && fixture.MeetingSettings != nil ||
+		fixture.Kind == "shortcut-prompt" && fixture.ShortcutPrompt != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -148,6 +157,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
 		}
 	}
+	host.resetSettingsDemo(fixture)
 }
 
 func (host *meetingDemoHost) faceStyle(model meetingOverlayModel) meetingOverlayFaceStyle {

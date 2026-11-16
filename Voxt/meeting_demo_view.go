@@ -57,6 +57,23 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 						historyAccessSection(c, fixture.state.HistoryAccess, host, &host.historyAccessUI)
 					})
 				})
+			case "settings":
+				settingsDialog(c, *fixture.state.Settings, host, host.settingsDialogUI)
+			case "meeting-settings":
+				dialogFrame(c, "mt-set", &host.pageUI.setOpen, i18n.T("Meeting settings"), "", 560, func() {
+					state := *fixture.state.MeetingSettings
+					meetingCaptureSettings(c, state, host, &host.settingsMeetingUI)
+					meetingASRSettings(c, state, host)
+					meetingLLMSettings(c, state, host)
+					meetingConsent(c)
+				}, func() {
+					ui.Spacer(c)
+					if primaryButton(c.Key("mt-set-done"), i18n.T("Done")).Clicked() {
+						host.pageUI.setOpen = false
+					}
+				})
+			case "shortcut-prompt":
+				shortcutPromptDialog(c, fixture.state.ShortcutPrompt, host)
 			}
 		})
 	})

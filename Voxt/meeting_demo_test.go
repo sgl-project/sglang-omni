@@ -4,6 +4,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -170,6 +171,114 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return access.LastRead
 		}
 		return i18n.T("Other programs")
+	case "settings":
+		dialog := state.Settings
+		switch {
+		case dialog.Audio != nil:
+			audio := dialog.Audio
+			if audio.DevicesError != "" {
+				return audio.DevicesError
+			}
+			if !audio.HelperReady {
+				return i18n.T("The helper is not running, so microphones cannot be listed.")
+			}
+			for _, pair := range audio.Sounds.Pairs {
+				if pair.Playing {
+					return pair.PlayLabel
+				}
+			}
+			if audio.Sounds.SourceID == soundSystemID {
+				return audio.Sounds.SystemCues[0].Selected
+			}
+			if audio.DevicesLoading || audio.Sounds.SourceID == soundNoneID {
+				return fixture.name
+			}
+			if len(audio.Devices) > 0 {
+				return audio.Devices[0].Name
+			}
+			if audio.DevicesRead {
+				return i18n.T("No other microphone is connected.")
+			}
+			return i18n.T("No microphone chosen, so Voxt records from the system's default input.")
+		case dialog.General != nil:
+			if len(dialog.General.OtherLanguages) == 0 {
+				return fixture.name
+			}
+			return dialog.General.OtherLanguages[0].Label
+		case dialog.Permissions != nil:
+			return dialog.Permissions.Microphone.Status
+		case dialog.Appearance != nil:
+			if dialog.Appearance.ReduceMotion {
+				return fixture.name
+			}
+			return i18n.T("Appearance")
+		case dialog.Overlay != nil:
+			if dialog.Overlay.Position == 1 && dialog.Overlay.LiveLayout == 1 {
+				return fixture.name
+			}
+			return i18n.T("Preview")
+		case dialog.Shortcuts != nil:
+			if !dialog.Shortcuts.AccessibilityInstalled {
+				return i18n.T("Open Permissions")
+			}
+			for _, row := range dialog.Shortcuts.Rows {
+				if len(row.Problems) > 0 {
+					return row.Problems[0]
+				}
+			}
+			return dialog.Shortcuts.Rows[0].KeyText
+		case dialog.Privacy != nil:
+			privacy := dialog.Privacy
+			if privacy.ClearHistoryAsk {
+				return i18n.T("Clear history?")
+			}
+			if privacy.HistoryAccess.ShowLastRead {
+				return privacy.HistoryAccess.LastRead
+			}
+			return privacy.Online
+		case dialog.Storage != nil:
+			storage := dialog.Storage
+			if storage.ResetAsk == "settings" {
+				return i18n.T("Reset all settings?")
+			}
+			if storage.ResetAsk == "everything" {
+				return i18n.T("Erase everything?")
+			}
+			if storage.Moving {
+				return storage.MoveProgressText
+			}
+			if storage.ModelMoving {
+				return storage.ModelMoveText
+			}
+			if storage.MoveError != "" {
+				return storage.MoveError
+			}
+			if storage.Report == nil {
+				return i18n.T("Measuring…")
+			}
+			return storage.Report.DataSize
+		case dialog.About != nil:
+			about := dialog.About
+			if about.SelfChecking {
+				return fixture.name
+			}
+			if len(about.Checks) > 0 {
+				return about.Checks[0].Detail
+			}
+			if len(about.Rows) < 4 {
+				return about.Rows[1].Value
+			}
+			return about.Rows[0].Value
+		}
+		return i18n.T("Settings")
+	case "meeting-settings":
+		meeting := state.MeetingSettings
+		if meeting.NoLLM {
+			return i18n.T("No language model is set up, so summaries and translation are off.")
+		}
+		return meeting.CaptureModeSelected
+	case "shortcut-prompt":
+		return state.ShortcutPrompt.OtherApp
 	default:
 		return ""
 	}
@@ -189,6 +298,15 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.historyUI.query, host.historyUI.sel = "stale", "stale"
 	host.historySettingsUI.exportSel = "stale"
 	host.historyAccessUI.listOpen = true
+	host.settingsForm.search = "stale"
+	host.settingsForm.findN = 3
+	host.settingsForm.clearHistoryAsk = true
+	host.settingsForm.ovStyle.margin = 42
+	host.settingsStorageUI.resetAsk, host.settingsStorageUI.resetText = "everything", "stale"
+	host.settingsMeetingUI.hide = true
+	host.settingsOpen = true
+	host.settingsRouter.Replace("/about")
+	host.settingsDialogUI.RenderUpdates = func(*ui.Context) {}
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -203,6 +321,20 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	if host.pageUI.query != "" || host.overlayUI.menu != meetingMenuNone || host.pageUI.detail != nil && host.pageUI.detail.question != "" ||
 		host.historyUI.query != "" || host.historyUI.sel != "" || host.historySettingsUI.exportSel != "" || host.historyAccessUI.listOpen {
 		t.Fatal("fixture switch kept local UI state")
+	}
+	if !reflect.DeepEqual(host.settingsForm, settingsForm{}) {
+		t.Fatalf("fixture switch kept settings form state: %+v", host.settingsForm)
+	}
+	if host.settingsStorageUI != (settingsStorageLocalUI{}) || host.settingsMeetingUI != (meetingSettingsUI{}) || host.settingsOpen || host.pageUI.setOpen {
+		t.Fatal("fixture switch kept settings dialog state")
+	}
+	if host.settingsRouter.Path() != "/general" || host.settingsDialogUI.RenderUpdates != nil {
+		t.Fatal("fixture switch kept settings router or update renderer")
+	}
+	if host.settingsDialogUI.Open != &host.settingsOpen || host.settingsDialogUI.Router != host.settingsRouter ||
+		host.settingsDialogUI.Form != &host.settingsForm || host.settingsDialogUI.HistoryAccess != &host.historyAccessUI ||
+		host.settingsDialogUI.Storage != &host.settingsStorageUI {
+		t.Fatal("settings dialog pointers do not address the host's local state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {
 		t.Fatal(err)
