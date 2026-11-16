@@ -10,8 +10,12 @@ from collections.abc import Callable
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
+from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.mem_cache.allocation_sizing import get_alloc_reserve_per_decode
+from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
+from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
@@ -25,11 +29,11 @@ from sglang_omni.models.fun_asr.encoder_service import (
     FunASRPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.models.fun_asr.scheduler import FunASRScheduler
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
 from sglang_omni.platforms import current_platform
-from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
@@ -40,6 +44,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler, OmniSchedulerArguments
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
@@ -71,6 +76,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         enable_encoder_torch_compile: bool,
         enable_encoder_cuda_graph: bool,
         enable_async_decode: bool,
+        enable_early_cpu_preparation: bool,
         async_decode_min_batch_size: int,
         prefill_coalesce_requests: int,
         prefill_coalesce_wait_ms: float,
@@ -95,6 +101,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         self.enable_encoder_torch_compile = enable_encoder_torch_compile
         self.enable_encoder_cuda_graph = enable_encoder_cuda_graph
         self.enable_async_decode = enable_async_decode
+        self.enable_early_cpu_preparation = enable_early_cpu_preparation
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
@@ -437,8 +444,8 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         )
 
     def make_adapters(self, model: object) -> tuple[
-        Callable[[StagePayload], request_builders.FunASRRequestData],
-        Callable[[request_builders.FunASRRequestData], StagePayload],
+        request_builders.FunASRRequestBuilder,
+        request_builders.FunASRResultAdapter,
     ]:
         del model
         return request_builders.make_fun_asr_scheduler_adapters(
@@ -451,6 +458,55 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             audio_encoder_service=self.audio_encoder_service,
             greedy_only=self.uses_torch_mps(),
         )
+
+    def make_scheduler(
+        self,
+        *,
+        model_worker: ModelWorker,
+        tree_cache: BasePrefixCache,
+        req_to_token_pool: ReqToTokenPool,
+        token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
+        server_args: ServerArgs,
+        model_config: ModelConfig,
+        model_runner: ModelRunner[request_builders.FunASRRequestData],
+        request_builder: request_builders.FunASRRequestBuilder,
+        result_adapter: request_builders.FunASRResultAdapter,
+        extra_scheduler_kwargs: SchedulerExtras[request_builders.FunASRRequestData],
+    ) -> OmniScheduler[request_builders.FunASRRequestData]:
+        if not self.enable_early_cpu_preparation or self.uses_torch_mps():
+            return super().make_scheduler(
+                model_worker=model_worker,
+                tree_cache=tree_cache,
+                req_to_token_pool=req_to_token_pool,
+                token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+                server_args=server_args,
+                model_config=model_config,
+                model_runner=model_runner,
+                request_builder=request_builder,
+                result_adapter=result_adapter,
+                extra_scheduler_kwargs=extra_scheduler_kwargs,
+            )
+        else:
+            scheduler_arguments: OmniSchedulerArguments[
+                request_builders.FunASRRequestData
+            ] = {
+                "tp_worker": model_worker,
+                "tree_cache": tree_cache,
+                "req_to_token_pool": req_to_token_pool,
+                "token_to_kv_pool_allocator": token_to_kv_pool_allocator,
+                "server_args": server_args,
+                "model_config": model_config,
+                "model_runner": model_runner,
+                "request_builder": request_builder,
+                "result_adapter": result_adapter,
+                "abort_callback": self.make_abort_callback(),
+                "request_finished_callback": self.make_request_finished_callback(),
+            }
+            scheduler_arguments.update(self.extra_scheduler_callbacks())
+            scheduler_arguments.update(extra_scheduler_kwargs)
+            return FunASRScheduler(
+                cpu_input_builder=request_builder, **scheduler_arguments
+            )
 
     def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None] | None]:
         return {

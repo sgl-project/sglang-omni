@@ -1439,9 +1439,7 @@ class OmniScheduler(Generic[RequestDataT]):
                         continue
                     else:
                         pass
-                    future = request_build_executor.submit(
-                        self.run_request_builder, payload, active_stage
-                    )
+                    future = self.submit_request_build(payload, active_stage)
                     submitted_build = True
                     self.pending_request_builds[req_id] = (
                         payload,
@@ -1490,6 +1488,16 @@ class OmniScheduler(Generic[RequestDataT]):
             )
         else:
             logger.exception(f"OmniScheduler: request builder failed for {request_id}")
+
+    def submit_request_build(
+        self, payload: StagePayload, active_stage: str | None
+    ) -> Future[RequestDataT | SGLangARRequestData | DeferredAdmission[RequestDataT]]:
+        executor = self.request_build_executor
+        assert executor is not None
+        return executor.submit(self.run_request_builder, payload, active_stage)
+
+    def request_build_slots_in_use(self) -> int:
+        return len(self.pending_request_builds)
 
     def request_build_queue_fits_workers(self) -> bool:
         """True when pending+backlog still fits in the request-build pool.
@@ -1611,7 +1619,7 @@ class OmniScheduler(Generic[RequestDataT]):
             backlog_ids = {payload.request_id for payload in backlog}
             capacity = max(
                 0,
-                self.request_build_max_pending - len(pending_builds),
+                self.request_build_max_pending - self.request_build_slots_in_use(),
             )
             selected: list[StagePayload] = []
             selected_ids: set[str] = set()

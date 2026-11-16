@@ -207,6 +207,14 @@ Qwen3-ASR shows the same shedding behavior at this level. For higher client
 concurrency, serve behind the DP=2 managed router, matching the ASR CI
 topology.
 
+## Experimental CPU input preparation
+
+`--asr.factory.enable_early_cpu_preparation true` lets one complete audio request prepare its CPU features and prompt while the scheduler executes another batch. It is off by default and uses the existing request-build pool and pending-work budget. Encoder submission and request admission still follow the scheduler's input and capacity checks. The option applies to both plain decoding and synchronous DFlash.
+
+The first implementation accepts owned audio bytes on a single tensor-parallel rank. Paths, URLs, incremental input, sessions, speculative overlap, and the Apple backend retain the original path. HTTP streaming output is supported. The preparation slot stays occupied until completed work is consumed or cancelled work leaves the executor; a full slot falls back without rejecting the request.
+
+Local CPU tests cover input equivalence, cancellation, capacity, and shutdown ordering. Two exploratory H200 runs at concurrency 16 with warm encoder caches lowered mean TTFT by 4.65–5.53% without draft and 1.09–2.86% with synchronous DFlash; p95 fell by 1.10–3.75% and 2.38–4.26%, respectively. These measurements used an earlier source revision, are not a stability guarantee, and have not been reproduced with cold caches or on the current branch. DFlash remained slower than the corresponding baseline. This option does not skip fbank/LFR on encoder-cache hits.
+
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.

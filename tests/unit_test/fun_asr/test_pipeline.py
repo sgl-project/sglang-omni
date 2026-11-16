@@ -640,3 +640,49 @@ def test_dflash_worker_reaches_the_decoder_through_the_outer_model() -> None:
     assert model.get_input_embeddings() is decoder_embedding
     assert model.lm_head is decoder_head
     assert captured_layer_ids == [[1, 13, 24]]
+
+
+@pytest.mark.parametrize("early", [False, True])
+@pytest.mark.parametrize("device", ["cuda:0", "mps"])
+def test_early_preparation_configuration_reaches_scheduler(monkeypatch, early, device):
+    builders = []
+    monkeypatch.setattr(
+        fun_asr_builder.FunASREngineBuilder,
+        "build",
+        lambda self, *args, **kwargs: builders.append(self),
+    )
+    fun_asr_stages.create_sglang_fun_asr_executor(
+        "unused", enable_early_cpu_preparation=early
+    )
+    builder = builders[0]
+    builder.device = device
+    enabled = early and device != "mps"
+    marker = object()
+    captured = {}
+
+    def construct(**kwargs):
+        captured.update(kwargs)
+        return marker
+
+    monkeypatch.setattr(fun_asr_builder, "FunASRScheduler", construct)
+    monkeypatch.setattr(omni_scheduler, "OmniScheduler", construct)
+    request_builder = object()
+    result = builder.make_scheduler(
+        model_worker=object(),
+        tree_cache=object(),
+        req_to_token_pool=object(),
+        token_to_kv_pool_allocator=object(),
+        server_args=object(),
+        model_config=object(),
+        model_runner=object(),
+        request_builder=request_builder,
+        result_adapter=object(),
+        extra_scheduler_kwargs=builder.extra_scheduler_kwargs(),
+    )
+    assert result is marker
+    assert ("cpu_input_builder" in captured) is enabled
+    if enabled:
+        assert captured["cpu_input_builder"] is request_builder
+    assert captured["request_builder"] is request_builder
+    assert captured["request_build_max_workers"] == (1 if device == "mps" else 8)
+    assert captured["request_build_max_pending"] == 32
