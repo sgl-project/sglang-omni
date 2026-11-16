@@ -1010,6 +1010,7 @@ def test_a_stateful_stream_decodes_through_its_state_beside_the_window_graphs(
         atol=0.02,
         rtol=0.02,
     )
+    assert vocoder.request_slots == {}
 
 
 @pytest.mark.accelerator

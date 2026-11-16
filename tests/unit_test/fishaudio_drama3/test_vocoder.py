@@ -33,6 +33,7 @@ from sglang_omni.models.fishaudio_drama3.request_builders import (
 )
 from sglang_omni.models.fishaudio_drama3.stages import resolve_codec_directory
 from sglang_omni.models.fishaudio_drama3.stateful_decoder import StatefulDACDecoder
+from sglang_omni.models.fishaudio_drama3.stateful_state import StreamState
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
     crossfade_frames,
     discarded_frames,
@@ -1623,12 +1624,12 @@ def test_serving_starts_after_the_default_streams_in_flight_work() -> None:
     np.testing.assert_array_equal(in_flight, expected)
 
 
-def stateful_vocoder(capacity: int = 2) -> Drama3VocoderScheduler:
-    codec = tiny_fishaudio_codec()
+def stateful_vocoder(capacity: int = 2, device: str = "cpu") -> Drama3VocoderScheduler:
+    codec = tiny_fishaudio_codec().to(device)
     factory = Drama3VocoderFactoryArgs()
     return Drama3VocoderScheduler(
         codec,
-        device="cpu",
+        device=device,
         stream_stride=factory.stream_stride,
         stream_followup_stride_ramp=factory.stream_followup_stride_ramp,
         stream_followup_stride=factory.stream_followup_stride,
@@ -1893,6 +1894,29 @@ def test_stateful_option_preserves_nonstream_full_decode() -> None:
     result = vocoder.vocode_payload(final_payload(frames, is_streaming=False))
     np.testing.assert_allclose(final_audio(result), expected.numpy(), atol=0, rtol=0)
     assert not vocoder.request_slots
+
+
+@pytest.mark.accelerator
+def test_a_cleared_stateful_slot_resets_on_the_decode_stream() -> None:
+    """An abort clears a request from another thread, whose stream nothing orders
+    against the decode stream, so the reset joins the stream the next decode runs on."""
+    require_cuda()
+    vocoder = stateful_vocoder(capacity=1, device="cuda")
+    decoder = vocoder.stateful_decoder
+    assert decoder is not None
+    vocoder.request_slots["request-a"] = decoder.create_state()
+    release_state = decoder.release_state
+    release_streams: list[torch.cuda.Stream] = []
+
+    def recording_release(state: StreamState) -> None:
+        release_streams.append(torch.cuda.current_stream())
+        release_state(state)
+
+    with patch.object(decoder, "release_state", side_effect=recording_release):
+        vocoder.clear_stream_state("request-a")
+
+    assert release_streams == [vocoder.decode_stream]
+    assert vocoder.decode_stream != torch.cuda.current_stream()
 
 
 def test_stateful_terminal_output_follows_slot_release() -> None:

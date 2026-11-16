@@ -743,7 +743,14 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         if request_id in self.request_slots:
             self.wait_for_stream_completion()
             assert self.stateful_decoder is not None
-            self.stateful_decoder.release_state(self.request_slots[request_id])
+            # note (Wenyao Gao): an abort clears from the stage's thread, and nothing
+            # orders that thread's stream against the decode stream, so the slot's
+            # reset joins the decode stream, ahead of the next decode there.
+            if self.decode_stream is None:
+                self.stateful_decoder.release_state(self.request_slots[request_id])
+            else:
+                with torch.get_device_module(self.device).stream(self.decode_stream):
+                    self.stateful_decoder.release_state(self.request_slots[request_id])
             self.request_slots.pop(request_id)
         else:
             pass
