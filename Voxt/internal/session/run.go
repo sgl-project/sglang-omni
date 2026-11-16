@@ -53,6 +53,11 @@ type run struct {
 	stopOnce sync.Once
 	pcm      *pcmBuffer
 	ended    bool // guarded by m.mu
+	// onDraft is a history retry's (RetryRequest.OnDraft): it has no
+	// session, so update applies its changes to own (guarded by m.mu) and
+	// passes the draft on.
+	onDraft func(string)
+	own     Snapshot
 
 	svc   Services
 	terms []store.Term

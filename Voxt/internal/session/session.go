@@ -195,14 +195,18 @@ type Snapshot struct {
 	// Highlights are dictionary term and alias byte ranges in a
 	// Transcribe Result.
 	Highlights []dict.Span
+	// Spoken is the recognised text as the language model gets it (the
+	// dictionary's aliases replaced), from Composing on; "" when nothing
+	// was said (a selection to translate).
+	Spoken string
 	// Selection is the selected text read when the shortcut fired
 	// (Translate, Rewrite; "" for none), SelectionVia how ("ax", "copy").
 	Selection, SelectionVia string
 	// TargetLanguage is Translate's (a code: "en", "zh-Hans").
 	TargetLanguage string
 	// Draft is the answer so far while the language model writes
-	// (Translate, Rewrite); Title the answer's title (Rewrite writing
-	// from scratch).
+	// (Transcribe's clean-up, Translate, Rewrite); Title the answer's
+	// title (Rewrite writing from scratch).
 	Draft, Title string
 	// Retried: Translate asked again, strictly (the first answer looked
 	// untranslated).
@@ -243,8 +247,10 @@ type Snapshot struct {
 
 // CanStop says whether StopLLM can end the answer streaming into the
 // answer card where it is, keeping what the model wrote so far (#3886).
+// Not Transcribe's clean-up: the rest of what was said would be lost
+// (SkipLLM keeps all of it, as recognised).
 func (s Snapshot) CanStop() bool {
-	return s.State == Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
+	return s.Kind != store.KindTranscribe && s.State == Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // Elapsed is how long the recording has run (from the first audio), at

@@ -54,6 +54,29 @@ func TestAliases(t *testing.T) {
 	}
 }
 
+// TestComposingSpoken: while the language model works, the snapshot holds
+// the text it got (the pill shows it): the recognised Final with the
+// dictionary's aliases replaced, not the stream's last partial, which the
+// pill kept showing.
+func TestComposingSpoken(t *testing.T) {
+	for _, kind := range []Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
+		t.Run(string(kind), func(t *testing.T) {
+			h := newHarness(t, &fakeStreamer{final: "hello aura link"}, &fakeLLM{hang: true}, func(c *Config, s *settings.Settings) {
+				c.Select = &fakeSelector{}
+				s.Features.Transcribe.Enhance = true
+			})
+			id, _ := h.m.Start(StartRequest{Kind: kind, Target: slack})
+			h.speak(id, 5)
+			s := h.rec.waitFor(t, "composing", func(s Snapshot) bool { return s.State == Composing })
+			if s.Spoken != "hello VoxtNew" || s.Raw != "hello aura link" || s.Partial != "partial" {
+				t.Errorf("spoken %q, raw %q, partial %q", s.Spoken, s.Raw, s.Partial)
+			}
+			h.m.Cancel(id)
+			h.rec.wait(t)
+		})
+	}
+}
+
 // longZH is a dictation compose cleans up in two pieces.
 var longZH = strings.Repeat("嗯，那个，我们下周二，呃不对，下周三下午三点开个会，讨论一下预算。", 16)
 
