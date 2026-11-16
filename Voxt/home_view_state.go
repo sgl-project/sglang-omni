@@ -77,7 +77,7 @@ type dayStats struct {
 }
 
 func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) homeViewState {
-	missing, ready := homeReadinessGroups(input.Readiness)
+	missing, ready := homeMissing(input.Readiness)
 	state := homeViewState{
 		Read: input.Read, Loading: input.Loading, Error: input.Error, KeepHistory: input.KeepHistory,
 		Slogan: buildHomeSloganViewState(translator, input.Features), Missing: missing, Ready: ready,
@@ -94,7 +94,7 @@ func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) h
 	return state
 }
 
-func homeReadinessGroups(list []homeReadinessViewState) (missing, ready []homeReadinessViewState) {
+func homeMissing(list []homeReadinessViewState) (missing, ready []homeReadinessViewState) {
 	for _, item := range list {
 		if item.OK {
 			ready = append(ready, item)

@@ -392,8 +392,8 @@ func TestHomeTryByShortcut(t *testing.T) {
 	drain := queuePosts(a)
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
 	frames(tt)
-	if a.sess.State.Live() || a.hm.block == nil || !has(tt, "No speech model is installed.") {
-		t.Fatalf("blocked try: %+v %v %q", a.sess, a.hm.block, tt.Texts())
+	if a.sess.State.Live() || a.homeUI.block == nil || !has(tt, "No speech model is installed.") {
+		t.Fatalf("blocked try: %+v %v %q", a.sess, a.homeUI.block, tt.Texts())
 	}
 	if a.notice != nil {
 		t.Error("a try's problem went to the overlay")

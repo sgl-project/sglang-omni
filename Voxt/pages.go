@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
@@ -44,8 +45,8 @@ func (a *app) pageShown(path string) {
 	}
 	switch path {
 	case "/home":
-		a.hm.tryOn = false // a new visit (homeShowsTry)
-		a.loadHome()       // home_page.go
+		a.homeUI.tryOn = false // a new visit (homeShowsTry)
+		a.loadHome()           // home_controller.go
 	case "/history":
 		a.historyShown() // history_page.go
 	case "/app-enhancement":
@@ -65,7 +66,16 @@ func (a *app) pageShown(path string) {
 func (a *app) page(c *ui.Context, p navPage) {
 	switch p.path {
 	case "/home":
-		a.homePage(c) // home_page.go
+		a.prepareHomePage()
+		model := a.homePageModel(time.Now())
+		homePage(c, &model, a, &a.histUI, func(c *ui.Context) {
+			a.tryCard(c, tryOpts{
+				prefix: "home", feature: hotkey.Transcribe, mine: a.homeTrySession(),
+				intro: a.tryIntro(hotkey.Transcribe), block: &a.homeUI.block,
+				start: func() *sessionNotice { _, n := a.startTry(featureKind(hotkey.Transcribe)); return n },
+			})
+		})
+		historyDeleteDialog(c, &a.histUI, a)
 		return
 	case "/logs":
 		a.logsPage(c)
