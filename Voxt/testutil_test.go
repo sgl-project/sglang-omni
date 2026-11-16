@@ -258,7 +258,9 @@ func newTestAppIn(t *testing.T, dir string) (*app, *fakeSupervisor, *ui.Tester) 
 	a.connectUpdates()
 	a.startHelper()
 	t.Cleanup(a.quit)
-	return a, fs, ui.NewTester(a.view, windowWidth, windowHeight)
+	tester := ui.NewTester(a.view, windowWidth, windowHeight)
+	a.copyText = func(text string) error { tester.SetClipboard(text); return nil }
+	return a, fs, tester
 }
 
 // requireCJKFont fails a test that measures Chinese text's pixels when

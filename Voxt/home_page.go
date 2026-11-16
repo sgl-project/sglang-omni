@@ -166,7 +166,7 @@ func (a *app) homePage(c *ui.Context) {
 			a.homeRecentList(c)
 		})
 	})
-	a.historyDeleteDialog(c) // the recent results' Delete (history_menu.go)
+	historyDeleteDialog(c, &a.histUI, a) // the recent results' Delete (history_menu.go)
 }
 
 // ---- The slogan ----
@@ -321,25 +321,10 @@ func (a *app) homeRecentList(c *ui.Context) {
 			if row.Clicked() {
 				a.openHistoryEntry(e)
 			}
-			a.entryMenu(c, row, e, false, func() { a.openHistoryEntry(e) }) // history_menu.go
+			entryState := buildHistoryRowViewState(i18n.CurrentTranslator(), e, "", "", false, a.hist.retry, time.Now())
+			entryMenu(c, row, &entryState, a, &a.histUI, false, func() { a.openHistoryEntry(e) }) // history_menu.go
 		}
 	})
-}
-
-// openHistoryEntry shows an entry in History: its feature's tab, its
-// details open.
-func (a *app) openHistoryEntry(e store.Entry) {
-	h := &a.hist
-	for i, kd := range store.Kinds {
-		if kd == e.Kind {
-			if h.tab != i {
-				h.tab, h.listFor = i, ""
-			}
-		}
-	}
-	h.query = ""
-	h.sel = e.ID
-	a.navigate("/history")
 }
 
 // countChars counts the characters of s that are not spaces.

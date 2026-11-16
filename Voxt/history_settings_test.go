@@ -259,7 +259,7 @@ func TestHistoryExportAndDelete(t *testing.T) {
 		t.Errorf("toast %q", a.toasts)
 	}
 	// The Translate tab's: none.
-	a.hist.tab = 1
+	a.histUI.tab = 1
 	frames(tt)
 	click(t, tt, "All recordings")
 	click(t, tt, "Translate only")

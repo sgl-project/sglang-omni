@@ -23,11 +23,7 @@ feature_page.go  # feature
 feature_prompts.go  # feature
 floating.go  # overlay
 history_access.go  # history
-history_detail.go  # history
 history_export.go  # history
-history_menu.go  # history
-history_page.go  # history
-history_retry.go  # history
 history_settings.go  # history
 home_page.go  # home
 home_ready.go  # home

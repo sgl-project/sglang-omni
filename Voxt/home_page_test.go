@@ -331,8 +331,8 @@ func TestHomeRecent(t *testing.T) {
 	}
 	title, _ := uitext.EntryTitle(e)
 	click(t, tt, title)
-	if a.router.Path() != "/history" || a.hist.sel != e.ID || a.hist.kind() != e.Kind {
-		t.Errorf("opened %s sel %q tab %s", a.router.Path(), a.hist.sel, a.hist.kind())
+	if a.router.Path() != "/history" || a.histUI.sel != e.ID || a.histUI.kind() != e.Kind {
+		t.Errorf("opened %s sel %q tab %s", a.router.Path(), a.histUI.sel, a.histUI.kind())
 	}
 	// History off: nothing is counted.
 	a.navigate("/home")

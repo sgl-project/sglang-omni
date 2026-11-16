@@ -129,20 +129,20 @@ func seedWriteHistory(t *testing.T, a *app) {
 // (TestSnapshots), on each tab.
 func snapshotHistoryDetail(a *app, save func(string)) {
 	a.navigate("/history")
-	a.hist.sel = histInserted
+	a.histUI.sel = histInserted
 	save("history-detail")
 	for _, tab := range []struct {
 		i    int
 		name string
 		sel  string
 	}{{1, "history-translate", histTransSel}, {2, "history-rewrite", histRewritten}, {3, "history-all", histTranslated}} {
-		a.hist.tab, a.hist.sel = tab.i, ""
+		a.histUI.tab, a.histUI.sel = tab.i, ""
 		a.loadHistory()
 		save(tab.name)
-		a.hist.sel = tab.sel
+		a.histUI.sel = tab.sel
 		save(tab.name + "-detail")
 	}
-	a.hist.tab, a.hist.sel = 0, ""
+	a.histUI.tab, a.histUI.sel = 0, ""
 	a.loadHistory()
 	snapshotHistoryRetry(a, save) // history_retry_test.go
 }
@@ -152,7 +152,7 @@ func TestHistoryTranslateAndRewrite(t *testing.T) {
 	seedHistory(t, a)
 	seedWriteHistory(t, a)
 	a.navigate("/history")
-	a.hist.tab = 1
+	a.histUI.tab = 1
 	a.loadHistory()
 	frames(tt)
 	if len(a.hist.list) != 2 || a.hist.list[0].ID != histTranslated {
@@ -161,7 +161,7 @@ func TestHistoryTranslateAndRewrite(t *testing.T) {
 	if !has(tt, "Let them know the Thursday afternoon review moves to Friday morning.") || !hasPrefix(tt, "8 minutes ago · Slack · → English") {
 		t.Errorf("rows %q", firstTexts(tt))
 	}
-	a.hist.sel = histTransSel
+	a.histUI.sel = histTransSel
 	frames(tt)
 	for _, s := range []string{"Selected text", "A goroutine is a lightweight thread managed by the Go runtime.", "Target language", "Simplified Chinese", "Shown in the answer card"} {
 		if !has(tt, s) {
@@ -171,7 +171,7 @@ func TestHistoryTranslateAndRewrite(t *testing.T) {
 	if has(tt, "Recognised text") {
 		t.Error("a selection shows a recognised text")
 	}
-	a.hist.tab, a.hist.sel = 2, histRewritten
+	a.histUI.tab, a.histUI.sel = 2, histRewritten
 	a.loadHistory()
 	frames(tt)
 	for _, s := range []string{"Instruction", "make it more formal and shorter", "Selected text", "Apologies: the release moves to Thursday while the tests finish."} {
@@ -183,7 +183,7 @@ func TestHistoryTranslateAndRewrite(t *testing.T) {
 		t.Error("a rewrite has a target language")
 	}
 	// The search covers the instruction and the selection.
-	a.hist.query = "formal"
+	a.histUI.query = "formal"
 	a.loadHistory()
 	frames(tt)
 	if len(a.hist.list) != 1 || a.hist.list[0].ID != histRewritten {
@@ -217,8 +217,8 @@ func TestHistoryTabs(t *testing.T) {
 	seedHistory(t, a)
 	a.navigate("/history")
 	clickSegment(t, tt, "Feature", 1, 4)
-	if a.hist.kind() != store.KindTranslate || len(a.hist.list) != 0 {
-		t.Fatalf("translate tab: kind %s, %v", a.hist.kind(), historyIDs(a))
+	if a.histUI.kind() != store.KindTranslate || len(a.hist.list) != 0 {
+		t.Fatalf("translate tab: kind %s, %v", a.histUI.kind(), historyIDs(a))
 	}
 	if !has(tt, "No translations yet") {
 		t.Errorf("no empty state on the Translate tab: %q", firstTexts(tt))
@@ -237,8 +237,8 @@ func TestHistoryAllTab(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/history")
 	clickSegment(t, tt, "Feature", 3, 4)
-	if a.hist.kind() != "" || !has(tt, "No history yet") {
-		t.Fatalf("empty All tab: kind %q, %q", a.hist.kind(), firstTexts(tt))
+	if a.histUI.kind() != "" || !has(tt, "No history yet") {
+		t.Fatalf("empty All tab: kind %q, %q", a.histUI.kind(), firstTexts(tt))
 	}
 	seedHistory(t, a)
 	seedWriteHistory(t, a)
@@ -262,7 +262,7 @@ func TestHistoryAllTab(t *testing.T) {
 		}
 	}
 	// The search covers every feature.
-	a.hist.query = "Thursday"
+	a.histUI.query = "Thursday"
 	a.loadHistory()
 	frames(tt)
 	kinds = map[store.Kind]int{}
@@ -272,7 +272,7 @@ func TestHistoryAllTab(t *testing.T) {
 	if kinds[store.KindTranscribe] == 0 || kinds[store.KindTranslate] == 0 || kinds[store.KindRewrite] == 0 {
 		t.Errorf("search on All %v", historyIDs(a))
 	}
-	a.hist.query = "无此内容 nothing"
+	a.histUI.query = "无此内容 nothing"
 	a.loadHistory()
 	if !has(tt, "Nothing matches “无此内容 nothing”") {
 		t.Errorf("no search empty state: %q", firstTexts(tt))
@@ -281,7 +281,7 @@ func TestHistoryAllTab(t *testing.T) {
 	if got := a.shownLabel(); got != "All matching “无此内容 nothing”" {
 		t.Errorf("shown label with a search %q", got)
 	}
-	a.hist.query = ""
+	a.histUI.query = ""
 	if got := a.shownLabel(); got != "" {
 		t.Errorf("shown label %q", got)
 	}
@@ -329,19 +329,19 @@ func TestHistorySearch(t *testing.T) {
 	if has(tt, "Hi Anna, thanks for the quick turnaround on the contract. The changes look good to me.") {
 		t.Error("an entry that does not match shows")
 	}
-	a.hist.query = "站会" // under 3 characters: a substring
+	a.histUI.query = "站会" // under 3 characters: a substring
 	a.loadHistory()
 	if ids := historyIDs(a); len(ids) != 1 || ids[0] != histCard {
 		t.Fatalf("search 站会: %v", ids)
 	}
-	a.hist.query = "nothing like this"
+	a.histUI.query = "nothing like this"
 	a.loadHistory()
 	if !has(tt, "Nothing matches “nothing like this”") {
 		t.Fatalf("no empty search state: %q", firstTexts(tt))
 	}
 	click(t, tt, "Clear search")
-	if a.hist.query != "" || len(a.hist.list) != 4 {
-		t.Errorf("after Clear search: %q, %v", a.hist.query, historyIDs(a))
+	if a.histUI.query != "" || len(a.hist.list) != 4 {
+		t.Errorf("after Clear search: %q, %v", a.histUI.query, historyIDs(a))
 	}
 }
 
@@ -372,8 +372,8 @@ func TestHistoryDetail(t *testing.T) {
 	t.Cleanup(func() { revealInFinder = was })
 	a.navigate("/history")
 	click(t, tt, "Let's move the design review to Thursday afternoon.")
-	if a.hist.sel != histInserted {
-		t.Fatalf("selected %q", a.hist.sel)
+	if a.histUI.sel != histInserted {
+		t.Fatalf("selected %q", a.histUI.sel)
 	}
 	for _, s := range []string{
 		"Entry details", "Result", "Recognised text", "Inserted", "Notes",
@@ -401,8 +401,8 @@ func TestHistoryDetail(t *testing.T) {
 
 	// A failed entry: why, no language model, no recording.
 	click(t, tt, "asr.accurate: the speech server stopped answering (15s)")
-	if a.hist.sel != histFailed {
-		t.Fatalf("selected %q", a.hist.sel)
+	if a.histUI.sel != histFailed {
+		t.Fatalf("selected %q", a.histUI.sel)
 	}
 	if !has(tt, "Failed: asr.accurate: the speech server stopped answering (15s)") {
 		t.Errorf("no failure notice: %q", tt.Texts())
@@ -411,8 +411,8 @@ func TestHistoryDetail(t *testing.T) {
 		t.Error("Show in Finder without a recording")
 	}
 	click(t, tt, "Close")
-	if a.hist.sel != "" {
-		t.Errorf("still selected: %q", a.hist.sel)
+	if a.histUI.sel != "" {
+		t.Errorf("still selected: %q", a.histUI.sel)
 	}
 }
 
@@ -434,7 +434,7 @@ func TestHistoryDetailLongTextLaysOutOnce(t *testing.T) {
 	a.navigate("/history")
 	frames(tt)
 	start := time.Now()
-	a.hist.sel = e.ID
+	a.histUI.sel = e.ID
 	frames(tt)
 	open := time.Since(start)
 	if !has(tt, "Entry details") {
@@ -456,7 +456,7 @@ func TestHistoryDelete(t *testing.T) {
 	a.navigate("/history")
 	click(t, tt, "明天上午十点的站会改到线上，链接我稍后发到群里。")
 	click(t, tt, "Delete entry…")
-	if !a.hist.delAsk || !has(tt, "Delete this entry?") {
+	if !a.histUI.delAsk || !has(tt, "Delete this entry?") {
 		t.Fatalf("no confirmation: %q", firstTexts(tt))
 	}
 	click(t, tt, "Cancel")
@@ -471,8 +471,8 @@ func TestHistoryDelete(t *testing.T) {
 	if _, err := a.lib.store.History().Get(context.Background(), histCard); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("still there: %v", err)
 	}
-	if a.hist.sel != "" || len(a.hist.list) != 3 || has(tt, "明天上午十点的站会改到线上，链接我稍后发到群里。") {
-		t.Errorf("after Delete: selected %q, %v", a.hist.sel, historyIDs(a))
+	if a.histUI.sel != "" || len(a.hist.list) != 3 || has(tt, "明天上午十点的站会改到线上，链接我稍后发到群里。") {
+		t.Errorf("after Delete: selected %q, %v", a.histUI.sel, historyIDs(a))
 	}
 }
 

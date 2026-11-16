@@ -63,7 +63,7 @@ func TestHistoryExportText(t *testing.T) {
 		t.Errorf("toast %q", a.toasts)
 	}
 	// Markdown, shown scope (the Transcribe tab).
-	a.hist.tab = 0
+	a.histUI.tab = 0
 	a.exportHistoryText(filepath.Join(dir, "b.md"), historyapi.FormatMarkdown, true)
 	md := read("b.md")
 	if !strings.Contains(md, "Notes: 第一条") || strings.Contains(md, "second") {

@@ -66,7 +66,7 @@ func (a *app) histExportTextRow(c *ui.Context) {
 func (a *app) exportHistoryText(dst, format string, shown bool) {
 	var q store.HistoryQuery
 	if shown {
-		q.Kind, q.Search = a.hist.kind(), a.histSearch()
+		q.Kind, q.Search = a.histUI.kind(), a.histSearch()
 	}
 	h := a.lib.store.History()
 	selection := a.prefs.Privacy.HistorySelection

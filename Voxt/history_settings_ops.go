@@ -47,6 +47,7 @@ func retention(h settings.History, now time.Time) store.Retention {
 // openHistorySettings applies the saved recordings folder and runs the
 // clean-up once, as the app starts (newApp).
 func (a *app) openHistorySettings() {
+	a.homeDir, _ = os.UserHomeDir()
 	a.applyAudioDir()
 	a.pruneHistory()
 }
@@ -260,7 +261,7 @@ func (a *app) exportRecordings(dir string, shown bool) {
 	h := a.lib.store.History()
 	q := store.HistoryQuery{WithAudio: true}
 	if shown {
-		q.Kind, q.Search = a.hist.kind(), a.histSearch()
+		q.Kind, q.Search = a.histUI.kind(), a.histSearch()
 	}
 	ctx, progress := a.startWork("export")
 	a.async(func() {

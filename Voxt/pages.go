@@ -86,7 +86,11 @@ func (a *app) page(c *ui.Context, p navPage) {
 		a.rewritePage(c) // feature_page.go
 		return
 	case "/history":
-		a.historyPage(c) // history_page.go
+		a.prepareHistoryPage()
+		model := a.historyPageModel(time.Now())
+		historyPage(c, &model, a, &a.histUI, a.pageWidth(c))
+		historyDeleteDialog(c, &a.histUI, a)
+		a.historySettingsDialog(c)
 		return
 	case "/app-enhancement":
 		a.appEnhancementPage(c) // appenhance_page.go

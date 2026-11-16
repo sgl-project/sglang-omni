@@ -73,7 +73,7 @@ func keepCountLabels() []string {
 }
 
 // histSearch is the History page's search.
-func (a *app) histSearch() string { return strings.TrimSpace(a.hist.query) }
+func (a *app) histSearch() string { return strings.TrimSpace(a.histUI.query) }
 
 // historySettingsButton is the History page's button that opens the
 // dialog, right of its search field.
@@ -193,10 +193,11 @@ func (a *app) histRecordingsSection(c *ui.Context) {
 // shownLabel names the recordings the History page shows: its tab, and
 // its search; "" when it shows them all (All, no search).
 func (a *app) shownLabel() string {
-	tab := historyTabs()[min(max(a.hist.tab, 0), len(historyTabs())-1)]
+	tabs := historyTabsFor(i18n.CurrentTranslator())
+	tab := tabs[min(max(a.histUI.tab, 0), len(tabs)-1)]
 	q := a.histSearch()
 	if q == "" {
-		if a.hist.kind() == "" {
+		if a.histUI.kind() == "" {
 			return ""
 		}
 		return i18n.T("%s only", tab)

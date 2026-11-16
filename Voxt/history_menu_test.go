@@ -121,8 +121,8 @@ func TestEntryMenuActions(t *testing.T) {
 	if got := tt.Clipboard(); got != "um so let's move the design review to thursday afternoon and I'll send the new agenda tonight" {
 		t.Errorf("clipboard = %q", got)
 	}
-	if a.hist.sel != "" {
-		t.Errorf("Copy selected %q", a.hist.sel)
+	if a.histUI.sel != "" {
+		t.Errorf("Copy selected %q", a.histUI.sel)
 	}
 	fallback := keptInFallbackFolder(t, a, histInserted+".wav")
 	openMenu(t, tt, row)
@@ -136,15 +136,15 @@ func TestEntryMenuActions(t *testing.T) {
 	for range 2 {
 		openMenu(t, tt, row)
 		choose(t, tt, "Show details")
-		if a.hist.sel != histInserted || !has(tt, "Entry details") {
-			t.Fatalf("Show details: selected %q", a.hist.sel)
+		if a.histUI.sel != histInserted || !has(tt, "Entry details") {
+			t.Fatalf("Show details: selected %q", a.histUI.sel)
 		}
 	}
 
 	// Delete asks first; Cancel keeps it.
 	openMenu(t, tt, "明天上午十点的站会改到线上，链接我稍后发到群里。")
 	choose(t, tt, "Delete")
-	if !a.hist.delAsk || a.hist.delID != histCard || !has(tt, "Delete this entry?") {
+	if !a.histUI.delAsk || a.histUI.delID != histCard || !has(tt, "Delete this entry?") {
 		t.Fatalf("no confirmation: %q", firstTexts(tt))
 	}
 	click(t, tt, "Cancel")
@@ -161,8 +161,8 @@ func TestEntryMenuActions(t *testing.T) {
 	if _, err := a.lib.store.History().Get(context.Background(), histCard); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("still there: %v", err)
 	}
-	if a.hist.sel != histInserted || len(a.hist.list) != 3 || has(tt, "明天上午十点的站会改到线上，链接我稍后发到群里。") {
-		t.Errorf("after Delete: selected %q, %v", a.hist.sel, historyIDs(a))
+	if a.histUI.sel != histInserted || len(a.hist.list) != 3 || has(tt, "明天上午十点的站会改到线上，链接我稍后发到群里。") {
+		t.Errorf("after Delete: selected %q, %v", a.histUI.sel, historyIDs(a))
 	}
 	// The other observers heard of it: Home reads again when it shows,
 	// the menu bar's recent results now.
@@ -212,8 +212,8 @@ func TestHomeRecentMenu(t *testing.T) {
 	nextTitle, _ := uitext.EntryTitle(next)
 	openMenu(t, tt, nextTitle)
 	choose(t, tt, "Show details")
-	if a.router.Path() != "/history" || a.hist.sel != next.ID {
-		t.Errorf("opened %s sel %q", a.router.Path(), a.hist.sel)
+	if a.router.Path() != "/history" || a.histUI.sel != next.ID {
+		t.Errorf("opened %s sel %q", a.router.Path(), a.histUI.sel)
 	}
 }
 
@@ -238,13 +238,13 @@ func TestHistoryRowKeys(t *testing.T) {
 	}
 	// The row still takes clicks: a second one hides the details.
 	click(t, tt, "Let's move the design review to Thursday afternoon.")
-	if a.hist.sel != "" {
-		t.Errorf("still selected: %q", a.hist.sel)
+	if a.histUI.sel != "" {
+		t.Errorf("still selected: %q", a.histUI.sel)
 	}
 	tt.Key(0, ui.KeyBackspace)
 	frames(tt)
-	if !a.hist.delAsk || a.hist.delID != histInserted {
-		t.Errorf("⌫ asked %v for %q", a.hist.delAsk, a.hist.delID)
+	if !a.histUI.delAsk || a.histUI.delID != histInserted {
+		t.Errorf("⌫ asked %v for %q", a.histUI.delAsk, a.histUI.delID)
 	}
 	click(t, tt, "Cancel")
 	// No text at all: ⌘C copies nothing.
