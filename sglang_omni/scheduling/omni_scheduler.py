@@ -2087,7 +2087,7 @@ class OmniScheduler(Generic[RequestDataT]):
     def prepare_request_limits(
         self,
         req_data: RequestDataT | SGLangARRequestData,
-         *,
+        *,
         speculative_reserve_tokens: int = 0,
     ) -> str | None:
         req = req_data.req
