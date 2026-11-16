@@ -11,6 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 type notesState struct {
@@ -31,6 +32,8 @@ type notesView struct {
 type notesViewCacheKey struct {
 	seq           int
 	locale        string
+	loading       bool
+	problems      string
 	minute        int64
 	location      string
 	zoneOffset    int
@@ -88,8 +91,10 @@ func (a *app) notesPageModel(now time.Time) notesViewState {
 		Selection: local.keys.sel, Custom: local.keys.custom, Typing: local.keys.typing,
 		Edited: local.keys.edited, Text: local.keys.text, RecordDenied: local.keys.recordDenied, Unknown: local.keys.unknown,
 	}
+	problems := uitext.HotkeyProblemsFor(i18n.CurrentTranslator(), a.prefs.Features, hotkey.Note)[0]
 	key := notesViewCacheKey{
-		seq: a.nv.seq, locale: i18n.Locale(), minute: now.Unix() / 60, location: now.Location().String(), zoneOffset: zoneOffset,
+		seq: a.nv.seq, locale: i18n.Locale(), loading: a.nv.loading, problems: strings.Join(problems, "\x00"),
+		minute: now.Unix() / 60, location: now.Location().String(), zoneOffset: zoneOffset,
 		keys: current, helperRecords: a.helperRecordsKeys(), editing: editing, usedBy: strings.Join(usedBy, "\x00"),
 	}
 	if key != a.nv.viewKey {

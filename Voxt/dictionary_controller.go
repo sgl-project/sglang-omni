@@ -37,6 +37,7 @@ type dictView struct {
 	all             []store.Term
 	importing       bool
 	legacyAvailable bool
+	legacyReads     int
 	scan            scanState
 	example         notesExampleCache
 	termRows        []dictionaryTermViewState
@@ -44,12 +45,22 @@ type dictView struct {
 }
 
 type dictionaryTermRowsCacheKey struct {
-	seq    int
-	locale string
+	seq     int
+	locale  string
+	loading bool
 }
 
 func (a *app) dictShown() {
-	a.dv.legacyAvailable = legacyLibrary() != ""
+	a.dv.legacyReads++
+	read := a.dv.legacyReads
+	a.async(func() {
+		available := legacyLibrary() != ""
+		a.post(func() {
+			if read == a.dv.legacyReads {
+				a.dv.legacyAvailable = available
+			}
+		})
+	})
 	a.loadDict()
 }
 
@@ -98,7 +109,7 @@ func (a *app) searchDictionary(query string) {
 
 func (a *app) dictionaryPageModel() dictionaryViewState {
 	translator := i18n.CurrentTranslator()
-	key := dictionaryTermRowsCacheKey{seq: a.dv.seq, locale: translator.Locale()}
+	key := dictionaryTermRowsCacheKey{seq: a.dv.seq, locale: translator.Locale(), loading: a.dv.loading}
 	if key != a.dv.termRowsKey {
 		a.dv.termRows = buildDictionaryTermViewStates(translator, a.dv.list)
 		a.dv.termRowsKey = key

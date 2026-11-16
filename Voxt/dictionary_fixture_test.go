@@ -15,6 +15,7 @@ import (
 
 func TestDictionaryFixtureCoverage(t *testing.T) {
 	for _, locale := range i18n.Supported() {
+		translator := i18n.NewTranslator(locale)
 		fixtures := readMeetingFixtures(t, locale)
 		sources, stages, editorErrors, scanErrors := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 		tabs, noteProblems, noteSystems, parseErrors := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -45,6 +46,15 @@ func TestDictionaryFixtureCoverage(t *testing.T) {
 				}
 				if state.Shortcut.ParseCode != "" {
 					parseErrors[state.Shortcut.ParseCode] = true
+				}
+				if !state.Shortcut.Custom {
+					wantSelection := notesChordLabelFor(translator, state.Shortcut.Keys)
+					if state.Shortcut.Keys == "" {
+						wantSelection = translator.T("Off")
+					}
+					if state.Shortcut.Selection != wantSelection || state.Shortcut.Text != state.Shortcut.Keys {
+						t.Errorf("%s: shortcut selection %q and text %q do not match keys %q", locale, state.Shortcut.Selection, state.Shortcut.Text, state.Shortcut.Keys)
+					}
 				}
 			}
 		}

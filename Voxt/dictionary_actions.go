@@ -21,7 +21,6 @@ type dictionaryActions interface {
 	openDictionaryScan()
 	startScan()
 	stopDictionaryScan()
-	saveNotes()
 	autosaveDictionaryNotes(changed, focused bool) dictionaryNotesViewState
 	setDictionaryNotesOff(off bool)
 }

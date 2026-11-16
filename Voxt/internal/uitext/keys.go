@@ -77,7 +77,7 @@ func keyGlyphFor(translator *i18n.Translator, k string) string {
 	case "Escape":
 		return translator.T("Esc")
 	case "Delete":
-		return i18n.T("Delete")
+		return translator.T("Delete")
 	case "ForwardDelete":
 		return "⌦"
 	case "Left":

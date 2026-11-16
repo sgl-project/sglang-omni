@@ -24,7 +24,6 @@ func newMeetingDemoTester(t *testing.T, host *meetingDemoHost) *ui.Tester {
 	tester.SetLocale(fixture.locale)
 	tester.SetFontSmoothing(hudSmoothing)
 	frames(tester)
-	host.calls = nil
 	return tester
 }
 

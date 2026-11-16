@@ -90,13 +90,13 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 		}},
 		{name: "note key press", fixture: "en/notes-shortcut-custom", steps: []historyDemoStep{{key: ui.KeyK}}, want: []string{`recordNoteKeys "K"`}},
 		{name: "note key draft", fixture: "en/notes-shortcut-parse-empty", steps: []historyDemoStep{{label: "Custom keys to record a note", text: "Control+Option+K"}}, want: []string{`updateNoteKeysDraft "Control+Option+K"`}},
-		{name: "note key save", fixture: "en/notes-shortcut-typing", steps: []historyDemoStep{{label: "Custom keys to record a note", text: "X"}, {key: ui.KeyEnter}}, want: []string{`updateNoteKeysDraft "Control+Option+KX"`, `setNoteKeys "Control+Option+KX"`}},
+		{name: "note key save", fixture: "en/notes-shortcut-typing", steps: []historyDemoStep{{label: "Custom keys to record a note", text: "X"}, {key: ui.KeyEnter}}, want: []string{`setNoteKeys "Control+Option+K"`, `updateNoteKeysDraft "Control+Option+KX"`, `setNoteKeys "Control+Option+KX"`}},
 		{name: "type keys", fixture: "en/notes-shortcut-custom", steps: historySteps("Type the keys instead"), want: []string{"setNoteHotkeyFocus false"}, check: func(t *testing.T, host *meetingDemoHost) {
 			if !host.notesUI.keys.typing {
 				t.Fatal("typed key editor did not open")
 			}
 		}},
-		{name: "record keys", fixture: "en/notes-shortcut-typing", steps: historySteps("Press the keys instead"), check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "record keys", fixture: "en/notes-shortcut-typing", steps: historySteps("Press the keys instead"), want: []string{`setNoteKeys "Control+Option+K"`}, check: func(t *testing.T, host *meetingDemoHost) {
 			if host.notesUI.keys.typing {
 				t.Fatal("key recorder did not reopen")
 			}

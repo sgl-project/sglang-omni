@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
 func TestHotkeyText(t *testing.T) {
@@ -31,6 +32,15 @@ func TestHotkeyText(t *testing.T) {
 		if got := HotkeyText(keys); got != want {
 			t.Errorf("HotkeyText(%q) = %q, want %q", keys, got, want)
 		}
+	}
+}
+
+func TestHotkeyTextExplicitLocale(t *testing.T) {
+	previous := i18n.Locale()
+	i18n.SetLocale("en")
+	t.Cleanup(func() { i18n.SetLocale(previous) })
+	if got, want := HotkeyTextFor(i18n.NewTranslator("zh-Hans"), "Control+Delete"), "⌃删除"; got != want {
+		t.Fatalf("HotkeyTextFor = %q, want %q", got, want)
 	}
 }
 

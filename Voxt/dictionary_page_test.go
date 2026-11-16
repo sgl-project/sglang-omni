@@ -453,3 +453,20 @@ func TestDictionaryNotesExampleCached(t *testing.T) {
 	}
 	i18n.SetLocale("en")
 }
+
+func TestDictionaryPageModelAppliesCompletedRead(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	seedTerms(t, a)
+	posts := make(chan func(), 8)
+	a.postQueue = func(fn func()) { posts <- fn }
+	a.navigate("/dictionary")
+	model := a.dictionaryPageModel()
+	if !model.Loading || len(model.Terms) != 0 {
+		t.Fatalf("initial model: loading %t, rows %d", model.Loading, len(model.Terms))
+	}
+	drainPosts(posts)
+	model = a.dictionaryPageModel()
+	if model.Loading || len(model.Terms) != 5 {
+		t.Fatalf("completed model: loading %t, rows %d", model.Loading, len(model.Terms))
+	}
+}

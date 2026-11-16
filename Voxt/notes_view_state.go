@@ -105,6 +105,13 @@ func buildNotesShortcutViewState(translator *i18n.Translator, input notesViewSta
 		RecordDenied: input.Editing.RecordDenied, Unknown: input.Editing.Unknown, UsedBy: input.UsedBy,
 		SetHint: current == "",
 	}
+	if !input.Editing.Custom {
+		state.Selection = notesChordLabelFor(translator, current)
+		state.Text, state.EditingText = current, uitext.HotkeyTextFor(translator, current)
+		if current == "" {
+			state.Selection = translator.T("Off")
+		}
+	}
 	state.EmptyHint = translator.T("Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.")
 	state.Problems = uitext.HotkeyProblemsFor(translator, input.Features, hotkey.Note)[0]
 	for _, problem := range hotkey.Check(input.Features) {
