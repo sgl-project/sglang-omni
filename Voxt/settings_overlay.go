@@ -207,7 +207,7 @@ func (a *app) overlayPreview(c *ui.Context) {
 		}
 		place.Children(func() {
 			c.SetTheme(overlayTheme())
-			row, _ := recordingPillRow(state.Pill, true, o.ShowTime, 0, func(k ovSized) (float32, bool) {
+			row, _ := recordingPillRow(&state.Pill, true, o.ShowTime, 0, func(k ovSized) (float32, bool) {
 				width, _ := c.MeasureText(k.wrap, k.span())
 				return width, true
 			})
@@ -218,7 +218,7 @@ func (a *app) overlayPreview(c *ui.Context) {
 				ui.Box(c).Absolute().Fill().Radius(radius).Material(glass.Blur{Radius: 8})
 				face := ui.Column(c.Key("ov-preview-face")).Absolute().Left(0).Top(0).Right(0).Bottom(0)
 				faceStyle(face, radius, layout.FaceAlpha(o)).Children(func() {
-					overlayPill(c, state, pillLook{time: o.ShowTime, w: w}, nil)
+					overlayPill(c, &state, pillLook{time: o.ShowTime, w: w}, nil)
 				})
 			})
 			c.SetTheme(t)

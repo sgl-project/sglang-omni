@@ -360,18 +360,23 @@ func sessionCardLiveKeyFor(input sessionCardProjectionInput) sessionCardLiveProj
 
 func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 	snapshot := a.sess
-	provider, _ := a.llmService(a.answer.llmID)
 	kind := a.answer.kind
 	if !a.answer.open {
 		kind = snapshot.Kind
 	}
-	return sessionCardProjectionInput{
+	input := sessionCardProjectionInput{
 		Snapshot: snapshot, Answer: a.answer, Own: a.cardSessionLive(), Writing: a.writingAnswer(),
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShownDraft: a.shownDraft(snapshot),
-		FollowKeys: a.featureKeys(hotkey.Rewrite), CanFollowUp: a.canFollowUp(),
-		ThinkingProvider: provider, Generation: a.llmGeneration(a.answer.llmID),
 		SizeStep: a.prefs.Features.CardSize(string(kind)),
 	}
+	if !a.answer.open {
+		return input
+	}
+	input.FollowKeys = a.featureKeys(hotkey.Rewrite)
+	input.CanFollowUp = a.canFollowUp()
+	input.ThinkingProvider, _ = a.llmService(a.answer.llmID)
+	input.Generation = a.llmGeneration(a.answer.llmID)
+	return input
 }
 
 func (a *app) refreshSessionCardProjection(projection *sessionOverlayProjection, next *sessionOverlayViewState) {

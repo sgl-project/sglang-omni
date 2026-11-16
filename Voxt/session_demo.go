@@ -43,7 +43,7 @@ func (host *meetingDemoHost) sessionLocal() sessionOverlayLocal {
 
 func (host *meetingDemoHost) rebuildSessionOverlayLayout() sessionOverlayLayout {
 	overlay := host.sessionSeed.Overlay
-	host.sessionLayout = sessionOverlayLayoutFor(host.sessionState, sessionOverlayLayoutInput{
+	host.sessionLayout = sessionOverlayLayoutFor(&host.sessionState, sessionOverlayLayoutInput{
 		Measure:  host.measureSessionOverlayText,
 		WorkArea: ovTestArea,
 		Overlay:  overlay,

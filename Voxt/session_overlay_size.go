@@ -1,8 +1,6 @@
 package main
 
 import (
-	"time"
-
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -11,16 +9,13 @@ import (
 )
 
 func (a *app) overlaySize(mode overlayMode) (width, height int, exact bool) {
-	if mode != ovAnswer {
-		a.refreshSessionOverlay(time.Now())
-	}
 	if mode == ovAnswer {
 		return a.cardSize()
 	}
-	return a.sessionOverlaySize(a.ov.projection.view)
+	return a.sessionOverlaySize(&a.ov.projection.view)
 }
 
-func (a *app) sessionOverlaySize(state sessionOverlayViewState) (width, height int, exact bool) {
+func (a *app) sessionOverlaySize(state *sessionOverlayViewState) (width, height int, exact bool) {
 	overlay := a.prefs.Overlay
 	if a.measure == nil {
 		a.measure = a.ovText
@@ -50,7 +45,7 @@ func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
 	if name := uitext.SceneShort(snapshot); name != "" {
 		scene = float32(textWidth(name, float64(layout.SceneSize)))
 	}
-	row, _ := recordingPillRow(pill, true, showTime, scene, func(key ovSized) (float32, bool) {
+	row, _ := recordingPillRow(&pill, true, showTime, scene, func(key ovSized) (float32, bool) {
 		return float32(textWidth(key.text, float64(key.size))), true
 	})
 	return row + 2*layout.PillPadX
@@ -121,6 +116,5 @@ func (a *app) cardBodyMax(card *sessionCardViewState) int {
 }
 
 func (a *app) cardSize() (width, height int, exact bool) {
-	a.refreshSessionOverlay(time.Now())
-	return a.sessionOverlaySize(a.ov.projection.view)
+	return a.sessionOverlaySize(&a.ov.projection.view)
 }

@@ -46,8 +46,8 @@ type pillLook struct {
 // overlayPill draws the recording or working pill from state: the feature's
 // icon, waveform or loader, optional time and scene, live line, and any skip
 // or thinking capsule. Its controls go through actions.
-func overlayPill(c *ui.Context, state sessionOverlayViewState, look pillLook, actions sessionOverlayActions) {
-	pill := state.Pill
+func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, actions sessionOverlayActions) {
+	pill := &state.Pill
 	text, hint := pill.LiveText, pill.LiveHint
 	var skip, thinkClicked bool
 	// The face's border takes layout.Border of its padding (MyGo's border box).
@@ -118,7 +118,7 @@ func overlayPill(c *ui.Context, state sessionOverlayViewState, look pillLook, ac
 // startingIcon is the feature's icon while the microphone or the speech
 // model starts (Voxt's initializing icon): it breathes, and a ring pings
 // out of it (layout.MicRing, layout.MicPulse); still without motion.
-func startingIcon(c *ui.Context, pill sessionPillViewState, look pillLook) {
+func startingIcon(c *ui.Context, pill *sessionPillViewState, look pillLook) {
 	d, ringA := layout.MicRing(look.phase, look.motion)
 	iconA, scale := layout.MicPulse(look.phase, look.motion)
 	ui.Box(c.Key("ov-starting")).Size(layout.IconSlot, layout.RowH).Shrink(0).Center().Label(pill.WaitingLabel).Children(func() {

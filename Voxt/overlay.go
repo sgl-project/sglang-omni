@@ -68,7 +68,7 @@ type sessionOverlayMeasurement struct {
 }
 
 func sessionOverlayContent(
-	state func() sessionOverlayViewState,
+	state func() *sessionOverlayViewState,
 	layoutState func() sessionOverlayLayout,
 	actions sessionOverlayActions,
 	local sessionOverlayLocal,
@@ -83,7 +83,7 @@ func sessionOverlayContent(
 
 func sessionOverlayView(
 	context *ui.Context,
-	state sessionOverlayViewState,
+	state *sessionOverlayViewState,
 	layoutState sessionOverlayLayout,
 	actions sessionOverlayActions,
 	local sessionOverlayLocal,

@@ -104,6 +104,7 @@ func TestLiveLines(t *testing.T) {
 	a.navigate("/settings/overlay")
 	frames(tt)
 	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: "Meet at three"}
+	a.refreshSessionOverlay(time.Now())
 	if w, h, _ := a.overlaySize(ovRecording); w >= layout.LinesW || h != layout.LiveH {
 		t.Fatalf("one line: %d×%d", w, h)
 	}
@@ -114,13 +115,16 @@ func TestLiveLines(t *testing.T) {
 	if !a.settings.Get().Overlay.LiveLines {
 		t.Fatal("not saved")
 	}
+	a.refreshSessionOverlay(time.Now())
 	_, one, _ := a.overlaySize(ovRecording)
 	if w, _, _ := a.overlaySize(ovRecording); w != layout.LinesW {
 		t.Errorf("lines: %d wide", w)
 	}
 	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 12)
+	a.refreshSessionOverlay(time.Now())
 	_, some, _ := a.overlaySize(ovRecording)
 	a.sess.Partial = strings.Repeat("and then the meeting moves to Thursday ", 200)
+	a.refreshSessionOverlay(time.Now())
 	_, most, _ := a.overlaySize(ovRecording)
 	if !(one < some && some < most) || most != layout.LinesHeight(layout.LinesMax*layout.LineH) {
 		t.Errorf("heights: one line %d, a few %d, many %d (most %d)", one, some, most, layout.LinesHeight(layout.LinesMax*layout.LineH))
@@ -145,6 +149,7 @@ func TestRewriteWritesIntoCard(t *testing.T) {
 	if m := a.overlayModeNow(); m != ovAnswer {
 		t.Fatalf("writing: mode %v", m)
 	}
+	a.refreshSessionOverlay(time.Now())
 	w, h, _ := a.cardSize()
 	if v := a.cachedCard(); cardTextForTest(v) != "Short." || !v.Busy || w != layout.CardSizes[0].W || h <= layout.CardChrome || h >= layout.CardChrome+layout.CardBodyMax {
 		t.Errorf("the writing card: %q busy %v, %d×%d", cardTextForTest(v), v.Busy, w, h)

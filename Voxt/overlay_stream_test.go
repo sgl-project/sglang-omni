@@ -104,7 +104,7 @@ func TestStreamedAnswerNoDip(t *testing.T) {
 		snap(a, s)
 		clock.advance(20 * time.Millisecond)
 		check("guessed")
-		for _, k := range sessionOverlayTexts(a.ov.projection.view, a.currentSessionOverlayLayout()) { // the view's measure: a line less than the guess
+		for _, k := range sessionOverlayTexts(&a.ov.projection.view, a.currentSessionOverlayLayout()) { // the view's measure: a line less than the guess
 			if _, ok := a.ov.textW[k]; !ok {
 				w, h := guessText(k)
 				if a.ov.textW == nil {

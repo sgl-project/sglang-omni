@@ -39,7 +39,7 @@ func kindTitleText(title string) ovSized { return ovSized{title, 12, 500, 0} }
 
 func capsuleText(text string) ovSized { return ovSized{text, 11, 600, 0} }
 
-func recordingPillRow(pill sessionPillViewState, label, showTime bool, scene float32, measure func(ovSized) (float32, bool)) (int, bool) {
+func recordingPillRow(pill *sessionPillViewState, label, showTime bool, scene float32, measure func(ovSized) (float32, bool)) (int, bool) {
 	modeLabel := float32(0)
 	exact := true
 	if label && !pill.Starting {
@@ -79,7 +79,7 @@ type sessionOverlayLayoutInput struct {
 const streamGrowStep = 4 * 19
 
 // sessionOverlayLayoutFor computes the native face model without owning an app or a window.
-func sessionOverlayLayoutFor(state sessionOverlayViewState, input sessionOverlayLayoutInput) sessionOverlayLayout {
+func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverlayLayoutInput) sessionOverlayLayout {
 	model := sessionOverlayLayout{
 		Radius: float32(input.Overlay.Radius), Alpha: float32(min(max(input.Overlay.Opacity, 0.5), 1)),
 		ShowTime: input.Overlay.ShowTime, LiveLines: input.Overlay.LiveLines, Top: input.Overlay.Position == "top",
@@ -114,7 +114,7 @@ func sessionOverlayLayoutFor(state sessionOverlayViewState, input sessionOverlay
 			model.Width, model.Exact = layout.NoticeWidth(textWidth, notice.Action != actionNone), exact
 		}
 	case ovRecording, ovWorking:
-		pill := state.Pill
+		pill := &state.Pill
 		scene := float32(0)
 		if pill.SceneText != "" {
 			scene, model.Exact = measureWidth(sceneText(pill.SceneText))
@@ -225,7 +225,7 @@ func sessionOverlayCardBodyHeight(card *sessionCardViewState, measureHeight func
 	return min(int(math.Ceil(float64(height))), bodyMax), streamHeight, exact
 }
 
-func sessionOverlayTexts(state sessionOverlayViewState, layoutState sessionOverlayLayout) []ovSized {
+func sessionOverlayTexts(state *sessionOverlayViewState, layoutState sessionOverlayLayout) []ovSized {
 	var texts []ovSized
 	switch state.Mode {
 	case ovNotice:
@@ -233,7 +233,7 @@ func sessionOverlayTexts(state sessionOverlayViewState, layoutState sessionOverl
 			texts = append(texts, noticeText(state.Notice.Text))
 		}
 	case ovRecording, ovWorking:
-		pill := state.Pill
+		pill := &state.Pill
 		if pill.SceneText != "" {
 			texts = append(texts, sceneText(pill.SceneText))
 		}
@@ -266,7 +266,7 @@ func sessionOverlayTexts(state sessionOverlayViewState, layoutState sessionOverl
 	return texts
 }
 
-func sessionOverlayMeasure(context *ui.Context, state sessionOverlayViewState, layoutState sessionOverlayLayout, onMeasured func([]sessionOverlayMeasurement)) {
+func sessionOverlayMeasure(context *ui.Context, state *sessionOverlayViewState, layoutState sessionOverlayLayout, onMeasured func([]sessionOverlayMeasurement)) {
 	var measurements []sessionOverlayMeasurement
 	var keys []ovSized
 	for _, key := range sessionOverlayTexts(state, layoutState) {

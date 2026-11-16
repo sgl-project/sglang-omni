@@ -11,7 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
-func overlayCard(context *ui.Context, state sessionOverlayViewState, layoutState sessionOverlayLayout, actions sessionOverlayActions, local sessionOverlayLocal, animation sessionOverlayAnimation) {
+func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutState sessionOverlayLayout, actions sessionOverlayActions, local sessionOverlayLocal, animation sessionOverlayAnimation) {
 	card := state.Card
 	if card == nil {
 		return

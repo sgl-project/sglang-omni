@@ -119,9 +119,9 @@ func (a *app) overlaySync() {
 	}
 	if a.ov.win == nil {
 		content := sessionOverlayContent(
-			func() sessionOverlayViewState {
+			func() *sessionOverlayViewState {
 				a.refreshSessionOverlay(time.Now())
-				return a.ov.projection.view
+				return &a.ov.projection.view
 			},
 			func() sessionOverlayLayout { return a.currentSessionOverlayLayout() },
 			a,
@@ -189,7 +189,7 @@ func (a *app) overlayDragged() {
 }
 
 func (a *app) syncPassThrough() {
-	pill := a.ov.projection.view.Pill
+	pill := &a.ov.projection.view.Pill
 	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking && !pill.CanSkip && !pill.CanThink) && !a.prefs.Overlay.LiveLines
 	if pass == a.ov.passThrough {
 		return

@@ -146,7 +146,7 @@ func TestSessionOverlayDemoMatchesProduction(t *testing.T) {
 			a.ov.textW = nil
 			a.ov.projection.pillReady = false
 			a.refreshSessionOverlay(meetingFixtureNow)
-			width, height, _ := a.sessionOverlaySize(a.ov.projection.view)
+			width, height, _ := a.sessionOverlaySize(&a.ov.projection.view)
 			a.ov.mode, a.ov.w, a.ov.h = a.ov.projection.view.Mode, width, height
 			placement := host.sessionDemoPlacement()
 			if placement.overlay.Width != width+2*layout.Pad || placement.overlay.Height != height+2*layout.Pad {
@@ -180,7 +180,7 @@ func sessionFixtureScenarioNamed(t *testing.T, name string) sessionFixtureScenar
 
 func newSessionProductionComparisonTester(a *app, width, height int) *ui.Tester {
 	tester := ui.NewTester(func(context *ui.Context) {
-		sessionOverlayView(context, a.ov.projection.view, a.currentSessionOverlayLayout(), a,
+		sessionOverlayView(context, &a.ov.projection.view, a.currentSessionOverlayLayout(), a,
 			sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui}, sessionOverlayAnimation{}, a.postSessionOverlayMeasurements, nil)
 	}, width, height)
 	tester.SetLocale("en")
@@ -191,7 +191,7 @@ func newSessionProductionComparisonTester(a *app, width, height int) *ui.Tester 
 func newSessionJSONComparisonTester(host *meetingDemoHost, width, height int) *ui.Tester {
 	tester := ui.NewTester(func(context *ui.Context) {
 		host.rebuildSessionOverlayLayout()
-		sessionOverlayView(context, host.sessionState, host.sessionLayout, host, host.sessionLocal(),
+		sessionOverlayView(context, &host.sessionState, host.sessionLayout, host, host.sessionLocal(),
 			sessionOverlayAnimation{}, host.applySessionOverlayMeasurements, nil)
 	}, width, height)
 	tester.SetLocale(host.current().locale)

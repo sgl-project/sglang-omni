@@ -377,7 +377,7 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 			input.ThinkingLabel = a.pillThinkText().text
 		}
 	}
-	next := projection.view
+	next := &projection.view
 	next.Revision, next.SessionID, next.State, next.Mode = a.sess.Rev, a.sess.ID, string(a.sess.State), input.Mode
 	next.ProblemCode = ""
 	if a.sess.Problem != nil {
@@ -393,10 +393,10 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 	}
 	next.Card = nil
 	if input.Mode == ovAnswer {
-		a.refreshSessionCardProjection(projection, &next)
+		a.refreshSessionCardProjection(projection, next)
 	}
 	next.Menu = nil
-	a.refreshSessionMenuProjection(projection, &next, locale)
+	a.refreshSessionMenuProjection(projection, next, locale)
 	next.Notice = nil
 	if input.Mode == ovNotice && a.notice != nil {
 		key := sessionNoticeProjectionKey{
@@ -409,5 +409,4 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 		}
 		next.Notice = &projection.notice
 	}
-	projection.view = next
 }

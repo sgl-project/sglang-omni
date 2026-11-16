@@ -450,7 +450,7 @@ func (a *app) overlayView(context *ui.Context) {
 // timed path matches the production content closure.
 func (a *app) overlayBenchmarkView(context *ui.Context) {
 	a.refreshSessionOverlay(time.Now())
-	sessionOverlayView(context, a.ov.projection.view, a.currentSessionOverlayLayout(), a,
+	sessionOverlayView(context, &a.ov.projection.view, a.currentSessionOverlayLayout(), a,
 		sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
 		sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase()},
 		a.postSessionOverlayMeasurements, func() { a.ov.reveal = false; a.post(a.revealOverlay) })

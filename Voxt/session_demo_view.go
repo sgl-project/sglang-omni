@@ -47,7 +47,7 @@ func sessionDemoOverlayView(context *ui.Context, host *meetingDemoHost) {
 	placement := host.sessionDemoPlacement()
 	ui.Box(context).Absolute().Left(float32(placement.overlay.X)).Top(float32(placement.overlay.Y)).
 		Width(float32(placement.overlay.Width)).Height(float32(placement.overlay.Height)).Children(func() {
-		sessionOverlayView(context, host.sessionState, host.sessionLayout, host, host.sessionLocal(),
+		sessionOverlayView(context, &host.sessionState, host.sessionLayout, host, host.sessionLocal(),
 			sessionOverlayAnimation{}, host.applySessionOverlayMeasurements, nil)
 	})
 	if placement.menuState != nil {
