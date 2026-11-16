@@ -59,14 +59,12 @@ type featureUI struct {
 	// rules and preview: the Your rules section and its full prompt, open.
 	rules   bool
 	preview bool
-	// find is the text to find in the rules (⌘F); found the match that
-	// Return selected last, from 1 (0: none yet); findFocus and
-	// findSelect ask, for the next build, for the find field's focus and
-	// for the rules field to select match found.
-	find       string
-	found      int
-	findFocus  bool
-	findSelect bool
+	// find is the text to find in the rules (⌘F); finder the match that
+	// Return selected last (find_marks.go); findFocus asks, for the next
+	// build, for the find field's focus.
+	find      string
+	finder    finder
+	findFocus bool
 	// block says why the Try area's Start did not start.
 	block *sessionNotice
 	// endWord is the end word's select and typed word (Transcribe).

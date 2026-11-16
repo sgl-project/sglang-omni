@@ -1,14 +1,18 @@
 package main
 
 // Meeting settings on the Meetings page (/meetings): capture mode,
-// screen-sharing privacy for the overlay, shortcuts, and consent text.
+// screen-sharing privacy for the overlay, shortcuts, the speech model and
+// its language, the language model, and consent text.
 
 import (
+	"slices"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // meetingSettingsUI is the Meetings page settings controls (not persisted
@@ -76,9 +80,45 @@ func (a *app) meetingSettings(c *ui.Context) {
 			}
 		})
 	a.featureShortcuts(c, hotkey.Meeting)
+	a.meetingASRSettings(c)
 	a.meetingLLMSettings(c)
 	ui.Text(c, i18n.T("Get the other person's consent before you record them speaking.")).
 		FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
+}
+
+// meetingASRSettings are the meeting's speech model (the menu Transcribe
+// has, Automatic first) and the language it listens for.
+func (a *app) meetingASRSettings(c *ui.Context) {
+	t := c.Theme()
+	m := a.prefs.Features.Meeting
+	ready := a.installed(local.ASR)
+	shown := slices.DeleteFunc(slices.Clone(ready), func(x local.Model) bool { return a.modelHidden(x.ID) }) // as featureModels
+	opts, auto := modelOptions(ready, shown)
+	sel := modelLabel(ready, m.ASR, auto)
+	settingRow(c, "mt-asr", i18n.T("Speech recognition"), "", func() {
+		if ui.Select(c.Key("mt-asr-sel"), &sel, opts).Label(i18n.T("Speech model for meetings")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).
+			Disabled(len(ready) == 0).Changed() {
+			id := modelID(opts, shown, sel)
+			a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.ASR = id })
+		}
+	})
+	langOpts := []string{i18n.T("Same as the main language")}
+	for _, code := range mainLanguages {
+		langOpts = append(langOpts, uitext.LangLabel(code))
+	}
+	langSel := langOpts[0]
+	if i := slices.Index(mainLanguages, m.Lang); i >= 0 {
+		langSel = langOpts[i+1]
+	}
+	settingRow(c, "mt-lang", i18n.T("Spoken language"), i18n.T("The language the speech model listens for. Choose one when the whole meeting is in it."), func() {
+		if ui.Select(c.Key("mt-lang-sel"), &langSel, langOpts).Label(i18n.T("Spoken language in meetings")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Changed() {
+			code := ""
+			if i := slices.Index(langOpts, langSel); i > 0 {
+				code = mainLanguages[i-1]
+			}
+			a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.Lang = code })
+		}
+	})
 }
 
 func (a *app) meetingLLMSettings(c *ui.Context) {

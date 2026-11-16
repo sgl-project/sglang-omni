@@ -5,7 +5,7 @@
 Voxt lives in the [SGLang-Omni](https://github.com/sgl-project/sglang-omni) repository and takes its issues and pull requests there, under the repository's licence, the Apache License 2.0. No contributor licence agreement is needed.
 
 - **Bugs**: Settings → About → Report a problem opens a GitHub issue with the diagnostics filled in. Or open an [issue](https://github.com/sgl-project/sglang-omni/issues) by hand, with "[VoxtNew]" in its title: what happened, what you expected, the steps.
-- **Changes**: Voxt does Transcribe, Translate and Rewrite, with App enhancement and the dictionary, on local models only; remote services, meetings, file transcription and notes are out of its scope. For anything larger than a fix, open an issue first.
+- **Changes**: Voxt does Transcribe, Translate and Rewrite, Meetings and Notes, with App enhancement, the dictionary and History, and `Voxt transcribe` for recordings. Speech runs on this Mac or a cloud speech API, and the language models are services the user sets up (README.md, What Voxt does). For anything larger than a fix, open an issue first.
 - Read [AGENTS.md](AGENTS.md) (the rules for changes) and [docs/architecture.md](docs/architecture.md) before changing code.
 
 ## Pull requests
@@ -39,6 +39,6 @@ The store's tests use MyGo's SQLite plugin, which downloads its library once (ch
 Voxt 在 [SGLang-Omni](https://github.com/sgl-project/sglang-omni) 仓库里，问题和 PR 都提到那里，按仓库的 Apache License 2.0 授权，不需要签贡献者协议。
 
 - **报告问题**：设置 → 诊断与关于 → 反馈问题，会打开一个已填好诊断信息的 GitHub issue；也可以手动开 [issue](https://github.com/sgl-project/sglang-omni/issues)，标题带上“[VoxtNew]”，写清发生了什么、你期望什么、复现步骤。
-- **改动**：Voxt 只做转录、翻译、改写，加上应用增强和词典，只用本地模型；远程服务、会议、文件转录、笔记不在范围内。比修 bug 更大的改动，先开 issue 讨论。
+- **改动**：Voxt 做转录、翻译、改写、会议和笔记，加上应用增强、词典和历史，以及转录录音文件的 `Voxt transcribe`。语音识别在本机或用云端语音服务，语言模型是用户自己设置的服务（README.zh-CN.md 的“Voxt 能做什么”）。比修 bug 更大的改动，先开 issue 讨论。
 - 改代码前先读 [AGENTS.md](AGENTS.md)（改动规则）和 [docs/architecture.md](docs/architecture.md)。
 - PR：一个 PR 一件事，带测试；提交信息和代码注释用英文；界面文字都经过 `i18n.T`，并在 `internal/i18n/locales/zh-Hans.json` 补中文；用户能察觉的改动在 [CHANGELOG.md](CHANGELOG.md) 的 `Unreleased` 里中英文各写一行；跑一遍上面的检查。

@@ -128,8 +128,14 @@ std::optional<mx::array> SuppressionMask(const std::vector<int> &token_ids,
 } // namespace
 
 WhisperTranscriber::WhisperTranscriber(
-    const std::filesystem::path &model_directory)
-    : model_(model_directory), tokenizer_(model_directory) {
+    const std::filesystem::path &model_directory,
+    const std::filesystem::path &draft_directory, int draft_steps)
+    : model_(model_directory), draft_steps_(draft_steps),
+      tokenizer_(model_directory) {
+  if (!draft_directory.empty()) {
+    draft_.emplace(draft_directory, model_);
+  } else {
+  }
   const nlohmann::json tokenizer_config =
       ReadJson(model_directory / "tokenizer_config.json");
   clean_up_tokenization_spaces_ =
@@ -237,6 +243,32 @@ WhisperTranscriber::DecodeText(const std::vector<int> &token_ids) const {
   return clean_up_tokenization_spaces_ ? CleanUpTokenizationSpaces(text) : text;
 }
 
+mx::array WhisperTranscriber::NextToken(mx::array logits, bool first_step,
+                                        float temperature) const {
+  // Note (Jiaxin Deng): the float16 decoder's logits are suppressed and
+  // ranked in float32, as the reference Whisper decoder does.
+  logits = mx::astype(logits, mx::float32);
+  if (first_step && begin_suppression_.has_value()) {
+    logits = mx::add(logits, mx::astype(*begin_suppression_, logits.dtype()));
+  } else {
+  }
+  if (step_suppression_.has_value()) {
+    logits = mx::add(logits, mx::astype(*step_suppression_, logits.dtype()));
+  } else {
+  }
+  if (timestamp_suppression_.has_value()) {
+    logits =
+        mx::add(logits, mx::astype(*timestamp_suppression_, logits.dtype()));
+  } else {
+  }
+  if (temperature <= 0.0f) {
+    return mx::argmax(logits, -1);
+  } else {
+    return mx::random::categorical(
+        mx::divide(logits, mx::array(temperature, logits.dtype())));
+  }
+}
+
 WhisperTranscriber::WindowResult
 WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
                                      const std::vector<int> &prompt_ids,
@@ -244,37 +276,16 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
                                      const std::atomic<bool> &cancel) const {
   const mx::array encoder_states = model_.Encode(window_samples);
   std::vector<DecoderLayerCache> caches(model_.config().text_layer_count);
-  const auto next_token = [&](mx::array logits, bool first_step) {
-    // Note (Jiaxin Deng): the float16 decoder's logits are suppressed and
-    // ranked in float32, as the reference Whisper decoder does.
-    logits = mx::astype(logits, mx::float32);
-    if (first_step && begin_suppression_.has_value()) {
-      logits = mx::add(logits, mx::astype(*begin_suppression_, logits.dtype()));
-    } else {
-    }
-    if (step_suppression_.has_value()) {
-      logits = mx::add(logits, mx::astype(*step_suppression_, logits.dtype()));
-    } else {
-    }
-    if (timestamp_suppression_.has_value()) {
-      logits =
-          mx::add(logits, mx::astype(*timestamp_suppression_, logits.dtype()));
-    } else {
-    }
-    if (temperature <= 0.0f) {
-      return mx::argmax(logits, -1);
-    } else {
-      return mx::reshape(
-          mx::random::categorical(mx::expand_dims(
-              mx::divide(logits, mx::array(temperature, logits.dtype())), 0)),
-          {});
-    }
-  };
   const mx::array prompt(prompt_ids.data(),
                          {1, static_cast<int>(prompt_ids.size())}, mx::int32);
-  mx::array token =
-      next_token(model_.Decode(prompt, 0, encoder_states, caches), true);
+  mx::array token = NextToken(
+      model_.Decode(prompt, 0, encoder_states, caches, 1), true, temperature);
   mx::async_eval({token});
+  if (draft_.has_value() && temperature <= 0.0f) {
+    return DecodeWithDraft(encoder_states, prompt, token, caches,
+                           max_new_tokens, cancel);
+  } else {
+  }
   WindowResult result;
   std::vector<int> generated_ids;
   for (int step = 0;; ++step) {
@@ -290,10 +301,10 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
     // decodes while the end of text is checked.
     if (step + 1 < max_new_tokens) {
       token =
-          next_token(model_.Decode(mx::reshape(current, {1, 1}),
-                                   static_cast<int>(prompt_ids.size()) + step,
-                                   encoder_states, caches),
-                     false);
+          NextToken(model_.Decode(mx::reshape(current, {1, 1}),
+                                  static_cast<int>(prompt_ids.size()) + step,
+                                  encoder_states, caches, 1),
+                    false, temperature);
       mx::async_eval({token});
     } else {
     }
@@ -303,6 +314,104 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
     } else {
     }
     generated_ids.push_back(token_id);
+  }
+  result.text = DecodeText(generated_ids);
+  result.generated_token_count = static_cast<int>(generated_ids.size());
+  return result;
+}
+
+WhisperTranscriber::WindowResult WhisperTranscriber::DecodeWithDraft(
+    const mx::array &encoder_states, const mx::array &prompt,
+    const mx::array &first_token, std::vector<DecoderLayerCache> &caches,
+    int max_new_tokens, const std::atomic<bool> &cancel) const {
+  std::vector<DecoderLayerCache> draft_caches(
+      draft_->config().text_layer_count);
+  // Note (XXXXRT666): only the draft's caches of the prompt are used; they are
+  // evaluated with the first round's proposals.
+  draft_->Decode(prompt, 0, encoder_states, draft_caches, 1);
+  WindowResult result;
+  std::vector<int> generated_ids;
+  // Positions the target's caches hold: the prompt, then the output before
+  // the anchor.
+  int position = prompt.shape(1);
+  // Output before the anchor that the draft has not decoded yet.
+  std::vector<int> undrafted_ids;
+  int anchor = static_cast<int>(first_token.item<uint32_t>());
+  while (true) {
+    if (cancel.load()) {
+      throw qwen3_asr::TranscriptionCancelled();
+    } else if (anchor == end_of_text_id_) {
+      break;
+    } else {
+    }
+    generated_ids.push_back(anchor);
+    const int remaining =
+        max_new_tokens - static_cast<int>(generated_ids.size());
+    if (remaining == 0) {
+      result.reached_token_limit = true;
+      break;
+    } else {
+    }
+    // Note (XXXXRT666): the target's token after the last accepted proposal
+    // takes the last place of the budget, so the draft proposes one fewer.
+    const int proposal_count = std::min(draft_steps_, remaining - 1);
+    // Note (XXXXRT666): each proposal feeds the draft's next step on the GPU,
+    // so a round reads back only the target's verdict.
+    std::vector<mx::array> block = {mx::array({static_cast<uint32_t>(anchor)})};
+    if (proposal_count > 0) {
+      int draft_position = position - static_cast<int>(undrafted_ids.size());
+      for (const int token_id : undrafted_ids) {
+        draft_->Decode(mx::array(&token_id, {1, 1}, mx::int32), draft_position,
+                       encoder_states, draft_caches, 1);
+        ++draft_position;
+      }
+      undrafted_ids.clear();
+      for (int i = 0; i < proposal_count; ++i) {
+        block.push_back(NextToken(
+            draft_->Decode(mx::reshape(block.back(), {1, 1}), position + i,
+                           encoder_states, draft_caches, 1),
+            false, 0.0f));
+      }
+    } else {
+      undrafted_ids.push_back(anchor);
+    }
+    const int block_length = proposal_count + 1;
+    const mx::array block_ids = mx::concatenate(block);
+    const mx::array predictions =
+        NextToken(model_.Decode(mx::reshape(block_ids, {1, block_length}),
+                                position, encoder_states, caches, block_length),
+                  false, 0.0f);
+    mx::eval({block_ids, predictions});
+    const uint32_t *block_values = block_ids.data<uint32_t>();
+    const uint32_t *predicted_ids = predictions.data<uint32_t>();
+    int accepted = 0;
+    bool stopped = false;
+    while (accepted < proposal_count &&
+           block_values[accepted + 1] == predicted_ids[accepted]) {
+      ++accepted;
+      if (static_cast<int>(block_values[accepted]) == end_of_text_id_) {
+        stopped = true;
+        break;
+      } else {
+        generated_ids.push_back(static_cast<int>(block_values[accepted]));
+      }
+    }
+    ++result.verify_round_count;
+    result.proposed_draft_token_count += proposal_count;
+    result.accepted_draft_token_count += accepted;
+    if (stopped) {
+      break;
+    } else if (accepted < proposal_count) {
+      TruncateCaches(caches, position + accepted + 1);
+      TruncateCaches(draft_caches, position + accepted + 1);
+    } else if (proposal_count > 0) {
+      // Note (XXXXRT666): the draft proposed the last token without decoding
+      // it.
+      undrafted_ids.push_back(static_cast<int>(block_values[proposal_count]));
+    } else {
+    }
+    anchor = static_cast<int>(predicted_ids[accepted]);
+    position += accepted + 1;
   }
   result.text = DecodeText(generated_ids);
   result.generated_token_count = static_cast<int>(generated_ids.size());
@@ -367,6 +476,9 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
     } else {
     }
     result.generated_token_count += window.generated_token_count;
+    result.verify_round_count += window.verify_round_count;
+    result.proposed_draft_token_count += window.proposed_draft_token_count;
+    result.accepted_draft_token_count += window.accepted_draft_token_count;
     if (window.reached_token_limit) {
       result.finish_reason = qwen3_asr::FinishReason::kLength;
     } else {

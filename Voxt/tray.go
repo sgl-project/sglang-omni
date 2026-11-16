@@ -162,19 +162,17 @@ func (a *app) trayItems() []*mygo.MenuItem {
 		{Label: i18n.T("Paste the last result") + "    " + uitext.HotkeyGlyphs(f.PasteLast.Keys), Click: act(func() { a.pasteLast(a.front) })},
 		{Label: i18n.T("Microphone"), Submenu: a.trayMicrophones(act)},
 	}
-	if a.meetingEnabled() {
-		mt := i18n.T("Start meeting")
-		if a.meetingActive() {
-			mt = i18n.T("End meeting")
-		}
-		items = append(items, &mygo.MenuItem{Label: mt, Click: act(func() {
-			if a.meetingActive() {
-				a.meetingFinish()
-			} else {
-				a.startMeeting()
-			}
-		})})
+	mt := i18n.T("Start meeting")
+	if a.meetingActive() {
+		mt = i18n.T("End meeting")
 	}
+	items = append(items, &mygo.MenuItem{Label: mt, Click: act(func() {
+		if a.meetingActive() {
+			a.meetingFinish()
+		} else {
+			a.startMeeting()
+		}
+	})})
 	if len(a.recent) > 0 {
 		items = append(items, mygo.Separator(), &mygo.MenuItem{Label: i18n.T("Recent results"), Disabled: true})
 		for _, text := range a.recent {
@@ -281,18 +279,19 @@ func (a *app) reopenWindow() {
 	}
 }
 
+// setActivationPolicy is MyGo's; tests replace it. Before App.Run it sets
+// the policy the app launches with.
+var setActivationPolicy = mygo.App.SetActivationPolicy
+
 // setDockShown shows VoxtNew in the Dock or leaves it out (an accessory
-// app); tests replace it. A test app has no Dock.
+// app); tests replace it.
 var setDockShown = func(a *app, shown bool) {
-	if !a.hasMenu {
-		return
-	}
 	p := mygo.ActivationPolicyAccessory
 	if shown {
 		p = mygo.ActivationPolicyRegular
 	}
-	mygo.App.SetActivationPolicy(p)
-	if !shown && a.life.IsVisible() {
+	setActivationPolicy(p)
+	if !shown && a.hasMenu && a.life.IsVisible() {
 		mygo.App.Focus() // macOS deactivates an app that turns accessory: its window stays in front
 	}
 }

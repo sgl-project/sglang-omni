@@ -93,6 +93,7 @@ type shellState struct {
 	logsPanel    bool
 	logsSource   string
 	logsQuery    string
+	logsFind     finder       // Return steps through the filter's matches (find_marks.go)
 	logSel       logSelection // the lines selected (shell_logs_select.go)
 	logsHeight   float32
 	logsDirty    atomic.Bool // a redraw for new lines is on its way

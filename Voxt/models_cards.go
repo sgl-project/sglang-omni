@@ -12,6 +12,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 
@@ -242,12 +243,14 @@ func (a *app) dictationCard(c *ui.Context) {
 	k := tok(t)
 	card(c.Key("model-" + dictation.ModelID)).Children(func() {
 		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
-			ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
 			// modelCard's order: the name, "Built-in" where a size would be and
 			// where it is used, what it is good at, then the labels at the foot.
 			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
 				ui.Column(c).Gap(px(t, 2)).Children(func() {
-					ui.Text(c, uitext.ModelName(dictation.ModelID)).FontWeight(600)
+					ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+						ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
+						ui.Text(c, uitext.ModelName(dictation.ModelID)).FontWeight(600)
+					})
 					meta := i18n.T("Built-in") // nothing to download
 					if used := a.usedBy(local.ASR, dictation.ModelID); used != "" {
 						meta += " · " + used
@@ -287,9 +290,6 @@ func (a *app) modelRow(c *ui.Context, m models.Model, alone bool) {
 		ic = icons.ChatRoundLine
 	}
 	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
-		if alone {
-			ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
-		}
 		// Voxt 1.x's order: the name, then its size and where it is used,
 		// then what it is good at, then the small labels at the foot.
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
@@ -299,6 +299,9 @@ func (a *app) modelRow(c *ui.Context, m models.Model, alone bool) {
 			}
 			ui.Column(c).Gap(px(t, 2)).Children(func() {
 				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+					if alone { // beside the name, as familyCard's header, so the text lines up with a family's (#3854)
+						ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
+					}
 					ui.Text(c, uitext.ModelName(m.ID)).FontWeight(600)
 					if m.Default && !m.Retired {
 						tagChip(c, i18n.T("Default"))
@@ -348,7 +351,7 @@ func (a *app) modelRow(c *ui.Context, m models.Model, alone bool) {
 	// model deleted first: it can still be cancelled or deleted.
 	ds := a.modelStatus[m.Draft]
 	if m.Draft != "" && (st.Installed || ds.Installed || ds.OnDisk || ds.Downloading || ds.Done > 0) {
-		a.draftRow(c, m.Draft)
+		a.draftRow(c, m)
 	}
 }
 
@@ -372,31 +375,54 @@ func (a *app) modelProgress(c *ui.Context, key string, m models.Model, st models
 	}
 }
 
-// draftRow is a speech model's speculative draft (models.Model.Draft) on
-// its card: a small model that proposes several tokens a step for the
-// speech model to check, so that it decodes faster.
-// Installed, the model's server takes it at its next start
-// (models_omni.go); deleting it stops that server first.
-func (a *app) draftRow(c *ui.Context, id string) {
+// draftRow is speech model m's Faster transcription on its card: a
+// switch for its speculative draft (models.Model.Draft), a small model
+// that proposes several tokens a step for the speech model to check, so
+// that it decodes faster. The switch decides whether the model's server
+// takes the draft at its next start (models_omni.go); on without the
+// draft, the row offers its download, and a draft on disk can be deleted
+// with the switch off. Deleting it stops that server first.
+func (a *app) draftRow(c *ui.Context, m models.Model) {
 	t := c.Theme()
 	k := tok(t)
-	d, _ := models.Lookup(id)
-	st := a.modelStatus[id]
+	d, _ := models.Lookup(m.Draft)
+	st := a.modelStatus[m.Draft]
+	on, set := a.prefs.Models.Faster[m.ID] // the switch; never switched: settings.Models.FasterOn
+	if !set {
+		on = st.Installed
+	}
 	ui.Row(c.Key("draft")).Gap(px(t, sp3)).AlignItems(ui.Start).Margin(px(t, sp2), 0, 0, px(t, 32)).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 				ui.Text(c, i18n.T("Faster transcription")).FontWeight(600)
-				infoTip(c.Key("how"), i18n.T("Uses speculative decoding. A small draft model proposes several words at a time, and the speech model checks them."))
+				infoTip(c.Key("how"), i18n.T("Uses speculative decoding: a small draft model (%s) proposes several words at a time, and the speech model checks them. It needs the draft downloaded.", uitext.HumanBytes(d.Size())))
 				if st.Installed {
 					statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
 				}
 			})
-			caption(c, i18n.T("Download to make this model faster."))
+			if on && !st.Installed && !st.Downloading {
+				caption(c.Key("needs"), i18n.T("Download the draft model to use this."))
+			}
 			caption(c.Key("size"), modelSizeText(d, st))
 		})
-		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.modelActions(c, d, st) })
+		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).AlignItems(ui.Center).Children(func() {
+			if on || st.Installed || st.OnDisk || st.Downloading || st.Done > 0 {
+				a.modelActions(c, d, st)
+			}
+			if ui.Switch(c.Key("faster"), &on).Label(i18n.T("Faster transcription for %s", uitext.ModelName(m.ID))).Changed() {
+				v := on
+				a.updateSettings(func(s *settings.Settings) {
+					f := maps.Clone(s.Models.Faster)
+					if f == nil {
+						f = map[string]bool{}
+					}
+					f[m.ID] = v
+					s.Models.Faster = f
+				})
+			}
+		})
 	})
-	if st.Downloading || st.Err != nil { // under the row's text, not the card's icon
+	if st.Downloading || st.Err != nil { // under the draft row's text
 		ui.Column(c.Key("draft-progress")).Margin(0, 0, 0, px(t, 32)).Children(func() { a.modelProgress(c, "draft-err", d, st) })
 	}
 }

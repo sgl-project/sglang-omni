@@ -3,7 +3,7 @@
 Use the OpenAI-compatible `/v1/audio/speech` interface to synthesize text. This
 page covers common part in TTS cookbook inlcluding: model setup, required inputs, and
 implementation-specific options belong in the linked cookbooks. The examples
-use [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints), which accepts text-only requests. Replace the model and add any fields required by your checkpoint.
+use [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice), which accepts text-only requests. Replace the model and add any fields required by your checkpoint.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ model you are serving.
 |---|---|---|
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | Yes | Text-only or voice cloning with `references` |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | Yes | Reference audio or a precomputed speaker embedding |
-| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints) | Yes | Built-in speakers; 1.7B supports instruction control |
+| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice) | Yes | Built-in speakers; 1.7B supports instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | Yes | `task_type: "VoiceDesign"` and non-empty `instructions`; checkpoint `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` uses `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` |
 | [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | Yes | One reference clip; cloning, cross-lingual and instruction modes |
 | [MOSS-TTS](../cookbook/moss_tts.md) | Yes | Optional reference and model-specific duration control |
@@ -379,6 +379,39 @@ curl --fail-with-body -sS -X POST http://localhost:8000/v1/audio/speech \
 ```
 
 To stream the same reference, add `"stream": true` and use the [streaming examples](#streaming). The example allows `us.aws.cdn.hf.co`, the redirect host observed for this clip; if the download redirects to a different host, allow that host too.
+
+## Voice Design
+
+Voice design generates a voice from a text description without reference audio. Support and required fields vary by model. Describing a voice is different from controlling the speaking style of a preset or reference voice.
+
+### Qwen3-TTS VoiceDesign
+
+This example requires the 1.7B VoiceDesign checkpoint, not CustomVoice or Base. The `task_type: "VoiceDesign"` setting is specific to Qwen3-TTS.
+
+Launch VoiceDesign:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --config examples/configs/qwen3_tts_1_7b_voicedesign.yaml \
+  --port 8000
+```
+
+After `/health` returns HTTP 200, provide the text to speak in `input` and a non-empty voice description in `instructions`. Omit `voice` and reference-audio fields.
+
+```bash
+curl --fail-with-body http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    "input": "Hello from Qwen VoiceDesign.",
+    "task_type": "VoiceDesign",
+    "instructions": "A warm, natural young adult voice."
+  }' \
+  --output designed-voice.wav
+```
+
+To stream the generated speech, add `"stream": true` and use the [streaming examples](#streaming). See the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md#voicedesign) for model selection and configuration details.
 
 ## Batch Speech
 

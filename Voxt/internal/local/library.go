@@ -61,7 +61,7 @@ func NewLibrary(m *models.Manager, open Openers, name func(id string) string) *L
 // recommended first; never a retired one. Memory only.
 func (l *Library) Installed(kind Kind) []Model {
 	var out []Model
-	for _, m := range models.Catalog() {
+	for m := range models.All() {
 		if string(m.Kind) == string(kind) && !m.Retired && l.models.Installed(m.ID) {
 			out = append(out, Model{Kind: kind, ID: m.ID, Name: l.name(m.ID), Features: m.Features, Stream: kind == ASR && m.Runtime == models.Omni})
 		}

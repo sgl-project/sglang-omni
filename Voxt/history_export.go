@@ -38,7 +38,10 @@ func (a *app) histExportTextRow(c *ui.Context) {
 	t := c.Theme()
 	hs := &a.histSet
 	settingRow(c, "hist-set-text", i18n.T("Export text"), "", func() {
-		scopes := []string{i18n.T("All entries"), a.shownLabel()}
+		scopes := []string{i18n.T("All entries")}
+		if l := a.shownLabel(); l != "" {
+			scopes = append(scopes, l)
+		}
 		if !slices.Contains(scopes, hs.textScope) {
 			hs.textScope = scopes[0]
 		}
@@ -52,7 +55,7 @@ func (a *app) histExportTextRow(c *ui.Context) {
 			if hs.textFormat == "JSONL" {
 				format, name = historyapi.FormatJSONL, "voxt-history.jsonl"
 			}
-			shown := hs.textScope == scopes[1]
+			shown := len(scopes) > 1 && hs.textScope == scopes[1]
 			chooseHistoryFile(a, name, func(dst string) { a.exportHistoryText(dst, format, shown) })
 		}
 	})

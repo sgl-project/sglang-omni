@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,7 +135,7 @@ func snapshotHistoryDetail(a *app, save func(string)) {
 		i    int
 		name string
 		sel  string
-	}{{1, "history-translate", histTransSel}, {2, "history-rewrite", histRewritten}} {
+	}{{1, "history-translate", histTransSel}, {2, "history-rewrite", histRewritten}, {3, "history-all", histTranslated}} {
 		a.hist.tab, a.hist.sel = tab.i, ""
 		a.loadHistory()
 		save(tab.name)
@@ -214,20 +216,79 @@ func TestHistoryTabs(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	seedHistory(t, a)
 	a.navigate("/history")
-	clickSegment(t, tt, "Feature", 1, 3)
+	clickSegment(t, tt, "Feature", 1, 4)
 	if a.hist.kind() != store.KindTranslate || len(a.hist.list) != 0 {
 		t.Fatalf("translate tab: kind %s, %v", a.hist.kind(), historyIDs(a))
 	}
 	if !has(tt, "No translations yet") {
 		t.Errorf("no empty state on the Translate tab: %q", firstTexts(tt))
 	}
-	clickSegment(t, tt, "Feature", 2, 3)
+	clickSegment(t, tt, "Feature", 2, 4)
 	if !has(tt, "No rewrites yet") {
 		t.Errorf("no empty state on the Rewrite tab: %q", firstTexts(tt))
 	}
-	clickSegment(t, tt, "Feature", 0, 3)
+	clickSegment(t, tt, "Feature", 0, 4)
 	if len(a.hist.list) != 4 {
 		t.Fatalf("transcribe tab: %v", historyIDs(a))
+	}
+}
+
+func TestHistoryAllTab(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/history")
+	clickSegment(t, tt, "Feature", 3, 4)
+	if a.hist.kind() != "" || !has(tt, "No history yet") {
+		t.Fatalf("empty All tab: kind %q, %q", a.hist.kind(), firstTexts(tt))
+	}
+	seedHistory(t, a)
+	seedWriteHistory(t, a)
+	a.loadHistory()
+	frames(tt)
+	// Every feature's entries, newest first, each naming its feature.
+	list := a.hist.list
+	kinds := map[store.Kind]int{}
+	for i, e := range list {
+		kinds[e.Kind]++
+		if i > 0 && e.CreatedAt.After(list[i-1].CreatedAt) {
+			t.Errorf("not newest first at %d: %v", i, historyIDs(a))
+		}
+	}
+	if len(list) != 8 || kinds[store.KindTranscribe] != 4 || kinds[store.KindTranslate] != 2 || kinds[store.KindRewrite] != 2 {
+		t.Fatalf("All tab %v", historyIDs(a))
+	}
+	for _, s := range []string{"Transcribe · 5 minutes ago · Notes · 0:07", "Translate · 8 minutes ago · Slack · → English", "Rewrite · 20 minutes ago", "8 entries"} {
+		if !hasPrefix(tt, s) {
+			t.Errorf("no row %q in %q", s, firstTexts(tt))
+		}
+	}
+	// The search covers every feature.
+	a.hist.query = "Thursday"
+	a.loadHistory()
+	frames(tt)
+	kinds = map[store.Kind]int{}
+	for _, e := range a.hist.list {
+		kinds[e.Kind]++
+	}
+	if kinds[store.KindTranscribe] == 0 || kinds[store.KindTranslate] == 0 || kinds[store.KindRewrite] == 0 {
+		t.Errorf("search on All %v", historyIDs(a))
+	}
+	a.hist.query = "无此内容 nothing"
+	a.loadHistory()
+	if !has(tt, "Nothing matches “无此内容 nothing”") {
+		t.Errorf("no search empty state: %q", firstTexts(tt))
+	}
+	// Export offers the shown entries only when they are not all of them.
+	if got := a.shownLabel(); got != "All matching “无此内容 nothing”" {
+		t.Errorf("shown label with a search %q", got)
+	}
+	a.hist.query = ""
+	if got := a.shownLabel(); got != "" {
+		t.Errorf("shown label %q", got)
+	}
+	// The feature tabs do not name the feature.
+	clickSegment(t, tt, "Feature", 0, 4)
+	if len(a.hist.list) != 4 || !hasPrefix(tt, "5 minutes ago · Notes") || hasPrefix(tt, "Transcribe · ") {
+		t.Errorf("transcribe tab %v %q", historyIDs(a), firstTexts(tt))
 	}
 }
 
@@ -352,6 +413,40 @@ func TestHistoryDetail(t *testing.T) {
 	click(t, tt, "Close")
 	if a.hist.sel != "" {
 		t.Errorf("still selected: %q", a.hist.sel)
+	}
+}
+
+// A record of 60,000 characters (an hour's dictation, a translated article)
+// lays out once when its details open; later frames reuse the layout. Its
+// layout is over MyGo's ordinary cache budget, and every frame laid it out
+// again, about a tenth of a second each (mygo-patches 0014).
+func TestHistoryDetailLongTextLaysOutOnce(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(1100, 720)
+	unit := "So let's move the design review to Thursday afternoon. 我们把设计评审挪到周四下午。\n"
+	// MyGo's text cache is the process's: a text of its own makes this run lay it out anew.
+	long := []rune(fmt.Sprint(time.Now().UnixNano(), " ", strings.Repeat(unit, 60000/len([]rune(unit))+1)))[:60000]
+	e := store.Entry{ID: "01LONGDETAIL", Kind: store.KindTranscribe, CreatedAt: time.Now(), Status: store.StatusDone,
+		AppName: "Notes", RawText: string(long), Result: string(long), Delivery: "insert"}
+	if err := a.lib.store.History().Put(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	a.navigate("/history")
+	frames(tt)
+	start := time.Now()
+	a.hist.sel = e.ID
+	frames(tt)
+	open := time.Since(start)
+	if !has(tt, "Entry details") {
+		t.Fatalf("the details did not open: %q", firstTexts(tt))
+	}
+	start = time.Now()
+	for i := range 10 {
+		tt.Move(800, 150+float32(i)*20)
+		tt.Frame()
+	}
+	if frame := time.Since(start) / 10; frame > open/4 {
+		t.Errorf("a frame over the open details takes %v, opening them %v: the text is laid out again each frame", frame, open)
 	}
 }
 
