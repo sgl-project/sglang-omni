@@ -32,6 +32,14 @@ type settingsPrivacyActions interface {
 	setLogText(on bool)
 }
 
+type settingsMeetingActions interface {
+	setMeetingCaptureMode(captureMode string)
+	setMeetingHideFromSharing(hideFromSharing bool)
+	setMeetingASR(speechModelID string)
+	setMeetingLanguage(languageCode string)
+	setMeetingLLM(languageModelID string)
+}
+
 type settingsOverlayActions interface {
 	overlayEdited()
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
@@ -115,6 +116,25 @@ func (a *app) page(c *ui.Context, p navPage) {
 	}
 	pageHeader(c, pageTitle(p.path), nil)
 	emptyState(c, p.icon, pageTitle(p.path), "", nil)
+}
+
+func (a *app) meetingSettingsDialog(c *ui.Context) {
+	if !a.mvUI.setOpen {
+		return
+	}
+	dialogFrame(c, "mt-set", &a.mvUI.setOpen, i18n.T("Meeting settings"), "", 560, func() {
+		state := a.meetingSettingsModel()
+		meetingCaptureSettings(c, state, a, a.meetingUI)
+		a.featureShortcuts(c, hotkey.Meeting)
+		meetingASRSettings(c, state, a)
+		meetingLLMSettings(c, state, a)
+		meetingConsent(c)
+	}, func() {
+		ui.Spacer(c)
+		if primaryButton(c.Key("mt-set-done"), i18n.T("Done")).Clicked() {
+			a.mvUI.setOpen = false
+		}
+	})
 }
 
 func (a *app) notFoundPage(c *ui.Context, path string) {
