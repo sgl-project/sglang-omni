@@ -17,7 +17,7 @@ Architecturally, MOSS-TTS-v1.5 is the `delay-pattern` counterpart to [MOSS-TTS-L
 
 ## Prerequisites
 
-For CUDA, install `sglang-omni` by following [Installation](../get_started/installation.md). For Ascend, use the installation profile below. Download the model (public, no token required):
+Install `sglang-omni` using [Installation](../get_started/installation.md) for CUDA or [Installation — NPU](../other_platforms/installation_npu.md) for Ascend. Download the model (public, no token required):
 
 ```bash
 hf download OpenMOSS-Team/MOSS-TTS-v1.5
@@ -28,42 +28,21 @@ The processor ships with the checkpoint, so no extra TTS package is needed. Deco
 
 ### Ascend NPU
 
-For single-NPU BF16 inference, use the A3 runtime pinned by `base-image-a3` in [`pyproject_npu.toml`](../../pyproject_npu.toml) and compatible [host drivers](../other_platforms/installation_npu.md#prerequisites). From that runtime's root shell, install this checkout and its audio dependencies:
-
-```bash
-bash scripts/npu/install_npu.sh --install-system-deps
-```
-
-Before starting the server, select your allocated device (0 below) and set the queue options:
+For single-NPU BF16 inference, select your allocated device and launch with the shared [MOSS configuration](../../examples/configs/moss_tts.yaml):
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0
 export SGLANG_OMNI_PLATFORM_SPEC=sglang_omni.platforms.npu.NPUOmniPlatform
 export PER_STREAM_QUEUE=1
 export TASK_QUEUE_ENABLE=1
+sgl-omni serve --model-path OpenMOSS-Team/MOSS-TTS-v1.5 --config examples/configs/moss_tts.yaml --port 8000
 ```
 
 `PER_STREAM_QUEUE` is an [experimental torch_npu option](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md).
 
-Download `OpenMOSS-Team/MOSS-Audio-Tokenizer` as well as the TTS checkpoint. For local weights, create `npu-moss.yaml`:
+The configuration uses `OpenMOSS-Team/MOSS-Audio-Tokenizer` by default. For offline weights, override `model_path` and the preprocessing and vocoder factories' `codec_model_path` in your local configuration.
 
-```yaml
-config_cls: MossTTSPipelineConfig
-model_path: /models/MOSS-TTS-v1.5
-stages:
-  preprocessing:
-    factory:
-      codec_model_path: /models/MOSS-Audio-Tokenizer
-  vocoder:
-    factory:
-      codec_model_path: /models/MOSS-Audio-Tokenizer
-```
-
-Start the server, then use the speech requests below:
-
-```bash
-sgl-omni serve --model-path /models/MOSS-TTS-v1.5 --config npu-moss.yaml --port 8000
-```
+If NPU sampling graph capture is incomplete, startup reports the device and missing batch sizes. Check the preceding capture traceback first. For an out-of-memory error or insufficient capture headroom, free device memory or reduce `stages.tts_engine.engine.cuda_graph_bs` in your configuration. For other capture errors, check the runtime dependencies against [Installation — NPU](../other_platforms/installation_npu.md). If the error persists, include the original traceback, runtime versions and reported batch sizes in a bug report. Both audio and mixed sampling require all configured buckets; an incomplete capture stops NPU startup.
 
 ## Server Configuration
 
