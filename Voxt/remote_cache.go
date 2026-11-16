@@ -17,19 +17,27 @@ import (
 
 type remoteFeatureCacheKey struct {
 	transcribeASR, transcribeLLM, transcribePrompt string
-	transcribeEnhance                              bool
+	transcribeEnhance, transcribeCleanup           bool
+	transcribeStructure                            bool
 	translateASR, translateLLM, translatePrompt    string
+	translateCleanup                               bool
+	translateTarget                                string
 	rewriteASR, rewriteLLM, rewritePrompt          string
+	rewriteCleanup                                 bool
 }
 
 type remoteInputsCacheKey struct {
-	locale    string
-	providers settings.Providers
-	features  remoteFeatureCacheKey
-	groups    []appctx.Group
-	keyMasks  map[string]string
-	keySpaced map[string]bool
-	tests     map[string]providerTest
+	locale         string
+	mainLanguage   string
+	otherLanguages []string
+	providers      settings.Providers
+	features       remoteFeatureCacheKey
+	groups         []appctx.Group
+	installedASR   []local.Model
+	installedLLM   []local.Model
+	keyMasks       map[string]string
+	keySpaced      map[string]bool
+	tests          map[string]providerTest
 }
 
 type remoteViewCacheKey struct {
@@ -72,14 +80,19 @@ func remoteFeatureInputs(prefs settings.Settings) remoteFeatureCacheKey {
 	return remoteFeatureCacheKey{
 		transcribeASR: features.Transcribe.ASR, transcribeLLM: features.Transcribe.LLM,
 		transcribePrompt: features.Transcribe.Prompt, transcribeEnhance: features.Transcribe.Enhance,
+		transcribeCleanup: features.Transcribe.Cleanup, transcribeStructure: features.Transcribe.Structure,
 		translateASR: features.Translate.ASR, translateLLM: features.Translate.LLM, translatePrompt: features.Translate.Prompt,
+		translateCleanup: features.Translate.Cleanup, translateTarget: features.Translate.Target,
 		rewriteASR: features.Rewrite.ASR, rewriteLLM: features.Rewrite.LLM, rewritePrompt: features.Rewrite.Prompt,
+		rewriteCleanup: features.Rewrite.Cleanup,
 	}
 }
 
 func (a *app) remoteInputsCacheKey() remoteInputsCacheKey {
 	return remoteInputsCacheKey{
-		locale: i18n.Locale(), providers: a.prefs.Providers, features: remoteFeatureInputs(a.prefs), groups: a.aeRules.Groups,
+		locale: i18n.Locale(), mainLanguage: a.prefs.General.MainLanguage, otherLanguages: a.prefs.General.OtherLanguages,
+		providers: a.prefs.Providers, features: remoteFeatureInputs(a.prefs), groups: a.aeRules.Groups,
+		installedASR: a.installed(local.ASR), installedLLM: a.installed(local.LLM),
 		keyMasks: a.keyMasks, keySpaced: a.keySpaced, tests: a.provTests,
 	}
 }
@@ -99,10 +112,21 @@ func (a *app) llmDebugCacheKey() llmDebugCacheKey {
 	return llmDebugCacheKey{remoteInputsCacheKey: a.remoteInputsCacheKey(), ui: a.llmDbg}
 }
 
+func cloneLocalModels(models []local.Model) []local.Model {
+	cloned := slices.Clone(models)
+	for index := range cloned {
+		cloned[index].Features = slices.Clone(cloned[index].Features)
+	}
+	return cloned
+}
+
 func cloneRemoteInputsCacheKey(key remoteInputsCacheKey) remoteInputsCacheKey {
+	key.otherLanguages = slices.Clone(key.otherLanguages)
 	key.providers.LLM = slices.Clone(key.providers.LLM)
 	key.providers.ASR = slices.Clone(key.providers.ASR)
 	key.groups = slices.Clone(key.groups)
+	key.installedASR = cloneLocalModels(key.installedASR)
+	key.installedLLM = cloneLocalModels(key.installedLLM)
 	key.keyMasks = maps.Clone(key.keyMasks)
 	key.keySpaced = maps.Clone(key.keySpaced)
 	key.tests = maps.Clone(key.tests)
