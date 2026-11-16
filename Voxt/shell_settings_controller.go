@@ -21,12 +21,20 @@ type settingsState struct {
 	storageState // settings_storage_controller.go
 	aboutState   // settings_about_controller.go
 	settingsForm // shell_settings.go: the controls that edit a setting
+
+	settingsRevision uint64
+	generalCache     struct {
+		key   generalSettingsCacheKey
+		state settingsGeneralViewState
+		valid bool
+	}
 }
 
 // updateSettings changes the settings: at once in the snapshot, and in
 // the service (saved in the background, then announced with Changed).
 // fn must only set fields, as it runs on both.
 func (a *app) updateSettings(fn func(*settings.Settings)) {
+	a.settingsRevision++
 	fn(&a.prefs)
 	st := a.settings
 	a.async(func() {
@@ -38,6 +46,7 @@ func (a *app) updateSettings(fn func(*settings.Settings)) {
 
 // settingsChanged applies saved settings to the app.
 func (a *app) settingsChanged(old, new settings.Settings) {
+	a.settingsRevision++
 	a.prefs = new
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
 	if (old.Dictionary.Learn && !new.Dictionary.Learn) || (old.Dictionary.Enabled && !new.Dictionary.Enabled) {

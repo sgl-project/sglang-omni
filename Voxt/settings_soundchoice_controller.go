@@ -186,8 +186,7 @@ func (a *app) setSoundVolume(volume int) {
 	a.previewSound(recordStartEvent, a.soundPrefs().Choice(recordStartEvent), "")
 }
 
-func (a *app) soundsSettingsModel(now time.Time) settingsSoundsViewState {
-	playing, remaining := a.previewPlayingAt(now)
+func (a *app) soundsSettingsModel(playing string, remaining time.Duration) settingsSoundsViewState {
 	return buildSettingsSoundsViewState(i18n.CurrentTranslator(), settingsSoundsStateInput{
 		Prefs: a.soundPrefs(), Source: a.soundSource(), Catalog: a.soundCat,
 		StartTarget: a.cueTarget(startCue), StopTarget: a.cueTarget(stopCue), SystemSounds: a.sysSounds,

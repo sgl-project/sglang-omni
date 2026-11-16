@@ -38,6 +38,7 @@ func newSettingsFixtureApp(t *testing.T) *app {
 func settingsFixtureApplyInput(t *testing.T, a *app, input settingsFixtureInput) {
 	t.Helper()
 	a.prefs = input.preferences
+	a.settingsRevision++
 	a.settingsOpen = true
 	a.setRouter.Replace("/" + input.section)
 	if input.privacy.HasUpdateFeed || input.updates.Present {

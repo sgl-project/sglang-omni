@@ -8,8 +8,19 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
+type generalSettingsCacheKey struct {
+	revision uint64
+	locale   string
+}
+
 func (a *app) generalSettingsModel() settingsGeneralViewState {
-	return buildSettingsGeneralViewState(i18n.CurrentTranslator(), a.prefs)
+	key := generalSettingsCacheKey{revision: a.settingsRevision, locale: i18n.Locale()}
+	if a.generalCache.valid && a.generalCache.key == key {
+		return a.generalCache.state
+	}
+	state := buildSettingsGeneralViewState(i18n.CurrentTranslator(), a.prefs)
+	a.generalCache.key, a.generalCache.state, a.generalCache.valid = key, state, true
+	return state
 }
 
 func (a *app) setAppLanguage(languageTag string) {

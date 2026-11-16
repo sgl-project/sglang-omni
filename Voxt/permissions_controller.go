@@ -22,6 +22,18 @@ type permissionsState struct {
 		access  bool
 		checked bool
 	}
+	permissionsCache struct {
+		key   permissionsCacheKey
+		state permissionsViewState
+		valid bool
+	}
+}
+
+type permissionsCacheKey struct {
+	locale        string
+	microphone    permission.State
+	speech        permission.State
+	accessibility bool
 }
 
 // permState is a permission.State from the helper's (proto.Perm*).
@@ -57,9 +69,17 @@ func (a *app) openPermissions() {
 }
 
 func (a *app) permissionsModel() permissionsViewState {
-	return buildPermissionsViewState(i18n.CurrentTranslator(), permissionsStateInput{
+	key := permissionsCacheKey{
+		locale: i18n.Locale(), microphone: a.perms.mic, speech: a.perms.speech, accessibility: a.perms.access,
+	}
+	if a.permissionsCache.valid && a.permissionsCache.key == key {
+		return a.permissionsCache.state
+	}
+	state := buildPermissionsViewState(i18n.CurrentTranslator(), permissionsStateInput{
 		Microphone: a.perms.mic, Accessibility: a.perms.access, SpeechRecognition: a.perms.speech,
 	})
+	a.permissionsCache.key, a.permissionsCache.state, a.permissionsCache.valid = key, state, true
+	return state
 }
 
 // recheckPermissions reads the permissions: at once here (cheap system

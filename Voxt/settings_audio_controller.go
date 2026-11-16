@@ -21,9 +21,29 @@ type audioState struct {
 		loading bool
 		err     string // why the last read failed ("" for none)
 	}
+	audioRevision uint64
+	audioCache    struct {
+		key   audioSettingsCacheKey
+		state settingsAudioViewState
+		valid bool
+	}
 	// playSound plays a cue and returns when it ended (playCueWait, on a
 	// goroutine); tests record the cues instead.
 	playSound func(sounds.Target)
+}
+
+type audioSettingsCacheKey struct {
+	settingsRevision uint64
+	locale           string
+	helperReady      bool
+	devicesRead      bool
+	devicesLoading   bool
+	devicesError     string
+	audioRevision    uint64
+	soundSequence    int
+	previewing       string
+	playing          string
+	systemSoundsRead bool
 }
 
 func (a *app) openAudio() {
@@ -38,6 +58,7 @@ func (a *app) loadDevices() {
 	}
 	a.audio.loading = true
 	helperCall(a, proto.MethodCaptureDevices, nil, 5*time.Second, func(r proto.DevicesResult, err error) {
+		a.audioRevision++
 		a.audio.loading = false
 		if err != nil {
 			a.audio.err = errText(err)
@@ -171,11 +192,25 @@ func (a *app) setMuteOutput(on bool) {
 }
 
 func (a *app) audioSettingsModel(now time.Time) settingsAudioViewState {
-	return buildSettingsAudioViewState(i18n.CurrentTranslator(), settingsAudioStateInput{
+	playing, remaining := a.previewPlayingAt(now)
+	key := audioSettingsCacheKey{
+		settingsRevision: a.settingsRevision, locale: i18n.Locale(), helperReady: a.helperReady(),
+		devicesRead: a.audio.read, devicesLoading: a.audio.loading, devicesError: a.audio.err,
+		audioRevision: a.audioRevision, soundSequence: a.sounds.seq, previewing: a.sounds.previewing,
+		playing: playing, systemSoundsRead: a.sysRead,
+	}
+	if playing == "" && a.audioCache.valid && a.audioCache.key == key {
+		return a.audioCache.state
+	}
+	state := buildSettingsAudioViewState(i18n.CurrentTranslator(), settingsAudioStateInput{
 		Audio: a.prefs.Audio, Devices: a.audio.devices, HelperReady: a.helperReady(),
 		DevicesRead: a.audio.read, DevicesLoading: a.audio.loading, DevicesError: a.audio.err,
-		Sounds: a.soundsSettingsModel(now),
+		Sounds: a.soundsSettingsModel(playing, remaining),
 	})
+	if playing == "" {
+		a.audioCache.key, a.audioCache.state, a.audioCache.valid = key, state, true
+	}
+	return state
 }
 
 // cue is a sound of a recording: its start, or its stop.
