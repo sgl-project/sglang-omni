@@ -233,6 +233,8 @@ raw summary.
 `--fingerprint` records the client environment and the server `/v1/models`
 identity.
 
+For `benchmark_tts_seedtts.py`, request latency and RTF end when the response body has been received. Audio payloads are retained during generation; WAV encoding and disk writes happen after the timed cohort and before speed results or generated-audio metadata are published. `--audio-artifact-max-bytes` bounds retained payload bytes (default: 1 GiB), including the last warmup response until its sample is replaced. It does not bound in-flight HTTP buffers or total process memory. Exceeding the limit or failing to save a WAV aborts the run; increase the limit or reduce the cohort size to fit available memory. Speed results record the configured limit and `audio_artifact_peak_bytes`.
+
 Chat-completion speed runs forward `--seed` on the request when it is set
 (MMSU, MMAU, and MMAR also use it to shuffle the dataset) and accept
 `--fingerprint`. `benchmark_omni_streaming_ttft.py` uses one `--seed` for

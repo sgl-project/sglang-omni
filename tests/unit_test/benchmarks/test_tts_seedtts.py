@@ -13,7 +13,9 @@ import threading
 import wave
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import BinaryIO
 from unittest.mock import MagicMock
 
@@ -22,6 +24,7 @@ import pytest
 import requests
 from aiohttp import web
 
+from benchmarks.benchmarker import runner as runner_module
 from benchmarks.benchmarker.data import FinishReason
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.dataset.seedtts import SampleInput
@@ -45,6 +48,8 @@ from benchmarks.metrics.wer import (
     calculate_wer_metrics,
 )
 from benchmarks.tasks import asr
+from benchmarks.tasks import tts as tts_tasks
+from benchmarks.tasks.audio_artifacts import TtsAudioArtifacts
 from benchmarks.tasks.tts import (
     _build_tts_payload,
     make_tts_send_fn,
@@ -923,3 +928,228 @@ def test_asr_speed_counts_scored_and_unscorable_transcriptions() -> None:
     assert speed["asr_rtf_mean"] == 0.25
     assert wer["evaluated"] == 1
     assert wer["skipped"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("concurrency", [1, 2])
+@pytest.mark.parametrize("save_audio", [False, True])
+async def test_audio_persistence_is_outside_generation_timing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stream: bool,
+    concurrency: int,
+    save_audio: bool,
+) -> None:
+    """Writing WAVs previously delayed requests and inflated benchmark timing."""
+    clock_seconds = 0.0
+    received_requests = 0
+    output_directory = tmp_path / "results"
+    pcm_bytes = bytes(range(8))
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as audio_file:
+        audio_file.setparams((1, 2, 4, 4, "NONE", "not compressed"))
+        audio_file.writeframes(pcm_bytes)
+    wav_bytes = wav_buffer.getvalue()
+
+    def perf_counter() -> float:
+        return clock_seconds
+
+    clock = SimpleNamespace(perf_counter=perf_counter)
+    monkeypatch.setattr(tts_tasks, "time", clock)
+    monkeypatch.setattr(runner_module, "time", clock)
+    real_flush = TtsAudioArtifacts.flush
+
+    def flush(artifacts: TtsAudioArtifacts) -> None:
+        nonlocal clock_seconds
+        assert received_requests == 4
+        assert not (output_directory / "speed_results.json").exists()
+        assert not (output_directory / "generated.json").exists()
+        real_flush(artifacts)
+        clock_seconds += 14.0
+
+    monkeypatch.setattr(TtsAudioArtifacts, "flush", flush)
+
+    async def speech(request: web.Request) -> web.Response:
+        nonlocal clock_seconds, received_requests
+        assert not list(output_directory.glob("audio/*.wav"))
+        payload = await request.json()
+        assert payload["response_format"] == ("pcm" if stream else "wav")
+        received_requests += 1
+        clock_seconds += 1.0
+        return web.Response(
+            body=pcm_bytes if stream else wav_bytes,
+            content_type="audio/pcm" if stream else "audio/wav",
+            headers={"x-sample-rate": "4", "x-channels": "1", "x-bit-depth": "16"},
+        )
+
+    application = web.Application()
+    application.router.add_post("/v1/audio/speech", speech)
+    server = web.AppRunner(application)
+    await server.setup()
+    site = web.TCPSite(server, "127.0.0.1", 0)
+    await site.start()
+    config = TtsSeedttsBenchmarkConfig(
+        model="tts",
+        meta="unused",
+        base_url=f"http://127.0.0.1:{server.addresses[0][1]}",
+        output_dir=str(output_directory),
+        stream=stream,
+        collect_stream_outcomes=False,
+        voice_clone=False,
+        concurrency=concurrency,
+        warmup=2,
+        subtalker_dosample_ratio=0.5,
+        disable_tqdm=True,
+        audio_artifact_max_bytes=2 * len(pcm_bytes if stream else wav_bytes),
+    )
+    samples = [replace(SEEDTTS_SAMPLE, sample_id=str(index)) for index in range(2)]
+    try:
+        results = await tts.run_tts_seedtts_benchmark(
+            config, samples=samples, save_audio=save_audio
+        )
+    finally:
+        await server.cleanup()
+    assert received_requests == 4
+    assert results["summary"]["wall_clock_s"] == 2.0
+    assert (
+        results["config"]["audio_artifact_max_bytes"] == config.audio_artifact_max_bytes
+    )
+    assert results["summary"]["audio_artifact_peak_bytes"] == (
+        config.audio_artifact_max_bytes if save_audio else 0
+    )
+    generated = json.loads((output_directory / "generated.json").read_text())
+    for entry in generated:
+        assert entry["is_success"]
+        assert entry["latency_s"] <= 2.0
+        if save_audio:
+            assert Path(entry["wav_path"]).read_bytes() == wav_bytes
+        else:
+            assert not entry["wav_path"]
+    for result in results["per_request"]:
+        assert result["latency_s"] == result["rtf"]
+    assert (output_directory / "speed_results.json").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["budget", "write"])
+async def test_artifact_failure_does_not_publish_benchmark_results(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
+) -> None:
+    """An incomplete audio cohort must not publish speed or quality metadata."""
+
+    async def iter_pcm_chunks() -> AsyncIterator[tuple[bytes, bool]]:
+        yield bytes(8), True
+
+    session = MagicMock()
+    session.post.return_value.__aenter__.return_value = MagicMock(
+        status=200,
+        headers={"Content-Type": "audio/pcm", "x-sample-rate": "4"},
+        content=MagicMock(iter_chunks=iter_pcm_chunks),
+    )
+    session_factory = MagicMock()
+    session_factory.return_value.__aenter__.return_value = session
+    monkeypatch.setattr(runner_module.aiohttp, "ClientSession", session_factory)
+    real_open = wave.open
+
+    def open_audio(path: str, mode: str) -> wave.Wave_write:
+        if mode == "wb":
+            raise OSError("disk full")
+        else:
+            return real_open(path, mode)
+
+    config = TtsSeedttsBenchmarkConfig(
+        model="tts",
+        meta="unused",
+        output_dir=str(tmp_path),
+        stream=True,
+        collect_stream_outcomes=False,
+        warmup=0,
+        disable_tqdm=True,
+        audio_artifact_max_bytes=7 if failure == "budget" else 8,
+    )
+    if failure == "write":
+        monkeypatch.setattr(wave, "open", open_audio)
+        expected_error = OSError
+    else:
+        expected_error = BufferError
+    with pytest.raises(expected_error):
+        await tts.run_tts_seedtts_benchmark(config, samples=[SEEDTTS_SAMPLE])
+    assert not (tmp_path / "speed_results.json").exists()
+    assert not (tmp_path / "generated.json").exists()
+    assert not (tmp_path / "results.csv").exists()
+
+
+def test_audio_artifact_budget_replacement_and_pcm_frame_boundaries(
+    tmp_path: Path,
+) -> None:
+    """Repeated warmup IDs replace retained bytes; split PCM frames survive saving."""
+    artifacts = TtsAudioArtifacts(output_directory=tmp_path, maximum_bytes=8)
+    artifacts.stage("warmup", (bytes(8),), (4, 1, 2))
+    artifacts.stage("warmup", (b"a", b"bcd"), (4, 1, 2))
+    with pytest.raises(BufferError, match="audio-artifact-max-bytes"):
+        artifacts.stage("overflow", (bytes(5),))
+    artifacts.stage("second", (bytes(4),), (4, 1, 2))
+    artifacts.flush()
+    with wave.open(str(tmp_path / "warmup.wav"), "rb") as audio_file:
+        assert audio_file.getnframes() == 2
+        assert audio_file.readframes(2) == b"abcd"
+    assert not (tmp_path / "overflow.wav").exists()
+    assert artifacts.retained_bytes == 0
+    assert artifacts.peak_bytes == 8
+
+
+def test_cli_audio_artifact_budget_reaches_the_benchmark() -> None:
+    config = config_from_cli("--audio-artifact-max-bytes", "42")
+    assert config.audio_artifact_max_bytes == 42
+    with pytest.raises(ValueError, match="positive"):
+        TtsAudioArtifacts(output_directory=Path(config.output_dir), maximum_bytes=0)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_request_latency_ends_at_body_completion(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    """Response cleanup previously made latency disagree with the RTF timer."""
+    clock_seconds = 10.0
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as audio_file:
+        audio_file.setparams((1, 2, 4, 4, "NONE", "not compressed"))
+        audio_file.writeframes(bytes(8))
+
+    def perf_counter() -> float:
+        return clock_seconds
+
+    async def iter_pcm_chunks() -> AsyncIterator[tuple[bytes, bool]]:
+        nonlocal clock_seconds
+        clock_seconds = 11.0
+        yield bytes(8), True
+        clock_seconds = 12.0
+
+    async def read() -> bytes:
+        nonlocal clock_seconds
+        clock_seconds = 12.0
+        return wav_buffer.getvalue()
+
+    async def exit_response(
+        *exceptions: BaseException | type[BaseException] | None,
+    ) -> None:
+        nonlocal clock_seconds
+        assert exceptions == (None, None, None)
+        clock_seconds = 100.0
+
+    session = MagicMock()
+    session.post.return_value.__aenter__.return_value = MagicMock(
+        status=200,
+        headers={"Content-Type": "audio/pcm", "x-sample-rate": "4"},
+        content=MagicMock(iter_chunks=iter_pcm_chunks),
+        read=read,
+    )
+    session.post.return_value.__aexit__.side_effect = exit_response
+    monkeypatch.setattr(tts_tasks, "time", SimpleNamespace(perf_counter=perf_counter))
+    send = make_tts_send_fn("tts", "http://host/v1/audio/speech", stream=stream)
+    result = asyncio.run(send(session, SEEDTTS_SAMPLE))
+    assert result.is_success
+    assert result.audio_duration_s == 1.0
+    assert result.latency_s == 2.0
+    assert result.rtf == 2.0

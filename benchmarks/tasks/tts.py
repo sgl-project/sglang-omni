@@ -61,6 +61,7 @@ from benchmarks.tasks.asr import (
     run_asr_transcription,
     transcribe_and_compute_wer,
 )
+from benchmarks.tasks.audio_artifacts import TtsAudioArtifacts
 
 logger = logging.getLogger(__name__)
 
@@ -1235,7 +1236,7 @@ async def _handle_raw_pcm_streaming_response(
     response: aiohttp.ClientResponse,
     result: RequestResult,
     start_time: float,
-    save_audio_dir: str | None,
+    audio_artifacts: TtsAudioArtifacts | None,
 ) -> None:
     pcm_chunks: list[bytes] = []
     chunk_times: list[float] = []
@@ -1258,22 +1259,23 @@ async def _handle_raw_pcm_streaming_response(
         chunk_times.append(chunk_time)
         pcm_chunks.append(bytes(chunk))
 
+    elapsed = time.perf_counter() - start_time
     if chunk_times:
         result.inter_chunk_s = [
             now - prev for prev, now in zip(chunk_times, chunk_times[1:])
         ]
     result.audio_chunk_count = len(pcm_chunks)
-    pcm_bytes = b"".join(pcm_chunks)
+    pcm_size_bytes = sum(len(chunk) for chunk in pcm_chunks)
     sample_rate, num_channels, sample_width = pcm_format
     bytes_per_second = sample_rate * num_channels * sample_width
     block_align = num_channels * sample_width
-    if not pcm_bytes or bytes_per_second <= 0:
-        result.error = f"Empty or invalid PCM response ({len(pcm_bytes)} bytes)"
+    if not pcm_size_bytes or bytes_per_second <= 0:
+        result.error = f"Empty or invalid PCM response ({pcm_size_bytes} bytes)"
         return
-    if len(pcm_bytes) % block_align != 0:
+    if pcm_size_bytes % block_align != 0:
         result.error = (
             "PCM response ended with a partial audio frame "
-            f"(bytes={len(pcm_bytes)}, block_align={block_align})"
+            f"(bytes={pcm_size_bytes}, block_align={block_align})"
         )
         return
 
@@ -1284,26 +1286,28 @@ async def _handle_raw_pcm_streaming_response(
         chunk_times,
         result.chunk_audio_duration_s,
     )
-    result.audio_duration_s = len(pcm_bytes) / bytes_per_second
-    elapsed = time.perf_counter() - start_time
+    result.audio_duration_s = pcm_size_bytes / bytes_per_second
+    result.latency_s = elapsed
     result.rtf = elapsed / result.audio_duration_s
     result.is_success = True
-    if save_audio_dir:
-        audio_path = os.path.join(save_audio_dir, f"{result.request_id}.wav")
-        with open(audio_path, "wb") as fh:
-            fh.write(_build_streaming_wav_bytes(pcm_chunks, pcm_format))
-        result.wav_path = audio_path
+    if audio_artifacts is not None:
+        result.wav_path = audio_artifacts.stage(
+            result.request_id, tuple(pcm_chunks), pcm_format
+        )
+    else:
+        pass
 
 
 async def _handle_non_streaming_response(
     response: aiohttp.ClientResponse,
     result: RequestResult,
     start_time: float,
-    save_audio_dir: str | None,
+    audio_artifacts: TtsAudioArtifacts | None,
 ) -> None:
     audio_bytes = await response.read()
-    result.audio_duration_s = get_wav_duration(audio_bytes)
     elapsed = time.perf_counter() - start_time
+    result.latency_s = elapsed
+    result.audio_duration_s = get_wav_duration(audio_bytes)
     if result.audio_duration_s > 0:
         result.is_success = True
         result.rtf = elapsed / result.audio_duration_s
@@ -1311,11 +1315,10 @@ async def _handle_non_streaming_response(
         result.error = f"Empty or invalid audio response ({len(audio_bytes)} bytes)"
         return
     _parse_response_headers(result, response.headers)
-    if save_audio_dir and audio_bytes:
-        audio_path = os.path.join(save_audio_dir, f"{result.request_id}.wav")
-        with open(audio_path, "wb") as fh:
-            fh.write(audio_bytes)
-        result.wav_path = audio_path
+    if audio_artifacts is not None:
+        result.wav_path = audio_artifacts.stage(result.request_id, (audio_bytes,))
+    else:
+        pass
 
 
 def _collect_chat_streaming_audio(
@@ -1399,10 +1402,10 @@ def make_tts_send_fn(
     voice: str | None = None,
     task_type: str | None = None,
     instructions: str | None = None,
-    save_audio_dir: str | None = None,
+    audio_artifacts: TtsAudioArtifacts | None = None,
     **gen_kwargs,
 ) -> SendFn:
-    """Return a *send_fn(session, sample) -> RequestResult* for the runner."""
+    """Return a send function; flush audio_artifacts after the runner finishes."""
 
     async def send_fn(
         session: aiohttp.ClientSession, sample: SampleInput
@@ -1432,7 +1435,7 @@ def make_tts_send_fn(
                     result.error = f"HTTP {response.status}: {await response.text()}"
                 elif stream:
                     await _handle_raw_pcm_streaming_response(
-                        response, result, start_time, save_audio_dir
+                        response, result, start_time, audio_artifacts
                     )
                     result.speech_outcome_id = response.headers.get(
                         "X-SGLang-Omni-Speech-Id", ""
@@ -1442,12 +1445,15 @@ def make_tts_send_fn(
                     )
                 else:
                     await _handle_non_streaming_response(
-                        response, result, start_time, save_audio_dir
+                        response, result, start_time, audio_artifacts
                     )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             result.error = str(exc)
         finally:
-            result.latency_s = time.perf_counter() - start_time
+            if not result.is_success:
+                result.latency_s = time.perf_counter() - start_time
+            else:
+                pass
         return result
 
     return send_fn

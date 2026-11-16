@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Iterator
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import aiohttp
 import numpy as np
@@ -302,3 +304,164 @@ def test_run_config_preserves_positional_arrival_seed() -> None:
     config = RunConfig(4, 2.0, 0, True, 60, 42)
     assert config.arrival_seed == 42
     assert config.trust_env is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["warmup", "dispatch", "followup", "arrival"])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_runner_drains_tasks_before_propagating_failure(
+    monkeypatch: pytest.MonkeyPatch, phase: str, cancel: bool
+) -> None:
+    """A failed or cancelled cohort previously left sibling requests running."""
+    generator = MagicMock()
+    generator.exponential.return_value = np.array([0.0, 0.0, 3600.0])
+    monkeypatch.setattr(
+        runner_module.np.random, "default_rng", MagicMock(return_value=generator)
+    )
+    sibling_started = asyncio.Event()
+    never_complete = asyncio.Event()
+    started = 0
+    finished = 0
+
+    async def work() -> None:
+        nonlocal started, finished
+        started += 1
+        index = started
+        try:
+            if index == 1:
+                await sibling_started.wait()
+                if cancel:
+                    await never_complete.wait()
+                else:
+                    raise BufferError("audio budget exceeded")
+            else:
+                sibling_started.set()
+                await never_complete.wait()
+        finally:
+            finished += 1
+
+    async def send(session: aiohttp.ClientSession, sample: str) -> RequestResult:
+        assert not session.closed
+        if phase == "followup":
+            pass
+        else:
+            await work()
+        return RequestResult(request_id=sample, is_success=True)
+
+    async def after_send(result: RequestResult) -> None:
+        assert result.is_success
+        await work()
+
+    runner = BenchmarkRunner(
+        RunConfig(
+            max_concurrency=2,
+            warmup=2 if phase == "warmup" else 0,
+            disable_tqdm=True,
+            request_rate=1.0 if phase == "arrival" else float("inf"),
+        )
+    )
+    task = asyncio.create_task(
+        runner.run(
+            (
+                ["first", "second", "future"]
+                if phase == "arrival"
+                else ["first", "second"]
+            ),
+            send,
+            after_send=after_send if phase == "followup" else None,
+        )
+    )
+    await asyncio.wait_for(sibling_started.wait(), timeout=3)
+    if cancel:
+        task.cancel()
+        expected_error = asyncio.CancelledError
+    else:
+        expected_error = BufferError
+    with pytest.raises(expected_error):
+        await asyncio.wait_for(task, timeout=3)
+    assert started == 2
+    assert finished == 2
+
+
+@pytest.mark.asyncio
+async def test_generation_failure_drains_pending_outcomes() -> None:
+    """A generation failure must drain outcome lookups already running."""
+    lookup_started = asyncio.Event()
+    sibling_started = asyncio.Event()
+    never_complete = asyncio.Event()
+    finished: set[str] = set()
+
+    async def send(session: aiohttp.ClientSession, sample: str) -> RequestResult:
+        assert not session.closed
+        if sample == "completed":
+            return RequestResult(request_id=sample, is_success=True)
+        elif sample == "failing":
+            await lookup_started.wait()
+            await sibling_started.wait()
+            raise BufferError("audio budget exceeded")
+        else:
+            sibling_started.set()
+            try:
+                await never_complete.wait()
+            finally:
+                finished.add("generation")
+            raise AssertionError("sibling request must be cancelled")
+
+    async def after_send(result: RequestResult) -> None:
+        assert result.request_id == "completed"
+        lookup_started.set()
+        try:
+            await never_complete.wait()
+        finally:
+            finished.add("outcome")
+
+    runner = BenchmarkRunner(RunConfig(max_concurrency=2, warmup=0, disable_tqdm=True))
+    with pytest.raises(BufferError, match="audio budget exceeded"):
+        await asyncio.wait_for(
+            runner.run(
+                ["completed", "failing", "pending"], send, after_send=after_send
+            ),
+            timeout=3,
+        )
+    assert finished == {"generation", "outcome"}
+
+
+@pytest.mark.asyncio
+async def test_due_arrival_is_sent_before_future_samples_are_scheduled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Future task creation previously delayed an already-due request."""
+    generator = MagicMock()
+    generator.exponential.return_value = np.array([0.0, 3600.0, 0.0])
+    monkeypatch.setattr(
+        runner_module.np.random, "default_rng", MagicMock(return_value=generator)
+    )
+    visited_sample_ids: list[str] = []
+    visited_at_first_send: list[str] = []
+    first_sent = asyncio.Event()
+
+    class ScheduledSamples(list[str]):
+        def __iter__(self) -> Iterator[str]:
+            for sample_id in super().__iter__():
+                visited_sample_ids.append(sample_id)
+                yield sample_id
+
+    async def send(session: aiohttp.ClientSession, sample_id: str) -> RequestResult:
+        assert not session.closed
+        assert sample_id == "first"
+        visited_at_first_send.extend(visited_sample_ids)
+        first_sent.set()
+        return RequestResult(request_id=sample_id, is_success=True)
+
+    runner = BenchmarkRunner(
+        RunConfig(max_concurrency=0, request_rate=1, warmup=0, disable_tqdm=True)
+    )
+    benchmark_task = asyncio.create_task(
+        runner.run(ScheduledSamples(["first", "next", "future"]), send)
+    )
+    try:
+        await asyncio.wait_for(first_sent.wait(), timeout=3)
+        assert "future" not in visited_at_first_send
+    finally:
+        benchmark_task.cancel()
+        await asyncio.gather(benchmark_task, return_exceptions=True)
