@@ -7,11 +7,6 @@
 # path  # area
 
 announcements.go  # shell
-feature_endword.go  # feature
-feature_keys.go  # feature
-feature_models.go  # feature
-feature_page.go  # feature
-feature_prompts.go  # feature
 key_recorder.go  # settings
 legacy_report.go  # legacy: exempt one-time 1.x import reporting
 pages.go  # shell
@@ -37,5 +32,4 @@ shell_logs_select.go  # shell
 shell_nav.go  # shell
 shell_notices.go  # shell
 shell_settings.go  # shell
-try_card.go  # feature
 ui_panels.go  # ui kit

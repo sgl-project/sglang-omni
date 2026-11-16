@@ -204,6 +204,9 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 		}
 		state := buildModelsViewState(translator, scenario.models)
 		fixture.Models = &state
+	case "feature":
+		state := buildFeatureFixtureViewState(translator, scenario.feature)
+		fixture.Feature = &state
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}

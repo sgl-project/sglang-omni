@@ -134,27 +134,31 @@ func KindTitleFor(translator *i18n.Translator, k store.Kind) string {
 // Recognition 0.8 s · Clean-up 1.1 s · Accurate speech recognition,
 // Balanced language model".
 func TimingsText(s session.Snapshot) string {
-	secs := func(d time.Duration) string { return i18n.T("%.1f s", d.Seconds()) }
+	return TimingsTextFor(i18n.CurrentTranslator(), s)
+}
+
+func TimingsTextFor(translator *i18n.Translator, s session.Snapshot) string {
+	secs := func(d time.Duration) string { return translator.T("%.1f s", d.Seconds()) }
 	var parts []string
 	tm := s.Timings
 	if tm.Audio > 0 {
-		parts = append(parts, i18n.T("Recording %s", secs(tm.Audio)))
+		parts = append(parts, translator.T("Recording %s", secs(tm.Audio)))
 	}
 	if tm.ASR > 0 {
-		parts = append(parts, i18n.T("Recognition %s", secs(tm.ASR)))
+		parts = append(parts, translator.T("Recognition %s", secs(tm.ASR)))
 	}
 	if tm.LLM > 0 {
 		switch s.Kind {
 		case store.KindTranslate:
-			parts = append(parts, i18n.T("Translation %s", secs(tm.LLM)))
+			parts = append(parts, translator.T("Translation %s", secs(tm.LLM)))
 		case store.KindRewrite:
-			parts = append(parts, i18n.T("Writing %s", secs(tm.LLM)))
+			parts = append(parts, translator.T("Writing %s", secs(tm.LLM)))
 		default:
-			parts = append(parts, i18n.T("Clean-up %s", secs(tm.LLM)))
+			parts = append(parts, translator.T("Clean-up %s", secs(tm.LLM)))
 		}
 	}
 	if tm.Total > 0 {
-		parts = append(parts, i18n.T("Total %s", secs(tm.Total)))
+		parts = append(parts, translator.T("Total %s", secs(tm.Total)))
 	}
 	var svc []string
 	for _, m := range []session.Model{s.ASR, s.LLM} {

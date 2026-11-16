@@ -95,6 +95,9 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				llmDebugView(c, &state, host, &host.remoteDebugUI)
 			case "models":
 				modelsPage(c, host.modelsViewState(), host, &host.modelsUI, modelsPageViews{})
+			case "feature":
+				state := host.featureViewState(fixture.state.Feature)
+				featurePage(c, &state, host, &host.feature.local, host)
 			}
 		})
 	})

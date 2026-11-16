@@ -42,6 +42,7 @@ type meetingDemoHost struct {
 	remoteDialogUI        providerDialogLocalUI
 	remoteDebugUI         llmDebugUI
 	modelsUI              modelsLocalUI
+	feature               featureDemoState
 	overlayLook           settings.Overlay
 	sessionState          sessionOverlayViewState
 	sessionSeed           sessionOverlayFixtureUI
@@ -148,7 +149,8 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "remote-cards" && fixture.RemoteCards != nil ||
 		fixture.Kind == "remote-dialog" && fixture.RemoteDialog != nil ||
 		fixture.Kind == "remote-debug" && fixture.RemoteDebug != nil ||
-		fixture.Kind == "models" && fixture.Models != nil
+		fixture.Kind == "models" && fixture.Models != nil ||
+		fixture.Kind == "feature" && fixture.Feature != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
 	}
@@ -201,6 +203,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 			textScope: state.TextScope, textFormat: state.TextFormat,
 		}
 	}
+	host.selectFeatureFixture(fixture.state.Feature)
 	host.historyAccessUI = historyAccessLocalUI{}
 	if state := fixture.state.HistoryAccess; state != nil {
 		host.historyAccessUI = historyAccessLocalUI{
@@ -300,6 +303,29 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 			host.modelsUI.modelShared = &sharedDelete{id: state.Delete.Shared.ID, forAll: state.Delete.Shared.ForAll}
 		}
 	}
+}
+
+func (host *meetingDemoHost) featureViewState(fixture *featureViewState) featureViewState {
+	state := *fixture
+	state.Try.Block = host.feature.block
+	state.Shortcuts.Rows = slices.Clone(state.Shortcuts.Rows)
+	for index := range state.Shortcuts.Rows {
+		if index < len(host.feature.local.rows) {
+			state.Shortcuts.Rows[index].Custom = buildFeatureCustomKeysViewState(i18n.CurrentTranslator(), host.feature.local.rows[index])
+		}
+	}
+	if state.Shortcuts.Paste != nil {
+		row := *state.Shortcuts.Paste
+		row.Custom = buildFeatureCustomKeysViewState(i18n.CurrentTranslator(), host.feature.local.paste)
+		state.Shortcuts.Paste = &row
+	}
+	if state.Shortcuts.Cancel != nil {
+		row := *state.Shortcuts.Cancel
+		row.Custom = buildFeatureCustomKeysViewState(i18n.CurrentTranslator(), host.feature.local.cancel)
+		state.Shortcuts.Cancel = &row
+	}
+	state.Prompt.Rules.Matches = findFolded(host.feature.local.prompt, host.feature.local.find)
+	return state
 }
 
 func (host *meetingDemoHost) faceStyle(model meetingOverlayModel) meetingOverlayFaceStyle {
