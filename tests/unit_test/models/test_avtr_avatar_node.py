@@ -11,6 +11,7 @@ import pytest
 from PIL import Image
 
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.models.avtr import renderer as renderer_module
 from sglang_omni.models.avtr.formats import (
     JPEG_FRAME,
     JPEG_FRAME_PORT,
@@ -630,3 +631,127 @@ def test_over_the_wire_a_session_drifts_to_the_healthy_worker_with_its_last_stat
                 worker.join(WAIT_S)
             else:
                 pass
+
+
+class EncodingRendererService(RendererService):
+    """A service that encodes the frames itself when asked for out_format=jpeg: the next state, then five JPEGs of the asked size, each of its own length."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        if request.url.path == "/health" or params.get("out_format") != "jpeg":
+            return super().__call__(request)
+        else:
+            pass
+        with self.lock:
+            fields = multipart_fields(request)
+            self.renders.append((dict(params), fields))
+            state = f"{self.name}-{len(self.renders)}".encode()
+        jpegs = []
+        for shade in range(5):
+            encoded = io.BytesIO()
+            Image.new(
+                "RGB",
+                (int(params["out_width"]), int(params["out_height"])),
+                (40 * shade, 100, 50),
+            ).save(encoded, format="JPEG", quality=int(params["jpeg_quality"]))
+            jpegs.append(encoded.getvalue())
+        return httpx.Response(
+            200,
+            headers={
+                "X-State-Length-Bytes": str(len(state)),
+                "X-Frame-Height": params["out_height"],
+                "X-Frame-Width": params["out_width"],
+                "X-Frame-Format": "jpeg",
+                "X-Frame-Lengths": ",".join(str(len(jpeg)) for jpeg in jpegs),
+            },
+            content=state + b"".join(jpegs),
+        )
+
+
+def jpeg_service_renderer(service: RendererService) -> AVTR1Renderer:
+    return AVTR1Renderer(
+        httpx.Client(
+            transport=httpx.MockTransport(service), base_url=f"http://{service.name}"
+        ),
+        "maria",
+        "plain_white",
+        width=16,
+        height=8,
+        jpeg_quality=90,
+        service_jpeg=True,
+    )
+
+
+def test_a_service_that_encodes_hands_its_jpegs_of_the_stage_size_through_unchanged():
+    service = EncodingRendererService("worker")
+    renderer = jpeg_service_renderer(service)
+    window = np.zeros(WINDOW_SAMPLES, dtype=np.float32)
+    frames: list[bytes] = []
+    state = renderer.render(b"", window, window, frames.append)
+    assert state == b"worker-1"
+    params, _ = service.renders[0]
+    assert params == {
+        "avatar_id": "maria",
+        "bg_id": "plain_white",
+        "pixel_format": "yuv_i420",
+        "out_format": "jpeg",
+        "out_width": "16",
+        "out_height": "8",
+        "jpeg_quality": "90",
+    }
+    assert len(frames) == 5
+    assert [rgb_of(frame).shape for frame in frames] == [(8, 16, 3)] * 5
+    assert [round(rgb_of(frame)[..., 0].mean() / 40) for frame in frames] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+    ]
+
+
+def test_asking_a_service_that_does_not_encode_for_jpegs_still_encodes_its_i420_here():
+    service = RendererService("worker")
+    renderer = jpeg_service_renderer(service)
+    window = np.zeros(WINDOW_SAMPLES, dtype=np.float32)
+    frames: list[bytes] = []
+    assert renderer.render(b"", window, window, frames.append) == b"worker-1"
+    assert service.renders[0][0]["out_format"] == "jpeg"
+    assert len(frames) == 5
+    picture = rgb_of(frames[0])
+    assert picture.shape == (8, 16, 3)
+    assert np.abs(picture.mean(axis=(0, 1)) - (200, 100, 50)).max() < 6
+
+
+def test_a_worker_takes_as_many_chunks_in_flight_as_requests_per_renderer_and_holds_sessions_per_renderer(
+    monkeypatch,
+):
+    real_client = httpx.Client
+
+    def listing(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"avatars": ["maria"], "backgrounds": ["plain_white"]}
+        )
+
+    def client(base_url: str, timeout: float) -> httpx.Client:
+        return real_client(
+            transport=httpx.MockTransport(listing), base_url=base_url, timeout=timeout
+        )
+
+    monkeypatch.setattr(renderer_module.httpx, "Client", client)
+    scheduler = renderer_module.create_scheduler(
+        renderer_urls=["http://a", "http://b"],
+        avatar="maria",
+        background="plain_white",
+        speech_sample_rate_hz=SPEECH_RATE_HZ,
+        sessions_per_renderer=6,
+        requests_per_renderer=6,
+        service_jpeg=True,
+    )
+    renderers = scheduler.session_hooks.renderers
+    assert len(renderers) == 12
+    assert [str(renderer.client.base_url) for renderer in renderers] == [
+        "http://a"
+    ] * 6 + ["http://b"] * 6
+    assert all(renderer.params["out_format"] == "jpeg" for renderer in renderers)
+    assert scheduler.max_open_sessions == 12

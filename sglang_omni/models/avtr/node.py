@@ -50,6 +50,10 @@ class AvatarFactoryArgs(FactoryArgs):
     jpeg_quality: int | None = Field(default=None, ge=1, le=95)
     sessions_per_renderer: int | None = Field(default=None, ge=1)
     "Sessions one worker keeps at real time; the stage holds this many per worker."
+    requests_per_renderer: int | None = Field(default=None, ge=1)
+    "Chunks of different Sessions the stage keeps in flight at one worker; set it to sessions_per_renderer for a service that batches them (the session-batched AVTR-1 service), leave it at 1 for the upstream one, which renders one at a time. A worker fails a Session after as many failed chunks in a row as the pool has requests in flight."
+    service_jpeg: bool | None = None
+    "Ask the workers for JPEG frames of the stage's size and quality instead of I420 to encode here; a worker that does not encode (the upstream service) still sends I420, which the stage then encodes."
 
 
 class AvatarStageConfig(StageConfig):

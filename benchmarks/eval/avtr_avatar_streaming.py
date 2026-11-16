@@ -166,6 +166,22 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=360)
     parser.add_argument("--jpeg-quality", type=int, default=75)
+    parser.add_argument(
+        "--requests-per-renderer",
+        type=int,
+        default=1,
+        help="chunks kept in flight at each worker (a session-batched service renders them in one batch)",
+    )
+    parser.add_argument(
+        "--service-jpeg",
+        action="store_true",
+        help="ask the workers for JPEG frames instead of encoding their I420 here",
+    )
+    parser.add_argument(
+        "--stagger",
+        action="store_true",
+        help="spread the Sessions' packets over the 200 ms instead of sending every Session's at once",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     user = read_wav(args.audio)
@@ -181,19 +197,30 @@ def main() -> None:
                 width=args.width,
                 height=args.height,
                 jpeg_quality=args.jpeg_quality,
+                service_jpeg=args.service_jpeg,
             ),
             shared,
         )
-        for index, url in enumerate(args.renderer_url)
+        for index, url in enumerate(
+            url for url in args.renderer_url for _ in range(args.requests_per_renderer)
+        )
     ]
     hooks = AvatarHooks(renderers, SPEECH_RATE_HZ)
     sessions = [Session(hooks, f"s{index}") for index in range(args.sessions)]
     packets = int(args.seconds * 1000 / PACKET_MS)
     reply_every = int(args.reply_every_s * 1000 / PACKET_MS)
     began = time.perf_counter()
+    phase_ms = PACKET_MS / len(sessions) if args.stagger else 0.0
     for index in range(packets):
-        time.sleep(max(began + index * PACKET_MS / 1000 - time.perf_counter(), 0))
         for number, session in enumerate(sessions):
+            time.sleep(
+                max(
+                    began
+                    + (index * PACKET_MS + number * phase_ms) / 1000
+                    - time.perf_counter(),
+                    0,
+                )
+            )
             offset = (index * PACKET_SAMPLES + number * 4321) % max(
                 user.size - PACKET_SAMPLES, 1
             )
@@ -232,6 +259,9 @@ def main() -> None:
     result = {
         "sessions": args.sessions,
         "renderer_urls": args.renderer_url,
+        "requests_per_renderer": args.requests_per_renderer,
+        "service_jpeg": args.service_jpeg,
+        "stagger": args.stagger,
         "seconds": args.seconds,
         "frame_size": [args.width, args.height],
         "chunk_latency_ms": stats(latency),

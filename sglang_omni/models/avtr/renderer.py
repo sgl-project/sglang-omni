@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The AVTR-1 renderer service behind the avatar stage: a pool of its workers, one render request per chunk, each frame encoded as JPEG."""
+"""The AVTR-1 renderer service behind the avatar stage: a pool of its workers, one render request per chunk, each frame encoded as JPEG here or, by a service that does it, there."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ from sglang_omni.scheduling.session import DEFAULT_MAX_CONCURRENCY, SessionSched
 RENDER_PATH = "/process-audio-v3"
 # A worker renders one chunk at a time (its service runs each request on its one TensorRT pipeline); a profile sets how many Sessions one keeps at real time on its GPU.
 DEFAULT_SESSIONS_PER_RENDERER = 1
+# Chunks the stage keeps in flight at one worker: more than one only pays off on a service that renders concurrent chunks of different Sessions in one batch.
+DEFAULT_REQUESTS_PER_RENDERER = 1
 DEFAULT_JPEG_QUALITY = 75
 # A chunk renders in about 55 ms on an H100; a worker that has not answered for this long is treated as gone.
 RENDER_TIMEOUT_S = 10.0
@@ -100,6 +102,7 @@ class AVTR1Renderer:
         width: int = DEFAULT_WIDTH,
         height: int = DEFAULT_HEIGHT,
         jpeg_quality: int = DEFAULT_JPEG_QUALITY,
+        service_jpeg: bool = False,
     ) -> None:
         self.client = client
         self.params = {
@@ -107,6 +110,17 @@ class AVTR1Renderer:
             "bg_id": background,
             "pixel_format": "yuv_i420",
         }
+        if service_jpeg:
+            self.params.update(
+                {
+                    "out_format": "jpeg",
+                    "out_width": str(width),
+                    "out_height": str(height),
+                    "jpeg_quality": str(jpeg_quality),
+                }
+            )
+        else:
+            pass
         self.width = width
         self.height = height
         self.jpeg_quality = jpeg_quality
@@ -136,30 +150,46 @@ class AVTR1Renderer:
                 else:
                     response.raise_for_status()
                 state_bytes = int(response.headers["X-State-Length-Bytes"])
-                frame_bytes = int(response.headers["X-Frame-Length-Bytes"])
                 height = int(response.headers["X-Frame-Height"])
                 width = int(response.headers["X-Frame-Width"])
+                jpeg_lengths = response.headers.get("X-Frame-Lengths")
+                if jpeg_lengths is None:
+                    frame_lengths = None
+                    frame_bytes = int(response.headers["X-Frame-Length-Bytes"])
+                else:
+                    # A service that encodes the frames itself sends JPEGs of the asked size, each of its own length.
+                    frame_lengths = [int(length) for length in jpeg_lengths.split(",")]
+                    frame_bytes = frame_lengths[0]
                 body = bytearray()
                 next_state: bytes | None = None
                 frame_start = state_bytes
+                sent = 0
                 for data in response.iter_bytes():
                     body += data
                     if next_state is None and len(body) >= state_bytes:
                         next_state = bytes(body[:state_bytes])
                     else:
                         pass
-                    while len(body) - frame_start >= frame_bytes:
-                        frame(
-                            jpeg_of_i420(
-                                bytes(body[frame_start : frame_start + frame_bytes]),
-                                height,
-                                width,
-                                self.height,
-                                self.width,
-                                self.jpeg_quality,
+                    while frame_bytes and len(body) - frame_start >= frame_bytes:
+                        payload = bytes(body[frame_start : frame_start + frame_bytes])
+                        if frame_lengths is None:
+                            frame(
+                                jpeg_of_i420(
+                                    payload,
+                                    height,
+                                    width,
+                                    self.height,
+                                    self.width,
+                                    self.jpeg_quality,
+                                )
                             )
-                        )
-                        frame_start += frame_bytes
+                        else:
+                            frame(payload)
+                            sent += 1
+                            frame_bytes = (
+                                frame_lengths[sent] if sent < len(frame_lengths) else 0
+                            )
+                        frame_start += len(payload)
         except httpx.TransportError as error:
             raise RendererUnavailable(
                 f"the AVTR-1 renderer at {self.client.base_url} failed: {error!r}"
@@ -188,6 +218,8 @@ def create_scheduler(
     height: int = DEFAULT_HEIGHT,
     jpeg_quality: int = DEFAULT_JPEG_QUALITY,
     sessions_per_renderer: int = DEFAULT_SESSIONS_PER_RENDERER,
+    requests_per_renderer: int = DEFAULT_REQUESTS_PER_RENDERER,
+    service_jpeg: bool = False,
 ) -> SessionScheduler:
     renderers = []
     for url in renderer_urls:
@@ -200,7 +232,7 @@ def create_scheduler(
                 f"the AVTR-1 renderer at {url} serves the avatars {loaded['avatars']} and the backgrounds {loaded['backgrounds']}, not {avatar!r} on {background!r}"
             )
         else:
-            renderers.append(
+            renderers += [
                 AVTR1Renderer(
                     client,
                     avatar,
@@ -208,11 +240,13 @@ def create_scheduler(
                     width=width,
                     height=height,
                     jpeg_quality=jpeg_quality,
+                    service_jpeg=service_jpeg,
                 )
-            )
+                for _ in range(requests_per_renderer)
+            ]
     return SessionScheduler(
         AvatarHooks(renderers, speech_sample_rate_hz),
-        max_open_sessions=len(renderers) * sessions_per_renderer,
+        max_open_sessions=len(renderer_urls) * sessions_per_renderer,
         max_concurrency=DEFAULT_MAX_CONCURRENCY,
     )
 
