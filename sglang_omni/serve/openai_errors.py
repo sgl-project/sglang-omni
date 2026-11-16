@@ -18,6 +18,7 @@ _BAD_REQUEST_MARKERS = (
     "Speculative decoding does not support",
     "out-of-vocabulary token id",
     "accepts audio up to",
+    "X-ASR audio must be",
     "requires at least two valid mel frames",
     "must contain exactly one <|audio|> token",
     "could not decode the uploaded audio",

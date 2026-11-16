@@ -18,6 +18,10 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
+SAMPLE_RATE_HZ = 16000
+TAIL_SILENCE_SAMPLES = 4800
+MIN_PADDED_SAMPLES = 10080
+
 
 class XASRWorker:
     def __init__(self, model_path: str, device: str):
@@ -49,38 +53,42 @@ class XASRWorker:
                     waveform = load_audio(
                         police_request_audio(resolve_audio_source(payload)),
                         source_name="xasr",
-                        target_sample_rate=16000,
+                        target_sample_rate=SAMPLE_RATE_HZ,
                     )
                     if (
                         waveform.ndim != 1
                         or not waveform.size
-                        or len(waveform) > 30 * 16000
                         or not np.isfinite(waveform).all()
                     ):
                         raise ValueError(
-                            "Audio must be finite, non-empty, mono and at most 30 seconds"
+                            "X-ASR audio must be finite, non-empty, and mono"
                         )
+                    elif len(waveform) > 30 * SAMPLE_RATE_HZ:
+                        raise ValueError("X-ASR accepts audio up to 30 seconds")
                     else:
                         pass
                     options = fbank.FbankOptions()
                     options.frame_opts.dither = 0
                     options.frame_opts.snip_edges = False
                     options.frame_opts.window_type = "povey"
-                    options.frame_opts.samp_freq = 16000
+                    options.frame_opts.samp_freq = SAMPLE_RATE_HZ
                     options.mel_opts.num_bins = 80
+                    options.mel_opts.high_freq = -400
                     extractor = fbank.OnlineFbank(options)
-                    extractor.accept_waveform(16000, waveform.tolist())
-                    extractor.input_finished()
+                    silence_samples = max(
+                        TAIL_SILENCE_SAMPLES, MIN_PADDED_SAMPLES - len(waveform)
+                    )
+                    samples = np.pad(waveform, (0, silence_samples))
+                    extractor.accept_waveform(SAMPLE_RATE_HZ, samples.tolist())
                     frames = np.stack(
                         [
                             extractor.get_frame(i)
                             for i in range(extractor.num_frames_ready)
                         ]
                     )
-                    frames = np.pad(frames, ((0, 100), (0, 0))).astype(np.float32)
                     state = self.model.new_stream()
                     features[index] = [
-                        frames[i : i + 61] for i in range(0, len(frames) - 61, 48)
+                        frames[i : i + 61] for i in range(0, len(frames) - 61 + 1, 48)
                     ]
                     states[index] = state
                 except Exception as exc:
