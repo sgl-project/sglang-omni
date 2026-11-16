@@ -43,15 +43,19 @@ func AutoKeyLabel(keys string) string {
 
 // TermErrorText says why a term cannot be saved.
 func TermErrorText(err error) string {
+	return TermErrorTextFor(i18n.CurrentTranslator(), err)
+}
+
+func TermErrorTextFor(translator *i18n.Translator, err error) string {
 	switch {
 	case errors.Is(err, dict.ErrEmpty):
-		return i18n.T("Type the term as it should be written.")
+		return translator.T("Type the term as it should be written.")
 	case errors.Is(err, dict.ErrLong):
-		return i18n.T("A term can have at most %d characters.", dict.MaxTermChars)
+		return translator.T("A term can have at most %d characters.", dict.MaxTermChars)
 	case errors.Is(err, core.ErrExists):
-		return i18n.T("This term is in the dictionary already.")
+		return translator.T("This term is in the dictionary already.")
 	}
-	return i18n.T("Could not save the term: %v", err)
+	return translator.T("Could not save the term: %v", err)
 }
 
 func PermissionText(p permission.State) (string, bool) {
