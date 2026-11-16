@@ -16,7 +16,7 @@ Detailed instructions are in [Installation](../get_started/installation.md). Fro
 uv pip install --prerelease=allow -v -e ".[fishaudio]"
 ```
 
-Download the checkpoint, then start the server. This command places preprocessing, the engine, and the vocoder on GPU 0. A stage moves to another GPU only when its `--<stage>.gpu` flag says so; see [Deployment](#deployment).
+Download the checkpoint, then start the server. This command places preprocessing, the engine, and the vocoder on GPU 0. A stage moves to another GPU only when its `--<stage>.gpu` flag says so; see [Deployment](#deployment-performance).
 
 ```bash
 hf download fishaudio/drama-3
@@ -282,7 +282,7 @@ A single stream gets its first audio in under 100 ms. At concurrency 16, audio i
 
 *Table 2. Drama 3 streaming performance by vocoder placement. Each cell is the mean of six server starts.*
 
-With the vocoder on the engine's GPU, at 256 streams the vocoder is fully loaded and each new stream's first audio waits in its queue. Moving it to a second GPU, as described under [Deployment](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html#deployment), gave about 72% more throughput and a 37% lower median TTFA at 256 streams. Use this layout when you need many concurrent streams and a short time to first audio together.
+With the vocoder on the engine's GPU, at 256 streams the vocoder is fully loaded and each new stream's first audio waits in its queue. Moving it to a second GPU, as described under [Deployment](#deployment-performance), gave about 72% more throughput and a 37% lower median TTFA at 256 streams. Use this layout when you need many concurrent streams and a short time to first audio together.
 
 ### Non-Streaming Requests
 
@@ -294,7 +294,7 @@ by default) and logs:
 Drama 3 vocoder: a non-streaming decode takes up to <frames> padded frames of <bytes> bytes each; share <share> GiB, held <held> GiB
 ```
 
-The limit does not count the memory the vocoder process holds outside PyTorch's allocator, so it cannot guarantee that the process stays within its share. With the engine's share raised to 0.85 on the same GPU, concurrent non-streaming requests can run out of GPU memory. To avoid that, stream those requests (`"stream": true`), keep the engine's default share of 0.70 on the GPU that runs the vocoder, or put the vocoder on a second GPU, as under [Deployment](#deployment).
+The limit does not count the memory the vocoder process holds outside PyTorch's allocator, so it cannot guarantee that the process stays within its share. With the engine's share raised to 0.85 on the same GPU, concurrent non-streaming requests can run out of GPU memory. To avoid that, stream those requests (`"stream": true`), keep the engine's default share of 0.70 on the GPU that runs the vocoder, or put the vocoder on a second GPU, as under [Deployment](#deployment-performance).
 
 ## Defaults Parameters
 
