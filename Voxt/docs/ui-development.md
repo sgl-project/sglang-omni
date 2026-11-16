@@ -86,7 +86,7 @@ The test writes one PNG per fixture as `<locale>-<scenario>.png` and checks each
 Check fixture switching and control-to-action wiring:
 
 ```sh
-go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|SessionDemo|SessionOverlayDemoMatchesProduction)$' .
+go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|HistoryDemoActionControls|SessionDemo.*|SessionOverlayDemoMatchesProduction)$' .
 go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History|Session)(Demo|OverlayDemoMatchesProduction)' .
 ```
 

@@ -2,10 +2,7 @@ package main
 
 import (
 	"github.com/egoist/mygo"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 func (a *app) overlaySize(mode overlayMode) (width, height int, exact bool) {
@@ -37,18 +34,6 @@ func (a *app) sessionOverlaySize(state *sessionOverlayViewState) (width, height 
 	a.ov.stream.h = model.StreamHeight
 	a.ov.layout = model
 	return model.Width, model.Height, model.Exact
-}
-
-func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
-	pill := sessionPillViewState{Title: uitext.KindTitle(snapshot.Kind), Starting: snapshot.Waiting != session.WaitNone}
-	scene := float32(0)
-	if name := uitext.SceneShort(snapshot); name != "" {
-		scene = float32(textWidth(name, float64(layout.SceneSize)))
-	}
-	row, _ := recordingPillRow(&pill, true, showTime, scene, func(key ovSized) (float32, bool) {
-		return float32(textWidth(key.text, float64(key.size))), true
-	})
-	return row + 2*layout.PillPadX
 }
 
 func faceRadius(overlay settings.Overlay, mode overlayMode, height int) float32 {
@@ -103,16 +88,6 @@ func (a *app) overlayArea() mygo.Rectangle {
 		return ovTestArea
 	}
 	return mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint()).WorkArea
-}
-
-func (a *app) cardBodyHeight(card *sessionCardViewState) (int, bool) {
-	body, streamHeight, exact := sessionOverlayCardBodyHeight(card, a.ovTextHeight, a.cardBodyMax(card), a.ov.stream.h)
-	a.ov.stream.h = streamHeight
-	return body, exact
-}
-
-func (a *app) cardBodyMax(card *sessionCardViewState) int {
-	return sessionOverlayCardBodyMax(card, a.ov.area.Height, a.prefs.Overlay.Margin)
 }
 
 func (a *app) cardSize() (width, height int, exact bool) {

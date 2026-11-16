@@ -74,6 +74,23 @@ func anchored(t *testing.T, what string, o settings.Overlay, f mygo.Rectangle) {
 // session starts as the pill again, whatever the last showed (10-15: the
 // second session's pill showed in the first's grown, empty window).
 // Escape, a notice, and two sessions in quick succession too.
+func TestOverlayFadeClearsSessionText(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	snap(a, session.Snapshot{ID: "fade-text", State: session.Recording, StartedAt: time.Now(), HeardAt: time.Now(), Partial: "stale live words", Levels: wave()})
+	snap(a, session.Snapshot{ID: "fade-text", State: session.Done, Inserted: true, Result: "inserted"})
+	if a.ov.shown || !a.ov.visible {
+		t.Fatalf("the overlay is not fading: shown %t visible %t", a.ov.shown, a.ov.visible)
+	}
+	if text := a.ov.projection.view.Pill.LiveText; text != "" {
+		t.Fatalf("hidden projection kept live text %q", text)
+	}
+	tester := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
+	frames(tester)
+	if tester.HasText("stale live words") {
+		t.Fatal("the fading overlay kept the previous session's live text")
+	}
+}
+
 func TestOverlaySessionsStartSmall(t *testing.T) {
 	for _, pos := range []string{"bottom", "top"} {
 		t.Run(pos, func(t *testing.T) {

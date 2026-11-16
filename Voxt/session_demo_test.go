@@ -247,6 +247,44 @@ func clickSessionDemoBubbleCopy(t *testing.T, host *meetingDemoHost, tester *ui.
 	frames(tester)
 }
 
+func sessionOverlayContentSentinel(state sessionOverlayViewState) string {
+	if state.Mode == ovHidden {
+		return ""
+	}
+	if state.Menu != nil && state.Menu.Label != "" {
+		return state.Menu.Label
+	}
+	if state.Notice != nil && state.Notice.Text != "" {
+		return state.Notice.Text
+	}
+	if card := state.Card; card != nil {
+		if card.Message != "" {
+			return card.Message
+		}
+		for index := 0; index < sessionCardBlockCount(card); index++ {
+			if text := sessionCardBlockAt(card, index).Text; text != "" {
+				return text
+			}
+		}
+		if card.Title != "" {
+			return card.Title
+		}
+	}
+	if state.Pill.LiveText != "" {
+		return state.Pill.LiveText
+	}
+	if state.Mode == ovWorking && state.Pill.WorkingLabel != "" {
+		return state.Pill.WorkingLabel
+	}
+	if state.Pill.Starting && state.Pill.WaitingLabel != "" {
+		return state.Pill.WaitingLabel
+	}
+	if state.Pill.Title != "" {
+		return state.Pill.Title
+	}
+	return state.Pill.WorkingLabel
+}
+
 func TestSessionDemoActionCoverage(t *testing.T) {
 	syntax, err := parser.ParseFile(token.NewFileSet(), "session_overlay_state.go", nil, 0)
 	if err != nil {
