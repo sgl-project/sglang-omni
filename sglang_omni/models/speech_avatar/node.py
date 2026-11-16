@@ -67,6 +67,8 @@ class SpeechVideoFactoryArgs(SpeechWorkerFactoryArgs):
     "Chunks keep rendering this long past a reply, so the mouth settles before the picture holds."
     reply_quiet_ms: float | None = Field(default=None, ge=0)
     "A reply shorter than a chunk starts once its audio stopped arriving for this long (its turn.done comes only after it played out)."
+    reply_starts_chunk: bool | None = None
+    "Send the frames up to a placed reply at once, so the reply's first chunk starts on its first frame: for chunks long against the render lead (LiveAct)."
 
 
 class SpeechMotionFactoryArgs(SpeechWorkerFactoryArgs):
@@ -85,6 +87,11 @@ class SpeechVideoStageConfig(StageConfig):
                 height=factory.height or DEFAULT_VIDEO_SIZE,
                 chunk_ms=factory.chunk_ms or DEFAULT_VIDEO_CHUNK_MS,
                 lookahead_ms=factory.lookahead_ms or 0.0,
+                render_lead_ms=(
+                    DEFAULT_RENDER_LEAD_MS
+                    if factory.render_lead_ms is None
+                    else factory.render_lead_ms
+                ),
             )
         )
 
