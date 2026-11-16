@@ -1,0 +1,50 @@
+{
+  "name": "overlay-live-lines",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot14",
+    "state": "recording",
+    "mode": "recording",
+    "pill": {
+      "kind": "",
+      "title": "Transcribe",
+      "working_label": "Recognising…",
+      "live_text": "So the plan for the release is to finish the onboarding first, then the history page, and after that we look at the translation card",
+      "elapsed_text": "0:47",
+      "levels": [
+        0.35,
+        0.4938276615812609,
+        0.6024412954423689,
+        0.6492484959812163,
+        0.6227892280477044,
+        0.5295416432311869,
+        0.39233600241796013,
+        0.24476503169311403,
+        0.12295925140762153,
+        0.05674096470047089,
+        0.06232271760105845,
+        0.1383379023288824,
+        0.2661753505403222,
+        0.41453599642634464,
+        0.5470959796156367,
+        0.6313999930324217
+      ],
+      "heard": true,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}

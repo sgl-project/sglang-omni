@@ -1,0 +1,146 @@
+{
+  "name": "card-conversation",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 10,
+    "session_id": "r2",
+    "state": "done",
+    "mode": "answer",
+    "pill": {
+      "kind": "rewrite",
+      "title": "改写",
+      "working_label": "识别中…",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "r2",
+      "kind": "rewrite",
+      "title": "Late",
+      "target_name": "Slack",
+      "thinking": {},
+      "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
+      "insert_tooltip": "插入到 Slack",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "turn-0-user",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "你",
+          "text": "write that I am late",
+          "user": true,
+          "selectable": true
+        },
+        {
+          "key": "turn-0-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "Running late",
+          "text": "Sorry, I am running about ten minutes late: please start without me.",
+          "selectable": true
+        },
+        {
+          "key": "turn-1-user",
+          "kind": "bubble",
+          "turn": 1,
+          "title": "你",
+          "text": "shorter",
+          "user": true,
+          "selectable": true
+        },
+        {
+          "key": "turn-1-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "Late",
+          "text": "Ten minutes late: start without me.",
+          "selectable": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": true,
+      "failed": false,
+      "copied": false,
+      "heard": false,
+      "can_insert": true,
+      "can_copy": true,
+      "can_follow_up": true,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}

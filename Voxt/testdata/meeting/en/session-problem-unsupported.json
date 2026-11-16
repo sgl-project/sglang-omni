@@ -1,0 +1,54 @@
+{
+  "name": "session-problem-unsupported",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "session-problem",
+    "state": "failed",
+    "problem_code": "unsupported",
+    "mode": "notice",
+    "pill": {
+      "kind": "",
+      "title": "Transcribe",
+      "working_label": "Recognising…",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "notice": {
+      "text": "This feature is not available.",
+      "tone": "error"
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

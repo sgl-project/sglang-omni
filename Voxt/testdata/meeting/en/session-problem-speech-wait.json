@@ -1,0 +1,56 @@
+{
+  "name": "session-problem-speech-wait",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "session-problem",
+    "state": "failed",
+    "problem_code": "speechWait",
+    "mode": "notice",
+    "pill": {
+      "kind": "",
+      "title": "Transcribe",
+      "working_label": "Recognising…",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "notice": {
+      "text": "The speech model is still downloading (33%).",
+      "action": "models",
+      "action_label": "Open Speech models",
+      "tone": "error"
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

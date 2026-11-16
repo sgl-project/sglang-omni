@@ -1,0 +1,132 @@
+{
+  "name": "card-follow-up-recording",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 8,
+    "session_id": "r2",
+    "state": "recording",
+    "mode": "answer",
+    "pill": {
+      "kind": "rewrite",
+      "title": "改写",
+      "working_label": "识别中…",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "r1",
+      "kind": "rewrite",
+      "title": "Running late",
+      "target_name": "Slack",
+      "thinking": {},
+      "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
+      "insert_tooltip": "插入到 Slack",
+      "size_step": 0,
+      "levels": [
+        0.35,
+        0.4938276615812609,
+        0.6024412954423689,
+        0.6492484959812163,
+        0.6227892280477044,
+        0.5295416432311869,
+        0.39233600241796013,
+        0.24476503169311403,
+        0.12295925140762153,
+        0.05674096470047089,
+        0.06232271760105845,
+        0.1383379023288824,
+        0.2661753505403222,
+        0.41453599642634464,
+        0.5470959796156367,
+        0.6313999930324217
+      ],
+      "blocks": [
+        {
+          "key": "turn-0-user",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "你",
+          "text": "write that I am late",
+          "user": true,
+          "selectable": true
+        },
+        {
+          "key": "turn-0-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "Running late",
+          "text": "Sorry, I am running about ten minutes late: please start without me.",
+          "selectable": true
+        }
+      ],
+      "live": [
+        {
+          "key": "turn-1-user",
+          "kind": "bubble",
+          "turn": 1,
+          "title": "你",
+          "text": "shorter",
+          "live": true,
+          "user": true,
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 1,
+      "busy": true,
+      "recording": true,
+      "writing": false,
+      "conversation": true,
+      "failed": false,
+      "copied": false,
+      "heard": true,
+      "can_insert": false,
+      "can_copy": true,
+      "can_follow_up": false,
+      "can_stop": true,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}

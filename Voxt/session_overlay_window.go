@@ -32,11 +32,13 @@ type overlayState struct {
 		native      bool
 		stream      streamReveal
 		projection  sessionOverlayProjection
+		layout      sessionOverlayLayout
 		lang        langMenuState
 		ui          sessionOverlayLocalUI
 	}
 	laterHook   func(time.Duration, func())
 	measureHook func(ovSized) (float32, float32)
+	measure     func(ovSized) (ovMeasured, bool)
 }
 
 // langMenuState owns the native language or thinking menu window.
@@ -158,12 +160,14 @@ func (a *app) overlaySync() {
 }
 
 func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
-	return sessionOverlayLayout{
-		Width: a.ov.w, Height: a.ov.h, Radius: faceRadius(a.prefs.Overlay, a.ov.mode, a.ov.h),
-		Alpha: layout.FaceAlpha(a.prefs.Overlay), ShowTime: a.prefs.Overlay.ShowTime,
-		LiveLines: a.prefs.Overlay.LiveLines, Top: a.prefs.Overlay.Position == "top", Reveal: a.ov.reveal,
-		Measured: a.ov.textW,
-	}
+	model := a.ov.layout
+	model.Width, model.Height = a.ov.w, a.ov.h
+	model.Radius = faceRadius(a.prefs.Overlay, a.ov.mode, a.ov.h)
+	model.Alpha = layout.FaceAlpha(a.prefs.Overlay)
+	model.ShowTime, model.LiveLines = a.prefs.Overlay.ShowTime, a.prefs.Overlay.LiveLines
+	model.Top = a.prefs.Overlay.Position == "top"
+	model.Reveal, model.Measured = a.ov.reveal, a.ov.textW
+	return model
 }
 
 func (a *app) overlayFrame(width, height int) mygo.Rectangle {
@@ -247,18 +251,7 @@ func (a *app) overlayFadeOut() {
 }
 
 func (a *app) overlayFace(mode overlayMode) (int, int) {
-	width, height, exact := a.overlaySize(mode)
-	switch {
-	case height == layout.LiveH && mode != ovAnswer:
-		if a.ov.live.id != a.sess.ID {
-			a.ov.live.id, a.ov.live.w = a.sess.ID, 0
-		}
-		if exact {
-			a.ov.live.w = max(a.ov.live.w, width)
-		}
-	case a.ov.live.id != a.sess.ID:
-		a.ov.live.id, a.ov.live.w = "", 0
-	}
+	width, height, _ := a.overlaySize(mode)
 	return width, height
 }
 

@@ -1,0 +1,118 @@
+{
+  "name": "overlay-composing-think-rewrite",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot22",
+    "state": "composing",
+    "mode": "working",
+    "pill": {
+      "kind": "rewrite",
+      "title": "Rewrite",
+      "working_label": "Writing…",
+      "elapsed_text": "0:00",
+      "thinking_label": "Ask again: Thinking (High, default)",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": true
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    },
+    "pill_thinking_menu": {
+      "kind": "pill-thinking",
+      "label": "Ask again with thinking level",
+      "options": [
+        {
+          "thinking": {},
+          "label": "High (default)",
+          "selected": true
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "none"
+          },
+          "label": "None",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "minimal"
+          },
+          "label": "Minimal",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "low"
+          },
+          "label": "Low",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "medium"
+          },
+          "label": "Medium",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "high"
+          },
+          "label": "High",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "xhigh"
+          },
+          "label": "Extra high",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "max"
+          },
+          "label": "Max",
+          "selected": false
+        }
+      ],
+      "selected_index": 0
+    }
+  }
+}

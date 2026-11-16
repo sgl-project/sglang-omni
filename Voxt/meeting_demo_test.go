@@ -20,6 +20,10 @@ func newMeetingDemoTester(t *testing.T, host *meetingDemoHost) *ui.Tester {
 		model := meetingOverlayLayoutModel(*fixture.state.Overlay, host.overlayUI.menu)
 		width, height = model.Layout.Width, model.Layout.Height+48
 	}
+	if fixture.state.Kind == "session-overlay" && host.sessionState.Mode != ovHidden {
+		placement := host.sessionDemoPlacement()
+		width, height = max(width, placement.width), placement.height+48
+	}
 	tester := ui.NewTester(func(c *ui.Context) { meetingDemoView(c, host) }, width, height)
 	tester.SetLocale(fixture.locale)
 	tester.SetFontSmoothing(hudSmoothing)
@@ -158,6 +162,11 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return settings.MissingNotice
 		}
 		return i18n.T("History settings")
+	case "session-overlay":
+		if state.Session.Mode == ovHidden {
+			return fixture.name
+		}
+		return sessionOverlayContentSentinel(*state.Session)
 	case "history-access":
 		access := state.HistoryAccess
 		if access.Ask {

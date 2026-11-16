@@ -40,6 +40,8 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 					model := meetingOverlayLayoutModel(state, host.overlayUI.menu)
 					meetingOverlayView(c, state, model, host, &host.overlayUI, meetingOverlayAnimation{}, host.faceStyle(model))
 				}
+			case "session-overlay":
+				sessionDemoOverlayView(c, host)
 			case "start":
 				ui.Column(c).Padding(24).Children(func() {
 					fillCard(c).Padding(16).Children(func() {

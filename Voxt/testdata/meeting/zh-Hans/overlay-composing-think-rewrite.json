@@ -1,0 +1,118 @@
+{
+  "name": "overlay-composing-think-rewrite",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot22",
+    "state": "composing",
+    "mode": "working",
+    "pill": {
+      "kind": "rewrite",
+      "title": "改写",
+      "working_label": "正在生成…",
+      "elapsed_text": "0:00",
+      "thinking_label": "重新问：思考（高，默认）",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": true
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    },
+    "pill_thinking_menu": {
+      "kind": "pill-thinking",
+      "label": "按思考强度重新问",
+      "options": [
+        {
+          "thinking": {},
+          "label": "高（默认）",
+          "selected": true
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "none"
+          },
+          "label": "无",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "minimal"
+          },
+          "label": "极低",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "low"
+          },
+          "label": "低",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "medium"
+          },
+          "label": "中",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "high"
+          },
+          "label": "高",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "xhigh"
+          },
+          "label": "超高",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "max"
+          },
+          "label": "最高",
+          "selected": false
+        }
+      ],
+      "selected_index": 0
+    }
+  }
+}

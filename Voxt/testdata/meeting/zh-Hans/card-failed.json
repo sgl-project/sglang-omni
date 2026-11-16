@@ -1,0 +1,134 @@
+{
+  "name": "card-failed",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 5,
+    "session_id": "t3",
+    "state": "failed",
+    "problem_code": "llm",
+    "mode": "answer",
+    "pill": {
+      "kind": "translate",
+      "title": "翻译",
+      "working_label": "识别中…",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "t3",
+      "kind": "translate",
+      "title": "翻译",
+      "target_name": "Arc",
+      "thinking": {},
+      "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
+      "problem_code": "llm",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "problem",
+          "kind": "problem",
+          "turn": 0,
+          "text": "语言模型出错：模型已停止或没有响应。请稍后再试。",
+          "selectable": false
+        },
+        {
+          "key": "problem-more",
+          "kind": "problem-more",
+          "turn": 0,
+          "text": "llm.balanced: the language model process stopped (signal 9)",
+          "selectable": true
+        },
+        {
+          "key": "source-last",
+          "kind": "source",
+          "turn": 0,
+          "text": "A goroutine is a lightweight thread managed by the Go runtime.",
+          "selectable": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": false,
+      "failed": true,
+      "copied": false,
+      "heard": false,
+      "can_insert": false,
+      "can_copy": false,
+      "can_follow_up": false,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": true,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}

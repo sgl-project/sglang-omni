@@ -7,6 +7,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
@@ -50,6 +51,179 @@ func recordingPillRow(pill sessionPillViewState, label, showTime bool, scene flo
 }
 
 func noticeText(text string) ovSized { return ovSized{text, layout.NoticeSize, 0, 0} }
+
+type sessionOverlayLayoutStyle struct {
+	Position  string  `json:"position"`
+	Opacity   float64 `json:"opacity"`
+	Radius    float64 `json:"radius"`
+	Margin    float64 `json:"margin"`
+	ShowTime  bool    `json:"show_time"`
+	LiveLines bool    `json:"live_lines"`
+}
+
+type sessionOverlayLayoutMemory struct {
+	LiveID       string
+	LiveWidth    int
+	StreamHeight float32
+}
+
+type sessionOverlayLayoutInput struct {
+	Measure  func(ovSized) (ovMeasured, bool)
+	WorkArea mygo.Rectangle
+	Overlay  sessionOverlayLayoutStyle
+	Memory   sessionOverlayLayoutMemory
+	Measured map[ovSized]ovMeasured
+	Reveal   bool
+}
+
+const streamGrowStep = 4 * 19
+
+// sessionOverlayLayoutFor computes the native face model without owning an app or a window.
+func sessionOverlayLayoutFor(state sessionOverlayViewState, input sessionOverlayLayoutInput) sessionOverlayLayout {
+	model := sessionOverlayLayout{
+		Radius: float32(input.Overlay.Radius), Alpha: float32(min(max(input.Overlay.Opacity, 0.5), 1)),
+		ShowTime: input.Overlay.ShowTime, LiveLines: input.Overlay.LiveLines, Top: input.Overlay.Position == "top",
+		Reveal: input.Reveal, Measured: input.Measured, Exact: true,
+		LiveID: input.Memory.LiveID, LiveWidth: input.Memory.LiveWidth, StreamHeight: input.Memory.StreamHeight,
+	}
+	measureWidth := func(key ovSized) (float32, bool) {
+		measured, exact := input.Measure(key)
+		return measured.w, exact
+	}
+	measureHeight := func(key ovSized) (float32, bool) {
+		measured, exact := input.Measure(key)
+		return measured.h, exact
+	}
+	switch state.Mode {
+	case ovAnswer:
+		card := state.Card
+		if card == nil {
+			model.Width, model.Height = layout.CardSizes[0].W, layout.CardChrome
+			break
+		}
+		bodyMax := sessionOverlayCardBodyMax(card, input.WorkArea.Height, input.Overlay.Margin)
+		body, streamHeight, exact := sessionOverlayCardBodyHeight(card, measureHeight, bodyMax, input.Memory.StreamHeight)
+		model.Width, model.Height, model.Exact, model.StreamHeight = layout.CardSizes[card.SizeStep].W, layout.CardChrome+body, exact, streamHeight
+		if card.Message != "" {
+			model.Height += layout.CardMsgGap + layout.CardMsgH
+		}
+	case ovNotice:
+		model.Width, model.Height = layout.NoticeW, layout.PillH
+		if notice := state.Notice; notice != nil {
+			textWidth, exact := measureWidth(noticeText(notice.Text))
+			model.Width, model.Exact = layout.NoticeWidth(textWidth, notice.Action != actionNone), exact
+		}
+	case ovRecording, ovWorking:
+		pill := state.Pill
+		scene := float32(0)
+		if pill.SceneText != "" {
+			scene, model.Exact = measureWidth(sceneText(pill.SceneText))
+		}
+		row, rowExact := recordingPillRow(pill, state.Mode == ovRecording, state.Mode == ovRecording && input.Overlay.ShowTime, scene, measureWidth)
+		model.Exact = model.Exact && rowExact
+		if pill.CanSkip {
+			width, exact := measureWidth(capsuleText(pill.SkipLabel))
+			row += layout.Gap + 2*10 + int(math.Ceil(float64(width)))
+			model.Exact = model.Exact && exact
+		}
+		if pill.CanThink {
+			width, exact := measureWidth(capsuleText(pill.ThinkingLabel))
+			row += layout.Gap + 2*10 + int(math.Ceil(float64(width)))
+			model.Exact = model.Exact && exact
+		}
+		text, hint := pill.LiveText, pill.LiveHint
+		if input.Overlay.LiveLines {
+			model.Width = layout.LinesW
+			if text == "" || hint {
+				model.Height, model.Exact = layout.LinesHeight(0), true
+				break
+			}
+			textHeight, exact := measureHeight(liveLinesKey(text))
+			model.Height, model.Exact = layout.LinesHeight(textHeight), exact
+			break
+		}
+		model.Height = layout.PillH
+		if text == "" {
+			model.Width = row + 2*layout.PillPadX
+			break
+		}
+		model.Height = layout.LiveH
+		textWidth, exact := measureWidth(liveTextKey(text))
+		model.Width = layout.LiveWidth(row, textWidth)
+		if model.LiveID == state.SessionID {
+			model.Width = max(model.Width, model.LiveWidth)
+		}
+		model.Exact = model.Exact && exact
+	default:
+		model.Width, model.Height = layout.PillW, layout.PillH
+	}
+	if model.Height == layout.LiveH && state.Mode != ovAnswer {
+		if model.LiveID != state.SessionID {
+			model.LiveID, model.LiveWidth = state.SessionID, 0
+		}
+		if model.Exact {
+			model.LiveWidth = max(model.LiveWidth, model.Width)
+		}
+	} else if model.LiveID != state.SessionID {
+		model.LiveID, model.LiveWidth = "", 0
+	}
+	if state.Mode != ovAnswer {
+		model.Radius = min(model.Radius, float32(model.Height)/2)
+	}
+	return model
+}
+
+func sessionOverlayBlockHeight(card *sessionCardViewState, block sessionCardBlock, measureHeight func(ovSized) (float32, bool)) (float32, bool) {
+	text, title, quote := sessionCardBlockText(card, block)
+	height, exact := measureHeight(text)
+	if block.Kind == sessionCardProblem {
+		height = max(height, layout.ProblemIcon)
+	}
+	if block.Kind == sessionCardBubble {
+		height += 2 * layout.BubblePadY
+		if title.text != "" {
+			titleHeight, ok := measureHeight(title)
+			height, exact = height+titleHeight+layout.BubbleTitleGap, exact && ok
+		}
+		if quote.text != "" {
+			quoteHeight, ok := measureHeight(quote)
+			height, exact = height+quoteGap+quoteHeight, exact && ok
+			if block.Cut {
+				height += quoteGap + quoteToggleH
+			}
+		}
+	}
+	return height, exact
+}
+
+func sessionOverlayCardBodyMax(card *sessionCardViewState, workAreaHeight int, margin float64) int {
+	room := workAreaHeight - int(math.Round(margin)) - layout.Pad - layout.CardChrome
+	if card != nil && card.Message != "" {
+		room -= layout.CardMsgGap + layout.CardMsgH
+	}
+	return max(room, layout.CardBodyMax)
+}
+
+func sessionOverlayCardBodyHeight(card *sessionCardViewState, measureHeight func(ovSized) (float32, bool), bodyMax int, previousStreamHeight float32) (int, float32, bool) {
+	var height float32
+	exact := true
+	streamHeight := previousStreamHeight
+	for index := 0; index < sessionCardBlockCount(card); index++ {
+		block := sessionCardBlockAt(card, index)
+		blockHeight, ok := sessionOverlayBlockHeight(card, block, measureHeight)
+		height += sessionCardBlockGap(block, index) + blockHeight
+		exact = exact && ok
+	}
+	if card.Writing || card.Conversation && card.Busy && !card.Recording {
+		height = float32(math.Ceil(float64(height/streamGrowStep))) * streamGrowStep
+		if exact {
+			streamHeight = height
+		} else if streamHeight > 0 {
+			height = streamHeight
+		}
+	}
+	return min(int(math.Ceil(float64(height))), bodyMax), streamHeight, exact
+}
 
 func sessionOverlayTexts(state sessionOverlayViewState, layoutState sessionOverlayLayout) []ovSized {
 	var texts []ovSized

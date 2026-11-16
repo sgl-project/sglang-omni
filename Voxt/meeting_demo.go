@@ -23,15 +23,22 @@ type meetingDemoFixture struct {
 }
 
 type meetingDemoHost struct {
-	fixtures          []meetingDemoFixture
-	selected          int
-	calls             []string
-	pageUI            meetingsLocalUI
-	overlayUI         meetingOverlayLocalUI
-	historyUI         historyLocalUI
-	historySettingsUI historySettingsLocalUI
-	historyAccessUI   historyAccessLocalUI
-	overlayLook       settings.Overlay
+	fixtures            []meetingDemoFixture
+	selected            int
+	calls               []string
+	pageUI              meetingsLocalUI
+	overlayUI           meetingOverlayLocalUI
+	historyUI           historyLocalUI
+	historySettingsUI   historySettingsLocalUI
+	historyAccessUI     historyAccessLocalUI
+	overlayLook         settings.Overlay
+	sessionState        sessionOverlayViewState
+	sessionSeed         sessionOverlayFixtureUI
+	sessionUI           sessionOverlayLocalUI
+	sessionCardUI       answerCardUI
+	sessionLayout       sessionOverlayLayout
+	sessionMemory       sessionOverlayLayoutMemory
+	sessionMeasurements map[ovSized]ovMeasured
 }
 
 func loadMeetingDemoHost(directory string) (*meetingDemoHost, error) {
@@ -98,9 +105,19 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "start" && fixture.Start != nil ||
 		fixture.Kind == "history" && fixture.History != nil ||
 		fixture.Kind == "history-settings" && fixture.HistorySettings != nil ||
-		fixture.Kind == "history-access" && fixture.HistoryAccess != nil
+		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||
+		fixture.Kind == "session-overlay" && fixture.Session != nil && fixture.SessionUI != nil
 	if !valid {
 		return meetingFixtureState{}, fmt.Errorf("kind %q has no matching state", fixture.Kind)
+	}
+	if fixture.Kind == "session-overlay" {
+		menuKind := ""
+		if fixture.Session.Menu != nil {
+			menuKind = fixture.Session.Menu.Kind
+		}
+		if fixture.SessionUI.Menu != menuKind {
+			return meetingFixtureState{}, fmt.Errorf("session menu seed %q does not match state %q", fixture.SessionUI.Menu, menuKind)
+		}
 	}
 	return fixture, nil
 }
@@ -148,6 +165,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 			historyAccess: state.On, historySelection: state.Selection, ask: state.Ask, listOpen: state.ListOpen,
 		}
 	}
+	host.resetSessionFixture(fixture.state)
 }
 
 func (host *meetingDemoHost) faceStyle(model meetingOverlayModel) meetingOverlayFaceStyle {

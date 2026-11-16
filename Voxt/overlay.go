@@ -51,6 +51,10 @@ type sessionOverlayLayout struct {
 	Top           bool
 	Reveal        bool
 	Measured      map[ovSized]ovMeasured
+	Exact         bool
+	LiveID        string
+	LiveWidth     int
+	StreamHeight  float32
 }
 
 type sessionOverlayAnimation struct {

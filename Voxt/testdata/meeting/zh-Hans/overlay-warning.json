@@ -1,0 +1,54 @@
+{
+  "name": "overlay-warning",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot25",
+    "state": "done",
+    "problem_code": "llm",
+    "mode": "notice",
+    "pill": {
+      "kind": "",
+      "title": "转录",
+      "working_label": "识别中…",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "notice": {
+      "text": "语言模型出错了，已插入识别原文。",
+      "tone": "warning"
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}

@@ -4,6 +4,7 @@ package main
 // and provider/menu projection live in session_overlay_menu.go and its state file.
 
 import (
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -17,6 +18,41 @@ const (
 	ovLangGap    = 6
 	ovLangRadius = 12
 )
+
+func sessionLanguageMenuHeight(rows int) int {
+	return min(rows*ovLangRowH+2*ovLangPad, ovLangMaxH)
+}
+
+func sessionLanguageMenuFrame(card mygo.Rectangle, top bool, rows int) mygo.Rectangle {
+	faceX, faceY := card.X+layout.Pad, card.Y+layout.Pad
+	capsuleRight := faceX + card.Width - 2*layout.Pad - layout.CardPadX - 3*layout.CardBtn - 3*layout.CardHeadGap
+	height := sessionLanguageMenuHeight(rows)
+	x := capsuleRight - ovLangW
+	y := faceY - ovLangGap - height
+	if top {
+		y = faceY + layout.CardPadTop + layout.CardHeadH + ovLangGap
+	}
+	return mygo.Rectangle{X: x - layout.Pad, Y: y - layout.Pad, Width: ovLangW + 2*layout.Pad, Height: height + 2*layout.Pad}
+}
+
+func thinkMenuFrame(language mygo.Rectangle, top bool, rows int) mygo.Rectangle {
+	height := min(rows*ovLangRowH+2*ovLangPad, ovLangMaxH) + 2*layout.Pad
+	if !top {
+		language.Y += language.Height - height
+	}
+	language.Height = height
+	return language
+}
+
+func pillMenuFrame(pill mygo.Rectangle, top bool, rows int) mygo.Rectangle {
+	height := min(rows*ovLangRowH+2*ovLangPad, ovLangMaxH)
+	x := pill.X + pill.Width - layout.Pad - ovLangW
+	y := pill.Y + layout.Pad - ovLangGap - height
+	if top {
+		y = pill.Y + pill.Height - layout.Pad + ovLangGap
+	}
+	return mygo.Rectangle{X: x - layout.Pad, Y: y - layout.Pad, Width: ovLangW + 2*layout.Pad, Height: height + 2*layout.Pad}
+}
 
 func sessionLanguageMenuContent(state func() sessionMenuViewState, actions sessionOverlayActions, local *sessionOverlayLocalUI) func(*ui.Context) {
 	return func(context *ui.Context) {

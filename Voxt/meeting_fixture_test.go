@@ -91,6 +91,9 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "history-access":
 		state := buildHistoryAccessViewState(translator, scenario.historyAccess)
 		fixture.HistoryAccess = &state
+	case "session-overlay":
+		_, state, seed := driveSessionFixture(t, *scenario.session, locale)
+		fixture.Session, fixture.SessionUI = state, seed
 	default:
 		t.Fatalf("unknown fixture kind %q", scenario.kind)
 	}
