@@ -161,6 +161,7 @@ func (a *app) settingsShown(sub string) {
 		a.loadStorage() // settings_storage_controller.go
 	case "/about":
 		a.loadSysInfo() // sysinfo.go
+		a.loadUpdates()
 	}
 }
 
@@ -215,6 +216,11 @@ func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
 		a.lastSettings = "about"
 		section := a.aboutSettingsModel()
 		state.About = &section
+		updates := a.updatesSettingsModel(now)
+		state.Updates = &updates
+		a.settingsUpdatesLocalUI = settingsUpdatesLocalUI{
+			AutoCheck: updates.AutoCheck, AutoInstall: updates.AutoInstall, Beta: updates.Beta,
+		}
 	}
 	return state
 }

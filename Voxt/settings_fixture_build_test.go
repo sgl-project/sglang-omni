@@ -46,6 +46,8 @@ func buildSettingsFixture(t *testing.T, translator *i18n.Translator, input setti
 	case "about":
 		section := buildSettingsAboutViewState(translator, input.about)
 		state.About = &section
+		updates := buildSettingsUpdatesViewState(translator, input.updates, input.now)
+		state.Updates = &updates
 	default:
 		t.Fatalf("unknown settings section %q", input.section)
 	}

@@ -25,16 +25,13 @@ package main
 
 import (
 	"os"
-	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
-	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // updateCheck is the update check of -tags updatecheck builds
@@ -94,6 +91,7 @@ func (pluginUpdates) OnChange(fn func()) (off func()) { return updater.OnChange(
 
 // updateState is the updater as the UI sees it.
 type updateState struct {
+	settingsUpdatesLocalUI
 	upd        updateService // nil: no updater (the overlay check)
 	updPrefs   updatePrefs   // as Prefs last said
 	updKnown   bool          // updPrefs was read
@@ -240,71 +238,9 @@ func (a *app) appUpdated() {
 // helper (OnQuit), the new version starts its own.
 func (a *app) relaunch() { appRelaunch() }
 
-// updateSettingsSection is the Updates part of Settings → About; a build
-// without the updater only says that it does not update.
-func (a *app) updateSettingsSection(c *ui.Context) {
-	if a.upd == nil {
-		sectionTitle(c, i18n.T("Updates"))
-		caption(c, i18n.T("This version does not update automatically."))
-		return
-	}
-	a.loadUpdates()
-	p := a.updPrefs
-	sectionTitle(c, i18n.T("Updates"))
-	if a.bundleUpdated {
-		settingRowNote(c, "about-relaunch", i18n.T("Update installed"), i18n.T("The new version runs once Voxt restarts."), func() {
-			if primaryButton(c.Key("about-relaunch"), i18n.T("Restart Voxt")).Clicked() {
-				a.relaunch()
-			}
-		})
-	}
-	desc := ""
-	switch {
-	case !a.updKnown:
-	case !p.Enabled:
-		desc = i18n.T("This copy cannot update itself because it is a development build or is in a folder Voxt cannot write to. Move Voxt to Applications.")
-	case p.LastCheck.IsZero():
-		desc = i18n.T("Not checked yet.")
-	default:
-		desc = i18n.T("Last checked %s.", uitext.TimeAgo(p.LastCheck))
-	}
-	settingRowNote(c, "about-update", i18n.T("Check for updates"), desc, func() {
-		if ui.Button(c.Key("about-update"), i18n.T("Check for Updates…")).Clicked() {
-			a.checkForUpdates()
-		}
-	})
-	if !a.updKnown || !p.Enabled {
-		return
-	}
-	auto := i18n.T("Once a day. Voxt asks before installing.")
-	if p.CheckOnly {
-		auto = i18n.T("Once a day. A card says when a new version is out.")
-	}
-	settingRow(c, "about-update-auto", i18n.T("Check automatically"), auto, func() {
-		if ui.Switch(c.Key("about-update-auto-switch"), &a.updPrefs.AutoCheck).Label(i18n.T("Check for updates automatically")).Changed() {
-			a.setAutoCheck(a.updPrefs.AutoCheck)
-		}
-	})
-	beta := a.betaOn()
-	note := i18n.T("Releases only.")
-	switch {
-	case beta:
-		note = i18n.T("Betas and releases, whichever is newer.")
-	case strings.Contains(a.version, "-"):
-		note = i18n.T("Releases only. This beta stays until a newer release comes out.")
-	}
-	settingRowNote(c, "about-update-beta", i18n.T("Beta updates"), note, func() {
-		if ui.Switch(c.Key("about-update-beta-switch"), &beta).Label(i18n.T("Get beta versions")).Changed() {
-			a.setBeta(beta)
-		}
-	})
-	if p.CheckOnly {
-		caption(c, i18n.T("Voxt does not install updates itself: install a new version from its disk image, or with brew upgrade --cask voxt."))
-		return
-	}
-	settingRow(c, "about-update-install", i18n.T("Install updates automatically"), i18n.T("Voxt asks only to restart."), func() {
-		if ui.Switch(c.Key("about-update-install-switch"), &a.updPrefs.AutoInstall).Label(i18n.T("Install updates without asking")).Disabled(!a.updPrefs.AutoCheck).Changed() {
-			a.setAutoInstall(a.updPrefs.AutoInstall)
-		}
-	})
+func (a *app) updatesSettingsModel(now time.Time) settingsUpdatesViewState {
+	return buildSettingsUpdatesViewState(i18n.CurrentTranslator(), settingsUpdatesStateInput{
+		Present: a.upd != nil, Known: a.updKnown, Prefs: a.updPrefs, BundleUpdated: a.bundleUpdated,
+		Beta: a.betaOn(), Version: a.version,
+	}, now)
 }

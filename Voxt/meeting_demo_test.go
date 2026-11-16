@@ -303,10 +303,10 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	host.settingsForm.clearHistoryAsk = true
 	host.settingsForm.ovStyle.margin = 42
 	host.settingsStorageUI.resetAsk, host.settingsStorageUI.resetText = "everything", "stale"
+	host.settingsUpdatesUI.AutoCheck = true
 	host.settingsMeetingUI.hide = true
 	host.settingsOpen = true
 	host.settingsRouter.Replace("/about")
-	host.settingsDialogUI.RenderUpdates = func(*ui.Context) {}
 	tester := newMeetingDemoTester(t, host)
 	if err := tester.ClickControl("Continue"); err != nil {
 		t.Fatal(err)
@@ -325,15 +325,16 @@ func TestMeetingDemoSwitchesFixtures(t *testing.T) {
 	if !reflect.DeepEqual(host.settingsForm, settingsForm{}) {
 		t.Fatalf("fixture switch kept settings form state: %+v", host.settingsForm)
 	}
-	if host.settingsStorageUI != (settingsStorageLocalUI{}) || host.settingsMeetingUI != (meetingSettingsUI{}) || host.settingsOpen || host.pageUI.setOpen {
+	if host.settingsStorageUI != (settingsStorageLocalUI{}) || host.settingsUpdatesUI != (settingsUpdatesLocalUI{}) ||
+		host.settingsMeetingUI != (meetingSettingsUI{}) || host.settingsOpen || host.pageUI.setOpen {
 		t.Fatal("fixture switch kept settings dialog state")
 	}
-	if host.settingsRouter.Path() != "/general" || host.settingsDialogUI.RenderUpdates != nil {
-		t.Fatal("fixture switch kept settings router or update renderer")
+	if host.settingsRouter.Path() != "/general" {
+		t.Fatal("fixture switch kept settings router")
 	}
 	if host.settingsDialogUI.Open != &host.settingsOpen || host.settingsDialogUI.Router != host.settingsRouter ||
 		host.settingsDialogUI.Form != &host.settingsForm || host.settingsDialogUI.HistoryAccess != &host.historyAccessUI ||
-		host.settingsDialogUI.Storage != &host.settingsStorageUI {
+		host.settingsDialogUI.Storage != &host.settingsStorageUI || host.settingsDialogUI.Updates != &host.settingsUpdatesUI {
 		t.Fatal("settings dialog pointers do not address the host's local state")
 	}
 	if err := tester.ClickControl("Back"); err != nil {

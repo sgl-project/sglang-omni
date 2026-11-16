@@ -24,6 +24,7 @@ func TestSettingsDemoActionControls(t *testing.T) {
 	tests = append(tests, settingsDemoAudioCases()...)
 	tests = append(tests, settingsDemoControlCases()...)
 	tests = append(tests, settingsDemoStorageCases()...)
+	tests = append(tests, settingsDemoUpdateCases()...)
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			host, err := loadMeetingDemoHost("testdata/meeting")

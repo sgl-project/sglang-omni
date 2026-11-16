@@ -90,7 +90,7 @@ type settingsDialogLocalUI struct {
 	Form          *settingsForm
 	HistoryAccess *historyAccessLocalUI
 	Storage       *settingsStorageLocalUI
-	RenderUpdates func(*ui.Context) // About's updater view; nil when the updates area has no fixture.
+	Updates       *settingsUpdatesLocalUI
 }
 
 // settingsDialog is Settings (⌘,): a dialog over the page, its sections
@@ -250,9 +250,7 @@ func settingsSection(c *ui.Context, r *ui.Route, state settingsDialogViewState, 
 			storageSettings(c, *state.Storage, actions, local.Storage)
 		case "about":
 			aboutDetails(c, *state.About)
-			if local.RenderUpdates != nil {
-				local.RenderUpdates(c) // updates.go
-			}
+			updateSettingsSection(c, *state.Updates, actions, local.Updates)
 			aboutDiagnostics(c, *state.About, actions)
 		}
 		return

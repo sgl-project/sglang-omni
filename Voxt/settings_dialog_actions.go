@@ -10,5 +10,6 @@ type settingsDialogActions interface {
 	settingsPrivacyActions
 	settingsStorageActions
 	settingsAboutActions
+	settingsUpdatesActions
 	navigate(path string)
 }

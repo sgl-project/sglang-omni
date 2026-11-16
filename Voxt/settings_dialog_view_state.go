@@ -47,6 +47,7 @@ type settingsDialogViewState struct {
 	Privacy     *settingsPrivacyViewState        `json:"privacy,omitempty"`
 	Storage     *settingsStorageViewState        `json:"storage,omitempty"`
 	About       *settingsAboutViewState          `json:"about,omitempty"`
+	Updates     *settingsUpdatesViewState        `json:"updates,omitempty"`
 }
 
 func buildSettingsDialogViewState(translator *i18n.Translator, open bool, currentPath, shownPath string) settingsDialogViewState {

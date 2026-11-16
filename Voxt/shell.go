@@ -294,7 +294,7 @@ func (a *app) view(c *ui.Context) {
 	settingsDialog(c, a.settingsDialogModel(time.Now()), a, settingsDialogLocalUI{
 		Open: &a.settingsOpen, Router: a.setRouter, Form: &a.settingsForm,
 		HistoryAccess: &a.histAccessUI, Storage: &a.storageState.settingsStorageLocalUI,
-		RenderUpdates: a.updateSettingsSection,
+		Updates: &a.updateState.settingsUpdatesLocalUI,
 	})
 	a.onboarding(c)                                     // onboarding_view.go
 	shortcutPromptDialog(c, a.shortcutPromptModel(), a) // settings_shortcuts_family.go

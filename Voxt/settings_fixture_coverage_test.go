@@ -9,6 +9,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 func TestSettingsFixtureCoverage(t *testing.T) {
@@ -77,6 +78,9 @@ func checkSettingsDialogFixture(t *testing.T, locale, name string, state *settin
 		if want := id == sectionID; present != want {
 			t.Errorf("%s/%s: %s section present=%t, want %t", locale, name, id, present, want)
 		}
+	}
+	if present := state.Updates != nil; present != (sectionID == "about") {
+		t.Errorf("%s/%s: updates state present=%t, want %t", locale, name, present, sectionID == "about")
 	}
 }
 
@@ -301,6 +305,7 @@ func checkSettingsStorageFixtures(t *testing.T, locale string, fixtures map[stri
 
 func checkSettingsAboutFixtures(t *testing.T, locale string, fixtures map[string]meetingFixtureState) {
 	t.Helper()
+	translator := i18n.NewTranslator(locale)
 	normal := requireSettingsDialogFixture(t, locale, fixtures, "settings-about-normal").About
 	loading := requireSettingsDialogFixture(t, locale, fixtures, "settings-about-loading").About
 	if len(normal.Rows) <= len(loading.Rows) {
@@ -309,6 +314,29 @@ func checkSettingsAboutFixtures(t *testing.T, locale string, fixtures map[string
 	selfChecking := requireSettingsDialogFixture(t, locale, fixtures, "settings-about-self-checking").About
 	if !selfChecking.SelfChecking {
 		t.Errorf("%s: about self-checking fixture is not checking", locale)
+	}
+	for _, name := range []string{"settings-about-normal", "settings-about-loading", "settings-about-self-checking", "settings-about-results"} {
+		if updates := requireSettingsDialogFixture(t, locale, fixtures, name).Updates; updates.Present {
+			t.Errorf("%s/%s: no-updater fixture has an updater", locale, name)
+		}
+	}
+	expectedDescription := translator.T("Last checked %s.", uitext.TimeAgoFor(translator, settingsFixtureLastCheck, settingsFixtureNow))
+	updates := requireSettingsDialogFixture(t, locale, fixtures, "settings-about-updates").Updates
+	if !updates.Present || !updates.Known || !updates.Enabled || updates.CheckOnly || updates.BundleUpdated ||
+		!updates.AutoCheck || updates.AutoInstall || updates.Beta || updates.AutoInstallDisabled {
+		t.Errorf("%s: full updater fixture has unexpected state %+v", locale, updates)
+	}
+	if updates.Description != expectedDescription || updates.AutoCheckText != translator.T("Once a day. Voxt asks before installing.") || updates.BetaNote != translator.T("Releases only.") {
+		t.Errorf("%s: full updater fixture has unexpected text %+v", locale, updates)
+	}
+	checkOnly := requireSettingsDialogFixture(t, locale, fixtures, "settings-about-updates-check-only").Updates
+	if !checkOnly.Present || !checkOnly.Known || !checkOnly.Enabled || !checkOnly.CheckOnly || !checkOnly.BundleUpdated ||
+		!checkOnly.AutoCheck || checkOnly.AutoInstall || !checkOnly.Beta {
+		t.Errorf("%s: check-only updater fixture has unexpected state %+v", locale, checkOnly)
+	}
+	if checkOnly.Description != expectedDescription || checkOnly.AutoCheckText != translator.T("Once a day. A card says when a new version is out.") ||
+		checkOnly.BetaNote != translator.T("Betas and releases, whichever is newer.") {
+		t.Errorf("%s: check-only updater fixture has unexpected text %+v", locale, checkOnly)
 	}
 	statuses := map[string]bool{}
 	for _, fixture := range fixtures {

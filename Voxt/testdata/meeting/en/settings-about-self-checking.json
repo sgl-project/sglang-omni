@@ -81,6 +81,20 @@
       ],
       "self_checking": true,
       "checks": null
+    },
+    "updates": {
+      "present": false,
+      "known": false,
+      "enabled": false,
+      "check_only": false,
+      "bundle_updated": false,
+      "description": "",
+      "auto_check_text": "Once a day. Voxt asks before installing.",
+      "beta_note": "Releases only.",
+      "auto_install_disabled": true,
+      "auto_check": false,
+      "auto_install": false,
+      "beta": false
     }
   }
 }

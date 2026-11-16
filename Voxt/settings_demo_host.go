@@ -9,6 +9,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 	host.settingsRouter = ui.NewRouter("/general")
 	host.settingsForm = settingsForm{}
 	host.settingsStorageUI = settingsStorageLocalUI{}
+	host.settingsUpdatesUI = settingsUpdatesLocalUI{}
 	host.settingsMeetingUI = meetingSettingsUI{}
 
 	if state := fixture.state.Settings; state != nil {
@@ -54,6 +55,11 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		if storage := state.Storage; storage != nil {
 			host.settingsStorageUI = settingsStorageLocalUI{resetAsk: storage.ResetAsk, resetText: storage.ResetText}
 		}
+		if updates := state.Updates; updates != nil {
+			host.settingsUpdatesUI = settingsUpdatesLocalUI{
+				AutoCheck: updates.AutoCheck, AutoInstall: updates.AutoInstall, Beta: updates.Beta,
+			}
+		}
 	}
 	if state := fixture.state.MeetingSettings; state != nil {
 		host.pageUI.setOpen = true
@@ -63,7 +69,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 	}
 	host.settingsDialogUI = settingsDialogLocalUI{
 		Open: &host.settingsOpen, Router: host.settingsRouter, Form: &host.settingsForm,
-		HistoryAccess: &host.historyAccessUI, Storage: &host.settingsStorageUI,
+		HistoryAccess: &host.historyAccessUI, Storage: &host.settingsStorageUI, Updates: &host.settingsUpdatesUI,
 	}
 }
 
@@ -194,6 +200,11 @@ func (host *meetingDemoHost) copyDiagnostics(_ *aboutUIContext) {
 	host.record("copyDiagnostics")
 }
 func (host *meetingDemoHost) reportBug(_ *aboutUIContext) { host.record("reportBug") }
+func (host *meetingDemoHost) checkForUpdates()            { host.record("checkForUpdates") }
+func (host *meetingDemoHost) relaunch()                   { host.record("relaunch") }
+func (host *meetingDemoHost) setAutoCheck(on bool)        { host.record("setAutoCheck %t", on) }
+func (host *meetingDemoHost) setBeta(on bool)             { host.record("setBeta %t", on) }
+func (host *meetingDemoHost) setAutoInstall(on bool)      { host.record("setAutoInstall %t", on) }
 func (host *meetingDemoHost) navigate(path string)        { host.record("navigate %s", path) }
 
 func (host *meetingDemoHost) setMeetingCaptureMode(captureMode string) {

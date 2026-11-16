@@ -16,6 +16,11 @@ import (
 
 const settingsFixtureSoundRemaining = 1250 * time.Millisecond
 
+var (
+	settingsFixtureNow       = time.Date(2026, time.November, 16, 12, 0, 0, 0, time.UTC)
+	settingsFixtureLastCheck = settingsFixtureNow.Add(-2 * time.Hour)
+)
+
 type settingsFixtureInput struct {
 	section        string
 	preferences    settings.Settings
@@ -27,6 +32,8 @@ type settingsFixtureInput struct {
 	historyAccess  historyAccessStateInput
 	storage        settingsStorageStateInput
 	about          settingsAboutStateInput
+	updates        settingsUpdatesStateInput
+	now            time.Time
 	keptModelIDs   []string
 	keptModelBytes int64
 }
@@ -184,6 +191,21 @@ func settingsFixtureScenarios() []meetingFixtureScenario {
 		{id: "fixture-data", title: "Fixture data", status: "fail", detail: "fixture check failed"},
 	}
 	scenarios = append(scenarios, aboutResults)
+
+	updates := newSettingsFixtureScenario("settings-about-updates", "about")
+	updates.settings.now = settingsFixtureNow
+	updates.settings.updates = settingsUpdatesStateInput{
+		Present: true, Known: true, Version: "1.2.3",
+		Prefs: updatePrefs{Enabled: true, AutoCheck: true, LastCheck: settingsFixtureLastCheck},
+	}
+	scenarios = append(scenarios, updates)
+	checkOnly := newSettingsFixtureScenario("settings-about-updates-check-only", "about")
+	checkOnly.settings.now = settingsFixtureNow
+	checkOnly.settings.updates = settingsUpdatesStateInput{
+		Present: true, Known: true, BundleUpdated: true, Beta: true, Version: "1.2.3",
+		Prefs: updatePrefs{Enabled: true, CheckOnly: true, AutoCheck: true, LastCheck: settingsFixtureLastCheck},
+	}
+	scenarios = append(scenarios, checkOnly)
 
 	scenarios = append(scenarios, newMeetingSettingsFixtureScenario("meeting-settings-normal"))
 	scenarios = append(scenarios, meetingFixtureScenario{

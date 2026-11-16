@@ -36,6 +36,7 @@ type meetingDemoHost struct {
 	settingsRouter    *settingsDemoRouter
 	settingsForm      settingsForm
 	settingsStorageUI settingsStorageLocalUI
+	settingsUpdatesUI settingsUpdatesLocalUI
 	settingsMeetingUI meetingSettingsUI
 	settingsDialogUI  settingsDialogLocalUI
 }
