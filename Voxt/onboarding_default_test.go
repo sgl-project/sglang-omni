@@ -51,12 +51,12 @@ func downloadAsked(t *testing.T, a *app, drain func(), id string) {
 	}
 }
 
-// TestGuideDownloadAndContinue: the guide recommends Qwen3-ASR 1.7B
-// (8bit) on every Mac, 8 GB ones included, and downloads only it.
+// TestGuideDownloadAndContinue: the guide recommends MOSS-Transcribe-Diarize
+// on every Mac, 8 GB ones included, and downloads only it and its draft.
 func TestGuideDownloadAndContinue(t *testing.T) {
-	label := "Download and continue (2.5 GB)"
+	label := "Download and continue (2.1 GB)"
 	a, tt, asked, drain := guideAt(t)
-	if !has(tt, "Qwen3-ASR 1.7B (8bit)") || !has(tt, label) || !has(tt, "Skip this step") || hasPrefix(tt, "Chosen for this Mac") {
+	if !has(tt, "MOSS-Transcribe-Diarize") || !has(tt, label) || !has(tt, "Skip this step") || hasPrefix(tt, "Chosen for this Mac") {
 		t.Fatalf("%q", tt.Texts())
 	}
 	if asked.Load() != 0 {
@@ -66,10 +66,29 @@ func TestGuideDownloadAndContinue(t *testing.T) {
 	if a.ob.step != obTranscribe {
 		t.Fatalf("step %d", a.ob.step)
 	}
-	downloadAsked(t, a, drain, models.ASRAccurate)
-	if s := a.models.Status(models.ASRFast); s.Err != nil || s.Downloading {
-		t.Errorf("%s downloaded too: %+v", models.ASRFast, s)
+	downloadAsked(t, a, drain, models.ASRMoss)
+	downloadAsked(t, a, drain, models.ASRMossDraft)
+	for _, id := range []string{models.ASRFast, models.ASRAccurate} {
+		if s := a.models.Status(id); s.Err != nil || s.Downloading {
+			t.Errorf("%s downloaded too: %+v", id, s)
+		}
 	}
+}
+
+// TestGuideDownloadsTheDraft: with the recommended model on this Mac,
+// the pack's download is its draft alone, so that Faster transcription is
+// on (#4067).
+func TestGuideDownloadsTheDraft(t *testing.T) {
+	countingHub(t)
+	a, _ := obTester(t)
+	drain := queuePosts(a)
+	reopenModels(a)
+	seedModels(t, a, models.ASRMoss, models.VADSilero)
+	if got := a.obDownloadLeft(); got != "262.5 MB" {
+		t.Errorf("left %q, want the draft's size", got)
+	}
+	a.obDownload()
+	downloadAsked(t, a, drain, models.ASRMossDraft)
 }
 
 // findPrefix is the text on screen that starts with s.
@@ -94,8 +113,8 @@ func TestGuideSkipDownloadsNothing(t *testing.T) {
 	a.obGo(obModels)
 	a.closeOnboarding()
 	drain()
-	if asked.Load() != 0 || a.models.Status(models.ASRAccurate).Downloading {
-		t.Fatalf("closing the guide asked %d: %+v", asked.Load(), a.models.Status(models.ASRAccurate))
+	if asked.Load() != 0 || a.models.Status(models.ASRMoss).Downloading {
+		t.Fatalf("closing the guide asked %d: %+v", asked.Load(), a.models.Status(models.ASRMoss))
 	}
 }
 
@@ -104,7 +123,7 @@ func TestGuideSkipDownloadsNothing(t *testing.T) {
 // Home sends the user to the page that can claim it.
 func TestGuideOnDiskNoDownload(t *testing.T) {
 	a, tt, _, _ := guideAt(t)
-	a.modelStatus[models.ASRAccurate] = models.Status{OnDisk: true, Users: []string{"AudioSmith"}}
+	a.modelStatus[models.ASRMoss] = models.Status{OnDisk: true, Users: []string{"AudioSmith"}}
 	frames(tt)
 	if hasPrefix(tt, "Download and continue") {
 		t.Errorf("offers what is on disk: %q", tt.Texts())
@@ -121,7 +140,7 @@ func TestGuideAlternativeNoDownloadButton(t *testing.T) {
 	a, tt, _, _ := guideAt(t)
 	a.ob.found = []models.Found{{ID: models.ASRFast, By: []string{"AudioSmith"}}}
 	frames(tt)
-	if !has(tt, "Download Qwen3-ASR 1.7B (8bit)") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
+	if !has(tt, "Download MOSS-Transcribe-Diarize") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
 		t.Fatalf("%q", tt.Texts())
 	}
 }
@@ -133,8 +152,8 @@ func TestGuideReuseUnchanged(t *testing.T) {
 	a, tt := obTester(t)
 	reopenModels(a)
 	smith := addPeer(t, a, "dev.hehehai.audiosmith", nil)
-	seedModels(t, a, models.ASRAccurate, models.VADSilero)
-	peerClaims(t, smith, models.ASRAccurate, models.VADSilero)
+	seedModels(t, a, models.ASRMoss, models.VADSilero)
+	peerClaims(t, smith, models.ASRMoss, models.VADSilero)
 	a.familyFound(a.fam.Discover())
 	a.models.Refresh()
 	a.obGo(obModels)
@@ -161,11 +180,11 @@ func TestGuideOnlyVADOnThisMac(t *testing.T) {
 	a.models.Refresh()
 	a.navigate("/history") // not Home, which offers the download too
 	a.obGo(obModels)
-	if !has(tt, "Use them") || !has(tt, "Download (2.5 GB)") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
+	if !has(tt, "Use them") || !has(tt, "Download (2.1 GB)") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
 		t.Fatalf("reuse card: %q", tt.Texts())
 	}
 	click(t, tt, "Use them")
-	if !has(tt, "Download and continue (2.5 GB)") || hasPrefix(tt, "Download (") {
+	if !has(tt, "Download and continue (2.1 GB)") || hasPrefix(tt, "Download (") {
 		t.Fatalf("after Use them: %q", tt.Texts())
 	}
 }
@@ -316,7 +335,7 @@ func TestHomeSpeechRow(t *testing.T) {
 	if a.shownPath() == modelsPath {
 		t.Error("the line left Home instead of downloading")
 	}
-	downloadAsked(t, a, drain, models.ASRAccurate)
+	downloadAsked(t, a, drain, models.ASRMoss)
 	if asked.Load() == 0 {
 		t.Error("nothing was asked of the Hub")
 	}

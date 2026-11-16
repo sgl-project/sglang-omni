@@ -15,6 +15,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **会议把对方标为说话人 1–4**：安装 MOSS-Transcribe-Diarize 后，Voxt 在会议结束时用它转录对方的话并区分说话人，你的话仍标为“我”，然后再校对转录稿和写总结。没装时会议照常工作，会议详情提供语音识别模型页入口。MOSS-Transcribe-Diarize 还新增 262 MB 的 DFlash 草稿模型，安装后默认开启，并沿用其他草稿模型的“转录加速”开关。
 ### Changed
 
+- **MOSS-Transcribe-Diarize is the recommended speech model** (#4067): the setup guide and Home now download MOSS-Transcribe-Diarize with its 262 MB DFlash draft (2.1 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. It knows Chinese and English. It takes no dictionary or Speech context while it recognises: while every feature uses such a model, the Speech models page says so under Speech context, which meeting transcript correction still reads, and your dictionary still guides the language model's clean-up. Qwen3-ASR stays on the Speech models page, and a Qwen3-ASR another ActNow app installed is offered in the guide instead of a download. A model you chose for a feature stays as chosen.
+
 - **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 - **The thinking button names its setting** (#4066): the thinking button in the recording window and on the answer card now reads, for example, "Thinking level: High" or "Thinking level: On (default)" instead of "Ask again: Thinking (High)". Click it to pick another level for this input; as before, picking one stops the answer and asks again. This is the same in Transcribe, Translate and Rewrite.
@@ -22,6 +24,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### 中文
 
 #### 变更
+
+- **推荐的语音识别模型改为 MOSS-Transcribe-Diarize**（#4067）：设置引导和首页现在下载 MOSS-Transcribe-Diarize 及其 262 MB 的 DFlash 草稿（共 2.1 GB），一开始就开着转录加速；装好后“自动”优先用它。它支持中文和英语，识别时不用词典和识别上下文：所有功能都用这类模型时，语音识别模型页在“识别上下文”下注明这一点，会议转录稿校对仍会读它，词典仍用于语言模型整理。Qwen3-ASR 仍在语音识别模型页上，其他 ActNow app 装过的 Qwen3-ASR 会在引导里作为不用下载的选择。你在功能里明确选过的模型不变。
 
 - **转录和翻译的结果也边写边显示在答案卡片里**：打开答案卡片时，译文和转录整理后的文字会随语言模型的输出逐步出现在卡片里，和改写的回答一样，不用再在录音窗口里等全部写完。翻译可以点“停止”，留下已写出的译文。转录的卡片没有“停止”，而是“用识别原文”（按取消键也一样）：把你说的整段按识别结果放进卡片，因为整理停在半路会丢掉后面的内容。在卡片里换一种语言或换一个思考强度时，新的回答也边写边替换卡片里的文字，失败时卡片回到原来的文字。历史记录里的“重试”和“重新识别”会在详情里边写边显示新结果。答案卡片关着时，结果仍在写完后一次插入。
 - **语言模型处理时，录音窗口显示发给它的文字**：用流式语音识别模型时，录音窗口下面一行改为显示发给语言模型的识别结果（最终识别结果，词典别名已替换），不再是最后一条实时文字，两者可能不同。不是流式的语音识别模型照旧不显示文字，没有语言模型时也照旧。
