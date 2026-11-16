@@ -1,0 +1,84 @@
+{
+  "name": "notes-empty",
+  "kind": "notes",
+  "notes": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "count_label": "",
+    "rows": [],
+    "shortcut": {
+      "keys": "RightCommand",
+      "current_text": "右 ⌘",
+      "options": [
+        {
+          "label": "已关闭",
+          "keys": ""
+        },
+        {
+          "label": "右 ⌥",
+          "keys": "RightOption"
+        },
+        {
+          "label": "右 ⌥ ⇧",
+          "keys": "RightOption+Shift"
+        },
+        {
+          "label": "⌃ 右 ⌥",
+          "keys": "Control+RightOption"
+        },
+        {
+          "label": "右 ⌘",
+          "keys": "RightCommand"
+        },
+        {
+          "label": "右 ⇧",
+          "keys": "RightShift"
+        },
+        {
+          "label": "fn",
+          "keys": "Fn"
+        },
+        {
+          "label": "fn ⇧",
+          "keys": "Fn+Shift"
+        },
+        {
+          "label": "fn ⌃",
+          "keys": "Fn+Control"
+        },
+        {
+          "label": "⌥空格",
+          "keys": "Option+Space"
+        },
+        {
+          "label": "⌃⌥空格",
+          "keys": "Control+Option+Space"
+        },
+        {
+          "label": "自定义…",
+          "keys": ""
+        }
+      ],
+      "problems": null,
+      "problem_codes": null,
+      "system_codes": null,
+      "used_by": null,
+      "empty_hint": "在任意 App 里按 右 ⌘，说完再按一次。说的内容会存到这里，不会输入到光标处。",
+      "set_hint": false,
+      "helper_records": false,
+      "selection": "Right ⌘",
+      "custom": false,
+      "typing": false,
+      "edited": false,
+      "text": "RightCommand",
+      "editing_text": "右 ⌘",
+      "parsed_keys": "RightCommand",
+      "parse_error": "",
+      "parse_code": "",
+      "edited_hint": "",
+      "record_denied": false,
+      "unknown": false
+    }
+  }
+}

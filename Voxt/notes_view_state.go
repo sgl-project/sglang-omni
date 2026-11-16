@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
@@ -27,6 +28,8 @@ type notesShortcutViewState struct {
 	CurrentText   string                    `json:"current_text"`
 	Options       []notesKeyOptionViewState `json:"options"`
 	Problems      []string                  `json:"problems"`
+	ProblemCodes  []string                  `json:"problem_codes"`
+	SystemCodes   []string                  `json:"system_codes"`
 	UsedBy        []string                  `json:"used_by"`
 	EmptyHint     string                    `json:"empty_hint"`
 	SetHint       bool                      `json:"set_hint"`
@@ -39,6 +42,7 @@ type notesShortcutViewState struct {
 	EditingText   string                    `json:"editing_text"`
 	ParsedKeys    string                    `json:"parsed_keys"`
 	ParseError    string                    `json:"parse_error"`
+	ParseCode     string                    `json:"parse_code"`
 	EditedHint    string                    `json:"edited_hint"`
 	RecordDenied  bool                      `json:"record_denied"`
 	Unknown       bool                      `json:"unknown"`
@@ -61,6 +65,7 @@ type notesShortcutStateInput struct {
 	Text         string
 	RecordDenied bool
 	Unknown      bool
+	Err          error
 }
 
 type notesViewStateInput struct {
@@ -102,16 +107,40 @@ func buildNotesShortcutViewState(translator *i18n.Translator, input notesViewSta
 	}
 	state.EmptyHint = translator.T("Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.")
 	state.Problems = uitext.HotkeyProblemsFor(translator, input.Features, hotkey.Note)[0]
+	for _, problem := range hotkey.Check(input.Features) {
+		if problem.Feature == hotkey.Note || problem.Code == hotkey.ProblemConflict && problem.Other == hotkey.Note {
+			state.ProblemCodes = append(state.ProblemCodes, problem.Code)
+			if problem.System != "" {
+				state.SystemCodes = append(state.SystemCodes, problem.System)
+			}
+		}
+	}
 	if current != "" && len(state.Problems) == 0 {
 		state.EmptyHint = translator.T("Press %s in any app, speak, and press it again. What you say is saved here instead of typed.", uitext.HotkeyTextFor(translator, current))
 	}
 	state.Options = notesKeyOptionsFor(translator, current)
 	editing := input.Editing
-	chord, err := hotkey.Parse(editing.Text)
+	err := editing.Err
+	var chord hotkey.Chord
+	if err == nil {
+		chord, err = hotkey.Parse(editing.Text)
+	}
 	if err == nil {
 		state.ParsedKeys = chord.String()
 	}
 	state.ParseError = uitext.ParseErrorTextFor(translator, err)
+	switch {
+	case errors.Is(err, hotkey.ErrEmpty):
+		state.ParseCode = "empty"
+	case errors.Is(err, hotkey.ErrNoModifier):
+		state.ParseCode = "no_modifier"
+	case errors.Is(err, hotkey.ErrTwoKeys):
+		state.ParseCode = "two_keys"
+	case errors.Is(err, hotkey.ErrFnSide):
+		state.ParseCode = "fn_side"
+	case err != nil:
+		state.ParseCode = "unknown"
+	}
 	if editing.Edited && err == nil {
 		state.EditedHint = translator.T("Press Return to use %s.", uitext.HotkeyTextFor(translator, editing.Text))
 	}

@@ -203,6 +203,8 @@ func buildDictionaryTermEditViewState(translator *i18n.Translator, input diction
 		state.ErrorCode = "long"
 	case errors.Is(input.Err, dict.ErrNewline):
 		state.ErrorCode = "newline"
+	case errors.Is(input.Err, dict.ErrFormat):
+		state.ErrorCode = "format"
 	case errors.Is(input.Err, core.ErrExists):
 		state.ErrorCode = "exists"
 	case input.Err != nil:
@@ -223,6 +225,12 @@ func buildDictionaryScanViewState(translator *i18n.Translator, input dictionaryS
 		state.Warning, _ = uitext.ModelErrorTextFor(translator, input.Err)
 		if state.ErrorCode == "" {
 			state.ErrorCode = "generic"
+			switch {
+			case errors.Is(input.Err, local.ErrNotInstalled):
+				state.ErrorCode = "not_installed"
+			case errors.Is(input.Err, local.ErrNoRuntime):
+				state.ErrorCode = "no_runtime"
+			}
 		}
 	}
 	switch {
