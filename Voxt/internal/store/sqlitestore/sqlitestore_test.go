@@ -191,6 +191,8 @@ func TestHistory(t *testing.T) {
 		entry("c", store.KindRewrite, t0.Add(2*time.Minute), "", "Dear team, the release moves to Friday."),
 	}
 	es[2].SourceText, es[2].PromptText = "release friday", "改正式一点"
+	es[0].Conversation, es[1].Conversation, es[2].Conversation = "first", "first", "second"
+	es[2].Title, es[2].Replaces = "Release", "b"
 	es[0].Audio = "a.wav"
 	es[0].SentMS, es[0].DSP, es[0].GainDB = 3100, "highpass+level", 7.5
 	if err := os.WriteFile(filepath.Join(h.AudioDir(), "a.wav"), []byte("RIFF"), 0o644); err != nil {
@@ -214,6 +216,9 @@ func TestHistory(t *testing.T) {
 	if got != want {
 		t.Errorf("round trip:\n%+v\n%+v", got, want)
 	}
+	if got, err := h.Get(ctx, "c"); err != nil || got.Title != "Release" || got.Replaces != "b" {
+		t.Errorf("rewrite round trip: %+v, %v", got, err)
+	}
 	ids := func(q store.HistoryQuery) string {
 		list, err := h.List(ctx, q)
 		if err != nil {
@@ -228,6 +233,7 @@ func TestHistory(t *testing.T) {
 	for q, want := range map[store.HistoryQuery]string{
 		{}:                                        "c,b,a",
 		{Kind: store.KindTranslate}:               "b",
+		{Conversation: "first"}:                   "b,a",
 		{Search: "十点开会"}:                          "a", // trigram, CJK
 		{Search: "开会"}:                            "a", // under 3 characters: LIKE
 		{Search: "Anna"}:                          "b",
@@ -498,5 +504,36 @@ func TestHistoryInsertedInto(t *testing.T) {
 		if err != nil || len(rows.Values) != 1 || asString(rows.Values[0][0]) != want {
 			t.Errorf("%s: the column %v %v", id, rows, err)
 		}
+	}
+}
+
+// The notes change's migration 9 ran first; upgrading then applies the
+// history reopen migration (the two share no number).
+func TestHistoryReopenMigratesAfterNotesAppName(t *testing.T) {
+	dir := t.TempDir()
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = slices.Clone(saved[:9])
+	s := openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != 9 {
+		t.Fatalf("user_version %d", v)
+	}
+	s.Close()
+	migrations = saved
+	s = openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != Version() {
+		t.Fatalf("user_version %d", v)
+	}
+	// Migration 9 is the notes one: its column is there beside 10's.
+	if _, err := s.db.Query(ctx, `SELECT app_name FROM notes LIMIT 1`); err != nil {
+		t.Fatalf("migration 9's column: %v", err)
+	}
+	e := store.Entry{ID: "e1", Kind: store.KindRewrite, Status: store.StatusDone, Result: "body", Title: "A title", Replaces: "e0"}
+	if err := s.History().Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.History().Get(ctx, "e1")
+	if err != nil || got.Title != "A title" || got.Replaces != "e0" {
+		t.Fatalf("entry %+v, %v", got, err)
 	}
 }

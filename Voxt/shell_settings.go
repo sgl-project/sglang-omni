@@ -143,6 +143,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	if old.General.HideDock != new.General.HideDock {
 		a.applyDock() // tray.go
 	}
+	if old.Privacy.KeepHistory != new.Privacy.KeepHistory {
+		a.loadTrayRecent() // the Reopen card list exists only with history on
+	}
 	if old.Updates.BetaOn(a.version) != new.Updates.BetaOn(a.version) {
 		a.applyBeta() // updates.go
 	}

@@ -91,6 +91,7 @@ type Entry struct {
 	SourceText string
 	PromptText string
 	Result     string
+	Title      string // Rewrite's answer title; "" for other kinds and older entries
 	TargetLang string
 	// Delivery: "insert" (pasted where the cursor was), "copy" or "card"
 	// (shown in the answer card).
@@ -114,8 +115,9 @@ type Entry struct {
 
 	// Conversation is the ID of the first session of the answer card's
 	// conversation this one belongs to (its own ID when it began one);
-	// "" for older entries.
-	Conversation string
+	// "" for older entries. Replaces is the answer a redo superseded;
+	// "" for a new turn and older entries.
+	Conversation, Replaces string
 
 	// DSP is the sound processing the speech model's copy of the
 	// recording went through (internal/dsp): "highpass", "level" or
@@ -138,10 +140,11 @@ type Entry struct {
 // HistoryQuery selects history entries: the zero value is every entry,
 // newest first.
 type HistoryQuery struct {
-	Kind   Kind   // "" = every kind
-	Search string // full text over the texts; under 3 characters a substring match
-	Limit  int    // 0 = no limit
-	Offset int
+	Kind         Kind   // "" = every kind
+	Conversation string // "" = every conversation
+	Search       string // full text over the texts; under 3 characters a substring match
+	Limit        int    // 0 = no limit
+	Offset       int
 	// WithAudio selects only the entries with a recording kept.
 	WithAudio bool
 	// After (inclusive) and Before (exclusive) bound CreatedAt; zero means
