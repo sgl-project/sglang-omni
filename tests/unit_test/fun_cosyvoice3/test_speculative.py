@@ -14,6 +14,7 @@ import pytest
 import torch
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.dspark_components import dspark_draft as sglang_dspark_draft
+from sglang.srt.speculative.spec_tp_sync import SpecTpSync
 from sglang.srt.utils import DynamicGradMode
 from torch._dynamo.utils import counters
 
@@ -30,6 +31,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     EMPTY_HISTORY_TOKEN,
     TOP_K_BOUND,
+    DraftSamplingState,
     ExactAccept,
     exact_accept,
     rejection_sample,
@@ -43,6 +45,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
     build_step_sampling_state,
 )
 from sglang_omni.models.fun_cosyvoice3.engine_builder import FunCosyVoice3EngineBuilder
+from sglang_omni.models.fun_cosyvoice3.exact_draft_graph import ExactDraftGraphSampler
 from sglang_omni.models.fun_cosyvoice3.model_runner import (
     COSYVOICE3_RAS_WINDOW_SIZE,
     FunCosyVoice3ModelRunner,
@@ -1085,3 +1088,110 @@ def test_drafting_routes_only_a_mirrored_head_through_its_own_block_draw(
     assert mirrored_block.greedy_mask.tolist() == [False]
     assert other_block == "sglang block"
     assert forwarded_heads == [other_head]
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize("graph_rows", [1, 4, 16])
+@pytest.mark.parametrize("seeded", [False, True])
+def test_exact_draft_graph_refreshes_history_and_noise(
+    graph_rows: int,
+    seeded: bool,
+) -> None:
+    """Graph replay must use current histories after shrink, growth, and slot reuse."""
+    torch.manual_seed(817)
+    model = dspark_draft.FunCosyVoice3DSparkDraftModel.__new__(
+        dspark_draft.FunCosyVoice3DSparkDraftModel
+    )
+    torch.nn.Module.__init__(model)
+    model.sample_from_anchor = False
+    model.confidence_head = None
+    model.lm_head = torch.nn.Linear(
+        32, TOTAL_VOCAB_SIZE, bias=False, device="cuda", dtype=torch.bfloat16
+    )
+    model.markov_head = MirroredMarkovHead(
+        vocab_size=TOTAL_VOCAB_SIZE, markov_rank=8
+    ).to("cuda", torch.bfloat16)
+    model.register_buffer(
+        "unreachable_logits", torch.zeros(TOTAL_VOCAB_SIZE, device="cuda")
+    )
+    sampler = ExactDraftGraphSampler(
+        model=model,
+        gamma=7,
+        max_bs=graph_rows,
+        device=torch.device("cuda"),
+        noise=sglang_dspark_draft.DraftNoise(
+            key=0, offset=torch.zeros((), device="cuda", dtype=torch.int64)
+        ),
+        tp_sync=SpecTpSync(SimpleNamespace(world_size=1)),
+        out=None,
+    )
+    model.markov_head.block_sampler = sampler.compiled_sampler
+    proposer = sglang_dspark_draft.DraftBlockProposer.__new__(
+        sglang_dspark_draft.DraftBlockProposer
+    )
+    proposer._staged_params_key = (
+        None  # noqa: leading-underscore  # initialize the upstream cache under test
+    )
+    proposer.num_staged_params_calls = 0
+    proposer.num_staged_params_skips = 0
+    with torch.inference_mode():
+        hidden_states = torch.randn(
+            graph_rows * 8, 32, device="cuda", dtype=torch.bfloat16
+        )
+        input_tokens = torch.randint(0, VOCAB_SIZE, (graph_rows * 8,), device="cuda")
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                sampler(hidden_states, input_tokens)
+        torch.cuda.current_stream().wait_stream(stream)
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            sampler(hidden_states, input_tokens)
+        for step, request_count in enumerate(
+            (graph_rows, graph_rows, max(1, graph_rows - 1), graph_rows, graph_rows)
+        ):
+            state = DraftSamplingState(
+                presence_mask=torch.rand(request_count, TOTAL_VOCAB_SIZE, device="cuda")
+                < 0.2,
+                repetition_penalties=torch.full((request_count,), 1.2, device="cuda"),
+                output_lengths=torch.full(
+                    (request_count,), (step % 3) * 7, device="cuda", dtype=torch.long
+                ),
+                min_new_tokens=torch.full(
+                    (request_count,), 12, device="cuda", dtype=torch.long
+                ),
+                temperatures=torch.full((request_count,), 0.8, device="cuda"),
+                greedy=torch.arange(request_count, device="cuda") % 3 == step % 3,
+                seeds=(
+                    torch.arange(request_count, device="cuda") + 19 if seeded else None
+                ),
+            )
+            model.markov_head.sampling_state = state
+            hidden_states.normal_()
+            input_tokens.random_(0, VOCAB_SIZE)
+            random_state = torch.cuda.get_rng_state()
+            proposer._stage_sampling_params(  # noqa: leading-underscore  # exercise the upstream staging contract
+                sampler, bs=request_count, sampling_info=None
+            )
+            graph.replay()
+            actual_tokens = (
+                sampler.out[: request_count * 7].view(request_count, 7).clone()
+            )
+            actual_logits = sampler.step_logits[:request_count].clone()
+            base_logits, _ = model.compute_base_logits(
+                hidden_states.view(graph_rows, 8, 32)[:request_count, 1:].reshape(
+                    -1, 32
+                )
+            )
+            torch.cuda.set_rng_state(random_state)
+            expected_tokens, expected_logits = model.markov_head.draw_block(
+                base_logits.view(request_count, 7, TOTAL_VOCAB_SIZE),
+                input_tokens.view(graph_rows, 8)[:request_count, 0],
+            )
+            torch.testing.assert_close(actual_tokens, expected_tokens, rtol=0, atol=0)
+            torch.testing.assert_close(
+                actual_logits, expected_logits, rtol=1e-5, atol=1e-5
+            )
