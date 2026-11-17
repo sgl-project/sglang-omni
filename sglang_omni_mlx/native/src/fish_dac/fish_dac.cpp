@@ -82,15 +82,8 @@ int AudioCodec::LayerCount(const std::string &prefix) const {
   return count;
 }
 
-// Note (Yitong Li): x + sin(alpha * x)^2 / alpha in the reference's operation
-// order (a reciprocal, then a product), which other models' Snake does not
-// share, for bit-identical audio.
 mx::array AudioCodec::Snake(const mx::array &x, const mx::array &alpha) {
-  return mx::add(
-      x, mx::multiply(mx::reciprocal(mx::add(
-                          alpha, omni_common::Scalar(1e-9, alpha.dtype()))),
-                      mx::power(mx::sin(mx::multiply(alpha, x)),
-                                omni_common::Scalar(2, x.dtype()))));
+  return omni_common::Snake(x, alpha, alpha);
 }
 
 // The transformers' RMSNorm, computed in float32 and cast back before the

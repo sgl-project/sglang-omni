@@ -323,16 +323,7 @@ mx::array Hift::ResBlock(const mx::array &x, const std::string &prefix,
                          int kernel_size) const {
   const auto snake = [&](const mx::array &input, const std::string &name) {
     const mx::array &alpha = checkpoint_.Weight(prefix + "." + name + ".alpha");
-    const mx::Dtype dtype = alpha.dtype();
-    const mx::array magnitude = mx::abs(alpha);
-    const mx::array divisor =
-        mx::where(mx::less(magnitude, Scalar(1e-9, dtype)), Scalar(1e-4, dtype),
-                  mx::multiply(mx::sign(alpha),
-                               mx::maximum(magnitude, Scalar(1e-4, dtype))));
-    return mx::add(input,
-                   mx::divide(mx::power(mx::sin(mx::multiply(input, alpha)),
-                                        mx::array(2.0f, input.dtype())),
-                              divisor));
+    return omni_common::Snake(input, alpha, alpha);
   };
   mx::array hidden = x;
   for (int i = 0; i < 3; ++i) {

@@ -93,6 +93,19 @@ std::vector<mx::array> SwigluGraph(const std::vector<mx::array> &inputs) {
   return {mx::multiply(SiluGraph({inputs[0]})[0], inputs[1])};
 }
 
+std::vector<mx::array> SnakeGraph(const std::vector<mx::array> &inputs) {
+  const mx::array &x = inputs[0];
+  const mx::array &alpha = inputs[1];
+  const mx::array &beta = inputs[2];
+  return {mx::add(x, mx::divide(mx::square(mx::sin(mx::multiply(alpha, x))),
+                                mx::add(beta, Scalar(1e-9f, beta))))};
+}
+
+std::vector<mx::array>
+LogScaleSnakeGraph(const std::vector<mx::array> &inputs) {
+  return SnakeGraph({inputs[0], mx::exp(inputs[1]), mx::exp(inputs[2])});
+}
+
 } // namespace
 
 mx::array Scalar(float value, mx::Dtype dtype) {
@@ -125,6 +138,13 @@ mx::array Silu(const mx::array &x) {
 mx::array Swiglu(const mx::array &gate, const mx::array &up) {
   static const auto compiled = mx::compile(SwigluGraph, true);
   return compiled({gate, up})[0];
+}
+
+mx::array Snake(const mx::array &x, const mx::array &alpha,
+                const mx::array &beta, bool log_scale) {
+  static const auto compiled = mx::compile(SnakeGraph, true);
+  static const auto compiled_log_scale = mx::compile(LogScaleSnakeGraph, true);
+  return (log_scale ? compiled_log_scale : compiled)({x, alpha, beta})[0];
 }
 
 mx::array RouteToExperts(const mx::array &hidden, const mx::array &indices,

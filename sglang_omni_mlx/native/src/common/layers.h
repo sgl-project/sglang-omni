@@ -85,6 +85,11 @@ mlx::core::array Silu(const mlx::core::array &x);
 // Silu(gate) * up, the gated MLP's activation.
 mlx::core::array Swiglu(const mlx::core::array &gate,
                         const mlx::core::array &up);
+// The vocoders' Snake, x + sin(alpha * x)^2 / (beta + 1e-9), alpha and beta
+// per channel and broadcast against x: BigVGAN's SnakeBeta, or DAC's Snake
+// with beta = alpha. With log_scale they hold log alpha and log beta.
+mlx::core::array Snake(const mlx::core::array &x, const mlx::core::array &alpha,
+                       const mlx::core::array &beta, bool log_scale = false);
 
 // A mixture of experts' outputs [tokens, experts_per_token, width] for hidden
 // [tokens, width] routed to indices [tokens, experts_per_token]. run_experts

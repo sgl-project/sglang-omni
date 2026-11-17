@@ -125,10 +125,7 @@ mx::array Model::Snake(const mx::array &hidden_states,
   const mx::array alpha = mx::transpose(
       mx::astype(checkpoint_.Weight(prefix + ".alpha"), hidden_states.dtype()),
       {0, 2, 1});
-  // Note (Akazaakane): power and square round differently in BF16.
-  return hidden_states + mx::power(mx::sin(alpha * hidden_states),
-                                   mx::array(2, hidden_states.dtype())) /
-                             (alpha + mx::array(1e-9f, alpha.dtype()));
+  return omni_common::Snake(hidden_states, alpha, alpha);
 }
 
 mx::array Model::Vocoder(const mx::array &latents) const {

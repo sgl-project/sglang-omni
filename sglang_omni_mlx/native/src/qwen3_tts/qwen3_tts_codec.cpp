@@ -18,7 +18,6 @@ namespace {
 
 constexpr const char *kPrefix = "decoder";
 constexpr float kCodebookUsageEps = 1e-5f;
-constexpr float kSnakeEps = 1e-9f;
 constexpr float kConvNextNormEps = 1e-6f;
 constexpr std::array<int, 3> kResidualDilations = {1, 3, 9};
 // Note (Jiaxin Deng): the CUDA vocoder decodes a whole request in 300-frame
@@ -136,12 +135,8 @@ SpeechDecoder::SpeechDecoder(const nlohmann::json &config,
 
 mx::array SpeechDecoder::Snake(const mx::array &x,
                                const std::string &prefix) const {
-  const mx::array alpha = mx::exp(checkpoint_.Weight(prefix + ".alpha"));
-  const mx::array beta = mx::exp(checkpoint_.Weight(prefix + ".beta"));
-  return mx::add(
-      x, mx::multiply(
-             mx::divide(mx::array(1.0f), mx::add(beta, mx::array(kSnakeEps))),
-             mx::power(mx::sin(mx::multiply(x, alpha)), mx::array(2.0f))));
+  return omni_common::Snake(x, checkpoint_.Weight(prefix + ".alpha"),
+                            checkpoint_.Weight(prefix + ".beta"), true);
 }
 
 mx::array SpeechDecoder::CausalConvolution(const mx::array &x,
