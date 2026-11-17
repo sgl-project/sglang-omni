@@ -143,7 +143,7 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		a.toggleThinkMenu()
 	}
 	if v.failed == nil {
-		tip := i18n.T("Insert into %s (R)", cmpOr(v.target, i18n.T("the app")))
+		tip := i18n.T("Insert into %s", cmpOr(v.target, i18n.T("the app")))
 		if v.why != "" {
 			tip = v.why
 		}
@@ -151,11 +151,11 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.closeLangMenu()
 			a.insertAnswer()
 		}
-		copyIcon, copyLabel, copyTip := icons.Copy, i18n.T("Copy"), i18n.T("Copy (C)")
+		copyIcon, copyLabel := icons.Copy, i18n.T("Copy")
 		if v.copied {
-			copyIcon, copyLabel, copyTip = icons.CopyCheck, i18n.T("Copied"), i18n.T("Copied")
+			copyIcon, copyLabel = icons.CopyCheck, i18n.T("Copied")
 		}
-		if cardIconButton(c.Key("ov-card-copy"), copyLabel, copyTip, copyIcon, v.canCopy) {
+		if cardIconButton(c.Key("ov-card-copy"), copyLabel, copyLabel, copyIcon, v.canCopy) {
 			a.closeLangMenu()
 			a.copyAnswer(c.Services().WriteClipboard)
 		}

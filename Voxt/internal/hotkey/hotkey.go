@@ -513,21 +513,3 @@ func (p Plan) Configure(active bool) proto.HotkeyConfigureParams {
 	// interval (at most 800 ms, else 500).
 	return proto.HotkeyConfigureParams{Bindings: bs, SwallowFn: p.UsesFn(), Active: active, Cancel: p.Cancel}
 }
-
-// CardCopy and CardInsert are the binding IDs of the answer card's
-// single-letter keys (#4127): c copies the answer, r inserts it. They
-// go out as bindings only while the card shows, so the letters reach
-// the app in front at any other time, as the cancel shortcut's key does.
-const (
-	CardCopy   = "card.copy"
-	CardInsert = "card.insert"
-)
-
-// CardBindings are the card's keys as the helper's event tap takes
-// them: bare c and r, swallowed while bound.
-func CardBindings() []proto.HotkeyBinding {
-	return []proto.HotkeyBinding{
-		binding(CardCopy, Chord{Key: "C", Code: keyCodes["C"]}, proto.BehaviorTap),
-		binding(CardInsert, Chord{Key: "R", Code: keyCodes["R"]}, proto.BehaviorTap),
-	}
-}

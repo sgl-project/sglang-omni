@@ -22,8 +22,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 
 
-
-
 ### Fixed
 
 - **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup; the meetings' speaker transcription keeps it.
@@ -46,7 +44,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Voxt 2 installs updates inside the app** (#3961): release builds check Voxt 2's signed stable or beta feed, download the update, install it and relaunch, as Voxt 1.x did. Settings → Diagnostics & About keeps the automatic check, beta and automatic install controls. Builds without a feed still check GitHub and point to the download.
 - **Update announcements are shorter**: the current version's announcement appears once after an update, with a title and at most three short lines. **What's new** opens the full notes, also available any time in Settings → About → Updates.
 - **Dictionary highlights in Transcribe**: the Try preview and answer card highlight recognised text that matches an enabled dictionary term or alias.
-- **Single-letter keys on the answer card** (#4127): while the answer card shows, press c to copy the answer and r to insert it over the selection, as the card's Copy and Insert buttons do. The keys reach the card only while it shows; at any other time c and r type as usual, and without Accessibility they do not work, like the cancel shortcut. The buttons' tips show the keys.
 
 
 
@@ -56,7 +53,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Recording starts with a microphone selected in Settings → Audio** (#4120). Voxt keeps a working input running through configuration changes. If two consecutive starts deliver no audio, it switches to the system default microphone. If that attempt also delivers no audio, Voxt ends the stalled recording with an error.
 ### 中文
-
 
 
 
@@ -102,8 +98,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Voxt 2 在 App 内安装更新**（#3961）：发布构建会检查 Voxt 2 的正式版或 beta 签名更新源，下载并安装更新后重新启动，和 Voxt 1.x 一样。「设置 → 诊断与关于」保留自动检查、Beta 更新和自动安装开关。没有更新源的构建仍检查 GitHub 并提供下载地址。
 - **更新公告更短**：当前版本的公告在更新后只出现一次，一个标题加最多三行短句。“新增功能”打开完整说明，也可以随时在 设置 → 关于 → 更新 里查看。
 - **转录里的词典高亮**：试用预览和答案卡片会高亮识别文字中命中启用词条或别名的部分。
-- **答案卡片的单字母键**（#4127）：答案卡片显示时，按 c 复制回答、按 r 把回答插入选中的位置，和卡片上的“复制”“插入”按钮一样。这两个键只在卡片显示时归卡片用，其余时候照常输入；没有辅助功能时不生效，和取消键一样。按钮的提示里标出了这两个键。
-
 
 
 
