@@ -96,7 +96,26 @@ mx::array SileroVAD::Conv1d(const mx::array &x, const std::string &name,
   }
 }
 
-float SileroVAD::Feed(const float *chunk, StreamState &state) const {
+namespace {
+
+// Chunks per GPU round trip on the file path; bounds the lazy graph.
+constexpr size_t kProbabilitySyncChunks = 250;
+
+} // namespace
+
+void SileroVAD::FlushProbabilities(std::vector<mlx::core::array> &pending,
+                                   std::vector<float> &probabilities) const {
+  const mx::array block = mx::concatenate(pending, 0);
+  mx::eval(block);
+  const float *values = block.data<float>();
+  probabilities.insert(probabilities.end(), values,
+                       values + static_cast<long>(pending.size()));
+  pending.clear();
+  ++file_path_syncs_;
+}
+
+mlx::core::array SileroVAD::FeedLazy(const float *chunk,
+                                     StreamState &state) const {
   std::vector<float> window(state.context);
   window.insert(window.end(), chunk, chunk + kChunkSamples);
   const int window_length = static_cast<int>(window.size());
@@ -141,11 +160,16 @@ float SileroVAD::Feed(const float *chunk, StreamState &state) const {
   mx::array out = Relu(mx::stack(hidden_steps, -2));
   out = mx::sigmoid(Conv1d(out, "final_conv", 1, 0));
   const mx::array probability = mx::mean(mx::squeeze(out, -1), 1, true);
-  mx::eval({probability, lstm->hidden, lstm->cell});
   state.hidden = lstm->hidden;
   state.cell = lstm->cell;
   state.context.assign(chunk + kChunkSamples - kContextSamples,
                        chunk + kChunkSamples);
+  return probability;
+}
+
+float SileroVAD::Feed(const float *chunk, StreamState &state) const {
+  const mx::array probability = FeedLazy(chunk, state);
+  mx::eval({probability, *state.hidden, *state.cell});
   return probability.item<float>();
 }
 
@@ -157,8 +181,18 @@ SileroVAD::PredictProbabilities(const std::vector<float> &samples) const {
                 0.0f);
   StreamState state;
   std::vector<float> probabilities;
+  file_path_syncs_ = 0;
+  // One GPU round trip per block instead of one per chunk: a file's chunks
+  // are known up front, and the LSTM state chains lazily between them.
+  std::vector<mx::array> pending;
   for (size_t offset = 0; offset < padded.size(); offset += kChunkSamples) {
-    probabilities.push_back(Feed(padded.data() + offset, state));
+    pending.push_back(FeedLazy(padded.data() + offset, state));
+    if (pending.size() == kProbabilitySyncChunks) {
+      FlushProbabilities(pending, probabilities);
+    }
+  }
+  if (!pending.empty()) {
+    FlushProbabilities(pending, probabilities);
   }
   return probabilities;
 }
