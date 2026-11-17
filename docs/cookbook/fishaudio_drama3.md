@@ -243,6 +243,47 @@ Each GPU then holds 18.5 GB of engine weights, and 9.7 GB with `--tts_engine.tp_
 
 *Table 4. Drama 3 FP8 checkpoint on Seed-TTS English, non-streaming requests at concurrency 8.*
 
+### Single 32 GB GPU: RTX 5090
+
+A single RTX 5090 (SM120, 32 GB) fits the int4 checkpoint with incremental
+streaming on the stateful codec decoder. The shipping config sizes the three
+stages to leave the preprocessing reserve and the vocoder their memory:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/drama-3-int4 \
+  --config examples/configs/drama3_tts_rtx5090.yaml \
+  --port 8000
+```
+
+The config gives the engine 0.70 of the GPU and the vocoder 0.16, caps requests
+at 8, and reserves 3 GiB for preprocessing. It sets `stateful_decode` and keeps
+only the streaming window CUDA graphs (`non_streaming_cuda_graph_max_frames 0`).
+The engine's weights take 20.6 GiB and leave a 25,872-token KV cache and 8 mamba
+slots; the vocoder holds 2.63 GiB of weights and graphs in its 5.02 GiB share,
+which fits one non-streaming decode of up to 1,211 padded frames. The whole
+pipeline idles at about 31,690 MiB of the card's 32,607 MiB, so
+`max_new_tokens` 1024 fits and 2048 does not. Raise `max_new_tokens` only after
+measuring the vocoder share on your card.
+
+`stateful_decode` also covers SM120, where the FA3-based incremental path
+(`--vocoder.factory.stream_decode incremental`) is unavailable and otherwise
+falls back to overlap decoding. Measured with eight streaming English prompts
+of about 5-7 s each, two runs per point, on one RTX 5090:
+
+| Concurrency | Stateful throughput (audio s/s) | Stateful TTFA | Overlap throughput (audio s/s) | Overlap TTFA |
+|---:|---:|---:|---:|---:|
+| 1 | 7.7 | 181 ms | 7.2 | 190 ms |
+| 2 | 11.4 | 241 ms | 10.5 | 270 ms |
+| 4 | 19.4 | 276 ms | 17.7 | 298 ms |
+| 8 | 29.2 | 354 ms | 28.7 | 358 ms |
+
+*Table 5. Drama 3 int4 streaming throughput and mean TTFA on one RTX 5090.*
+
+Stateful decoding is 6-10% faster than overlap at concurrency 1-4 and costs
+about 1.7 GiB more GPU memory (31,732 MiB versus 30,072 MiB peak). At concurrency 8
+the engine becomes the bottleneck and the two are within run-to-run spread.
+
 ### High Concurrency
 
 The defaults run at most 16 requests at a time on the engine and give it 0.70 of the GPU's memory. For more streams at once, raise the request cap; the measurements below also raise the engine's share:
@@ -434,3 +475,5 @@ Loading takes 6.4 to 6.8 s native and 6.9 to 7.2 s for the reference. Peak MLX m
 ## Incremental streaming codec
 
 The incremental codec is opt-in: set `--vocoder.factory.stateful_decode true` to reuse per-request convolution and attention history. While it is on, it replaces the vocoder's default batched incremental stream decoding (`--vocoder.factory.stream_decode incremental`). GEMM upsampling, folded codebooks, Snake/history fusion and compiled attention follow this setting unless individually overridden. Slot capacity follows `tts_engine.engine.max_running_requests` when set, otherwise `tts_engine.factory.max_running_requests`; it does not add an HTTP admission limit. Streams that cannot acquire a slot use window decoding for their entire lifetime. Fixed routing, single replicas, a dedicated TP1 vocoder process and zero crossfade are required. Enabling the feature adds state memory and compilation/capture startup cost. It targets sustained concurrent workloads, especially shared-GPU deployments; benefits with a dedicated vocoder GPU are workload-dependent.
+
+It is also the incremental streaming path on SM120: the default `stream_decode incremental` path needs FA3, which is gated to compute capability 8.x and 9.x, so on an RTX 5090 it falls back to overlap decoding while `stateful_decode` runs the incremental decoder. See [Single 32 GB GPU: RTX 5090](#single-32-gb-gpu-rtx-5090) for the validated int4 config and measurements.

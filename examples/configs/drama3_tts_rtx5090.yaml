@@ -1,0 +1,27 @@
+# Single RTX 5090 (SM120, 32 GB) profile for the int4 checkpoint and incremental
+# streaming codec decoding. See the "Incremental streaming codec" section of
+# docs/cookbook/fishaudio_drama3.md for the memory budget and measurements.
+config_cls: Drama3PipelineConfig
+name: drama3-tts-rtx5090
+model_path: fishaudio/drama-3-int4
+
+stages:
+  preprocessing:
+    # The reference encoder needs at least 3 GiB on this card; 2 GiB OOMs while
+    # encoding a reference.
+    total_reserve_bytes: 3GiB
+
+  tts_engine:
+    gpu_memory_fraction: 0.70
+    factory:
+      max_running_requests: 8
+      # 2048 frames does not fit beside the stateful decoder on 32 GB.
+      max_new_tokens: 1024
+
+  vocoder:
+    gpu_memory_fraction: 0.16
+    factory:
+      stateful_decode: true
+      # Keep only the streaming window graphs: a non-streaming CUDA graph of
+      # max_new_tokens frames does not fit this card's vocoder share.
+      non_streaming_cuda_graph_max_frames: 0
