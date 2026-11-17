@@ -187,6 +187,10 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 	chunks := PlanChunks(speech, len(pcm)/2, p)
 	var out []Segment
 	var carry string
+	var covered time.Duration // the earlier chunks returned audio up to here
+	var prevText string       // the last emitted line, for the straddling one
+	var tail []labeledLine    // the trailing emitted lines, for speaker anchors
+	needTrim := false
 	for i, ch := range chunks {
 		if onProgress != nil {
 			onProgress(float64(i) / float64(len(chunks)))
@@ -205,6 +209,10 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 			return nil, err
 		}
 		offset := time.Duration(ch.Start) * time.Second / time.Duration(rate)
+		// A hard cut starts this chunk inside audio the previous chunk
+		// returned; the model numbers what it hears there over, and the
+		// repeated lines anchor its numbers to the earlier ones.
+		anchors := anchorSpeakers(res.Segments, offset, covered, tail)
 		marked := 0
 		carry = ""
 		for _, part := range res.Segments {
@@ -212,13 +220,35 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 			if text == "" {
 				continue
 			}
-			start := offset + max(part.Start, time.Duration(0))
-			out = append(out, Segment{
-				ID: core.NewID(time.Now()), Source: src, Speaker: mtdSpeaker(part.Speaker),
-				Start: start, End: max(offset+part.End, start), Text: text, Final: true,
-			})
 			marked++
-			carry += "[" + part.Speaker + "] " + text + "\n"
+			start := offset + max(part.Start, time.Duration(0))
+			end := max(offset+part.End, start)
+			if end <= covered {
+				continue // already returned with the previous chunk
+			}
+			if needTrim {
+				text = DedupeOverlapText(prevText, text)
+				if text == "" {
+					continue
+				}
+			}
+			speaker := mtdSpeaker(part.Speaker)
+			if anchored, ok := anchors[part.Speaker]; ok {
+				speaker = anchored
+			}
+			out = append(out, Segment{
+				ID: core.NewID(time.Now()), Source: src, Speaker: speaker,
+				Start: start, End: end, Text: text, Final: true,
+			})
+			prevText = text
+			needTrim = false
+			if speaker != "" {
+				tail = append(tail, labeledLine{words: splitWords(text), speaker: speaker})
+				if len(tail) > 8 {
+					tail = tail[len(tail)-8:]
+				}
+				carry += "[" + mtdLabel(speaker) + "] " + text + "\n"
+			}
 		}
 		if marked == 0 && strings.TrimSpace(res.Text) != "" {
 			out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: strings.TrimSpace(res.Text), Final: true})
@@ -226,6 +256,8 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 		if runes := []rune(carry); len(runes) > 300 { // the last lines, at most a screen
 			carry = string(runes[len(runes)-300:])
 		}
+		covered = time.Duration(ch.End) * time.Second / time.Duration(rate)
+		needTrim = true
 	}
 	if onProgress != nil {
 		onProgress(1)
@@ -246,6 +278,67 @@ func mtdSpeaker(speaker string) string {
 		return ""
 	}
 	return "s" + n
+}
+
+// mtdLabel is a global speaker in the prompt's own format (s2 -> S02), so
+// the next chunk continues the numbers it sees.
+func mtdLabel(speaker string) string {
+	n, ok := strings.CutPrefix(speaker, "s")
+	if !ok {
+		return speaker
+	}
+	v, err := strconv.Atoi(n)
+	if err != nil || v <= 0 {
+		return speaker
+	}
+	return fmt.Sprintf("S%02d", v)
+}
+
+// labeledLine is an emitted line's words and its global speaker.
+type labeledLine struct {
+	words   []string
+	speaker string
+}
+
+// anchorSpeakers maps a chunk's labels to the earlier chunks' speakers.
+// The model numbers the voices it hears from scratch, so a line it
+// repeated from the previous chunk's audio (ending at or before covered)
+// names the same voice under whatever number this chunk gave it.
+func anchorSpeakers(parts []asr.SpeakerSegment, offset, covered time.Duration, tail []labeledLine) map[string]string {
+	if covered <= 0 || len(tail) == 0 {
+		return nil
+	}
+	anchors := map[string]string{}
+	for _, part := range parts {
+		if _, ok := anchors[part.Speaker]; ok {
+			continue
+		}
+		if offset+part.End > covered {
+			continue
+		}
+		words := splitWords(part.Text)
+		if len(words) < 2 {
+			continue // a one-word line anchors nothing: too many voices say it
+		}
+		for k := len(tail) - 1; k >= 0; k-- {
+			if tail[k].speaker != "" && sameWords(tail[k].words, words) {
+				anchors[part.Speaker] = tail[k].speaker
+				break
+			}
+		}
+	}
+	return anchors
+}
+
+// sameWords says two lines match: equal, or the shorter a prefix of the
+// longer (a cut can clip the repeated line).
+func sameWords(a, b []string) bool {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, req asr.FileRequest, rate int, pcm []byte, chunks []Chunk, onProgress func(float64)) ([]Segment, error) {

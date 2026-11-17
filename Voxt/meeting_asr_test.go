@@ -48,6 +48,7 @@ func TestMeetingDiarizerRequiresInstalledMTD(t *testing.T) {
 	}
 	provider := &meetingDiarizerFake{}
 	a.local = &meetingMTDLocal{provider: provider}
+	a.prefs.General.MainLanguage = "en" // an unknown language keeps the selected model
 	d, err = a.meetingDiarizer(context.Background())
 	if err != nil || d != provider {
 		t.Fatalf("with MTD: diarizer %v, err %v", d, err)
@@ -119,6 +120,8 @@ func TestMeetingTrackASRUsesDictionary(t *testing.T) {
 
 // MTD knows only zh and en: a meeting in another language keeps the
 // selected model's transcription instead of a forced wrong-language one.
+// An unknown language (English UI, no main language: no hint, #3398) is
+// not zh or en either.
 func TestMeetingDiarizerLanguageGate(t *testing.T) {
 	provider := &meetingDiarizerFake{}
 	for _, tc := range []struct {
@@ -129,6 +132,7 @@ func TestMeetingDiarizerLanguageGate(t *testing.T) {
 		{"en", true},
 		{"ko", false},
 		{"ja", false},
+		{"", false},
 	} {
 		t.Run(tc.main, func(t *testing.T) {
 			a, _, _ := newTestApp(t)

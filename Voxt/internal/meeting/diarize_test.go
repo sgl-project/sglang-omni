@@ -66,6 +66,68 @@ func TestDiarizeTrackChunksAndCarriesSpeakers(t *testing.T) {
 	}
 }
 
+// A hard cut starts the next chunk inside audio the previous chunk
+// returned: its repeat of the lines there is dropped, not transcribed
+// twice, and a line straddling the cut keeps only its new words.
+func TestDiarizeTrackDropsOverlapRepeat(t *testing.T) {
+	d := &seqDiarizer{results: []asr.Result{
+		{Segments: []asr.SpeakerSegment{
+			{Start: 0, End: time.Second, Speaker: "S01", Text: "hello team"},
+			{Start: 119 * time.Second, End: 120 * time.Second, Speaker: "S01", Text: "ship it today"},
+		}},
+		{Segments: []asr.SpeakerSegment{
+			{Start: 100 * time.Millisecond, End: 1100 * time.Millisecond, Speaker: "S01", Text: "ship it today"},
+			{Start: 2 * time.Second, End: 3 * time.Second, Speaker: "S01", Text: "and tomorrow too"},
+		}},
+	}}
+	rate := asr.SampleRate
+	pcm := make([]byte, rate*200*2) // 200 s
+	speech := []vad.Segment{{Start: 0, End: rate * 200}}
+	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 3 {
+		t.Fatalf("segments %+v", segs)
+	}
+	if segs[1].Text != "ship it today" || segs[2].Text != "and tomorrow too" {
+		t.Errorf("segments %+v", segs)
+	}
+}
+
+// The model can number a voice again in a later chunk: the repeated line
+// in the overlap anchors the new number to the earlier speaker instead of
+// merging two voices into one, and the carry shows the earlier numbers.
+func TestDiarizeTrackAnchorsRenumberedSpeaker(t *testing.T) {
+	d := &seqDiarizer{results: []asr.Result{
+		{Segments: []asr.SpeakerSegment{
+			{Start: 0, End: time.Second, Speaker: "S01", Text: "hello team"},
+			{Start: 119 * time.Second, End: 120 * time.Second, Speaker: "S02", Text: "good point let us ship it"},
+		}},
+		{Segments: []asr.SpeakerSegment{
+			// the overlap re-transcribed, with the second voice renumbered S01
+			{Start: 100 * time.Millisecond, End: 1100 * time.Millisecond, Speaker: "S01", Text: "good point let us ship it"},
+			{Start: 2 * time.Second, End: 3 * time.Second, Speaker: "S01", Text: "next steps now"},
+		}},
+	}}
+	rate := asr.SampleRate
+	pcm := make([]byte, rate*200*2) // 200 s
+	speech := []vad.Segment{{Start: 0, End: rate * 200}}
+	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 3 {
+		t.Fatalf("segments %+v", segs)
+	}
+	if segs[1].Speaker != "s2" || segs[2].Speaker != "s2" || segs[2].Text != "next steps now" {
+		t.Errorf("segments %+v", segs)
+	}
+	if !strings.Contains(d.requests[1].Prompt, "[S02] good point let us ship it") {
+		t.Errorf("the second request's prompt: %q", d.requests[1].Prompt)
+	}
+}
+
 // Speaker numbers past S04 keep their number (an import can have more
 // voices than a call's other side).
 func TestMTDSpeakerNumbers(t *testing.T) {
