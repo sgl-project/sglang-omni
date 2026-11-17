@@ -74,7 +74,7 @@ type Decision struct {
 // (a Transcribe one, not a note, with the setting on).
 func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string, finish bool) Decision {
 	if e.Binding == FinishID {
-		if phase == Recording && e.Phase == proto.PhaseTrigger {
+		if phase == Recording && e.Phase == proto.PhaseTrigger && finish {
 			return Decision{Action: Stop}
 		}
 		return Decision{}

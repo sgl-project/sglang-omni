@@ -422,16 +422,20 @@ func TestRouteFinish(t *testing.T) {
 	other := proto.App{PID: 2, BundleID: "com.apple.TextEdit", Name: "TextEdit"}
 	for _, front := range []proto.App{voxt, other} {
 		for _, tc := range []struct {
-			phase Phase
-			want  Decision
+			phase  Phase
+			finish bool
+			want   Decision
 		}{
-			{Recording, Decision{Action: Stop}},
-			{Idle, Decision{}},
-			{Busy, Decision{}},
+			{Recording, false, Decision{}},
+			{Recording, true, Decision{Action: Stop}},
+			{Idle, false, Decision{}},
+			{Busy, false, Decision{}},
+			{Idle, true, Decision{}},
+			{Busy, true, Decision{}},
 		} {
 			e := proto.HotkeyEventParams{Binding: "finish", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front}
-			if got := Route(e, tc.phase, "", "", false); got != tc.want {
-				t.Errorf("%s, %v: %+v, want %+v", front.Name, tc.phase, got, tc.want)
+			if got := Route(e, tc.phase, "", "", tc.finish); got != tc.want {
+				t.Errorf("%s, %v, finish %v: %+v, want %+v", front.Name, tc.phase, tc.finish, got, tc.want)
 			}
 		}
 	}

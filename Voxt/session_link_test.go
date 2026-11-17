@@ -108,6 +108,26 @@ func TestResolverWithoutSpeech(t *testing.T) {
 	}
 }
 
+func TestReturnFinishQueuedStateChange(t *testing.T) {
+	a := &app{sess: session.Snapshot{State: session.Recording, Kind: store.KindTranscribe}}
+	a.prefs = settings.Defaults()
+	a.prefs.Features.Transcribe.ReturnFinishes = true
+	cfg := a.hotkeyPlan().Configure(true)
+	if !slices.ContainsFunc(cfg.Bindings, func(b proto.HotkeyBinding) bool { return b.ID == "finish" }) {
+		t.Fatal("finish was not configured")
+	}
+	e := proto.HotkeyEventParams{Binding: "finish", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap}
+	a.prefs.Features.Transcribe.ReturnFinishes = false
+	if d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes()); d.Action != hotkey.None {
+		t.Errorf("opt-out event stopped the session: %+v", d)
+	}
+	a.sess.Kind = store.KindTranslate
+	a.prefs.Features.Transcribe.ReturnFinishes = true
+	if d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes()); d.Action != hotkey.None {
+		t.Errorf("event from the old Transcribe configuration stopped Translate: %+v", d)
+	}
+}
+
 // TestReturnFinishPlanScope: the helper gets Return only for a Transcribe
 // recording with the setting on, never for another feature or idle work.
 // With Paste last on Return, its tap routes to Stop in the same cases and
