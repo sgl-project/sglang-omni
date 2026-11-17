@@ -16,6 +16,7 @@
 namespace whisper {
 
 namespace mx = mlx::core;
+using omni_common::Gelu;
 
 namespace {
 
@@ -28,26 +29,6 @@ constexpr float kLayerNormEpsilon = 1e-5f;
 // Note (khazic): the decoder's additive causal mask value; it becomes -inf in
 // float16.
 constexpr float kMaskedScore = -1e9f;
-
-std::vector<mx::array> GeluGraph(const std::vector<mx::array> &inputs) {
-  // Note (khazic): x * (1 + erf(x / sqrt(2))) / 2, its scalars in x's dtype as
-  // in Swift.
-  const mx::array &x = inputs[0];
-  const mx::Dtype dtype = x.dtype();
-  return {mx::divide(
-      mx::multiply(
-          x, mx::add(mx::array(1.0f, dtype),
-                     mx::erf(mx::divide(
-                         x, mx::array(static_cast<float>(M_SQRT2), dtype))))),
-      mx::array(2.0f, dtype))};
-}
-
-// Note (khazic): compiled shapeless, as the Swift port's gelu is: one fused
-// kernel.
-mx::array Gelu(const mx::array &x) {
-  static const auto compiled = mx::compile(GeluGraph, true);
-  return compiled({x})[0];
-}
 
 // Note (khazic): fixed sinusoids of the encoder positions, computed in double
 // precision.
@@ -96,13 +77,8 @@ mx::array MelFilters(int mel_bin_count) {
 
 WhisperConfig ReadConfig(const std::filesystem::path &model_directory,
                          bool draft = false) {
-  std::ifstream config_stream(model_directory / "config.json");
-  if (!config_stream) {
-    throw std::runtime_error("cannot read config.json in " +
-                             model_directory.string());
-  } else {
-  }
-  const nlohmann::json config = nlohmann::json::parse(config_stream);
+  const nlohmann::json config =
+      omni_common::ReadJson(model_directory / "config.json");
   if (config.contains("quantization") ||
       config.contains("quantization_config")) {
     throw std::runtime_error("quantized Whisper checkpoints are not served");
@@ -215,25 +191,67 @@ mx::array SplitHeads(const mx::array &x, int head_count) {
                        {0, 2, 1, 3});
 }
 
+// The target's weights, with the fixed encoder positions the checkpoint
+// leaves out.
+omni_common::WeightMap
+TargetWeights(const std::filesystem::path &model_directory,
+              const WhisperConfig &config) {
+  omni_common::WeightMap weights = LoadWeights(model_directory);
+  weights.erase("alignment_heads");
+  // Note (khazic): the checkpoint leaves out the fixed encoder positions.
+  if (weights.count("encoder.positional_embedding") == 0) {
+    weights.insert_or_assign(
+        "encoder.positional_embedding",
+        mx::astype(Sinusoids(config.audio_context_length, config.audio_width),
+                   weights.at("encoder.conv1.weight").dtype()));
+  } else {
+  }
+  return weights;
+}
+
+// A draft's decoder weights in the target's dtype; refuses a draft whose
+// decoder cannot read the target's encoder states.
+omni_common::WeightMap
+DraftWeights(const std::filesystem::path &draft_directory,
+             const WhisperConfig &config, const WhisperConfig &target_config,
+             mx::Dtype dtype) {
+  const std::string draft = "the Whisper draft at " + draft_directory.string();
+  if (config.audio_width != target_config.audio_width) {
+    throw std::runtime_error(draft + " reads encoder states of width " +
+                             std::to_string(config.audio_width) +
+                             ", the target's are " +
+                             std::to_string(target_config.audio_width));
+  } else if (config.vocabulary_size != target_config.vocabulary_size) {
+    throw std::runtime_error(draft + " has a vocabulary of " +
+                             std::to_string(config.vocabulary_size) +
+                             ", the target's is " +
+                             std::to_string(target_config.vocabulary_size));
+  } else if (config.text_context_length < target_config.text_context_length) {
+    throw std::runtime_error(draft + " places " +
+                             std::to_string(config.text_context_length) +
+                             " text positions, fewer than the target's " +
+                             std::to_string(target_config.text_context_length));
+  } else {
+  }
+  // Note (XXXXRT666): the draft decodes the target's encoder states, so only
+  // its decoder is loaded; an encoder unlike the target's only lowers how many
+  // proposals the target accepts.
+  omni_common::WeightMap weights =
+      LoadWeights(draft_directory, /*decoder_only=*/true);
+  for (auto &[name, weight] : weights) {
+    weight = mx::astype(weight, dtype);
+  }
+  return weights;
+}
+
 } // namespace
 
 WhisperModel::WhisperModel(const std::filesystem::path &model_directory)
     : config_(ReadConfig(model_directory)), hann_window_(HannWindow()),
       mel_filters_(MelFilters(config_.mel_bin_count)),
-      weights_(LoadWeights(model_directory)) {
-  weights_.erase("alignment_heads");
-  // Note (khazic): the checkpoint leaves out the fixed encoder positions.
-  if (weights_.count("encoder.positional_embedding") == 0) {
-    weights_.insert_or_assign(
-        "encoder.positional_embedding",
-        mx::astype(Sinusoids(config_.audio_context_length, config_.audio_width),
-                   Weight("encoder.conv1.weight").dtype()));
-  } else {
-  }
-  std::vector<mx::array> parameters = {hann_window_, mel_filters_};
-  for (const auto &[name, array] : weights_)
-    parameters.push_back(array);
-  mx::eval(parameters);
+      checkpoint_(TargetWeights(model_directory, config_),
+                  nlohmann::json::object()) {
+  mx::eval({hann_window_, mel_filters_});
 }
 
 WhisperModel::WhisperModel(const std::filesystem::path &draft_directory,
@@ -241,65 +259,12 @@ WhisperModel::WhisperModel(const std::filesystem::path &draft_directory,
     : config_(ReadConfig(draft_directory, /*draft=*/true)),
       hann_window_(HannWindow()),
       mel_filters_(MelFilters(config_.mel_bin_count)),
-      weights_(LoadWeights(draft_directory, /*decoder_only=*/true)) {
-  const std::string draft = "the Whisper draft at " + draft_directory.string();
-  if (config_.audio_width != target.config_.audio_width) {
-    throw std::runtime_error(draft + " reads encoder states of width " +
-                             std::to_string(config_.audio_width) +
-                             ", the target's are " +
-                             std::to_string(target.config_.audio_width));
-  } else if (config_.vocabulary_size != target.config_.vocabulary_size) {
-    throw std::runtime_error(draft + " has a vocabulary of " +
-                             std::to_string(config_.vocabulary_size) +
-                             ", the target's is " +
-                             std::to_string(target.config_.vocabulary_size));
-  } else if (config_.text_context_length < target.config_.text_context_length) {
-    throw std::runtime_error(
-        draft + " places " + std::to_string(config_.text_context_length) +
-        " text positions, fewer than the target's " +
-        std::to_string(target.config_.text_context_length));
-  } else {
-  }
-  const mx::Dtype dtype =
-      target.Weight("decoder.token_embedding.weight").dtype();
-  std::vector<mx::array> parameters;
-  for (auto &[name, weight] : weights_) {
-    weight = mx::astype(weight, dtype);
-    parameters.push_back(weight);
-  }
-  mx::eval(parameters);
-}
-
-const mx::array &WhisperModel::Weight(const std::string &name) const {
-  const auto found = weights_.find(name);
-  if (found == weights_.end()) {
-    throw std::runtime_error("checkpoint is missing " + name);
-  } else {
-  }
-  return found->second;
-}
-
-mx::array WhisperModel::Linear(const mx::array &x,
-                               const std::string &prefix) const {
-  const auto bias = weights_.find(prefix + ".bias");
-  if (bias == weights_.end()) {
-    return mx::matmul(x, mx::transpose(Weight(prefix + ".weight")));
-  } else {
-    return mx::addmm(bias->second, x,
-                     mx::transpose(Weight(prefix + ".weight")));
-  }
-}
-
-mx::array WhisperModel::LayerNorm(const mx::array &x,
-                                  const std::string &prefix) const {
-  return mx::fast::layer_norm(x, Weight(prefix + ".weight"),
-                              Weight(prefix + ".bias"), kLayerNormEpsilon);
-}
-
-mx::array WhisperModel::Conv1d(const mx::array &x, const std::string &prefix,
-                               int stride) const {
-  return mx::add(mx::conv1d(x, Weight(prefix + ".weight"), stride, 1),
-                 Weight(prefix + ".bias"));
+      checkpoint_(DraftWeights(draft_directory, config_, target.config_,
+                               target.checkpoint_
+                                   .Weight("decoder.token_embedding.weight")
+                                   .dtype()),
+                  nlohmann::json::object()) {
+  mx::eval({hann_window_, mel_filters_});
 }
 
 mx::array WhisperModel::Attention(const mx::array &queries_input,
@@ -310,8 +275,8 @@ mx::array WhisperModel::Attention(const mx::array &queries_input,
   const int batch = queries_input.shape(0);
   const int length = queries_input.shape(1);
   const int width = queries_input.shape(2);
-  const mx::array queries =
-      SplitHeads(Linear(queries_input, prefix + ".query"), head_count);
+  const mx::array queries = SplitHeads(
+      checkpoint_.Linear(queries_input, prefix + ".query"), head_count);
   const float scale = std::pow(static_cast<float>(width / head_count), -0.5f);
   const mx::array attended =
       mask.has_value()
@@ -319,26 +284,30 @@ mx::array WhisperModel::Attention(const mx::array &queries_input,
                 queries, keys, values, scale, /*window_size=*/-1, "", *mask)
           : mx::fast::scaled_dot_product_attention(queries, keys, values,
                                                    scale);
-  return Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
-                            {batch, length, width}),
-                prefix + ".out");
+  return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
+                                        {batch, length, width}),
+                            prefix + ".out");
 }
 
 mx::array WhisperModel::EncoderLayer(const mx::array &x, int layer) const {
   const std::string prefix = "encoder.blocks." + std::to_string(layer);
   const int head_count = config_.audio_head_count;
-  const mx::array normed = LayerNorm(x, prefix + ".attn_ln");
+  const mx::array normed =
+      checkpoint_.LayerNorm(x, prefix + ".attn_ln", kLayerNormEpsilon);
   const mx::array keys =
-      SplitHeads(Linear(normed, prefix + ".attn.key"), head_count);
-  const mx::array values =
-      SplitHeads(Linear(normed, prefix + ".attn.value"), head_count);
+      SplitHeads(checkpoint_.Linear(normed, prefix + ".attn.key"), head_count);
+  const mx::array values = SplitHeads(
+      checkpoint_.Linear(normed, prefix + ".attn.value"), head_count);
   const mx::array hidden =
       mx::add(x, Attention(normed, keys, values, prefix + ".attn", head_count,
                            std::nullopt));
-  return mx::add(hidden,
-                 Linear(Gelu(Linear(LayerNorm(hidden, prefix + ".mlp_ln"),
-                                    prefix + ".mlp1")),
-                        prefix + ".mlp2"));
+  return mx::add(
+      hidden,
+      checkpoint_.Linear(Gelu(checkpoint_.Linear(
+                             checkpoint_.LayerNorm(hidden, prefix + ".mlp_ln",
+                                                   kLayerNormEpsilon),
+                             prefix + ".mlp1")),
+                         prefix + ".mlp2"));
 }
 
 mx::array WhisperModel::LogMel(std::span<const float> window_samples) const {
@@ -384,11 +353,12 @@ mx::array WhisperModel::Encode(std::span<const float> padded_samples,
   // Note (Jiaxin Deng): the float32 log-mel is cast to the weights' dtype, as
   // the reference Whisper does; fed as float32 it promotes the whole encoder,
   // and through the cross-attention the decoder, to float32.
-  mx::array x = mx::astype(mel_batch, Weight("encoder.conv1.weight").dtype());
-  x = Gelu(Conv1d(x, "encoder.conv1", 1));
-  x = Gelu(Conv1d(x, "encoder.conv2", 2));
-  x = mx::add(x, mx::slice(Weight("encoder.positional_embedding"), {0, 0},
-                           {x.shape(1), x.shape(2)}));
+  mx::array x =
+      mx::astype(mel_batch, checkpoint_.Weight("encoder.conv1.weight").dtype());
+  x = Gelu(checkpoint_.Conv1d(x, "encoder.conv1", 1, 1));
+  x = Gelu(checkpoint_.Conv1d(x, "encoder.conv2", 2, 1));
+  x = mx::add(x, mx::slice(checkpoint_.Weight("encoder.positional_embedding"),
+                           {0, 0}, {x.shape(1), x.shape(2)}));
   for (int layer = 0; layer < config_.audio_layer_count; ++layer) {
     if (cancel.load()) {
       throw omni_common::GenerationCancelled();
@@ -400,7 +370,7 @@ mx::array WhisperModel::Encode(std::span<const float> padded_samples,
     // more at its peak for large-v3-turbo, at no measurable speed gain.
     mx::eval(x);
   }
-  return LayerNorm(x, "encoder.ln_post");
+  return checkpoint_.LayerNorm(x, "encoder.ln_post", kLayerNormEpsilon);
 }
 
 mx::array WhisperModel::DecoderLayer(const mx::array &x, int layer,
@@ -409,10 +379,12 @@ mx::array WhisperModel::DecoderLayer(const mx::array &x, int layer,
                                      DecoderLayerCache &cache) const {
   const std::string prefix = "decoder.blocks." + std::to_string(layer);
   const int head_count = config_.text_head_count;
-  const mx::array normed = LayerNorm(x, prefix + ".attn_ln");
-  mx::array keys = SplitHeads(Linear(normed, prefix + ".attn.key"), head_count);
-  mx::array values =
-      SplitHeads(Linear(normed, prefix + ".attn.value"), head_count);
+  const mx::array normed =
+      checkpoint_.LayerNorm(x, prefix + ".attn_ln", kLayerNormEpsilon);
+  mx::array keys =
+      SplitHeads(checkpoint_.Linear(normed, prefix + ".attn.key"), head_count);
+  mx::array values = SplitHeads(
+      checkpoint_.Linear(normed, prefix + ".attn.value"), head_count);
   if (cache.self_keys.has_value()) {
     keys = mx::concatenate({*cache.self_keys, keys}, 2);
     values = mx::concatenate({*cache.self_values, values}, 2);
@@ -424,19 +396,25 @@ mx::array WhisperModel::DecoderLayer(const mx::array &x, int layer,
       x, Attention(normed, keys, values, prefix + ".attn", head_count, mask));
   if (!cache.cross_keys.has_value()) {
     cache.cross_keys = SplitHeads(
-        Linear(encoder_states, prefix + ".cross_attn.key"), head_count);
+        checkpoint_.Linear(encoder_states, prefix + ".cross_attn.key"),
+        head_count);
     cache.cross_values = SplitHeads(
-        Linear(encoder_states, prefix + ".cross_attn.value"), head_count);
+        checkpoint_.Linear(encoder_states, prefix + ".cross_attn.value"),
+        head_count);
   } else {
   }
-  hidden = mx::add(hidden,
-                   Attention(LayerNorm(hidden, prefix + ".cross_attn_ln"),
-                             *cache.cross_keys, *cache.cross_values,
-                             prefix + ".cross_attn", head_count, std::nullopt));
-  return mx::add(hidden,
-                 Linear(Gelu(Linear(LayerNorm(hidden, prefix + ".mlp_ln"),
-                                    prefix + ".mlp1")),
-                        prefix + ".mlp2"));
+  hidden = mx::add(
+      hidden, Attention(checkpoint_.LayerNorm(hidden, prefix + ".cross_attn_ln",
+                                              kLayerNormEpsilon),
+                        *cache.cross_keys, *cache.cross_values,
+                        prefix + ".cross_attn", head_count, std::nullopt));
+  return mx::add(
+      hidden,
+      checkpoint_.Linear(Gelu(checkpoint_.Linear(
+                             checkpoint_.LayerNorm(hidden, prefix + ".mlp_ln",
+                                                   kLayerNormEpsilon),
+                             prefix + ".mlp1")),
+                         prefix + ".mlp2"));
 }
 
 mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
@@ -450,10 +428,12 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
     position_values[i] = start_position + i;
   const mx::array position_ids(position_values.data(), {length}, mx::int32);
   mx::array hidden =
-      mx::add(mx::take(Weight("decoder.token_embedding.weight"), token_ids, 0),
-              mx::expand_dims(mx::take(Weight("decoder.positional_embedding"),
-                                       position_ids, 0),
-                              0));
+      mx::add(mx::take(checkpoint_.Weight("decoder.token_embedding.weight"),
+                       token_ids, 0),
+              mx::expand_dims(
+                  mx::take(checkpoint_.Weight("decoder.positional_embedding"),
+                           position_ids, 0),
+                  0));
   std::optional<mx::array> mask;
   if (length > 1) {
     std::vector<int32_t> column_values(total_length);
@@ -471,7 +451,7 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
   for (int layer = 0; layer < config_.text_layer_count; ++layer) {
     hidden = DecoderLayer(hidden, layer, encoder_states, mask, caches[layer]);
   }
-  hidden = LayerNorm(hidden, "decoder.ln");
+  hidden = checkpoint_.LayerNorm(hidden, "decoder.ln", kLayerNormEpsilon);
   const int batch_size = hidden.shape(0);
   const int width = hidden.shape(2);
   const mx::array rows =
@@ -480,8 +460,8 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
                   {batch_size * logit_count, width});
   // Note (khazic): tied output projection: the token embedding used as a linear
   // layer.
-  return mx::matmul(rows,
-                    mx::transpose(Weight("decoder.token_embedding.weight")));
+  return mx::matmul(rows, mx::transpose(checkpoint_.Weight(
+                              "decoder.token_embedding.weight")));
 }
 
 void TruncateCaches(std::vector<DecoderLayerCache> &caches, int token_count) {
