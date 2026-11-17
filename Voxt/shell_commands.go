@@ -58,8 +58,9 @@ func (a *app) commands() []command {
 
 	look := i18n.T("Appearance")
 	for _, th := range []struct{ id, title, en string }{
-		{settings.ThemeLight, i18n.T("Theme: light"), "Theme: light"},
+		{settings.ThemeSystem, i18n.T("Theme: follow the system"), "Theme: follow the system"},
 		{settings.ThemeDark, i18n.T("Theme: dark"), "Theme: dark"},
+		{settings.ThemeLight, i18n.T("Theme: light"), "Theme: light"},
 		{settings.ThemeTransparent, i18n.T("Theme: transparent"), "Theme: transparent"},
 	} {
 		add("theme/"+th.id, look, th.title, th.en, "", a.prefs.Appearance.Theme != th.id, func() {

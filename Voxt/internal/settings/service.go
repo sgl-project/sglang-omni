@@ -38,9 +38,8 @@ const (
 	MaxWindowTransparency     = 15
 )
 
-// Themes are the explicit choices in the picker. ThemeSystem preserves
-// the system appearance until the user chooses one.
-var Themes = []string{ThemeLight, ThemeDark, ThemeTransparent}
+// Themes are the choices in the appearance picker.
+var Themes = []string{ThemeSystem, ThemeDark, ThemeLight, ThemeTransparent}
 
 // Sidebar width bounds, DIPs at 100 %.
 const (
@@ -156,7 +155,7 @@ func clone(s Settings) Settings {
 func normalize(s Settings) Settings {
 	s.Version = Version
 	ap := &s.Appearance
-	if ap.Theme != ThemeSystem && !slices.Contains(Themes, ap.Theme) {
+	if !slices.Contains(Themes, ap.Theme) {
 		ap.Theme = ThemeSystem
 	}
 	ap.Palette = strings.ToLower(strings.TrimSpace(ap.Palette))

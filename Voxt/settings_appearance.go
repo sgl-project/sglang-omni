@@ -41,15 +41,8 @@ func (a *app) sidebarRow(c *ui.Context) {
 
 func (a *app) appearanceSettings(c *ui.Context) {
 	settingRow(c, "theme", i18n.T("Theme"), "", func() {
-		mode := a.prefs.Appearance.Theme
-		if mode == settings.ThemeSystem {
-			mode = settings.ThemeLight
-			if c.Theme().Dark {
-				mode = settings.ThemeDark
-			}
-		}
-		selected := slices.Index(settings.Themes, mode)
-		if ui.Segmented(c.Key("theme-seg"), &selected, i18n.T("Light"), i18n.T("Dark"), i18n.T("Transparent")).Label(i18n.T("Theme")).Changed() {
+		selected := slices.Index(settings.Themes, a.prefs.Appearance.Theme)
+		if ui.Segmented(c.Key("theme-seg"), &selected, i18n.T("System"), i18n.T("Dark"), i18n.T("Light"), i18n.T("Transparent")).Label(i18n.T("Theme")).Changed() {
 			a.setAppearanceMode(settings.Themes[selected])
 		}
 	})
@@ -74,6 +67,25 @@ func (a *app) appearanceSettings(c *ui.Context) {
 
 func (a *app) setAppearanceMode(mode string) {
 	a.updateSettings(func(s *settings.Settings) { s.Appearance.Theme = mode })
+}
+
+func (a *app) syncSavedAppearancePreview(appearance *settings.Appearance) {
+	saved := a.settings.Get().Appearance
+	if a.paletteSavePending {
+		saved.Palette = a.prefs.Appearance.Palette
+	}
+	if a.transparencySavePending {
+		saved.WindowTransparency = a.prefs.Appearance.WindowTransparency
+	}
+	appearance.Palette, appearance.WindowTransparency = saved.Palette, saved.WindowTransparency
+}
+
+func (a *app) loadAppearancePreview() {
+	appearance := a.prefs.Appearance
+	a.colorPalette = ui.Hex(appearance.Palette)
+	if !a.transparencyDragging {
+		a.windowTransparency = float64(appearance.WindowTransparency)
+	}
 }
 
 func (a *app) paletteSettings(c *ui.Context) {

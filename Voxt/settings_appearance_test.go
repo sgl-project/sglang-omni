@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"image/png"
 	"math"
@@ -81,17 +82,67 @@ func TestAppearancePalette(t *testing.T) {
 
 func TestSystemAppearanceIsPreserved(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	tt.SetDark(true)
-	frames(tt)
-	want := paletteTokens(settings.DefaultPalette, true).Bg
-	got := tt.Image().RGBAAt(windowWidth-4, windowHeight-4)
-	if got.R != want.R || got.G != want.G || got.B != want.B {
-		t.Fatalf("system dark background = %v, want %v", got, want)
+	checkBackground := func(dark bool) {
+		t.Helper()
+		frames(tt)
+		want := paletteTokens(settings.DefaultPalette, dark).Bg
+		got := tt.Image().RGBAAt(windowWidth-4, windowHeight-4)
+		if got.R != want.R || got.G != want.G || got.B != want.B {
+			t.Fatalf("background = %v, want %v (dark = %v)", got, want, dark)
+		}
 	}
+	tt.SetDark(true)
+	checkBackground(true)
 	a.navigate("/settings/appearance")
-	click(t, tt, "Light")
-	if got := a.settings.Get().Appearance.Theme; got != settings.ThemeLight {
-		t.Fatalf("clicking Light over a dark system theme saved %q", got)
+	click(t, tt, "Dark")
+	if got := a.settings.Get().Appearance.Theme; got != settings.ThemeDark {
+		t.Fatalf("clicking Dark over a dark system theme saved %q", got)
+	}
+	tt.SetDark(false)
+	a.settingsOpen = false
+	checkBackground(true)
+	a.navigate("/settings/appearance")
+	frames(tt)
+	if err := tt.ClickControl("System"); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.settings.Get().Appearance.Theme; got != settings.ThemeSystem {
+		t.Fatalf("returning to System saved %q", got)
+	}
+	a.settingsOpen = false
+	checkBackground(false)
+	tt.SetDark(true)
+	checkBackground(true)
+}
+
+func TestLateAppearancePreviewSavePreservesOtherSettings(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	before := a.settings.Get()
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+		s.Appearance.Palette = "#b25280"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	paletteSaved := a.settings.Get()
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+		s.Appearance.WindowTransparency = settings.MaxWindowTransparency
+	}); err != nil {
+		t.Fatal(err)
+	}
+	transparencySaved := a.settings.Get()
+	a.updateSettings(func(s *settings.Settings) {
+		s.Appearance.Scale = 1.25
+		s.Privacy.KeepHistory = false
+	})
+	// Deliver the preview notifications after the other settings have applied.
+	a.settingsChanged(paletteSaved, transparencySaved)
+	a.settingsChanged(before, paletteSaved)
+	if appearance := a.prefs.Appearance; appearance.Scale != 1.25 || appearance.Palette != "#b25280" ||
+		appearance.WindowTransparency != settings.MaxWindowTransparency {
+		t.Fatalf("late preview notifications changed appearance to %+v", appearance)
+	}
+	if a.scale != 3 || a.prefs.Privacy.KeepHistory || a.keepHistory {
+		t.Fatalf("late preview notifications reverted scale or privacy: scale index %d, keep history %v", a.scale, a.keepHistory)
 	}
 }
 

@@ -138,16 +138,25 @@ func (a *app) updateSettings(fn func(*settings.Settings)) {
 
 // settingsChanged applies saved settings to the app.
 func (a *app) settingsChanged(old, new settings.Settings) {
+	if old.Appearance.Palette != new.Appearance.Palette || old.Appearance.WindowTransparency != new.Appearance.WindowTransparency {
+		before := old
+		before.Appearance.Palette = new.Appearance.Palette
+		before.Appearance.WindowTransparency = new.Appearance.WindowTransparency
+		if reflect.DeepEqual(before, new) {
+			// A preview save can arrive after other settings were edited.
+			// Apply only the fields it owns to the live settings.
+			palette := a.prefs.Appearance.Palette
+			a.syncSavedAppearancePreview(&a.prefs.Appearance)
+			a.loadAppearancePreview()
+			if a.prefs.Appearance.Palette != palette {
+				a.invalidatePaletteOverlays()
+			}
+			return
+		}
+	}
 	if ap := a.prefs.Appearance; ap.Palette != new.Appearance.Palette || ap.WindowTransparency != new.Appearance.WindowTransparency {
 		// An earlier background save can publish after a newer appearance edit.
-		saved := a.settings.Get().Appearance
-		new.Appearance.Palette, new.Appearance.WindowTransparency = saved.Palette, saved.WindowTransparency
-		if a.paletteSavePending {
-			new.Appearance.Palette = ap.Palette
-		}
-		if a.transparencySavePending {
-			new.Appearance.WindowTransparency = ap.WindowTransparency
-		}
+		a.syncSavedAppearancePreview(&new.Appearance)
 	}
 	a.prefs = new
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
@@ -256,10 +265,7 @@ func (a *app) loadSettingsForm() {
 	if i := slices.Index(mainLanguages, s.General.MainLanguage); i >= 0 {
 		f.mainLanguage = mainLanguageOptions()[i+1]
 	}
-	f.colorPalette = ui.Hex(s.Appearance.Palette)
-	if !f.transparencyDragging {
-		f.windowTransparency = float64(s.Appearance.WindowTransparency)
-	}
+	a.loadAppearancePreview()
 	f.scale = max(0, slices.Index(settings.Scales, s.Appearance.Scale))
 	f.reduceMotion = s.Appearance.ReduceMotion
 	f.menuBar, f.closeToTray, f.openAtLogin = s.General.MenuBar, s.General.CloseToTray, s.General.LaunchAtLogin
