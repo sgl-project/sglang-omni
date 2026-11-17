@@ -415,5 +415,6 @@
   "The Target language menu on the Translate page. Translate only.": "来自翻译页的“目标语言”菜单。只有翻译用到。",
   "The app in front, when an App enhancement group matches it. The features that group applies to.": "最前面的 App，在它匹配某个应用增强分组时填入。用于该分组生效的功能。",
   "Your main language, from General settings. Every feature.": "你的主要语言，来自通用设置。所有功能都用到。",
-  "Your other languages, from General settings. Every feature.": "你的其他语言，来自通用设置。所有功能都用到。"
+  "Your other languages, from General settings. Every feature.": "你的其他语言，来自通用设置。所有功能都用到。",
+  "Use transcript": "用识别原文"
 }
