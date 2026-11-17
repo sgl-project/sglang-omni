@@ -4,12 +4,20 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rewrite and Translate read a block selection in a Lark doc**: selecting an image block, or a range of blocks with images and text, in a Lark doc in Chrome no longer reads as "no selection". Chrome reports such a selection to Accessibility as a single blank space, which Voxt mistook for the selected text and never tried copying; Voxt now treats a reading that is all whitespace as no reading and copies with ⌘C instead, so the selection's text (with a placeholder per image) reaches the language model.
+
 ### Changed
 
 - **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 
 ### 中文
+
+#### 修复
+
+- **改写和翻译能读到 Lark 文档里的块级选区**：在 Chrome 的 Lark 文档里选中一个图片块，或选中图片加文字的一段块，不再读成“没有选中”。Chrome 把这样的选区经无障碍接口报成一个空格，Voxt 以前把它当成选中的文字，不再尝试复制；现在全白的读取结果按没读到处理，改用 ⌘C 复制，选区文字（每张图一个占位符）会发给语言模型。
 
 #### 变更
 
