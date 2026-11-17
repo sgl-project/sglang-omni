@@ -30,6 +30,9 @@ type trayState struct {
 	trayLive bool     // the icon shows the recording one
 	quitting bool     // Quit was chosen: closing the window must not hide it
 	recent   []string // the last results, newest first (trayRecentN at most)
+	// seq numbers the reads, so that only the last one lands: a stale
+	// read finishing later must not revive deleted entries.
+	seq int
 	// copyText puts text on the clipboard (mygo.Clipboard); tests record.
 	copyText func(string) error
 	// life is the main window as the window life uses it: a.win, or a fake in tests.
@@ -93,6 +96,8 @@ func (a *app) loadTrayRecent() {
 		a.reopen = nil
 		a.buildTrayMenu()
 	}
+	a.trayState.seq++
+	seq := a.trayState.seq
 	h := a.lib.store.History()
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -109,6 +114,9 @@ func (a *app) loadTrayRecent() {
 			}
 		}
 		a.post(func() {
+			if seq != a.trayState.seq {
+				return // a newer read is on its way
+			}
 			a.recent = uitext.RecentResults(es, trayRecentN)
 			a.reopen = reopen
 			a.buildTrayMenu()

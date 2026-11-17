@@ -195,6 +195,15 @@ func TestRetry(t *testing.T) {
 			t.Errorf("requests %+v", reqs)
 		}
 	})
+	t.Run("the new answer's title replaces the old one", func(t *testing.T) {
+		model := &fakeLLM{text: `{"title": "Polite decline", "content": "Thanks, but no."}`}
+		h, e := retryHarness(t, &fakeFile{text: "decline politely"}, model, false)
+		e.Kind, e.Title, e.Result = store.KindRewrite, "Old title", "old body"
+		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
+		if err != nil || out.Result != "Thanks, but no." || out.Title != "Polite decline" {
+			t.Fatalf("entry %+v, %v", out, err)
+		}
+	})
 	t.Run("keeping recordings", func(t *testing.T) {
 		h, e := retryHarness(t, &fakeFile{text: "x"}, nil, true)
 		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})

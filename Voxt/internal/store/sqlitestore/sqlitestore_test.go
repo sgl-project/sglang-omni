@@ -486,3 +486,34 @@ func TestHistoryInsertedInto(t *testing.T) {
 		}
 	}
 }
+
+// The notes change's migration 9 ran first; upgrading then applies the
+// history reopen migration (the two share no number).
+func TestHistoryReopenMigratesAfterNotesAppName(t *testing.T) {
+	dir := t.TempDir()
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = slices.Clone(saved[:9])
+	s := openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != 9 {
+		t.Fatalf("user_version %d", v)
+	}
+	s.Close()
+	migrations = saved
+	s = openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != Version() {
+		t.Fatalf("user_version %d", v)
+	}
+	// Migration 9 is the notes one: its column is there beside 10's.
+	if _, err := s.db.Query(ctx, `SELECT app_name FROM notes LIMIT 1`); err != nil {
+		t.Fatalf("migration 9's column: %v", err)
+	}
+	e := store.Entry{ID: "e1", Kind: store.KindRewrite, Status: store.StatusDone, Result: "body", Title: "A title", Replaces: "e0"}
+	if err := s.History().Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.History().Get(ctx, "e1")
+	if err != nil || got.Title != "A title" || got.Replaces != "e0" {
+		t.Fatalf("entry %+v, %v", got, err)
+	}
+}
