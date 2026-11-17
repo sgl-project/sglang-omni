@@ -6,6 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Rewrite and Translate read a block selection in a Lark doc** (#4154): selecting an image block, or a range of blocks with images and text, in a Lark doc in Chrome no longer reads as "no selection". Chrome reports such a selection to Accessibility as a single blank space, which Voxt mistook for the selected text and never tried copying; Voxt now treats a reading that is all whitespace as no reading and copies with ⌘C instead, so the selection's text (with a placeholder per image) reaches the language model.
 - **Starting a meeting works while nothing is playing** (#4130): with the system audio permission already allowed, starting a meeting on a quiet Mac failed about four seconds in, and the notice wrongly said to allow the permission in System Settings. The system audio tap was treated as dead because an idle output gave it no audio; it now waits and records the other side once sound plays.
 - **A microphone added in Settings → Audio no longer makes dictation hang on "Starting the microphone…"** (#4120): a chosen input that starts but never delivers sound (some microphones keep reconfiguring themselves before the first sound arrives) made Voxt rebuild the audio engine without end, so the recording never began. The rebuild is now limited like the one for a silent microphone: the second try records from the system default input, and if nothing delivers sound the recording stops with a clear error instead of hanging.
 - **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup; the meetings' speaker transcription keeps it.
@@ -45,6 +46,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **在 设置 → 音频 里添加麦克风后，听写不再卡在“正在启动麦克风…”**（#4120）：有的麦克风启动后一直不给声音（在第一个声音到来之前不断重新配置自己），此前 Voxt 会不停重建音频引擎，录音永远不开始。现在这类重建和麦克风静音一样有限制：第二次改用系统默认输入录音；如果所有输入都没有声音，录音会以明确的错误结束，不再卡死。
 - **没有声音播放时也能开始会议**（#4130）：已允许系统音频录制权限后，在安静的 Mac 上开始会议会在约四秒后失败，提示还误让去系统设置里开权限。原因是输出空闲时系统音频录制没有声音，被当成了故障；现在它会一直等，有声音播出来就能录到对方。
 - **改写的答案卡片按 Markdown 排版显示**（#4119）：语言模型的回答是 Markdown，卡片现在按排版显示改写的回答——标题、加粗、列表、代码和公式的 TeX——不再是原始符号，和主流聊天 App 一样；边写边显示和对话里的回答也一样。你自己说的话原样显示，翻译和转录整理的文字仍是纯文本（会原样插入）。复制和插入用的仍是回答原文。
+- **改写和翻译能读到 Lark 文档里的块级选区**（#4154）：在 Chrome 的 Lark 文档里选中一个图片块，或选中图片加文字的一段块，不再读成“没有选中”。Chrome 把这样的选区经无障碍接口报成一个空格，Voxt 以前把它当成选中的文字，不再尝试复制；现在全白的读取结果按没读到处理，改用 ⌘C 复制，选区文字（每张图一个占位符）会发给语言模型。
 
 #### 变更
 
