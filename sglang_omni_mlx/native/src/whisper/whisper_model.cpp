@@ -20,6 +20,9 @@ using omni_common::Gelu;
 
 namespace {
 
+constexpr int kMlpQuantizationBits = 8;
+constexpr int kQuantizationGroupSize = 64;
+
 constexpr float kLayerNormEpsilon = 1e-5f;
 
 // Note (khazic): fixed sinusoids of the encoder positions, computed in double
@@ -219,8 +222,17 @@ DraftWeights(const std::filesystem::path &draft_directory,
 
 WhisperModel::WhisperModel(const std::filesystem::path &model_directory)
     : config_(ReadConfig(model_directory)),
-      checkpoint_(TargetWeights(model_directory, config_),
-                  nlohmann::json::object()) {}
+      // Note (XXXXRT666): the decoder's MLPs run in 8 bits, quantized at load;
+      // its attention stays in the checkpoint dtype, since quantizing it
+      // changed large-v3's mixed-language transcripts.
+      checkpoint_(omni_common::QuantizedCheckpoint(
+          TargetWeights(model_directory, config_), nlohmann::json::object(),
+          kQuantizationGroupSize, [](const std::string &name) {
+            return name.starts_with("decoder.blocks.") &&
+                           name.find(".mlp") != std::string::npos
+                       ? kMlpQuantizationBits
+                       : 0;
+          })) {}
 
 WhisperModel::WhisperModel(const std::filesystem::path &draft_directory,
                            const WhisperModel &target)
