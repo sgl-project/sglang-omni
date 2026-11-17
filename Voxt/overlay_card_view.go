@@ -24,7 +24,7 @@ func (a *app) overlayCard(c *ui.Context) {
 	if v.msg != "" {
 		msgH = layout.CardMsgGap + layout.CardMsgH
 	}
-	bodyH := float32(max(a.ov.h-layout.CardChrome-msgH, 0))
+	bodyH := float32(max(a.ov.h-layout.CardChrome-cardAttachH(v)-msgH, 0))
 	// The border takes layout.Border of the padding (MyGo's border box).
 	// The card moves where its background is dragged (overlayDragged): a
 	// long answer may cover what the user reads.
@@ -33,6 +33,7 @@ func (a *app) overlayCard(c *ui.Context) {
 			a.cardHeader(c, v)
 		})
 		ui.Box(c).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+		a.cardAttachView(c, v)
 		a.cardBody(c, v, bodyH)
 		a.cardSizeButton(c, v)
 		if v.msg != "" {
@@ -56,6 +57,38 @@ func (a *app) cardSizeButton(c *ui.Context, v cardView) {
 		a.closeLangMenu()
 		a.setCardSize(string(v.kind), next)
 	}
+}
+
+// cardAttachView is the card's row saying which picture went to the
+// language model: the input box's as thumbnails, else the copied
+// picture's or the window screenshot's name (a stale clipboard picture
+// wins over the screenshot, 9.25 — say which it was).
+func (a *app) cardAttachView(c *ui.Context, v cardView) {
+	if len(v.thumbs) > 0 {
+		ui.Row(c).Height(layout.CardAttachThumb).Shrink(0).Margin(layout.CardAttachH-layout.CardAttachThumb, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(i18n.T("Images sent with the instruction")).Children(func() {
+			for i, bmp := range v.thumbs {
+				if bmp != nil {
+					ui.Image(c.Key(i), bmp).Size(layout.CardAttachThumb, layout.CardAttachThumb).Fit(ui.Cover).Radius(4).Shrink(0)
+				}
+			}
+		})
+		return
+	}
+	var label string
+	var ic icons.Icon
+	switch v.attach {
+	case "clipboard":
+		label, ic = i18n.T("Copied image"), icons.ClipboardList
+	case "window":
+		label, ic = i18n.T("Screenshot"), icons.WindowFrame
+	}
+	if label == "" {
+		return
+	}
+	ui.Row(c).Height(layout.CardAttachThumb).Shrink(0).Margin(layout.CardAttachH-layout.CardAttachThumb, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(label).Children(func() {
+		ui.Icon(c, ic.Linear).Size(14, 14).TextColor(ovText2).Shrink(0)
+		ui.Text(c, label).FontSize(12).TextColor(ovText2).SingleLine().Shrink(0)
+	})
 }
 
 // sizeStepButton is the corner button that steps a card from size step

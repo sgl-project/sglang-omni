@@ -72,8 +72,8 @@ func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool
 			last = i
 		}
 	}
-	if req.Image != nil && last >= 0 {
-		oms[last].Content = o.withImage(msgs[last].Content, req.Image)
+	if len(req.Images) > 0 && last >= 0 {
+		oms[last].Content = o.withImages(msgs[last].Content, req.Images)
 	}
 	p := o.preset
 	switch t := req.Thinking; {
@@ -215,8 +215,8 @@ relax:
 			sampling = false
 		case extra && o.mentionsExtra(detail):
 			extra = false
-		case req.Image != nil: // a model that takes no images
-			req.Image = nil
+		case req.Images != nil && !req.ImagesRequired: // a model that takes no images
+			req.Images = nil
 		default:
 			break relax
 		}
@@ -247,14 +247,22 @@ relax:
 	return out, nil
 }
 
-// withImage is text and a JPEG as one message's content parts, in the
+// withImages is text and JPEGs as one message's content parts, in the
 // API's format.
-func (o *OpenAI) withImage(text string, jpeg []byte) []map[string]any {
-	url := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg)
+func (o *OpenAI) withImages(text string, jpegs [][]byte) []map[string]any {
+	parts := make([]map[string]any, 0, len(jpegs)+1)
 	if o.responsesAPI() {
-		return []map[string]any{{"type": "input_text", "text": text}, {"type": "input_image", "image_url": url}}
+		parts = append(parts, map[string]any{"type": "input_text", "text": text})
+		for _, jpeg := range jpegs {
+			parts = append(parts, map[string]any{"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg)})
+		}
+		return parts
 	}
-	return []map[string]any{{"type": "text", "text": text}, {"type": "image_url", "image_url": map[string]any{"url": url}}}
+	parts = append(parts, map[string]any{"type": "text", "text": text})
+	for _, jpeg := range jpegs {
+		parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg)}})
+	}
+	return parts
 }
 
 // mentionsExtra reports whether a rejection names one of ExtraBody's keys

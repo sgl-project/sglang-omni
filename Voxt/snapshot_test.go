@@ -275,6 +275,7 @@ func snapshotsMain(t *testing.T, out string) {
 
 		// The recording overlay, state by state (overlay_test.go).
 		overlayShots(t, a, out, suffix, run.dark)
+		boxShots(t, a, out, suffix, run.dark)
 
 		// Last, as they set services up: the setup guide, step by step
 		// (onboarding_test.go), then Home ready (home_page_test.go).

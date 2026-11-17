@@ -25,7 +25,10 @@ func (a *app) openAnswer(s session.Snapshot) {
 	card := answerCard{
 		open: true, id: s.ID, conv: s.ID, kind: s.Kind, text: s.Result, title: s.Title, target: s.Target,
 		input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage, llmID: s.LLM.ID,
-		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name),
+		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name), attach: s.ImageHint,
+	}
+	if s.ID == a.box.sending {
+		card.images, card.thumbs = a.box.images, a.box.thumbs
 	}
 	if s.State == session.Failed {
 		card.problem = s.Problem
@@ -103,6 +106,11 @@ func (a *app) retryAnswer(lang string) {
 	}
 	in := card.input
 	req := session.StartRequest{Kind: card.kind, Target: card.target, Text: &in, TargetLanguage: lang, Thinking: card.think}
+	if card.kind == store.KindRewrite && card.attach == "box" {
+		// The box's pictures go with its answer again (another thinking
+		// level).
+		req.Box, req.Images = true, card.images
+	}
 	if req.TargetLanguage == "" {
 		req.TargetLanguage = card.lang
 	}

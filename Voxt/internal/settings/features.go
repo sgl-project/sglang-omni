@@ -124,6 +124,11 @@ type Rewrite struct {
 	// default, as in Voxt 1.x (no omitempty: off is kept). The field
 	// cardChars of 0.1.0 is dropped.
 	ShowCard bool `json:"showCard"`
+	// InputBox opens Rewrite's input box on the shortcut: the text to
+	// rewrite is typed or pasted into it (with pictures) instead of read
+	// from the selection, and the spoken instruction goes with it as
+	// before. Off: the selection is the source, as in Voxt 1.x.
+	InputBox bool `json:"inputBox,omitempty"`
 }
 
 // AppEnhancement: scene rules by app and URL. The groups are the

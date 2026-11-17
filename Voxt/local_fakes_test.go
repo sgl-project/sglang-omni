@@ -149,8 +149,8 @@ func requestBody(req llm.Request) map[string]any {
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
 	}
-	if req.Image != nil {
-		body["image"] = req.Image
+	if len(req.Images) > 0 {
+		body["images"] = req.Images
 	}
 	if req.Format == llm.FormatJSON {
 		body["response_format"] = map[string]any{"type": "json_object"}

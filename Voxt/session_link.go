@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -51,6 +52,8 @@ type sessionState struct {
 	sess session.Snapshot
 	// answer is the answer card: open while a result waits there.
 	answer answerCard
+	// box is Rewrite's input box (rewrite_box.go; off by default).
+	box rewriteBox
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
@@ -99,6 +102,12 @@ type answerCard struct {
 	// the card shows them as one (Voxt's conversation mode), from then on.
 	turns        []compose.Turn
 	conversation bool
+	// attach says which picture went to the language model
+	// (Snapshot.ImageHint); images and thumbs are the input box's
+	// pictures, shown in the card (rewrite_box.go).
+	attach string
+	images [][]byte
+	thumbs []*ui.Bitmap
 	// quotesOpen are the turns whose selection shows whole (#3816).
 	quotesOpen map[int]bool
 	// redo is the session translating the text into redoLang, another
@@ -266,6 +275,9 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	}
 	was := a.sess
 	a.sess = s
+	if a.box.open {
+		a.boxSync() // the box's voice line follows its session
+	}
 	for _, fn := range a.onSession { // events.go: the setup guide, the sounds
 		fn(was, s)
 	}
@@ -300,9 +312,14 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	case a.answer.open && a.answer.redo != "" && a.answer.redo == s.ID:
 		a.endRedo(s)
 	case s.Card && (s.Result != "" || s.State == session.Failed):
-		a.openAnswer(s)
-		a.syncHotkeys() // the cancel shortcut closes the card
+		// The box's send failed: the box shows the error and keeps its
+		// text and pictures, no failed card.
+		if s.State != session.Failed || s.ID != a.box.sending {
+			a.openAnswer(s)
+			a.syncHotkeys() // the cancel shortcut closes the card
+		}
 	}
+	a.boxEnded(s)
 	back := a.resurface()
 	var copied *sessionNotice
 	if !s.Card && !s.Inserted && s.Delivery != "" && s.Result != "" && s.State == session.Done {

@@ -41,9 +41,47 @@ func ParseAnswer(text string) (Answer, bool) {
 	if _, ok := fields["content"]; !ok {
 		return Answer{}, false
 	}
-	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(a.Title), `"“”#*`))
-	a.Content = strings.TrimSpace(a.Content)
+	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(StripControl(a.Title)), `"“”#*`))
+	a.Content = strings.TrimSpace(StripControl(a.Content))
 	return a, true
+}
+
+// StripControl removes a model's internal control blocks (<|...|>:
+// tool-call and thinking scaffolding some backends emit as plain text,
+// #4085). They are markup, never answer text: a <|..._begin|> block goes
+// with what it wraps, through its <|..._end|>, and a block cut off by
+// the end of the stream goes too.
+func StripControl(s string) string {
+	for {
+		i := strings.Index(s, "<|")
+		if i < 0 {
+			return s
+		}
+		j := strings.Index(s[i+2:], "|>")
+		if j < 0 {
+			return strings.TrimRight(s[:i], " \t\r\n")
+		}
+		name := s[i+2 : i+2+j]
+		rest := s[i+2+j+2:]
+		// A wrapper goes with what it wraps: <|..._begin|> through its
+		// <|..._end|>, a thought <|channel|> through <channel|> (Gemma 4's
+		// channel, llm's thinkTags).
+		close := ""
+		switch {
+		case strings.HasSuffix(name, "_begin"):
+			close = "<|" + strings.TrimSuffix(name, "_begin") + "_end|>"
+		case name == "channel":
+			close = "<channel|>"
+		}
+		if close != "" {
+			k := strings.Index(rest, close)
+			if k < 0 {
+				return strings.TrimRight(s[:i], " \t\r\n")
+			}
+			rest = rest[k+len(close):]
+		}
+		s = s[:i] + rest
+	}
 }
 
 // extractObject is the first balanced JSON object in text ("" for none).
@@ -97,9 +135,9 @@ func PartialAnswer(text string) Answer {
 		}
 	}
 	if !strings.HasPrefix(t, "{") {
-		return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
+		return Answer{Content: strings.TrimSpace(StripControl(strings.TrimSuffix(t, "```")))}
 	}
-	return Answer{Title: strings.TrimSpace(partialField(t, "title")), Content: strings.TrimLeft(partialField(t, "content"), " \n")}
+	return Answer{Title: strings.TrimSpace(StripControl(partialField(t, "title"))), Content: strings.TrimLeft(StripControl(partialField(t, "content")), " \n")}
 }
 
 // partialField is the string value of key in a JSON object that may be

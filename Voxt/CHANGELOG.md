@@ -4,12 +4,20 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **Rewrite's input box** (#4085): turn on Rewrite → Input box, and the Rewrite shortcut opens a small box instead of recording at once. Type or paste the text to rewrite (the selected text starts in the box), paste or drop up to 4 images (thumbnails, each with a remove button), say the instruction as before (hold the shortcut, or press it again), and press Enter to send; Shift+Enter is a new line, Esc closes. The box replaces the selected text as the source, with the same Rewrite prompt and the same shortcut. Images you put in the box are sent because you put them there (the Privacy switches do not gate them); a model that takes no images gets an error and the box keeps your text and images, never silently sending the text alone. A request can now carry several images, in one order everywhere: the box's images, else the copied image, else the window screenshot; the card says which one went ("Screenshot" / "Copied image" / the box's thumbnails), and a screenshot that would not be sent is no longer taken. Answers no longer show a model's internal tool or thinking markers when no image reached it.
+
 ### Changed
 
 - **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 
 ### 中文
+
+#### 新增
+
+- **改写的输入框**（#4085）：在改写页打开“输入框”后，按改写快捷键会先打开一个小框，不再直接录音。在框里输入或粘贴要改写的文字（选中的文字会先填进框里），粘贴或拖入最多 4 张图片（缩略图带删除按钮），照常按住快捷键或再按一次说出指令，按 Enter 发送；Shift+Enter 换行，Esc 关闭。输入框只代替选中的文字作为原文，改写 prompt 和快捷键都不变。放进框里的图片是你主动放的，不需要隐私开关；模型不收图片时会报错，框里的文字和图片都保留，不会只发文字。一次请求现在可以带多张图片，顺序统一为：输入框的图片 > 复制的图片 > 窗口截图；卡片上会写明这次发的是哪一种（“截图”/“复制的图片”/输入框的缩略图），不会被发送的截图不再截取。模型没有收到图片时，回答里不再出现它的内部工具或思考标记。
 
 #### 变更
 

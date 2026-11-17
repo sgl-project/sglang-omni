@@ -219,6 +219,10 @@ type Snapshot struct {
 	Inserted bool
 	Card     bool
 	Delivery deliver.Reason
+	// ImageHint says which picture went to the language model
+	// ("window", "clipboard", "box"; "" for none), so the answer card
+	// can say so.
+	ImageHint string
 	// Landing says where the result was pasted (nil: not inserted): the
 	// app, Target or the app the user went to and focused a text field
 	// in. Target stays the app the scene was chosen for (the history's app).
@@ -460,6 +464,18 @@ type StartRequest struct {
 	// or reading the selection: a retry from the answer card, or the
 	// same text into another language.
 	Text *TextInput
+	// Box marks a Rewrite from the input box (settings
+	// Features.Rewrite.InputBox): Text is the box's text and the spoken
+	// instruction, Images the box's pictures (JPEGs). The images are the
+	// user's own: they always go to the language model
+	// (llm.Request.ImagesRequired), ahead of a copied picture or the
+	// window's, which an empty box leaves to today's rule.
+	Box    bool
+	Images [][]byte
+	// BoxVoice records the box's spoken instruction only: no selection,
+	// no picture, no language model, no history; the recognised
+	// instruction (Snapshot.Spoken) is the box's to send.
+	BoxVoice bool
 	// TargetLanguage overrides Translate's target ("": the settings').
 	TargetLanguage string
 	// Thinking overrides the language model's thinking for Translate's
