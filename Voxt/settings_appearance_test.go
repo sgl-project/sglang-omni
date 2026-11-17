@@ -6,7 +6,9 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -278,8 +280,62 @@ func TestPaletteContrast(t *testing.T) {
 	}
 }
 
-func TestPalettePreviews(t *testing.T) {
-	runSnapshots(t, "VOXTNEW_PALETTE_PREVIEWS", func(t *testing.T, out string) {
+func TestResetInvalidatesPreviewSaves(t *testing.T) {
+	for _, reset := range []struct {
+		name string
+		fn   func(*app)
+	}{
+		{"resetLook", (*app).resetLook},
+		{"resetSettings", (*app).resetSettings},
+	} {
+		for _, preview := range []string{"palette", "transparency"} {
+			t.Run(reset.name+"/"+preview, func(t *testing.T) {
+				a, _, _ := newTestApp(t)
+				var revision uint64
+				if preview == "palette" {
+					a.paletteSavePending = true
+					revision = a.paletteRevision.Add(1)
+				} else {
+					a.transparencySavePending = true
+					revision = a.transparencyRevision.Add(1)
+				}
+				reset.fn(a)
+				if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+					if preview == "palette" && a.paletteRevision.Load() == revision {
+						s.Appearance.Palette = "#000001"
+					}
+					if preview == "transparency" && a.transparencyRevision.Load() == revision {
+						s.Appearance.WindowTransparency = settings.MaxWindowTransparency
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if got := a.settings.Get().Appearance; got.Palette != settings.DefaultPalette || got.WindowTransparency != settings.DefaultWindowTransparency {
+					t.Errorf("stale preview survived reset: %+v", got)
+				}
+				if a.colorPalette != ui.Hex(settings.DefaultPalette) || int(a.windowTransparency) != settings.DefaultWindowTransparency {
+					t.Errorf("stale preview remains visible: color %v, transparency %v", a.colorPalette, a.windowTransparency)
+				}
+				if a.paletteSavePending || a.transparencySavePending {
+					t.Error("reset left preview saves pending")
+				}
+			})
+		}
+	}
+}
+
+func TestPalettePreviewsUseMainSnapshotGate(t *testing.T) {
+	out, err := exec.Command("go", "test", "-list", "^TestSnapshotsPalettePreviews$").CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "\nTestSnapshotsPalettePreviews\n") {
+		t.Errorf("palette previews are not selected by the main snapshot gate: %s", out)
+	}
+}
+
+func TestSnapshotsPalettePreviews(t *testing.T) {
+	runSnapshots(t, "VOXTNEW_SNAPSHOTS", func(t *testing.T, out string) {
 		a, _, tt := newTestApp(t)
 		a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
 		a.navigate("/settings/appearance")
