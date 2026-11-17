@@ -44,7 +44,8 @@ const (
 
 	MethodBrowserURL = "browser.url" // request: the front tab's URL of a browser (Accessibility only)
 
-	MethodScreenWindow = "screen.window" // request: a JPEG of an app's front window (Screen Recording)
+	MethodScreenWindow   = "screen.window"   // request: a JPEG of an app's front window (Screen Recording)
+	MethodClipboardImage = "clipboard.image" // request: the picture on the clipboard as a JPEG
 
 	MethodOutputWatch   = "output.watch"   // request: the default output and its mute; output.changed while on
 	MethodOutputMute    = "output.mute"    // request: mute a device and claim it (not when it was muted already)
@@ -157,6 +158,8 @@ func ParamsFor(method string) any {
 		return new(AppIconsParams)
 	case MethodScreenWindow:
 		return new(ScreenWindowParams)
+	case MethodClipboardImage:
+		return new(ClipboardImageParams)
 	case MethodOutputWatch:
 		return new(OutputWatchParams)
 	case MethodOutputMute:
@@ -238,6 +241,8 @@ func ResultFor(method string) any {
 		return new(AppIconsResult)
 	case MethodScreenWindow:
 		return new(ScreenWindowResult)
+	case MethodClipboardImage:
+		return new(ClipboardImageResult)
 	case MethodOutputWatch:
 		return new(OutputState)
 	case MethodOutputMute:
@@ -262,7 +267,7 @@ var (
 		MethodHotkeyConfigure, MethodHotkeyStatus, MethodHotkeyRecord, MethodHotkeyCancelRecord,
 		MethodAppFrontmost, MethodAppList, MethodAppConfigure, MethodAppIcons,
 		MethodTextFocus, MethodTextSelection, MethodTextPaste, MethodTextRead,
-		MethodBrowserURL, MethodScreenWindow,
+		MethodBrowserURL, MethodScreenWindow, MethodClipboardImage,
 		MethodOutputWatch, MethodOutputMute, MethodOutputRelease, MethodOutputRecover,
 		MethodSpeechRecognize, MethodSpeechAudio,
 	}

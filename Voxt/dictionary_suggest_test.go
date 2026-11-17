@@ -55,6 +55,16 @@ func TestSuggestionsCountShowsBeforeThePageOpens(t *testing.T) {
 	}
 }
 
+// #4027: the section says where suggestions come from and how to stop them.
+func TestSuggestionsSayWhy(t *testing.T) {
+	a, tt := suggestTester(t, twoSuggestions...)
+	a.navigate("/dictionary")
+	frames(tt)
+	if !has(tt, "点“添加”之前不会放进词典") || !has(tt, "从我的改正中学习") {
+		t.Fatalf("no explanation: %q", firstTexts(tt))
+	}
+}
+
 func TestSuggestionsAddThenRowGoes(t *testing.T) {
 	a, tt := suggestTester(t, twoSuggestions...)
 	a.navigate("/dictionary")

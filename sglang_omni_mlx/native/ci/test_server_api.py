@@ -11,6 +11,7 @@ import http.client
 import io
 import json
 import os
+import select
 import subprocess
 import time
 import uuid
@@ -22,7 +23,8 @@ from pathlib import Path
 import pytest
 from websockets.sync.client import connect
 
-from sglang_omni_mlx.native.ci.long_audio_client import stream_recording
+from sglang_omni_mlx.native.ci.long_audio_client import score, stream_recording
+from sglang_omni_mlx.native.ci.long_audio_corpus import build_recording, load_clips
 
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 DATA_ROOT = os.environ.get("CI_DATA_ROOT")
@@ -32,6 +34,9 @@ pytestmark = pytest.mark.skipif(
 MODEL_REPO = "mlx-community/Qwen3-ASR-0.6B-4bit"
 DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-0.6B-dflash"
 LARGE_DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
+# Bounds on a server that hangs, so a test fails instead of waiting forever.
+STARTUP_TIMEOUT_SECONDS = 600
+SHUTDOWN_TIMEOUT_SECONDS = 10
 
 
 def model_directory(repo: str = MODEL_REPO) -> Path:
@@ -70,7 +75,17 @@ class Server:
             stderr=subprocess.DEVNULL,
             text=True,
         )
-        self.ready = json.loads(self.process.stdout.readline())
+        readable, _, _ = select.select(
+            [self.process.stdout], [], [], STARTUP_TIMEOUT_SECONDS
+        )
+        if not readable:
+            self.process.kill()
+            self.process.wait()
+            raise TimeoutError(
+                f"{binary} sent no ready event within {STARTUP_TIMEOUT_SECONDS} s"
+            )
+        else:
+            self.ready = json.loads(self.process.stdout.readline())
         self.port = self.ready.get("port")
 
     def request(
@@ -109,7 +124,13 @@ class Server:
         if self.process.poll() is None:
             self.process.stdin.write('{"command": "shutdown"}\n')
             self.process.stdin.flush()
-            self.process.wait(timeout=10)
+            try:
+                self.process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                # A server left running would keep its model in memory.
+                self.process.kill()
+                self.process.wait()
+                raise
         else:
             pass
 
@@ -217,11 +238,22 @@ def test_a_draft_model_serves_the_voxt_final_request() -> None:
     assert events[0]["text"]
     assert events[0]["generation_metadata"]["finish_reason"] == "stop"
     assert events[0]["generation_metadata"]["language"] == "English"
+    metadata = events[0]["generation_metadata"]
+    assert metadata["verify_round_count"] > 0
+    assert metadata["proposed_draft_token_count"] > 0
+    assert (
+        0
+        <= metadata["accepted_draft_token_count"]
+        <= metadata["proposed_draft_token_count"]
+    )
     assert budget_status == 200
     budget_done = sse_events(budget_body)[0]
     assert budget_done["text"]
     assert budget_done["generation_metadata"]["finish_reason"] == "length"
     assert budget_done["generation_metadata"]["generated_token_count"] == 2
+    assert budget_done["generation_metadata"]["verify_round_count"] == 1
+    assert budget_done["generation_metadata"]["proposed_draft_token_count"] == 0
+    assert budget_done["generation_metadata"]["accepted_draft_token_count"] == 0
 
 
 def test_a_draft_for_another_target_fails_at_load() -> None:
@@ -232,6 +264,66 @@ def test_a_draft_for_another_target_fails_at_load() -> None:
     assert failed.ready["event"] == "failed"
     assert "hidden size 2048" in failed.ready["reason"]
     assert failed.process.wait(timeout=10) == 1
+
+
+def test_backoff_preserves_long_recording_quality(tmp_path: Path) -> None:
+    recording_path = tmp_path / "recording.wav"
+    recording = build_recording(
+        load_clips(Path(DATA_ROOT) / "corpus" / "v1", "zh"),
+        900,
+        0,
+        recording_path,
+    )
+    outputs = {}
+    for policy in ("fixed", "adaptive"):
+        result = subprocess.run(
+            [
+                str(Path(RUNTIME_BIN) / "qwen3_asr_transcribe"),
+                "--model-path",
+                str(model_directory()),
+                "--draft-model-path",
+                str(model_directory(DRAFT_REPO)),
+                "--draft-policy",
+                policy,
+                "--layout",
+                "voxt_swift",
+                "--language",
+                "Chinese",
+                "--max-new-tokens",
+                "4096",
+                "--cache-limit-bytes",
+                str(2 << 30),
+                "--stop-at-end-of-text",
+                "--stop-on-token-loop",
+                str(recording_path),
+            ],  # fmt: skip
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=600,
+        )
+        outputs[policy] = json.loads(result.stdout)
+        assert outputs[policy]["finish_reason"] == "stop"
+        assert ("DFlash backoff after " in result.stderr) == (
+            policy == "adaptive"
+        ), result.stderr
+    fixed = outputs["fixed"]
+    adaptive = outputs["adaptive"]
+    assert 0 < adaptive["verify_rounds"] < fixed["verify_rounds"]
+    fixed_error = score(recording.reference, fixed["text"], "zh").error_rate
+    adaptive_error = score(recording.reference, adaptive["text"], "zh").error_rate
+    golden = json.loads(
+        (
+            Path(__file__).parent / "golden" / "qwen3-asr-0.6b-4bit-dflash.json"
+        ).read_text()
+    )
+    # note (ZaneZhang-67): a faster token-loop stop is not a quality-preserving backoff.
+    assert (adaptive_error - fixed_error) * 100 <= golden["tolerance"]["metric_pp"], (
+        fixed_error,
+        adaptive_error,
+        fixed["generated_token_count"],
+        adaptive["generated_token_count"],
+    )
 
 
 def test_plain_request_returns_json_text(server: Server) -> None:

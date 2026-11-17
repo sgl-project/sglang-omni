@@ -578,6 +578,10 @@ def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_prefill"] is False
     assert scheduler_kwargs["model_runner"].speculative_ignores_request_seed is True
+    assert (
+        scheduler_kwargs["model_runner"].speculative_repetition_penalty_owner
+        == "verify_logits"
+    )
 
 
 def test_a_failed_build_leaves_no_draft_copy_behind(
