@@ -4828,122 +4828,202 @@ def test_qwen3_tts_tail_miss_degrades_the_cohort_to_left_context(
     assert scheduler.codec_state_stats()["left_context_fallbacks"] == 2
 
 
+SLOT_WAIT_CODES = torch.tensor(
+    [[10, 1], [20, 2], [30, 3], [40, 4], [50, 5], [60, 6]], dtype=torch.long
+)
+SLOT_WAIT_SAMPLES = [float(code) for code in (10, 20, 30, 40, 50, 60) for _ in range(4)]
+
+
+def one_slot_stream_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Qwen3TTSStreamingVocoderScheduler, int]:
+    """A streaming scheduler with one codec slot, held by an earlier stream named owner."""
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch, stream_followup_stride=1)
+    scheduler.initial_worker = object()
+    scheduler.followup_worker = object()
+    arena = scheduler.codec_arena
+    scheduler.codec_arena = type(arena)(
+        arena.decoder, num_slots=1, device=arena.device, dtype=arena.dtype
+    )
+    owner = scheduler.create_stream_state("owner")
+    owner.codec_slot = scheduler.codec_arena.acquire()
+    scheduler.stream_states["owner"] = owner
+    return scheduler, owner.codec_slot
+
+
+def open_finished_stream(
+    scheduler: Qwen3TTSStreamingVocoderScheduler,
+    request_id: str,
+    codes: torch.Tensor = SLOT_WAIT_CODES,
+) -> Qwen3TTSStreamState:
+    """A stream whose first chunk reaches the initial worker and whose generation has ended."""
+    state = admit_reference_stream(scheduler, request_id, codes, ref_code_len=0)
+    scheduler.stream_payloads[request_id] = make_payload(
+        inputs=request_id, params={"stream": True}
+    )
+    scheduler.run_initial_batch([(request_id, state)])
+    scheduler.handle_stream_done(request_id)
+    return state
+
+
+def drain_stream_decodes(
+    scheduler: Qwen3TTSStreamingVocoderScheduler,
+) -> dict[str, list[OutgoingMessage]]:
+    """Run queued first and follow-up decodes until both queues are empty, then each request's messages in order."""
+    while not (scheduler.initial_queue.empty() and scheduler.followup_queue.empty()):
+        while not scheduler.initial_queue.empty():
+            scheduler.run_initial_batch([scheduler.initial_queue.get_nowait()])
+        while not scheduler.followup_queue.empty():
+            _, _, request_id, state = scheduler.followup_queue.get_nowait()
+            scheduler.run_followup_batch([(request_id, state)])
+            scheduler.drain_pending_incremental(keep=0)
+    messages: dict[str, list[OutgoingMessage]] = {}
+    while not scheduler.outbox.empty():
+        message = scheduler.outbox.get_nowait()
+        messages.setdefault(message.request_id, []).append(message)
+    return messages
+
+
+def assert_stream_completed(messages: list[OutgoingMessage]) -> None:
+    assert [message.type for message in messages][-1] == "result"
+    assert [message.type for message in messages].count("result") == 1
+    assert [
+        sample
+        for message in messages
+        if message.type == "stream"
+        for sample in chunk_samples(message)
+    ] == SLOT_WAIT_SAMPLES
+
+
 def test_qwen3_tts_full_codec_arena_holds_a_stream_until_a_slot_frees(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
-    scheduler.initial_worker = object()
-    arena = scheduler.codec_arena
-    held = [arena.acquire() for _ in range(arena.num_slots)]
-    waiting = admit_reference_stream(
-        scheduler,
-        "waiting",
-        torch.tensor([[10, 1], [20, 2]], dtype=torch.long),
-        ref_code_len=0,
-    )
-
-    scheduler.run_initial_batch([("waiting", waiting)])
+    scheduler, owner_slot = one_slot_stream_scheduler(monkeypatch)
+    waiting = open_finished_stream(scheduler, "waiting")
 
     assert scheduler.outbox.empty()
-    assert waiting.incremental_codec_fallback is False
     assert waiting.is_waiting_for_codec_slot is True
-    assert waiting.initial_pending is False
+    assert waiting.incremental_codec_fallback is False
+
+    scheduler.abort("owner")
+    messages = drain_stream_decodes(scheduler)
+
+    assert_stream_completed(messages["waiting"])
+    assert "waiting" not in scheduler.stream_states
+    assert scheduler.codec_arena.active_slots() == 0
+    assert scheduler.codec_arena.acquire() == owner_slot
     assert scheduler.codec_state_stats()["slot_waits"] == 1
-
-    owner = scheduler.create_stream_state("owner")
-    owner.codec_slot = held[0]
-    scheduler.release_codec_slot(owner)
-
-    assert scheduler.initial_queue.get_nowait() == ("waiting", waiting)
-    assert waiting.initial_pending is True
 
 
 def test_qwen3_tts_new_stream_waits_behind_streams_already_waiting_for_a_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
-    scheduler.initial_worker = object()
-    arena = scheduler.codec_arena
-    held = [arena.acquire() for _ in range(arena.num_slots)]
-    first = admit_reference_stream(
-        scheduler,
-        "first",
-        torch.tensor([[10, 1], [20, 2]], dtype=torch.long),
-        ref_code_len=0,
-    )
-    scheduler.run_initial_batch([("first", first)])
-    owner = scheduler.create_stream_state("owner")
-    owner.codec_slot = held[0]
-    scheduler.release_codec_slot(owner)
-    second = admit_reference_stream(
-        scheduler,
-        "second",
-        torch.tensor([[30, 3], [40, 4]], dtype=torch.long),
-        ref_code_len=0,
-    )
+    scheduler, owner_slot = one_slot_stream_scheduler(monkeypatch)
+    first = open_finished_stream(scheduler, "first")
+    scheduler.abort("owner")
+    second = open_finished_stream(scheduler, "second")
 
-    scheduler.run_initial_batch([("second", second), ("first", first)])
-
-    assert second.codec_slot is None
+    assert first.codec_slot == owner_slot
     assert second.is_waiting_for_codec_slot is True
-    assert first.codec_slot == held[0]
-    assert first.is_waiting_for_codec_slot is False
+
+    messages = drain_stream_decodes(scheduler)
+
+    assert_stream_completed(messages["first"])
+    assert_stream_completed(messages["second"])
+    assert scheduler.codec_arena.active_slots() == 0
 
 
-def test_qwen3_tts_waiting_stream_leaves_the_queue_when_incremental_planning_fails(
+def test_qwen3_tts_waiting_stream_falls_back_when_its_slot_faults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
-    scheduler.initial_worker = object()
-    arena = scheduler.codec_arena
-    held = [arena.acquire() for _ in range(arena.num_slots)]
-    waiting = admit_reference_stream(
-        scheduler,
-        "waiting",
-        torch.tensor([[10, 1], [20, 2]], dtype=torch.long),
-        ref_code_len=0,
-    )
-    scheduler.run_initial_batch([("waiting", waiting)])
-    owner = scheduler.create_stream_state("owner")
-    owner.codec_slot = held[0]
-    scheduler.release_codec_slot(owner)
+    scheduler, owner_slot = one_slot_stream_scheduler(monkeypatch)
+    waiting = open_finished_stream(scheduler, "waiting")
 
     def fail_zero_slot(slot: int) -> None:
         raise RuntimeError("device fault")
 
-    monkeypatch.setattr(arena, "zero_slot", fail_zero_slot)
-
-    scheduler.run_initial_batch([("waiting", waiting)])
+    monkeypatch.setattr(scheduler.codec_arena, "zero_slot", fail_zero_slot)
+    scheduler.abort("owner")
+    messages = drain_stream_decodes(scheduler)
 
     assert waiting.incremental_codec_fallback is True
-    assert waiting.is_waiting_for_codec_slot is False
+    assert_stream_completed(messages["waiting"])
+    assert scheduler.codec_arena.retired == {owner_slot}
     assert scheduler.codec_slot_waiting_queue == {}
 
 
-def test_qwen3_tts_waiting_stream_keeps_async_finish_when_generation_ends(
+def test_qwen3_tts_slot_freed_while_a_stream_parks_goes_to_that_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
-    scheduler.initial_worker = object()
+    scheduler, owner_slot = one_slot_stream_scheduler(monkeypatch)
     arena = scheduler.codec_arena
-    for _ in range(arena.num_slots):
-        arena.acquire()
-    waiting = admit_reference_stream(
-        scheduler,
-        "waiting",
-        torch.tensor([[10, 1], [20, 2]], dtype=torch.long),
-        ref_code_len=0,
-    )
-    scheduler.stream_payloads["waiting"] = make_payload(
-        inputs="waiting", params={"stream": True}
-    )
-    scheduler.run_initial_batch([("waiting", waiting)])
+    scheduler.mark_codec_slots_in_flight([owner_slot])
+    scheduler.abort("owner")
+    failed_acquire = threading.Event()
+    slot_returned = threading.Event()
+    acquire = arena.acquire
 
-    scheduler.handle_stream_done("waiting")
+    def acquire_then_let_the_slot_return() -> int | None:
+        slot = acquire()
+        if slot is None:
+            failed_acquire.set()
+            slot_returned.wait(10)
+        else:
+            pass
+        return slot
 
-    assert waiting.final_pending is True
-    assert scheduler.outbox.empty()
-    assert "waiting" in scheduler.stream_states
+    def return_the_slot() -> None:
+        if failed_acquire.wait(10):
+            scheduler.finish_codec_slots([owner_slot])
+            slot_returned.set()
+        else:
+            pass
+
+    monkeypatch.setattr(arena, "acquire", acquire_then_let_the_slot_return)
+    releaser = threading.Thread(target=return_the_slot)
+    releaser.start()
+    open_finished_stream(scheduler, "waiting")
+    releaser.join(10)
+    messages = drain_stream_decodes(scheduler)
+
+    assert slot_returned.is_set()
+    assert_stream_completed(messages["waiting"])
+    assert arena.active_slots() == 0
+
+
+def test_qwen3_tts_a_cancelled_waiter_hands_its_turn_to_the_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _ = one_slot_stream_scheduler(monkeypatch)
+    open_finished_stream(scheduler, "cancelled")
+    open_finished_stream(scheduler, "later")
+    scheduler.abort("owner")
+    scheduler.abort("cancelled")
+
+    messages = drain_stream_decodes(scheduler)
+
+    assert_stream_completed(messages["later"])
+    assert "cancelled" not in scheduler.stream_states
+    assert scheduler.codec_arena.active_slots() == 0
+
+
+def test_qwen3_tts_waiting_streams_fail_once_the_decoder_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, owner_slot = one_slot_stream_scheduler(monkeypatch)
+    open_finished_stream(scheduler, "waiting")
+    scheduler.codec_arena.retire(owner_slot)
+    scheduler.cuda_decode_failed = True
+    scheduler.wake_codec_slot_admission()
+
+    messages = drain_stream_decodes(scheduler)
+
+    assert [message.type for message in messages["waiting"]] == ["error"]
+    assert "waiting" not in scheduler.stream_states
+    assert scheduler.codec_slot_waiting_queue == {}
+    later = open_finished_stream(scheduler, "later")
+    assert later.is_waiting_for_codec_slot is False
+    assert later.incremental_codec_fallback is True
 
 
 def test_qwen3_tts_stateful_codec_uses_reference_once_then_fresh_frames(

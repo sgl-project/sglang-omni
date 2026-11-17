@@ -490,6 +490,10 @@ class Qwen3TTSDecodeHandle:
                     "Qwen3-TTS decode event and stream synchronization both failed; disabling CUDA decode and retaining the in-flight buffers",
                     exc_info=True,
                 )
+                if self.owner is not None:
+                    self.owner.wake_codec_slot_admission()
+                else:
+                    pass
                 raise event_exc
             self.drop_views()
             slot.broken = True
@@ -1399,9 +1403,10 @@ class Qwen3TTSStreamingVocoderScheduler(
             logger.warning(
                 f"Qwen3-TTS vocoder has {codec_stats['slots']} Codec slots, fewer "
                 f"than the {running_stream_count} requests the engine can run at "
-                "once; streams past the slots decode eagerly on the left-context "
-                "path. Set --vocoder.factory.codec_state_slots to at least "
-                f"{running_stream_count}."
+                "once; streams past the slots wait for one before their first "
+                "audio (a synchronous decoder sends them to the left-context "
+                "path instead). Set --vocoder.factory.codec_state_slots to at "
+                f"least {running_stream_count}."
             )
         else:
             pass
@@ -1887,17 +1892,15 @@ class Qwen3TTSStreamingVocoderScheduler(
         arena = self.codec_arena
         assert arena is not None
         if state.codec_slot is None:
-            if (
-                self.async_decode
-                and self.codec_slot_waiting_queue
-                and not state.is_waiting_for_codec_slot
-            ):
+            # note (ratish): a disabled decoder never frees a retired slot, so a stream takes the fallback, whose launch fails it.
+            can_wait = self.async_decode and not self.cuda_decode_failed
+            if can_wait and self.codec_slot_waiting_queue:
                 self.wait_for_codec_slot(request_id, state)
                 return None
             else:
                 pass
             slot = arena.acquire()
-            if slot is None and self.async_decode:
+            if slot is None and can_wait:
                 self.wait_for_codec_slot(request_id, state)
                 return None
             elif slot is None:
@@ -1908,11 +1911,6 @@ class Qwen3TTSStreamingVocoderScheduler(
                     arena.num_slots,
                 )
                 return None
-            else:
-                pass
-            if state.is_waiting_for_codec_slot:
-                state.is_waiting_for_codec_slot = False
-                self.codec_slot_waiting_queue.pop(request_id)
             else:
                 pass
             state.codec_slot = slot
@@ -1995,38 +1993,72 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
         self.codec_arena.release(slot)
-        self.schedule_waiting_streams()
+        self.wake_codec_slot_admission()
 
     def wait_for_codec_slot(self, request_id: str, state: Qwen3TTSStreamState) -> None:
         """Queue a stream behind the streams already waiting for a slot; the caller holds state_lock."""
-        if state.is_waiting_for_codec_slot:
-            return
-        else:
-            pass
         state.is_waiting_for_codec_slot = True
         self.codec_slot_waiting_queue[request_id] = state
         self.codec_slot_wait_count += 1
-        self.schedule_waiting_streams()
 
-    def schedule_waiting_streams(self) -> None:
-        """Schedule the first decode of the oldest waiting streams, one per free slot."""
-        # note (ratish): an empty queue takes no lock, since a stream queued after this check schedules itself against the slots then free.
+    def wake_codec_slot_admission(self) -> None:
+        """Make the initial worker run admission while streams wait: queue the oldest waiter's first decode unless one is pending.
+
+        A pending first decode is queued or in a batch, and every initial batch admits waiters at its start and end.
+        """
+        # note (ratish): an empty queue takes no lock; a stream parked after this check is admitted by the end of its own batch.
         if not self.codec_slot_waiting_queue:
             return
         else:
             pass
         with self.state_lock:
-            free_slot_count = self.codec_arena.free_slots()
-            for request_id, state in list(self.codec_slot_waiting_queue.items()):
-                if free_slot_count <= 0:
-                    return
-                else:
-                    pass
+            for request_id, state in self.codec_slot_waiting_queue.items():
                 if not state.initial_pending:
                     self.schedule_initial(request_id, state)
                 else:
                     pass
-                free_slot_count -= 1
+                return
+
+    def admit_waiting_streams(self) -> None:
+        """Give free slots to the oldest waiting streams and queue their first decodes; the initial worker only.
+
+        The worker claims each slot as it picks the stream, so a waiter that leaves first never holds one, and a disabled decoder fails every waiter.
+        """
+        if not self.codec_slot_waiting_queue:
+            return
+        else:
+            pass
+        failed: list[tuple[str, Qwen3TTSStreamState]] = []
+        with self.state_lock:
+            while self.codec_slot_waiting_queue:
+                request_id, state = next(iter(self.codec_slot_waiting_queue.items()))
+                if self.cuda_decode_failed:
+                    self.codec_slot_waiting_queue.pop(request_id)
+                    state.is_waiting_for_codec_slot = False
+                    failed.append((request_id, state))
+                    continue
+                else:
+                    pass
+                try:
+                    slot = self.codec_arena.acquire()
+                except Exception as exc:
+                    self.note_incremental_planning_failure(request_id, state, exc)
+                    self.schedule_initial(request_id, state)
+                    continue
+                if slot is None:
+                    break
+                else:
+                    pass
+                self.codec_slot_waiting_queue.pop(request_id)
+                state.is_waiting_for_codec_slot = False
+                state.codec_slot = slot
+                state.codec_frame_position = 0
+                self.schedule_initial(request_id, state)
+        error = RuntimeError(
+            "Qwen3-TTS CUDA decode is disabled after an unrecoverable stream failure"
+        )
+        for request_id, state in failed:
+            self.fail_async_stream(request_id, state, error)
 
     def mark_codec_slots_in_flight(self, slots: list[int]) -> None:
         with self.codec_lock:
@@ -2045,7 +2077,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         for slot in releasable:
             self.codec_arena.release(slot)
         if releasable:
-            self.schedule_waiting_streams()
+            self.wake_codec_slot_admission()
         else:
             pass
 
@@ -2498,6 +2530,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     "Qwen3-TTS decode launch failed and the decode stream could not be synchronized; disabling CUDA decode and retaining the in-flight buffers",
                     exc_info=True,
                 )
+                self.wake_codec_slot_admission()
                 raise launch_exc
             if pinned:
                 slot.broken = True
@@ -2909,8 +2942,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         work yet. Must be called under ``state_lock``.
 
         Note (Qihao Liu): the flag still says which planner produced the plan,
-        so an exhausted arena degrades this request to the left-context planner
-        without disturbing the others.
+        so a request that leaves the incremental path (an exhausted arena under
+        a synchronous decoder, or a planning or decode failure) degrades to the
+        left-context planner without disturbing the others. Under an async
+        decoder an exhausted arena parks the request until a slot frees.
         """
         if self.use_incremental_path(state):
             try:
@@ -3298,6 +3333,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         planned_incremental: list[
             tuple[str, Qwen3TTSStreamState, IncrementalDecodePlan]
         ] = []
+        self.admit_waiting_streams()
         with self.state_lock:
             for request_id, state in batch:
                 if (
@@ -3323,6 +3359,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                     planned_incremental.append((request_id, state, plan))
                 else:
                     planned.append((request_id, state, plan))
+        # note (ratish): a stream parked above no longer counts as pending, so a slot freed while it parked is claimed here.
+        self.admit_waiting_streams()
         tail_runner = self.initial_tail_decode_graphs
         tail_entries: list[tuple[str, Qwen3TTSStreamState, IncrementalDecodePlan]] = []
         other_entries: list[tuple[str, Qwen3TTSStreamState, IncrementalDecodePlan]] = []

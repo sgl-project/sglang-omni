@@ -152,11 +152,6 @@ class Qwen3TTSCodecStateArena:
                 - sum(slot < self._num_slots for slot in self.retired)
             )  # noqa: leading-underscore
 
-    def free_slots(self) -> int:
-        """Slots an acquire can hand out now."""
-        with self.lock:
-            return len(self.free)
-
     def acquire(self) -> int | None:
         """Take a zeroed slot, or ``None`` when the arena is full."""
         with self.lock:
@@ -167,11 +162,16 @@ class Qwen3TTSCodecStateArena:
                 pass
             slot = self.free.pop()
             released = self.release_events.pop(slot, None)
-        if released is not None:
-            self.device_module.current_stream(self.device).wait_event(released)
-        else:
-            pass
-        self.zero_slot(slot)
+        try:
+            if released is not None:
+                self.device_module.current_stream(self.device).wait_event(released)
+            else:
+                pass
+            self.zero_slot(slot)
+        except BaseException:
+            # note (ratish): a fault before the slot is zeroed leaves its memory unproven, so it is withdrawn, not lost from the count.
+            self.retire(slot)
+            raise
         return slot
 
     def release(self, slot: int) -> None:
