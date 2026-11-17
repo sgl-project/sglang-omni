@@ -216,10 +216,8 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
   };
   const int offset = caches[0].offset();
   const auto rotate = [&](const mx::array &heads) {
-    return mx::astype(mx::fast::rope(mx::astype(heads, mx::float32),
-                                     config.head_dim, true, config.rope_base,
-                                     1.0f, offset),
-                      heads.dtype());
+    return mx::fast::rope(heads, config.head_dim, true, config.rope_base, 1.0f,
+                          offset);
   };
   const auto split_heads = [&](const mx::array &projection, int start, int size,
                                int head_count) {

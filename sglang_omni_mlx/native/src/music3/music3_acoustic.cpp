@@ -82,16 +82,6 @@ mx::array Model::Velocity(const mx::array &latents, float sigma,
                             checkpoint_.Linear(hidden, "transformer.proj_in")},
                            1);
   const int length = hidden.shape(1);
-  const mx::array inverse_frequencies = mx::reciprocal(mx::power(
-      mx::array(10000.0f),
-      mx::astype(mx::arange(0, rotary_dim, 2), mx::float32) / rotary_dim));
-  mx::array frequencies = mx::outer(mx::astype(mx::arange(length), mx::float32),
-                                    inverse_frequencies);
-  frequencies = mx::concatenate({frequencies, frequencies}, -1);
-  const mx::array cosine =
-      mx::astype(mx::expand_dims(mx::cos(frequencies), 1), hidden.dtype());
-  const mx::array sine =
-      mx::astype(mx::expand_dims(mx::sin(frequencies), 1), hidden.dtype());
   for (int layer = 0; layer < config_.at("dit_num_layers").get<int>();
        ++layer) {
     const std::string prefix =
@@ -99,25 +89,13 @@ mx::array Model::Velocity(const mx::array &latents, float sigma,
     const mx::array normalized =
         checkpoint_.LayerNorm(hidden, prefix + ".norm1", 1e-5f);
     const auto project = [&](const std::string &name, bool rotary) {
-      mx::array projected =
+      const mx::array projected = mx::transpose(
           mx::reshape(checkpoint_.Linear(normalized, prefix + ".attn." + name),
-                      {1, length, heads, head_dim});
-      if (rotary) {
-        const mx::array left = mx::slice(projected, {0, 0, 0, 0},
-                                         {1, length, heads, rotary_dim / 2});
-        const mx::array right = mx::slice(projected, {0, 0, 0, rotary_dim / 2},
-                                          {1, length, heads, rotary_dim});
-        const mx::array rotated =
-            mx::slice(projected, {0, 0, 0, 0}, {1, length, heads, rotary_dim}) *
-                cosine +
-            mx::concatenate({-right, left}, -1) * sine;
-        projected = mx::concatenate(
-            {rotated,
-             mx::slice(projected, {0, 0, 0, rotary_dim}, projected.shape())},
-            -1);
-      } else {
-      }
-      return mx::transpose(projected, {0, 2, 1, 3});
+                      {1, length, heads, head_dim}),
+          {0, 2, 1, 3});
+      return rotary ? mx::fast::rope(projected, rotary_dim, false, 10000.0f,
+                                     1.0f, 0)
+                    : projected;
     };
     const mx::array attended = mx::fast::scaled_dot_product_attention(
         project("to_q", true), project("to_k", true), project("to_v", false),
