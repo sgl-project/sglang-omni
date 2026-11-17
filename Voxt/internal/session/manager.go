@@ -135,7 +135,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 		m.snap.TargetLanguage = r.target
 	}
 	if t := req.Text; t != nil {
-		m.snap.Raw, m.snap.Selection = strings.TrimSpace(t.Raw), t.Selection
+		m.snap.Raw, m.snap.Selection, m.snap.Typed = strings.TrimSpace(t.Raw), t.Selection, t.Typed
 	}
 	s := m.snap.clone()
 	m.pub.Lock()

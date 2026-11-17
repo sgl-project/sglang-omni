@@ -253,10 +253,12 @@ func TestOverlayFlows(t *testing.T) {
 		"translate-speech-not-inserted": "working recording working notice",
 		"translate-selection":           "working",
 		"translate-selection-readonly":  "working answer",
-		"rewrite":                       "recording working answer",
-		"rewrite-selection":             "recording working answer",
-		"rewrite-no-card":               "recording working",
-		"follow-up":                     "answer",
+		// Rewrite's card with the input box shows the recording instead
+		// of the pill.
+		"rewrite":           "working answer",
+		"rewrite-selection": "working answer",
+		"rewrite-no-card":   "working",
+		"follow-up":         "answer",
 	}
 	for _, fl := range overlayFlows() {
 		t.Run(fl.name, func(t *testing.T) {

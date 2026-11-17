@@ -141,9 +141,88 @@ func ParseAnswer(text string) (Answer, bool) {
 	if _, ok := fields["content"]; !ok {
 		return Answer{}, false
 	}
-	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(a.Title), `"“”#*`))
-	a.Content = strings.TrimSpace(a.Content)
+	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(StripControl(a.Title)), `"“”#*`))
+	a.Content = strings.TrimSpace(StripControl(a.Content))
 	return a, true
+}
+
+// StripControl removes a model's internal control blocks (<|...|>:
+// tool-call and thinking scaffolding some backends emit as plain text,
+// #4085). They are markup, never answer text: a <|..._begin|> block goes
+// with what it wraps, through its <|..._end|>, and a block cut off by
+// the end of the stream goes too.
+func StripControl(s string) string {
+	for at := 0; ; {
+		k := strings.Index(s[at:], "<|")
+		if k < 0 {
+			return s
+		}
+		i := at + k
+		j := strings.Index(s[i+2:], "|>")
+		if j < 0 {
+			// Only a cut-off tag's tail goes with the stream's end; text
+			// after a real <| (F#'s, a user's) stays.
+			if controlTag(s[i+2:]) {
+				return strings.TrimRight(s[:i], " \t\r\n")
+			}
+			return s
+		}
+		name := s[i+2 : i+2+j]
+		rest := s[i+2+j+2:]
+		// A wrapper goes with what it wraps: <|..._begin|> through its
+		// <|..._end|>, a thought <|channel|> through <channel|> (Gemma 4's
+		// channel, llm's thinkTags). Anything else is text.
+		close := ""
+		if controlTag(name) {
+			switch {
+			case strings.HasSuffix(name, "_begin"):
+				close = "<|" + strings.TrimSuffix(name, "_begin") + "_end|>"
+			case name == "channel":
+				close = "<channel|>"
+			}
+		}
+		if close == "" {
+			at = i + 2
+			continue
+		}
+		e := strings.Index(rest, close)
+		if e < 0 {
+			return strings.TrimRight(s[:i], " \t\r\n")
+		}
+		s = s[:i] + rest[e+len(close):]
+		at = i
+	}
+}
+
+// controlTag reports whether tail is a control tag's name, whole or
+// cut off by the stream's end: channel (Gemma 4's thought channel), or
+// an identifier of _-joined parts whose last part starts begin or end,
+// as tool_call_be is tool_call_begin cut short. A plain word is none of
+// these: F#'s <|x and the tags a user writes stay text.
+func controlTag(tail string) bool {
+	if strings.HasPrefix("channel", tail) {
+		return tail != ""
+	}
+	i := strings.LastIndexByte(tail, '_')
+	if i < 0 || !tagName(tail) {
+		return false
+	}
+	last := tail[i+1:]
+	return strings.HasPrefix("begin", last) || strings.HasPrefix("end", last)
+}
+
+// tagName reports whether tail has a tag name's shape: a letter, then
+// letters, digits and _.
+func tagName(tail string) bool {
+	for i, r := range tail {
+		switch {
+		case 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z':
+		case i > 0 && (r == '_' || '0' <= r && r <= '9'):
+		default:
+			return false
+		}
+	}
+	return tail != ""
 }
 
 // extractObject is the first balanced JSON object in text ("" for none).
@@ -197,9 +276,9 @@ func PartialAnswer(text string) Answer {
 		}
 	}
 	if !strings.HasPrefix(t, "{") {
-		return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
+		return Answer{Content: strings.TrimSpace(StripControl(strings.TrimSuffix(t, "```")))}
 	}
-	return Answer{Title: strings.TrimSpace(partialField(t, "title")), Content: strings.TrimLeft(partialField(t, "content"), " \n")}
+	return Answer{Title: strings.TrimSpace(StripControl(partialField(t, "title"))), Content: strings.TrimLeft(StripControl(partialField(t, "content")), " \n")}
 }
 
 // partialField is the string value of key in a JSON object that may be
@@ -279,4 +358,41 @@ func decodePartialString(s string) string {
 		i += 2
 	}
 	return b.String()
+}
+
+// CleanOutput tidies a Transcribe clean-up's answer to input: the
+// content of the <output> tags the clean-up's contract asks for when
+// they are there and the input did not have them (never the model's
+// commentary outside them, #4086); when the input itself has the tags,
+// one outermost pair the model wrapped its whole answer in goes and the
+// text keeps its own tags. Then Clean's tidy. Only the Transcribe
+// clean-up asks for the tags: Rewrite's and Translate's answers go to
+// Clean, so tags their text itself has (HTML they were asked for) stay.
+func CleanOutput(out, input string) string {
+	s := strings.TrimSpace(out)
+	if strings.Contains(input, outputOpen) {
+		s = unwrappedOutput(s)
+	} else if content, ok := taggedOutput(s); ok {
+		s = strings.TrimSpace(content)
+	}
+	return Clean(s, input)
+}
+
+// Clean tidies a model's answer to input: without the <input> tags a
+// model echoed, its internal control blocks (#4085), or the quotes it
+// wrapped the whole answer in (unless the input was quoted so itself).
+func Clean(out, input string) string {
+	s := StripControl(strings.TrimSpace(out))
+	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "<input>"), "</input>"))
+	in := strings.TrimSpace(input)
+	for _, q := range [][2]string{{`"`, `"`}, {"“", "”"}, {"「", "」"}} {
+		wrapped := func(t string) bool {
+			return len(t) > len(q[0])+len(q[1]) && strings.HasPrefix(t, q[0]) && strings.HasSuffix(t, q[1]) &&
+				!strings.Contains(t[len(q[0]):len(t)-len(q[1])], q[0])
+		}
+		if wrapped(s) && !wrapped(in) {
+			s = strings.TrimSpace(s[len(q[0]) : len(s)-len(q[1])])
+		}
+	}
+	return s
 }

@@ -122,6 +122,13 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			a.transcribeOrAddSelection(req) // dictionary_selection.go: a few words selected go to the dictionary
 			return
 		}
+		if kind == store.KindRewrite {
+			// The Rewrite card with the input box opens with the
+			// microphone; the next press (or the hold's release)
+			// finishes the recording and sends.
+			a.openBox(target, req)
+			return
+		}
 		a.startSession(req)
 	case hotkey.Stop:
 		a.stopSession()

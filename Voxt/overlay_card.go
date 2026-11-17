@@ -78,6 +78,11 @@ type cardView struct {
 	canInsert, canCopy, canFollowUp, canStop, canStopAnswer, canRetry, canLang bool
 	copied                                                                     bool
 	follow                                                                     string // the Rewrite shortcut's glyphs
+	// attach says which picture went to the language model ("window",
+	// "clipboard", "box"; "" for none): the card says so, the box's as
+	// thumbnails (thumbs).
+	attach string
+	thumbs []*ui.Bitmap
 	// size is the card's, its feature's (Features.CardSizes).
 	size layout.CardSize
 	// writing: an answer as the model writes it (writingAnswer, or one
@@ -144,8 +149,14 @@ func (a *app) cardNow() cardView {
 	if !a.answer.open {
 		if a.writingAnswer() {
 			s := a.pillSession()
-			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: a.shownDraft(s), busy: true, writing: true, canStopAnswer: a.sess.CanStop(),
+			v := cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: a.shownDraft(s), busy: true, writing: true, canStopAnswer: a.sess.CanStop(),
 				canUseTranscript: a.sess.CanSkip, lang: s.TargetLanguage, target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
+			if s.ID == a.box.sending {
+				v.attach, v.thumbs = "box", a.box.thumbs
+			} else {
+				v.attach = s.ImageHint
+			}
+			return v
 		}
 		return cardView{size: layout.CardSizes[0]} // no card: the pill shows the session
 	}
@@ -154,7 +165,7 @@ func (a *app) cardNow() cardView {
 	redo := own && s.ID == card.redo
 	follow := own && !redo
 	v := cardView{kind: card.kind, text: card.text, failed: card.problem, msg: card.msg, why: card.why, lang: card.lang,
-		target: card.target.Name, copied: card.copied, busy: own, conversation: card.conversation || follow,
+		target: card.target.Name, copied: card.copied, busy: own, conversation: card.conversation || follow, attach: card.attach, thumbs: card.thumbs,
 		size: layout.CardSizes[a.prefs.Features.CardSize(string(card.kind))]}
 	v.title = uitext.CardTitle(card.kind, card.title)
 	v.think = card.think
@@ -394,12 +405,20 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 	return min(int(math.Ceil(float64(h))), bodyMax), exact
 }
 
+// cardAttachH is the height of v's picture row (0 for none).
+func cardAttachH(v cardView) int {
+	if v.attach != "" || len(v.thumbs) > 0 {
+		return layout.CardAttachH
+	}
+	return 0
+}
+
 // cardBodyMax is the most text v shows before it scrolls: as much as the
 // work area holds beside the overlay's margin, so that the card grows
 // with a long answer and stays on the screen (#3644 FB41); never less
 // than layout.CardBodyMax.
 func (a *app) cardBodyMax(v cardView) int {
-	room := a.ov.area.Height - int(math.Round(a.prefs.Overlay.Margin)) - layout.Pad - layout.CardChrome
+	room := a.ov.area.Height - int(math.Round(a.prefs.Overlay.Margin)) - layout.Pad - layout.CardChrome - cardAttachH(v)
 	if v.msg != "" {
 		room -= layout.CardMsgGap + layout.CardMsgH
 	}
@@ -411,7 +430,7 @@ func (a *app) cardBodyMax(v cardView) int {
 func (a *app) cardSize() (w, h int, exact bool) {
 	v := a.cardNow()
 	body, exact := a.cardBodyHeight(v)
-	h = layout.CardChrome + body
+	h = layout.CardChrome + cardAttachH(v) + body
 	if v.msg != "" {
 		h += layout.CardMsgGap + layout.CardMsgH
 	}
