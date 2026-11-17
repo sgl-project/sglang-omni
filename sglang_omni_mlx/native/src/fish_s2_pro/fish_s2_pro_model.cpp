@@ -467,6 +467,8 @@ omni_common::FinishReason FishS2ProModel::Generate(
       codes.push_back(code);
     }
     const mx::array frame_codes = mx::concatenate(codes, 0);
+    // Note (XXXXRT666): the fast transformer runs while the slow step builds.
+    mx::async_eval({frame_codes});
     if (frame + 1 < frame_limit) {
       hidden = Forward(Embed(mx::array({token}, {1, 1}, mx::int32),
                              mx::reshape(frame_codes, {codebook_count_, 1}),
