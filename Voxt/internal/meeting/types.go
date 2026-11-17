@@ -125,6 +125,15 @@ type Config struct {
 	Diarizer func(ctx context.Context) (asr.Diarizer, error)
 	// VAD finds speech regions for the final pass; nil uses energy analysis.
 	VAD vad.Model
+	// VADFallback is called only when a configured model's batch actually
+	// falls back to energy analysis. Nil keeps the default silent fallback.
+	VADFallback func()
+	// DisableVAD sends the whole track through the chunk planner without
+	// speech-region detection. The zero value keeps the normal VAD path.
+	DisableVAD bool
+	// FinalizeChunkParams overrides the final pass's chunk planner for
+	// profiling; nil keeps DefaultChunkParams.
+	FinalizeChunkParams *ChunkParams
 	// Context is what the language model corrects a transcript with;
 	// nil for none.
 	Context func(ctx context.Context) TranscriptContext

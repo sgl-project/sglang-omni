@@ -54,7 +54,7 @@ type readyEvent struct {
 // speculative draft in draft ("" none); the channel gets its first event
 // (or closes when stdout ends without one).
 // cacheLimit: pass spec's --cache-limit-mb (the binary knows it).
-func spawn(cfg Config, spec Spec, dir, draft string, cacheLimit bool) (*process, <-chan readyEvent, error) {
+func spawn(cfg Config, spec Spec, dir, draft string, draftBits int, cacheLimit bool) (*process, <-chan readyEvent, error) {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return nil, nil, fmt.Errorf("no model directory %s", dir)
 	}
@@ -74,9 +74,12 @@ func spawn(cfg Config, spec Spec, dir, draft string, cacheLimit bool) (*process,
 	}
 	args = append(args, spec.launchArgs(cacheLimit)...)
 	if draft != "" {
-		// 8-bit: the same transcripts as bf16 on the eval set, faster and smaller
-		// (#3874); the flag came with --draft-model-path (#3285).
-		args = append(args, "--draft-model-path", draft, "--draft-bits", "8")
+		// The default is 8-bit: the same transcripts as bf16 on the eval set,
+		// faster and smaller (#3874).
+		if draftBits == 0 {
+			draftBits = 8
+		}
+		args = append(args, "--draft-model-path", draft, "--draft-bits", itoa(draftBits))
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(serverEnv(os.Environ()), cfg.Env...)

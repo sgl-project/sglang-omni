@@ -3,6 +3,7 @@ package omni
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -19,7 +20,8 @@ type server struct {
 	dir  string
 	// draft is the speculative draft's folder the process verifies, ""
 	// none; cleared once the server refused it (startProcess).
-	draft string
+	draft     string
+	draftBits int
 
 	mu      sync.Mutex
 	proc    *process // the ready process, nil when none runs
@@ -40,8 +42,8 @@ type startOp struct {
 	err  error
 }
 
-func newServer(rt *Runtime, spec Spec, dir, draft string) *server {
-	return &server{rt: rt, spec: spec, dir: dir, draft: draft, stopped: make(chan struct{})}
+func newServer(rt *Runtime, spec Spec, dir, draft string, draftBits int) *server {
+	return &server{rt: rt, spec: spec, dir: dir, draft: draft, draftBits: draftBits, stopped: make(chan struct{})}
 }
 
 // errRetired: the server was retired while a use waited for it.
@@ -164,7 +166,7 @@ func (s *server) startProcess() (*process, error) {
 // spawnReady spawns the process verifying draft and waits for its ready
 // line; a server retired meanwhile is killed.
 func (s *server) spawnReady(draft string) (*process, error) {
-	p, ready, err := spawn(s.rt.cfg, s.spec, s.dir, draft, s.rt.cacheLimit(s.spec))
+	p, ready, err := spawn(s.rt.cfg, s.spec, s.dir, draft, s.draftBits, s.rt.cacheLimit(s.spec))
 	if err != nil {
 		return nil, err
 	}
@@ -338,14 +340,20 @@ func (s *server) running() bool {
 	return s.proc != nil && s.proc.alive()
 }
 
-// pid is the ready process's id, 0 when none runs.
-func (s *server) pid() int {
+// pids includes a process still loading its model, so memory sampling does
+// not miss the weights before the ready event.
+func (s *server) pids() []int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.proc == nil || !s.proc.alive() {
-		return 0
+	var out []int
+	for _, process := range []*process{s.proc, s.spawned} {
+		if process != nil && process.alive() {
+			if pid := process.pidOf(); pid > 0 && !slices.Contains(out, pid) {
+				out = append(out, pid)
+			}
+		}
 	}
-	return s.proc.pidOf()
+	return out
 }
 
 // waitDrained waits, at most a start's timeout, for the speech models'

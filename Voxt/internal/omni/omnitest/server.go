@@ -171,8 +171,13 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 	if o.TokenLimit {
 		finish = "length"
 	}
-	body := map[string]any{"type": "transcript.text.done", "text": text,
-		"generation_metadata": map[string]any{"generated_token_count": 10, "language": language, "finish_reason": finish}}
+	metadata := map[string]any{"generated_token_count": 10, "language": language, "finish_reason": finish}
+	if o.DraftCounters {
+		metadata["verify_round_count"] = 3
+		metadata["proposed_draft_token_count"] = 12
+		metadata["accepted_draft_token_count"] = 8
+	}
+	body := map[string]any{"type": "transcript.text.done", "text": text, "generation_metadata": metadata}
 	if o.Segments {
 		body["segments"] = []map[string]any{
 			{"start": 0.5, "end": 1.5, "speaker": "S01", "text": "first"},

@@ -149,11 +149,12 @@ func TestMossLive(t *testing.T) {
 }
 
 // A post-meeting MOSS request keeps the whole Other track in one request,
-// leaves the prompt empty for diarization, and returns timed speakers.
+// sends the request's prompt (the meeting's carry-over instruction), and
+// returns timed speakers.
 func TestMossDiarize(t *testing.T) {
 	f := newFake(t, omnitest.Opts{Segments: true}, withServers(t, "moss_transcribe_diarize_server"))
 	a := f.asr(t, ASRMoss)
-	res, err := a.Diarize(context.Background(), asr.FileRequest{Audio: tone(65*time.Second, 0.3), Format: "pcm", SampleRate: 16000, Lang: "en", Prompt: "ignored"})
+	res, err := a.Diarize(context.Background(), asr.FileRequest{Audio: tone(65*time.Second, 0.3), Format: "pcm", SampleRate: 16000, Lang: "en", Prompt: "the instruction"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +162,7 @@ func TestMossDiarize(t *testing.T) {
 		t.Fatalf("segments %+v", res.Segments)
 	}
 	finals := f.records("final")
-	if len(finals) != 1 || finals[0].Samples != 65*16000 || finals[0].Fields["prompt"] != "" || finals[0].Fields["language"] != "en" {
+	if len(finals) != 1 || finals[0].Samples != 65*16000 || finals[0].Fields["prompt"] != "the instruction" || finals[0].Fields["language"] != "en" {
 		t.Errorf("finals %+v", finals)
 	}
 }

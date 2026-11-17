@@ -88,8 +88,18 @@ type Result struct {
 	Lang     string        // as the speech model reported it, "" when it did not
 	Duration time.Duration // of the audio, when the speech model reported it
 	Model    string
+	Acquire  time.Duration // starting or waiting for the model before Latency; 0 when not reported
 	Latency  time.Duration // from the end of the audio to the final text
 	Segments []SpeakerSegment
+	Draft    *DraftStats // speculative decoding counters, nil without a draft
+}
+
+// DraftStats counts one speculative decoding run's proposed and accepted
+// draft tokens.
+type DraftStats struct {
+	VerifyRounds int
+	Proposed     int
+	Accepted     int
 }
 
 // Diarizer transcribes a recording with timestamps and speaker labels.

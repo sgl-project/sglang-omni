@@ -130,6 +130,9 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── eval/             the models' quality evaluation: the eval set (testdata/eval: synthesised
 │   │                     dictations, their words, the expected clean-up, checks), error rates,
 │   │                     dictionary terms found, clean-up checks (docs/eval.md)
+│   ├── profile/          opt-in long-recording, overlap, and interactive-priority profiling:
+│   │                     strict JSON config, stage and request timing, deterministic simulated
+│   │                     language models, eval scores, native/resource samples and Darwin signposts
 │   ├── archtest/         tests of the code's structure only: file sizes, import layering ("Code structure rules")
 │   └── tools/            developer commands (standard library only): snapcmp (snapshot comparison),
 │                         declhash (pure-move check), evalsynth (the speech fixtures, Qwen3-TTS on a Mac)
@@ -152,6 +155,7 @@ notify, logs ──▶ core
 asr ──▶ core                  llm ──▶ core                  local ──▶ asr, llm, models, vad     models/modelstest ──▶ models
 providers ──▶ asr, llm, local, settings                       uitext ──▶ providers
 omni ──▶ asr, lang, resident, vad      eval ──▶ asr
+profile ──▶ asr, eval, llm, macx, meeting, vad
 session ──▶ appctx, asr, compose, core, deliver, dict, dsp, helper/proto, lang, llm, settings, store, vad
 dsp ──▶ vad
 compose ──▶ lang              deliver ──▶ helper/proto      hotkey ──▶ helper/proto, settings

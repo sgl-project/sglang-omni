@@ -125,8 +125,10 @@ type ASRTuning struct {
 	// (--cache-limit-mb): with no cap one long Final kept up to 6 GB beside
 	// the weights (eval.md "Speech server memory"). 0: the flag is not
 	// passed, so the server's default applies (2 GiB; no cap on an older
-	// server, which also lacks the flag).
-	CacheMB int
+	// server, which also lacks the flag). CacheLimitSet distinguishes an
+	// explicit profiling override of 0 from that default.
+	CacheMB       int
+	CacheLimitSet bool
 }
 
 // VADTuning is Silero's: Threshold is the speech probability that counts
@@ -325,7 +327,7 @@ func (s Spec) launchArgs(cacheLimit bool) []string {
 			"--first-decode-ms", itoa(int(a.FirstDecode/time.Millisecond)),
 			"--decode-interval-ms", itoa(int(a.DecodeInterval/time.Millisecond)),
 			"--max-segment-seconds", ftoa(a.MaxSegment.Seconds()))
-		if cacheLimit && a.CacheMB > 0 {
+		if cacheLimit && (a.CacheMB > 0 || a.CacheLimitSet) {
 			args = append(args, "--cache-limit-mb", itoa(a.CacheMB))
 		}
 	}

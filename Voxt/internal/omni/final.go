@@ -42,6 +42,7 @@ type finalResult struct {
 	tokens   int    // generated
 	language string // detected (or the hint), "" when none
 	length   bool   // the budget ended it
+	draft    *asr.DraftStats
 	segments []struct {
 		Start   float64 `json:"start"`
 		End     float64 `json:"end"`
@@ -166,6 +167,9 @@ func parseEvent(payload string) (*finalResult, error) {
 			Tokens   *int    `json:"generated_token_count"`
 			Language *string `json:"language"`
 			Finish   string  `json:"finish_reason"`
+			Verify   *int    `json:"verify_round_count"`
+			Proposed *int    `json:"proposed_draft_token_count"`
+			Accepted *int    `json:"accepted_draft_token_count"`
 		} `json:"generation_metadata"`
 		Error *struct {
 			Type string `json:"type"`
@@ -185,6 +189,9 @@ func parseEvent(payload string) (*finalResult, error) {
 			r.tokens, r.length = *m.Tokens, m.Finish == "length"
 			if m.Language != nil {
 				r.language = *m.Language
+			}
+			if m.Verify != nil && *m.Verify > 0 && m.Proposed != nil && m.Accepted != nil {
+				r.draft = &asr.DraftStats{VerifyRounds: *m.Verify, Proposed: *m.Proposed, Accepted: *m.Accepted}
 			}
 		}
 		return r, nil

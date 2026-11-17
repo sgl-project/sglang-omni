@@ -14,6 +14,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
 func rateSamples(d time.Duration) int {
@@ -91,9 +92,11 @@ func TestFinalizeReplacesMicSegments(t *testing.T) {
 
 	micASR := &seqFileASR{texts: []string{"final mic"}}
 	sysASR := &seqFileASR{texts: []string{"final sys"}}
+	detector := &countingVAD{}
 	cfg := meeting.Config{
 		Store:    db.Meetings(),
 		Dir:      filepath.Join(root, "meetings"),
+		VAD:      detector,
 		Settings: func() settings.Meeting { return settings.Meeting{} },
 		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
 		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
@@ -110,6 +113,9 @@ func TestFinalizeReplacesMicSegments(t *testing.T) {
 
 	if err := meeting.FinalizePass(ctx, cfg, created, nil); err != nil {
 		t.Fatal(err)
+	}
+	if detector.calls != 2 || detector.sampleCounts[0] != rateSamples(2*time.Second) || detector.sampleCounts[1] != rateSamples(time.Second) {
+		t.Fatalf("ordinary VAD calls %d, sample counts %v", detector.calls, detector.sampleCounts)
 	}
 	_, segs, err := db.Meetings().Meeting(ctx, "m1")
 	if err != nil {
@@ -130,6 +136,66 @@ func TestFinalizeReplacesMicSegments(t *testing.T) {
 	}
 	if micText != "final mic" || sysText != "final sys" {
 		t.Fatalf("segments mic=%q sys=%q", micText, sysText)
+	}
+}
+
+type countingVAD struct {
+	calls        int
+	sampleCounts []int
+}
+
+func (v *countingVAD) Speech(_ context.Context, pcm []byte, _ int) ([]vad.Segment, error) {
+	v.calls++
+	v.sampleCounts = append(v.sampleCounts, len(pcm)/2)
+	return []vad.Segment{{Start: 0, End: len(pcm) / 2}}, nil
+}
+
+func (v *countingVAD) Open(context.Context) (vad.ModelStream, error) { return nil, nil }
+
+func TestFinalizeChunkOverridesAndDisabledVAD(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	meetDir := filepath.Join(root, "meetings", "m-chunks")
+	if err := os.MkdirAll(meetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeWAV(t, meetDir, "system.wav", tonePCM(rateSamples(3200*time.Millisecond)))
+	mt, err := db.Meetings().CreateMeeting(ctx, store.Meeting{
+		ID: "m-chunks", CreatedAt: time.Now(), Status: store.MeetingDone,
+		Mode: store.MeetingModeSubtitles, Audio: "m-chunks", DurationMS: 3200,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &seqFileASR{texts: []string{"one", "two", "three", "four", "five"}}
+	detector := &countingVAD{}
+	chunks := meeting.DefaultChunkParams()
+	chunks.MaxDur = time.Second
+	chunks.MinDur = 100 * time.Millisecond
+	chunks.Pad = time.Millisecond
+	chunks.HardOverlap = time.Millisecond
+	cfg := meeting.Config{
+		Store: db.Meetings(), Dir: filepath.Join(root, "meetings"), VAD: detector,
+		Settings:   func() settings.Meeting { return settings.Meeting{} },
+		Privacy:    func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		DisableVAD: true, FinalizeChunkParams: &chunks,
+		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			return meeting.TrackASR{Caps: file.Caps(), File: file}, nil
+		},
+	}
+	if err := meeting.FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	if detector.calls != 0 {
+		t.Errorf("VAD ran %d times while disabled", detector.calls)
+	}
+	if file.n < 3 {
+		t.Errorf("3.2 seconds at a one-second limit made %d ASR calls", file.n)
 	}
 }
 
@@ -162,9 +228,11 @@ func TestFinalizeDiarizesSystemAndReloadsSpeakerLabels(t *testing.T) {
 		{Start: 2500 * time.Millisecond, End: 3500 * time.Millisecond, Speaker: "S04", Text: "fourth"},
 	}}}
 	hold := &fakeModelHold{}
+	detector := &countingVAD{}
 	cfg := meeting.Config{
 		Store:     db.Meetings(),
 		Dir:       filepath.Join(root, "meetings"),
+		VAD:       detector,
 		Settings:  func() settings.Meeting { return settings.Meeting{} },
 		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
 		ModelHold: hold,
@@ -183,6 +251,11 @@ func TestFinalizeDiarizesSystemAndReloadsSpeakerLabels(t *testing.T) {
 	}
 	if err := meeting.FinalizePass(ctx, cfg, mt, nil); err != nil {
 		t.Fatal(err)
+	}
+	// MTD goes in pieces planned from speech regions, so the system track
+	// runs VAD too; the single full-range region still makes one request.
+	if detector.calls != 2 || detector.sampleCounts[0] != rateSamples(2*time.Second) || detector.sampleCounts[1] != rateSamples(5*time.Second) {
+		t.Fatalf("VAD calls %d, sample counts %v; want the microphone, then the system track", detector.calls, detector.sampleCounts)
 	}
 	if len(diarizer.requests) != 1 || len(diarizer.requests[0].Audio) != rateSamples(5*time.Second)*2 {
 		t.Fatalf("diarizer requests %+v", diarizer.requests)
