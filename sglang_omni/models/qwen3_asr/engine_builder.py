@@ -69,6 +69,15 @@ logger = logging.getLogger(__name__)
 QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS = 32
 
 
+def is_datacenter_blackwell(sm_version: int | None) -> bool:
+    """SM100/SM103 (B200/B300 class), where the B200-measured serving defaults apply."""
+    return (
+        current_platform.is_cuda()
+        and sm_version is not None
+        and 100 <= sm_version < 120
+    )
+
+
 class Qwen3ASRModelRunner(ModelRunner[Qwen3ASRRequestData]):
     """The shared AR runner, opted into speculative overlap and, on CUDA, the shared verify repetition_penalty.
 
@@ -253,14 +262,22 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             defaults["prefill_attention_backend"] = "triton"
         else:
             pass
+        sm_version = (
+            get_visible_gpu_sm_version(self.gpu_id)
+            if current_platform.is_cuda() or self.mm_attention_backend is None
+            else None
+        )
+        if is_datacenter_blackwell(sm_version) and self.draft_checkpoint is None:
+            # note (Xuanfei): the automatic SM100 choice, trtllm_mha, cannot capture the full prefill graph.
+            defaults["attention_backend"] = "flashinfer"
+        else:
+            pass
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
+        elif sm_version is not None and sm_version >= 100:
+            defaults["mm_attention_backend"] = "triton_attn"
         else:
-            sm_version = get_visible_gpu_sm_version(self.gpu_id)
-            if sm_version is not None and sm_version >= 100:
-                defaults["mm_attention_backend"] = "triton_attn"
-            else:
-                pass
+            pass
         return defaults
 
     def make_model_runner(
@@ -638,8 +655,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
                 self.prefill_coalesce_requires_pending_builds
             ),
             # note (ychu824): with a draft this defaults to off, because holding prefills during decode delayed the first text and did not raise throughput.
+            # note (Xuanfei): on SM100 the hold also costs throughput without a draft, once prefill runs as a full graph.
             "prefill_coalesce_after_builds_during_decode": (
                 self.draft_checkpoint is None
+                and not (
+                    current_platform.is_cuda()
+                    and is_datacenter_blackwell(get_visible_gpu_sm_version(self.gpu_id))
+                )
                 if self.prefill_coalesce_after_builds_during_decode is None
                 else self.prefill_coalesce_after_builds_during_decode
             ),

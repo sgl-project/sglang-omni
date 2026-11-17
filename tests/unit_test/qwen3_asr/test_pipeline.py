@@ -138,6 +138,7 @@ def make_engine_builder(
         stream_emit_interval_s=0.05,
     )
     builder.context_length = context_length
+    builder.gpu_id = 0
     return builder
 
 
@@ -315,6 +316,7 @@ def test_qwen3_asr_explicit_mm_attention_backend_overrides_sm_default(
         lambda gpu_id: pytest.fail(f"unexpected SM lookup for GPU {gpu_id}"),
         raising=False,
     )
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: False)
     builder = make_engine_builder(mm_attention_backend="fa3")
     builder.gpu_id = 0
 
@@ -912,6 +914,100 @@ def test_qwen3_asr_async_decode_false_turns_speculative_overlap_off(
         builder.draft_checkpoint.cleanup()
     else:
         assert builder.infra_kwargs() == {}
+
+
+@pytest.mark.parametrize(
+    ("is_cuda", "sm_version", "expected_backend"),
+    [
+        (True, 90, None),
+        (True, 100, "flashinfer"),
+        (True, 103, "flashinfer"),
+        (True, 120, None),
+        (True, None, None),
+        (False, 100, None),
+    ],
+)
+def test_qwen3_asr_defaults_attention_to_flashinfer_on_datacenter_blackwell(
+    monkeypatch: pytest.MonkeyPatch,
+    is_cuda: bool,
+    sm_version: int | None,
+    expected_backend: str | None,
+) -> None:
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: is_cuda)
+    monkeypatch.setattr(
+        qwen3_asr_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: sm_version,
+        raising=False,
+    )
+    builder = make_engine_builder(mm_attention_backend="fa3")
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert defaults.get("attention_backend") == expected_backend
+
+
+def test_qwen3_asr_explicit_attention_backend_overrides_blackwell_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        qwen3_asr_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: 100,
+        raising=False,
+    )
+    builder = make_engine_builder(mm_attention_backend="fa3")
+
+    overrides = build_generation_batch_overrides(
+        **builder.generation_defaults(dtype="bfloat16"),
+        server_args_overrides={"attention_backend": "trtllm_mha"},
+    )
+
+    assert overrides["attention_backend"] == "trtllm_mha"
+
+
+def test_qwen3_asr_draft_retains_automatic_blackwell_attention_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        qwen3_asr_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: 100,
+        raising=False,
+    )
+    builder = make_engine_builder(mm_attention_backend="fa3")
+    builder.draft_checkpoint = Mock()
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert "attention_backend" not in defaults
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "expected"), [(90, True), (100, False), (120, True)]
+)
+def test_qwen3_asr_coalesce_during_decode_defaults_off_on_datacenter_blackwell(
+    monkeypatch: pytest.MonkeyPatch, sm_version: int, expected: bool
+) -> None:
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        qwen3_asr_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: sm_version,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "make_qwen3_asr_stream_output_builder",
+        lambda **kwargs: object(),
+    )
+    builder = make_engine_builder(prefill_coalesce_after_builds_during_decode=None)
+
+    kwargs = builder.extra_scheduler_kwargs()
+
+    assert kwargs["prefill_coalesce_after_builds_during_decode"] is expected
 
 
 @pytest.mark.parametrize("with_draft", [False, True])
