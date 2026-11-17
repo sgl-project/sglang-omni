@@ -1042,7 +1042,7 @@ ready without it.</p>
 </pre></div>
 </div>
 <p>The <a class="reference internal" href="qwen3_asr.html#per-request-plain-fallback"><span class="std std-ref">Qwen3-ASR fallback restrictions</span></a> also apply to MOSS-TD.</p>
-<p>When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.</p>
+<p>When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default from 2 decoding requests, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.</p>
 </section>
 </section>
 <section id="benchmarking">
