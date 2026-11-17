@@ -45,6 +45,11 @@ type dictionaryState struct {
 	// selPress is the transcribe shortcut whose selection is being read
 	// (dictionary_selection.go).
 	selPress *selectionPress
+	// glossaryTerms is the whole dictionary for the feature pages' prompt
+	// preview (feature_prompts.go), read again after each change;
+	// glossaryReads numbers the reads: only the last one lands.
+	glossaryTerms []store.Term
+	glossaryReads int
 }
 
 type dictView struct {
@@ -121,7 +126,9 @@ var (
 // dictShown runs when the router goes to the page (pageShown).
 func (a *app) dictShown() { a.loadDict() }
 
-// loadDict reads the terms of the search in the background.
+// loadDict reads the terms of the search in the background. The glossary
+// cache (loadGlossaryTerms in feature_prompts.go) follows every reload, so
+// anything that reloads the list also reaches the prompt preview.
 func (a *app) loadDict() {
 	d := &a.dv
 	d.seq++
@@ -145,6 +152,10 @@ func (a *app) loadDict() {
 			d.list, d.err = list, ""
 			if q == "" {
 				d.total = len(list)
+				a.glossaryReads++
+				a.glossaryTerms = list
+			} else {
+				a.loadGlossaryTerms()
 			}
 		})
 	})

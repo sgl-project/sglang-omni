@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 func TestPromptSaveUsesFullSystem(t *testing.T) {
@@ -413,6 +415,39 @@ func TestPreviewIsTheWholePrompt(t *testing.T) {
 		if out, _ := a.composedPreview(feature); strings.Contains(out.System, "Roth") {
 			t.Errorf("%s: the dictionary shows while off", feature)
 		}
+		// The glossary's enabled terms are in the preview, as a session
+		// adds them (run_listen.go, write.go); the session side here is
+		// rebuilt from the store, not from the preview's cache.
+		repo := a.lib.store.Dictionary()
+		if err := repo.Put(context.Background(), store.Term{ID: "g1", Term: "Zephyrion", Aliases: []string{"zeph"}, Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+		a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = true })
+		a.loadGlossaryTerms()
+		out, err = a.composedPreview(feature)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if whole = wholePrompt(out); !strings.Contains(whole, "Zephyrion") {
+			t.Errorf("%s: no glossary term in %q", feature, whole)
+		}
+		sent = a.previewInput(feature)
+		sent.TaskPrompt, sent.Dictionary = promptOf(a.prefs, feature), session.PromptDictionary(a.prefs)
+		if terms, _ := repo.List(context.Background(), ""); a.prefs.Dictionary.Enabled && a.prefs.Dictionary.Glossary {
+			for _, tm := range terms {
+				if tm.Enabled {
+					sent.Glossary = append(sent.Glossary, compose.Term{Term: tm.Term, Aliases: tm.Aliases})
+				}
+			}
+		}
+		if want, _ := compose.Build(sent); wholePrompt(want) != whole {
+			t.Errorf("%s: the preview's glossary is not what is sent:\n%s\n---\n%s", feature, whole, wholePrompt(want))
+		}
+		if err := repo.Delete(context.Background(), "g1"); err != nil {
+			t.Fatal(err)
+		}
+		a.loadGlossaryTerms()
+		a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = false })
 		// A 200 row dictionary, open in the preview, still draws quickly.
 		a.updateSettings(func(s *settings.Settings) { s.Dictionary.NotesOff, s.Dictionary.Notes = false, longNotes(200) })
 		start := time.Now()
@@ -450,5 +485,44 @@ func TestMarkValues(t *testing.T) {
 	}
 	if s := markValues(ui.Hex("#0066ff"), "", nil); len(s) != 1 || s[0].Text != "" {
 		t.Errorf("empty text: %+v", s)
+	}
+}
+
+// TestPreviewFollowsTheDictionary: the prompt preview's glossary cache
+// follows every dictionary reload, not only the start and the term
+// dialogs: a term that appears between two reloads — another profile's,
+// once profiles land — is in the whole prompt a session sends, and one
+// that goes away leaves it, with a search active too.
+func TestPreviewFollowsTheDictionary(t *testing.T) {
+	a, _ := pageTester(t, "/transcribe")
+	a.updateSettings(func(s *settings.Settings) {
+		s.Dictionary.Enabled, s.Dictionary.Glossary = true, true
+	})
+	repo := a.lib.store.Dictionary()
+	if err := repo.Put(context.Background(), store.Term{ID: "g1", Term: "Zephyrion", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	a.loadDict()
+	out, err := a.composedPreview(hotkey.Transcribe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole := wholePrompt(out); !strings.Contains(whole, "Zephyrion") {
+		t.Fatalf("the reload did not reach the preview: %q", whole)
+	}
+	if err := repo.Delete(context.Background(), "g1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Put(context.Background(), store.Term{ID: "g2", Term: "Quixotica", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	a.dv.query = "quix"
+	a.loadDict()
+	out, err = a.composedPreview(hotkey.Transcribe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole := wholePrompt(out); strings.Contains(whole, "Zephyrion") || !strings.Contains(whole, "Quixotica") {
+		t.Errorf("the filtered reload did not reach the preview: %q", whole)
 	}
 }
