@@ -364,8 +364,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         else:
             pass
         super().validate_before_infrastructure(server_args)
-        # Replace the per-request decode mrope-position loop with a vectorized
-        # equivalent before any forward runs.
+        # Replace sglang's per-request decode and speculative mrope positions
+        # with text-only equivalents before any forward runs.
         mrope_fast_path.apply_asr_mrope_fast_path()
         from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
 
