@@ -33,4 +33,27 @@ func TestRepackOrdersEqualSizedRectanglesByPosition(t *testing.T) {
 			t.Errorf("pixel %d = %d, want %d", want.x, atlas.Pix[want.x], want.value)
 		}
 	}
+
+	rectangles = []image.Rectangle{
+		image.Rect(4, 0, 5, 2),
+		image.Rect(0, 0, 1, 2),
+		image.Rect(2, 0, 3, 2),
+	}
+	positions, ok = atlas.Repack(rectangles)
+	if !ok {
+		t.Fatal("second repack failed")
+	}
+	for index, want := range wantPositions {
+		if positions[index] != want {
+			t.Errorf("second rectangle %d moved to %v, want %v", rectangles[index], positions[index], want)
+		}
+	}
+	for _, want := range []struct {
+		x     int
+		value byte
+	}{{4, 3}, {0, 1}, {2, 2}} {
+		if atlas.Pix[want.x] != want.value {
+			t.Errorf("second pixel %d = %d, want %d", want.x, atlas.Pix[want.x], want.value)
+		}
+	}
 }
