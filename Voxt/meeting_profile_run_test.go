@@ -113,13 +113,22 @@ func runMeetingProfile(
 	if runErr != nil {
 		return
 	}
-	var pcm []byte
+	var pcm, micPCM []byte
 	runErr = recorder.Measure("decode", 0, func() error {
 		var err error
 		pcm, err = dependencies.decode(config.Audio)
+		if err != nil {
+			return err
+		}
+		if config.MicAudio != "" {
+			micPCM, err = dependencies.decode(config.MicAudio)
+		}
 		return err
 	})
 	audioDuration := asr.Duration(pcm, asr.SampleRate)
+	if micDuration := asr.Duration(micPCM, asr.SampleRate); micDuration > audioDuration {
+		audioDuration = micDuration
+	}
 	recorder.SetLastAudio(audioDuration)
 	recorder.SetAudioDuration(audioDuration)
 	if runErr != nil {
@@ -148,9 +157,19 @@ func runMeetingProfile(
 		if err := os.WriteFile(filepath.Join(meetingDir, "system.wav"), asr.WAV(pcm, asr.SampleRate), 0o600); err != nil {
 			return err
 		}
+		if len(micPCM) > 0 {
+			if err := os.WriteFile(filepath.Join(meetingDir, "mic.wav"), asr.WAV(micPCM, asr.SampleRate), 0o600); err != nil {
+				return err
+			}
+		}
 		mode := store.MeetingModeSubtitles
 		if config.Mode == "import" {
 			mode = store.MeetingModeImport
+		}
+		if len(micPCM) > 0 {
+			// A second track makes it a real two-track meeting: the final
+			// pass processes mic and system, not the import's system only.
+			mode = store.MeetingModeMeeting
 		}
 		now := time.Now()
 		meetingRow, err = database.Meetings().CreateMeeting(ctx, store.Meeting{

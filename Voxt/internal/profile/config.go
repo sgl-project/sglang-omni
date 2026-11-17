@@ -20,6 +20,7 @@ type Config struct {
 	Name                 string      `json:"name,omitempty"`
 	Mode                 string      `json:"mode"`
 	Audio                string      `json:"audio"`
+	MicAudio             string      `json:"mic_audio,omitempty"`
 	Reference            string      `json:"reference,omitempty"`
 	OutputDir            string      `json:"output_dir"`
 	Model                ModelConfig `json:"model"`
@@ -91,6 +92,13 @@ func (c *Config) Validate() error {
 	case ".m4a", ".mp4", ".wav":
 	default:
 		return fmt.Errorf("profile: audio must be an m4a, mp4 or wav file")
+	}
+	if c.MicAudio != "" {
+		switch strings.ToLower(filepath.Ext(c.MicAudio)) {
+		case ".m4a", ".mp4", ".wav":
+		default:
+			return fmt.Errorf("profile: mic_audio must be an m4a, mp4 or wav file")
+		}
 	}
 	if c.OutputDir == "" || c.Model.ID == "" || c.Model.Dir == "" {
 		return fmt.Errorf("profile: output_dir and model id/dir are required")

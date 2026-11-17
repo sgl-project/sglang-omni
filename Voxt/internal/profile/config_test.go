@@ -33,6 +33,7 @@ func TestConfigValidation(t *testing.T) {
 	}{
 		{"mode", func(c *Config) { c.Mode = "meeting" }},
 		{"audio type", func(c *Config) { c.Audio = "meeting.mp3" }},
+		{"mic audio type", func(c *Config) { c.MicAudio = "mic.mp3" }},
 		{"model", func(c *Config) { c.Model.Dir = "" }},
 		{"draft dir", func(c *Config) { c.Draft.Dir = "" }},
 		{"draft bits", func(c *Config) { c.Draft.Bits = 16 }},

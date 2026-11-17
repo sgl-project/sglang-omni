@@ -34,6 +34,7 @@ CONFIG_FIELDS = {
     "name",
     "mode",
     "audio",
+    "mic_audio",
     "reference",
     "output_dir",
     "model",

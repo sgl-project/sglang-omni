@@ -181,6 +181,33 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 	}
 }
 
+func TestMeetingProfileFakeImportWithMicTrack(t *testing.T) {
+	config := fakeProfileConfig("import")
+	config.MicAudio = "mic.wav"
+	releases := 0
+	speech := &fakeProfileASR{segments: 65, releases: &releases}
+	detector := &fakeProfileVAD{releases: &releases}
+	dependencies := defaultProfileDependencies()
+	dependencies.decode = func(path string) ([]byte, error) {
+		return make([]byte, asr.SampleRate*2), nil
+	}
+	dependencies.newASR = func(profile.Config) (profileASR, error) { return speech, nil }
+	dependencies.newVAD = func(profile.Config) (profileVAD, error) { return detector, nil }
+	recorder := profile.NewRecorder(config)
+	report, runErr := runMeetingProfile(context.Background(), config, dependencies, recorder, nil, nil)
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	// A mic.wav from mic_audio makes the run a two-track meeting: the mic
+	// track is transcribed, the system track diarized, both after VAD.
+	if report.Status != "success" || speech.diarizeCalls != 1 || speech.transcribeCalls != 1 || detector.calls != 2 || releases != 2 {
+		t.Fatalf("status %s, ASR %+v, VAD %+v, releases %d", report.Status, speech, detector, releases)
+	}
+	if report.AudioDurationMS != 1000 {
+		t.Errorf("audio duration %d, want the track duration 1000", report.AudioDurationMS)
+	}
+}
+
 func TestMeetingProfileFakeSubtitlesWithoutVAD(t *testing.T) {
 	config := fakeProfileConfig("subtitles")
 	config.Model.ID = "asr.fast"
