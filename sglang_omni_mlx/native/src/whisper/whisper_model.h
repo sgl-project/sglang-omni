@@ -67,7 +67,6 @@ public:
                           int logit_count) const;
 
 private:
-  mlx::core::array LogMel(std::span<const float> window_samples) const;
   mlx::core::array Attention(const mlx::core::array &queries_input,
                              const mlx::core::array &keys,
                              const mlx::core::array &values,
@@ -80,10 +79,6 @@ private:
                                 DecoderLayerCache &cache) const;
 
   WhisperConfig config_;
-  // The log-mel front end's periodic Hann window [400] and mel filters
-  // [201, mel_bins].
-  mlx::core::array hann_window_;
-  mlx::core::array mel_filters_;
   omni_common::Checkpoint checkpoint_;
 };
 

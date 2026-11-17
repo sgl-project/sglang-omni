@@ -8,9 +8,9 @@
 #include <string_view>
 #include <utility>
 
+#include "common/audio.h"
 #include "common/generation.h"
 #include "common/npz.h"
-#include "common/swift_port.h"
 #include "nlohmann/json.hpp"
 
 namespace whisper {
@@ -20,11 +20,6 @@ using omni_common::Gelu;
 
 namespace {
 
-constexpr int kFftSize = 400;
-constexpr int kHopLength = 160;
-constexpr int kReflectPadding = kFftSize / 2;
-constexpr float kLogMelFloor = 1e-10f;
-constexpr float kLogMelDynamicRange = 8.0f;
 constexpr float kLayerNormEpsilon = 1e-5f;
 // Note (khazic): the decoder's additive causal mask value; it becomes -inf in
 // float16.
@@ -52,27 +47,6 @@ mx::array Sinusoids(int length, int channels) {
     }
   }
   return mx::array(values.data(), {length, channels}, mx::float32);
-}
-
-// Note (khazic): the periodic Hann window, built with MLX ops from Swift's
-// Float.pi.
-mx::array HannWindow() {
-  const float swift_pi = std::nextafter(static_cast<float>(M_PI), 0.0f);
-  const mx::array sample_indices =
-      mx::astype(mx::arange(kFftSize, mx::int32), mx::float32);
-  return mx::multiply(
-      mx::array(0.5f),
-      mx::subtract(mx::array(1.0f),
-                   mx::cos(mx::divide(
-                       mx::multiply(mx::array(2.0f * swift_pi), sample_indices),
-                       mx::array(static_cast<float>(kFftSize))))));
-}
-
-mx::array MelFilters(int mel_bin_count) {
-  const std::vector<float> values =
-      swift_port::SlaneyMelFilterBank(kFftSize, mel_bin_count);
-  return mx::array(values.data(), {kFftSize / 2 + 1, mel_bin_count},
-                   mx::float32);
 }
 
 WhisperConfig ReadConfig(const std::filesystem::path &model_directory,
@@ -247,25 +221,18 @@ DraftWeights(const std::filesystem::path &draft_directory,
 } // namespace
 
 WhisperModel::WhisperModel(const std::filesystem::path &model_directory)
-    : config_(ReadConfig(model_directory)), hann_window_(HannWindow()),
-      mel_filters_(MelFilters(config_.mel_bin_count)),
+    : config_(ReadConfig(model_directory)),
       checkpoint_(TargetWeights(model_directory, config_),
-                  nlohmann::json::object()) {
-  mx::eval({hann_window_, mel_filters_});
-}
+                  nlohmann::json::object()) {}
 
 WhisperModel::WhisperModel(const std::filesystem::path &draft_directory,
                            const WhisperModel &target)
     : config_(ReadConfig(draft_directory, /*draft=*/true)),
-      hann_window_(HannWindow()),
-      mel_filters_(MelFilters(config_.mel_bin_count)),
       checkpoint_(DraftWeights(draft_directory, config_, target.config_,
                                target.checkpoint_
                                    .Weight("decoder.token_embedding.weight")
                                    .dtype()),
-                  nlohmann::json::object()) {
-  mx::eval({hann_window_, mel_filters_});
-}
+                  nlohmann::json::object()) {}
 
 mx::array WhisperModel::Attention(const mx::array &queries_input,
                                   const mx::array &keys,
@@ -310,42 +277,14 @@ mx::array WhisperModel::EncoderLayer(const mx::array &x, int layer) const {
                          prefix + ".mlp2"));
 }
 
-mx::array WhisperModel::LogMel(std::span<const float> window_samples) const {
-  const int sample_count = static_cast<int>(window_samples.size());
-  const mx::array audio(window_samples.data(), {sample_count}, mx::float32);
-  // Note (khazic): reflect padding: audio[1:201] reversed, audio,
-  // audio[-201:-1] reversed.
-  const mx::array head = mx::slice(audio, {kReflectPadding}, {0}, {-1});
-  const mx::array tail = mx::slice(audio, {sample_count - 2},
-                                   {sample_count - kReflectPadding - 2}, {-1});
-  const mx::array padded = mx::concatenate({head, audio, tail});
-  const int frame_count = 1 + (padded.shape(0) - kFftSize) / kHopLength;
-  const mx::array frames =
-      mx::as_strided(padded, {frame_count, kFftSize}, {kHopLength, 1}, 0);
-  mx::array magnitudes = mx::square(mx::abs(mx::fft::rfft(
-      mx::multiply(frames, mx::expand_dims(hann_window_, 0)), -1)));
-  // Note (khazic): the final centered STFT frame is dropped, as Whisper's
-  // reference front end drops it.
-  magnitudes = mx::transpose(
-      mx::slice(magnitudes, {0, 0}, {frame_count - 1, magnitudes.shape(1)}),
-      {1, 0});
-  const mx::array mel_power =
-      mx::matmul(mx::transpose(mel_filters_, {1, 0}), magnitudes);
-  mx::array log_mel =
-      mx::log10(mx::maximum(mel_power, mx::array(kLogMelFloor)));
-  log_mel = mx::maximum(
-      log_mel, mx::subtract(mx::max(log_mel), mx::array(kLogMelDynamicRange)));
-  log_mel = mx::divide(mx::add(log_mel, mx::array(4.0f)), mx::array(4.0f));
-  return mx::transpose(log_mel, {1, 0});
-}
-
 mx::array WhisperModel::Encode(std::span<const float> padded_samples,
                                const std::atomic<bool> &cancel) const {
   std::vector<mx::array> mel_windows;
   for (size_t offset = 0; offset < padded_samples.size();
        offset += kWindowSampleCount) {
-    mel_windows.push_back(
-        LogMel(padded_samples.subspan(offset, kWindowSampleCount)));
+    mel_windows.push_back(omni_common::WhisperWindowFeatures(
+        padded_samples.data() + offset, kWindowSampleCount,
+        config_.mel_bin_count));
   }
   const mx::array mel_batch = mel_windows.size() == 1
                                   ? mx::expand_dims(mel_windows.front(), 0)
