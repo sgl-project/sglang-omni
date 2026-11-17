@@ -84,7 +84,7 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 4. 在 `meeting_demo_test.go` 的 `meetingDemoSentinel` 中加入预期可见文字，并在该区域的 demo action 测试中加入控件测试。
 5. 正式页面还要由所属控制器构造状态，并在 `pages.go` 中注册视图。只做 demo 练习时，完成 fixture、视图和 action 测试即可。
 
-`TestFileSizes` 限制生产文件最多 600 行、测试文件最多 800 行。接入后会超限时，先按主题把 demo 代码拆到 `<area>_demo.go` 或 `<area>_demo_test.go`，不要压缩无关代码，也不要新增 allowlist 条目。
+`TestFileSizes` 限制生产文件最多 600 行、测试文件最多 800 行。接入后会超限时，先按主题把 demo 代码拆到 `<area>_demo.go` 或 `<area>_demo_test.go`。
 
 运行 `go test ./internal/archtest` 检查新视图的 import，运行 `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage|TestSessionFixtureCoverage|TestUpdatesFixtureCoverage|TestHomeFixtureCoverage|TestOnboardingFixtureCoverage|TestAppEnhancementFixtureCoverage|TestDictionaryFixtureCoverage|TestRemoteFixtureCoverage|TestModelsFixtureCoverage|TestFeatureFixtureCoverage|TestSettingsFixtureCoverage|TestShellFixtureCoverage)$' .` 检查现有 fixture 覆盖。新区域的 golden、渲染和 action 测试放在这些测试旁边。
 
@@ -105,8 +105,10 @@ go test -count=1 -run '^Test(MeetingDemo(ActionControls|SwitchesFixtures)|Histor
 go test -tags=meetingdemo -count=1 -run '^Test(Meeting|History|Session|Updates|Home|Onboarding|AppEnhancement|Dictionary|Remote|Models|Feature|Settings|Shell)(Demo|OverlayDemoMatchesProduction)' .
 ```
 
-第一条命令点击每个会触发 action 的会议、历史、会话浮窗、更新、首页、引导、应用增强、词典、语言模型、模型、功能页、设置和 shell 控件以及本地取消控件，再比较完整的调用记录，覆盖菜单、确认对话框、播放、搜索、历史设置、导出、清理、“其他程序”、录音胶囊、答案卡片、更新偏好、Release 对话框、就绪项修复、最近结果、权限、模型选择、引导试用、规则编辑器、浏览器列表、词典词条、笔记、服务卡片、服务对话框、LLM 调试视图、模型下载、删除、网络、模型驻留时长、快捷键编辑、模型选择、提示词控件、试用会话、设置各分节、录制器、存储和诊断控件，以及 shell 的导航、通知卡片、日志过滤与选择、命令面板、快捷键一览和公告对话框。它还会比较正式代码和 JSON fixture 的渲染结果。第二条命令还会编译启用 demo 的入口。
+第一条命令点击这些 demo 测试覆盖的、会触发 action 的会议、历史、会话浮窗、更新、首页、引导、应用增强、词典、语言模型、模型、功能页、设置和 shell 控件以及本地取消控件，再比较完整的调用记录，覆盖菜单、确认对话框、播放、搜索、历史设置、导出、清理、“其他程序”、录音胶囊、答案卡片、更新偏好、Release 对话框、就绪项修复、最近结果、权限、模型选择、引导试用、规则编辑器、浏览器列表、词典词条、笔记、服务卡片、服务对话框、LLM 调试视图、模型下载、删除、网络、模型驻留时长、快捷键编辑、模型选择、提示词控件、试用会话、设置各分节、录制器、存储和诊断控件，以及 shell 的导航、通知卡片、日志过滤与全量复制、命令面板、快捷键一览和公告对话框。它还会比较正式代码和 JSON fixture 的渲染结果。第二条命令还会编译启用 demo 的入口。
 
 这些测试使用 `ui.Tester`，不需要窗口、辅助进程二进制、模型、麦克风、网络或 Voxt 数据目录，也能在 Linux 上运行。
+
+shell demo 不覆盖日志选择、侧栏宽度变化、`openMainSettings`、`openLogFile`、`closeLogsPanel` 和 `toggleLogsPanel`，这些路径由生产测试和真机检查负责。
 
 demo 不能验证原生浮窗位置、材质、防共享、真实音频采集、辅助进程行为、模型输出、真实下载和删除、运行时行为、代理和网络行为、全局快捷键、持久化或文件输出。这些仍要在 Mac 上用正式 app 检查。功能区域的“试一试”卡片也不属于首页 demo，首页 fixture 会隐藏这一节。模型 fixture 也不接入设置引导和远程服务视图。主设置和会议自有的会议设置已有 fixture，更新和功能区快捷键子视图仍由各自区域负责。
