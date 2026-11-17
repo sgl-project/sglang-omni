@@ -7,28 +7,33 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 
 
+
 ### Fixed
 
 - **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup; the meetings' speaker transcription keeps it.
+- **Transcribe shows and inserts only the cleaned text, never the model's commentary about its edits** (#4086): with the language-model step on, a model that explains what it changed ("I removed the filler…") had that explanation inserted as if it were part of the transcript. The clean-up now asks for the final text between <output> tags and only the text between them is streamed into the card, shown and inserted; an answer without the tags is used as before. When you say the tags themselves, only the one outer pair the model adds around your text goes, and Rewrite and Translate answers keep such tags in their text (HTML you asked for, say).
 
 ### Added
 
 - **Meetings label the other side as Speaker 1, 2, 3 and so on**: with MOSS-Transcribe-Diarize installed, Voxt uses it after a meeting to transcribe the other side with speaker labels while your lines stay Me, before transcript correction and the summary. Long meetings go to it in pieces, so dictation waits at most one piece, and a voice keeps its number across the pieces. In a language MOSS-Transcribe-Diarize does not know (it knows Chinese and English), or when the language is left automatic so it cannot be told, the meeting keeps the selected model's transcription. Without it, the meeting works as before and its details link to Speech models.
 - **Copy and edit notes in place, and see their source app**: each note has Copy and Edit buttons. Save writes the edit back to the note, and Cancel leaves it unchanged. If Voxt knows the frontmost app at capture time, new notes show its name.
 - **Reopen recent cards from the menu bar**: the new Reopen card section lists up to five Rewrite or Translate conversations from the last 24 hours whose current answer was not inserted. Open one to continue with all its turns, including after restarting Voxt. With the menu bar icon off, the Dock menu has the same list. Deleting or clearing history removes its rows. Turning off Keep a history hides the list, and Settings → Privacy now says so.
+- **Dictionary profiles**: keep named sets of dictionary entries for different situations. Existing entries move into the active Default profile with their meaning unchanged. Create, rename, delete, and switch profiles on the Dictionary page; Transcribe, Translate, and Rewrite use only the active profile. Hammerspoon, macOS Shortcuts, and shell scripts can switch without opening the Dictionary page by running `open -g 'voxtnew://dictionary/profile?name=Work'`. See docs/dictionary-profiles.md.
 
 ### 中文
 
 #### 修复
 
+
 - **用 MOSS-Transcribe-Diarize 听写不会再插入说话人或时间戳标记**：在部分录音（多为英语）上，即使要求纯文本，模型也会输出区分说话人的标记（[S01]、[2.62]），听写会照原样插入。现在纯文本路径会去掉这些标记；会议的说话人转录保持不变。
+- **转录只显示和插入整理后的文字，不再混入模型对自己改动的说明**（#4086）：打开语言模型整理时，有的模型会在整理结果后面解释自己改了什么（“我删掉了……”），这段说明会被当成转录稿插入。现在转录的整理要求模型把最终文本放在 <output> 标签之间，只有标签里的内容会边写边进入卡片、显示和插入；没有标签的回答照原来的方式使用。你口述的内容本身有这对标签时，只去掉模型在最外面加的一对；改写和翻译的回答保留文本里的这类标签（比如按要求生成的 HTML）。
 
 #### 新增
 
 - **会议把对方标为说话人 1、2、3……**：安装 MOSS-Transcribe-Diarize 后，Voxt 在会议结束时用它转录对方的话并区分说话人，你的话仍标为“我”，然后再校对转录稿和写总结。长会议分段送给它，听写最多等一段，同一个人的编号跨段不变。遇到它不认识的语种（它只认识中文和英文），或语言保持自动而无法判断时，会议沿用所选模型的转录。没装时会议照常工作，会议详情提供语音识别模型页入口。
 - **笔记可以一键复制、原地编辑，并显示来源 App**：每条笔记都有“复制”和“编辑”按钮。编辑后点“保存”会写回这条笔记，点“取消”则不改内容。Voxt 能确定按下快捷键时的前台 App 时，新笔记也会显示这个 App。
 - **从菜单栏重新打开最近的卡片**：新的「重新打开卡片」一栏最多列出 5 段最近 24 小时内的改写或翻译对话，当前回答已经插入的不列出。点开即可带着所有轮次继续，重启 Voxt 后也可以。菜单栏图标关闭时，程序坞菜单提供同样的列表。删除记录或清空历史后，对应行也会移除。关闭「保存历史」后不显示这一栏，「设置 → 隐私」里已注明。
-- **Dictionary profiles**: keep named sets of dictionary entries for different situations. Existing entries move into the active Default profile with their meaning unchanged. Create, rename, delete, and switch profiles on the Dictionary page; Transcribe, Translate, and Rewrite use only the active profile. Hammerspoon, macOS Shortcuts, and shell scripts can switch without opening the Dictionary page by running `open -g 'voxtnew://dictionary/profile?name=Work'`. See docs/dictionary-profiles.md.
+
 ### Changed
 
 - **MOSS-Transcribe-Diarize is the recommended speech model** (#4067): the setup guide and Home now download MOSS-Transcribe-Diarize with its 262 MB DFlash draft (2.1 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. It knows Chinese and English. It takes no dictionary or Speech context while it recognises: while every feature uses such a model, the Speech models page says so under Speech context, which meeting transcript correction still reads, and your dictionary still guides the language model's clean-up. Qwen3-ASR stays on the Speech models page, and a Qwen3-ASR another ActNow app installed is offered in the guide instead of a download. A model you chose for a feature stays as chosen.
@@ -42,6 +47,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **词典分组**：为不同场合保存几组词条。现有词条移入当前使用的“默认”分组，含义不变。在词典页新建、改名、删除和切换分组；转录、翻译和改写只用当前分组。Hammerspoon、macOS 快捷指令和 shell 脚本可以不打开词典页就切换：运行 `open -g 'voxtnew://dictionary/profile?name=Work'`。见 docs/dictionary-profiles.md。
+
 
 #### 变更
 
