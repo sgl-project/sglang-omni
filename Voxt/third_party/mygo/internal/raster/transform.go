@@ -238,7 +238,7 @@ func (r *renderer) transformedGlyphs(op *scene.Op) {
 					continue
 				}
 				lx, ly := inv.Point(wx, wy)
-				a := atlasSample(atlas, float32(g.U)+lx-box.X, float32(g.V)+ly-box.Y, int(g.U), int(g.V), int(g.UW), int(g.VH))
+				a := atlasSample(atlas, lx-box.X, ly-box.Y, int(g.U), int(g.V), int(g.UW), int(g.VH))
 				tint := g.Color.Premul(1)
 				if pt != nil {
 					tint = pt.at(lx, ly)
@@ -273,7 +273,7 @@ func atlasSample(a *scene.Atlas, u, v float32, ax, ay, w, h int) [4]float32 {
 	var c [4]float32
 	for j := range 2 {
 		for i := range 2 {
-			sx, sy := min(max(x+i, ax), ax+w-1), min(max(y+j, ay), ay+h-1)
+			sx, sy := min(max(x+i, 0), w-1)+ax, min(max(y+j, 0), h-1)+ay
 			weight := (1 - tx) * (1 - ty)
 			if i == 1 {
 				weight = tx * (1 - ty)
