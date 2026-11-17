@@ -9,9 +9,12 @@ from array import array
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Protocol
+from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardMode, PPProxyTensors
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.dspark_components import dspark_draft as sglang_dspark_draft
 from sglang.srt.speculative.spec_tp_sync import SpecTpSync
@@ -1090,6 +1093,73 @@ def test_drafting_routes_only_a_mirrored_head_through_its_own_block_draw(
     assert forwarded_heads == [other_head]
 
 
+@pytest.mark.parametrize("runs_graph", [False, True])
+def test_worker_refreshes_sampling_before_decode(
+    runs_graph: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Consecutive decodes reused stale history when sampling tensor identities matched."""
+    worker = FunCosyVoice3DSparkWorker.__new__(FunCosyVoice3DSparkWorker)
+    worker.request_histories = RequestHistories(
+        slot_count=1, device=torch.device("cpu")
+    )
+    worker.draft_model = SimpleNamespace(
+        markov_head=SimpleNamespace(sampling_state=None)
+    )
+    worker.exact_verify_executor = SimpleNamespace(step_state=None)
+    proposer = SimpleNamespace(
+        _staged_params_key=None,
+        num_staged_params_calls=0,
+        num_staged_params_skips=0,
+    )
+    worker._proposer = (
+        proposer  # noqa: leading-underscore  # inherited proposer under test
+    )
+    batch = SimpleNamespace(
+        forward_mode=ForwardMode.DECODE,
+        is_extend_in_batch=False,
+        return_logprob=False,
+        sampling_info=SimpleNamespace(
+            penalizer_orchestrator=None,
+            need_min_p_sampling=False,
+            logit_bias=None,
+            has_custom_logit_processor=False,
+        ),
+    )
+    state_builder = Mock()
+    monkeypatch.setattr(dspark_worker, "build_step_sampling_state", state_builder)
+    observed_lengths: list[int] = []
+
+    def stage_sampling_params(*, bs: int, sampling_info: None) -> None:
+        observed_lengths.append(worker.draft_model.markov_head.sampling_state)
+
+    sampler = SimpleNamespace(stage_sampling_params=stage_sampling_params)
+
+    def run_draft_step(
+        batch: ScheduleBatch,
+        on_publish: None,
+        grammar_barrier: None,
+        *,
+        pp_proxy_tensors: PPProxyTensors | None,
+    ) -> None:
+        if runs_graph:
+            sglang_dspark_draft.DraftBlockProposer._stage_sampling_params(  # noqa: leading-underscore  # execute the dependency's cache decision
+                proposer, sampler, bs=1, sampling_info=None
+            )
+        else:
+            pass
+
+    monkeypatch.setattr(
+        dspark_worker.DSparkWorkerV2,
+        "forward_batch_generation",
+        Mock(side_effect=run_draft_step),
+    )
+    for output_length in (7, 14, 0, 7):
+        state_builder.return_value = SimpleNamespace(draft=output_length)
+        worker.forward_batch_generation(batch)
+        assert worker.exact_verify_executor.step_state is state_builder.return_value
+    assert observed_lengths == ([7, 14, 0, 7] if runs_graph else [])
+
+
 @pytest.mark.accelerator
 @REQUIRES_CUDA
 @pytest.mark.parametrize("graph_rows", [1, 4, 16])
@@ -1097,6 +1167,7 @@ def test_drafting_routes_only_a_mirrored_head_through_its_own_block_draw(
 def test_exact_draft_graph_refreshes_history_and_noise(
     graph_rows: int,
     seeded: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Graph replay must use current histories after shrink, growth, and slot reuse."""
     torch.manual_seed(817)
@@ -1135,6 +1206,46 @@ def test_exact_draft_graph_refreshes_history_and_noise(
     )
     proposer.num_staged_params_calls = 0
     proposer.num_staged_params_skips = 0
+    worker = FunCosyVoice3DSparkWorker.__new__(FunCosyVoice3DSparkWorker)
+    worker.draft_model = model
+    worker.request_histories = RequestHistories(
+        slot_count=graph_rows, device=torch.device("cuda")
+    )
+    worker.exact_verify_executor = SimpleNamespace(step_state=None)
+    worker._proposer = (
+        proposer  # noqa: leading-underscore  # inherited proposer under test
+    )
+    batch = SimpleNamespace(
+        forward_mode=ForwardMode.DECODE,
+        is_extend_in_batch=False,
+        return_logprob=False,
+        sampling_info=SimpleNamespace(
+            penalizer_orchestrator=None,
+            need_min_p_sampling=False,
+            logit_bias=None,
+            has_custom_logit_processor=False,
+        ),
+    )
+    state_builder = Mock()
+    monkeypatch.setattr(dspark_worker, "build_step_sampling_state", state_builder)
+
+    def run_draft_step(
+        batch: ScheduleBatch,
+        on_publish: None,
+        grammar_barrier: None,
+        *,
+        pp_proxy_tensors: PPProxyTensors | None,
+    ) -> None:
+        proposer._stage_sampling_params(  # noqa: leading-underscore  # exercise the unpatched dependency's staging cache
+            sampler, bs=request_count, sampling_info=None
+        )
+        graph.replay()
+
+    monkeypatch.setattr(
+        dspark_worker.DSparkWorkerV2,
+        "forward_batch_generation",
+        Mock(side_effect=run_draft_step),
+    )
     with torch.inference_mode():
         hidden_states = torch.randn(
             graph_rows * 8, 32, device="cuda", dtype=torch.bfloat16
@@ -1169,14 +1280,11 @@ def test_exact_draft_graph_refreshes_history_and_noise(
                     torch.arange(request_count, device="cuda") + 19 if seeded else None
                 ),
             )
-            model.markov_head.sampling_state = state
+            state_builder.return_value = SimpleNamespace(draft=state)
             hidden_states.normal_()
             input_tokens.random_(0, VOCAB_SIZE)
             random_state = torch.cuda.get_rng_state()
-            proposer._stage_sampling_params(  # noqa: leading-underscore  # exercise the upstream staging contract
-                sampler, bs=request_count, sampling_info=None
-            )
-            graph.replay()
+            worker.forward_batch_generation(batch)
             actual_tokens = (
                 sampler.out[: request_count * 7].view(request_count, 7).clone()
             )

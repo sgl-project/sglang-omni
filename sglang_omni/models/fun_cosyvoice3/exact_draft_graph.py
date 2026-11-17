@@ -22,8 +22,6 @@ from sglang_omni.sampling.speculative_noise import (
 
 
 class ExactDraftGraphSampler(DsparkDraftSampler):
-    requires_per_step_sampling_params: bool = True
-
     def __init__(
         self,
         *,
@@ -35,12 +33,6 @@ class ExactDraftGraphSampler(DsparkDraftSampler):
         tp_sync: SpecTpSync,
         out: torch.Tensor | None,
     ) -> None:
-        if not hasattr(DsparkDraftSampler, "requires_per_step_sampling_params"):
-            raise RuntimeError(
-                "Exact draft graphs require the SGLang per-step sampler staging API."
-            )
-        else:
-            pass
         super().__init__(
             model=model,
             gamma=gamma,

@@ -564,6 +564,8 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
             )
             self.draft_model.markov_head.sampling_state = state.draft
             self.exact_verify_executor.step_state = state
+            # note (yaourt): committed history changes even when sampling tensor identities match.
+            self._proposer._staged_params_key = None  # noqa: leading-underscore  # invalidate the inherited sampling-state cache
         else:
             pass
         return super().forward_batch_generation(
