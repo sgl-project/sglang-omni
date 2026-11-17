@@ -551,8 +551,24 @@ func TestClean(t *testing.T) {
 		{`"Hello," she said, "bye."`, "x", `"Hello," she said, "bye."`},
 		{`"Quoted."`, `"quoted"`, `"Quoted."`},
 		{"", "x", ""},
-		// The <output> tags the clean-up's contract asks for: only their
-		// content, never the model's commentary about its edits (#4086).
+		// Only Transcribe's clean-up asks for <output> tags: a Rewrite
+		// or Translate answer whose text itself has them (HTML it was
+		// asked for) keeps them.
+		{"Use <output>result</output> for results.", "format this as HTML", "Use <output>result</output> for results."},
+	} {
+		if got := Clean(tc.out, tc.in); got != tc.want {
+			t.Errorf("Clean(%q) = %q, want %q", tc.out, got, tc.want)
+		}
+	}
+}
+
+// TestCleanOutput: the Transcribe clean-up's contract — only the
+// <output> tags' content, never the model's commentary about its edits
+// (#4086); text that has the tags because the user said them keeps
+// them, less one outermost pair the model wrapped it in.
+func TestCleanOutput(t *testing.T) {
+	for _, tc := range []struct{ out, in, want string }{
+		{"  Hello.  ", "hello", "Hello."},
 		{"<output>\nHello.\n</output>", "hello", "Hello."},
 		{"<output>\nHello.\n</output>\n\nI removed the filler “um”.", "hello", "Hello."},
 		{"Here you go: <output>Hello.</output> Hope it helps.", "hello", "Hello."},
@@ -561,11 +577,15 @@ func TestClean(t *testing.T) {
 		{"<output></output>", "hello", ""},
 		{"<output>“你好。”</output>", "你好", "你好。"},
 		// The tags were in the input itself (dictated literally): the
-		// answer is used as it is.
+		// answer is used as it is…
 		{`use <output> and </output> here`, "use <output> and </output> here", `use <output> and </output> here`},
+		{"<output>a</output><output>b</output>", "<output>a</output><output>b</output>", "<output>a</output><output>b</output>"},
+		// …but a contract-abiding model wrapped it in one more pair:
+		// exactly that pair goes.
+		{"<output>use <output> and </output> here</output>", "use <output> and </output> here", "use <output> and </output> here"},
 	} {
-		if got := Clean(tc.out, tc.in); got != tc.want {
-			t.Errorf("Clean(%q) = %q, want %q", tc.out, got, tc.want)
+		if got := CleanOutput(tc.out, tc.in); got != tc.want {
+			t.Errorf("CleanOutput(%q) = %q, want %q", tc.out, got, tc.want)
 		}
 	}
 }
@@ -575,24 +595,48 @@ func TestClean(t *testing.T) {
 func TestPartialOutput(t *testing.T) {
 	full := "<output>\n大家好，周五发布。\n</output>\n\n我删掉了语气词。"
 	for i := 1; i <= len(full); i++ {
-		got := PartialOutput(full[:i])
+		got := PartialOutput(full[:i], "周五发布")
+		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
+			t.Fatalf("at %d: a tag in %q", i, got)
+		}
+	}
+	// Commentary before the opening tag goes too, as Clean drops it.
+	prefixed := "Here you go: <output>Hello.</output>"
+	for i := 1; i <= len(prefixed); i++ {
+		got := PartialOutput(prefixed[:i], "hello")
 		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
 			t.Fatalf("at %d: a tag in %q", i, got)
 		}
 	}
 	for text, want := range map[string]string{
-		"":                          "",
-		"<":                         "",
-		"<outpu":                    "",
-		"<output>":                  "",
-		"plain text":                "plain text",
-		"<output>\nHello.":          "Hello.",
-		"Hello.</out":               "Hello.",
-		"<output>Hello.</output>\n": "Hello.",
+		"":                            "",
+		"<":                           "",
+		"<outpu":                      "",
+		"<output>":                    "",
+		"plain text":                  "plain text",
+		"<output>\nHello.":            "Hello.",
+		"<output>Hello.</output>\n":   "Hello.",
+		"Here you go: <output>Hello.": "Hello.",
+		// A stream ending in the opening tag's start holds back: the
+		// tag may complete, and the commentary before it then goes.
+		"Here you go: <outpu": "",
+		// Without an opening tag a closing one is the user's text and
+		// shows as it is, whole or as far as it came (CleanOutput
+		// keeps it too).
+		"use </output> here": "use </output> here",
+		"Hello.</out":        "Hello.</out",
 	} {
-		if got := PartialOutput(text); got != want {
+		if got := PartialOutput(text, "hello"); got != want {
 			t.Errorf("PartialOutput(%q) = %q, want %q", text, got, want)
 		}
+	}
+	// The tags the user said stay: CleanOutput keeps that text too,
+	// less one outermost pair a contract-abiding model wrapped it in.
+	if got := PartialOutput("use <output> and </output> here", "use <output> and </output> here"); got != "use <output> and </output> here" {
+		t.Errorf("PartialOutput with the user's own tags = %q", got)
+	}
+	if got := PartialOutput("<output>use <output> and </output> here</output>", "use <output> and </output> here"); got != "use <output> and </output> here" {
+		t.Errorf("PartialOutput with the model's wrapper around the user's tags = %q", got)
 	}
 }
 

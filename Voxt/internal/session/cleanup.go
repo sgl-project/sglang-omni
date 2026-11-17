@@ -103,7 +103,7 @@ func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) 
 			}
 			answers = append(answers, p.Text)
 		default:
-			answers = append(answers, compose.Clean(resp.Text, p.Text))
+			answers = append(answers, compose.CleanOutput(resp.Text, p.Text))
 		}
 		draft.done(answers)
 	}
@@ -142,9 +142,11 @@ func (d *drafter) add(delta string) {
 }
 
 // publish puts the draft so far in the snapshot, without the contract's
-// <output> tags (PartialOutput).
+// <output> tags (PartialOutput, with the part's own text as CleanOutput
+// gets it).
 func (d *drafter) publish() {
-	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String())))
+	part := d.parts[len(d.parts)-1]
+	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
 }
 

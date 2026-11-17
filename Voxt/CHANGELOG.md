@@ -29,7 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **Transcribe shows and inserts only the cleaned text, never the model's commentary about its edits** (#4086): with the language-model step on, a model that explains what it changed ("I removed the filler…") had that explanation inserted as if it were part of the transcript. The clean-up now asks for the final text between <output> tags and only the text between them is streamed into the card, shown and inserted; an answer without the tags is used as before.
+- **Transcribe shows and inserts only the cleaned text, never the model's commentary about its edits** (#4086): with the language-model step on, a model that explains what it changed ("I removed the filler…") had that explanation inserted as if it were part of the transcript. The clean-up now asks for the final text between <output> tags and only the text between them is streamed into the card, shown and inserted; an answer without the tags is used as before. When you say the tags themselves, only the one outer pair the model adds around your text goes, and Rewrite and Translate answers keep such tags in their text (HTML you asked for, say).
 
 
 ### Changed
@@ -44,7 +44,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **转录只显示和插入整理后的文字，不再混入模型对自己改动的说明**（#4086）：打开语言模型整理时，有的模型会在整理结果后面解释自己改了什么（“我删掉了……”），这段说明会被当成转录稿插入。现在转录的整理要求模型把最终文本放在 <output> 标签之间，只有标签里的内容会边写边进入卡片、显示和插入；没有标签的回答照原来的方式使用。
+- **转录只显示和插入整理后的文字，不再混入模型对自己改动的说明**（#4086）：打开语言模型整理时，有的模型会在整理结果后面解释自己改了什么（“我删掉了……”），这段说明会被当成转录稿插入。现在转录的整理要求模型把最终文本放在 <output> 标签之间，只有标签里的内容会边写边进入卡片、显示和插入；没有标签的回答照原来的方式使用。你口述的内容本身有这对标签时，只去掉模型在最外面加的一对；改写和翻译的回答保留文本里的这类标签（比如按要求生成的 HTML）。
 - **在 设置 → 音频 里添加麦克风后，听写不再卡在“正在启动麦克风…”**（#4120）：有的麦克风启动后一直不给声音（在第一个声音到来之前不断重新配置自己），此前 Voxt 会不停重建音频引擎，录音永远不开始。现在这类重建和麦克风静音一样有限制：第二次改用系统默认输入录音；如果所有输入都没有声音，录音会以明确的错误结束，不再卡死。
 - **没有声音播放时也能开始会议**（#4130）：已允许系统音频录制权限后，在安静的 Mac 上开始会议会在约四秒后失败，提示还误让去系统设置里开权限。原因是输出空闲时系统音频录制没有声音，被当成了故障；现在它会一直等，有声音播出来就能录到对方。
 - **改写的答案卡片按 Markdown 排版显示**（#4119）：语言模型的回答是 Markdown，卡片现在按排版显示改写的回答——标题、加粗、列表、代码和公式的 TeX——不再是原始符号，和主流聊天 App 一样；边写边显示和对话里的回答也一样。你自己说的话原样显示，翻译和转录整理的文字仍是纯文本（会原样插入）。复制和插入用的仍是回答原文。

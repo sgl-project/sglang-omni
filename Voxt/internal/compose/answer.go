@@ -47,26 +47,81 @@ func taggedOutput(s string) (string, bool) {
 	return rest, true
 }
 
+// unwrappedOutput is s without one outermost outputOpen…outputClose
+// pair, when that pair wraps the whole of s: a contract-abiding model's
+// wrapper around an answer that has the user's own tags (#4086). A pair
+// that closes early is the user's own text (say two pairs in a row)
+// and stays.
+func unwrappedOutput(s string) string {
+	if !strings.HasPrefix(s, outputOpen) || !strings.HasSuffix(s, outputClose) {
+		return s
+	}
+	mid := s[len(outputOpen) : len(s)-len(outputClose)]
+	depth := 1
+	for rest := mid; ; {
+		o, c := strings.Index(rest, outputOpen), strings.Index(rest, outputClose)
+		switch {
+		case c >= 0 && (o < 0 || c < o):
+			if depth--; depth == 0 {
+				return s
+			}
+			rest = rest[c+len(outputClose):]
+		case o >= 0:
+			depth++
+			rest = rest[o+len(outputOpen):]
+		default:
+			return mid
+		}
+	}
+}
+
 // PartialOutput is a streaming clean-up answer's text so far, for the
 // card: without the contract's <output> tags, whole or as far as they
-// came, and nothing of the commentary that follows them.
-func PartialOutput(s string) string {
+// came, and nothing of the commentary around them. A closing tag only
+// truncates after an opening tag came; without one the text is the
+// user's own and shows as it is, as CleanOutput keeps it. When the
+// input itself has the tags, one outermost wrapper pair goes, as in
+// CleanOutput.
+func PartialOutput(s, input string) string {
 	t := strings.TrimLeft(s, " \t\r\n")
+	if strings.Contains(input, outputOpen) {
+		return unwrappedOutput(t)
+	}
 	if t == "" || strings.HasPrefix(outputOpen, t) {
 		return "" // nothing yet, or the opening tag is still coming
 	}
-	if strings.HasPrefix(t, outputOpen) {
-		t = strings.TrimLeft(t[len(outputOpen):], " \t\r\n")
+	i := strings.Index(t, outputOpen)
+	if i < 0 {
+		// No opening tag came: the text shows as it is, but a stream
+		// ending in the opening tag's start holds back — the tag may
+		// complete, and the commentary before it then goes.
+		if partialTagSuffix(t, outputOpen) > 0 {
+			return ""
+		}
+		return t
 	}
+	// The commentary before the opening tag goes, as CleanOutput drops
+	// it.
+	t = strings.TrimLeft(t[i+len(outputOpen):], " \t\r\n")
 	if i := strings.Index(t, outputClose); i >= 0 {
 		return strings.TrimRight(t[:i], " \t\r\n")
 	}
-	for i := len(outputClose) - 1; i > 0; i-- {
-		if strings.HasSuffix(t, outputClose[:i]) {
-			return strings.TrimRight(t[:len(t)-i], " \t\r\n")
-		}
+	if i := partialTagSuffix(t, outputClose); i > 0 {
+		return strings.TrimRight(t[:len(t)-i], " \t\r\n")
 	}
 	return t
+}
+
+// partialTagSuffix is the length of s's suffix that is a proper prefix
+// of tag (the tag's first characters, the rest still coming); 0 for
+// none.
+func partialTagSuffix(s, tag string) int {
+	for i := len(tag) - 1; i > 0; i-- {
+		if strings.HasSuffix(s, tag[:i]) {
+			return i
+		}
+	}
+	return 0
 }
 
 // ParseAnswer reads a model's JSON answer {title, content}: the object
