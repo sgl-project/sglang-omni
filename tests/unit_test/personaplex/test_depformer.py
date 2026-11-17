@@ -26,6 +26,8 @@ from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
 from sglang_omni.models.personaplex.sampling import (
     AudioSampling,
     SamplingRun,
+    batched_seeded_exponential_noise,
+    batched_seeded_exponential_noises,
     sample_runs,
     sample_token,
 )
@@ -661,3 +663,32 @@ def test_cuda_layer_keeps_eager_outputs_for_unsupported_inputs(
     ):
         actual = layer.step(hidden_states, 0, cache)
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@torch.inference_mode()
+def test_batched_seeded_noise_accepts_every_codebook_position() -> None:
+    """The second codebook must not become an invalid specialized scalar."""
+    logits = torch.zeros(2, AUDIO_CARD, device="cuda", dtype=torch.bfloat16)
+    seeds = torch.tensor([7, 8], device="cuda")
+    frame_positions = torch.tensor([11, 12], device="cuda")
+
+    noises = batched_seeded_exponential_noises(
+        logits, seeds, frame_positions, codebook_count=SPEC.steps
+    )
+    individual_noises = torch.stack(
+        [
+            batched_seeded_exponential_noise(
+                logits, seeds, frame_positions, codebook_position
+            )
+            for codebook_position in range(SPEC.steps)
+        ]
+    )
+
+    assert torch.equal(noises, individual_noises)
+    assert all(torch.isfinite(noise).all() and (noise > 0).all() for noise in noises)
+    assert all(
+        not torch.equal(previous, current)
+        for previous, current in zip(noises[:-1], noises[1:], strict=True)
+    )
