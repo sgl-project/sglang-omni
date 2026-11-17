@@ -88,6 +88,46 @@ def semantic_checkpoint(
         yield name, value
 
 
+def patch_zimage_rope_index_for_npu() -> None:
+    """Gather Z-Image RoPE factors with index_select on NPU.
+
+    The diffusers embedder indexes a complex64 table with a tensor, which NPU
+    rejects, while index_select on complex64 is supported.
+    """
+    from diffusers.models.transformers.transformer_z_image import RopeEmbedder
+
+    if getattr(
+        RopeEmbedder, "_npu_index_select_patch", False
+    ):  # noqa: leading-underscore
+        return
+    else:
+        pass
+
+    def rope_embed(self, ids: torch.Tensor) -> torch.Tensor:
+        assert ids.ndim == 2
+        assert ids.shape[-1] == len(self.axes_dims)
+        device = ids.device
+
+        if self.freqs_cis is None:
+            self.freqs_cis = self.precompute_freqs_cis(
+                self.axes_dims, self.axes_lens, theta=self.theta
+            )
+            self.freqs_cis = [freqs_cis.to(device) for freqs_cis in self.freqs_cis]
+        elif self.freqs_cis[0].device != device:
+            self.freqs_cis = [freqs_cis.to(device) for freqs_cis in self.freqs_cis]
+        else:
+            pass
+
+        result = [
+            torch.index_select(self.freqs_cis[i], 0, ids[:, i])
+            for i in range(len(self.axes_dims))
+        ]
+        return torch.cat(result, dim=-1)
+
+    RopeEmbedder.__call__ = rope_embed
+    RopeEmbedder._npu_index_select_patch = True  # noqa: leading-underscore
+
+
 class ZImageTransformer2DModelWrapper(nn.Module):
     """Load semantic checkpoints and return positive velocity for t in [0, 1].
 
@@ -133,6 +173,11 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         from diffusers.models.transformers.transformer_z_image import (
             ZImageTransformer2DModel,
         )
+
+        if torch.device(device).type == "npu":
+            patch_zimage_rope_index_for_npu()
+        else:
+            pass
 
         with torch.device("meta"):
             model = ZImageTransformer2DModel(**self.cfg)
