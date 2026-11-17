@@ -71,6 +71,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         # note (wilsonzheng0327): the 5-layer draft adds 18% to each token's KV; fp8 halves that, which long meetings on 80 GB cards need to fit.
         engine_settings={"speculative_draft_kv_cache_dtype": "fp8_e4m3"},
         license="apache-2.0",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
