@@ -80,6 +80,20 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			return
 		}
 	}
+	if a.answer.open {
+		switch e.Binding {
+		case hotkey.CardCopy: // the card's c: what its Copy does (#4127)
+			if a.cardNow().canCopy {
+				a.copyAnswer(func(s string) { a.copyRecent(s) })
+			}
+			return
+		case hotkey.CardInsert: // the card's r: what its Insert does
+			if a.cardNow().canInsert {
+				a.insertAnswer()
+			}
+			return
+		}
+	}
 	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes())
 	switch d.Action {
 	case hotkey.Start:
@@ -171,6 +185,10 @@ func (a *app) syncHotkeys() {
 		return
 	}
 	params := plan.Configure(a.sess.State.Live() || a.answer.open)
+	if a.answer.open && !paused {
+		// The card's single-letter keys (#4127) bind only while it shows.
+		params.Bindings = append(slices.Clone(params.Bindings), hotkey.CardBindings()...)
+	}
 	key := fmt.Sprintf("%+v", params)
 	if key == a.hotkeysSent {
 		return
