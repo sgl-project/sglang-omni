@@ -1,5 +1,6 @@
 """Exercise reference preprocessing, native editing and sequential outputs."""
 
+import dataclasses
 import pickle
 from io import BytesIO
 from pathlib import Path
@@ -171,6 +172,8 @@ def test_edit_reference_count_limit() -> None:
     image_path = [f"reference{index}.png" for index in range(MAX_REFERENCE_COUNT + 1)]
     with pytest.raises(ValueError, match="at most 64 reference images"):
         SenseNovaU1SamplingParams(prompt="edit", image_path=image_path)
+    with pytest.raises(ValueError, match="more image placeholders than reference"):
+        SenseNovaU1SamplingParams(prompt="<image><image> edit", image_path="ref.png")
 
 
 @pytest.mark.parametrize(
@@ -220,12 +223,18 @@ def test_edit_api_rejects_invalid_image_tokens_before_dispatch(
 
 
 def test_t2i_skips_unused_edit_guidance() -> None:
-    """T2I requests ignore edit-only guidance and keep it out of their pickles."""
-    sampling = SenseNovaU1SamplingParams(prompt="a landscape", img_cfg_scale=-1)
+    """T2I requests ignore edit-only guidance and keep its default out of pickles."""
+    SenseNovaU1SamplingParams(prompt="a landscape", img_cfg_scale=-1)
+    sampling = SenseNovaU1SamplingParams(prompt="a landscape")
     request = Req(sampling_params=sampling)
     sampling.apply_request_extra(request)
     assert request.image_path is None
     assert b"img_cfg_scale" not in pickle.dumps(request)
+    edit = dataclasses.replace(
+        SenseNovaU1SamplingParams(prompt="a landscape", img_cfg_scale=2.5),
+        image_path="reference.png",
+    )
+    assert edit.img_cfg_scale == 2.5
 
 
 @pytest.mark.parametrize(

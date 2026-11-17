@@ -158,9 +158,11 @@ class SenseNovaU1SamplingParams(SamplingParams):
                 )
             else:
                 pass
-        else:
-            # note (Richard Wang): keep edit-only guidance out of T2I request pickles.
+        elif self.img_cfg_scale == type(self).img_cfg_scale:
+            # note (Richard Wang): keep default edit-only guidance out of T2I request pickles.
             self.__dict__.pop("img_cfg_scale", None)
+        else:
+            pass
         if (
             self.width % RESOLUTION_ALIGNMENT != 0
             or self.height % RESOLUTION_ALIGNMENT != 0
