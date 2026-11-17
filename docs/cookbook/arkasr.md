@@ -92,7 +92,7 @@ Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode tru
 
 WER stays at 1.11-1.13% on English and CER at 0.86-0.89% on Chinese, and p95 latency drops at every load in both modes. The larger gain at 64 comes from the default cap of 32 running requests, under which the server without a draft slows from 32 to 64 concurrent requests; with `--asr.engine.max_running_requests 64 --asr.engine.cuda_graph_max_bs 64` on both sides, the gain at 16, 32 and 64 is 1.12x, 1.18x and 1.06x synchronous and 1.30x, 1.27x and 1.13x overlapped. Overlap delays streamed first text: first-output p95 against the server without a draft is -4%, +6% and +15% at 1, 4 and 16 concurrent requests synchronous, and +8%, +23% and +31% overlapped. The draft reserves 13% of the KV pool. The draft checkpoint sets the default block size; `--asr.engine.speculative_num_draft_tokens` overrides it. The default context budget includes speculative KV reserve; an explicit `--context-length` must leave room for that reserve as well as the prompt and output.
 
-#### Measure First Text at Concurrency 16
+### Measure First Text at Concurrency 16
 
 Run the [P9.3](https://github.com/sgl-project/sglang-omni/issues/2941#p9--ark-asr-3b-dflash) comparison from the repository root on a dedicated H200. Use SGLang 0.5.23 when comparing with the original measurements.
 
@@ -121,7 +121,7 @@ CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.speculative_sweep \
 
 The pinned English dataset has 1,088 rows. This workload sends its 666 distinct audio clips once per pass. The sweep starts a fresh server for each leg, with the draft off for A and synchronous DFlash for B. Both sides disable the prefix cache and run one discarded warmup followed by three passes. It reports client-side p95 time to the first SSE text fragment, throughput, WER and failed requests in `$run_dir/sweep/sweep.json`. P9.3 passes when the draft's first-text p95 is at most `max(5 ms, 5% of the baseline p95)` slower than the baseline.
 
-To record the request build, queue and prefill timings, append `--profile-events` after `--stream`. Each leg then runs an additional profiled pass and attaches its breakdown to that leg's `client.json`. The three measured passes finish before profiling starts.
+To record the request build, queue and prefill timings, append `--profile-events --profile-event-buffer-capacity 32768 --profile-event-dir "$run_dir/events"` after `--stream`. Each leg then runs an additional profiled pass and attaches its breakdown to that leg's `client.json`. The three measured passes finish before profiling starts. Check that every `run_status_*.json` in the event directory reports `complete: true` before interpreting the breakdown. The default 1,024-event buffer dropped events on this workload; 32,768 events per producer retained the full pass.
 
 ### Prefill Coalescing
 
