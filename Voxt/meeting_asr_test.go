@@ -116,3 +116,31 @@ func TestMeetingTrackASRUsesDictionary(t *testing.T) {
 		}
 	}
 }
+
+// MTD knows only zh and en: a meeting in another language keeps the
+// selected model's transcription instead of a forced wrong-language one.
+func TestMeetingDiarizerLanguageGate(t *testing.T) {
+	provider := &meetingDiarizerFake{}
+	for _, tc := range []struct {
+		main string
+		want bool
+	}{
+		{"zh-Hans", true},
+		{"en", true},
+		{"ko", false},
+		{"ja", false},
+	} {
+		t.Run(tc.main, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.local = &meetingMTDLocal{provider: provider}
+			a.prefs.General.MainLanguage = tc.main
+			d, err := a.meetingDiarizer(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (d != nil) != tc.want {
+				t.Errorf("%s: diarizer %v", tc.main, d)
+			}
+		})
+	}
+}
