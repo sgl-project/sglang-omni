@@ -128,6 +128,22 @@ int NextPowerOfTwo(int value) {
   return power;
 }
 
+// Note (XXXXRT666): the checkpoint is float32; the encoder runs in bfloat16,
+// its FSMN kernels already in MLX's layout.
+omni_common::WeightMap HalfPrecisionWeights(omni_common::WeightMap weights) {
+  for (auto &[name, weight] : weights) {
+    if (name.ends_with(".fsmn_block.weight")) {
+      weight = mx::contiguous(mx::transpose(weight, {0, 2, 1}));
+    } else {
+    }
+    if (mx::issubdtype(weight.dtype(), mx::floating)) {
+      weight = mx::astype(weight, mx::bfloat16);
+    } else {
+    }
+  }
+  return weights;
+}
+
 } // namespace
 
 SenseVoiceModel::SenseVoiceModel(const std::filesystem::path &model_directory)
@@ -136,7 +152,9 @@ SenseVoiceModel::SenseVoiceModel(const std::filesystem::path &model_directory)
 
 SenseVoiceModel::SenseVoiceModel(const nlohmann::json &config,
                                  const std::filesystem::path &model_directory)
-    : checkpoint_(omni_common::LoadSafetensors(model_directory), config),
+    : checkpoint_(
+          HalfPrecisionWeights(omni_common::LoadSafetensors(model_directory)),
+          config),
       mel_filters_(mx::array(0.0f)) {
   const nlohmann::json &encoder = config.at("encoder_conf");
   const nlohmann::json &front_end = config.at("frontend_conf");
@@ -321,9 +339,7 @@ mx::array SenseVoiceModel::EncoderLayer(const mx::array &x,
   const mx::array memory = mx::add(
       mx::conv1d(
           mx::pad(qkv[2], {{0, 0}, {left_padding, right_padding}, {0, 0}}),
-          mx::transpose(checkpoint_.Weight(attention + ".fsmn_block.weight"),
-                        {0, 2, 1}),
-          1, 0, 1, width),
+          checkpoint_.Weight(attention + ".fsmn_block.weight"), 1, 0, 1, width),
       qkv[2]);
   const auto heads = [&](const mx::array &projected) {
     return mx::transpose(
@@ -358,13 +374,15 @@ mx::array SenseVoiceModel::Logits(const mx::array &features, int language_id,
         mx::array(ids.data(), {1, static_cast<int>(ids.size())}, mx::int32),
         "embed");
   };
-  mx::array x = mx::concatenate({query({language_id}),
-                                 query({kEventQueryId, kEmotionQueryId}),
-                                 query({use_itn ? kWithItnId : kWithoutItnId}),
-                                 mx::expand_dims(features, 0)},
-                                1);
-  x = mx::multiply(x, mx::array(static_cast<float>(std::sqrt(
-                          static_cast<double>(config_.model_width)))));
+  mx::array x = mx::concatenate(
+      {query({language_id}), query({kEventQueryId, kEmotionQueryId}),
+       query({use_itn ? kWithItnId : kWithoutItnId}),
+       mx::expand_dims(mx::astype(features, mx::bfloat16), 0)},
+      1);
+  x = mx::multiply(
+      x, omni_common::Scalar(static_cast<float>(std::sqrt(
+                                 static_cast<double>(config_.model_width))),
+                             x));
   // Note (Dayuxiaoshui): sinusoids at positions 1 onward, sines then
   // cosines, in MLX ops as the Swift port builds them.
   const int time = x.shape(1);
