@@ -127,6 +127,19 @@ To record the request build, queue and prefill timings, append `--profile-events
 
 ARK-ASR holds newly built requests briefly so the scheduler can admit a larger prefill batch. Synchronous DFlash defaults to four request-build workers and a 4 ms coalescing deadline. No draft and opt-in speculative overlap retain two workers and a 32 ms deadline. Both use a 16-request threshold. These defaults are resolved after selecting the decoding mode; explicit `request_build_max_workers` and `prefill_coalesce_wait_ms` settings take precedence.
 
+With these defaults, a pinned SeedTTS ABBA sweep on one H200 passed the TTFT, throughput and end-to-end p95 gates at c1, c2, c4, c8 and c16 on both English and Chinese. Selected loads with the prefix cache off and the running-request cap at 32:
+
+| Language | Concurrency | No-draft TTFT p95, ms | DFlash TTFT p95, ms | Delta, ms | Throughput ratio |
+|---|---:|---:|---:|---:|---:|
+| EN | 4 | 32.72 | 32.97 | +0.25 | 1.76x |
+| EN | 16 | 69.97 | 71.20 | +1.23 | 1.26x |
+| ZH | 4 | 28.25 | 31.28 | +3.03 | 1.62x |
+| ZH | 16 | 67.07 | 65.90 | -1.17 | 1.20x |
+
+Each p95 is the mean of six measured passes per side, with one discarded warmup per server and concurrency. The sweep used SGLang 0.5.23, PyTorch 2.14.1+cu130, BF16 and greedy streaming. There were no failed or skipped requests; mean WER was 1.15–1.17% on English and mean CER was 0.87–0.89% on Chinese.
+
+Paired checks also passed at cap 64 with c4/c16, and with the prefix cache enabled at c1–c16, on both languages. A later English c16 ABBA measured a +0.67 ms TTFT delta. Chinese cached c4 was the closest case: +4.60 ms in the full sweep and +4.08 ms in an independent ABBA repeat, both below the 5 ms limit. See [the validation results](https://github.com/sgl-project/sglang-omni/pull/4109) for the complete comparisons.
+
 For example, to set the original coalescing deadline explicitly:
 
 ```bash
@@ -321,8 +334,8 @@ Raising `pre_lm_max_batch_size` above `encoder_max_batch_size` turns a group
 into several bounded forwards; it never widens a single forward, so it does
 not change peak encoder activation memory.
 
-`request_build_max_workers` defaults to **2** and
-`request_build_max_pending` to **16**. These workers only perform CPU request
+`request_build_max_workers` defaults to **4** for synchronous DFlash and **2**
+otherwise; `request_build_max_pending` defaults to **16**. These workers only perform CPU request
 construction; encoder concurrency and backpressure are owned by the separate
 pre-LM queue.
 
