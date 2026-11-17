@@ -232,8 +232,8 @@ CohereModel::CohereModel(const std::filesystem::path &model_directory)
                        ? kQuantizationBits
                        : 0;
           })) {
-  mx::eval({hann_window_, mel_filters_, relative_position_table_,
-            decoder_positions_});
+  mx::async_eval({hann_window_, mel_filters_, relative_position_table_,
+                  decoder_positions_});
 }
 
 mx::array CohereModel::RelativePositions(int length, mx::Dtype dtype) const {

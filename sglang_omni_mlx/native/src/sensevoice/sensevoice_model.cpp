@@ -242,7 +242,7 @@ SenseVoiceModel::SenseVoiceModel(const nlohmann::json &config,
         mx::array(inverse_stddevs.data(), {config_.input_size}, mx::float32);
   } else {
   }
-  mx::eval(mel_filters_);
+  mx::async_eval(mel_filters_);
 }
 
 mx::array SenseVoiceModel::Fbank(const std::vector<float> &samples) const {

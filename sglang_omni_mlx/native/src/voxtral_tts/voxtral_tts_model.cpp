@@ -124,7 +124,7 @@ VoxtralTtsModel::VoxtralTtsModel(const std::filesystem::path &model_directory,
     voices_.emplace(voice, embedding);
     loaded.push_back(embedding);
   }
-  mx::eval(loaded);
+  mx::async_eval(loaded);
 }
 
 omni_common::FinishReason VoxtralTtsModel::Generate(

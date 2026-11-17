@@ -90,7 +90,7 @@ mx::array MingAcoustic::TimeEmbeddings() const {
               prefix + ".0")),
           prefix + ".2"),
       1);
-  mx::eval(embeddings);
+  mx::async_eval(embeddings);
   return embeddings;
 }
 

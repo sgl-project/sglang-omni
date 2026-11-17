@@ -281,8 +281,8 @@ FeedResult SortformerModel::Feed(const std::vector<float> &samples,
   const mx::array fifo_predictions =
       mx::slice(all_predictions, {0, cache_length, 0},
                 {1, cache_length + fifo_length, speakers});
-  mx::eval({chunk_predictions, chunk_embeddings, cache_predictions,
-            fifo_predictions});
+  mx::async_eval({chunk_predictions, chunk_embeddings, cache_predictions,
+                  fifo_predictions});
 
   if (cache_length > 0) {
     state.spkcache_preds = cache_predictions;
@@ -293,7 +293,7 @@ FeedResult SortformerModel::Feed(const std::vector<float> &samples,
   state.fifo = mx::concatenate({state.fifo, chunk_embeddings}, 1);
   state.fifo_preds =
       mx::concatenate({previous_fifo_predictions, chunk_predictions}, 1);
-  mx::eval({state.fifo, state.fifo_preds});
+  mx::async_eval({state.fifo, state.fifo_preds});
   state.frames_processed += chunk_length;
 
   FeedResult result;

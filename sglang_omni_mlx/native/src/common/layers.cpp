@@ -164,7 +164,7 @@ Checkpoint QuantizedCheckpoint(WeightMap weights, nlohmann::json config,
           mx::quantize(array, group_size, bits);
       // note (wilsonzheng0327): evaluated one weight at a time, so each
       // stored weight is released before the next one is read.
-      mx::eval(parts);
+      mx::async_eval(parts);
       const std::string layer = name.substr(0, name.size() - 7);
       quantized.insert_or_assign(layer + ".weight", parts[0]);
       quantized.insert_or_assign(layer + ".scales", parts[1]);
@@ -326,7 +326,7 @@ Checkpoint::Checkpoint(WeightMap weights, const nlohmann::json &config)
   parameters.reserve(weights_.size());
   for (const auto &[name, array] : weights_)
     parameters.push_back(array);
-  mx::eval(parameters);
+  mx::async_eval(parameters);
 }
 
 const mx::array &Checkpoint::Weight(const std::string &name) const {

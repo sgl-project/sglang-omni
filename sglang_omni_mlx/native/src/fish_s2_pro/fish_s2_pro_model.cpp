@@ -200,6 +200,8 @@ FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
   }
   // Note (Jiaxin Deng): the codec's raw weight-norm tensors, freed once
   // folded, would otherwise stay in MLX's buffer cache for the process's life.
+  // The checkpoints load asynchronously, so wait for the folds first.
+  mx::synchronize();
   mx::clear_cache();
 }
 

@@ -95,7 +95,7 @@ Flow::Flow(const omni_common::Checkpoint &checkpoint)
       // only on its tokens.
       noise_(mx::random::normal({1, kMelBinCount, kMaxMelFrames}, mx::float32,
                                 0.0f, 1.0f, mx::random::key(0))) {
-  mx::eval(noise_);
+  mx::async_eval(noise_);
 }
 
 mx::array Flow::Decode(const std::vector<int> &speech_tokens,
@@ -197,7 +197,7 @@ mx::array Flow::Decode(const std::vector<int> &speech_tokens,
     x = mx::add(x, mx::multiply(steps[step - 1], guided));
     // Note (yexiaodong): one evaluation per step bounds the graph and the
     // memory it holds.
-    mx::eval(x);
+    mx::async_eval(x);
   }
   return mx::transpose(
       mx::slice(x, {0, prompt_frames, 0}, {1, frame_count, kMelBinCount}),
@@ -325,7 +325,7 @@ Hift::Hift(const omni_common::Checkpoint &checkpoint)
       mx::random::uniform({1, kHarmonicCount}, mx::float32, mx::random::key(1));
   initial_phases_ = mx::concatenate(
       {mx::zeros({1, 1}), mx::slice(phases, {0, 1}, {1, kHarmonicCount})}, 1);
-  mx::eval({window_, initial_phases_});
+  mx::async_eval({window_, initial_phases_});
 }
 
 mx::array Hift::Conv(const mx::array &x, const std::string &prefix, int left,

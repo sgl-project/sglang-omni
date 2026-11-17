@@ -423,7 +423,7 @@ mx::array AudioCodec::Encode(const std::vector<float> &samples) const {
       y = CausalConvolve(y, Index(prefix, 4), 2 * stride, stride, 1, 1);
     }
     windows.push_back(SliceTime(y, context, y.shape(2)));
-    mx::eval(windows.back());
+    mx::async_eval(windows.back());
   }
   mx::array x = Transformer(mx::concatenate(windows, 2), kEncoderTransformer,
                             kEncoderWindow);
@@ -562,7 +562,7 @@ mx::array AudioCodec::Decode(const mx::array &codes) const {
                           CausalConvolve(x, prefix + ".1.dwconv", 7, 1, 1, dim),
                           prefix + ".1");
   }
-  mx::eval(x);
+  mx::async_eval(x);
 
   const int latent_frames = x.shape(2);
   std::vector<mx::array> windows;
@@ -585,7 +585,7 @@ mx::array AudioCodec::Decode(const mx::array &codes) const {
     windows.push_back(mx::slice(mx::reshape(y, {-1}),
                                 {context * kLatentFrameSamples},
                                 {static_cast<int>(y.size())}));
-    mx::eval(windows.back());
+    mx::async_eval(windows.back());
   }
   return mx::concatenate(windows, 0);
 }
