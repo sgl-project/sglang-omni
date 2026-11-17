@@ -651,7 +651,7 @@ def test_arkasr_speculative_overlap_is_an_explicit_opt_in(
     ),
     [
         (False, None, None, None, 32.0, 2),
-        (True, None, None, None, 4.0, 4),
+        (True, None, None, None, 1.0, 4),
         (True, True, None, None, 32.0, 2),
         (False, None, 24.0, 3, 24.0, 3),
         (True, None, 24.0, 2, 24.0, 2),
