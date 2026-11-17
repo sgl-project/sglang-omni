@@ -100,11 +100,12 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 		req.SpeechWait = n.text
 	}
 	if len(req.Previous) == 0 {
-		a.answer = answerCard{}
+		a.setAside(req.Try)
 	}
 	a.notice = nil
 	id, err := a.mgr.Start(req)
 	if err != nil {
+		a.resurface()  // no session took the card's place
 		return "", nil // a session runs already
 	}
 	return id, nil
@@ -134,6 +135,14 @@ func (a *app) cancelSession() {
 func (a *app) skipLLM() {
 	if a.mgr != nil {
 		a.mgr.SkipLLM(a.sess.ID)
+	}
+}
+
+// stopLLM ends the answer streaming into the card where it is; the card
+// keeps it (session.Manager's StopLLM).
+func (a *app) stopLLM() {
+	if a.mgr != nil {
+		a.mgr.StopLLM(a.sess.ID)
 	}
 }
 

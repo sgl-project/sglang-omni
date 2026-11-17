@@ -288,7 +288,7 @@ func TestAutomaticNamesTheModelInUse(t *testing.T) {
 	}
 	check("/transcribe", "Speech model for Transcribe", fakeASRModel.Name)
 	check("/transcribe", "Language model for Transcribe", fakeLLMModel.Name)
-	check("/translate", "Target language", "Simplified Chinese")
+	check("/translate", "Target language for Translate", "Simplified Chinese")
 }
 
 // TestTranscribeEndWord: the word that ends a recording is Off, one of
@@ -357,7 +357,7 @@ func TestTranslateFallbackModel(t *testing.T) {
 // change elsewhere shows, and long rules fill a tall field.
 func TestTranscribeRules(t *testing.T) {
 	a, tt := trTester(t)
-	if has(tt, "{{USER_MAIN_LANGUAGE}}") || has(tt, "Example user message") {
+	if has(tt, "{{USER_MAIN_LANGUAGE}}") || has(tt, "What the language model receives") {
 		t.Fatal("Your rules are open at first")
 	}
 	click(t, tt, "Your rules")
@@ -368,7 +368,7 @@ func TestTranscribeRules(t *testing.T) {
 		t.Fatal("not dirty after typing")
 	}
 	// Leaving the field saves it.
-	click(t, tt, "Example user message")
+	click(t, tt, "What the language model receives")
 	if p := a.lib.settings.Get().Features.Transcribe.Prompt; !strings.Contains(p, "Write {{USER_MAIN_LANGUAGE}} numbers as digits.") {
 		t.Fatalf("prompt %q", p)
 	}
@@ -553,6 +553,19 @@ func TestTranscribeFullPage(t *testing.T) {
 			}
 			png.Encode(f, tt.Image())
 			f.Close()
+			if feature == hotkey.Translate && !dark {
+				// A prompt of one's own that names the language: the warning (#3956).
+				u := a.fui(feature)
+				u.prompt, u.promptDirty = "Translate Chinese into English.", true
+				a.savePrompt(feature)
+				frames(tt)
+				f, err := os.Create(filepath.Join(out, "page-translate-own-prompt-light.png"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				png.Encode(f, tt.Image())
+				f.Close()
+			}
 		}
 	}
 }

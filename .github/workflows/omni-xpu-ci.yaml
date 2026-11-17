@@ -83,6 +83,7 @@ jobs:
               - 'sglang_omni/**'
               - 'tests/unit_test/xpu/**'
               - 'tests/unit_test/dots_tts/**'
+              - 'tests/unit_test/ming3_audio/**'
               - 'tests/unit_test/nemotron3_5_asr/**'
               - 'pyproject_xpu.toml'
               - 'scripts/xpu/**'
@@ -278,6 +279,7 @@ jobs:
             pytest tests/unit_test/xpu/test_device_layer.py \
               tests/unit_test/dots_tts/test_flow_head.py \
               tests/unit_test/dots_tts/test_tail.py \
+              tests/unit_test/ming3_audio/test_talker.py \
               tests/unit_test/nemotron3_5_asr/test_hf_compat.py \
               tests/unit_test/nemotron3_5_asr/test_model_runner.py -v -x
 

@@ -14,13 +14,13 @@
 #include <utility>
 #include <vector>
 
+#include "common/generation.h"
 #include "common/layers.h"
 #include "common/tokenizer.h"
 #include "fish_dac/fish_dac.h"
 #include "fishaudio_drama3/fishaudio_drama3_experts.h"
 #include "fishaudio_drama3/fishaudio_drama3_prompt.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "qwen3_asr/qwen3_decoder.h"
 
 namespace fishaudio_drama3 {
@@ -39,7 +39,7 @@ struct Sampling {
 };
 
 struct SynthesisResult {
-  qwen3_asr::FinishReason finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::FinishReason finish_reason = omni_common::FinishReason::kStop;
   // Prompt rows of every chunk, and the frames generated for them.
   int prompt_row_count = 0;
   int frame_count = 0;
@@ -93,7 +93,7 @@ public:
   // max_frames frames. on_audio receives the audio as it is decoded: every
   // 7 frames (0.33 s) when streaming, else at each chunk's end; on_frame
   // receives each frame's evaluated int32 codes [codebooks] first. Throws
-  // TranscriptionCancelled once cancel is set.
+  // GenerationCancelled once cancel is set.
   SynthesisResult
   Synthesize(const std::string &text, Voice &voice, const Sampling &sampling,
              int max_frames, bool stream, const std::atomic<bool> &cancel,
@@ -137,7 +137,7 @@ private:
   mlx::core::array CodebookHead(const mlx::core::array &hidden,
                                 int index) const;
   // Feeds rows [start, stop) into both caches; returns row stop - 1's
-  // backbone hidden state [1, 1, dim]. Throws TranscriptionCancelled between
+  // backbone hidden state [1, 1, dim]. Throws GenerationCancelled between
   // blocks of rows and before offloaded expert loads once cancel is set.
   mlx::core::array Prefill(const mlx::core::array &frames, ModelCaches &caches,
                            int start, int stop,
