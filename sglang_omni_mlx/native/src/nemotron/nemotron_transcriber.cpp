@@ -244,12 +244,17 @@ void NemotronStream::Decode(int mel_frame_limit, bool flush,
 void NemotronStream::DecodeChunk(const mx::array &prompted) {
   const NemotronModel &model = transcriber_.model();
   const int blank = model.blank_id();
-  const int width = prompted.shape(2);
+  const mx::array projected_frames = model.ProjectFrames(prompted);
+  const int joint_width = projected_frames.shape(2);
   const int frame_count = prompted.shape(1);
   const double frame_seconds = transcriber_.frame_seconds();
   // Note (Dayuxiaoshui): the prediction only changes when a token is emitted,
   // so it is reused across blanks; Swift reruns it to the same values.
+  // Note (XXXXRT666): each prediction is joined with every frame left in the
+  // chunk at once, read back together, until a token is emitted.
   std::optional<std::pair<mx::array, LstmState>> prediction;
+  std::vector<int32_t> frame_tokens;
+  int tokens_start = 0;
   int frame = 0;
   int symbols_this_frame = 0;
   while (frame < frame_count) {
@@ -263,13 +268,17 @@ void NemotronStream::DecodeChunk(const mx::array &prompted) {
         state.cell[layer] = mx::astype(state.cell[layer], dtype);
       }
       prediction.emplace(mx::astype(output, dtype), std::move(state));
+      const mx::array tokens =
+          model.JointTokens(mx::slice(projected_frames, {0, frame, 0},
+                                      {1, frame_count, joint_width}),
+                            prediction->first);
+      mx::eval(tokens);
+      frame_tokens.assign(tokens.data<int32_t>(),
+                          tokens.data<int32_t>() + tokens.size());
+      tokens_start = frame;
     } else {
     }
-    const mx::array encoder_frame =
-        mx::slice(prompted, {0, frame, 0}, {1, frame + 1, width});
-    const int token = static_cast<int>(
-        mx::argmax(model.JointLogits(encoder_frame, prediction->first), -1)
-            .item<uint32_t>());
+    const int token = frame_tokens[frame - tokens_start];
     if (token == blank) {
       ++frame;
       symbols_this_frame = 0;

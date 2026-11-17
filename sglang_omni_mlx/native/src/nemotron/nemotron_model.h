@@ -76,8 +76,11 @@ public:
   std::pair<mlx::core::array, LstmState>
   Predict(std::optional<int> token,
           const std::optional<LstmState> &state) const;
-  // Joint logits [1, 1, 1, classes] for one encoder frame [1, 1, width].
-  mlx::core::array JointLogits(const mlx::core::array &frame,
+  // joint.enc of encoder frames [1, frames, width]: [1, frames, joint].
+  mlx::core::array ProjectFrames(const mlx::core::array &frames) const;
+  // The joint's most likely class, int32 [frames], of projected frames [1,
+  // frames, joint] joined with one prediction [1, 1, hidden].
+  mlx::core::array JointTokens(const mlx::core::array &projected_frames,
                                const mlx::core::array &prediction) const;
 
   const NemotronConfig &config() const { return config_; }

@@ -260,12 +260,17 @@ NemotronModel::Predict(std::optional<int> token,
   return {output, next};
 }
 
-mx::array NemotronModel::JointLogits(const mx::array &frame,
+mx::array NemotronModel::ProjectFrames(const mx::array &frames) const {
+  return checkpoint_.Linear(frames, "joint.enc");
+}
+
+mx::array NemotronModel::JointTokens(const mx::array &projected_frames,
                                      const mx::array &prediction) const {
-  const mx::array combined =
-      mx::add(mx::expand_dims(checkpoint_.Linear(frame, "joint.enc"), 2),
-              mx::expand_dims(checkpoint_.Linear(prediction, "joint.pred"), 1));
-  return checkpoint_.Linear(swift_port::Relu(combined), "joint.joint_net.2");
+  const mx::array logits = checkpoint_.Linear(
+      swift_port::Relu(mx::add(projected_frames,
+                               checkpoint_.Linear(prediction, "joint.pred"))),
+      "joint.joint_net.2");
+  return mx::astype(mx::reshape(mx::argmax(logits, -1), {-1}), mx::int32);
 }
 
 } // namespace nemotron
