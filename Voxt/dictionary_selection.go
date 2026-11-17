@@ -168,6 +168,7 @@ func (a *app) addSelectedTerm(term string) {
 				log.Printf("dictionary: the selection added (%d characters)", utf8.RuneCountInString(term))
 				a.showNotice(sessionNotice{text: i18n.T("Added to the dictionary: %s", term), ok: true})
 				a.loadDict() // dictionary_page.go
+				a.loadGlossaryTerms()
 			}
 		})
 	})

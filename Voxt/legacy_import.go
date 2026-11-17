@@ -462,6 +462,7 @@ func (a *app) importLegacyFrom(picked string) {
 			}
 			log.Printf("legacy import: %s", report.text())
 			a.loadDict()
+			a.loadGlossaryTerms()
 		})
 	})
 }

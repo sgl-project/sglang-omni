@@ -4,6 +4,7 @@ package main
 // the preview of the whole prompt (feature_page.go).
 
 import (
+	"context"
 	"math"
 	"slices"
 	"strings"
@@ -396,13 +397,40 @@ func rewriteSample() (instruction, selection string) {
 	return i18n.T("um make it shorter, no, more formal"), i18n.T("hey, the release slips to thursday because the tests are still running, sorry!")
 }
 
+// loadGlossaryTerms reads the whole dictionary for the feature pages'
+// prompt preview (a session reads the terms itself); only the last read
+// lands.
+func (a *app) loadGlossaryTerms() {
+	a.glossaryReads++
+	read := a.glossaryReads
+	repo := a.lib.store.Dictionary()
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		terms, err := repo.List(ctx, "")
+		a.post(func() {
+			if read != a.glossaryReads || err != nil {
+				return
+			}
+			a.glossaryTerms = terms
+		})
+	})
+}
+
 // composedPreview is the request a session would send with the settings
 // and the rules as typed, for the sample text: the personal dictionary
-// too (session.PromptDictionary), but not the glossary, whose terms only
-// the Dictionary page reads.
+// (session.PromptDictionary) and the glossary's enabled terms, as a
+// session adds them (run_listen.go, write.go).
 func (a *app) composedPreview(feature string) (compose.Output, error) {
 	in := a.previewInput(feature)
 	in.Dictionary = session.PromptDictionary(a.prefs)
+	if a.prefs.Dictionary.Enabled && a.prefs.Dictionary.Glossary {
+		for _, t := range a.glossaryTerms {
+			if t.Enabled {
+				in.Glossary = append(in.Glossary, compose.Term{Term: t.Term, Aliases: t.Aliases})
+			}
+		}
+	}
 	// As savePrompt saves it: the built-in rules are no prompt of one's own,
 	// whose layers (the dictionary among them) would come in another order.
 	if strings.TrimSpace(in.TaskPrompt) == strings.TrimSpace(a.promptBuiltin(feature)) {

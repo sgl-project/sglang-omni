@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 func TestPromptSaveUsesFullSystem(t *testing.T) {
@@ -413,6 +415,39 @@ func TestPreviewIsTheWholePrompt(t *testing.T) {
 		if out, _ := a.composedPreview(feature); strings.Contains(out.System, "Roth") {
 			t.Errorf("%s: the dictionary shows while off", feature)
 		}
+		// The glossary's enabled terms are in the preview, as a session
+		// adds them (run_listen.go, write.go); the session side here is
+		// rebuilt from the store, not from the preview's cache.
+		repo := a.lib.store.Dictionary()
+		if err := repo.Put(context.Background(), store.Term{ID: "g1", Term: "Zephyrion", Aliases: []string{"zeph"}, Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+		a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = true })
+		a.loadGlossaryTerms()
+		out, err = a.composedPreview(feature)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if whole = wholePrompt(out); !strings.Contains(whole, "Zephyrion") {
+			t.Errorf("%s: no glossary term in %q", feature, whole)
+		}
+		sent = a.previewInput(feature)
+		sent.TaskPrompt, sent.Dictionary = promptOf(a.prefs, feature), session.PromptDictionary(a.prefs)
+		if terms, _ := repo.List(context.Background(), ""); a.prefs.Dictionary.Enabled && a.prefs.Dictionary.Glossary {
+			for _, tm := range terms {
+				if tm.Enabled {
+					sent.Glossary = append(sent.Glossary, compose.Term{Term: tm.Term, Aliases: tm.Aliases})
+				}
+			}
+		}
+		if want, _ := compose.Build(sent); wholePrompt(want) != whole {
+			t.Errorf("%s: the preview's glossary is not what is sent:\n%s\n---\n%s", feature, whole, wholePrompt(want))
+		}
+		if err := repo.Delete(context.Background(), "g1"); err != nil {
+			t.Fatal(err)
+		}
+		a.loadGlossaryTerms()
+		a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = false })
 		// A 200 row dictionary, open in the preview, still draws quickly.
 		a.updateSettings(func(s *settings.Settings) { s.Dictionary.NotesOff, s.Dictionary.Notes = false, longNotes(200) })
 		start := time.Now()

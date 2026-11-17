@@ -45,6 +45,11 @@ type dictionaryState struct {
 	// selPress is the transcribe shortcut whose selection is being read
 	// (dictionary_selection.go).
 	selPress *selectionPress
+	// glossaryTerms is the whole dictionary for the feature pages' prompt
+	// preview (feature_prompts.go), read again after each change;
+	// glossaryReads numbers the reads: only the last one lands.
+	glossaryTerms []store.Term
+	glossaryReads int
 }
 
 type dictView struct {
@@ -149,6 +154,9 @@ func (a *app) loadDict() {
 		})
 	})
 }
+
+// loadGlossaryTerms (feature_prompts.go) reads the whole dictionary for
+// the feature pages' prompt preview.
 
 func (a *app) dictionaryPage(c *ui.Context) {
 	t := c.Theme()
@@ -473,6 +481,7 @@ func (a *app) saveTerm(term store.Term, fromDialog bool) {
 				a.toast(uitext.TermErrorText(err))
 			}
 			a.loadDict()
+			a.loadGlossaryTerms()
 		})
 	})
 }
@@ -491,6 +500,7 @@ func (a *app) deleteTerm(term store.Term) {
 			}
 			a.toast(i18n.T("Deleted “%s”", term.Term))
 			a.loadDict()
+			a.loadGlossaryTerms()
 		})
 	})
 }
@@ -538,6 +548,7 @@ func (a *app) importFile(path string) {
 			a.dv.importing = false
 			a.toast(msg)
 			a.loadDict()
+			a.loadGlossaryTerms()
 		})
 	})
 }
