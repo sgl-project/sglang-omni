@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -143,7 +144,7 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 				return nil, err
 			}
 			if d != nil {
-				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, onProgress)
+				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, speech, onProgress)
 				if err != nil {
 					return nil, err
 				}
@@ -165,26 +166,66 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 	return nil, fmt.Errorf("meeting: ASR not configured")
 }
 
-func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileRequest, rate int, pcm []byte, onProgress func(float64)) ([]Segment, error) {
-	req.Audio = pcm
-	res, err := d.Diarize(ctx, req)
-	if err != nil {
-		return nil, err
-	}
+// diarizeChunkMax is how much of a track one MTD request covers: small
+// enough that a dictation waits at most one request (the runtime lets it
+// in between), and far from the native decoder's own 20-minute split.
+const diarizeChunkMax = 2 * time.Minute
+
+// mossPrompt is the instruction MOSS gets with no prompt of its own
+// (moss_transcriber.cpp's kDefaultPrompt, repeated here: a prompt of ours
+// replaces it, and the format must stay).
+const mossPrompt = "Transcribe the audio into text. Start each segment with the start timestamp and speaker label ([S01], [S02], [S03], ...), write the corresponding spoken content, and end each segment with the ending timestamp to clearly mark the segment range."
+
+// diarizeTrack transcribes the track with MTD in chunks, each request
+// after the first carrying the last labeled lines, so a voice keeps its
+// number across the boundaries (the native decoder starts its labels
+// over per chunk).
+func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileRequest, rate int, pcm []byte, speech []vad.Segment, onProgress func(float64)) ([]Segment, error) {
+	p := DefaultChunkParams()
+	p.Rate = rate
+	p.MaxDur = diarizeChunkMax
+	chunks := PlanChunks(speech, len(pcm)/2, p)
 	var out []Segment
-	for _, part := range res.Segments {
-		text := strings.TrimSpace(part.Text)
-		if text == "" {
-			continue
+	var carry string
+	for i, ch := range chunks {
+		if onProgress != nil {
+			onProgress(float64(i) / float64(len(chunks)))
 		}
-		start := max(part.Start, time.Duration(0))
-		out = append(out, Segment{
-			ID: core.NewID(time.Now()), Source: src, Speaker: mtdSpeaker(part.Speaker),
-			Start: start, End: max(part.End, start), Text: text, Final: true,
-		})
-	}
-	if len(out) == 0 && strings.TrimSpace(res.Text) != "" {
-		out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, End: asr.Duration(pcm, rate), Text: strings.TrimSpace(res.Text), Final: true})
+		sub := req
+		sub.Audio = pcm[ch.Start*2 : ch.End*2]
+		sub.Prompt = mossPrompt
+		if req.Prompt != "" {
+			sub.Prompt += "\n" + req.Prompt
+		}
+		if carry != "" {
+			sub.Prompt += "\nThis recording's earlier part ended with these labeled segments; the same voices keep their labels:\n" + carry
+		}
+		res, err := d.Diarize(ctx, sub)
+		if err != nil {
+			return nil, err
+		}
+		offset := time.Duration(ch.Start) * time.Second / time.Duration(rate)
+		marked := 0
+		carry = ""
+		for _, part := range res.Segments {
+			text := strings.TrimSpace(part.Text)
+			if text == "" {
+				continue
+			}
+			start := offset + max(part.Start, time.Duration(0))
+			out = append(out, Segment{
+				ID: core.NewID(time.Now()), Source: src, Speaker: mtdSpeaker(part.Speaker),
+				Start: start, End: max(offset+part.End, start), Text: text, Final: true,
+			})
+			marked++
+			carry += "[" + part.Speaker + "] " + text + "\n"
+		}
+		if marked == 0 && strings.TrimSpace(res.Text) != "" {
+			out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: strings.TrimSpace(res.Text), Final: true})
+		}
+		if runes := []rune(carry); len(runes) > 300 { // the last lines, at most a screen
+			carry = string(runes[len(runes)-300:])
+		}
 	}
 	if onProgress != nil {
 		onProgress(1)
@@ -193,18 +234,18 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 }
 
 func mtdSpeaker(speaker string) string {
-	switch speaker {
-	case "S01", "S1":
-		return "s1"
-	case "S02", "S2":
-		return "s2"
-	case "S03", "S3":
-		return "s3"
-	case "S04", "S4":
-		return "s4"
-	default:
+	n, ok := strings.CutPrefix(speaker, "S")
+	if !ok {
 		return ""
 	}
+	n = strings.TrimLeft(n, "0")
+	if n == "" {
+		return ""
+	}
+	if _, err := strconv.Atoi(n); err != nil {
+		return ""
+	}
+	return "s" + n
 }
 
 func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, req asr.FileRequest, rate int, pcm []byte, chunks []Chunk, onProgress func(float64)) ([]Segment, error) {

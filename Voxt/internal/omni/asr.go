@@ -158,7 +158,7 @@ func (a *ASR) Diarize(ctx context.Context, req asr.FileRequest) (asr.Result, err
 	}
 	defer l.release()
 	start := time.Now()
-	r, err := transcribe(ctx, l, finalRequest{pcm: pcm, language: a.spec.languageHint(req.Lang), layout: a.spec.ASR.AudioLayout}, a.rt.cfg.StallTimeout)
+	r, err := transcribe(ctx, l, finalRequest{pcm: pcm, language: a.spec.languageHint(req.Lang), context: req.Prompt, layout: a.spec.ASR.AudioLayout}, a.rt.cfg.StallTimeout)
 	if err != nil {
 		return asr.Result{}, err
 	}
