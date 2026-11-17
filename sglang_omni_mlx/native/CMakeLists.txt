@@ -369,7 +369,7 @@ add_library(cosyvoice3 STATIC src/cosyvoice3/cosyvoice3_vocoder.cpp
 target_link_libraries(cosyvoice3 PUBLIC common)
 target_compile_options(cosyvoice3 PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(cosyvoice3_server src/cosyvoice3/cosyvoice3_server.cpp)
-target_link_libraries(cosyvoice3_server PRIVATE cosyvoice3 asr_service)
+target_link_libraries(cosyvoice3_server PRIVATE cosyvoice3 speech_service)
 target_compile_options(cosyvoice3_server PRIVATE -Wall -Wextra)
 add_executable(cosyvoice3_synthesize tools/cosyvoice3_synthesize.cpp)
 target_link_libraries(cosyvoice3_synthesize PRIVATE cosyvoice3)
