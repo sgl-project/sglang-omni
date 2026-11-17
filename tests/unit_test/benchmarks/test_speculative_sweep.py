@@ -104,7 +104,7 @@ def test_decode_logs_are_bucketed_by_running_batch_size_and_reported() -> None:
         f"Decode batch, #running-req: {size}, #token: 100, token usage: 0.5, "
         f"accept len: {size / 10:.1f}, cuda graph: {size % 2 == 0}, "
         f"gen throughput (token/s): {size * 10:.1f}"
-        for size in (1, 2, 4, 5, 8, 9, 16, 17, 32, 33, 64)
+        for size in (1, 2, 4, 5, 8, 9, 16, 17, 32, 33, 64, 65, 100)
     )
     parsed_batches = read_decode_batches(log)
     baseline_leg = leg("baseline", None, [load(1, 10, 1)])
@@ -127,9 +127,17 @@ def test_decode_logs_are_bucketed_by_running_batch_size_and_reported() -> None:
     assert [
         (row.lowest_running_requests, row.highest_running_requests)
         for row in comparison.decode_rows
-    ] == [(1, 1), (2, 4), (5, 8), (9, 16), (17, 32), (33, 64)]
-    assert [row.baseline_lines for row in comparison.decode_rows] == [1, 2, 2, 2, 2, 2]
-    assert [row.draft_lines for row in comparison.decode_rows] == [1, 2, 2, 2, 2, 2]
+    ] == [(1, 1), (2, 4), (5, 8), (9, 16), (17, 32), (33, 64), (65, None)]
+    assert [row.baseline_lines for row in comparison.decode_rows] == [
+        1,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+    ]
+    assert [row.draft_lines for row in comparison.decode_rows] == [1, 2, 2, 2, 2, 2, 2]
     assert comparison.decode_rows[
         1
     ].baseline_gen_throughput_tokens_per_s == pytest.approx(30)
@@ -137,6 +145,7 @@ def test_decode_logs_are_bucketed_by_running_batch_size_and_reported() -> None:
     assert comparison.decode_rows[1].draft_accept_length == pytest.approx(0.3)
     assert "| Running | Lines, no draft | Lines, draft |" in summary
     assert "| 2-4 | 2 | 2 | 30.0 | 30.0 | 1.00x | 0.30 |" in summary
+    assert "| 65+ | 2 | 2 | 825.0 | 825.0 | 1.00x | 8.25 |" in summary
 
 
 def test_decode_parser_reads_sglang_speculative_metrics() -> None:

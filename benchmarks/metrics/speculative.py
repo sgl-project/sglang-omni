@@ -25,8 +25,16 @@ ROADMAP_CONCURRENCIES = (1, 4, 8, 16, 32, 64)
 DECODE_BATCH_PATTERN = re.compile(
     r"Decode batch, #running-req: (\d+),.*cuda graph: (True|False), gen throughput \(token/s\): ([0-9.]+)"
 )
-# Inclusive (lowest, highest) numbers of requests running in one decode batch.
-RUNNING_REQUEST_RANGES = ((1, 1), (2, 4), (5, 8), (9, 16), (17, 32), (33, 64))
+# Inclusive (lowest, highest) numbers of requests running in one decode batch; no highest means no upper limit.
+RUNNING_REQUEST_RANGES: tuple[tuple[int, int | None], ...] = (
+    (1, 1),
+    (2, 4),
+    (5, 8),
+    (9, 16),
+    (17, 32),
+    (33, 64),
+    (65, None),
+)
 
 
 @dataclass(kw_only=True)
@@ -74,7 +82,7 @@ class Leg:
 @dataclass(kw_only=True)
 class DecodeRow:
     lowest_running_requests: int
-    highest_running_requests: int
+    highest_running_requests: int | None
     baseline_lines: int
     draft_lines: int
     baseline_gen_throughput_tokens_per_s: float | None
@@ -203,9 +211,11 @@ def decode_rows(legs: list[Leg]) -> list[DecodeRow]:
                 for leg in legs
                 if leg.side == side
                 for batch in leg.decode_batches
-                if lowest_running_requests
-                <= batch.running_requests
-                <= highest_running_requests
+                if batch.running_requests >= lowest_running_requests
+                and (
+                    highest_running_requests is None
+                    or batch.running_requests <= highest_running_requests
+                )
             ]
             for side in ("baseline", "draft")
         }
@@ -488,14 +498,19 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
         )
     lines += [
         "",
-        "Decode phase by requests running in one batch: the median generation throughput each side logged, so the gain leaves out the encoder, prefill and idle time that the throughput gain above includes.",
+        "Logged generation throughput by requests running in one batch: the median of the server's gen throughput lines, a window rate that includes prefill and idle time between log lines.",
         "",
-        "| Running | Lines, no draft | Lines, draft | Tokens/s, no draft | Tokens/s, draft | Decode gain | Accept len | CUDA graph, no draft | CUDA graph, draft |",
+        "| Running | Lines, no draft | Lines, draft | Logged tokens/s, no draft | Logged tokens/s, draft | Logged gain | Accept len | CUDA graph, no draft | CUDA graph, draft |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for decode_row in comparison.decode_rows:
+        running_label = (
+            f"{decode_row.lowest_running_requests}+"
+            if decode_row.highest_running_requests is None
+            else f"{decode_row.lowest_running_requests}-{decode_row.highest_running_requests}"
+        )
         lines.append(
-            f"| {decode_row.lowest_running_requests}-{decode_row.highest_running_requests} "
+            f"| {running_label} "
             f"| {decode_row.baseline_lines} | {decode_row.draft_lines} "
             f"| {number(decode_row.baseline_gen_throughput_tokens_per_s, 1)} "
             f"| {number(decode_row.draft_gen_throughput_tokens_per_s, 1)} "
