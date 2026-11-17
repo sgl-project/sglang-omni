@@ -61,6 +61,39 @@ func TestWhisperFinalBatchesQuietCuts(t *testing.T) {
 	}
 }
 
+func TestWhisperFinalSkipsDigitalSilenceTail(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		speechTime   time.Duration
+		chunkSeconds float64
+		cutSearch    time.Duration
+		lastSample   byte
+		wantSamples  int
+		wantText     string
+	}{
+		{"digital silence", 2 * time.Second, 2, 0, 0, 2 * sampleRate, "speech"},
+		{"quiet audio", 2 * time.Second, 2, 0, 1, 60 * sampleRate, "speech tail"},
+		{"zero window within a chunk", 30 * time.Second, 30, 5 * time.Second, 0, 30 * sampleRate, "speech"},
+		{"nonzero window within a chunk", 30 * time.Second, 30, 5 * time.Second, 1, 31 * sampleRate, "speech"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t, omnitest.Opts{Text: "speech", WindowTexts: []string{"speech", "tail"}}, withServers(t, "whisper_server"))
+			a := f.asr(t, ASRWhisperTurbo)
+			a.spec.ASR.ChunkSeconds, a.spec.ASR.CutSearch = tc.chunkSeconds, tc.cutSearch
+			pcm := append(tone(tc.speechTime, 0.3), silence(time.Second)...)
+			pcm[len(pcm)-2] = tc.lastSample
+			result, err := a.Transcribe(t.Context(), asr.FileRequest{Audio: pcm, Format: "pcm"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			finals := f.records("final")
+			if result.Text != tc.wantText || len(finals) != 1 || finals[0].Samples != tc.wantSamples {
+				t.Fatalf("got %q and %+v, want %q from one request of %d samples", result.Text, finals, tc.wantText, tc.wantSamples)
+			}
+		})
+	}
+}
+
 // TestKinds: Voxt 1.x's other speech models run on servers of their own
 // with only the common launch flags (their servers refuse Qwen3-ASR's),
 // take no context, and spell the language hint their server's way.

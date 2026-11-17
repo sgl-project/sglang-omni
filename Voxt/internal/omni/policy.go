@@ -1,6 +1,7 @@
 package omni
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 	"strconv"
@@ -99,6 +100,22 @@ type chunk struct {
 }
 
 const whisperWindowBytes = 30 * sampleRate * 2
+
+// trimWhisperSilenceTail drops fully zero windows after the last window
+// with audio. Whisper can hallucinate words from an all-padding window.
+func trimWhisperSilenceTail(chunks []chunk) []chunk {
+	for {
+		tail := &chunks[len(chunks)-1]
+		audioBytes := len(bytes.TrimRight(tail.pcm, "\x00"))
+		if audioBytes == 0 && len(chunks) > 1 {
+			chunks = chunks[:len(chunks)-1]
+			continue
+		}
+		windows := max(1, (audioBytes+whisperWindowBytes-1)/whisperWindowBytes)
+		tail.pcm = tail.pcm[:min(len(tail.pcm), windows*whisperWindowBytes)]
+		return chunks
+	}
+}
 
 // packWhisperChunks puts the quiet cuts on the runtime's 30 s window
 // boundaries so that a batch decodes the same audio as separate requests.

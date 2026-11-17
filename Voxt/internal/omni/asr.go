@@ -171,8 +171,12 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 	budget := t.tokenBudget(asr.Duration(pcm, sampleRate))
 	shared := t.TokensPerSecond > 0 // else each request has the whole budget
 	batchWhisper := a.spec.Kind == kindWhisper && a.draft == ""
+	chunks := t.splitChunks(pcm)
+	if a.spec.Kind == kindWhisper {
+		chunks = trimWhisperSilenceTail(chunks)
+	}
 	var parts []string
-	for chunks := t.splitChunks(pcm); len(chunks) > 0; {
+	for len(chunks) > 0 {
 		if shared && budget <= 0 {
 			break
 		}
