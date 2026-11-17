@@ -20,6 +20,9 @@ from sglang_omni.models.avtr.node import AvatarStageConfig, avatar_stage
 from sglang_omni.models.ellsa2.node import MOTION_STAGE
 from sglang_omni.models.ellsa2.node import SESSION_PORTS as MOTION_PORTS
 from sglang_omni.models.ellsa2.node import MotionStageConfig, motion_stage
+from sglang_omni.models.liveavatar.node import LIVEAVATAR_STAGE
+from sglang_omni.models.liveavatar.node import SESSION_PORTS as LIVEAVATAR_PORTS
+from sglang_omni.models.liveavatar.node import LiveAvatarStageConfig, liveavatar_stage
 from sglang_omni.models.speech_avatar.node import (
     MOTION_SESSION_PORTS as SPEECH_MOTION_PORTS,
 )
@@ -100,12 +103,19 @@ AVATAR_WORKER_GROUP = StageGroup(
     AVATAR_WORKER_PORTS,
     stage_ports=AvatarWorkerStageConfig.session_ports,
 )
+LIVEAVATAR_GROUP = StageGroup(
+    lambda: [liveavatar_stage()],
+    None,
+    LIVEAVATAR_PORTS,
+    stage_ports=LiveAvatarStageConfig.session_ports,
+)
 PLUGIN_STAGE_GROUPS = (
     MOTION_GROUP,
     AVATAR_GROUP,
     SPEECH_VIDEO_GROUP,
     SPEECH_MOTION_GROUP,
     AVATAR_WORKER_GROUP,
+    LIVEAVATAR_GROUP,
 )
 PLUGIN_STAGE_CONFIG_TYPES: dict[str, type[StageConfig]] = {
     MOTION_STAGE: MotionStageConfig,
@@ -113,6 +123,7 @@ PLUGIN_STAGE_CONFIG_TYPES: dict[str, type[StageConfig]] = {
     SPEECH_VIDEO_STAGE: SpeechVideoStageConfig,
     SPEECH_MOTION_STAGE: SpeechMotionStageConfig,
     AVATAR_WORKER_STAGE: AvatarWorkerStageConfig,
+    LIVEAVATAR_STAGE: LiveAvatarStageConfig,
 }
 
 
