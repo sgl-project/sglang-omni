@@ -1,0 +1,12 @@
+{
+  "Set a shortcut to record notes.": "设置快捷键后才能记笔记。",
+  "%d note": "%d 条笔记",
+  "%d notes": "%d 条笔记",
+  "Could not read the notes.": "无法读取笔记。",
+  "No notes yet": "还没有笔记",
+  "Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.": "先在上面选一个快捷键，然后在任意 App 里按下它说话。说的内容会存到这里，不会输入到光标处。",
+  "Press %s in any app, speak, and press it again. What you say is saved here instead of typed.": "在任意 App 里按 %s，说完再按一次。说的内容会存到这里，不会输入到光标处。",
+  "Could not delete the note: %v": "无法删除笔记：%v",
+  "Keys to record a note": "记笔记的快捷键",
+  "Custom keys to record a note": "自定义记笔记的快捷键"
+}
