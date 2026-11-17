@@ -155,6 +155,7 @@ def create_thinker_executor(
     *,
     max_seq_len: int,
     enable_async_decode: bool,
+    async_decode_min_batch_size: int = 1,
     device: str | None = None,
     gpu_id: int | None = None,
     tp_rank: int = 0,
@@ -310,4 +311,5 @@ def create_thinker_executor(
         request_builder=build_request,
         result_adapter=build_result,
         enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
     )
