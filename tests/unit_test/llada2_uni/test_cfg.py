@@ -142,7 +142,8 @@ def test_cfg_graph_waits_for_padding_to_enter_cached_prefix(
     runner = object.__new__(CFGCudaGraphRunner)
     batch = NS(
         reqs=make_cfg_group(3),
-        dllm_left_pad_lens_cpu=[0, 6, 2],
+        dllm_pad_lens_cpu=[0, 6, 2],
+        dllm_pad_starts_cpu=[0, 0, 0],
         extend_prefix_lens_cpu=[prefix] * 3,
     )
     assert runner.can_run_graph(batch) is expected
@@ -167,7 +168,8 @@ def test_cfg_graph_rejects_unpadded_prefill(
         requests[row].dllm_phase = phase
     batch = NS(
         reqs=requests,
-        dllm_left_pad_lens_cpu=[0] * len(requests),
+        dllm_pad_lens_cpu=[0] * len(requests),
+        dllm_pad_starts_cpu=[0] * len(requests),
         extend_prefix_lens_cpu=[prefix] * len(requests),
     )
     runner = object.__new__(CFGCudaGraphRunner)
@@ -443,6 +445,7 @@ def test_interleaved_frame_shares_the_history_kv_and_emits_only_image_tokens(
     )
     worker = object.__new__(ModelWorker)
     worker.dllm_algorithm = LowConfidenceCFG(dllm_config)
+    worker.tp_rank = 0
     worker.model_runner = NS(device="cpu", forward=forward)
 
     with get_context().override_server_args(
@@ -533,7 +536,6 @@ def test_only_a_thinker_asked_to_reuse_prefixes_keeps_the_radix_cache(
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.models.llada2_uni import bootstrap
-    from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
 
     class Stop(Exception):
         pass
@@ -543,7 +545,7 @@ def test_only_a_thinker_asked_to_reuse_prefixes_keeps_the_radix_cache(
 
     monkeypatch.setattr(DllmConfig, "from_server_args", lambda server_args: None)
     monkeypatch.setattr(
-        scheduling_bootstrap, "create_sglang_infrastructure", stop_at_infrastructure
+        bootstrap, "create_sglang_infrastructure", stop_at_infrastructure
     )
     server_args = ServerArgs(model_path="dummy")
 
@@ -610,6 +612,17 @@ def test_attention_masks_local_and_cached_padding() -> None:
     assert begin_forward.call_args.args[3].tolist() == [8, 2]
     assert not backend.forward_metadata.extend_no_prefix
 
+    batch.batch_size = 2
+    backend.cfg_replay_batch = batch
+    backend.dllm_config = NS(block_size=4)
+    backend.prefill_cuda_graph_metadata = {2: backend.prefill_wrappers_paged}
+    backend.use_paged = False
+    begin_forward.reset_mock()
+    backend.init_forward_metadata_out_graph(batch)
+    begin_forward.assert_called_once()
+    assert begin_forward.call_args.args[3].tolist() == [8, 2]
+    assert begin_forward.call_args.kwargs["plan"] is batch.kv_loc_plan
+
 
 def test_attention_reads_no_cached_kv_while_the_padding_is_still_ahead() -> None:
     """A cold group whose only padding sat in a later block ran a paged pass over no KV."""
@@ -632,16 +645,6 @@ def test_attention_reads_no_cached_kv_while_the_padding_is_still_ahead() -> None
     assert begin_forward.call_args.args[3].tolist() == [0, 0]
     assert backend.forward_metadata.extend_no_prefix
 
-    batch.batch_size = 2
-    backend.cfg_replay_batch = batch
-    backend.dllm_config = NS(block_size=4)
-    backend.prefill_cuda_graph_metadata = {2: backend.prefill_wrappers_paged}
-    backend.use_paged = False
-    begin_forward.reset_mock()
-    backend.init_forward_metadata_out_graph(batch)
-    begin_forward.assert_called_once()
-    assert begin_forward.call_args.args[3].tolist() == [8, 2]
-    assert begin_forward.call_args.kwargs["plan"] is batch.kv_loc_plan
 
 def test_attention_skips_padding_after_the_history() -> None:
     backend, begin_forward = make_planning_backend()
@@ -927,7 +930,8 @@ def test_cfg_graph_replay_matches_eager_across_requests() -> None:
                 ),
                 extend_prefix_lens_cpu=[prefix] * 3,
                 extend_seq_lens_cpu=[block_size] * 3,
-                dllm_left_pad_lens_cpu=padding,
+                dllm_pad_lens_cpu=padding,
+                dllm_pad_starts_cpu=[0] * 3,
             )
             translator = eager_backend.kv_index_translator
             translator.own_plan(eager_batch).bind(eager_batch, translator)

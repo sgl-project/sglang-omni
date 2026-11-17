@@ -762,8 +762,8 @@ def radix_scheduler() -> DllmScheduler:
                 tree_components=(ComponentType.FULL,),
             )
         )
-        yield DllmScheduler(
-            SimpleNamespace(),
+        scheduler = DllmScheduler(
+            SimpleNamespace(tp_rank=0),
             tree_cache,
             pool,
             allocator,
@@ -781,6 +781,9 @@ def radix_scheduler() -> DllmScheduler:
             request_builder=build_phase_request,
             result_adapter=finish_phase,
         )
+        # drain_and_purge reads messages only while the scheduler runs.
+        scheduler.running = True
+        yield scheduler
 
 
 def run_phase(

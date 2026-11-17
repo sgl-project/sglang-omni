@@ -45,16 +45,16 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
     def init_forward_metadata_out_graph(
         self, forward_batch: ForwardBatch, in_capture: bool = False
     ) -> None:
-        self.cfg_local_left_pad_active = False
+        self.cfg_local_pad_active = False
         batch = self.cfg_replay_batch
-        if in_capture or batch is None or not any(batch.dllm_left_pad_lens_cpu):
+        if in_capture or batch is None or not any(batch.dllm_pad_lens_cpu):
             return super().init_forward_metadata_out_graph(forward_batch, in_capture)
         else:
             pass
 
         bs = forward_batch.batch_size
         prefix_lens = forward_batch.seq_lens - self.dllm_config.block_size
-        pad_lens = batch.dllm_left_pad_lens_cpu + [0] * (bs - batch.batch_size)
+        pad_lens = batch.dllm_pad_lens_cpu + [0] * (bs - batch.batch_size)
         cached_pad_lens = torch.tensor(
             pad_lens, dtype=prefix_lens.dtype, device=prefix_lens.device
         )
@@ -63,7 +63,7 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
             prefix - pad
             for prefix, pad in zip(
                 batch.extend_prefix_lens_cpu,
-                batch.dllm_left_pad_lens_cpu,
+                batch.dllm_pad_lens_cpu,
                 strict=True,
             )
         )

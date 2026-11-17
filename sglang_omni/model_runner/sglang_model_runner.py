@@ -399,13 +399,15 @@ class CFGCudaGraphRunner(DecodeCudaGraphRunner):
         if any(request.is_dllm_prefill() for request in forward_batch.reqs):
             return False
         elif any(
-            padding_length > prefix_length
-            for padding_length, prefix_length in zip(
-                forward_batch.dllm_left_pad_lens_cpu,
+            padding_length > prefix_length or (padding_length and padding_start)
+            for padding_length, padding_start, prefix_length in zip(
+                forward_batch.dllm_pad_lens_cpu,
+                forward_batch.dllm_pad_starts_cpu,
                 forward_batch.extend_prefix_lens_cpu,
                 strict=True,
             )
         ):
+            # Replay skips a left pad by offset, padding after the history needs explicit KV indices.
             return False
         else:
             pass
