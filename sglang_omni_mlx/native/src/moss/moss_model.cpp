@@ -21,16 +21,22 @@ constexpr const char *kWhisperPrefix = "model.whisper_encoder";
 constexpr const char *kAdaptorPrefix = "model.vq_adaptor.layers";
 constexpr const char *kDecoderPrefix = "model.language_model";
 // Note (XXXXRT666): the decoder's layers are quantized at load, attention to
-// 8 bits and the MLPs to 4, which keeps the transcripts and speakers; its
-// tied embedding table stays in the checkpoint dtype, since quantizing it
-// changed them, as did 4-bit attention.
+// 8 bits and the MLPs to 4, which keeps the transcripts and speakers, and so
+// is its output projection, to 8 bits; its tied embedding table stays in the
+// checkpoint dtype, since quantizing the lookup changed them, as did 4-bit
+// attention.
 constexpr int kAttentionQuantizationBits = 8;
+constexpr int kOutputQuantizationBits = 8;
 constexpr int kMlpQuantizationBits = 4;
 constexpr int kDecoderQuantizationGroupSize = 64;
 
 // Note (Dayuxiaoshui): the checkpoint keeps PyTorch's Conv1d layout, and its
-// lm_head is a copy of the tied embedding table.
+// lm_head is a copy of the tied embedding table, kept as the decoder's output
+// projection.
 WeightMap LoadedWeights(WeightMap weights) {
+  weights.insert_or_assign(
+      std::string(kDecoderPrefix) + ".output_projection.weight",
+      weights.at(std::string(kDecoderPrefix) + ".embed_tokens.weight"));
   weights.erase("lm_head.weight");
   const std::string conv_prefix = std::string(kWhisperPrefix) + ".conv";
   for (auto &[name, array] : weights) {
@@ -55,7 +61,11 @@ MossTranscribeDiarize::MossTranscribeDiarize(
           LoadedWeights(LoadSafetensors(model_directory)), config,
           kDecoderQuantizationGroupSize,
           [](const std::string &name) {
-            if (!name.starts_with(std::string(kDecoderPrefix) + ".layers.")) {
+            if (name ==
+                std::string(kDecoderPrefix) + ".output_projection.weight") {
+              return kOutputQuantizationBits;
+            } else if (!name.starts_with(std::string(kDecoderPrefix) +
+                                         ".layers.")) {
               return 0;
             } else if (name.find(".self_attn.") != std::string::npos) {
               return kAttentionQuantizationBits;
