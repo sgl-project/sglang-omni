@@ -17,7 +17,7 @@ from sglang.srt.mem_cache.memory_pool import KVWriteLoc
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
 
-CFG_ATTENTION_BACKEND = "llada2_uni_cfg_flashinfer"
+from sglang_omni.models.llada2_uni.bootstrap import CFG_ATTENTION_BACKEND
 
 
 class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
