@@ -6,6 +6,7 @@
 #include <set>
 #include <stdexcept>
 
+#include "common/layers.h"
 #include "nlohmann/json.hpp"
 
 namespace sortformer {
@@ -15,6 +16,8 @@ using omni_common::NemoProcessorConfig;
 namespace mx = mlx::core;
 
 namespace {
+
+constexpr float kBatchNormEps = 1e-5f;
 
 nlohmann::json Section(const nlohmann::json &config, const char *key) {
   // Note (Jiaxin Deng): Swift decodes a missing section from the top level.
@@ -238,6 +241,7 @@ LoadCheckpoint(const std::filesystem::path &model_directory,
     } else {
     }
   }
+  omni_common::FoldBatchNorms(weights, "norm", kBatchNormEps);
   return weights;
 }
 

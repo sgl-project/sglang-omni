@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "common/fastconformer.h"
 #include "common/layers.h"
 #include "sortformer/sortformer_checkpoint.h"
 
@@ -15,23 +16,15 @@ namespace mx = mlx::core;
 namespace {
 
 using omni_common::Scalar;
+using omni_common::Silu;
 
 std::vector<mx::array> ReluGraph(const std::vector<mx::array> &inputs) {
   return {mx::maximum(inputs[0], Scalar(0.0f, inputs[0]))};
 }
 
-std::vector<mx::array> SiluGraph(const std::vector<mx::array> &inputs) {
-  return {mx::multiply(inputs[0], mx::sigmoid(inputs[0]))};
-}
-
-// Note (Jiaxin Deng): compiled shapeless to match MLXNN relu and silu.
+// Note (Jiaxin Deng): compiled shapeless to match MLXNN relu.
 mx::array Relu(const mx::array &x) {
   static const auto compiled = mx::compile(ReluGraph, true);
-  return compiled({x})[0];
-}
-
-mx::array Silu(const mx::array &x) {
-  static const auto compiled = mx::compile(SiluGraph, true);
   return compiled({x})[0];
 }
 
@@ -43,33 +36,6 @@ int SubsampledLength(int frame_count, int stage_count) {
              1;
   }
   return length;
-}
-
-// Note (Jiaxin Deng): computed in float32 and cast to the activations' dtype,
-// as Swift does.
-mx::array RelativePositionalEncoding(int length, int width, mx::Dtype dtype) {
-  std::vector<float> positions;
-  for (int position = length - 1; position >= -(length - 1); --position) {
-    positions.push_back(static_cast<float>(position));
-  }
-  std::vector<float> dimensions;
-  for (int dimension = 0; dimension < width; dimension += 2) {
-    dimensions.push_back(static_cast<float>(dimension));
-  }
-  const int position_count = static_cast<int>(positions.size());
-  const mx::array position_array(positions.data(), {position_count},
-                                 mx::float32);
-  const mx::array dimension_array(
-      dimensions.data(), {static_cast<int>(dimensions.size())}, mx::float32);
-  const mx::array divisor = mx::exp(mx::multiply(
-      dimension_array, mx::array(static_cast<float>(
-                           -std::log(10000.0) / static_cast<double>(width)))));
-  const mx::array angles = mx::multiply(mx::expand_dims(position_array, 1),
-                                        mx::expand_dims(divisor, 0));
-  const mx::array encoding =
-      mx::reshape(mx::stack({mx::sin(angles), mx::cos(angles)}, -1),
-                  {position_count, width});
-  return mx::astype(mx::expand_dims(encoding, 0), dtype);
 }
 
 } // namespace
@@ -151,33 +117,6 @@ SortformerModel::RelativePositionAttention(const mx::array &x,
   return checkpoint_.Linear(out, prefix + ".o_proj");
 }
 
-mx::array
-SortformerModel::ConformerConvolution(const mx::array &x,
-                                      const std::string &prefix) const {
-  const auto conv = [&](const mx::array &input, const std::string &name,
-                        int padding, int groups) {
-    return checkpoint_.Conv1d(input, prefix + "." + name, 1, padding, 1,
-                              groups);
-  };
-  mx::array h = conv(x, "pointwise_conv1", 0, 1);
-  const std::vector<mx::array> halves = mx::split(h, 2, -1);
-  h = mx::multiply(halves[0], mx::sigmoid(halves[1]));
-  h = conv(h, "depthwise_conv", (config_.fc_encoder.conv_kernel_size - 1) / 2,
-           config_.fc_encoder.hidden_size);
-  const mx::array &running_var =
-      checkpoint_.Weight(prefix + ".norm.running_var");
-  h = mx::add(
-      mx::multiply(
-          mx::divide(
-              mx::subtract(h,
-                           checkpoint_.Weight(prefix + ".norm.running_mean")),
-              mx::sqrt(mx::add(running_var, Scalar(1e-5f, running_var)))),
-          checkpoint_.Weight(prefix + ".norm.weight")),
-      checkpoint_.Weight(prefix + ".norm.bias"));
-  h = Silu(h);
-  return conv(h, "pointwise_conv2", 0, 1);
-}
-
 mx::array SortformerModel::ConformerLayer(const mx::array &x,
                                           const mx::array &position_embedding,
                                           int layer) const {
@@ -186,9 +125,8 @@ mx::array SortformerModel::ConformerLayer(const mx::array &x,
   const std::string prefix = "fc_encoder.layers." + std::to_string(layer);
   const auto feed_forward = [&](const mx::array &input,
                                 const std::string &name) {
-    return checkpoint_.Linear(
-        Silu(checkpoint_.Linear(input, prefix + "." + name + ".linear1")),
-        prefix + "." + name + ".linear2");
+    return omni_common::ConformerFeedForward(checkpoint_, input,
+                                             prefix + "." + name);
   };
   mx::array residual = x;
   mx::array h = feed_forward(
@@ -199,8 +137,8 @@ mx::array SortformerModel::ConformerLayer(const mx::array &x,
       checkpoint_.LayerNorm(residual, prefix + ".norm_self_att", kEps),
       position_embedding, prefix + ".self_attn");
   residual = mx::add(residual, h);
-  h = ConformerConvolution(
-      checkpoint_.LayerNorm(residual, prefix + ".norm_conv", kEps),
+  h = omni_common::ConformerConvolution(
+      checkpoint_, checkpoint_.LayerNorm(residual, prefix + ".norm_conv", kEps),
       prefix + ".conv");
   residual = mx::add(residual, h);
   h = feed_forward(
@@ -218,8 +156,10 @@ mx::array SortformerModel::FastConformer(const mx::array &embeddings) const {
     x = mx::multiply(x, Scalar(scale, x));
   } else {
   }
-  const mx::array position_embedding = RelativePositionalEncoding(
-      x.shape(1), config_.fc_encoder.hidden_size, x.dtype());
+  const mx::array position_embedding =
+      mx::astype(omni_common::RelativePositionTable(
+                     x.shape(1), config_.fc_encoder.hidden_size),
+                 x.dtype());
   for (int layer = 0; layer < config_.fc_encoder.num_hidden_layers; ++layer) {
     x = ConformerLayer(x, position_embedding, layer);
   }

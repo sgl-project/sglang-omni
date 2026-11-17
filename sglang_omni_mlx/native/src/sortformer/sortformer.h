@@ -136,8 +136,6 @@ private:
   RelativePositionAttention(const mlx::core::array &x,
                             const mlx::core::array &position_embedding,
                             const std::string &prefix) const;
-  mlx::core::array ConformerConvolution(const mlx::core::array &x,
-                                        const std::string &prefix) const;
   mlx::core::array ConformerLayer(const mlx::core::array &x,
                                   const mlx::core::array &position_embedding,
                                   int layer) const;
