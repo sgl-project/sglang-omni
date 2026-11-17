@@ -64,6 +64,7 @@ add_library(common STATIC
   src/common/audio_chunks.cpp
   src/common/campplus.cpp
   src/common/dflash_draft.cpp
+  src/common/fastconformer.cpp
   src/common/form.cpp
   src/common/kv_cache.cpp
   src/common/layers.cpp
@@ -91,6 +92,10 @@ set_source_files_properties(src/common/campplus.cpp
 # Note (Mengwei Liu): energy cuts retain Cohere's and MOSS's separate float
 # operations.
 set_source_files_properties(src/common/audio_chunks.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# Note (XXXXRT666): the relative position table keeps the rounding it had in
+# parakeet_asr and nemotron_asr.
+set_source_files_properties(src/common/fastconformer.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 add_library(qwen3_asr STATIC

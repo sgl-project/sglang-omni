@@ -72,13 +72,6 @@ private:
                 const std::filesystem::path &model_directory);
   mlx::core::array Conv2d(const mlx::core::array &x, const std::string &prefix,
                           int groups) const;
-  mlx::core::array FeedForward(const mlx::core::array &x,
-                               const std::string &prefix) const;
-  mlx::core::array Attention(const mlx::core::array &x,
-                             const mlx::core::array &positions,
-                             const std::string &prefix) const;
-  mlx::core::array Convolution(const mlx::core::array &x,
-                               const std::string &prefix) const;
   // [frame, token, hidden, cell] to [token and duration class, hidden, cell].
   std::vector<mlx::core::array>
   DecodeGraph(const std::vector<mlx::core::array> &inputs) const;

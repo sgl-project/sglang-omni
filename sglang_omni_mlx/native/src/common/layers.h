@@ -104,6 +104,12 @@ mlx::core::array RouteToExperts(const mlx::core::array &hidden,
 // first key-count columns.
 mlx::core::array RelativeShift(const mlx::core::array &scores);
 
+// Folds every batch norm module.norm_name (running statistics, weight, bias)
+// into the module's depthwise_conv before it, giving that convolution a bias,
+// and drops the norm's tensors.
+void FoldBatchNorms(WeightMap &weights, const std::string &norm_name,
+                    float eps);
+
 // One LSTM step in MLXNN's formulation. gates [1, 4 * hidden] are x * Wx^T +
 // bias in input, forget, candidate, output order; with no state the step
 // starts from zeros, adding no recurrent term and no carried cell.
