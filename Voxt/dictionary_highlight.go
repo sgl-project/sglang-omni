@@ -18,11 +18,17 @@ func dictionaryText(c *ui.Context, text string, highlights []dict.Span) ui.Eleme
 	}
 	at := 0
 	for _, highlight := range highlights {
-		plain(at, highlight.Start)
-		spans = append(spans, ui.Span{
-			Text: text[highlight.Start:highlight.End], Background: k.AccentSoft, Radius: 3,
-		})
-		at = highlight.End
+		// A span belongs to the text it was made for; one from an older,
+		// longer text must not reach outside this one.
+		start := min(max(highlight.Start, at), len(text))
+		end := min(max(highlight.End, start), len(text))
+		plain(at, start)
+		if end > start {
+			spans = append(spans, ui.Span{
+				Text: text[start:end], Background: k.AccentSoft, Radius: 3,
+			})
+		}
+		at = end
 	}
 	plain(at, len(text))
 	return ui.RichText(c, spans...).Label(text)

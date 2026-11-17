@@ -56,3 +56,42 @@ func TestTranscribeDictionaryHighlights(t *testing.T) {
 		}
 	})
 }
+
+// TestRedoDropsOldHighlights: a redo streams a new draft over the card;
+// the old answer's spans must not mark it (or slice outside it).
+func TestRedoDropsOldHighlights(t *testing.T) {
+	const long = "Voxt uses SGLang, and Voxt keeps it fast."
+	a, _, _ := newTestApp(t)
+	shortScreen(t, a)
+	s := session.Snapshot{ID: "t1", Kind: store.KindTranscribe, State: session.Done, Card: true,
+		Delivery: deliver.ReasonCard, Result: long}
+	snap(a, s)
+	s.Highlights = testDictionaryHighlights(long)
+	a.openAnswer(s)
+	a.overlaySync()
+	a.answer.redo = "t2"
+	snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranscribe, State: session.Composing, Card: true, Draft: "短一些。"})
+	if v := a.cardNow(); v.text != "短一些。" || v.highlights != nil {
+		t.Errorf("the redo keeps the old spans over %q: %+v", v.text, v.highlights)
+	}
+	a.overlaySync()
+	tt := cardTester(t, a)
+	frames(tt)
+	if !hasExact(tt, "短一些。") {
+		t.Errorf("the draft is not the card's text: %q", firstTexts(tt))
+	}
+}
+
+// TestDictionaryHighlightOutOfRange: a span from an older, longer text
+// is clamped to this one instead of slicing outside it.
+func TestDictionaryHighlightOutOfRange(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	shortScreen(t, a)
+	s := session.Snapshot{ID: "t1", Kind: store.KindTranscribe, State: session.Done, Card: true,
+		Delivery: deliver.ReasonCard, Result: "short"}
+	snap(a, s)
+	s.Highlights = []dict.Span{{Start: 2, End: 40}}
+	a.openAnswer(s)
+	a.overlaySync()
+	renderOverlay(t, a)
+}

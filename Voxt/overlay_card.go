@@ -166,6 +166,7 @@ func (a *app) cardNow() cardView {
 			// The answer asked again streams in over the card's; a failure
 			// or a cancel brings the card's back (endRedo).
 			v.title, v.text, v.writing = uitext.CardTitle(card.kind, s.Title), a.shownDraft(s), true
+			v.highlights = nil // the old answer's spans do not fit the new text
 		}
 	}
 	v.canCopy = card.text != "" && !v.writing
