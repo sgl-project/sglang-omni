@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -63,28 +64,17 @@ func TestLLMWaitRow(t *testing.T) {
 }
 
 // TestLLMWaitSavedCustom (#3941): every custom wait an earlier version
-// could save keeps its value and duration and shows the nearest preset,
-// the shorter one on a tie.
+// could save keeps its value and duration and shows as what it is, not
+// as the nearest preset.
 func TestLLMWaitSavedCustom(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate(remotePath)
 	frames(tt)
-	presets := []struct {
-		minutes int
-		label   string
-	}{
-		{1, "1 minute"}, {2, "2 minutes"}, {5, "5 minutes"},
-		{10, "10 minutes"}, {30, "30 minutes"}, {60, "60 minutes"},
-	}
 	for minutes := 1; minutes <= settings.WaitMaxMinutes; minutes++ {
 		value := settings.WaitMinutes(minutes)
-		nearest := presets[0]
-		for _, preset := range presets[1:] {
-			distance := max(minutes-preset.minutes, preset.minutes-minutes)
-			nearestDistance := max(minutes-nearest.minutes, nearest.minutes-minutes)
-			if distance < nearestDistance {
-				nearest = preset
-			}
+		label := fmt.Sprintf("%d minutes", minutes)
+		if minutes == 1 {
+			label = "1 minute"
 		}
 		t.Run(value, func(t *testing.T) {
 			loaded, err := settings.Migrate([]byte(`{"version":4,"models":{"llmWait":"` + value + `"}}`))
@@ -98,13 +88,13 @@ func TestLLMWaitSavedCustom(t *testing.T) {
 			a.updateSettings(func(s *settings.Settings) { s.Models = loaded.Models })
 			frames(tt)
 			if got := a.settings.Get().Models.LLMWait; got != value {
-				t.Errorf("showing the nearest preset changed the saved wait to %q", got)
+				t.Errorf("showing the wait changed the saved wait to %q", got)
 			}
 			if got := a.settings.Get().Models.LLMWaitFor(); got != want {
 				t.Errorf("wait %v, want %v", got, want)
 			}
-			if !hasExact(tt, nearest.label) || hasExact(tt, "Custom…") || hasExact(tt, "Wait for the language model in minutes") {
-				t.Errorf("nearest preset %q: texts %q", nearest.label, firstTexts(tt))
+			if !hasExact(tt, label) {
+				t.Errorf("the wait shows %q, not its own %q: texts %q", firstTexts(tt), label, firstTexts(tt))
 			}
 		})
 	}

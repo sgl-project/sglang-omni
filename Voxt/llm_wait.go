@@ -7,6 +7,7 @@ package main
 
 import (
 	"slices"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -26,27 +27,26 @@ func (a *app) llmWaitRow(c *ui.Context) {
 	help := i18n.T("How long Voxt waits for an answer before it inserts the recognised text instead. Automatic waits 20 seconds to a minute, longer for long text.")
 	settingRow(c, "llm-wait", i18n.T("Wait for the language model"), help, func() {
 		opts := waitLabels()
+		v := a.prefs.Models.LLMWait
+		i := slices.Index(settings.WaitChoices, v)
+		// A custom wait saved by an earlier version shows as what it is;
+		// the nearest preset would say another wait than the one in effect.
+		if wait := a.prefs.Models.LLMWaitFor(); i < 0 && wait > 0 {
+			n := int(wait / time.Minute)
+			opts = append(opts, i18n.N(n, "%d minute", "%d minutes", n))
+			i = len(opts) - 1
+		}
 		save := func(v string) {
 			a.llmWaitFor = v + "\x00" + i18n.Locale()
 			a.updateSettings(func(s *settings.Settings) { s.Models.LLMWait = v })
 		}
-		v := a.prefs.Models.LLMWait
 		if want := v + "\x00" + i18n.Locale(); a.llmWaitFor != want {
-			i := slices.Index(settings.WaitChoices, v)
-			// A saved custom wait keeps its value; only its label moves to a preset.
-			if wait := a.prefs.Models.LLMWaitFor(); i < 0 && wait > 0 {
-				nearest := settings.NoLimit
-				for candidate := 1; candidate < len(settings.WaitChoices)-1; candidate++ {
-					candidateWait := (settings.Models{LLMWait: settings.WaitChoices[candidate]}).LLMWaitFor()
-					if distance := max(wait-candidateWait, candidateWait-wait); distance < nearest {
-						i, nearest = candidate, distance
-					}
-				}
-			}
 			a.llmWaitFor, a.llmWaitSel = want, opts[max(i, 0)]
 		}
 		if ui.Select(c.Key("llm-wait-select"), &a.llmWaitSel, opts).Label(i18n.T("Wait for the language model")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 140)).Changed() {
-			save(settings.WaitChoices[max(slices.Index(opts, a.llmWaitSel), 0)])
+			if choice := slices.Index(opts, a.llmWaitSel); choice >= 0 && choice < len(settings.WaitChoices) {
+				save(settings.WaitChoices[choice])
+			}
 		}
 	})
 }
