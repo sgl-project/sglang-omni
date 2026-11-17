@@ -38,6 +38,7 @@ import (
 // dictionaryState is the Dictionary page's view state.
 type dictionaryState struct {
 	dv              dictView
+	dictProfiles    dictionaryProfileState
 	book            *learn.Book
 	suggestions     []learn.Suggestion // the sidebar's count and the page's section
 	suggestionReads int                // numbers the reads: only the last one lands
@@ -99,6 +100,7 @@ type termEdit struct {
 	createdAt       time.Time
 	original, title string
 	suggestion      string // the key of the suggestion the dialog accepts, if any
+	profile         string // the profile the term was opened in: a switch must not retarget Save/Delete
 }
 
 // Test seams: the file dialogs of Import and Export.
@@ -214,6 +216,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			d.listUI.ScrollIntoView(row)
 		}
 		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
+			a.dictionaryProfileBar(c)
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 				if d.find.field(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
 					a.loadDict()
@@ -262,6 +265,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	})
 	a.termDialog(c)
 	a.scanDialog(c)
+	a.dictionaryProfileDialogs(c)
 }
 
 // dictSwitches say where the terms go.
@@ -385,7 +389,7 @@ func (a *app) openTerm(term store.Term) {
 	d := &a.dv
 	d.editOpen = true
 	d.edit = termEdit{id: term.ID, term: term.Term, aliases: strings.Join(term.Aliases, ", "), note: term.Note,
-		enabled: term.Enabled, createdAt: term.CreatedAt, original: term.Term}
+		enabled: term.Enabled, createdAt: term.CreatedAt, original: term.Term, profile: a.activeDictionaryProfile().ID}
 	d.editWas = d.edit
 }
 
@@ -423,7 +427,7 @@ func (a *app) termDialog(c *ui.Context) {
 	}, func() {
 		if e.id != "" && ghostButton(c.Key("term-delete"), i18n.T("Delete")).Clicked() {
 			d.editOpen = false
-			a.deleteTerm(store.Term{ID: e.id, Term: e.original})
+			a.deleteTerm(store.Term{ID: e.id, Term: e.original, ProfileID: e.profile})
 		}
 		ui.Spacer(c)
 		if ui.Button(c.Key("term-cancel"), i18n.T("Cancel")).Clicked() {
@@ -440,7 +444,7 @@ func (a *app) termDialog(c *ui.Context) {
 // submitTerm checks and saves the dialog's term.
 func (a *app) submitTerm() {
 	e := &a.dv.edit
-	term := dict.Clean(store.Term{ID: e.id, Term: e.term, Aliases: dict.SplitAliases(e.aliases), Note: e.note, Enabled: e.enabled, CreatedAt: e.createdAt})
+	term := dict.Clean(store.Term{ID: e.id, Term: e.term, Aliases: dict.SplitAliases(e.aliases), Note: e.note, Enabled: e.enabled, CreatedAt: e.createdAt, ProfileID: e.profile})
 	if err := dict.Check(term); err != nil {
 		e.err = uitext.TermErrorText(err)
 		return
@@ -490,7 +494,7 @@ func (a *app) deleteTerm(term store.Term) {
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := repo.Delete(ctx, term.ID)
+		err := repo.Delete(ctx, term.ID, term.ProfileID)
 		a.post(func() {
 			if err != nil && !errors.Is(err, core.ErrNotFound) {
 				a.toast(i18n.T("Could not delete the term: %v", err))

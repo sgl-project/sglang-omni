@@ -48,9 +48,11 @@ type meetingsView struct {
 	setOpen bool   // the meeting settings dialog
 	delID   string // the meeting the Delete dialog deletes, "" for none
 	// importing is the recording file being imported (meetings_import.go),
-	// importNoMTD opens the dialog that importing needs MTD.
-	importing   *meetingImport
-	importNoMTD bool
+	// importNoMTD opens the dialog that importing needs MTD;
+	// importNoHistory the one that Keep a history is off.
+	importing       *meetingImport
+	importNoMTD     bool
+	importNoHistory bool
 }
 
 type meetingsState struct {

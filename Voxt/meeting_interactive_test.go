@@ -77,11 +77,11 @@ func TestMeetingInteractive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer releaseVAD()
-	longPCM, err := decodeAudio(config.LongAudio)
+	longPCM, err := decodeAudio(context.Background(), config.LongAudio)
 	if err != nil {
 		t.Fatal(err)
 	}
-	interactivePCM, err := decodeAudio(config.InteractiveAudio)
+	interactivePCM, err := decodeAudio(context.Background(), config.InteractiveAudio)
 	if err != nil {
 		t.Fatal(err)
 	}

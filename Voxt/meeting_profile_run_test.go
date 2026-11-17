@@ -29,7 +29,7 @@ type profileVAD interface {
 }
 
 type profileDependencies struct {
-	decode       func(string) ([]byte, error)
+	decode       func(context.Context, string) ([]byte, error)
 	openStore    func(context.Context, string) (store.Store, error)
 	newASR       func(profile.Config) (profileASR, error)
 	newVAD       func(profile.Config) (profileVAD, error)
@@ -116,12 +116,12 @@ func runMeetingProfile(
 	var pcm, micPCM []byte
 	runErr = recorder.Measure("decode", 0, func() error {
 		var err error
-		pcm, err = dependencies.decode(config.Audio)
+		pcm, err = dependencies.decode(ctx, config.Audio)
 		if err != nil {
 			return err
 		}
 		if config.MicAudio != "" {
-			micPCM, err = dependencies.decode(config.MicAudio)
+			micPCM, err = dependencies.decode(ctx, config.MicAudio)
 		}
 		return err
 	})
