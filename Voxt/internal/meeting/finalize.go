@@ -205,6 +205,9 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 	p := DefaultChunkParams()
 	p.Rate = rate
 	p.MaxDur = diarizeChunkMax
+	// Profiling experiment (round 26): pack speech regions up to the cap
+	// instead of starting a new request at every pause over PauseMin.
+	p.PauseMin = diarizeChunkMax
 	chunks := PlanChunks(speech, len(pcm)/2, p)
 	if len(chunks) == 0 {
 		chunks = []Chunk{{Start: 0, End: len(pcm) / 2}}
