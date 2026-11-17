@@ -44,8 +44,10 @@ public:
   // Loads config.json and model.safetensors (16 kHz branch only).
   explicit SileroVAD(const std::filesystem::path &model_directory);
 
-  // Speech probability of one 512-sample chunk; advances state.
-  float Feed(const float *chunk, StreamState &state) const;
+  // Speech probability of each of chunk_count consecutive 512-sample chunks;
+  // advances state.
+  std::vector<float> Feed(const float *samples, int chunk_count,
+                          StreamState &state) const;
   // Per-chunk probabilities of a whole buffer: zero-padded to whole chunks,
   // fed in order from a fresh state (Swift predictProba).
   std::vector<float>
