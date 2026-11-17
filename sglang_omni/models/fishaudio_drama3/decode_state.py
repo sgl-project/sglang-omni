@@ -24,17 +24,17 @@ def ras_window(frame_rows: list[list[int]]) -> list[int]:
 
 
 def extend_frame_rows(request_data: Drama3RequestData) -> list[list[int]]:
-    """The rows of a prefill, which must cover the request's whole frame history."""
+    """Uncached frame rows through the end of the request's history."""
     sglang_request = request_data.req
     assert sglang_request is not None
     sequence_ids = list(sglang_request.full_untruncated_fill_ids)
     if (
         sglang_request.extend_end is None
-        or sglang_request.prefix_len != 0
+        or (sglang_request.prefix_len != 0 and not request_data.prefix_cache_enabled)
         or sglang_request.extend_end != len(sequence_ids)
     ):
         raise RuntimeError(
-            f"{sglang_request.rid}: a Drama 3 prefill must cover the whole sequence of "
+            f"{sglang_request.rid}: expected the complete uncached suffix of "
             f"{len(sequence_ids)} rows in one extend; got "
             f"[{sglang_request.prefix_len}, {sglang_request.extend_end})"
         )
@@ -42,21 +42,25 @@ def extend_frame_rows(request_data: Drama3RequestData) -> list[list[int]]:
         raise RuntimeError(
             f"{sglang_request.rid}: an extend needs at least {MINIMUM_PROMPT_ROWS} rows"
         )
-    elif [frame_row[0] for frame_row in request_data.frame_rows] != sequence_ids:
+    elif [frame_row[0] for frame_row in request_data.frame_rows] != (
+        request_data.input_ids.tolist() + list(sglang_request.output_ids)
+    ):
         raise RuntimeError(
             f"{sglang_request.rid}: the frame history is not the sequence"
         )
     else:
-        return request_data.frame_rows
+        return request_data.frame_rows[
+            sglang_request.prefix_len : sglang_request.extend_end
+        ]
 
 
 def extend_frame_history(request_data: Drama3RequestData) -> torch.Tensor:
-    """extend_frame_rows as an int64 CPU tensor [rows, frame width]: the prompt
-    tensor the request builder kept, then any frames sampled before a retraction."""
+    """Uncached prefill history as an int64 CPU tensor [rows, frame width]."""
     frame_rows = extend_frame_rows(request_data)
     prompt_frames = request_data.prompt_frames
     assert prompt_frames is not None
-    sampled_rows = frame_rows[request_data.prompt_row_count :]
+    prompt_frames = prompt_frames[request_data.req.prefix_len :]
+    sampled_rows = frame_rows[len(prompt_frames) :]
     if not sampled_rows:
         return prompt_frames
     else:

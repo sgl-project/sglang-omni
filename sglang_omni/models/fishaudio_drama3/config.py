@@ -35,6 +35,7 @@ ReferenceSamplingFallback = Literal["argmax", "ras"]
 DEFAULT_REFERENCE_SAMPLING = False
 DEFAULT_REFERENCE_SAMPLING_FALLBACK: ReferenceSamplingFallback = "argmax"
 DEFAULT_TOWER_FUSED_LAYERS = True
+DEFAULT_PREFIX_CACHE_PROMPT_ONLY = True
 DEFAULT_ENABLE_ASYNC_DECODE = False
 DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
 # The codec of the public S2-Pro release, pinned to an immutable commit.
@@ -81,6 +82,7 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     reference_sampling: bool | None = None
     reference_sampling_fallback: ReferenceSamplingFallback | None = None
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS
+    prefix_cache_prompt_only: bool = DEFAULT_PREFIX_CACHE_PROMPT_ONLY
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE
     async_decode_min_batch_size: int = Field(
         default=DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE, ge=1
@@ -192,6 +194,19 @@ class Drama3PipelineConfig(PipelineConfig):
         factory = self.stage_named("vocoder").factory
         assert isinstance(factory, Drama3VocoderFactoryArgs)
         return factory.stateful_decode
+
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        env_defaults = super().resolved_stage_env_defaults(stage_name)
+        if stage_name == "tts_engine":
+            factory = self.stage_named(stage_name).factory
+            assert isinstance(factory, Drama3EngineFactoryArgs)
+            env_defaults.setdefault(
+                "SGLANG_ENABLE_GDN_PREFILL_GRAPH_EXTEND",
+                "1" if factory.gdn_prefill_cuda_graphs else "0",
+            )
+        else:
+            pass
+        return env_defaults
 
     def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)

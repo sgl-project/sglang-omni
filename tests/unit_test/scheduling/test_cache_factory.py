@@ -24,10 +24,12 @@ from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 
+from sglang_omni.scheduling.sglang_backend import cache as cache_module
 from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
 from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
     EvictHeapRadixCache,
 )
+from sglang_omni.vendor.sglang.core import set_mamba_track_indices
 
 
 def test_factory_selects_evict_heap_only_for_lru() -> None:
@@ -67,22 +69,37 @@ def test_factory_passes_the_eviction_policy_config_to_the_strategy() -> None:
     assert cache.eviction_strategy.protected_threshold == 4
 
 
-@pytest.mark.parametrize("eviction_policy", ["lru"])
-def test_factory_refuses_radix_for_hybrid_state_pools(eviction_policy: str) -> None:
-    """A radix hit restores attention KV but never the linear-attention state."""
+@pytest.mark.parametrize("eviction_policy", ["lru", "fifo"])
+def test_factory_restores_both_hybrid_cache_components(
+    eviction_policy: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hybrid requests need the state-aware cache, including its checkpoint policy."""
     hybrid_pool = object.__new__(HybridReqToTokenPool)
+    cache_factory = Mock()
+    monkeypatch.setattr(cache_module, "UnifiedRadixCache", cache_factory)
+    monkeypatch.setattr(
+        cache_module.schedule_batch,
+        "set_mamba_track_indices_from_reqs",
+        cache_module.schedule_batch.set_mamba_track_indices_from_reqs,
+    )
     with get_context().override_server_args(
         disable_radix_cache=False,
         chunked_prefill_size=None,
         radix_eviction_policy=eviction_policy,
+        mamba_radix_cache_strategy="extra_buffer",
+        enable_streaming_session=False,
     ):
-        with pytest.raises(ValueError, match="disable_radix_cache"):
-            create_tree_cache(
-                hybrid_pool,
-                Mock(spec=BaseTokenToKVPoolAllocator, device="cpu"),
-                1,
-                None,
-            )
+        cache = create_tree_cache(
+            hybrid_pool,
+            Mock(spec=BaseTokenToKVPoolAllocator, device="cpu"),
+            1,
+            None,
+        )
+    assert cache is cache_factory.return_value
+    (params,) = cache_factory.call_args.args
+    assert params.tree_components == (ComponentType.FULL, ComponentType.MAMBA)
+    assert params.enable_mamba_extra_buffer
+    assert not params.enable_mamba_extra_buffer_lazy
 
 
 def test_factory_serves_hybrid_state_pools_from_the_unified_cache() -> None:
@@ -98,6 +115,40 @@ def test_factory_serves_hybrid_state_pools_from_the_unified_cache() -> None:
 
     assert type(cache) is UnifiedRadixCache
     assert cache.tree_components == (ComponentType.FULL, ComponentType.MAMBA)
+
+
+def test_single_checkpoint_buffer_tracks_donation_and_reordered_requests() -> None:
+    request_pool = object.__new__(HybridReqToTokenPool)
+    request_pool.mamba_ping_pong_track_buffer_size = 1
+    request_pool.req_index_to_mamba_ping_pong_track_buffer_mapping = torch.tensor(
+        [[-1], [10], [20]], dtype=torch.int64
+    )
+    requests = [
+        Req(str(index), "", [1], SamplingParams(max_new_tokens=4)) for index in (1, 2)
+    ]
+    for index, request in enumerate(requests, start=1):
+        request.kv.req_pool_idx = index
+        request.kv.mamba_ping_pong_track_buffer = torch.tensor([index * 10])
+        request.kv.mamba_ping_pong_empty = [False]
+    batch = ScheduleBatch(
+        reqs=requests,
+        req_to_token_pool=request_pool,
+        # note (wirybeaver): beam member rows follow the user-visible requests.
+        req_pool_indices=torch.tensor([1, 2, 2]),
+    )
+    replacement_slot = torch.tensor(30)
+    reordered_rows = torch.tensor([2, 1, 2])
+    expected_initial = torch.tensor([10, 20])
+    expected_after_donation = torch.tensor([20, 30])
+
+    set_mamba_track_indices(batch)
+    assert torch.equal(batch.mamba_track_indices, expected_initial)
+    request_pool.set_mamba_ping_pong_slot(requests[0], 0, replacement_slot)
+    batch.reqs = list(reversed(requests))
+    batch.req_pool_indices = reordered_rows
+    set_mamba_track_indices(batch)
+    assert torch.equal(batch.mamba_track_indices, expected_after_donation)
+    assert batch.mamba_track_buffer_indices == [0, 0]
 
 
 def make_window_cache(
