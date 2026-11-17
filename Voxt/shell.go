@@ -34,6 +34,17 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
+// Aliases of the MyGo types the shell's logic files name (the shell's
+// state, the logs' selection): a file that names only the aliases does
+// not import MyGo, so the boundary check reads it as the logic file it
+// is (the settings demo's settingsDemoRouter does the same).
+type (
+	uiContext   = ui.Context
+	uiRect      = ui.Rect
+	uiInputKind = ui.InputKind
+	uiModifiers = ui.Modifiers
+)
+
 // The main window's size, DIPs: by default and at the least. A size the
 // window remembers (StateKey "main") wins over the default, so a window
 // left larger by an older version keeps its size.
@@ -90,12 +101,11 @@ type shellState struct {
 	logsPanel    bool
 	logsSource   string
 	logsQuery    string
-	logsFind     finder       // Return steps through the filter's matches (find_marks.go)
-	logSel       logSelection // the lines selected (shell_logs_select.go)
 	logsHeight   float32
 	logsDirty    atomic.Bool // a redraw for new lines is on its way
 
-	navState          // shell_nav.go
+	logsState // shell_logs_controller.go
+	navState  // shell_nav.go
 	menuLocale string // locale the native menu was built in
 	hasMenu    bool   // the app runs (not a test): it has a menu bar to build
 }
@@ -282,7 +292,7 @@ func (a *app) view(c *ui.Context) {
 				ph := min(px(t, a.logsHeight), max(px(t, 120), wh/2-px(t, sp6)))
 				ui.Divider(c)
 				ui.Column(c.Key("logs-panel")).Height(ph).Shrink(0).Children(func() {
-					a.logsView(c, true)
+					logsView(c, a.logsModel(), a, a.logsLocal(), true)
 				})
 			}
 		})

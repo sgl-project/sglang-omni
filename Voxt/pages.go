@@ -80,7 +80,7 @@ func (a *app) page(c *ui.Context, p navPage) {
 		historyDeleteDialog(c, &a.histUI, a)
 		return
 	case "/logs":
-		a.logsPage(c)
+		logsPage(c, a.logsModel(), a, a.logsLocal())
 		return
 	case modelsPath:
 		model := a.modelsPageModel()
