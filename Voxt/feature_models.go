@@ -167,11 +167,17 @@ func (a *app) trEnhance(c *ui.Context) {
 				a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Cleanup = on })
 			}
 		})
-	settingRow(c, "tr-structure", i18n.T("Structure"),
-		i18n.T("Makes lists and paragraphs when you dictate steps or a long text."), func() {
-			if ui.Switch(c.Key("tr-structure-switch"), &f.Structure).Label(i18n.T("Structure")).Disabled(!f.UsesLLM()).Changed() {
-				on := f.Structure
-				a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Structure = on })
+	settingRow(c, "tr-structure", i18n.T("Automatic formatting"),
+		i18n.T("Your language model decides when to use lists or paragraphs from what you say. Ordinary messages keep their wording. You do not need to say first or second."), func() {
+			automatic := f.UsesLLM() && f.Structure
+			if ui.Switch(c.Key("tr-structure-switch"), &automatic).Label(i18n.T("Automatic formatting")).Changed() {
+				a.updateSettings(func(s *settings.Settings) {
+					s.Features.Transcribe.Structure = automatic
+					if automatic {
+						s.Features.Transcribe.Enhance = true
+						s.Features.Transcribe.LocalStructure = false
+					}
+				})
 			}
 		})
 }

@@ -48,7 +48,7 @@ func TestTranscribePageRenders(t *testing.T) {
 		"Transcribe", "Shortcuts", "Right ⌥", "Tap", "Double tap", "Long press", "Add a shortcut",
 		"Paste the last result", "⌃⌥V",
 		"Models", "No speech model is installed. Install one to transcribe.", "Open Speech models",
-		"Clean-up", "Clean up with a language model", "Basic clean-up", "Structure",
+		"Clean-up", "Clean up with a language model", "Basic clean-up", "Automatic formatting",
 		"Your rules", "characters",
 		"Try it", "Start",
 	} {
@@ -252,7 +252,7 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	}
 
 	// The switches write back; with Enhance off the layers are greyed.
-	clickSwitch(t, tt, "Structure")
+	clickSwitch(t, tt, "Automatic formatting")
 	if !a.lib.settings.Get().Features.Transcribe.Structure {
 		t.Error("structure not saved")
 	}
@@ -263,6 +263,29 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	clickSwitch(t, tt, "Basic clean-up")
 	if !a.lib.settings.Get().Features.Transcribe.Cleanup {
 		t.Error("clean-up changed while disabled")
+	}
+}
+
+func TestAutomaticFormattingSwitchesFromLocalMode(t *testing.T) {
+	a, tt := trTester(t)
+	readyModels(a)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.LocalStructure = true
+		s.Features.Transcribe.Enhance = false
+		s.Features.Transcribe.Cleanup = false
+	})
+	clickSwitch(t, tt, "Automatic formatting")
+	transcribe := a.lib.settings.Get().Features.Transcribe
+	if !transcribe.Structure || !transcribe.UsesLLM() || transcribe.LocalStructure || transcribe.Cleanup {
+		t.Fatalf("automatic formatting settings = %+v", transcribe)
+	}
+	preview, err := a.composedPreview(hotkey.Transcribe)
+	if err != nil || preview.System != a.promptBuiltin(hotkey.Transcribe) {
+		t.Fatalf("automatic formatting preview = %+v, error %v", preview, err)
+	}
+	clickSwitch(t, tt, "Automatic formatting")
+	if a.lib.settings.Get().Features.Transcribe.Structure {
+		t.Fatal("automatic formatting stayed on")
 	}
 }
 
