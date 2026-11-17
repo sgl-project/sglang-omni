@@ -238,11 +238,6 @@ LoadCheckpoint(const std::filesystem::path &model_directory,
     } else {
     }
   }
-  std::vector<mx::array> parameters;
-  parameters.reserve(weights.size());
-  for (const auto &[name, array] : weights)
-    parameters.push_back(array);
-  mx::eval(parameters);
   return weights;
 }
 
