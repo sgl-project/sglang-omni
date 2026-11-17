@@ -48,23 +48,30 @@ func TestWindowScreenshotEndToEnd(t *testing.T) {
 }
 
 // TestClipboardImageEndToEnd: with "Send the copied image with Rewrite"
-// on, the helper's picture of the clipboard goes with the selection and
-// the instruction to the language model; with nothing on the clipboard
-// (or the switch off) the model gets the text alone.
+// on and nothing selected, the helper's picture of the clipboard goes
+// with the instruction to the language model; a text selection takes
+// the text path and the picture stays out (#4152); with nothing on the
+// clipboard (or the switch off) the model gets the text alone.
 func TestClipboardImageEndToEnd(t *testing.T) {
 	for _, tc := range []struct {
 		name, opts string
+		sel        string
 		on, image  bool
 	}{
-		{"a copied image", ",clipboard-image", true, true},
-		{"nothing copied", "", true, false},
-		{"off", ",clipboard-image", false, false},
+		{"a copied image, no selection", ",clipboard-image", "", true, true},
+		{"a copied image with a selection stays out", ",clipboard-image", "this", true, false},
+		{"nothing copied", "", "this", true, false},
+		{"off", ",clipboard-image", "", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chat := &fakeChat{text: "A red square."}
 			set, keys, _ := fileSetup(t, "describe the picture", chat)
 			ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
-			a := newSessionApp(t, helpertest.Opt("selection", "this")+","+ev+tc.opts, func(s *settings.Settings) {
+			opts := ev + tc.opts
+			if tc.sel != "" {
+				opts = helpertest.Opt("selection", tc.sel) + "," + opts
+			}
+			a := newSessionApp(t, opts, func(s *settings.Settings) {
 				set(s)
 				s.Privacy.SendClipboardImage = tc.on
 			}, keys)
