@@ -31,6 +31,15 @@ type dictionaryProfileState struct {
 	deleteID   string
 }
 
+// profileName is a profile's name as the user sees it: the built-in
+// Default translates; the user's own names stay as typed.
+func profileName(p store.DictionaryProfile) string {
+	if p.ID == "default" {
+		return i18n.T("Default")
+	}
+	return p.Name
+}
+
 func (a *app) activeDictionaryProfile() store.DictionaryProfile {
 	for _, profile := range a.dictProfiles.list {
 		if profile.Active {
@@ -98,7 +107,7 @@ func (a *app) switchDictionaryProfileByName(name string) {
 				return
 			}
 			for _, profile := range profiles {
-				if profile.Name == strings.TrimSpace(name) {
+				if profile.Name == strings.TrimSpace(name) || profileName(profile) == strings.TrimSpace(name) {
 					a.switchDictionaryProfile(profile.ID)
 					return
 				}
@@ -117,7 +126,7 @@ func (a *app) dictionaryProfileBar(c *ui.Context) {
 	active := a.activeDictionaryProfile()
 	selected, names := 0, make([]string, len(profiles))
 	for i, profile := range profiles {
-		names[i] = profile.Name
+		names[i] = profileName(profile)
 		if profile.Active {
 			selected = i
 		}
@@ -132,11 +141,11 @@ func (a *app) dictionaryProfileBar(c *ui.Context) {
 			p.editOpen, p.editID, p.editName, p.editErr = true, "", "", ""
 		}
 		moreMenu(c.Key("dict-profile-more"), i18n.T("Profile actions"), func(m *ui.Menu) {
-			if m.Item(i18n.T("Rename “%s”…", active.Name)).Disabled(active.ID == "").Chosen() {
+			if m.Item(i18n.T("Rename “%s”…", profileName(active))).Disabled(active.ID == "").Chosen() {
 				p := &a.dictProfiles
 				p.editOpen, p.editID, p.editName, p.editErr = true, active.ID, active.Name, ""
 			}
-			if m.Item(i18n.T("Delete “%s”…", active.Name)).Disabled(len(profiles) <= 1).Chosen() {
+			if m.Item(i18n.T("Delete “%s”…", profileName(active))).Disabled(len(profiles) <= 1).Chosen() {
 				a.dictProfiles.deleteOpen, a.dictProfiles.deleteID = true, active.ID
 			}
 		})
@@ -236,7 +245,7 @@ func (a *app) dictionaryProfileDialogs(c *ui.Context) {
 		name := ""
 		for _, profile := range p.list {
 			if profile.ID == p.deleteID {
-				name = profile.Name
+				name = profileName(profile)
 			}
 		}
 		dialogFrame(c, "dict-profile-delete", &p.deleteOpen, i18n.T("Delete “%s”?", name), "", 420, func() {

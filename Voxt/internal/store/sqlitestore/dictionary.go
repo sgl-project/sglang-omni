@@ -50,10 +50,10 @@ func (r *dictionaryRepo) Put(ctx context.Context, t store.Term) error {
 	if t.Enabled {
 		enabled = 1
 	}
-	_, err = r.db.Execute(ctx, `INSERT INTO dictionary_terms (profile_id, `+termColumns+`) VALUES (`+activeProfile+`, ?, ?, ?, ?, ?, ?, ?)
+	_, err = r.db.Execute(ctx, `INSERT INTO dictionary_terms (profile_id, `+termColumns+`) VALUES (COALESCE(NULLIF(?, ''), `+activeProfile+`), ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(profile_id, id) DO UPDATE SET term = excluded.term, aliases = excluded.aliases, note = excluded.note,
   enabled = excluded.enabled, created_at = excluded.created_at, updated_at = excluded.updated_at`,
-		t.ID, t.Term, string(data), t.Note, enabled, t.CreatedAt.UnixMilli(), t.UpdatedAt.UnixMilli())
+		t.ProfileID, t.ID, t.Term, string(data), t.Note, enabled, t.CreatedAt.UnixMilli(), t.UpdatedAt.UnixMilli())
 	return wrap("term "+t.Term, err)
 }
 
@@ -96,8 +96,8 @@ func (r *dictionaryRepo) List(ctx context.Context, search string) ([]store.Term,
 	return out, nil
 }
 
-func (r *dictionaryRepo) Delete(ctx context.Context, id string) error {
-	res, err := r.db.Execute(ctx, `DELETE FROM dictionary_terms WHERE profile_id = `+activeProfile+` AND id = ?`, id)
+func (r *dictionaryRepo) Delete(ctx context.Context, id, profileID string) error {
+	res, err := r.db.Execute(ctx, `DELETE FROM dictionary_terms WHERE profile_id = COALESCE(NULLIF(?, ''), `+activeProfile+`) AND id = ?`, profileID, id)
 	if err != nil {
 		return wrap("term "+id, err)
 	}

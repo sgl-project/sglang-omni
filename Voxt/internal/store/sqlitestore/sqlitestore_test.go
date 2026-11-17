@@ -362,10 +362,10 @@ func TestDictionary(t *testing.T) {
 	if got := names("VOX"); got != "VoxtNew" {
 		t.Errorf("ignoring case: %q", got)
 	}
-	if err := d.Delete(ctx, "2"); err != nil {
+	if err := d.Delete(ctx, "2", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Delete(ctx, "2"); !errors.Is(err, core.ErrNotFound) {
+	if err := d.Delete(ctx, "2", ""); !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("deleted twice: %v", err)
 	}
 	if st, _ := s.Stats(ctx); st.Dictionary != 2 {

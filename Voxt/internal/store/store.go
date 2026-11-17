@@ -221,6 +221,9 @@ type Term struct {
 	Enabled   bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// ProfileID binds a write to the profile the term was opened from
+	// ("": the active one, as sessions, imports and learning use).
+	ProfileID string
 }
 
 // DictionaryProfile is a named set of dictionary terms. Active is true
@@ -239,7 +242,8 @@ type Dictionary interface {
 	Get(ctx context.Context, id string) (Term, error)
 	// List returns the active profile's terms matching search ("" = all), A to Z.
 	List(ctx context.Context, search string) ([]Term, error)
-	Delete(ctx context.Context, id string) error
+	// Delete removes the term from profileID ("" = the active profile).
+	Delete(ctx context.Context, id, profileID string) error
 	// Profiles lists every profile, A to Z.
 	Profiles(ctx context.Context) ([]DictionaryProfile, error)
 	// CreateProfile adds an inactive profile with a unique, non-empty name.
