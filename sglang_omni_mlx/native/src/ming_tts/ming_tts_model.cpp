@@ -177,9 +177,8 @@ mx::array MingBackbone::EmbedTokens(const mx::array &input_ids) const {
 mx::array MingBackbone::Mlp(const mx::array &x,
                             const std::string &prefix) const {
   return checkpoint_.Linear(
-      mx::multiply(
-          omni_common::Silu(checkpoint_.Linear(x, prefix + ".gate_proj")),
-          checkpoint_.Linear(x, prefix + ".up_proj")),
+      omni_common::Swiglu(checkpoint_.Linear(x, prefix + ".gate_proj"),
+                          checkpoint_.Linear(x, prefix + ".up_proj")),
       prefix + ".down_proj");
 }
 
@@ -225,10 +224,9 @@ mx::array MingBackbone::Moe(const mx::array &x,
                 std::nullopt, row_experts, sorted);
           }
         };
-        return project(
-            mx::multiply(omni_common::Silu(project(rows, "gate_proj")),
-                         project(rows, "up_proj")),
-            "down_proj");
+        return project(omni_common::Swiglu(project(rows, "gate_proj"),
+                                           project(rows, "up_proj")),
+                       "down_proj");
       });
   const mx::array output = mx::astype(
       mx::reshape(

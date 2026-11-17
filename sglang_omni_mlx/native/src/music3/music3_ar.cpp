@@ -72,8 +72,8 @@ mx::array Model::Depth(const mx::array &embeddings) const {
     hidden =
         hidden +
         checkpoint_.Linear(
-            omni_common::Silu(checkpoint_.Linear(mlp, prefix + ".gate_proj")) *
-                checkpoint_.Linear(mlp, prefix + ".up_proj"),
+            omni_common::Swiglu(checkpoint_.Linear(mlp, prefix + ".gate_proj"),
+                                checkpoint_.Linear(mlp, prefix + ".up_proj")),
             prefix + ".down_proj");
   }
   return checkpoint_.RmsNorm(hidden, "rvq_depth_decoder.norm", epsilon);

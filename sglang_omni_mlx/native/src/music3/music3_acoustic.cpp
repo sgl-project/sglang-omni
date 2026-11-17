@@ -131,9 +131,9 @@ mx::array Model::Velocity(const mx::array &latents, float sigma,
                       checkpoint_.LayerNorm(hidden, prefix + ".norm2", 1e-5f),
                       prefix + ".ff_in"),
                   2, -1);
-    hidden = hidden + checkpoint_.Linear(feed_forward[0] *
-                                             omni_common::Silu(feed_forward[1]),
-                                         prefix + ".ff_out");
+    hidden = hidden + checkpoint_.Linear(
+                          omni_common::Swiglu(feed_forward[1], feed_forward[0]),
+                          prefix + ".ff_out");
   }
   hidden = checkpoint_.Linear(mx::slice(hidden, {0, 1, 0}, hidden.shape()),
                               "transformer.proj_out");

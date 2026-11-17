@@ -266,12 +266,12 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
         checkpoint_.RmsNorm(hidden, prefix + ".ffn_norm", config.norm_eps);
     hidden = mx::add(
         hidden,
-        checkpoint_.Linear(
-            mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                             feed_forward_input, prefix + ".feed_forward.w1")),
-                         checkpoint_.Linear(feed_forward_input,
-                                            prefix + ".feed_forward.w3")),
-            prefix + ".feed_forward.w2"));
+        checkpoint_.Linear(omni_common::Swiglu(
+                               checkpoint_.Linear(feed_forward_input,
+                                                  prefix + ".feed_forward.w1"),
+                               checkpoint_.Linear(feed_forward_input,
+                                                  prefix + ".feed_forward.w3")),
+                           prefix + ".feed_forward.w2"));
   }
   const int dimension = hidden.shape(2);
   return checkpoint_.RmsNorm(

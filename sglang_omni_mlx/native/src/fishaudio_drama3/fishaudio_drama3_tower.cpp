@@ -108,9 +108,8 @@ mx::array Drama3Model::TowerLayer(
   const mx::array feed_forward_input =
       Fp32Norm(after_attention, block + ".ffn_norm", tower_norm_eps_);
   const mx::array feed_forward = checkpoint_.Linear(
-      mx::multiply(
-          omni_common::Silu(checkpoint_.Linear(feed_forward_input,
-                                               block + ".feed_forward.w1")),
+      omni_common::Swiglu(
+          checkpoint_.Linear(feed_forward_input, block + ".feed_forward.w1"),
           checkpoint_.Linear(feed_forward_input, block + ".feed_forward.w3")),
       block + ".feed_forward.w2");
   const mx::array layer_output =

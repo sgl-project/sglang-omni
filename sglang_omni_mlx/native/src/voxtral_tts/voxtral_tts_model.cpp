@@ -304,10 +304,10 @@ mx::array VoxtralTtsModel::AcousticLayer(const mx::array &x, int layer) const {
   return mx::add(
       hidden,
       checkpoint_.Linear(
-          mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                           feed_forward_input, prefix + ".feed_forward.w1")),
-                       checkpoint_.Linear(feed_forward_input,
-                                          prefix + ".feed_forward.w3")),
+          omni_common::Swiglu(checkpoint_.Linear(feed_forward_input,
+                                                 prefix + ".feed_forward.w1"),
+                              checkpoint_.Linear(feed_forward_input,
+                                                 prefix + ".feed_forward.w3")),
           prefix + ".feed_forward.w2"));
 }
 
