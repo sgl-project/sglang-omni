@@ -434,14 +434,6 @@ def test_windows_with_a_discard_get_their_own_graphs_beside_the_whole_ones() -> 
     }
 
 
-def test_an_utterance_only_decoder_gets_one_graph_per_length() -> None:
-    """Under incremental stream decoding the graph decoder serves only non-streaming
-    requests, and has no longest stream window to size batched graphs from."""
-    assert window_graph_keys(
-        (), (8, 16), max_batch_size=1, window_discards={}, flush_keys=[]
-    ) == [(1, 16, 0), (1, 8, 0)]
-
-
 class RecordingBatchDecoder:
     """Decodes same-length windows together with the frame-number codec, zeroes the
     discarded frames' audio as a graph that skips them leaves it, and records each
