@@ -351,9 +351,8 @@ mx::array SenseVoiceModel::EncoderLayer(const mx::array &x,
   return mx::add(hidden, feed_forward);
 }
 
-mx::array SenseVoiceModel::LogProbabilities(const mx::array &features,
-                                            int language_id,
-                                            bool use_itn) const {
+mx::array SenseVoiceModel::Logits(const mx::array &features, int language_id,
+                                  bool use_itn) const {
   const auto query = [&](std::vector<int32_t> ids) {
     return checkpoint_.Embed(
         mx::array(ids.data(), {1, static_cast<int>(ids.size())}, mx::int32),
@@ -397,7 +396,7 @@ mx::array SenseVoiceModel::LogProbabilities(const mx::array &features,
   }
   x = checkpoint_.LayerNorm(x, "encoder.tp_norm", kLayerNormEps);
   const mx::array logits = checkpoint_.Linear(x, "ctc.ctc_lo");
-  return mx::squeeze(mx::subtract(logits, mx::logsumexp(logits, -1, true)), 0);
+  return mx::squeeze(logits, 0);
 }
 
 } // namespace sensevoice

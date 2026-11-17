@@ -258,10 +258,10 @@ SenseVoiceTranscriber::TranscribePass(const std::vector<float> &samples,
                                                      {24995, "BGM"},
                                                      {24997, "Laughter"},
                                                      {24999, "Applause"}};
-  const mx::array log_probabilities =
-      model_.LogProbabilities(model_.Features(samples), language_id, use_itn);
-  const mx::array predictions =
-      mx::astype(mx::argmax(log_probabilities, -1), mx::int32);
+  const mx::array predictions = mx::astype(
+      mx::argmax(model_.Logits(model_.Features(samples), language_id, use_itn),
+                 -1),
+      mx::int32);
   mx::eval(predictions);
   const int32_t *ids = predictions.data<int32_t>();
   const int frame_count = static_cast<int>(predictions.size());
