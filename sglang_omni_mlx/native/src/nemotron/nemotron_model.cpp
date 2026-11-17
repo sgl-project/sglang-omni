@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "common/fastconformer.h"
 #include "common/swift_port.h"
 
 namespace nemotron {
@@ -19,7 +20,6 @@ constexpr float kLayerNormEps = 1e-5f;
 constexpr int kCausalPadBefore = 2;
 constexpr int kCausalPadAfter = 1;
 constexpr int kSubsamplingStride = 2;
-constexpr float kPositionTimescale = 10000.0f;
 
 mx::array Scalar(float value, mx::Dtype dtype) {
   return mx::array(value, dtype);
@@ -126,89 +126,6 @@ mx::array NemotronModel::Subsample(const mx::array &mel) const {
   return checkpoint_.Linear(x, prefix + ".out");
 }
 
-mx::array NemotronModel::RelativePositions(int length, mx::Dtype dtype) const {
-  const int width = config_.model_width;
-  const int row_count = 2 * length - 1;
-  // Note (Dayuxiaoshui): each value depends only on its position and column,
-  // so building the rows a chunk needs equals slicing Swift's 5000-position
-  // table; float math in Swift's order keeps the values bit-identical.
-  const float log_timescale =
-      static_cast<float>(std::log(static_cast<double>(kPositionTimescale))) /
-      static_cast<float>(width);
-  std::vector<float> values(static_cast<size_t>(row_count) * width);
-  for (int row = 0; row < row_count; ++row) {
-    const float position = static_cast<float>(length - 1 - row);
-    for (int column = 0; column < width; column += 2) {
-      const float inverse_frequency =
-          std::exp(-static_cast<float>(column) * log_timescale);
-      const float angle = position * inverse_frequency;
-      values[static_cast<size_t>(row) * width + column] = std::sin(angle);
-      values[static_cast<size_t>(row) * width + column + 1] = std::cos(angle);
-    }
-  }
-  return mx::astype(
-      mx::array(values.data(), {1, row_count, width}, mx::float32), dtype);
-}
-
-mx::array NemotronModel::FeedForward(const mx::array &x,
-                                     const std::string &prefix) const {
-  return checkpoint_.Linear(
-      swift_port::Silu(checkpoint_.Linear(x, prefix + ".linear1")),
-      prefix + ".linear2");
-}
-
-mx::array NemotronModel::RelativeAttention(const mx::array &queries,
-                                           const mx::array &keys_values,
-                                           const mx::array &relative_positions,
-                                           const std::string &prefix) const {
-  const int query_count = queries.shape(1);
-  const int key_count = keys_values.shape(1);
-  const int position_count = relative_positions.shape(1);
-  const int head_count = config_.head_count;
-  const int head_width = config_.model_width / head_count;
-  const float scale =
-      static_cast<float>(std::pow(static_cast<double>(head_width), -0.5));
-  const mx::array query_heads =
-      mx::reshape(checkpoint_.Linear(queries, prefix + ".linear_q"),
-                  {1, query_count, head_count, head_width});
-  const auto heads = [&](const mx::array &projected, int length) {
-    return mx::transpose(
-        mx::reshape(projected, {1, length, head_count, head_width}),
-        {0, 2, 1, 3});
-  };
-  const mx::Dtype dtype = query_heads.dtype();
-  const mx::array content_queries = mx::transpose(
-      mx::add(query_heads,
-              mx::astype(checkpoint_.Weight(prefix + ".pos_bias_u"), dtype)),
-      {0, 2, 1, 3});
-  const mx::array position_queries = mx::transpose(
-      mx::add(query_heads,
-              mx::astype(checkpoint_.Weight(prefix + ".pos_bias_v"), dtype)),
-      {0, 2, 1, 3});
-  const mx::array keys =
-      heads(checkpoint_.Linear(keys_values, prefix + ".linear_k"), key_count);
-  const mx::array values =
-      heads(checkpoint_.Linear(keys_values, prefix + ".linear_v"), key_count);
-  const mx::array positions =
-      heads(checkpoint_.Linear(relative_positions, prefix + ".linear_pos"),
-            position_count);
-  mx::array position_scores =
-      mx::matmul(position_queries, mx::swapaxes(positions, -2, -1));
-  position_scores = omni_common::RelativeShift(position_scores);
-  position_scores =
-      mx::multiply(mx::slice(position_scores, {0, 0, 0, 0},
-                             {1, head_count, query_count, key_count}),
-                   Scalar(scale, position_scores.dtype()));
-  // Note (Dayuxiaoshui): the position scores ride in as the additive mask, so
-  // the fused kernel adds them to the content scores before the softmax.
-  const mx::array attended = mx::fast::scaled_dot_product_attention(
-      content_queries, keys, values, scale, /*window_size=*/-1, "array",
-      position_scores);
-  return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
-                                        {1, query_count, config_.model_width}),
-                            prefix + ".linear_out");
-}
-
 mx::array NemotronModel::StreamLayer(const mx::array &x, int layer,
                                      const mx::array &relative_positions,
                                      LayerCache &cache) const {
@@ -216,10 +133,12 @@ mx::array NemotronModel::StreamLayer(const mx::array &x, int layer,
   const mx::Dtype dtype = x.dtype();
   const mx::array half = Scalar(0.5f, dtype);
   mx::array hidden = mx::add(
-      x, mx::multiply(half, FeedForward(checkpoint_.LayerNorm(
-                                            x, prefix + ".norm_feed_forward1",
-                                            kLayerNormEps),
-                                        prefix + ".feed_forward1")));
+      x, mx::multiply(
+             half, omni_common::ConformerFeedForward(
+                       checkpoint_,
+                       checkpoint_.LayerNorm(x, prefix + ".norm_feed_forward1",
+                                             kLayerNormEps),
+                       prefix + ".feed_forward1")));
 
   const mx::array attention_input =
       checkpoint_.LayerNorm(hidden, prefix + ".norm_self_att", kLayerNormEps);
@@ -227,9 +146,10 @@ mx::array NemotronModel::StreamLayer(const mx::array &x, int layer,
       cache.attention_inputs.has_value()
           ? mx::concatenate({*cache.attention_inputs, attention_input}, 1)
           : attention_input;
-  hidden = mx::add(hidden, RelativeAttention(attention_input, keys_values,
-                                             relative_positions,
-                                             prefix + ".self_attn"));
+  hidden = mx::add(hidden, omni_common::RelativePositionAttention(
+                               checkpoint_, attention_input, keys_values,
+                               relative_positions, prefix + ".self_attn",
+                               config_.head_count));
   const int key_count = keys_values.shape(1);
   cache.attention_inputs = mx::slice(
       keys_values, {0, std::max(0, key_count - config_.left_context_frames), 0},
@@ -265,8 +185,9 @@ mx::array NemotronModel::StreamLayer(const mx::array &x, int layer,
                  checkpoint_.Weight(conv_prefix + ".pointwise_conv2.weight")));
 
   hidden = mx::add(
-      hidden,
-      mx::multiply(half, FeedForward(checkpoint_.LayerNorm(
+      hidden, mx::multiply(half, omni_common::ConformerFeedForward(
+                                     checkpoint_,
+                                     checkpoint_.LayerNorm(
                                          hidden, prefix + ".norm_feed_forward2",
                                          kLayerNormEps),
                                      prefix + ".feed_forward2")));

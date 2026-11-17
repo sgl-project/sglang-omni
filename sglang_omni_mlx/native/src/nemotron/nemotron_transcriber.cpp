@@ -6,6 +6,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
+#include "common/fastconformer.h"
 #include "common/generation.h"
 #include "common/swift_port.h"
 #include "common/text.h"
@@ -225,7 +226,9 @@ void NemotronStream::Decode(int mel_frame_limit, bool flush,
             ? layer_caches_[0].attention_inputs->shape(1)
             : 0;
     const mx::array positions =
-        model.RelativePositions(attention_frames + high - low, hidden.dtype());
+        mx::astype(omni_common::RelativePositionTable(
+                       attention_frames + high - low, config.model_width),
+                   hidden.dtype());
     for (int layer = 0; layer < config.layer_count; ++layer) {
       hidden =
           model.StreamLayer(hidden, layer, positions, layer_caches_[layer]);

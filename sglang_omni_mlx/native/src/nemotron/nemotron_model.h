@@ -60,7 +60,6 @@ public:
   mlx::core::array Subsample(const mlx::core::array &mel) const;
   // Relative positions length - 1 down to -(length - 1), [1, 2 * length - 1,
   // width] in dtype; every layer of a chunk shares them.
-  mlx::core::array RelativePositions(int length, mlx::core::Dtype dtype) const;
   // One conformer layer over a chunk [1, frames, width], reading and replacing
   // the layer's cache.
   mlx::core::array StreamLayer(const mlx::core::array &x, int layer,
@@ -89,12 +88,6 @@ private:
                 const std::filesystem::path &model_directory);
   mlx::core::array Conv2d(const mlx::core::array &x, const std::string &prefix,
                           int stride, int groups) const;
-  mlx::core::array FeedForward(const mlx::core::array &x,
-                               const std::string &prefix) const;
-  mlx::core::array RelativeAttention(const mlx::core::array &queries,
-                                     const mlx::core::array &keys_values,
-                                     const mlx::core::array &relative_positions,
-                                     const std::string &prefix) const;
 
   NemotronConfig config_;
   omni_common::Checkpoint checkpoint_;
