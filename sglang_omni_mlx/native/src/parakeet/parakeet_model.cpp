@@ -218,9 +218,9 @@ mx::array ParakeetModel::Encode(const mx::array &features) const {
   return x;
 }
 
-std::pair<mx::array, mx::array> ParakeetModel::InitialState() const {
+std::pair<mx::array, mx::array> ParakeetModel::InitialState(int rows) const {
   const mx::array zeros = mx::zeros(
-      {config_.prediction_layer_count, 1, prediction_width_}, mx::bfloat16);
+      {config_.prediction_layer_count, rows, prediction_width_}, mx::bfloat16);
   return {zeros, zeros};
 }
 
@@ -239,16 +239,17 @@ ParakeetModel::PredictGraph(const std::vector<mx::array> &inputs) const {
   for (int layer = 0; layer < config_.prediction_layer_count; ++layer) {
     const std::string lstm =
         prediction + ".dec_rnn.lstm." + std::to_string(layer);
+    const int rows = hidden.shape(1);
     const auto layer_state = [&](const mx::array &state) {
       return mx::squeeze(
-          mx::slice(state, {layer, 0, 0}, {layer + 1, 1, prediction_width_}),
+          mx::slice(state, {layer, 0, 0}, {layer + 1, rows, prediction_width_}),
           0);
     };
     const mx::array gates =
         mx::addmm(checkpoint_.Weight(lstm + ".bias"), output,
                   mx::transpose(checkpoint_.Weight(lstm + ".Wx")));
     const omni_common::LstmCell next = omni_common::LstmStep(
-        mx::squeeze(mx::slice(gates, {0, 0, 0}, {1, 1, gates.shape(2)}), 1),
+        mx::reshape(gates, {rows, gates.shape(2)}),
         omni_common::LstmCell{layer_state(hidden), layer_state(cell)},
         checkpoint_.Weight(lstm + ".Wh"));
     hidden_states.push_back(next.hidden);
@@ -263,10 +264,11 @@ mx::array ParakeetModel::ProjectFrames(const mx::array &encoded) const {
   return checkpoint_.Linear(encoded, "joint.enc");
 }
 
-Prediction ParakeetModel::Predict(int token, const mx::array &hidden,
+Prediction ParakeetModel::Predict(const mx::array &tokens,
+                                  const mx::array &hidden,
                                   const mx::array &cell) const {
   const std::vector<mx::array> outputs =
-      compiled_predict_({mx::array({token}, {1, 1}, mx::int32), hidden, cell});
+      compiled_predict_({tokens, hidden, cell});
   return {outputs[0], outputs[1], outputs[2]};
 }
 
@@ -276,14 +278,15 @@ mx::array ParakeetModel::Decisions(const mx::array &projected_frames,
       swift_port::Relu(mx::add(projected_frames, prediction.projection)),
       "joint.joint_net.2");
   const int class_count = blank_id() + 1;
+  const int rows = logits.shape(0);
   const int frame_count = logits.shape(1);
   return mx::astype(
-      mx::stack(
-          {mx::argmax(
-               mx::slice(logits, {0, 0, 0}, {1, frame_count, class_count}), -1),
-           mx::argmax(mx::slice(logits, {0, 0, class_count},
-                                {1, frame_count, logits.shape(2)}),
-                      -1)}),
+      mx::stack({mx::argmax(mx::slice(logits, {0, 0, 0},
+                                      {rows, frame_count, class_count}),
+                            -1),
+                 mx::argmax(mx::slice(logits, {0, 0, class_count},
+                                      {rows, frame_count, logits.shape(2)}),
+                            -1)}),
       mx::int32);
 }
 

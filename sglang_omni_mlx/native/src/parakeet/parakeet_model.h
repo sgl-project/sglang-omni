@@ -31,8 +31,9 @@ struct ParakeetConfig {
   int max_symbols_per_frame = 0;
 };
 
-// The prediction network's joint.pred output [1, 1, joint] for one state,
-// and the state after feeding its token, kept once a token is emitted.
+// The prediction network's joint.pred output [rows, 1, joint] for each
+// row's state, and the states after feeding its token, kept once a token is
+// emitted.
 struct Prediction {
   mlx::core::array projection;
   mlx::core::array hidden;
@@ -54,16 +55,17 @@ public:
   mlx::core::array Encode(const mlx::core::array &features) const;
   // joint.enc of encoder frames [1, frames, width]: [1, frames, joint].
   mlx::core::array ProjectFrames(const mlx::core::array &encoded) const;
-  // The prediction network fed token (the blank feeds zeros) from state
-  // [layers, 1, hidden].
-  Prediction Predict(int token, const mlx::core::array &hidden,
+  // The prediction network fed each row's token, int32 [rows, 1] (the blank
+  // feeds zeros), from states [layers, rows, hidden].
+  Prediction Predict(const mlx::core::array &tokens,
+                     const mlx::core::array &hidden,
                      const mlx::core::array &cell) const;
-  // Token and duration classes, int32 [2, frames], of projected frames [1,
-  // frames, joint] joined with one prediction.
+  // Token and duration classes, int32 [2, rows, frames], of projected frames
+  // [rows, frames, joint] joined with each row's prediction.
   mlx::core::array Decisions(const mlx::core::array &projected_frames,
                              const Prediction &prediction) const;
-  // Zero prediction state [layers, 1, hidden] in bfloat16.
-  std::pair<mlx::core::array, mlx::core::array> InitialState() const;
+  // Zero prediction states [layers, rows, hidden] in bfloat16.
+  std::pair<mlx::core::array, mlx::core::array> InitialState(int rows) const;
 
   const ParakeetConfig &config() const { return config_; }
   int blank_id() const { return static_cast<int>(config_.vocabulary.size()); }
