@@ -1,0 +1,21 @@
+sglang_omni/models/duo/live.py
+  s_9be4bd449be508::t_7c2cf1bc729e7f 31,131
+tests/unit_test/serve/test_realtime_video.py
+  s_9be4bd449be508::t_42ae47fda3bccc 390-394
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ba0ed8378b16666f29c675145becf7a3aceaad38",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
