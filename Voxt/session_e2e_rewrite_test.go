@@ -8,12 +8,49 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+// TestRewriteCardFromStart: the first recording, recognition and answer
+// share the card; typing a request submits with the original selection.
+func TestRewriteCardFromStart(t *testing.T) {
+	chat := &fakeChat{text: "Ship Friday."}
+	set, services, _ := fileSetup(t, "unused speech", chat)
+	a := newSessionApp(t, helpertest.Opt("selection", "We plan to ship on Friday."), set, services)
+	a.afterSession = append(a.afterSession, func(_, current session.Snapshot) {
+		if current.State.Live() && a.ov.mode != ovAnswer {
+			t.Errorf("%s showed %s instead of the card", current.State, a.ov.mode)
+		}
+	})
+	front := helpertest.Apps["com.tinyspeck.slackmacgap"]
+	a.startSession(session.StartRequest{Kind: store.KindRewrite, Target: front})
+	a.pump("the selected text in the recording card", func() bool {
+		return a.sess.State == session.Recording && a.sess.Selection != "" && len(a.sess.Levels) > 0
+	})
+	id := a.sess.ID
+	tt := cardTester(t, a.app)
+	frames(tt)
+	if !a.cardNow().recording || !has(tt, a.sess.Selection) {
+		t.Fatalf("recording card lost the waveform or selection: %+v", a.cardNow())
+	}
+	click(t, tt, "Rewrite request")
+	tt.Type("Make it shorter")
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	a.pump("the typed answer", func() bool { return a.sess.State.Ended() })
+	if a.sess.ID != id || a.sess.Raw != "Make it shorter" || a.answer.text != "Ship Friday." || len(a.pasted()) != 0 {
+		t.Fatalf("typed rewrite: %+v, card %+v", a.sess, a.answer)
+	}
+	frames(tt)
+	if has(tt, "Rewrite request") {
+		t.Error("the recording input stayed over the answer")
+	}
+}
 
 // TestRewriteAnswerFollowUp: nothing selected and nothing takes text: the
 // JSON answer streams into the card with its title; the Rewrite shortcut

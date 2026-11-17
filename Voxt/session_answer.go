@@ -184,7 +184,7 @@ func (a *app) canFollowUp() bool {
 // closeAnswer closes the answer card (and cancels a follow-up, or another
 // language, on its way).
 func (a *app) closeAnswer() {
-	if a.cardSessionLive() || a.writingAnswer() {
+	if a.cardSessionLive() || a.liveCard() {
 		a.cancelSession()
 	}
 	a.answer, a.followUp = answerCard{}, ""

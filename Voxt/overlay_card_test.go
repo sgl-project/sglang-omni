@@ -35,6 +35,48 @@ var (
 	cardQuoteLong = strings.Repeat("Ben: I will send the notes after the meeting. ", 66)[:3000]
 )
 
+// TestCardFirstOverlay: card-enabled sessions never visit the preview,
+// including while live text is hidden, and Rewrite shows input and selection.
+func TestCardFirstOverlay(t *testing.T) {
+	for _, kind := range []store.Kind{store.KindRewrite, store.KindTranslate, store.KindTranscribe} {
+		t.Run(string(kind), func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			for _, state := range []session.State{session.Recording, session.Recognizing, session.Composing} {
+				snap(a, session.Snapshot{ID: "card-first", Kind: kind, State: state, Card: true,
+					Selection: "We plan to ship on Friday.", Levels: wave(), HeardAt: time.Now()})
+				if a.ov.mode != ovAnswer || a.ov.passThrough || !a.ov.shown {
+					t.Fatalf("%s: mode %s, pass-through %v, shown %v", state, a.ov.mode, a.ov.passThrough, a.ov.shown)
+				}
+				if state == session.Recording && kind == store.KindRewrite {
+					tt := cardTester(t, a)
+					frames(tt)
+					if !has(tt, "Rewrite request") || !has(tt, a.sess.Selection) || !has(tt, "Input level") {
+						t.Fatalf("recording card: %v", firstTexts(tt))
+					}
+					if dir := os.Getenv("VOXTNEW_SNAPSHOTS"); dir != "" {
+						img := renderOverlay(t, a)
+						var output bytes.Buffer
+						if err := png.Encode(&output, img); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(filepath.Join(dir, "rewrite-card-input.png"), output.Bytes(), 0644); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				a.prefs.Overlay.HideLiveText = true
+				if a.overlayModeNow() != ovAnswer {
+					t.Fatal("hiding live text returned to the preview")
+				}
+			}
+			snap(a, session.Snapshot{ID: "card-first", Kind: kind, State: session.Cancelled})
+			if a.ov.mode != ovHidden {
+				t.Error("the cancelled card stayed open")
+			}
+		})
+	}
+}
+
 // cardStep is one state of the answer card, set on an app.
 type cardStep struct {
 	name  string
@@ -181,6 +223,9 @@ func TestAnswerCardStates(t *testing.T) {
 					}
 				}
 				want := layout.CardChrome + body
+				if v.input {
+					want += cardInputH
+				}
 				if st.msg {
 					want += layout.CardMsgGap + layout.CardMsgH
 				}

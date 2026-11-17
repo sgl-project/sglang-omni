@@ -25,6 +25,9 @@ func (a *app) overlayCard(c *ui.Context) {
 		msgH = layout.CardMsgGap + layout.CardMsgH
 	}
 	bodyH := float32(max(a.ov.h-layout.CardChrome-msgH, 0))
+	if v.input {
+		bodyH = max(bodyH-cardInputH, 0)
+	}
 	// The border takes layout.Border of the padding (MyGo's border box).
 	// The card moves where its background is dragged (overlayDragged): a
 	// long answer may cover what the user reads.
@@ -34,6 +37,9 @@ func (a *app) overlayCard(c *ui.Context) {
 		})
 		ui.Box(c).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
 		a.cardBody(c, v, bodyH)
+		if v.input {
+			a.cardInput(c)
+		}
 		a.cardSizeButton(c, v)
 		if v.msg != "" {
 			ui.Row(c).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(v.msg).Children(func() {
@@ -81,11 +87,11 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 	// Voxt's: one answer icon for every single result, the microphone over
 	// a conversation (its waveform beside it).
 	ic := icons.VoxtAnswer
-	if v.conversation {
+	if v.conversation || v.recording {
 		ic = icons.VoxtTranscribe
 	}
 	ui.Icon(c, ic.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(v)).Shrink(0).Label(uitext.KindTitle(v.kind))
-	if v.conversation {
+	if v.conversation || v.recording {
 		// Voxt's: a small waveform in the title's place, moving while a
 		// follow-up records.
 		cardWave(c, v, a.overlayMotion(), a.overlayPhase())
@@ -100,6 +106,8 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			// Voxt's spinner: an arc turning once in 0.9 s, 88 %.
 			busy := i18n.T("Translating…")
 			switch {
+			case !v.writing:
+				busy = i18n.T("Recognizing…")
 			case v.writing && v.kind == store.KindTranscribe:
 				busy = i18n.T("Cleaning up…")
 			case v.writing && v.kind == store.KindRewrite:
@@ -124,9 +132,13 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.skipLLM()
 		}
 	case v.canStop:
-		if cardCapsule(c.Key("ov-card-stop"), i18n.T("Done"), i18n.T("Stop recording the follow-up")) {
+		tip := i18n.T("Stop recording")
+		if v.conversation {
+			tip = i18n.T("Stop recording the follow-up")
+		}
+		if cardCapsule(c.Key("ov-card-stop"), i18n.T("Done"), tip) {
 			a.closeLangMenu()
-			a.stopSession()
+			a.submitCardInput()
 		}
 	case v.canFollowUp:
 		if cardCapsule(c.Key("ov-card-continue"), i18n.T("Continue"), continueTip(v.follow)) {
@@ -187,7 +199,7 @@ func ovCardIconA(v cardView) float32 {
 func (v cardView) langCapsule() bool { return v.kind == store.KindTranslate && v.failed == nil }
 
 // cardSpinning says whether the card shows a spinner (it turns).
-func (v cardView) spinning() bool { return !v.conversation && v.busy }
+func (v cardView) spinning() bool { return !v.conversation && !v.recording && v.busy }
 
 // cardIconButton is one of the header's round buttons (Voxt's
 // AnswerHeaderActionButton): 24, white 8 % (16 % and a hairline under

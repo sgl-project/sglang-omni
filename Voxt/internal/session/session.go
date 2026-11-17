@@ -214,8 +214,8 @@ type Snapshot struct {
 	// language model works (Manager.Rethink); nil: the service's setting.
 	Thinking *llm.Thinking
 	// Inserted: the result was pasted; Card: it shows in the answer card
-	// (Delivery says why it was not inserted). While the model writes,
-	// Card says the answer streams into the card.
+	// (Delivery says why it was not inserted). During a live session,
+	// Card says input and output belong in the card from the start.
 	Inserted bool
 	Card     bool
 	Delivery deliver.Reason
