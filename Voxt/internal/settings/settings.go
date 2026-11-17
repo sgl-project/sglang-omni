@@ -16,6 +16,7 @@
 package settings
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -113,7 +114,8 @@ type Privacy struct {
 	// default.
 	SendClipboardImage bool `json:"sendClipboardImage,omitempty"`
 	// SendClipboardImageWithSelection deliberately includes that picture
-	// with selected text too; off by default so an earlier image stays out.
+	// with selected text too; fresh installs default it off, while older
+	// documents keep their original text-plus-image behavior.
 	SendClipboardImageWithSelection bool `json:"sendClipboardImageWithSelection,omitempty"`
 }
 
@@ -401,6 +403,11 @@ func Migrate(data []byte) (Settings, error) {
 	migrateShowCard(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
 	migrateOptionsJSON(data, &s.Providers)
+	if s.Version < 4 && !bytes.Contains(data, []byte(`"sendClipboardImageWithSelection"`)) {
+		// Older documents predate the text-only guard: keep their original
+		// selected-text-plus-image behavior. Fresh installs default it off.
+		s.Privacy.SendClipboardImageWithSelection = true
+	}
 	s.Version = Version
 	return normalize(s), nil
 }

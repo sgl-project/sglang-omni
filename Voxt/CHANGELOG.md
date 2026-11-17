@@ -6,7 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
-- **Rewrite can deliberately send selected text and a copied image together**: the new Settings → Privacy → Text and a copied image together switch sends both when you mean it. It is off by default, so an earlier copied image still cannot take over a text Rewrite.
+- **Rewrite can deliberately send selected text and a copied image together**: the new Settings → Privacy → Text and a copied image together switch sends both when you mean it. Fresh installs default it off so an earlier copied image cannot take over a text Rewrite; existing documents keep the pre-PR text-plus-image behavior, and turning it off makes any selection text-only.
 
 ### Changed
 
@@ -21,7 +21,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
-- **改写可以明确同时发送选中文字和复制的图片**：设置 → 隐私 →“同时发送选中文字和复制的图片”打开后，两者一起发送。默认关闭，避免早前复制的图片取代选中文字成为改写输入。
+- **改写可以明确同时发送选中文字和复制的图片**：设置 → 隐私 →“同时发送选中文字和复制的图片”打开后，两者一起发送。新安装默认关闭，避免早前复制的图片取代选中文字成为改写输入；已有设置保持原来的文字加图片行为，关闭后任何选区都只发文字。
 
 #### 变更
 

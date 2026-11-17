@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
@@ -56,10 +57,12 @@ func TestClipboardImageEndToEnd(t *testing.T) {
 	for _, tc := range []struct {
 		name, opts, sel   string
 		viaCopy, on, both bool
+		legacy            bool
 		want              []byte
 	}{
 		{name: "a copied image, no selection", opts: ",clipboard-image", on: true, want: helpertest.ClipImage},
-		{name: "a copied image with a selection stays out", opts: ",clipboard-image", sel: "this", on: true},
+		{name: "existing settings send text and copied image", opts: ",clipboard-image", sel: "this", on: true, legacy: true, want: helpertest.ClipImage},
+		{name: "a fresh selection stays out", opts: ",clipboard-image", sel: "this", on: true},
 		{name: "a copied image placeholder returns the new image", opts: ",clipboard-image,copy-selection-image", sel: "[Image]", viaCopy: true, on: true, want: helpertest.Shot(812)},
 		{name: "literal placeholder text through copy stays text", opts: ",clipboard-image", sel: "[Image]", viaCopy: true, on: true},
 		{name: "deliberate text and image sends both", opts: ",clipboard-image", sel: "this", on: true, both: true, want: helpertest.ClipImage},
@@ -81,7 +84,23 @@ func TestClipboardImageEndToEnd(t *testing.T) {
 			a := newSessionApp(t, opts, func(s *settings.Settings) {
 				set(s)
 				s.Privacy.SendClipboardImage = tc.on
-				s.Privacy.SendClipboardImageWithSelection = tc.both
+				if tc.legacy {
+					s.Version = 1
+					var document map[string]any
+					raw, _ := json.Marshal(s)
+					if err := json.Unmarshal(raw, &document); err != nil {
+						t.Fatal(err)
+					}
+					delete(document["privacy"].(map[string]any), "sendClipboardImageWithSelection")
+					raw, _ = json.Marshal(document)
+					migrated, err := settings.Migrate(raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					*s = migrated
+				} else {
+					s.Privacy.SendClipboardImageWithSelection = tc.both
+				}
 			}, keys)
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
 			if a.sess.State != session.Done || a.sess.Result != "A red square." {

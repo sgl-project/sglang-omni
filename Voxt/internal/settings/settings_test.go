@@ -127,6 +127,26 @@ func TestMemory(t *testing.T) {
 	}
 }
 
+func TestMigrateClipboardImageWithSelection(t *testing.T) {
+	legacy, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !legacy.Privacy.SendClipboardImageWithSelection {
+		t.Error("an older document lost selected text plus copied image")
+	}
+	explicit, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit text-only choice was not preserved")
+	}
+	if Defaults().Privacy.SendClipboardImageWithSelection {
+		t.Error("a fresh install should default to text-only")
+	}
+}
+
 // TestSoundPreset: older documents have none (the family's default
 // cues); a Voxt preset becomes its system sounds, Soft the defaults, and
 // the preset is not written again.

@@ -53,7 +53,7 @@ func (a *app) privacySettings(c *ui.Context) {
 			a.updateSettings(func(s *settings.Settings) { s.Privacy.SendClipboardImage = on })
 		}
 	})
-	settingRow(c, "priv-copied-with-text", i18n.T("Text and a copied image together"), i18n.T("Off by default: a text selection sends only text, so an earlier copied image cannot take over. Turn on to send the selected text and the copied image together deliberately."), func() {
+	settingRow(c, "priv-copied-with-text", i18n.T("Text and a copied image together"), i18n.T("For fresh installs, a text selection sends only text. Existing documents keep the earlier behavior: selected text and the copied image go together. Turn it off to make any selection text-only."), func() {
 		if ui.Switch(c.Key("priv-copied-with-text"), &a.settingsForm.sendClipboardWithSelection).Label(i18n.T("Send both with Rewrite")).Changed() {
 			on := a.settingsForm.sendClipboardWithSelection
 			a.updateSettings(func(s *settings.Settings) { s.Privacy.SendClipboardImageWithSelection = on })

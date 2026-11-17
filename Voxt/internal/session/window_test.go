@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -92,13 +93,15 @@ func TestClipboardImage(t *testing.T) {
 		copyText      string
 		copiedImage   []byte
 		withSelection bool
+		legacy        bool
 		previous      []compose.Turn
 		pic           []byte
 		err           error
 		want          []byte
 		wantReadClip  bool
 	}{
-		{name: "a selection sends no picture", kind: store.KindRewrite, on: true, pic: clip, wantReadClip: true},
+		{name: "existing settings send selected text and copied image", kind: store.KindRewrite, on: true, legacy: true, pic: clip, want: clip, wantReadClip: true},
+		{name: "a fresh selection sends no picture", kind: store.KindRewrite, on: true, pic: clip, wantReadClip: true},
 		{name: "the same selection on a follow-up sends no picture", kind: store.KindRewrite, on: true, previous: []compose.Turn{{Selection: "ship friday?"}}, pic: clip, wantReadClip: true},
 		{name: "a copied image placeholder sends the newly copied image", kind: store.KindRewrite, on: true, copyText: "[Image]", copiedImage: selected, pic: clip, want: selected, wantReadClip: true},
 		{name: "literal placeholder text through Accessibility sends no picture", kind: store.KindRewrite, on: true, selection: "[Image]", pic: clip, wantReadClip: true},
@@ -131,7 +134,23 @@ func TestClipboardImage(t *testing.T) {
 			h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
 				c.Select = sel
 				s.Privacy.SendClipboardImage, s.Privacy.SendWindow = tc.on, tc.window
-				s.Privacy.SendClipboardImageWithSelection = tc.withSelection
+				if tc.legacy {
+					s.Version = 1
+					var document map[string]any
+					raw, _ := json.Marshal(s)
+					if err := json.Unmarshal(raw, &document); err != nil {
+						t.Fatal(err)
+					}
+					delete(document["privacy"].(map[string]any), "sendClipboardImageWithSelection")
+					raw, _ = json.Marshal(document)
+					migrated, err := settings.Migrate(raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					*s = migrated
+				} else {
+					s.Privacy.SendClipboardImageWithSelection = tc.withSelection
+				}
 				c.Window = func(context.Context, int) ([]byte, error) { return shot, nil }
 				c.ClipboardImage = func(context.Context) ([]byte, error) {
 					sel.mu.Lock()
