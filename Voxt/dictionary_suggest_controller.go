@@ -33,6 +33,7 @@ func (a *app) loadSuggestions() {
 				return
 			}
 			a.suggestions = list
+			a.suggestionReads++
 		})
 	})
 }
