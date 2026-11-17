@@ -8,6 +8,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Import a recording as a meeting**: Import recording… on the Meetings page turns an audio file, or the sound of a video (m4a, mp3, wav, aiff, caf, mp4, mov), into a meeting. MOSS-Transcribe-Diarize transcribes the whole file and labels every voice Speaker 1, 2, 3 and so on: the file is one mixed track, so there is no You/Others split. Then the same transcript clean-up and summary as a recorded meeting's run. The meeting keeps the file's name, date and length until the summary names it, the page shows progress with Cancel for long files, and an interrupted import can be finished with Continue processing. Importing needs MOSS-Transcribe-Diarize: without it Voxt says so and opens Speech models, instead of transcribing without speaker labels.
 - **Meetings label the other side as Speaker 1–4**: with MOSS-Transcribe-Diarize installed, Voxt uses it after a meeting to transcribe the other side with speaker labels while your lines stay Me, before transcript correction and the summary. Without it, the meeting works as before and its details link to Speech models.
+- **Dictionary profiles**: keep named sets of dictionary entries for different situations. Existing entries move into the active Default profile with their meaning unchanged. Create, rename, delete, and switch profiles on the Dictionary page; Transcribe, Translate, and Rewrite use only the active profile. Hammerspoon, macOS Shortcuts, and shell scripts can switch without opening the Dictionary page by running `open -g 'voxtnew://dictionary/profile?name=Work'`. See docs/dictionary-profiles.md.
 
 ### 中文
 
@@ -21,6 +22,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 
 ### 中文
+
+#### 新增
+
+- **词典分组**：为不同场合保存几组词条。现有词条移入当前使用的“默认”分组，含义不变。在词典页新建、改名、删除和切换分组；转录、翻译和改写只用当前分组。Hammerspoon、macOS 快捷指令和 shell 脚本可以不打开词典页就切换：运行 `open -g 'voxtnew://dictionary/profile?name=Work'`。见 docs/dictionary-profiles.md。
 
 #### 变更
 
