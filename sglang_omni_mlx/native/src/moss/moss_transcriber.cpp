@@ -3,12 +3,10 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
-#include <iostream>
 #include <regex>
 
 #include "common/audio.h"
@@ -64,10 +62,6 @@ constexpr float kCutEnergyWindowMilliseconds = 100.0f;
 const char *const kTimestampPattern = R"(\[(\d+(?:[\.,]\d+)?)\])";
 const char *const kSegmentPattern =
     R"(\[(\d+(?:[\.,]\d+)?)\]\[(S\d+)\]([\s\S]*?)\[(\d+(?:[\.,]\d+)?)\])";
-
-double Milliseconds(std::chrono::steady_clock::duration duration) {
-  return std::chrono::duration<double, std::milli>(duration).count();
-}
 
 double TimestampValue(std::string text) {
   std::replace(text.begin(), text.end(), ',', '.');
@@ -317,7 +311,6 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
                                  const MossOptions &options, int max_new_tokens,
                                  double offset_seconds,
                                  const std::atomic<bool> &cancel) const {
-  const auto frontend_started = std::chrono::steady_clock::now();
   const int sample_count = static_cast<int>(samples.size());
   const int samples_per_token =
       kHopLength * kWhisperEncoderStride * model_.audio_merge_size();
@@ -383,12 +376,7 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
   } else {
   }
   const mx::array embeddings = mx::expand_dims(mx::concatenate(pieces, 0), 0);
-  const auto frontend_eval_started = std::chrono::steady_clock::now();
   mx::eval(embeddings);
-  const double frontend_build_ms =
-      Milliseconds(frontend_eval_started - frontend_started);
-  const double frontend_eval_ms =
-      Milliseconds(std::chrono::steady_clock::now() - frontend_eval_started);
 
   const auto is_end = [&](int token_id) {
     return token_id == im_end_id_ ||
@@ -411,18 +399,13 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
     }
   };
   DraftStatistics draft_statistics;
-  double decoder_prefill_ms = 0.0;
-  double autoregressive_decode_ms = 0.0;
   if (draft_.has_value()) {
     draft_statistics =
         draft_->Decode(model_.decoder(), embeddings, max_new_tokens,
                        kPrefillStepTokens, commit, cancel);
-    decoder_prefill_ms = draft_statistics.prefill_ms;
-    autoregressive_decode_ms = draft_statistics.decode_ms;
   } else {
     // Note (Dayuxiaoshui): the last prompt token stays out of the chunked
     // prefill, so its forward pass also gives the first logits.
-    const auto prefill_started = std::chrono::steady_clock::now();
     std::vector<KVCache> caches = model_.decoder().NewCaches();
     int processed = 0;
     while (prompt_length - processed > 1) {
@@ -438,9 +421,6 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
                                    caches));
       processed += step;
     }
-    decoder_prefill_ms =
-        Milliseconds(std::chrono::steady_clock::now() - prefill_started);
-    const auto decode_started = std::chrono::steady_clock::now();
     mx::array next_token = mx::argmax(model_.decoder().LastLogits(
         model_.decoder().Forward(mx::slice(embeddings, {0, processed, 0},
                                            {1, prompt_length, hidden}),
@@ -460,10 +440,7 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
       mx::async_eval({next_token});
       finished = commit(static_cast<int>(token.item<uint32_t>()));
     }
-    autoregressive_decode_ms =
-        Milliseconds(std::chrono::steady_clock::now() - decode_started);
   }
-  const auto rebuild_started = std::chrono::steady_clock::now();
   const std::string raw_text =
       StripUnicodeWhitespace(tokenizer_.Decode(output_ids, true));
   TranscriptionResult result;
@@ -476,33 +453,7 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
   result.verify_round_count = draft_statistics.verify_round_count;
   result.proposed_draft_token_count = draft_statistics.proposed_token_count;
   result.accepted_draft_token_count = draft_statistics.accepted_token_count;
-  result.frontend_build_ms = frontend_build_ms;
-  result.frontend_eval_ms = frontend_eval_ms;
-  result.decoder_prefill_ms = decoder_prefill_ms;
-  result.autoregressive_decode_ms = autoregressive_decode_ms;
-  result.result_rebuild_ms =
-      Milliseconds(std::chrono::steady_clock::now() - rebuild_started);
   return result;
-}
-
-nlohmann::ordered_json MossNativeTimingJson(const TranscriptionResult &result,
-                                            int64_t audio_ms,
-                                            int native_chunk_count) {
-  return {{"event", "moss_native_timing"},
-          {"audio_ms", audio_ms},
-          {"native_chunk_count", native_chunk_count},
-          {"native_split_ms", result.native_split_ms},
-          {"frontend_build_ms", result.frontend_build_ms},
-          {"frontend_eval_ms", result.frontend_eval_ms},
-          {"decoder_prefill_ms", result.decoder_prefill_ms},
-          {"autoregressive_decode_ms", result.autoregressive_decode_ms},
-          {"result_rebuild_ms", result.result_rebuild_ms},
-          {"cache_clear_ms", result.cache_clear_ms},
-          {"native_total_ms", result.native_total_ms},
-          {"generated_token_count", result.generated_token_count},
-          {"verify_round_count", result.verify_round_count},
-          {"proposed_draft_token_count", result.proposed_draft_token_count},
-          {"accepted_draft_token_count", result.accepted_draft_token_count}};
 }
 
 TranscriptionResult
@@ -520,7 +471,6 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
                            *options.window_offset_seconds, cancel);
   } else {
   }
-  const auto native_started = std::chrono::steady_clock::now();
   const double duration_seconds =
       static_cast<double>(samples.size()) / kSampleRate;
   const int max_new_tokens =
@@ -534,14 +484,8 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
                              kDefaultExtraTokens));
   TranscriptionResult combined;
   combined.finish_reason = FinishReason::kStop;
-  const auto split_started = std::chrono::steady_clock::now();
-  const std::vector<AudioChunk> chunks =
-      SplitAudio(samples, kChunkDurationSeconds, kMinChunkDurationSeconds);
-  combined.native_split_ms =
-      Milliseconds(std::chrono::steady_clock::now() - split_started);
-  int native_chunk_count = 0;
-  for (const AudioChunk &chunk : chunks) {
-    ++native_chunk_count;
+  for (const AudioChunk &chunk :
+       SplitAudio(samples, kChunkDurationSeconds, kMinChunkDurationSeconds)) {
     TranscriptionResult result = TranscribeChunk(
         chunk.samples, options, max_new_tokens, chunk.offset_seconds, cancel);
     const std::string text = StripUnicodeWhitespace(result.text);
@@ -555,28 +499,13 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
     combined.verify_round_count += result.verify_round_count;
     combined.proposed_draft_token_count += result.proposed_draft_token_count;
     combined.accepted_draft_token_count += result.accepted_draft_token_count;
-    combined.frontend_build_ms += result.frontend_build_ms;
-    combined.frontend_eval_ms += result.frontend_eval_ms;
-    combined.decoder_prefill_ms += result.decoder_prefill_ms;
-    combined.autoregressive_decode_ms += result.autoregressive_decode_ms;
-    combined.result_rebuild_ms += result.result_rebuild_ms;
     // Note (Dayuxiaoshui): one truncated chunk cuts the whole transcript short.
     if (result.finish_reason == FinishReason::kLength) {
       combined.finish_reason = FinishReason::kLength;
     } else {
     }
-    const auto cache_clear_started = std::chrono::steady_clock::now();
     mx::clear_cache();
-    combined.cache_clear_ms +=
-        Milliseconds(std::chrono::steady_clock::now() - cache_clear_started);
   }
-  combined.native_total_ms =
-      Milliseconds(std::chrono::steady_clock::now() - native_started);
-  std::cerr << MossNativeTimingJson(
-                   combined, static_cast<int64_t>(duration_seconds * 1000.0),
-                   native_chunk_count)
-                   .dump()
-            << "\n";
   return combined;
 }
 

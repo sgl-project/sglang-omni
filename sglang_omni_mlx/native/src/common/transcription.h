@@ -36,15 +36,6 @@ struct TranscriptionResult {
   int verify_round_count = 0;
   int proposed_draft_token_count = 0;
   int accepted_draft_token_count = 0;
-  // Existing synchronization boundaries only; no extra MLX evaluation is added.
-  double native_split_ms = 0.0;
-  double frontend_build_ms = 0.0;
-  double frontend_eval_ms = 0.0;
-  double decoder_prefill_ms = 0.0;
-  double autoregressive_decode_ms = 0.0;
-  double result_rebuild_ms = 0.0;
-  double cache_clear_ms = 0.0;
-  double native_total_ms = 0.0;
 };
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,
