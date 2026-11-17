@@ -57,6 +57,10 @@ Json DoneEvent(const TranscriptionResult &result,
         {"language",
          result.language.has_value() ? Json(*result.language) : Json()},
         {"finish_reason", omni_common::FinishReasonName(result.finish_reason)}};
+    if (!result.window_texts.empty()) {
+      event["generation_metadata"]["window_texts"] = result.window_texts;
+    } else {
+    }
     if (result.verify_round_count > 0) {
       event["generation_metadata"]["verify_round_count"] =
           result.verify_round_count;

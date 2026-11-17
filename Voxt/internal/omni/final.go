@@ -38,10 +38,11 @@ type finalRequest struct {
 
 // finalResult is a request's answer.
 type finalResult struct {
-	text     string
-	tokens   int    // generated
-	language string // detected (or the hint), "" when none
-	length   bool   // the budget ended it
+	text        string
+	tokens      int    // generated
+	language    string // detected (or the hint), "" when none
+	length      bool   // the budget ended it
+	windowTexts []string
 }
 
 // body is the request's multipart form (Voxt's OmniMultipartBody for
@@ -151,9 +152,10 @@ func parseEvent(payload string) (*finalResult, error) {
 		Type     string `json:"type"`
 		Text     string `json:"text"`
 		Metadata *struct {
-			Tokens   *int    `json:"generated_token_count"`
-			Language *string `json:"language"`
-			Finish   string  `json:"finish_reason"`
+			Tokens      *int     `json:"generated_token_count"`
+			Language    *string  `json:"language"`
+			Finish      string   `json:"finish_reason"`
+			WindowTexts []string `json:"window_texts"`
 		} `json:"generation_metadata"`
 		Error *struct {
 			Type string `json:"type"`
@@ -171,6 +173,7 @@ func parseEvent(payload string) (*finalResult, error) {
 				return nil, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Detail: "the generation metadata is incomplete"}
 			}
 			r.tokens, r.length = *m.Tokens, m.Finish == "length"
+			r.windowTexts = m.WindowTexts
 			if m.Language != nil {
 				r.language = *m.Language
 			}

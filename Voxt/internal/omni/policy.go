@@ -98,6 +98,34 @@ type chunk struct {
 	offset time.Duration
 }
 
+const whisperWindowBytes = 30 * sampleRate * 2
+
+// packWhisperChunks puts the quiet cuts on the runtime's 30 s window
+// boundaries so that a batch decodes the same audio as separate requests.
+func packWhisperChunks(chunks []chunk) ([]byte, []int) {
+	const maxBatchWindows = 4
+	var counts []int
+	windows := 0
+	for _, chunk := range chunks {
+		count := (len(chunk.pcm) + whisperWindowBytes - 1) / whisperWindowBytes
+		if windows+count > maxBatchWindows {
+			break
+		}
+		windows += count
+		counts = append(counts, count)
+	}
+	if len(counts) < 2 {
+		return nil, nil
+	}
+	pcm := make([]byte, windows*whisperWindowBytes)
+	offset := 0
+	for i, count := range counts {
+		copy(pcm[offset:], chunks[i].pcm)
+		offset += count * whisperWindowBytes
+	}
+	return pcm, counts
+}
+
 // splitChunks cuts PCM16 mono at 16 kHz into requests of at most
 // t.ChunkSeconds, each cut at the quietest t.CutWindow within t.CutSearch
 // of the chunk's nominal end (MLXAudio's splitter, which Voxt's Qwen3-ASR

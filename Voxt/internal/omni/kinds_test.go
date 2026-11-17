@@ -1,7 +1,9 @@
 package omni
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +14,52 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
 )
+
+func TestWhisperFinalBatchesQuietCuts(t *testing.T) {
+	pcm := append(tone(32*time.Second, 0.3), silence(time.Second)...)
+	pcm = append(pcm, tone(32*time.Second, 0.3)...)
+
+	for _, tc := range []struct {
+		name        string
+		windowTexts []string
+		want        string
+		requests    int
+	}{
+		{"batch", []string{"第一段", "末尾", "第二段", ""}, "第一段 末尾第二段", 1},
+		{"older runtime", nil, "片段片段", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t, omnitest.Opts{Text: "片段", WindowTexts: tc.windowTexts, RecordAudio: true}, withServers(t, "whisper_server"))
+			a := f.asr(t, ASRWhisperTurbo)
+			chunks := a.spec.ASR.splitChunks(pcm)
+			if len(chunks) != 2 || len(chunks[0].pcm) <= whisperWindowBytes || len(chunks[1].pcm) <= whisperWindowBytes {
+				t.Fatal("the fixture should cut into two chunks of more than 30 seconds")
+			}
+			res, err := a.Transcribe(t.Context(), asr.FileRequest{Audio: pcm, Format: "pcm", Lang: "zh-Hans"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			finals := f.records("final")
+			if res.Text != tc.want || len(finals) != tc.requests {
+				t.Fatalf("%q in %d requests, want %q in %d requests", res.Text, len(finals), tc.want, tc.requests)
+			}
+			audio, err := base64.StdEncoding.DecodeString(finals[0].Audio)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(audio) != 4*whisperWindowBytes {
+				t.Fatalf("sent %d bytes, want four 30-second windows", len(audio))
+			}
+			for i, chunk := range chunks {
+				padded := audio[i*2*whisperWindowBytes : (i+1)*2*whisperWindowBytes]
+				if !bytes.Equal(padded[:len(chunk.pcm)], chunk.pcm) ||
+					len(bytes.Trim(padded[len(chunk.pcm):], "\x00")) != 0 {
+					t.Errorf("chunk %d audio or padding changed", i)
+				}
+			}
+		})
+	}
+}
 
 // TestKinds: Voxt 1.x's other speech models run on servers of their own
 // with only the common launch flags (their servers refuse Qwen3-ASR's),

@@ -283,7 +283,7 @@ mx::array WhisperModel::EncoderLayer(const mx::array &x, int layer) const {
                         prefix + ".mlp2"));
 }
 
-mx::array WhisperModel::Encode(const std::vector<float> &window_samples) const {
+mx::array WhisperModel::LogMel(std::span<const float> window_samples) const {
   const int sample_count = static_cast<int>(window_samples.size());
   const mx::array audio(window_samples.data(), {sample_count}, mx::float32);
   // Note (khazic): reflect padding: audio[1:201] reversed, audio,
@@ -309,12 +309,23 @@ mx::array WhisperModel::Encode(const std::vector<float> &window_samples) const {
   log_mel = mx::maximum(
       log_mel, mx::subtract(mx::max(log_mel), mx::array(kLogMelDynamicRange)));
   log_mel = mx::divide(mx::add(log_mel, mx::array(4.0f)), mx::array(4.0f));
+  return mx::transpose(log_mel, {1, 0});
+}
 
+mx::array WhisperModel::Encode(std::span<const float> padded_samples) const {
+  std::vector<mx::array> mel_windows;
+  for (size_t offset = 0; offset < padded_samples.size();
+       offset += kWindowSampleCount) {
+    mel_windows.push_back(
+        LogMel(padded_samples.subspan(offset, kWindowSampleCount)));
+  }
+  const mx::array mel_batch = mel_windows.size() == 1
+                                  ? mx::expand_dims(mel_windows.front(), 0)
+                                  : mx::stack(mel_windows);
   // Note (Jiaxin Deng): the float32 log-mel is cast to the weights' dtype, as
   // the reference Whisper does; fed as float32 it promotes the whole encoder,
   // and through the cross-attention the decoder, to float32.
-  mx::array x = mx::astype(mx::expand_dims(mx::transpose(log_mel, {1, 0}), 0),
-                           Weight("encoder.conv1.weight").dtype());
+  mx::array x = mx::astype(mel_batch, Weight("encoder.conv1.weight").dtype());
   x = Gelu(Conv1d(x, "encoder.conv1", 1));
   x = Gelu(Conv1d(x, "encoder.conv2", 2));
   x = mx::add(x, mx::slice(Weight("encoder.positional_embedding"), {0, 0},
@@ -398,10 +409,12 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
     hidden = DecoderLayer(hidden, layer, encoder_states, mask, caches[layer]);
   }
   hidden = LayerNorm(hidden, "decoder.ln");
+  const int batch_size = hidden.shape(0);
   const int width = hidden.shape(2);
-  const mx::array rows = mx::reshape(
-      mx::slice(hidden, {0, length - logit_count, 0}, {1, length, width}),
-      {logit_count, width});
+  const mx::array rows =
+      mx::reshape(mx::slice(hidden, {0, length - logit_count, 0},
+                            {batch_size, length, width}),
+                  {batch_size * logit_count, width});
   // Note (khazic): tied output projection: the token embedding used as a linear
   // layer.
   return mx::matmul(rows,
