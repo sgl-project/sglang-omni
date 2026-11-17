@@ -118,7 +118,7 @@ func (t *Translator) N(n int, one, other string, args ...any) string {
 }
 
 func newCatalog(tag string) *catalog {
-	messages, err := readMessages(tag)
+	messages, err := readMessages(localeFS, tag)
 	if err != nil {
 		panic("i18n: " + err.Error())
 	}
@@ -133,15 +133,15 @@ func newCatalog(tag string) *catalog {
 	return c
 }
 
-// readMessages merges a locale's catalog: locales/<tag>.json when it
-// exists, then every locales/<tag>/*.json in name order. A key in two
-// files is an error.
-func readMessages(tag string) (map[string]string, error) {
+// readMessages merges a locale's catalog in fsys: locales/<tag>.json
+// when it exists, then every locales/<tag>/*.json in name order. A key
+// in two files is an error.
+func readMessages(fsys fs.FS, tag string) (map[string]string, error) {
 	var names []string
-	if _, err := fs.Stat(localeFS, "locales/"+tag+".json"); err == nil {
+	if _, err := fs.Stat(fsys, "locales/"+tag+".json"); err == nil {
 		names = append(names, "locales/"+tag+".json")
 	}
-	if entries, err := localeFS.ReadDir("locales/" + tag); err == nil {
+	if entries, err := fs.ReadDir(fsys, "locales/"+tag); err == nil {
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
 				names = append(names, "locales/"+tag+"/"+e.Name())
@@ -150,7 +150,7 @@ func readMessages(tag string) (map[string]string, error) {
 	}
 	messages := map[string]string{}
 	for _, name := range names {
-		data, err := localeFS.ReadFile(name)
+		data, err := fs.ReadFile(fsys, name)
 		if err != nil {
 			return nil, err
 		}

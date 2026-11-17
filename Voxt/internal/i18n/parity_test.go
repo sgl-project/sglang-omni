@@ -74,9 +74,9 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string, usage m
 			if id, ok := sel.X.(*ast.Ident); !ok || id.Name != local && id.Name != "translator" {
 				return true
 			}
-		pos := fset.Position(call.Pos()).String()
-		rel := strings.TrimPrefix(path, moduleRoot+"/")
-		lit := func(i int) (string, bool) {
+			pos := fset.Position(call.Pos()).String()
+			rel := strings.TrimPrefix(path, moduleRoot+"/")
+			lit := func(i int) (string, bool) {
 				if i >= len(call.Args) {
 					return "", false
 				}
@@ -88,12 +88,12 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string, usage m
 				return s, err == nil
 			}
 			add := func(k string) {
-			keys[k] = pos
-			if files[k] == nil {
-				files[k] = map[string]bool{}
+				keys[k] = pos
+				if files[k] == nil {
+					files[k] = map[string]bool{}
+				}
+				files[k][rel] = true
 			}
-			files[k][rel] = true
-		}
 			switch sel.Sel.Name {
 			case "T":
 				if s, ok := lit(0); ok {
@@ -138,7 +138,7 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string, usage m
 
 func readLocale(t *testing.T, tag string) map[string]string {
 	t.Helper()
-	m, err := readMessages(tag)
+	m, err := readMessages(localeFS, tag)
 	if err != nil {
 		t.Fatal(err)
 	}

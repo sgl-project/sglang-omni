@@ -1,7 +1,9 @@
 package i18n
 
 import (
+	"maps"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -146,5 +148,41 @@ func TestDates(t *testing.T) {
 	}
 	if got := NewTranslator("zh-Hans").DateTimeAt(value, now); got != "2025年12月31日 15:04" {
 		t.Errorf("explicit zone and locale: %q", got)
+	}
+}
+
+// TestReadMessages: a locale's catalog is locales/<tag>.json when it
+// exists plus every locales/<tag>/*.json merged in name order; a key in
+// two files or broken JSON is an error, and an unknown tag is empty.
+func TestReadMessages(t *testing.T) {
+	fsys := fstest.MapFS{
+		"locales/en.json":         &fstest.MapFile{Data: []byte(`{}`)},
+		"locales/zh/a.json":       &fstest.MapFile{Data: []byte(`{"One": "一", "Two": "二"}`)},
+		"locales/zh/b.json":       &fstest.MapFile{Data: []byte(`{"Three": "三"}`)},
+		"locales/dup.json":        &fstest.MapFile{Data: []byte(`{"One": "一"}`)},
+		"locales/dup/extra.json":  &fstest.MapFile{Data: []byte(`{"One": "一"}`)},
+		"locales/bad/broken.json": &fstest.MapFile{Data: []byte(`{"One":`)},
+		"locales/bad/notes.txt":   &fstest.MapFile{Data: []byte(`not a catalog`)},
+		"locales/bad/sub/c.json":  &fstest.MapFile{Data: []byte(`{"Hidden": "x"}`)},
+	}
+	m, err := readMessages(fsys, "zh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"One": "一", "Two": "二", "Three": "三"}
+	if !maps.Equal(m, want) {
+		t.Errorf("split merge: %v", m)
+	}
+	if m, err := readMessages(fsys, "en"); err != nil || len(m) != 0 {
+		t.Errorf("en: %v, %v", m, err)
+	}
+	if m, err := readMessages(fsys, "de"); err != nil || len(m) != 0 {
+		t.Errorf("unknown tag: %v, %v", m, err)
+	}
+	if _, err := readMessages(fsys, "dup"); err == nil {
+		t.Error("a key in two files is an error")
+	}
+	if _, err := readMessages(fsys, "bad"); err == nil {
+		t.Error("broken JSON is an error")
 	}
 }
