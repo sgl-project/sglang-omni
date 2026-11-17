@@ -8,9 +8,10 @@ import Foundation
 // state carries over) to the asked rate and cut into capture.pcm frames
 // (PCM16 LE) with capture.level about 20 times a second (PCMFramer).
 //
-// capture.start is a job: capture.started at the first audio, then the
-// frames, and its answer when it ends; capture.stop flushes the queued
-// audio and the partial last frame before the job answers.
+// capture.start is a job: capture.started at the first audio (when the
+// tap starts, for capture.system: an idle output has no audio yet), then
+// the frames, and its answer when it ends; capture.stop flushes the
+// queued audio and the partial last frame before the job answers.
 //
 // - Devices are tried in the user's order (Core Audio UIDs), then the
 //   default input (fellBack).
@@ -365,6 +366,9 @@ private final class CaptureRun: @unchecked Sendable {
             tap.stop()
             throw error
         }
+        // The tap is recording once it starts; on an idle output its
+        // first audio may wait for playback, so capture.started does not.
+        sendStarted(at: monotonicMs())
         armWatchdog(generation: gen)
     }
 
@@ -401,6 +405,10 @@ private final class CaptureRun: @unchecked Sendable {
     }
 
     private func armWatchdog(generation gen: Int) {
+        // An idle output gives a system tap no callbacks until something
+        // plays; that is not a dead device, so it is never rebuilt or
+        // ended over silence.
+        guard captureSilenceIsFatal(system: system) else { return }
         queue.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self else { return }
             let (stale, silent) = self.lock.withLock { (self.ended || self.generation != gen, self.callbacksThisEngine == 0) }
