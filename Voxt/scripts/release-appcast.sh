@@ -197,6 +197,10 @@ case "${1:-}" in
     build_number "$version" >/dev/null
     [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || fail "'$sha256' is not a SHA-256"
     [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "'$repo' is not OWNER/REPO"
+    # No auto_updates yet: brew-installed 2.0.x/2.1.0 cannot update
+    # themselves, and auto_updates would exclude the cask from brew
+    # upgrade. It returns once self-updating releases are widely
+    # installed (the app then takes over from brew).
     cat <<CASK
 cask "voxt" do
   version "$version"
@@ -215,8 +219,6 @@ cask "voxt" do
 
   depends_on arch: :arm64
   depends_on macos: :sequoia
-
-  auto_updates true
 
   app "Voxt.app"
 end

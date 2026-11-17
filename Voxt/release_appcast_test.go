@@ -164,9 +164,11 @@ func TestReleaseAppcastAssetNames(t *testing.T) {
 			t.Errorf("the cask has no %s:\n%s", line, cask)
 		}
 	}
-	// Voxt 2 updates itself, so brew upgrade leaves it to the app.
-	if !strings.Contains(cask, "\n  auto_updates true\n") {
-		t.Errorf("the cask does not say auto_updates true:\n%s", cask)
+	// No auto_updates while brew-installed 2.0.x/2.1.0 cannot update
+	// themselves: brew upgrade must still deliver the first self-updating
+	// release. It returns once those are widely installed.
+	if strings.Contains(cask, "auto_updates") {
+		t.Errorf("the cask strands brew-installed 2.0.x/2.1.0:\n%s", cask)
 	}
 	if out, err := runReleaseAppcast(t, "", "cask", "2.0.1", "not-a-digest", "sgl-project/sglang-omni"); err == nil {
 		t.Errorf("a cask with a bad SHA-256 printed %q", out)

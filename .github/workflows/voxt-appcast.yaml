@@ -231,7 +231,10 @@ jobs:
 
   voxt2:
     name: Voxt 2 update manifest
-    if: startsWith(github.event.release.tag_name || inputs.tag, 'voxt-v')
+    # Manual runs only until a real install, restart and rollback of the
+    # published update is verified end to end; publishing a release must
+    # not push an unverified update to production by itself.
+    if: github.event_name != 'release' && startsWith(github.event.release.tag_name || inputs.tag, 'voxt-v')
     runs-on: macos-15
     timeout-minutes: 15
     environment: voxt-release
@@ -294,9 +297,9 @@ jobs:
           reply="$(jq -n --arg channel "$CHANNEL" --arg version "$VERSION" \
             --slurpfile manifest "$RUNNER_TEMP/voxt2/update-darwin-arm64.json" \
             '{channel: $channel, version: $version, mode: "replace-latest", manifest: $manifest[0]}' \
-            | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/voxt2/update" \
+            | curl --fail-with-body --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/voxt2/update" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
-              -H "Content-Type: application/json" --data-binary @-)"
+              -H "Content-Type: application/json" --data-binary @-)" || { echo "::error::voxt2 update was refused: $reply"; exit 1; }
           echo "$reply"
           jq -e '.ok == true' <<< "$reply" > /dev/null
 
