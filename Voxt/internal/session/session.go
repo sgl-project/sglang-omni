@@ -45,6 +45,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -191,6 +192,9 @@ type Snapshot struct {
 	// recognised text (Rewrite's spoken instruction); Result what is
 	// delivered.
 	Partial, Raw, Result string
+	// Highlights are dictionary term and alias byte ranges in a
+	// Transcribe Result.
+	Highlights []dict.Span
 	// Spoken is the recognised text as the language model gets it (the
 	// dictionary's aliases replaced), from Composing on; "" when nothing
 	// was said (a selection to translate).
@@ -496,6 +500,9 @@ type TextInput struct {
 func (s Snapshot) clone() Snapshot {
 	if s.Levels != nil {
 		s.Levels = append([]float64(nil), s.Levels...)
+	}
+	if s.Highlights != nil {
+		s.Highlights = append([]dict.Span(nil), s.Highlights...)
 	}
 	if s.Problem != nil {
 		p := *s.Problem

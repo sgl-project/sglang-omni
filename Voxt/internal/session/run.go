@@ -15,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -306,8 +307,13 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	}
 	snap := r.m.Current()
 	total := r.now().Sub(snap.StartedAt)
+	var highlights []dict.Span
+	if r.req.Kind == store.KindTranscribe && r.settings.Dictionary.Enabled {
+		highlights = dict.HighlightSpans(result, r.terms)
+	}
 	r.m.end(r, st, func(s *Snapshot) {
 		s.Result, s.Problem = result, problem
+		s.Highlights = highlights
 		s.Recording = r.keepsRecording(store.StatusDone)
 		s.Inserted = dres.Inserted
 		if l, ok := dres.Landing(); ok {

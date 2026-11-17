@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
@@ -50,9 +51,10 @@ var (
 // cardView is what the answer card shows: an ended session's card, or
 // the answer the model is writing into it.
 type cardView struct {
-	kind  store.Kind
-	title string
-	text  string
+	kind       store.Kind
+	title      string
+	text       string
+	highlights []dict.Span
 	// busy: an answer, another language, or a follow-up, is on its way
 	// (the spinner, or the conversation's waveform).
 	busy bool
@@ -153,7 +155,7 @@ func (a *app) cardNow() cardView {
 	own := a.cardSessionLive()
 	redo := own && s.ID == card.redo
 	follow := own && !redo
-	v := cardView{kind: card.kind, text: card.text, failed: card.problem, msg: card.msg, why: card.why, lang: card.lang,
+	v := cardView{kind: card.kind, text: card.text, highlights: card.highlights, failed: card.problem, msg: card.msg, why: card.why, lang: card.lang,
 		target: card.target.Name, copied: card.copied, busy: own, conversation: card.conversation || follow,
 		size: layout.CardSizes[a.prefs.Features.CardSize(string(card.kind))]}
 	v.title = uitext.CardTitle(card.kind, card.title)
@@ -164,6 +166,7 @@ func (a *app) cardNow() cardView {
 			// The answer asked again streams in over the card's; a failure
 			// or a cancel brings the card's back (endRedo).
 			v.title, v.text, v.writing = uitext.CardTitle(card.kind, s.Title), a.shownDraft(s), true
+			v.highlights = nil // the old answer's spans do not fit the new text
 		}
 	}
 	v.canCopy = card.text != "" && !v.writing
@@ -246,9 +249,10 @@ func (a *app) cardRecording() bool {
 // cardBlock is one piece of the card's text, as it lays out: a text
 // (wrapped where it draws), a failure's line, or a conversation's bubble.
 type cardBlock struct {
-	text  ovSized
-	color ui.Color
-	gap   float32 // before it
+	text       ovSized
+	highlights []dict.Span
+	color      ui.Color
+	gap        float32 // before it
 	// selectable: the answer (its text can be selected and copied).
 	selectable bool
 	// markdown: the text renders as Markdown (a Rewrite's answer,
@@ -313,7 +317,13 @@ func cardBlocks(v cardView) []cardBlock {
 		return out
 	}
 	text := strings.TrimSpace(v.text)
-	return []cardBlock{{text: ovSized{text, layout.CardTextSize, layout.CardTextWeight, bodyW}, color: ovCardText, selectable: text != "",
+	offset := strings.Index(v.text, text)
+	highlights := append([]dict.Span(nil), v.highlights...)
+	for i := range highlights {
+		highlights[i].Start -= offset
+		highlights[i].End -= offset
+	}
+	return []cardBlock{{text: ovSized{text, layout.CardTextSize, layout.CardTextWeight, bodyW}, highlights: highlights, color: ovCardText, selectable: text != "",
 		markdown: v.kind == store.KindRewrite && text != "", stream: v.writing}}
 }
 
