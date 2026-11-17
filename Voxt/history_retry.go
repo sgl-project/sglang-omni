@@ -16,9 +16,12 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
+// entryRetry is the retry running: its entry and stage ("" for none),
+// and the language model's answer so far (the details show it).
 type entryRetry struct {
 	id    string
 	stage session.State
+	draft string
 }
 
 func (a *app) retryEntry(entry store.Entry) {
@@ -40,6 +43,12 @@ func (a *app) retryEntry(entry store.Entry) {
 			a.post(func() {
 				if a.hist.retry.id == entry.ID {
 					a.hist.retry.stage = stage
+				}
+			})
+		}, OnDraft: func(draft string) {
+			a.post(func() {
+				if a.hist.retry.id == entry.ID {
+					a.hist.retry.draft = draft
 				}
 			})
 		}})

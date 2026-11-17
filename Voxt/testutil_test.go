@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/hehehai/actnowkit/sounds"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"math"
 	"net/http"
 	"os"
@@ -518,4 +519,19 @@ func shortScreen(t *testing.T, a *app) {
 	t.Cleanup(func() { ovTestArea = saved })
 	ovTestArea.Height = layout.CardBodyMax + int(math.Round(a.prefs.Overlay.Margin)) + layout.Pad + layout.CardChrome
 	a.ov.area = ovTestArea
+}
+
+// testCardNow is the answer card's view state in the field names of the
+// tests written before the card moved to view state (#4063's tests).
+type testCardNow struct {
+	kind                                              store.Kind
+	text, lang                                        string
+	writing, canStopAnswer, canUseTranscript, canCopy bool
+	canInsert                                         bool
+}
+
+func (a *app) cardNow() testCardNow {
+	v := a.cachedCard()
+	return testCardNow{kind: store.Kind(v.Kind), text: cardTextForTest(v), lang: v.Language, writing: v.Writing,
+		canStopAnswer: v.CanStopAnswer, canUseTranscript: v.CanUseTranscript, canCopy: v.CanCopy, canInsert: v.CanInsert}
 }

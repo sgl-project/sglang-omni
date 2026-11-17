@@ -269,7 +269,12 @@ func liveText(snapshot session.Snapshot) string {
 	case session.Recording, session.Recognizing:
 		return partial
 	case session.Composing, session.Delivering:
-		return cmpOr(partial, strings.TrimSpace(snapshot.Selection))
+		// A stream's words become the recognised text as it was sent to the
+		// model (its last partial can differ); without live words, the selection.
+		if partial != "" {
+			return cmpOr(strings.TrimSpace(snapshot.Spoken), partial)
+		}
+		return strings.TrimSpace(snapshot.Selection)
 	}
 	return ""
 }
@@ -289,6 +294,7 @@ func copySessionLevels(destination *[session.Bars]float64, levels []float64) {
 }
 
 type sessionPillProjectionKey struct {
+	spoken                      string // liveText shows it while the model works
 	sessionID, kind, state      string
 	partial, selection          string
 	waiting                     string
@@ -349,7 +355,7 @@ func sessionPillKeyFor(input sessionOverlayProjectionInput, locale string, now t
 	elapsed := snapshot.Elapsed(now)
 	key := sessionPillProjectionKey{
 		sessionID: snapshot.ID, kind: string(snapshot.Kind), state: string(snapshot.State),
-		partial: snapshot.Partial, selection: snapshot.Selection, waiting: string(snapshot.Waiting),
+		partial: snapshot.Partial, spoken: snapshot.Spoken, selection: snapshot.Selection, waiting: string(snapshot.Waiting),
 		sceneText: uitext.SceneShort(snapshot), sceneLabel: uitext.SceneLabel(snapshot),
 		pillNoteID: input.PillNoteID, pillNoteText: input.PillNoteText,
 		thinkingLabel: input.ThinkingLabel, locale: locale, mode: input.Mode,

@@ -299,7 +299,11 @@ func buildHistoryDetailViewState(translator *i18n.Translator, input historyDetai
 			state.TextBlocks = append(state.TextBlocks, historyTextBlockViewState{Key: key, Title: title, CopyLabel: copyLabel, Text: text})
 		}
 	}
-	addTextBlock("hist-result", translator.T("Result"), translator.T("Copy result"), entry.Result)
+	result := entry.Result
+	if input.Retry.id == entry.ID && strings.TrimSpace(input.Retry.draft) != "" {
+		result = input.Retry.draft // a retry's answer as the model writes it
+	}
+	addTextBlock("hist-result", translator.T("Result"), translator.T("Copy result"), result)
 	if entry.PromptText != "" {
 		addTextBlock("hist-prompt", translator.T("Instruction"), translator.T("Copy instruction"), entry.PromptText)
 	}

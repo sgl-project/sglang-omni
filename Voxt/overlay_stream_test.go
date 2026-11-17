@@ -78,6 +78,33 @@ func TestStreamedAnswerCalm(t *testing.T) {
 	}
 }
 
+// TestStreamedAnswerAskedAgain: a translation streams into the card, looks
+// untranslated, and the model is asked again, strictly: the draft starts
+// over. The new answer showed at once up to where the first one had got,
+// instead of at the pace from its start.
+func TestStreamedAnswerAskedAgain(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	clock := (&fakeTimers{}).install(a)
+	s := session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Composing, Card: true, Selection: "x", TargetLanguage: "zh-Hans",
+		Draft: strings.Repeat("The meeting moves to Thursday. ", 6)}
+	snap(a, s)
+	clock.advance(5 * time.Second)
+	if v := a.cachedCard(); !v.Writing || cardTextForTest(v) != strings.TrimSpace(s.Draft) {
+		t.Fatalf("the first answer: the card shows %q (writing %v)", cardTextForTest(v), v.Writing)
+	}
+	s.Retried, s.Draft = true, ""
+	snap(a, s)
+	s.Draft = "会议改到周四。"
+	snap(a, s)
+	if v := a.cachedCard(); !v.Writing || cardTextForTest(v) == s.Draft {
+		t.Errorf("asked again: the card shows %q at once (writing %v)", cardTextForTest(v), v.Writing)
+	}
+	clock.advance(time.Second)
+	if v := a.cachedCard(); cardTextForTest(v) != s.Draft {
+		t.Errorf("asked again: after a second the card shows %q", cardTextForTest(v))
+	}
+}
+
 // TestStreamedAnswerNoDip (#3839 verify): on the Mac the view measures
 // each new text a frame after the card first sized it from a guess, and
 // the guess runs long. The card must not grow a step on the guess and

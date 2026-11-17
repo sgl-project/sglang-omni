@@ -48,8 +48,8 @@ type cardStep struct {
 }
 
 // cardSteps walk the answer card through its states, as one Translate
-// card and one Rewrite conversation would (while the model writes, the
-// pill shows the answer: overlay_flows_test.go).
+// card and one Rewrite conversation would (a first answer as the model
+// writes it: overlay_stream_test.go).
 func cardSteps() []cardStep {
 	arc := proto.App{PID: 77, BundleID: "company.thebrowser.Browser", Name: "Arc"}
 	sel := "A goroutine is a lightweight thread managed by the Go runtime."
@@ -62,9 +62,11 @@ func cardSteps() []cardStep {
 			snap(a, tr(session.Done, "goroutine 是由 Go 运行时管理的轻量级线程。", "goroutine 是由 Go 运行时管理的轻量级线程。"))
 		},
 			insert: true, copy: true, followUp: true, lang: true},
+		// Another language, before its first words (then they stream in
+		// over the card's: TestTranslateSpeechCard).
 		{name: "redo", apply: func(a *app) {
 			a.answer.redo, a.answer.redoLang = "t2", "ja"
-			snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranslate, State: session.Composing, Card: true, Target: arc, Selection: sel, TargetLanguage: "ja", Draft: "ゴルーチン"})
+			snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranslate, State: session.Composing, Card: true, Target: arc, Selection: sel, TargetLanguage: "ja"})
 		}, copy: true, busy: true},
 		{name: "redone-long", apply: func(a *app) {
 			snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranslate, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Target: arc,

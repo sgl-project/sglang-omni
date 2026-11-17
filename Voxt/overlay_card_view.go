@@ -78,7 +78,10 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		}
 		if card.Busy {
 			busy := i18n.T("Translating…")
-			if card.Writing {
+			switch {
+			case card.Writing && card.Kind == "transcribe":
+				busy = i18n.T("Cleaning up…")
+			case card.Writing && card.Kind == "rewrite":
 				busy = i18n.T("Writing…")
 			}
 			ui.Icon(context, icons.VoxtSpinner.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.88)).Shrink(0).
@@ -93,6 +96,10 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 	case card.CanStopAnswer:
 		if cardCapsule(context.Key("ov-card-stop-answer"), i18n.T("Stop"), i18n.T("Stop writing and keep the text so far")) {
 			actions.stopLLM()
+		}
+	case card.CanUseTranscript:
+		if cardCapsule(context.Key("ov-card-use-transcript"), i18n.T("Use transcript"), "") {
+			actions.skipLLM()
 		}
 	case card.CanStop:
 		if cardCapsule(context.Key("ov-card-stop"), i18n.T("Done"), i18n.T("Stop recording the follow-up")) {

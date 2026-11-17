@@ -206,3 +206,24 @@ func snapshotHistoryRetry(a *app, save func(string)) {
 	a.historyChanged()
 	a.loadHistory()
 }
+
+// TestHistoryRetryDraft: while a retry's language model writes, the
+// details' Result shows its answer so far in place of the old one, until
+// the retry is over.
+func TestHistoryRetryDraft(t *testing.T) {
+	a, tt, _ := retryApp(t, "Again.")
+	seedHistory(t, a)
+	seedRetryEntry(t, a)
+	a.navigate("/history")
+	a.histUI.sel = histInserted
+	a.hist.retry = entryRetry{id: histInserted, stage: session.Composing, draft: "Let's move the design review to"}
+	frames(tt)
+	if !hasExact(tt, "Let's move the design review to") {
+		t.Errorf("while it writes: %q", firstTexts(tt))
+	}
+	a.hist.retry = entryRetry{}
+	frames(tt)
+	if hasExact(tt, "Let's move the design review to") {
+		t.Errorf("after the retry: %q", firstTexts(tt))
+	}
+}

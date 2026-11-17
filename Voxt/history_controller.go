@@ -49,6 +49,7 @@ type historyViewCacheKey struct {
 	selectedID      string
 	retryID         string
 	retryStage      string
+	retryDraft      string
 	keepHistory     bool
 	audioMissing    string
 	defaultAudioDir string
@@ -147,7 +148,7 @@ func (a *app) historyPageModel(now time.Time) historyViewState {
 	_, zoneOffset := now.Zone()
 	key := historyViewCacheKey{
 		seq: a.hist.seq, listFor: a.hist.listFor, loading: a.hist.loading, stale: a.hist.stale, err: a.hist.err,
-		tab: a.histUI.tab, query: a.histUI.query, selectedID: a.histUI.sel, retryID: a.hist.retry.id, retryStage: string(a.hist.retry.stage),
+		tab: a.histUI.tab, query: a.histUI.query, selectedID: a.histUI.sel, retryID: a.hist.retry.id, retryStage: string(a.hist.retry.stage), retryDraft: a.hist.retry.draft,
 		keepHistory: a.prefs.Privacy.KeepHistory, audioMissing: a.histSet.audioMissing, defaultAudioDir: a.defaultAudioDir,
 		homeDir: a.homeDir, locale: i18n.Locale(), location: now.Location().String(), zoneOffset: zoneOffset,
 		minute: now.Unix() / 60, asrModel: asrModel, llmModel: llmModel,

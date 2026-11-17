@@ -55,10 +55,12 @@ type sessionCardViewState struct {
 	CanFollowUp   bool                  `json:"can_follow_up"`
 	CanStop       bool                  `json:"can_stop"`
 	CanStopAnswer bool                  `json:"can_stop_answer"`
-	CanRetry      bool                  `json:"can_retry"`
-	CanLanguage   bool                  `json:"can_language"`
-	ShowThinking  bool                  `json:"show_thinking"`
-	CanThink      bool                  `json:"can_think"`
+	// CanUseTranscript: Transcribe's clean-up or Translate's speech can go in as recognised instead (#3821).
+	CanUseTranscript bool `json:"can_use_transcript,omitempty"`
+	CanRetry         bool `json:"can_retry"`
+	CanLanguage      bool `json:"can_language"`
+	ShowThinking     bool `json:"show_thinking"`
+	CanThink         bool `json:"can_think"`
 }
 
 // sessionCardBlock is one laid-out body, failure, source, or conversation block.
@@ -103,7 +105,10 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 			state.ID, state.Kind = snapshot.ID, string(snapshot.Kind)
 			state.Title = sessionCardTitleFor(translator, snapshot.Kind, snapshot.Title)
 			state.TargetName = snapshot.Target.Name
+			state.Language = snapshot.TargetLanguage
+			state.LanguageLabel = compose.LanguageName(snapshot.TargetLanguage, translator.Locale())
 			state.Busy, state.Writing, state.CanStopAnswer = true, true, snapshot.CanStop()
+			state.CanUseTranscript = snapshot.CanSkip
 			state.Live[0] = sessionCardWritingBlock(input.ShownDraft)
 			state.LiveCount = 1
 		}
@@ -129,6 +134,12 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		CanStopAnswer: follow && snapshot.CanStop(), CanRetry: card.problem != nil && !snapshot.State.Live(),
 		FollowTooltip: continueTipFor(translator, input.FollowKeys),
 	}
+	if sessionCardRedoWriting(input) {
+		// The answer asked again streams in over the card's; a failure or a
+		// cancel brings the card's back (endRedo).
+		state.Title = sessionCardTitleFor(translator, card.kind, snapshot.Title)
+		state.Writing, state.CanCopy = true, false
+	}
 	if card.problem != nil {
 		state.ProblemCode = card.problem.Code
 	}
@@ -147,7 +158,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 	}
 	if state.Failed && !state.Conversation {
 		state.Blocks = sessionCardFailureBlocks(translator, card)
-	} else if !state.Conversation {
+	} else if !state.Conversation && !state.Writing {
 		state.Blocks = []sessionCardBlock{{Key: "answer", Kind: sessionCardBody, Text: strings.TrimSpace(card.text), Selectable: strings.TrimSpace(card.text) != ""}}
 	} else {
 		state.Blocks = sessionCardConversationBlocks(translator, card)
@@ -216,6 +227,10 @@ func buildSessionCardLiveTail(translator *i18n.Translator, input sessionCardProj
 		}
 		return live, 0
 	}
+	if sessionCardRedoWriting(input) {
+		live[0] = sessionCardWritingBlock(input.ShownDraft)
+		return live, 1
+	}
 	if !follow {
 		return live, 0
 	}
@@ -248,6 +263,14 @@ func sessionCardUserBlock(translator *i18n.Translator, quotesOpen map[int]bool, 
 		block.Text = "…"
 	}
 	return block, strings.TrimSpace(said) != "" || block.Quote != ""
+}
+
+// sessionCardRedoWriting says whether an answer asked again (another
+// language or thinking level) is streaming over an open card's text.
+func sessionCardRedoWriting(input sessionCardProjectionInput) bool {
+	snapshot, card := input.Snapshot, input.Answer
+	return card.open && !card.conversation && !input.HideLiveText && input.Own && snapshot.ID == card.redo &&
+		snapshot.State == session.Composing && strings.TrimSpace(snapshot.Draft) != ""
 }
 
 func sessionCardWritingBlock(text string) sessionCardBlock {
@@ -304,6 +327,7 @@ func updateSessionCardLiveState(translator *i18n.Translator, card *sessionCardVi
 		card.Title = sessionCardTitleFor(translator, input.Snapshot.Kind, input.Snapshot.Title)
 		card.TargetName = input.Snapshot.Target.Name
 		card.CanStopAnswer = input.Snapshot.CanStop()
+		card.CanUseTranscript = input.Snapshot.CanSkip
 	}
 	card.Live, card.LiveCount = buildSessionCardLiveTail(translator, input, follow)
 }
@@ -319,6 +343,7 @@ type sessionCardProjectionKey struct {
 	followKeys                            string
 	own, writing, hideLiveText            bool
 	canFollowUp, copied, conversation     bool
+	redoWriting                           bool
 	problemCode                           string
 }
 
@@ -327,7 +352,7 @@ type sessionCardLiveProjectionKey struct {
 	selection, title, shownDraft   string
 	target                         string
 	own, writing, hideLiveText     bool
-	canStop                        bool
+	canStop, canSkip               bool
 }
 
 func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKey {
@@ -347,6 +372,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 		turnCount: len(card.turns), followKeys: input.FollowKeys,
 		own: input.Own, writing: input.Writing, hideLiveText: input.HideLiveText,
 		canFollowUp: input.CanFollowUp, copied: card.copied, conversation: card.conversation, problemCode: problemCode,
+		redoWriting: sessionCardRedoWriting(input),
 	}
 }
 
@@ -355,7 +381,7 @@ func sessionCardLiveKeyFor(input sessionCardProjectionInput) sessionCardLiveProj
 	return sessionCardLiveProjectionKey{sessionID: snapshot.ID, state: string(snapshot.State),
 		raw: snapshot.Raw, partial: snapshot.Partial, selection: snapshot.Selection, title: snapshot.Title,
 		target: snapshot.Target.Name, shownDraft: input.ShownDraft, own: input.Own, writing: input.Writing,
-		hideLiveText: input.HideLiveText, canStop: snapshot.CanStop()}
+		hideLiveText: input.HideLiveText, canStop: snapshot.CanStop(), canSkip: snapshot.CanSkip}
 }
 
 func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
@@ -403,7 +429,7 @@ func cmpOr(first, second string) string {
 
 func (a *app) writingAnswer() bool {
 	snapshot := a.pillSession()
-	return !a.answer.open && snapshot.Kind == store.KindRewrite && snapshot.State == session.Composing && snapshot.Card && !snapshot.Try && strings.TrimSpace(snapshot.Draft) != ""
+	return !a.answer.open && snapshot.State == session.Composing && snapshot.Card && !snapshot.Try && strings.TrimSpace(snapshot.Draft) != ""
 }
 
 func (a *app) featureKeys(feature string) string {
