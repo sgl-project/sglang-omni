@@ -184,6 +184,10 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 	p := DefaultChunkParams()
 	p.Rate = rate
 	p.MaxDur = diarizeChunkMax
+	// Pack speech across pauses up to the chunk cap: with the plain-ASR
+	// pause threshold every pause would start a new request, and the
+	// fixed per-request cost would dominate a pause-rich track.
+	p.PauseMin = diarizeChunkMax
 	chunks := PlanChunks(speech, len(pcm)/2, p)
 	var out []Segment
 	var carry string
