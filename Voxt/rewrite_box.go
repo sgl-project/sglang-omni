@@ -140,6 +140,9 @@ func (a *app) dropBox() {
 	a.box = rewriteBox{}
 	a.boxShare.store("", nil)
 	a.boxGen++
+	// A send queued behind a picture's conversion dies with the box: an
+	// old life's conversion landing later must not send the new life.
+	a.boxSendQueued = false
 }
 
 // boxSend is Enter in the box: while it records, it finishes the

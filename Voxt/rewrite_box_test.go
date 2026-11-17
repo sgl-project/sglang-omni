@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
@@ -393,6 +394,44 @@ func TestRewriteBoxStaleConversionDropped(t *testing.T) {
 	a.boxConverted(gen, boxJPEG(t), "")
 	if len(a.box.images) != 0 || a.boxPending != 0 {
 		t.Errorf("%d images, %d pending", len(a.box.images), a.boxPending)
+	}
+}
+
+// TestRewriteBoxQueuedSendDiesWithTheBox: Enter queued behind a pasted
+// picture's conversion belongs to that box's life. Esc and a reopen
+// start a new one: the old life's conversion, landing now, must not
+// stop and send the new recording — the user's Enter does, once.
+func TestRewriteBoxQueuedSendDiesWithTheBox(t *testing.T) {
+	chat := &fakeChat{text: "A shorter text."}
+	a := newBoxApp(t, script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger)), chat)
+	a.pump("the first recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	var gen int
+	a.postQueue(func() {
+		gen = a.boxGen
+		a.boxPending++ // the pasted picture still converts
+		a.boxSend()    // Enter: the send waits for it
+		a.closeBox()   // Esc before it lands
+	})
+	a.pump("the box closed", func() bool { return !a.box.open && a.sess.State.Ended() })
+	a.drain(500 * time.Millisecond) // the cancelled capture's teardown
+	a.postQueue(func() { a.openBox(proto.App{}, session.StartRequest{Kind: store.KindRewrite}) })
+	a.pump("the second recording", func() bool {
+		return a.box.open && a.box.session != "" && a.sess.ID == a.box.session && a.sess.State == session.Recording
+	})
+	// The old life's conversion lands: no send may come of it.
+	a.postQueue(func() { a.boxConverted(gen, boxJPEG(t), "") })
+	a.drain(500 * time.Millisecond)
+	if a.sess.State != session.Recording {
+		t.Fatalf("a stale conversion's queued send stopped the new recording (%s)", a.sess.State)
+	}
+	if n := len(chat.requests()); n != 0 {
+		t.Fatalf("%d chats without the user's Enter", n)
+	}
+	// The user's own Enter still sends, once.
+	a.postQueue(a.boxSend)
+	a.pump("the answer", func() bool { return a.answer.open })
+	if n := len(chat.requests()); n != 1 {
+		t.Fatalf("%d chats", n)
 	}
 }
 

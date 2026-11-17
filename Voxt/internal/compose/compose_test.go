@@ -558,6 +558,7 @@ func TestClean(t *testing.T) {
 		// Only the control markers are markup; other <| stays (F#'s
 		// pipe, a tag the user wrote).
 		{"let y = f <| x", "x", "let y = f <| x"},
+		{"let y = f <|x", "x", "let y = f <|x"},
 		{"One <|mid|> two.", "x", "One <|mid|> two."},
 		{"code <| x then <|tool_call_begin|>c<|tool_call_end|>", "x", "code <| x then"},
 	} {
@@ -571,7 +572,11 @@ func TestClean(t *testing.T) {
 // internal control blocks too (#4085), a partial one's unfinished tail
 // included.
 func TestStripControlAnswer(t *testing.T) {
-	if got := StripControl("a<|x|>b<|y"); got != "a<|x|>b" {
+	if got := StripControl("a<|x|>b<|tool_call_be"); got != "a<|x|>b" {
+		t.Errorf("StripControl %q", got)
+	}
+	// A bare word is no control tag: F#'s pipe keeps its operand.
+	if got := StripControl("let y = f <|x"); got != "let y = f <|x" {
 		t.Errorf("StripControl %q", got)
 	}
 	if got := StripControl("no blocks"); got != "no blocks" {
@@ -581,7 +586,7 @@ func TestStripControlAnswer(t *testing.T) {
 	if !ok || a.Title != "T<|x|>" || a.Content != "Ships Friday." {
 		t.Errorf("ParseAnswer %+v %v", a, ok)
 	}
-	if got := PartialAnswer(`{"title":"T","content":"Ships Friday.<|tool`); got.Content != "Ships Friday." {
+	if got := PartialAnswer(`{"title":"T","content":"Ships Friday.<|tool_call_be`); got.Content != "Ships Friday." {
 		t.Errorf("PartialAnswer %+v", got)
 	}
 	if got := PartialAnswer("plain text <|tool_calls_section_be"); got.Content != "plain text" {

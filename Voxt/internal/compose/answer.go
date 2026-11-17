@@ -62,7 +62,7 @@ func StripControl(s string) string {
 		if j < 0 {
 			// Only a cut-off tag's tail goes with the stream's end; text
 			// after a real <| (F#'s, a user's) stays.
-			if tagName(s[i+2:]) {
+			if controlTag(s[i+2:]) {
 				return strings.TrimRight(s[:i], " \t\r\n")
 			}
 			return s
@@ -73,7 +73,7 @@ func StripControl(s string) string {
 		// <|..._end|>, a thought <|channel|> through <channel|> (Gemma 4's
 		// channel, llm's thinkTags). Anything else is text.
 		close := ""
-		if tagName(name) {
+		if controlTag(name) {
 			switch {
 			case strings.HasSuffix(name, "_begin"):
 				close = "<|" + strings.TrimSuffix(name, "_begin") + "_end|>"
@@ -94,8 +94,25 @@ func StripControl(s string) string {
 	}
 }
 
-// tagName reports whether tail is one tag's name (or, with no |> yet,
-// a cut-off tag's name so far): a letter, then letters, digits and _.
+// controlTag reports whether tail is a control tag's name, whole or
+// cut off by the stream's end: channel (Gemma 4's thought channel), or
+// an identifier of _-joined parts whose last part starts begin or end,
+// as tool_call_be is tool_call_begin cut short. A plain word is none of
+// these: F#'s <|x and the tags a user writes stay text.
+func controlTag(tail string) bool {
+	if strings.HasPrefix("channel", tail) {
+		return tail != ""
+	}
+	i := strings.LastIndexByte(tail, '_')
+	if i < 0 || !tagName(tail) {
+		return false
+	}
+	last := tail[i+1:]
+	return strings.HasPrefix("begin", last) || strings.HasPrefix("end", last)
+}
+
+// tagName reports whether tail has a tag name's shape: a letter, then
+// letters, digits and _.
 func tagName(tail string) bool {
 	for i, r := range tail {
 		switch {
