@@ -229,7 +229,7 @@ func (a *app) obFooter(c *ui.Context) {
 				a.obGo(a.ob.step + 1)
 			}
 			if primaryButton(c.Key("ob-next"), i18n.T("Download and continue (%s)", a.obDownloadLeft())).Disabled(busy).Clicked() {
-				a.obDownload()
+				a.downloadModel(a.obSpeech())
 				a.obGo(a.ob.step + 1)
 			}
 		case a.ob.step == obModels && a.modelStatus[a.obSpeech()].Downloading:

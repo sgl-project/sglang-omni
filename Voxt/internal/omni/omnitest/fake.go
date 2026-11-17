@@ -85,10 +85,6 @@ type Opts struct {
 	Segments bool
 	// TokenLimit ends the Final at the generation budget.
 	TokenLimit bool
-	// LiveMarkup sends MOSS's diarization markup in the live segments and
-	// the completed text, as the real model sometimes does on its
-	// plain-text instruction.
-	LiveMarkup bool
 }
 
 // Env is the environment that makes a test binary a fake with o.
@@ -107,7 +103,6 @@ func Env(o Opts) []string {
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
 	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
-	v.Set("livemarkup", strconv.FormatBool(o.LiveMarkup))
 	return []string{EnvFake + "=" + v.Encode()}
 }
 
@@ -127,7 +122,6 @@ func opts() Opts {
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
 	o.LiveDrop, _ = strconv.ParseBool(v.Get("livedrop"))
-	o.LiveMarkup, _ = strconv.ParseBool(v.Get("livemarkup"))
 	if o.Text == "" {
 		o.Text = "fake transcript"
 	}

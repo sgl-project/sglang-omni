@@ -1330,7 +1330,6 @@
   "Hide %s": "隐藏 %s",
   "Hide it from the features' menus": "不在功能页的模型菜单里列出",
   "Speech context": "识别上下文",
-  "The speech models in use do not take it while they recognise. The language model still gets it when it corrects a meeting's transcript, and your dictionary still guides its clean-up.": "正在用的语音识别模型识别时不用它。语言模型校对会议转录稿时仍会用到它，词典也仍会用于语言模型整理。",
   "Tell the speech model who is speaking and about what.": "告诉语音识别模型谁在说话、在说什么。",
   "For example: I work on LLM serving and speak Chinese with English technical terms.": "例如：我从事大模型推理服务，说中文，夹杂英文技术词。",
   "Recognition prompt": "识别提示词",

@@ -99,7 +99,7 @@ func (a *app) speechReadiness() readiness {
 	id := a.obSpeech()
 	st := a.modelStatus[id]
 	openModels := func() { a.navigate(modelsPath) }
-	download := a.obDownload
+	download := func() { a.downloadModel(id) }
 	r.kind, r.text = noticeWarn, i18n.T("No speech model is installed. Install one to transcribe, translate and rewrite by voice.")
 	if ok {
 		r.kind, r.text = noticeInfo, i18n.T("Using System dictation for now.")

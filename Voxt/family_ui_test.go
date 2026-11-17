@@ -94,13 +94,13 @@ func TestOnboardingReuse(t *testing.T) {
 	a, tt := obTester(t)
 	reopenModels(a) // the counting Hub
 	smith := addPeer(t, a, "dev.hehehai.audiosmith", nil)
-	seedModels(t, a, models.ASRMoss, models.VADSilero)
-	peerClaims(t, smith, models.ASRMoss, models.VADSilero)
+	seedModels(t, a, models.ASRAccurate, models.VADSilero)
+	peerClaims(t, smith, models.ASRAccurate, models.VADSilero)
 	a.familyFound(a.fam.Discover())
 	a.models.Refresh()
 	a.obGo(obModels)
-	for _, s := range []string{"2 models are already on this Mac", "Installed by AudioSmith · 1.8 GB · no download needed",
-		"MOSS-Transcribe-Diarize · Silero VAD v6", "Use them", "Choose models…", "Installed · from AudioSmith",
+	for _, s := range []string{"2 models are already on this Mac", "Installed by AudioSmith · 2.5 GB · no download needed",
+		"Qwen3-ASR 1.7B (8bit) · Silero VAD v6", "Use them", "Choose models…", "Installed · from AudioSmith",
 		"Set up a language model"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
@@ -110,12 +110,12 @@ func TestOnboardingReuse(t *testing.T) {
 		t.Error("Continue stays the primary button")
 	}
 	click(t, tt, "Use them")
-	for _, id := range []string{models.ASRMoss, models.VADSilero} {
+	for _, id := range []string{models.ASRAccurate, models.VADSilero} {
 		if c, ok := voxtnewClaim(t, a, id); !ok || c.Origin != fammodels.OriginReused {
 			t.Errorf("%s: claim %+v %v", id, c, ok)
 		}
 	}
-	if has(tt, "Use them") || !has(tt, "Ready: MOSS-Transcribe-Diarize") || !has(tt, "Set up a language model") || hasPrefix(tt, "Download (") {
+	if has(tt, "Use them") || !has(tt, "Ready: Qwen3-ASR 1.7B (8bit)") || !has(tt, "Set up a language model") || hasPrefix(tt, "Download (") {
 		t.Errorf("after Use them: %q", tt.Texts())
 	}
 	for _, m := range models.Catalog() {
@@ -151,7 +151,7 @@ func reuseAgain(t *testing.T, a *app) {
 	a.obGo(obModels)
 }
 
-// TestOnboardingAlternative: the recommended speech model missing, the fast
+// TestOnboardingAlternative: the accurate speech model missing, the fast
 // one AudioSmith installed is offered for now; Download stays the
 // default; Use claims it, and the step says it is ready.
 func TestOnboardingAlternative(t *testing.T) {
@@ -167,8 +167,8 @@ func TestOnboardingAlternative(t *testing.T) {
 	drain()
 	a.obGo(obModels)
 	drain()
-	line := "MOSS-Transcribe-Diarize isn't installed, but Qwen3-ASR 0.6B (4bit) (from AudioSmith) is. Use it for now?"
-	for _, s := range []string{line, "Download MOSS-Transcribe-Diarize", "Use Qwen3-ASR 0.6B (4bit)",
+	line := "Qwen3-ASR 1.7B (8bit) isn't installed, but Qwen3-ASR 0.6B (4bit) (from AudioSmith) is. Use it for now?"
+	for _, s := range []string{line, "Download Qwen3-ASR 1.7B (8bit)", "Use Qwen3-ASR 0.6B (4bit)",
 		"1 model is already on this Mac", "Silero VAD v6", "Set up a language model"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
@@ -178,19 +178,19 @@ func TestOnboardingAlternative(t *testing.T) {
 		t.Errorf("the speech model is in the step's Download, or ready: %q", tt.Texts())
 	}
 
-	// Download (the default) starts the recommended one.
-	obScrollTo(tt, "Download MOSS-Transcribe-Diarize")
-	click(t, tt, "Download MOSS-Transcribe-Diarize")
+	// Download (the default) starts the accurate one.
+	obScrollTo(tt, "Download Qwen3-ASR 1.7B (8bit)")
+	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
 	deadline := time.Now().Add(5 * time.Second)
 	for asked.Load() == 0 && time.Now().Before(deadline) {
 		drain()
 	}
-	for a.models.Status(models.ASRMoss).Downloading && time.Now().Before(deadline) {
+	for a.models.Status(models.ASRAccurate).Downloading && time.Now().Before(deadline) {
 		drain()
 	}
 	drain()
 	if asked.Load() == 0 {
-		t.Fatalf("Download asked nothing of the Hub: %+v", a.models.Status(models.ASRMoss))
+		t.Fatalf("Download asked nothing of the Hub: %+v", a.models.Status(models.ASRAccurate))
 	}
 
 	// Use it for now.

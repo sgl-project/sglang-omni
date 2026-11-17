@@ -232,21 +232,13 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 			samples += len(pcm) / 2
 			if samples >= next {
 				next = samples + 16000
-				text := fmt.Sprintf("partial %d", samples/1600)
-				if o.LiveMarkup {
-					text = "[S01] " + text + "[2.62]"
-				}
-				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": text, "is_final": false})
+				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": fmt.Sprintf("partial %d", samples/1600), "is_final": false})
 			}
 		case "input_audio_buffer.commit":
 			send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": "live final", "is_final": true})
 		case "transcription.done":
 			if !o.LiveDrop {
-				text := "live final"
-				if o.LiveMarkup {
-					text = o.Text
-				}
-				send(map[string]any{"type": "transcription.completed", "text": text})
+				send(map[string]any{"type": "transcription.completed", "text": "live final"})
 			}
 			return
 		}

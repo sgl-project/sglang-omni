@@ -73,7 +73,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 1. **下载** [`Voxt-2.1.0-arm64.dmg`][download]，打开后把 **Voxt** 拖进“应用程序”。
 
-2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（MOSS-Transcribe-Diarize 及其转录加速草稿，2.1 GB），再配置一个语言模型用于整理、翻译和改写。
+2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（Qwen3-ASR 1.7B (8bit)，2.5 GB），再配置一个语言模型用于整理、翻译和改写。
 3. 在任意 App 里**单按右 Option**，说话，再按一下。
 
 分步说明：[Install Voxt][install-guide]。
@@ -98,7 +98,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 ### 系统要求
 
 - **Apple 芯片**、**macOS 15** 及以上的 Mac。Voxt 2 不能在 Intel Mac 上运行，那里请继续用 Voxt 1.x。
-- app 约 280 MB，推荐的语音识别模型连同草稿需下载 2.1 GB。
+- app 约 280 MB，推荐的语音识别模型需下载 2.5 GB。
 - Voxt 2 有新版本时会提示（“检查更新…”，以及每天一次的自动检查，可以在 设置 → 诊断与关于 里关掉），但不会自己安装。新版本用同样的方式安装：从 dmg 安装。
 
 ## 你的模型，你的数据
@@ -109,11 +109,10 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 | 模型 | 擅长什么 | 下载大小 |
 |---|---|---|
-| **MOSS-Transcribe-Diarize**，推荐 | 中文和英语，为多人对话设计。实时显示文字，默认开启转录加速。不用词典和识别上下文，词典仍用于语言模型整理。 | 2.1 GB（含草稿） |
-| **Qwen3-ASR 1.7B (8bit)** | 最准确：口音、方言、人名、一句话里夹几种语言。实时显示文字。 | 2.5 GB |
+| **Qwen3-ASR 1.7B (8bit)**，推荐 | 最准确：口音、方言、人名、一句话里夹几种语言。实时显示文字。 | 2.5 GB |
 | **Qwen3-ASR 0.6B (4bit)** | 更快、更省内存，适合在安静环境里清晰地说话。实时显示文字。 | 713 MB |
 
-- **更多本地模型**：Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）、Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo / Large v3 / Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）和 Cohere Transcribe 03-2026（14 种语言）。macOS 自带的系统听写也可以用，无需下载。
+- **更多本地模型**：MOSS-Transcribe-Diarize（中文和英语，实时显示文字）、Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）、Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo / Large v3 / Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）和 Cohere Transcribe 03-2026（14 种语言）。macOS 自带的系统听写也可以用，无需下载。
 - **Qwen3-ASR** 支持 30 种语言和 22 种中文方言，并且会用到你的词典；其他可下载的模型不用词典。
 - **转录加速**（DFlash）：在 Qwen3-ASR 和 MOSS-Transcribe-Diarize 的卡片上打开开关并下载一个草稿模型（Qwen3-ASR 1.7B 726 MB，8bit 和 6bit 共用；0.6B 和 MOSS 各 262 MB），它每步先提出几个词，再由语音识别模型校验。关掉开关，模型照常工作；草稿留在磁盘上，直到你删除它。
 - **云端语音 API**，如果你更想用：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼、阶跃星辰、小米 MiMo 和 Google Gemini。
