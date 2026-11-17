@@ -54,6 +54,14 @@ private:
   int end_ = 0;
 };
 
+// A sequence prefilled alone, to decode in a batch with others.
+struct PrefilledSequence {
+  std::vector<omni_common::KVCache> caches;
+  int prompt_length = 0;
+  // The greedy token after the prompt, [1].
+  mlx::core::array first_token;
+};
+
 class Qwen3Decoder {
 public:
   // Weights under prefix (layers, norm, embed_tokens), or at the top level
@@ -91,6 +99,12 @@ public:
       std::vector<std::vector<mlx::core::array>> *captured = nullptr) const;
   std::vector<omni_common::KVCache> NewCaches() const;
   const Qwen3DecoderConfig &config() const { return config_; }
+  // Greedy decoding of sequences together, left-padded to the longest prompt:
+  // accept(index, token_id) takes each unfinished sequence's next token and
+  // returns true once that sequence is done; returns when every one is. The
+  // sequences' caches are moved into the batch's.
+  void DecodeGreedyBatch(std::vector<PrefilledSequence> &sequences,
+                         const std::function<bool(size_t, int)> &accept) const;
   // One decode step for a batch, embeddings [batch, 1, hidden]. offsets is
   // each row's true position, int32 [batch]; pads is each row's count of
   // left-padding cache slots, int32 [batch, 1]. Returns logits [batch, vocab].

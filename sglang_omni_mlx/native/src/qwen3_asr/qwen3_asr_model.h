@@ -43,11 +43,6 @@ public:
   // rounding of matrices with other row counts.
   int WindowFrameCount() const;
   const omni_common::Qwen3Decoder &decoder() const { return decoder_; }
-  // One decode step for a batch; see omni_common::Qwen3Decoder::DecodeBatch.
-  mlx::core::array DecodeBatch(const mlx::core::array &embeddings,
-                               std::vector<omni_common::BatchedKVCache> &caches,
-                               const mlx::core::array &offsets,
-                               const mlx::core::array &pads) const;
 
 private:
   Qwen3ASR(const nlohmann::json &config,

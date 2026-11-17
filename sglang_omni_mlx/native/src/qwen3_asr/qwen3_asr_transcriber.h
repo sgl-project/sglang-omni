@@ -156,8 +156,6 @@ private:
   // error and gets no row.
   std::vector<BatchRow> PrefillRows(const std::vector<BatchRequest> &requests,
                                     const BatchFinished &on_finished) const;
-  static std::vector<omni_common::BatchedKVCache>
-  StackCaches(const std::vector<BatchRow> &rows);
   // Decodes the rows together until each has finished or been cancelled,
   // reporting each as it does.
   void DecodeRows(const std::vector<BatchRequest> &requests,

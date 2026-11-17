@@ -296,6 +296,68 @@ mx::array Qwen3Decoder::BatchLayer(const mx::array &x, int layer,
                   prefix + ".mlp.down_proj"));
 }
 
+void Qwen3Decoder::DecodeGreedyBatch(
+    std::vector<PrefilledSequence> &sequences,
+    const std::function<bool(size_t, int)> &accept) const {
+  const int batch = static_cast<int>(sequences.size());
+  int longest_prompt = 0;
+  std::vector<mx::array> first_tokens;
+  // Each row's true position, which differs from the shared cache index.
+  std::vector<int32_t> positions;
+  for (const PrefilledSequence &sequence : sequences) {
+    longest_prompt = std::max(longest_prompt, sequence.prompt_length);
+    first_tokens.push_back(mx::reshape(sequence.first_token, {1}));
+    positions.push_back(sequence.prompt_length);
+  }
+  // Rows are left-padded to the longest prompt; the pad slots are masked out.
+  std::vector<int32_t> pads;
+  for (const PrefilledSequence &sequence : sequences) {
+    pads.push_back(longest_prompt - sequence.prompt_length);
+  }
+  std::vector<BatchedKVCache> caches;
+  caches.reserve(config_.num_hidden_layers);
+  for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
+    std::vector<std::pair<mx::array, mx::array>> filled;
+    for (const PrefilledSequence &sequence : sequences) {
+      filled.push_back(sequence.caches[layer].Filled());
+    }
+    caches.emplace_back(filled);
+  }
+  // The stacked caches hold the prefill keys and values; drop the
+  // per-sequence copies so the decode does not keep both alive.
+  for (PrefilledSequence &sequence : sequences) {
+    sequence.caches.clear();
+  }
+  const mx::array pad_counts(pads.data(), {batch, 1}, mx::int32);
+  mx::array next_tokens = mx::concatenate(first_tokens, 0);
+  mx::async_eval({next_tokens});
+  std::vector<bool> is_done(batch, false);
+  int active_count = batch;
+  while (active_count > 0) {
+    const mx::array tokens = next_tokens;
+    // Queue the next step for the whole batch before reading this one, as the
+    // single-sequence loop does.
+    next_tokens = mx::argmax(
+        DecodeBatch(EmbedTokens(mx::reshape(tokens, {batch, 1})), caches,
+                    mx::array(positions.data(), {batch}, mx::int32),
+                    pad_counts),
+        -1);
+    mx::async_eval({next_tokens});
+    mx::eval(tokens);
+    const uint32_t *token_ids = tokens.data<uint32_t>();
+    for (int row = 0; row < batch; ++row) {
+      ++positions[row];
+      if (is_done[row]) {
+        continue;
+      } else if (accept(row, static_cast<int>(token_ids[row]))) {
+        is_done[row] = true;
+        --active_count;
+      } else {
+      }
+    }
+  }
+}
+
 mx::array Qwen3Decoder::DecodeBatch(const mx::array &embeddings,
                                     std::vector<BatchedKVCache> &caches,
                                     const mx::array &offsets,
