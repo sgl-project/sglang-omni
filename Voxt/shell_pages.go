@@ -158,7 +158,7 @@ var (
 	remoteIcon         = icons.Cloud
 	dictionaryIcon     = icons.NotebookBookmark
 	notesIcon          = icons.Notes
-	meetingIcon        = icons.UsersGroupTwoRounded
+	meetingIcon        = icons.Dialog
 	permissionsIcon    = icons.ShieldKeyhole
 	logsIcon           = icons.ClipboardList
 	settingsIcon       = icons.Settings

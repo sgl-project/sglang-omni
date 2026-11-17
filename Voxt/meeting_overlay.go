@@ -182,21 +182,21 @@ func (a *app) meetingOverlayBar(c *ui.Context, s meeting.Snapshot, model meeting
 		rowH, gap = layout.CardHeadH, layout.CardHeadGap
 	}
 	ui.Row(c).Height(rowH).Shrink(0).Gap(gap).AlignItems(ui.Center).Children(func() {
-		// The icon is red while it records, as the menu bar's.
-		col, status := mtRecDot, i18n.T("Meeting in progress")
+		col, status := ovIcon, i18n.T("Meeting in progress")
 		if paused {
 			col, status = ovText2, i18n.T("Meeting paused")
 		}
 		ui.Box(c).Size(layout.IconSlot, rowH).Shrink(0).Center().Children(func() {
-			ui.Icon(c, meetingIcon.Bold).Size(layout.IconSize, layout.IconSize).TextColor(col).Shrink(0).Label(status)
+			ui.Icon(c, meetingIcon.Linear).Size(layout.IconSize, layout.IconSize).TextColor(col).Shrink(0).Label(status)
 		})
 		if model.ShowExpanded && live {
 			a.meetingModeCapsule(c, s)
 		} else {
-			ui.Text(c, meetingModeTitle(s.Mode)).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0)
+			// Align the text's visible strokes with the waveform and SVG centers.
+			ui.Text(c, meetingModeTitle(s.Mode)).FontSize(12).FontWeight(500).FixedLineHeight(layout.LineH).TextColor(ovText).SingleLine().Shrink(0).Translate(0, -1.5)
 		}
 		if paused {
-			ui.Text(c, i18n.T("Paused")).FontSize(12).TextColor(ovText2).SingleLine().Shrink(0)
+			ui.Text(c, i18n.T("Paused")).FontSize(12).FixedLineHeight(layout.LineH).TextColor(ovText2).SingleLine().Shrink(0).Translate(0, -1.5)
 		} else {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
 				if s.Mode != meeting.ModeSubtitles {
@@ -207,38 +207,53 @@ func (a *app) meetingOverlayBar(c *ui.Context, s meeting.Snapshot, model meeting
 				}
 			})
 		}
-		ui.Text(c, formatMeetingElapsed(s.Elapsed)).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
-		ui.Box(c).Grow(1)
-		if live {
-			label, icon := i18n.T("Pause meeting"), icons.Pause
-			if paused {
-				label, icon = i18n.T("Resume meeting"), icons.Play
+		ui.Box(c).Grow(1).MinWidth(layout.TimeW).Height(rowH).Center().Children(func() {
+			ui.Text(c, formatMeetingElapsed(s.Elapsed)).FontSize(12).FontFeatures("tnum").FixedLineHeight(layout.LineH).TextColor(ovText2).SingleLine().Shrink(0).Translate(0, -0.75)
+		})
+		ui.Row(c.Key("mt-actions")).Gap(2).AlignItems(ui.Center).Shrink(0).Children(func() {
+			if live {
+				label, icon := i18n.T("Pause meeting"), icons.Pause.Bold
+				if paused {
+					label, icon = i18n.T("Resume meeting"), icons.Play.Bold
+				}
+				if meetingOverlayButton(c.Key("mt-pause"), label, icon, 14) {
+					a.meetOvMenu = meetingMenuNone
+					a.meetingPauseResume()
+				}
 			}
-			if cardIconButton(c.Key("mt-pause"), label, label, icon, true) {
-				a.meetOvMenu = meetingMenuNone
-				a.meetingPauseResume()
+			if live || s.State == meeting.StateStarting { // a start that hangs can be ended
+				if meetingOverlayButton(c.Key("mt-end"), i18n.T("End meeting"), icons.Stop.Bold, 14) {
+					a.meetOvMenu = meetingMenuNone
+					a.meetingFinish()
+				}
 			}
-		}
-		if live || s.State == meeting.StateStarting { // a start that hangs can be ended
-			if cardIconButton(c.Key("mt-end"), i18n.T("End meeting"), i18n.T("End meeting"), icons.Stop, true) {
-				a.meetOvMenu = meetingMenuNone
-				a.meetingFinish()
+			if model.ShowExpanded && live && meetingOverlayButton(c.Key("mt-more"), i18n.T("More"), icons.MenuDots.Linear, 14) {
+				a.toggleMeetingMenu(meetingMenuMore)
 			}
-		}
-		if model.ShowExpanded && live && cardIconButton(c.Key("mt-more"), i18n.T("More"), i18n.T("More"), icons.MenuDots, true) {
-			a.toggleMeetingMenu(meetingMenuMore)
-		}
-		label, icon := i18n.T("Collapse"), icons.MinimizeSquareMinimalistic
-		if model.Layout.Collapsed {
-			label, icon = i18n.T("Expand"), icons.MaximizeSquareMinimalistic
-		}
-		if cardIconButton(c.Key("mt-ov-collapse"), label, label, icon, true) {
-			next := !model.Layout.Collapsed
-			a.meetOvCollapsed, a.meetOvMenu = next, meetingMenuNone
-			a.updateSettings(func(st *settings.Settings) { st.Features.Meeting.Collapsed = next })
-			a.syncMeetingOverlay()
-		}
+			label, icon := i18n.T("Collapse"), icons.Minimize.Linear
+			if model.Layout.Collapsed {
+				label, icon = i18n.T("Expand"), icons.Maximize.Linear
+			}
+			if meetingOverlayButton(c.Key("mt-ov-collapse"), label, icon, 12) {
+				next := !model.Layout.Collapsed
+				a.meetOvCollapsed, a.meetOvMenu = next, meetingMenuNone
+				a.updateSettings(func(st *settings.Settings) { st.Features.Meeting.Collapsed = next })
+				a.syncMeetingOverlay()
+			}
+		})
 	})
+}
+
+func meetingOverlayButton(c *ui.Context, label string, icon *ui.SVG, iconSize float32) bool {
+	b := ui.ButtonBase(c).Size(layout.CardBtn, layout.CardBtn).Radius(6).Center().Shrink(0).Label(label).Tooltip(label)
+	background := ui.Transparent
+	if b.Hovered() {
+		background = ui.RGBA(255, 255, 255, 0.1)
+	}
+	b.Background(background)
+	return b.Children(func() {
+		ui.Icon(c, icon).Size(iconSize, iconSize).TextColor(ovText)
+	}).Clicked()
 }
 
 // meetingModeTitle is the name of a meeting's mode.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -13,25 +14,37 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
-// The capsule's controls fit in its window, with a long warning too.
+// The capsule's controls keep their face padding beside an hour-long timer.
 func TestMeetingOverlayControlsFit(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	for _, problem := range []string{"", meeting.ProblemKeySystemSilent} {
-		s := meeting.Snapshot{ID: "m1", State: meeting.StateRecording, Mode: meeting.ModeMeeting}
-		if problem != "" {
-			s.Problem = &meeting.Problem{Key: problem}
-		}
-		a.meetSnap, a.meetOvCollapsed = s, true
-		m := overlayModel(s, true, 0, meetingMenuNone)
-		tt := ui.NewTester(a.meetingOverlayView, m.Layout.Width, m.Layout.Height)
-		frames(tt)
-		for _, label := range []string{"Pause meeting", "End meeting", "Expand", meetingOverlayProblemText(problem)} {
-			if label == "" {
-				continue
+	for _, elapsed := range []time.Duration{754 * time.Second, time.Hour + 754*time.Second} {
+		for _, problem := range []string{"", meeting.ProblemKeySystemSilent} {
+			s := meeting.Snapshot{ID: "m1", State: meeting.StateRecording, Mode: meeting.ModeMeeting, Elapsed: elapsed}
+			if problem != "" {
+				s.Problem = &meeting.Problem{Key: problem}
 			}
-			r, ok := tt.Find(label)
-			if !ok || r.W < 10 || r.H < 10 || r.X < 0 || r.Y < 0 || r.X+r.W > float32(m.Layout.Width) || r.Y+r.H > float32(m.Layout.Height) {
-				t.Errorf("problem %q: %q at %+v (found %v) outside %dx%d", problem, label, r, ok, m.Layout.Width, m.Layout.Height)
+			a.meetSnap, a.meetOvCollapsed = s, true
+			m := overlayModel(s, true, 0, meetingMenuNone)
+			tt := ui.NewTester(a.meetingOverlayView, m.Layout.Width, m.Layout.Height)
+			frames(tt)
+			timer, ok := tt.Find(formatMeetingElapsed(elapsed))
+			if !ok {
+				t.Fatal("no meeting timer")
+			}
+			for _, label := range []string{"Pause meeting", "End meeting", "Expand", meetingOverlayProblemText(problem)} {
+				if label == "" {
+					continue
+				}
+				r, ok := tt.Find(label)
+				if !ok || r.W < 10 || r.H < 10 || r.X < 0 || r.Y < 0 || r.X+r.W > float32(m.Layout.Width) || r.Y+r.H > float32(m.Layout.Height) {
+					t.Errorf("problem %q: %q at %+v (found %v) outside %dx%d", problem, label, r, ok, m.Layout.Width, m.Layout.Height)
+				}
+				if label == "Expand" && r.X+r.W > float32(m.Layout.Width-layout.Pad-layout.PillPadX)+0.5 {
+					t.Errorf("Expand at %+v reaches into the face padding", r)
+				}
+				if label == "Pause meeting" && timer.X+timer.W > r.X-4 {
+					t.Errorf("timer %+v overlaps controls %+v", timer, r)
+				}
 			}
 		}
 	}
