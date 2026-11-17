@@ -1,15 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
+import huggingface_hub
 import pytest
 
 from sglang_omni.config import StageConfig
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.placement import build_stage_placement_plan
 from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig, Variants
 from sglang_omni.native_generation.stage import native_server_kwargs
 from sglang_omni.pipeline import runtime_config
 from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.replicas import validate_device_assignment
+from sglang_omni.scheduling.native_chat_scheduler import native_chat_server_kwargs
 
 
 def config(devices=(1, 3)):
@@ -256,3 +261,92 @@ def test_text_variant_serves_the_reasoner_as_an_engine_stage():
     assert engine_stage_names(config) == ["reasoner"]
     # The Reasoner has no generation stage, so it serves no native media routes.
     assert not any(stage.http_routes for stage in config.stages)
+
+
+@pytest.mark.parametrize("variant", [None, "text", "generation", "umm"])
+def test_edge_architecture_selects_shared_native_stages(
+    tmp_path: Path, variant: str | None
+) -> None:
+    """An Edge checkpoint was rejected before its native stages could start."""
+    (tmp_path / "config.json").write_text(
+        '{"architectures": ["Cosmos3EdgeForConditionalGeneration"]}'
+    )
+    pipeline = ConfigManager.from_model_path(str(tmp_path), variant=variant).config
+    expected_entry = {"text": "reasoner", "umm": "orchestrator"}.get(
+        variant, "generation"
+    )
+    assert pipeline.resolved_entry_stage == expected_entry
+    for stage in pipeline.stages:
+        if stage.name == "generation":
+            assert stage.factory_path == (
+                "sglang_omni.native_generation.stage.create_generation_scheduler"
+            )
+        elif stage.name == "reasoner":
+            assert stage.factory_path == (
+                "sglang_omni.scheduling.native_chat_scheduler."
+                "create_native_chat_scheduler"
+            )
+        else:
+            assert stage.process == "orchestrator"
+
+
+@pytest.mark.parametrize("stage_name", ["generation", "reasoner"])
+@pytest.mark.parametrize(
+    "pin_location", ["model_path", "overrides", "both", "conflict", "local"]
+)
+def test_native_stages_preserve_checkpoint_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage_name: Literal["generation", "reasoner"],
+    pin_location: Literal["model_path", "overrides", "both", "conflict", "local"],
+) -> None:
+    """Native metadata lookup ignored a checkpoint pin before loading its weights."""
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    downloads: list[tuple[str, str | None]] = []
+
+    def download(repo_id: str, revision: str | None = None) -> str:
+        downloads.append((repo_id, revision))
+        return str(snapshot)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", download)
+    model_path = "org/checkpoint"
+    overrides = {} if pin_location == "model_path" else {"served_model_name": "edge"}
+    if pin_location == "local":
+        checkpoint = tmp_path / "checkpoint@revision"
+        checkpoint.mkdir()
+        model_path = str(checkpoint)
+    elif pin_location != "overrides":
+        model_path += "@revision"
+    else:
+        pass
+    if pin_location in ("overrides", "both", "conflict"):
+        overrides["revision"] = "other" if pin_location == "conflict" else "revision"
+    else:
+        pass
+    original = overrides.copy()
+    factory = (
+        native_server_kwargs
+        if stage_name == "generation"
+        else native_chat_server_kwargs
+    )
+    if pin_location == "conflict":
+        with pytest.raises(ValueError, match="different checkpoint revisions"):
+            factory(model_path, 0, overrides)
+    else:
+        native_arguments = factory(model_path, 0, overrides)
+        assert native_arguments["model_path"] == (
+            model_path if pin_location == "local" else str(snapshot)
+        )
+        assert native_arguments.get("revision") == (
+            None if pin_location == "local" else "revision"
+        )
+        assert native_arguments["served_model_name"] == (
+            "org/checkpoint" if pin_location == "model_path" else "edge"
+        )
+    assert downloads == (
+        []
+        if pin_location in ("local", "conflict")
+        else [("org/checkpoint", "revision")]
+    )
+    assert overrides == original

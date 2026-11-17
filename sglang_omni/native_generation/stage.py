@@ -38,6 +38,7 @@ from sglang_omni.preprocessing.resource_connector import (
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils.checkpoint import resolve_checkpoint, split_checkpoint_revision
 
 logger = logging.getLogger(__name__)
 
@@ -902,7 +903,17 @@ def native_server_kwargs(
         raise ValueError("Set the generation model and GPUs through Omni placement")
     else:
         pass
+    model_path, revision = split_checkpoint_revision(model_path, kwargs.get("revision"))
+    if revision is not None and not os.path.isdir(model_path):
+        kwargs.setdefault("served_model_name", model_path)
+        model_path = resolve_checkpoint(f"{model_path}@{revision}")
+    else:
+        pass
     kwargs.update(model_path=model_path, num_gpus=len(devices))
+    if revision is not None:
+        kwargs["revision"] = revision
+    else:
+        pass
     # The checkpoint names a pipeline class that only native SGLang defines,
     # so the auto backend's diffusers fallback could never load it. Asking
     # for the native backend lets this process name the pipeline without
