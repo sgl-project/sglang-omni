@@ -13,9 +13,11 @@ public enum ClipboardPicture {
     /// file's icon and name there), else the first decodable representation
     /// in imageTypes order; nil when it holds text (a copied spreadsheet
     /// range or styled text brings a picture of itself along), a file
-    /// that is not an image, or no image. data has the clipboard's data
-    /// for imageTypes.
-    public static func image(types: [String], data: [String: Data], file: URL?, maxSide: Int) -> CGImage? {
+    /// that is not an image, or no image. Read each representation's
+    /// bytes only when the earlier ones could not be decoded.
+    public static func image(
+        types: [String], file: URL?, maxSide: Int, dataForType: @Sendable (String) async -> Data?
+    ) async -> CGImage? {
         let opts: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -30,8 +32,8 @@ public enum ClipboardPicture {
             return thumbnail(CGImageSourceCreateWithURL(file as CFURL, nil))
         }
         guard !types.contains(UTType.utf8PlainText.identifier) else { return nil }
-        for type in imageTypes {
-            if let bytes = data[type], let image = thumbnail(CGImageSourceCreateWithData(bytes as CFData, nil)) {
+        for type in imageTypes where types.contains(type) {
+            if let bytes = await dataForType(type), let image = thumbnail(CGImageSourceCreateWithData(bytes as CFData, nil)) {
                 return image
             }
         }
