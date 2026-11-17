@@ -15,5 +15,4 @@ shell_logs.go  # shell
 shell_logs_order.go  # shell
 shell_logs_select.go  # shell
 shell_nav.go  # shell
-shell_notices.go  # shell
 ui_panels.go  # ui kit

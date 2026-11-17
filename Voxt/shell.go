@@ -76,13 +76,9 @@ type shellState struct {
 	settings settings.Service
 	prefs    settings.Settings // the settings, as this thread last saw them
 	notes    *notify.Center
-	notices  []core.Notification // newest first
 	logs     *logs.Ring
 
-	// problemCode: the form of each problem shown (setProblem);
-	// problemDismissed: the forms the user dismissed, not shown again
-	// this run while they last.
-	problemCode, problemDismissed map[string]string
+	noticesState // shell_notices_controller.go
 
 	version string // the app's, beside Settings in the sidebar; "" in tests
 

@@ -205,7 +205,7 @@ func (a *app) railItem(c *ui.Context, path string, ic icons.Icon, title string) 
 	if len(a.notices) == 0 {
 		a.noticesOpen = false
 	}
-	ui.Popover(c, b, &a.noticesOpen, func() { a.noticePopover(c) })
+	ui.Popover(c, b, &a.noticesOpen, func() { noticePopover(c, a.noticesModel(), a) })
 }
 
 // railButton is a button of the rail: Bold on the pressed face while
@@ -305,7 +305,9 @@ func (a *app) sidebar(c *ui.Context) {
 	a.saveClosedSections()
 	// The notifications, at the foot (shell_notices.go).
 	if len(a.notices) > 0 {
-		ui.Column(c).Shrink(0).Padding(px(t, sp1), px(t, 10), px(t, sp2)).Children(func() { a.noticeStack(c) })
+		ui.Column(c).Shrink(0).Padding(px(t, sp1), px(t, 10), px(t, sp2)).Children(func() {
+			noticeStack(c, a.noticesModel(), a)
+		})
 	}
 }
 
