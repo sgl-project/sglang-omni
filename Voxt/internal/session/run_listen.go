@@ -94,7 +94,9 @@ func (r *run) readSelection() string {
 		r.logf("info", "no selection (%s, %.0f ms; %s)", res.Via, res.MS, strings.Join(res.Steps, ", "))
 		return ""
 	}
-	if r.req.Kind == store.KindRewrite {
+	if r.req.Kind == store.KindRewrite && !r.settings.Privacy.SendClipboardImage {
+		r.clip = nil
+	} else if r.req.Kind == store.KindRewrite {
 		switch {
 		case len(res.Image) > 0 && (trimmed == "[Image]" || r.settings.Privacy.SendClipboardImageWithSelection):
 			// The copy fallback returns the newly selected image before it
