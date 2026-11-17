@@ -89,6 +89,8 @@ def make_scheduler(
     scheduler.uncond_to_cond = {}
     scheduler.uncond_rids = set()
     scheduler.orphaned_uncond_rids = set()
+    scheduler.retained_contexts = {}
+    scheduler.contexts_to_retain = set()
     scheduler.result_adapter = lambda request_data: StagePayload("req", None, {})
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
     return scheduler
@@ -401,8 +403,6 @@ def chunked_scheduler() -> DllmScheduler:
     scheduler.chunked_prefill_size = 32
     scheduler.model_config = None
     scheduler.staging_queue = []
-    scheduler.retained_contexts = {}
-    scheduler.contexts_to_retain = set()
     for rid in ("cond", "uncond"):
         params = SamplingParams(max_new_tokens=32, temperature=0.0)
         params.normalize(None)
@@ -748,12 +748,14 @@ def finish_phase(data: SGLangDLLMRequestData) -> StagePayload:
 
 @pytest.fixture
 def radix_scheduler() -> DllmScheduler:
-    with get_context().override_server_args(page_size=4, max_prefill_tokens=64):
+    # torch_native keeps a CUDA host off the Triton kernels, which cannot read these CPU pools.
+    with get_context().override_server_args(
+        page_size=4, max_prefill_tokens=64, attention_backend="torch_native"
+    ):
         pool = ReqToTokenPool(3, PHASE_POOL_TOKENS, "cpu", False)
         allocator = PagedTokenToKVPoolAllocator(
             PHASE_POOL_TOKENS, 4, torch.float32, "cpu", None, False
         )
-        # The Triton allocation kernels a CUDA host selects cannot read this CPU pool.
         allocator.use_triton_kernels = False
         tree_cache = UnifiedRadixCache(
             CacheInitParams(

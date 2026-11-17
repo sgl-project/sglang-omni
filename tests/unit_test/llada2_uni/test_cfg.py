@@ -448,15 +448,15 @@ def test_interleaved_frame_shares_the_history_kv_and_emits_only_image_tokens(
     worker.tp_rank = 0
     worker.model_runner = NS(device="cpu", forward=forward)
 
+    # torch_native keeps a CUDA host off the Triton kernels, which cannot read these CPU pools.
     with get_context().override_server_args(
-        page_size=block_size, max_prefill_tokens=64
+        page_size=block_size, max_prefill_tokens=64, attention_backend="torch_native"
     ):
         # Admission reserves the text phase's whole token budget.
         req_to_token_pool = ReqToTokenPool(3, 8192, "cpu", False)
         allocator = PagedTokenToKVPoolAllocator(
             32768, block_size, torch.float32, "cpu", None, False
         )
-        # The Triton allocation kernels a CUDA host selects cannot read this CPU pool.
         allocator.use_triton_kernels = False
         tree_cache = UnifiedRadixCache(
             CacheInitParams(
