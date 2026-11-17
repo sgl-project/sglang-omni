@@ -20,10 +20,17 @@ constexpr float kWhisperLayerNormEps = 1e-5f;
 constexpr const char *kWhisperPrefix = "model.whisper_encoder";
 constexpr const char *kAdaptorPrefix = "model.vq_adaptor.layers";
 constexpr const char *kDecoderPrefix = "model.language_model";
+// Note (XXXXRT666): the decoder's layers are quantized at load, attention to
+// 8 bits and the MLPs to 4, which keeps the transcripts and speakers; its
+// tied embedding table stays in the checkpoint dtype, since quantizing it
+// changed them, as did 4-bit attention.
+constexpr int kAttentionQuantizationBits = 8;
+constexpr int kMlpQuantizationBits = 4;
+constexpr int kDecoderQuantizationGroupSize = 64;
 
 // Note (Dayuxiaoshui): the checkpoint keeps PyTorch's Conv1d layout, and its
 // lm_head is a copy of the tied embedding table.
-WeightMap MlxLayoutWeights(WeightMap weights) {
+WeightMap LoadedWeights(WeightMap weights) {
   weights.erase("lm_head.weight");
   const std::string conv_prefix = std::string(kWhisperPrefix) + ".conv";
   for (auto &[name, array] : weights) {
@@ -44,7 +51,18 @@ MossTranscribeDiarize::MossTranscribeDiarize(
 
 MossTranscribeDiarize::MossTranscribeDiarize(
     const nlohmann::json &config, const std::filesystem::path &model_directory)
-    : checkpoint_(MlxLayoutWeights(LoadSafetensors(model_directory)), config),
+    : checkpoint_(omni_common::QuantizedCheckpoint(
+          LoadedWeights(LoadSafetensors(model_directory)), config,
+          kDecoderQuantizationGroupSize,
+          [](const std::string &name) {
+            if (!name.starts_with(std::string(kDecoderPrefix) + ".layers.")) {
+              return 0;
+            } else if (name.find(".self_attn.") != std::string::npos) {
+              return kAttentionQuantizationBits;
+            } else {
+              return kMlpQuantizationBits;
+            }
+          })),
       decoder_(checkpoint_, kDecoderPrefix,
                Qwen3DecoderConfig::FromJson(config.at("text_config"))) {
   const nlohmann::json &audio = config.at("audio_config");
