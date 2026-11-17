@@ -34,9 +34,7 @@ int LanguageQueryId(const std::optional<std::string> &language) {
   } else {
   }
   std::string key = swift_port::TrimWhitespace(*language, true);
-  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
+  key = omni_common::AsciiLowercase(key);
   const auto found = ids.find(key);
   return found == ids.end() ? 0 : found->second;
 }

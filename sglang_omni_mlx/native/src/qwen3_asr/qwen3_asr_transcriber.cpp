@@ -68,13 +68,6 @@ std::string Strip(const std::string &text) {
   return text.substr(begin, end - begin);
 }
 
-std::string Lowercase(std::string text) {
-  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return text;
-}
-
 std::optional<size_t> FindSubsequence(const std::vector<int> &values,
                                       const std::vector<int> &pattern) {
   if (pattern.size() > values.size()) {
@@ -102,7 +95,7 @@ mx::array PromptMel(const std::vector<float> &samples, AudioLayout layout) {
 
 std::optional<std::string> NormalizeLanguage(const std::string &language) {
   const std::string stripped = Strip(language);
-  const std::string normalized = Lowercase(stripped);
+  const std::string normalized = omni_common::AsciiLowercase(stripped);
   if (stripped.empty()) {
     return std::nullopt;
   } else if (normalized == "cn" || normalized.rfind("zh-", 0) == 0 ||
@@ -116,7 +109,7 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
   } else {
   }
   for (const auto &[unused_code, name] : LanguageCodeToName()) {
-    if (Lowercase(name) == normalized) {
+    if (omni_common::AsciiLowercase(name) == normalized) {
       return name;
     } else {
     }
@@ -619,9 +612,10 @@ Qwen3ASRTranscriber::SplitOutput(const std::vector<int> &output_ids,
         true));
     const size_t separator = prefix.find(' ');
     if (separator != std::string::npos &&
-        Lowercase(prefix.substr(0, separator)) == "language") {
+        omni_common::AsciiLowercase(prefix.substr(0, separator)) ==
+            "language") {
       const std::string value = Strip(prefix.substr(separator + 1));
-      if (!value.empty() && Lowercase(value) != "none") {
+      if (!value.empty() && omni_common::AsciiLowercase(value) != "none") {
         detected = value;
       } else {
       }

@@ -86,15 +86,6 @@ struct SpeechRequest {
   int first_chunk_frames = kDefaultFirstChunkFrames;
 };
 
-std::string Lower(const std::string &text) {
-  std::string lowered;
-  for (const char character : text) {
-    lowered.push_back(
-        static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
-  }
-  return lowered;
-}
-
 // Note (Jiaxin Deng): CUDA checks each field's JSON type before its model
 // validation, in this order.
 void CheckFieldTypes(const Json &body) {
@@ -308,7 +299,8 @@ SpeechRequest ParseRequest(const Json &body,
   } else {
   }
   const std::string voice = voice_field.get<std::string>();
-  std::string speaker = Lower(omni_common::StripUnicodeWhitespace(voice));
+  std::string speaker =
+      omni_common::AsciiLowercase(omni_common::StripUnicodeWhitespace(voice));
   if (speaker.empty() || speaker == "default") {
     speaker = kDefaultSpeaker;
   } else if (model.speaker_ids().count(speaker) == 0) {
@@ -323,11 +315,12 @@ SpeechRequest ParseRequest(const Json &body,
   std::string language = "auto";
   const Json language_field = FieldOr(body, "language", Json());
   if (language_field.is_string()) {
-    language = Lower(
+    language = omni_common::AsciiLowercase(
         omni_common::StripUnicodeWhitespace(language_field.get<std::string>()));
-    const bool known =
-        std::any_of(kLanguages.begin(), kLanguages.end(),
-                    [&](const char *name) { return Lower(name) == language; });
+    const bool known = std::any_of(
+        kLanguages.begin(), kLanguages.end(), [&](const char *name) {
+          return omni_common::AsciiLowercase(name) == language;
+        });
     if (!known) {
       std::string supported;
       for (const char *name : kLanguages) {

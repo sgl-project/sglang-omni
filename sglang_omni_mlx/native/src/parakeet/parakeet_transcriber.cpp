@@ -6,8 +6,6 @@
 #include <iterator>
 #include <stdexcept>
 
-#include <CoreFoundation/CoreFoundation.h>
-
 #include "common/audio.h"
 #include "common/audio_chunks.h"
 #include "common/generation.h"
@@ -44,27 +42,6 @@ constexpr double kChunkEnergyWindowSeconds = 0.1;
 constexpr double kMinChunkSeconds = 0.5;
 constexpr double kChunkOverlapSeconds = 1.0;
 
-bool Contains(const std::string &text, const char *needle) {
-  return text.find(needle) != std::string::npos;
-}
-
-// Note (Dayuxiaoshui): Swift's String.contains(" ") compares grapheme
-// clusters, so a space that a combining mark attaches to is not a space.
-bool ContainsStandaloneSpace(const std::string &text) {
-  const std::vector<uint32_t> code_points = omni_common::CodePoints(text);
-  const CFCharacterSetRef combining =
-      CFCharacterSetGetPredefined(kCFCharacterSetNonBase);
-  for (size_t index = 0; index < code_points.size(); ++index) {
-    if (code_points[index] == ' ' && (index + 1 == code_points.size() ||
-                                      !CFCharacterSetIsLongCharacterMember(
-                                          combining, code_points[index + 1]))) {
-      return true;
-    } else {
-    }
-  }
-  return false;
-}
-
 struct Sentence {
   std::string text;
   std::vector<AlignedToken> tokens;
@@ -91,12 +68,14 @@ TokensToSentences(const std::vector<AlignedToken> &tokens) {
     const AlignedToken &token = tokens[index];
     current.tokens.push_back(token);
     const std::string &text = token.text;
-    const bool closes =
-        Contains(text, "!") || Contains(text, "?") ||
-        Contains(text, "\xE3\x80\x82") || Contains(text, "\xEF\xBC\x9F") ||
-        Contains(text, "\xEF\xBC\x81") ||
-        (Contains(text, ".") && (index + 1 == tokens.size() ||
-                                 tokens[index + 1].has_standalone_space));
+    const bool closes = omni_common::Contains(text, "!") ||
+                        omni_common::Contains(text, "?") ||
+                        omni_common::Contains(text, "\xE3\x80\x82") ||
+                        omni_common::Contains(text, "\xEF\xBC\x9F") ||
+                        omni_common::Contains(text, "\xEF\xBC\x81") ||
+                        (omni_common::Contains(text, ".") &&
+                         (index + 1 == tokens.size() ||
+                          tokens[index + 1].has_standalone_space));
     if (closes) {
       close();
     } else {
@@ -270,7 +249,7 @@ ParakeetTranscriber::ParakeetTranscriber(
          marker = text.find(kWordMarker, marker + 1)) {
       text.replace(marker, std::string(kWordMarker).size(), " ");
     }
-    standalone_spaces_.push_back(ContainsStandaloneSpace(text));
+    standalone_spaces_.push_back(omni_common::ContainsStandaloneSpace(text));
     token_texts_.push_back(text);
     special_tokens_.push_back((piece.size() >= 4 && piece.rfind("<|", 0) == 0 &&
                                piece.compare(piece.size() - 2, 2, "|>") == 0) ||

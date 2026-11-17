@@ -12,6 +12,7 @@
 #include "common/generation.h"
 #include "common/layers.h"
 #include "common/swift_port.h"
+#include "common/text.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
 
@@ -37,9 +38,7 @@ std::string LanguageCode(const std::string &language) {
       {"vietnamese", "vi"}, {"vi", "vi"}, {"korean", "ko"},     {"ko", "ko"},
   };
   std::string key = language;
-  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
+  key = omni_common::AsciiLowercase(key);
   const auto found = table.find(key);
   return found == table.end() ? "en" : found->second;
 }

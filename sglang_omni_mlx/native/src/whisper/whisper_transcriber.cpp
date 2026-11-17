@@ -10,6 +10,7 @@
 #include "common/generation.h"
 #include "common/layers.h"
 #include "common/swift_port.h"
+#include "common/text.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
 
@@ -43,16 +44,9 @@ const std::map<std::string, std::string> &LanguageNameToCode() {
   return table;
 }
 
-std::string Lowercase(std::string text) {
-  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return text;
-}
-
 // "<|en|>" or "EN" to "en".
 std::string LanguageKey(const std::string &text) {
-  std::string key = Lowercase(text);
+  std::string key = omni_common::AsciiLowercase(text);
   if (key.size() >= 4 && key.compare(0, 2, "<|") == 0 &&
       key.compare(key.size() - 2, 2, "|>") == 0) {
     return key.substr(2, key.size() - 4);
