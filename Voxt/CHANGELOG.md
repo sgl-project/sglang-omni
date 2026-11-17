@@ -15,6 +15,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Rewrite: images dropped in several batches keep the drop order**: a large image dropped first no longer ends up after smaller images dropped later; the box and the request to the language model follow the order the images were dropped in, whatever finishes converting first.
 - **Rewrite: code ending in a pipe keeps its tail, and an old box's queued Enter cannot send the new recording**: an answer holding code where a pipe sits right before a word with no space (F#'s `<|x`) no longer loses the tail; only the model's real control markers are removed. And Enter pressed while a pasted picture still converted, then Esc and the shortcut again, no longer stops and sends the new recording when the old picture's conversion finishes; only your Enter in the new box sends.
 
 ### 中文
@@ -30,6 +31,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **改写：分几次拖入的图片保持拖入顺序**：先拖入的大图不再排到后拖入的小图后面，卡片和发给语言模型的请求都按拖入的顺序，不受转换快慢影响。
 - **改写：竖线后紧跟单词的代码不再丢尾巴，旧卡片排队的 Enter 不会发送新录音**：竖线和后面的单词之间没有空格的代码（如 F# 的 `<|x`）在回答里不再被截断，只有模型真正的控制标记会被移除。粘贴的图片还在转换时按了 Enter，再按 Esc、按快捷键重开，旧图片转换完成不会再停止并发送新录音，只有你在新卡片里按 Enter 才会发送。
 
 ## [2.1.0] - 2026-11-15

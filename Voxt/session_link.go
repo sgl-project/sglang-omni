@@ -62,6 +62,11 @@ type sessionState struct {
 	// posted; boxSendQueued: Enter came while one converted.
 	boxGen, boxPending int
 	boxSendQueued      bool
+	// boxSeq numbers the picture conversions in drop (or paste) order;
+	// one lands only after every earlier number (boxNext is the next
+	// due), boxHeld keeping one whose earlier numbers still convert.
+	boxSeq, boxNext int
+	boxHeld         map[int]boxLanding
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard

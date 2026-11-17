@@ -207,6 +207,23 @@ func (a *app) boxEnded(s session.Snapshot) {
 	a.boxSync()
 }
 
+// boxLanding is one converted picture waiting for its turn (boxHeld).
+type boxLanding struct {
+	gen     int
+	jpeg    []byte
+	errText string
+}
+
+// boxReserve takes a dropped or pasted picture's number: the send
+// waits for it (boxPending), and it lands after every earlier number,
+// so batches keep the drop order whatever converts first.
+func (a *app) boxReserve() int {
+	a.boxPending++
+	seq := a.boxSeq
+	a.boxSeq++
+	return seq
+}
+
 // boxAttach adds a picture to the box (paste, drop), capped at
 // boxMaxImages. The JPEG is encoded once, here, and kept: a send again
 // (a retry, another thinking level, a follow-up) has the same bytes in
@@ -254,7 +271,7 @@ func (a *app) boxPaste(svc ui.Services) bool {
 			return true
 		}
 		gen := a.boxGen
-		a.boxPending++
+		seq := a.boxReserve()
 		a.async(func() {
 			jpeg, err := imgconv.JPEG(raw)
 			a.post(func() {
@@ -262,18 +279,18 @@ func (a *app) boxPaste(svc ui.Services) bool {
 				if err != nil {
 					errText, jpeg = i18n.T("This image could not be read."), nil
 				}
-				a.boxConverted(gen, jpeg, errText)
+				a.boxConverted(gen, seq, jpeg, errText)
 			})
 		})
 		return true
 	case has(transfer.FileList):
 		gen := a.boxGen
-		a.boxPending++
+		seq := a.boxReserve()
 		helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
 			if err != nil {
 				res.JPEG = nil
 			}
-			a.boxConverted(gen, res.JPEG, "")
+			a.boxConverted(gen, seq, res.JPEG, "")
 		})
 		return true
 	}
@@ -286,16 +303,20 @@ func (a *app) boxDrop(files []string) {
 		return
 	}
 	gen := a.boxGen
-	a.boxPending += len(files)
+	seqs := make([]int, len(files))
+	for i := range files {
+		seqs[i] = a.boxReserve()
+	}
 	a.async(func() {
-		for _, f := range files {
+		for i, f := range files {
 			jpeg, err := imgconv.JPEGFile(f)
+			seq := seqs[i]
 			a.post(func() {
 				errText := ""
 				if err != nil {
 					errText, jpeg = i18n.T("This image could not be read; paste it (⌘V) instead."), nil
 				}
-				a.boxConverted(gen, jpeg, errText)
+				a.boxConverted(gen, seq, jpeg, errText)
 			})
 		}
 	})
@@ -303,15 +324,31 @@ func (a *app) boxDrop(files []string) {
 
 // boxConverted takes one converted picture on the main thread (errText
 // when it would not read, "" on success or a silent skip): it lands
-// only in the box's own life (a close started another), and a send that
-// waited for it goes now.
-func (a *app) boxConverted(gen int, jpeg []byte, errText string) {
+// only in the box's own life (a close started another) and in its
+// number's turn — each batch converts on its own goroutine, so a big
+// picture of an earlier batch can finish after a later batch's, and
+// without the turn the box and the request would follow the finish
+// order, not the drop order. A send that waited for it goes now.
+func (a *app) boxConverted(gen, seq int, jpeg []byte, errText string) {
 	a.boxPending--
-	if gen == a.boxGen {
-		if errText != "" {
-			a.box.err = errText
+	if a.boxHeld == nil {
+		a.boxHeld = map[int]boxLanding{}
+	}
+	a.boxHeld[seq] = boxLanding{gen, jpeg, errText}
+	for {
+		land, ok := a.boxHeld[a.boxNext]
+		if !ok {
+			break
+		}
+		delete(a.boxHeld, a.boxNext)
+		a.boxNext++
+		if land.gen != a.boxGen {
+			continue
+		}
+		if land.errText != "" {
+			a.box.err = land.errText
 		} else {
-			a.boxAttach(jpeg)
+			a.boxAttach(land.jpeg)
 		}
 		a.boxSync()
 	}
