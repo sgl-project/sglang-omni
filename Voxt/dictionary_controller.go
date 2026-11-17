@@ -67,7 +67,7 @@ type dictionaryViewCacheKey struct {
 	query           string
 	tab             int
 	scanOpen        bool
-	suggestionReads int
+	suggestions     string
 	settings        uint64
 	locale          string
 	scanModelID     string
@@ -109,6 +109,19 @@ func dictionaryScanCacheKeyFor(state scanState) dictionaryScanCacheKey {
 		key.failed, key.failedType = state.failed.Error(), fmt.Sprintf("%T", state.failed)
 	}
 	return key
+}
+
+// dictionarySuggestionsFingerprint is the suggestions' content as one
+// comparable string: loadSuggestions swaps the slice when a read lands,
+// and tests seed a.suggestions directly, so a read counter alone can go
+// stale.
+func dictionarySuggestionsFingerprint(suggestions []learn.Suggestion) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d", len(suggestions))
+	for _, suggestion := range suggestions {
+		fmt.Fprintf(&b, "|%s\x00%s\x00%s", suggestion.Key(), strings.Join(suggestion.Heard, "\x00"), suggestion.Source)
+	}
+	return b.String()
 }
 
 func dictionaryEditCacheKeyFor(local dictionaryLocalUI) dictionaryEditCacheKey {
@@ -188,7 +201,7 @@ func (a *app) dictionaryPageModel() dictionaryViewState {
 	viewKey := dictionaryViewCacheKey{
 		seq: a.dv.seq, read: a.dv.read, loading: a.dv.loading, err: a.dv.err, listFor: a.dv.listFor,
 		total: a.dv.total, legacy: a.dv.legacyAvailable, query: a.dictUI.query, tab: a.dictUI.tab, scanOpen: a.dictUI.scanOpen,
-		suggestionReads: a.suggestionReads, settings: a.settingsRevision, locale: translator.Locale(),
+		suggestions: dictionarySuggestionsFingerprint(a.suggestions), settings: a.settingsRevision, locale: translator.Locale(),
 		scanModelID: scanModel.ID, scanModelName: scanModel.Name, canScan: canScan,
 		scan: dictionaryScanCacheKeyFor(a.dv.scan), edit: dictionaryEditCacheKeyFor(a.dictUI),
 		notesText: a.dictUI.notes.text, notesQuery: a.dictUI.notesQuery, notesFind: a.dictUI.notesFind.cur,
