@@ -198,6 +198,8 @@ class ModelRunner(Generic[RequestDataInput]):
         self.token_id_host_slot: int = 0
         self.token_id_events: list[torch.cuda.Event] = []
         self.token_id_event_slot: int = 0
+        self.host_copy_stream: torch.Stream | None = None
+        self.host_copy_done: torch.Event | None = None
         self.suppress_tensor_cache: dict[
             tuple[tuple[int, ...], int, str], torch.Tensor | None
         ] = {}
@@ -415,6 +417,39 @@ class ModelRunner(Generic[RequestDataInput]):
             dtype,
             realloc_on_grow=True,
         )
+
+    def snapshot_launch_ids(
+        self, ids: torch.Tensor, host_buf: torch.Tensor
+    ) -> torch.Tensor:
+        """Launch-time copy of ids for resolve: into host_buf, or a device clone where
+        that copy would hold the host until the launched forward finishes."""
+        if current_platform.supports_async_device_to_host_copy():
+            host_buf[: ids.shape[0]].copy_(ids, non_blocking=True)
+            return host_buf
+        else:
+            return ids.clone()
+
+    def host_launch_ids(self, launch_ids: torch.Tensor) -> torch.Tensor:
+        """Host tensor for snapshot_launch_ids' result, after the launch event completed."""
+        if launch_ids.device.type == "cpu":
+            return launch_ids
+        else:
+            pass
+        # note (siju): the next step is already queued on the compute stream, so copy on a
+        # stream of its own; the launch event the caller waited on covers the snapshot.
+        device_module = torch.get_device_module(launch_ids.device)
+        if self.host_copy_stream is None:
+            self.host_copy_stream = device_module.Stream(device=launch_ids.device)
+            self.host_copy_done = device_module.Event()
+        else:
+            pass
+        rows = launch_ids.shape[0]
+        host_buf = self.next_host_staging(tuple(launch_ids.shape), launch_ids.dtype)
+        with device_module.stream(self.host_copy_stream):
+            host_buf[:rows].copy_(launch_ids, non_blocking=True)
+            self.host_copy_done.record(self.host_copy_stream)
+        self.host_copy_done.synchronize()
+        return host_buf[:rows]
 
     def execute(self, scheduler_output: SchedulerOutput) -> ModelRunnerOutput:
         """Full synchronous pipeline: build → prepare → forward → post →
@@ -1040,9 +1075,9 @@ class ModelRunner(Generic[RequestDataInput]):
             pass
         n = len(requests)
         ids = result.next_token_ids
-        host_buf = self.next_host_staging((n,), ids.dtype)
-        host_buf[:n].copy_(ids[:n], non_blocking=True)
-        return host_buf
+        return self.snapshot_launch_ids(
+            ids[:n], self.next_host_staging((n,), ids.dtype)
+        )
 
     def post_decode_resolve(
         self,
@@ -1062,7 +1097,7 @@ class ModelRunner(Generic[RequestDataInput]):
             return
         else:
             pass
-        result.next_token_ids = launch_buf[: len(requests)]
+        result.next_token_ids = self.host_launch_ids(launch_buf)[: len(requests)]
 
     def sample_before_post_prefill(
         self,

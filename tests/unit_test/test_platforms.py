@@ -292,3 +292,12 @@ def test_cpu_cuda_rocm_xpu_and_musa_implement_the_shared_device_operations() -> 
         assert (
             type(platform).get_available_memory is not DeviceMixin.get_available_memory
         ), platform_type
+
+
+@pytest.mark.parametrize(
+    "tp_size, expected", [(1, "intel_xpu"), (4, "intel_xpu"), (8, None)]
+)
+def test_xpu_thinker_attention_backend_keeps_triton_at_tp8(
+    tp_size: int, expected: str | None
+) -> None:
+    assert XPUOmniPlatform().get_thinker_attention_backend(tp_size) == expected

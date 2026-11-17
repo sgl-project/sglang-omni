@@ -276,6 +276,7 @@ jobs:
             pip install --no-cache-dir pytest pytest-asyncio
           docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
             pytest tests/unit_test/xpu/test_device_layer.py \
+              tests/unit_test/model_runner/test_base_hooks.py \
               tests/unit_test/dots_tts/test_flow_head.py \
               tests/unit_test/dots_tts/test_tail.py \
               tests/unit_test/nemotron3_5_asr/test_hf_compat.py \

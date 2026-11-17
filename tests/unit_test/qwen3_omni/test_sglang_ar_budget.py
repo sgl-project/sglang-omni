@@ -852,6 +852,48 @@ def test_thinker_decode_graph_stays_available_to_an_explicit_override(
     assert overrides["disable_decode_cuda_graph"] is False
 
 
+@pytest.mark.parametrize("backend", ["intel_xpu", None])
+def test_thinker_attention_backend_follows_the_platform_default(
+    monkeypatch, backend: str | None
+) -> None:
+    monkeypatch.setattr(
+        current_platform, "get_thinker_attention_backend", lambda tp_size: backend
+    )
+    overrides = thinker_overrides(monkeypatch, allows=True)
+
+    assert overrides.get("attention_backend") == backend
+
+
+def test_a_cpu_placed_thinker_keeps_the_host_attention_backend(monkeypatch) -> None:
+    """An accelerator default must not follow the stage onto an explicit CPU placement."""
+    monkeypatch.setattr(
+        current_platform,
+        "get_thinker_attention_backend",
+        lambda tp_size: "intel_xpu",
+    )
+    monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
+    overrides = thinker_overrides(monkeypatch, allows=True, device="cpu")
+
+    assert "attention_backend" not in overrides
+
+
+def test_thinker_attention_backend_yields_to_an_explicit_override(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        current_platform,
+        "get_thinker_attention_backend",
+        lambda tp_size: "intel_xpu",
+    )
+    overrides = thinker_overrides(
+        monkeypatch,
+        allows=True,
+        server_args_overrides={"attention_backend": "triton"},
+    )
+
+    assert overrides["attention_backend"] == "triton"
+
+
 @pytest.mark.parametrize(
     "is_cuda, expected", [(True, "breakable"), (False, "disabled")]
 )
