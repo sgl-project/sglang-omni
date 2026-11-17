@@ -19,13 +19,21 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset videomme-ci-25
     python -m benchmarks.dataset.prepare --dataset videoamme-ci-50
     python -m benchmarks.dataset.prepare --dataset socialomni
+    python -m benchmarks.dataset.prepare --dataset duplex-mpe
+    python -m benchmarks.dataset.prepare --dataset duplex-mpe-mini
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 
+from benchmarks.dataset.duplex_mpe import (
+    DUPLEX_MPE_DATASET_ID,
+    DUPLEX_MPE_DATASET_REVISION,
+    download_duplex_mpe_dataset,
+)
 from benchmarks.dataset.socialomni import (
     SOCIALOMNI_DATASET_ID,
     SOCIALOMNI_DATASET_REVISION,
@@ -64,6 +72,8 @@ DATASETS: dict[str, str] = {
     "videomme-ci-25": "zhaochenyang20/Video_MME_ci_25",
     "videoamme-ci-50": "zhaochenyang20/Video_AMME_ci",
     "socialomni": SOCIALOMNI_DATASET_ID,
+    "duplex-mpe": DUPLEX_MPE_DATASET_ID,
+    "duplex-mpe-mini": f"{DUPLEX_MPE_DATASET_ID}:mini",
 }
 
 
@@ -79,7 +89,32 @@ def download_dataset(
     from huggingface_hub import hf_hub_download
 
     dataset_id, separator, split = repo_id.partition(":")
-    if dataset_id == SOCIALOMNI_DATASET_ID:
+    if dataset_id == DUPLEX_MPE_DATASET_ID:
+        if revision not in (None, DUPLEX_MPE_DATASET_REVISION):
+            raise ValueError(
+                "Duplex-MPE must use the pinned dataset revision "
+                f"{DUPLEX_MPE_DATASET_REVISION}"
+            )
+        else:
+            pass
+        if separator and split != "mini":
+            raise ValueError(f"Unsupported Duplex-MPE subset: {split!r}")
+        else:
+            pass
+        is_mini_subset = separator == ":" and split == "mini"
+        default_dir = (
+            "benchmarks/cache/duplex_mpe_mini"
+            if is_mini_subset
+            else "benchmarks/cache/duplex_mpe"
+        )
+        download_duplex_mpe_dataset(
+            destination_dir=Path(local_dir or default_dir),
+            revision=DUPLEX_MPE_DATASET_REVISION,
+            mini=is_mini_subset,
+            quiet=quiet,
+        )
+        return
+    elif dataset_id == SOCIALOMNI_DATASET_ID:
         if revision not in (None, SOCIALOMNI_DATASET_REVISION):
             raise ValueError(
                 "SocialOmni must use the pinned dataset revision "
@@ -185,7 +220,10 @@ def main() -> None:
     parser.add_argument(
         "--local-dir",
         default=None,
-        help="SocialOmni download directory (default: benchmarks/cache/socialomni).",
+        help=(
+            "Materialized dataset directory for socialomni or duplex-mpe "
+            "(defaults under benchmarks/cache/)."
+        ),
     )
     args = parser.parse_args()
 

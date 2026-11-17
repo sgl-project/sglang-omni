@@ -1,6 +1,6 @@
 # Full-Duplex Guide
 
-SGLang-Omni serves live voice conversations on `/v1/realtime` with three interaction strategies. This page takes each one end to end: how to install it, how to launch it, how to talk to it, and how to benchmark it with Full-Duplex-Bench. The reference sections at the end hold the metric definitions, the cascade configuration and the Session graph that all three run on.
+SGLang-Omni serves live voice conversations on `/v1/realtime` with three interaction strategies. This page takes each one end to end: how to install it, how to launch it, how to talk to it, and how to benchmark it on dyadic (Full-Duplex-Bench) and multi-party (Duplex-MPE) conversations. The reference sections at the end hold the metric definitions, the cascade configuration and the Session graph that all three run on.
 
 ## Choose a Strategy
 
@@ -1105,6 +1105,59 @@ It prints each subset's metrics as value, interval and count, with the bounds ov
 - **Relevance of a reply.** Neither these metrics nor the official turn-taking score check that a reply answers the user. Only the official interruption judge rating covers it, and that rating depends on the judge model the run configured.
 - **ASR errors.** A missed or invented word changes the metrics it falls in. All systems share the pinned Parakeet checkpoint, which does not mean they share the same recognition error.
 - **Acoustic latency.** The output is a simulated playout of the received audio.
+
+## Multi-Party Benchmark: Duplex-MPE
+
+[Duplex-MPE](https://arxiv.org/abs/2609.31948) ([Project Page](https://step-out.github.io/Duplex-MPE-Page/), [GitHub](https://github.com/step-out/Duplex-MPE), [Hugging Face](https://huggingface.co/datasets/ChengqianMa/Duplex-MPE)) evaluates selective participation when an assistant (`Aria`) shares a continuous `/v1/realtime` audio stream with three to four human speakers. Each conversation pairs an `explicit` stream (naming Aria on the direct request) with an `implicit` stream (addressing Aria through conversational context alone) across 2,000 paired scenarios (4,000 streams in total).
+
+### Dataset and Setup
+
+`benchmarks.dataset.prepare` pins Hugging Face revision `6d5f59fab1237c14ee8229ea36f111b7423b0fe6` and verifies the manifest and duty-preamble SHA-256 digests after download:
+
+```bash
+# Deterministic 20-pair (40-stream) smoke subset
+python -m benchmarks.dataset.prepare --dataset duplex-mpe-mini --local-dir benchmarks/cache/duplex_mpe_mini
+
+# Full 2,000-pair (4,000-stream) dataset
+python -m benchmarks.dataset.prepare --dataset duplex-mpe --local-dir benchmarks/cache/duplex_mpe
+```
+
+### Run
+
+`benchmarks.eval.benchmark_duplex_mpe` queries `GET /v1/realtime/capabilities` (with a WebSocket `session.created` fallback on HTTP 404) to negotiate input and output PCM16 sample rates and session mode across native full-duplex (`MiniCPM-o 4.5`, `PersonaPlex`, `Nemotron VoiceChat`), turn-based (`Qwen3-Omni` Session graph and `Streaming Cascade`), and legacy speech-pipeline servers. Because every session begins with the spoken duty preamble `audio/aria_duty_preamble.wav`, endpoints that refuse text `instructions` in `session.update` (such as Nemotron VoiceChat) receive the same spoken task instruction; relative to offline in-process adapters, `/v1/realtime` evaluation records wall-clock WebSocket playout, stores per-scenario reference seeds as provenance metadata (`seed_policy="reference_seed_metadata_only"`), resamples `22.05 kHz` output via exact `441 -> 320` GCD blocks, sends PCM16 clips to `/v1/audio/transcriptions`, and provides `--strict-reference-vad-version` when pinning `silero-vad==6.2.1`.
+
+```bash
+# Run all phases in one command, or split --phase into generate, asr, judge, and score
+python -m benchmarks.eval.benchmark_duplex_mpe \
+  --dataset-root benchmarks/cache/duplex_mpe_mini \
+  --output-dir benchmarks/results/duplex_mpe_minicpmo \
+  --mini \
+  --model openbmb/MiniCPM-o-4_5 \
+  --base-url http://127.0.0.1:8000 \
+  --asr-base-url http://127.0.0.1:8001 \
+  --judge-config benchmarks/configs/duplex_mpe_judge.example.json
+```
+
+To run recording, transcription (`Qwen/Qwen3-ASR-1.7B` on `/v1/audio/transcriptions`), and semantic judging sequentially on a single GPU, invoke `--phase generate`, `--phase asr`, `--phase judge`, and `--phase score` against the same `--output-dir`. Judge credentials are read from the environment variable named by `api_key_env` in the judge JSON config and are never persisted in output artifacts.
+
+### Metrics
+
+| Metric | Turn window | Definition |
+| --- | --- | --- |
+| `TR` (`fresh_onset_response_rate`) | `T` (1 direct request per stream) | Share of scenarios with a fresh assistant speech onset within `5.0 s` after `T` ends (excluding speech already active at `T` end; once active, the reactive scheduler waits for `2.0 s` of raw-voicing silence up to `60.0 s`) |
+| `AA` (`conditional_answer_accuracy` / `unconditional_answer_accuracy`) | `T` | Semantic accuracy of the transcribed `T` response against the reference answer, reported both over responded `T` turns and over all scenarios |
+| `SP` (`silence_preservation`) | `N1`, `N2`, `N3` (unaddressed turns) | Share of bystander turns (`N1` mentions Aria without a request, `N2` addresses another human or device, `N3` is self-talk) with either no speech or brief phatic `BACKCHANNEL` rather than `SUBSTANTIVE_INTRUSION` |
+| `AY` (`answering_window_yield` / `unconditional_window_yield`) | `N4_Q` + `3.0 s` + `N4_R` | When a human asks Aria (`N4_Q`) and another participant resolves or cancels the request `3.0 s` later (`N4_R`), share of eligible responses (whose earliest qualifying onset falls inside the `3.0 s` answering pause and remains active across `N4_R` start) that stop within `2.0 s` of `N4_R` onset and stay silent through `N4_R` + `0.5 s` |
+| `RP`, `WR` | `T`, `N4` | Coverage diagnostics: `response_presence` (`T` turns classified as responded via `T_HIT_5S`, `T_HIT_CONTINUATION`, or `T_OVERLONG_60S`) and `window_response` (`N4_Q` windows containing at least `0.12 s` of qualifying speech) |
+
+```bibtex
+@article{ma2026duplexmpe,
+  title   = {Duplex-MPE: Benchmarking Multi-Party Interaction in Full-Duplex Dialogue},
+  author  = {Ma, Chengqian and Feng, Wenhao and Jin, Weixuan and Dai, Gaole and Xie, Tianyu and Ma, Yuexiao and Kang, Zhaolu and Zhao, Xiangyu and Zheng, Xiawu and Chao, Fei},
+  journal = {arXiv preprint arXiv:2609.31948},
+  year    = {2026}
+}
+```
 
 ## Streaming Cascade Reference
 
