@@ -37,6 +37,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     Qwen3TTSIncrementalCodecCudaGraphRunner,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.scheduling.streaming_vocoder import vocoder_decode_stream_priority
 from sglang_omni.utils import channels_last_conv, snake_beta
 from sglang_omni.utils.channels_last_conv import channels_last_weight
 
@@ -1150,6 +1151,35 @@ def test_codec_state_arena_stages_indices_on_npu() -> None:
     assert index.tolist() == [1, 3]
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_xpu(), reason="Intel XPU is required")
+def test_codec_decodes_on_the_stream_priority_the_vocoder_resolves_on_xpu() -> None:
+    """The vocoder decodes on a priority stream, and XPU reaches oneDNN with neither
+    end of the range it advertises: the greatest priority faults inside the first conv
+    and the least one is refused as an unrecognized stream, so the resolved priority
+    has to be the only level a decode runs on."""
+    device = torch.device("xpu", torch.xpu.current_device())
+    decode_priority = vocoder_decode_stream_priority(torch.xpu)
+
+    assert decode_priority == 0
+
+    torch.manual_seed(21)
+    incremental = Qwen3TTSIncrementalDecoder(Decoder().to(device).eval())
+    arena = Qwen3TTSCodecStateArena(
+        incremental, num_slots=2, device=device, dtype=torch.float32
+    )
+    codes = torch.randint(0, 16, (1, 2, 4), device=device)
+    expected_waveform = incremental.decode(codes, arena.gather([arena.acquire()]))
+    decode_stream = torch.xpu.Stream(device=device, priority=decode_priority)
+    with torch.xpu.stream(decode_stream):
+        waveform = incremental.decode(codes, arena.gather([arena.acquire()]))
+    torch.xpu.synchronize(device)
+
+    assert waveform.device == device
+    assert bool(torch.isfinite(waveform).all())
+    torch.testing.assert_close(waveform, expected_waveform)
+
+
 def state_rows(
     state: Qwen3TTSIncrementalCodecState,
 ) -> tuple[
@@ -1428,9 +1458,14 @@ def test_first_decode_from_its_reach_matches_the_whole_reference(
     )
 
 
-@pytest.fixture(params=("cuda", "npu"))
+@pytest.fixture(params=("cuda", "npu", "xpu"))
 def codec_graph_device(request: pytest.FixtureRequest) -> torch.device:
-    if request.param == "npu":
+    if request.param == "xpu":
+        if not current_platform.is_xpu():
+            pytest.skip("XPU platform is required")
+        else:
+            pass
+    elif request.param == "npu":
         if not current_platform.is_npu():
             pytest.skip("NPU platform is required")
         else:
