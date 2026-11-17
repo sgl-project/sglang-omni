@@ -64,12 +64,15 @@ type Decision struct {
 //     that started the session stops it, other "up"s do nothing. Cancel
 //     cancels. With Strict shortcuts on (strict is the session's feature),
 //     only that feature's bindings stop; another feature's do nothing.
+//     PasteLast stops only with Return finishing live (finish: its Return
+//     may be the finish the plan dropped); otherwise it waits.
 //   - Busy: the cancel shortcut cancels; everything else waits.
 //
 // holdBinding is the binding whose long press started the session ("":
 // none); strict is the feature that started it with Strict shortcuts on
-// ("": off).
-func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string) Decision {
+// ("": off); finish is whether the recording's plan has Return finishing
+// (a Transcribe one, not a note, with the setting on).
+func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string, finish bool) Decision {
 	if e.Binding == FinishID {
 		if phase == Recording && e.Phase == proto.PhaseTrigger {
 			return Decision{Action: Stop}
@@ -94,7 +97,9 @@ func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string) D
 		case Idle:
 			return Decision{Action: Paste}
 		case Recording:
-			return Decision{Action: Stop} // its Return may be the finish the plan dropped
+			if finish {
+				return Decision{Action: Stop} // its Return may be the finish the plan dropped
+			}
 		}
 		return Decision{}
 	}

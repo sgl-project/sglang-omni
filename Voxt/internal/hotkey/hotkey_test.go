@@ -403,12 +403,12 @@ func TestRoute(t *testing.T) {
 		{"cancel shortcut cancels busy", ev(proto.HotkeyCancel, proto.PhaseTrigger), Busy, "", Decision{Action: Cancel}},
 		{"cancel shortcut idle", ev(proto.HotkeyCancel, proto.PhaseTrigger), Idle, "", Decision{}},
 		{"paste last", ev(PasteLast, proto.PhaseTrigger), Idle, "", Decision{Action: Paste}},
-		{"paste last stops the recording", ev(PasteLast, proto.PhaseTrigger), Recording, "", Decision{Action: Stop}},
+		{"paste last waits without the finish", ev(PasteLast, proto.PhaseTrigger), Recording, "", Decision{}},
 		{"note starts", ev(Note, proto.PhaseTrigger), Idle, "", Decision{Action: Start, Feature: Note}},
 		{"note stops", ev(Note, proto.PhaseTrigger), Recording, "", Decision{Action: Stop}},
 		{"unknown binding", ev("try/x", proto.PhaseTrigger), Idle, "", Decision{}},
 	} {
-		if got := Route(tc.e, tc.phase, tc.hold, ""); got != tc.want {
+		if got := Route(tc.e, tc.phase, tc.hold, "", false); got != tc.want {
 			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
 		}
 	}
@@ -430,7 +430,7 @@ func TestRouteFinish(t *testing.T) {
 			{Busy, Decision{}},
 		} {
 			e := proto.HotkeyEventParams{Binding: "finish", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front}
-			if got := Route(e, tc.phase, "", ""); got != tc.want {
+			if got := Route(e, tc.phase, "", "", false); got != tc.want {
 				t.Errorf("%s, %v: %+v, want %+v", front.Name, tc.phase, got, tc.want)
 			}
 		}
@@ -440,8 +440,9 @@ func TestRouteFinish(t *testing.T) {
 // TestRouteStrict: with Strict shortcuts, while recording only the
 // bindings of the feature that started the session stop it (tap, double
 // tap, the release of its long press); another feature's tap, down and up
-// do nothing; Cancel routes as in the default mode, and PasteLast stops,
-// as any feature's binding does there.
+// do nothing; Cancel routes as in the default mode, and PasteLast stops
+// with Return finishing live, whatever strict says (Build's dedup counts
+// its Return as the finish then).
 func TestRouteStrict(t *testing.T) {
 	ev := func(binding, phase string) proto.HotkeyEventParams {
 		return proto.HotkeyEventParams{Binding: binding, Phase: phase}
@@ -467,31 +468,31 @@ func TestRouteStrict(t *testing.T) {
 					} else if start.hold != "" && tc.e.Phase == proto.PhaseUp {
 						tc.defaultTo = Decision{} // only the hold's own release stops
 					}
-					if got := Route(tc.e, Recording, start.hold, own); got != tc.strict {
+					if got := Route(tc.e, Recording, start.hold, own, false); got != tc.strict {
 						t.Errorf("strict, %s started by %s, %+v: %+v, want %+v", own, start.name, tc.e, got, tc.strict)
 					}
-					if got := Route(tc.e, Recording, start.hold, ""); got != tc.defaultTo {
+					if got := Route(tc.e, Recording, start.hold, "", false); got != tc.defaultTo {
 						t.Errorf("default, %s started by %s, %+v: %+v, want %+v", own, start.name, tc.e, got, tc.defaultTo)
 					}
 				}
 			}
 		}
 		for _, strict := range []string{own, ""} {
-			if got := Route(ev(proto.HotkeyCancel, proto.PhaseTrigger), Recording, "", strict); got != (Decision{Action: Cancel}) {
+			if got := Route(ev(proto.HotkeyCancel, proto.PhaseTrigger), Recording, "", strict, false); got != (Decision{Action: Cancel}) {
 				t.Errorf("%q: cancel %+v", strict, got)
 			}
-			if got := Route(ev(PasteLast, proto.PhaseTrigger), Recording, "", strict); got != (Decision{Action: Stop}) {
-				t.Errorf("%q: paste last while recording %+v", strict, got)
+			if got := Route(ev(PasteLast, proto.PhaseTrigger), Recording, "", strict, true); got != (Decision{Action: Stop}) {
+				t.Errorf("%q: paste last while recording with the finish %+v", strict, got)
 			}
-			if got := Route(ev(own+"/0", proto.PhaseTrigger), Idle, "", strict); got != (Decision{Action: Start, Feature: own}) {
+			if got := Route(ev(own+"/0", proto.PhaseTrigger), Idle, "", strict, false); got != (Decision{Action: Start, Feature: own}) {
 				t.Errorf("%q: idle tap %+v", strict, got)
 			}
 		}
 	}
-	if got := Route(ev("transcribe/0", proto.PhaseTrigger), Recording, "", Note); got != (Decision{}) {
+	if got := Route(ev("transcribe/0", proto.PhaseTrigger), Recording, "", Note, false); got != (Decision{}) {
 		t.Errorf("strict note session, transcribe tap: %+v", got)
 	}
-	if got := Route(ev(Note, proto.PhaseTrigger), Recording, "", Note); got != stop {
+	if got := Route(ev(Note, proto.PhaseTrigger), Recording, "", Note, false); got != stop {
 		t.Errorf("strict note session, note tap: %+v", got)
 	}
 }
@@ -528,18 +529,23 @@ func TestBuildFinishDedup(t *testing.T) {
 	}
 }
 
-// TestRoutePasteLastStopsRecording: paste last pastes in Idle and stops
-// a Recording, as a feature's binding does (its Return may be the
-// finish the plan dropped for it); elsewhere it waits.
-func TestRoutePasteLastStopsRecording(t *testing.T) {
+// TestRoutePasteLastRoute: paste last pastes in Idle. While Recording it
+// stops only with Return finishing live (its Return may be the finish the
+// plan dropped for it); with the setting off, or in a session the plan
+// never binds Finish for (Translate, Rewrite, a note), it waits, as in
+// Busy.
+func TestRoutePasteLastRoute(t *testing.T) {
 	e := proto.HotkeyEventParams{Binding: PasteLast, Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap}
-	if got := Route(e, Recording, "", ""); got != (Decision{Action: Stop}) {
-		t.Errorf("recording: %+v", got)
+	if got := Route(e, Recording, "", "", true); got != (Decision{Action: Stop}) {
+		t.Errorf("recording with the finish: %+v", got)
 	}
-	if got := Route(e, Idle, "", ""); got != (Decision{Action: Paste}) {
+	if got := Route(e, Recording, "", "", false); got != (Decision{}) {
+		t.Errorf("recording without the finish: %+v", got)
+	}
+	if got := Route(e, Idle, "", "", false); got != (Decision{Action: Paste}) {
 		t.Errorf("idle: %+v", got)
 	}
-	if got := Route(e, Busy, "", ""); got != (Decision{}) {
+	if got := Route(e, Busy, "", "", false); got != (Decision{}) {
 		t.Errorf("busy: %+v", got)
 	}
 }

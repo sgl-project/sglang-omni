@@ -8,6 +8,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -109,6 +110,8 @@ func TestResolverWithoutSpeech(t *testing.T) {
 
 // TestReturnFinishPlanScope: the helper gets Return only for a Transcribe
 // recording with the setting on, never for another feature or idle work.
+// With Paste last on Return, its tap routes to Stop in the same cases and
+// nowhere else: opted out, or another feature's session, Return waits.
 func TestReturnFinishPlanScope(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -134,6 +137,14 @@ func TestReturnFinishPlanScope(t *testing.T) {
 			got := slices.ContainsFunc(cfg.Bindings, func(b proto.HotkeyBinding) bool { return b.ID == "finish" })
 			if got != tc.want {
 				t.Errorf("Return bound %v, want %v: %+v", got, tc.want, cfg.Bindings)
+			}
+			// With Paste last on Return, Build drops Finish for it; its tap
+			// must route to Stop in the same cases and nowhere else.
+			a.prefs.Features.PasteLast = settings.Hotkey{Keys: "Return"}
+			e := proto.HotkeyEventParams{Binding: hotkey.PasteLast, Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap}
+			d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes())
+			if stopped := d.Action == hotkey.Stop; stopped != tc.want {
+				t.Errorf("paste last on Return stops %v, want %v: %+v", stopped, tc.want, d)
 			}
 		})
 	}

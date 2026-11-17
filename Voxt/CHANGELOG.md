@@ -8,11 +8,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Return finishes dictation**: while Transcribe records, press Return to stop recording and finish through the same path as the stop shortcut. Voxt consumes that Return instead of sending it again after insertion. The Transcribe page has a Return finishes dictation switch, on by default, for users who need Return for a newline while recording.
 
+### Fixed
+
+- **Paste last on Return honours the opt-out**: with Paste last on Return and Return finishes dictation off, pressing Return while Transcribe records no longer stops the recording, and it never stops a Translate, Rewrite or note recording.
+
 ### 中文
 
 #### 新增
 
 - **按回车完成转录**：转录录音时，按回车停止录音，走和停止快捷键相同的后续流程。这个回车会被消费，插入结果后不会再发送一次。转录页新增“按回车完成转录”开关，默认打开；录音时需要回车换行的用户可以关闭。
+
+#### 修复
+
+- **“粘贴最近结果”绑定回车时尊重开关**：把“粘贴最近结果”设为回车、又关闭“按回车完成转录”后，转录录音时按回车不再停止录音；翻译、改写、笔记的录音也不会被回车停止。
 
 ## [2.1.0] - 2026-11-15
 
