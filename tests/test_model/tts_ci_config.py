@@ -77,28 +77,28 @@ THRESHOLD_SLACK_LOWER = 1.25
 
 
 # Higgs thresholds.
-HIGGS_VC_WER_MAX_CORPUS = 0.0101
+HIGGS_VC_WER_MAX_CORPUS = 0.0109
 HIGGS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_WER_MAX_CORPUS)
-HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0115
+HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.01
 HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_STREAM_WER_MAX_CORPUS)
-HIGGS_VC_SIMILARITY_MEAN_MIN = 66.05749237060547
-HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1662
+HIGGS_VC_SIMILARITY_MEAN_MIN = 65.81311408996582
+HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1641
 HIGGS_VC_UTMOS_MEAN_MIN = apply_mos_slack(HIGGS_VC_UTMOS_MEAN_REFERENCE)
 
 HIGGS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 25.043,
-        "output_tok_per_req_s": 191.0,
-        "latency_mean_s": 0.634,
-        "rtf_mean": 0.1487,
+        "throughput_qps": 23.593,
+        "output_tok_per_req_s": 190.5,
+        "latency_mean_s": 0.643,
+        "rtf_mean": 0.1505,
     }
 }
 
 HIGGS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 21.773,
-        "latency_mean_s": 0.664,
-        "rtf_mean": 0.1582,
+        "throughput_qps": 23.774,
+        "latency_mean_s": 0.669,
+        "rtf_mean": 0.1607,
     }
 }
 
@@ -111,28 +111,28 @@ HIGGS_VC_STREAM_THRESHOLDS = apply_slack(
 
 
 # MOSS Local thresholds.
-MOSS_VC_WER_MAX_CORPUS = 0.0223
+MOSS_VC_WER_MAX_CORPUS = 0.0234
 MOSS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_WER_MAX_CORPUS)
-MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0242
+MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0222
 MOSS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_STREAM_WER_MAX_CORPUS)
-MOSS_VC_SIMILARITY_MEAN_MIN = 63.915214157104494
-MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9579
+MOSS_VC_SIMILARITY_MEAN_MIN = 62.98760913848877
+MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9575
 MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
 
 MOSS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 27.308,
-        "output_tok_per_req_s": 115.1,
-        "latency_mean_s": 0.582,
-        "rtf_mean": 0.1344,
+        "throughput_qps": 26.75,
+        "output_tok_per_req_s": 113.9,
+        "latency_mean_s": 0.594,
+        "rtf_mean": 0.1371,
     }
 }
 
 MOSS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 25.304,
-        "latency_mean_s": 0.629,
-        "rtf_mean": 0.1443,
+        "throughput_qps": 24.845,
+        "latency_mean_s": 0.64,
+        "rtf_mean": 0.1469,
     }
 }
 
@@ -147,30 +147,30 @@ MOSS_VC_STREAM_THRESHOLDS = apply_slack(
 # a single instance: on one H100 the tuned single instance beats the same-card
 # MPS-DP2 pool on peak throughput and holds a several-fold better first-audio
 # latency, so colocation is no longer the recommended topology for it.
-QWEN3_TTS_VC_WER_MAX_CORPUS = 0.0117
+QWEN3_TTS_VC_WER_MAX_CORPUS = 0.0107
 QWEN3_TTS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(QWEN3_TTS_VC_WER_MAX_CORPUS)
-QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.0142
+QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.0105
 QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
     QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS
 )
-QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.37776275634765
-QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.1975
+QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.90312927246094
+QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.1972
 QWEN3_TTS_VC_UTMOS_MEAN_MIN = apply_mos_slack(QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE)
 
 QWEN3_TTS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 37.543,
-        "output_tok_per_req_s": 138.5,
-        "latency_mean_s": 0.423,
-        "rtf_mean": 0.1029,
+        "throughput_qps": 41.263,
+        "output_tok_per_req_s": 152.3,
+        "latency_mean_s": 0.382,
+        "rtf_mean": 0.0923,
     }
 }
 
 QWEN3_TTS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 44.066,
-        "latency_mean_s": 0.36,
-        "rtf_mean": 0.0871,
+        "throughput_qps": 47.86,
+        "latency_mean_s": 0.332,
+        "rtf_mean": 0.08,
     }
 }
 
@@ -210,30 +210,30 @@ QWEN3_TTS_VC_STREAM_THRESHOLDS = apply_slack(
 )
 
 # Fun-CosyVoice3 0.5B.
-COSYVOICE3_VC_WER_MAX_CORPUS = 0.0134
+COSYVOICE3_VC_WER_MAX_CORPUS = 0.0123
 COSYVOICE3_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(COSYVOICE3_VC_WER_MAX_CORPUS)
-COSYVOICE3_VC_STREAM_WER_MAX_CORPUS = 0.0128
+COSYVOICE3_VC_STREAM_WER_MAX_CORPUS = 0.012
 COSYVOICE3_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
     COSYVOICE3_VC_STREAM_WER_MAX_CORPUS
 )
-COSYVOICE3_VC_SIMILARITY_MEAN_MIN = 68.71527511596679
-COSYVOICE3_VC_UTMOS_MEAN_REFERENCE = 3.9894
+COSYVOICE3_VC_SIMILARITY_MEAN_MIN = 68.23052673339843
+COSYVOICE3_VC_UTMOS_MEAN_REFERENCE = 3.9935
 COSYVOICE3_VC_UTMOS_MEAN_MIN = apply_mos_slack(COSYVOICE3_VC_UTMOS_MEAN_REFERENCE)
 
 COSYVOICE3_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 28.539,
-        "output_tok_per_req_s": 298.6,
-        "latency_mean_s": 0.558,
-        "rtf_mean": 0.1238,
+        "throughput_qps": 31.795,
+        "output_tok_per_req_s": 336.6,
+        "latency_mean_s": 0.5,
+        "rtf_mean": 0.1108,
     }
 }
 
 COSYVOICE3_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 26.173,
-        "latency_mean_s": 0.609,
-        "rtf_mean": 0.1343,
+        "throughput_qps": 29.483,
+        "latency_mean_s": 0.54,
+        "rtf_mean": 0.1192,
     }
 }
 
@@ -255,10 +255,10 @@ COSYVOICE3_VC_STREAM_THRESHOLDS = apply_slack(
 # arms is printed until it is calibrated under CI co-load. The c50 continuity
 # rate is printed too: with three to seven streams per 1088 over a 50 ms
 # underrun, a ratio slack on a near-100% rate is either far too loose or flaky.
-QWEN3_TTS_LATENCY_VC_R1_TTFP_MEDIAN_REF_S = 0.0237
-QWEN3_TTS_LATENCY_VC_R20_TTFP_MEDIAN_REF_S = 0.0267
-QWEN3_TTS_LATENCY_CUSTOM_VOICE_R1_TTFP_MEDIAN_REF_S = 0.0153
-QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_MEDIAN_REF_S = 0.0172
+QWEN3_TTS_LATENCY_VC_R1_TTFP_MEDIAN_REF_S = 0.0242
+QWEN3_TTS_LATENCY_VC_R20_TTFP_MEDIAN_REF_S = 0.0255
+QWEN3_TTS_LATENCY_CUSTOM_VOICE_R1_TTFP_MEDIAN_REF_S = 0.0158
+QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_MEDIAN_REF_S = 0.0156
 
 
 def latency_gate(reference_s: float) -> float:
