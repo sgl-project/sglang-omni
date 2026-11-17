@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -263,6 +264,18 @@ func runMeetingProfile(
 	rawText := profileMeetingText(rawSegments)
 	finalText := rawText
 	summaryText := ""
+	if segmentsFile, segmentsErr := os.Create(filepath.Join(config.OutputDir, "segments.jsonl")); segmentsErr == nil {
+		encoder := json.NewEncoder(segmentsFile)
+		for _, segment := range rawSegments {
+			_ = encoder.Encode(map[string]any{
+				"source": segment.Source, "speaker": segment.Speaker,
+				"start_ms": segment.StartMS, "end_ms": segment.EndMS, "text": segment.Text,
+			})
+		}
+		_ = segmentsFile.Close()
+	} else {
+		recorder.Warn("segments.jsonl: " + segmentsErr.Error())
+	}
 
 	if config.Cleanup {
 		chatKind = "correction"
