@@ -50,6 +50,7 @@ func TestModelsPage(t *testing.T) {
 	tt.SetSize(windowWidth, 4800) // the retired models are below the speech model cards
 	a.navigate(modelsPath)
 	frames(tt)
+	frames(tt)
 	texts := tt.Texts()
 	for _, family := range []string{"Qwen3-ASR", "Whisper"} {
 		i := slices.Index(texts, family)
@@ -91,6 +92,7 @@ func TestModelsPage(t *testing.T) {
 	// Deleting asks first.
 	a.navigate("/home")
 	a.navigate(modelsPath)
+	frames(tt)
 	scrollSettingsToText(tt, "Delete Qwen3-ASR 0.6B (4bit)…")
 	clickControl(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
 	if !has(tt, "Delete Qwen3-ASR 0.6B (4bit)?") || !has(tt, "This frees 712.8 MB. You can download it again later.") {
@@ -116,6 +118,7 @@ func TestModelsPageDraftAlone(t *testing.T) {
 	tt.SetSize(windowWidth, 1600)
 	seedModels(t, a, models.ASRFastDraft)
 	a.navigate(modelsPath)
+	frames(tt)
 	if !has(tt, "Faster transcription") || !has(tt, "262.5 MB on disk") || has(tt, "712.8 MB on disk") {
 		t.Fatalf("the draft alone: %q", tt.Texts())
 	}
@@ -129,6 +132,7 @@ func TestModelsPageDraftAlone(t *testing.T) {
 	a.modelStatus[models.ASRFastDraft] = models.Status{Downloading: true, Done: draft.Size() / 4, Total: draft.Size()}
 	a.navigate("/home")
 	a.navigate(modelsPath)
+	frames(tt)
 	if !has(tt, "Faster transcription") || !has(tt, "Cancel") {
 		t.Errorf("downloading: %q", tt.Texts())
 	}
@@ -142,6 +146,7 @@ func TestModelsPageSystemDictation(t *testing.T) {
 	tt.SetSize(windowWidth, 1600)
 	a.dictation.SetHelper(fs) // as helperChanged does for a helper with speech.*
 	a.navigate(modelsPath)
+	frames(tt)
 	used := func() int {
 		return strings.Count(strings.Join(tt.Texts(), "\n"), "· Used by Transcribe · Translate · Rewrite")
 	}
@@ -178,12 +183,14 @@ func TestHideModel(t *testing.T) {
 		a.navigate("/home")
 		a.navigate(modelsPath)
 		frames(tt)
+		frames(tt)
 		return tt.AccessLabels()
 	}
 	modelClick := func(label string) {
 		t.Helper()
 		a.navigate("/home")
 		a.navigate(modelsPath)
+		frames(tt)
 		scrollSettingsToText(tt, label)
 		clickControl(t, tt, label)
 	}
@@ -281,9 +288,11 @@ func TestModelDownloadStates(t *testing.T) {
 	reopenModels(a)
 	seedModels(t, a, models.VADSilero) // the speech models' voice detection: only the model downloads
 	a.navigate(modelsPath)
+	frames(tt)
 
 	mode.Store("hold")
-	click(t, tt, "Download Qwen3-ASR 0.6B (4bit)")
+	scrollSettingsToText(tt, "Download Qwen3-ASR 0.6B (4bit)")
+	clickControl(t, tt, "Download Qwen3-ASR 0.6B (4bit)")
 	deadline := time.Now().Add(5 * time.Second)
 	for !(has(tt, "Downloading: ") && partialBytes(a, models.ASRFast) > 0) && time.Now().Before(deadline) { // bytes came: a cancel keeps them
 		drain()
@@ -291,7 +300,8 @@ func TestModelDownloadStates(t *testing.T) {
 	if !has(tt, "Cancel") || !a.modelStatus[models.ASRFast].Downloading {
 		t.Fatalf("downloading: %+v %+v %q", a.modelStatus[models.ASRFast], a.models.Status(models.ASRFast), tt.Texts()[25:])
 	}
-	click(t, tt, "Cancel downloading Qwen3-ASR 0.6B (4bit)")
+	scrollSettingsToText(tt, "Cancel downloading Qwen3-ASR 0.6B (4bit)")
+	clickControl(t, tt, "Cancel downloading Qwen3-ASR 0.6B (4bit)")
 	drain()
 	st := a.modelStatus[models.ASRFast]
 	if st.Downloading || st.Done == 0 || st.Err != nil || !has(tt, "Resume") || !has(tt, "Stopped: ") {
@@ -300,7 +310,8 @@ func TestModelDownloadStates(t *testing.T) {
 
 	// A failure: what the card says, and Try again.
 	mode.Store("missing")
-	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
+	scrollSettingsToText(tt, "Download Qwen3-ASR 1.7B (8bit)")
+	clickControl(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
 	deadline = time.Now().Add(5 * time.Second)
 	for !has(tt, "The download server does not have this model.") && time.Now().Before(deadline) {
 		drain()
@@ -310,7 +321,8 @@ func TestModelDownloadStates(t *testing.T) {
 	}
 
 	// Deleting what a stopped download kept.
-	click(t, tt, "Delete the partial download of Qwen3-ASR 0.6B (4bit)")
+	scrollSettingsToText(tt, "Delete the partial download of Qwen3-ASR 0.6B (4bit)")
+	clickControl(t, tt, "Delete the partial download of Qwen3-ASR 0.6B (4bit)")
 	drain()
 	if st := a.modelStatus[models.ASRFast]; st.Done != 0 || has(tt, "Resume") {
 		t.Errorf("kept: %+v", st)
@@ -408,6 +420,7 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	draft, _ := models.Lookup(models.ASRAccurateDraft) // its bar under the row's text
 	a.modelStatus[models.ASRAccurateDraft] = models.Status{Downloading: true, Done: draft.Size() / 2, Total: draft.Size()}
 	a.navigate(modelsPath)
+	frames(tt)
 	// Two of them loaded (models_memory.go), as a session leaves them.
 	a.modelMem = map[string]int64{models.ASRAccurate: 2_469_606_195, models.LLMTranslate: 1_234_173_952}
 	save("models-states")
@@ -418,6 +431,7 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	a.modelStatus[models.LLMFast] = models.Status{DeletedBy: dictaID}
 	a.navigate("/home")
 	a.navigate(modelsPath)
+	frames(tt)
 	save("models-family")
 	scrollSettingsToText(tt, uitext.ModelName(models.LLMFast))
 	save("models-family-language") // deleted elsewhere, another app's model to use
@@ -450,6 +464,7 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	// The Advanced section under the cards, folded and open
 	// (models_keep.go).
 	a.navigate(modelsPath)
+	frames(tt)
 	scrollSettingsToText(tt, i18n.T("Advanced"))
 	save("models-advanced")
 	a.modelAdvanced = true
@@ -461,12 +476,14 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	a.modelHiddenOpen = true
 	a.navigate("/home")
 	a.navigate(modelsPath)
+	frames(tt)
 	scrollSettingsToText(tt, i18n.T("Hidden models"))
 	save("models-hidden")
 	a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = nil })
 	// The page as it was: the setup guide's shots show it behind them.
 	a.navigate("/home")
 	a.navigate(modelsPath)
+	frames(tt)
 	frames(tt)
 	scrollSettingsToText(tt, uitext.ModelName(models.LLMFast))
 }
@@ -481,15 +498,23 @@ func TestModelsPageFaster(t *testing.T) {
 	tt.SetSize(windowWidth, 1600)
 	seedModels(t, a, models.ASRFast)
 	a.navigate(modelsPath)
+	frames(tt)
 	const sw, dl = "Faster transcription for Qwen3-ASR 0.6B (4bit)", "Download Qwen3-ASR 0.6B DFlash draft"
+	drain := queuePosts(a)
 	if !has(tt, "Faster transcription") || has(tt, "Download the draft model to use this.") || tt.HasText(dl) {
 		t.Fatalf("off: %q", tt.Texts())
 	}
-	click(t, tt, sw)
+	scrollSettingsToText(tt, sw)
+	clickControl(t, tt, sw)
+	drain()
+	frames(tt)
 	if !a.settings.Get().Models.Faster[models.ASRFast] || !has(tt, "Download the draft model to use this.") || !has(tt, "262.5 MB download") || !tt.HasText(dl) {
 		t.Fatalf("on without the draft: %+v %q", a.settings.Get().Models, tt.Texts())
 	}
-	click(t, tt, sw)
+	scrollSettingsToText(tt, sw)
+	clickControl(t, tt, sw)
+	drain()
+	frames(tt)
 	if on, set := a.settings.Get().Models.Faster[models.ASRFast]; !set || on {
 		t.Fatalf("switched off: %+v", a.settings.Get().Models)
 	}
@@ -498,10 +523,14 @@ func TestModelsPageFaster(t *testing.T) {
 	seedModels(t, a, models.ASRFast, models.ASRFastDraft)
 	a.navigate("/home")
 	a.navigate(modelsPath)
+	frames(tt)
 	if !has(tt, "262.5 MB on disk") || has(tt, "Download the draft model to use this.") || a.omniDraft(models.ASRFast) != "" {
 		t.Fatalf("installed, off: %q, omniDraft %q", tt.Texts(), a.omniDraft(models.ASRFast))
 	}
-	click(t, tt, sw)
+	scrollSettingsToText(tt, sw)
+	clickControl(t, tt, sw)
+	drain()
+	frames(tt)
 	if a.omniDraft(models.ASRFast) == "" {
 		t.Error("switched on with the draft: unused")
 	}
@@ -512,7 +541,10 @@ func TestModelsPageFaster(t *testing.T) {
 	if a.omniDraft(models.ASRFast) == "" {
 		t.Error("never switched, installed: unused")
 	}
-	click(t, tt, sw)
+	scrollSettingsToText(tt, sw)
+	clickControl(t, tt, sw)
+	drain()
+	frames(tt)
 	if on, set := a.settings.Get().Models.Faster[models.ASRFast]; !set || on || a.omniDraft(models.ASRFast) != "" {
 		t.Errorf("never switched, then off: %+v", a.settings.Get().Models)
 	}
@@ -532,6 +564,7 @@ func TestModelCardsLineUp(t *testing.T) {
 			tt.SetSize(w, 6000)
 			a.dictation.SetHelper(fs)
 			a.navigate(modelsPath)
+			frames(tt)
 			frames(tt)
 			ids := []string{dictation.ModelID}
 			for _, m := range models.Catalog() {
@@ -564,6 +597,7 @@ func TestSpeechContextNoteWithoutTaker(t *testing.T) {
 	tt.SetSize(windowWidth, 4800)
 	seedModels(t, a, models.ASRMoss, models.ASRAccurate, models.VADSilero)
 	a.navigate(modelsPath)
+	frames(tt)
 	frames(tt)
 	note := "The speech models in use do not take it while they recognise. The language model still gets it when it corrects a meeting's transcript, and your dictionary still guides its clean-up."
 	if !has(tt, note) || !has(tt, "Tell the speech model who is speaking and about what.") {

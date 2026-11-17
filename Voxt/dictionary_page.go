@@ -24,7 +24,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -295,18 +295,6 @@ func (a *app) dictSwitches(c *ui.Context) {
 			v := *learnOn
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Learn = v })
 		}
-	})
-}
-
-// dictGuide says where a term applies, folded under the switches
-// (docs/behavior.md 5.16, 7.9, 7.9a).
-func (a *app) dictGuide(c *ui.Context) {
-	collapsible(c.Key("dict-guide"), i18n.T("How the dictionary works"), &a.dv.guideOpen, nil, func() {
-		caption(c, i18n.T("Each enabled term is used in three places:"))
-		caption(c, i18n.T("Speech recognition: with Speech hints on, terms go to the speech model as words to expect. Aliases are not sent."))
-		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes terms as spelled here. With more than %d terms, only those found in the text are sent, up to %d.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
-		caption(c, i18n.T("Aliases: misspellings Voxt replaces with the term, even without a language model."))
-		caption(c, i18n.T("Rules a term cannot hold, such as when a spelling applies, go in the Personal dictionary: Markdown notes for the language model only, with an example of the prompt."))
 	})
 }
 
