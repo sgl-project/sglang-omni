@@ -358,6 +358,10 @@ const streamGrowStep = 4 * 19 // layout.CardTextSize × 1.3, rounded up (guessTe
 // cardBodyMax (then it scrolls), and whether it was measured.
 func (a *app) cardBodyHeight(v cardView) (int, bool) {
 	bodyMax := a.cardBodyMax(v)
+	if p := &a.overlayTranscript; v.kind == store.KindTranscribe && !v.writing && v.failed == nil &&
+		p.ready && p.input.key == a.answer.id && p.input.source == v.text && p.height > 0 {
+		return min(p.height, bodyMax), true
+	}
 	var h float32
 	exact := true
 	for _, b := range cardBlocks(v) {

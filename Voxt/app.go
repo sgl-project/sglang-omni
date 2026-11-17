@@ -84,6 +84,7 @@ type app struct {
 	learnState
 	historyAccessState
 	transcribeSocketState
+	mainTranscript, overlayTranscript transcriptPreview
 	meetingState
 	meetingOverlayState
 	meetingsState

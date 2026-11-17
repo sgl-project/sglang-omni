@@ -296,6 +296,14 @@ func cardWave(c *ui.Context, v cardView, motion bool, phase float64) {
 // conversation follows its newest turn, and a first answer its newest
 // words as the model writes them, while they show the end.
 func (a *app) cardBody(c *ui.Context, v cardView, bodyH float32) {
+	if v.kind == store.KindTranscribe && !v.writing && v.failed == nil && bodyH > 0 {
+		t := c.Theme()
+		in := transcriptPreviewInput{key: a.answer.id, source: v.text, size: layout.CardTextSize, text: ovCardText, link: t.Accent, dark: true}
+		if preview := a.overlayTranscript.place(c.Key("ov-transcript"), a.ov.win, in, bodyH, bodyH); preview.Valid() {
+			preview.Margin(layout.CardRuleGap, layout.CardInset, 0, 0)
+			return
+		}
+	}
 	st := &a.ov.cardScroll
 	key := a.answer.id + "/" + a.sess.ID
 	if v.conversation {
