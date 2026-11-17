@@ -57,6 +57,8 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 	if m.cfg.Context != nil {
 		tc = m.cfg.Context(ctx)
 	}
+	var fixedIdx []int
+	var fixedText []string
 	for _, batch := range correctionBatches(segs) {
 		fixed, err := correctBatch(ctx, chat, tc, batch)
 		if err != nil {
@@ -64,10 +66,15 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 		}
 		for _, s := range batch {
 			if t, ok := fixed[s.Idx]; ok && t != s.Text {
-				if err := m.cfg.Store.UpdateSegmentText(ctx, mt.Seq, s.Idx, t); err != nil {
-					return err
-				}
+				fixedIdx, fixedText = append(fixedIdx, s.Idx), append(fixedText, t)
 			}
+		}
+	}
+	// Only a whole correction lands: a failure part-way must not leave
+	// some lines corrected and the rest not, with nothing saying so.
+	for i, idx := range fixedIdx {
+		if err := m.cfg.Store.UpdateSegmentText(ctx, mt.Seq, idx, fixedText[i]); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -189,3 +189,49 @@ func TestLiveTranslationFindsItsLine(t *testing.T) {
 		t.Fatalf("%+v", segs)
 	}
 }
+
+// failAfterChat fails from request n+1 on.
+type failAfterChat struct {
+	inner *fixingChat
+	n     int
+	err   error
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *failAfterChat) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
+	f.mu.Lock()
+	f.calls++
+	c := f.calls
+	f.mu.Unlock()
+	if c > f.n {
+		return llm.Response{}, f.err
+	}
+	return f.inner.Chat(ctx, req)
+}
+
+// A correction that fails part-way leaves every line as recognised:
+// nothing is corrected by halves, unmarked.
+func TestCorrectTranscriptFailureIsWhole(t *testing.T) {
+	var segs []store.MeetingSegment
+	for i := 0; i <= correctBatchLines; i++ {
+		segs = append(segs, store.MeetingSegment{Idx: i, Source: store.SegmentMic, StartMS: int64(i * 1000), EndMS: int64(i*1000 + 900), Text: "Box line"})
+	}
+	m, repo, chat := correctFixture(t, segs...)
+	m.cfg.LLM = func(context.Context, string) (SummaryChat, error) {
+		return &failAfterChat{inner: chat, n: 1, err: errors.New("the model stopped")}, nil
+	}
+	ctx := context.Background()
+	if err := m.CorrectTranscript(ctx, "m"); err == nil {
+		t.Fatal("the second batch's failure did not surface")
+	}
+	_, got, err := repo.Meeting(ctx, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range got {
+		if s.Text != "Box line" {
+			t.Fatalf("line %d was corrected by halves: %q", s.Idx, s.Text)
+		}
+	}
+}
