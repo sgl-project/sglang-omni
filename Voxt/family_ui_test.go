@@ -327,6 +327,7 @@ func TestShortcutRecorderUsedBy(t *testing.T) {
 	conflictPeers(t, a)
 	a.famStarted = true // the manifest and conflicts follow the settings (family.go)
 	a.scPrompt = nil
+	tt.SetSize(windowWidth, 900) // the keys menu's last item, Custom…, is below 520 DIPs with Linux fonts
 	a.navigate("/translate")
 	if !has(tt, "Also used by AudioSmith (Dictation)") {
 		t.Errorf("translate: %q", tt.Texts())

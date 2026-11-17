@@ -114,6 +114,7 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 				test.prepare(host)
 			}
 			tester := newMeetingDemoTester(t, host)
+			tester.SetSize(windowWidth, 900) // the keys menu's last item, Custom…, is below 520 DIPs with Linux fonts
 			for _, step := range test.steps {
 				var err error
 				switch {

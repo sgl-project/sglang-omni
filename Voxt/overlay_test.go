@@ -47,7 +47,9 @@ func snap(a *app, s session.Snapshot) {
 func wave() []float64 {
 	var out []float64
 	for i := range session.Bars {
-		out = append(out, 0.35+0.3*math.Sin(float64(i)/2))
+		// Rounded: arm64 fuses this multiply-add and amd64 does not, so the raw
+		// values differ in the last bit and the goldens would differ by platform.
+		out = append(out, math.Round((0.35+0.3*math.Sin(float64(i)/2))*1e9)/1e9)
 	}
 	return out
 }
