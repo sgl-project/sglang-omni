@@ -2,6 +2,8 @@
 #include "common/fastconformer.h"
 
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 namespace omni_common {
@@ -39,21 +41,40 @@ mx::array RelativePositionAttention(const Checkpoint &checkpoint,
                                     const mx::array &keys_values,
                                     const mx::array &relative_positions,
                                     const std::string &prefix, int head_count) {
+  return ChunkedRelativePositionAttention(
+      checkpoint, queries, keys_values, queries.shape(1), 0, relative_positions,
+      prefix, head_count);
+}
+
+mx::array ChunkedRelativePositionAttention(const Checkpoint &checkpoint,
+                                           const mx::array &queries,
+                                           const mx::array &keys_values,
+                                           int chunk_frames, int padding_frames,
+                                           const mx::array &relative_positions,
+                                           const std::string &prefix,
+                                           int head_count) {
   const int query_count = queries.shape(1);
   const int key_count = keys_values.shape(1);
+  const int chunks = query_count / chunk_frames;
+  const int window = key_count - query_count + chunk_frames;
+  if (chunks * chunk_frames != query_count || window < chunk_frames) {
+    throw std::invalid_argument(
+        "chunked attention needs whole chunks and keys for every query");
+  } else {
+  }
   const int position_count = relative_positions.shape(1);
   const int width = queries.shape(2);
   const int head_width = width / head_count;
   const float scale =
       static_cast<float>(std::pow(static_cast<double>(head_width), -0.5));
-  const auto heads = [&](const mx::array &projected, int length) {
+  const auto heads = [&](const mx::array &projected, int batch, int length) {
     return mx::transpose(
-        mx::reshape(projected, {1, length, head_count, head_width}),
+        mx::reshape(projected, {batch, length, head_count, head_width}),
         {0, 2, 1, 3});
   };
   const mx::array query_heads =
       mx::reshape(checkpoint.Linear(queries, prefix + ".linear_q"),
-                  {1, query_count, head_count, head_width});
+                  {chunks, chunk_frames, head_count, head_width});
   const mx::Dtype dtype = query_heads.dtype();
   const mx::array content_queries = mx::transpose(
       mx::add(query_heads,
@@ -63,18 +84,44 @@ mx::array RelativePositionAttention(const Checkpoint &checkpoint,
       mx::add(query_heads,
               mx::astype(checkpoint.Weight(prefix + ".pos_bias_v"), dtype)),
       {0, 2, 1, 3});
-  const mx::array keys =
-      heads(checkpoint.Linear(keys_values, prefix + ".linear_k"), key_count);
-  const mx::array values =
-      heads(checkpoint.Linear(keys_values, prefix + ".linear_v"), key_count);
+  // Note (XXXXRT666): chunk c's keys are frames c * chunk_frames on for its
+  // window, gathered after the projections so that frames shared by
+  // neighbouring windows are projected once.
+  const mx::array key_frames =
+      mx::add(mx::expand_dims(mx::multiply(mx::arange(chunks, mx::int32),
+                                           mx::array(chunk_frames, mx::int32)),
+                              1),
+              mx::expand_dims(mx::arange(window, mx::int32), 0));
+  const auto windows = [&](const std::string &projection) {
+    const mx::array projected =
+        checkpoint.Linear(keys_values, prefix + projection);
+    return chunks == 1
+               ? heads(projected, 1, key_count)
+               : heads(mx::take(mx::reshape(projected, {key_count, width}),
+                                mx::reshape(key_frames, {-1}), 0),
+                       chunks, window);
+  };
+  const mx::array keys = windows(".linear_k");
+  const mx::array values = windows(".linear_v");
   const mx::array positions =
-      heads(checkpoint.Linear(relative_positions, prefix + ".linear_pos"),
+      heads(checkpoint.Linear(relative_positions, prefix + ".linear_pos"), 1,
             position_count);
-  const mx::array position_scores =
+  mx::array position_scores =
       mx::multiply(RelativeShift(mx::matmul(position_queries,
                                             mx::swapaxes(positions, -2, -1)),
-                                 key_count),
+                                 window),
                    Scalar(scale, dtype));
+  if (padding_frames > 0) {
+    position_scores = mx::add(
+        position_scores,
+        mx::astype(
+            mx::where(mx::less(mx::reshape(key_frames, {chunks, 1, 1, window}),
+                               mx::array(padding_frames, mx::int32)),
+                      mx::array(-std::numeric_limits<float>::infinity()),
+                      mx::array(0.0f)),
+            dtype));
+  } else {
+  }
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       content_queries, keys, values, scale, /*window_size=*/-1, "array",
       position_scores);

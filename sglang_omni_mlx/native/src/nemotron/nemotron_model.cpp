@@ -126,9 +126,33 @@ mx::array NemotronModel::Subsample(const mx::array &mel) const {
   return checkpoint_.Linear(x, prefix + ".out");
 }
 
-mx::array NemotronModel::StreamLayer(const mx::array &x, int layer,
-                                     const mx::array &relative_positions,
-                                     LayerCache &cache) const {
+mx::array NemotronModel::Encode(const mx::array &x, int chunk_frames,
+                                std::vector<LayerCache> &caches) const {
+  const int cached = caches.front().attention_inputs.has_value()
+                         ? caches.front().attention_inputs->shape(1)
+                         : 0;
+  // Note (XXXXRT666): one chunk sees the frames cached so far; several share
+  // one window length, so a stream's first windows are padded to the full
+  // context and the padding is masked.
+  const int padding = x.shape(1) > chunk_frames
+                          ? std::max(0, config_.left_context_frames - cached)
+                          : 0;
+  const mx::array positions =
+      mx::astype(omni_common::RelativePositionTable(
+                     cached + padding + chunk_frames, config_.model_width),
+                 x.dtype());
+  mx::array hidden = x;
+  for (int layer = 0; layer < config_.layer_count; ++layer) {
+    hidden =
+        Layer(hidden, layer, chunk_frames, padding, positions, caches[layer]);
+  }
+  return hidden;
+}
+
+mx::array NemotronModel::Layer(const mx::array &x, int layer, int chunk_frames,
+                               int padding_frames,
+                               const mx::array &relative_positions,
+                               LayerCache &cache) const {
   const std::string prefix = "encoder.layers." + std::to_string(layer);
   const mx::Dtype dtype = x.dtype();
   const mx::array half = Scalar(0.5f, dtype);
@@ -142,17 +166,22 @@ mx::array NemotronModel::StreamLayer(const mx::array &x, int layer,
 
   const mx::array attention_input =
       checkpoint_.LayerNorm(hidden, prefix + ".norm_self_att", kLayerNormEps);
-  const mx::array keys_values =
+  mx::array keys_values =
       cache.attention_inputs.has_value()
           ? mx::concatenate({*cache.attention_inputs, attention_input}, 1)
           : attention_input;
-  hidden = mx::add(hidden, omni_common::RelativePositionAttention(
+  if (padding_frames > 0) {
+    keys_values = mx::pad(keys_values, {{0, 0}, {padding_frames, 0}, {0, 0}});
+  } else {
+  }
+  hidden = mx::add(hidden, omni_common::ChunkedRelativePositionAttention(
                                checkpoint_, attention_input, keys_values,
-                               relative_positions, prefix + ".self_attn",
-                               config_.head_count));
+                               chunk_frames, padding_frames, relative_positions,
+                               prefix + ".self_attn", config_.head_count));
   const int key_count = keys_values.shape(1);
   cache.attention_inputs = mx::slice(
-      keys_values, {0, std::max(0, key_count - config_.left_context_frames), 0},
+      keys_values,
+      {0, std::max(padding_frames, key_count - config_.left_context_frames), 0},
       {1, key_count, config_.model_width});
 
   const std::string conv_prefix = prefix + ".conv";

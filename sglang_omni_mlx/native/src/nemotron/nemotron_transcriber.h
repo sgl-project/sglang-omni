@@ -28,7 +28,8 @@ class NemotronTranscriber;
 
 // One audio stream decoded as it arrives: audio is encoded in whole chunks
 // of mel frames that later audio can no longer change, and Finish flushes
-// the rest, so the text equals one Transcribe of all the audio.
+// the rest, so every chunk sees the context one Transcribe of all the audio
+// gives it, and the text matches up to rounding.
 class NemotronStream {
 public:
   NemotronStream(const NemotronTranscriber &transcriber,
@@ -53,6 +54,12 @@ private:
   };
 
   void Decode(int mel_frame_limit, bool flush, const std::atomic<bool> &cancel);
+  // Subsampled frames of mel frames consumed_mel_frames_ up to end, from the
+  // kept audio's mel, which starts at first_frame; none once the last chunk
+  // adds no frame.
+  std::optional<mlx::core::array> SubsampleTo(const mlx::core::array &mel,
+                                              int first_frame, int end,
+                                              bool last_chunk);
   void DecodeChunk(const mlx::core::array &prompted);
 
   const NemotronTranscriber &transcriber_;
@@ -83,7 +90,8 @@ public:
 
   // The whole recording through the streaming loop; with no chunk_frames,
   // at the native chunk size, as Voxt's Swift port decodes its Final pass.
-  // The audio goes in one chunk at a time, so memory stays flat with length.
+  // The audio goes in one block of chunks at a time, so memory stays flat
+  // with length.
   omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const NemotronOptions &options,
              const std::atomic<bool> &cancel) const;
