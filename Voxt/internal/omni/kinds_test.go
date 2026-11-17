@@ -175,6 +175,24 @@ func TestMossDiarizeTokenLimit(t *testing.T) {
 	}
 }
 
+// TestWithInstruction: a copy with another instruction sends it as the
+// prompt; the model's own Instruction is unchanged.
+func TestWithInstruction(t *testing.T) {
+	f := newFake(t, omnitest.Opts{}, withServers(t, "moss_transcribe_diarize_server"))
+	a := f.asr(t, ASRMoss).WithInstruction("another task")
+	if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3), Format: "pcm", SampleRate: 16000}); err != nil {
+		t.Fatal(err)
+	}
+	if finals := f.records("final"); len(finals) != 1 || finals[0].Fields["prompt"] != "another task" {
+		t.Errorf("finals %+v", finals)
+	}
+	if got := again(ASRMoss).ASR.Instruction; !strings.Contains(got, "plain text") {
+		t.Errorf("the model's Instruction changed: %q", got)
+	}
+	f.rt.Close()
+
+}
+
 // TestMissingServer: a runtime built without a model's server says so
 // instead of running the model on qwen3_asr_server.
 func TestMissingServer(t *testing.T) {
