@@ -1,6 +1,6 @@
-# ZONOS2
+# Zonos2
 
-[ZONOS2](https://huggingface.co/Zyphra) is a mixture-of-experts (MoE)
+[Zonos2](https://huggingface.co/Zyphra) is a mixture-of-experts (MoE)
 text-to-speech model from Zyphra. A MoE autoregressive decoder predicts
 **9 DAC audio codebooks** scheduled in a **delay pattern**; the codes are then
 decoded back to **44.1 kHz** speech by a DAC vocoder. It clones a voice from a
@@ -13,7 +13,7 @@ vocoder` pipeline and is served through the OpenAI-compatible
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
-ZONOS2 uses the Descript DAC codec, which is not included in the base
+Zonos2 uses the Descript DAC codec, which is not included in the base
 `sglang-omni` package. From the SGLang-Omni repository root, install its
 model-specific dependencies:
 
@@ -37,7 +37,7 @@ server's `PATH` (e.g. `apt-get install ffmpeg`).
 
 The pipeline is `preprocessing → speaker_encode → tts_engine → vocoder`.
 
-ZONOS2 ships a `params.json` whose `model_type` (`zonos2`) auto-selects the
+Zonos2 ships a `params.json` whose `model_type` (`zonos2`) auto-selects the
 `Zonos2ForCausalLM` architecture, so `serve` needs only `--model-path` — no
 `--config` (mirrors Higgs).
 
@@ -51,9 +51,9 @@ sgl-omni serve \
 
 ### Voice Cloning
 
-ZONOS2 clones a voice from a reference clip. The `references` field accepts `audio_path`
+Zonos2 clones a voice from a reference clip. The `references` field accepts `audio_path`
 (a local path, HTTP URL, or base64 data URI) and `text` (the transcript of that clip).
-The shared speech API accepts the transcript, but ZONOS2 currently conditions only on
+The shared speech API accepts the transcript, but Zonos2 currently conditions only on
 the reference audio.
 
 ```bash
@@ -70,7 +70,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 ```
 
 `ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
-`references[0].text`. `ref_text` is currently unused by ZONOS2.
+`references[0].text`. `ref_text` is currently unused by Zonos2.
 
 **Python**
 
@@ -101,10 +101,9 @@ URL, or a base64 **data URI** (`data:audio/wav;base64,<...>`, transcoded via `ff
 
 ### Streaming
 
-Set `"stream": true` with `"response_format": "pcm"` to receive raw signed 16-bit
-little-endian PCM bytes. The response is not SSE or base64. ZONOS2 returns mono 44.1 kHz
-audio with `Content-Type: audio/pcm` and the `X-Sample-Rate`, `X-Channels`, and
-`X-Bit-Depth` headers.
+Set `"stream": true` and `"response_format": "pcm"` to receive raw signed 16-bit little-endian PCM bytes. `stream_format` defaults to `"audio"`, and `response_format` defaults to `"wav"`. With PCM selected, Zonos2 returns mono 44.1 kHz audio with `Content-Type: audio/pcm` and the `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` headers.
+
+Omit `response_format` or set it to `"wav"` for raw WAV streaming with one header followed by PCM chunks. Set `stream_format="sse"` for SSE events, which can omit `stream=true`. Every HTTP mode defaults to WAV; an explicit `response_format` overrides that default.
 
 ```bash
 curl -sS -D output.headers -X POST http://localhost:8000/v1/audio/speech \
@@ -145,8 +144,9 @@ from the resulting text.
 | `input` | (required) | Text to synthesize |
 | `references` | `null` | Reference clip for cloning; `text` is accepted but currently unused |
 | `ref_audio` / `ref_text` | `null` | Shorthand fields; `ref_text` is currently unused |
-| `response_format` | `wav` | Use `pcm` when `stream=true` |
-| `stream` | `false` | Stream raw mono 44.1 kHz PCM16 bytes; requires `response_format=pcm` |
+| `response_format` | `wav` | Explicit values override the default in every mode. HTTP streaming accepts `pcm` or `wav` |
+| `stream` | `false` | Stream raw mono 44.1 kHz WAV by default; set `response_format="pcm"` for raw PCM16 bytes |
+| `stream_format` | `audio` | Raw audio bytes by default; explicit `sse` enables SSE events even when `stream` is omitted |
 | `language` | `null` | Optional NeMo text-normalization language; `Auto` preserves raw text |
 | `max_new_tokens` | (model default) | Maximum generated frames; an explicit value must be `> 0` |
 | `temperature` | (model default) | Sampling temperature |
@@ -157,7 +157,7 @@ from the resulting text.
 
 ## Benchmarking
 
-ZONOS2 clones from each prompt (`--ref-format references`). Run the seed-tts-eval voice-clone
+Zonos2 clones from each prompt (`--ref-format references`). Run the seed-tts-eval voice-clone
 benchmark against a running server:
 
 ```bash
@@ -213,7 +213,7 @@ Set `stream_emit_chunk_frames=1` for per-frame streaming. The 2-GPU `multi_gpu` 
 ## Known Limitations
 
 - **Reference transcripts are not used.** The shared API accepts `text` / `ref_text`, but
-  ZONOS2 currently conditions only on reference audio.
+  Zonos2 currently conditions only on reference audio.
 - **Language controls text normalization only.** It does not add a separate model-side
   language condition.
 - **Per-request seeds are unsupported.** Requests with `seed` are rejected until sampling

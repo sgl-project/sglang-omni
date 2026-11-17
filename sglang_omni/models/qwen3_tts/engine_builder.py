@@ -327,13 +327,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         else:
             pass
         prefill_fields: dict[str, list[int] | int] = {}
-        # note (luojiaxuan): the generic ladder starts at 4, and a replay falls back to
-        # eager when its bucket exceeds twice the real token count, so a 1-token prefill
-        # lands in bucket 4 and misses. Measured over 3203 prefills at 10 and 20 RPS on
-        # H100 CustomVoice, 1301 of them (40.6%) are exactly one token, and they are the
-        # only shapes that fall back: 2 and 3 already replay inside bucket 4. Adding the
-        # single 1 bucket takes the fallback rate to zero, so the default is the shared
-        # ladder plus that bucket rather than a hand-picked list.
+        # note (luojiaxuan): ladders deferred to SGLang can still omit bucket 1 and force cached single-token prefills to run eagerly.
         if (
             prefill.bs[0] != 1
             and self.server_args_overrides.get("cuda_graph_bs_prefill") is None

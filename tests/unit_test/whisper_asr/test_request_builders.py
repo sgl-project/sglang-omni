@@ -68,7 +68,9 @@ class FakeTokenizer:
         return [SOT_PREV] + [1000 + i for i in range(len(text))]
 
 
-def make_request_builder(tokenizer: FakeTokenizer | None = None):
+def make_request_builder(
+    tokenizer: FakeTokenizer | None = None, speculative_num_steps: int = 0
+):
     fake_processor = SimpleNamespace(
         feature_extractor=lambda audio, *, sampling_rate, return_tensors: (
             SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
@@ -80,6 +82,7 @@ def make_request_builder(tokenizer: FakeTokenizer | None = None):
         generation_config=generation_config(),
         encoder_token_count=ENCODER_TOKEN_COUNT,
         max_new_tokens=32,
+        speculative_num_steps=speculative_num_steps,
     )
     return request_builder
 
@@ -190,6 +193,42 @@ def test_request_builder_drops_prompt_when_generation_fills_context(
     assert data.prompt_token_ids == PREFIX
     # note (jiannan-17): The four-token prefix leaves 444 decoder positions for generation.
     assert data.max_new_tokens == 448 - len(PREFIX)
+
+
+def test_speculative_request_leaves_the_draft_chain_inside_the_position_table(
+    monkeypatch,
+) -> None:
+    """A verify reads seven positions past the newest token, which ran off the 448-position table."""
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+
+    data = make_request_builder(speculative_num_steps=7)(
+        make_payload({"max_new_tokens": 500})
+    )
+
+    assert len(data.prompt_token_ids) + data.max_new_tokens + 7 == 448
+
+
+def test_speculative_request_keeps_sampling_and_segment_timestamps(
+    monkeypatch,
+) -> None:
+    """The draft chain samples and applies the timestamp rules, so a speculative request keeps both."""
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+
+    data = make_request_builder(speculative_num_steps=7)(
+        make_payload({"temperature": 0.7, "segment_timestamps": True})
+    )
+
+    assert data.req.sampling_params.temperature == 0.7
+    assert data.req.sampling_params.custom_params["segment_timestamps"] is True
+    assert data.req.custom_logit_processor is not None
 
 
 def test_decoder_budget_invariant_exhaustive() -> None:
@@ -341,6 +380,29 @@ def test_result_adapter_reports_a_token_budget_stop() -> None:
     )
 
     assert result_adapter(data).data["finish_reason"] == "length"
+
+
+def test_result_adapter_returns_the_speculative_acceptance_details() -> None:
+    _, result_adapter = make_whisper_scheduler_adapters(
+        processor=SimpleNamespace(),
+        tokenizer=FakeTokenizer(),
+        generation_config=generation_config(),
+        encoder_token_count=ENCODER_TOKEN_COUNT,
+        max_new_tokens=32,
+    )
+    data = whisper_request_builders.WhisperASRRequestData(
+        output_ids=[7, 8], stage_payload=make_payload()
+    )
+    data.spec_tokens_details = {
+        "spec_accept_rate": 0.5,
+        "spec_accept_length": 2.0,
+        "spec_num_correct_drafts": 1,
+        "spec_num_proposed_drafts": 2,
+        "spec_verify_ct": 1,
+        "spec_correct_drafts_histogram": [0, 1],
+    }
+
+    assert result_adapter(data).data["spec_tokens_details"] == data.spec_tokens_details
 
 
 def test_request_builder_pre_lm_encode_attaches_embeddings(monkeypatch) -> None:

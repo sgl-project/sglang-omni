@@ -84,6 +84,26 @@ def make_qwen_payload(
     )
 
 
+def make_thinker_config(
+    *,
+    image_token_id: int,
+    video_token_id: int,
+    audio_token_id: int,
+    vision_start_token_id: int,
+    audio_start_token_id: int,
+) -> SimpleNamespace:
+    """The thinker config fields the Qwen3-Omni request builder and its M-RoPE read."""
+    return SimpleNamespace(
+        image_token_id=image_token_id,
+        video_token_id=video_token_id,
+        audio_token_id=audio_token_id,
+        vision_start_token_id=vision_start_token_id,
+        audio_start_token_id=audio_start_token_id,
+        position_id_per_seconds=25,
+        vision_config=SimpleNamespace(spatial_merge_size=2, tokens_per_second=2),
+    )
+
+
 def make_dialog(
     session_identity: SessionIdentity,
 ) -> tuple[QwenInputHooks, list[TimedChunk], SessionContext]:

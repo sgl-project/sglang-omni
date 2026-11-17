@@ -13,15 +13,15 @@
 #include <string>
 #include <vector>
 
+#include "common/campplus.h"
+#include "common/generation.h"
 #include "common/layers.h"
 #include "common/text.h"
 #include "common/tokenizer.h"
 #include "cosyvoice3/cosyvoice3_audio.h"
-#include "cosyvoice3/cosyvoice3_speaker.h"
 #include "cosyvoice3/cosyvoice3_speech_tokenizer.h"
 #include "cosyvoice3/cosyvoice3_vocoder.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "qwen3_asr/qwen3_decoder.h"
 
 namespace cosyvoice3 {
@@ -76,7 +76,7 @@ struct Reference {
 struct GeneratedSpeech {
   // As sampled, before silent runs are trimmed.
   std::vector<int> speech_tokens;
-  qwen3_asr::FinishReason finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::FinishReason finish_reason = omni_common::FinishReason::kStop;
 };
 
 class CosyVoice3Model {
@@ -94,7 +94,7 @@ public:
   Reference EncodeReference(const ReferenceAudio &audio) const;
 
   // Samples speech tokens after the text ids and the prompt speech tokens;
-  // calls on_token with each one and throws TranscriptionCancelled once
+  // calls on_token with each one and throws GenerationCancelled once
   // cancel is set.
   GeneratedSpeech Generate(const std::vector<int> &prompt_text_ids,
                            const std::vector<int> &target_text_ids,
@@ -138,7 +138,7 @@ private:
   std::unique_ptr<omni_common::Tokenizer> tokenizer_;
   Flow flow_;
   Hift hift_;
-  SpeakerEncoder speaker_encoder_;
+  omni_common::CamPlusEncoder speaker_encoder_;
   omni_common::Checkpoint speech_tokenizer_checkpoint_;
   SpeechTokenizer speech_tokenizer_;
 };

@@ -165,6 +165,8 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     mask_leading_silence: bool = False
     ref_code: torch.Tensor | None = None
     ref_code_len: int = 0
+    speech_input_tokens: int | None = None
+    speech_output_tokens: int = 0
     prompt_input_embeds: torch.Tensor | None = None
     semantic_sampling_seed: int = field(default_factory=new_qwen3_tts_sampling_seed)
     subtalker_dosample: bool = True
@@ -885,6 +887,7 @@ def qwen3_tts_uploaded_voice_cache_key(state: Qwen3TTSState) -> SpeakerCacheKey 
 class OptionalVoicePrompt(TypedDict, total=False):
     ref_code: list[torch.Tensor | None]
     x_vector_only_mode: list[bool]
+    reference_audio_frame_count: list[int]
 
 
 class VoicePrompt(OptionalVoicePrompt):
@@ -894,6 +897,7 @@ class VoicePrompt(OptionalVoicePrompt):
 
 class OptionalCachedVoicePrompt(TypedDict, total=False):
     ref_code: tuple[torch.Tensor, ...]
+    reference_audio_frame_count: int
 
 
 class CachedVoicePrompt(OptionalCachedVoicePrompt):
@@ -922,6 +926,12 @@ def cacheable_qwen3_tts_voice_prompt(
         artifact["ref_code"] = tuple(
             cacheable_qwen3_tts_tensor(code) for code in ref_codes
         )
+    else:
+        pass
+    if "reference_audio_frame_count" in voice_clone_prompt:
+        artifact["reference_audio_frame_count"] = voice_clone_prompt[
+            "reference_audio_frame_count"
+        ][0]
     else:
         pass
     return artifact
@@ -958,6 +968,12 @@ def qwen3_tts_voice_prompt_from_cache(
     }
     if "ref_code" in artifact:
         prompt["ref_code"] = [code.detach().clone() for code in artifact["ref_code"]]
+    else:
+        pass
+    if "reference_audio_frame_count" in artifact:
+        prompt["reference_audio_frame_count"] = [
+            artifact["reference_audio_frame_count"]
+        ]
     else:
         pass
     ref_text = artifact.get("ref_text")
@@ -1299,6 +1315,15 @@ class Qwen3TTSAdhocReferenceHook(
             "ref_spk_embedding": [speaker_embedding],
             "x_vector_only_mode": [item.x_vector_only_mode],
             "icl_mode": [not item.x_vector_only_mode],
+            "reference_audio_frame_count": [
+                (
+                    math.ceil(
+                        len(waveform) / sample_rate * QWEN3_TTS_CODEC_FRAMES_PER_S
+                    )
+                    if not item.x_vector_only_mode
+                    else 0
+                )
+            ],
         }
         return voice_clone_prompt, item.ref_text
 
@@ -1523,6 +1548,17 @@ def prepare_qwen3_tts_base_request(
             ),
         )
 
+    if state.speech_input_tokens is not None and voice_clone_prompt["icl_mode"][0]:
+        reference_frames = voice_clone_prompt.get("reference_audio_frame_count")
+        if reference_frames is None:
+            reference_codes = voice_clone_prompt["ref_code"][0]
+            reference_frame_count = int(reference_codes.shape[0])
+        else:
+            reference_frame_count = reference_frames[0]
+        state.speech_input_tokens += reference_frame_count
+    else:
+        pass
+
     input_id = wrapper._tokenize_texts([wrapper._build_assistant_text(state.text)])[
         0
     ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -1606,6 +1642,28 @@ def prepare_qwen3_tts_request(
     )
 
     validate_qwen3_tts_model_task(model, state)
+    target_ids = wrapper._tokenize_texts([state.text])[
+        0
+    ]  # noqa: leading-underscore  # The model wrapper owns text tokenization.
+    state.speech_input_tokens = int(target_ids.numel()) if state.text else 0
+    tts_params = payload.request.metadata.get("tts_params") or {}
+    if not isinstance(tts_params, dict):
+        tts_params = {}
+    else:
+        pass
+    instructions = (
+        tts_params.get("instructions")
+        or tts_params.get("instruct")
+        or payload.request.params.get("instructions")
+        or payload.request.params.get("instruct")
+    )
+    if isinstance(instructions, str) and instructions.strip():
+        instruction_ids = wrapper._tokenize_texts([instructions])[
+            0
+        ]  # noqa: leading-underscore  # The model wrapper owns text tokenization.
+        state.speech_input_tokens += int(instruction_ids.numel())
+    else:
+        pass
     # note (ratish): the text budget fitted to Base clones cuts slow CustomVoice and VoiceDesign speech far more often than these tasks run away, so they take the checkpoint's generation_config limit, which the scheduler clamps to the context and the KV pool.
     if (
         "max_new_tokens" in state.generation_kwargs
@@ -1614,9 +1672,6 @@ def prepare_qwen3_tts_request(
         generation_kwargs = state.generation_kwargs
     else:
         # note (luojiaxuan): The default budget counts the target text only; reference text and instructions are prompt, not speech.
-        target_ids = wrapper._tokenize_texts([state.text])[
-            0
-        ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         generation_kwargs = {
             **state.generation_kwargs,
             "max_new_tokens": text_length_budget(target_ids.shape[-1]),
@@ -1926,6 +1981,7 @@ def build_sglang_qwen3_tts_request(
         req=req,
         ref_code=prepared.ref_code,
         ref_code_len=ref_code_len,
+        speech_input_tokens=state.speech_input_tokens,
         prompt_input_embeds=prepared.prompt_input_embeds,
         prefill_input_embeds=prepared.prompt_input_embeds,
         semantic_sampling_seed=semantic_sampling_seed,
@@ -2016,18 +2072,24 @@ def apply_sglang_qwen3_tts_result(
     else:
         codes = torch.empty((0, 0), dtype=torch.long)
 
+    result: dict[str, object] = {
+        "audio_codes": codes,
+        "ref_code_len": data.ref_code_len,
+        "prompt_tokens": data.ref_code_len,
+        "completion_tokens": len(data.output_codes),
+        "engine_time_s": time.perf_counter() - data.engine_start_s,
+        "sample_rate": 24000,
+        "finish_reason": qwen3_tts_finish_reason(data),
+    }
+    if data.speech_input_tokens is not None:
+        result["speech_input_tokens"] = data.speech_input_tokens
+        result["speech_output_tokens"] = data.speech_output_tokens
+    else:
+        pass
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
-        data={
-            "audio_codes": codes,
-            "ref_code_len": data.ref_code_len,
-            "prompt_tokens": data.ref_code_len,
-            "completion_tokens": len(data.output_codes),
-            "engine_time_s": time.perf_counter() - data.engine_start_s,
-            "sample_rate": 24000,
-            "finish_reason": qwen3_tts_finish_reason(data),
-        },
+        data=result,
     )
 
 

@@ -4,14 +4,60 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <vector>
+
+#include "yaml-cpp/yaml.h"
 
 namespace omni_common {
 
 namespace mx = mlx::core;
 
 namespace {
+
+nlohmann::json YamlToJson(const YAML::Node &node) {
+  if (node.IsMap()) {
+    nlohmann::json object = nlohmann::json::object();
+    for (const auto &entry : node) {
+      object[entry.first.as<std::string>()] = YamlToJson(entry.second);
+    }
+    return object;
+  } else if (node.IsSequence()) {
+    nlohmann::json array = nlohmann::json::array();
+    for (const auto &element : node) {
+      array.push_back(YamlToJson(element));
+    }
+    return array;
+  } else if (!node.IsScalar()) {
+    return nullptr;
+  } else if (node.Tag() == "!") {
+    // A quoted scalar is a string whatever it spells.
+    return node.Scalar();
+  } else {
+  }
+  // Note (XXXXRT666): PyYAML's safe loader, which OmegaConf reads config.yaml
+  // with, takes these as booleans; yaml-cpp's own decoding adds y, n and any
+  // casing.
+  static const std::set<std::string> true_words{
+      "true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"};
+  static const std::set<std::string> false_words{
+      "false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"};
+  long long integer = 0;
+  double number = 0.0;
+  if (true_words.contains(node.Scalar())) {
+    return true;
+  } else if (false_words.contains(node.Scalar())) {
+    return false;
+  } else if (YAML::convert<long long>::decode(node, integer)) {
+    return integer;
+  } else if (YAML::convert<double>::decode(node, number)) {
+    return number;
+  } else {
+    return node.Scalar();
+  }
+}
 
 std::vector<mx::array> GeluGraph(const std::vector<mx::array> &inputs) {
   // Note (Jiaxin Deng): mlx.nn.gelu's op order, kept for bit identity.
@@ -25,6 +71,17 @@ std::vector<mx::array> GeluGraph(const std::vector<mx::array> &inputs) {
                      mx::erf(mx::divide(
                          x, mx::array(static_cast<float>(M_SQRT2), dtype))))),
       mx::array(2.0f, dtype))};
+}
+
+std::vector<mx::array> TanhGeluGraph(const std::vector<mx::array> &inputs) {
+  const mx::array &x = inputs[0];
+  const mx::Dtype dtype = x.dtype();
+  const mx::array inner = mx::multiply(
+      mx::array(static_cast<float>(std::sqrt(2.0 / M_PI)), dtype),
+      mx::add(x, mx::multiply(mx::array(0.044715f, dtype),
+                              mx::power(x, mx::array(3.0f, dtype)))));
+  return {mx::multiply(mx::multiply(mx::array(0.5f, dtype), x),
+                       mx::add(mx::array(1.0f, dtype), mx::tanh(inner)))};
 }
 
 std::vector<mx::array> SiluGraph(const std::vector<mx::array> &inputs) {
@@ -48,9 +105,40 @@ mx::array Gelu(const mx::array &x) {
   return compiled({x})[0];
 }
 
+mx::array TanhGelu(const mx::array &x) {
+  static const auto compiled = mx::compile(TanhGeluGraph, true);
+  return compiled({x})[0];
+}
+
 mx::array Silu(const mx::array &x) {
   static const auto compiled = mx::compile(SiluGraph, true);
   return compiled({x})[0];
+}
+
+mx::array RouteToExperts(const mx::array &hidden, const mx::array &indices,
+                         const ExpertRunner &run_experts) {
+  const int tokens = hidden.shape(0), width = hidden.shape(1);
+  const int experts_per_token = indices.shape(1);
+  // Note (XXXXRT666): A decode token's experts are all distinct, so sorting
+  // leaves gather_mm nothing to group.
+  if (tokens > 1) {
+    const mx::array flat_indices = mx::reshape(indices, {-1});
+    const mx::array order = mx::argsort(flat_indices);
+    const mx::array token_indices =
+        mx::floor_divide(order, mx::array(experts_per_token, mx::uint32));
+    const mx::array routed =
+        run_experts(mx::expand_dims(mx::take(hidden, token_indices, 0), 1),
+                    mx::take(flat_indices, order, 0), true);
+    const mx::array inverse_order = mx::put_along_axis(
+        mx::zeros(order.shape(), mx::uint32), order,
+        mx::arange(tokens * experts_per_token, mx::uint32), 0);
+    return mx::reshape(mx::take(routed, inverse_order, 0),
+                       {tokens, experts_per_token, routed.shape(-1)});
+  } else {
+    return mx::squeeze(
+        run_experts(mx::reshape(hidden, {tokens, 1, 1, width}), indices, false),
+        -2);
+  }
 }
 
 nlohmann::json ReadJson(const std::filesystem::path &path) {
@@ -60,6 +148,15 @@ nlohmann::json ReadJson(const std::filesystem::path &path) {
   } else {
   }
   return nlohmann::json::parse(stream);
+}
+
+nlohmann::json ReadYaml(const std::filesystem::path &path) {
+  std::ifstream stream(path);
+  if (!stream) {
+    throw std::runtime_error("cannot read " + path.string());
+  } else {
+  }
+  return YamlToJson(YAML::Load(stream));
 }
 
 WeightMap LoadSafetensors(const std::filesystem::path &model_directory) {
@@ -124,6 +221,15 @@ const mx::array &Checkpoint::Weight(const std::string &name) const {
 
 bool Checkpoint::Has(const std::string &name) const {
   return weights_.count(name) > 0;
+}
+
+void Checkpoint::RequireShape(const std::string &name,
+                              const mx::Shape &shape) const {
+  if (Weight(name).shape() != shape) {
+    throw std::invalid_argument("checkpoint tensor has an unexpected shape: " +
+                                name);
+  } else {
+  }
 }
 
 const QuantizationConfig &

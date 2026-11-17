@@ -1,0 +1,19 @@
+## client → service
+GET /api-ws/v1/realtime?model=qwen3-asr-flash-realtime
+Authorization: Bearer <key>
+OpenAI-Beta: realtime=v1
+→ text {"event_id":"<event-id>","session":{"input_audio_format":"pcm","input_audio_transcription":{"language":"zh"},"modalities":["text"],"sample_rate":16000,"turn_detection":{"silence_duration_ms":800,"threshold":0.35,"type":"server_vad"}},"type":"session.update"}
+→ text {"audio":"<base64 of 3200 bytes>","event_id":"<event-id>","type":"input_audio_buffer.append"} ×10
+→ text {"audio":"<base64 of 2000 bytes>","event_id":"<event-id>","type":"input_audio_buffer.append"}
+→ text {"event_id":"<event-id>","type":"session.finish"}
+
+## events
+partial: 今天
+partial: 今天天气
+partial: 今天天气不错
+partial: 今天天气不错，
+partial: 今天天气不错，阳光明媚。
+partial: 今天天气不错，阳光明媚。Let's
+partial: 今天天气不错，阳光明媚。Let's go.
+final: 今天天气不错，阳光明媚。Let's go.
+  model=qwen3-asr-flash-realtime lang=en duration=1.0625s

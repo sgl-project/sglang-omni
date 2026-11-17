@@ -24,6 +24,7 @@ from typing import BinaryIO, Literal
 from pydantic import JsonValue
 
 from benchmarks.duplex.client import MAX_TIMEOUT_S
+from benchmarks.duplex.fdb.engines import ENGINES, Engine
 from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -34,11 +35,6 @@ PARAKEET_REPO_ID = "nvidia/parakeet-tdt-0.6b-v2"
 PARAKEET_FILENAME = "parakeet-tdt-0.6b-v2.nemo"
 PARAKEET_REVISION = "ae9ad07059c7c739ffaf932226a8fe64ae2620b0"
 PARAKEET_SHA256 = "d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c"
-
-MODEL_ID = "openbmb/MiniCPM-o-4_5"
-DEFAULT_MODEL_REVISION = "503e754207c94da6bb26850b4469f367c9ea3582"
-RECORD_PROFILE = "minicpmo-native-pr2377"
-ENGINE_LABEL = "minicpmo"
 
 JudgeName = Literal["qwen", "gpt"]
 JUDGE_NAMES: tuple[JudgeName, ...] = ("qwen", "gpt")
@@ -54,6 +50,10 @@ JUDGE_NCCL_PORT_OFFSET = 1
 NCCL_PORT_END = NCCL_PORT_BASE + NCCL_PORT_SPAN
 # note (luojiaxuan): v1.0 artifacts of a repeat live under repeat-N/v10/.
 V10_DIR = "v10"
+# note (jeffro): generate writes the engine a run records here, and the later
+# steps of the run read it back instead of ENGINE.
+ENGINE_FILE = "engine.txt"
+DEFAULT_ENGINE = "minicpmo"
 # note (luojiaxuan): the per-reply listening metrics of a repeat live under
 # repeat-N/listening/.
 LISTENING_DIR = "listening"
@@ -62,8 +62,9 @@ LISTENING_DIR = "listening"
 @dataclass(frozen=True)
 class Settings:
     fdb_work: Path
+    engine: Engine
     scoring_venv: Path
-    model_revision: str
+    model_revision: str | None
     model_path: Path
     server_port: int
     judge: JudgeName
@@ -132,6 +133,10 @@ class Settings:
         return self.scoring_venv / "bin" / "python"
 
     @property
+    def aligner_python(self) -> Path:
+        return self.fdb_work / "aligner-venv" / "bin" / "python"
+
+    @property
     def run_root(self) -> Path:
         return self.fdb_work / "runs" / self.run_name
 
@@ -148,8 +153,12 @@ class Settings:
             "SCORING_PYTHON": str(self.scoring_python),
             "PARAKEET_NEMO": str(self.parakeet_nemo),
             "PARAKEET_SHA256": PARAKEET_SHA256,
-            "MODEL_ID": MODEL_ID,
-            "MODEL_REVISION": self.model_revision,
+            "MODEL_ID": self.engine.model_id,
+            **(
+                {}
+                if self.model_revision is None
+                else {"MODEL_REVISION": self.model_revision}
+            ),
             "REALTIME_URL": self.realtime_url,
             "SESSION_TIMEOUT_S": self.session_timeout_s,
             "V10_SESSION_TIMEOUT_S": self.v10_session_timeout_s,
@@ -284,9 +293,31 @@ def reject_nccl_range(name: str, port: int) -> None:
         pass
 
 
+def resolve_engine(run_root: Path) -> Engine:
+    """The engine the run recorded, else ENGINE, else the default; an ENGINE
+    that differs from the recorded one stops the step."""
+    requested = os.environ.get("ENGINE") or None
+    engine_file = run_root / ENGINE_FILE
+    recorded = engine_file.read_text().strip() if engine_file.is_file() else None
+    if requested is not None and requested not in ENGINES:
+        raise SystemExit(
+            f"ERROR: ENGINE must be one of {', '.join(ENGINES)}, got '{requested}'."
+        )
+    elif recorded is not None and requested is not None and requested != recorded:
+        raise SystemExit(
+            f"ERROR: {run_root} was recorded with ENGINE={recorded}, not {requested}; "
+            "unset ENGINE or use another --run-name."
+        )
+    elif recorded is not None:
+        return ENGINES[recorded]
+    else:
+        return ENGINES[requested or DEFAULT_ENGINE]
+
+
 def load_settings(run_name: str) -> Settings:
     """Machine settings from environment variables; the run name comes from the CLI."""
     fdb_work = env_path("FDB_WORK", Path.home() / "fdb")
+    engine = resolve_engine(fdb_work / "runs" / run_name)
     judge = env_text("JUDGE", "qwen")
     if judge not in JUDGE_NAMES:
         raise SystemExit(f"ERROR: JUDGE must be qwen or gpt, got '{judge}'.")
@@ -304,9 +335,12 @@ def load_settings(run_name: str) -> Settings:
     reject_nccl_range("judge NCCL port", judge_port + JUDGE_NCCL_PORT_OFFSET)
     return Settings(
         fdb_work=fdb_work,
+        engine=engine,
         scoring_venv=env_path("SCORING_VENV", fdb_work / "scoring-venv"),
-        model_revision=env_text("MODEL_REVISION", DEFAULT_MODEL_REVISION),
-        model_path=env_path("MODEL_PATH", fdb_work / "models" / "MiniCPM-o-4_5"),
+        model_revision=os.environ.get("MODEL_REVISION") or engine.model_revision,
+        model_path=env_path(
+            "MODEL_PATH", fdb_work / "models" / engine.model_id.split("/")[-1]
+        ),
         server_port=server_port,
         judge=judge,
         judge_model_path=env_path(

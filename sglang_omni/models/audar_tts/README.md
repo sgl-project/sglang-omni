@@ -9,7 +9,7 @@ pip install -e '.[audar-tts]'
 For a CUDA build of llama.cpp, install `llama-cpp-python` with the build flags
 required by the target CUDA image before installing SGLang Omni. For Intel XPU,
 skip the extra and follow the
-[XPU install guide](../../../docs/get_started/installation_xpu.md#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu),
+[XPU install guide](../../../docs/other_platforms/installation_xpu.md#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu),
 which builds llama.cpp with SYCL.
 
 Start the server with the explicit config because the Turbo Hugging Face repo

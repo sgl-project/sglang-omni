@@ -167,6 +167,9 @@ class ConstantFrameDecoder:
     samples_per_frame = 1764
     num_quantizers = 1
 
+    def required_context_frames(self, holdback_samples: int) -> int:
+        return (holdback_samples + self.samples_per_frame - 1) // self.samples_per_frame
+
     def __call__(self, code_frames: torch.Tensor) -> torch.Tensor:
         return code_frames[:, 0].float().repeat_interleave(self.samples_per_frame) / 100
 
@@ -176,7 +179,7 @@ def test_codec_matches_offline_samples_including_final_tail() -> None:
     hooks = CodecHooks(decoder, "cpu")
     session_identity = SessionIdentity("codec")
     hooks.open(session_identity, OmniRequest(None))
-    reference = StreamingCodec(decoder, "cpu")
+    reference = StreamingCodec(decoder, "cpu", chunk_frames=(1,))
     output_chunks: list[TimedChunk] = []
     context = SessionContext(
         session_identity=session_identity,

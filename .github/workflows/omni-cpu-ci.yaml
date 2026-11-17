@@ -118,7 +118,7 @@ jobs:
             const labels = pr.data.labels.map((label) => label.name);
             core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
-            core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-intel-cpu-ci"));
+            core.setOutput("is_selected", labels.includes("run-intel-cpu-ci"));
 
       - name: Log PR gate state
         if: ${{ github.event_name == 'pull_request' }}

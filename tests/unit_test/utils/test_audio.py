@@ -12,9 +12,11 @@ from types import ModuleType
 import numpy as np
 import pybase64
 import pytest
+import soundfile as sf
 
 from sglang_omni.utils import audio
 from sglang_omni.utils.audio import AudioDecodeError, load_audio
+from sglang_omni.utils.g711 import ALAW, MULAW, wrap_g711_as_wav
 
 
 def wav_bytes(
@@ -60,6 +62,29 @@ def test_check_torchcodec_ready_probes_decoder_and_warns_once(
         if "falling back to soundfile" in record.getMessage()
     ]
     assert len(fallback_records) == 1
+
+
+def test_load_audio_falls_back_when_torchcodec_imports_but_cannot_decode(
+    monkeypatch,
+) -> None:
+    """A FLAC upload returned HTTP 500 on a host without FFmpeg, where torchcodec imports but every decode fails."""
+
+    def fail_to_load_library(source):
+        raise RuntimeError("Could not load libtorchcodec")
+
+    fake_decoders = ModuleType("torchcodec.decoders")
+    fake_decoders.AudioDecoder = fail_to_load_library
+    monkeypatch.setitem(sys.modules, "torchcodec", ModuleType("torchcodec"))
+    monkeypatch.setitem(sys.modules, "torchcodec.decoders", fake_decoders)
+    monkeypatch.setattr(audio, "_TORCHCODEC_USABLE", None)
+    monkeypatch.setattr(audio.torchaudio, "load", fail_to_load_library)
+    flac = io.BytesIO()
+    sf.write(flac, np.linspace(-0.5, 0.5, 1600), 16000, format="FLAC")
+    reference, _ = sf.read(io.BytesIO(flac.getvalue()), dtype="float32")
+
+    samples = load_audio(flac.getvalue())
+
+    np.testing.assert_array_equal(samples, reference)
 
 
 def test_load_audio_falls_back_when_torchcodec_is_unavailable(monkeypatch) -> None:
@@ -301,6 +326,23 @@ def test_load_audio_fast_path_resamples(monkeypatch) -> None:
     assert samples.shape == (1600,)
 
 
+@pytest.mark.parametrize("encoding", [MULAW, ALAW])
+def test_load_audio_fast_path_decodes_g711_wav(monkeypatch, encoding: str) -> None:
+    """A mu-law or A-law WAV needed torchaudio, so it failed wherever torchaudio could not decode."""
+    wav = wrap_g711_as_wav(bytes(range(256)), encoding)
+    reference, _ = sf.read(io.BytesIO(wav), dtype="float32")
+
+    def fail_load(source):
+        raise RuntimeError(f"Failed to create AudioDecoder for {source}")
+
+    monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: True)
+    monkeypatch.setattr(audio.torchaudio, "load", fail_load)
+
+    samples = load_audio(wav, target_sample_rate=8000)
+
+    np.testing.assert_array_equal(samples, reference)
+
+
 def test_load_audio_trims_before_resampling() -> None:
     import librosa
     import torch
@@ -354,11 +396,9 @@ DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
 def test_load_audio_decodes_the_8khz_telephony_fixtures() -> None:
-    from sglang_omni.utils.g711 import wrap_g711_as_wav
-
     original = load_audio((DATA_DIR / "query_to_draw.wav").read_bytes())
     raw = (DATA_DIR / "query_to_draw_8k.ulaw").read_bytes()
-    from_raw = load_audio(wrap_g711_as_wav(raw, "mulaw"))
+    from_raw = load_audio(wrap_g711_as_wav(raw, MULAW))
     from_wav = load_audio((DATA_DIR / "query_to_draw_8k_ulaw.wav").read_bytes())
 
     assert from_raw.shape == from_wav.shape == original.shape

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 from pathlib import Path
+from typing import Literal
 from unittest.mock import Mock
 
 import httpx
@@ -46,9 +47,12 @@ def test_speech_service_rejects_non_string_input() -> None:
 def test_speech_generation_uses_served_model_and_default_voice() -> None:
     service = SpeechRequestValidator(default_model="tts")
     prepared = service.parse_generation_request({"input": "hello"})
-    generate_request = service.build_generate_request(prepared.request, validate=False)
+    generate_request = service.build_generate_request(prepared.request)
 
     assert prepared.request.model is None
+    assert prepared.request.response_format == "wav"
+    assert prepared.request.stream is False
+    assert generate_request.stream is False
     assert prepared.request.voice == "default"
     assert generate_request.model == "tts"
     assert isinstance(generate_request.metadata["tts_params"], dict)
@@ -376,27 +380,70 @@ def test_speech_service_allows_reference_text_with_instructions_by_default() -> 
     assert request.instructions == "speak warmly"
 
 
-def test_speech_service_requires_pcm_for_http_streaming() -> None:
+@pytest.mark.parametrize(
+    "request_fields",
+    [
+        {"stream": True, "response_format": "mp3"},
+        {"stream_format": "sse", "response_format": "flac"},
+    ],
+)
+def test_speech_service_rejects_unsupported_stream_formats(
+    request_fields: dict[str, object],
+) -> None:
     service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
-        service.parse_request(
-            {"input": "hello", "stream": True, "response_format": "wav"}
-        )
+        service.parse_request({"input": "hello", **request_fields})
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "response_format"
-    assert "stream=true" in exc_info.value.message
-
-
-def test_speech_service_sse_enables_streaming() -> None:
-    service = SpeechRequestValidator(default_model="tts")
-
-    request = service.parse_request(
-        {"input": "hello", "response_format": "pcm", "stream_format": "sse"}
+    assert exc_info.value.message == (
+        "Streaming requires response_format='pcm' or 'wav'"
     )
 
-    assert request.stream
+
+@pytest.mark.parametrize("stream_format", ["audio", "sse"])
+@pytest.mark.parametrize(
+    ("response_format", "speed"), [(None, 0.25), ("wav", 2.0), ("pcm", 4.0)]
+)
+def test_http_stream_accepts_audio_formats_and_speed_without_file_encoder(
+    stream_format: Literal["audio", "sse"],
+    response_format: Literal["wav", "pcm"] | None,
+    speed: float,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audio and SSE streaming accept WAV or PCM without optional file encoders."""
+    service = SpeechRequestValidator(default_model="tts")
+    monkeypatch.setattr(
+        speech_service,
+        "audio_encoding_unavailable_reason",
+        Mock(return_value="File encoder is unavailable"),
+    )
+    payload: dict[str, object] = {
+        "input": "hello",
+        "stream_format": stream_format,
+        "speed": speed,
+    }
+    if stream_format == "audio":
+        payload["stream"] = True
+    else:
+        pass
+    if response_format is not None:
+        payload["response_format"] = response_format
+    else:
+        pass
+
+    request = service.parse_request(payload)
+    generated = service.build_generate_request(request)
+    expected_format = response_format or "wav"
+
+    assert request.stream is True
+    assert request.response_format == expected_format
+    assert request.speed == speed
+    assert generated.stream is True
+    tts_params = generated.metadata["tts_params"]
+    assert isinstance(tts_params, dict)
+    assert tts_params["response_format"] == expected_format
 
 
 def test_speech_service_reports_missing_encoder_dependency_as_capability_error(

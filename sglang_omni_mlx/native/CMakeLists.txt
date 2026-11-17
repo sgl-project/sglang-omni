@@ -44,23 +44,48 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/civetweb/civetweb.git
   GIT_TAG d7ba35bbb649209c66e582d5a0244ba988a15159 # v1.16
   EXCLUDE_FROM_ALL)
+# The released AuK checkpoints describe themselves in config.yaml.
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_FORMAT_SOURCE OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  yaml_cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+  GIT_TAG f7320141120f720aecc4c32be25586e7da9eb978 # 0.8.0
+  EXCLUDE_FROM_ALL)
 set(BUILD_SHARED_LIBS OFF)
-FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
+FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb yaml_cpp)
 
 add_library(common STATIC
   src/common/audio.cpp
+  src/common/audio_chunks.cpp
+  src/common/campplus.cpp
   src/common/form.cpp
   src/common/layers.cpp
   src/common/npz.cpp
+  src/common/reference_audio.cpp
   src/common/text.cpp
-  src/common/tokenizer.cpp)
+  src/common/tokenizer.cpp
+  src/common/transcription.cpp)
 target_include_directories(common PUBLIC src)
 target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-static
-  "-framework CoreFoundation")
+  "-framework CoreFoundation" PRIVATE yaml-cpp::yaml-cpp)
 target_compile_options(common PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 # Note (Jiaxin Deng): npz keeps the no-fused-multiply-add rounding it was built
-# with as part of whisper_asr.
-set_source_files_properties(src/common/npz.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# with as part of whisper_asr, and reference_audio as part of cosyvoice3.
+set_source_files_properties(src/common/npz.cpp src/common/reference_audio.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# Note (XXXXRT666): campplus keeps the rounding it was built with as part of
+# cosyvoice3.
+set_source_files_properties(src/common/campplus.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# Note (Mengwei Liu): energy cuts retain Cohere's and MOSS's separate float
+# operations.
+set_source_files_properties(src/common/audio_chunks.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp
@@ -139,7 +164,7 @@ add_library(swift_port STATIC src/common/swift_port.cpp)
 target_include_directories(swift_port PUBLIC src)
 target_link_libraries(swift_port PUBLIC mlx)
 add_library(whisper_asr STATIC src/whisper/whisper_model.cpp src/whisper/whisper_transcriber.cpp)
-target_link_libraries(whisper_asr PUBLIC qwen3_asr swift_port)
+target_link_libraries(whisper_asr PUBLIC common swift_port)
 # Note (khazic): CPU float math rounds each operation, as Swift does: no fused multiply-add.
 target_compile_options(swift_port PRIVATE -Wall -Wextra -ffp-contract=off)
 target_compile_options(whisper_asr PRIVATE -Wall -Wextra -ffp-contract=off)
@@ -202,7 +227,7 @@ install(TARGETS nemotron_asr_server nemotron_transcribe RUNTIME DESTINATION bin)
 # Note (Dayuxiaoshui): Parakeet TDT: parakeet_server, with qwen3_asr_server's API without
 # realtime, and its parity tool; the front end is Sortformer's NeMo log-mel.
 add_library(parakeet_asr STATIC src/parakeet/parakeet_model.cpp src/parakeet/parakeet_transcriber.cpp)
-target_link_libraries(parakeet_asr PUBLIC qwen3_asr sortformer swift_port)
+target_link_libraries(parakeet_asr PUBLIC common sortformer swift_port)
 target_compile_options(parakeet_asr PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(parakeet_server src/parakeet/parakeet_server.cpp)
 target_link_libraries(parakeet_server PRIVATE parakeet_asr asr_service)
@@ -216,7 +241,7 @@ install(TARGETS parakeet_server parakeet_transcribe RUNTIME DESTINATION bin)
 # Note (Dayuxiaoshui): SenseVoice Small: sensevoice_server, with qwen3_asr_server's API
 # without realtime, and its parity tool; Silero VAD cuts long audio at speech.
 add_library(sensevoice_asr STATIC src/sensevoice/sensevoice_model.cpp src/sensevoice/sensevoice_transcriber.cpp)
-target_link_libraries(sensevoice_asr PUBLIC qwen3_asr swift_port silero_vad)
+target_link_libraries(sensevoice_asr PUBLIC common swift_port silero_vad)
 target_compile_options(sensevoice_asr PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(sensevoice_server src/sensevoice/sensevoice_server.cpp)
 target_link_libraries(sensevoice_server PRIVATE sensevoice_asr asr_service)
@@ -226,6 +251,66 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
+
+# AuK's reference front end uses the same SoX resampler revision as python-soxr.
+FetchContent_Declare(
+  soxr
+  URL https://codeload.github.com/chirlu/soxr/tar.gz/a66f3eeeeb62a32403ff143b756eed92b1ec6b62
+  URL_HASH SHA256=d72cf79f82b4bc56d853c8e166bef994f0bbf9a1ca90ae6f81a3847081f48b96
+  SOURCE_SUBDIR no_automatic_build)
+FetchContent_MakeAvailable(soxr)
+list(APPEND CMAKE_MODULE_PATH "${soxr_SOURCE_DIR}/cmake/Modules")
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WITH_OPENMP OFF CACHE BOOL "" FORCE)
+set(WITH_LSR_BINDINGS OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS ON)
+add_subdirectory("${soxr_SOURCE_DIR}" "${soxr_BINARY_DIR}" EXCLUDE_FROM_ALL)
+set(BUILD_SHARED_LIBS OFF)
+set_target_properties(soxr PROPERTIES INSTALL_NAME_DIR "@rpath")
+
+add_library(audio_resample STATIC src/common/audio_resample.cpp)
+target_include_directories(audio_resample PUBLIC src PRIVATE "${soxr_SOURCE_DIR}/src")
+target_link_libraries(audio_resample PUBLIC soxr)
+target_compile_options(audio_resample PRIVATE -Wall -Wextra)
+
+add_library(auk_model STATIC src/auk/auk_conditioner.cpp src/auk/auk_conditioner_audio.cpp
+  src/auk/auk_dit.cpp src/auk/auk_dit_checkpoint.cpp src/auk/auk_vae.cpp src/auk/auk_model.cpp)
+target_link_libraries(auk_model PUBLIC common audio_resample)
+target_compile_options(auk_model PRIVATE -Wall -Wextra)
+add_executable(auk_server src/auk/auk_server.cpp src/auk/auk_request.cpp)
+target_link_libraries(auk_server PRIVATE auk_model speech_service)
+add_executable(auk_synthesize tools/auk_synthesize.cpp)
+target_link_libraries(auk_synthesize PRIVATE auk_model)
+set_target_properties(auk_server auk_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS auk_server auk_synthesize RUNTIME DESTINATION bin)
+install(TARGETS soxr LIBRARY DESTINATION bin)
+install(FILES "${soxr_SOURCE_DIR}/LICENCE" DESTINATION share/licenses/soxr)
+install(FILES licenses/qwen-research.txt licenses/NOTICE DESTINATION share/licenses/auk)
+install(FILES ../../sglang_omni/models/auk/LICENSE DESTINATION share/licenses/auk
+  RENAME auk.txt)
+install(FILES ../../LICENSE DESTINATION share/licenses/auk RENAME Apache-2.0.txt)
+
+# Ming-Omni-TTS 16.8B-A3B: ming_tts_server, with the CUDA server's
+# /v1/audio/speech API.
+add_library(ming_tts STATIC src/ming_tts/ming_tts_model.cpp src/ming_tts/ming_tts_acoustic.cpp
+  src/ming_tts/ming_tts_audio.cpp src/ming_tts/ming_tts_generator.cpp
+  src/ming_tts/ming_tts_reference.cpp)
+target_link_libraries(ming_tts PUBLIC qwen3_asr)
+target_compile_options(ming_tts PRIVATE -Wall -Wextra)
+# Its request parsing, which stub_server shares.
+add_library(ming_tts_request STATIC src/ming_tts/ming_tts_request.cpp)
+target_link_libraries(ming_tts_request PUBLIC speech_service)
+target_compile_options(ming_tts_request PRIVATE -Wall -Wextra)
+add_executable(ming_tts_server src/ming_tts/ming_tts_server.cpp)
+target_link_libraries(ming_tts_server PRIVATE ming_tts ming_tts_request)
+target_compile_options(ming_tts_server PRIVATE -Wall -Wextra)
+set_target_properties(ming_tts_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS ming_tts_server RUNTIME DESTINATION bin)
 
 # Note (Minyi Tang): Voxtral 4B TTS: voxtral_tts_server, with the CUDA server's
 # /v1/audio/speech API, and its parity tool; the text decoder reuses Qwen3's.
@@ -276,7 +361,7 @@ install(TARGETS qwen3_tts_server qwen3_tts_synthesize RUNTIME DESTINATION bin)
 # server's /v1/audio/speech API, and its parity tool; the Qwen2 decoder reuses
 # Qwen3's, and the WAV and PCM writers are shared in common/audio.
 add_library(cosyvoice3 STATIC src/cosyvoice3/cosyvoice3_vocoder.cpp
-  src/cosyvoice3/cosyvoice3_audio.cpp src/cosyvoice3/cosyvoice3_speaker.cpp
+  src/cosyvoice3/cosyvoice3_audio.cpp
   src/cosyvoice3/cosyvoice3_speech_tokenizer.cpp
   src/cosyvoice3/cosyvoice3_model.cpp)
 target_link_libraries(cosyvoice3 PUBLIC qwen3_asr)
@@ -291,20 +376,28 @@ set_target_properties(cosyvoice3_server cosyvoice3_synthesize PROPERTIES
   INSTALL_RPATH "@loader_path")
 install(TARGETS cosyvoice3_server cosyvoice3_synthesize RUNTIME DESTINATION bin)
 
+# Fish Audio's DAC codec, which Drama 3 and S2-Pro share.
+add_library(fish_dac STATIC src/fish_dac/fish_dac.cpp src/fish_dac/fish_dac_stream.cpp)
+target_link_libraries(fish_dac PUBLIC common)
+target_compile_options(fish_dac PRIVATE -Wall -Wextra -ffp-contract=off)
+
 # Note (Yitong Li): Fish Audio Drama 3: fishaudio_drama3_server, with the CUDA
 # server's /v1/audio/speech API, and its parity tool; attention layers keep
 # Qwen3's KV cache.
 add_library(fishaudio_drama3 STATIC
   src/fishaudio_drama3/fishaudio_drama3_text.cpp
   src/fishaudio_drama3/fishaudio_drama3_prompt.cpp
-  src/fishaudio_drama3/fishaudio_drama3_codec.cpp
-  src/fishaudio_drama3/fishaudio_drama3_codec_stream.cpp
+  src/fishaudio_drama3/fishaudio_drama3_experts.cpp
   src/fishaudio_drama3/fishaudio_drama3_model.cpp
   src/fishaudio_drama3/fishaudio_drama3_backbone.cpp
   src/fishaudio_drama3/fishaudio_drama3_tower.cpp
   src/fishaudio_drama3/fishaudio_drama3_generation.cpp)
-target_link_libraries(fishaudio_drama3 PUBLIC qwen3_asr)
+target_link_libraries(fishaudio_drama3 PUBLIC qwen3_asr fish_dac)
 target_compile_options(fishaudio_drama3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(fishaudio_drama3_experts_test EXCLUDE_FROM_ALL
+  ci/fishaudio_drama3_experts_test.cpp)
+target_link_libraries(fishaudio_drama3_experts_test PRIVATE fishaudio_drama3)
+
 add_executable(fishaudio_drama3_server src/fishaudio_drama3/fishaudio_drama3_server.cpp)
 target_link_libraries(fishaudio_drama3_server PRIVATE fishaudio_drama3 speech_service)
 target_compile_options(fishaudio_drama3_server PRIVATE -Wall -Wextra)
@@ -315,13 +408,66 @@ set_target_properties(fishaudio_drama3_server fishaudio_drama3_synthesize PROPER
   INSTALL_RPATH "@loader_path")
 install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DESTINATION bin)
 
+add_library(ming3_audio STATIC src/ming3_audio/ming3_audio_model.cpp
+  src/ming3_audio/ming3_audio_attention.cpp
+  src/ming3_audio/ming3_audio_mtp.cpp)
+target_link_libraries(ming3_audio PUBLIC qwen3_asr)
+target_compile_options(ming3_audio PRIVATE -Wall -Wextra)
+add_library(ming3_audio_service STATIC src/ming3_audio/ming3_audio_service.cpp)
+target_link_libraries(ming3_audio_service PUBLIC omni_service)
+target_compile_options(ming3_audio_service PRIVATE -Wall -Wextra)
+add_executable(ming3_audio_chat tools/ming3_audio_chat.cpp)
+target_link_libraries(ming3_audio_chat PRIVATE ming3_audio)
+add_executable(ming3_audio_server src/ming3_audio/ming3_audio_server.cpp)
+target_link_libraries(ming3_audio_server PRIVATE ming3_audio ming3_audio_service)
+set_target_properties(ming3_audio_chat ming3_audio_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS ming3_audio_chat ming3_audio_server RUNTIME DESTINATION bin)
+
 install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
   DESTINATION licenses)
+
+# Optional local codec fixture; requires a checkpoint and saved codes.
+add_executable(fishaudio_drama3_codec_test EXCLUDE_FROM_ALL
+  ci/fishaudio_drama3_codec_test.cpp)
+target_link_libraries(fishaudio_drama3_codec_test PRIVATE fish_dac)
+
+# Note (Jiaxin Deng): Fish S2-Pro: fish_s2_pro_server, with the CUDA server's
+# /v1/audio/speech API and reference-audio voice cloning, and its parity tool.
+add_library(fish_s2_pro STATIC src/fish_s2_pro/fish_s2_pro_stream.cpp
+  src/fish_s2_pro/fish_s2_pro_model.cpp)
+target_link_libraries(fish_s2_pro PUBLIC qwen3_asr fish_dac)
+target_compile_options(fish_s2_pro PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(fish_s2_pro_server src/fish_s2_pro/fish_s2_pro_server.cpp)
+target_link_libraries(fish_s2_pro_server PRIVATE fish_s2_pro speech_service)
+target_compile_options(fish_s2_pro_server PRIVATE -Wall -Wextra)
+add_executable(fish_s2_pro_synthesize tools/fish_s2_pro_synthesize.cpp)
+target_link_libraries(fish_s2_pro_synthesize PRIVATE fish_s2_pro)
+set_target_properties(fish_s2_pro_server fish_s2_pro_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS fish_s2_pro_server fish_s2_pro_synthesize RUNTIME DESTINATION bin)
 
 # The protocol tests' stand-in server (tests/stub_server.cpp); built only on
 # request and never installed.
 add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)
-target_link_libraries(stub_server PRIVATE speech_service)
+target_link_libraries(stub_server PRIVATE speech_service ming3_audio_service
+  ming_tts_request)
 target_compile_options(stub_server PRIVATE -Wall -Wextra)
 set_target_properties(stub_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+add_executable(audio_chunk_test EXCLUDE_FROM_ALL tests/audio_chunk_test.cpp)
+target_link_libraries(audio_chunk_test PRIVATE common)
+target_compile_options(audio_chunk_test PRIVATE -Wall -Wextra)
+set_target_properties(audio_chunk_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+# Compares NEXTN with plain decoding on a small checkpoint
+# (tests/test_ming3_mtp.py); built only on request and never installed.
+add_executable(ming3_mtp_probe EXCLUDE_FROM_ALL tests/ming3_mtp_probe.cpp)
+target_link_libraries(ming3_mtp_probe PRIVATE ming3_audio)
+target_compile_options(ming3_mtp_probe PRIVATE -Wall -Wextra)
+set_target_properties(ming3_mtp_probe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")

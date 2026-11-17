@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "exportedAt": "2026-11-06T08:40:00Z",
+  "categories": [
+    {
+      "id": "72C46470-2B8D-4DA7-883B-2123F8EC9B94",
+      "name": "Default"
+    }
+  ],
+  "entries": [
+    {
+      "term": "SGLang-Omni",
+      "categoryID": "72C46470-2B8D-4DA7-883B-2123F8EC9B94",
+      "categoryNameSnapshot": "Default",
+      "replacementTerms": [
+        "sglang omni",
+        "s g lang"
+      ]
+    },
+    {
+      "term": "Qwen3-ASR",
+      "categoryID": "72C46470-2B8D-4DA7-883B-2123F8EC9B94",
+      "categoryNameSnapshot": "Default",
+      "replacementTerms": []
+    },
+    {
+      "term": "张三丰",
+      "categoryID": "72C46470-2B8D-4DA7-883B-2123F8EC9B94",
+      "categoryNameSnapshot": "Default",
+      "replacementTerms": [
+        "张三峰"
+      ]
+    },
+    {
+      "term": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "categoryID": "72C46470-2B8D-4DA7-883B-2123F8EC9B94",
+      "categoryNameSnapshot": "Default",
+      "replacementTerms": []
+    }
+  ]
+}

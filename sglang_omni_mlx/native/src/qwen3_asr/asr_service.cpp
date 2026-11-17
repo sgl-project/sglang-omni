@@ -11,8 +11,10 @@
 
 #include "civetweb.h"
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/http.h"
 #include "common/service.h"
+#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/worker.h"
 
@@ -21,12 +23,12 @@ namespace asr_service {
 namespace {
 
 namespace mx = mlx::core;
+using omni_common::TranscriptionResult;
 using omni_server::BadRequest;
 using omni_server::Json;
 using omni_server::ReadBody;
 using omni_server::WriteJson;
 using qwen3_asr::CancelFlag;
-using qwen3_asr::TranscriptionResult;
 using qwen3_asr::TranscriptionWorker;
 
 constexpr auto kHeartbeatInterval = std::chrono::milliseconds(250);
@@ -40,7 +42,7 @@ struct ServerState {
 // Speaker segments, for models that produce them.
 void AddSegments(Json &body, const TranscriptionResult &result) {
   if (!result.segments.empty()) {
-    body["segments"] = qwen3_asr::SpeakerSegmentsJson(result.segments);
+    body["segments"] = omni_common::SpeakerSegmentsJson(result.segments);
   } else {
   }
 }
@@ -54,7 +56,16 @@ Json DoneEvent(const TranscriptionResult &result,
         {"generated_token_count", result.generated_token_count},
         {"language",
          result.language.has_value() ? Json(*result.language) : Json()},
-        {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)}};
+        {"finish_reason", omni_common::FinishReasonName(result.finish_reason)}};
+    if (result.verify_round_count > 0) {
+      event["generation_metadata"]["verify_round_count"] =
+          result.verify_round_count;
+      event["generation_metadata"]["proposed_draft_token_count"] =
+          result.proposed_draft_token_count;
+      event["generation_metadata"]["accepted_draft_token_count"] =
+          result.accepted_draft_token_count;
+    } else {
+    }
   } else {
   }
   return event;
@@ -142,7 +153,7 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
   try {
     const TranscriptionResult result = future.get();
     WriteSse(connection, DoneEvent(result, include_generation_metadata).dump());
-  } catch (const qwen3_asr::TranscriptionCancelled &) {
+  } catch (const omni_common::GenerationCancelled &) {
     return 200;
   } catch (const std::exception &error) {
     std::cerr << "transcription failed: " << typeid(error).name() << "\n";
@@ -226,10 +237,11 @@ void SocketClosed(const mg_connection *connection, void *) {
 
 class AsrService : public omni_server::Service {
 public:
-  AsrService(const std::filesystem::path &directory, const ModelLoader &load) {
+  AsrService(const std::filesystem::path &directory, const ModelLoader &load,
+             int max_batch) {
     worker_ = std::make_unique<TranscriptionWorker>(
         [&]() { model_ = load(directory); },
-        [this]() { model_->ReleaseIdleMemory(); });
+        [this]() { model_->ReleaseIdleMemory(); }, max_batch);
   }
 
   void SetModelName(const std::string &model_name,
@@ -323,17 +335,23 @@ void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory) {
                            const_cast<RealtimeFactory *>(&factory));
 }
 
+omni_server::ServedKind CreateServedKind(const ServedKind &kind) {
+  return {
+      kind.model_kind,
+      [load = kind.load,
+       max_batch = kind.max_batch](const std::filesystem::path &directory) {
+        return std::make_unique<AsrService>(directory, load,
+                                            max_batch ? max_batch() : 1);
+      },
+      kind.flags,
+      kind.check_flags,
+  };
+}
+
 int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
   std::vector<omni_server::ServedKind> services;
   for (const auto &kind : kinds) {
-    services.push_back({
-        kind.model_kind,
-        [load = kind.load](const std::filesystem::path &directory) {
-          return std::make_unique<AsrService>(directory, load);
-        },
-        kind.flags,
-        kind.check_flags,
-    });
+    services.push_back(CreateServedKind(kind));
   }
   return omni_server::Serve(argc, argv, services);
 }

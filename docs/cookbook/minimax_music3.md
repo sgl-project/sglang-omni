@@ -31,7 +31,7 @@ source .venv/bin/activate
 uv pip install -v -e .   # drop -e for a non-editable install
 ```
 
-On Intel GPUs, first follow the [Intel XPU installation instructions](../get_started/installation_xpu.md), then replace `CUDA_VISIBLE_DEVICES` in the commands below with `ZE_AFFINITY_MASK` (for example, `ZE_AFFINITY_MASK=0` or `ZE_AFFINITY_MASK=0,1`).
+On Intel GPUs, first follow the [Intel XPU installation instructions](../other_platforms/installation_xpu.md), then replace `CUDA_VISIBLE_DEVICES` in the commands below with `ZE_AFFINITY_MASK` (for example, `ZE_AFFINITY_MASK=0` or `ZE_AFFINITY_MASK=0,1`).
 
 **Single GPU** (colocate both stages):
 
@@ -48,6 +48,8 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --
 Default optimizations that are on without further flags: backbone decode device graph, RVQ depth device graph, compiled DIT blocks, compiled DAV decoder, and batched seeded sampling.
 
 Classifier-free guidance is on in both stages and has no flag. See [Guidance](#guidance) for what it costs you, because the AR half changes how much a request occupies.
+
+To run it on Ascend NPU, follow the [MiniMax-Music3 Ascend NPU guide](../other_platforms/installation_npu.md#minimax-music3).
 
 ## Apple Silicon: native MLX
 
@@ -588,7 +590,7 @@ What it does *not* change is the request contract or where the randomness comes 
 
 The server batches continuously. Admission defaults to 16 concurrent requests (`max_running_requests=16`), which is **32 decode rows**, because guidance gives every request a second row. Raise admission at serve time with `--minimax_music3_ar.engine.max_running_requests`; the row count, the decode device graph and the RVQ depth device graph are all derived from it:
 
-On Intel GPUs, first follow the [Intel XPU installation instructions](../get_started/installation_xpu.md), then replace `CUDA_VISIBLE_DEVICES` in the commands below with `ZE_AFFINITY_MASK` (for example, `ZE_AFFINITY_MASK=0` or `ZE_AFFINITY_MASK=0,1`).
+On Intel GPUs, first follow the [Intel XPU installation instructions](../other_platforms/installation_xpu.md), then replace `CUDA_VISIBLE_DEVICES` in the commands below with `ZE_AFFINITY_MASK` (for example, `ZE_AFFINITY_MASK=0` or `ZE_AFFINITY_MASK=0,1`).
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000 \

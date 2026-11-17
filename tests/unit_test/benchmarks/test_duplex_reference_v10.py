@@ -231,6 +231,9 @@ def test_export_writes_reference_layout_and_manifest(tmp_path: Path) -> None:
         INPUT_SAMPLES,
     )
     manifest = json.loads((tree / "manifest.json").read_text())
+    assert manifest["builder_sha256"]["oracle_models.py"] == sha256_bytes(
+        Path(reference_v10.__file__).with_name("oracle_models.py").read_bytes()
+    )
     rows = {row["sample_id"]: row for row in manifest["samples"]}
     assert rows["synthetic_user_interruption/1"]["eligible"] is True
     assert rows["synthetic_user_interruption/1"]["files"]["output.wav"] == (

@@ -2,7 +2,7 @@
 """Drop whole units of retained history from an idle SGLang streaming session, in place.
 
 This module is the only code that edits SGLang's streaming session for a history cut: its committed
-token arrays and lengths, and the session's KV row, as SGLang 0.5.22 lays them out. After a cut,
+token arrays and lengths, and the session's KV row, as the pinned SGLang lays them out. After a cut,
 ARSessionBridge checks that SGLang put exactly the expected history ahead of the next unit.
 """
 

@@ -37,6 +37,10 @@ from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
+from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
+    CublasFlagSetter,
+    cublas_flags,
+)
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import FakeFlow as _PackedFlow
 
 HIFT_ROUNDING_ATOL = 1e-6
@@ -442,6 +446,14 @@ def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
         flow_prompt_speech_token=torch.tensor([[5]], dtype=torch.int32),
         flow_embedding=torch.ones(1, 192),
         flow_prompt_speech_feat=reference_features,
+        spec_tokens_details={
+            "spec_accept_rate": 0.5,
+            "spec_accept_length": 2.0,
+            "spec_num_correct_drafts": 1,
+            "spec_num_proposed_drafts": 2,
+            "spec_verify_ct": 1,
+            "spec_correct_drafts_histogram": [0, 1],
+        },
     )
     payload = make_payload(state)
 
@@ -470,6 +482,7 @@ def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
     )
     assert result.sample_rate == 24000
     assert result.modality == "audio"
+    assert result.spec_tokens_details == state.spec_tokens_details
 
 
 def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:
@@ -1962,10 +1975,10 @@ def make_causal_hift(voiced_threshold: float) -> torch.nn.Module:
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_hift_step_matches_the_whole_history_chain(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    cublas_flags("allow_tf32", False)
     voiced_threshold = 10.0
     hift = make_causal_hift(voiced_threshold)
     vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
@@ -2019,10 +2032,10 @@ def test_hift_step_matches_the_whole_history_chain(
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("is_final", [False, True])
 def test_hift_step_window_equals_the_whole_history_call(
-    monkeypatch: pytest.MonkeyPatch, is_final: bool
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter, is_final: bool
 ) -> None:
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    cublas_flags("allow_tf32", False)
     vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), make_causal_hift(10.0))
     torch.manual_seed(1)
     mel = torch.randn(1, 80, 300, device="cuda") * 3
@@ -2052,11 +2065,11 @@ def test_hift_step_window_equals_the_whole_history_call(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_hift_step_final_equals_its_own_call_beside_finals_of_other_widths(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     """Each final's samples and cursor equal its own call, whatever it shares a step with and in which order."""
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    cublas_flags("allow_tf32", False)
     vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), make_causal_hift(10.0))
     torch.manual_seed(1)
     samples_per_frame = vocoder.hift_samples_per_mel_frame
@@ -2162,9 +2175,9 @@ def test_vocoder_leaves_hift_unpatched_off_nvidia(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_vocoder_spectra_match_cosyvoice_without_a_host_wait(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    cublas_flags("allow_tf32", False)
     hift = make_causal_hift(10.0)
     stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
     decode = hift.decode
@@ -2266,10 +2279,10 @@ def test_patched_sine_source_matches_cosyvoice_without_a_host_wait() -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("finalize", [False, True])
 def test_channels_last_decode_matches_cosyvoice_decode(
-    monkeypatch: pytest.MonkeyPatch, finalize: bool
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter, finalize: bool
 ) -> None:
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    cublas_flags("allow_tf32", False)
     hift = make_causal_hift(10.0)
     reference_hift = copy.deepcopy(hift)
     stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
@@ -2288,10 +2301,10 @@ def test_channels_last_decode_matches_cosyvoice_decode(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_hift_decode_replay_equals_each_rows_own_decode(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    cublas_flags("allow_tf32", False)
     hift = make_causal_hift(10.0)
     vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
     samples_per_frame = vocoder.hift_samples_per_mel_frame
@@ -2325,10 +2338,10 @@ def test_hift_decode_replay_equals_each_rows_own_decode(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_hift_step_through_the_decode_graphs_equals_the_eager_step(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    cublas_flags("allow_tf32", False)
     vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), make_causal_hift(10.0))
     samples_per_frame = vocoder.hift_samples_per_mel_frame
     device = torch.device("cuda", torch.cuda.current_device())

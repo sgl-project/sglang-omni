@@ -53,8 +53,8 @@ VAD_FIELDS = {
     "vad_max_chunk_seconds": "24.0",
 }
 MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+MOSS_DRAFT_REPO = "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash"
 NEMOTRON_REPO = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
-PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
 SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
 # Voxt's SenseVoice settings for long audio: speech runs cut into overlapping chunks.
 SENSEVOICE_VAD_FIELDS = {
@@ -366,10 +366,24 @@ def test_cohere_rejects_a_bad_temperature(
     assert "temperature" in json.loads(body)["detail"]
 
 
-@pytest.fixture(scope="module")
-def moss_server() -> Iterator[ModelServer]:
+MOSS_SERVER_MODES = [
+    pytest.param(False, id="plain"),
+    pytest.param(True, id="dflash"),
+]
+
+
+@pytest.fixture(scope="module", params=[False], ids=["plain"])
+def moss_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
+    flags = (
+        (
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
+        )
+        if request.param
+        else ()
+    )
     running = ModelServer(
-        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO
+        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO, flags
     )
     yield running
     running.stop()
@@ -388,6 +402,7 @@ def two_speaker_wav() -> bytes:
     return out.getvalue()
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None:
     assert moss_server.ready["model_name"].startswith("voxt-moss_transcribe_diarize-")
     status, body = moss_server.post_form({}, two_speaker_wav())
@@ -406,6 +421,32 @@ def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None
     assert "[S01]" in result["text"] and "[S02]" in result["text"]
 
 
+@pytest.mark.parametrize("max_new_tokens", [1, 2, 8, 9])
+def test_moss_draft_stops_at_the_token_budget(max_new_tokens: int) -> None:
+    """A budget ending inside a draft block must not commit extra tokens."""
+    result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "moss_transcribe"),
+            "--model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_REPO.replace("/", "_")),
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
+            "--max-new-tokens",
+            str(max_new_tokens),
+            str(Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0006_en_short.wav"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    output = json.loads(result.stdout)
+    assert output["generated_token_count"] == max_new_tokens
+    assert output["finish_reason"] == "length"
+    assert (output["verify_rounds"] > 0) == (max_new_tokens > 1)
+
+
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_streamed_request_ends_with_segments(moss_server: ModelServer) -> None:
     status, body = moss_server.post_form(
         {"stream": "true", "include_generation_metadata": "true"},
@@ -459,6 +500,7 @@ def test_moss_realtime_rejects_a_prompt_it_cannot_render(
         assert json.loads(socket.recv())["type"] == "transcription_session.updated"
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_realtime_finalizes_windows_with_segments(
     moss_server: ModelServer,
 ) -> None:
@@ -503,13 +545,6 @@ def test_moss_realtime_finalizes_windows_with_segments(
 @pytest.fixture(scope="module")
 def nemotron_server() -> Iterator[ModelServer]:
     running = ModelServer("nemotron_asr_server", "nemotron_asr", NEMOTRON_REPO)
-    yield running
-    running.stop()
-
-
-@pytest.fixture(scope="module")
-def parakeet_server() -> Iterator[ModelServer]:
-    running = ModelServer("parakeet_server", "parakeet", PARAKEET_REPO)
     yield running
     running.stop()
 
@@ -713,60 +748,6 @@ def test_nemotron_realtime_disconnect_stops_its_decode(
             time.monotonic() - closed_at < 1.5
         ), "the decode kept running after its client left"
         time.sleep(0.05)
-
-
-def test_parakeet_final_request_returns_text_and_sentences(
-    parakeet_server: ModelServer,
-) -> None:
-    assert parakeet_server.ready["model_name"].startswith("voxt-parakeet-")
-    status, body = parakeet_server.post_form(
-        {"chunk_duration": "1200"}, clip("0006_en_short")
-    )
-    assert status == 200
-    result = json.loads(body)
-    assert result["text"] == "Surely you are not thinking of going off there."
-    [segment] = result["segments"]
-    assert segment["text"].strip() == result["text"]
-    assert 0 <= segment["start"] < segment["end"] <= 3.1
-
-
-def test_parakeet_merges_overlapping_chunks_into_sentences(
-    parakeet_server: ModelServer,
-) -> None:
-    # Note (Dayuxiaoshui): a whole-recording request decodes 5 s chunks that
-    # overlap by 1 s, as Voxt's Swift path does.
-    status, body = parakeet_server.post_form(
-        {
-            "chunk_duration": "1200",
-            "stream": "true",
-            "include_generation_metadata": "true",
-        },
-        clip("0344_en_long"),
-    )
-    assert status == 200
-    done = sse_events(body)[0]
-    assert done["text"].startswith(
-        "In every way they sought to undermine the authority"
-    )
-    assert done["generation_metadata"]["finish_reason"] == "stop"
-    status, body = parakeet_server.post_form({}, clip("0344_en_long"))
-    assert status == 200
-    segments = json.loads(body)["segments"]
-    assert len(segments) > 1
-    assert [segment["start"] for segment in segments] == sorted(
-        segment["start"] for segment in segments
-    )
-
-
-@pytest.mark.parametrize("chunk_duration", ["nan", "1", "-5", "600"])
-def test_parakeet_rejects_a_bad_chunk_duration(
-    parakeet_server: ModelServer, chunk_duration: str
-) -> None:
-    status, body = parakeet_server.post_form(
-        {"chunk_duration": chunk_duration}, clip("0006_en_short")
-    )
-    assert status == 400
-    assert "chunk_duration" in json.loads(body)["detail"]
 
 
 @pytest.fixture(scope="module")

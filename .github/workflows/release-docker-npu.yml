@@ -121,7 +121,8 @@ jobs:
           push: ${{ needs.preprocess.outputs.publish == 'true' }}
           provenance: false
           cache-from: type=gha,scope=npu-${{ matrix.device }}
-          cache-to: type=gha,mode=max,scope=npu-${{ matrix.device }}
+          # Only a publishing run writes the layer cache: a pull request's goes to its own ref, which no other pull request reads.
+          cache-to: ${{ needs.preprocess.outputs.publish == 'true' && format('type=gha,mode=max,scope=npu-{0}', matrix.device) || '' }}
       - name: Record published image
         if: needs.preprocess.outputs.publish == 'true'
         env:

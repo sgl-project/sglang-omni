@@ -1,0 +1,21 @@
+# Single-device BF16 DFlash with eager execution.
+config_cls: Qwen3ASRPipelineConfig
+name: qwen3-asr-1.7b-dflash-npu
+model_path: Qwen/Qwen3-ASR-1.7B
+
+stages:
+  asr:
+    factory:
+      dtype: bfloat16
+      enable_async_decode: false
+      enable_encoder_cuda_graph: false
+    engine:
+      max_running_requests: 1
+      disable_cuda_graph: true
+      enable_torch_compile: false
+      attention_backend: ascend
+      speculative_algorithm: DFLASH
+      speculative_draft_attention_backend: ascend
+      speculative_draft_model_path: wilsonzheng0327/Qwen3-ASR-1.7B-dflash
+      speculative_draft_model_revision: d62bd4051e68282e02f93de774036a35f22f1373
+      speculative_num_draft_tokens: 8

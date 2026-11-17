@@ -1483,7 +1483,6 @@ def create_talker_ar_executor_from_config(
     total_gpu_memory_fraction: float | None = None,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
-    enable_talker_start_topology: bool = False,
     code2wav_in_process: bool = False,
     codec_coalesce_frames: int = 0,
     codec_coalesce_first_frames: int = 0,
@@ -1578,7 +1577,6 @@ def create_talker_ar_executor_from_config(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
-        enable_talker_start_topology=enable_talker_start_topology,
         code2wav_in_process=code2wav_in_process,
         operator_selected_prefill_backend=operator_selected_prefill_backend(
             server_args_overrides

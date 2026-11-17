@@ -37,6 +37,7 @@ def collect_s2pro_step_outputs(
     output_semantic_ids: torch.Tensor,
     im_end_token_id: int,
     rep_history_len: int | None = None,
+    skip_finished: bool = False,
 ) -> None:
     batch_size = len(requests)
     if batch_size == 0:
@@ -49,6 +50,10 @@ def collect_s2pro_step_outputs(
 
     for row_idx, sched_req in enumerate(requests):
         data = sched_req.data
+        if skip_finished and (data.req.finished() or data.req.is_retracted):
+            continue
+        else:
+            pass
         if data.req.inflight_middle_chunks > 0:
             continue
         else:
@@ -64,7 +69,7 @@ def collect_s2pro_step_outputs(
         data.last_codebook_values = codes[1:, 0].clone()
         data.previous_semantic_tokens.append(semantic_token)
         if rep_history_len is not None:
-            append_semantic_history(data, output_semantic_ids[row_idx], rep_history_len)
+            append_semantic_history(data, output_codes[row_idx, 0], rep_history_len)
         else:
             pass
         data.output_codes.append(codes)
@@ -99,6 +104,7 @@ class FishS2ProModelRunner(ModelRunner):
     """Fish TTS runner with unified forward-owned decode and persistent buffers."""
 
     model: S2ProSGLangTextModel
+    async_enabled: bool = False
 
     def __init__(
         self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
@@ -107,12 +113,22 @@ class FishS2ProModelRunner(ModelRunner):
         self.semantic_begin_id = int(self.model.semantic_begin_id)
         self.semantic_end_id = int(self.model.semantic_end_id)
         self.im_end_token_id = int(self.model.im_end_token_id)
+        self.last_decode_request_ids: tuple[str, ...] | None = None
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
-        # note (Junnan Li): not supported yet; semantic_history_tokens is
-        # appended at resolve, one step late under lookahead.
-        del batch
-        return False
+        if not (self.async_enabled and self.model.async_decode_state_enabled):
+            return False
+        else:
+            pass
+        if self.model.vq_codes.device.type != "cuda":
+            return False
+        else:
+            pass
+        request_ids = tuple(req.rid for req in batch.reqs)
+        return (
+            request_ids == self.last_decode_request_ids
+            and super().lookahead_eligible(batch)
+        )
 
     def before_prefill(
         self,
@@ -121,6 +137,7 @@ class FishS2ProModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
+        self.last_decode_request_ids = None
         self.sync_decode_state(requests)
         input_embeds = self.build_prefill_input_embeds(forward_batch, requests)
         if input_embeds is not None:
@@ -145,6 +162,17 @@ class FishS2ProModelRunner(ModelRunner):
         )
         self.model.vq_mask[:batch_size].copy_(is_semantic)
 
+        request_ids = tuple(req.request_id for req in requests)
+        if (
+            self.async_enabled
+            and self.model.vq_codes.device.type == "cuda"
+            and self.model.async_decode_state_enabled
+            and request_ids == self.last_decode_request_ids
+        ):
+            return
+        else:
+            pass
+
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             self.sync_decode_row_state(row_idx, data)
@@ -160,6 +188,7 @@ class FishS2ProModelRunner(ModelRunner):
                     dtype=self.model.vq_codes.dtype,
                 )
             )
+        self.last_decode_request_ids = request_ids
 
     def post_prefill(
         self,
@@ -180,6 +209,48 @@ class FishS2ProModelRunner(ModelRunner):
     ) -> None:
         del forward_batch, schedule_batch
         self.collect_step_outputs(result, requests)
+
+    def post_decode_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        del forward_batch
+        if not requests:
+            return None
+        else:
+            pass
+        batch_size = len(requests)
+        codes = self.model.output_codes[:batch_size].clone()
+        result.next_token_ids = codes[:, 0]
+        host_codes = self.next_host_staging(codes.shape, codes.dtype)
+        host_codes[:batch_size].copy_(codes, non_blocking=True)
+        return codes, host_codes
+
+    def post_decode_resolve(
+        self,
+        launch_buf: tuple[torch.Tensor, torch.Tensor] | None,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        del forward_batch, schedule_batch
+        if launch_buf is None:
+            return
+        else:
+            pass
+        codes, host_codes = launch_buf
+        collect_s2pro_step_outputs(
+            result,
+            requests,
+            output_codes=codes,
+            output_semantic_ids=host_codes[:, 0],
+            im_end_token_id=self.im_end_token_id,
+            rep_history_len=self.model.rep_history_len,
+            skip_finished=True,
+        )
 
     def sync_decode_state(self, requests: list[SchedulerRequest]) -> None:
         for row_idx, sched_req in enumerate(requests):

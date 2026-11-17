@@ -1,0 +1,7 @@
+{
+  "source": "Error frame layout and code 55000031 (server busy) from Volcengine's SAUC docs (docs/6561/1354869, error code table); the message is constructed.",
+  "frames": [
+    {"after": 1, "seq": 1, "payload": {"audio_info": {"duration": 0}, "result": {"text": ""}}},
+    {"after": 2, "kind": "error", "code": 55000031, "payload": {"error": "server busy"}}
+  ]
+}

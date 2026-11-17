@@ -48,7 +48,7 @@ health_path = "/health"
 [[workers.service_profiles]]
 service = "speech_http"
 model_ids = ["tts-model"]
-response_formats = ["mp3", "opus", "aac", "flac", "wav"]
+response_formats = ["mp3", "opus", "aac", "flac"]
 stream_modes = ["non_streaming"]
 tasks = ["text_to_speech"]
 reference_forms = ["none"]
@@ -57,7 +57,7 @@ voice_name_policy = "preset"
 [[workers.service_profiles]]
 service = "speech_http"
 model_ids = ["tts-model"]
-response_formats = ["pcm"]
+response_formats = ["pcm", "wav"]
 stream_modes = ["non_streaming", "streaming"]
 tasks = ["text_to_speech"]
 reference_forms = ["none"]
@@ -73,7 +73,7 @@ health_path = "/health"
 [[workers.service_profiles]]
 service = "speech_http"
 model_ids = ["tts-model"]
-response_formats = ["mp3", "opus", "aac", "flac", "wav"]
+response_formats = ["mp3", "opus", "aac", "flac"]
 stream_modes = ["non_streaming"]
 tasks = ["text_to_speech"]
 reference_forms = ["none"]
@@ -82,7 +82,7 @@ voice_name_policy = "preset"
 [[workers.service_profiles]]
 service = "speech_http"
 model_ids = ["tts-model"]
-response_formats = ["pcm"]
+response_formats = ["pcm", "wav"]
 stream_modes = ["non_streaming", "streaming"]
 tasks = ["text_to_speech"]
 reference_forms = ["none"]

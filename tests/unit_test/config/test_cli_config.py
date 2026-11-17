@@ -15,6 +15,7 @@ disk, which these tests have no weights for.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import ClassVar
 from unittest import mock
 
@@ -27,8 +28,91 @@ from sglang_omni.cli import app
 from sglang_omni.cli.config import config_app
 from sglang_omni.cli.serve import patches_from_broadcast_flags
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.sources import dump_user_config
+from sglang_omni.models.nemotron_voicechat.config import NemotronVoiceChatPipelineConfig
+
+
+@pytest.fixture
+def voicechat_config_file(tmp_path: Path) -> Path:
+    config = NemotronVoiceChatPipelineConfig(model_path="dummy")
+    path = tmp_path / "voicechat.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": config.config_cls,
+                "model_path": "dummy",
+                "stages": {"code2wav": {"factory": {"chunk_frames": [1]}}},
+            }
+        )
+    )
+    return path
+
+
+@pytest.mark.parametrize("schedule", [None, "[1, 2, 4]"])
+def test_voicechat_chunk_schedule_reaches_factory(
+    runner: CliRunner, voicechat_config_file: Path, schedule: str | None
+) -> None:
+    """CLI lists must reach the codec as frame counts, not string characters."""
+    arguments = (
+        ["--code2wav.factory.chunk_frames", schedule] if schedule is not None else []
+    )
+    manager = ConfigManager.from_file(str(voicechat_config_file))
+    config = manager.merge_config(manager.parse_extra_args(arguments))
+    stage = next(stage for stage in config.stages if stage.name == "code2wav")
+    expected = (1, 2, 4) if schedule is not None else (1,)
+    assert resolve_stage_typed_kwargs(stage)["chunk_frames"] == expected
+
+    result = runner.invoke(
+        config_app, ["resolve", "--config", str(voicechat_config_file), *arguments]
+    )
+    assert result.exit_code == 0, output_of(result)
+    resolved = yaml.safe_load(result.stdout)
+    assert resolved["stages"]["code2wav"]["factory"]["chunk_frames"] == list(expected)
+
+
+def test_voicechat_chunk_schedule_explains_precedence(
+    runner: CliRunner, voicechat_config_file: Path
+) -> None:
+    """The model-specific schedule must retain YAML and CLI provenance."""
+    result = runner.invoke(
+        config_app,
+        [
+            "explain",
+            "stages.code2wav.factory.chunk_frames",
+            "--config",
+            str(voicechat_config_file),
+            "--code2wav.factory.chunk_frames",
+            "[1, 2, 4]",
+        ],
+    )
+    assert result.exit_code == 0, output_of(result)
+    assert "model default" in result.stdout
+    assert "yaml file" in result.stdout
+    assert "(1, 2, 4)  <- cli dotted (command line)  [winner]" in result.stdout
+
+
+@pytest.mark.parametrize("source", ["cli", "yaml"])
+@pytest.mark.parametrize("schedule", ["[]", "[0]", "[true]", "[1.5]", "4", "null"])
+def test_voicechat_rejects_invalid_chunk_schedule(
+    runner: CliRunner, voicechat_config_file: Path, source: str, schedule: str
+) -> None:
+    """Invalid schedules must fail before a worker starts or loads weights."""
+    if source == "yaml":
+        config = yaml.safe_load(voicechat_config_file.read_text())
+        config["stages"]["code2wav"]["factory"]["chunk_frames"] = yaml.safe_load(
+            schedule
+        )
+        voicechat_config_file.write_text(yaml.safe_dump(config))
+        arguments = []
+    else:
+        arguments = ["--code2wav.factory.chunk_frames", schedule]
+    result = runner.invoke(
+        config_app, ["resolve", "--config", str(voicechat_config_file), *arguments]
+    )
+    assert result.exit_code != 0
+    assert "chunk_frames" in output_of(result)
 
 
 def output_of(result) -> str:

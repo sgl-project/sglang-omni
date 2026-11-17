@@ -24,6 +24,7 @@ class Ming3ASRFactoryArgs(FactoryArgs):
 
     pre_lm_max_batch_size: int | None = Field(default=None, ge=1)
     pre_lm_max_batch_wait_ms: int | None = Field(default=None, ge=0)
+    stream_emit_interval_seconds: float = Field(default=0.05, ge=0, allow_inf_nan=False)
 
 
 class Ming3ASRThinkerStageConfig(EngineStageConfig):

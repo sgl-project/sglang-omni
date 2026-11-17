@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 
 from benchmarks.duplex.fdb.common import (
-    ENGINE_LABEL,
     LISTENING_DIR,
     PARAKEET_SHA256,
     Settings,
@@ -106,7 +105,7 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
             "--reference-source",
             str(settings.fdb_source),
             "--tree",
-            f"{ENGINE_LABEL}={repeat_dir / 'reference-audio'}",
+            f"{settings.engine.name}={repeat_dir / 'reference-audio'}",
             "--out",
             str(scores),
             *(["--retry-failed"] if retry_failed else []),

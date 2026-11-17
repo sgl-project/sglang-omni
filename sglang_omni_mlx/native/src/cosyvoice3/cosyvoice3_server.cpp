@@ -56,11 +56,13 @@
 
 #include "civetweb.h"
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/http.h"
+#include "common/reference_audio.h"
 #include "common/text.h"
+#include "common/transcription.h"
 #include "cosyvoice3/cosyvoice3_model.h"
 #include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 
 namespace {
 
@@ -125,7 +127,7 @@ struct AudioChannel {
   std::exception_ptr error;
   int prompt_token_count = 0;
   int completion_token_count = 0;
-  qwen3_asr::FinishReason finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::FinishReason finish_reason = omni_common::FinishReason::kStop;
 };
 
 // body's field, or fallback when it is missing or null.
@@ -266,14 +268,8 @@ std::string
 ReferenceBytes(const std::string &source,
                const std::optional<std::filesystem::path> &allowed_directory) {
   if (source.rfind("data:", 0) == 0) {
-    const size_t comma = source.find(',');
-    if (comma == std::string::npos ||
-        !std::string_view(source).substr(0, comma).ends_with(";base64")) {
-      throw std::invalid_argument("a reference audio data URL must be base64 "
-                                  "(data:audio/wav;base64,...)");
-    } else {
-    }
-    return Base64Bytes(source.substr(comma + 1));
+    return Base64Bytes(
+        omni_common::AudioDataUrlPayload(source, "reference audio"));
   } else if (source.rfind("http://", 0) == 0 ||
              source.rfind("https://", 0) == 0) {
     throw std::invalid_argument(
@@ -718,7 +714,7 @@ bool ClientLeft(int client_socket) {
 
 // Thrown by a generation that reaches its request's deadline; a cancellation,
 // so it is never logged as a failure.
-class DeadlineReached : public qwen3_asr::TranscriptionCancelled {};
+class DeadlineReached : public omni_common::GenerationCancelled {};
 
 // Whether error is a generation stopping at its request's deadline.
 bool ReachedDeadline(std::exception_ptr error) {
@@ -738,7 +734,7 @@ bool ReachedDeadline(std::exception_ptr error) {
 void LogFailure(std::exception_ptr error) {
   try {
     std::rethrow_exception(error);
-  } catch (const qwen3_asr::TranscriptionCancelled &) {
+  } catch (const omni_common::GenerationCancelled &) {
   } catch (const std::exception &failure) {
     // Note (Minyi Tang): only the exception type is logged, never the text.
     std::cerr << "speech generation failed: " << typeid(failure).name() << "\n";
@@ -879,7 +875,7 @@ private:
           return Synthesize(request, *channel, cancelled, deadline);
         },
         cancel,
-        [this, channel](std::optional<qwen3_asr::TranscriptionResult>,
+        [this, channel](std::optional<omni_common::TranscriptionResult>,
                         std::exception_ptr error) {
           // Note (Minyi Tang): the slot frees before the response can end,
           // so a client's next request is never refused for its previous one.
@@ -986,14 +982,14 @@ private:
         "X-SGLang-Omni-Total-Tokens: %d\r\nConnection: close\r\n\r\n",
         request.response_format.c_str(), audio.size(),
         request.response_format.c_str(), request_id.c_str(),
-        qwen3_asr::FinishReasonName(channel->finish_reason), prompt_tokens,
+        omni_common::FinishReasonName(channel->finish_reason), prompt_tokens,
         completion_tokens, prompt_tokens, completion_tokens,
         prompt_tokens + completion_tokens);
     mg_write(connection, audio.data(), audio.size());
     return 200;
   }
 
-  qwen3_asr::TranscriptionResult
+  omni_common::TranscriptionResult
   Synthesize(const SpeechRequest &request, AudioChannel &channel,
              const std::atomic<bool> &cancel,
              std::chrono::steady_clock::time_point deadline) const {
@@ -1001,7 +997,7 @@ private:
     // request's thread may be blocked writing to a slow client.
     const auto check = [&] {
       if (cancel.load()) {
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else if (std::chrono::steady_clock::now() >= deadline) {
         throw DeadlineReached();
       } else {
@@ -1033,7 +1029,7 @@ private:
     } else {
     }
     const mlx::core::array samples = model_.Vocode(kept, reference, check);
-    qwen3_asr::TranscriptionResult result;
+    omni_common::TranscriptionResult result;
     result.generated_token_count =
         static_cast<int>(generated.speech_tokens.size());
     result.finish_reason = generated.finish_reason;

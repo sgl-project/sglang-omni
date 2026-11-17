@@ -309,6 +309,7 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
         extra_model_outputs={},
         finish_reason=None,
         weight_version=None,
+        spec_tokens_details=None,
         output_token_logprobs=[],
     )
 
@@ -322,12 +323,15 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
 
 def test_qwen_apply_thinker_result_omits_missing_optional_fields() -> None:
     state = Qwen3OmniPipelineState()
-    result = SimpleNamespace(output_ids=[8], extra_model_outputs={})
+    result = SimpleNamespace(
+        output_ids=[8], extra_model_outputs={}, spec_tokens_details=None
+    )
 
     thinker_out = apply_thinker_result(state, stage_name="thinker", result=result)
 
     assert "finish_reason" not in thinker_out
     assert "weight_version" not in thinker_out
+    assert "spec_tokens_details" not in thinker_out
     assert "output_token_logprobs" not in thinker_out
     assert state.thinker_out is thinker_out
     assert state.engine_outputs["thinker"] is thinker_out
@@ -1684,10 +1688,8 @@ def test_qwen_talker_enables_and_attests_breakable_prefill_graphs(
         execution_mode=execution_mode,
         operator_selected_prefill_backend=True,
         enable_partial_start=True,
-        enable_talker_start_topology=True,
     )
     assert scheduler.enable_partial_start is True
-    assert scheduler.enable_talker_start_topology is True
     if execution_mode == "request":
         assert getattr(scheduler, "session_adapter", None) is None
         assert scheduler.request_builder is ordinary_request_builder
@@ -2140,6 +2142,7 @@ def test_qwen_sglang_request_hashes_media_tokens_without_changing_mrope_ids(
             audio_token_id=audio_token_id,
         ),
         capture_prompt_hidden_states=False,
+        speaks=False,
     )
 
     pad_values = req_data.req.omni_model_inputs["pad_values"]
@@ -2196,6 +2199,7 @@ def test_qwen_sglang_request_records_mm_token_positions(
             audio_token_id=audio_token_id,
         ),
         capture_prompt_hidden_states=False,
+        speaks=False,
     )
 
     positions = (

@@ -14,12 +14,13 @@
 #include <utility>
 #include <vector>
 
+#include "common/generation.h"
 #include "common/layers.h"
 #include "common/tokenizer.h"
-#include "fishaudio_drama3/fishaudio_drama3_codec.h"
+#include "fish_dac/fish_dac.h"
+#include "fishaudio_drama3/fishaudio_drama3_experts.h"
 #include "fishaudio_drama3/fishaudio_drama3_prompt.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "qwen3_asr/qwen3_decoder.h"
 
 namespace fishaudio_drama3 {
@@ -38,13 +39,13 @@ struct Sampling {
 };
 
 struct SynthesisResult {
-  qwen3_asr::FinishReason finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::FinishReason finish_reason = omni_common::FinishReason::kStop;
   // Prompt rows of every chunk, and the frames generated for them.
   int prompt_row_count = 0;
   int frame_count = 0;
 };
 
-// A reference: mono samples at kCodecSampleRate or codes [codebooks][frames],
+// A reference: mono samples at the codec's rate or codes [codebooks][frames],
 // and its transcript.
 struct ReferenceInput {
   std::string text;
@@ -73,10 +74,11 @@ struct Voice {
 
 class Drama3Model {
 public:
-  explicit Drama3Model(const std::filesystem::path &model_directory);
+  explicit Drama3Model(const std::filesystem::path &model_directory,
+                       bool offload_experts = false);
 
   const omni_common::Tokenizer &tokenizer() const { return tokenizer_; }
-  const AudioCodec &codec() const { return codec_; }
+  const fish_dac::AudioCodec &codec() const { return codec_; }
   int codebook_count() const { return codebook_count_; }
   int codebook_size() const { return codebook_size_; }
   int semantic_begin() const { return semantic_begin_; }
@@ -91,7 +93,7 @@ public:
   // max_frames frames. on_audio receives the audio as it is decoded: every
   // 7 frames (0.33 s) when streaming, else at each chunk's end; on_frame
   // receives each frame's evaluated int32 codes [codebooks] first. Throws
-  // TranscriptionCancelled once cancel is set.
+  // GenerationCancelled once cancel is set.
   SynthesisResult
   Synthesize(const std::string &text, Voice &voice, const Sampling &sampling,
              int max_frames, bool stream, const std::atomic<bool> &cancel,
@@ -105,7 +107,8 @@ private:
   mlx::core::array Embed(const mlx::core::array &frames) const;
   // The final-normed hidden states [batch, time, dim] of embeddings.
   mlx::core::array Backbone(const mlx::core::array &embeddings,
-                            std::vector<LayerCache> &caches) const;
+                            std::vector<LayerCache> &caches,
+                            const std::atomic<bool> &cancel) const;
   mlx::core::array GatedDeltaLayer(const mlx::core::array &x,
                                    const std::string &prefix,
                                    LayerCache &cache) const;
@@ -113,7 +116,8 @@ private:
                                   const std::string &prefix,
                                   qwen3_asr::KVCache &cache) const;
   mlx::core::array MixtureOfExperts(const mlx::core::array &x,
-                                    const std::string &prefix) const;
+                                    const std::string &prefix,
+                                    const std::atomic<bool> &cancel) const;
   mlx::core::array
   TowerLayer(const mlx::core::array &hidden, const mlx::core::array &codes,
              const mlx::core::array &is_semantic, int layer,
@@ -133,8 +137,8 @@ private:
   mlx::core::array CodebookHead(const mlx::core::array &hidden,
                                 int index) const;
   // Feeds rows [start, stop) into both caches; returns row stop - 1's
-  // backbone hidden state [1, 1, dim]. Throws TranscriptionCancelled between
-  // blocks of rows once cancel is set.
+  // backbone hidden state [1, 1, dim]. Throws GenerationCancelled between
+  // blocks of rows and before offloaded expert loads once cancel is set.
   mlx::core::array Prefill(const mlx::core::array &frames, ModelCaches &caches,
                            int start, int stop,
                            const std::atomic<bool> &cancel) const;
@@ -151,7 +155,8 @@ private:
   // token [1].
   Step DecodeStep(const mlx::core::array &hidden, const mlx::core::array &frame,
                   const mlx::core::array &history, ModelCaches &caches,
-                  const Sampling &sampling) const;
+                  const Sampling &sampling,
+                  const std::atomic<bool> &cancel) const;
   // The codes [codebooks] of each frame of one chunk until the end of speech;
   // returns whether it ended there rather than at max_frames.
   bool GenerateChunk(
@@ -160,9 +165,10 @@ private:
       const std::function<void(const mlx::core::array &)> &on_frame) const;
 
   nlohmann::json config_;
+  std::unique_ptr<ExpertCache> expert_cache_;
   omni_common::Checkpoint checkpoint_;
   omni_common::Tokenizer tokenizer_;
-  AudioCodec codec_;
+  fish_dac::AudioCodec codec_;
   int layer_count_;
   float rms_norm_eps_;
   int attention_head_count_;
