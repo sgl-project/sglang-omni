@@ -48,11 +48,12 @@ bool ContainsStandaloneSpace(const std::string &text) {
   return false;
 }
 
-sortformer::ProcessorConfig FrontEnd(const std::filesystem::path &directory) {
+omni_common::NemoProcessorConfig
+FrontEnd(const std::filesystem::path &directory) {
   const nlohmann::json config =
       omni_common::ReadJson(directory / "config.json").at("preprocessor");
   const int sample_rate = config.at("sample_rate").get<int>();
-  sortformer::ProcessorConfig front_end;
+  omni_common::NemoProcessorConfig front_end;
   front_end.feature_size = config.at("features").get<int>();
   front_end.sampling_rate = sample_rate;
   front_end.fft_size = config.at("n_fft").get<int>();

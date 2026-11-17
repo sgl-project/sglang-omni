@@ -10,9 +10,9 @@
 #include <string>
 #include <vector>
 
+#include "common/nemo_features.h"
 #include "common/transcription.h"
 #include "nemotron/nemotron_model.h"
-#include "sortformer/sortformer_features.h"
 
 namespace nemotron {
 
@@ -89,8 +89,12 @@ public:
              const std::atomic<bool> &cancel) const;
 
   const NemotronModel &model() const { return model_; }
-  const sortformer::FeatureExtractor &features() const { return features_; }
-  const sortformer::ProcessorConfig &front_end() const { return front_end_; }
+  const omni_common::NemoFeatureExtractor &features() const {
+    return features_;
+  }
+  const omni_common::NemoProcessorConfig &front_end() const {
+    return front_end_;
+  }
   // Seconds of audio per encoder frame.
   double frame_seconds() const;
   bool IsSpecialToken(int token_id) const;
@@ -100,8 +104,8 @@ public:
 
 private:
   NemotronModel model_;
-  sortformer::ProcessorConfig front_end_;
-  sortformer::FeatureExtractor features_;
+  omni_common::NemoProcessorConfig front_end_;
+  omni_common::NemoFeatureExtractor features_;
   std::vector<std::string> token_texts_;
   std::vector<bool> standalone_spaces_;
   std::vector<bool> special_tokens_;

@@ -10,6 +10,8 @@
 
 namespace sortformer {
 
+using omni_common::NemoProcessorConfig;
+
 namespace mx = mlx::core;
 
 namespace {
@@ -68,7 +70,7 @@ Config ParseConfig(const nlohmann::json &json) {
   m.min_pos_scores_rate = modules.value("min_pos_scores_rate", 0.5f);
   m.use_aosc = modules.value("use_aosc", false);
   const nlohmann::json processor = Section(json, "processor_config");
-  ProcessorConfig &p = config.processor;
+  NemoProcessorConfig &p = config.processor;
   p.feature_size = processor.value("feature_size", 80);
   p.sampling_rate = processor.value("sampling_rate", 16000);
   p.hop_length = processor.value("hop_length", 160);

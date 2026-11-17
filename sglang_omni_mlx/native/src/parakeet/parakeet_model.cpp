@@ -90,7 +90,7 @@ ParakeetModel::ParakeetModel(const nlohmann::json &config,
       static_cast<int>(preprocessor.at("window_stride").get<float>() *
                        static_cast<float>(sample_rate));
   front_end_.preemphasis = preprocessor.value("preemph", 0.97f);
-  features_ = sortformer::FeatureExtractor(front_end_);
+  features_ = omni_common::NemoFeatureExtractor(front_end_);
   prediction_width_ =
       checkpoint_.Weight("decoder.prediction.dec_rnn.lstm.0.Wh").shape(1);
   compiled_decode_ = mx::compile([this](const std::vector<mx::array> &inputs) {

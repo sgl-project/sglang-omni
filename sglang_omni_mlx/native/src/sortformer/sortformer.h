@@ -8,8 +8,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/nemo_features.h"
 #include "mlx/mlx.h"
-#include "sortformer/sortformer_features.h"
 
 namespace sortformer {
 
@@ -66,7 +66,7 @@ struct Config {
   FastConformerConfig fc_encoder;
   TransformerConfig tf_encoder;
   ModulesConfig modules;
-  ProcessorConfig processor;
+  omni_common::NemoProcessorConfig processor;
 };
 
 // One stream's state between feeds (Swift StreamingState). The arrays start as
@@ -118,7 +118,9 @@ public:
   explicit SortformerModel(const std::filesystem::path &model_directory);
 
   const Config &config() const { return config_; }
-  const FeatureExtractor &features() const { return features_; }
+  const omni_common::NemoFeatureExtractor &features() const {
+    return features_;
+  }
   // Seconds per diarization frame: hop_length * subsampling / sample rate.
   float frame_duration() const;
 
@@ -151,7 +153,7 @@ private:
   SpeakerProbabilities(const mlx::core::array &embeddings) const;
 
   Config config_;
-  FeatureExtractor features_;
+  omni_common::NemoFeatureExtractor features_;
   std::unordered_map<std::string, mlx::core::array> weights_;
 };
 

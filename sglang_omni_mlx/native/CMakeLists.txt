@@ -67,6 +67,7 @@ add_library(common STATIC
   src/common/form.cpp
   src/common/kv_cache.cpp
   src/common/layers.cpp
+  src/common/nemo_features.cpp
   src/common/npz.cpp
   src/common/qwen3_decoder.cpp
   src/common/realtime_connection.cpp
@@ -111,7 +112,6 @@ target_compile_options(silero_vad PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 add_library(sortformer STATIC
   src/sortformer/sortformer.cpp
   src/sortformer/sortformer_checkpoint.cpp
-  src/sortformer/sortformer_features.cpp
   src/sortformer/sortformer_state.cpp)
 target_include_directories(sortformer PUBLIC src)
 target_link_libraries(sortformer PUBLIC common)
@@ -213,7 +213,7 @@ install(TARGETS moss_transcribe_diarize_server moss_transcribe RUNTIME DESTINATI
 # and Qwen3-ASR's checkpoint loading, with its own server and parity tool.
 add_library(nemotron_asr STATIC src/nemotron/nemotron_model.cpp src/nemotron/nemotron_transcriber.cpp
   src/nemotron/nemotron_realtime.cpp)
-target_link_libraries(nemotron_asr PUBLIC common sortformer swift_port)
+target_link_libraries(nemotron_asr PUBLIC common swift_port)
 # Note (Dayuxiaoshui): the positional table is float math that must round as
 # Swift's does, so no fused multiply-add.
 target_compile_options(nemotron_asr PRIVATE -Wall -Wextra -ffp-contract=off)
@@ -229,7 +229,7 @@ install(TARGETS nemotron_asr_server nemotron_transcribe RUNTIME DESTINATION bin)
 # Note (Dayuxiaoshui): Parakeet TDT: parakeet_server, with qwen3_asr_server's API without
 # realtime, and its parity tool; the front end is Sortformer's NeMo log-mel.
 add_library(parakeet_asr STATIC src/parakeet/parakeet_model.cpp src/parakeet/parakeet_transcriber.cpp)
-target_link_libraries(parakeet_asr PUBLIC common sortformer swift_port)
+target_link_libraries(parakeet_asr PUBLIC common swift_port)
 target_compile_options(parakeet_asr PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(parakeet_server src/parakeet/parakeet_server.cpp)
 target_link_libraries(parakeet_server PRIVATE parakeet_asr asr_service)
