@@ -270,35 +270,25 @@ mx::array VoxtralTtsModel::AcousticLayer(const mx::array &x, int layer) const {
   const int length = x.shape(1);
   const mx::array normed =
       checkpoint_.RmsNorm(x, prefix + ".attention_norm", acoustic_norm_eps_);
-  // Bidirectional attention over the three positions, keys and values
-  // repeated for each query head that shares them.
-  const auto heads = [&](const std::string &projection, int head_count,
-                         int repeats) {
+  // Bidirectional attention over the three positions; the fused kernel
+  // shares each key/value head among its query heads.
+  const auto heads = [&](const std::string &projection, int head_count) {
     return mx::transpose(
-        mx::repeat(mx::reshape(checkpoint_.Linear(
-                                   normed, prefix + ".attention." + projection),
-                               {batch, length, head_count, acoustic_head_dim_}),
-                   repeats, 2),
+        mx::reshape(
+            checkpoint_.Linear(normed, prefix + ".attention." + projection),
+            {batch, length, head_count, acoustic_head_dim_}),
         {0, 2, 1, 3});
   };
-  const int repeats = acoustic_head_count_ / acoustic_key_value_head_count_;
-  const mx::array queries =
-      Scale(heads("wq", acoustic_head_count_, 1),
-            std::pow(static_cast<double>(acoustic_head_dim_), -0.5));
-  const mx::array keys = heads("wk", acoustic_key_value_head_count_, repeats);
-  const mx::array values = heads("wv", acoustic_key_value_head_count_, repeats);
-  const mx::array weights = mx::astype(
-      mx::softmax(
-          mx::astype(mx::matmul(queries, mx::transpose(keys, {0, 1, 3, 2})),
-                     mx::float32),
-          -1),
-      values.dtype());
+  const mx::array attended = mx::fast::scaled_dot_product_attention(
+      heads("wq", acoustic_head_count_),
+      heads("wk", acoustic_key_value_head_count_),
+      heads("wv", acoustic_key_value_head_count_),
+      static_cast<float>(
+          std::pow(static_cast<double>(acoustic_head_dim_), -0.5)));
   const mx::array hidden = mx::add(
-      x,
-      checkpoint_.Linear(
-          mx::reshape(mx::transpose(mx::matmul(weights, values), {0, 2, 1, 3}),
-                      {batch, length, -1}),
-          prefix + ".attention.wo"));
+      x, checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
+                                        {batch, length, -1}),
+                            prefix + ".attention.wo"));
   const mx::array feed_forward_input =
       checkpoint_.RmsNorm(hidden, prefix + ".ffn_norm", acoustic_norm_eps_);
   return mx::add(

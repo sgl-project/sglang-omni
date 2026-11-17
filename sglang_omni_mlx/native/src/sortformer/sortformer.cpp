@@ -163,7 +163,6 @@ mx::array SortformerModel::FastConformer(const mx::array &embeddings) const {
 }
 
 mx::array SortformerModel::TransformerLayer(const mx::array &x,
-                                            const mx::array &mask,
                                             int layer) const {
   const TransformerConfig &tf = config_.tf_encoder;
   const std::string prefix = "tf_encoder.layers." + std::to_string(layer);
@@ -181,13 +180,10 @@ mx::array SortformerModel::TransformerLayer(const mx::array &x,
   const mx::array q = project("q_proj");
   const mx::array k = project("k_proj");
   const mx::array v = project("v_proj");
-  mx::array scores = mx::matmul(mx::multiply(q, Scalar(scale, q)),
-                                mx::transpose(k, {0, 1, 3, 2}));
-  scores = mx::add(scores, mask);
-  const mx::array attention = mx::softmax(scores, -1);
-  const mx::array attended =
-      mx::reshape(mx::transpose(mx::matmul(attention, v), {0, 2, 1, 3}),
-                  {batch, length, tf.d_model});
+  const mx::array attended = mx::reshape(
+      mx::transpose(mx::fast::scaled_dot_product_attention(q, k, v, scale),
+                    {0, 2, 1, 3}),
+      {batch, length, tf.d_model});
   mx::array h =
       mx::add(x, checkpoint_.Linear(attended, prefix + ".self_attn.out_proj"));
   h = checkpoint_.LayerNorm(h, prefix + ".self_attn_layer_norm",
@@ -203,29 +199,18 @@ mx::array SortformerModel::TransformerLayer(const mx::array &x,
 mx::array
 SortformerModel::SpeakerProbabilities(const mx::array &embeddings) const {
   const int length = embeddings.shape(1);
-  // Note (Jiaxin Deng): Swift still adds a float32 mask, promoting float16
-  // attention scores to float32 from the first layer on.
-  const mx::array valid =
-      mx::less(mx::expand_dims(mx::arange(length, mx::int32), 0),
-               mx::reshape(mx::array(length, mx::int32), {1, 1}));
-  const mx::array additive_mask =
-      mx::expand_dims(mx::multiply(mx::subtract(mx::array(1.0f),
-                                                mx::astype(valid, mx::float32)),
-                                   mx::array(-1e4f)),
-                      {1, 2});
   const mx::array positions = mx::arange(length, mx::int32);
   mx::array x =
       mx::add(embeddings,
               mx::take(checkpoint_.Weight("tf_encoder.embed_positions.weight"),
                        positions, 0));
   for (int layer = 0; layer < config_.tf_encoder.encoder_layers; ++layer) {
-    x = TransformerLayer(x, additive_mask, layer);
+    x = TransformerLayer(x, layer);
   }
   mx::array h = Relu(x);
   h = Relu(checkpoint_.Linear(h, "sortformer_modules.first_hidden_to_hidden"));
-  h = mx::sigmoid(
+  return mx::sigmoid(
       checkpoint_.Linear(h, "sortformer_modules.single_hidden_to_spks"));
-  return mx::multiply(h, mx::expand_dims(valid, 2));
 }
 
 StreamingState SortformerModel::InitStreamingState() const {

@@ -140,9 +140,7 @@ private:
                                   const mlx::core::array &position_embedding,
                                   int layer) const;
   mlx::core::array FastConformer(const mlx::core::array &embeddings) const;
-  mlx::core::array TransformerLayer(const mlx::core::array &x,
-                                    const mlx::core::array &mask,
-                                    int layer) const;
+  mlx::core::array TransformerLayer(const mlx::core::array &x, int layer) const;
   mlx::core::array
   SpeakerProbabilities(const mlx::core::array &embeddings) const;
 
