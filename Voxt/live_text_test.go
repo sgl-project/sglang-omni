@@ -44,24 +44,30 @@ func TestLiveTextSwitch(t *testing.T) {
 // TestLiveTextCard: with Show live text off, a follow-up in the answer
 // card shows neither the words being said nor the answer being written,
 // as the pill does not.
-// TestLiveTextNoLLMDraft: after stop, the pill keeps the live ASR text,
-// while the speech model finishes and while the language model works, and
-// never replays the language model's draft (FB6). It went blank while the
-// language model worked (#3644).
+// TestLiveTextNoLLMDraft: after stop, the pill keeps the live ASR text
+// while the speech model finishes; while the language model works the
+// stream's words become the text the model got, and never the model's
+// draft (FB6). It went blank while the language model worked (#3644),
+// then kept the stream's last partial, which can differ from what the
+// model got. A file model's text never shows there (FB6).
 func TestLiveTextNoLLMDraft(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	stream := "meet at three tomorrow"
+	stream, spoken := "meet at three tomorrow", "Meet at three tomorrow with VoxtNew"
 	a.sess = session.Snapshot{State: session.Recording, Partial: stream}
 	if text, _ := pillLine(a.pillSession()); text != stream {
 		t.Fatalf("recording: %q", text)
 	}
-	a.sess = session.Snapshot{State: session.Composing, Partial: stream, Draft: "Meet at three."}
-	if text, _ := pillLine(a.pillSession()); text != stream {
-		t.Fatalf("composing: %q", text)
-	}
 	a.sess = session.Snapshot{State: session.Recognizing, Partial: stream}
 	if text, _ := pillLine(a.pillSession()); text != stream {
 		t.Fatalf("recognizing: %q", text)
+	}
+	a.sess = session.Snapshot{State: session.Composing, Partial: stream, Spoken: spoken, Draft: "Meet at three."}
+	if text, _ := pillLine(a.pillSession()); text != spoken {
+		t.Fatalf("composing: %q", text)
+	}
+	a.sess = session.Snapshot{State: session.Composing, Spoken: spoken, Draft: "Meet at three."}
+	if text, _ := pillLine(a.pillSession()); text != "" {
+		t.Errorf("composing, a file model: %q", text)
 	}
 }
 
