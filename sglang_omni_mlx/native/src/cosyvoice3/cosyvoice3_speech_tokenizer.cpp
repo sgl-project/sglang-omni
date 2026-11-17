@@ -22,8 +22,7 @@ constexpr int kHiddenSize = 1280;
 constexpr int kHeadCount = 20;
 constexpr int kHeadDim = kHiddenSize / kHeadCount;
 constexpr int kFsmnKernelSize = 31;
-constexpr int kRotaryPositions = 2048;
-constexpr double kRotaryTheta = 10000.0;
+constexpr float kRotaryBase = 10000.0f;
 constexpr float kAttentionNormEps = 1e-6f;
 constexpr float kMlpNormEps = 1e-5f;
 // Longer input is tokenized in overlapping 30 s windows, which is not
@@ -38,36 +37,10 @@ std::string LayerPrefix(int layer) {
   return "encoder.blocks." + std::to_string(layer);
 }
 
-// x [1, positions, heads, head dim] rotated by halves.
-mx::array ApplyRotary(const mx::array &x, const mx::array &cos,
-                      const mx::array &sin) {
-  const int half = x.shape(-1) / 2;
-  const mx::array left =
-      mx::slice(x, {0, 0, 0, 0}, {x.shape(0), x.shape(1), x.shape(2), half});
-  const mx::array right = mx::slice(
-      x, {0, 0, 0, half}, {x.shape(0), x.shape(1), x.shape(2), x.shape(3)});
-  const mx::array rotated = mx::concatenate({mx::negative(right), left}, -1);
-  return mx::add(mx::multiply(x, cos), mx::multiply(rotated, sin));
-}
-
 } // namespace
 
 SpeechTokenizer::SpeechTokenizer(const omni_common::Checkpoint &checkpoint)
-    : checkpoint_(checkpoint), rotary_cos_(0.0f), rotary_sin_(0.0f) {
-  const mx::array exponents =
-      mx::divide(mx::astype(mx::arange(0, kHeadDim, 2), mx::float32),
-                 mx::array(static_cast<float>(kHeadDim)));
-  const mx::array frequencies = mx::divide(
-      mx::array(1.0f),
-      mx::power(mx::array(static_cast<float>(kRotaryTheta)), exponents));
-  const mx::array angles = mx::astype(
-      mx::outer(mx::arange(kRotaryPositions), frequencies), mx::float32);
-  const mx::array cos = mx::cos(angles);
-  const mx::array sin = mx::sin(angles);
-  rotary_cos_ = mx::concatenate({cos, cos}, -1);
-  rotary_sin_ = mx::concatenate({sin, sin}, -1);
-  mx::eval({rotary_cos_, rotary_sin_});
-}
+    : checkpoint_(checkpoint) {}
 
 mx::array SpeechTokenizer::Block(const mx::array &x, int layer,
                                  const mx::array &attention_mask) const {
@@ -79,12 +52,14 @@ mx::array SpeechTokenizer::Block(const mx::array &x, int layer,
   const mx::array key = checkpoint_.Linear(normed, prefix + ".attn.key");
   const mx::array value = checkpoint_.Linear(normed, prefix + ".attn.value");
   const mx::Shape head_shape = {1, positions, kHeadCount, kHeadDim};
-  const mx::array cos = mx::expand_dims(
-      mx::slice(rotary_cos_, {0, 0}, {positions, kHeadDim}), {0, 2});
-  const mx::array sin = mx::expand_dims(
-      mx::slice(rotary_sin_, {0, 0}, {positions, kHeadDim}), {0, 2});
-  const mx::array q = ApplyRotary(mx::reshape(query, head_shape), cos, sin);
-  const mx::array k = ApplyRotary(mx::reshape(key, head_shape), cos, sin);
+  // Heads [1, heads, positions, head dim], rotated by halves.
+  const auto rotated = [&](const mx::array &projection) {
+    return mx::fast::rope(
+        mx::transpose(mx::reshape(projection, head_shape), {0, 2, 1, 3}),
+        kHeadDim, false, kRotaryBase, 1.0f, 0);
+  };
+  const mx::array q = rotated(query);
+  const mx::array k = rotated(key);
   const mx::array v = mx::reshape(value, head_shape);
 
   // The FSMN memory: a centered depthwise convolution over the values.
@@ -105,8 +80,7 @@ mx::array SpeechTokenizer::Block(const mx::array &x, int layer,
   const mx::array scale(
       static_cast<float>(std::pow(static_cast<double>(kHeadDim), -0.25)));
   const mx::array attention = mx::fast::scaled_dot_product_attention(
-      mx::multiply(mx::transpose(q, {0, 2, 1, 3}), scale),
-      mx::multiply(mx::transpose(k, {0, 2, 1, 3}), scale),
+      mx::multiply(q, scale), mx::multiply(k, scale),
       mx::transpose(v, {0, 2, 1, 3}), 1.0f, /*window_size=*/-1, "array",
       attention_mask);
   const mx::array attended = mx::reshape(mx::transpose(attention, {0, 2, 1, 3}),

@@ -58,28 +58,6 @@ mx::array Mish(const mx::array &x) {
                       mx::tanh(mx::logaddexp(x, mx::array(0.0f, x.dtype()))));
 }
 
-// Interleaved rotation of the first 64 channels, as the DiT applies rotary
-// embeddings before it splits heads.
-mx::array Rotate(const mx::array &x, const mx::array &cos,
-                 const mx::array &sin) {
-  const int batch = x.shape(0);
-  const int length = x.shape(1);
-  const int width = x.shape(2);
-  const mx::array rotated = mx::slice(x, {0, 0, 0}, {batch, length, 64});
-  const mx::array passed = mx::slice(x, {0, 0, 64}, {batch, length, width});
-  const mx::array pairs = mx::reshape(rotated, {batch, length, 32, 2});
-  const mx::array even =
-      mx::squeeze(mx::slice(pairs, {0, 0, 0, 0}, {batch, length, 32, 1}), 3);
-  const mx::array odd =
-      mx::squeeze(mx::slice(pairs, {0, 0, 0, 1}, {batch, length, 32, 2}), 3);
-  const mx::array half_turn = mx::reshape(
-      mx::stack({mx::negative(odd), even}, -1), {batch, length, 64});
-  const mx::array result = mx::astype(
-      mx::add(mx::multiply(rotated, cos), mx::multiply(half_turn, sin)),
-      x.dtype());
-  return mx::concatenate({result, passed}, -1);
-}
-
 // The periodic Hann window torch.stft uses.
 mx::array HannWindow() {
   std::vector<float> window(kFftSize);
@@ -111,21 +89,8 @@ Flow::Flow(const omni_common::Checkpoint &checkpoint)
       // Note (yexiaodong): one fixed noise draw, so a request's mel depends
       // only on its tokens.
       noise_(mx::random::normal({1, kMelBinCount, kMaxMelFrames}, mx::float32,
-                                0.0f, 1.0f, mx::random::key(0))),
-      rope_cos_(mx::array(0.0f)), rope_sin_(mx::array(0.0f)) {
-  const mx::array inverse_frequencies = mx::divide(
-      mx::array(1.0f),
-      mx::power(
-          mx::array(10000.0f),
-          mx::divide(mx::astype(mx::arange(0, kDitHeadSize, 2), mx::float32),
-                     mx::array(static_cast<float>(kDitHeadSize)))));
-  const mx::array angles =
-      mx::repeat(mx::outer(mx::astype(mx::arange(kMaxMelFrames), mx::float32),
-                           inverse_frequencies),
-                 2, -1);
-  rope_cos_ = mx::cos(angles);
-  rope_sin_ = mx::sin(angles);
-  mx::eval({noise_, rope_cos_, rope_sin_});
+                                0.0f, 1.0f, mx::random::key(0))) {
+  mx::eval(noise_);
 }
 
 mx::array Flow::Decode(const std::vector<int> &speech_tokens,
@@ -303,19 +268,20 @@ mx::array Flow::Block(const mx::array &x, const mx::array &timestep_embedding,
         mx::expand_dims(modulation[shift], 1));
   };
   const mx::array normed = modulate(x, 0, 1);
-  const mx::array cos =
-      mx::expand_dims(mx::slice(rope_cos_, {0, 0}, {length, 64}), 0);
-  const mx::array sin =
-      mx::expand_dims(mx::slice(rope_sin_, {0, 0}, {length, 64}), 0);
+  // Note (XXXXRT666): the DiT rotates adjacent pairs of the first head's
+  // channels only, since it applies rotary embeddings before it splits heads.
+  const auto rotated = [&](const mx::array &projection) {
+    return mx::fast::rope(projection, kDitHeadSize, true, 10000.0f, 1.0f, 0);
+  };
   const auto heads = [&](const mx::array &projection) {
     return mx::transpose(
         mx::reshape(projection, {batch, length, kDitHeadCount, kDitHeadSize}),
         {0, 2, 1, 3});
   };
   const mx::array q =
-      heads(Rotate(checkpoint_.Linear(normed, prefix + "attn.to_q"), cos, sin));
+      heads(rotated(checkpoint_.Linear(normed, prefix + "attn.to_q")));
   const mx::array k =
-      heads(Rotate(checkpoint_.Linear(normed, prefix + "attn.to_k"), cos, sin));
+      heads(rotated(checkpoint_.Linear(normed, prefix + "attn.to_k")));
   const mx::array v = heads(checkpoint_.Linear(normed, prefix + "attn.to_v"));
   const mx::array attended = mx::reshape(
       mx::transpose(mx::fast::scaled_dot_product_attention(

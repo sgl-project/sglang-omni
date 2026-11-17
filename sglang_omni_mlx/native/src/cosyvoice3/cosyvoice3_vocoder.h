@@ -49,8 +49,6 @@ private:
   const omni_common::Checkpoint &checkpoint_;
   mlx::core::array dtype_probe_;
   mlx::core::array noise_;
-  mlx::core::array rope_cos_;
-  mlx::core::array rope_sin_;
 };
 
 // Mel frames to samples, given the checkpoint's hifigan.* weights.
