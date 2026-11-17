@@ -616,6 +616,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-handling">Audio Handling</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dtype">dtype</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu">Ascend NPU</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#marker-token-suppression">Marker-Token Suppression</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pre-lm-audio-encoder">Pre-LM Audio Encoder</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#how-this-relates-to-encoder-max-batch-size">How this relates to <code class="docutils literal notranslate"><span class="pre">encoder_max_batch_size</span></code></a></li>
@@ -936,6 +937,17 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\<
 memory using the official checkpoint and <code class="docutils literal notranslate"><span class="pre">tests/data/query_to_cars.wav</span></code>. The
 server returned the expected transcript through <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code>.</p>
 </section>
+<section id="ascend-npu">
+<h2>Ascend NPU<a class="headerlink" href="#ascend-npu" title="Link to this heading">#</a></h2>
+<p>ARK-ASR-3B runs on Ascend 910 with the provided NPU configuration:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>AutoArk-AI/ARK-ASR-3B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/arkasr_npu.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>See the <a class="reference internal" href="../other_platforms/installation_npu.html"><span class="std std-doc">NPU installation guide</span></a> for environment setup.</p>
+</section>
 <section id="marker-token-suppression">
 <h2>Marker-Token Suppression<a class="headerlink" href="#marker-token-suppression" title="Link to this heading">#</a></h2>
 <p>The stock checkpoint ships no <code class="docutils literal notranslate"><span class="pre">bad_words_ids</span></code>, so plain <code class="docutils literal notranslate"><span class="pre">skip_special_tokens=True</span></code>
@@ -1145,6 +1157,7 @@ ARK-ASR currently ignores it (the transcription instruction is fixed).</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-handling">Audio Handling</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dtype">dtype</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu">Ascend NPU</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#marker-token-suppression">Marker-Token Suppression</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pre-lm-audio-encoder">Pre-LM Audio Encoder</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#how-this-relates-to-encoder-max-batch-size">How this relates to <code class="docutils literal notranslate"><span class="pre">encoder_max_batch_size</span></code></a></li>
