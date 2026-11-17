@@ -6,15 +6,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import (
-    TYPE_CHECKING,
-    Callable,
-    Iterable,
-    Optional,
-    ParamSpec,
-    Tuple,
-    TypeVar,
-)
+from typing import TYPE_CHECKING, Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -23,7 +15,6 @@ from sglang.srt.layers.sampler import multinomial_with_seed
 from torch import Tensor, nn
 from transformers import PretrainedConfig
 
-from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     MergedColumnParallelLinear,
@@ -46,18 +37,6 @@ else:
     pass
 
 logger = logging.getLogger(__name__)
-
-_P = ParamSpec("_P")
-_R = TypeVar("_R")
-
-
-# Temporary MUSA bridge until the opaque store from SGLang #50916 is available.
-def disable_grad_on_musa(fn: Callable[_P, _R]) -> Callable[_P, _R]:
-    if current_platform.is_musa():
-        return torch.no_grad()(fn)
-    else:
-        return fn
-
 
 # Note (Ratish): fixed top-k width keeps decode graph shape stable;
 # per-request top_k is masked inside _decode_codebooks.
@@ -371,7 +350,6 @@ class S2ProSGLangTextModel(nn.Module):
             pass
         return int(self.vq_codes.shape[0])
 
-    @disable_grad_on_musa
     def forward(
         self,
         input_ids: Tensor,
