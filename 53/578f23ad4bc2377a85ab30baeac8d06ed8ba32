@@ -1,0 +1,109 @@
+sglang_omni/models/duo/reference_parallel.py
+  s_9be4bd449be508::t_b32fd07fcda429 1-369
+sglang_omni/models/duo/model.py
+  s_9be4bd449be508::t_b32fd07fcda429 1-590
+sglang_omni/models/duo/realtime.py
+  s_9be4bd449be508::t_b32fd07fcda429 1-1042
+sglang_omni/serve/realtime/negotiation.py
+  s_9be4bd449be508::t_f0aba71abc617c 38-43,163-169,238-243,245,252-259
+sglang_omni/serve/realtime/schema.py
+  s_9be4bd449be508::t_f0aba71abc617c 74-88,160
+sglang_omni/models/duo/reference.py
+  s_9be4bd449be508::t_b32fd07fcda429 1-698
+sglang_omni/models/duo/live.py
+  s_9be4bd449be508::t_b32fd07fcda429 1-675
+sglang_omni/models/duo/streaming.py
+  s_9be4bd449be508::t_b32fd07fcda429 1-400
+sglang_omni/serve/realtime/runtime.py
+  s_9be4bd449be508::t_f0aba71abc617c 107,129-151,264,387,393,422,426,522,531,534,558,641
+sglang_omni/serve/realtime/types.py
+  s_9be4bd449be508::t_f0aba71abc617c 126
+benchmarks/duo/fp8/build.py
+  s_9be4bd449be508::t_7a1cc84990ce7a 1-194
+benchmarks/duo/fp8/csrc/fullapi_async.LICENSE
+  s_9be4bd449be508::t_ce0680a132e2ba 1-29
+benchmarks/duo/fp8/csrc/fullapi_async.patch
+  s_9be4bd449be508::t_57836382962da6 1-187
+scripts/merge_duo_intent_adapter.py
+  s_9be4bd449be508::t_f79ef73334c217 1-37
+scripts/serve_duo_realtime.py
+  s_9be4bd449be508::t_12daf7536c3679 1-386
+sglang_omni/models/duo/__init__.py
+  s_9be4bd449be508::t_104b49039ea324 1
+sglang_omni/models/duo/cache.py
+  s_9be4bd449be508::t_3c612377d7fa7a 1-335
+sglang_omni/models/duo/checkpoint.py
+  s_9be4bd449be508::t_cec691180db46e 1-172
+sglang_omni/models/duo/conditioning.py
+  s_9be4bd449be508::t_a8bb4973378a3c 1-151
+sglang_omni/models/duo/config.py
+  s_9be4bd449be508::t_12ddca2ae9ee37 1-73
+sglang_omni/models/duo/fp8_execution.py
+  s_9be4bd449be508::t_5a3b251d0f1c8c 1-268
+sglang_omni/models/duo/fp8_kernels.py
+  s_9be4bd449be508::t_08ab41c31c4884 1-220
+sglang_omni/models/duo/geometry.py
+  s_9be4bd449be508::t_65f225fdd62ee6 1-34
+sglang_omni/models/duo/intent.py
+  s_9be4bd449be508::t_5a0588a12b4ef0 1-171
+sglang_omni/models/duo/intent_conditioning_compat.py
+  s_9be4bd449be508::t_78b5cea485ae15 1-144
+sglang_omni/models/duo/intent_srt.py
+  s_9be4bd449be508::t_8e0a64584483e8 1-383
+sglang_omni/models/duo/kernels.py
+  s_9be4bd449be508::t_d9abe51c98a030 1-90
+sglang_omni/models/duo/live_intent.py
+  s_9be4bd449be508::t_0c993c9237f28f 1-352
+sglang_omni/models/duo/live_intent_srt.py
+  s_9be4bd449be508::t_64ecd650f949ab 1-363
+sglang_omni/models/duo/media.py
+  s_9be4bd449be508::t_a0fb9951073bab 1-352
+sglang_omni/models/duo/media_parallel.py
+  s_9be4bd449be508::t_175b81294169b7 1-274
+sglang_omni/models/duo/modelopt.py
+  s_9be4bd449be508::t_8fd1c64c1a3b89 1-204
+sglang_omni/models/duo/modes.py
+  s_9be4bd449be508::t_0a3fa344abf45c 1-50
+sglang_omni/models/duo/native_dcp.py
+  s_9be4bd449be508::t_5ac3d7cf247762 1-1256
+sglang_omni/models/duo/native_execution.py
+  s_9be4bd449be508::t_c79a3e7fc8e107 1-210
+sglang_omni/models/duo/overlap.py
+  s_9be4bd449be508::t_b547983312636c 1-121
+sglang_omni/models/duo/ring.py
+  s_9be4bd449be508::t_0e87113788de3a 1-224
+sglang_omni/models/duo/sequence.py
+  s_9be4bd449be508::t_d251a37f4e91dd 1-139
+sglang_omni/models/duo/stages.py
+  s_9be4bd449be508::t_e604e79aa0598b 1-75
+sglang_omni/vendor/solarx/LICENSE
+  s_9be4bd449be508::t_c6375152c80756 1-52
+sglang_omni/vendor/solarx/__init__.py
+  s_9be4bd449be508::t_c48382b62fbba8 1-81
+sglang_omni/vendor/solarx/stream_decoder.py
+  s_9be4bd449be508::t_c2bfdfec89bdff 1-583
+tests/unit_test/kernels/test_duo_kernels.py
+  s_9be4bd449be508::t_7300d19a0fb2c1 1-278
+tests/unit_test/kernels/test_duo_native.py
+  s_9be4bd449be508::t_6f9208f11a6667 1-1009
+tests/unit_test/kernels/test_duo_transport.py
+  s_9be4bd449be508::t_63045c45d2f929 1-93
+tests/unit_test/serve/test_realtime_duo_worker.py
+  s_9be4bd449be508::t_81446e163f0ed4 1-804
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "53578f23ad4bc2377a85ab30baeac8d06ed8ba32",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
