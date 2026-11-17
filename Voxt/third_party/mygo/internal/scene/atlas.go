@@ -31,9 +31,6 @@ type Atlas struct {
 	// Lasting shelves span rows [0, bottom), transient ones [top, H).
 	shelves, transient []shelf
 	bottom, top        int
-	order              []int
-	positions          []image.Point
-	saved              [][]byte
 }
 
 type atlasChange struct {
@@ -186,8 +183,7 @@ func (a *Atlas) Grow() bool {
 // again, tallest first, moving their pixels along. It returns where each
 // went, or false, changing nothing, when they do not fit.
 func (a *Atlas) Repack(rects []image.Rectangle) ([]image.Point, bool) {
-	a.order = slices.Grow(a.order, len(rects))[:len(rects)]
-	order := a.order
+	order := make([]int, len(rects))
 	for i := range order {
 		order[i] = i
 	}
@@ -200,8 +196,7 @@ func (a *Atlas) Repack(rects []image.Rectangle) ([]image.Point, bool) {
 		)
 	})
 	plan := Atlas{W: a.W, H: a.H, top: a.H}
-	a.positions = slices.Grow(a.positions, len(rects))[:len(rects)]
-	pos := a.positions
+	pos := make([]image.Point, len(rects))
 	for _, i := range order {
 		x, y, ok := plan.Alloc(rects[i].Dx(), rects[i].Dy())
 		if !ok {
@@ -209,11 +204,10 @@ func (a *Atlas) Repack(rects []image.Rectangle) ([]image.Point, bool) {
 		}
 		pos[i] = image.Pt(x, y)
 	}
-	a.saved = slices.Grow(a.saved, len(rects))[:len(rects)]
-	saved := a.saved
+	saved := make([][]byte, len(rects))
 	for i, r := range rects {
 		row := r.Dx() * a.BPP
-		b := slices.Grow(saved[i], row*r.Dy())[:row*r.Dy()]
+		b := make([]byte, row*r.Dy())
 		for j := 0; j < r.Dy(); j++ {
 			copy(b[j*row:][:row], a.Pix[((r.Min.Y+j)*a.W+r.Min.X)*a.BPP:][:row])
 		}
