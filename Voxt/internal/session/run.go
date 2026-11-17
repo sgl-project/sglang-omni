@@ -226,6 +226,11 @@ func (r *run) main() {
 				return
 			}
 		}
+		if sel != "" {
+			// A text selection takes the text path: a picture copied
+			// earlier would send the rewrite down the image path (#4152).
+			r.clip = nil
+		}
 		r.write(text, sel)
 	}
 }

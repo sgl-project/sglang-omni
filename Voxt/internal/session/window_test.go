@@ -73,9 +73,11 @@ func TestWindowPicture(t *testing.T) {
 
 // TestClipboardImage: with Privacy.SendClipboardImage on, Rewrite reads
 // the clipboard's picture before the selection (whose ⌘C would replace
-// it) and sends it with the text, instead of the window's; off, with no
-// picture or when reading fails, the model gets the text (or the window)
-// and the rewrite lands. Translate and a try never read the clipboard.
+// it) and sends it instead of the window's — only when no text is
+// selected: a text selection takes the text path, and a picture copied
+// earlier stays out (#4152). Off, with no picture or when reading
+// fails, the model gets the text (or the window) and the rewrite lands.
+// Translate and a try never read the clipboard.
 func TestClipboardImage(t *testing.T) {
 	clip, shot := []byte{0xff, 0xd8, 'c', 0xff, 0xd9}, []byte{0xff, 0xd8, 'w', 0xff, 0xd9}
 	for _, tc := range []struct {
@@ -83,14 +85,16 @@ func TestClipboardImage(t *testing.T) {
 		kind         store.Kind
 		on, window   bool
 		try          bool
+		noSel        bool
 		pic          []byte
 		err          error
 		want         []byte
 		wantReadClip bool
 	}{
-		{name: "rewrite", kind: store.KindRewrite, on: true, pic: clip, want: clip, wantReadClip: true},
+		{name: "a selection sends no picture", kind: store.KindRewrite, on: true, pic: clip, wantReadClip: true},
+		{name: "no selection: the picture goes", kind: store.KindRewrite, on: true, noSel: true, pic: clip, want: clip, wantReadClip: true},
 		{name: "off", kind: store.KindRewrite, pic: clip},
-		{name: "wins over the window", kind: store.KindRewrite, on: true, window: true, pic: clip, want: clip, wantReadClip: true},
+		{name: "wins over the window", kind: store.KindRewrite, on: true, window: true, noSel: true, pic: clip, want: clip, wantReadClip: true},
 		{name: "no picture: the window", kind: store.KindRewrite, on: true, window: true, want: shot, wantReadClip: true},
 		{name: "reading fails", kind: store.KindRewrite, on: true, err: errors.New("helper gone"), wantReadClip: true},
 		{name: "a try", kind: store.KindRewrite, on: true, try: true, pic: clip},
@@ -99,6 +103,9 @@ func TestClipboardImage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			model := &fakeLLM{text: "We ship on Friday."}
 			sel := &fakeSelector{text: "ship friday?"}
+			if tc.noSel {
+				sel = &fakeSelector{}
+			}
 			var reads, selBefore int
 			h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
 				c.Select = sel
