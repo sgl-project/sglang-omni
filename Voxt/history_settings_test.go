@@ -77,9 +77,10 @@ func TestHistorySettingsDialog(t *testing.T) {
 	if a.histSet.open {
 		t.Error("Done did not close it")
 	}
-	// Settings → Privacy has the switch, and opens the dialog.
-	a.navigate("/settings/privacy")
-	frames(tt)
+	// Settings → Privacy has the switch, and opens the dialog. Scroll
+	// like openPrivacy: the rows sit under the fold where the lines
+	// measure taller (Linux CI), and a click there lands elsewhere.
+	openPrivacy(t, a, tt)
 	click(t, tt, "Save each recording")
 	if !a.prefs.Privacy.KeepAudio || !a.settings.Get().Privacy.KeepAudio {
 		t.Error("Keep recordings did not turn on")
