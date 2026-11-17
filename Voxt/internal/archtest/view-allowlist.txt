@@ -6,7 +6,6 @@
 #
 # path  # area
 
-announcements.go  # shell
 legacy_report.go  # legacy: exempt one-time 1.x import reporting
 pages.go  # shell
 shell.go  # shell

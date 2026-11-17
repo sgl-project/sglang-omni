@@ -207,7 +207,7 @@ func (a *app) cardAction(n core.Notification) {
 		a.importLegacy() // legacy_import.go
 		return
 	case linkAnnouncement:
-		a.announceShown, a.announceShownOpen = n, true // announcements.go
+		a.announceShown, a.announceShownOpen = n, true // shell_announcement_controller.go
 		return
 	}
 	if u, ok := strings.CutPrefix(n.Link, linkDownload); ok {

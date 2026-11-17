@@ -296,8 +296,8 @@ func (a *app) view(c *ui.Context) {
 		obState := a.onboardingViewState()
 		onboardingView(c, obState, a, &onboardingLocalUI{open: obState.Open})
 	}
-	shortcutPromptDialog(c, a.shortcutPromptModel(), a) // settings_shortcuts_family.go
-	a.announcementDialog(c)                             // announcements.go
+	shortcutPromptDialog(c, a.shortcutPromptModel(), a)                    // settings_shortcuts_family.go
+	announcementDialog(c, a.announcementModel(time.Now()), &a.announceShownOpen) // announcements.go
 	m, u := a.releaseDialogModel(), &a.updUI
 	releaseDialog(c, m, a, u) // updates_view.go
 	a.legacyReportDialog(c)   // legacy_report.go
