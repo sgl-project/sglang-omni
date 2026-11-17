@@ -4,6 +4,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+
 ### Fixed
 
 - **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup; the meetings' speaker transcription keeps it.
@@ -11,6 +12,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Meetings label the other side as Speaker 1, 2, 3 and so on**: with MOSS-Transcribe-Diarize installed, Voxt uses it after a meeting to transcribe the other side with speaker labels while your lines stay Me, before transcript correction and the summary. Long meetings go to it in pieces, so dictation waits at most one piece, and a voice keeps its number across the pieces. In a language MOSS-Transcribe-Diarize does not know (it knows Chinese and English), or when the language is left automatic so it cannot be told, the meeting keeps the selected model's transcription. Without it, the meeting works as before and its details link to Speech models.
+- **Copy and edit notes in place, and see their source app**: each note has Copy and Edit buttons. Save writes the edit back to the note, and Cancel leaves it unchanged. If Voxt knows the frontmost app at capture time, new notes show its name.
 
 ### 中文
 
@@ -21,6 +23,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **会议把对方标为说话人 1、2、3……**：安装 MOSS-Transcribe-Diarize 后，Voxt 在会议结束时用它转录对方的话并区分说话人，你的话仍标为“我”，然后再校对转录稿和写总结。长会议分段送给它，听写最多等一段，同一个人的编号跨段不变。遇到它不认识的语种（它只认识中文和英文），或语言保持自动而无法判断时，会议沿用所选模型的转录。没装时会议照常工作，会议详情提供语音识别模型页入口。
+- **笔记可以一键复制、原地编辑，并显示来源 App**：每条笔记都有“复制”和“编辑”按钮。编辑后点“保存”会写回这条笔记，点“取消”则不改内容。Voxt 能确定按下快捷键时的前台 App 时，新笔记也会显示这个 App。
 ### Changed
 
 - **MOSS-Transcribe-Diarize is the recommended speech model** (#4067): the setup guide and Home now download MOSS-Transcribe-Diarize with its 262 MB DFlash draft (2.1 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. It knows Chinese and English. It takes no dictionary or Speech context while it recognises: while every feature uses such a model, the Speech models page says so under Speech context, which meeting transcript correction still reads, and your dictionary still guides the language model's clean-up. Qwen3-ASR stays on the Speech models page, and a Qwen3-ASR another ActNow app installed is offered in the guide instead of a download. A model you chose for a feature stays as chosen.
@@ -36,6 +39,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **转录和翻译的结果也边写边显示在答案卡片里**：打开答案卡片时，译文和转录整理后的文字会随语言模型的输出逐步出现在卡片里，和改写的回答一样，不用再在录音窗口里等全部写完。翻译可以点“停止”，留下已写出的译文。转录的卡片没有“停止”，而是“用识别原文”（按取消键也一样）：把你说的整段按识别结果放进卡片，因为整理停在半路会丢掉后面的内容。在卡片里换一种语言或换一个思考强度时，新的回答也边写边替换卡片里的文字，失败时卡片回到原来的文字。历史记录里的“重试”和“重新识别”会在详情里边写边显示新结果。答案卡片关着时，结果仍在写完后一次插入。
 - **语言模型处理时，录音窗口显示发给它的文字**：用流式语音识别模型时，录音窗口下面一行改为显示发给语言模型的识别结果（最终识别结果，词典别名已替换），不再是最后一条实时文字，两者可能不同。不是流式的语音识别模型照旧不显示文字，没有语言模型时也照旧。
+
 
 ## [2.1.0] - 2026-11-15
 

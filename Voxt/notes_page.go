@@ -40,6 +40,9 @@ type notesView struct {
 	loading bool
 	err     string
 	listUI  ui.ListState
+	editID  string
+	draft   string
+	saving  bool
 	// keys is the shortcut's controls, set from keysFor (the keys and
 	// the language).
 	keys    keyRow
@@ -115,10 +118,12 @@ func (a *app) notesPage(c *ui.Context) {
 }
 
 // noteRow is a note in the list: its text (selectable), its time and
-// Delete.
+// source app, and Copy, Edit and Delete.
 func (a *app) noteRow(c *ui.Context, note store.Note) {
 	t := c.Theme()
 	k := tok(t)
+	n := &a.nv
+	editing := n.editID == note.ID
 	row := ui.Row(c.Key("note-"+note.ID)).Padding(px(t, 6), px(t, sp2)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
 		Gap(px(t, sp2)).AlignItems(ui.Start)
 	if row.Hovered() {
@@ -126,12 +131,63 @@ func (a *app) noteRow(c *ui.Context, note store.Note) {
 	}
 	row.Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
-			ui.Text(c, note.Text).Selectable()
-			caption(c, uitext.TimeAgo(note.CreatedAt)).SingleLine()
+			if editing {
+				ui.TextArea(c.Key("edit-text"), &n.draft).Label(i18n.T("Edit %s", noteExcerpt(note.Text))).Lines(2, 8).AutoFocus().Disabled(n.saving)
+				ui.Row(c).Gap(px(t, sp2)).Children(func() {
+					ui.Spacer(c)
+					if ghostButton(c.Key("cancel"), i18n.T("Cancel")).Disabled(n.saving).Clicked() {
+						n.editID, n.draft = "", ""
+					}
+					if primaryButton(c.Key("save"), i18n.T("Save")).Disabled(n.saving).Clicked() {
+						a.saveNoteEdit(note)
+					}
+				})
+			} else {
+				ui.Text(c, note.Text).Selectable()
+			}
+			meta := uitext.TimeAgo(note.CreatedAt)
+			if note.AppName != "" {
+				meta += " · " + note.AppName
+			}
+			caption(c, meta).SingleLine()
 		})
+		if editing {
+			return
+		}
+		if iconButton(c.Key("copy"), icons.Copy, i18n.T("Copy")).Label(i18n.T("Copy: %s", noteExcerpt(note.Text))).Clicked() {
+			c.Services().WriteClipboard(note.Text)
+			a.toast(i18n.T("Copied"))
+		}
+		if iconButton(c.Key("edit"), icons.Pen2, i18n.T("Edit %s", noteExcerpt(note.Text))).Disabled(n.editID != "").Clicked() {
+			n.editID, n.draft = note.ID, note.Text
+		}
 		if iconButton(c.Key("delete"), icons.TrashBinMinimalistic, i18n.T("Delete %s", noteExcerpt(note.Text))).Clicked() {
 			a.deleteNote(note)
 		}
+	})
+}
+
+func (a *app) saveNoteEdit(note store.Note) {
+	n := &a.nv
+	note.Text = n.draft
+	n.saving = true
+	repo := a.lib.store.Notes()
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := repo.Put(ctx, note)
+		a.post(func() {
+			n := &a.nv
+			n.saving = false
+			if err != nil {
+				a.toast(i18n.T("Could not save the note: %v", err))
+				return
+			}
+			if n.editID == note.ID {
+				n.editID, n.draft = "", ""
+			}
+			a.loadNotes()
+		})
 	})
 }
 

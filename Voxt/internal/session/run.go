@@ -400,7 +400,7 @@ func (r *run) saveNote(text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt})
+	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt, AppName: r.req.Target.Name})
 }
 
 // keep writes the history entry of an ended session (and its recording),

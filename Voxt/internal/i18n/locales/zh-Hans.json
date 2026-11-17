@@ -1356,6 +1356,7 @@
   "Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.": "先在上面选一个快捷键，然后在任意 App 里按下它说话。说的内容会存到这里，不会输入到光标处。",
   "Press %s in any app, speak, and press it again. What you say is saved here instead of typed.": "在任意 App 里按 %s，说完再按一次。说的内容会存到这里，不会输入到光标处。",
   "Could not delete the note: %v": "无法删除笔记：%v",
+  "Could not save the note: %v": "无法保存笔记：%v",
   "Keys to record a note": "记笔记的快捷键",
   "Custom keys to record a note": "自定义记笔记的快捷键",
   "Proxy user name": "代理用户名",
