@@ -242,14 +242,14 @@ func (a *app) providerDialogView(c *ui.Context) {
 				}
 			})
 		}
-		epInfo := i18n.T("The API root, ending in /v1. Leave it empty for the service's own. Only https://, or http:// to this Mac.")
+		epInfo := i18n.T("The API root, ending in /v1. Leave it empty for the service's own. HTTP sends the API key and text without encryption.")
 		switch {
 		case streams:
 			epInfo = i18n.T("Leave it empty for the service's own. Only wss://, or ws:// to this Mac.")
 		case d.kind == local.ASR:
 			epInfo = i18n.T("Leave it empty for the service's own. Only https://, or http:// to this Mac.")
 		case sv.endpoint == "":
-			epInfo = i18n.T("The API root of any OpenAI-compatible server, ending in /v1. Only https://, or http:// to this Mac.")
+			epInfo = i18n.T("The API root of any OpenAI-compatible server, ending in /v1. HTTP sends the API key and text without encryption.")
 		}
 		if !sv.signIn {
 			fieldInfo(c, i18n.T("Address"), epInfo, func() {

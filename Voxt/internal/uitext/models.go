@@ -106,7 +106,7 @@ func ModelErrorText(err error) (msg, more string) {
 		case llm.CodeAddress:
 			return i18n.T("Nothing answers at the remote model's address. Check the address on the Language models page."), more
 		case llm.CodeConfig:
-			return i18n.T("The remote model's address is not allowed. Use https://, or http:// for an address on this Mac."), more
+			return i18n.T("The remote model's address is not allowed. Use http:// or https:// without a user name or password."), more
 		case llm.CodeTimeout:
 			return i18n.T("The language model did not answer in time."), more
 		case llm.CodeNetwork, llm.CodeServer, llm.CodeOverloaded, llm.CodeRateLimited:
