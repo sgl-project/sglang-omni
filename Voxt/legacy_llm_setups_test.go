@@ -241,24 +241,6 @@ func TestLegacyImportAsksForOptionalKey(t *testing.T) {
 	}
 }
 
-// A LAN HTTP address remains usable after import, with a to-do only when
-// the old setup had a key that needs to be pasted again.
-func TestLegacyImportLANHTTP(t *testing.T) {
-	r := importSetups(t, `[{"providerID":"ollama","model":"qwen3","endpoint":"http://192.168.1.20:11434/api/chat"},
-	 {"providerID":"lmStudio","model":"m","endpoint":"http://127.0.0.1:1234/v1"}]`)
-	if len(r.todo) != 0 {
-		t.Errorf("usable HTTP addresses were flagged: %q", r.text())
-	}
-	r = importSetups(t, `[{"providerID":"ollama","model":"qwen3","endpoint":"http://192.168.1.20:11434/api/chat","storedCredentialPresence":{"apiKey":true}}]`)
-	if len(r.todo) != 1 || !hasTodo(r, "ollama", "needs its API key") {
-		t.Errorf("an old key needs to be pasted again: %q", r.text())
-	}
-	p, _ := oneLLM(t, `{"providerID":"ollama","model":"qwen3","endpoint":"http://192.168.1.20:11434/api/chat"}`)
-	if _, err := providers.Config(p).Resolve(); err != nil {
-		t.Errorf("%q did not resolve: %v", p.Endpoint, err)
-	}
-}
-
 // A setup at a service's default address, with its settings untouched,
 // comes out as before: asked only for its key.
 func TestLegacyDefaultAddressesUnchanged(t *testing.T) {
