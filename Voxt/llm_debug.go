@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
@@ -31,6 +33,10 @@ const llmDebugPath = "/llm-debug"
 
 // llmDebugTimeout bounds a run: a slow model's long answer.
 const llmDebugTimeout = 2 * time.Minute
+
+// llmDebugPromptLines is the prompt field's height when the prompt is
+// short; it grows with its text from there.
+const llmDebugPromptLines = 8
 
 // llmDebugUI is the page's state.
 type llmDebugUI struct {
@@ -85,7 +91,7 @@ func (a *app) llmDebugInput(p llmDebugPreset, prompt string) compose.Input {
 	u, f := &a.llmDbg, a.prefs.Features
 	in := compose.Input{
 		MainLanguage: session.MainLanguage(a.prefs, i18n.Locale()), OtherLanguages: a.prefs.General.OtherLanguages,
-		Text: strings.TrimSpace(u.input),
+		Text: strings.TrimSpace(u.input), Dictionary: session.PromptDictionary(a.prefs),
 	}
 	rules := prompt
 	if p.group != "" {
@@ -161,14 +167,20 @@ func (a *app) llmDebugPage(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
 	u := &a.llmDbg
-	columnPageHeader(c, i18n.T("Language model debug"), nil)
+	// The page opens from Language models over its own route: Esc or ×
+	// goes back there (#3781).
+	columnPageHeader(c, i18n.T("Language model debug"), func() {
+		if iconButton(c.Key("llmdbg-close"), icons.Close, i18n.T("Close")).Clicked() || c.Shortcut(0, ui.KeyEscape) {
+			a.navigate(remotePath)
+		}
+	})
 	ui.Scroll(c.Key("llmdbg-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp4)).Children(func() {
-			caption(c, i18n.T("Send a feature's request for your own text to a language model, with its prompt edited here. Nothing is saved until you use the prompt."))
+			caption(c, i18n.T("Try a prompt on your own text. Nothing is saved until you click Use this prompt."))
 			setups := providers.Ready(a.prefs, func(id string) bool { return a.hasKey(local.LLM, id) })
 			if len(setups) == 0 {
 				caption(c, i18n.T("Set up a language model first."))
-				if ui.Button(c.Key("llmdbg-setup"), i18n.T("Open Language models")).Clicked() {
+				if ui.Button(c.Key("llmdbg-setup"), i18n.T("Open Language models")).AlignSelf(ui.Start).Clicked() {
 					a.navigate(remotePath)
 				}
 				return
@@ -201,7 +213,11 @@ func (a *app) llmDebugPage(c *ui.Context) {
 			if p.group != "" {
 				label = i18n.T("Group prompt")
 			}
-			ui.TextArea(c.Key("llmdbg-prompt"), &u.prompt).Label(label).MinHeight(px(t, 160))
+			// As high as its text, however long, as Your rules on a
+			// feature's page: a long prompt (tens of thousands of
+			// characters) scrolled in a box of its own inside the page,
+			// two scroll bars (11-09).
+			ui.TextArea(c.Key("llmdbg-prompt"), &u.prompt).Label(label).Lines(llmDebugPromptLines, math.MaxInt32)
 			ui.Row(c).Gap(px(t, sp2)).Children(func() {
 				edited := u.prompt != saved
 				if ui.Button(c.Key("llmdbg-use"), i18n.T("Use this prompt")).Disabled(!edited).Clicked() {
@@ -220,7 +236,7 @@ func (a *app) llmDebugPage(c *ui.Context) {
 				ui.TextInput(c.Key("llmdbg-instruction"), &u.instruction).Label(i18n.T("Spoken instruction")).
 					Placeholder(i18n.T("um make it shorter, no, more formal"))
 			}
-			ui.TextArea(c.Key("llmdbg-input"), &u.input).Label(input).MinHeight(px(t, 88))
+			ui.TextArea(c.Key("llmdbg-input"), &u.input).Label(input).Lines(4, math.MaxInt32)
 			ready := strings.TrimSpace(u.input) != "" || p.feature == hotkey.Rewrite && strings.TrimSpace(u.instruction) != ""
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
 				if primaryButton(c.Key("llmdbg-run"), i18n.T("Run")).Disabled(u.running || !ready).Clicked() {

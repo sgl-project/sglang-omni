@@ -122,6 +122,7 @@ type Store struct {
 	history    *historyRepo
 	dictionary *dictionaryRepo
 	notes      *notesRepo
+	meetings   *meetingsRepo
 }
 
 var _ store.Store = (*Store)(nil)
@@ -176,6 +177,7 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 	s.history = &historyRepo{db: db, dir: filepath.Join(dir, audioDir)}
 	s.dictionary = &dictionaryRepo{db: db}
 	s.notes = &notesRepo{db: db}
+	s.meetings = &meetingsRepo{db: db}
 	return s, nil
 }
 
@@ -240,6 +242,7 @@ func (s *Store) Documents() store.Documents   { return s.documents }
 func (s *Store) History() store.History       { return s.history }
 func (s *Store) Dictionary() store.Dictionary { return s.dictionary }
 func (s *Store) Notes() store.Notes           { return s.notes }
+func (s *Store) Meetings() store.Meetings     { return s.meetings }
 
 // Close closes the database; operations in flight are cancelled.
 func (s *Store) Close() error { return s.db.Close() }

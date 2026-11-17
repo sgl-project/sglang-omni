@@ -20,9 +20,9 @@ var textEdit = proto.App{PID: 531, BundleID: "com.apple.TextEdit", Name: "TextEd
 // which presses Return) delivers where the user is when the result is
 // ready: Slack, another app's text field (no Return there; the history
 // keeps Slack and its rule and names the app it went into apart), or
-// the card when nothing
-// there takes text, a password field has the focus, or a selection made
-// in Slack is to be replaced elsewhere.
+// nowhere when nothing there takes text or a password field has the
+// focus (the app copies it), or the card when a selection made in Slack
+// is to be replaced elsewhere.
 func TestDeliverWhereTyping(t *testing.T) {
 	inSlack := proto.FocusResult{PID: slack.PID, App: &slack, Role: "AXTextArea", Editable: true}
 	inTextEdit := proto.FocusResult{PID: textEdit.PID, App: &textEdit, Role: "AXTextArea", Editable: true}
@@ -73,7 +73,8 @@ func TestDeliverWhereTyping(t *testing.T) {
 			}
 			e := es[0]
 			if tc.into.PID == 0 {
-				if len(pasted) != 0 || end.Inserted || !end.Card || end.Delivery != tc.reason || e.AppName != "Slack" || e.Delivery != "card" || e.InsertedBundle != "" {
+				card := tc.kind == store.KindTranslate // a selection to replace elsewhere: the card; else the app copies it
+				if len(pasted) != 0 || end.Inserted || end.Card != card || end.Delivery != tc.reason || e.AppName != "Slack" || (e.Delivery == "card") != card || e.InsertedBundle != "" {
 					t.Errorf("card: pasted %q, end %+v, entry %s %s", pasted, end, e.AppName, e.Delivery)
 				}
 				return
@@ -122,7 +123,7 @@ func TestDeliverIntoOwnWindow(t *testing.T) {
 			if tc.insert && (len(pasted) != 1 || pasted[0] != "Hello." || !end.Inserted || end.Card || end.Landing == nil || end.Landing.App.PID != 77) {
 				t.Errorf("not typed into its own field: pasted %q, end %+v", pasted, end)
 			}
-			if !tc.insert && (len(pasted) != 0 || end.Inserted || !end.Card || end.Delivery != deliver.ReasonNotEditable) {
+			if !tc.insert && (len(pasted) != 0 || end.Inserted || end.Card || end.Delivery != deliver.ReasonNotEditable) {
 				t.Errorf("pasted %q, end %+v", pasted, end)
 			}
 		})
@@ -179,9 +180,9 @@ func TestCancelBeforePaste(t *testing.T) {
 }
 
 // TestDeliverUnconfirmed: a paste the focused element did not show (the
-// helper's check) is no insert: the card shows the result with why, the
-// history says card, the log says what the element read; with secure
-// input on in another app, the reason says so. A check that cannot tell
+// helper's check) is no insert: the session ends with why (the app says
+// the clipboard holds it), the log says what the element read; with
+// secure input on in another app, the reason says so. A check that cannot tell
 // is an insert, as before.
 func TestDeliverUnconfirmed(t *testing.T) {
 	terminal := &proto.App{PID: 1702, BundleID: "com.apple.Terminal", Name: "Terminal"}
@@ -219,9 +220,9 @@ func TestDeliverUnconfirmed(t *testing.T) {
 			}
 			want := "insert"
 			if !tc.inserted {
-				want = "card"
+				want = "" // card off: the app copies it and says so
 			}
-			if end.Inserted != tc.inserted || end.Card == tc.inserted || end.Delivery != tc.reason || es[0].Delivery != want {
+			if end.Inserted != tc.inserted || end.Card || end.Delivery != tc.reason || es[0].Delivery != want {
 				t.Errorf("end inserted %v card %v delivery %q, entry %q", end.Inserted, end.Card, end.Delivery, es[0].Delivery)
 			}
 			h.mu.Lock()
@@ -231,5 +232,31 @@ func TestDeliverUnconfirmed(t *testing.T) {
 				t.Errorf("no delivery line in the log:\n%s", logs)
 			}
 		})
+	}
+}
+
+// TestCardSwitch: a text that does not go in (nothing editable has the
+// focus) opens the answer card only when the feature's card is on. With
+// it off (Transcribe's default) the session ends with no card and the
+// reason, and the app copies the text (Voxt opened the card anyway).
+func TestCardSwitch(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		h := newHarness(t, &fakeFile{text: "hello"}, nil, func(_ *Config, s *settings.Settings) { s.Features.Transcribe.ShowCard = on })
+		h.text.focus = proto.FocusResult{PID: slack.PID, Role: "AXButton"}
+		id, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.speak(id, 3)
+		end := h.rec.wait(t)
+		es := h.hist.all()
+		want, reason := "", deliver.ReasonNotEditable
+		if on {
+			want, reason = "card", deliver.ReasonCard
+		}
+		if end.State != Done || end.Inserted || end.Card != on || end.Delivery != reason || end.Result == "" ||
+			len(h.text.pastes()) != 0 || len(es) != 1 || es[0].Delivery != want {
+			t.Errorf("card on %v: end %+v, entries %+v", on, end, es)
+		}
 	}
 }

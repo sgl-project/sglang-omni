@@ -241,10 +241,15 @@ func TestGoldenRewrite(t *testing.T) {
 		English: "write a two sentence update for the team saying aura link ships friday",
 		Chinese: "写一段两句话的进展，告诉团队 aura link 周五发布",
 	}
+	// A follow-up on a selection with text selected since (#3816).
+	more := map[string][2]string{
+		English: {"summarize the new messages too", "Anna: docs are up. Ben: tests passed, ship it"},
+		Chinese: {"把新消息也总结进去", "安娜：文档已上线。小李：测试通过，可以发"},
+	}
 	mains := map[string]string{English: "en", Chinese: "zh"}
 	n := 0
 	for _, set := range []string{English, Chinese} {
-		for mask := range 10 {
+		for mask := range 11 {
 			in := Input{Task: Rewrite, MainLanguage: mains[set], OtherLanguages: []string{"en", "zh"}}
 			name := "rewrite-" + set
 			switch {
@@ -268,6 +273,10 @@ func TestGoldenRewrite(t *testing.T) {
 				in.Instruction, in.Answer, in.Cleanup = instruction[set], true, true
 				in.Previous = []Turn{{Instruction: generate[set], Answer: Answer{Title: "Update", Content: "VoxtNew ships on Friday."}}}
 				name += "-answer-cleanup-followup"
+			case mask == 9:
+				in.Instruction, in.Text = more[set][0], more[set][1]
+				in.Previous = []Turn{{Instruction: instruction[set], Selection: selection[set], Answer: Answer{Content: "- VoxtNew 0.1 ships on Friday."}}}
+				name += "-selection-followup-new"
 			default:
 				in.Text, in.Instruction, in.Cleanup = selection[set], instruction[set], true
 				in.Scene = &Scene{AppName: "Mail", Prompt: "Formal mail."}
@@ -284,7 +293,7 @@ func TestGoldenRewrite(t *testing.T) {
 			n++
 		}
 	}
-	if n != 20 {
+	if n != 22 {
 		t.Errorf("%d combinations", n)
 	}
 }
@@ -608,5 +617,32 @@ func TestScanGolden(t *testing.T) {
 	}
 	if out := Scan([]string{"x"}, "en", nil); strings.Contains(out.System, "Other frequently used languages") {
 		t.Errorf("a line for no other languages: %s", out.System)
+	}
+}
+
+// TestTranslateBackLine: with a back language the task says to write in
+// it when all of the text is already in the target; without one, or when
+// it is the target, the line is left out (#4024).
+func TestTranslateBackLine(t *testing.T) {
+	for _, tc := range []struct {
+		main, back, want string
+	}{
+		{"es", "es", "if all of it is already in English, translate it into Spanish instead"},
+		{"zh", "zh", "如果全部已经是英语，就改为翻译成中文"},
+		{"es", "", ""},
+		{"en", "en", ""},
+	} {
+		out, err := Build(Input{Task: Translate, MainLanguage: tc.main, TargetLanguage: "en", BackLanguage: tc.back, Text: "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sys := out.Messages()[0].Content
+		if tc.want == "" {
+			if strings.Contains(sys, "instead") || strings.Contains(sys, "改为翻译成") {
+				t.Errorf("%+v: unexpected switch line:\n%s", tc, sys)
+			}
+		} else if !strings.Contains(sys, tc.want) {
+			t.Errorf("%+v: no %q in:\n%s", tc, tc.want, sys)
+		}
 	}
 }

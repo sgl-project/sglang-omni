@@ -7,8 +7,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/hehehai/actnowkit/sounds"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,10 +34,17 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // The test binary is also the fake helper (helpertest) and the fake
 // Omni server (omnitest).
+// failListModels stands for runListModels in tests: no dialog asks a
+// real server on this Mac which models it has.
+func failListModels(context.Context, settings.Provider, string, *http.Client) ([]string, error) {
+	return nil, errors.New("no model servers in tests")
+}
+
 func TestMain(m *testing.M) {
 	if helpertest.Enabled() {
 		helpertest.Main()
@@ -43,6 +52,7 @@ func TestMain(m *testing.M) {
 	if omnitest.Enabled() {
 		omnitest.Main()
 	}
+	runListModels = failListModels
 	os.Exit(runIsolated(m))
 }
 
@@ -57,6 +67,18 @@ func runIsolated(m *testing.M) int {
 	}
 	defer os.RemoveAll(tmp)
 	realHub = models.Hub()
+	realCache, _ := os.UserCacheDir()
+	// LegacyHubs always considers ~/.cache/huggingface/hub; point HOME away so
+	// unit tests do not import catalogue models from the developer machine.
+	os.Setenv("HOME", tmp)
+	os.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, "cache"))
+	// mygo's sqlite plugin finds its dylib only under UserCacheDir; keep the
+	// real one so each run does not download it from GitHub again.
+	if cache, err := os.UserCacheDir(); err == nil && realCache != "" && cache != realCache {
+		if os.MkdirAll(cache, 0o755) == nil {
+			os.Symlink(filepath.Join(realCache, "mygo"), filepath.Join(cache, "mygo"))
+		}
+	}
 	os.Setenv(family.EnvDir, filepath.Join(tmp, "ActNow"))
 	os.Setenv("HF_HUB_CACHE", filepath.Join(tmp, "hub"))
 	os.Unsetenv("HF_HOME")

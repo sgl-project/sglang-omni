@@ -6,6 +6,7 @@ package main
 import (
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -35,6 +36,7 @@ func (a *app) translateSettings(c *ui.Context) {
 	u := a.fui(hotkey.Translate)
 	f := &a.prefs.Features.Translate
 	sectionTitle(c, i18n.T("Translation"))
+	caption(c, i18n.T("How Translate works: speech recognition writes what you said in your own language, then the language model translates it into the target language with the prompt in Your rules. A prompt of your own replaces the built-in one and gets the target language only where it says {{TARGET_LANGUAGE}}. Selected text already in the target language goes into your main language instead."))
 	opts := []string{i18n.T("Automatic (now: %s)", uitext.TargetLanguageLabel(session.TranslateTarget(settings.Settings{General: a.prefs.General}, i18n.Locale(), "")))}
 	for _, code := range compose.TargetLanguages {
 		opts = append(opts, uitext.TargetLanguageLabel(code))
@@ -47,9 +49,9 @@ func (a *app) translateSettings(c *ui.Context) {
 		opts = append(opts, cur)
 	}
 	u.lang = cur // the settings say; a choice saves at once
-	settingRow(c, "tl-target", i18n.T("Translate into"),
-		i18n.T("Automatic is English, or Chinese when your main language is English (Settings → General). The answer card can translate the same text into another language."), func() {
-			if ui.Select(c.Key("tl-target-sel"), &u.lang, opts).Label(i18n.T("Target language")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Changed() {
+	settingRow(c, "tl-target", i18n.T("Target language"),
+		i18n.T("The language model translates into this. Speech recognition writes what you said in your own language. Automatic is English, or Chinese when your main language is English. Text that is all in the target language goes into your main language."), func() {
+			if ui.Select(c.Key("tl-target-sel"), &u.lang, opts).Label(i18n.T("Target language for Translate")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Changed() {
 				code := ""
 				if j := slices.Index(opts, u.lang); j > 0 && j <= len(compose.TargetLanguages) {
 					code = compose.TargetLanguages[j-1]
@@ -57,8 +59,19 @@ func (a *app) translateSettings(c *ui.Context) {
 				a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Target = code })
 			}
 		})
+	// A prompt of its own replaces the built-in one (compose.buildFullPrompt):
+	// without the variable, "into English" in it wins over the menu.
+	if own := promptOf(a.prefs, hotkey.Translate); own != "" && !strings.Contains(own, targetVar) {
+		notice(c, "tl-no-target", noticeWarn, i18n.T("Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing."), "", func() {
+			if ui.Button(c.Key("tl-add-target"), i18n.T("Add {{TARGET_LANGUAGE}} to the prompt")).Clicked() {
+				u := a.fui(hotkey.Translate) // its text: what was typed since the last save too
+				u.prompt = strings.TrimRight(u.prompt, "\n") + "\n\n" + i18n.T("Translate the text into {{TARGET_LANGUAGE}}.")
+				a.savePrompt(hotkey.Translate)
+			}
+		}, nil)
+	}
 	settingRow(c, "tl-cleanup", i18n.T("Basic clean-up"),
-		i18n.T("Cleans up what you say before translating it: fillers, false starts and corrections go, spoken punctuation becomes marks. Selected text is translated as it is."), func() {
+		i18n.T("Cleans up what you say before translating it. Selected text is translated as it is."), func() {
 			if ui.Switch(c.Key("tl-cleanup-switch"), &f.Cleanup).Label(i18n.T("Basic clean-up")).Changed() {
 				on := f.Cleanup
 				a.updateSettings(func(s *settings.Settings) { s.Features.Translate.Cleanup = on })
@@ -67,22 +80,42 @@ func (a *app) translateSettings(c *ui.Context) {
 }
 
 // cardSetting is feature's Answer card section (p is the page's prefix):
-// the switch on Transcribe and Translate, one for both (Rewrite always
-// shows answers in the card), and the card's size, each feature its own.
+// the feature's own card switch and card size. Rewrite's card does more
+// (follow-ups): its page says so, and what turning the switch off gives
+// up.
 func (a *app) cardSetting(c *ui.Context, p, feature string) {
 	sectionTitle(c, i18n.T("Answer card"))
 	f := &a.prefs.Features
-	if feature != hotkey.Rewrite {
-		settingRow(c, p+"-card", i18n.T("Show the result in a card"),
-			i18n.T("Shows transcribed and translated results in the answer card, to read, copy or insert, instead of typing them (or replacing the selection). Transcribe and Translate share this switch. Text that cannot go in, as with no text field in front, shows in the card anyway."), func() {
-				if ui.Switch(c.Key(p+"-card-switch"), &f.ShowCard).Label(i18n.T("Show the result in a card")).Changed() {
-					on := f.ShowCard
-					a.updateSettings(func(s *settings.Settings) { s.Features.ShowCard = on })
+	var on *bool
+	var help string
+	switch feature {
+	case hotkey.Translate:
+		on = &f.Translate.ShowCard
+		help = i18n.T("Shows translations in the answer card instead of typing them.")
+	case hotkey.Rewrite:
+		on = &f.Rewrite.ShowCard
+		help = i18n.T("Shows answers in the answer card, where you can follow up. When off, the answer is typed or replaces the selection.")
+	default:
+		on = &f.Transcribe.ShowCard
+		help = i18n.T("Shows the text in the answer card instead of typing it.")
+	}
+	settingRow(c, p+"-card", i18n.T("Show the result in a card"), help, func() {
+		if ui.Switch(c.Key(p+"-card-switch"), on).Label(i18n.T("Show the result in a card")).Changed() {
+			v := *on
+			a.updateSettings(func(s *settings.Settings) {
+				switch feature {
+				case hotkey.Translate:
+					s.Features.Translate.ShowCard = v
+				case hotkey.Rewrite:
+					s.Features.Rewrite.ShowCard = v
+				default:
+					s.Features.Transcribe.ShowCard = v
 				}
 			})
-	}
+		}
+	})
 	size := f.CardSize(feature)
-	settingRow(c, p+"-card-size", i18n.T("Card size"), i18n.T("A larger card shows more of a long answer before it scrolls. Each feature keeps its own size."), func() {
+	settingRow(c, p+"-card-size", i18n.T("Card size"), "", func() {
 		if ui.Segmented(c.Key(p+"-card-size-seg"), &size, i18n.T("Small"), i18n.T("Medium"), i18n.T("Large")).Label(i18n.T("Card size")).Changed() {
 			a.setCardSize(feature, size)
 		}
@@ -111,7 +144,7 @@ func (a *app) rewriteSettings(c *ui.Context) {
 	f := &a.prefs.Features.Rewrite
 	sectionTitle(c, i18n.T("Rewriting"))
 	settingRow(c, "rw-cleanup", i18n.T("Clean up the instruction"),
-		i18n.T("Reads past fillers, false starts and corrections in what you say (\"shorter, no, more formal\"). It never changes the selected text by itself."), func() {
+		i18n.T("Ignores fillers and false starts in what you say. The selected text is not changed."), func() {
 			if ui.Switch(c.Key("rw-cleanup-switch"), &f.Cleanup).Label(i18n.T("Clean up the instruction")).Changed() {
 				on := f.Cleanup
 				a.updateSettings(func(s *settings.Settings) { s.Features.Rewrite.Cleanup = on })
@@ -121,19 +154,29 @@ func (a *app) rewriteSettings(c *ui.Context) {
 
 // ---- Your rules ----
 
-// variableInfo says what a prompt variable holds.
+// variableInfo says what a prompt variable holds, where its value comes
+// from and which features fill it.
 func variableInfo(name string) string {
 	switch name {
 	case "USER_MAIN_LANGUAGE":
-		return i18n.T("The language you mostly speak (Settings → General).")
+		return i18n.T("Your main language, from General settings. Every feature.")
 	case "USER_OTHER_LANGUAGES":
-		return i18n.T("The other languages you mix in.")
+		return i18n.T("Your other languages, from General settings. Every feature.")
 	case "TARGET_LANGUAGE":
-		return i18n.T("The language to translate into (Translate only).")
+		return i18n.T("The Target language menu on the Translate page. Translate only.")
 	case "APP_NAME":
-		return i18n.T("The app in front (with App enhancement).")
+		return i18n.T("The app in front, when an App enhancement group matches it. The features that group applies to.")
 	}
 	return ""
+}
+
+// featureVariables are the variables feature fills: Translate's target
+// language only in Translate.
+func featureVariables(feature string) []string {
+	if feature == hotkey.Translate {
+		return compose.VariableNames
+	}
+	return slices.DeleteFunc(slices.Clone(compose.VariableNames), func(n string) bool { return n == "TARGET_LANGUAGE" })
 }
 
 // promptOf is a feature's saved rules.
@@ -141,15 +184,22 @@ func promptOf(s settings.Settings, feature string) string {
 	return featureOf(s, feature).Prompt
 }
 
-// promptBuiltin is the built-in system prompt before user overrides.
+// targetVar is the variable that takes Translate's target language.
+const targetVar = "{{TARGET_LANGUAGE}}"
+
+// promptBuiltin is the built-in system prompt before user overrides, the
+// target language left as {{TARGET_LANGUAGE}}: the rules field starts
+// from it, and a prompt edited from it keeps following the menu.
 func (a *app) promptBuiltin(feature string) string {
 	u := a.fui(feature)
 	was := u.prompt
 	wasDirty := u.promptDirty
 	u.prompt = ""
 	u.promptDirty = false
-	out, err := a.composedPreview(feature)
+	in := a.previewInput(feature)
 	u.prompt, u.promptDirty = was, wasDirty
+	in.KeepTarget = true
+	out, err := compose.Build(in)
 	if err != nil {
 		return ""
 	}
@@ -247,42 +297,25 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 		var label, placeholder string
 		switch feature {
 		case hotkey.Translate:
-			caption(c, i18n.T("This is sent to the model as the system prompt. Variables are filled in when you dictate or try a sample."))
 			label = i18n.T("System prompt for Translate")
 			placeholder = i18n.T("For example: use British spelling; keep product names in English; write dates as 15 October 2026.")
 		case hotkey.Rewrite:
-			caption(c, i18n.T("This is sent to the model as the system prompt. Variables are filled in when you dictate or try a sample."))
 			label = i18n.T("System prompt for Rewrite")
 			placeholder = i18n.T("For example: write plainly, without emoji; sign mails with my first name.")
 		default:
-			caption(c, i18n.T("This is sent to the model as the system prompt. Variables are filled in when you dictate or try a sample."))
 			label = i18n.T("System prompt for Transcribe")
 			placeholder = i18n.T("For example: write numbers as digits; keep English product names as they are; end every sentence with a full stop.")
 		}
-		caption(c, i18n.T("Rules act after recognition, on the text the speech model produced. Speech hints (Dictionary page) only tell the speech model which words to expect; punctuation, format and fillers are decided here."))
 		matches := findFolded(u.prompt, u.find)
+		f := &u.finder
+		moved := f.advance(len(matches))
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-			find := searchField(c, p+"-find", &u.find, i18n.T("Find in the prompt"), px(t, 320))
+			find := f.field(c, p+"-find", &u.find, i18n.T("Find in the prompt"), px(t, 320))
 			if u.findFocus {
 				u.findFocus = false
 				find.Focus()
 			}
-			if find.Changed() {
-				u.found = 0
-			}
-			if find.Submitted() && len(matches) > 0 {
-				u.found = u.found%len(matches) + 1
-				u.findSelect = true
-			}
-			switch {
-			case strings.TrimSpace(u.find) == "":
-			case len(matches) == 0:
-				caption(c, i18n.T("Not found")).SingleLine().Shrink(0)
-			case u.found > 0:
-				caption(c, i18n.T("%d of %d", u.found, len(matches))).SingleLine().Shrink(0)
-			default:
-				caption(c, i18n.N(len(matches), "%d match", "%d matches", len(matches))).SingleLine().Shrink(0)
-			}
+			f.count(c, u.find, len(matches))
 		})
 		// As high as the rules, however long: a long prompt reads down the
 		// page, which scrolls to the caret and to what Find selects (MyGo
@@ -291,16 +324,17 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 		if len(matches) > 0 {
 			ranges := make([]ui.TextRange, len(matches))
 			for i, m := range matches {
-				ranges[i] = ui.TextRange{Start: m[0], End: m[1], Color: k.Accent, Weight: 600}
-				if i == u.found-1 {
-					ranges[i].Weight = 800
+				// A text area's runs take no ground: the current match is
+				// heavier, and selected below.
+				ranges[i] = ui.TextRange{Start: m[0], End: m[1], Color: k.Danger, Weight: 700}
+				if i == f.cur-1 {
+					ranges[i].Weight = 900
 				}
 			}
 			in.TextRanges(ranges...)
 		}
-		if u.findSelect && u.found > 0 && u.found <= len(matches) {
-			u.findSelect = false
-			in.SetTextSelection(matches[u.found-1][0], matches[u.found-1][1])
+		if moved {
+			in.SetTextSelection(matches[f.cur-1][0], matches[f.cur-1][1])
 		}
 		if in.Changed() {
 			u.promptDirty = true
@@ -318,7 +352,7 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 			a.savePrompt(feature) // it lost the focus
 		}
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-			caption(c, i18n.T("Variables (click one to copy it):")).Grow(1).MinWidth(0)
+			caption(c, i18n.T("Variables (click to copy):")).Grow(1).MinWidth(0)
 			builtin := a.promptBuiltin(feature)
 			empty := promptOf(a.prefs, feature) == "" && strings.TrimSpace(u.prompt) == strings.TrimSpace(builtin)
 			if ghostIconButton(c.Key(p+"-prompt-reset"), icons.Refresh, i18n.T("Reset to default")).Label(i18n.T("Reset to default prompt")).Disabled(empty).Clicked() {
@@ -326,8 +360,10 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 				a.savePrompt(feature)
 			}
 		})
+		pin := a.previewInput(feature)
+		values := compose.Variables(pin, compose.TemplateSet(pin.MainLanguage))
 		ui.Column(c.Key(p + "-vars")).Gap(px(t, 4)).Children(func() {
-			for _, name := range compose.VariableNames {
+			for _, name := range featureVariables(feature) {
 				token := "{{" + name + "}}"
 				ui.Row(c.Key("var-" + name)).Wrap().GapX(px(t, sp2)).GapY(px(t, 2)).AlignItems(ui.Center).Children(func() {
 					b := ui.ButtonBase(c.Key("copy")).Padding(px(t, 2), px(t, 6)).Radius(px(t, 4)).Background(k.Hover).Label(token).Tooltip(i18n.T("Copy")).Shrink(0)
@@ -341,11 +377,15 @@ func (a *app) featureRules(c *ui.Context, feature string) {
 						c.Services().WriteClipboard(token)
 						a.toast(i18n.T("Copied"))
 					}
-					caption(c, variableInfo(name)).Grow(1).Basis(px(t, 200)).MinWidth(0)
+					now := values[name]
+					if strings.TrimSpace(now) == "" {
+						now = i18n.T("(none)")
+					}
+					caption(c, variableInfo(name)+" "+i18n.T("Now: %s", now)).Grow(1).Basis(px(t, 200)).MinWidth(0)
 				})
 			}
 		})
-		collapsible(c.Key(p+"-preview"), i18n.T("Example user message"), &u.preview, nil, func() {
+		collapsible(c.Key(p+"-preview"), i18n.T("What the language model receives"), &u.preview, nil, func() {
 			a.previewBody(c, feature)
 		})
 	})
@@ -360,6 +400,11 @@ func rewriteSample() (instruction, selection string) {
 // composedPreview is the request a session would send with the settings
 // and the rules as typed, for the sample text.
 func (a *app) composedPreview(feature string) (compose.Output, error) {
+	return compose.Build(a.previewInput(feature))
+}
+
+// previewInput is composedPreview's input.
+func (a *app) previewInput(feature string) compose.Input {
 	g := a.prefs.General
 	in := compose.Input{
 		TaskPrompt: a.fui(feature).prompt, MainLanguage: session.MainLanguage(a.prefs, i18n.Locale()), OtherLanguages: g.OtherLanguages,
@@ -376,33 +421,26 @@ func (a *app) composedPreview(feature string) (compose.Output, error) {
 		f := a.prefs.Features.Transcribe
 		in.Task, in.Cleanup, in.Structure, in.Text = compose.Transcribe, f.Cleanup, f.Structure, trySample()
 	}
-	return compose.Build(in)
+	return in
 }
 
+// previewBody is the whole request, system prompt and messages, with the
+// variables filled in from the settings now.
 func (a *app) previewBody(c *ui.Context, feature string) {
 	t := c.Theme()
-	k := tok(t)
 	p := uitext.FeaturePrefix(feature)
-	switch feature {
-	case hotkey.Transcribe:
-		if !a.prefs.Features.Transcribe.Enhance {
-			caption(c, i18n.T("Clean-up is off: nothing is sent to a language model."))
-		}
-	case hotkey.Translate:
-		caption(c, i18n.T("Spoken text, as below; selected text is translated without the clean-up and keeps its form."))
-	case hotkey.Rewrite:
-		caption(c, i18n.T("With a selection, as below; with nothing selected the model writes from the instruction and answers with a title and the text."))
+	if feature == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {
+		caption(c, i18n.T("Clean-up is off, so nothing is sent to a language model."))
 	}
 	out, err := a.composedPreview(feature)
 	if err != nil {
 		caption(c, err.Error())
 		return
 	}
-	caption(c, i18n.T("Your dictionary's terms and App enhancement's scene are added to the system prompt when they apply."))
-	ui.Column(c.Key(p + "-preview-user")).Gap(px(t, 4)).Children(func() {
-		ui.Text(c, i18n.T("Example user message")).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
-		fillCard(c).Padding(px(t, sp3)).Children(func() {
-			ui.Text(c, out.User).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
-		})
+	caption(c, i18n.T("Your rules with the variables filled in from your settings now, for a sample input. When the personal dictionary is on, it goes right after the system prompt: see How it is used on the Dictionary page."))
+	ui.Column(c.Key(p + "-preview-msgs")).Gap(px(t, sp2)).Children(func() {
+		for i, m := range out.Messages() {
+			promptCard(c, "msg-"+strconv.Itoa(i), m.Role, m.Content)
+		}
 	})
 }

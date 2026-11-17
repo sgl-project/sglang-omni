@@ -109,6 +109,11 @@ func (a *ASR) Spec() Spec { return a.spec.clone() }
 // the model loads while the user speaks).
 func (a *ASR) Warm() { a.rt.Warm(a.spec, a.dir, a.draft) }
 
+// Hold keeps this model's server loaded until release (meeting capture).
+func (a *ASR) Hold(ctx context.Context) (func(), error) {
+	return a.rt.Hold(ctx, HoldTarget{Spec: a.spec, Dir: a.dir, Draft: a.draft})
+}
+
 // Caps: it streams (a live preview, then the Final) and transcribes
 // files; a model with a context takes hints (the context bias) and a
 // prompt.

@@ -3,7 +3,7 @@
 Use the OpenAI-compatible `/v1/audio/speech` interface to synthesize text. This
 page covers common part in TTS cookbook inlcluding: model setup, required inputs, and
 implementation-specific options belong in the linked cookbooks. The examples
-use [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints), which accepts text-only requests. Replace the model and add any fields required by your checkpoint.
+use [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice), which accepts text-only requests. Replace the model and add any fields required by your checkpoint.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ model you are serving.
 |---|---|---|
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | Yes | Text-only or voice cloning with `references` |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | Yes | Reference audio or a precomputed speaker embedding |
-| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints) | Yes | Built-in speakers; 1.7B supports instruction control |
+| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice) | Yes | Built-in speakers; 1.7B supports instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | Yes | `task_type: "VoiceDesign"` and non-empty `instructions`; checkpoint `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` uses `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` |
 | [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | Yes | One reference clip; cloning, cross-lingual and instruction modes |
 | [MOSS-TTS](../cookbook/moss_tts.md) | Yes | Optional reference and model-specific duration control |
@@ -30,7 +30,8 @@ model you are serving.
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | Yes | Optional reference and transcript; `initial_codec_chunk_frames` is rejected |
 | [Ming-3.0-TTS](../cookbook/ming3_tts.md) | CUDA; CPU decodes a complete waveform | Optional reference; the Tiny and 0.5B checkpoints handle `ref_text` differently |
 | [Ming-3.0 audio](../cookbook/ming3_audio.md) | See cookbook | Speech uses one reference clip and its transcript |
-| [ZONOS2](../cookbook/zonos2.md) | Yes | Reference cloning and model-specific chunk configuration |
+| [Zonos2](../cookbook/zonos2.md) | Yes | Reference cloning and model-specific chunk configuration |
+| [Zonos3](../cookbook/zonos3.md) | Yes | Optional reference clip; no transcript needed |
 | [AuK](../cookbook/auk.md) | No | Serial, non-streaming engine; `stage_params.auk_engine.gen_seconds` is required for speech |
 
 Ming-Omni-TTS sets its first and steady chunk cadence through the
@@ -379,6 +380,39 @@ curl --fail-with-body -sS -X POST http://localhost:8000/v1/audio/speech \
 
 To stream the same reference, add `"stream": true` and use the [streaming examples](#streaming). The example allows `us.aws.cdn.hf.co`, the redirect host observed for this clip; if the download redirects to a different host, allow that host too.
 
+## Voice Design
+
+Voice design generates a voice from a text description without reference audio. Support and required fields vary by model. Describing a voice is different from controlling the speaking style of a preset or reference voice.
+
+### Qwen3-TTS VoiceDesign
+
+This example requires the 1.7B VoiceDesign checkpoint, not CustomVoice or Base. The `task_type: "VoiceDesign"` setting is specific to Qwen3-TTS.
+
+Launch VoiceDesign:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --config examples/configs/qwen3_tts_1_7b_voicedesign.yaml \
+  --port 8000
+```
+
+After `/health` returns HTTP 200, provide the text to speak in `input` and a non-empty voice description in `instructions`. Omit `voice` and reference-audio fields.
+
+```bash
+curl --fail-with-body http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    "input": "Hello from Qwen VoiceDesign.",
+    "task_type": "VoiceDesign",
+    "instructions": "A warm, natural young adult voice."
+  }' \
+  --output designed-voice.wav
+```
+
+To stream the generated speech, add `"stream": true` and use the [streaming examples](#streaming). See the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md#voicedesign) for model selection and configuration details.
+
 ## Batch Speech
 
 Use `/v1/audio/speech/batch` when one request should synthesize several
@@ -479,7 +513,7 @@ These fields are accepted by the shared speech endpoint. Model support and defau
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw WAV streaming by default. Set `response_format="pcm"` for raw PCM, or `stream_format="sse"` for SSE events |
 | `stream_format` | string | `"audio"` | Streaming transport: `audio` returns raw WAV or PCM bytes when streaming is enabled; `sse` enables SSE even when `stream` is omitted or false. SSE uses data-only `message` events by default. The server startup flag `--enable-speech-sse-named-events` selects the framing and error type shown in the [SSE Event Framing table](#sse-event-framing) |
-| `initial_codec_chunk_frames` | int | `null` | Model-specific first streaming chunk override. Qwen3-TTS, Higgs, MOSS-TTS Local, and ZONOS2 document support; `0` selects their steady chunk size. Ming-Omni-TTS rejects this field |
+| `initial_codec_chunk_frames` | int | `null` | Model-specific first streaming chunk override. Qwen3-TTS, Higgs, MOSS-TTS Local, and Zonos2 document support; `0` selects their steady chunk size. Ming-Omni-TTS rejects this field |
 | `stream_codec_output` | bool | `true` | Qwen3-TTS only. Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice / VoiceDesign |
 | `suppress_bootstrap_silence` | bool | `true` | Qwen3-TTS only. Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output on validated voice/language pairs; an audible first frame is always emitted unchanged. Set `false` to keep the leading silence |
 | `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path / file URL / data URL / remote URL) and `text`. For Qwen3-TTS Base, the only item may instead carry `speaker_embedding`: the x-vector the same checkpoint's speaker encoder computes from the clip, 1024 numbers for 0.6B and 2048 for 1.7B, each finite in the model's dtype, which implies x-vector-only mode |

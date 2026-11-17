@@ -26,10 +26,12 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// entryRetry is the retry running: its entry and stage ("" for none).
+// entryRetry is the retry running: its entry and stage ("" for none),
+// and the language model's answer so far (the details show it).
 type entryRetry struct {
 	id    string
 	stage session.State
+	draft string
 }
 
 // retryWanted: the entry failed or kept no text, so its recording is
@@ -78,6 +80,12 @@ func (a *app) retryEntry(e store.Entry) {
 			a.post(func() {
 				if a.hist.retry.id == e.ID {
 					a.hist.retry.stage = st
+				}
+			})
+		}, OnDraft: func(d string) {
+			a.post(func() {
+				if a.hist.retry.id == e.ID {
+					a.hist.retry.draft = d
 				}
 			})
 		}})
@@ -131,7 +139,7 @@ func (a *app) entryStatus(c *ui.Context, e store.Entry) {
 		})
 	case e.Audio != "" && retryWanted(e):
 		b := ui.ButtonBase(c.Key("hist-retry-chip")).Padding(px(t, 1), px(t, 6)).Radius(px(t, 4)).Gap(px(t, 3)).AlignItems(ui.Center).Shrink(0).
-			Label(i18n.T("Retry")).Tooltip(i18n.T("Recognise its recording again")).Disabled(a.hist.retry.id != "")
+			Label(i18n.T("Retry")).Tooltip(i18n.T("Recognise the recording again")).Disabled(a.hist.retry.id != "")
 		bg := k.Hover
 		if b.Hovered() && a.hist.retry.id == "" {
 			bg = k.Pressed
@@ -165,7 +173,7 @@ func (a *app) entryRetryButton(c *ui.Context, e store.Entry) {
 	label := retryLabel(e)
 	b := secondaryIconButton(c.Key("hist-detail-retry"), icons.Refresh, label).Label(label).Disabled(a.hist.retry.id != "")
 	if !retryWanted(e) {
-		b.Tooltip(i18n.T("Recognise its recording again: the entry gets the new text, nothing is inserted"))
+		b.Tooltip(i18n.T("Recognise the recording again. Nothing is inserted."))
 	}
 	if b.Clicked() {
 		a.retryEntry(e)
@@ -205,7 +213,7 @@ func recordingKeptText(e store.Entry) string {
 		return ""
 	}
 	if e.Status == store.StatusCancelled {
-		return i18n.T("Recording kept for Retry; deleted after %s.", i18n.DateTime(e.AudioUntil))
+		return i18n.T("Recording kept until %s so you can retry.", i18n.DateTime(e.AudioUntil))
 	}
-	return i18n.T("Recording kept because recognition failed; deleted after %s.", i18n.DateTime(e.AudioUntil))
+	return i18n.T("Recording kept until %s because recognition failed.", i18n.DateTime(e.AudioUntil))
 }

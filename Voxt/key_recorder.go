@@ -145,7 +145,7 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 	})
 	switch {
 	case r.recordDenied:
-		warnLine(c, i18n.T("Recording a shortcut needs Accessibility permission."))
+		warnLine(c, i18n.T("Recording a shortcut needs Accessibility access."))
 		ui.Row(c).Children(func() {
 			if ghostButton(c.Key("record-open-perms"), i18n.T("Open Permissions")).Clicked() {
 				a.navigate("/settings/permissions")
@@ -157,13 +157,13 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 		if a.helperRecordsKeys() {
 			caption(c, i18n.T("Press the shortcut you want, including fn, a left or right modifier, or a mouse button. Each press replaces the last."))
 		} else {
-			caption(c, i18n.T("Press the keys you want, as ⌥Space. Each press replaces the last."))
+			caption(c, i18n.T("Press the keys you want, such as ⌥Space. Each press replaces the last."))
 		}
 	default:
 		if a.helperRecordsKeys() {
 			caption(c, i18n.T("Click the field, then press the shortcut, including fn, a left or right modifier, or a mouse button."))
 		} else {
-			caption(c, i18n.T("Click the field and press the keys, as ⌥Space. fn, a left or right modifier and mouse buttons need Accessibility: open Permissions."))
+			caption(c, i18n.T("Click the field and press the keys, such as ⌥Space. To use fn, a left or right modifier or a mouse button, allow Accessibility in Permissions."))
 		}
 	}
 	if ghostButton(c.Key("type-keys"), i18n.T("Type the keys instead")).Clicked() {

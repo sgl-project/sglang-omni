@@ -34,6 +34,7 @@ var navGroups = []navGroup{
 		{"/translate", "Translate", translateIcon},
 		{"/rewrite", "Rewrite", rewriteIcon},
 		{"/notes", "Notes", notesIcon},
+		{"/meetings", "Meetings", meetingIcon},
 		{"/app-enhancement", "App enhancement", appEnhancementIcon},
 	}},
 	{"Resources", []navPage{
@@ -43,8 +44,13 @@ var navGroups = []navGroup{
 	}},
 	{"System", []navPage{
 		{"/logs", "Logs", logsIcon},
+		{settingsPath, "Settings", settingsIcon}, // the dialog over the page, not a page of the router
 	}},
 }
+
+// settingsPath opens the settings dialog (navigate), at the section shown
+// last.
+const settingsPath = "/settings"
 
 // shortcutPages are the pages ⌘1…⌘6 open, in that order.
 var shortcutPages = []string{"/home", "/history", "/transcribe", "/translate", "/rewrite", "/app-enhancement"}
@@ -55,11 +61,16 @@ func (a *app) pageHidden(path string) bool {
 	return a.prefs.Features.IsHidden(strings.TrimPrefix(path, "/"))
 }
 
-// pages are every page of the sidebar, in its order.
+// pages are every page of the sidebar, in its order: the router's pages,
+// so not Settings, whose item opens its dialog.
 var pages = func() []navPage {
 	var out []navPage
 	for _, g := range navGroups {
-		out = append(out, g.pages...)
+		for _, p := range g.pages {
+			if p.path != settingsPath {
+				out = append(out, p)
+			}
+		}
 	}
 	return out
 }()
@@ -111,6 +122,8 @@ func pageTitle(path string) string {
 		return i18n.T("Rewrite")
 	case "/notes":
 		return i18n.T("Notes")
+	case "/meetings":
+		return i18n.T("Meetings")
 	case "/app-enhancement":
 		return i18n.T("App enhancement")
 	case modelsPath:
@@ -121,7 +134,7 @@ func pageTitle(path string) string {
 		return i18n.T("Dictionary")
 	case "/logs":
 		return i18n.T("Logs")
-	case "/settings":
+	case settingsPath:
 		return i18n.T("Settings")
 	}
 	return path
@@ -145,7 +158,9 @@ var (
 	remoteIcon         = icons.Cloud
 	dictionaryIcon     = icons.NotebookBookmark
 	notesIcon          = icons.Notes
+	meetingIcon        = icons.MicrophoneLarge
 	permissionsIcon    = icons.ShieldKeyhole
 	logsIcon           = icons.ClipboardList
+	settingsIcon       = icons.Settings
 	searchIcon         = icons.Magnifer
 )

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -35,9 +36,13 @@ func (r *run) transcribe(text string) {
 	result := text
 	var problem *Problem
 	if f := r.settings.Features.Transcribe; f.Enhance && r.svc.LLM != nil {
-		r.m.update(r, func(s *Snapshot) { s.State = Composing })
+		card := f.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
+		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
 		llmStart := r.now()
-		cleaned, profile, err := r.cleanUp(text)
+		cleaned, profile, err := r.cleanUp(text, nil)
+		for r.askAgain() {
+			cleaned, profile, err = r.cleanUp(text, r.thinking())
+		}
 		llmTime := r.now().Sub(llmStart)
 		if r.cancelled.Load() {
 			r.endCancelled(nil)
@@ -46,6 +51,9 @@ func (r *run) transcribe(text string) {
 		r.m.update(r, func(s *Snapshot) { s.Profile, s.Timings.LLM = profile, llmTime })
 		result = cleaned
 		switch {
+		case r.skipped.Load():
+			r.logf("info", "the language model was skipped after %v: the text goes on as recognised", llmTime.Round(time.Millisecond))
+			result = text
 		case err != nil:
 			r.logf("warning", "language model %s (%s) failed after %v, the text goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
 			problem = &Problem{Code: ProblemLLM, Err: err, Degraded: true}
@@ -57,7 +65,7 @@ func (r *run) transcribe(text string) {
 		}
 	}
 	var o finishOpts
-	if r.settings.Features.ShowCard {
+	if r.settings.Features.Transcribe.ShowCard {
 		o.card = deliver.ReasonCard
 	}
 	r.finish(Done, problem, result, o)
@@ -67,7 +75,8 @@ func (r *run) transcribe(text string) {
 // answer streaming into the snapshot's Draft after those before it. A
 // part that fails keeps its text as recognised; err is the first
 // failure (the text itself when the request could not be composed).
-func (r *run) cleanUp(text string) (string, string, error) {
+// think overrides the service's thinking (nil: its setting).
+func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) {
 	parts, err := compose.BuildParts(r.transcribeInput(text))
 	if err != nil {
 		return text, "", err
@@ -79,11 +88,11 @@ func (r *run) cleanUp(text string) (string, string, error) {
 	var failed error
 	for i, p := range parts {
 		draft := newDrafter(r, parts[:i+1], answers)
-		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, OnDelta: draft.add}
-		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.m.cfg.LLMTimeout))
+		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, InputChars: utf8.RuneCountInString(text), OnDelta: draft.add}
+		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
 		switch {
-		case r.ctx.Err() != nil:
-			return text, p.Profile(), r.ctx.Err()
+		case r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():
+			return text, p.Profile(), err
 		case err != nil:
 			if len(parts) > 1 {
 				err = fmt.Errorf("piece %d of %d: %w", i+1, len(parts), err)
@@ -142,4 +151,29 @@ func (d *drafter) publish() {
 func (d *drafter) done(answers []string) {
 	draft := compose.JoinParts(d.parts, answers)
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
+}
+
+// askAgain says whether Rethink chose another level for the answer under
+// way (and nothing ended it since), and readies its request: a new
+// llmCtx, an empty draft.
+func (r *run) askAgain() bool {
+	if !r.rethink.Load() || r.cancelled.Load() || r.skipped.Load() || r.stopped.Load() {
+		return false
+	}
+	r.m.mu.Lock()
+	r.rethink.Store(false)
+	think := r.think
+	r.llmCtx, r.llmStop = context.WithCancel(r.ctx)
+	r.m.mu.Unlock()
+	r.logf("info", "asking the language model again at the thinking level chosen: %+v", think)
+	r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = "", "" })
+	return true
+}
+
+// thinking is the level the requests ask with: Rethink's, else the
+// session's (StartRequest.Thinking; nil: the service's setting).
+func (r *run) thinking() *llm.Thinking {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	return r.think
 }

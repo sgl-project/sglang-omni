@@ -18,8 +18,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/sqlite"
@@ -166,7 +168,7 @@ func parseLegacyExport(data []byte) (terms []store.Term, skipped int, err error)
 }
 
 // legacyKinds maps the previous Voxt's history kinds to this app's; its
-// "transcript" entries (meetings and file transcription) have no place here.
+// "transcript" entries go to meetings (legacy_import_meetings.go), not history.
 var legacyKinds = map[string]store.Kind{"normal": store.KindTranscribe, "translation": store.KindTranslate, "rewrite": store.KindRewrite}
 
 // readLegacyHistory reads the previous Voxt's history: the text of each
@@ -192,7 +194,13 @@ func readLegacyHistory(ctx context.Context, path string) (entries []store.Entry,
 		id, _ := v[0].(string)
 		text, _ := v[1].(string)
 		kind, ok := legacyKinds[fmt.Sprint(v[3])]
-		if !ok || strings.TrimSpace(text) == "" {
+		if !ok {
+			if fmt.Sprint(v[3]) != "transcript" {
+				skipped++
+			}
+			continue
+		}
+		if strings.TrimSpace(text) == "" {
 			skipped++
 			continue
 		}
@@ -228,6 +236,11 @@ const linkImportLegacy = "action:import-legacy"
 // posted: once, so a dismissed card stays away.
 const legacyOffered = "legacy-import-offered"
 
+// legacyEnhanceSettled is the document that says an import has read the
+// previous Voxt's Transcribe clean-up switch: only the first applies it, so
+// importing again cannot undo what the user turned on since.
+const legacyEnhanceSettled = "legacy-enhance-settled"
+
 // offerLegacy posts, once, a card offering the previous Voxt's data to who
 // will not see the setup guide's: who set up a version without the import
 // (2.0.0) and then installed this one.
@@ -261,7 +274,7 @@ func (a *app) importLegacy() {
 	}
 	go func() {
 		files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import from Voxt 1.x"),
-			Message:     i18n.T("This is the previous Voxt's data. Click Import to bring its dictionary, history and settings over; the previous Voxt keeps everything as it is."),
+			Message:     i18n.T("Click Import to bring over its dictionary, history and settings. The previous Voxt keeps all its data."),
 			ButtonLabel: i18n.T("Import"), DefaultPath: lib, Directory: true})
 		if err != nil || len(files) == 0 {
 			return
@@ -272,7 +285,15 @@ func (a *app) importLegacy() {
 
 func (a *app) importLegacyFrom(picked string) {
 	a.dv.importing = true
-	repo, hist, mods, docs, prefs := a.lib.store.Dictionary(), a.lib.store.History(), a.models, a.lib.store.Documents(), a.settings
+	repo, hist, mods, docs, prefs, kr := a.lib.store.Dictionary(), a.lib.store.History(), a.models, a.lib.store.Documents(), a.settings, a.keys
+	// savedKey reads the Keychain itself: a key the app has not read yet would look missing.
+	savedKey := func(kind local.Kind, id string) bool {
+		if kr == nil {
+			return false
+		}
+		key, err := kr.Get(providers.Account(kind, id))
+		return err == nil && key != ""
+	}
 	a.async(func() {
 		done := false // the dictionary came over: the card offers the import again, quietly
 		report := func() legacyReport {
@@ -286,9 +307,9 @@ func (a *app) importLegacyFrom(picked string) {
 			if err != nil {
 				log.Printf("legacy import: %s: %v", path, err)
 				if strings.Contains(err.Error(), "no such table") {
-					return legacyReport{failed: i18n.T("This folder is not the previous Voxt's. Nothing was imported.")}
+					return legacyReport{failed: i18n.T("This is not the previous Voxt's data folder. Nothing was imported.")}
 				}
-				return legacyReport{failed: i18n.T("The previous Voxt's dictionary could not be read; it may be damaged. Nothing was imported.")}
+				return legacyReport{failed: i18n.T("The previous Voxt's dictionary could not be read and may be damaged. Nothing was imported.")}
 			}
 			added, updated, err := mergeImported(ctx, repo, terms)
 			if err != nil {
@@ -309,7 +330,22 @@ func (a *app) importLegacyFrom(picked string) {
 				return r
 			}
 			if histSkipped > 0 {
-				r.skipped = append(r.skipped, i18n.N(histSkipped, "%d history entry: a meeting or empty", "%d history entries: meetings or empty", histSkipped))
+				r.skipped = append(r.skipped, i18n.N(histSkipped, "%d history entry: empty", "%d history entries: empty", histSkipped))
+			}
+			voxtDir := filepath.Dir(path)
+			meetStats, err := mergeLegacyMeetings(ctx, a.lib.store.Meetings(), a.lib.store.Dir(), voxtDir, path)
+			if err != nil {
+				log.Printf("legacy import: meetings: %v", err)
+			} else {
+				if meetStats.imported > 0 {
+					r.imported = append(r.imported, i18n.N(meetStats.imported, "Meetings: %d session", "Meetings: %d sessions", meetStats.imported))
+				}
+				if meetStats.fileSkipped > 0 {
+					r.skipped = append(r.skipped, i18n.N(meetStats.fileSkipped, "%d file transcript: left in the previous Voxt", "%d file transcripts: left in the previous Voxt", meetStats.fileSkipped))
+				}
+				if meetStats.incomplete > 0 {
+					r.skipped = append(r.skipped, i18n.N(meetStats.incomplete, "%d meeting transcript: not enough detail", "%d meeting transcripts: not enough detail", meetStats.incomplete))
+				}
 			}
 			n := 0
 			for _, e := range entries {
@@ -323,9 +359,18 @@ func (a *app) importLegacyFrom(picked string) {
 			if n > 0 {
 				r.imported = append(r.imported, i18n.N(n, "History: %d entry", "History: %d entries", n))
 			}
-			voxtDir := filepath.Dir(path)
+			if !legacyPreferencesReadable(voxtDir) {
+				r.skipped = append(r.skipped, i18n.T("Settings (language models, speech services, prompts): the previous Voxt's preferences could not be read"))
+			}
+			features := legacyPreference(voxtDir, "featureSettings")
 			l := parseLegacySettings(legacyPreference(voxtDir, "remoteLLMProviderConfigurations"), legacyPreference(voxtDir, "remoteASRProviderConfigurations"),
-				legacyPreference(voxtDir, "featureSettings"), legacyPreference(voxtDir, "mlxLocalASRTuningSettings"))
+				features, legacyPreference(voxtDir, "mlxLocalASRTuningSettings"))
+			if _, settled, err := docs.Get(ctx, legacyEnhanceSettled); err == nil && settled {
+				l.enhanceOff = false
+			}
+			if line := l.codexLeftOut(); line != "" {
+				r.skipped = append(r.skipped, line)
+			}
 			// The models first: a feature keeps its local speech model when it came over.
 			if ids, bytes := reuseLegacyModels(ctx, mods, voxtDir); len(ids) > 0 {
 				n := 0 // the tokenizers are not counted
@@ -343,9 +388,22 @@ func (a *app) importLegacyFrom(picked string) {
 			}
 			var llmServices, speechServices []settings.Provider
 			prompts := 0
-			if err := prefs.Update(ctx, func(s *settings.Settings) { llmServices, speechServices, prompts = l.apply(s) }); err != nil {
+			if err := prefs.Update(ctx, func(s *settings.Settings) {
+				llmServices, speechServices, prompts = l.apply(s, voxtDir)
+				legacyApplyGeneral(voxtDir, s)
+			}); err != nil {
 				log.Printf("legacy import: settings: %v", err)
 				llmServices, speechServices, prompts = nil, nil, 0 // not saved: nothing came over
+			} else {
+				settled := []string{legacyDockSettled}
+				if features != "" {
+					settled = append(settled, legacyEnhanceSettled)
+				}
+				for _, id := range settled {
+					if err := docs.Put(ctx, id, []byte("true")); err != nil {
+						log.Printf("legacy import: %v", err)
+					}
+				}
 			}
 			if n := len(llmServices); n > 0 {
 				r.imported = append(r.imported, i18n.N(n, "%d language model service", "%d language model services", n))
@@ -357,20 +415,32 @@ func (a *app) importLegacyFrom(picked string) {
 				r.imported = append(r.imported, i18n.N(prompts, "%d prompt", "%d prompts", prompts))
 			}
 			// The keys stay in the previous Voxt's Keychain: each service
-			// that needs one is to complete.
+			// that needs one, or had one there, is to complete.
 			for _, p := range llmServices {
-				if missing := providers.Missing(p, false); missing != "" {
+				hasKey := savedKey(local.LLM, p.ID)
+				missing := providers.Missing(p, hasKey)
+				if missing == providers.MissingAddress { // its own to-do follows
+					missing = ""
+				}
+				if missing == "" && !hasKey && slices.Contains(l.keyedLLM, p.ID) {
+					missing = providers.MissingKey
+				}
+				if missing != "" {
 					r.todo = append(r.todo, legacyTodo{text: setupNeedsText(local.LLM, p, missing), kind: local.LLM, id: p.ID})
 				}
 			}
 			for _, p := range speechServices {
-				if !providers.SpeechKeyOptional(p) {
+				if !providers.SpeechKeyOptional(p) && !savedKey(local.ASR, p.ID) {
 					r.todo = append(r.todo, legacyTodo{text: setupNeedsText(local.ASR, p, providers.MissingKey), kind: local.ASR, id: p.ID})
 				}
 			}
 			llmCheck, speechCheck := l.toCheck(llmServices, speechServices)
 			for _, p := range llmCheck {
-				r.todo = append(r.todo, legacyTodo{text: i18n.T("Check %s: its address or model may not work as it did in the previous Voxt.", uitext.PresetName(p.ID)), kind: local.LLM, id: p.ID})
+				text := i18n.T("Check %s: its address or model may not work as it did in the previous Voxt.", uitext.PresetName(p.ID))
+				if slices.Contains(l.refusedLLM, p.ID) {
+					text = setupNeedsText(local.LLM, p, providers.MissingAddress)
+				}
+				r.todo = append(r.todo, legacyTodo{text: text, kind: local.LLM, id: p.ID})
 			}
 			for _, p := range speechCheck {
 				r.todo = append(r.todo, legacyTodo{text: i18n.T("Check %s: its address or model may not work as it did in the previous Voxt.", uitext.SpeechName(p.ID)), kind: local.ASR, id: p.ID})
@@ -394,4 +464,36 @@ func (a *app) importLegacyFrom(picked string) {
 			a.loadDict()
 		})
 	})
+}
+
+// legacyInputVars are the previous Voxt's variables for the input, which is
+// never in the rules here.
+var legacyInputVars = strings.NewReplacer("{{RAW_TRANSCRIPTION}}", "", "{{SOURCE_TEXT}}", "", "{{DICTATED_PROMPT}}", "")
+
+// legacyWithoutInput is p without those variables. Only the lines that held
+// one are tidied: their spacing closes up, and a line left with only its
+// label ("Text:") goes.
+func legacyWithoutInput(p string) string {
+	var kept []string
+	for _, line := range strings.Split(p, "\n") {
+		if out := legacyInputVars.Replace(line); out != line {
+			line = strings.Join(strings.Fields(out), " ")
+			if line == "" || legacyLoneLabel(line) {
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// legacyLoneLabel reports whether line, its variable gone, is only a label
+// ("Text:", "原文："): one short word. Any other line ending in a colon has
+// an instruction in it ("Apply this request:", "把下面的话翻译成英文：").
+func legacyLoneLabel(line string) bool {
+	label, ok := strings.CutSuffix(line, ":")
+	if !ok {
+		label, ok = strings.CutSuffix(line, "：")
+	}
+	return ok && !strings.Contains(label, " ") && utf8.RuneCountInString(label) <= 6
 }

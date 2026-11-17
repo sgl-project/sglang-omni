@@ -38,6 +38,9 @@ type Provider struct {
 	RecognitionPrompt string `json:"recognitionPrompt,omitempty"`
 	// Generation is a language model's request settings (unset: Voxt's).
 	Generation Generation `json:"generation,omitzero"`
+	// APIFormat is how a language model is called (OpenAI and custom
+	// services only): "" chat completions, "responses" the Responses API.
+	APIFormat string `json:"apiFormat,omitempty"`
 }
 
 // Generation is a language model setup's request settings, the fields of
@@ -67,9 +70,12 @@ type Generation struct {
 	Thinking       string `json:"thinking,omitempty"`
 	ThinkingEffort string `json:"thinkingEffort,omitempty"`
 	ThinkingBudget int    `json:"thinkingBudget,omitempty"`
-	Verbosity      string `json:"verbosity,omitempty"`    // OpenAI's
-	KeepAlive      string `json:"keepAlive,omitempty"`    // Ollama's
-	IncludeUsage   *bool  `json:"includeUsage,omitempty"` // oMLX's
+	// ThinkingOffUnder: an input of fewer characters is sent with
+	// Voxt's default thinking (off where the service lets it); 0: never.
+	ThinkingOffUnder int    `json:"thinkingOffUnder,omitempty"`
+	Verbosity        string `json:"verbosity,omitempty"`    // OpenAI's
+	KeepAlive        string `json:"keepAlive,omitempty"`    // Ollama's
+	IncludeUsage     *bool  `json:"includeUsage,omitempty"` // oMLX's
 	// ExtraBodyJSON is the dialog's Request parameters: a JSON object
 	// applied to the request body last as a JSON merge patch (RFC 7386),
 	// so its keys win, an object merges into the one Voxt sends (Ollama's

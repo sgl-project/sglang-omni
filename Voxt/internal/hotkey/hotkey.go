@@ -290,6 +290,8 @@ const (
 	// Note is the binding id of Features.Note: it starts a Transcribe
 	// session whose text becomes a note.
 	Note = "note"
+	// Meeting is Features.Meeting's binding id (dev builds).
+	Meeting = "meeting"
 )
 
 // Features lists the three features in the settings' order.
@@ -301,11 +303,21 @@ func ID(feature string, i int) string { return feature + "/" + strconv.Itoa(i) }
 // ParseID splits a binding id: ("transcribe", 0, true); PasteLast and
 // Note are (id, 0, true); "cancel" and others are false.
 func ParseID(id string) (feature string, index int, ok bool) {
-	if id == PasteLast || id == Note {
+	if id == PasteLast || id == Note || id == Meeting {
 		return id, 0, true
 	}
 	f, n, found := strings.Cut(id, "/")
-	if !found || !slices.Contains(Features, f) {
+	if !found {
+		return "", 0, false
+	}
+	if f == Meeting {
+		i, err := strconv.Atoi(n)
+		if err != nil || i < 0 {
+			return "", 0, false
+		}
+		return f, i, true
+	}
+	if !slices.Contains(Features, f) {
 		return "", 0, false
 	}
 	i, err := strconv.Atoi(n)
@@ -337,6 +349,8 @@ func HotkeysOf(f settings.Features, feature string) []settings.Hotkey {
 			return nil
 		}
 		return []settings.Hotkey{f.Note}
+	case Meeting:
+		return f.Meeting.Hotkeys
 	}
 	return f.Transcribe.Hotkeys
 }
@@ -406,6 +420,11 @@ func Build(f settings.Features, enabled []string) Plan {
 	}
 	if f.Note.Keys != "" {
 		add(Note, f.Note, proto.BehaviorTap)
+	}
+	if slices.Contains(enabled, Meeting) {
+		for i, h := range f.Meeting.Hotkeys {
+			add(ID(Meeting, i), h, Behavior(h.Trigger))
+		}
 	}
 	if f.Cancel.Keys != "" {
 		if c, err := Parse(f.Cancel.Keys); err == nil {

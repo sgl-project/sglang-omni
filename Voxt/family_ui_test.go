@@ -174,7 +174,7 @@ func TestOnboardingAlternative(t *testing.T) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
 	}
-	if hasPrefix(tt, "Download (") || has(tt, "Ready: Qwen3-ASR 0.6B (4bit)") {
+	if hasPrefix(tt, "Download and continue") || has(tt, "Ready: Qwen3-ASR 0.6B (4bit)") {
 		t.Errorf("the speech model is in the step's Download, or ready: %q", tt.Texts())
 	}
 

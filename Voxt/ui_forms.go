@@ -26,7 +26,8 @@ type numOpts struct {
 	Label, Tooltip string
 	Width          float32 // of the whole control; 0 for the default
 	Disabled       bool
-	Grow           bool // take the width the row leaves
+	Grow           bool  // take the width the row leaves
+	Over           *bool // set to whether the typed text is a number over hi
 }
 
 // numberInput is a field for *value in [lo, hi] by step, with a − and +
@@ -78,6 +79,10 @@ func numberInput(c *ui.Context, value *float64, lo, hi, step float64, o numOpts)
 		if !in.Focused() {
 			*text = format(*value) // what the app set, or what was typed, in full
 		}
+		if o.Over != nil {
+			v, err := strconv.ParseFloat(strings.TrimSpace(*text), 64)
+			*o.Over = err == nil && v > hi
+		}
 		ui.Row(c.Key("steps")).AlignItems(ui.Stretch).Radius(px(t, radiusControl)).Border(1, k.Line).Shrink(0).Children(func() {
 			step1 := func(key string, ic icons.Icon, label string, delta float64, off bool) {
 				b := ui.ButtonBase(c.Key(key)).Width(px(t, 28)).Center().Label(label).Tooltip(label).Disabled(o.Disabled || off)
@@ -111,20 +116,6 @@ func numberInput(c *ui.Context, value *float64, lo, hi, step float64, o numOpts)
 		row.Grow(1).MinWidth(0)
 	}
 	return changed
-}
-
-// popoverWithFooter is a popover's content: body in a scroll as tall as
-// the window allows, and footer (Reset…) pinned under it, past a hairline,
-// so it shows however long the body is.
-func popoverWithFooter(c *ui.Context, key string, footer, body func()) {
-	t := c.Theme()
-	_, h := c.Size()
-	maxH := max(px(t, 180), min(px(t, 420), h*0.4)) // room above or below the button it opens from
-	ui.Column(c.Key(key + "-pop-frame")).Children(func() {
-		ui.Scroll(c.Key(key + "-pop-scroll")).MaxHeight(maxH).Children(body)
-		ui.Divider(c)
-		ui.Column(c.Key(key + "-pop-footer")).Padding(px(t, 10)).AlignItems(ui.Stretch).Children(footer)
-	})
 }
 
 // segmentedSome is ui.Segmented (as wide as its segments, as

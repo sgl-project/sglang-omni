@@ -500,30 +500,35 @@ func TestMuteOutput(t *testing.T) {
 	}
 }
 
-// TestMigrateShowCard: Translate's card switch, the only one before,
-// becomes every feature's; a document saved since keeps its choice.
+// TestMigrateShowCard: each feature has its own card switch. The one
+// switch of the 2.0.3 betas (features.showCard), on, turns all three on;
+// Translate's own (2.0.1's) is read as it is; Rewrite's is on unless the
+// document says off.
 func TestMigrateShowCard(t *testing.T) {
+	type cards struct{ transcribe, translate, rewrite bool }
 	for _, tc := range []struct {
 		doc  string
-		want bool
+		want cards
 	}{
-		{`{"version":4,"features":{"translate":{"showCard":true}}}`, true},
-		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, false},
-		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, true},
-		{`{"version":4,"features":{"translate":{}}}`, false},
+		{`{"version":4,"features":{"translate":{"showCard":true}}}`, cards{false, true, true}},
+		{`{"version":4,"features":{"translate":{"cleanup":true}}}`, cards{false, false, true}},
+		{`{"version":4,"features":{"showCard":true,"translate":{}}}`, cards{true, true, true}},
+		{`{"version":4,"features":{"rewrite":{"showCard":false}}}`, cards{false, false, false}},
+		{`{"version":4,"features":{"transcribe":{"showCard":true},"rewrite":{"showCard":false}}}`, cards{true, false, false}},
 	} {
 		s, err := Migrate([]byte(tc.doc))
-		if err != nil || s.Features.ShowCard != tc.want {
-			t.Errorf("%s: ShowCard %v, want %v (%v)", tc.doc, s.Features.ShowCard, tc.want, err)
+		f := s.Features
+		if got := (cards{f.Transcribe.ShowCard, f.Translate.ShowCard, f.Rewrite.ShowCard}); err != nil || got != tc.want {
+			t.Errorf("%s: cards %+v, want %+v (%v)", tc.doc, got, tc.want, err)
 		}
+		if f.ShowsCard("transcribe") != f.Transcribe.ShowCard || f.ShowsCard("translate") != f.Translate.ShowCard || f.ShowsCard("rewrite") != f.Rewrite.ShowCard {
+			t.Errorf("%s: ShowsCard disagrees with the fields", tc.doc)
+		}
+		// Saved and read again, Rewrite's off stays off.
 		out, _ := json.Marshal(s)
-		var doc struct {
-			Features struct {
-				Translate map[string]any `json:"translate"`
-			} `json:"features"`
-		}
-		if json.Unmarshal(out, &doc) != nil || doc.Features.Translate["showCard"] != nil {
-			t.Errorf("%s: Translate still has a card switch: %s", tc.doc, out)
+		again, err := Migrate(out)
+		if g := again.Features; err != nil || (cards{g.Transcribe.ShowCard, g.Translate.ShowCard, g.Rewrite.ShowCard}) != tc.want {
+			t.Errorf("%s: saved as %s, read back %+v", tc.doc, out, g)
 		}
 	}
 }
@@ -544,5 +549,65 @@ func TestMigrateOptionsJSON(t *testing.T) {
 	}
 	if s.Providers.LLM[1].Generation.ExtraBodyJSON != `{"options": {}}` {
 		t.Errorf("kept %q", s.Providers.LLM[1].Generation.ExtraBodyJSON)
+	}
+}
+
+// TestLiveLinesDefault: Lines is the default live text layout (11-09),
+// for a document saved before too (it had no key unless Lines was
+// chosen); One line, chosen, is written and read back.
+func TestLiveLinesDefault(t *testing.T) {
+	for _, tc := range []struct {
+		doc  string
+		want bool
+	}{
+		{`{"version":4}`, true},
+		{`{"version":4,"overlay":{"liveLines":true}}`, true},
+		{`{"version":4,"overlay":{"liveLines":false}}`, false},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		if err != nil || s.Overlay.LiveLines != tc.want {
+			t.Errorf("%s: LiveLines %v, want %v (%v)", tc.doc, s.Overlay.LiveLines, tc.want, err)
+		}
+		out, _ := json.Marshal(s)
+		if again, err := Migrate(out); err != nil || again.Overlay.LiveLines != tc.want {
+			t.Errorf("%s: saved as %s, read back %v", tc.doc, out, again.Overlay.LiveLines)
+		}
+	}
+}
+
+// TestDictionaryNotesUpgrade: 2.0.3's settings, which have no personal
+// dictionary, read with none and its switch on; notes and the switch
+// round-trip.
+func TestDictionaryNotesUpgrade(t *testing.T) {
+	old, err := Migrate([]byte(`{"version":4,"dictionary":{"enabled":true,"asrHints":true,"glossary":true,"speechContext":"Leo"}}`))
+	if d := old.Dictionary; err != nil || d.Notes != "" || d.NotesOff || !d.Enabled || !d.Glossary || d.SpeechContext != "Leo" {
+		t.Fatalf("2.0.3's dictionary: %+v %v", d, err)
+	}
+	for _, off := range []bool{false, true} {
+		s := Defaults()
+		s.Dictionary.Notes, s.Dictionary.NotesOff = "| 101 | `幺零幺` → 101 |\n\n```\nx | y\n```", off
+		out, _ := json.Marshal(s)
+		again, err := Migrate(out)
+		if err != nil || again.Dictionary != s.Dictionary {
+			t.Errorf("saved as %s, read back %+v (%v)", out, again.Dictionary, err)
+		}
+	}
+}
+
+// TestStrictShortcutsDefault: Strict shortcuts is off by default and for
+// a document saved before it existed (Voxt 1.x's common stop); on is
+// written and read back (#3823).
+func TestStrictShortcutsDefault(t *testing.T) {
+	if Defaults().Features.StrictShortcuts {
+		t.Error("on by default")
+	}
+	s, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
+	if err != nil || s.Features.StrictShortcuts {
+		t.Fatalf("old document: %v %v", s.Features.StrictShortcuts, err)
+	}
+	s.Features.StrictShortcuts = true
+	data, _ := json.Marshal(s)
+	if back, err := Migrate(data); err != nil || !back.Features.StrictShortcuts {
+		t.Errorf("round trip: %v %v", back.Features.StrictShortcuts, err)
 	}
 }

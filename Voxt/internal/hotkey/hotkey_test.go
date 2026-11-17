@@ -268,7 +268,8 @@ func TestParseID(t *testing.T) {
 		ok bool
 	}{
 		"transcribe/0": {"transcribe", 0, true}, "rewrite/12": {"rewrite", 12, true}, "paste-last": {PasteLast, 0, true}, "note": {Note, 0, true},
-		"escape": {}, "meeting/0": {}, "transcribe/x": {}, "transcribe/-1": {},
+		"meeting/0": {Meeting, 0, true},
+		"escape":    {}, "transcribe/x": {}, "transcribe/-1": {},
 	} {
 		f, i, ok := ParseID(id)
 		if f != want.f || i != want.i || ok != want.ok {
@@ -375,8 +376,67 @@ func TestRoute(t *testing.T) {
 		{"note stops", ev(Note, proto.PhaseTrigger), Recording, "", Decision{Action: Stop}},
 		{"unknown binding", ev("try/x", proto.PhaseTrigger), Idle, "", Decision{}},
 	} {
-		if got := Route(tc.e, tc.phase, tc.hold); got != tc.want {
+		if got := Route(tc.e, tc.phase, tc.hold, ""); got != tc.want {
 			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestRouteStrict: with Strict shortcuts, while recording only the
+// bindings of the feature that started the session stop it (tap, double
+// tap, the release of its long press); another feature's tap, down and up
+// do nothing; Cancel and PasteLast route as in the default mode, which
+// stops on any feature's binding.
+func TestRouteStrict(t *testing.T) {
+	ev := func(binding, phase string) proto.HotkeyEventParams {
+		return proto.HotkeyEventParams{Binding: binding, Phase: phase}
+	}
+	stop := Decision{Action: Stop}
+	for _, own := range Features {
+		for _, start := range []struct{ name, hold string }{{"tap", ""}, {"double tap", ""}, {"long press", own + "/2"}} {
+			for _, other := range Features {
+				for _, tc := range []struct {
+					e                 proto.HotkeyEventParams
+					strict, defaultTo Decision
+				}{
+					{ev(other+"/0", proto.PhaseTrigger), Decision{}, stop},
+					{ev(other+"/1", proto.PhaseTrigger), Decision{}, stop},
+					{ev(other+"/3", proto.PhaseDown), Decision{}, stop},
+					{ev(other+"/2", proto.PhaseUp), Decision{}, Decision{}},
+				} {
+					if other == own {
+						tc.strict = tc.defaultTo
+						if start.hold != "" && tc.e.Binding == start.hold {
+							tc.strict, tc.defaultTo = stop, stop
+						}
+					} else if start.hold != "" && tc.e.Phase == proto.PhaseUp {
+						tc.defaultTo = Decision{} // only the hold's own release stops
+					}
+					if got := Route(tc.e, Recording, start.hold, own); got != tc.strict {
+						t.Errorf("strict, %s started by %s, %+v: %+v, want %+v", own, start.name, tc.e, got, tc.strict)
+					}
+					if got := Route(tc.e, Recording, start.hold, ""); got != tc.defaultTo {
+						t.Errorf("default, %s started by %s, %+v: %+v, want %+v", own, start.name, tc.e, got, tc.defaultTo)
+					}
+				}
+			}
+		}
+		for _, strict := range []string{own, ""} {
+			if got := Route(ev(proto.HotkeyCancel, proto.PhaseTrigger), Recording, "", strict); got != (Decision{Action: Cancel}) {
+				t.Errorf("%q: cancel %+v", strict, got)
+			}
+			if got := Route(ev(PasteLast, proto.PhaseTrigger), Recording, "", strict); got != (Decision{}) {
+				t.Errorf("%q: paste last while recording %+v", strict, got)
+			}
+			if got := Route(ev(own+"/0", proto.PhaseTrigger), Idle, "", strict); got != (Decision{Action: Start, Feature: own}) {
+				t.Errorf("%q: idle tap %+v", strict, got)
+			}
+		}
+	}
+	if got := Route(ev("transcribe/0", proto.PhaseTrigger), Recording, "", Note); got != (Decision{}) {
+		t.Errorf("strict note session, transcribe tap: %+v", got)
+	}
+	if got := Route(ev(Note, proto.PhaseTrigger), Recording, "", Note); got != stop {
+		t.Errorf("strict note session, note tap: %+v", got)
 	}
 }

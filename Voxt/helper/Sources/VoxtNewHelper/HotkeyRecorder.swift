@@ -2,168 +2,119 @@ import ApplicationServices
 import VoxtNewHelperKit
 import Foundation
 
-/// A one-shot session event tap for hotkey.record.
-final class HotkeyRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<String, Error>?
-    private var tap: CFMachPort?
-    private var runLoop: CFRunLoop?
-    private var tapThread: Thread?
-    private var timeoutTimer: DispatchWorkItem?
-    private var activeMods = Set<ModKey>()
-    private var peakMods = Set<ModKey>()
-    private var recording = false
+/// hotkey.record: KeyRecordSession (VoxtNewHelperKit) holds the state and
+/// its locking; each recording gets a short-lived session event tap of its
+/// own (RecordTap).
+final class HotkeyRecorder: Sendable {
+    private let session = KeyRecordSession(trusted: { AXIsProcessTrusted() }, makeTap: { RecordTap.start($0) })
 
     func record(timeoutSeconds: Double) async throws -> HotkeyRecordResult {
-        let keys = try await recordKeys(timeoutSeconds: timeoutSeconds)
+        let keys: String = try await withCheckedThrowingContinuation { cont in
+            session.begin(timeoutSeconds: timeoutSeconds) { cont.resume(with: $0) }
+        }
         return HotkeyRecordResult(keys: keys)
     }
 
-    private func recordKeys(timeoutSeconds: Double) async throws -> String {
-        let timeout = timeoutSeconds > 0 ? timeoutSeconds : 15
-        return try await withCheckedThrowingContinuation { cont in
-            lock.withLock {
-                self.cancelLocked()
-                guard AXIsProcessTrusted() else {
-                    cont.resume(throwing: RPCError.denied(PermissionName.accessibility, "Accessibility is required to record shortcuts"))
-                    return
-                }
-                self.continuation = cont
-                self.activeMods = []
-                self.peakMods = []
-                self.recording = true
-                guard self.startTap() else {
-                    self.recording = false
-                    self.continuation = nil
-                    cont.resume(throwing: RPCError.denied(PermissionName.accessibility, "Accessibility is required to record shortcuts"))
-                    return
-                }
-                let work = DispatchWorkItem { [weak self] in
-                    self?.lock.withLock { self?.finish(RPCError(Code.timeout, "Recording timed out")) }
-                }
-                self.timeoutTimer = work
-                DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: work)
-            }
-        }
-    }
-
     func cancel() {
-        lock.withLock { finish(RPCError(Code.cancelled, "Cancelled")) }
+        session.cancel()
+    }
+}
+
+/// One recording's event tap, on a thread of its own: key downs, modifier
+/// changes and other mouse buttons go to the handler, which swallows them
+/// while it records.
+private final class RecordTap: KeyRecordTap, @unchecked Sendable {
+    private let handler: @Sendable (KeyRecordInput) -> Bool
+    private let lock = NSLock()
+    // Under lock.
+    private var port: CFMachPort?
+    private var loop: CFRunLoop?
+    private var stopped = false
+
+    private init(handler: @escaping @Sendable (KeyRecordInput) -> Bool) {
+        self.handler = handler
     }
 
-    private func cancelLocked() {
-        finish(RPCError(Code.cancelled, "Cancelled"))
+    /// A running tap, or nil when the tap cannot be created (no
+    /// Accessibility).
+    static func start(_ handler: @escaping @Sendable (KeyRecordInput) -> Bool) -> RecordTap? {
+        let t = RecordTap(handler: handler)
+        return t.run() ? t : nil
     }
 
-    private func finish(_ err: RPCError) {
-        timeoutTimer?.cancel()
-        timeoutTimer = nil
-        recording = false
-        stopTap()
-        activeMods = []
-        peakMods = []
-        guard let cont = continuation else { return }
-        continuation = nil
-        cont.resume(throwing: err)
-    }
-
-    private func succeed(_ keys: String) {
-        timeoutTimer?.cancel()
-        timeoutTimer = nil
-        recording = false
-        stopTap()
-        activeMods = []
-        peakMods = []
-        guard let cont = continuation else { return }
-        continuation = nil
-        cont.resume(returning: keys)
-    }
-
-    private func startTap() -> Bool {
+    private func run() -> Bool {
         let mask: CGEventMask = [CGEventType.keyDown, .flagsChanged, .otherMouseDown]
             .reduce(0) { $0 | (1 << $1.rawValue) }
         let ready = DispatchSemaphore(value: 0)
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         let callback: CGEventTapCallBack = { _, type, event, user in
             guard let user else { return Unmanaged.passUnretained(event) }
-            let me = Unmanaged<HotkeyRecorder>.fromOpaque(user).takeUnretainedValue()
-            return me.handle(type, event)
+            return Unmanaged<RecordTap>.fromOpaque(user).takeUnretainedValue().handle(type, event)
         }
-        let thread = Thread { [weak self] in
-            guard let self else { ready.signal(); return }
-            guard let port = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-                                               eventsOfInterest: mask, callback: callback, userInfo: refcon) else {
+        // The thread keeps the tap (refcon) alive until its run loop stops.
+        let thread = Thread { [self] in
+            guard let p = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+                                            eventsOfInterest: mask, callback: callback, userInfo: refcon) else {
                 ready.signal()
                 return
             }
-            let loop = CFRunLoopGetCurrent()
-            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0)
-            CFRunLoopAddSource(loop, source, .commonModes)
-            CGEvent.tapEnable(tap: port, enable: true)
-            self.lock.withLock {
-                self.tap = port
-                self.runLoop = loop
+            let l = CFRunLoopGetCurrent()
+            CFRunLoopAddSource(l, CFMachPortCreateRunLoopSource(kCFAllocatorDefault, p, 0), .commonModes)
+            let kept = lock.withLock {
+                guard !stopped else { return false } // gave up waiting for it
+                port = p
+                loop = l
+                return true
             }
+            guard kept else {
+                CFMachPortInvalidate(p)
+                ready.signal()
+                return
+            }
+            CGEvent.tapEnable(tap: p, enable: true)
             ready.signal()
             CFRunLoopRun()
-            self.lock.withLock {
-                self.tap = nil
-                self.runLoop = nil
-            }
         }
         thread.name = "voxtnew.hotkey.record"
-        tapThread = thread
         thread.start()
-        return ready.wait(timeout: .now() + 1) == .success && lock.withLock({ tap != nil })
+        guard ready.wait(timeout: .now() + 1) == .success, lock.withLock({ port != nil }) else {
+            stop()
+            return false
+        }
+        return true
     }
 
-    private func stopTap() {
-        let (port, loop) = lock.withLock { (tap, runLoop) }
-        if let port {
-            CGEvent.tapEnable(tap: port, enable: false)
-            CFMachPortInvalidate(port)
+    func stop() {
+        let (p, l) = lock.withLock {
+            stopped = true
+            defer { port = nil; loop = nil }
+            return (port, loop)
         }
-        if let loop { CFRunLoopStop(loop) }
-        tap = nil
-        runLoop = nil
-        tapThread = nil
+        if let p {
+            CGEvent.tapEnable(tap: p, enable: false)
+            CFMachPortInvalidate(p)
+        }
+        if let l { CFRunLoopStop(l) }
     }
 
     private func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
+        let pass = Unmanaged.passUnretained(event)
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let port = lock.withLock({ tap }) { CGEvent.tapEnable(tap: port, enable: true) }
-            return Unmanaged.passUnretained(event)
+            if let p = lock.withLock({ port }) { CGEvent.tapEnable(tap: p, enable: true) }
+            return pass
         }
-        guard lock.withLock({ recording }) else { return Unmanaged.passUnretained(event) }
         let flags = event.flags.rawValue
-        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        let input: KeyRecordInput
         switch type {
         case .flagsChanged:
-            lock.withLock {
-                let prev = activeMods
-                activeMods = WireHotkeyRecord.mods(from: flags)
-                peakMods.formUnion(activeMods)
-                if !prev.isEmpty && activeMods.isEmpty, let s = WireHotkeyRecord.chordString(mods: peakMods) {
-                    succeed(s)
-                }
-            }
-            return nil
+            input = .flagsChanged(flags: flags)
         case .keyDown:
-            if ModKey.forKeyCode(keyCode) != nil { return nil }
-            let mods = WireHotkeyRecord.mods(from: flags)
-            if let s = WireHotkeyRecord.chordString(mods: mods, keyCode: keyCode) {
-                succeed(s)
-            }
-            return nil
+            input = .keyDown(keyCode: UInt16(event.getIntegerValueField(.keyboardEventKeycode)), flags: flags)
         case .otherMouseDown:
-            let button = Int(event.getIntegerValueField(.mouseEventButtonNumber))
-            let mods = WireHotkeyRecord.mods(from: flags)
-            if button >= 2, let s = WireHotkeyRecord.chordString(mods: mods, mouseButton: button) {
-                succeed(s)
-            }
-            return nil
+            input = .mouseDown(button: Int(event.getIntegerValueField(.mouseEventButtonNumber)), flags: flags)
         default:
-            return Unmanaged.passUnretained(event)
+            return pass
         }
+        return handler(input) ? nil : pass
     }
 }

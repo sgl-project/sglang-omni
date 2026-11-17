@@ -143,13 +143,13 @@ jobs:
 
           # The update window shows the published release notes, as for Voxt 1.x.
           body="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body --jq .body)"
-          if [[ -z "${body//[[:space:]]/}" ]]; then
+          if [[ ! "$body" =~ [^[:space:]] ]]; then
             echo "::error::Write the notes of $TAG on its release page, then run Voxt Appcast for it"
             exit 1
           else
             :
           fi
-          release_notes="$(Voxt/scripts/release-appcast.sh notes <<< "$body")"
+          release_notes_by_locale="$(Voxt/scripts/release-appcast.sh notes-by-locale <<< "$body")"
 
           prepare="$(jq '{action: "prepareUpload"} + del(.sparkleVersion)' <<< "$ENTRY" \
             | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
@@ -170,9 +170,10 @@ jobs:
             -H "Content-Disposition: attachment; filename=\"$DMG_NAME\"" --upload-file "$dmg_path"
 
           reply="$(jq --arg sha256 "$sha256" --arg size "$ZIP_LENGTH" --arg edSignature "$ED_SIGNATURE" \
-            --arg releaseNotes "$release_notes" --arg releaseURL "$RELEASE_URL" --arg publishedAt "$PUBLISHED_AT" \
+            --argjson notes "$release_notes_by_locale" --arg releaseURL "$RELEASE_URL" --arg publishedAt "$PUBLISHED_AT" \
             '. + {sha256: $sha256, size: $size, edSignature: $edSignature,
-              releaseNotes: $releaseNotes, releaseURL: $releaseURL, publishedAt: $publishedAt}' <<< "$ENTRY" \
+              releaseNotes: $notes.en, releaseNotesByLocale: $notes,
+              releaseURL: $releaseURL, publishedAt: $publishedAt}' <<< "$ENTRY" \
             | curl --fail --silent --show-error "${retry[@]}" -X POST "$api/api/pkg/update" \
               -H "Authorization: Bearer $VOXT_RELEASE_API_KEY" -H "X-Voxt-Source: github-actions" \
               -H "Content-Type: application/json" --data-binary @-)"

@@ -65,8 +65,9 @@ type PasteParams struct {
 	// KeepClipboard leaves Text on the clipboard instead of restoring.
 	KeepClipboard  bool `json:"keepClipboard,omitempty"`
 	RestoreDelayMS int  `json:"restoreDelayMs,omitempty"` // default 500
-	// TargetPID, when set, must be the app in front: otherwise nothing is
-	// pasted (Posted false, Front says who is in front). The app activates
+	// TargetPID, when set, must be the app in front or own the focused
+	// element (a non-activating panel such as Raycast's): otherwise nothing
+	// is pasted (Posted false, Front says who is in front). The app activates
 	// the target itself (macx.Activate) when it has to.
 	TargetPID int `json:"targetPid,omitempty"`
 	// Press are keys posted after ⌘V (app enhancement's auto key: Return,

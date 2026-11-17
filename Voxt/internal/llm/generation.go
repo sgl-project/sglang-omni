@@ -25,9 +25,13 @@ type Generation struct {
 	ResponseFormat string
 	JSONSchema     map[string]any
 	Thinking       Thinking
-	Verbosity      string // OpenAI's text verbosity: "low", "medium", "high"
-	KeepAlive      string // Ollama's keep_alive ("5m")
-	IncludeUsage   *bool  // oMLX's stream_options.include_usage; nil: Voxt's (on)
+	// ThinkOffUnder: a request whose InputChars is under it uses
+	// ThinkDefault (thinking off where the service lets it) instead of
+	// Thinking; 0: never.
+	ThinkOffUnder int
+	Verbosity     string // OpenAI's text verbosity: "low", "medium", "high"
+	KeepAlive     string // Ollama's keep_alive ("5m")
+	IncludeUsage  *bool  // oMLX's stream_options.include_usage; nil: Voxt's (on)
 	// ExtraBody is applied to the body last as a JSON merge patch (RFC
 	// 7386): its keys win, an object merges into the body's, null removes.
 	ExtraBody map[string]any
@@ -225,6 +229,9 @@ func applyThinking(b map[string]any, id, model string, t Thinking) {
 			b["thinking"] = disabled
 		case ThinkBudget:
 			b["thinking"] = enabled(t.Budget)
+			if n, ok := b["max_tokens"].(int); ok && n <= t.Budget { // Voxt 1.x kept it above the budget
+				b["max_tokens"] = t.Budget + 1
+			}
 		}
 	case "gemini":
 		switch t.Mode {

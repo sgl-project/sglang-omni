@@ -121,7 +121,7 @@ func TestScanButtonNeedsTheTranscribeLanguageModel(t *testing.T) {
 			if !has(tt, "先给转录选一个语言模型") {
 				t.Errorf("no explanation: %q", tt.Texts())
 			}
-			clickControl(t, tt, "打开转录")
+			clickControl(t, tt, "打开转录页")
 			if a.nav != "/transcribe" {
 				t.Errorf("the link goes to %s", a.nav)
 			}
@@ -131,7 +131,7 @@ func TestScanButtonNeedsTheTranscribeLanguageModel(t *testing.T) {
 
 func TestScanButtonOpensAndShowsWhatItWillSend(t *testing.T) {
 	a, tt, _, _ := scanTester(t, 5)
-	want := fmt.Sprintf("Voxt 会把 5 条转录结果发给 %s，从中找出人名、产品名和术语。你确认之前，不会有词加入词典。", fakeLLMModel.Name)
+	want := fmt.Sprintf("Voxt 会把 5 条转录结果发给 %s，找出人名和术语。你确认后才会加入词典。", fakeLLMModel.Name)
 	if !a.dv.scan.open || !has(tt, want) {
 		t.Fatalf("dialog: %q", tt.Texts())
 	}

@@ -10,9 +10,9 @@
 #include <vector>
 
 #include "common/tokenizer.h"
+#include "common/transcription.h"
 #include "moss/moss_model.h"
 #include "qwen3_asr/dflash_draft.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 
 namespace moss {
 
@@ -37,14 +37,14 @@ public:
                   const std::filesystem::path &draft_directory,
                   int draft_quantization_bits);
 
-  qwen3_asr::TranscriptionResult
+  omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const MossOptions &options,
              const std::atomic<bool> &cancel) const;
   std::vector<int> PromptIds(int audio_token_count,
                              const std::optional<std::string> &prompt) const;
 
 private:
-  qwen3_asr::TranscriptionResult
+  omni_common::TranscriptionResult
   TranscribeChunk(const std::vector<float> &samples, const MossOptions &options,
                   int max_new_tokens, double offset_seconds,
                   const std::atomic<bool> &cancel) const;
@@ -69,8 +69,8 @@ void ValidatePrompt(const std::optional<std::string> &prompt);
 std::string OffsetTimestampTags(const std::string &text, double offset_seconds);
 // [start][Sxx]text[end] segments; one unlabelled segment spanning the audio
 // when none parse.
-std::vector<qwen3_asr::SpeakerSegment> ParseSegments(const std::string &text,
-                                                     double duration_seconds,
-                                                     double offset_seconds);
+std::vector<omni_common::SpeakerSegment> ParseSegments(const std::string &text,
+                                                       double duration_seconds,
+                                                       double offset_seconds);
 
 } // namespace moss

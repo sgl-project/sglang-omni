@@ -71,6 +71,7 @@ type updateService interface {
 // updatePrefs is a snapshot of the updater for Settings → About.
 type updatePrefs struct {
 	Enabled     bool // this build can update itself
+	CheckOnly   bool // it only checks GitHub's releases (updates_github.go)
 	AutoCheck   bool // checks once a day in the background
 	AutoInstall bool // installs what a background check finds without asking
 	LastCheck   time.Time
@@ -102,6 +103,7 @@ type updateState struct {
 	bundleStale func() bool
 	// bundleUpdated is set once it did: the card asks to restart.
 	bundleUpdated bool
+	releaseState  // updates_github.go
 }
 
 // The update's card: its ID, and the link of its action, which restarts
@@ -260,11 +262,11 @@ func (a *app) updateSettingsSection(c *ui.Context) {
 	switch {
 	case !a.updKnown:
 	case !p.Enabled:
-		desc = i18n.T("This copy cannot update itself: it is a development build, or it is in a folder Voxt cannot write to. Move Voxt to Applications.")
+		desc = i18n.T("This copy cannot update itself because it is a development build or is in a folder Voxt cannot write to. Move Voxt to Applications.")
 	case p.LastCheck.IsZero():
-		desc = i18n.T("New versions come with their notes. Not checked yet.")
+		desc = i18n.T("Not checked yet.")
 	default:
-		desc = i18n.T("New versions come with their notes. Last checked %s.", uitext.TimeAgo(p.LastCheck))
+		desc = i18n.T("Last checked %s.", uitext.TimeAgo(p.LastCheck))
 	}
 	settingRowNote(c, "about-update", i18n.T("Check for updates"), desc, func() {
 		if ui.Button(c.Key("about-update"), i18n.T("Check for Updates…")).Clicked() {
@@ -274,25 +276,33 @@ func (a *app) updateSettingsSection(c *ui.Context) {
 	if !a.updKnown || !p.Enabled {
 		return
 	}
-	settingRow(c, "about-update-auto", i18n.T("Check automatically"), i18n.T("Once a day, in the background. A new version opens a window with its notes, which asks before installing it."), func() {
+	auto := i18n.T("Once a day. Voxt asks before installing.")
+	if p.CheckOnly {
+		auto = i18n.T("Once a day. A card says when a new version is out.")
+	}
+	settingRow(c, "about-update-auto", i18n.T("Check automatically"), auto, func() {
 		if ui.Switch(c.Key("about-update-auto-switch"), &a.updPrefs.AutoCheck).Label(i18n.T("Check for updates automatically")).Changed() {
 			a.setAutoCheck(a.updPrefs.AutoCheck)
 		}
 	})
 	beta := a.betaOn()
-	note := i18n.T("Releases only. Turning it on offers betas too: new features sooner, and more bugs.")
+	note := i18n.T("Releases only.")
 	switch {
 	case beta:
-		note = i18n.T("Betas and releases, whichever is newer. Betas bring new features sooner, and more bugs.")
+		note = i18n.T("Betas and releases, whichever is newer.")
 	case strings.Contains(a.version, "-"):
-		note = i18n.T("Releases only. This beta stays until a release newer than it comes out: Voxt never goes back to an older version.")
+		note = i18n.T("Releases only. This beta stays until a newer release comes out.")
 	}
 	settingRowNote(c, "about-update-beta", i18n.T("Beta updates"), note, func() {
 		if ui.Switch(c.Key("about-update-beta-switch"), &beta).Label(i18n.T("Get beta versions")).Changed() {
 			a.setBeta(beta)
 		}
 	})
-	settingRow(c, "about-update-install", i18n.T("Install updates automatically"), i18n.T("Updates found in the background download and install without asking; Voxt then asks to restart. Off by default."), func() {
+	if p.CheckOnly {
+		caption(c, i18n.T("Voxt does not install updates itself: install a new version from its disk image, or with brew upgrade --cask voxt."))
+		return
+	}
+	settingRow(c, "about-update-install", i18n.T("Install updates automatically"), i18n.T("Voxt asks only to restart."), func() {
 		if ui.Switch(c.Key("about-update-install-switch"), &a.updPrefs.AutoInstall).Label(i18n.T("Install updates without asking")).Disabled(!a.updPrefs.AutoCheck).Changed() {
 			a.setAutoInstall(a.updPrefs.AutoInstall)
 		}

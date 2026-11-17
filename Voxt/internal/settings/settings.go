@@ -34,8 +34,8 @@ type Settings struct {
 	Privacy        Privacy        `json:"privacy"`
 	Audio          Audio          `json:"audio"`
 	Overlay        Overlay        `json:"overlay"`
-	Features       Features       `json:"features"`       // features.go
-	AppEnhancement AppEnhancement `json:"appEnhancement"` // features.go
+	Features       Features       `json:"features"`
+	AppEnhancement AppEnhancement `json:"appEnhancement"`
 	Dictionary     Dictionary     `json:"dictionary"`
 	Setup          Setup          `json:"setup"`
 	Updates        Updates        `json:"updates,omitzero"`
@@ -99,6 +99,19 @@ type Privacy struct {
 	// LogText writes recognised and generated text to the log; off, the
 	// log has only lengths and timings.
 	LogText bool `json:"logText,omitempty"`
+	// HistoryAccess opens `Voxt history` to programs on this Mac
+	// (docs/history-access.md); HistorySelection adds the selected text to
+	// what they and Export text get.
+	HistoryAccess    bool `json:"historyAccess,omitempty"`
+	HistorySelection bool `json:"historySelection,omitempty"`
+	// SendWindow sends a picture of the window the user speaks into to
+	// the language model, with the text (session/window.go); off by
+	// default.
+	SendWindow bool `json:"sendWindow,omitempty"`
+	// SendClipboardImage sends the picture on the clipboard with
+	// Rewrite's text to the language model (session/window.go); off by
+	// default.
+	SendClipboardImage bool `json:"sendClipboardImage,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.
@@ -139,6 +152,14 @@ type Audio struct {
 	// whole recording once more (the Final), so the text comes sooner and
 	// is a little less accurate (#3644 FB7). Off: the Final runs.
 	LiveResult bool `json:"liveResult,omitempty"`
+	// UploadMB caps each upload to a speech service that takes the whole
+	// recording and splits long ones (OpenAI, Doubao): pieces of at most
+	// this many MB (1 MB = 2^20 bytes). 0, or more than the service's own
+	// limit: the service's (25 MB, 100 MB). MaxSeconds stops a recording
+	// at this length, as Stop does (0: no limit). Settings → Audio shows
+	// it in minutes; the overlay warns as either limit nears (#3840).
+	UploadMB   int `json:"uploadMB,omitempty"`
+	MaxSeconds int `json:"maxSeconds,omitempty"`
 }
 
 // MuteOn reports whether recordings mute the system's output: the user's
@@ -216,8 +237,10 @@ type Overlay struct {
 	HideLiveText bool `json:"hideLiveText,omitempty"`
 	// LiveLines shows the live text in lines that wrap, in a wide face
 	// from the first word, growing up to ten lines, then the newest ones
-	// (#3644 FB5); off, one line that scrolls sideways.
-	LiveLines bool `json:"liveLines,omitempty"`
+	// (#3644 FB5); off, one line that scrolls sideways. On by default
+	// since 11-09 (the user: the pill should grow in lines, not sideways);
+	// no omitempty, so One line is kept.
+	LiveLines bool `json:"liveLines"`
 }
 
 // DefaultOpacity and DefaultRadius are the overlay face's: translucent
@@ -256,6 +279,14 @@ type Dictionary struct {
 	// what) that the speech model gets before the hints, with the
 	// dictionary on or off; a service that takes no prompt ignores it.
 	SpeechContext string `json:"speechContext,omitempty"`
+	// Notes is the personal dictionary: Markdown the user writes once (a
+	// table of standard spelling, what recognition makes of it, and when
+	// it applies, or any notes) that goes into the language model's
+	// system prompt for Transcribe, Translate and Rewrite, never to
+	// speech recognition (compose.Input.Dictionary). NotesOff keeps it
+	// out of the prompt; notes are sent by default once written.
+	Notes    string `json:"notes,omitempty"`
+	NotesOff bool   `json:"notesOff,omitempty"`
 	// Learn watches the field a Transcribe result was pasted into for
 	// 30 s and proposes a term when the user corrects a word of it
 	// (internal/learn). Off by default.
@@ -271,15 +302,23 @@ type Setup struct {
 	Tried bool `json:"tried,omitempty"`
 }
 
-// Updates: what the updater offers (Settings → About → Updates). Its
-// other preferences (automatic checks and installs) are the updater
-// plugin's, in its own updater.json.
+// Updates: what the updater offers (Settings → About → Updates). With an
+// update feed, its other preferences (automatic checks and installs) are
+// the updater plugin's, in its own updater.json; without one, the check
+// of GitHub's releases (updates_github.go) keeps its own here.
 type Updates struct {
 	// Beta offers beta versions (the feed's beta channel) too. Nil until the
 	// user chooses: then on while the running version is a beta (BetaOn),
 	// so that a beta's users get the next one. No migration: older
 	// documents have none.
 	Beta *bool `json:"beta,omitempty"`
+	// NoAutoCheck turns off the daily check of GitHub's releases (on by
+	// default); LastCheck is when one last succeeded.
+	NoAutoCheck bool      `json:"noAutoCheck,omitempty"`
+	LastCheck   time.Time `json:"lastCheck,omitzero"`
+	// Dismissed is the version whose "is available" card the user
+	// dismissed: no card for it again, one for a newer version.
+	Dismissed string `json:"dismissed,omitempty"`
 }
 
 // BetaOn reports whether updates include betas for the app of version
@@ -318,11 +357,11 @@ func Defaults() Settings {
 		Appearance: Appearance{Theme: "system", Scale: 1},
 		Privacy:    Privacy{KeepHistory: true},
 		Audio:      Audio{Sounds: true},
-		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96},
+		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},
 		Features: Features{
 			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true},
 			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
-			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true},
+			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
 			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
 			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},

@@ -25,6 +25,8 @@ import (
 // their titles (settings parses them).
 type genForm struct {
 	think, effort, budget           string
+	shortOff                        bool   // Off for short inputs (#3951)
+	shortUnder                      string // its limit, in characters; "": shortUnderDefault
 	maxTokens, temperature, topP    string
 	topK, minP, seed                string
 	presence, frequency, repetition string
@@ -35,6 +37,9 @@ type genForm struct {
 	usage                           bool // oMLX: usage in stream events (on by default)
 	extraBody                       string
 	advanced                        bool // the folding section, open
+	// api is the API format's title (it is saved in settings.Provider, not
+	// in Generation).
+	api string
 }
 
 // The menus' choices: values and their titles.
@@ -85,7 +90,15 @@ func formatTitle(v string) string {
 var (
 	responseFormats = []string{"", llm.ResponseJSON, llm.ResponseJSONSchema}
 	verbosities     = []string{"", "low", "medium", "high"}
+	apiFormats      = []string{"", llm.APIResponses}
 )
+
+func apiFormatTitle(v string) string {
+	if v == llm.APIResponses {
+		return "Responses"
+	}
+	return "Chat Completions"
+}
 
 func verbosityTitle(v string) string {
 	if v == "" {
@@ -112,6 +125,14 @@ func titles(values []string, titleOf func(string) string) []string {
 	return out
 }
 
+// shortUnderDefault is Off for short inputs' limit when its field is
+// empty: about a sentence or two.
+const shortUnderDefault = 200
+
+// thinks says thinking mode m asks the model to think, so Off for short
+// inputs changes something.
+func thinks(m string) bool { return m == llm.ThinkOn || m == llm.ThinkEffort || m == llm.ThinkBudget }
+
 // genFormOf is the form of saved settings g.
 func genFormOf(g settings.Generation) genForm {
 	f := genForm{
@@ -126,6 +147,9 @@ func genFormOf(g settings.Generation) genForm {
 	}
 	if g.ThinkingBudget > 0 {
 		f.budget = strconv.Itoa(g.ThinkingBudget)
+	}
+	if f.shortOff = g.ThinkingOffUnder > 0; f.shortOff {
+		f.shortUnder = strconv.Itoa(g.ThinkingOffUnder)
 	}
 	return f
 }
@@ -175,6 +199,12 @@ func (f *genForm) settings() (g settings.Generation, bad string) {
 	case llm.ThinkBudget:
 		if b := integer(f.budget, i18n.T("Budget tokens")); b != nil {
 			g.ThinkingBudget = *b
+		}
+	}
+	if f.shortOff && thinks(g.Thinking) {
+		g.ThinkingOffUnder = shortUnderDefault
+		if n := integer(f.shortUnder, i18n.T("Fewer characters than")); n != nil && *n > 0 {
+			g.ThinkingOffUnder = *n
 		}
 	}
 	// 0 asks for no limit, as an empty field does (the request would ask
@@ -273,6 +303,14 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 				}
 			})
 		})
+		if thinks(valueOf(f.think, caps.ThinkModes, thinkTitle)) {
+			fieldInfo(c, i18n.T("Off for short inputs"), "", func() {
+				ui.Switch(c.Key("gen-short"), &f.shortOff).Label(i18n.T("Off for short inputs"))
+			})
+			if f.shortOff {
+				num("gen-short-under", i18n.T("Fewer characters than"), strconv.Itoa(shortUnderDefault), &f.shortUnder)
+			}
+		}
 	}
 	if caps.MaxOutputTokens {
 		num("gen-max", i18n.T("Max output tokens (optional)"), i18n.T("e.g. 4096"), &f.maxTokens)
@@ -293,6 +331,12 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 	// own default for the model.
 	serviceDefault := i18n.T("Service default")
 	collapsible(c, i18n.T("Advanced"), &f.advanced, nil, func() {
+		if caps.APIFormat {
+			fieldInfo(c, i18n.T("API format"), i18n.T("Chat Completions works with nearly every service. Responses is OpenAI's newer API, and a custom service must support POST /responses."), func() {
+				ui.Select(c.Key("gen-api"), &f.api, titles(apiFormats, apiFormatTitle)).Label(i18n.T("API format")).Width(px(t, 240))
+			})
+		}
+		responses := valueOf(f.api, apiFormats, apiFormatTitle) == llm.APIResponses
 		pair(func() {
 			if caps.Temperature {
 				half("gen-temp", i18n.T("Temperature"), serviceDefault, &f.temperature)
@@ -334,13 +378,15 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 				ui.TextArea(c.Key("gen-schema"), &f.schema).Label("JSON Schema").Placeholder(`{"type": "object", …}`).MinHeight(px(t, 96))
 			}
 		}
-		if caps.Logprobs {
-			ui.Switch(c.Key("gen-logprobs"), &f.logprobs).Label("Logprobs")
+		if caps.Logprobs && !responses {
+			fieldInfo(c, "Logprobs", "", func() {
+				ui.Switch(c.Key("gen-logprobs"), &f.logprobs).Label("Logprobs")
+			})
 			if f.logprobs {
 				num("gen-toplogprobs", i18n.T("Top logprobs (optional)"), "5", &f.topLogprobs)
 			}
 		}
-		if caps.Stop {
+		if caps.Stop && !responses {
 			fieldInfo(c, i18n.T("Stop sequences"), "", func() {
 				ui.TextArea(c.Key("gen-stop"), &f.stop).Label(i18n.T("Stop sequences")).Placeholder(i18n.T("One stop sequence per line")).MinHeight(px(t, 56))
 			})
@@ -350,7 +396,7 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 			if caps.KeepAlive { // note (luojiaxuan): Ollama, whose model options go in "options"
 				example = `{"options": {"num_ctx": 8192}}`
 			}
-			fieldInfo(c, i18n.T("Request parameters"), i18n.T("A JSON object merged into the request after Voxt's own fields: its keys win, an object merges into the one Voxt sends, and null leaves a field out."), func() {
+			fieldInfo(c, i18n.T("Request parameters"), i18n.T("A JSON object merged into the request. Its keys override Voxt's, nested objects are merged, and null leaves a field out."), func() {
 				ui.TextArea(c.Key("gen-extra"), &f.extraBody).Label(i18n.T("Request parameters")).Placeholder(example).MinHeight(px(t, 72))
 			})
 		}

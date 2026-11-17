@@ -32,6 +32,22 @@ func (a *app) hotkeyPhase() hotkey.Phase {
 	return hotkey.Idle
 }
 
+// strictFeature is the feature whose shortcuts stop the session with
+// Strict shortcuts on ("": off, any feature's do).
+func (a *app) strictFeature() string {
+	switch {
+	case !a.prefs.Features.StrictShortcuts:
+		return ""
+	case a.sess.Note:
+		return hotkey.Note
+	case a.sess.Kind == store.KindTranslate:
+		return hotkey.Translate
+	case a.sess.Kind == store.KindRewrite:
+		return hotkey.Rewrite
+	}
+	return hotkey.Transcribe
+}
+
 // hotkeyFired acts on a shortcut (the helper's hotkey.event, or a Carbon
 // shortcut).
 func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
@@ -54,19 +70,27 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			a.closeAnswer()
 			return
 		case a.followUp != "" && a.followUp == a.answer.id:
-			// A follow-up: the cancel shortcut cancels it, the card stays (Voxt's).
-			a.cancelSession()
+			// A follow-up: the cancel shortcut cancels it, the card stays (Voxt's);
+			// its answer streaming, it stops there and the card keeps it (#3886).
+			if a.sess.CanStop() {
+				a.stopLLM()
+			} else {
+				a.cancelSession()
+			}
 			return
 		}
 	}
-	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding)
+	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature())
 	switch d.Action {
 	case hotkey.Start:
 		hold := ""
 		if d.Hold {
 			hold = e.Binding
 		}
-		if d.Feature == hotkey.Rewrite && a.followUpAnswer(hold) {
+		// In another app than the card's, the Rewrite shortcut begins a new
+		// conversation (the card waits under it, setAside); the card's
+		// Continue still follows up from any app (#4013).
+		if d.Feature == hotkey.Rewrite && a.inCardApp(target) && a.followUpAnswer(hold) {
 			return
 		}
 		kind := store.KindTranscribe
@@ -102,6 +126,14 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	case hotkey.Stop:
 		a.stopSession()
 	case hotkey.Cancel:
+		if a.writingAnswer() && a.sess.CanStop() {
+			a.stopLLM() // the writing card's Stop: the answer so far stays (#3886)
+			return
+		}
+		if a.sess.State == session.Composing && a.sess.CanSkip {
+			a.skipLLM() // the preview's Use transcript (#3821)
+			return
+		}
 		a.cancelSession()
 	case hotkey.Paste:
 		a.pasteLast(target)
@@ -119,7 +151,8 @@ func (a *app) hotkeyPlan() hotkey.Plan {
 // fallback in step with the event tap.
 func (a *app) syncHotkeys() {
 	plan := a.hotkeyPlan()
-	if a.keysListening {
+	paused := a.keysListening
+	if paused {
 		plan = hotkey.Plan{} // the keys go to the field that records them
 	}
 	a.syncCarbon(plan)
@@ -140,6 +173,15 @@ func (a *app) syncHotkeys() {
 			return
 		}
 		was := a.hotkeys.Installed
+		if paused {
+			// With no bindings the helper removes its tap: off on purpose
+			// while a shortcut field records keys, not for want of
+			// Accessibility. Read as missing, it put up the "Without
+			// Accessibility" notice beside the field (whose Open Permissions
+			// went with the notice once the field lost the focus) and
+			// registered the Carbon fallback, which took the keys.
+			st.Installed = was
+		}
 		a.hotkeys = st
 		if st.Installed != was {
 			a.syncCarbon(a.hotkeyPlan())
@@ -183,4 +225,9 @@ func (a *app) syncCarbon(plan hotkey.Plan) {
 		}
 		a.carbon = append(a.carbon, acc)
 	}
+}
+
+// inCardApp says whether app is the answer card's (or Voxt, or unknown).
+func (a *app) inCardApp(app proto.App) bool {
+	return app.BundleID == "" || isSelf(app) || strings.EqualFold(app.BundleID, a.answer.target.BundleID)
 }

@@ -145,7 +145,7 @@ func (a *app) homePage(c *ui.Context) {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
 	columnPageHeader(c, i18n.T("Home"), func() {
-		if ghostIconButton(c.Key("home-guide"), icons.Compass, i18n.T("Setup guide")).Label(i18n.T("Open the setup guide")).Clicked() {
+		if ghostIconButton(c.Key("home-guide"), icons.Compass, i18n.T("Setup guide")).Label(i18n.T("Open setup guide")).Clicked() {
 			a.openOnboarding()
 		}
 	})

@@ -24,7 +24,7 @@ func TestCopyResult(t *testing.T) {
 		ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
 		a := newSessionApp(t, helpertest.Opt("selection", "Good morning.")+","+ev, func(s *settings.Settings) {
 			s.General.CopyResult = c.copy
-			s.Features.Translate.Target, s.Features.Translate.LLM, s.Features.ShowCard = "zh-Hans", llm.Custom, c.card
+			s.Features.Translate.Target, s.Features.Translate.LLM, s.Features.Translate.ShowCard = "zh-Hans", llm.Custom, c.card
 			s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: srv.URL + "/v1", Model: "mock-model"}}
 		}, local.NotInstalled{})
 		var copied []string
@@ -37,5 +37,28 @@ func TestCopyResult(t *testing.T) {
 		case !c.card && (len(pasted) != 1 || pasted[0].KeepClipboard != c.copy || len(copied) != 0):
 			t.Errorf("%+v: pasted %+v, copied %q", c, pasted, copied)
 		}
+	}
+}
+
+// copiedNotice is what the overlay says when a result that did not go in
+// was copied instead of shown in the card.
+const copiedNotice = "Not inserted. Copied: press ⌘V to paste."
+
+// TestNotInsertedCardOff: a dictation that cannot go in (nothing editable
+// has the focus) with Transcribe's card off copies the text and says so;
+// the answer card stays shut (Voxt opened it anyway).
+func TestNotInsertedCardOff(t *testing.T) {
+	set, keys, _ := fileSetup(t, "hello aura link", &fakeChat{text: "Hello, Voxt."})
+	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, "transcribe/0", proto.PhaseTrigger))
+	a := newSessionApp(t, "readonly,"+ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Transcribe.ShowCard = false
+	}, keys)
+	var copied []string
+	a.copyText = func(s string) error { copied = append(copied, s); return nil }
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if a.sess.Inserted || a.sess.Card || a.answer.open || !slices.Equal(copied, []string{"Hello, Voxt."}) ||
+		a.notice == nil || a.notice.text != copiedNotice || len(a.pasted()) != 0 {
+		t.Errorf("end %+v, card open %v, copied %q, notice %+v", a.sess, a.answer.open, copied, a.notice)
 	}
 }

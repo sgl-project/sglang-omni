@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"slices"
@@ -29,7 +30,9 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -48,6 +51,9 @@ type sessionState struct {
 	sess session.Snapshot
 	// answer is the answer card: open while a result waits there.
 	answer answerCard
+	// under is the card a new session took the place of: it comes back
+	// when that session leaves no card (resurface, #4013).
+	under answerCard
 	// notice is the overlay's one-line message, when it shows one;
 	// noticeSeq numbers them, so that a notice's timer hides only itself.
 	notice    *sessionNotice
@@ -72,6 +78,7 @@ type sessionState struct {
 type answerCard struct {
 	open      bool
 	id        string // the session whose result it shows
+	conv      string // the first session of its conversation (store.Entry.Conversation)
 	kind      store.Kind
 	text      string
 	title     string // Rewrite's answer title ("" for none)
@@ -92,10 +99,20 @@ type answerCard struct {
 	// the card shows them as one (Voxt's conversation mode), from then on.
 	turns        []compose.Turn
 	conversation bool
+	// quotesOpen are the turns whose selection shows whole (#3816).
+	quotesOpen map[int]bool
 	// redo is the session translating the text into redoLang, another
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).
 	redo, redoLang string
+	// llmID is the language model service that answered (its settings'
+	// Provider.ID); think the thinking level the answer was asked with,
+	// nil the service's; redoThink the redo's; thinkMenu: the card's menu
+	// (langOpen) lists the thinking levels, not the languages; pillMenu:
+	// the working pill's (#3940), not the card's.
+	llmID               string
+	think, redoThink    *llm.Thinking
+	thinkMenu, pillMenu bool
 	// copied: Copy's mark shows (2 s, Voxt's); copySeq numbers the
 	// copies, so that a copy's timer clears only its own mark.
 	copied  bool
@@ -109,7 +126,9 @@ const (
 	actionLanguage    = "language" // the Language models page (remote_page.go)
 	actionPermissions = "permissions"
 	actionHelper      = "helper"
-	actionRetry       = "retry" // the session's entry, in History (history_retry.go)
+	actionRetry       = "retry"  // the session's entry, in History (history_retry.go)
+	actionSignIn      = "signin" // the ChatGPT (Codex) dialog (remote_chatgpt.go)
+	actionUsage       = "usage"  // the ChatGPT usage page, in the browser
 )
 
 // sessionNotice is a one-line message in the overlay, where
@@ -122,6 +141,7 @@ type sessionNotice struct {
 	warn       bool   // a warning (the session went on), not an error
 	ok         bool   // done as asked (a term added), not a problem
 	seq        int    // which notice: its timer hides only itself
+	over       bool   // shows before the card that came back as its session ended (#4013)
 	// then runs when its time is up (not when a click or the next
 	// session hides it): the notice that follows it.
 	then func()
@@ -139,9 +159,25 @@ func (a *app) openSessions() {
 	logs := a.logs
 	st := a.settings
 	a.mgr = session.New(session.Config{
-		Audio:   session.HelperAudio{H: sup},
-		Text:    a.textIO(), // family_runtime.go: the family's paste rule
-		Select:  session.HelperText{H: sup},
+		Audio:  session.HelperAudio{H: sup},
+		Text:   a.textIO(), // family_runtime.go: the family's paste rule
+		Select: session.HelperText{H: sup},
+		Window: func(ctx context.Context, pid int) ([]byte, error) {
+			var r proto.ScreenWindowResult
+			raw, err := sup.Call(ctx, "", proto.MethodScreenWindow, proto.ScreenWindowParams{PID: pid}, nil)
+			if err == nil {
+				err = json.Unmarshal(raw, &r)
+			}
+			return r.JPEG, err
+		},
+		ClipboardImage: func(ctx context.Context) ([]byte, error) {
+			var r proto.ClipboardImageResult
+			raw, err := sup.Call(ctx, "", proto.MethodClipboardImage, proto.ClipboardImageParams{}, nil)
+			if err == nil {
+				err = json.Unmarshal(raw, &r)
+			}
+			return r.JPEG, err
+		},
 		Resolve: resolver(lm),
 		History: lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
@@ -164,18 +200,21 @@ func (a *app) openSessions() {
 
 // resolver opens a session's local models (off the main thread: opening
 // one may start its runtime). A model that is not installed stays nil:
-// the session says what it lacks when it needs it (a selection to
-// translate needs no speech model).
+// the session says what it lacks when it needs it. Without speech the
+// speech model is not opened at all: loading it again after it went
+// idle cost a selection Translate seconds (#3838).
 func resolver(lm local.Services) session.Resolver {
-	return func(ctx context.Context, kind session.Kind, s settings.Settings) (session.Services, error) {
+	return func(ctx context.Context, kind session.Kind, s settings.Settings, speech bool) (session.Services, error) {
 		f := featureOf(s, string(kind))
 		var svc session.Services
-		p, m, err := lm.ASR(ctx, f.ASR)
-		switch {
-		case err == nil:
-			svc.ASR, svc.ASRInfo = p, sessionModel(m)
-		case !errors.Is(err, local.ErrNotInstalled):
-			return svc, err
+		if speech {
+			p, m, err := lm.ASR(ctx, f.ASR)
+			switch {
+			case err == nil:
+				svc.ASR, svc.ASRInfo = p, sessionModel(m)
+			case !errors.Is(err, local.ErrNotInstalled):
+				return svc, err
+			}
 		}
 		if va, ok := svc.ASR.(local.VoiceActivity); ok {
 			// No model: speech is found by energy.
@@ -264,6 +303,14 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.openAnswer(s)
 		a.syncHotkeys() // the cancel shortcut closes the card
 	}
+	back := a.resurface()
+	var copied *sessionNotice
+	if !s.Card && !s.Inserted && s.Delivery != "" && s.Result != "" && s.State == session.Done {
+		// Not inserted and the card is off: the clipboard has it (Voxt 1.x).
+		a.copyRecent(s.Result)
+		// One short line: a notice is one line, cut past NoticeW2.
+		copied = &sessionNotice{text: i18n.T("Not inserted. Copied: press ⌘V to paste."), warn: true, over: back}
+	}
 	if s.ID != "" && a.followUp != "" && !s.Card {
 		a.followUp = "" // a follow-up that ended without an answer: the card keeps the last one
 	}
@@ -274,20 +321,27 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		text, more, action := sessionProblemText(p)
 		switch {
 		case s.Note && s.Card:
-			text = i18n.T("The note could not be saved: the card shows it.")
+			text = i18n.T("Could not save the note, so the card shows it.")
 		case s.Note && p.Code == session.ProblemLLM && p.Degraded:
 			text = degradedLLMText(p, true) // the recognised text went to Notes
 		}
 		if text != "" {
 			// Nothing heard is not a failure: a warning.
-			n := sessionNotice{text: text, more: more, action: action, warn: p.Degraded || p.Code == session.ProblemNoSpeech}
+			n := sessionNotice{text: text, more: more, action: action, warn: p.Degraded || p.Code == session.ProblemNoSpeech, over: back}
 			if p.Code == session.ProblemASR && s.Recording {
 				n.action, n.entry = actionRetry, s.ID // the entry kept the recording: Retry
 			}
+			if copied != nil {
+				n.then = func() { a.showNotice(*copied) }
+			}
 			a.showNotice(n)
+		} else if copied != nil {
+			a.showNotice(*copied)
 		}
 	} else if s.Note && s.State == session.Done && s.Result != "" {
 		a.showNotice(sessionNotice{text: i18n.T("Saved to Notes")})
+	} else if copied != nil {
+		a.showNotice(*copied)
 	}
 	if s.State != session.Cancelled {
 		a.historyChanged()
@@ -339,6 +393,11 @@ func (a *app) noticeAction(action string) {
 		a.navigate("/settings/permissions")
 	case actionHelper:
 		a.restartHelper()
+	case actionSignIn:
+		a.showMainWindow()
+		a.completeSetup(local.LLM, providers.ChatGPT)
+	case actionUsage:
+		go openBrowser(chatgptUsageURL)
 	}
 }
 

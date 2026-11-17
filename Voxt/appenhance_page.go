@@ -120,7 +120,7 @@ func (a *app) appEnhancementPage(c *ui.Context) {
 	inline, shown := p.list.layout(a, c, px(t, aeListW), px(t, aeMainMinW))
 	widePageHeader(c, i18n.T("App enhancement"), func() {
 		if !inline {
-			p.list.toggle(c.Key("ae-list-toggle"), icons.SidebarMinimalistic, shown, i18n.T("Show the groups"), i18n.T("Hide the groups"))
+			p.list.toggle(c.Key("ae-list-toggle"), icons.SidebarMinimalistic, shown, i18n.T("Show groups"), i18n.T("Hide groups"))
 		}
 		on := &a.prefs.AppEnhancement.Enabled
 		state := i18n.T("Off")
@@ -138,7 +138,7 @@ func (a *app) appEnhancementPage(c *ui.Context) {
 		// The browsers: a setting of the page, not a group, so not in
 		// the groups' list.
 		if iconButton(c.Key("ae-browsers"), icons.Global, i18n.T("Browsers")).
-			Tooltip(i18n.T("Browsers: which apps are browsers, read for their tab's address")).Clicked() {
+			Tooltip(i18n.T("Choose which apps are browsers")).Clicked() {
 			a.openBrowsers()
 		}
 	})
@@ -149,7 +149,7 @@ func (a *app) appEnhancementPage(c *ui.Context) {
 				ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).Children(func() {
 					a.aePreviewCard(c)
 					if !a.prefs.AppEnhancement.Enabled {
-						notice(c, "ae-off", noticeInfo, i18n.T("App enhancement is off: every app gets only the features' own rules."), "", nil, nil)
+						notice(c, "ae-off", noticeInfo, i18n.T("App enhancement is off, so every app uses only the features' own rules."), "", nil, nil)
 					}
 					if a.aeErr != "" {
 						notice(c, "ae-err", noticeError, i18n.T("Could not read the groups."), a.aeErr, nil, nil)
@@ -182,7 +182,7 @@ func (a *app) openBrowsers() {
 // aeEmpty is the page without groups.
 func (a *app) aeEmpty(c *ui.Context) {
 	emptyState(c, appEnhancementIcon, i18n.T("Rules for the frontmost app or website"),
-		i18n.T("Group apps and website addresses, and give each group a scene prompt (a chat app, your mail, code review). It is added on top of the features' own rules when you dictate there."), func() {
+		i18n.T("Give apps and websites their own prompt, such as a casual tone in chats."), func() {
 			if ghostIconButton(c.Key("ae-empty-new"), icons.Add, i18n.T("New group")).Clicked() {
 				a.addGroup()
 			}
