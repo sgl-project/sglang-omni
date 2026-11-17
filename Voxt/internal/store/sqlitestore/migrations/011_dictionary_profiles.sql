@@ -1,4 +1,7 @@
--- Named dictionaries. Existing terms move into the active Default profile.
+-- VoxtNew database, migration 11: named dictionaries. Existing terms move
+-- into the active Default profile. (Migrations 9 and 10 are the notes app's
+-- name and the history reopen, from the notes and history changes; the
+-- three must not share a number.)
 CREATE TABLE dictionary_profiles (
   id     TEXT PRIMARY KEY,
   name   TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (name != ''),
