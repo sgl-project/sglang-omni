@@ -11,16 +11,14 @@ package main
 import (
 	"time"
 
-	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 )
 
 // pages builds the page the router shows.
-func (a *app) pages(c *ui.Context) {
-	a.router.View(c, func(r *ui.Route) {
+func (a *app) pages(c *uiContext) {
+	a.router.View(c, func(r *uiRoute) {
 		for _, p := range pages {
 			if r.Match(p.path) {
 				r.Title(pageTitle(p.path))
@@ -35,7 +33,7 @@ func (a *app) pages(c *ui.Context) {
 			return
 		}
 		r.Title(i18n.T("Not found"))
-		a.notFoundPage(c, r.Path())
+		notFoundPage(c, r.Path(), a)
 	}).Grow(1).MinHeight(0)
 }
 
@@ -65,12 +63,12 @@ func (a *app) pageShown(path string) {
 }
 
 // page builds one page of the sidebar.
-func (a *app) page(c *ui.Context, p navPage) {
+func (a *app) page(c *uiContext, p navPage) {
 	switch p.path {
 	case "/home":
 		a.prepareHomePage()
 		model := a.homePageModel(time.Now())
-		homePage(c, &model, a, &a.histUI, func(c *ui.Context) {
+		homePage(c, &model, a, &a.histUI, func(c *uiContext) {
 			a.tryCard(c, tryOpts{
 				prefix: "home", feature: hotkey.Transcribe, mine: a.homeTrySession(),
 				intro: a.tryIntro(hotkey.Transcribe), block: &a.homeUI.block,
@@ -149,26 +147,26 @@ func (a *app) page(c *ui.Context, p navPage) {
 	emptyState(c, p.icon, pageTitle(p.path), "", nil)
 }
 
-func (a *app) featureShortcuts(c *ui.Context, feature string) {
+func (a *app) featureShortcuts(c *uiContext, feature string) {
 	state := a.featureShortcutsModel(feature)
 	featureShortcuts(c, feature, &state, a, a.fui(feature))
 }
 
-func (a *app) featurePage(c *ui.Context, feature string) {
+func (a *app) featurePage(c *uiContext, feature string) {
 	state, tryActions := a.featurePageModel(feature)
 	featurePage(c, &state, a, a.fui(feature), tryActions)
 }
 
-func (a *app) transcribePage(c *ui.Context) { a.featurePage(c, hotkey.Transcribe) }
-func (a *app) translatePage(c *ui.Context)  { a.featurePage(c, hotkey.Translate) }
-func (a *app) rewritePage(c *ui.Context)    { a.featurePage(c, hotkey.Rewrite) }
+func (a *app) transcribePage(c *uiContext) { a.featurePage(c, hotkey.Transcribe) }
+func (a *app) translatePage(c *uiContext)  { a.featurePage(c, hotkey.Translate) }
+func (a *app) rewritePage(c *uiContext)    { a.featurePage(c, hotkey.Rewrite) }
 
-func (a *app) tryCard(c *ui.Context, options tryOpts) {
+func (a *app) tryCard(c *uiContext, options tryOpts) {
 	state, actions := a.tryCardState(options)
 	tryCard(c, &state, actions)
 }
 
-func (a *app) recordFeatureKeys(row *keyRow, event ui.InputEvent, save func(string)) {
+func (a *app) recordFeatureKeys(row *keyRow, event uiInputEvent, save func(string)) {
 	keys, ok := pressedKeys(event)
 	row.unknown = !ok
 	if ok {
@@ -177,7 +175,7 @@ func (a *app) recordFeatureKeys(row *keyRow, event ui.InputEvent, save func(stri
 	}
 }
 
-func (a *app) meetingSettingsDialog(c *ui.Context) {
+func (a *app) meetingSettingsDialog(c *uiContext) {
 	if !a.mvUI.setOpen {
 		return
 	}
@@ -189,18 +187,6 @@ func (a *app) meetingSettingsDialog(c *ui.Context) {
 		meetingLLMSettings(c, state, a)
 		meetingConsent(c)
 	}, func() {
-		ui.Spacer(c)
-		if primaryButton(c.Key("mt-set-done"), i18n.T("Done")).Clicked() {
-			a.mvUI.setOpen = false
-		}
-	})
-}
-
-func (a *app) notFoundPage(c *ui.Context, path string) {
-	pageHeader(c, i18n.T("Not found"), nil)
-	emptyState(c, icons.Magnifer, i18n.T("There is no page at %s.", path), "", func() {
-		if ui.Button(c.Key("go-home"), i18n.T("Go to Home")).Clicked() {
-			a.navigate("/home")
-		}
+		dialogDoneButton(c, "mt-set-done", &a.mvUI.setOpen)
 	})
 }

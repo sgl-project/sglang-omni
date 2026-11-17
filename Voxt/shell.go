@@ -29,6 +29,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/logs"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/notify"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -39,10 +40,12 @@ import (
 // not import MyGo, so the boundary check reads it as the logic file it
 // is (the settings demo's settingsDemoRouter does the same).
 type (
-	uiContext   = ui.Context
-	uiRect      = ui.Rect
-	uiInputKind = ui.InputKind
-	uiModifiers = ui.Modifiers
+	uiContext    = ui.Context
+	uiRoute      = ui.Route
+	uiRect       = ui.Rect
+	uiInputKind  = ui.InputKind
+	uiInputEvent = ui.InputEvent
+	uiModifiers  = ui.Modifiers
 )
 
 // The main window's size, DIPs: by default and at the least. A size the
@@ -322,6 +325,25 @@ func (a *app) view(c *ui.Context) {
 		a.syncHotkeys()
 	}
 	a.keysHeard = false
+}
+
+// dialogDoneButton is a dialogFrame footer: a Done button at the right,
+// closing the dialog.
+func dialogDoneButton(c *ui.Context, key string, open *bool) {
+	ui.Spacer(c)
+	if primaryButton(c.Key(key), i18n.T("Done")).Clicked() {
+		*open = false
+	}
+}
+
+// notFoundPage is the router's fallback: no page at the path.
+func notFoundPage(c *ui.Context, path string, actions navActions) {
+	pageHeader(c, i18n.T("Not found"), nil)
+	emptyState(c, icons.Magnifer, i18n.T("There is no page at %s.", path), "", func() {
+		if ui.Button(c.Key("go-home"), i18n.T("Go to Home")).Clicked() {
+			actions.navigate("/home")
+		}
+	})
 }
 
 // toastsView gives the toasts their place and look: small ink toasts in
