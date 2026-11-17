@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import runpy
 from types import SimpleNamespace
 
 import huggingface_hub
@@ -18,6 +19,9 @@ from sglang_omni.models.auk.config import (
     AuKPipelineConfig,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 
 @pytest.mark.parametrize(
@@ -85,3 +89,20 @@ def test_hub_config_yaml_resolves_without_snapshot(monkeypatch, tmp_path):
 
     monkeypatch.setattr("sglang_omni.utils.hf.hf_hub_download", fake_hub_download)
     assert manager.resolve_config_cls_for_model_path("tencent/AuK") is AuKPipelineConfig
+
+
+@pytest.mark.parametrize(
+    ("platform_class", "graph_enabled"),
+    [(CUDAOmniPlatform, True), (XPUOmniPlatform, False)],
+)
+def test_the_step_graph_defaults_off_only_on_xpu(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_class: type[OmniPlatform],
+    graph_enabled: bool,
+) -> None:
+    monkeypatch.setattr("sglang_omni.platforms.current_platform", platform_class())
+    namespace = runpy.run_module("sglang_omni.models.auk.config")
+    config = namespace["AuKPipelineConfig"](model_path="tencent/AuK")
+    engine = config.stage_named(ENGINE_STAGE)
+    assert engine.factory.enable_dit_cuda_graph is graph_enabled
+    assert engine.factory.enable_dit_torch_compile is True
