@@ -212,7 +212,8 @@ def test_the_profile_feeds_the_users_and_the_agents_audio_to_the_node_and_publis
             render_lead_ms=factory.render_lead_ms,
         ),
     )
-    assert factory.pipeline_depth == DEPTH and len(factory.worker_urls) == 1
+    # The recommended layout (one stage of four sequence-parallel ranks and a decoder) keeps two blocks in flight.
+    assert factory.pipeline_depth == 2 and len(factory.worker_urls) == 1
 
 
 def test_the_port_waits_for_a_replys_first_picture_as_long_as_the_render_lead_and_some_slack():
@@ -417,8 +418,18 @@ def fake_front(module):
         width=384,
         height=704,
         window_samples=GEOMETRY.window_samples,
+        frames_per_block=12,
     )
-    args = SimpleNamespace(jpeg_quality=80, pipeline_depth=DEPTH, timing_log=None)
+    args = SimpleNamespace(
+        jpeg_quality=80,
+        pipeline_depth=DEPTH,
+        timing_log=None,
+        stages=4,
+        sp=1,
+        step_list=[0, 1, 2, 3],
+        block_frames=3,
+        gpu_jpeg=False,
+    )
     return module.Front(engine, args)
 
 

@@ -14,9 +14,9 @@ LOOKAHEAD_MS = 240.0
 # The worker's picture for the authors' 720*400 area and a 400x720 portrait reference (examples/fashion_blogger.jpg): 384x704.
 WIDTH = 384
 HEIGHT = 704
-# How far past the frame the node reached a reply starts: its first block's speech has to arrive (a chunk plus the look-ahead, as fast as the TTS streams it) and the block has to pass the four DiT ranks and the decoder, about 1.4 s on five H200s.
-RENDER_LEAD_MS = 2400.0
-# Silent blocks a Session starts with: the first block of a Session and of its second clip (the fifth) also fill the attention sink.
+# How far past the frame the node reached a reply starts: its first block's speech has to arrive (a chunk plus the look-ahead, as fast as the TTS streams it) and the block has to pass the worker, about 0.6 s on five H100s with four sequence-parallel DiT ranks (liveavatar_worker.py --stages 1 --sp 4 --gpu-jpeg).
+RENDER_LEAD_MS = 1600.0
+# Silent blocks a Session starts with: the first block of its second clip (the fifth) also fills the attention sink, and with the authors' TPP layout so does its first.
 PRIME_CHUNKS = 5
 # A client holding a reply's audio waits this much past the lead for its first picture before it lets the audio go.
 REPLY_MEDIA_WAIT_SLACK_MS = 600
