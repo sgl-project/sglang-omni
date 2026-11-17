@@ -424,7 +424,7 @@ func TestReprocessInterruptedMeeting(t *testing.T) {
 	cfg := meeting.Config{
 		Store:    db.Meetings(),
 		Dir:      filepath.Join(root, "meetings"),
-		Settings: func() settings.Meeting { return settings.Meeting{} },
+		Settings: func() settings.Meeting { return settings.Meeting{NoAutoSummary: true} },
 		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
 		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
 			switch src {

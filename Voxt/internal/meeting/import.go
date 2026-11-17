@@ -69,18 +69,7 @@ func (m *Manager) Import(ctx context.Context, req ImportRequest, onProgress func
 	if err != nil {
 		return fail(err)
 	}
-	cfg := m.cfg
-	if cfg.Settings().NoFinalPass {
-		// The "skip the live final pass" setting is for recorded
-		// meetings; an import's only pass is this one.
-		inner := cfg.Settings
-		cfg.Settings = func() settings.Meeting {
-			out := inner()
-			out.NoFinalPass = false
-			return out
-		}
-	}
-	if err := FinalizePass(ctx, cfg, mt, onProgress); err != nil {
+	if err := FinalizePass(ctx, importPassConfig(m.cfg), mt, onProgress); err != nil {
 		return id, err
 	}
 	if !m.cfg.Settings().NoAutoSummary {
@@ -89,4 +78,20 @@ func (m *Manager) Import(ctx context.Context, req ImportRequest, onProgress func
 		}
 	}
 	return id, nil
+}
+
+// importPassConfig forces the final pass on for an import: the "skip the
+// live final pass" setting is for recorded meetings; an import's only
+// pass is this one.
+func importPassConfig(cfg Config) Config {
+	if !cfg.Settings().NoFinalPass {
+		return cfg
+	}
+	inner := cfg.Settings
+	cfg.Settings = func() settings.Meeting {
+		out := inner()
+		out.NoFinalPass = false
+		return out
+	}
+	return cfg
 }

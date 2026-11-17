@@ -341,6 +341,68 @@ func TestReprocessCorrectsAndSummarizes(t *testing.T) {
 	}
 }
 
+// Continue processing after a cancel runs the pass even with "skip the
+// live final pass" on: an import's only pass is this one, and the
+// meeting ends done, not finishing forever.
+func TestReprocessImportIgnoresNoFinalPass(t *testing.T) {
+	chat := &fixingChat{}
+	block := make(chan struct{})
+	diarizer := &importDiarizer{block: block, result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "Box one"},
+	}}}
+	plain := &importFileASR{}
+	m, repo := importFixture(t, chat, diarizer, plain)
+	m.cfg.Settings = func() settings.Meeting { return settings.Meeting{NoFinalPass: true} }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var id string
+	go func() {
+		var err error
+		id, err = m.Import(ctx, ImportRequest{Name: "long", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+		done <- err
+	}()
+	<-block
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	diarizer.block = nil
+	if err := m.Reprocess(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if len(diarizer.got()) != 2 {
+		t.Fatalf("the pass did not run again: %d MTD requests", len(diarizer.got()))
+	}
+	mt, segs, err := repo.Meeting(context.Background(), id)
+	if err != nil || mt.Status != store.MeetingDone || len(segs) != 1 {
+		t.Fatalf("status %v, %d segments, %v", mt, len(segs), err)
+	}
+}
+
+// Continue processing tells the caller when the correction or the
+// summary fails, as the import does; the meeting itself is done.
+func TestReprocessSurfacesCorrectionFailure(t *testing.T) {
+	chat := &fixingChat{}
+	diarizer := &importDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "hi"},
+	}}}
+	plain := &importFileASR{}
+	m, repo := importFixture(t, chat, diarizer, plain)
+	ctx := context.Background()
+	id, err := m.Import(ctx, ImportRequest{Name: "x", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.LLM = func(context.Context, string) (SummaryChat, error) { return nil, errors.New("model down") }
+	if err := m.Reprocess(ctx, id); err == nil {
+		t.Fatal("a failed correction came back as a success")
+	}
+	mt, _, err := repo.Meeting(ctx, id)
+	if err != nil || mt.Status != store.MeetingDone {
+		t.Fatalf("status %v, %v", mt, err)
+	}
+}
+
 // Keep a history off refuses the import instead of storing the whole
 // transcript anyway.
 func TestImportRefusedWithoutHistory(t *testing.T) {

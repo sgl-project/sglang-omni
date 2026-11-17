@@ -30,14 +30,19 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		m.notify(m.Current())
 	}
-	err = FinalizePass(ctx, m.cfg, mt, m.finalizeProgress(id))
+	cfg := m.cfg
+	if fromStoreMode(mt.Mode) == ModeImport {
+		cfg = importPassConfig(cfg)
+	}
+	err = FinalizePass(ctx, cfg, mt, m.finalizeProgress(id))
 	if err != nil {
 		return err
 	}
-	// The correction and the summary run as after a live finalize; their
-	// failure is a warning there too (the meeting menu corrects again).
+	// The correction and the summary run as after a live finalize; a
+	// failure surfaces to the caller (the meeting menu corrects again).
+	var cerr error
 	if !m.cfg.Settings().NoAutoSummary {
-		_ = m.correctAndSummarize(ctx, id)
+		cerr = m.correctAndSummarize(ctx, id)
 	}
 	if m.id == id {
 		m.mu.Lock()
@@ -47,7 +52,7 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		m.notify(m.Current())
 	}
-	return nil
+	return cerr
 }
 
 func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
