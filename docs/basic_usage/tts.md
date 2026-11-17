@@ -18,6 +18,7 @@ model you are serving.
 | Model | Incremental audio | Request requirements and model-specific behavior |
 |---|---|---|
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | Yes | Text-only or voice cloning with `references` |
+| [Fish Audio Drama 3](../cookbook/fishaudio_drama3.md) | Yes | Text-only or voice cloning with `references` and their transcripts; `previous_takes` for editing; a request `seed` is refused |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | Yes | Reference audio or a precomputed speaker embedding |
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice) | Yes | Built-in speakers; 1.7B supports instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | Yes | `task_type: "VoiceDesign"` and non-empty `instructions`; checkpoint `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` uses `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` |
