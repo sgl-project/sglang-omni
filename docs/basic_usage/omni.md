@@ -367,8 +367,8 @@ Realtime interaction is separate from both a completed chat request and an SSE r
 
 Start the model with its realtime deployment configuration and connect to `/v1/realtime`. Session configuration, audio formats, event IDs, and packet metadata depend on the deployment; choose its documented protocol before sending audio.
 
-- [Qwen3-Omni standard speech pipeline](../cookbook/qwen3_omni.md#realtime-speech-with-server-side-turn-detection): turn-based conversation events and server-side turn detection.
-- [Qwen3-Omni persistent session profile](../cookbook/qwen3_omni.md#qwen3-omni-persistent-session-stages): the shared session protocol with persistent KV state.
+- [Qwen3-Omni standard speech pipeline](../cookbook/qwen3_omni/platforms.md#realtime-speech-with-server-side-turn-detection): turn-based conversation events and server-side turn detection.
+- [Qwen3-Omni persistent session profile](../cookbook/qwen3_omni/platforms.md#qwen3-omni-persistent-session-stages): the shared session protocol with persistent KV state.
 - [MiniCPM-o](../cookbook/minicpm_o.md): model-specific full-duplex setup and the shared session protocol.
 
 Where supported, audio arrives as base64 PCM16 in `input_audio_buffer.append`; client commits or server-side turn detection delimit turns. Native full-duplex deployments have their own turn controls. Setting `stream: true` on a chat request creates an SSE response, not a realtime session.
@@ -389,7 +389,7 @@ Turn-based sessions may use client commits, `server_vad`, or semantic VAD when t
 
 Startup warmup depends on the pipeline and realtime deployment. A configured request warmup must finish before `/health` reports ready; a pipeline without request warmup can become ready without exercising its chat path. While startup is in progress, `/health` returns HTTP 503 with status `starting`. A failed request warmup stops the server.
 
-`SGLANG_OMNI_WARMUP_TIMEOUT` sets the timeout in seconds for each warmup request (default `600`). Pass `--skip-server-warmup` to report ready without running these requests. See [Qwen3-Omni Server Readiness](../cookbook/qwen3_omni.md#server-readiness) for its synthetic inputs and replica coverage. Readiness does not guarantee that every input shape has been warmed up.
+`SGLANG_OMNI_WARMUP_TIMEOUT` sets the timeout in seconds for each warmup request (default `600`). Pass `--skip-server-warmup` to report ready without running these requests. See [Qwen3-Omni Server Readiness](../cookbook/qwen3_omni/tuning.md#server-readiness) for its synthetic inputs and replica coverage. Readiness does not guarantee that every input shape has been warmed up.
 
 ## Request Parameters
 
