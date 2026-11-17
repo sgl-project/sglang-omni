@@ -22,9 +22,15 @@ def reply_media_wait_ms(chunk_ms: float, lookahead_ms: float) -> int:
 
 
 def jpeg_frame_port(
-    *, fps: int, width: int, height: int, chunk_ms: float, lookahead_ms: float
+    *,
+    fps: int,
+    width: int,
+    height: int,
+    chunk_ms: float,
+    lookahead_ms: float,
+    render_lead_ms: float = 0.0,
 ) -> PluginPort:
-    """Each frame is stamped with its 1/fps on the Session input timeline, listening frames (empty payloads, which keep the picture) included, and carries the turn of the reply audio it shows."""
+    """Each frame is stamped with its 1/fps on the Session input timeline, listening frames (empty payloads, which keep the picture) included, and carries the turn of the reply audio it shows. A reply's first frame is stamped `render_lead_ms` past the frame the node had reached when the reply was placed, so a client holding the reply's audio waits that much longer for it."""
     return PluginPort(
         VIDEO,
         JPEG_FRAME,
@@ -32,7 +38,9 @@ def jpeg_frame_port(
             "fps": fps,
             TIMELINE: INPUT_TIMELINE,
             "follows_replies": True,
-            "reply_media_wait_ms": reply_media_wait_ms(chunk_ms, lookahead_ms),
+            "reply_media_wait_ms": reply_media_wait_ms(
+                chunk_ms, lookahead_ms + render_lead_ms
+            ),
             "reply_lookahead_ms": round(chunk_ms + lookahead_ms),
             "chunk_ms": chunk_ms,
             "width": width,

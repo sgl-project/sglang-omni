@@ -414,7 +414,9 @@ class SpeechVideoHooks(SpeechAvatarHooks):
     audio its window reads is in or, at the latest, once the user's audio
     comes within `render_lead` of its start, until a chunk starts `tail`
     past every reply; the frames of a chunk the reply does not reach show
-    the model's silence.
+    the model's silence. With `reply_starts_chunk`, the frames up to a
+    placed reply go out at once, so its first chunk starts on its first
+    frame (for chunks long against the render lead).
     """
 
     def __init__(
@@ -427,6 +429,7 @@ class SpeechVideoHooks(SpeechAvatarHooks):
         render_lead_ms: float,
         tail_ms: float = 0.0,
         reply_quiet_ms: float = REPLY_QUIET_MS,
+        reply_starts_chunk: bool = False,
         input_sample_rate_hz: int = SESSION_INPUT_SAMPLE_RATE_HZ,
         recovery_probe_s: float = RECOVERY_PROBE_S,
         clock: Callable[[], float] = time.monotonic,
@@ -449,6 +452,7 @@ class SpeechVideoHooks(SpeechAvatarHooks):
         self.render_lead = timeline_sample(render_lead_ms)
         self.tail = timeline_sample(tail_ms)
         self.reply_quiet_s = reply_quiet_ms / 1000
+        self.reply_starts_chunk = reply_starts_chunk
         self.clock = clock
 
     def append_speech(
@@ -579,7 +583,37 @@ class SpeechVideoHooks(SpeechAvatarHooks):
         ):
             self.emit_frame(session, session.cursor, None, b"")
             session.cursor += self.frame_samples
-        session.audio.user.drop_before(session.cursor)
+        # With `reply_starts_chunk`, the silence up to a reply placed ahead goes out now, ahead of the user's audio, so the reply's first chunk
+        # starts on its first frame and renders within the render lead: a chunk started where the cursor is would spend most of that lead on
+        # silence, which a model whose chunk is long against its lead (LiveAct: 1.6 s chunks, 1.15 s lead) cannot afford.
+        upcoming = self.upcoming_reply(session) if self.reply_starts_chunk else None
+        while (
+            upcoming is not None
+            and session.cursor < upcoming
+            and not self.plays(session, session.cursor)
+        ):
+            self.emit_frame(session, session.cursor, None, b"")
+            session.cursor += self.frame_samples
+        session.audio.user.drop_before(min(session.cursor, session.audio.user.end))
+
+    def upcoming_reply(self, session: SpeechSession) -> int | None:
+        """The first frame of the first placed reply that starts past the cursor, None when there is none."""
+        assert session.cursor is not None
+        starts = [
+            reply.start
+            for reply in session.audio.replies.replies
+            if reply.start is not None and reply.start > session.cursor
+        ]
+        return min(starts) if starts else None
+
+    def plays(self, session: SpeechSession, start: int) -> bool:
+        """Whether a reply plays at the frame from `start`, or ended within the tail before it."""
+        return (
+            session.audio.replies.turn_at(
+                start - self.tail, self.tail + self.frame_samples
+            )
+            is not None
+        )
 
     def emit_frame(
         self, session: SpeechSession, start: int, turn: int | None, jpeg: bytes
