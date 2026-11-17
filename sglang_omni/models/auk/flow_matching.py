@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
+from threading import Event
 
 import torch
 import torch.nn.functional as F
@@ -14,7 +15,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
-from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner
+from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner, AuKStepReplay
 
 
 def request_generator(
@@ -102,6 +103,7 @@ class AuKFlowMatching(nn.Module):
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
         step_graph: AuKStepCudaGraphRunner | None = None,
+        abort_event: Event | None = None,
     ) -> torch.Tensor:
         return self.sample_batch(
             [item],
@@ -110,6 +112,7 @@ class AuKFlowMatching(nn.Module):
             sway_sampling_coef=sway_sampling_coef,
             t_grid=t_grid,
             step_graph=step_graph,
+            abort_event=abort_event,
         )[0]
 
     @torch.no_grad()
@@ -122,6 +125,7 @@ class AuKFlowMatching(nn.Module):
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
         step_graph: AuKStepCudaGraphRunner | None = None,
+        abort_event: Event | None = None,
     ) -> list[torch.Tensor]:
         """Integrate the velocity field for a batch of requests.
 
@@ -256,15 +260,27 @@ class AuKFlowMatching(nn.Module):
         else:
             pass
         try:
-            result = integrate(fn or partial(step, inputs), y0, t)
+            result = integrate(
+                fn or partial(step, inputs), y0, t, abort_event=abort_event
+            )
             return [latent[: item.target_frames] for item, latent in zip(items, result)]
         finally:
             self.transformer.clear_cache()
 
 
-def integrate(fn, y0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+def integrate(
+    fn: AuKStepReplay,
+    y0: torch.Tensor,
+    t: torch.Tensor,
+    *,
+    abort_event: Event | None = None,
+) -> torch.Tensor:
     """Fixed-grid Euler integration, matching the released inference recipe."""
     y = y0
     for step in range(t.numel() - 1):
+        if abort_event is not None and abort_event.is_set():
+            raise InterruptedError("AuK sampling cancelled")
+        else:
+            pass
         y = y + (t[step + 1] - t[step]) * fn(t[step], y)
     return y
