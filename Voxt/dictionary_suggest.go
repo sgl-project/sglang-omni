@@ -74,7 +74,6 @@ func (a *app) acceptSuggestion(key string, term store.Term, fromDialog bool) {
 			}
 			a.loadDict()
 			a.loadSuggestions()
-			a.loadGlossaryTerms()
 		})
 	})
 }

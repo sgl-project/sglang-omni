@@ -126,7 +126,9 @@ var (
 // dictShown runs when the router goes to the page (pageShown).
 func (a *app) dictShown() { a.loadDict() }
 
-// loadDict reads the terms of the search in the background.
+// loadDict reads the terms of the search in the background. The glossary
+// cache (loadGlossaryTerms in feature_prompts.go) follows every reload, so
+// anything that reloads the list also reaches the prompt preview.
 func (a *app) loadDict() {
 	d := &a.dv
 	d.seq++
@@ -150,13 +152,14 @@ func (a *app) loadDict() {
 			d.list, d.err = list, ""
 			if q == "" {
 				d.total = len(list)
+				a.glossaryReads++
+				a.glossaryTerms = list
+			} else {
+				a.loadGlossaryTerms()
 			}
 		})
 	})
 }
-
-// loadGlossaryTerms (feature_prompts.go) reads the whole dictionary for
-// the feature pages' prompt preview.
 
 func (a *app) dictionaryPage(c *ui.Context) {
 	t := c.Theme()
@@ -481,7 +484,6 @@ func (a *app) saveTerm(term store.Term, fromDialog bool) {
 				a.toast(uitext.TermErrorText(err))
 			}
 			a.loadDict()
-			a.loadGlossaryTerms()
 		})
 	})
 }
@@ -500,7 +502,6 @@ func (a *app) deleteTerm(term store.Term) {
 			}
 			a.toast(i18n.T("Deleted “%s”", term.Term))
 			a.loadDict()
-			a.loadGlossaryTerms()
 		})
 	})
 }
@@ -548,7 +549,6 @@ func (a *app) importFile(path string) {
 			a.dv.importing = false
 			a.toast(msg)
 			a.loadDict()
-			a.loadGlossaryTerms()
 		})
 	})
 }

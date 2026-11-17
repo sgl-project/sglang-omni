@@ -487,3 +487,42 @@ func TestMarkValues(t *testing.T) {
 		t.Errorf("empty text: %+v", s)
 	}
 }
+
+// TestPreviewFollowsTheDictionary: the prompt preview's glossary cache
+// follows every dictionary reload, not only the start and the term
+// dialogs: a term that appears between two reloads — another profile's,
+// once profiles land — is in the whole prompt a session sends, and one
+// that goes away leaves it, with a search active too.
+func TestPreviewFollowsTheDictionary(t *testing.T) {
+	a, _ := pageTester(t, "/transcribe")
+	a.updateSettings(func(s *settings.Settings) {
+		s.Dictionary.Enabled, s.Dictionary.Glossary = true, true
+	})
+	repo := a.lib.store.Dictionary()
+	if err := repo.Put(context.Background(), store.Term{ID: "g1", Term: "Zephyrion", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	a.loadDict()
+	out, err := a.composedPreview(hotkey.Transcribe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole := wholePrompt(out); !strings.Contains(whole, "Zephyrion") {
+		t.Fatalf("the reload did not reach the preview: %q", whole)
+	}
+	if err := repo.Delete(context.Background(), "g1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Put(context.Background(), store.Term{ID: "g2", Term: "Quixotica", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	a.dv.query = "quix"
+	a.loadDict()
+	out, err = a.composedPreview(hotkey.Transcribe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole := wholePrompt(out); strings.Contains(whole, "Zephyrion") || !strings.Contains(whole, "Quixotica") {
+		t.Errorf("the filtered reload did not reach the preview: %q", whole)
+	}
+}
