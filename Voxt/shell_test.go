@@ -103,17 +103,28 @@ func TestPaletteFitsTheWindow(t *testing.T) {
 }
 
 func TestPalettePopulatesItsFirstFrame(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	var counts []int
-	tt := ui.NewTester(func(c *ui.Context) {
-		a.view(c)
-		counts = append(counts, len(a.paletteView.Items))
-	}, windowWidth, windowHeight)
-	before := len(counts)
-	tt.Key(ui.Cmd, ui.KeyK)
-	opened := counts[before:]
-	if len(opened) == 0 || opened[0] == 0 {
-		t.Fatalf("the palette's first open frame has no commands: counts %v", counts)
+	for _, name := range []string{"keyboard", "sidebar"} {
+		t.Run(name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			var counts []int
+			var opens []bool
+			tt := ui.NewTester(func(c *ui.Context) {
+				a.view(c)
+				counts = append(counts, len(a.paletteView.Items))
+				opens = append(opens, a.paletteOpen)
+			}, windowWidth, windowHeight)
+			before := len(counts)
+			if name == "keyboard" {
+				tt.Key(ui.Cmd, ui.KeyK)
+			} else if err := tt.Click("Command palette"); err != nil {
+				t.Fatal(err)
+			}
+			for i, open := range opens[before:] {
+				if open && counts[before+i] == 0 {
+					t.Fatalf("the palette's first open frame has no commands: counts %v, opens %v", counts, opens)
+				}
+			}
+		})
 	}
 }
 

@@ -149,6 +149,8 @@ func (a *app) paletteItems() []command {
 func (a *app) openPalette() {
 	if !a.paletteOpen {
 		a.paletteOpen, a.paletteQuery, a.paletteSel = true, "", 0
+		a.paletteView = buildPaletteViewState(a.commandList(), "")
+		a.paletteViewKey = paletteCacheKey{list: a.listKey}
 	}
 }
 
