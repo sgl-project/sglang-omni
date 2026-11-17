@@ -473,6 +473,38 @@ mx::array RelativeShift(const mx::array &scores, int key_count) {
       query_length - 1);
 }
 
+mx::array TransposedConvolutionPhases(const mx::array &weight, int stride) {
+  const int out = weight.shape(0);
+  const int kernel_size = weight.shape(1);
+  const int in = weight.shape(2);
+  const int taps = (kernel_size + stride - 1) / stride;
+  const mx::array padded =
+      taps * stride == kernel_size
+          ? weight
+          : mx::pad(weight, {{0, 0}, {0, taps * stride - kernel_size}, {0, 0}});
+  // Kernel step j * stride + p meets input q - j at output q * stride + p, so
+  // phase p's taps run backwards over j.
+  const mx::array phases =
+      mx::take(mx::reshape(padded, {out, taps, stride, in}),
+               mx::arange(taps - 1, -1, -1), 1);
+  return mx::reshape(mx::transpose(phases, {2, 0, 1, 3}),
+                     {stride * out, taps, in});
+}
+
+mx::array ConvolveTransposed(const mx::array &x, const mx::array &phases,
+                             int stride, int kernel_size, int padding) {
+  const int batch = x.shape(0);
+  const int length = x.shape(1);
+  const int taps = phases.shape(1);
+  const int out = phases.shape(0) / stride;
+  const mx::array padded =
+      taps > 1 ? mx::pad(x, {{0, 0}, {taps - 1, taps - 1}, {0, 0}}) : x;
+  const mx::array steps = mx::reshape(
+      mx::conv1d(padded, phases), {batch, (length + taps - 1) * stride, out});
+  return mx::slice(steps, {0, padding, 0},
+                   {batch, (length - 1) * stride + kernel_size - padding, out});
+}
+
 void FoldBatchNorms(WeightMap &weights, const std::string &norm_name,
                     float eps) {
   const std::string suffix = "." + norm_name + ".running_mean";

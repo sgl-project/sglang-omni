@@ -127,6 +127,20 @@ mlx::core::array RouteToExperts(const mlx::core::array &hidden,
 // 1.
 mlx::core::array RelativeShift(const mlx::core::array &scores, int key_count);
 
+// A transposed convolution's weight [out, kernel, in] at stride as one
+// stride-1 convolution's [stride * out, ceil(kernel / stride), in], output
+// channel p * out + o giving output step q * stride + p. MLX runs transposed
+// convolutions as an unfold of the zero-dilated input and a GEMM, stride
+// times the work and off its implicit-GEMM path.
+mlx::core::array TransposedConvolutionPhases(const mlx::core::array &weight,
+                                             int stride);
+// mlx::core::conv_transpose1d(x, weight, stride, padding) for x [batch, time,
+// in], from TransposedConvolutionPhases(weight, stride) and weight's kernel
+// size.
+mlx::core::array ConvolveTransposed(const mlx::core::array &x,
+                                    const mlx::core::array &phases, int stride,
+                                    int kernel_size, int padding = 0);
+
 // Folds every batch norm module.norm_name (running statistics, weight, bias)
 // into the module's depthwise_conv before it, giving that convolution a bias,
 // and drops the norm's tensors.

@@ -25,7 +25,9 @@ constexpr mx::Dtype kDtype = mx::float16;
 // layouts moved to MLX's, in kDtype; the training-only flow is dropped. Each
 // activation filter is also split into its even and odd taps, flipped for
 // upsampling, for the two-phase convolutions.
-omni_common::WeightMap ConvertVAEWeights(const omni_common::WeightMap &stored) {
+omni_common::WeightMap
+ConvertVAEWeights(const omni_common::WeightMap &stored,
+                  const std::vector<int> &upsample_rates) {
   omni_common::WeightMap weights;
   for (const auto &[stored_name, stored_weight] : stored) {
     if (stored_name.starts_with("flow.") ||
@@ -43,10 +45,15 @@ omni_common::WeightMap ConvertVAEWeights(const omni_common::WeightMap &stored) {
                (magnitude / mx::sqrt(mx::sum(weight * weight, {1, 2}, true)));
     } else {
     }
-    if (name.ends_with(".weight") && weight.ndim() == 3) {
-      weight = mx::transpose(weight, name.starts_with("ups.")
-                                         ? std::vector<int>{1, 2, 0}
-                                         : std::vector<int>{0, 2, 1});
+    if (name.ends_with(".weight") && weight.ndim() == 3 &&
+        name.starts_with("ups.")) {
+      // ups.<stage>.0.weight, a transposed convolution, as its stride-1
+      // phases.
+      const int stage = std::stoi(name.substr(4));
+      weight = omni_common::TransposedConvolutionPhases(
+          mx::transpose(weight, {1, 2, 0}), upsample_rates.at(stage));
+    } else if (name.ends_with(".weight") && weight.ndim() == 3) {
+      weight = mx::transpose(weight, {0, 2, 1});
     } else if (name.ends_with(".filter")) {
       weight = mx::transpose(weight, {0, 2, 1});
       const int taps = weight.shape(1);
@@ -80,7 +87,10 @@ mx::array LeakyRelu(const mx::array &hidden_states, float negative_slope) {
 } // namespace
 
 VAE::VAE(const omni_common::WeightMap &weights, const nlohmann::json &config)
-    : checkpoint_(ConvertVAEWeights(weights), nlohmann::json::object()) {
+    : checkpoint_(
+          ConvertVAEWeights(
+              weights, config.at("upsample_rates").get<std::vector<int>>()),
+          nlohmann::json::object()) {
   latent_dimension_ = config.at("latent_dim").get<int>();
   causal_ = config.at("causal").get<bool>();
   activation_causal_ = config.at("act_causal").get<bool>();
@@ -89,8 +99,9 @@ VAE::VAE(const omni_common::WeightMap &weights, const nlohmann::json &config)
   upsample_rates_ = config.at("upsample_rates").get<std::vector<int>>();
   const auto encoder_channels =
       config.at("downsample_channels").get<std::vector<int>>();
-  const auto upsample_kernels =
+  upsample_kernels_ =
       config.at("upsample_kernel_sizes").get<std::vector<int>>();
+  const auto &upsample_kernels = upsample_kernels_;
   const auto residual_kernels =
       config.at("resblock_kernel_sizes").get<std::vector<int>>();
   residual_dilations_ =
@@ -180,8 +191,14 @@ VAE::VAE(const omni_common::WeightMap &weights, const nlohmann::json &config)
   decoder_channels = config.at("upsample_initial_channel").get<int>();
   require_convolution("conv_pre", latent_dimension_, decoder_channels, 7);
   for (size_t i = 0; i < upsample_rates_.size(); ++i) {
-    require_convolution("ups." + std::to_string(i) + ".0", decoder_channels,
-                        decoder_channels / 2, upsample_kernels[i]);
+    // A transposed convolution, kept as its stride-1 phases.
+    const std::string upsample = "ups." + std::to_string(i) + ".0";
+    const int rate = upsample_rates_[i];
+    checkpoint_.RequireShape(upsample + ".weight",
+                             {rate * (decoder_channels / 2),
+                              (upsample_kernels[i] + rate - 1) / rate,
+                              decoder_channels});
+    checkpoint_.RequireShape(upsample + ".bias", {decoder_channels / 2});
     decoder_channels /= 2;
     for (size_t j = 0; j < residual_kernels.size(); ++j) {
       const std::string prefix =
@@ -366,12 +383,12 @@ mx::array VAE::Decode(const mx::array &latents) const {
   hidden_states = Convolution(hidden_states, "conv_pre");
   for (size_t i = 0; i < upsample_rates_.size(); ++i) {
     const std::string prefix = "ups." + std::to_string(i) + ".0";
-    const auto &weight = checkpoint_.Weight(prefix + ".weight");
     const int rate = upsample_rates_[i];
-    hidden_states =
-        mx::conv_transpose1d(hidden_states, weight, rate,
-                             causal_ ? 0 : (weight.shape(1) - rate) / 2) +
-        checkpoint_.Weight(prefix + ".bias");
+    const int kernel = upsample_kernels_[i];
+    hidden_states = omni_common::ConvolveTransposed(
+                        hidden_states, checkpoint_.Weight(prefix + ".weight"),
+                        rate, kernel, causal_ ? 0 : (kernel - rate) / 2) +
+                    checkpoint_.Weight(prefix + ".bias");
     if (causal_) {
       hidden_states =
           mx::slice(hidden_states, {0, 0, 0},

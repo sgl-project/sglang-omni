@@ -133,8 +133,10 @@ AudioCodec::PrepareWeights(omni_common::WeightMap weights,
   weights.erase(codebook + "cluster_usage");
   weights.erase(codebook + "embedding_sum");
   // Folds a weight-normed kernel (out, in, kernel), or (in, out, kernel) when
-  // transposed, into MLX's (out, kernel, in).
-  const auto fold = [&](const std::string &module, bool transposed) {
+  // transposed, into MLX's (out, kernel, in), a transposed one's then split
+  // into its stride-1 phases.
+  const auto fold = [&](const std::string &module, int transposed_stride) {
+    const bool transposed = transposed_stride > 0;
     const std::string stem = module + ".conv.parametrizations.weight.";
     const mx::array direction = weights.at(stem + "original1");
     const mx::array direction32 = mx::astype(direction, mx::float32);
@@ -148,19 +150,22 @@ AudioCodec::PrepareWeights(omni_common::WeightMap weights,
         direction.dtype());
     weights.insert_or_assign(
         module + ".conv.weight",
-        mx::transpose(weight, transposed ? std::vector<int>{1, 2, 0}
-                                         : std::vector<int>{0, 2, 1}));
+        transposed ? omni_common::TransposedConvolutionPhases(
+                         mx::transpose(weight, {1, 2, 0}), transposed_stride)
+                   : mx::transpose(weight, {0, 2, 1}));
     weights.erase(stem + "original0");
     weights.erase(stem + "original1");
   };
   for (size_t index = 0; index < blocks.size(); ++index) {
     if (blocks[index].kind != BlockKind::kTransformer) {
       fold(prefix + ".decoder_blocks." + std::to_string(index),
-           blocks[index].kind == BlockKind::kTransposedConvolution);
+           blocks[index].kind == BlockKind::kTransposedConvolution
+               ? blocks[index].stride
+               : 0);
     } else {
     }
   }
-  fold(prefix + ".output_proj", false);
+  fold(prefix + ".output_proj", 0);
   return weights;
 }
 
@@ -200,9 +205,9 @@ mx::array AudioCodec::Decode(const mx::array &codes) const {
           hidden, checkpoint_.Weight(block_prefix + ".conv.weight"),
           block.stride, "edge");
     } else if (block.kind == BlockKind::kTransposedConvolution) {
-      hidden = mx::conv_transpose1d(
+      hidden = omni_common::ConvolveTransposed(
           hidden, checkpoint_.Weight(block_prefix + ".conv.weight"),
-          block.stride);
+          block.stride, block.kernel_size);
       // Causal: drops the trailing kernel minus stride steps.
       hidden =
           mx::slice(hidden, {0, 0, 0},

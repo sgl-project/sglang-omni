@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
-#include <set>
+#include <map>
 #include <stdexcept>
 #include <string_view>
 
@@ -109,7 +109,8 @@ mx::array AudioCodec::ConvolveTransposed(const mx::array &x,
                                          const ConvolutionWeights &weights,
                                          int stride) {
   mx::array y =
-      mx::conv_transpose1d(mx::swapaxes(x, 1, 2), weights.kernel, stride);
+      omni_common::ConvolveTransposed(mx::swapaxes(x, 1, 2), weights.kernel,
+                                      stride, weights.kernel.shape(1) * stride);
   if (weights.bias.has_value()) {
     y = mx::add(y, *weights.bias);
   } else {
@@ -145,19 +146,24 @@ AudioCodec::LoadWeights(const std::filesystem::path &model_directory) {
   auto [loaded, metadata] =
       mx::load_safetensors((model_directory / "codec.safetensors").string());
   const std::string_view plain_kernel = ".conv.weight";
-  std::set<std::string> transposed_prefixes;
+  // Each transposed convolution's stride.
+  std::map<std::string, int> transposed_strides;
   for (int block = 0; block < kDownsampleCount; ++block) {
-    transposed_prefixes.insert(Index("quantizer.upsample", block) + ".0");
+    transposed_strides.emplace(Index("quantizer.upsample", block) + ".0", 2);
   }
   for (int block = 0; block < 4; ++block) {
-    transposed_prefixes.insert(Index("decoder.model", block + 1) + ".block.1");
+    transposed_strides.emplace(Index("decoder.model", block + 1) + ".block.1",
+                               kDecoderStrides[block]);
   }
-  // Transposed convolutions store [in, out, kernel]; the rest [out, in,
-  // kernel].
-  const auto to_mlx_layout = [&transposed_prefixes](const std::string &prefix,
-                                                    const mx::array &kernel) {
-    return transposed_prefixes.count(prefix) ? mx::transpose(kernel, {1, 2, 0})
-                                             : mx::transpose(kernel, {0, 2, 1});
+  // Transposed convolutions store [in, out, kernel] and are kept as their
+  // stride-1 phases; the rest store [out, in, kernel].
+  const auto to_mlx_layout = [&transposed_strides](const std::string &prefix,
+                                                   const mx::array &kernel) {
+    const auto found = transposed_strides.find(prefix);
+    return found != transposed_strides.end()
+               ? omni_common::TransposedConvolutionPhases(
+                     mx::transpose(kernel, {1, 2, 0}), found->second)
+               : mx::transpose(kernel, {0, 2, 1});
   };
   omni_common::WeightMap weights;
   for (auto &[name, array] : loaded) {

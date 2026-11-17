@@ -21,7 +21,8 @@ namespace fish_dac {
 inline constexpr int kSampleRate = 44100;
 inline constexpr int kFrameSamples = 2048;
 
-// A convolution's kernel with its weight norm folded, in MLX layout.
+// A convolution's kernel with its weight norm folded, in MLX layout (a
+// transposed convolution's as its stride-1 phases).
 struct ConvolutionWeights {
   mlx::core::array kernel;
   std::optional<mlx::core::array> bias;
