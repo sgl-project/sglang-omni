@@ -12,6 +12,13 @@ namespace omni_common {
 
 namespace mx = mlx::core;
 
+namespace {
+
+// The longest input, such as a draft's verify block, that runs as one graph.
+constexpr int kSingleGraphTokens = 32;
+
+} // namespace
+
 Qwen3DecoderConfig
 Qwen3DecoderConfig::FromJson(const nlohmann::json &text_config) {
   // note (wilsonzheng0327): newer configs keep rope_theta under
@@ -165,7 +172,9 @@ mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
                                 std::vector<mx::array> *captured) const {
   mx::array hidden = embeddings;
   // Note (Yucheng Hu): MLX frees temporaries per buffer, so eval per layer.
-  const bool is_prefill = embeddings.shape(1) > 1;
+  // Note (XXXXRT666): only past kSingleGraphTokens, so a short input such as a
+  // draft block or a code predictor's first step builds without waiting.
+  const bool is_prefill = embeddings.shape(1) > kSingleGraphTokens;
   for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
     if (std::count(capture_layers.begin(), capture_layers.end(), layer) > 0) {
       captured->push_back(hidden);
