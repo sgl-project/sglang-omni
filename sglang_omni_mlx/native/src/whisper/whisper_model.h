@@ -4,6 +4,7 @@
 // and decoder run in the weights' dtype.
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -56,7 +57,8 @@ public:
 
   const WhisperConfig &config() const { return config_; }
   // A batch of contiguous, padded windows to states [batch, 1500, width].
-  mlx::core::array Encode(std::span<const float> padded_samples) const;
+  mlx::core::array Encode(std::span<const float> padded_samples,
+                          const std::atomic<bool> &cancel) const;
   // Token ids [batch, length] placed from start_position on, to the logits
   // of the last logit_count positions [batch * logit_count, vocabulary].
   mlx::core::array Decode(const mlx::core::array &token_ids, int start_position,

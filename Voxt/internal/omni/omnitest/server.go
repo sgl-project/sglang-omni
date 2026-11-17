@@ -151,6 +151,10 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		os.Exit(3)
 	}
 	for end := time.Now().Add(o.Delay); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if r.Context().Err() != nil {
+			record(o, Record{Event: "final-cancelled", Samples: samples})
+			return
+		}
 		_, _ = io.WriteString(w, ":\n\n")
 		flush()
 	}

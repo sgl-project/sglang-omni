@@ -546,7 +546,7 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
     std::vector<float> window_samples(batch_sample_count, 0.0f);
     std::copy(samples.begin() + start, samples.begin() + end,
               window_samples.begin());
-    const mx::array encoder_states = model_.Encode(window_samples);
+    const mx::array encoder_states = model_.Encode(window_samples, cancel);
     if (cancel.load()) {
       throw omni_common::GenerationCancelled();
     } else {

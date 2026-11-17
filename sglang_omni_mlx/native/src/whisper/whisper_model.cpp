@@ -6,6 +6,7 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "common/generation.h"
 #include "common/npz.h"
 #include "common/swift_port.h"
 #include "nlohmann/json.hpp"
@@ -312,7 +313,8 @@ mx::array WhisperModel::LogMel(std::span<const float> window_samples) const {
   return mx::transpose(log_mel, {1, 0});
 }
 
-mx::array WhisperModel::Encode(std::span<const float> padded_samples) const {
+mx::array WhisperModel::Encode(std::span<const float> padded_samples,
+                               const std::atomic<bool> &cancel) const {
   std::vector<mx::array> mel_windows;
   for (size_t offset = 0; offset < padded_samples.size();
        offset += kWindowSampleCount) {
@@ -331,6 +333,10 @@ mx::array WhisperModel::Encode(std::span<const float> padded_samples) const {
   x = mx::add(x, mx::slice(Weight("encoder.positional_embedding"), {0, 0},
                            {x.shape(1), x.shape(2)}));
   for (int layer = 0; layer < config_.audio_layer_count; ++layer) {
+    if (cancel.load()) {
+      throw omni_common::GenerationCancelled();
+    } else {
+    }
     x = EncoderLayer(x, layer);
     // Note (Jiaxin Deng): evaluated layer by layer; as one graph the whole
     // encoder keeps each layer's temporaries until it finishes, about 0.6 GB

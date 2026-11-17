@@ -203,6 +203,38 @@ func TestBatchPreview(t *testing.T) {
 	}
 }
 
+func TestWhisperFinishCancelsInFlightPreview(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Delay: time.Second, Text: "text {n}"}, withServers(t, "whisper_server"))
+	a := f.asr(t, ASRWhisperTurbo)
+	st, err := a.Open(t.Context(), asr.StreamRequest{SampleRate: sampleRate, Lang: "en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sendAll(t, st, tone(time.Second, 0.3))
+	eventually(t, "the preview request reached the server", func() bool {
+		return len(f.records("final")) == 1
+	})
+	sendAll(t, st, tone(time.Second/2, 0.3))
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the server saw the preview disconnect", func() bool {
+		return len(f.records("final-cancelled")) == 1
+	})
+	events := drain(t, st)
+	if len(events) != 1 || events[0].Kind != asr.EventFinal || events[0].Text != "text 2" {
+		t.Fatalf("events %+v, want just the second request's final", events)
+	}
+	requests := f.records("final")
+	if len(requests) != 2 || requests[1].Samples != 3*sampleRate/2 {
+		t.Fatalf("requests %+v, want the final to include all samples", requests)
+	}
+	if requests[0].Fields["preview"] != "true" || requests[1].Fields["preview"] != "" {
+		t.Fatalf("requests %+v, want only the preview to request fast disconnect detection", requests)
+	}
+}
+
 // TestMossLive: MOSS's live session and Final carry its plain-text
 // instruction, not the dictionary.
 func TestMossLive(t *testing.T) {

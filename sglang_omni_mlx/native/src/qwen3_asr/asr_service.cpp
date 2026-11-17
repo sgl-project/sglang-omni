@@ -32,6 +32,7 @@ using qwen3_asr::CancelFlag;
 using qwen3_asr::TranscriptionWorker;
 
 constexpr auto kHeartbeatInterval = std::chrono::milliseconds(250);
+constexpr auto kPreviewHeartbeatInterval = std::chrono::milliseconds(50);
 
 struct ServerState {
   TranscriptionWorker *worker = nullptr;
@@ -148,7 +149,11 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
                         "Connection: close\r\n\r\n");
   // Note (Jiaxin Deng): SSE comment heartbeats fail to write once the peer is
   // gone, which cancels the decode it was waiting for.
-  while (future.wait_for(kHeartbeatInterval) != std::future_status::ready) {
+  const auto heartbeat_interval =
+      omni_common::FormFlag(TextField(*form, "preview"))
+          ? kPreviewHeartbeatInterval
+          : kHeartbeatInterval;
+  while (future.wait_for(heartbeat_interval) != std::future_status::ready) {
     if (mg_write(connection, ":\n\n", 3) <= 0) {
       cancel->store(true);
     } else {

@@ -33,7 +33,7 @@ type finalRequest struct {
 	context   string
 	maxTokens int
 	layout    string
-	preview   bool // the batch preview's: not logged (one a second)
+	preview   bool // a provisional request with faster disconnect detection
 }
 
 // finalResult is a request's answer.
@@ -66,6 +66,9 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 	field("stop_at_end_of_text", "true")
 	field("stop_on_token_loop", "true")
 	field("include_generation_metadata", "true")
+	if r.preview {
+		field("preview", "true")
+	}
 	if r.layout != "" {
 		field("audio_layout", r.layout)
 	}
