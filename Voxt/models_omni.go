@@ -226,7 +226,7 @@ func (a *app) omniDraft(id string) string {
 		return ""
 	}
 	dir := a.models.Dir(m.Draft)
-	if a.settings != nil && !a.settings.Get().Models.FasterOn(id, dir != "", m.DraftOptIn) {
+	if a.settings != nil && !a.settings.Get().Models.FasterOn(id, dir != "") {
 		return ""
 	}
 	return dir

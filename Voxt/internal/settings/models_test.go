@@ -108,20 +108,12 @@ func TestFasterOn(t *testing.T) {
 		{"on", true, true}, {"on", false, false},
 		{"off", true, false}, {"off", false, false},
 	} {
-		if got := m.FasterOn(c.id, c.installed, false); got != c.want {
+		if got := m.FasterOn(c.id, c.installed); got != c.want {
 			t.Errorf("%s, installed %v: %v", c.id, c.installed, got)
 		}
 	}
-	if !(Models{}).FasterOn("x", true, false) {
+	if !(Models{}).FasterOn("x", true) {
 		t.Error("no switches at all: an installed draft is off")
-	}
-	// An opt-in model's (a draft that came with another's download):
-	// never switched is off, the switch turns it on.
-	if (Models{}).FasterOn("x", true, true) {
-		t.Error("an opt-in model on without a switch")
-	}
-	if !(Models{Faster: map[string]bool{"x": true}}).FasterOn("x", true, true) {
-		t.Error("an opt-in model off with the switch on")
 	}
 	s := Defaults()
 	s.Models.Faster = map[string]bool{"asr.fast": false}

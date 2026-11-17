@@ -38,14 +38,12 @@ type Models struct {
 }
 
 // FasterOn says whether speech model id uses its draft, given whether
-// the draft is installed: the switch, else the installed draft — but an
-// opt-in model's (a draft that came with another's download) waits for
-// the switch.
-func (m Models) FasterOn(id string, draftInstalled, optIn bool) bool {
+// the draft is installed: the switch, else the installed draft.
+func (m Models) FasterOn(id string, draftInstalled bool) bool {
 	if on, set := m.Faster[id]; set {
 		return on && draftInstalled
 	}
-	return draftInstalled && !optIn
+	return draftInstalled
 }
 
 // The choices of Models.LLMWait.
