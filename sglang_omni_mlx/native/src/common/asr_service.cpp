@@ -180,11 +180,7 @@ void SocketReady(mg_connection *connection, void *data) {
   const auto *factory = static_cast<const RealtimeFactory *>(data);
   auto *socket = new SocketState();
   socket->session = (*factory)([connection](const std::string &text) {
-    mg_lock_connection(connection);
-    const int written = mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_TEXT,
-                                           text.data(), text.size());
-    mg_unlock_connection(connection);
-    return written > 0;
+    return omni_server::SendWebSocketText(connection, text);
   });
   mg_set_user_connection_data(connection, socket);
 }
