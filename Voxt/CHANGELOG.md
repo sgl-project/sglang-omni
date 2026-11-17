@@ -6,6 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Starting a meeting works while nothing is playing** (#4130): with the system audio permission already allowed, starting a meeting on a quiet Mac failed about four seconds in, and the notice wrongly said to allow the permission in System Settings. The system audio tap was treated as dead because an idle output gave it no audio; it now waits and records the other side once sound plays.
 - **A microphone added in Settings → Audio no longer makes dictation hang on "Starting the microphone…"** (#4120): a chosen input that starts but never delivers sound (some microphones keep reconfiguring themselves before the first sound arrives) made Voxt rebuild the audio engine without end, so the recording never began. The rebuild is now limited like the one for a silent microphone: the second try records from the system default input, and if nothing delivers sound the recording stops with a clear error instead of hanging.
 - **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup; the meetings' speaker transcription keeps it.
 - **Rewrite's answer card renders Markdown** (#4119): the language model answers in Markdown, and the card now shows a Rewrite answer as it reads — headings, bold, lists, code, and a formula's TeX — instead of the raw markers, the way the chat apps show replies, while it streams in and in a conversation's answers. What you said stays as written, and a translation or Transcribe's clean-up stays plain text, as it goes in verbatim. Copy and Insert still use the answer's original text.
@@ -42,6 +43,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **转录只显示和插入整理后的文字，不再混入模型对自己改动的说明**（#4086）：打开语言模型整理时，有的模型会在整理结果后面解释自己改了什么（“我删掉了……”），这段说明会被当成转录稿插入。现在转录的整理要求模型把最终文本放在 <output> 标签之间，只有标签里的内容会边写边进入卡片、显示和插入；没有标签的回答照原来的方式使用。
 - **在 设置 → 音频 里添加麦克风后，听写不再卡在“正在启动麦克风…”**（#4120）：有的麦克风启动后一直不给声音（在第一个声音到来之前不断重新配置自己），此前 Voxt 会不停重建音频引擎，录音永远不开始。现在这类重建和麦克风静音一样有限制：第二次改用系统默认输入录音；如果所有输入都没有声音，录音会以明确的错误结束，不再卡死。
+- **没有声音播放时也能开始会议**（#4130）：已允许系统音频录制权限后，在安静的 Mac 上开始会议会在约四秒后失败，提示还误让去系统设置里开权限。原因是输出空闲时系统音频录制没有声音，被当成了故障；现在它会一直等，有声音播出来就能录到对方。
 
 #### 变更
 

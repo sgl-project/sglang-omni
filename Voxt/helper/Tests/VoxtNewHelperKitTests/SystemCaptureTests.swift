@@ -46,6 +46,15 @@ final class SystemCaptureTests: XCTestCase {
         XCTAssertEqual(c, CaptureFileConfig(path: "/tmp/call.wav", speed: 4))
     }
 
+    /// A silent microphone is rebuilt and then fails (Bluetooth and USB
+    /// inputs can start without a callback); a system tap on an idle
+    /// output only has nothing to deliver yet, so it waits and its
+    /// capture.started does not hold the meeting's start.
+    func testSilenceIsFatalOnlyForTheMicrophone() {
+        XCTAssertTrue(captureSilenceIsFatal(system: false))
+        XCTAssertFalse(captureSilenceIsFatal(system: true))
+    }
+
     func testSystemParamsCarryOver() {
         let c = SystemParams(sampleRate: 16000, frameMs: 100, levelHz: 20, maxSeconds: 7200).capture
         XCTAssertNil(c.devices)

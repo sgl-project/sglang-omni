@@ -41,6 +41,14 @@ public func systemTapPlan(ownPIDs: [Int32], outputUID: String) -> SystemTapPlan 
     return SystemTapPlan(excludedPIDs: ownPIDs.filter { $0 > 1 && seen.insert($0).inserted }, outputUID: outputUID)
 }
 
+/// Whether no audio from a capture means it is broken. A microphone
+/// engine that stays silent is (Bluetooth and some USB inputs start
+/// without a single callback), so it is rebuilt and then ends the job.
+/// A system tap on an idle output is not: it has nothing to deliver
+/// until something plays, so it keeps waiting, and capture.started
+/// already went out when the tap started.
+public func captureSilenceIsFatal(system: Bool) -> Bool { !system }
+
 /// The recordings that run: at most one capture.start and one
 /// capture.system at a time.
 public struct CaptureSlots<Run: AnyObject> {
