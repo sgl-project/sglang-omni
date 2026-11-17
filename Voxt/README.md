@@ -120,7 +120,7 @@ Speech is recognised **on your Mac** by the [SGLang-Omni MLX runtime](../sglang_
 
 ### Language models
 
-Clean-up, Translate and Rewrite use the language model you set up on the Language models page, over its OpenAI-compatible API:
+Clean-up, Translate and Rewrite use the language model you set up in Settings → Language models, over its OpenAI-compatible API:
 
 - **On your Mac**, so the text stays here: Ollama, LM Studio, oMLX, SGLang MLX, or any other compatible server.
 - **A service**: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI and OpenRouter.

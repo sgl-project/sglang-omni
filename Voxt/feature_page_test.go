@@ -39,6 +39,7 @@ func trTester(t *testing.T) (*app, *ui.Tester) {
 // readyModels installs a speech model and a language model (fakes).
 func readyModels(a *app) {
 	a.local = readyLocal()
+	a.modelStatus[fakeASRModel.ID] = models.Status{Installed: true}
 	a.checkModels() // as installing does: the models' card goes
 }
 
@@ -280,6 +281,56 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	clickSwitch(t, tt, "Basic clean-up")
 	if !a.lib.settings.Get().Features.Transcribe.Cleanup {
 		t.Error("clean-up changed while disabled")
+	}
+}
+
+// TestFeatureModelControls: each feature manages its speech model where it
+// picks one, from the first download through deletion and download progress.
+func TestFeatureModelControls(t *testing.T) {
+	a, tt := trTester(t)
+	const download = "Download Qwen3-ASR 1.7B (8bit)"
+	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
+		a.navigate("/" + feature)
+		frames(tt)
+		if !slices.Contains(tt.AccessLabels(), download) {
+			t.Errorf("%s has no inline download: %q", feature, tt.AccessLabels())
+		}
+	}
+	a.navigate("/transcribe")
+	seedModels(t, a, models.ASRAccurate, models.VADSilero)
+	frames(tt)
+	if !has(tt, "2.5 GB on disk") || !slices.Contains(tt.AccessLabels(), "Delete Qwen3-ASR 1.7B (8bit)…") {
+		t.Fatalf("installed model's controls: %q", tt.AccessLabels())
+	}
+	click(t, tt, "Delete Qwen3-ASR 1.7B (8bit)…")
+	click(t, tt, "Delete Qwen3-ASR 1.7B (8bit)")
+	if a.models.Installed(models.ASRAccurate) || !slices.Contains(tt.AccessLabels(), download) {
+		t.Error("the deleted model does not offer its download again")
+	}
+	m, _ := models.Lookup(models.ASRAccurate)
+	a.modelStatus[m.ID] = models.Status{Downloading: true, Done: m.Size() / 2, Total: m.Size()}
+	frames(tt)
+	if !has(tt, "Downloading: ") || !slices.Contains(tt.AccessLabels(), "Cancel downloading Qwen3-ASR 1.7B (8bit)") {
+		t.Errorf("download progress: %q", tt.Texts())
+	}
+}
+
+// TestFeatureRemoteModelControls: a feature reads and edits the remote
+// language model it picked without opening the Language models section.
+func TestFeatureRemoteModelControls(t *testing.T) {
+	a, tt := trTester(t)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{{ID: "ollama", Model: "qwen3:8b"}}
+		s.Features.Transcribe.LLM = "ollama"
+	})
+	a.syncRemote()
+	frames(tt)
+	if !has(tt, "Ready") || !slices.Contains(tt.AccessLabels(), "Edit Ollama") {
+		t.Fatalf("remote model's controls: %q", tt.AccessLabels())
+	}
+	click(t, tt, "Edit Ollama")
+	if !a.provDlg.open || a.provDlg.id != "ollama" {
+		t.Errorf("edit opened %+v", a.provDlg)
 	}
 }
 

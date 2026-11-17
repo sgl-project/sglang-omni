@@ -100,7 +100,7 @@ func TestOverlayModes(t *testing.T) {
 		t.Fatalf("notice %s %+v", a.ov.mode, a.notice)
 	}
 	a.noticeAction(a.notice.action)
-	if a.router.Path() != modelsPath || a.ov.mode != ovHidden {
+	if a.shownPath() != modelsPath || a.ov.mode != ovHidden {
 		t.Errorf("action: %s %s", a.router.Path(), a.ov.mode)
 	}
 	// Cancelled and too short: nothing.

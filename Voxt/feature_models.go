@@ -11,6 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -85,6 +86,7 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 			a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, feature, id) })
 		}
 	})
+	a.featureModelStatus(c, p+"-asr", local.ASR, feature, f.ASR)
 	settingRow(c, p+"-llm", i18n.T("Language model"), "", func() {
 		sel := ui.Select(c.Key(p+"-llm-sel"), &u.llm, optsL).Label(llmLabel).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).
 			Disabled(len(readyL) == 0 || !enhance)
@@ -93,6 +95,7 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 			a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.LLM, feature, id) })
 		}
 	})
+	a.featureModelStatus(c, p+"-llm", local.LLM, feature, f.LLM)
 	if feature == hotkey.Translate {
 		settingRow(c, p+"-fallback", i18n.T("Fallback model"), i18n.T("Used when the language model fails."), func() {
 			sel := ui.Select(c.Key(p+"-fallback-sel"), &u.fallback, optsF).Label(i18n.T("Fallback language model for Translate")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).
@@ -106,6 +109,42 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 	if feature == hotkey.Transcribe && len(readyL) == 0 && enhance {
 		notice(c, "tr-no-llm", noticeInfo, i18n.T("No language model is set up, so the text is typed as recognised, without clean-up."), "", setUpLLM, nil)
 	}
+}
+
+// Keeping the model's actions beside its picker avoids a trip to Settings.
+func (a *app) featureModelStatus(c *ui.Context, key string, kind local.Kind, feature, id string) {
+	if id == "" {
+		if m, ok := a.featureModel(kind, feature); ok {
+			id = m.ID
+		}
+	}
+	if kind == local.ASR && id == "" {
+		id = models.ASRAccurate
+	}
+	if m, ok := models.Lookup(id); ok && local.Kind(m.Kind) == kind && !m.Retired {
+		t := c.Theme()
+		st := a.modelStatus[m.ID]
+		ui.Row(c.Key(key + "-model")).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+			caption(c, uitext.ModelName(m.ID)+" · "+modelSizeText(m, st)).Grow(1).MinWidth(0)
+			a.modelActions(c, m, st)
+		})
+		a.modelProgress(c, key+"-model-progress", m, st)
+		return
+	}
+	p, configured := a.setupOf(kind, id)
+	if !configured {
+		return
+	}
+	t := c.Theme()
+	sv := lookupService(kind, id)
+	dot, state := a.providerState(c, kind, p, true)
+	ui.Row(c.Key(key + "-service")).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+		statusDot(c, dot)
+		caption(c, sv.name+" · "+state).Grow(1).MinWidth(0)
+		if ghostButton(c.Key("edit"), i18n.T("Edit…")).Label(i18n.T("Edit %s", sv.name)).Clicked() {
+			a.openProviderDialog(kind, id)
+		}
+	})
 }
 
 // modelOptions are a model select's labels: "Automatic (now: X)", X the

@@ -1,6 +1,6 @@
 package main
 
-// The memory the loaded models use, on the Speech models page: the speech
+// The memory the loaded models use, in Settings → Speech models: the speech
 // models' servers (internal/omni) are processes of their own, measured by
 // their process ids (macx.Memory: the footprint, or the resident memory when the
 // weights are mapped from their file) off the main thread, when the page
@@ -88,7 +88,7 @@ func (a *app) modelsShown() {
 // memTick measures again while the page shows, when the window is
 // visible, and stops on another page (the next visit starts it again).
 func (a *app) memTick() {
-	if a.currentPage() != modelsPath[1:] {
+	if a.shownPath() != modelsPath {
 		a.memPolling = false
 		return
 	}

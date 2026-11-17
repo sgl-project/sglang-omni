@@ -118,14 +118,23 @@ func TestLLMDebugCloses(t *testing.T) {
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
-	if p := a.router.Path(); p != remotePath {
+	if p := a.shownPath(); p != remotePath {
 		t.Fatalf("Esc: at %q", p)
+	}
+	// Closing Settings must not bring the debug page back.
+	a.settingsOpen = false
+	if p := a.shownPath(); p == llmDebugPath {
+		t.Fatalf("the debug page came back after Settings closed")
 	}
 	a.navigate(llmDebugPath)
 	frames(tt)
 	click(t, tt, "Close")
 	frames(tt)
-	if p := a.router.Path(); p != remotePath {
+	if p := a.shownPath(); p != remotePath {
 		t.Fatalf("Close: at %q", p)
+	}
+	a.settingsOpen = false
+	if p := a.shownPath(); p == llmDebugPath {
+		t.Fatalf("the debug page came back after Settings closed")
 	}
 }

@@ -84,7 +84,7 @@ func ModelErrorText(err error) (msg, more string) {
 		case asr.KindCancelled:
 			return i18n.T("Cancelled."), more
 		case asr.KindConfig:
-			return i18n.T("The speech model is not set up correctly. Check it on the Speech models page."), more
+			return i18n.T("The speech model is not set up correctly. Check it in Settings → Speech models."), more
 		}
 		return i18n.T("The speech model answered something Voxt does not understand."), more
 	}
@@ -92,19 +92,19 @@ func ModelErrorText(err error) (msg, more string) {
 	if errors.As(err, &le) {
 		switch le.Code {
 		case llm.CodeSignIn:
-			return i18n.T("Your ChatGPT sign-in has expired. Sign in again on the Language models page."), more
+			return i18n.T("Your ChatGPT sign-in has expired. Sign in again in Settings → Language models."), more
 		case llm.CodeUsageLimit:
 			return i18n.T("You have reached your ChatGPT plan's usage limit for now."), more
 		case llm.CodeNotEligible:
 			return i18n.T("ChatGPT refused this account. Its plan, workspace or region cannot use Codex."), more
 		case llm.CodeNoKey:
-			return i18n.T("No API key is saved for the remote model. Add one on the Language models page."), more
+			return i18n.T("No API key is saved for the remote model. Add one in Settings → Language models."), more
 		case llm.CodeAuth:
 			return i18n.T("The remote service refused the API key."), more
 		case llm.CodeModelNotFound:
 			return i18n.T("The remote service does not have this model."), more
 		case llm.CodeAddress:
-			return i18n.T("Nothing answers at the remote model's address. Check the address on the Language models page."), more
+			return i18n.T("Nothing answers at the remote model's address. Check the address in Settings → Language models."), more
 		case llm.CodeConfig:
 			return i18n.T("The remote model's address is not allowed. Use https://, or http:// for an address on this Mac."), more
 		case llm.CodeTimeout:

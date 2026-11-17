@@ -97,9 +97,9 @@ func snapshotsMain(t *testing.T, out string) {
 		}
 		// The Language models page's foot, with the way to the prompt debug
 		// page, and that page (llm_debug.go).
-		a.navigate("/language-models")
+		a.navigate(remotePath)
 		scrollToText(tt, i18n.T("Try prompts on a model…"))
-		save("page-language-models-debug")
+		save("settings-language-models-debug")
 		a.navigate(llmDebugPath)
 		save("page-llm-debug")
 		// Set up: the prompt, long as the saved ones are, the page around it.
@@ -326,6 +326,19 @@ func scrollToText(tt *ui.Tester, s string) {
 	if r, ok := tt.Find(s); ok {
 		w, h := snapshotSize()
 		tt.Scroll(float32(w)*0.6, float32(h)*0.5, 0, r.Y-float32(h)*0.2)
+	}
+}
+
+// scrollSettingsToText scrolls a settings section until s is near its top.
+// The search field locates the dialog even in a tall test window.
+func scrollSettingsToText(tt *ui.Tester, s string) {
+	frames(tt)
+	r, ok := tt.Find(s)
+	anchor, anchored := tt.Find(i18n.T("Find in settings"))
+	if ok && anchored {
+		y := anchor.Y + anchor.H + 100
+		tt.Scroll(anchor.X+anchor.W/2, y, 0, r.Y-y)
+		frames(tt)
 	}
 }
 

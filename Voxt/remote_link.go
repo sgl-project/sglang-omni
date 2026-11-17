@@ -31,8 +31,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// remotePath is the Language models page's path.
-const remotePath = "/language-models"
+// remotePath is the Language models section's path in Settings.
+const remotePath = "/settings/language-models"
 
 // service is a remote service as its page and dialog show it: a language
 // model's preset (internal/llm) or a speech service (providers.Speech).

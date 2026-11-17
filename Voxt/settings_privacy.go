@@ -27,8 +27,8 @@ func (a *app) privacySettings(c *ui.Context) {
 	}
 	ui.Column(c.Key("priv-list")).Gap(px(t, sp1)).Children(func() {
 		for _, s := range []string{
-			i18n.T("Your recordings are recognised on this Mac. If a feature uses a speech service you set up on the Speech models page, its recordings go to that service. Voxt has no server of its own."),
-			i18n.T("Text to clean up, translate or rewrite goes to the language model you set up on the Language models page. With a local server such as Ollama, it stays on this Mac. Otherwise it goes to that service."),
+			i18n.T("Your recordings are recognised on this Mac. If a feature uses a speech service you set up in Settings → Speech models, its recordings go to that service. Voxt has no server of its own."),
+			i18n.T("Text to clean up, translate or rewrite goes to the language model you set up in Settings → Language models. With a local server such as Ollama, it stays on this Mac. Otherwise it goes to that service."),
 			i18n.T("With ChatGPT (Codex), that text goes to OpenAI under your account and its terms."),
 			online,
 			i18n.T("Voxt reads the address of the current browser tab only to pick your app enhancement rules. The language model never sees it, only the app's name."),

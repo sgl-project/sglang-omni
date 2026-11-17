@@ -89,8 +89,10 @@ func TestModelsPage(t *testing.T) {
 	}
 
 	// Deleting asks first.
+	a.navigate("/home")
 	a.navigate(modelsPath)
-	click(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	scrollSettingsToText(tt, "Delete Qwen3-ASR 0.6B (4bit)…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B (4bit)…")
 	if !has(tt, "Delete Qwen3-ASR 0.6B (4bit)?") || !has(tt, "This frees 712.8 MB. You can download it again later.") {
 		t.Fatalf("no confirmation: %q", tt.Texts())
 	}
@@ -117,8 +119,9 @@ func TestModelsPageDraftAlone(t *testing.T) {
 	if !has(tt, "Faster transcription") || !has(tt, "262.5 MB on disk") || has(tt, "712.8 MB on disk") {
 		t.Fatalf("the draft alone: %q", tt.Texts())
 	}
-	click(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
-	click(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft")
+	scrollSettingsToText(tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft…")
+	clickControl(t, tt, "Delete Qwen3-ASR 0.6B DFlash draft")
 	if has(tt, "Faster transcription") || a.models.Installed(models.ASRFastDraft) {
 		t.Errorf("after the delete: %q", tt.Texts())
 	}
@@ -171,7 +174,19 @@ func TestHideModel(t *testing.T) {
 		frames(tt)
 		return texts
 	}
-	labels := func() []string { a.navigate(modelsPath); frames(tt); return tt.AccessLabels() }
+	labels := func() []string {
+		a.navigate("/home")
+		a.navigate(modelsPath)
+		frames(tt)
+		return tt.AccessLabels()
+	}
+	modelClick := func(label string) {
+		t.Helper()
+		a.navigate("/home")
+		a.navigate(modelsPath)
+		scrollSettingsToText(tt, label)
+		clickControl(t, tt, label)
+	}
 	if l := labels(); slices.Contains(l, "Hide "+fast) || !slices.Contains(l, "Hide "+systemDictation) || !slices.Contains(l, "Hide "+accurate) {
 		t.Fatalf("Hide on the model in use, or not on the others: %q", l)
 	}
@@ -179,9 +194,8 @@ func TestHideModel(t *testing.T) {
 		t.Fatalf("System dictation is not offered: %q", tt.Texts())
 	}
 
-	a.navigate(modelsPath)
-	click(t, tt, "Hide "+systemDictation)
-	click(t, tt, "Hide "+accurate)
+	modelClick("Hide " + accurate)
+	modelClick("Hide " + systemDictation)
 	if has(tt, systemDictation) || has(tt, accurate) || !has(tt, "Hidden models") {
 		t.Fatalf("hidden cards still listed, or no Hidden models: %q", tt.Texts())
 	}
@@ -204,14 +218,12 @@ func TestHideModel(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.Features.Translate.ASR = "" })
 
 	// Show, in the folded section; the section goes with the last one.
-	a.navigate(modelsPath)
-	click(t, tt, "Hidden models")
-	click(t, tt, "Show "+systemDictation)
+	modelClick("Hidden models")
+	modelClick("Show " + systemDictation)
 	if !slices.Contains(menu("/transcribe", "Speech model for Transcribe"), systemDictation) {
 		t.Errorf("shown again but not offered: %q", tt.Texts())
 	}
-	a.navigate(modelsPath)
-	click(t, tt, "Show "+accurate)
+	modelClick("Show " + accurate)
 	if !has(tt, systemDictation) || !has(tt, accurate) || has(tt, "Hidden models") {
 		t.Errorf("after Show: %q", tt.Texts())
 	}
@@ -399,7 +411,7 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	// Two of them loaded (models_memory.go), as a session leaves them.
 	a.modelMem = map[string]int64{models.ASRAccurate: 2_469_606_195, models.LLMTranslate: 1_234_173_952}
 	save("models-states")
-	scrollToText(tt, i18n.T("Language models"))
+	scrollSettingsToText(tt, i18n.T("Language models no longer used"))
 	save("models-states-language")
 	// The family's states: another app downloads one, another deleted one.
 	a.modelStatus[models.ASRFast] = models.Status{Elsewhere: audioSmithID, Done: fast.Size() / 4}
@@ -407,7 +419,7 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	a.navigate("/home")
 	a.navigate(modelsPath)
 	save("models-family")
-	scrollToText(tt, uitext.ModelName(models.LLMFast))
+	scrollSettingsToText(tt, uitext.ModelName(models.LLMFast))
 	save("models-family-language") // deleted elsewhere, another app's model to use
 	a.askDeleteModel(models.ASRAccurate)
 	save("models-delete-shared")
@@ -438,28 +450,25 @@ func modelShots(t *testing.T, a *app, tt *ui.Tester, save func(string)) {
 	// The Advanced section under the cards, folded and open
 	// (models_keep.go).
 	a.navigate(modelsPath)
-	scrollToText(tt, i18n.T("Advanced"))
+	scrollSettingsToText(tt, i18n.T("Advanced"))
 	save("models-advanced")
 	a.modelAdvanced = true
-	scrollToText(tt, i18n.T("Advanced"))
+	scrollSettingsToText(tt, i18n.T("Advanced"))
 	save("models-advanced-open")
 	a.modelAdvanced = false
 	// A hidden model, in its section opened (models_cards.go).
-	fastName := uitext.ModelName(models.ASRFast)
+	a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = append(s.Models.Hidden, models.ASRFast) })
+	a.modelHiddenOpen = true
 	a.navigate("/home")
 	a.navigate(modelsPath)
-	scrollToText(tt, fastName) // on screen: a click off it does nothing (the smallest window)
-	click(t, tt, i18n.T("Hide %s", fastName))
-	scrollToText(tt, i18n.T("Hidden models"))
-	click(t, tt, i18n.T("Hidden models"))
-	scrollToText(tt, i18n.T("Hidden models"))
+	scrollSettingsToText(tt, i18n.T("Hidden models"))
 	save("models-hidden")
-	click(t, tt, i18n.T("Show %s", fastName))
+	a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = nil })
 	// The page as it was: the setup guide's shots show it behind them.
 	a.navigate("/home")
 	a.navigate(modelsPath)
 	frames(tt)
-	scrollToText(tt, uitext.ModelName(models.LLMFast))
+	scrollSettingsToText(tt, uitext.ModelName(models.LLMFast))
 }
 
 // TestModelsPageFaster (#3873): Faster transcription is a switch on the

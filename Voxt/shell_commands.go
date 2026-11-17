@@ -42,7 +42,14 @@ func (a *app) commands() []command {
 	}
 	add("go/settings", nav, i18n.T("Settings"), "Settings", "⌘,", true, func() { a.navigate("/settings") })
 	for _, s := range settingsSections() {
-		add("go/settings/"+s.id, i18n.T("Settings"), s.title, s.en, "", true, func() { a.navigate("/settings/" + s.id) })
+		id := "go/settings/" + s.id
+		switch s.id {
+		case "models":
+			id = "go/models"
+		case "language-models":
+			id = "go/language-models"
+		}
+		add(id, i18n.T("Settings"), s.title, s.en, "", true, func() { a.navigate("/settings/" + s.id) })
 	}
 
 	view := i18n.T("View")
@@ -138,6 +145,12 @@ func (a *app) shortcuts(c *ui.Context) {
 // commandIcon is a command's icon in the palette: its page's for "Go
 // to" commands, a settings section's, or nil.
 func commandIcon(id string) *icons.Icon {
+	// A page that moved into Settings keeps its section's icon.
+	if rest, ok := strings.CutPrefix(id, "go"); ok {
+		if to, ok := movedPaths[rest]; ok {
+			id = "go" + to
+		}
+	}
 	if rest, ok := strings.CutPrefix(id, "go/settings"); ok {
 		ic := icons.Settings
 		if sec := strings.TrimPrefix(rest, "/"); sec != "" {
