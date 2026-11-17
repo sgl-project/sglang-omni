@@ -18,8 +18,8 @@ import Foundation
 //   single callback): no callback within 1.2 s rebuilds the engine; the
 //   second time on the default input; after that the job ends (an error
 //   when no audio came at all).
-// - A configuration change (default device switched, AirPods connected)
-//   rebuilds the engine. An input going away moves the recording to the
+// - A configuration change rebuilds a stopped engine or follows a new
+//   default input. An input going away moves the recording to the
 //   next of devices still connected, else the default input (deviceLost;
 //   the default input follows the new default); none left ends it.
 // - Tests only: VOXTNEW_HELPER_CAPTURE_FILE names an audio file that
@@ -454,8 +454,20 @@ private final class CaptureRun: @unchecked Sendable {
 
     private func startWatchers() {
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil) { [weak self] n in
-            guard let self, let e = n.object as? AVAudioEngine, self.lock.withLock({ e === self.engine && !self.ended }) else { return }
-            self.queue.async { self.restart(reason: CaptureReason.configurationChange) }
+            guard let self, let notifiedEngine = n.object as? AVAudioEngine else { return }
+            let notifiedGeneration: Int? = self.lock.withLock {
+                notifiedEngine === self.engine && !self.ended ? self.generation : nil
+            }
+            guard let notifiedGeneration else { return }
+            self.queue.async {
+                let (engine, usingDefault, deviceID) = self.lock.withLock {
+                    (self.generation == notifiedGeneration && !self.ended ? self.engine : nil, self.usingDefault, self.deviceID)
+                }
+                guard let engine else { return }
+                // Setting CurrentDevice can report a configuration change after the engine is already running on that device.
+                if engine.isRunning && (!usingDefault || inputDeviceIDs().defaultID == deviceID) { return }
+                self.restart(reason: CaptureReason.configurationChange)
+            }
         }
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 0.25, repeating: 0.25)
