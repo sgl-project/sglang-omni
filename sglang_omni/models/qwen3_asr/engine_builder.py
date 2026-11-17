@@ -70,12 +70,16 @@ QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS = 32
 
 
 class Qwen3ASRModelRunner(ModelRunner[Qwen3ASRRequestData]):
-    """The shared AR runner, opted into speculative overlap.
+    """The shared AR runner, opted into speculative overlap and, on CUDA, the shared verify repetition_penalty.
 
     Audio embeddings enter only at prefill, so a decode round reads nothing but the tokens the previous round left on the device.
     """
 
     supports_speculative_async_decode: bool = True
+    # note (wilsonzheng0327): the verify penalty is validated on CUDA only, so other platforms keep refusing repetition_penalty under the draft.
+    speculative_repetition_penalty_owner = (
+        "verify_logits" if current_platform.is_cuda() else None
+    )
 
 
 class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
@@ -91,7 +95,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         max_new_tokens: int,
         enable_async_decode: bool,
         enable_plain_fallback: bool,
-        async_decode_min_batch_size: int,
+        async_decode_min_batch_size: int | None,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
         enable_torch_compile: bool | None,
@@ -611,7 +615,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             "enable_async_decode": (
                 False if use_torch_mps else self.enable_async_decode
             ),
-            "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            # note (wilsonzheng0327): with a draft a lone request decodes synchronously, because overlap made its first streamed text about 20% (2 ms) later than without a draft, while larger batches keep overlap.
+            "async_decode_min_batch_size": (
+                (1 if self.draft_checkpoint is None else 2)
+                if self.async_decode_min_batch_size is None
+                else self.async_decode_min_batch_size
+            ),
             # note (rsi): ASR prompts fit one chunk, so a prefill's first
             # tokens can be resolved after the next decode launches.
             "async_prefill": current_platform.is_cuda()
