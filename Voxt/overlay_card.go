@@ -53,9 +53,8 @@ type cardView struct {
 	kind  store.Kind
 	title string
 	text  string
-	// busy: another language, or a follow-up, is on its way (the
-	// spinner, or the conversation's waveform). A first answer is written
-	// in the pill: the card comes with it.
+	// busy: an answer, another language, or a follow-up, is on its way
+	// (the spinner, or the conversation's waveform).
 	busy bool
 	// recording: a follow-up records (the conversation's waveform moves).
 	recording bool
@@ -81,10 +80,12 @@ type cardView struct {
 	follow                                                                     string // the Rewrite shortcut's glyphs
 	// size is the card's, its feature's (Features.CardSizes).
 	size layout.CardSize
-	// writing: Rewrite's first answer as the model writes it
-	// (writingAnswer), shown at a steady pace in a card that grows a few
-	// lines at a time (overlay_stream.go, #3836).
-	writing bool
+	// writing: an answer as the model writes it (writingAnswer, or one
+	// asked again in another language or at another thinking level),
+	// shown at a steady pace in a card that grows a few lines at a time
+	// (overlay_stream.go, #3836). canUseTranscript: Transcribe's clean-up
+	// or Translate's speech can go in as recognised instead (#3821).
+	writing, canUseTranscript bool
 }
 
 // cardBubble is one turn's side in a conversation.
@@ -144,7 +145,7 @@ func (a *app) cardNow() cardView {
 		if a.writingAnswer() {
 			s := a.pillSession()
 			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: a.shownDraft(s), busy: true, writing: true, canStopAnswer: a.sess.CanStop(),
-				target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
+				canUseTranscript: a.sess.CanSkip, lang: s.TargetLanguage, target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
 		}
 		return cardView{size: layout.CardSizes[0]} // no card: the pill shows the session
 	}
@@ -159,8 +160,13 @@ func (a *app) cardNow() cardView {
 	v.think = card.think
 	if redo {
 		v.lang, v.think = card.redoLang, card.redoThink
+		if !v.conversation && s.State == session.Composing && strings.TrimSpace(s.Draft) != "" {
+			// The answer asked again streams in over the card's; a failure
+			// or a cancel brings the card's back (endRedo).
+			v.title, v.text, v.writing = uitext.CardTitle(card.kind, s.Title), a.shownDraft(s), true
+		}
 	}
-	v.canCopy = card.text != ""
+	v.canCopy = card.text != "" && !v.writing
 	v.canInsert = card.problem == nil && card.text != "" && !own
 	v.canLang = card.kind == store.KindTranslate && card.problem == nil && !s.State.Live()
 	v.canFollowUp = a.canFollowUp()
@@ -218,15 +224,17 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-// writingAnswer says whether Rewrite's first answer is being written, its
-// first words in, and will end in the card: the pill hands over to the
-// answer card, which the answer streams into, instead of a loader until
-// the whole answer is in (#3644). Not with Show live text off, nor for a
-// follow-up (its card is open already), a try (the page shows it) or an
-// answer that goes in at once (the card switch off: the pill shows it).
+// writingAnswer says whether a first answer (Transcribe's clean-up,
+// Translate's or Rewrite's answer) is being written, its first words in,
+// and will end in the card: the pill hands over to the answer card,
+// which the answer streams into, instead of a loader until the whole
+// answer is in (#3644). Not with Show live text off, nor for a follow-up
+// or an answer asked again (its card is open already), a try (the page
+// shows it) or an answer that goes in at once (the card switch off: the
+// pill shows it).
 func (a *app) writingAnswer() bool {
 	s := a.pillSession()
-	return !a.answer.open && s.Kind == store.KindRewrite && s.State == session.Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
+	return !a.answer.open && s.State == session.Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
 // cardRecording says whether the card shows a follow-up recording (its

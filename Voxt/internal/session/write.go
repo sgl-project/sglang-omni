@@ -90,7 +90,7 @@ func (r *run) write(raw, selection string) {
 	// already there.
 	keepSpeech := kind == store.KindTranslate && selection == "" && raw != ""
 	r.m.update(r, func(s *Snapshot) {
-		s.State, s.Selection, s.Card, s.CanSkip = Composing, selection, o.card != "" && !r.req.Try, keepSpeech
+		s.State, s.Selection, s.Card, s.CanSkip, s.Spoken = Composing, selection, o.card != "" && !r.req.Try, keepSpeech, raw
 		if kind == store.KindTranslate {
 			s.TargetLanguage = r.target
 		}
