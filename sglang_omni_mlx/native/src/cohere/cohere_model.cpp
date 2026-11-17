@@ -24,8 +24,9 @@ constexpr int kHopLength = 160;
 constexpr float kPreEmphasis = 0.97f;
 constexpr float kLayerNormEpsilon = 1e-5f;
 constexpr float kBatchNormEpsilon = 1e-5f;
-// Note (XXXXRT666): the decoder's layers run in 8 bits, quantized at load;
-// the encoder stays in float16, since its products are compute-bound.
+// Note (XXXXRT666): the decoder's layers and lm_head run in 8 bits, quantized
+// at load; the encoder stays in float16, since its products are
+// compute-bound.
 constexpr int kQuantizationBits = 8;
 constexpr int kQuantizationGroupSize = 64;
 constexpr float kNormalizationEpsilon = 1e-5f;
@@ -226,8 +227,10 @@ CohereModel::CohereModel(const std::filesystem::path &model_directory)
       checkpoint_(omni_common::QuantizedCheckpoint(
           LoadWeights(model_directory, config_), nlohmann::json::object(),
           kQuantizationGroupSize, [](const std::string &name) {
-            return name.starts_with("decoder.core.layers.") ? kQuantizationBits
-                                                            : 0;
+            return name.starts_with("decoder.core.layers.") ||
+                           name == "lm_head.weight"
+                       ? kQuantizationBits
+                       : 0;
           })) {
   mx::eval({hann_window_, mel_filters_, relative_position_table_,
             decoder_positions_});
