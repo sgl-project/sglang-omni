@@ -35,6 +35,8 @@ constexpr double kAutomaticMinimumTailSeconds = 10.0;
 constexpr double kRecoveryPaddingSeconds = 0.25;
 constexpr double kRecoveryGapSeconds = 3.0;
 constexpr int kRecoveryAttemptCount = 2;
+// Encoder frames joined with one prediction per read-back.
+constexpr int kDecisionWindowFrames = 16;
 // Note (Mengwei Liu): the -50 dBFS RMS gate excludes silence, not noise.
 constexpr double kRecoveryMinimumMeanSquaredAmplitude = 1e-5;
 constexpr double kChunkSearchSeconds = 5.0;
@@ -265,12 +267,19 @@ ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
   } else {
   }
   const ParakeetConfig &config = model_.config();
-  const mx::array encoded = model_.Encode(model_.Features(samples));
-  mx::eval(encoded);
-  const int frame_count = encoded.shape(1);
+  const mx::array projected_frames =
+      model_.ProjectFrames(model_.Encode(model_.Features(samples)));
+  mx::eval(projected_frames);
+  const int frame_count = projected_frames.shape(1);
+  const int joint_width = projected_frames.shape(2);
   const int blank = model_.blank_id();
-  auto [hidden, cell] = model_.InitialState();
-  int last_token = blank;
+  const auto [initial_hidden, initial_cell] = model_.InitialState();
+  Prediction prediction = model_.Predict(blank, initial_hidden, initial_cell);
+  // Note (XXXXRT666): the prediction only changes when a token is emitted, so
+  // a window of frames is joined with it at once and read back together.
+  int window_start = 0;
+  int window_end = 0;
+  std::vector<int32_t> decisions;
   int new_symbols = 0;
   std::vector<AlignedToken> tokens;
   for (int frame = 0; frame < frame_count;) {
@@ -278,15 +287,28 @@ ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
       throw omni_common::GenerationCancelled();
     } else {
     }
-    const DecoderStep step = model_.Decode(
-        mx::slice(encoded, {0, frame, 0}, {1, frame + 1, config.model_width}),
-        last_token, hidden, cell);
+    if (frame < window_start || frame >= window_end) {
+      window_start = frame;
+      window_end = std::min(frame_count, frame + kDecisionWindowFrames);
+      const mx::array window_decisions =
+          model_.Decisions(mx::slice(projected_frames, {0, window_start, 0},
+                                     {1, window_end, joint_width}),
+                           prediction);
+      mx::eval(window_decisions);
+      decisions.assign(window_decisions.data<int32_t>(),
+                       window_decisions.data<int32_t>() +
+                           window_decisions.size());
+    } else {
+    }
+    const int window_frames = window_end - window_start;
+    const int token = decisions[frame - window_start];
+    const int duration_index = decisions[window_frames + frame - window_start];
     // Note (Dayuxiaoshui): NemoDecodingLogic.tdtStep; an unknown duration
     // class advances one frame.
     const int jump =
-        step.duration_index >= 0 &&
-                step.duration_index < static_cast<int>(config.durations.size())
-            ? config.durations[step.duration_index]
+        duration_index >= 0 &&
+                duration_index < static_cast<int>(config.durations.size())
+            ? config.durations[duration_index]
             : 1;
     const int symbol_frame = frame;
     frame += jump;
@@ -297,16 +319,13 @@ ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
       new_symbols = 0;
     } else {
     }
-    if (step.token != blank) {
-      last_token = step.token;
-      hidden = step.hidden;
-      cell = step.cell;
-      if (step.token >= 0 && step.token < blank &&
-          !special_tokens_[step.token]) {
-        tokens.push_back({step.token, token_texts_[step.token],
-                          model_.FrameSeconds(symbol_frame),
-                          model_.FrameSeconds(jump),
-                          standalone_spaces_[step.token]});
+    if (token != blank) {
+      prediction = model_.Predict(token, prediction.hidden, prediction.cell);
+      window_end = window_start;
+      if (token >= 0 && token < blank && !special_tokens_[token]) {
+        tokens.push_back(
+            {token, token_texts_[token], model_.FrameSeconds(symbol_frame),
+             model_.FrameSeconds(jump), standalone_spaces_[token]});
       } else {
       }
     } else {

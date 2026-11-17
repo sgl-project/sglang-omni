@@ -94,8 +94,8 @@ ParakeetModel::ParakeetModel(const nlohmann::json &config,
   features_ = omni_common::NemoFeatureExtractor(front_end_);
   prediction_width_ =
       checkpoint_.Weight("decoder.prediction.dec_rnn.lstm.0.Wh").shape(1);
-  compiled_decode_ = mx::compile([this](const std::vector<mx::array> &inputs) {
-    return DecodeGraph(inputs);
+  compiled_predict_ = mx::compile([this](const std::vector<mx::array> &inputs) {
+    return PredictGraph(inputs);
   });
   // Note (Dayuxiaoshui): the graph below is the published TDT checkpoint's:
   // per-feature normalized Hann features, 8x dw-striding subsampling,
@@ -225,11 +225,10 @@ std::pair<mx::array, mx::array> ParakeetModel::InitialState() const {
 }
 
 std::vector<mx::array>
-ParakeetModel::DecodeGraph(const std::vector<mx::array> &inputs) const {
-  const mx::array &frame = inputs[0];
-  const mx::array &token = inputs[1];
-  const mx::array &hidden = inputs[2];
-  const mx::array &cell = inputs[3];
+ParakeetModel::PredictGraph(const std::vector<mx::array> &inputs) const {
+  const mx::array &token = inputs[0];
+  const mx::array &hidden = inputs[1];
+  const mx::array &cell = inputs[2];
   const std::string prediction = "decoder.prediction";
   const mx::array embedded = checkpoint_.Embed(token, prediction + ".embed");
   mx::array output = mx::where(
@@ -256,30 +255,36 @@ ParakeetModel::DecodeGraph(const std::vector<mx::array> &inputs) const {
     cell_states.push_back(next.cell);
     output = mx::expand_dims(next.hidden, 1);
   }
-  const mx::array combined =
-      mx::add(mx::expand_dims(checkpoint_.Linear(frame, "joint.enc"), 2),
-              mx::expand_dims(checkpoint_.Linear(output, "joint.pred"), 1));
-  const mx::array logits = mx::reshape(
-      checkpoint_.Linear(swift_port::Relu(combined), "joint.joint_net.2"),
-      {-1});
-  const int class_count = blank_id() + 1;
-  return {
-      mx::stack({mx::astype(mx::argmax(mx::slice(logits, {0}, {class_count})),
-                            mx::int32),
-                 mx::astype(mx::argmax(mx::slice(logits, {class_count},
-                                                 {logits.shape(0)})),
-                            mx::int32)}),
-      mx::stack(hidden_states, 0), mx::stack(cell_states, 0)};
+  return {checkpoint_.Linear(output, "joint.pred"), mx::stack(hidden_states, 0),
+          mx::stack(cell_states, 0)};
 }
 
-DecoderStep ParakeetModel::Decode(const mx::array &frame, int token,
-                                  const mx::array &hidden,
+mx::array ParakeetModel::ProjectFrames(const mx::array &encoded) const {
+  return checkpoint_.Linear(encoded, "joint.enc");
+}
+
+Prediction ParakeetModel::Predict(int token, const mx::array &hidden,
                                   const mx::array &cell) const {
-  const std::vector<mx::array> outputs = compiled_decode_(
-      {frame, mx::array({token}, {1, 1}, mx::int32), hidden, cell});
-  mx::eval(outputs);
-  const int32_t *decisions = outputs[0].data<int32_t>();
-  return {decisions[0], decisions[1], outputs[1], outputs[2]};
+  const std::vector<mx::array> outputs =
+      compiled_predict_({mx::array({token}, {1, 1}, mx::int32), hidden, cell});
+  return {outputs[0], outputs[1], outputs[2]};
+}
+
+mx::array ParakeetModel::Decisions(const mx::array &projected_frames,
+                                   const Prediction &prediction) const {
+  const mx::array logits = checkpoint_.Linear(
+      swift_port::Relu(mx::add(projected_frames, prediction.projection)),
+      "joint.joint_net.2");
+  const int class_count = blank_id() + 1;
+  const int frame_count = logits.shape(1);
+  return mx::astype(
+      mx::stack(
+          {mx::argmax(
+               mx::slice(logits, {0, 0, 0}, {1, frame_count, class_count}), -1),
+           mx::argmax(mx::slice(logits, {0, 0, class_count},
+                                {1, frame_count, logits.shape(2)}),
+                      -1)}),
+      mx::int32);
 }
 
 } // namespace parakeet
