@@ -119,6 +119,26 @@ func TestLegacyCodexLeftOut(t *testing.T) {
 	}
 }
 
+func TestLegacyHTTPGatewayDocs(t *testing.T) {
+	for _, check := range []struct {
+		file, want, old string
+	}{
+		{"docs/voxt-migration.md", "API-key language models can use HTTP on another host", "Voxt 2 only connects over https, or http to this Mac"},
+		{"docs/manual-test.md", "另一台机器的 http 地址可以继续使用", "另一台机器的 http 地址写“要改"},
+		{"docs/behavior.md", "API-key 服务接受 http 或 https", "地址只接受 https 或指向本机的 http"},
+		{"docs/architecture.md", "API-key services: http or https; Codex: https off this Mac", "ProviderConfig.Resolve (https, or http to this Mac)"},
+	} {
+		doc, err := os.ReadFile(check.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(doc)
+		if !strings.Contains(text, check.want) || strings.Contains(text, check.old) {
+			t.Errorf("%s does not describe the HTTP gateway behavior", check.file)
+		}
+	}
+}
+
 func TestLegacyPromptInputVariables(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"Task: {{DICTATED_PROMPT}}\nText: {{SOURCE_TEXT}}", ""},
