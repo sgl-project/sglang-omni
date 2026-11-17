@@ -119,7 +119,9 @@ CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.speculative_sweep \
   --output-dir "$run_dir/sweep" -- --stream
 ```
 
-The sweep starts a fresh server for each leg, with the draft off for A and synchronous DFlash for B. Both sides disable the prefix cache and run one discarded warmup followed by three passes. It reports client-side p95 time to the first SSE text fragment, throughput, WER and failed requests in `$run_dir/sweep/sweep.json`. P9.3 passes when the draft's first-text p95 is at most `max(5 ms, 5% of the baseline p95)` slower than the baseline.
+The pinned English dataset has 1,088 rows. This workload sends its 666 distinct audio clips once per pass. The sweep starts a fresh server for each leg, with the draft off for A and synchronous DFlash for B. Both sides disable the prefix cache and run one discarded warmup followed by three passes. It reports client-side p95 time to the first SSE text fragment, throughput, WER and failed requests in `$run_dir/sweep/sweep.json`. P9.3 passes when the draft's first-text p95 is at most `max(5 ms, 5% of the baseline p95)` slower than the baseline.
+
+To record the request build, queue and prefill timings, append `--profile-events` after `--stream`. Each leg then runs an additional profiled pass and attaches its breakdown to that leg's `client.json`. The three measured passes finish before profiling starts.
 
 ### Prefill Coalescing
 
