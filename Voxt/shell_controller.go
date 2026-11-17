@@ -63,6 +63,9 @@ type shellState struct {
 	navState      // shell_nav_controller.go
 	commandsState // shell_commands_controller.go
 	shellUI       shellLocalUI
+	// shellViewModel is the frame's aggregate, reused between frames
+	// (shellModel).
+	shellViewModel shellViewState
 
 	menuLocale string // locale the native menu was built in
 	hasMenu    bool   // the app runs (not a test): it has a menu bar to build
@@ -217,20 +220,31 @@ func startHidden(atLogin bool, g settings.General) bool {
 
 // shellModel is the frame's shell view state: the theme, the drained
 // toasts, and the cached sub-states (the sidebar, the notifications, the
-// logs panel, the palette, the sheet).
+// logs panel, the palette, the sheet). The palette's and the sheet's
+// models build only while their dialog shows: closed, DialogBase and
+// Modal never look at them, and the registry and the sheet's rows stay
+// off the frame. The aggregate is reused, so a quiet frame allocates
+// nothing here.
 func (a *app) shellModel() *shellViewState {
-	model := &shellViewState{
+	model := &a.shellViewModel
+	*model = shellViewState{
 		Theme: a.prefs.Appearance.Theme, Scale: a.prefs.Appearance.Scale,
 		Still:  a.win == nil || a.prefs.Appearance.ReduceMotion,
 		Toasts: a.toasts,
 		Nav:    a.navModel(), Notices: a.noticesModel(),
-		Palette: a.paletteModel(), Sheet: a.sheetModel(),
+		Palette: &a.paletteView, Sheet: &a.sheetView,
 		LogsHeight:   a.logsHeight,
 		SettingsOpen: a.settingsOpen,
 	}
 	a.toasts = nil
 	if a.logsPanel && section(a.router.Path()) != "/logs" {
 		model.Logs = a.logsModel()
+	}
+	if a.paletteOpen {
+		model.Palette = a.paletteModel()
+	}
+	if a.sheetOpen {
+		model.Sheet = a.sheetModel()
 	}
 	return model
 }
