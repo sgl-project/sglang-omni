@@ -88,15 +88,21 @@ func (r *run) readSelection() string {
 		return ""
 	}
 	text := res.Text
-	if strings.TrimSpace(text) == "" {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
 		// The helper's steps say which reading found nothing (#3835).
 		r.logf("info", "no selection (%s, %.0f ms; %s)", res.Via, res.MS, strings.Join(res.Steps, ", "))
 		return ""
 	}
+	if r.req.Kind == store.KindRewrite && !(res.Via == proto.ViaCopy && trimmed == "[Image]") {
+		// A copied [Image] placeholder denotes an image selection; other
+		// selections take the text path, including on follow-ups (#4152).
+		r.clip = nil
+	}
 	for _, t := range r.req.Previous {
 		// A follow-up's: the text selected before, still selected, is in
 		// the conversation already (#3816).
-		if strings.TrimSpace(t.Selection) == strings.TrimSpace(text) {
+		if strings.TrimSpace(t.Selection) == trimmed {
 			r.logf("info", "the selection is in the conversation already")
 			return ""
 		}
