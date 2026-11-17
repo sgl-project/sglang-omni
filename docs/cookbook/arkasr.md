@@ -132,7 +132,7 @@ To record the request build, queue and prefill timings, append `--profile-events
 
 ### Prefill Coalescing
 
-ARK-ASR can hold newly built requests briefly so the scheduler can admit a larger prefill batch. Synchronous DFlash defaults to four request-build workers and admits ready requests without an additional coalescing delay. No draft and opt-in speculative overlap retain two workers and a 32 ms deadline. The request threshold remains 16. These defaults are resolved after selecting the decoding mode; explicit `request_build_max_workers` and `prefill_coalesce_wait_ms` settings take precedence.
+ARK-ASR can hold newly built requests briefly so the scheduler can admit a larger prefill batch. Synchronous DFlash defaults to four request-build workers and admits ready requests without an additional coalescing delay. No draft and opt-in speculative overlap retain two workers and a 32 ms deadline. The request threshold is 16 when coalescing is enabled. These defaults are resolved after selecting the decoding mode; explicit `request_build_max_workers` and `prefill_coalesce_wait_ms` settings take precedence.
 
 With four workers and the earlier 4 ms DFlash deadline, a pinned SeedTTS ABBA sweep on one H200 passed the TTFT, throughput and end-to-end p95 gates at c1, c2, c4, c8 and c16 on both English and Chinese. Selected loads with the prefix cache off and the running-request cap at 32:
 

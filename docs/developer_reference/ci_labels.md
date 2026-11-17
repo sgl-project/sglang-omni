@@ -77,7 +77,7 @@ The stage label is `run-asr-ci`. A model label does not name the stage. Combine 
 | Model label | Checkpoint | In the random pool |
 | --- | --- | --- |
 | `run-fun-asr-nano-2512` | `FunAudioLLM/Fun-ASR-Nano-2512-hf` | Yes |
-| `run-ark-asr-3b` | `AutoArk-AI/ARK-ASR-3B` with DFlash | No, pending calibration |
+| `run-ark-asr-3b` | `AutoArk-AI/ARK-ASR-3B` with DFlash | Yes |
 | `run-qwen3-asr-1.7b` | `Qwen/Qwen3-ASR-1.7B` | Yes |
 | `run-whisper-large-v3` | `openai/whisper-large-v3` | Yes |
 

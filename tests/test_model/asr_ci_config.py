@@ -79,6 +79,40 @@ THRESHOLD_SLACK_HIGHER = 0.9
 THRESHOLD_SLACK_LOWER = 1.1
 
 
+# note (Ruilin Gao): Worst of five H100 DP2 SeedTTS runs with default DFlash, Rust router, c96 and 192 warmup requests on 2026-11-17.
+ARK_ASR_EN_CORPUS_WER_MAX = 0.011122881355932203
+ARK_ASR_EN_SAMPLE_WER_MAX = 0.2857142857142857
+ARK_ASR_ZH_CORPUS_WER_MAX = 0.008780341624213366
+ARK_ASR_ZH_SAMPLE_WER_MAX = 0.25
+ARK_ASR_THROUGHPUT_MIN = 370.7124560875262
+ARK_ASR_LATENCY_MEAN_MAX_S = 0.24956829155213628
+ARK_ASR_LATENCY_P95_MAX_S = 0.38313296157866705
+ARK_ASR_RTF_MEAN_MAX = 0.054346892974234916
+ARK_ASR_RTF_P95_MAX = 0.0864
+
+ARK_ASR_EN_CORPUS_WER_THRESHOLD = apply_wer_slack(
+    ARK_ASR_EN_CORPUS_WER_MAX, THRESHOLD_SLACK_LOWER
+)
+ARK_ASR_EN_SAMPLE_WER_THRESHOLD = apply_wer_slack(
+    ARK_ASR_EN_SAMPLE_WER_MAX, THRESHOLD_SLACK_LOWER
+)
+ARK_ASR_ZH_CORPUS_WER_THRESHOLD = apply_wer_slack(
+    ARK_ASR_ZH_CORPUS_WER_MAX, THRESHOLD_SLACK_LOWER
+)
+ARK_ASR_ZH_SAMPLE_WER_THRESHOLD = apply_wer_slack(
+    ARK_ASR_ZH_SAMPLE_WER_MAX, THRESHOLD_SLACK_LOWER
+)
+ARK_ASR_THROUGHPUT_THRESHOLD = round(ARK_ASR_THROUGHPUT_MIN * THRESHOLD_SLACK_HIGHER, 3)
+ARK_ASR_LATENCY_MEAN_THRESHOLD_S = round(
+    ARK_ASR_LATENCY_MEAN_MAX_S * THRESHOLD_SLACK_LOWER, 3
+)
+ARK_ASR_LATENCY_P95_THRESHOLD_S = round(
+    ARK_ASR_LATENCY_P95_MAX_S * THRESHOLD_SLACK_LOWER, 3
+)
+ARK_ASR_RTF_MEAN_THRESHOLD = round(ARK_ASR_RTF_MEAN_MAX * THRESHOLD_SLACK_LOWER, 4)
+ARK_ASR_RTF_P95_THRESHOLD = round(ARK_ASR_RTF_P95_MAX * THRESHOLD_SLACK_LOWER, 4)
+
+
 FUN_ASR_EN_CORPUS_WER_MAX = 0.0172
 FUN_ASR_EN_SAMPLE_WER_MAX = 0.3077
 FUN_ASR_ZH_CORPUS_WER_MAX = 0.0138
@@ -190,17 +224,16 @@ ASR_CI_PRESETS: dict[str, AsrCiPreset] = {
         model_path="AutoArk-AI/ARK-ASR-3B",
         revision="1e28271b79edc97635783bea65abc89195a09ed3",
         display_name="ARK-ASR-3B",
-        gate_thresholds=False,
         thresholds=AsrCiThresholdPreset(
-            en_corpus_wer_max=0.0,
-            en_sample_wer_max=0.0,
-            zh_corpus_wer_max=0.0,
-            zh_sample_wer_max=0.0,
-            throughput_min=0.0,
-            latency_mean_max_s=0.0,
-            latency_p95_max_s=0.0,
-            rtf_mean_max=0.0,
-            rtf_p95_max=0.0,
+            en_corpus_wer_max=ARK_ASR_EN_CORPUS_WER_THRESHOLD,
+            en_sample_wer_max=ARK_ASR_EN_SAMPLE_WER_THRESHOLD,
+            zh_corpus_wer_max=ARK_ASR_ZH_CORPUS_WER_THRESHOLD,
+            zh_sample_wer_max=ARK_ASR_ZH_SAMPLE_WER_THRESHOLD,
+            throughput_min=ARK_ASR_THROUGHPUT_THRESHOLD,
+            latency_mean_max_s=ARK_ASR_LATENCY_MEAN_THRESHOLD_S,
+            latency_p95_max_s=ARK_ASR_LATENCY_P95_THRESHOLD_S,
+            rtf_mean_max=ARK_ASR_RTF_MEAN_THRESHOLD,
+            rtf_p95_max=ARK_ASR_RTF_P95_THRESHOLD,
         ),
     ),
     "fun": AsrCiPreset(

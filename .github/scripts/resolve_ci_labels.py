@@ -54,7 +54,7 @@ CI_STAGES: tuple[CiStage, ...] = (
             "run-qwen3-asr-1.7b": "qwen3",
             "run-whisper-large-v3": "whisper",
         },
-        random_presets=("fun", "qwen3", "whisper"),
+        random_presets=("ark", "fun", "qwen3", "whisper"),
     ),
     CiStage(
         name="tts",
