@@ -327,6 +327,21 @@ type sessionOverlayProjection struct {
 	noticeReady bool
 	cardReady   bool
 	menuReady   bool
+	stillReady  bool
+	stillKey    sessionOverlayStillKey
+}
+
+// sessionOverlayStillKey is everything a still notice frame reads: when
+// it matches, refreshSessionOverlay leaves the projection as it is
+// instead of rebuilding the header and comparing the sub-keys every
+// frame.
+type sessionOverlayStillKey struct {
+	sessionID, state, problemCode string
+	revision                      uint64
+	sequence                      int
+	text, action                  string
+	locale                        string
+	warn, success, over           bool
 }
 
 func sessionPillKeyFor(input sessionOverlayProjectionInput, locale string, now time.Time) sessionPillProjectionKey {
@@ -361,13 +376,30 @@ func sessionPillKeyFor(input sessionOverlayProjectionInput, locale string, now t
 func (a *app) refreshSessionOverlay(now time.Time) {
 	projection := &a.ov.projection
 	locale := i18n.Locale()
+	mode := a.overlayModeNow()
+	if mode == ovNotice && a.notice != nil && !a.answer.ui.langOpen {
+		key := sessionOverlayStillKey{
+			sessionID: a.sess.ID, state: string(a.sess.State), revision: a.sess.Rev,
+			sequence: a.notice.seq, text: a.notice.text, action: a.notice.action,
+			locale: locale, warn: a.notice.warn, success: a.notice.ok, over: a.notice.over,
+		}
+		if a.sess.Problem != nil {
+			key.problemCode = a.sess.Problem.Code
+		}
+		if projection.stillReady && key == projection.stillKey && projection.view.Mode == ovNotice {
+			return
+		}
+		projection.stillKey, projection.stillReady = key, true
+	} else {
+		projection.stillReady = false
+	}
 	if projection.translator == nil || projection.locale != locale {
 		projection.locale = locale
 		projection.translator = i18n.NewTranslator(locale)
 		projection.cardReady, projection.menuReady = false, false
 	}
 	input := sessionOverlayProjectionInput{
-		Snapshot: a.sess, Mode: a.overlayModeNow(),
+		Snapshot: a.sess, Mode: mode,
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShowTime: a.prefs.Overlay.ShowTime,
 		PillNoteID: a.pillNote.id, PillNoteText: a.pillNote.text, Notice: a.notice,
 	}
