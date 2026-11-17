@@ -218,6 +218,7 @@ TailOutput MingAcoustic::Step(const mx::array &hidden, const mx::array &history,
                                    sampled.shape())));
     } else {
     }
+    mx::async_eval(sampled);
   }
   const mx::array stop =
       mx::softmax(checkpoint_.Linear(
