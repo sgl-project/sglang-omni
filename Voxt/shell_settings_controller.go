@@ -28,6 +28,20 @@ type settingsState struct {
 		state settingsGeneralViewState
 		valid bool
 	}
+	dialogCache struct {
+		key   settingsDialogCacheKey
+		state settingsDialogViewState
+		valid bool
+	}
+}
+
+// settingsDialogCacheKey is every input of the settings dialog's own
+// view state (settings_dialog_view_state.go): open, the two paths and the
+// language. The sections' models have their own caches.
+type settingsDialogCacheKey struct {
+	open            bool
+	path, shownPath string
+	locale          string
 }
 
 // updateSettings changes the settings: at once in the snapshot, and in
@@ -186,7 +200,12 @@ func (a *app) shownPath() string {
 }
 
 func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
-	state := buildSettingsDialogViewState(i18n.CurrentTranslator(), a.settingsOpen, a.setRouter.Path(), a.shownPath())
+	key := settingsDialogCacheKey{open: a.settingsOpen, path: a.setRouter.Path(), shownPath: a.shownPath(), locale: i18n.Locale()}
+	if !a.dialogCache.valid || a.dialogCache.key != key {
+		a.dialogCache.state = buildSettingsDialogViewState(i18n.CurrentTranslator(), key.open, key.path, key.shownPath)
+		a.dialogCache.key, a.dialogCache.valid = key, true
+	}
+	state := a.dialogCache.state
 	if !state.Open {
 		return state
 	}
