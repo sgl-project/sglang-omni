@@ -264,7 +264,9 @@ func runMeetingProfile(
 	rawText := profileMeetingText(rawSegments)
 	finalText := rawText
 	summaryText := ""
-	if segmentsFile, segmentsErr := os.Create(filepath.Join(config.OutputDir, "segments.jsonl")); segmentsErr == nil {
+	if segmentsErr := os.MkdirAll(config.OutputDir, 0o700); segmentsErr != nil {
+		recorder.Warn("segments.jsonl: " + segmentsErr.Error())
+	} else if segmentsFile, segmentsErr := os.Create(filepath.Join(config.OutputDir, "segments.jsonl")); segmentsErr == nil {
 		encoder := json.NewEncoder(segmentsFile)
 		for _, segment := range rawSegments {
 			_ = encoder.Encode(map[string]any{
