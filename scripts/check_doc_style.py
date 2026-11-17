@@ -21,6 +21,10 @@ GLOB_TOKEN_PATTERN = re.compile(r"\[[!]?\]?[^]]*\]|\*\*|\*|\?|.")
 LITERAL_DIRECTIVE_NAMES = {"code", "code-block", "sourcecode", "parsed-literal", "raw"}
 TOCTREE_EXEMPTIONS = {
     "README.md": "Repository overview, separate from the published manual.",
+    "cookbook/fishaudio_drama3/benchmarks.md": "Linked from the Fish Audio Drama 3 cookbook; intentionally omitted from sidebar navigation.",
+    "cookbook/fishaudio_drama3/platforms.md": "Linked from the Fish Audio Drama 3 cookbook; intentionally omitted from sidebar navigation.",
+    "cookbook/fishaudio_drama3/reference.md": "Linked from the Fish Audio Drama 3 cookbook; intentionally omitted from sidebar navigation.",
+    "cookbook/fishaudio_drama3/tuning.md": "Linked from the Fish Audio Drama 3 cookbook; intentionally omitted from sidebar navigation.",
     "cookbook/qwen3_tts/benchmarks.md": "Linked from the Qwen3-TTS cookbook; intentionally omitted from sidebar navigation.",
     "cookbook/qwen3_tts/platforms.md": "Linked from the Qwen3-TTS cookbook; intentionally omitted from sidebar navigation.",
     "cookbook/qwen3_tts/reference.md": "Linked from the Qwen3-TTS cookbook; intentionally omitted from sidebar navigation.",
