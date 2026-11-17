@@ -49,14 +49,20 @@ func taggedOutput(s string) (string, bool) {
 
 // PartialOutput is a streaming clean-up answer's text so far, for the
 // card: without the contract's <output> tags, whole or as far as they
-// came, and nothing of the commentary that follows them.
-func PartialOutput(s string) string {
+// came, and nothing of the commentary around them. The tags are left
+// alone when the input itself has them (the user said them: Clean keeps
+// the text then too).
+func PartialOutput(s, input string) string {
 	t := strings.TrimLeft(s, " \t\r\n")
+	if strings.Contains(input, outputOpen) {
+		return t
+	}
 	if t == "" || strings.HasPrefix(outputOpen, t) {
 		return "" // nothing yet, or the opening tag is still coming
 	}
-	if strings.HasPrefix(t, outputOpen) {
-		t = strings.TrimLeft(t[len(outputOpen):], " \t\r\n")
+	// The commentary before the opening tag goes, as Clean drops it.
+	if i := strings.Index(t, outputOpen); i >= 0 {
+		t = strings.TrimLeft(t[i+len(outputOpen):], " \t\r\n")
 	}
 	if i := strings.Index(t, outputClose); i >= 0 {
 		return strings.TrimRight(t[:i], " \t\r\n")

@@ -575,24 +575,37 @@ func TestClean(t *testing.T) {
 func TestPartialOutput(t *testing.T) {
 	full := "<output>\n大家好，周五发布。\n</output>\n\n我删掉了语气词。"
 	for i := 1; i <= len(full); i++ {
-		got := PartialOutput(full[:i])
+		got := PartialOutput(full[:i], "周五发布")
+		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
+			t.Fatalf("at %d: a tag in %q", i, got)
+		}
+	}
+	// Commentary before the opening tag goes too, as Clean drops it.
+	prefixed := "Here you go: <output>Hello.</output>"
+	for i := 1; i <= len(prefixed); i++ {
+		got := PartialOutput(prefixed[:i], "hello")
 		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
 			t.Fatalf("at %d: a tag in %q", i, got)
 		}
 	}
 	for text, want := range map[string]string{
-		"":                          "",
-		"<":                         "",
-		"<outpu":                    "",
-		"<output>":                  "",
-		"plain text":                "plain text",
-		"<output>\nHello.":          "Hello.",
-		"Hello.</out":               "Hello.",
-		"<output>Hello.</output>\n": "Hello.",
+		"":                            "",
+		"<":                           "",
+		"<outpu":                      "",
+		"<output>":                    "",
+		"plain text":                  "plain text",
+		"<output>\nHello.":            "Hello.",
+		"Hello.</out":                 "Hello.",
+		"<output>Hello.</output>\n":   "Hello.",
+		"Here you go: <output>Hello.": "Hello.",
 	} {
-		if got := PartialOutput(text); got != want {
+		if got := PartialOutput(text, "hello"); got != want {
 			t.Errorf("PartialOutput(%q) = %q, want %q", text, got, want)
 		}
+	}
+	// The tags the user said stay: Clean keeps that text too.
+	if got := PartialOutput("use <output> and </output> here", "use <output> and </output> here"); got != "use <output> and </output> here" {
+		t.Errorf("PartialOutput with the user's own tags = %q", got)
 	}
 }
 
