@@ -182,6 +182,11 @@ const (
 	CardChrome = CardPadTop + CardHeadH + CardRuleTop + 1 + CardRuleGap + CardPadY
 	CardMsgGap = 8
 	CardMsgH   = 16
+	// CardAttachH is the height of the row that says which picture went
+	// to the language model (a thumbnail 24 high, its gap).
+	CardAttachH = 28
+	// CardAttachThumb is a thumbnail's size in that row.
+	CardAttachThumb = 24
 	// CardMaxH is the highest card on such a work area: CardBodyMax of
 	// text, and a line.
 	CardMaxH = CardChrome + CardBodyMax + CardMsgGap + CardMsgH

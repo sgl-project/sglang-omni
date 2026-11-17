@@ -380,6 +380,7 @@ type fakeLLM struct {
 	chunk  int
 	pause  time.Duration
 	finish string // the response's FinishReason
+	drop   bool   // the response reports the images dropped (llm.Response.ImagesDropped)
 
 	mu   sync.Mutex
 	reqs []llm.Request
@@ -422,7 +423,7 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 			req.OnDelta(string(rs[i:min(i+n, len(rs))]))
 		}
 	}
-	return llm.Response{Text: text, FinishReason: f.finish}, nil
+	return llm.Response{Text: text, FinishReason: f.finish, ImagesDropped: f.drop}, nil
 }
 
 func (f *fakeLLM) requests() []llm.Request {

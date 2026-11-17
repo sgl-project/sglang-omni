@@ -88,6 +88,9 @@ type run struct {
 	// clip is the picture on the clipboard for Rewrite's language model
 	// (window.go), read before the selection; nil: none.
 	clip []byte
+	// typed is Rewrite's typed text: StartRequest.Text's, or the input
+	// box's (Config.BoxInput) when the answer is asked for.
+	typed string
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
@@ -168,7 +171,11 @@ func (r *run) main() {
 		return
 	}
 	r.logf("info", "start %s in %s", kind, r.req.Target.BundleID)
-	r.shootWindow()
+	// Rewrite's window picture waits for the clipboard's: the copied
+	// picture wins, and a picture that will not be sent is never taken.
+	if kind != store.KindRewrite {
+		r.shootWindow()
+	}
 
 	// The services and the dictionary, meanwhile. A typed text or a
 	// selection to translate is not heard: no speech model (#3838).
@@ -176,6 +183,7 @@ func (r *run) main() {
 	r.resolve(r.req.Text == nil && !selTranslate)
 
 	if t := r.req.Text; t != nil {
+		r.typed = t.Typed
 		if r.awaitServices() {
 			r.write(r.spoken(strings.TrimSpace(t.Raw)), t.Selection)
 		}
@@ -202,6 +210,12 @@ func (r *run) main() {
 		selDone = make(chan string, 1)
 		go func() {
 			r.readClipboardImage() // first: reading the selection may ⌘C over the clipboard
+			if !r.req.Box {
+				// The box's session shoots when the answer is asked for:
+				// pictures pasted into it while it records win, and a
+				// picture that will not be sent is never taken.
+				r.shootWindow()
+			}
 			selDone <- r.readSelection()
 		}()
 	}
@@ -469,8 +483,8 @@ func (r *run) keep(s Snapshot, status store.Status) {
 
 // inHistory reports whether the session's history entry is written: not
 // for a try, nor for a note saved from its recognition (the Notes page
-// keeps it). A note whose recognition failed, or that was cancelled, keeps
-// its entry and recording, as a dictation does.
+// keeps it). A note whose recognition failed, or that was cancelled,
+// keeps its entry and recording, as a dictation does.
 func (r *run) inHistory(status store.Status) bool {
 	if r.req.Try || r.m.cfg.History == nil || !r.settings.Privacy.KeepHistory {
 		return false

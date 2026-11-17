@@ -99,6 +99,9 @@ func (a *app) startSessionID(req session.StartRequest) (string, *sessionNotice) 
 	if n := a.speechWaits(req.Kind); n != nil { // Translate: only when it comes to speech
 		req.SpeechWait = n.text
 	}
+	if a.box.open && !req.Box {
+		a.closeBox() // a session that is not the box's replaces it
+	}
 	if len(req.Previous) == 0 {
 		a.setAside(req.Try)
 	}

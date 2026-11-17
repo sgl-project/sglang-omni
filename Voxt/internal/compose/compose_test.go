@@ -355,7 +355,7 @@ func TestLayersOfTheTasks(t *testing.T) {
 	out, _ := Build(Input{Task: Rewrite, Instruction: "y", Answer: true, Previous: []Turn{{Instruction: "z", Selection: "s", Answer: Answer{Title: "T", Content: "c"}}}})
 	msgs := out.Messages()
 	if len(msgs) != 4 || msgs[1].Role != "user" || msgs[2].Content != `{"title":"T","content":"c"}` || msgs[3].Content != "<instruction>\ny\n</instruction>" ||
-		msgs[1].Content != "<instruction>\nz\n</instruction>\n\n<selected_text>\ns\n</selected_text>" {
+		msgs[1].Content != "<selected_text>\ns\n</selected_text>\n\n<instruction>\nz\n</instruction>" {
 		t.Errorf("messages %+v", msgs)
 	}
 }
@@ -555,6 +555,16 @@ func TestClean(t *testing.T) {
 		// or Translate answer whose text itself has them (HTML it was
 		// asked for) keeps them.
 		{"Use <output>result</output> for results.", "format this as HTML", "Use <output>result</output> for results."},
+		// A model's internal control blocks never reach the user (#4085).
+		{"Hello.<|tool_call_begin|>call vision<|tool_call_end|>", "x", "Hello."},
+		{"<|channel|>thought<channel|>你好。", "x", "你好。"},
+		{"cut off at the stream's end <|tool_call_be", "x", "cut off at the stream's end"},
+		// Only the control markers are markup; other <| stays (F#'s
+		// pipe, a tag the user wrote).
+		{"let y = f <| x", "x", "let y = f <| x"},
+		{"let y = f <|x", "x", "let y = f <|x"},
+		{"One <|mid|> two.", "x", "One <|mid|> two."},
+		{"code <| x then <|tool_call_begin|>c<|tool_call_end|>", "x", "code <| x then"},
 	} {
 		if got := Clean(tc.out, tc.in); got != tc.want {
 			t.Errorf("Clean(%q) = %q, want %q", tc.out, got, tc.want)
@@ -637,6 +647,32 @@ func TestPartialOutput(t *testing.T) {
 	}
 	if got := PartialOutput("<output>use <output> and </output> here</output>", "use <output> and </output> here"); got != "use <output> and </output> here" {
 		t.Errorf("PartialOutput with the model's wrapper around the user's tags = %q", got)
+	}
+}
+
+// TestStripControlAnswer: ParseAnswer and PartialAnswer strip a model's
+// internal control blocks too (#4085), a partial one's unfinished tail
+// included.
+func TestStripControlAnswer(t *testing.T) {
+	if got := StripControl("a<|x|>b<|tool_call_be"); got != "a<|x|>b" {
+		t.Errorf("StripControl %q", got)
+	}
+	// A bare word is no control tag: F#'s pipe keeps its operand.
+	if got := StripControl("let y = f <|x"); got != "let y = f <|x" {
+		t.Errorf("StripControl %q", got)
+	}
+	if got := StripControl("no blocks"); got != "no blocks" {
+		t.Errorf("StripControl %q", got)
+	}
+	a, ok := ParseAnswer(`{"title":"T<|x|>","content":"Ships Friday.<|tool_call_begin|>c<|tool_call_end|>"}`)
+	if !ok || a.Title != "T<|x|>" || a.Content != "Ships Friday." {
+		t.Errorf("ParseAnswer %+v %v", a, ok)
+	}
+	if got := PartialAnswer(`{"title":"T","content":"Ships Friday.<|tool_call_be`); got.Content != "Ships Friday." {
+		t.Errorf("PartialAnswer %+v", got)
+	}
+	if got := PartialAnswer("plain text <|tool_calls_section_be"); got.Content != "plain text" {
+		t.Errorf("PartialAnswer %+v", got)
 	}
 }
 

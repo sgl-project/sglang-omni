@@ -43,10 +43,10 @@ func buildFullPrompt(in Input, set string, vars, flags map[string]string, full s
 	if in.Task == Rewrite {
 		for _, t := range in.Previous {
 			out.History = append(out.History,
-				Message{Role: "user", Content: RewriteMessage(t.Instruction, t.Selection)},
+				Message{Role: "user", Content: RewriteMessage(t.Instruction, t.Selection, t.Typed)},
 				Message{Role: "assistant", Content: t.Answer.reply(in.Answer)})
 		}
-		out.User = out.withGlossary(RewriteMessage(in.Instruction, in.Text))
+		out.User = out.withGlossary(RewriteMessage(in.Instruction, in.Text, in.Typed))
 	} else {
 		out.User = out.withGlossary(UserMessage(in.Text))
 		if input, answer, ok := Example(in); ok {

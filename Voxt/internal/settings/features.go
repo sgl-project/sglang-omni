@@ -122,7 +122,8 @@ type Rewrite struct {
 	// ShowCard sends every answer to the answer card, which takes
 	// follow-ups, instead of replacing the selection or typing it: on by
 	// default, as in Voxt 1.x (no omitempty: off is kept). The field
-	// cardChars of 0.1.0 is dropped.
+	// cardChars of 0.1.0 is dropped; so is inputBox (never released):
+	// the input box is the only Rewrite now.
 	ShowCard bool `json:"showCard"`
 }
 

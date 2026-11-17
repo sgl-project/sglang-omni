@@ -4,6 +4,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **Rewrite opens one card with the microphone and an input box** (#4085): the Rewrite shortcut starts the microphone and opens the Rewrite card at once; there is no switch and no separate recording window any more. The text selected at the press goes into the card as the input; while you speak, you can type more text and paste or drop up to 4 images (thumbnails, each with a remove button). Press the shortcut again (or Enter) to finish and send; Shift+Enter is a new line, Esc closes without sending. What the language model gets is in one fixed order: the selected text, then the typed text and images, then what you said, with the same Rewrite prompt and the same shortcut as before. With nothing selected, typed or pasted, Rewrite works as before with speech alone. Images you put in the box are sent because you put them there (the Privacy switches do not gate them); a model that takes no images gets an error and the card keeps your text and images, and sending again uses the same image bytes in the same position, so the server's prefix cache can reuse them. A request can carry several images, in one order everywhere: the box's images, else the copied image, else the window screenshot; the card says which one went ("Screenshot" / "Copied image" / the box's thumbnails), and a screenshot that would not be sent is no longer taken. Settings → Privacy says under the two switches that with both on, the copied image goes, not the screenshot. Answers no longer show a model's internal tool or thinking markers when no image reached it.
+
 ### Fixed
 
 - **Rewrite and Translate read a block selection in a Lark doc** (#4154): selecting an image block, or a range of blocks with images and text, in a Lark doc in Chrome no longer reads as "no selection". Chrome reports such a selection to Accessibility as a single blank space, which Voxt mistook for the selected text and never tried copying; Voxt now treats a reading that is all whitespace as no reading and copies with ⌘C instead, so the selection's text (with a placeholder per image) reaches the language model.
@@ -16,7 +20,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Meetings label the other side as Speaker 1, 2, 3 and so on**: with MOSS-Transcribe-Diarize installed, Voxt uses it after a meeting to transcribe the other side with speaker labels while your lines stay Me, before transcript correction and the summary. Long meetings go to it in pieces, so dictation waits at most one piece, and a voice keeps its number across the pieces. In a language MOSS-Transcribe-Diarize does not know (it knows Chinese and English), or when the language is left automatic so it cannot be told, the meeting keeps the selected model's transcription. Without it, the meeting works as before and its details link to Speech models.
 
+### Fixed
+
+- **Rewrite: images dropped in several batches keep the drop order**: a large image dropped first no longer ends up after smaller images dropped later; the box and the request to the language model follow the order the images were dropped in, whatever finishes converting first.
+- **Rewrite: code ending in a pipe keeps its tail, and an old box's queued Enter cannot send the new recording**: an answer holding code where a pipe sits right before a word with no space (F#'s `<|x`) no longer loses the tail; only the model's real control markers are removed. And Enter pressed while a pasted picture still converted, then Esc and the shortcut again, no longer stops and sends the new recording when the old picture's conversion finishes; only your Enter in the new box sends.
+
 ### 中文
+
+#### 新增
+
+- **改写同时打开麦克风和一个带输入框的卡片**（#4085）：按改写快捷键会立刻开始录音并打开改写卡片，不再有开关，也不再有单独的录音窗口。按下快捷键时选中的文字会自动进入卡片作为原文；说话的同时可以补充输入文字，粘贴或拖入最多 4 张图片（缩略图带删除按钮）。再按一次快捷键（或按 Enter）结束录音并发送；Shift+Enter 换行，Esc 关闭不发送。发给语言模型的内容顺序固定：先是选中的文字，然后是输入的文字和图片，最后是说出的指令；改写 prompt 和快捷键都不变。没有选中、没有输入、没有图片时，改写和以前一样只用语音。放进卡片的图片是你主动放的，不需要隐私开关；模型不收图片时会报错，卡片里的文字和图片都保留，再次发送时图片的字节和位置完全相同，服务器的前缀缓存可以复用。一次请求可以带多张图片，顺序统一为：卡片的图片 > 复制的图片 > 窗口截图；卡片上写明这次发的是哪一种（“截图”/“复制的图片”/缩略图），不会被发送的截图不再截取。设置 → 隐私的两个开关下面写明：两个都打开时，发送复制的图片，不发送截图。模型没有收到图片时，回答里不再出现它的内部工具或思考标记。
 
 #### 修复
 
@@ -56,6 +69,11 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **转录和翻译的结果也边写边显示在答案卡片里**：打开答案卡片时，译文和转录整理后的文字会随语言模型的输出逐步出现在卡片里，和改写的回答一样，不用再在录音窗口里等全部写完。翻译可以点“停止”，留下已写出的译文。转录的卡片没有“停止”，而是“用识别原文”（按取消键也一样）：把你说的整段按识别结果放进卡片，因为整理停在半路会丢掉后面的内容。在卡片里换一种语言或换一个思考强度时，新的回答也边写边替换卡片里的文字，失败时卡片回到原来的文字。历史记录里的“重试”和“重新识别”会在详情里边写边显示新结果。答案卡片关着时，结果仍在写完后一次插入。
 - **语言模型处理时，录音窗口显示发给它的文字**：用流式语音识别模型时，录音窗口下面一行改为显示发给语言模型的识别结果（最终识别结果，词典别名已替换），不再是最后一条实时文字，两者可能不同。不是流式的语音识别模型照旧不显示文字，没有语言模型时也照旧。
 - **思考按钮直接写思考强度**（#4066）：录音窗口和答案卡片上的思考按钮改成“思考强度：高”“思考强度：已开启（默认）”这样的写法，不再写“重新问：思考（高）”。点它就能为这次输入换一个强度，和以前一样，选了就停掉这次回答、重新问。转录、翻译、改写都一样。
+
+#### 修复
+
+- **改写：分几次拖入的图片保持拖入顺序**：先拖入的大图不再排到后拖入的小图后面，卡片和发给语言模型的请求都按拖入的顺序，不受转换快慢影响。
+- **改写：竖线后紧跟单词的代码不再丢尾巴，旧卡片排队的 Enter 不会发送新录音**：竖线和后面的单词之间没有空格的代码（如 F# 的 `<|x`）在回答里不再被截断，只有模型真正的控制标记会被移除。粘贴的图片还在转换时按了 Enter，再按 Esc、按快捷键重开，旧图片转换完成不会再停止并发送新录音，只有你在新卡片里按 Enter 才会发送。
 
 ## [2.1.0] - 2026-11-15
 

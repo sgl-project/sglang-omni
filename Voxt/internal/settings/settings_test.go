@@ -38,6 +38,12 @@ func TestMigrate(t *testing.T) {
 			t.Errorf("%s: cancel %+v %v", tc.doc, s.Features.Cancel, err)
 		}
 	}
+	// The dropped inputBox switch (never released: the input box is the
+	// only Rewrite now) loads without a word.
+	s, err = Migrate([]byte(`{"version":4,"features":{"rewrite":{"inputBox":true,"cleanup":false}}}`))
+	if err != nil || s.Features.Rewrite.Cleanup {
+		t.Errorf("inputBox: %+v %v", s.Features.Rewrite, err)
+	}
 	data, _ := json.Marshal(s)
 	again, err := Migrate(data)
 	if err != nil || !reflect.DeepEqual(again, s) {

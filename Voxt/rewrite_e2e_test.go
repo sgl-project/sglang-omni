@@ -96,7 +96,7 @@ func TestRewriteSelectionInCard(t *testing.T) {
 		t.Errorf("card %+v", v)
 	}
 	msgs := chatMessages(chat.requests()[0])
-	if msgs[1][1] != "<instruction>\nmake it formal\n</instruction>\n\n<selected_text>\nhey all, ship friday\n</selected_text>" {
+	if msgs[1][1] != "<selected_text>\nhey all, ship friday\n</selected_text>\n\n<instruction>\nmake it formal\n</instruction>" {
 		t.Errorf("user message %q", msgs[1][1])
 	}
 	es := a.history()

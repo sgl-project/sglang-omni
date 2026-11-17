@@ -53,6 +53,7 @@ func (a *app) privacySettings(c *ui.Context) {
 			a.updateSettings(func(s *settings.Settings) { s.Privacy.SendClipboardImage = on })
 		}
 	})
+	caption(c, i18n.T("With both on, the copied image goes, not the screenshot."))
 
 	sectionTitle(c, i18n.T("Kept on this Mac"))
 	settingRow(c, "priv-history", i18n.T("Keep a history"), "", func() {
