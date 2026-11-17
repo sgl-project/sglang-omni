@@ -40,6 +40,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/markdown"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 )
@@ -88,6 +89,12 @@ type overlayState struct {
 		// (overlayMeasure); a text not there yet is guessed (guessText)
 		// until it is.
 		textW map[ovSized]ovMeasured
+		// mdCard and mdBubble are how the card's and its bubbles'
+		// Markdown renders, mdH its heights as the view laid them out
+		// (overlay_card_markdown.go); a text not there yet measures as
+		// plain text until it is.
+		mdCard, mdBubble markdown.Options
+		mdH              map[mdKey]float32
 		// area is the work area of the display it shows on, chosen when
 		// it appears (the display under the pointer); a resize stays there.
 		area mygo.Rectangle

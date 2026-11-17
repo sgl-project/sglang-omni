@@ -325,6 +325,8 @@ func (a *app) cardBlockView(c *ui.Context, b cardBlock) {
 	switch {
 	case b.bubble:
 		a.cardBubbleView(c, b)
+	case b.markdown:
+		a.cardMarkdown(c, b).Margin(b.gap, 0, 0, 0)
 	case b.problem:
 		ui.Row(c).Gap(layout.ProblemGap).AlignItems(ui.Start).Margin(b.gap, 0, 0, 0).Children(func() {
 			ui.Icon(c, icons.DangerCircle.Bold).Size(layout.ProblemIcon, layout.ProblemIcon).TextColor(tok(c.Theme()).Danger).Shrink(0)
@@ -369,12 +371,16 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			if b.title.text != "" {
 				ui.Text(c, b.title.text).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleA)).SingleLine().Ellipsis("…").MaxWidth(b.text.wrap)
 			}
-			t := ui.Text(c, b.text.text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textA))
-			if b.user {
-				t.TextAlign(ui.End)
-			}
-			if !b.live {
-				t.Selectable()
+			if b.markdown {
+				a.cardMarkdown(c, b)
+			} else {
+				t := ui.Text(c, b.text.text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textA))
+				if b.user {
+					t.TextAlign(ui.End)
+				}
+				if !b.live {
+					t.Selectable()
+				}
 			}
 			if b.quote.text != "" {
 				a.cardQuoteView(c, b)
