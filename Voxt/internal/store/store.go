@@ -351,7 +351,7 @@ type Meetings interface {
 	UpdateMeeting(ctx context.Context, m Meeting) error
 	AppendSegments(ctx context.Context, seq int64, segs []MeetingSegment) error
 	UpdateSegmentTranslation(ctx context.Context, seq int64, idx int, translation string) error
-	UpdateSegmentText(ctx context.Context, seq int64, idx int, text string) error
+	UpdateSegmentTexts(ctx context.Context, seq int64, texts map[int]string) error
 	ReplaceSegments(ctx context.Context, seq int64, src SegmentSource, segs []MeetingSegment) error
 	Meeting(ctx context.Context, id string) (Meeting, []MeetingSegment, error)
 	ListMeetings(ctx context.Context, q MeetingQuery) ([]Meeting, error)

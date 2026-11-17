@@ -19,6 +19,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 
 
+
+
 ### Fixed
 
 - **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup; the meetings' speaker transcription keeps it.
@@ -26,6 +28,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Rewrite and Translate read a block selection in a Lark doc**: selecting an image block, or a range of blocks with images and text, in a Lark doc in Chrome no longer reads as "no selection". Chrome reports such a selection to Accessibility as a single blank space, which Voxt mistook for the selected text and never tried copying; Voxt now treats a reading that is all whitespace as no reading and copies with ⌘C instead, so the selection's text (with a placeholder per image) reaches the language model.
 - **Paste last on Return honours the opt-out**: with Paste last on Return and Return finishes dictation off, pressing Return while Transcribe records no longer stops the recording, and it never stops a Translate, Rewrite or note recording.
 - **Rewrite input bubbles fit what you said**: short instructions use a narrow bubble, longer instructions grow to the usual width and wrap, and long conversations still scroll.
+- **A failed meeting transcript correction no longer applies by halves**: when the language model corrected a meeting's transcript and failed part-way, the batches already done stayed, so the summary ran over a mix of corrected and recognised lines with nothing saying which was which. The correction now lands only as a whole; a failure, the model's or the save's, leaves every line as recognised.
+- **A failed or cancelled meeting's recording is deleted after seven days**: the recording was meant to be kept for seven days when the settings keep no audio, but nothing ever deleted it. It is now swept once its time is up, and a recording that cannot be deleted stays tracked and is tried again instead of being forgotten on disk. A finished meeting's recording still follows the settings right away.
 
 ### Added
 
@@ -46,6 +50,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### 中文
 
 
+
 #### 修复
 
 
@@ -56,6 +61,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **改写和翻译能读到 Lark 文档里的块级选区**：在 Chrome 的 Lark 文档里选中一个图片块，或选中图片加文字的一段块，不再读成“没有选中”。Chrome 把这样的选区经无障碍接口报成一个空格，Voxt 以前把它当成选中的文字，不再尝试复制；现在全白的读取结果按没读到处理，改用 ⌘C 复制，选区文字（每张图一个占位符）会发给语言模型。
 - **“粘贴最近结果”绑定回车时尊重开关**：把“粘贴最近结果”设为回车、又关闭“按回车完成转录”后，转录录音时按回车不再停止录音；翻译、改写、笔记的录音也不会被回车停止。
 - **改写输入气泡随内容调整**：短指令用窄气泡，长指令加宽到常用宽度并换行，长对话仍然可以滚动。
+- **会议转录稿校对失败时不再改一半**：语言模型校对会议转录稿中途失败时，已完成的批次会留下，总结因此混用校对过和未校对的文字，且看不出区别。现在校对只会整体生效，无论模型还是保存失败，每一行都保持识别原文。
+- **失败或取消的会议录音七天后会被删除**：设置不保留音频时，这类录音本应保留七天，但一直没有东西去删它。现在到期后会被清理；删不掉的录音会保留记录、之后重试，不会被遗忘在磁盘上。正常结束的会议录音仍按设置立即处理。
 
 #### 新增
 
@@ -85,6 +92,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Voxt 2 在 App 内安装更新**（#3961）：发布构建会检查 Voxt 2 的正式版或 beta 签名更新源，下载并安装更新后重新启动，和 Voxt 1.x 一样。「设置 → 诊断与关于」保留自动检查、Beta 更新和自动安装开关。没有更新源的构建仍检查 GitHub 并提供下载地址。
 - **更新公告更短**：当前版本的公告在更新后只出现一次，一个标题加最多三行短句。“新增功能”打开完整说明，也可以随时在 设置 → 关于 → 更新 里查看。
 - **转录里的词典高亮**：试用预览和答案卡片会高亮识别文字中命中启用词条或别名的部分。
+
 
 
 

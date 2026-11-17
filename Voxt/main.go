@@ -139,6 +139,7 @@ func main() {
 		a.watchBundle()          // updates.go: an update installed while it runs
 		a.watchReleases()        // updates_github.go: the daily check without a feed
 		a.expireRecordings()     // history_retry.go: recordings kept for a retry, past their time
+		a.expireMeetingAudio()   // meeting_audio.go: a failed meeting's recording, past its 7 days
 		a.openHistoryAccess()    // history_access.go: the socket, when the setting is on
 		a.openTranscribeSocket() // transcribe_socket.go: `Voxt transcribe`
 		a.announceURL = announce.URL
