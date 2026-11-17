@@ -92,6 +92,35 @@ Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode tru
 
 WER stays at 1.11-1.13% on English and CER at 0.86-0.89% on Chinese, and p95 latency drops at every load in both modes. The larger gain at 64 comes from the default cap of 32 running requests, under which the server without a draft slows from 32 to 64 concurrent requests; with `--asr.engine.max_running_requests 64 --asr.engine.cuda_graph_max_bs 64` on both sides, the gain at 16, 32 and 64 is 1.12x, 1.18x and 1.06x synchronous and 1.30x, 1.27x and 1.13x overlapped. Overlap delays streamed first text: first-output p95 against the server without a draft is -4%, +6% and +15% at 1, 4 and 16 concurrent requests synchronous, and +8%, +23% and +31% overlapped. The draft reserves 13% of the KV pool. The draft checkpoint sets the default block size; `--asr.engine.speculative_num_draft_tokens` overrides it. The default context budget includes speculative KV reserve; an explicit `--context-length` must leave room for that reserve as well as the prompt and output.
 
+#### Measure First Text at Concurrency 16
+
+Run the [P9.3](https://github.com/sgl-project/sglang-omni/issues/2941#p9--ark-asr-3b-dflash) comparison from the repository root on a dedicated H200. Use SGLang 0.5.23 when comparing with the original measurements.
+
+```bash
+run_dir=$(mktemp -d "${TMPDIR:-/tmp}/arkasr-en-c16.XXXXXX")
+target_model=$(hf download AutoArk-AI/ARK-ASR-3B \
+  --revision 1e28271b79edc97635783bea65abc89195a09ed3)
+cat > "$run_dir/arkasr-dflash.yaml" <<EOF
+config_cls: ArkasrPipelineConfig
+model_path: "$target_model"
+stages:
+  asr:
+    engine:
+      max_running_requests: 32
+      speculative_algorithm: DFLASH
+      speculative_draft_model_path: wilsonzheng0327/ARK-ASR-3B-dflash
+      speculative_draft_model_revision: b0789bb314fab990e0f2377054c4b1947d204273
+EOF
+
+CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.speculative_sweep \
+  --draft-config "$run_dir/arkasr-dflash.yaml" \
+  --workload seedtts-en-unique-clips \
+  --concurrencies 16 --repeats 3 --order ABBA \
+  --output-dir "$run_dir/sweep" -- --stream
+```
+
+The sweep starts a fresh server for each leg, with the draft off for A and synchronous DFlash for B. Both sides disable the prefix cache and run one discarded warmup followed by three passes. It reports client-side p95 time to the first SSE text fragment, throughput, WER and failed requests in `$run_dir/sweep/sweep.json`. P9.3 passes when the draft's first-text p95 is at most `max(5 ms, 5% of the baseline p95)` slower than the baseline.
+
 ### Prefill Coalescing
 
 ARK-ASR holds newly built requests briefly by default so the scheduler can
