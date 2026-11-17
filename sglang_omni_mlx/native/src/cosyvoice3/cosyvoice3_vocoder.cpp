@@ -397,7 +397,6 @@ mx::array Hift::HarmonicSource(const mx::array &f0) const {
 mx::array Hift::Decode(const mx::array &mel) const {
   const mx::Dtype dtype =
       checkpoint_.Weight("hifigan.conv_pre.conv.weight").dtype();
-  const int frame_count = mel.shape(2);
   const mx::array frames = mx::transpose(mel, {0, 2, 1});
 
   // Note (yuhui): pitch runs in float32, since its error accumulates in
@@ -420,14 +419,11 @@ mx::array Hift::Decode(const mx::array &mel) const {
       {mx::slice(source, {half}, {0}, {-1}), source,
        mx::slice(source, {sample_count - 2}, {sample_count - half - 2}, {-1})});
   const int fft_frames = sample_count / kFftHop + 1;
-  const mx::array starts =
-      mx::multiply(mx::arange(fft_frames, mx::int32), mx::array(kFftHop));
-  const mx::array spectrum = mx::fft::fft(
-      mx::multiply(mx::take(padded, mx::add(mx::expand_dims(starts, 1),
-                                            mx::arange(kFftSize, mx::int32))),
-                   window_),
-      -1);
-  const mx::array bins = mx::slice(spectrum, {0, 0}, {fft_frames, kFftBins});
+  const mx::array bins =
+      mx::fft::rfft(mx::multiply(mx::as_strided(padded, {fft_frames, kFftSize},
+                                                {kFftHop, 1}, 0),
+                                 window_),
+                    -1);
   // Note (yuhui): the float32 source spectrum is cast so it does not
   // promote the half-precision convolutions.
   const mx::array source_spectrum = mx::astype(
@@ -471,20 +467,13 @@ mx::array Hift::Decode(const mx::array &mel) const {
                   mx::array(kMaxMagnitude));
   const mx::array phase =
       mx::sin(mx::slice(hidden, {0, kFftBins}, {count, 2 * kFftBins}));
-  const mx::array real = mx::multiply(magnitude, mx::cos(phase));
-  const mx::array imaginary = mx::multiply(magnitude, mx::sin(phase));
-  const auto mirrored = [&](const mx::array &values) {
-    return mx::slice(values, {0, kFftBins - 2}, {count, 0}, {1, -1});
-  };
-  const mx::array full_spectrum = mx::add(
-      mx::astype(mx::concatenate({real, mirrored(real)}, -1), mx::complex64),
+  const mx::array spectrum = mx::add(
+      mx::astype(mx::multiply(magnitude, mx::cos(phase)), mx::complex64),
       mx::multiply(
           mx::array(mx::complex64_t{0.0f, 1.0f}),
-          mx::astype(mx::concatenate(
-                         {imaginary, mx::negative(mirrored(imaginary))}, -1),
-                     mx::complex64)));
+          mx::astype(mx::multiply(magnitude, mx::sin(phase)), mx::complex64)));
   const mx::array windowed =
-      mx::multiply(mx::real(mx::fft::ifft(full_spectrum, -1)), window_);
+      mx::multiply(mx::fft::irfft(spectrum, kFftSize, -1), window_);
   const mx::array window_sum = mx::maximum(
       OverlapAdd(mx::broadcast_to(mx::square(window_), {count, kFftSize})),
       mx::array(1e-8f));
