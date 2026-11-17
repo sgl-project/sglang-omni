@@ -20,6 +20,7 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.models.auk.config import AuKPipelineConfig
 from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
 from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.resource_connector import (
@@ -420,7 +421,9 @@ def apply_stage_offload_cli_overrides(
     else:
         pass
 
-    if not isinstance(pipeline_config, MiniMaxMusic3PipelineConfig):
+    if not isinstance(
+        pipeline_config, (MiniMaxMusic3PipelineConfig, AuKPipelineConfig)
+    ):
         raise typer.BadParameter(
             "--stage-offload-components is not supported by this pipeline"
         )

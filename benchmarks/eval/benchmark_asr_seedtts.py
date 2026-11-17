@@ -709,7 +709,7 @@ def parse_args() -> argparse.Namespace:
         "--fallback-percentage",
         type=int,
         default=0,
-        help="Percentage of clips sent with repetition_penalty=1.2 to exercise plain fallback.",
+        help="Percentage of clips sent with repetition_penalty=1.2. Whether they decode plainly depends on the server: a draft that applies the penalty keeps them.",
     )
     parser.add_argument(
         "--unique-audio",

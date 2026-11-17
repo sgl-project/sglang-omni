@@ -24,7 +24,8 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── logs/             log ring + rotated files
 │   ├── notify/           the notification centre (kept in the store's documents)
 │   ├── lang/             the language table, 652 languages                                     (leaf)
-│   ├── permission/       Microphone and Accessibility (purego on darwin; Fake for tests)       (leaf)
+│   ├── permission/       Microphone, Accessibility and Speech Recognition (purego on darwin;
+│   │                     Fake for tests); system audio is asked for through the helper    (leaf)
 │   ├── macx/             activating an app again before a paste (purego on darwin); the       (leaf)
 │   │                     recording's sounds (afplay, Voxt's presets and how long each is
 │   │                     heard); the system's web proxies (CFNetwork);
@@ -73,8 +74,18 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │   └── omnitest/     a fake qwen3_asr_server for tests (the test binary re-runs itself)
 │   ├── session/          the one owner of a voice session: the state machine (reading →
 │   │                     recording → recognizing → composing → delivering → done/cancelled/
-│   │                     failed), the selection, Translate's and Rewrite's streaming answer, its
+│   │                     failed), the selection, the language model's streaming answer, its
 │   │                     snapshots, the history entry; adapters over the helper (helperio.go)
+│   ├── meeting/          a meeting's owner (Manager, Snapshot for the UI, Config callbacks): the
+│   │                     two tracks' capture, live captions (Live, Committer, echo and loop checks),
+│   │                     the WAV archive, the pass after the meeting, correction, the summary and
+│   │                     its follow-ups
+│   ├── fileasr/          `Voxt transcribe` (docs/transcribe.md): the command sends a file's PCM to
+│   │                     the running app, which cuts it as a meeting does and recognises it
+│   ├── dictation/        System dictation (macOS's SFSpeechRecognizer over the helper) as a speech model
+│   ├── announce/         Voxt's announcements (Voxt 1.x's manifest and list; sends only the revision)
+│   ├── learn/            dictionary suggestions from what the user does with Voxt's text
+│   ├── codexauth/        the ChatGPT (Codex) sign-in: browser login with PKCE, tokens in the Keychain
 │   ├── vad/              local voice activity detection (energy over an adaptive noise floor):
 │   │                     Analyze, Compact (file services), Gate (streams), Merge; Model, the
 │   │                     interface of a VAD model (Silero, internal/omni) the gate can follow  (leaf)

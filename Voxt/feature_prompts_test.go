@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 func TestPromptSaveUsesFullSystem(t *testing.T) {
@@ -18,7 +20,7 @@ func TestPromptSaveUsesFullSystem(t *testing.T) {
 	a.fui(hotkey.Translate).prompt = custom
 	a.fui(hotkey.Translate).promptDirty = true
 	a.savePrompt(hotkey.Translate)
-	click(t, tt, "Example user message")
+	click(t, tt, "What the language model receives")
 	if p := a.lib.settings.Get().Features.Translate.Prompt; p != custom {
 		t.Fatalf("saved %q", p)
 	}
@@ -221,5 +223,153 @@ func TestRulesFind(t *testing.T) {
 	}
 	if got := findFolded(u.prompt, "DLLM"); !slices.Equal(got, [][2]int{{4, 8}, {29, 33}}) {
 		t.Errorf("matches %v", got)
+	}
+}
+
+// TestTranslateBuiltinPromptKeepsTarget: the rules field starts from the
+// built-in prompt with {{TARGET_LANGUAGE}} in it, so a prompt edited from
+// it follows the menu. It had the language's name written in (#3956): the
+// edited prompt kept translating into it whatever the menu said.
+func TestTranslateBuiltinPromptKeepsTarget(t *testing.T) {
+	a, tt := pageTester(t, "/translate")
+	builtin := a.promptBuiltin(hotkey.Translate)
+	if !strings.Contains(builtin, targetVar) || strings.Contains(builtin, "Simplified Chinese") {
+		t.Fatalf("built-in prompt %q", builtin)
+	}
+	u := a.fui(hotkey.Translate)
+	u.prompt, u.promptDirty = builtin+"\nUse British spelling.", true
+	a.savePrompt(hotkey.Translate)
+	click(t, tt, "Target language for Translate")
+	click(t, tt, "Japanese")
+	out, err := a.composedPreview(hotkey.Translate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.System, "into Japanese") || strings.Contains(out.System, "{{") {
+		t.Fatalf("edited prompt does not follow the menu: %q", out.System)
+	}
+	if has(tt, "Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing.") {
+		t.Error("warning for a prompt that uses the variable")
+	}
+}
+
+// TestTranslateWarnsPromptIgnoresTarget: a prompt of one's own without
+// {{TARGET_LANGUAGE}} ("into English", in English or Chinese) gets a
+// warning on the page and a button that adds it; none for the built-in
+// prompt (#3956).
+func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
+	const warning = "Your prompt does not use {{TARGET_LANGUAGE}}, so this menu does nothing."
+	a, tt := pageTester(t, "/translate")
+	for _, s := range []string{"Target language", "The language model translates into this. Speech recognition writes what you said in your own language. Automatic is English, or Chinese when your main language is English. Text that is all in the target language goes into your main language."} {
+		if !has(tt, s) {
+			t.Errorf("no %q", s)
+		}
+	}
+	if has(tt, warning) {
+		t.Fatal("warning with the built-in prompt")
+	}
+	u := a.fui(hotkey.Translate)
+	for _, own := range []string{"Translate Chinese into English.\n\n", "把中文翻译成英语。"} {
+		u.prompt, u.promptDirty = own, true
+		a.savePrompt(hotkey.Translate)
+		frames(tt)
+		if !has(tt, warning) {
+			t.Fatalf("no warning for %q", own)
+		}
+		click(t, tt, "Add {{TARGET_LANGUAGE}} to the prompt")
+		saved := a.lib.settings.Get().Features.Translate.Prompt
+		if want := strings.TrimRight(own, "\n") + "\n\nTranslate the text into {{TARGET_LANGUAGE}}."; saved != want {
+			t.Fatalf("saved %q, want %q", saved, want)
+		}
+		if has(tt, warning) {
+			t.Fatalf("warning after adding the variable to %q", own)
+		}
+		out, err := a.composedPreview(hotkey.Translate)
+		if err != nil || !strings.Contains(out.System, "into Simplified Chinese.") {
+			t.Fatalf("composed %q, %v", out.System, err)
+		}
+	}
+	// Typed but not saved yet (the field saves 800 ms after the last key):
+	// the button keeps it.
+	u.prompt, u.promptDirty = "Into English.", true
+	a.savePrompt(hotkey.Translate)
+	u.prompt, u.promptDirty = "Into English. Keep it short.", true
+	frames(tt)
+	click(t, tt, "Add {{TARGET_LANGUAGE}} to the prompt")
+	if saved := a.lib.settings.Get().Features.Translate.Prompt; saved != "Into English. Keep it short.\n\nTranslate the text into {{TARGET_LANGUAGE}}." {
+		t.Fatalf("typed text lost: %q", saved)
+	}
+	click(t, tt, "Your rules")
+	click(t, tt, "Reset to default prompt")
+	if has(tt, warning) {
+		t.Error("warning after the reset")
+	}
+}
+
+// TestFeaturePageShowsFilledRequest: each feature page offers only the
+// variables the feature fills, each saying where its value comes from and
+// what it is now, and shows the whole request with them filled in. The
+// Translate page showed only the user message and offered
+// {{TARGET_LANGUAGE}} on every page (#4016).
+func TestFeaturePageShowsFilledRequest(t *testing.T) {
+	a, tt := pageTester(t, "/transcribe")
+	tt.SetSize(windowWidth, 9000)
+	click(t, tt, "Your rules")
+	if has(tt, "{{TARGET_LANGUAGE}}") {
+		t.Error("Transcribe offers {{TARGET_LANGUAGE}}")
+	}
+	if !hasPrefix(tt, "Your main language, from General settings. Every feature. Now: ") {
+		t.Errorf("no note for {{USER_MAIN_LANGUAGE}} in %q", firstTexts(tt))
+	}
+
+	a, tt = pageTester(t, "/translate")
+	tt.SetSize(windowWidth, 9000)
+	click(t, tt, "Your rules")
+	if !strings.Contains(a.fui(hotkey.Translate).prompt, "{{TARGET_LANGUAGE}}") {
+		t.Fatalf("rules field %q", a.fui(hotkey.Translate).prompt)
+	}
+	in := a.previewInput(hotkey.Translate)
+	target := compose.LanguageName(in.TargetLanguage, compose.TemplateSet(in.MainLanguage))
+	if !has(tt, "The Target language menu on the Translate page. Translate only. Now: "+target) {
+		t.Errorf("no note for {{TARGET_LANGUAGE}} = %q", target)
+	}
+	click(t, tt, "What the language model receives")
+	out, err := a.composedPreview(hotkey.Translate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.System, "{{") || !strings.Contains(out.System, target) {
+		t.Fatalf("system prompt not filled in: %q", out.System)
+	}
+	for _, s := range []string{"system", out.System, "user", out.User} {
+		if !hasExact(tt, s) {
+			t.Errorf("preview lacks %q", s)
+		}
+	}
+}
+
+// TestFeaturePageFilledRequestEdges: a variable with no value says so,
+// and a prompt of one's own shows filled in as it is sent.
+func TestFeaturePageFilledRequestEdges(t *testing.T) {
+	a, tt := pageTester(t, "/translate")
+	tt.SetSize(windowWidth, 9000)
+	a.updateSettings(func(s *settings.Settings) {
+		s.General.OtherLanguages = nil
+		s.Features.Translate.Prompt = "把文字翻成 {{TARGET_LANGUAGE}}，不懂的保留 {{USER_OTHER_LANGUAGES}} 原文。"
+	})
+	click(t, tt, "Your rules")
+	if !has(tt, "Your other languages, from General settings. Every feature. Now: (none)") {
+		t.Errorf("empty variable not shown as none in %q", tt.Texts())
+	}
+	click(t, tt, "What the language model receives")
+	out, err := a.composedPreview(hotkey.Translate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.System, "{{") || !strings.HasPrefix(out.System, "把文字翻成 ") {
+		t.Fatalf("system %q", out.System)
+	}
+	if !hasExact(tt, out.System) {
+		t.Errorf("preview lacks the filled prompt %q", out.System)
 	}
 }
