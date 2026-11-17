@@ -403,7 +403,7 @@ func TestRoute(t *testing.T) {
 		{"cancel shortcut cancels busy", ev(proto.HotkeyCancel, proto.PhaseTrigger), Busy, "", Decision{Action: Cancel}},
 		{"cancel shortcut idle", ev(proto.HotkeyCancel, proto.PhaseTrigger), Idle, "", Decision{}},
 		{"paste last", ev(PasteLast, proto.PhaseTrigger), Idle, "", Decision{Action: Paste}},
-		{"paste last while recording", ev(PasteLast, proto.PhaseTrigger), Recording, "", Decision{}},
+		{"paste last stops the recording", ev(PasteLast, proto.PhaseTrigger), Recording, "", Decision{Action: Stop}},
 		{"note starts", ev(Note, proto.PhaseTrigger), Idle, "", Decision{Action: Start, Feature: Note}},
 		{"note stops", ev(Note, proto.PhaseTrigger), Recording, "", Decision{Action: Stop}},
 		{"unknown binding", ev("try/x", proto.PhaseTrigger), Idle, "", Decision{}},
@@ -440,8 +440,8 @@ func TestRouteFinish(t *testing.T) {
 // TestRouteStrict: with Strict shortcuts, while recording only the
 // bindings of the feature that started the session stop it (tap, double
 // tap, the release of its long press); another feature's tap, down and up
-// do nothing; Cancel and PasteLast route as in the default mode, which
-// stops on any feature's binding.
+// do nothing; Cancel routes as in the default mode, and PasteLast stops,
+// as any feature's binding does there.
 func TestRouteStrict(t *testing.T) {
 	ev := func(binding, phase string) proto.HotkeyEventParams {
 		return proto.HotkeyEventParams{Binding: binding, Phase: phase}
@@ -480,7 +480,7 @@ func TestRouteStrict(t *testing.T) {
 			if got := Route(ev(proto.HotkeyCancel, proto.PhaseTrigger), Recording, "", strict); got != (Decision{Action: Cancel}) {
 				t.Errorf("%q: cancel %+v", strict, got)
 			}
-			if got := Route(ev(PasteLast, proto.PhaseTrigger), Recording, "", strict); got != (Decision{}) {
+			if got := Route(ev(PasteLast, proto.PhaseTrigger), Recording, "", strict); got != (Decision{Action: Stop}) {
 				t.Errorf("%q: paste last while recording %+v", strict, got)
 			}
 			if got := Route(ev(own+"/0", proto.PhaseTrigger), Idle, "", strict); got != (Decision{Action: Start, Feature: own}) {
@@ -493,5 +493,53 @@ func TestRouteStrict(t *testing.T) {
 	}
 	if got := Route(ev(Note, proto.PhaseTrigger), Recording, "", Note); got != stop {
 		t.Errorf("strict note session, note tap: %+v", got)
+	}
+}
+
+// TestBuildFinishDedup: an existing Return chord covers Finish only when
+// it stops the recording as routed: Paste last (Route stops it there),
+// any feature's with Strict shortcuts off, only Transcribe's own with
+// them on (Route filters the rest, so Finish is bound and leads).
+func TestBuildFinishDedup(t *testing.T) {
+	hk := func(keys string) settings.Hotkey { return settings.Hotkey{Keys: keys} }
+	f := settings.Defaults().Features
+	f.PasteLast = hk("Return")
+	if p := Build(f, []string{"finish", PasteLast}); p.Finish != nil {
+		t.Errorf("paste-last on Return did not cover: %+v", p.Finish)
+	}
+	f = settings.Defaults().Features
+	f.Translate.Hotkeys = []settings.Hotkey{hk("Return")}
+	if p := Build(f, []string{"finish", Translate}); p.Finish != nil {
+		t.Errorf("translate on Return did not cover: %+v", p.Finish)
+	}
+	f.StrictShortcuts = true
+	p := Build(f, []string{"finish", Translate})
+	if p.Finish == nil {
+		t.Fatal("strict: no finish beside a filtered Return")
+	}
+	if cfg := p.Configure(true); len(cfg.Bindings) == 0 || cfg.Bindings[0].ID != "finish" {
+		t.Errorf("strict: finish does not lead: %+v", cfg.Bindings)
+	}
+	f = settings.Defaults().Features
+	f.StrictShortcuts = true
+	f.Transcribe.Hotkeys = []settings.Hotkey{hk("Return")}
+	if p := Build(f, []string{"finish", Transcribe}); p.Finish != nil {
+		t.Errorf("strict: transcribe's own Return did not cover: %+v", p.Finish)
+	}
+}
+
+// TestRoutePasteLastStopsRecording: paste last pastes in Idle and stops
+// a Recording, as a feature's binding does (its Return may be the
+// finish the plan dropped for it); elsewhere it waits.
+func TestRoutePasteLastStopsRecording(t *testing.T) {
+	e := proto.HotkeyEventParams{Binding: PasteLast, Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap}
+	if got := Route(e, Recording, "", ""); got != (Decision{Action: Stop}) {
+		t.Errorf("recording: %+v", got)
+	}
+	if got := Route(e, Idle, "", ""); got != (Decision{Action: Paste}) {
+		t.Errorf("idle: %+v", got)
+	}
+	if got := Route(e, Busy, "", ""); got != (Decision{}) {
+		t.Errorf("busy: %+v", got)
 	}
 }

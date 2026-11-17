@@ -391,8 +391,9 @@ type Plan struct {
 func Build(f settings.Features, enabled []string) Plan {
 	var p Plan
 	type seen struct {
-		c Chord
-		b string
+		id string
+		c  Chord
+		b  string
 	}
 	var taken []seen
 	add := func(id string, h settings.Hotkey, behavior string) {
@@ -405,7 +406,7 @@ func Build(f settings.Features, enabled []string) Plan {
 				return
 			}
 		}
-		taken = append(taken, seen{c, behavior})
+		taken = append(taken, seen{id, c, behavior})
 		p.Bindings = append(p.Bindings, binding(id, c, behavior))
 		if acc, ok := c.Accelerator(); ok {
 			p.Carbon = append(p.Carbon, Carbon{ID: id, Accelerator: acc})
@@ -436,8 +437,16 @@ func Build(f settings.Features, enabled []string) Plan {
 		c, _ := Parse("Return")
 		dup := false
 		for _, s := range taken {
-			if s.c.Equal(c) && s.b == proto.BehaviorTap {
-				dup = true // an existing Return binding already stops the recording
+			if !s.c.Equal(c) || s.b != proto.BehaviorTap {
+				continue
+			}
+			// An existing Return binding covers Finish only if it stops
+			// the recording as routed: a feature's under the common stop
+			// (Strict shortcuts: only Transcribe's own, the recording it
+			// plans for), Paste last's as Route stops it.
+			feature, _, _ := ParseID(s.id)
+			if feature == PasteLast || !f.StrictShortcuts || feature == Transcribe {
+				dup = true
 			}
 		}
 		if !dup {
@@ -488,12 +497,15 @@ func (p Plan) UsesFn() bool {
 
 // Configure is the hotkey.configure of the plan; active while a session
 // runs or the answer card shows (taps fire at once, the cancel shortcut
-// is reported). Finish joins the ordinary bindings only while active.
+// is reported). Finish joins the ordinary bindings only while active,
+// first: a binding it was kept beside (Strict shortcuts filters it) must
+// not win its keys.
 func (p Plan) Configure(active bool) proto.HotkeyConfigureParams {
-	bs := slices.Clone(p.Bindings)
+	var bs []proto.HotkeyBinding
 	if active && p.Finish != nil {
 		bs = append(bs, *p.Finish)
 	}
+	bs = append(bs, p.Bindings...)
 	if bs == nil {
 		bs = []proto.HotkeyBinding{}
 	}

@@ -87,8 +87,14 @@ func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string) D
 		return Decision{}
 	}
 	if feature == PasteLast {
-		if phase == Idle && e.Phase == proto.PhaseTrigger {
+		if e.Phase != proto.PhaseTrigger {
+			return Decision{}
+		}
+		switch phase {
+		case Idle:
 			return Decision{Action: Paste}
+		case Recording:
+			return Decision{Action: Stop} // its Return may be the finish the plan dropped
 		}
 		return Decision{}
 	}
