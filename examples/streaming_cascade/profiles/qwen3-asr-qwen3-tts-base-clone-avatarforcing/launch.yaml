@@ -9,13 +9,13 @@ stages:
       silence_duration_ms: 160
   avatar_worker:
     factory:
-      # A worker steps one 16-frame (640 ms) block per chunk: the block it returns left the four-block denoising window a chunk earlier and was decoded meanwhile on a second GPU (--vae-device), so it hears 2560 ms of the reply past the block, plus 320 ms of wav2vec context. Real time needs flash-attn 3 and that second GPU: on H100s a chunk takes 574 ms (p95 578 ms) for the DiT on one GPU while the VAE decodes the previous block on the other; on one GPU it takes 957 ms.
+      # A worker steps one 16-frame (640 ms) block per chunk: the block it returns has just left the four-block denoising window, so it hears 1920 ms of the reply past the block, plus 320 ms of wav2vec context. Real time on one H100 takes the worker's speed options and TAEHV's small decoder in place of the Wan VAE (--fuse --compile-blocks --cuda-graph --jpeg-threads 8 --taehv taew2_1.pth, flash-attn 3): a chunk takes 441 ms (p95 446 ms, 1.44x). For the Wan VAE's own pictures, decode on a second GPU one chunk behind (--vae-device cuda:1 --vae-compile instead of --taehv and --cuda-graph): p95 427 ms, and lookahead_ms 2880. The release's code needs two GPUs and takes 574 ms (p95 578 ms).
       renderer_urls: ["http://127.0.0.1:8121"]
       fps: 25
       chunk_frames: 16
-      lookahead_ms: 2880
+      lookahead_ms: 2240
       listens: false
-      render_ms: 600
+      render_ms: 450
       width: 480
       height: 832
       # The rate of the tts node's openai_speech audio.
