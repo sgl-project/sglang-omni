@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "common/kv_cache.h"
+#include "common/layers.h"
 #include "mlx/mlx.h"
 
 namespace cohere_transcribe {
@@ -53,15 +54,6 @@ public:
                           std::vector<DecoderLayerCache> &caches) const;
 
 private:
-  const mlx::core::array &Weight(const std::string &name) const;
-  mlx::core::array Linear(const mlx::core::array &x,
-                          const std::string &prefix) const;
-  mlx::core::array LayerNorm(const mlx::core::array &x,
-                             const std::string &prefix) const;
-  mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,
-                          int padding, int groups) const;
-  mlx::core::array Conv2d(const mlx::core::array &x, const std::string &prefix,
-                          int stride, int padding, int groups) const;
   mlx::core::array RelativePositions(int length, mlx::core::Dtype dtype) const;
   mlx::core::array EncoderSelfAttention(const mlx::core::array &x,
                                         const mlx::core::array &positions,
@@ -87,7 +79,7 @@ private:
   mlx::core::array relative_position_table_;
   // The decoder's fixed sinusoidal positions [max_sequence_length, width].
   mlx::core::array decoder_positions_;
-  std::unordered_map<std::string, mlx::core::array> weights_;
+  omni_common::Checkpoint checkpoint_;
 };
 
 } // namespace cohere_transcribe
