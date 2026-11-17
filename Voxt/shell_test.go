@@ -102,6 +102,21 @@ func TestPaletteFitsTheWindow(t *testing.T) {
 	}
 }
 
+func TestPalettePopulatesItsFirstFrame(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	var counts []int
+	tt := ui.NewTester(func(c *ui.Context) {
+		a.view(c)
+		counts = append(counts, len(a.paletteView.Items))
+	}, windowWidth, windowHeight)
+	before := len(counts)
+	tt.Key(ui.Cmd, ui.KeyK)
+	opened := counts[before:]
+	if len(opened) == 0 || opened[0] == 0 {
+		t.Fatalf("the palette's first open frame has no commands: counts %v", counts)
+	}
+}
+
 func TestPaletteAndDeepLinks(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.Key(ui.Cmd, ui.KeyK)

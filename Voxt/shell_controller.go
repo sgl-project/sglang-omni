@@ -266,9 +266,9 @@ func (a *app) shellLocal() *shellLocalUI {
 // each area's dialogs.
 func (a *app) view(c *uiContext) {
 	a.mainUI = c.Services()
-	model := a.shellModel()
-	shellShortcuts(c, model.Nav, a, &a.sheetOpen)
+	shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
 	a.syncNav()
+	model := a.shellModel()
 	now := time.Now()
 	shellView(c, model, a, a.shellLocal(), func() { a.pages(c) }, func() {
 		settingsDialog(c, a.settingsDialogModel(now), a, settingsDialogLocalUI{
