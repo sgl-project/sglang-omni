@@ -50,3 +50,39 @@ func TestSweepMeetingAudio(t *testing.T) {
 		t.Errorf("the fresh meeting changed: %+v, %v", got, err)
 	}
 }
+
+// A recording the sweep cannot delete keeps its fields, so the next pass
+// tries it again instead of forgetting a file that is still on disk.
+func TestSweepMeetingAudioKeepsARecordingItCannotDelete(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	dir := filepath.Join(a.dataDir(), "meetings")
+	repo := a.lib.store.Meetings()
+	ctx := context.Background()
+	mt := store.Meeting{ID: "stuck", CreatedAt: time.Now().Add(-8 * 24 * time.Hour), Status: store.MeetingInterrupted,
+		Mode: store.MeetingModeMeeting, Audio: "stuck", AudioUntil: time.Now().Add(-time.Hour)}
+	if _, err := repo.CreateMeeting(ctx, mt); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "stuck"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stuck", "system.wav"), []byte("wav"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The meetings folder read-only: the recording's folder cannot go.
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o755) }()
+	n, err := a.sweepMeetingAudio(dir)
+	if err == nil || n != 0 {
+		t.Fatalf("swept %d, err %v", n, err)
+	}
+	got, _, err := repo.Meeting(ctx, "stuck")
+	if err != nil || got.Audio != "stuck" || got.AudioUntil.IsZero() {
+		t.Fatalf("a failed delete cleared the fields: %+v, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stuck")); err != nil {
+		t.Fatalf("the recording went anyway: %v", err)
+	}
+}

@@ -210,6 +210,33 @@ func (f *failAfterChat) Chat(ctx context.Context, req llm.Request) (llm.Response
 	return f.inner.Chat(ctx, req)
 }
 
+// failWrites fails the correction's save.
+type failWrites struct{ store.Meetings }
+
+func (failWrites) UpdateSegmentTexts(context.Context, int64, map[int]string) error {
+	return errors.New("disk full")
+}
+
+// A correction whose save fails surfaces and leaves every line as
+// recognised: no half-corrected transcript reaches the summary.
+func TestCorrectTranscriptWriteFailureIsWhole(t *testing.T) {
+	m, repo, _ := correctFixture(t,
+		store.MeetingSegment{Idx: -1, Source: store.SegmentMic, Speaker: "me", Text: "Box one"},
+		store.MeetingSegment{Idx: -1, Source: store.SegmentMic, Speaker: "me", Text: "Box two"},
+	)
+	m.cfg.Store = failWrites{repo}
+	ctx := context.Background()
+	if err := m.CorrectTranscript(ctx, "m"); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("the failed save surfaced as %v", err)
+	}
+	_, segs, _ := repo.Meeting(ctx, "m")
+	for _, s := range segs {
+		if !strings.HasPrefix(s.Text, "Box ") {
+			t.Fatalf("line %d was corrected by halves: %q", s.Idx, s.Text)
+		}
+	}
+}
+
 // A correction that fails part-way leaves every line as recognised:
 // nothing is corrected by halves, unmarked.
 func TestCorrectTranscriptFailureIsWhole(t *testing.T) {

@@ -47,7 +47,11 @@ func (a *app) sweepMeetingAudio(dir string) (int, error) {
 	}
 	n := 0
 	for _, mt := range expired {
-		_ = os.RemoveAll(filepath.Join(dir, mt.Audio))
+		// The fields clear only once the files are gone: otherwise the
+		// recording would stay on disk with nothing ever selecting it again.
+		if err := os.RemoveAll(filepath.Join(dir, mt.Audio)); err != nil {
+			return n, fmt.Errorf("delete recording %s: %w", mt.Audio, err)
+		}
 		mt.Audio, mt.AudioUntil = "", time.Time{}
 		if err := ms.UpdateMeeting(ctx, mt); err != nil {
 			return n, err

@@ -57,27 +57,22 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 	if m.cfg.Context != nil {
 		tc = m.cfg.Context(ctx)
 	}
-	var fixedIdx []int
-	var fixedText []string
+	fixed := map[int]string{}
 	for _, batch := range correctionBatches(segs) {
-		fixed, err := correctBatch(ctx, chat, tc, batch)
+		got, err := correctBatch(ctx, chat, tc, batch)
 		if err != nil {
 			return err
 		}
 		for _, s := range batch {
-			if t, ok := fixed[s.Idx]; ok && t != s.Text {
-				fixedIdx, fixedText = append(fixedIdx, s.Idx), append(fixedText, t)
+			if t, ok := got[s.Idx]; ok && t != s.Text {
+				fixed[s.Idx] = t
 			}
 		}
 	}
-	// Only a whole correction lands: a failure part-way must not leave
-	// some lines corrected and the rest not, with nothing saying so.
-	for i, idx := range fixedIdx {
-		if err := m.cfg.Store.UpdateSegmentText(ctx, mt.Seq, idx, fixedText[i]); err != nil {
-			return err
-		}
-	}
-	return nil
+	// Only a whole correction lands: a failure part-way, the language
+	// model's or the save's, must not leave some lines corrected and the
+	// rest not, with nothing saying so.
+	return m.cfg.Store.UpdateSegmentTexts(ctx, mt.Seq, fixed)
 }
 
 // correctionBatches splits the lines with text into requests.

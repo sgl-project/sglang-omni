@@ -6,8 +6,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **A failed meeting transcript correction no longer applies by halves**: when the language model corrected a meeting's transcript and failed part-way, the batches already done stayed, so the summary ran over a mix of corrected and recognised lines with nothing saying which was which. The correction now lands only as a whole; a failure leaves every line as recognised.
-- **A failed or cancelled meeting's recording is deleted after seven days**: the recording was meant to be kept for seven days when the settings keep no audio, but nothing ever deleted it. It is now swept once its time is up. A finished meeting's recording still follows the settings right away.
+- **A failed meeting transcript correction no longer applies by halves**: when the language model corrected a meeting's transcript and failed part-way, the batches already done stayed, so the summary ran over a mix of corrected and recognised lines with nothing saying which was which. The correction now lands only as a whole; a failure, the model's or the save's, leaves every line as recognised.
+- **A failed or cancelled meeting's recording is deleted after seven days**: the recording was meant to be kept for seven days when the settings keep no audio, but nothing ever deleted it. It is now swept once its time is up, and a recording that cannot be deleted stays tracked and is tried again instead of being forgotten on disk. A finished meeting's recording still follows the settings right away.
 
 ### Changed
 
@@ -18,8 +18,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **会议转录稿校对失败时不再改一半**：语言模型校对会议转录稿中途失败时，已完成的批次会留下，总结因此混用校对过和未校对的文字，且看不出区别。现在校对只会整体生效，失败时每一行都保持识别原文。
-- **失败或取消的会议录音七天后会被删除**：设置不保留音频时，这类录音本应保留七天，但一直没有东西去删它。现在到期后会被清理。正常结束的会议录音仍按设置立即处理。
+- **会议转录稿校对失败时不再改一半**：语言模型校对会议转录稿中途失败时，已完成的批次会留下，总结因此混用校对过和未校对的文字，且看不出区别。现在校对只会整体生效，无论模型还是保存失败，每一行都保持识别原文。
+- **失败或取消的会议录音七天后会被删除**：设置不保留音频时，这类录音本应保留七天，但一直没有东西去删它。现在到期后会被清理；删不掉的录音会保留记录、之后重试，不会被遗忘在磁盘上。正常结束的会议录音仍按设置立即处理。
 
 #### 变更
 
