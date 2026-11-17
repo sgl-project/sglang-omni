@@ -11,7 +11,7 @@ Voxt lives in the [SGLang-Omni](https://github.com/sgl-project/sglang-omni) repo
 ## Pull requests
 
 1. Keep a pull request to one change, with tests. Commit messages and code comments are in English.
-2. Every user-visible string goes through `i18n.T` with an English message, and its Simplified Chinese translation goes into `internal/i18n/locales/zh-Hans.json`.
+2. Every user-visible string goes through `i18n.T` with an English message, and its Simplified Chinese translation goes into `internal/i18n/locales/zh-Hans/<area>.json`, the area of the code that uses it (`common.json` when shared).
 3. A change users notice gets a line in the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md), in English and Chinese.
 4. Run the checks below, and say in the pull request what changed and how you checked it. For a change in the UI, add before and after screenshots.
 
@@ -41,4 +41,4 @@ Voxt 在 [SGLang-Omni](https://github.com/sgl-project/sglang-omni) 仓库里，�
 - **报告问题**：设置 → 诊断与关于 → 反馈问题，会打开一个已填好诊断信息的 GitHub issue；也可以手动开 [issue](https://github.com/sgl-project/sglang-omni/issues)，标题带上“[VoxtNew]”，写清发生了什么、你期望什么、复现步骤。
 - **改动**：Voxt 做转录、翻译、改写、会议和笔记，加上应用增强、词典和历史，以及转录录音文件的 `Voxt transcribe`。语音识别在本机或用云端语音服务，语言模型是用户自己设置的服务（README.zh-CN.md 的“Voxt 能做什么”）。比修 bug 更大的改动，先开 issue 讨论。
 - 改代码前先读 [AGENTS.md](AGENTS.md)（改动规则）和 [docs/architecture.md](docs/architecture.md)。
-- PR：一个 PR 一件事，带测试；提交信息和代码注释用英文；界面文字都经过 `i18n.T`，并在 `internal/i18n/locales/zh-Hans.json` 补中文；用户能察觉的改动在 [CHANGELOG.md](CHANGELOG.md) 的 `Unreleased` 里中英文各写一行；跑一遍上面的检查。
+- PR：一个 PR 一件事，带测试；提交信息和代码注释用英文；界面文字都经过 `i18n.T`，中文补在 `internal/i18n/locales/zh-Hans/<区域>.json`（用到它的代码所在的区域，多处共用放 `common.json`）；用户能察觉的改动在 [CHANGELOG.md](CHANGELOG.md) 的 `Unreleased` 里中英文各写一行；跑一遍上面的检查。
