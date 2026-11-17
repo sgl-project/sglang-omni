@@ -208,4 +208,14 @@ ProbabilitiesToTimestamps(const std::vector<float> &probabilities,
   return padded;
 }
 
+const SileroVAD &SileroVADCache::Load(const std::string &model_directory) {
+  if (model_ == nullptr || model_directory_ != model_directory) {
+    model_.reset();
+    model_ = std::make_unique<SileroVAD>(model_directory);
+    model_directory_ = model_directory;
+  } else {
+  }
+  return *model_;
+}
+
 } // namespace silero_vad

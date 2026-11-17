@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,18 @@ std::optional<int> IntegerField(const FormFields &form,
                                 const std::string &name);
 std::optional<float> NumberField(const FormFields &form,
                                  const std::string &name);
+
+// A field another field makes required; throws std::invalid_argument naming
+// both when it is missing.
+template <typename Value>
+Value RequiredField(const std::optional<Value> &value, const std::string &name,
+                    const std::string &required_by) {
+  if (!value.has_value()) {
+    throw std::invalid_argument(name + " is required with " + required_by);
+  } else {
+  }
+  return *value;
+}
 
 // Builds the session of one realtime socket around the socket's sender.
 using RealtimeFactory =

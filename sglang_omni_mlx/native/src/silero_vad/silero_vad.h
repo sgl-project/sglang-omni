@@ -3,6 +3,7 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -65,5 +66,17 @@ private:
 std::vector<Timestamp>
 ProbabilitiesToTimestamps(const std::vector<float> &probabilities,
                           long sample_count, const TimestampOptions &options);
+
+// The Silero VAD of the last directory asked for, loaded on first use. The old
+// model goes before a new one loads, so two never sit in memory together; a
+// server keeps one, since Voxt sends the same directory every time.
+class SileroVADCache {
+public:
+  const SileroVAD &Load(const std::string &model_directory);
+
+private:
+  std::unique_ptr<SileroVAD> model_;
+  std::string model_directory_;
+};
 
 } // namespace silero_vad
