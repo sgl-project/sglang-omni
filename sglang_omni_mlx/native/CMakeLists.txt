@@ -350,7 +350,7 @@ add_library(qwen3_tts STATIC src/qwen3_tts/qwen3_tts_codec.cpp src/qwen3_tts/qwe
 target_link_libraries(qwen3_tts PUBLIC common)
 target_compile_options(qwen3_tts PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(qwen3_tts_server src/qwen3_tts/qwen3_tts_server.cpp)
-target_link_libraries(qwen3_tts_server PRIVATE qwen3_tts asr_service)
+target_link_libraries(qwen3_tts_server PRIVATE qwen3_tts speech_service)
 target_compile_options(qwen3_tts_server PRIVATE -Wall -Wextra)
 add_executable(qwen3_tts_synthesize tools/qwen3_tts_synthesize.cpp)
 target_link_libraries(qwen3_tts_synthesize PRIVATE qwen3_tts)
