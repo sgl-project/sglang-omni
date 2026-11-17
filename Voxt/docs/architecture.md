@@ -8,6 +8,8 @@ VoxtNew is a Go app on MyGo (native UI, no cgo) with one small Swift helper proc
 
 ## 1. Package map
 
+The app icon uses a centered microphone with orange and peach stars. Smaller interface icons use the star-free microphone in `internal/icons/voxt-microphone.svg`, inheriting the surrounding text color; the menu bar uses its template PNG at the existing 18 pt size and keeps the recording dot. The setup guide's header returns to earlier steps without clearing settings or completed tries, with navigation disabled during a guide try. Notification cards no longer show their creation time on hover.
+
 ```
 github.com/sgl-project/sglang-omni/Voxt
 ├── *.go                  package main: the UI (views + view state) and the wiring

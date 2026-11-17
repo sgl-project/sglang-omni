@@ -92,7 +92,15 @@ func (a *app) obHeader(c *ui.Context) {
 				if i > 0 {
 					ui.Icon(c, icons.AltArrowRight.Linear).Size(arrow, arrow).TextColor(k.Text3)
 				}
-				ui.Row(c.Key("ob-step-" + itoa(i))).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
+				var step ui.Element
+				if i < a.ob.step {
+					step = ghostBase(c.Key("ob-step-"+itoa(i))).Border(0, ui.Color{}).
+						Disabled(a.obBusy()).Label(s).Tooltip(i18n.T("Back") + " · " + s).
+						OnClick(func() { a.obGo(i) })
+				} else {
+					step = ui.Row(c.Key("ob-step-" + itoa(i)))
+				}
+				step.Height(px(t, 28)).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
 					col := k.Text3
 					switch {
 					case i == a.ob.step:
@@ -102,6 +110,9 @@ func (a *app) obHeader(c *ui.Context) {
 						ui.Icon(c, icons.CheckCircle.Bold).Size(px(t, 12), px(t, 12)).TextColor(k.Accent)
 					case i < a.ob.step:
 						col = k.Text2
+					}
+					if i < a.ob.step && step.Hovered() {
+						col = k.Text
 					}
 					tx := ui.Text(c, s).FontSize(px(t, fsCaption)).TextColor(col).SingleLine()
 					if i == a.ob.step {

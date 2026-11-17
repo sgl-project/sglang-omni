@@ -146,11 +146,11 @@ var movedPaths = map[string]string{
 	"/permissions": "/settings/permissions", // a page of the sidebar until 10-2026
 }
 
-// The pages' and the shell's icons (Solar; internal/icons/names.txt).
+// The pages' and shell's icons: the brand microphone and Solar icons.
 var (
 	homeIcon           = icons.Home2
 	historyIcon        = icons.History
-	transcribeIcon     = icons.Microphone3
+	transcribeIcon     = icons.VoxtMicrophone
 	translateIcon      = icons.Global
 	rewriteIcon        = icons.PenNewRound
 	appEnhancementIcon = icons.Target
@@ -158,7 +158,7 @@ var (
 	remoteIcon         = icons.Cloud
 	dictionaryIcon     = icons.NotebookBookmark
 	notesIcon          = icons.Notes
-	meetingIcon        = icons.MicrophoneLarge
+	meetingIcon        = icons.VoxtMicrophone
 	permissionsIcon    = icons.ShieldKeyhole
 	logsIcon           = icons.ClipboardList
 	settingsIcon       = icons.Settings

@@ -1,5 +1,6 @@
-// Package trayicon holds the menu bar icon: Voxt's microphone
-// (voxt.png, 512×512, unchanged from Voxt's voxt.imageset; NOTICE), as
+// Package trayicon holds the menu bar icon: the star-free brand microphone
+// (voxt.png, 512×512, rendered from ../icons/voxt-microphone.svg with room
+// for the recording dot), as
 // template PNGs of 36×36 pixels. MyGo's macOS tray sizes any icon to 18
 // points tall, so on a Retina screen each pixel is one device pixel (Voxt
 // shows the same image at 18×18 points); a 1× screen gets it scaled down

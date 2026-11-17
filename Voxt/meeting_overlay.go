@@ -200,7 +200,7 @@ func (a *app) meetingOverlayBar(c *ui.Context, s meeting.Snapshot, model meeting
 		} else {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
 				if s.Mode != meeting.ModeSubtitles {
-					meetingWave(c.Key("mt-wave-mic"), icons.MicrophoneLarge, i18n.T("Microphone"), s.Levels[meeting.SourceMic])
+					meetingWave(c.Key("mt-wave-mic"), icons.VoxtMicrophone, i18n.T("Microphone"), s.Levels[meeting.SourceMic])
 				}
 				if s.Mode != meeting.ModeRecording {
 					meetingWave(c.Key("mt-wave-system"), icons.VolumeLoud, i18n.T("System audio"), s.Levels[meeting.SourceSystem])

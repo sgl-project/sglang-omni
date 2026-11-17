@@ -317,7 +317,7 @@ func (a *app) audioSettings(c *ui.Context) {
 func deviceName(c *ui.Context, name, notes string, inUse, present bool) {
 	t := c.Theme()
 	k := tok(t)
-	ic, col := icons.MicrophoneLarge, k.Text3
+	ic, col := icons.VoxtMicrophone, k.Text3
 	if inUse {
 		ic, col = icons.CheckCircle, k.Accent
 	}

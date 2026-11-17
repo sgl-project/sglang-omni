@@ -158,6 +158,44 @@ func TestOnboardingSteps(t *testing.T) {
 	}
 }
 
+func TestOnboardingHeaderBackNavigation(t *testing.T) {
+	a, tt := obTester(t)
+	click(t, tt, "Get started")
+	click(t, tt, "Welcome")
+	if a.ob.step != obWelcome || !has(tt, "Get started") {
+		t.Fatal("the Permissions header could not return to Welcome")
+	}
+	click(t, tt, "Get started")
+	click(t, tt, "Models")
+	if a.ob.step != obPermissions {
+		t.Fatal("the header skipped ahead to an unreached step")
+	}
+	a.ob.passed[obTranscribe] = true
+	a.ob.tries[obTranscribe] = "completed-transcription"
+	a.obGo(obMore)
+	frames(tt)
+	click(t, tt, "Permissions")
+	if a.ob.step != obPermissions || !has(tt, "Microphone") || !a.ob.passed[obTranscribe] || a.ob.tries[obTranscribe] != "completed-transcription" {
+		t.Fatal("returning to an earlier step lost guide progress")
+	}
+	a.obGo(obRewrite)
+	a.ob.tries[obRewrite] = "active-rewrite"
+	for _, state := range []session.State{session.Recording, session.Composing} {
+		a.sess = obSnap(a, "active-rewrite", store.KindRewrite, state)
+		frames(tt)
+		click(t, tt, "Welcome")
+		if a.ob.step != obRewrite || a.sess.State != state {
+			t.Fatal("header navigation interrupted an active try")
+		}
+	}
+	a.sess.State = session.Done
+	frames(tt)
+	click(t, tt, "Welcome")
+	if a.ob.step != obWelcome || !has(tt, "Get started") {
+		t.Fatal("the header stayed disabled after the try finished")
+	}
+}
+
 // TestOnboardingTryPasses: only the step's own session passes it, done
 // with a result; another session, an older one or a failure does not.
 func TestOnboardingTryPasses(t *testing.T) {
@@ -328,7 +366,7 @@ func TestOnboardingStepsOneLine(t *testing.T) {
 				if !ok1 || !ok2 || !ok3 {
 					t.Fatalf("%s %v: steps or × not found in %q", lang, size, tt.Texts())
 				}
-				if math.Abs(float64(first.Y-last.Y)) > 1 || last.X+last.W > x.X {
+				if math.Abs(float64(first.Y+first.H/2-last.Y-last.H/2)) > 1 || last.X+last.W > x.X {
 					t.Errorf("%s %v step %d: %q at %+v, %q at %+v, × at %+v", lang, size, step, titles[0], first, titles[len(titles)-1], last, x)
 				}
 			}
