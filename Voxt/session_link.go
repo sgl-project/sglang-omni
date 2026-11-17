@@ -280,7 +280,7 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	if s.State.Ended() && !was.State.Ended() {
 		a.sessionEnded(s)
 	}
-	if s.State.Live() != was.State.Live() || (s.State == session.Recording) != (was.State == session.Recording) {
+	if s.State.Live() != was.State.Live() {
 		a.syncHotkeys()
 	}
 	for _, fn := range a.afterSession { // events.go: the menu bar, the overlay

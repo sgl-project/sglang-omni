@@ -218,7 +218,6 @@ func (a *app) featureShortcuts(c *ui.Context, feature string) {
 	})
 	switch feature {
 	case hotkey.Transcribe:
-		a.trReturnFinishRow(c)
 		a.trPasteRow(c)
 		a.trCancelRow(c)
 		a.trEndWordRow(c) // feature_endword.go
@@ -372,17 +371,6 @@ func warnLine(c *ui.Context, text string) {
 	ui.Row(c).Gap(px(t, 4)).AlignItems(ui.Start).Children(func() {
 		ui.Icon(c, icons.DangerTriangle.Linear).Size(px(t, 14), px(t, 14)).TextColor(k.Warning).Shrink(0).Margin(px(t, 1), 0, 0, 0)
 		ui.Text(c, text).FontSize(px(t, fsCaption)).TextColor(k.Warning).Grow(1).MinWidth(0)
-	})
-}
-
-// trReturnFinishRow chooses whether Return finishes a Transcribe recording.
-func (a *app) trReturnFinishRow(c *ui.Context) {
-	f := &a.prefs.Features.Transcribe
-	settingRow(c, "tr-return-finish", i18n.T("Return finishes dictation"), i18n.T("While Transcribe records, Return stops recording. The key does not add a newline after the result."), func() {
-		if ui.Switch(c.Key("tr-return-finish-switch"), &f.ReturnFinishes).Label(i18n.T("Return finishes dictation")).Changed() {
-			on := f.ReturnFinishes
-			a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ReturnFinishes = on })
-		}
 	})
 }
 

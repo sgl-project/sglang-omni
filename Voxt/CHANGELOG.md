@@ -22,15 +22,21 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 
 
+
+
+
 ### Fixed
 
 - **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup; the meetings' speaker transcription keeps it.
 - **Transcribe shows and inserts only the cleaned text, never the model's commentary about its edits** (#4086): with the language-model step on, a model that explains what it changed ("I removed the filler…") had that explanation inserted as if it were part of the transcript. The clean-up now asks for the final text between <output> tags and only the text between them is streamed into the card, shown and inserted; an answer without the tags is used as before. When you say the tags themselves, only the one outer pair the model adds around your text goes, and Rewrite and Translate answers keep such tags in their text (HTML you asked for, say).
 - **Rewrite and Translate read a block selection in a Lark doc**: selecting an image block, or a range of blocks with images and text, in a Lark doc in Chrome no longer reads as "no selection". Chrome reports such a selection to Accessibility as a single blank space, which Voxt mistook for the selected text and never tried copying; Voxt now treats a reading that is all whitespace as no reading and copies with ⌘C instead, so the selection's text (with a placeholder per image) reaches the language model.
-- **Paste last on Return honours the opt-out**: with Paste last on Return and Return finishes dictation off, pressing Return while Transcribe records no longer stops the recording, and it never stops a Translate, Rewrite or note recording.
+
+
 - **Rewrite input bubbles fit what you said**: short instructions use a narrow bubble, longer instructions grow to the usual width and wrap, and long conversations still scroll.
 - **A failed meeting transcript correction no longer applies by halves**: when the language model corrected a meeting's transcript and failed part-way, the batches already done stayed, so the summary ran over a mix of corrected and recognised lines with nothing saying which was which. The correction now lands only as a whole; a failure, the model's or the save's, leaves every line as recognised.
 - **A failed or cancelled meeting's recording is deleted after seven days**: the recording was meant to be kept for seven days when the settings keep no audio, but nothing ever deleted it. It is now swept once its time is up, and a recording that cannot be deleted stays tracked and is tried again instead of being forgotten on disk. A finished meeting's recording still follows the settings right away.
+
+
 
 ### Added
 
@@ -40,10 +46,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Dictionary profiles**: keep named sets of dictionary entries for different situations. Existing entries move into the active Default profile with their meaning unchanged. Create, rename, delete, and switch profiles on the Dictionary page; Transcribe, Translate, and Rewrite use only the active profile. Hammerspoon, macOS Shortcuts, and shell scripts can switch without opening the Dictionary page by running `open -g 'voxtnew://dictionary/profile?name=Work'`. See docs/dictionary-profiles.md.
 - **Rewrite's answer card renders Markdown** (#4119): the language model answers in Markdown, and the card now shows a Rewrite answer as it reads — headings, bold, lists, code, and a formula's TeX — instead of the raw markers, the way the chat apps show replies, while it streams in and in a conversation's answers. What you said stays as written, and a translation or Transcribe's clean-up stays plain text, as it goes in verbatim. Copy and Insert still use the answer's original text.
 - **Wait for the language model offers presets up to 60 minutes**: the setting on the Language models page now offers Automatic, 1, 2, 5, 10, 30 and 60 minutes, and No limit, replacing the Custom… minutes field. A custom wait saved by an earlier version keeps its duration and shows as what it is.
-- **Return finishes dictation**: while Transcribe records, press Return to stop recording and finish through the same path as the stop shortcut. Voxt consumes that Return instead of sending it again after insertion. The Transcribe page has a Return finishes dictation switch, on by default, for users who need Return for a newline while recording.
+
+
 - **Voxt 2 installs updates inside the app** (#3961): release builds check Voxt 2's signed stable or beta feed, download the update, install it and relaunch, as Voxt 1.x did. Settings → Diagnostics & About keeps the automatic check, beta and automatic install controls. Builds without a feed still check GitHub and point to the download.
 - **Update announcements are shorter**: the current version's announcement appears once after an update, with a title and at most three short lines. **What's new** opens the full notes, also available any time in Settings → About → Updates.
 - **Dictionary highlights in Transcribe**: the Try preview and answer card highlight recognised text that matches an enabled dictionary term or alias.
+
+
 
 
 
@@ -64,10 +73,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **用 MOSS-Transcribe-Diarize 听写不会再插入说话人或时间戳标记**：在部分录音（多为英语）上，即使要求纯文本，模型也会输出区分说话人的标记（[S01]、[2.62]），听写会照原样插入。现在纯文本路径会去掉这些标记；会议的说话人转录保持不变。
 - **转录只显示和插入整理后的文字，不再混入模型对自己改动的说明**（#4086）：打开语言模型整理时，有的模型会在整理结果后面解释自己改了什么（“我删掉了……”），这段说明会被当成转录稿插入。现在转录的整理要求模型把最终文本放在 <output> 标签之间，只有标签里的内容会边写边进入卡片、显示和插入；没有标签的回答照原来的方式使用。你口述的内容本身有这对标签时，只去掉模型在最外面加的一对；改写和翻译的回答保留文本里的这类标签（比如按要求生成的 HTML）。
 - **改写和翻译能读到 Lark 文档里的块级选区**：在 Chrome 的 Lark 文档里选中一个图片块，或选中图片加文字的一段块，不再读成“没有选中”。Chrome 把这样的选区经无障碍接口报成一个空格，Voxt 以前把它当成选中的文字，不再尝试复制；现在全白的读取结果按没读到处理，改用 ⌘C 复制，选区文字（每张图一个占位符）会发给语言模型。
-- **“粘贴最近结果”绑定回车时尊重开关**：把“粘贴最近结果”设为回车、又关闭“按回车完成转录”后，转录录音时按回车不再停止录音；翻译、改写、笔记的录音也不会被回车停止。
+
+
 - **改写输入气泡随内容调整**：短指令用窄气泡，长指令加宽到常用宽度并换行，长对话仍然可以滚动。
 - **会议转录稿校对失败时不再改一半**：语言模型校对会议转录稿中途失败时，已完成的批次会留下，总结因此混用校对过和未校对的文字，且看不出区别。现在校对只会整体生效，无论模型还是保存失败，每一行都保持识别原文。
 - **失败或取消的会议录音七天后会被删除**：设置不保留音频时，这类录音本应保留七天，但一直没有东西去删它。现在到期后会被清理；删不掉的录音会保留记录、之后重试，不会被遗忘在磁盘上。正常结束的会议录音仍按设置立即处理。
+
+
 
 #### 新增
 
@@ -94,10 +106,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **词典分组**：为不同场合保存几组词条。现有词条移入当前使用的“默认”分组，含义不变。在词典页新建、改名、删除和切换分组；转录、翻译和改写只用当前分组。Hammerspoon、macOS 快捷指令和 shell 脚本可以不打开词典页就切换：运行 `open -g 'voxtnew://dictionary/profile?name=Work'`。见 docs/dictionary-profiles.md。
 - **改写的答案卡片按 Markdown 排版显示**（#4119）：语言模型的回答是 Markdown，卡片现在按排版显示改写的回答——标题、加粗、列表、代码和公式的 TeX——不再是原始符号，和主流聊天 App 一样；边写边显示和对话里的回答也一样。你自己说的话原样显示，翻译和转录整理的文字仍是纯文本（会原样插入）。复制和插入用的仍是回答原文。
 - **“等待语言模型”提供最长 60 分钟的预设**：语言模型页的这项设置现在可选“自动”、1、2、5、10、30、60 分钟和“不限制”，替代原来的“自定义…”分钟输入。旧版本保存的自定义等待保持原时长，并如实显示。
-- **按回车完成转录**：转录录音时，按回车停止录音，走和停止快捷键相同的后续流程。这个回车会被消费，插入结果后不会再发送一次。转录页新增“按回车完成转录”开关，默认打开；录音时需要回车换行的用户可以关闭。
+
+
 - **Voxt 2 在 App 内安装更新**（#3961）：发布构建会检查 Voxt 2 的正式版或 beta 签名更新源，下载并安装更新后重新启动，和 Voxt 1.x 一样。「设置 → 诊断与关于」保留自动检查、Beta 更新和自动安装开关。没有更新源的构建仍检查 GitHub 并提供下载地址。
 - **更新公告更短**：当前版本的公告在更新后只出现一次，一个标题加最多三行短句。“新增功能”打开完整说明，也可以随时在 设置 → 关于 → 更新 里查看。
 - **转录里的词典高亮**：试用预览和答案卡片会高亮识别文字中命中启用词条或别名的部分。
+
+
 
 
 
@@ -127,9 +142,12 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 
 
+
 #### 修复
 
 - **在设置 → 音频选定麦克风后可以正常开始录音**（#4120）。收到配置变更通知时，Voxt 会继续使用正常运行的麦克风。如果连续两次启动都未收到音频，Voxt 会切换到系统默认麦克风。如果这次也未收到音频，Voxt 会结束卡住的录音并提示错误。
+
+
 ## [2.1.0] - 2026-11-15
 
 ### Added

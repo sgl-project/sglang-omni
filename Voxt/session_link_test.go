@@ -3,15 +3,11 @@ package main
 import (
 	"context"
 	"errors"
-	"slices"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -105,47 +101,5 @@ func TestResolverWithoutSpeech(t *testing.T) {
 		if svc.LLMInfo.ID != "deepseek" || svc.FallbackInfo.ID != "ollama" {
 			t.Errorf("speech %v: model %q, fallback %q", speech, svc.LLMInfo.ID, svc.FallbackInfo.ID)
 		}
-	}
-}
-
-// TestReturnFinishPlanScope: the helper gets Return only for a Transcribe
-// recording with the setting on, never for another feature or idle work.
-// With Paste last on Return, its tap routes to Stop in the same cases and
-// nowhere else: opted out, or another feature's session, Return waits.
-func TestReturnFinishPlanScope(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		state session.State
-		kind  store.Kind
-		note  bool
-		on    bool
-		want  bool
-	}{
-		{name: "Transcribe recording", state: session.Recording, kind: store.KindTranscribe, on: true, want: true},
-		{name: "setting off", state: session.Recording, kind: store.KindTranscribe, want: false},
-		{name: "idle", state: session.Idle, kind: store.KindTranscribe, on: true, want: false},
-		{name: "recognizing", state: session.Recognizing, kind: store.KindTranscribe, on: true, want: false},
-		{name: "Translate", state: session.Recording, kind: store.KindTranslate, on: true, want: false},
-		{name: "Rewrite", state: session.Recording, kind: store.KindRewrite, on: true, want: false},
-		{name: "note", state: session.Recording, kind: store.KindTranscribe, note: true, on: true, want: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			a := &app{sess: session.Snapshot{State: tc.state, Kind: tc.kind, Note: tc.note}}
-			a.prefs = settings.Defaults()
-			a.prefs.Features.Transcribe.ReturnFinishes = tc.on
-			cfg := a.hotkeyPlan().Configure(tc.state.Live())
-			got := slices.ContainsFunc(cfg.Bindings, func(b proto.HotkeyBinding) bool { return b.ID == "finish" })
-			if got != tc.want {
-				t.Errorf("Return bound %v, want %v: %+v", got, tc.want, cfg.Bindings)
-			}
-			// With Paste last on Return, Build drops Finish for it; its tap
-			// must route to Stop in the same cases and nowhere else.
-			a.prefs.Features.PasteLast = settings.Hotkey{Keys: "Return"}
-			e := proto.HotkeyEventParams{Binding: hotkey.PasteLast, Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap}
-			d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes())
-			if stopped := d.Action == hotkey.Stop; stopped != tc.want {
-				t.Errorf("paste last on Return stops %v, want %v: %+v", stopped, tc.want, d)
-			}
-		})
 	}
 }

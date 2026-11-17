@@ -594,27 +594,6 @@ func TestDictionaryNotesUpgrade(t *testing.T) {
 	}
 }
 
-// TestReturnFinishesDefault: Return finishes dictation by default and for
-// a document saved before the setting existed; an explicit choice survives.
-func TestReturnFinishesDefault(t *testing.T) {
-	if !Defaults().Features.Transcribe.ReturnFinishes {
-		t.Fatal("Return does not finish dictation by default")
-	}
-	old, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
-	if err != nil || !old.Features.Transcribe.ReturnFinishes {
-		t.Fatalf("old document: %v %v", old.Features.Transcribe.ReturnFinishes, err)
-	}
-	for _, on := range []bool{false, true} {
-		s := Defaults()
-		s.Features.Transcribe.ReturnFinishes = on
-		data, _ := json.Marshal(s)
-		back, err := Migrate(data)
-		if err != nil || back.Features.Transcribe.ReturnFinishes != on {
-			t.Errorf("%v round trip: %v %v", on, back.Features.Transcribe.ReturnFinishes, err)
-		}
-	}
-}
-
 // TestStrictShortcutsDefault: Strict shortcuts is off by default and for
 // a document saved before it existed (Voxt 1.x's common stop); on is
 // written and read back (#3823).

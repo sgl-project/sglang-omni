@@ -359,7 +359,7 @@ func Defaults() Settings {
 		Audio:      Audio{Sounds: true},
 		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},
 		Features: Features{
-			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true, ReturnFinishes: true},
+			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true},
 			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
 			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
