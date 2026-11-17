@@ -45,8 +45,13 @@ mx::array Scalar(double value, mx::Dtype dtype) {
   return mx::array(static_cast<float>(value), dtype);
 }
 
-mx::array PlainLayerNorm(const mx::array &x) {
-  return mx::fast::layer_norm(x, std::nullopt, std::nullopt, kNormEps);
+// LayerNorm(x) * (1 + scale) + shift as one fused norm, scale and shift [1,
+// width] shared by every row.
+mx::array ModulatedLayerNorm(const mx::array &x, const mx::array &shift,
+                             const mx::array &scale) {
+  return mx::fast::layer_norm(
+      x, mx::reshape(mx::add(Scalar(1.0, x.dtype()), scale), {-1}),
+      mx::reshape(shift, {-1}), kNormEps);
 }
 
 mx::array LeakyRelu(const mx::array &x, double slope) {
@@ -168,9 +173,8 @@ mx::array Flow::Decode(const std::vector<int> &speech_tokens,
   mx::array dt = mx::squeeze(mx::subtract(span(1), span(0)));
   for (int step = 1; step <= kFlowStepCount; ++step) {
     on_step();
-    const mx::array velocity =
-        Velocity(mx::concatenate({x, x}, 0), mu_pair,
-                 mx::concatenate({t, t}, 0), speaker_pair, conditioning_pair);
+    const mx::array velocity = Velocity(mx::concatenate({x, x}, 0), mu_pair, t,
+                                        speaker_pair, conditioning_pair);
     const std::vector<mx::array> halves = mx::split(velocity, 2, 0);
     const mx::array guided = mx::subtract(
         mx::multiply(Scalar(1.0 + kGuidanceRate, dtype), halves[0]),
@@ -191,7 +195,7 @@ mx::array Flow::Decode(const std::vector<int> &speech_tokens,
 }
 
 mx::array Flow::Velocity(const mx::array &x, const mx::array &mu,
-                         const mx::array &timesteps,
+                         const mx::array &time,
                          const mx::array &speaker_features,
                          const mx::array &mel_conditioning) const {
   const mx::Dtype dtype = x.dtype();
@@ -202,7 +206,7 @@ mx::array Flow::Velocity(const mx::array &x, const mx::array &mu,
                    mx::array(static_cast<float>(-std::log(10000.0) /
                                                 (kTimeFrequencyCount - 1)))));
   const mx::array time_angles = mx::multiply(
-      mx::expand_dims(mx::multiply(Scalar(1000.0, dtype), timesteps), 1),
+      mx::expand_dims(mx::multiply(Scalar(1000.0, dtype), time), 1),
       mx::expand_dims(frequencies, 0));
   // Note (yuhui): the float32 sinusoid is cast before the time MLP so
   // it does not promote the half-precision DiT.
@@ -239,33 +243,26 @@ mx::array Flow::Velocity(const mx::array &x, const mx::array &mu,
       mx::split(checkpoint_.Linear(omni_common::Silu(timestep_embedding),
                                    kEstimator + "norm_out.linear"),
                 2, -1);
-  hidden =
-      mx::add(mx::multiply(PlainLayerNorm(hidden),
-                           mx::expand_dims(
-                               mx::add(Scalar(1.0, dtype), modulation[0]), 1)),
-              mx::expand_dims(modulation[1], 1));
-  return checkpoint_.Linear(hidden, kEstimator + "proj_out");
+  return checkpoint_.Linear(
+      ModulatedLayerNorm(hidden, modulation[1], modulation[0]),
+      kEstimator + "proj_out");
 }
 
 mx::array Flow::Block(const mx::array &x, const mx::array &timestep_embedding,
                       int block) const {
   const std::string prefix =
       kEstimator + "transformer_blocks." + std::to_string(block) + ".";
-  const mx::Dtype dtype = x.dtype();
   const int batch = x.shape(0);
   const int length = x.shape(1);
   const int width = x.shape(2);
-  // Shift, scale and gate for attention, then for the feed-forward.
+  // Shift, scale and gate for attention, then for the feed-forward, each [1,
+  // width].
   const std::vector<mx::array> modulation =
       mx::split(checkpoint_.Linear(omni_common::Silu(timestep_embedding),
                                    prefix + "attn_norm.linear"),
                 6, -1);
   const auto modulate = [&](const mx::array &input, int shift, int scale) {
-    return mx::add(
-        mx::multiply(
-            PlainLayerNorm(input),
-            mx::expand_dims(mx::add(Scalar(1.0, dtype), modulation[scale]), 1)),
-        mx::expand_dims(modulation[shift], 1));
+    return ModulatedLayerNorm(input, modulation[shift], modulation[scale]);
   };
   const mx::array normed = modulate(x, 0, 1);
   // Note (XXXXRT666): the DiT rotates adjacent pairs of the first head's
@@ -289,14 +286,13 @@ mx::array Flow::Block(const mx::array &x, const mx::array &timestep_embedding,
                     {0, 2, 1, 3}),
       {batch, length, width});
   mx::array hidden = mx::add(
-      x, mx::multiply(mx::expand_dims(modulation[2], 1),
+      x, mx::multiply(modulation[2],
                       checkpoint_.Linear(attended, prefix + "attn.to_out_0")));
   const mx::array feed_forward =
       checkpoint_.Linear(omni_common::TanhGelu(checkpoint_.Linear(
                              modulate(hidden, 3, 4), prefix + "ff.ff_0_0")),
                          prefix + "ff.ff_2");
-  return mx::add(hidden,
-                 mx::multiply(mx::expand_dims(modulation[5], 1), feed_forward));
+  return mx::add(hidden, mx::multiply(modulation[5], feed_forward));
 }
 
 Hift::Hift(const omni_common::Checkpoint &checkpoint)

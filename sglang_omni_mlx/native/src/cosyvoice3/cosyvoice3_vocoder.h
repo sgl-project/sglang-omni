@@ -36,10 +36,11 @@ public:
                           const std::function<void()> &on_step) const;
 
 private:
-  // The DiT's velocity [batch, 80, frames] at noisy mel x.
+  // The DiT's velocity [batch, 80, frames] at noisy mel x, every row at time
+  // [1].
   mlx::core::array Velocity(const mlx::core::array &x,
                             const mlx::core::array &mu,
-                            const mlx::core::array &timesteps,
+                            const mlx::core::array &time,
                             const mlx::core::array &speaker_features,
                             const mlx::core::array &mel_conditioning) const;
   mlx::core::array Block(const mlx::core::array &x,
