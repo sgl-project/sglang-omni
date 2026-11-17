@@ -280,6 +280,30 @@ func TestOmniSharedDraftUnload(t *testing.T) {
 	}
 }
 
+// TestOmniDraftDoesNotUseDeletedFiles: a stale installed status cannot
+// resurrect a draft whose directory was already deleted.
+func TestOmniDraftDoesNotUseDeletedFiles(t *testing.T) {
+	a := newSessionApp(t, "", func(*settings.Settings) {}, realLocal{installed: []string{models.ASRQwen6bit, models.ASRAccurateDraft, models.VADSilero}})
+	draft := a.models.Dir(models.ASRAccurateDraft)
+	if draft == "" {
+		t.Fatal("no shared draft")
+	}
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+		s.Models.Faster = map[string]bool{models.ASRQwen6bit: true}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(draft); err != nil {
+		t.Fatal(err)
+	}
+	if !a.models.Installed(models.ASRAccurateDraft) {
+		t.Fatal("the fixture needs the pre-refresh installed state")
+	}
+	if got := a.omniDraft(models.ASRQwen6bit); got != "" {
+		t.Errorf("the deleted draft was selected: %q", got)
+	}
+}
+
 // eventually waits for cond, at most 10 s.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
