@@ -310,7 +310,7 @@ func setupNeedsText(kind local.Kind, p settings.Provider, missing string) string
 	case providers.MissingEndpoint:
 		return i18n.T("%s needs its address.", name)
 	case providers.MissingAddress:
-		return i18n.T("Change the address of %s. Use http or https without a user name or password.", name)
+		return i18n.T("Change the address of %s. Check its protocol and remove any user name or password.", name)
 	}
 	return i18n.T("%s needs a model.", name)
 }

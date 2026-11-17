@@ -317,7 +317,7 @@ func TestLegacyRefusedAddressNotReady(t *testing.T) {
 	if !a.provDlg.open || a.provDlg.id != "ollama" {
 		t.Errorf("Complete setup: %+v", a.provDlg.open)
 	}
-	if got := setupNeedsText(local.LLM, invalid, providers.MissingAddress); !strings.Contains(got, "http or https") {
+	if got := setupNeedsText(local.LLM, invalid, providers.MissingAddress); !strings.Contains(got, "Check its protocol") {
 		t.Errorf("the notice says %q", got)
 	}
 }

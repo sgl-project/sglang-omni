@@ -38,7 +38,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── llm/              chat models (from AudioSmith): request and response types, skills, Backend,
 │   │                     Client (retries, JSON repair, thinking stripped), schemas, usage; OpenAI (Auralink's
 │   │                     OpenAI-compatible chat completions transport), the services' presets (presets.json),
-│   │                     ProviderConfig.Resolve (http or https for API-key services), Probe (the connection test)
+│   │                     ProviderConfig.Resolve (https, or http to this Mac), Probe (the connection test)
 │   ├── providers/        the remote language models the user set up (settings.Providers): Ready, Missing,
 │   │                     Open (an llm.Client over llm.OpenAI), Test, TestLog (no key); Services: local.Services
 │   │                     with the ready ones after the local models

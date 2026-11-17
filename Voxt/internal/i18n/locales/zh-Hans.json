@@ -1527,7 +1527,7 @@
   "Microphone and system audio": "麦克风与系统音频",
   "Translating to %s": "正在翻译为 %s",
   "Save this meeting?": "保存这场会议？",
-  "Change the address of %s. Use http or https without a user name or password.": "请修改 %s 的地址。请使用 http 或 https，且不要在地址中填写用户名或密码。",
+  "Change the address of %s. Check its protocol and remove any user name or password.": "请修改 %s 的地址。检查协议，且不要在地址中填写用户名或密码。",
   "Address not allowed": "地址不符合要求",
   "Settings (language models, speech services, prompts): the previous Voxt's preferences could not be read": "设置（语言模型、语音识别服务、提示词）：无法读取旧版 Voxt 的偏好设置",
   "API format": "API 格式",
