@@ -100,6 +100,11 @@ SpeechDecoder::PrepareWeights(omni_common::WeightMap weights) {
       prepared.insert_or_assign(name, array);
     }
   }
+  // Note (XXXXRT666): the checkpoint is float32; the decoder runs in float16,
+  // with Snake computed in float32.
+  for (auto &[name, array] : prepared) {
+    array = mx::astype(array, mx::float16);
+  }
   return prepared;
 }
 
@@ -228,9 +233,7 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
       const mx::array rows = checkpoint_.Embed(
           ids, quantizer_prefix + ".vq.layers." + std::to_string(codebook) +
                    ".codebook.embed");
-      sum = sum.has_value()
-                ? mx::add(*sum, rows)
-                : mx::add(mx::zeros(rows.shape(), mx::float32), rows);
+      sum = sum.has_value() ? mx::add(*sum, rows) : rows;
     }
     return mx::conv1d(
         *sum, checkpoint_.Weight(quantizer_prefix + ".output_proj.weight"));
@@ -291,7 +294,9 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
   wave = Snake(wave, stack + "." + std::to_string(output_stage));
   wave = CausalConvolution(
       wave, stack + "." + std::to_string(output_stage + 1) + ".conv", 1, 1);
-  return mx::reshape(mx::clip(wave, mx::array(-1.0f), mx::array(1.0f)), {-1});
+  return mx::reshape(mx::clip(mx::astype(wave, mx::float32), mx::array(-1.0f),
+                              mx::array(1.0f)),
+                     {-1});
 }
 
 SpeechStream::SpeechStream(const SpeechDecoder &decoder, bool streamed,

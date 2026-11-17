@@ -94,17 +94,35 @@ std::vector<mx::array> SwigluGraph(const std::vector<mx::array> &inputs) {
   return {mx::multiply(SiluGraph({inputs[0]})[0], inputs[1])};
 }
 
+// Note (XXXXRT666): computed in float32 and returned in the inputs' promoted
+// dtype, since a half-precision alpha * x of a few hundred loses the sine's
+// phase.
+mx::array SnakeFloat(const mx::array &x, const mx::array &alpha,
+                     const mx::array &beta, mx::Dtype dtype) {
+  return mx::astype(
+      mx::add(x, mx::divide(mx::square(mx::sin(mx::multiply(alpha, x))),
+                            mx::add(beta, mx::array(1e-9f)))),
+      dtype);
+}
+
+mx::Dtype SnakeDtype(const std::vector<mx::array> &inputs) {
+  return mx::promote_types(
+      inputs[0].dtype(),
+      mx::promote_types(inputs[1].dtype(), inputs[2].dtype()));
+}
+
 std::vector<mx::array> SnakeGraph(const std::vector<mx::array> &inputs) {
-  const mx::array &x = inputs[0];
-  const mx::array &alpha = inputs[1];
-  const mx::array &beta = inputs[2];
-  return {mx::add(x, mx::divide(mx::square(mx::sin(mx::multiply(alpha, x))),
-                                mx::add(beta, Scalar(1e-9f, beta))))};
+  return {SnakeFloat(mx::astype(inputs[0], mx::float32),
+                     mx::astype(inputs[1], mx::float32),
+                     mx::astype(inputs[2], mx::float32), SnakeDtype(inputs))};
 }
 
 std::vector<mx::array>
 LogScaleSnakeGraph(const std::vector<mx::array> &inputs) {
-  return SnakeGraph({inputs[0], mx::exp(inputs[1]), mx::exp(inputs[2])});
+  return {SnakeFloat(mx::astype(inputs[0], mx::float32),
+                     mx::exp(mx::astype(inputs[1], mx::float32)),
+                     mx::exp(mx::astype(inputs[2], mx::float32)),
+                     SnakeDtype(inputs))};
 }
 
 } // namespace
