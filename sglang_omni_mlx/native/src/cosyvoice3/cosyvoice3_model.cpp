@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -739,23 +740,18 @@ CosyVoice3Model::Generate(const std::vector<int> &prompt_text_ids,
       mx::greater_equal(vocabulary, mx::array(kSpeechTokenSize));
   const mx::array negative_infinity =
       mx::array(-std::numeric_limits<float>::infinity());
-  mx::array seen = mx::zeros({kTotalSpeechVocabularySize}, mx::bool_);
   mx::array random_key = mx::random::key(options.seed);
   const auto next_key = [&]() {
     const auto [carried, drawn] = mx::random::split(random_key);
     random_key = carried;
     return drawn;
   };
-
-  GeneratedSpeech generated;
-  generated.finish_reason = omni_common::FinishReason::kLength;
-  while (static_cast<int>(generated.speech_tokens.size()) < max_tokens) {
-    if (cancel.load()) {
-      throw omni_common::GenerationCancelled();
-    } else {
-    }
+  // A token, int32 [], from logits after generated_count tokens, which are
+  // seen and end in recent [kRepetitionWindow].
+  const auto draw = [&](const mx::array &logits, int generated_count,
+                        const mx::array &seen, const mx::array &recent) {
     mx::array row = mx::astype(mx::reshape(logits, {-1}), mx::float32);
-    if (static_cast<int>(generated.speech_tokens.size()) < min_tokens) {
+    if (generated_count < min_tokens) {
       row = mx::where(is_control, negative_infinity, row);
     } else {
     }
@@ -768,55 +764,87 @@ CosyVoice3Model::Generate(const std::vector<int> &prompt_text_ids,
                       row);
     } else {
     }
-    int token = 0;
     if (greedy) {
-      token = mx::argmax(row).item<int>();
+      return mx::astype(mx::argmax(row), mx::int32);
     } else {
-      const mx::array scaled = mx::divide(row, mx::array(options.temperature));
-      // Note (Jiaxin Deng): top-k and top-p both cut the sorted
-      // probabilities of the whole row, as the CUDA sampler does.
-      const mx::array order = mx::argsort(mx::negative(scaled));
-      const mx::array sorted = mx::take(scaled, order);
-      const mx::array probabilities = mx::softmax(sorted, -1, true);
-      mx::array keep =
-          mx::less_equal(mx::subtract(mx::cumsum(probabilities), probabilities),
-                         mx::array(options.top_p));
-      if (options.top_k > 0) {
-        keep = mx::logical_and(keep,
-                               mx::less(mx::arange(kTotalSpeechVocabularySize),
-                                        mx::array(options.top_k)));
-      } else {
-      }
-      const mx::array choice = mx::random::categorical(
-          mx::where(keep, sorted, negative_infinity), -1, next_key());
-      token = mx::take(order, choice).item<int>();
-      const auto &recent = generated.speech_tokens;
-      const size_t window_start = recent.size() > kRepetitionWindow
-                                      ? recent.size() - kRepetitionWindow
-                                      : 0;
-      // Note (yexiaodong): a speech token among the last ten is drawn again
-      // from the whole distribution without it, as the reference sampler
-      // does to break loops.
-      if (token < kSpeechTokenSize &&
-          std::find(recent.begin() + window_start, recent.end(), token) !=
-              recent.end()) {
-        token = mx::random::categorical(
-                    mx::where(mx::equal(vocabulary, mx::array(token)),
-                              negative_infinity, scaled),
-                    -1, next_key())
-                    .item<int>();
-      } else {
-      }
     }
-    if (token >= kSpeechTokenSize) {
+    const mx::array scaled = mx::divide(row, mx::array(options.temperature));
+    // Note (Jiaxin Deng): top-k and top-p both cut the sorted probabilities
+    // of the whole row, as the CUDA sampler does.
+    const mx::array order = mx::argsort(mx::negative(scaled));
+    const mx::array sorted = mx::take(scaled, order);
+    const mx::array probabilities = mx::softmax(sorted, -1, true);
+    mx::array keep =
+        mx::less_equal(mx::subtract(mx::cumsum(probabilities), probabilities),
+                       mx::array(options.top_p));
+    if (options.top_k > 0) {
+      keep =
+          mx::logical_and(keep, mx::less(mx::arange(kTotalSpeechVocabularySize),
+                                         mx::array(options.top_k)));
+    } else {
+    }
+    const mx::array token = mx::astype(
+        mx::take(order, mx::random::categorical(
+                            mx::where(keep, sorted, negative_infinity), -1,
+                            next_key())),
+        mx::int32);
+    // Note (yexiaodong): a speech token among the last ten is drawn again
+    // from the whole distribution without it, as the reference sampler does
+    // to break loops.
+    const mx::array is_repeated =
+        mx::logical_and(mx::less(token, mx::array(kSpeechTokenSize)),
+                        mx::any(mx::equal(recent, token)));
+    return mx::where(is_repeated,
+                     mx::astype(mx::random::categorical(
+                                    mx::where(mx::equal(vocabulary, token),
+                                              negative_infinity, scaled),
+                                    -1, next_key()),
+                                mx::int32),
+                     token);
+  };
+
+  GeneratedSpeech generated;
+  generated.finish_reason = omni_common::FinishReason::kLength;
+  // Note (XXXXRT666): tokens are drawn on the GPU and each step is queued
+  // before the token before it is read, so the GPU runs while the host waits;
+  // a stop discards the queued step.
+  mx::array seen = mx::zeros({kTotalSpeechVocabularySize}, mx::bool_);
+  mx::array recent =
+      mx::full({static_cast<int>(kRepetitionWindow)}, -1, mx::int32);
+  mx::array token = draw(logits, 0, seen, recent);
+  while (static_cast<int>(generated.speech_tokens.size()) < max_tokens) {
+    if (cancel.load()) {
+      throw omni_common::GenerationCancelled();
+    } else {
+    }
+    const int generated_count =
+        static_cast<int>(generated.speech_tokens.size());
+    seen = mx::logical_or(seen, mx::equal(vocabulary, token));
+    recent = mx::concatenate(
+        {mx::slice(recent, {1}, {static_cast<int>(kRepetitionWindow)}),
+         mx::reshape(token, {1})});
+    std::optional<mx::array> next_token;
+    if (generated_count + 1 < max_tokens) {
+      next_token =
+          draw(ForwardEmbeddings(checkpoint_.Embed(mx::reshape(token, {1, 1}),
+                                                   "speech_embedding"),
+                                 caches),
+               generated_count + 1, seen, recent);
+      mx::async_eval({token, *next_token});
+    } else {
+    }
+    const int token_id = token.item<int>();
+    if (token_id >= kSpeechTokenSize) {
       generated.finish_reason = omni_common::FinishReason::kStop;
       break;
     } else {
     }
-    generated.speech_tokens.push_back(token);
-    seen = mx::logical_or(seen, mx::equal(vocabulary, mx::array(token)));
-    on_token(token);
-    logits = ForwardEmbeddings(SpeechEmbeddings({token}), caches);
+    generated.speech_tokens.push_back(token_id);
+    on_token(token_id);
+    if (next_token.has_value()) {
+      token = *next_token;
+    } else {
+    }
   }
   return generated;
 }
