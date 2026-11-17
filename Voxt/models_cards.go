@@ -389,7 +389,7 @@ func (a *app) draftRow(c *ui.Context, m models.Model) {
 	st := a.modelStatus[m.Draft]
 	on, set := a.prefs.Models.Faster[m.ID] // the switch; never switched: settings.Models.FasterOn
 	if !set {
-		on = st.Installed
+		on = st.Installed && !m.DraftOptIn
 	}
 	ui.Row(c.Key("draft")).Gap(px(t, sp3)).AlignItems(ui.Start).Margin(px(t, sp2), 0, 0, px(t, 32)).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {

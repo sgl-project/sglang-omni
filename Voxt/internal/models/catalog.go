@@ -131,6 +131,12 @@ type Model struct {
 	// speech model's card; the runtime passes it while it is installed.
 	// "" for none.
 	Draft string
+	// DraftOptIn: the draft came with another model's download (a shared
+	// draft), so a settings document that never saw this model's switch
+	// must not turn it on: Faster transcription waits for the user's own
+	// switch (settings.Models.Faster), as the download never said yes
+	// for this model.
+	DraftOptIn bool
 	// Alternatives are models that may stand in for it while it is not
 	// installed (the same kind, lighter or another app's), offered to the
 	// user, never chosen silently (family spec §7.2, §7.10.1).
@@ -222,7 +228,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: ASRQwen6bit, Name: "Qwen3-ASR 1.7B (6bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero}, Draft: ASRAccurateDraft,
+		ID: ASRQwen6bit, Name: "Qwen3-ASR 1.7B (6bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero}, Draft: ASRAccurateDraft, DraftOptIn: true,
 		Family: "qwen3-asr", Quant: "6bit",
 		Repo: "mlx-community/Qwen3-ASR-1.7B-6bit", Revision: "edd077a475c4da058e25b6e6ec1199115ca1be2b",
 		Files: []File{
