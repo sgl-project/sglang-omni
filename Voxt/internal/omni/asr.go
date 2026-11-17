@@ -196,7 +196,8 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 					chunks = chunks[len(chunkWindows):]
 					continue
 				}
-				// An older runtime only reports the combined text.
+				// A mismatched older runtime cannot split this first batch;
+				// redo it per chunk and avoid batching the remaining chunks.
 				batchWhisper = false
 			}
 		}
