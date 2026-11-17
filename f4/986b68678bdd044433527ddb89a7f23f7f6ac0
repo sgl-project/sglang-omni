@@ -1,0 +1,34 @@
+pyproject.toml
+  s_9be4bd449be508::t_90b8df0b8661be 205
+sglang_omni/serve/realtime/negotiation.py
+  s_9be4bd449be508::t_b1812280452a8e 226,233-240
+sglang_omni/serve/realtime/types.py
+  s_9be4bd449be508::t_b1812280452a8e 132,150-156,178-185
+  s_9be4bd449be508::t_20d3d4e4a74202 186
+sglang_omni/models/duo/realtime.py
+  s_9be4bd449be508::t_b1812280452a8e 136-138,1052-1056
+docs/models/duo.md
+  s_9be4bd449be508::t_90b8df0b8661be 30-33
+sglang_omni/serve/realtime/runtime.py
+  s_9be4bd449be508::t_b1812280452a8e 107,249
+scripts/serve_duo_realtime.py
+  s_9be4bd449be508::t_4f1650a54ef888 330
+tests/unit_test/serve/test_realtime_video.py
+  s_9be4bd449be508::t_5c1fba032eefcf 38,45-46,370-395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f4986b68678bdd044433527ddb89a7f23f7f6ac0",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
