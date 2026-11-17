@@ -26,9 +26,11 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **会议把对方标为说话人 1、2、3……**：安装 MOSS-Transcribe-Diarize 后，Voxt 在会议结束时用它转录对方的话并区分说话人，你的话仍标为“我”，然后再校对转录稿和写总结。长会议分段送给它，听写最多等一段，同一个人的编号跨段不变。遇到它不认识的语种（它只认识中文和英文），或语言保持自动而无法判断时，会议沿用所选模型的转录。没装时会议照常工作，会议详情提供语音识别模型页入口。
 
+
 ### Fixed
 
 - **Transcribe shows and inserts only the cleaned text, never the model's commentary about its edits** (#4086): with the language-model step on, a model that explains what it changed ("I removed the filler…") had that explanation inserted as if it were part of the transcript. The clean-up now asks for the final text between <output> tags and only the text between them is streamed into the card, shown and inserted; an answer without the tags is used as before.
+
 
 ### Changed
 

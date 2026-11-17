@@ -128,6 +128,28 @@ func TestDiarizeTrackAnchorsRenumberedSpeaker(t *testing.T) {
 	}
 }
 
+// Pauses shorter than a chunk do not start a new MTD request: speech
+// packs into chunks up to the cap, so a pause-rich track's request count
+// follows its length, not its pause count.
+func TestDiarizeTrackPacksPausesToTheCap(t *testing.T) {
+	rate := asr.SampleRate
+	pcm := make([]byte, rate*300*2) // 300 s
+	var speech []vad.Segment
+	for start := 0; start+10 <= 300; start += 12 {
+		speech = append(speech, vad.Segment{Start: start * rate, End: (start + 10) * rate})
+	}
+	d := &seqDiarizer{}
+	for len(d.results) < len(speech) {
+		d.results = append(d.results, asr.Result{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "hi"}}})
+	}
+	if _, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.requests) != 3 {
+		t.Errorf("%d requests for 300 s of pause-rich speech, want 3 (one per %v, not one per pause)", len(d.requests), diarizeChunkMax)
+	}
+}
+
 // Speaker numbers past S04 keep their number (an import can have more
 // voices than a call's other side).
 func TestMTDSpeakerNumbers(t *testing.T) {
