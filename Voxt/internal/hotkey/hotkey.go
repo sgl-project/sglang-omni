@@ -494,8 +494,8 @@ const (
 // generation, and a bare cancel key keeps priority over the same card key.
 func CardBindings(generation uint64, cancel *proto.HotkeyBinding) []proto.HotkeyBinding {
 	bindings := []proto.HotkeyBinding{
-		binding(CardCopy, Chord{Key: "C", Code: keyCodes["C"]}, proto.BehaviorTap),
-		binding(CardInsert, Chord{Key: "R", Code: keyCodes["R"]}, proto.BehaviorTap),
+		binding(CardCopy, Chord{Key: "C", Code: keyCodes["C"], Mods: map[string]string{}}, proto.BehaviorTap),
+		binding(CardInsert, Chord{Key: "R", Code: keyCodes["R"], Mods: map[string]string{}}, proto.BehaviorTap),
 	}
 	out := make([]proto.HotkeyBinding, 0, len(bindings))
 	for _, b := range bindings {

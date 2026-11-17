@@ -1,6 +1,7 @@
 package hotkey
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -258,6 +259,21 @@ func TestBuildCancel(t *testing.T) {
 	f.Cancel = settings.Hotkey{Keys: settings.DefaultTranscribe}
 	if ps := ProblemsOf(Check(f), CancelID); len(ps[0]) != 1 || ps[0][0].Code != ProblemConflict || ps[0][0].Other != Transcribe {
 		t.Errorf("clashing cancel: %+v", ps[0])
+	}
+}
+
+func TestCardBindingsMarshalEmptyModifiers(t *testing.T) {
+	for _, binding := range CardBindings(1, nil) {
+		if binding.Modifiers == nil {
+			t.Errorf("%s has nil modifiers", binding.ID)
+		}
+		raw, err := json.Marshal(binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(raw, []byte(`"modifiers":{}`)) {
+			t.Errorf("%s marshals as %s, want modifiers {}", binding.ID, raw)
+		}
 	}
 }
 
