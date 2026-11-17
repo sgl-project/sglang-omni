@@ -65,6 +65,11 @@ private:
 // placeholder, so the server can reject it before decoding.
 void ValidatePrompt(const std::optional<std::string> &prompt);
 
+// Per-request native timings without transcript, prompt or speaker content.
+nlohmann::ordered_json
+MossNativeTimingJson(const omni_common::TranscriptionResult &result,
+                     int64_t audio_ms, int native_chunk_count);
+
 // Timestamp tags [12.34] shifted by offset_seconds, printed with 2 decimals.
 std::string OffsetTimestampTags(const std::string &text, double offset_seconds);
 // [start][Sxx]text[end] segments; one unlabelled segment spanning the audio

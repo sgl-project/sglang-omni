@@ -24,7 +24,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -38,6 +38,7 @@ import (
 // dictionaryState is the Dictionary page's view state.
 type dictionaryState struct {
 	dv              dictView
+	dictProfiles    dictionaryProfileState
 	book            *learn.Book
 	suggestions     []learn.Suggestion // the sidebar's count and the page's section
 	suggestionReads int                // numbers the reads: only the last one lands
@@ -45,6 +46,11 @@ type dictionaryState struct {
 	// selPress is the transcribe shortcut whose selection is being read
 	// (dictionary_selection.go).
 	selPress *selectionPress
+	// glossaryTerms is the whole dictionary for the feature pages' prompt
+	// preview (feature_prompts.go), read again after each change;
+	// glossaryReads numbers the reads: only the last one lands.
+	glossaryTerms []store.Term
+	glossaryReads int
 }
 
 type dictView struct {
@@ -73,19 +79,12 @@ type dictView struct {
 	// scan is the history scan's dialog (dictionary_scan.go).
 	scan scanState
 	// tab is the view: the terms or the personal dictionary
-	// (dictionary_notes.go), whose editor is notes and whose example is
-	// of notesFeatures[notesFeature].
-	tab          int
-	notes        speechContextState
-	notesFeature int
+	// (dictionary_notes.go), whose editor is notes.
+	tab   int
+	notes speechContextState
 	// notesQuery and notesFind are the view's search (find_marks.go).
 	notesQuery string
 	notesFind  finder
-	// all are the terms of the last read without a search, for the
-	// example's glossary.
-	all []store.Term
-	// example is the personal dictionary's example, as last built.
-	example notesExampleCache
 }
 
 // termEdit is the term dialog's fields: a new term when id is "".
@@ -99,6 +98,7 @@ type termEdit struct {
 	createdAt       time.Time
 	original, title string
 	suggestion      string // the key of the suggestion the dialog accepts, if any
+	profile         string // the profile the term was opened in: a switch must not retarget Save/Delete
 }
 
 // Test seams: the file dialogs of Import and Export.
@@ -128,7 +128,9 @@ var (
 // dictShown runs when the router goes to the page (pageShown).
 func (a *app) dictShown() { a.loadDict() }
 
-// loadDict reads the terms of the search in the background.
+// loadDict reads the terms of the search in the background. The glossary
+// cache (loadGlossaryTerms in feature_prompts.go) follows every reload, so
+// anything that reloads the list also reaches the prompt preview.
 func (a *app) loadDict() {
 	d := &a.dv
 	d.seq++
@@ -151,7 +153,11 @@ func (a *app) loadDict() {
 			}
 			d.list, d.err = list, ""
 			if q == "" {
-				d.total, d.all = len(list), list
+				d.total = len(list)
+				a.glossaryReads++
+				a.glossaryTerms = list
+			} else {
+				a.loadGlossaryTerms()
 			}
 		})
 	})
@@ -214,6 +220,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			d.listUI.ScrollIntoView(row)
 		}
 		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
+			a.dictionaryProfileBar(c)
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 				if d.find.field(c, "dict-search", &d.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
 					a.loadDict()
@@ -262,6 +269,7 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	})
 	a.termDialog(c)
 	a.scanDialog(c)
+	a.dictionaryProfileDialogs(c)
 }
 
 // dictSwitches say where the terms go.
@@ -287,18 +295,6 @@ func (a *app) dictSwitches(c *ui.Context) {
 			v := *learnOn
 			a.updateSettings(func(s *settings.Settings) { s.Dictionary.Learn = v })
 		}
-	})
-}
-
-// dictGuide says where a term applies, folded under the switches
-// (docs/behavior.md 5.16, 7.9, 7.9a).
-func (a *app) dictGuide(c *ui.Context) {
-	collapsible(c.Key("dict-guide"), i18n.T("How the dictionary works"), &a.dv.guideOpen, nil, func() {
-		caption(c, i18n.T("Each enabled term is used in three places:"))
-		caption(c, i18n.T("Speech recognition: with Speech hints on, terms go to the speech model as words to expect. Aliases are not sent."))
-		caption(c, i18n.T("Language model: with Glossary for the language model on, the model writes terms as spelled here. With more than %d terms, only those found in the text are sent, up to %d.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms))
-		caption(c, i18n.T("Aliases: misspellings Voxt replaces with the term, even without a language model."))
-		caption(c, i18n.T("Rules a term cannot hold, such as when a spelling applies, go in the Personal dictionary: Markdown notes for the language model only, with an example of the prompt."))
 	})
 }
 
@@ -385,7 +381,7 @@ func (a *app) openTerm(term store.Term) {
 	d := &a.dv
 	d.editOpen = true
 	d.edit = termEdit{id: term.ID, term: term.Term, aliases: strings.Join(term.Aliases, ", "), note: term.Note,
-		enabled: term.Enabled, createdAt: term.CreatedAt, original: term.Term}
+		enabled: term.Enabled, createdAt: term.CreatedAt, original: term.Term, profile: a.activeDictionaryProfile().ID}
 	d.editWas = d.edit
 }
 
@@ -423,7 +419,7 @@ func (a *app) termDialog(c *ui.Context) {
 	}, func() {
 		if e.id != "" && ghostButton(c.Key("term-delete"), i18n.T("Delete")).Clicked() {
 			d.editOpen = false
-			a.deleteTerm(store.Term{ID: e.id, Term: e.original})
+			a.deleteTerm(store.Term{ID: e.id, Term: e.original, ProfileID: e.profile})
 		}
 		ui.Spacer(c)
 		if ui.Button(c.Key("term-cancel"), i18n.T("Cancel")).Clicked() {
@@ -440,7 +436,7 @@ func (a *app) termDialog(c *ui.Context) {
 // submitTerm checks and saves the dialog's term.
 func (a *app) submitTerm() {
 	e := &a.dv.edit
-	term := dict.Clean(store.Term{ID: e.id, Term: e.term, Aliases: dict.SplitAliases(e.aliases), Note: e.note, Enabled: e.enabled, CreatedAt: e.createdAt})
+	term := dict.Clean(store.Term{ID: e.id, Term: e.term, Aliases: dict.SplitAliases(e.aliases), Note: e.note, Enabled: e.enabled, CreatedAt: e.createdAt, ProfileID: e.profile})
 	if err := dict.Check(term); err != nil {
 		e.err = uitext.TermErrorText(err)
 		return
@@ -490,7 +486,7 @@ func (a *app) deleteTerm(term store.Term) {
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := repo.Delete(ctx, term.ID)
+		err := repo.Delete(ctx, term.ID, term.ProfileID)
 		a.post(func() {
 			if err != nil && !errors.Is(err, core.ErrNotFound) {
 				a.toast(i18n.T("Could not delete the term: %v", err))

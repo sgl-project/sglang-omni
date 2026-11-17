@@ -3,7 +3,7 @@ package main
 // The setup guide's models step (onboarding.go): the recommended pack (a
 // speech model for this Mac's memory with its voice detection), which the
 // footer's primary button downloads, then the language model: the one set
-// up, or a way to the Language models page (they are remote). The models another
+// up, or a way to Settings → Language models (they are remote). The models another
 // ActNow app already put on this Mac come first (family spec §7.10.1): a
 // card offers to use them ("Use them" claims them for VoxtNew, nothing
 // downloads), and while the recommended speech model is missing and one

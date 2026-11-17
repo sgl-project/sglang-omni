@@ -464,6 +464,18 @@ target_compile_options(audio_chunk_test PRIVATE -Wall -Wextra)
 set_target_properties(audio_chunk_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
+add_executable(silero_vad_batched_test EXCLUDE_FROM_ALL tests/silero_vad_batched_test.cpp)
+target_link_libraries(silero_vad_batched_test PRIVATE silero_vad)
+target_compile_options(silero_vad_batched_test PRIVATE -Wall -Wextra)
+set_target_properties(silero_vad_batched_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+add_executable(moss_timing_test EXCLUDE_FROM_ALL tests/moss_timing_test.cpp)
+target_link_libraries(moss_timing_test PRIVATE moss_asr)
+target_compile_options(moss_timing_test PRIVATE -Wall -Wextra)
+set_target_properties(moss_timing_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 # Compares NEXTN with plain decoding on a small checkpoint
 # (tests/test_ming3_mtp.py); built only on request and never installed.
 add_executable(ming3_mtp_probe EXCLUDE_FROM_ALL tests/ming3_mtp_probe.cpp)

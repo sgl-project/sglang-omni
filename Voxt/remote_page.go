@@ -1,7 +1,7 @@
 package main
 
-// The Language models page (/language-models; Auralink's Model services
-// page) and the remote services' cards, which the Speech models page shows
+// The Language models section in Settings (/settings/language-models;
+// /language-models before) and the remote services' cards, which the Speech models section shows
 // too (models_cards.go): a card per service, those set up first, each with
 // its state, where it runs (on this Mac or remote), model, saved key and a
 // connection test; a streaming speech service's card is tagged Realtime. A
@@ -25,21 +25,14 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-func (a *app) remotePage(c *ui.Context) {
-	t := c.Theme()
-	columnPageHeader(c, i18n.T("Language models"), nil)
-	ui.Scroll(c.Key("remote-scroll")).Grow(1).MinHeight(0).Children(func() {
-		pageColumn(c).Gap(px(t, sp4)).Children(func() {
-			a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
-			caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
-			a.llmWaitRow(c) // llm_wait.go; above the cards, seen without scrolling (#3821)
-			a.providerCards(c, local.LLM)
-			if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
-				a.navigate(llmDebugPath)
-			}
-		})
-	})
-	a.providerDialogView(c) // remote_dialog.go
+func (a *app) remoteSettings(c *ui.Context) {
+	a.obBackBar(c, remotePath) // onboarding.go: left from the setup guide
+	caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
+	a.llmWaitRow(c) // llm_wait.go; above the cards, seen without scrolling (#3821)
+	a.providerCards(c, local.LLM)
+	if ui.Button(c.Key("remote-debug"), i18n.T("Try prompts on a model…")).AlignSelf(ui.Start).Clicked() {
+		a.navigate(llmDebugPath)
+	}
 }
 
 // providerCards lists kind's services: those set up first, then the
@@ -61,9 +54,10 @@ func (a *app) providerCards(c *ui.Context, kind local.Kind) {
 			online = append(online, sv)
 		}
 	}
-	room := min(a.pageWidth(c), px(t, 880)) - px(t, 2*sp6) - 1 // the column's padding
-	// Cards at least 260 wide: two columns in the default window (800
-	// wide) and the smallest.
+	w, h := c.Size()
+	dw, _ := settingsDialogSize(t, w, h)
+	room := dw - px(t, settingsColumnW) - px(t, 2*sp6) - 1 // the settings column and the content's padding
+	// Cards at least 260 wide, in as many columns as the section fits.
 	cols := max(1, int((room+px(t, sp3))/(px(t, 260)+px(t, sp3))))
 	cardW := (room - px(t, sp3)*float32(cols-1)) / float32(cols)
 	grid := func(key string, list []service) {

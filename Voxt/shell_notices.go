@@ -277,7 +277,11 @@ func (a *app) noticeCard(c *ui.Context, n core.Notification) {
 		})
 		// Under the title, from its start.
 		ui.Column(c).Gap(px(t, 2)).Padding(0, px(t, sp1), 0, px(t, 20)).Children(func() {
-			if n.Body != "" {
+			if n.Link == linkAnnouncement {
+				for _, line := range announcementSummary(n.Body) {
+					ui.Text(c, line).FontSize(px(t, fsMicro)).TextColor(k.Text2).SingleLine().Ellipsis("…")
+				}
+			} else if n.Body != "" {
 				ui.Text(c, n.Body).FontSize(px(t, fsMicro)).TextColor(k.Text2).MaxLines(3).Ellipsis("…")
 			}
 			if n.Link != "" {
@@ -331,7 +335,7 @@ func cardActionLabel(link string) string {
 	case linkImportLegacy:
 		return i18n.T("Import") // the card's title says from where
 	case linkAnnouncement:
-		return i18n.T("Read")
+		return i18n.T("What's new")
 	}
 	if strings.HasPrefix(link, linkDownload) {
 		return i18n.T("Download")

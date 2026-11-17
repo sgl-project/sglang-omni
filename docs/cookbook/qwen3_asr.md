@@ -33,11 +33,12 @@ sgl-omni serve \
 Qwen3-ASR runs a single ASR stage on one GPU. Its default `auto` dtype follows
 the checkpoint configuration (BF16 for Qwen3-ASR-1.7B); pass
 `--asr.factory.dtype float16` to force FP16.
-Async decode is enabled by default for all decode batch sizes, allowing the
-shared one-step-lookahead path to overlap host-side result processing with the
-next GPU decode forward even for a single request. Use
-`--asr.factory.enable_async_decode false` to disable it, or tune the crossover
-with `--asr.factory.async_decode_min_batch_size`.
+Async decode is enabled by default, allowing the shared one-step-lookahead path
+to overlap host-side result processing with the next GPU decode forward. Without
+a draft it covers every decode batch size, even a single request; with the
+DFlash draft a single request decodes synchronously (see the DFlash section).
+Use `--asr.factory.enable_async_decode false` to disable it, or set the
+crossover with `--asr.factory.async_decode_min_batch_size`.
 The request builders also use the shared LM prefill-admission gate: prefill
 starts when 16 built requests are ready or after the oldest ready request waits
 40 ms. Once request-build work drains, a ready prefill is released immediately
@@ -250,8 +251,7 @@ specific to this checkpoint:
 - `prompt` — vocabulary biasing, described below.
 - `repetition_penalty` — default `1.0`, valid range `(0, 2]`. Values above `1`
   discourage repeats and can stop a runaway loop on noisy or silent audio, but
-  they also lower accuracy on clean audio, so keep `1.0` unless loops occur. The
-  DFlash draft does not apply it: a value other than `1.0` returns HTTP 400.
+  they also lower accuracy on clean audio, so keep `1.0` unless loops occur.
 - `max_new_tokens` — per-request generation cap; the default is the stage
   limit.
 
@@ -365,7 +365,7 @@ The limits shared with the other ASR models are listed in
 - Streaming requests cannot chunk and run as one engine request, bounded by
   `max_native_clip_s` (1,200 s) on CUDA and 60 seconds on Torch MPS. Use
   `stream=false` for longer uploads.
-- DFlash rejects `repetition_penalty` values other than `1.0` with HTTP 400.
+
 ## Platform Configuration
 
 ### Ascend NPU graph execution
@@ -382,7 +382,7 @@ The example defaults to Qwen3-ASR-1.7B. To use 0.6B, add `--model-path Qwen/Qwen
 
 This example uses eager LM decode and prefill to avoid truncated outputs observed in [targeted transcription checks on Ascend910_9362](https://github.com/sgl-project/sglang-omni/pull/3199#discussion_r4510634009), while retaining the default encoder graphs.
 
-DFlash has its own validated NPU examples on the same queue setup. NPU DFlash supports only greedy decoding (`temperature=0`): requests with a nonzero temperature are rejected because NPU verification uses argmax. For one Ascend device, use the BF16 eager example, which uses the same pinned draft as the CUDA example and sets `enable_async_decode: false` to retain the validated greedy, synchronous configuration:
+DFlash has its own validated NPU examples on the same queue setup. NPU DFlash supports only greedy decoding (`temperature=0`): requests with a nonzero temperature are rejected because NPU verification uses argmax. NPU DFlash does not apply `repetition_penalty` yet: a value other than `1.0` returns HTTP 400, or uses ordinary decoding with `asr.factory.enable_plain_fallback`. For one Ascend device, use the BF16 eager example, which uses the same pinned draft that CUDA serves by default and sets `enable_async_decode: false` to retain the validated greedy, synchronous configuration:
 
 ```bash
 sgl-omni serve --config examples/configs/qwen3_asr_1_7b_dflash_npu.yaml --port 8000
@@ -428,41 +428,36 @@ that qualified limit are rejected.
 
 ## DFlash speculative decoding
 
-Enable experimental DFlash decoding for Qwen3-ASR-1.7B on one CUDA GPU with the pinned draft model:
+On one CUDA GPU, Qwen3-ASR-1.7B serves with its DFlash draft, [`wilsonzheng0327/Qwen3-ASR-1.7B-dflash`](https://huggingface.co/wilsonzheng0327/Qwen3-ASR-1.7B-dflash), by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path that launches, from `--model-path` or a config file, is `Qwen/Qwen3-ASR-1.7B`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it, such as `${MODEL_PATH}` above. Other platforms serve without the draft, and so do a stage with `tp_size` above 1, any other checkpoint, Qwen3-ASR-0.6B included, and a copy outside the Hugging Face cache. The RTX 4090 and RTX 5090 profiles above turn it off, since they were validated without it.
 
-```bash
-sgl-omni serve \
-  --config examples/configs/qwen3_asr_1_7b_dflash.yaml \
-  --asr.engine.max_running_requests 8 \
-  --port 8000
-```
+On one H200 over SeedTTS clips, with streamed responses and the prefix cache off, the draft on its defaults raised throughput 1.72x at 1 concurrent request, 1.42x at 4 and 1.22x at 16 on English clips and 1.58x, 1.38x and 1.17x on Chinese clips. It lowered p95 latency by 22–51% from 1 to 16 concurrent requests, with the same WER and CER. On one H100 over SeedTTS English clips with synchronous scheduling, the draft raised throughput 1.90x at 1 concurrent request, 1.56x at 4 and 1.39x at 16. It lowered p95 latency by 26–42% and the p95 of the first streamed text by 9–26%, with the same WER. With the clips repeated and the prefix cache on, it raised throughput 1.90x, 1.51x and 1.40x.
 
 Ascend NPU runs separate validated examples and is greedy only; see [Ascend NPU graph execution](#ascend-npu-graph-execution).
 
 DFlash serves any `temperature`. Above 0, verification accepts each drafted token with the target model's probability for it and otherwise samples from the target's remaining probabilities. ASR transcripts are confident, so sampling barely lowers acceptance: on one H100 with SeedTTS English and Chinese clips at 16 concurrent requests, each verification step committed 5.66 tokens at `temperature` 0, 5.66 at 0.7 and 5.62 at 1.0. On the same server at the default cap of 64 running requests, the speedup at 0.7 and 1.0 stayed close to its greedy speedup at every load tested, from 1 to 64 concurrent requests. DFlash retains CUDA graphs.
 
-DFlash does not apply `repetition_penalty`: a request that sets it to anything other than `1.0` returns HTTP 400. To use the penalty, serve without the draft (`--asr.engine.disable_speculative_decoding true`, shown below).
+On CUDA, DFlash applies `repetition_penalty` as ordinary decoding does: each verified position is penalized over the transcript so far and the drafted tokens before it. On one H200 with every SeedTTS clip sent at 1.2, no request failed, transcripts differed from a synchronous server without the draft about as often as they do with no penalty (5 of 666 English, 2 of 1,010 Chinese, 1 request at a time), and the logged acceptance length fell by about 1%. The draft does not see the penalty, so a strong one lowers acceptance more: by about 15% at 2.0.
 
-The draft overlaps scheduling with host work by default; add `--asr.factory.enable_async_decode false` to schedule synchronously. On one H100 with greedy decoding and the prefix cache off, overlap ran at 1.12–1.26x synchronous scheduling on 60-second recordings, 1.01–1.15x on SeedTTS English clips and 0.99–1.15x on SeedTTS Chinese clips, from 1 to 64 concurrent requests, with the same WER and CER. On short clips it also removed the draft's loss under load: at 64 concurrent requests the synchronous draft ran at 0.94x the server without a draft on English clips and 0.91x on Chinese, and the overlapped draft at 1.08x and 1.04x. Overlap runs one extra verify round per request, so the logged acceptance length drops (5.9 to 4.6 tokens on English clips), and streamed first text arrives about 2 ms later for one short clip at a time. With `--asr.factory.async_decode_min_batch_size` set above 1, a decode batch smaller than it, or a prefill after which fewer requests than it are decoding, has its result processed before the next batch is chosen; other batches overlap. At 4 on the same H100 with SeedTTS clips, first streamed text for one clip at a time matched the server without a draft, and throughput stayed within 5% of overlap except at 2 requests, where it was about 7% lower.
+The draft overlaps scheduling with host work by default; add `--asr.factory.enable_async_decode false` to schedule synchronously. On one H100 with greedy decoding and the prefix cache off, overlap ran at 1.12–1.26x synchronous scheduling on 60-second recordings, 1.01–1.15x on SeedTTS English clips and 0.99–1.15x on SeedTTS Chinese clips, from 1 to 64 concurrent requests, with the same WER and CER. On short clips it also removed the draft's loss under load: at 64 concurrent requests the synchronous draft ran at 0.94x the server without a draft on English clips and 0.91x on Chinese, and the overlapped draft at 1.08x and 1.04x. Overlap runs one extra verify round per request, so the logged acceptance length drops (5.9 to 4.6 tokens on English clips), and streamed first text arrives about 2 ms later for one short clip at a time. A decode batch smaller than `--asr.factory.async_decode_min_batch_size`, or a prefill after which fewer requests than it are decoding, has its result processed before the next batch is chosen; other batches overlap. With the draft it defaults to 2, so a lone request decodes synchronously; without a draft it defaults to 1. On one H200 with SeedTTS clips sent once each and streamed, the prefix cache off, first streamed text p95 for one clip at a time matched the server without a draft at 2 (1.00x on English and Chinese), against 1.16x and 1.19x with overlap at every batch size. That costs about 5% of single-request throughput on English and 4% on Chinese; from 2 to 64 concurrent requests the two settings stayed within 3% of each other in throughput. At 4 on one H100, first streamed text for one clip at a time also matched the server without a draft, and throughput stayed within 5% of overlap except at 2 requests, where it was about 7% lower. Set it to 1 to overlap every batch.
 
-The command above caps the server at 8 running requests. A load sweep at the default cap with the prefix cache off ([#3454](https://github.com/sgl-project/sglang-omni/pull/3454)), on one H200 over SeedTTS English clips, found that the synchronous draft gives no speedup at 32 concurrent requests and is about 10% slower at 64. To serve such a load, turn the draft off; `disable_speculative_decoding` drops every `speculative_*` key from the stage:
+The H200 that measured 1.72x differed from the H100 under load: at the default cap of 64 running requests with the prefix cache off, the draft on its defaults gave no speedup at 32 concurrent requests and ran about 10% slower at 64, on both English and Chinese clips, with first streamed text p95 11–21% later than without the draft at both loads. Overlapping every batch had the same throughput, and synchronous scheduling lost the same throughput on English clips in an earlier sweep ([#3454](https://github.com/sgl-project/sglang-omni/pull/3454)). To serve without the draft, add `disable_speculative_decoding`, which drops every `speculative_*` key from the stage:
 
 ```bash
 sgl-omni serve \
-  --config examples/configs/qwen3_asr_1_7b_dflash.yaml \
+  --model-path Qwen/Qwen3-ASR-1.7B \
   --asr.engine.disable_speculative_decoding true \
   --port 8000
 ```
 
 Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
 
-Realtime transcription sessions (`--enable-realtime`) use the draft too. On one H100 at the default memory fraction and cap of 64 running requests, SeedTTS English and Chinese clips and 60-second LongLibriHeavy recordings streamed at wall-clock pace, 1 to 16 sessions at a time, with server VAD or manual commit. No session hit an error or a protocol violation, WER stayed within 0.03 percentage points of the server without the draft, and the median time to a segment's first partial was 11 to 28% lower with the synchronous draft, least at a 1000 ms decode interval, and to its final transcript 17 to 27% lower. Overlap, now the default, gave the same transcripts and median latencies as the synchronous draft on SeedTTS English sessions with server VAD, 1 and 16 at a time, with no errors or protocol violations.
+Realtime transcription sessions (`--enable-realtime`) use the draft too. On one H100 at the default memory fraction and cap of 64 running requests, SeedTTS English and Chinese clips and 60-second LongLibriHeavy recordings streamed at wall-clock pace, 1 to 16 sessions at a time, with server VAD or manual commit. No session hit an error or a protocol violation, WER stayed within 0.03 percentage points of the server without the draft, and the median time to a segment's first partial was 11 to 28% lower with the synchronous draft, least at a 1000 ms decode interval, and to its final transcript 17 to 27% lower. Overlap on every batch gave the same transcripts and median latencies as the synchronous draft on SeedTTS English sessions with server VAD, 1 and 16 at a time, with no errors or protocol violations.
 
 The draft's weights and KV cache come out of the stage's memory fraction. On an 80 GB H100 at `--mem-fraction-static 0.08`, as in the streaming cascade profiles, the KV cache holds 11,501 tokens with the draft and 20,705 without. At that fraction, 640 SeedTTS Chinese sessions, 16 at a time, ran with no errors.
 
 ### Per-request plain fallback
 
-Set `asr.factory.enable_plain_fallback` to route requests that DFlash cannot serve through ordinary decoding. For example, `repetition_penalty=1.2` uses ordinary decoding, and supported sampling temperatures can still use DFlash. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
+Set `asr.factory.enable_plain_fallback` to route requests that DFlash cannot serve through ordinary decoding: requests that fit the target context but leave too little room for draft KV, and, off CUDA, requests that set `repetition_penalty`.
 
 ```bash
 sgl-omni serve \
@@ -472,7 +467,7 @@ sgl-omni serve \
 
 This option requires synchronous DFlash on one CUDA GPU, with prefill CUDA graphs, mixed chunks, and DP attention disabled. Decode CUDA graphs and radix caching can stay enabled. Both paths share the target model and KV pool, and each path caches its prefixes separately.
 
-When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.
+When both paths have work, the scheduler gives speculative batches one to two turns per plain turn, according to their live request counts. This reduces the cost of sparse fallback traffic on speculative requests, but increases latency for plain requests. The two-turn cap prevents plain requests from starving; it does not bound wall-clock waiting time because forward durations vary. Fallback requires synchronous decoding, while Qwen3-ASR DFlash on its own overlaps draft execution by default from 2 decoding requests, so even 0% fallback can cost throughput relative to the default DFlash server. Benchmark both request cohorts before enabling this option.
 
 ## Benchmarking
 

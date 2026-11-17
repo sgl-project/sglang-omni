@@ -51,12 +51,22 @@ public:
 
   const TimestampOptions &defaults() const { return defaults_; }
 
+  // GPU round trips the last PredictProbabilities call made; the streaming
+  // Feed path does not touch this.
+  size_t FilePathSyncs() const { return file_path_syncs_; }
+
 private:
+  // Feed without the GPU round trip; the file path syncs once per block.
+  mlx::core::array FeedLazy(const float *chunk, StreamState &state) const;
+  // Appends the pending lazy probabilities and counts the round trip.
+  void FlushProbabilities(std::vector<mlx::core::array> &pending,
+                          std::vector<float> &probabilities) const;
   mlx::core::array Conv1d(const mlx::core::array &x, const std::string &name,
                           int stride, int padding) const;
   const mlx::core::array &Weight(const std::string &name) const;
 
   std::unordered_map<std::string, mlx::core::array> weights_;
+  mutable size_t file_path_syncs_ = 0;
   int filter_length_ = 256;
   int hop_length_ = 128;
   int pad_ = 64;

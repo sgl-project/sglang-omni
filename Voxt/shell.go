@@ -189,7 +189,7 @@ func (a *app) closeShell() {
 	a.logs.Close()
 }
 
-// navigate goes to a router path ("/models"); it does nothing when that
+// navigate goes to a router path ("/transcribe"); it does nothing when that
 // page shows already. "/settings/general" opens the settings dialog at
 // that section, over the page, and "/settings" at the section shown last;
 // any other path closes it.
@@ -291,6 +291,9 @@ func (a *app) view(c *ui.Context) {
 		})
 	})
 	a.settingsDialog(c)       // shell_settings.go
+	a.modelDeleteDialogs(c)   // models_delete.go
+	a.networkDialog(c)        // models_network.go
+	a.providerDialogView(c)   // remote_dialog.go
 	a.onboarding(c)           // onboarding_view.go
 	a.shortcutPromptDialog(c) // settings_shortcuts_family.go
 	a.announcementDialog(c)   // announcements.go

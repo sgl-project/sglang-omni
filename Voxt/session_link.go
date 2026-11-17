@@ -27,6 +27,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -54,6 +55,9 @@ type sessionState struct {
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
+	// reopen is the history's continuable conversations, newest first.
+	reopen     []reopenConversation
+	restoreSeq int
 	// notice is the overlay's one-line message, when it shows one;
 	// noticeSeq numbers them, so that a notice's timer hides only itself.
 	notice    *sessionNotice
@@ -76,15 +80,16 @@ type sessionState struct {
 
 // answerCard is the answer card's state (overlay_card.go draws it).
 type answerCard struct {
-	open      bool
-	id        string // the session whose result it shows
-	conv      string // the first session of its conversation (store.Entry.Conversation)
-	kind      store.Kind
-	text      string
-	title     string // Rewrite's answer title ("" for none)
-	target    proto.App
-	inserting bool   // Insert pastes: the card is hidden meanwhile (Voxt's)
-	msg       string // a line under the text: why Insert, or another language, did not work
+	open       bool
+	id         string // the session whose result it shows
+	conv       string // the first session of its conversation (store.Entry.Conversation)
+	kind       store.Kind
+	text       string
+	highlights []dict.Span
+	title      string // Rewrite's answer title ("" for none)
+	target     proto.App
+	inserting  bool   // Insert pastes: the card is hidden meanwhile (Voxt's)
+	msg        string // a line under the text: why Insert, or another language, did not work
 	// why says why the result is in the card and not in place (Insert's
 	// tip: Voxt says nothing; one line of orange was too loud, 10-15).
 	why string

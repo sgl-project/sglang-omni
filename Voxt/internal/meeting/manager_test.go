@@ -304,7 +304,11 @@ func TestSnapshotKeepsLevelHistory(t *testing.T) {
 	}
 	defer m.Finish(ctx, id)
 	deadline := time.Now().Add(2 * time.Second)
-	for len(m.Current().Levels[meeting.SourceMic]) < session.Bars && time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
+		levels := m.Current().Levels[meeting.SourceMic]
+		if len(levels) > 0 && levels[len(levels)-1] == session.Level(-3) {
+			break
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	got := m.Current().Levels

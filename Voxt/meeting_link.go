@@ -53,7 +53,8 @@ func (a *app) openMeetings() {
 		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
 			return a.meetingTrackASR(ctx, src)
 		},
-		VAD: a.meetingVAD(),
+		Diarizer: a.meetingDiarizer,
+		VAD:      a.meetingVAD(),
 		LLM: func(ctx context.Context, id string) (meeting.SummaryChat, error) {
 			chat, _, err := a.local.LLM(ctx, id)
 			return chat, err
@@ -295,12 +296,23 @@ func meetingStartProblem(err error) string {
 		return i18n.T("The speech model for meetings is not downloaded. Download it in Settings → Meetings.")
 	case errors.Is(err, meeting.ErrBusy):
 		return i18n.T("A meeting is already recording.")
-	case errors.As(err, &se) && se.Guidance == meeting.GuidanceModel:
-		return i18n.T("Could not load the speech model for meetings: %v", se.Err)
-	case errors.As(err, &se) && se.Source == meeting.SourceSystem:
-		return i18n.T("Could not record system audio. Allow Voxt in System Settings → Privacy & Security → Screen & System Audio Recording, or record the microphone only.")
 	case errors.As(err, &se):
-		return i18n.T("Could not record the microphone. Allow Voxt in System Settings → Privacy & Security → Microphone.")
+		if se.Guidance == meeting.GuidanceModel {
+			return i18n.T("Could not load the speech model for meetings: %v", se.Err)
+		}
+		denied := errors.Is(se.Err, &proto.Error{Code: proto.CodePermissionDenied})
+		switch se.Source {
+		case meeting.SourceSystem:
+			if denied {
+				return i18n.T("Could not record system audio. Allow system audio recording for Voxt in System Settings → Privacy & Security → Screen & System Audio Recording, or record the microphone only.")
+			}
+			return i18n.T("Could not record system audio. Try again, or record the microphone only.")
+		case meeting.SourceMic:
+			if denied {
+				return i18n.T("Could not record the microphone. Allow Voxt in System Settings → Privacy & Security → Microphone.")
+			}
+			return i18n.T("Could not record the microphone. Check your input device and try again.")
+		}
 	}
 	return i18n.T("Could not start the meeting: %v", err)
 }

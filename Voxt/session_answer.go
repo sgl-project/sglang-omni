@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -24,7 +25,7 @@ import (
 func (a *app) openAnswer(s session.Snapshot) {
 	card := answerCard{
 		open: true, id: s.ID, conv: s.ID, kind: s.Kind, text: s.Result, title: s.Title, target: s.Target,
-		input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage, llmID: s.LLM.ID,
+		highlights: s.Highlights, input: session.TextInput{Raw: s.Raw, Selection: s.Selection}, lang: s.TargetLanguage, llmID: s.LLM.ID,
 		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name),
 	}
 	if s.State == session.Failed {
@@ -75,6 +76,7 @@ func (a *app) endRedo(s session.Snapshot) {
 	switch {
 	case s.State == session.Done && s.Result != "":
 		a.answer.id, a.answer.text, a.answer.lang, a.answer.think = s.ID, s.Result, s.TargetLanguage, think
+		a.answer.highlights = s.Highlights
 		a.answer.title, a.answer.msg, a.answer.copied = s.Title, "", false
 		if a.answer.kind == store.KindRewrite && len(a.answer.turns) == 1 {
 			a.answer.turns[0].Answer = compose.Answer{Title: s.Title, Content: s.Result}
@@ -133,7 +135,7 @@ func (a *app) retryAnswer(lang string) {
 // with its thinking level: it stays in the card, which shows its text
 // until the new one comes (Voxt's).
 func (a *app) redoAnswer(req session.StartRequest) {
-	req.Card, req.Conversation = true, a.answer.conv
+	req.Card, req.Conversation, req.Replaces = true, a.answer.conv, a.answer.id
 	a.answer.msg = ""
 	if n := a.sessionBlocker(req.Kind); n != nil {
 		a.answer.msg = n.text
@@ -189,6 +191,7 @@ func (a *app) closeAnswer() {
 	}
 	a.answer, a.followUp = answerCard{}, ""
 	a.resurface()
+	a.buildTrayMenu()
 	a.syncHotkeys()
 	a.overlaySync()
 }
@@ -278,6 +281,7 @@ func (a *app) insertAnswer() {
 				if res.Moved(card.target) {
 					into = res.To // the user clicked into another app
 				}
+				a.reopen = slices.DeleteFunc(a.reopen, func(recent reopenConversation) bool { return recent.conversation == card.conv })
 				a.setDelivery(card.id, "insert", into)
 				a.closeAnswer()
 				return

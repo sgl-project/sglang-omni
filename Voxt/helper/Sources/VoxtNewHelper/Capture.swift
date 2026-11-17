@@ -14,113 +14,21 @@ import Foundation
 //
 // - Devices are tried in the user's order (Core Audio UIDs), then the
 //   default input (fellBack).
-// - Watchdog (Voxt's lesson: Bluetooth and some USB inputs start without a
-//   single callback): no callback within 1.2 s rebuilds the engine; the
-//   second time on the default input; after that the job ends (an error
-//   when no audio came at all).
-// - A configuration change (default device switched, AirPods connected)
-//   rebuilds the engine. An input going away moves the recording to the
+// - Engines that deliver no audio are limited (Voxt's lesson: Bluetooth
+//   and some USB inputs start without a single callback; a chosen input
+//   can also keep reconfiguring itself before any buffer arrives): the
+//   watchdog rebuilds an engine silent for 1.2 s, and a rebuilt engine
+//   that was silent counts the same (NoAudioEscalation). The second
+//   silent engine starts on the default input, a third ends the job (an
+//   error when no audio came at all); an engine with audio resets it.
+// - A configuration change rebuilds a stopped engine or follows a new
+//   default input. An input going away moves the recording to the
 //   next of devices still connected, else the default input (deviceLost;
 //   the default input follows the new default); none left ends it.
 // - Tests only: VOXTNEW_HELPER_CAPTURE_FILE names an audio file that
 //   stands in for the microphone (CaptureFileConfig): the same conversion,
 //   framing, notifications and endings, at a microphone's pace, without
 //   asking for the microphone. capture.system: SystemCapture.swift.
-
-// MARK: Devices (Core Audio)
-
-func property<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
-                         scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal, _ value: inout T) -> Bool {
-    var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
-    var size = UInt32(MemoryLayout<T>.size)
-    return withUnsafeMutablePointer(to: &value) { AudioObjectGetPropertyData(object, &address, 0, nil, &size, $0) } == noErr
-}
-
-func stringProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
-    var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-    let value = UnsafeMutablePointer<Unmanaged<CFString>?>.allocate(capacity: 1)
-    defer { value.deallocate() }
-    value.initialize(to: nil)
-    guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, value) == noErr, let s = value.pointee?.takeRetainedValue() else { return nil }
-    return s as String
-}
-
-private func inputChannelCount(_ device: AudioObjectID) -> Int {
-    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
-                                             mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
-    var size: UInt32 = 0
-    guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr, size > 0 else { return 0 }
-    let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
-    defer { raw.deallocate() }
-    guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, raw) == noErr else { return 0 }
-    let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
-    return list.reduce(0) { $0 + Int($1.mNumberChannels) }
-}
-
-private func transportName(_ t: UInt32) -> String? {
-    switch t {
-    case kAudioDeviceTransportTypeBuiltIn: "builtin"
-    case kAudioDeviceTransportTypeUSB: "usb"
-    case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: "bluetooth"
-    case kAudioDeviceTransportTypeAggregate, kAudioDeviceTransportTypeAutoAggregate: "aggregate"
-    case kAudioDeviceTransportTypeVirtual: "virtual"
-    case kAudioDeviceTransportTypeContinuityCaptureWired, kAudioDeviceTransportTypeContinuityCaptureWireless: "continuity"
-    default: nil
-    }
-}
-
-private func inputDeviceIDs() -> (all: [AudioObjectID], defaultID: AudioObjectID) {
-    var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
-                                             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-    var size: UInt32 = 0
-    var ids: [AudioObjectID] = []
-    if AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr {
-        ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids)
-    }
-    var def = AudioObjectID(0)
-    _ = property(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultInputDevice, &def)
-    return (ids.filter { inputChannelCount($0) > 0 }, def)
-}
-
-/// The audio inputs, the default one first.
-func captureDevices() -> [CaptureDevice] {
-    let (ids, def) = inputDeviceIDs()
-    var out: [CaptureDevice] = []
-    for id in ids {
-        guard let uid = stringProperty(id, kAudioDevicePropertyDeviceUID) else { continue }
-        var rate = Float64(0)
-        _ = property(id, kAudioDevicePropertyNominalSampleRate, &rate)
-        var transport = UInt32(0)
-        _ = property(id, kAudioDevicePropertyTransportType, &transport)
-        out.append(CaptureDevice(id: uid, name: stringProperty(id, kAudioObjectPropertyName) ?? uid,
-                                 channels: inputChannelCount(id), sampleRate: Int(rate), default: id == def,
-                                 transport: transportName(transport)))
-    }
-    return out.sorted { $0.default && !$1.default }
-}
-
-private func findDevice(uid: String) -> AudioObjectID? {
-    inputDeviceIDs().all.first { stringProperty($0, kAudioDevicePropertyDeviceUID) == uid }
-}
-
-private func deviceName(_ id: AudioObjectID) -> String {
-    stringProperty(id, kAudioObjectPropertyName) ?? stringProperty(id, kAudioDevicePropertyDeviceUID) ?? "input \(id)"
-}
-
-private func isAlive(_ id: AudioObjectID) -> Bool {
-    var alive = UInt32(0)
-    return property(id, kAudioDevicePropertyDeviceIsAlive, &alive) && alive != 0
-}
-
-/// CPU time of the process, in seconds.
-func cpuSeconds() -> Double {
-    var u = rusage()
-    getrusage(RUSAGE_SELF, &u)
-    func s(_ tv: timeval) -> Double { Double(tv.tv_sec) + Double(tv.tv_usec) / 1e6 }
-    return s(u.ru_utime) + s(u.ru_stime)
-}
 
 // MARK: Capture
 
@@ -217,13 +125,18 @@ private final class CaptureRun: @unchecked Sendable {
     private var resampler: MonoResampler?
     private var inputFormat: AVAudioFormat?
     private var framer: PCMFramer
+    // The native system tap may produce no callbacks while the output is idle.
+    // Both are owned by the capture queue.
+    private var systemClock: SystemCaptureClock?
+    private var systemSilenceTimer: DispatchSourceTimer?
+    private static let silence = [Float](repeating: 0, count: 1024)
     /// The file input's name and its pacing timer (tests only).
     private var sourceName: String?
     private var fileTimer: DispatchSourceTimer?
     private var generation = 0
     private var callbacksThisEngine = 0
     private var restarts = 0
-    private var noCallbackRestarts = 0
+    private var escalation = NoAudioEscalation()
     private var ended = false
     private var startedSent = false
     private var frames = 0
@@ -253,8 +166,13 @@ private final class CaptureRun: @unchecked Sendable {
             return try startFile(file)
         }
         if system {
-            try startSystem()
-            return startWatchers()
+            return try queue.sync {
+                try startSystem()
+                let now = monotonicMs()
+                systemClock = SystemCaptureClock(sampleRate: rate, startedAt: now)
+                sendStarted(at: now)
+                startSystemSilenceTimer()
+            }
         }
         var reasons: [String] = []
         for uid in params.devices ?? [] where !uid.isEmpty {
@@ -336,6 +254,33 @@ private final class CaptureRun: @unchecked Sendable {
         armWatchdog(generation: gen)
     }
 
+    private func startSystemSilenceTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.lock.withLock({ self.ended }), let clock = self.systemClock else { return }
+            self.padSystemSilence(clock.silenceWhileIdle(at: monotonicMs(), written: self.framer.samplesSeen))
+            if let limit = self.maxSamples, self.framer.samplesSeen >= limit {
+                self.endAsync(reason: CaptureReason.maxSeconds)
+            }
+        }
+        systemSilenceTimer = timer
+        timer.resume()
+    }
+
+    private func padSystemSilence(_ samples: Int) {
+        let capacity = maxSamples.map { max(0, $0 - framer.samplesSeen) } ?? samples
+        var remaining = min(samples, capacity)
+        Self.silence.withUnsafeBufferPointer { silence in
+            while remaining > 0 {
+                let count = min(remaining, silence.count)
+                let (frames, _) = framer.push(UnsafeBufferPointer(rebasing: silence[..<count]))
+                emit(frames, [])
+                remaining -= count
+            }
+        }
+    }
+
     /// capture.system: a tap on the default output, whose buffers go
     /// through receive() like the engine's; a new default output restarts it.
     private func startSystem() throws {
@@ -365,7 +310,6 @@ private final class CaptureRun: @unchecked Sendable {
             tap.stop()
             throw error
         }
-        armWatchdog(generation: gen)
     }
 
     /// The test-only file input: the file's buffers go through receive()
@@ -402,34 +346,38 @@ private final class CaptureRun: @unchecked Sendable {
 
     private func armWatchdog(generation gen: Int) {
         queue.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            guard let self else { return }
-            let (stale, silent) = self.lock.withLock { (self.ended || self.generation != gen, self.callbacksThisEngine == 0) }
-            guard !stale, silent else { return }
-            let attempt = self.lock.withLock { () -> Int in
-                self.noCallbackRestarts += 1
-                return self.noCallbackRestarts
-            }
-            if attempt > 2 {
-                self.endAsync(noAudio: "No input gave audio: \(deviceName(self.lock.withLock { self.deviceID })) delivered nothing within 1.2 s, \(attempt - 1) times")
-                return
-            }
-            // The second time, move to the default input.
-            self.restart(reason: CaptureReason.noCallback, toDefault: attempt == 2)
+            self?.restart(reason: CaptureReason.noCallback, silentGeneration: gen)
         }
     }
 
     /// Rebuilds the engine (on the queue), on the inputs of restartOrder in
     /// turn. A chosen input that went away makes it deviceLost; when no
     /// other input starts, that recording ends with what it has.
-    private func restart(reason: String, toDefault: Bool = false) {
-        let (attempt, preferred, wasDefault) = lock.withLock { () -> (Int, String?, Bool) in
+    private func restart(reason: String, silentGeneration: Int? = nil) {
+        let restart = lock.withLock { () -> (attempt: Int, preferred: String?, wasDefault: Bool, step: NoAudioEscalation.Step?)? in
+            guard !ended else { return nil }
+            if let silentGeneration {
+                guard generation == silentGeneration, callbacksThisEngine == 0 else { return nil }
+            }
+            // A microphone rebuild before the first buffer counts like a watchdog timeout.
+            // For system audio only the watchdog counts, as output changes can happen before playback begins.
+            let silent = callbacksThisEngine == 0 && (!system || silentGeneration != nil)
             restarts += 1
-            return (restarts, usingDefault ? nil : deviceUID, usingDefault)
+            let step = silent ? escalation.silentEngine() : nil
+            return (restarts, usingDefault ? nil : deviceUID, usingDefault, step)
+        }
+        guard let (attempt, preferred, wasDefault, step) = restart else { return }
+        if step == .end {
+            let id = lock.withLock { deviceID }
+            if system {
+                return endAsync(noAudio: "No input gave audio: \(deviceName(id)) delivered nothing within 1.2 s, 2 times")
+            }
+            return endAsync(noAudio: "No input gave audio: \(deviceName(id)) delivered nothing on three consecutive starts")
         }
         stopEngine()
         let gone = !system && preferred.map { findDevice(uid: $0).map(isAlive) != true } ?? false
         var failure: Error?
-        for uid in system ? [nil] : restartOrder(devices: params.devices ?? [], current: preferred, gone: gone, toDefault: toDefault) {
+        for uid in system ? [nil] : restartOrder(devices: params.devices ?? [], current: preferred, gone: gone, toDefault: step == .default) {
             do {
                 try system ? startSystem() : startEngine(uid: uid)
                 failure = nil
@@ -454,8 +402,20 @@ private final class CaptureRun: @unchecked Sendable {
 
     private func startWatchers() {
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil) { [weak self] n in
-            guard let self, let e = n.object as? AVAudioEngine, self.lock.withLock({ e === self.engine && !self.ended }) else { return }
-            self.queue.async { self.restart(reason: CaptureReason.configurationChange) }
+            guard let self, let notifiedEngine = n.object as? AVAudioEngine else { return }
+            let notifiedGeneration: Int? = self.lock.withLock {
+                notifiedEngine === self.engine && !self.ended ? self.generation : nil
+            }
+            guard let notifiedGeneration else { return }
+            self.queue.async {
+                let (engine, usingDefault, deviceID) = self.lock.withLock {
+                    (self.generation == notifiedGeneration && !self.ended ? self.engine : nil, self.usingDefault, self.deviceID)
+                }
+                guard let engine else { return }
+                // Setting CurrentDevice can report a configuration change after the engine is already running on that device.
+                if engine.isRunning && (!usingDefault || inputDeviceIDs().defaultID == deviceID) { return }
+                self.restart(reason: CaptureReason.configurationChange)
+            }
         }
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 0.25, repeating: 0.25)
@@ -486,12 +446,26 @@ private final class CaptureRun: @unchecked Sendable {
         e.reset()
     }
 
+    private func stopSource() {
+        if system && file == nil {
+            // The tap and the timer can also be used by work on this queue.
+            queue.sync {
+                systemSilenceTimer?.cancel()
+                systemSilenceTimer = nil
+                stopEngine()
+            }
+        } else {
+            stopEngine()
+        }
+    }
+
     /// The tap (or the file input): downmix to mono at the input's rate,
     /// then convert on the queue.
     private func receive(_ buffer: AVAudioPCMBuffer, generation gen: Int) {
         let mono: AVAudioFormat? = lock.withLock {
             guard gen == generation, !ended else { return nil }
             callbacksThisEngine += 1
+            if !system && callbacksThisEngine == 1 { escalation.engineHeard() }
             return resampler?.mono
         }
         guard let mono, let copy = MonoResampler.downmix(buffer, into: mono) else { return }
@@ -499,12 +473,16 @@ private final class CaptureRun: @unchecked Sendable {
         queue.async { [weak self] in self?.process(copy, generation: gen, at: at) }
     }
 
-    /// On the queue: capture.started at the first audio, then convert and frame.
+    /// On the queue: convert and frame the audio. For the mic and file
+    /// inputs, the first buffer also marks the start.
     private func process(_ buffer: AVAudioPCMBuffer, generation gen: Int, at: Double) {
         // Not "ended": finish() lets the buffers already queued through.
         guard let res = lock.withLock({ gen == generation ? resampler : nil }) else { return }
         sendStarted(at: at)
         guard let converted = res.convert(buffer), let samples = converted.floatChannelData?[0] else { return }
+        if let missing = systemClock?.silenceBeforeBuffer(at: at, samples: Int(converted.frameLength), written: framer.samplesSeen) {
+            padSystemSilence(missing)
+        }
         let (fs, levels) = framer.push(UnsafeBufferPointer(start: samples, count: Int(converted.frameLength)))
         emit(fs, levels)
         if let maxSamples, framer.samplesSeen >= maxSamples {
@@ -548,7 +526,7 @@ private final class CaptureRun: @unchecked Sendable {
     private func teardown() {
         watcher?.cancel()
         if let o = configObserver { NotificationCenter.default.removeObserver(o) }
-        stopEngine()
+        stopSource()
         onEnd(self)
     }
 
@@ -575,9 +553,13 @@ private final class CaptureRun: @unchecked Sendable {
     /// partial last one) are sent first. False when it had ended.
     func finish(reason: String) -> Bool {
         guard markEnded() else { return false }
-        stopEngine()
+        let stoppedAt = monotonicMs()
+        stopSource()
         // Buffers already queued still convert: queue.sync runs after them.
         let result: CaptureResult = queue.sync {
+            if let clock = systemClock {
+                padSystemSilence(clock.silenceWhileIdle(at: stoppedAt, written: framer.samplesSeen, stopping: true))
+            }
             if let last = framer.flush() {
                 emit([last], [])
             }

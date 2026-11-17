@@ -139,7 +139,7 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.retryAnswer("")
 		}
 	}
-	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking level"), askAgainText(v.think, a.llmGeneration(a.answer.llmID)), icons.Tuning2, v.canThink) {
+	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking level"), thinkButtonText(v.think, a.llmGeneration(a.answer.llmID)), icons.Tuning2, v.canThink) {
 		a.toggleThinkMenu()
 	}
 	if v.failed == nil {
@@ -325,13 +325,15 @@ func (a *app) cardBlockView(c *ui.Context, b cardBlock) {
 	switch {
 	case b.bubble:
 		a.cardBubbleView(c, b)
+	case b.markdown:
+		a.cardMarkdown(c, b).Margin(b.gap, 0, 0, 0)
 	case b.problem:
 		ui.Row(c).Gap(layout.ProblemGap).AlignItems(ui.Start).Margin(b.gap, 0, 0, 0).Children(func() {
 			ui.Icon(c, icons.DangerCircle.Bold).Size(layout.ProblemIcon, layout.ProblemIcon).TextColor(tok(c.Theme()).Danger).Shrink(0)
 			ui.Text(c, b.text.text).FontSize(b.text.size).FontWeight(b.text.weight).TextColor(b.color).Grow(1).MinWidth(0)
 		})
 	default:
-		t := ui.Text(c, b.text.text).FontSize(b.text.size).TextColor(b.color).Margin(b.gap, 0, 0, 0)
+		t := dictionaryText(c, b.text.text, b.highlights).FontSize(b.text.size).TextColor(b.color).Margin(b.gap, 0, 0, 0)
 		if b.text.weight != 0 {
 			t.FontWeight(b.text.weight)
 		}
@@ -342,9 +344,9 @@ func (a *app) cardBlockView(c *ui.Context, b cardBlock) {
 }
 
 // cardBubbleView is a conversation's turn (Voxt's
-// RewriteConversationBubble): 340 wide in the small card (its text's
-// wrap, and the padding), the user's on the right; an answer shows Copy
-// under the pointer.
+// RewriteConversationBubble): the user's input fits its text on the right,
+// up to 340 wide in the small card; an answer takes that width and shows
+// Copy under the pointer.
 func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 	justify := ui.Start
 	bg, line := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08)
@@ -358,6 +360,13 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			titleA = 0.54
 		}
 	}
+	if b.user {
+		textWidth, _ := c.MeasureText(0, b.text.span())
+		titleWidth, _ := c.MeasureText(0, b.title.span())
+		quoteWidth, _ := c.MeasureText(0, b.quote.span())
+		b.text.wrap = layout.BubbleTextWidth(textWidth, titleWidth, quoteWidth, b.text.wrap)
+		b.quote.wrap = b.text.wrap
+	}
 	ui.Row(c).Justify(justify).Margin(b.gap, 0, 0, 0).Children(func() {
 		col := ui.Column(c.Key("bubble")).Width(b.text.wrap+2*layout.BubblePadX).Shrink(0).Padding(layout.BubblePadY-layout.Border, layout.BubblePadX-layout.Border).Gap(layout.BubbleTitleGap).
 			Radius(layout.BubbleRadius).Background(bg).Border(1, line)
@@ -369,12 +378,16 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			if b.title.text != "" {
 				ui.Text(c, b.title.text).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleA)).SingleLine().Ellipsis("…").MaxWidth(b.text.wrap)
 			}
-			t := ui.Text(c, b.text.text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textA))
-			if b.user {
-				t.TextAlign(ui.End)
-			}
-			if !b.live {
-				t.Selectable()
+			if b.markdown {
+				a.cardMarkdown(c, b)
+			} else {
+				t := ui.Text(c, b.text.text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textA))
+				if b.user {
+					t.TextAlign(ui.End)
+				}
+				if !b.live {
+					t.Selectable()
+				}
 			}
 			if b.quote.text != "" {
 				a.cardQuoteView(c, b)

@@ -168,10 +168,18 @@ func (a *app) llmDebugPage(c *ui.Context) {
 	k := tok(t)
 	u := &a.llmDbg
 	// The page opens from Language models over its own route: Esc or ×
-	// goes back there (#3781).
+	// goes back there (#3781), and the route back to the page Settings
+	// opened over, or the debug page shows again when Settings closes.
 	columnPageHeader(c, i18n.T("Language model debug"), func() {
 		if iconButton(c.Key("llmdbg-close"), icons.Close, i18n.T("Close")).Clicked() || c.Shortcut(0, ui.KeyEscape) {
 			a.navigate(remotePath)
+			if a.router.Path() == llmDebugPath {
+				if a.router.CanGoBack() {
+					a.router.Back()
+				} else {
+					a.router.Replace("/home")
+				}
+			}
 		}
 	})
 	ui.Scroll(c.Key("llmdbg-scroll")).Grow(1).MinHeight(0).Children(func() {

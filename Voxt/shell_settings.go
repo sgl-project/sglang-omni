@@ -78,6 +78,8 @@ type settingsSection struct{ id, title, en string }
 func settingsSections() []settingsSection {
 	return []settingsSection{
 		{"general", i18n.T("General"), "General language menu bar login"},
+		{"models", i18n.T("Speech models"), "Speech models download delete install recognition"},
+		{"language-models", i18n.T("Language models"), "Language models services providers API"},
 		{"permissions", i18n.T("Permissions"), "Permissions microphone accessibility privacy"},
 		{"audio", i18n.T("Audio"), "Audio microphone input device sounds silence"},
 		{"overlay", i18n.T("Overlay style"), "Overlay style position opacity corners recording pill"},
@@ -96,6 +98,10 @@ func settingsSectionIcon(id string) icons.Icon {
 	switch id {
 	case "general":
 		return icons.Settings
+	case "models":
+		return modelsIcon
+	case "language-models":
+		return remoteIcon
 	case "permissions":
 		return permissionsIcon
 	case "audio":
@@ -142,6 +148,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	}
 	if old.General.HideDock != new.General.HideDock {
 		a.applyDock() // tray.go
+	}
+	if old.Privacy.KeepHistory != new.Privacy.KeepHistory {
+		a.loadTrayRecent() // the Reopen card list exists only with history on
 	}
 	if old.Updates.BetaOn(a.version) != new.Updates.BetaOn(a.version) {
 		a.applyBeta() // updates.go
@@ -281,6 +290,8 @@ func (a *app) openSettings(sub string) {
 // that read something when they show start it here.
 func (a *app) settingsShown(sub string) {
 	switch sub {
+	case "/models":
+		a.modelsShown() // models_memory.go
 	case "/permissions":
 		a.recheckPermissions() // permissions.go
 	case "/audio":
@@ -431,15 +442,17 @@ func settingsDialogSize(t *ui.Theme, w, h float32) (dw, dh float32) {
 // settingsSection builds the section of the settings dialog r shows.
 func (a *app) settingsSection(c *ui.Context, r *ui.Route) {
 	sections := map[string]func(*ui.Context){
-		"general":     a.generalSettings,
-		"permissions": a.permissionsSettings, // permissions.go
-		"audio":       a.audioSettings,       // settings_audio.go
-		"overlay":     a.overlaySettings,     // settings_overlay.go
-		"shortcuts":   a.shortcutsSettings,   // settings_shortcuts.go
-		"appearance":  a.appearanceSettings,
-		"privacy":     a.privacySettings, // settings_privacy.go
-		"storage":     a.storageSettings, // settings_storage.go
-		"about":       a.aboutSettings,   // settings_about.go
+		"general":         a.generalSettings,
+		"models":          a.modelsSettings,      // models_cards.go
+		"language-models": a.remoteSettings,      // remote_page.go
+		"permissions":     a.permissionsSettings, // permissions.go
+		"audio":           a.audioSettings,       // settings_audio.go
+		"overlay":         a.overlaySettings,     // settings_overlay.go
+		"shortcuts":       a.shortcutsSettings,   // settings_shortcuts.go
+		"appearance":      a.appearanceSettings,
+		"privacy":         a.privacySettings, // settings_privacy.go
+		"storage":         a.storageSettings, // settings_storage.go
+		"about":           a.aboutSettings,   // settings_about.go
 	}
 	for _, s := range settingsSections() {
 		if r.Match("/" + s.id) {
