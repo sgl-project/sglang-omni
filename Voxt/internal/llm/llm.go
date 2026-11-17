@@ -137,6 +137,9 @@ type Response struct {
 	Latency      time.Duration // of the successful attempt
 	Attempts     int           // 1 + retries (Client)
 	Repairs      int           // JSON repair turns (Client.JSON)
+	// ImagesDropped: the model refused the images and the answer came
+	// from the text alone (only the session may claim an image went).
+	ImagesDropped bool
 	// JSON is the validated value for FormatJSON requests made through
 	// Client.JSON (the extracted JSON text otherwise empty).
 	JSON json.RawMessage

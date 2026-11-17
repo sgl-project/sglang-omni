@@ -218,6 +218,25 @@ func b2i(b bool) int {
 	return 0
 }
 
+// TestImageHintClearedWhenDropped: the model refused the picture and
+// answered from the text alone (llm.Response.ImagesDropped); the card
+// must not claim a picture went with the request.
+func TestImageHintClearedWhenDropped(t *testing.T) {
+	model := &fakeLLM{text: "We ship on Friday.", drop: true}
+	h := newHarness(t, &fakeFile{text: "unused"}, model, func(c *Config, s *settings.Settings) {
+		s.Privacy.SendWindow = true
+		c.Window = func(context.Context, int) ([]byte, error) { return []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, nil }
+	})
+	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
+		Text: &TextInput{Raw: "make it polite", Selection: "ship friday?"}}); err != nil {
+		t.Fatal(err)
+	}
+	end := h.rec.wait(t)
+	if end.State != Done || end.ImageHint != "" {
+		t.Fatalf("end %s hint %q", end.State, end.ImageHint)
+	}
+}
+
 // TestBoxInput: the input box's session records and reads the selection
 // as ever; when the answer is asked for, the box's typed text and
 // pictures (Config.BoxInput) go with it, the pictures required, the

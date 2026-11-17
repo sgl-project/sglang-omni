@@ -48,7 +48,7 @@ func TestImagesRefusedSendsText(t *testing.T) {
 	)
 	c := &Client{Backend: NewOpenAI(presetAt(t, "openai", f.srv.URL), "sk", f.srv.Client())}
 	resp, err := c.Chat(context.Background(), Request{Messages: msgs("hi"), Images: [][]byte{{0xff, 0xd8}}})
-	if err != nil || resp.Text != "fine" {
+	if err != nil || resp.Text != "fine" || !resp.ImagesDropped {
 		t.Fatalf("%v %+v", err, resp)
 	}
 	rs := f.requests()

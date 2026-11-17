@@ -52,36 +52,60 @@ func ParseAnswer(text string) (Answer, bool) {
 // with what it wraps, through its <|..._end|>, and a block cut off by
 // the end of the stream goes too.
 func StripControl(s string) string {
-	for {
-		i := strings.Index(s, "<|")
-		if i < 0 {
+	for at := 0; ; {
+		k := strings.Index(s[at:], "<|")
+		if k < 0 {
 			return s
 		}
+		i := at + k
 		j := strings.Index(s[i+2:], "|>")
 		if j < 0 {
-			return strings.TrimRight(s[:i], " \t\r\n")
+			// Only a cut-off tag's tail goes with the stream's end; text
+			// after a real <| (F#'s, a user's) stays.
+			if tagName(s[i+2:]) {
+				return strings.TrimRight(s[:i], " \t\r\n")
+			}
+			return s
 		}
 		name := s[i+2 : i+2+j]
 		rest := s[i+2+j+2:]
 		// A wrapper goes with what it wraps: <|..._begin|> through its
 		// <|..._end|>, a thought <|channel|> through <channel|> (Gemma 4's
-		// channel, llm's thinkTags).
+		// channel, llm's thinkTags). Anything else is text.
 		close := ""
-		switch {
-		case strings.HasSuffix(name, "_begin"):
-			close = "<|" + strings.TrimSuffix(name, "_begin") + "_end|>"
-		case name == "channel":
-			close = "<channel|>"
-		}
-		if close != "" {
-			k := strings.Index(rest, close)
-			if k < 0 {
-				return strings.TrimRight(s[:i], " \t\r\n")
+		if tagName(name) {
+			switch {
+			case strings.HasSuffix(name, "_begin"):
+				close = "<|" + strings.TrimSuffix(name, "_begin") + "_end|>"
+			case name == "channel":
+				close = "<channel|>"
 			}
-			rest = rest[k+len(close):]
 		}
-		s = s[:i] + rest
+		if close == "" {
+			at = i + 2
+			continue
+		}
+		e := strings.Index(rest, close)
+		if e < 0 {
+			return strings.TrimRight(s[:i], " \t\r\n")
+		}
+		s = s[:i] + rest[e+len(close):]
+		at = i
 	}
+}
+
+// tagName reports whether tail is one tag's name (or, with no |> yet,
+// a cut-off tag's name so far): a letter, then letters, digits and _.
+func tagName(tail string) bool {
+	for i, r := range tail {
+		switch {
+		case 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z':
+		case i > 0 && (r == '_' || '0' <= r && r <= '9'):
+		default:
+			return false
+		}
+	}
+	return tail != ""
 }
 
 // extractObject is the first balanced JSON object in text ("" for none).

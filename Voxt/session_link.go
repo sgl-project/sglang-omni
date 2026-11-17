@@ -57,6 +57,11 @@ type sessionState struct {
 	// content as the sending session reads it (Config.BoxInput).
 	box      rewriteBox
 	boxShare boxShare
+	// boxGen numbers the box's lives: a picture conversion posted for an
+	// older life is dropped. boxPending counts the conversions not yet
+	// posted; boxSendQueued: Enter came while one converted.
+	boxGen, boxPending int
+	boxSendQueued      bool
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard

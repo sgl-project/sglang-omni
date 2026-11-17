@@ -357,3 +357,69 @@ func TestAnswerCardAttach(t *testing.T) {
 		t.Error("no card")
 	}
 }
+
+// fakeBoxWindow records the panel's life (boxWindow).
+type fakeBoxWindow struct{ hidden, destroyed bool }
+
+func (f *fakeBoxWindow) Invalidate() {}
+func (f *fakeBoxWindow) Center()     {}
+func (f *fakeBoxWindow) Show()       {}
+func (f *fakeBoxWindow) Focus()      {}
+func (f *fakeBoxWindow) Hide()       { f.hidden = true }
+func (f *fakeBoxWindow) Destroy()    { f.destroyed = true }
+
+// TestRewriteBoxCloseClosesWindow: Esc drops the box's state, but the
+// panel must go with it — zeroing the window pointer first would
+// strand the visible panel on screen, and a reopen would add another.
+func TestRewriteBoxCloseClosesWindow(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	w := &fakeBoxWindow{}
+	a.box = rewriteBox{open: true, shown: true, win: w, winShown: true}
+	a.closeBox()
+	if !w.destroyed || a.box.win != nil || a.box.open {
+		t.Errorf("destroyed %v, box %+v", w.destroyed, a.box)
+	}
+}
+
+// TestRewriteBoxStaleConversionDropped: a picture whose conversion
+// ends after the box was closed must not land in the reopened one.
+func TestRewriteBoxStaleConversionDropped(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true}
+	gen := a.boxGen
+	a.boxPending++
+	a.closeBox()
+	a.box.open = true // the shortcut again
+	a.boxConverted(gen, boxJPEG(t), "")
+	if len(a.box.images) != 0 || a.boxPending != 0 {
+		t.Errorf("%d images, %d pending", len(a.box.images), a.boxPending)
+	}
+}
+
+// TestRewriteBoxSendWaitsForConversion: Enter while a pasted picture
+// still converts sends when it lands, with the picture; the accepted
+// picture is never left behind.
+func TestRewriteBoxSendWaitsForConversion(t *testing.T) {
+	chat := &fakeChat{text: "A shorter text."}
+	a := newBoxApp(t, boxScript(t), chat)
+	a.pump("the card and the microphone", func() bool {
+		return a.box.open && a.sess.State == session.Recording
+	})
+	a.postQueue(func() {
+		gen := a.boxGen
+		a.boxPending++
+		a.boxSend() // Enter with the conversion still running
+		if !a.boxSendQueued || a.sess.State != session.Recording {
+			t.Errorf("queued %v, session %s", a.boxSendQueued, a.sess.State)
+		}
+		a.boxConverted(gen, boxJPEG(t), "")
+	})
+	a.pump("the answer", func() bool { return a.answer.open })
+	reqs := chat.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d chats", len(reqs))
+	}
+	if imgs, _ := reqs[0]["images"].([][]byte); len(imgs) != 1 {
+		t.Errorf("%d images sent", len(imgs))
+	}
+}

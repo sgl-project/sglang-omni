@@ -196,6 +196,7 @@ func (o *OpenAI) chat(ctx context.Context, req Request) (Response, error) {
 		return b
 	}
 	sent := build()
+	imagesDropped := false
 	resp, err := o.send(ctx, url, sent, model, req.Timeout)
 	// Relax parameters a server rejects, once each: stream_options (older
 	// compatible servers; usage then gets estimated), temperature / top_p
@@ -216,7 +217,7 @@ relax:
 		case extra && o.mentionsExtra(detail):
 			extra = false
 		case req.Images != nil && !req.ImagesRequired: // a model that takes no images
-			req.Images = nil
+			req.Images, imagesDropped = nil, true
 		default:
 			break relax
 		}
@@ -241,6 +242,7 @@ relax:
 	}
 	out.Provider = o.preset.ID
 	out.Latency = time.Since(start)
+	out.ImagesDropped = imagesDropped
 	if out.FinishReason == FinishFilter && out.Text == "" {
 		return out, newErr(CodeFiltered, "provider", o.preset.ID)
 	}

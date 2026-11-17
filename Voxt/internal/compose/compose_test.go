@@ -554,8 +554,12 @@ func TestClean(t *testing.T) {
 		// A model's internal control blocks never reach the user (#4085).
 		{"Hello.<|tool_call_begin|>call vision<|tool_call_end|>", "x", "Hello."},
 		{"<|channel|>thought<channel|>你好。", "x", "你好。"},
-		{"One <|mid|> two.", "x", "One  two."},
 		{"cut off at the stream's end <|tool_call_be", "x", "cut off at the stream's end"},
+		// Only the control markers are markup; other <| stays (F#'s
+		// pipe, a tag the user wrote).
+		{"let y = f <| x", "x", "let y = f <| x"},
+		{"One <|mid|> two.", "x", "One <|mid|> two."},
+		{"code <| x then <|tool_call_begin|>c<|tool_call_end|>", "x", "code <| x then"},
 	} {
 		if got := Clean(tc.out, tc.in); got != tc.want {
 			t.Errorf("Clean(%q) = %q, want %q", tc.out, got, tc.want)
@@ -567,14 +571,14 @@ func TestClean(t *testing.T) {
 // internal control blocks too (#4085), a partial one's unfinished tail
 // included.
 func TestStripControlAnswer(t *testing.T) {
-	if got := StripControl("a<|x|>b<|y"); got != "a" && got != "ab" {
+	if got := StripControl("a<|x|>b<|y"); got != "a<|x|>b" {
 		t.Errorf("StripControl %q", got)
 	}
 	if got := StripControl("no blocks"); got != "no blocks" {
 		t.Errorf("StripControl %q", got)
 	}
 	a, ok := ParseAnswer(`{"title":"T<|x|>","content":"Ships Friday.<|tool_call_begin|>c<|tool_call_end|>"}`)
-	if !ok || a.Title != "T" || a.Content != "Ships Friday." {
+	if !ok || a.Title != "T<|x|>" || a.Content != "Ships Friday." {
 		t.Errorf("ParseAnswer %+v %v", a, ok)
 	}
 	if got := PartialAnswer(`{"title":"T","content":"Ships Friday.<|tool`); got.Content != "Ships Friday." {

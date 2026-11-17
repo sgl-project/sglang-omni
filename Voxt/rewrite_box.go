@@ -67,8 +67,19 @@ type rewriteBox struct {
 	// focusText: the text box takes the focus on show; winShown: the
 	// window is on screen (native only).
 	focusText bool
-	win       *mygo.Window
+	win       boxWindow
 	winShown  bool
+}
+
+// boxWindow is the box's panel as boxSync and closeBoxWindow use it
+// (*mygo.Window; a fake in tests, so a close's hide is observable).
+type boxWindow interface {
+	Invalidate()
+	Center()
+	Show()
+	Focus()
+	Hide()
+	Destroy()
 }
 
 // boxShare is the box's content as the sending session reads it
@@ -118,9 +129,17 @@ func (a *app) closeBox() {
 	if a.box.session != "" && a.sess.State.Live() && a.sess.ID == a.box.session {
 		a.cancelSession()
 	}
+	a.dropBox()
+	a.boxSync()
+}
+
+// dropBox drops the box's state, closing the window first: zeroing win
+// before boxSync ran would strand the panel on screen, unreachable.
+func (a *app) dropBox() {
+	a.closeBoxWindow()
 	a.box = rewriteBox{}
 	a.boxShare.store("", nil)
-	a.boxSync()
+	a.boxGen++
 }
 
 // boxSend is Enter in the box: while it records, it finishes the
@@ -128,6 +147,12 @@ func (a *app) closeBox() {
 // kept instruction, text and pictures again.
 func (a *app) boxSend() {
 	if !a.box.open {
+		return
+	}
+	if a.boxPending > 0 {
+		// A pasted or dropped picture is still converting: send when it
+		// lands, so the accepted picture cannot be left behind.
+		a.boxSendQueued = true
 		return
 	}
 	if a.box.session != "" && a.sess.ID == a.box.session {
@@ -160,8 +185,7 @@ func (a *app) boxEnded(s session.Snapshot) {
 	}
 	switch s.State {
 	case session.Done:
-		a.box = rewriteBox{} // sent: the card holds the answer
-		a.boxShare.store("", nil)
+		a.dropBox() // sent: the card holds the answer
 	case session.Failed:
 		// Nothing of the box's is dropped: it comes back with the
 		// error, the text and the pictures kept, the instruction ready
@@ -175,8 +199,7 @@ func (a *app) boxEnded(s session.Snapshot) {
 		}
 		a.box.shown = true
 	default: // cancelled: as Esc always did
-		a.box = rewriteBox{}
-		a.boxShare.store("", nil)
+		a.dropBox()
 	}
 	a.boxSync()
 }
@@ -227,23 +250,27 @@ func (a *app) boxPaste(svc ui.Services) bool {
 		if err != nil {
 			return true
 		}
+		gen := a.boxGen
+		a.boxPending++
 		a.async(func() {
 			jpeg, err := imgconv.JPEG(raw)
 			a.post(func() {
+				errText := ""
 				if err != nil {
-					a.box.err = i18n.T("This image could not be read.")
-				} else {
-					a.boxAttach(jpeg)
+					errText, jpeg = i18n.T("This image could not be read."), nil
 				}
-				a.boxSync()
+				a.boxConverted(gen, jpeg, errText)
 			})
 		})
 		return true
 	case has(transfer.FileList):
+		gen := a.boxGen
+		a.boxPending++
 		helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
-			if err == nil && len(res.JPEG) > 0 {
-				a.boxAttach(res.JPEG)
+			if err != nil {
+				res.JPEG = nil
 			}
+			a.boxConverted(gen, res.JPEG, "")
 		})
 		return true
 	}
@@ -255,19 +282,40 @@ func (a *app) boxDrop(files []string) {
 	if !a.box.open {
 		return
 	}
+	gen := a.boxGen
+	a.boxPending += len(files)
 	a.async(func() {
 		for _, f := range files {
 			jpeg, err := imgconv.JPEGFile(f)
 			a.post(func() {
+				errText := ""
 				if err != nil {
-					a.box.err = i18n.T("This image could not be read; paste it (⌘V) instead.")
-				} else {
-					a.boxAttach(jpeg)
+					errText, jpeg = i18n.T("This image could not be read; paste it (⌘V) instead."), nil
 				}
-				a.boxSync()
+				a.boxConverted(gen, jpeg, errText)
 			})
 		}
 	})
+}
+
+// boxConverted takes one converted picture on the main thread (errText
+// when it would not read, "" on success or a silent skip): it lands
+// only in the box's own life (a close started another), and a send that
+// waited for it goes now.
+func (a *app) boxConverted(gen int, jpeg []byte, errText string) {
+	a.boxPending--
+	if gen == a.boxGen {
+		if errText != "" {
+			a.box.err = errText
+		} else {
+			a.boxAttach(jpeg)
+		}
+		a.boxSync()
+	}
+	if a.boxPending == 0 && a.boxSendQueued {
+		a.boxSendQueued = false
+		a.boxSend()
+	}
 }
 
 // boxSync shows, hides or refreshes the box's window. Main thread.

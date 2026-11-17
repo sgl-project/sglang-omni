@@ -64,6 +64,11 @@ func (r *run) llmChat(req llm.Request) (llm.Response, error) {
 		r.m.update(r, func(s *Snapshot) { s.ImageHint = hint })
 	}
 	resp, err := r.svc.LLM.Chat(ctx, req)
+	if err == nil && resp.ImagesDropped && hint != "" {
+		// The model answered from the text alone: the card must not
+		// claim a picture went with the request.
+		r.m.update(r, func(s *Snapshot) { s.ImageHint = "" })
+	}
 	if err == nil || r.ctx.Err() != nil {
 		return resp, err
 	}
