@@ -23,6 +23,11 @@ constexpr float kTransformerNormEps = 1e-5f;
 constexpr int kEncoderWindow = 512;
 constexpr float kConvNeXtNormEps = 1e-6f;
 constexpr float kMaskedScore = -1e9f;
+// The decoder's weights and activations; the encoder keeps the checkpoint's
+// float32, whose codes a lower precision could flip.
+constexpr mx::Dtype kDecoderDtype = mx::float16;
+constexpr std::string_view kDecoderPrefixes[] = {
+    "decoder.", "quantizer.upsample.", "quantizer.post_module."};
 // The encoder's output and the decoder's input run at 4 latent frames per code
 // frame.
 constexpr int kLatentFrameSamples = kFrameSamples / 4;
@@ -195,6 +200,17 @@ AudioCodec::LoadWeights(const std::filesystem::path &model_directory) {
                                to_mlx_layout(prefix, array));
     } else {
       weights.insert_or_assign(name, array);
+    }
+  }
+  for (auto &[name, array] : weights) {
+    if (mx::issubdtype(array.dtype(), mx::floating) &&
+        !name.ends_with(".freqs_cis") &&
+        std::any_of(std::begin(kDecoderPrefixes), std::end(kDecoderPrefixes),
+                    [&name](std::string_view prefix) {
+                      return name.starts_with(prefix);
+                    })) {
+      array = mx::astype(array, kDecoderDtype);
+    } else {
     }
   }
   return weights;
@@ -549,7 +565,7 @@ mx::array AudioCodec::QuantizedFeatures(const mx::array &codes) const {
         residual.has_value() ? *residual : omni_common::Scalar(0, projection),
         projection);
   }
-  return mx::add(semantic, *residual);
+  return mx::astype(mx::add(semantic, *residual), kDecoderDtype);
 }
 
 mx::array AudioCodec::Decode(const mx::array &codes) const {
@@ -593,7 +609,7 @@ mx::array AudioCodec::Decode(const mx::array &codes) const {
                                 {static_cast<int>(y.size())}));
     mx::async_eval(windows.back());
   }
-  return mx::concatenate(windows, 0);
+  return mx::astype(mx::concatenate(windows, 0), mx::float32);
 }
 
 } // namespace fish_dac

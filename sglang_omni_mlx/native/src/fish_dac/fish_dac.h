@@ -100,7 +100,8 @@ private:
   Quantize(const mlx::core::array &latents, const std::string &prefix) const;
   mlx::core::array DecodeCode(const mlx::core::array &codes,
                               const std::string &prefix) const;
-  // The summed quantizer outputs [1, dim, frames] of codes [codebooks, frames].
+  // The summed quantizer outputs [1, dim, frames] of codes [codebooks, frames],
+  // in the decoder's dtype.
   mlx::core::array QuantizedFeatures(const mlx::core::array &codes) const;
 
   omni_common::Checkpoint checkpoint_;
