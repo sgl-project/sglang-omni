@@ -12,49 +12,36 @@ import (
 )
 
 type transcriptPreviewInput struct {
-	key, source string
-	size        float32
-	text, link  ui.Color
-	dark        bool
+	key, source            string
+	size                   float32
+	text, link, background ui.Color
+	dark                   bool
+	streaming              bool
 }
 
-// One preview per window, on the main thread. The page reports its
-// content height again when a resized window reflows it.
+// Preview state belongs to its host window's main thread.
 type transcriptPreview struct {
-	input   transcriptPreviewInput
-	view    *mygo.WebView
-	version uint64
-	height  int
-	ready   bool
+	input                          transcriptPreviewInput
+	view                           *mygo.WebView
+	version                        uint64
+	height                         int
+	ready, loaded, running, closed bool
 }
+
+var transcriptUpdate = mygo.NewEvent[transcriptpreview.Update]("transcript-preview")
 
 func (p *transcriptPreview) place(c *ui.Context, win *mygo.Window, in transcriptPreviewInput, fallback, limit float32) ui.Element {
 	if win == nil || in.source == "" {
 		return ui.Element{}
 	}
-	if p.input != in {
+	if p.input != in || p.view != nil && p.view.IsDestroyed() {
+		old := p.input
 		p.input = in
 		p.version++
-		p.height, p.ready = 0, false
-		version := p.version
-		win.Update(func() {
-			if p.version != version {
-				return
-			}
-			markup := transcriptMarkdown(in.source)
-			if markup == "" {
-				return
-			}
-			if p.view == nil || p.view.IsDestroyed() {
-				view, err := win.NewWebView(mygo.WebViewOptions{Transparent: true})
-				if err != nil {
-					return
-				}
-				p.view = view
-			}
-			p.ready = true
-			p.view.Page().LoadHTML(transcriptpreview.Page(markup, version, in.size, cssColor(in.text), cssColor(in.link), in.dark), "")
-		})
+		if old.key != in.key || old.size != in.size || old.text != in.text || old.link != in.link || old.dark != in.dark || old.background != in.background || p.view != nil && p.view.IsDestroyed() {
+			p.height, p.ready, p.loaded = 0, false, false
+		}
+		win.Update(func() { p.update(win) })
 	}
 	if !p.ready || p.view == nil || p.view.IsDestroyed() {
 		return ui.Element{}
@@ -66,11 +53,53 @@ func (p *transcriptPreview) place(c *ui.Context, win *mygo.Window, in transcript
 	return ui.WebView(c, p.view).Height(min(height, limit)).MinWidth(0).Shrink(0)
 }
 
+// Only one parse runs per preview. Updates arriving meanwhile replace the
+// pending input, so a fast stream cannot queue an unbounded number of jobs.
+func (p *transcriptPreview) update(win *mygo.Window) {
+	if p.running || p.closed || win.IsDestroyed() {
+		return
+	}
+	in, version := p.input, p.version
+	p.running = true
+	go func() {
+		markup := transcriptMarkup(in.source, in.streaming)
+		win.Update(func() {
+			p.running = false
+			if p.closed || win.IsDestroyed() {
+				return
+			}
+			if p.version != version {
+				p.update(win)
+				return
+			}
+			if markup == "" {
+				p.ready = false
+				return
+			}
+			if p.view == nil || p.view.IsDestroyed() {
+				view, err := win.NewWebView(mygo.WebViewOptions{BackgroundColor: cssColor(in.background)})
+				if err != nil {
+					return
+				}
+				p.view, p.loaded = view, false
+			}
+			data := transcriptpreview.Update{HTML: markup, Version: version, Streaming: in.streaming}
+			if !p.loaded {
+				p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
+				p.loaded = true
+			} else {
+				_ = transcriptUpdate.EmitPage(p.view.Page(), data)
+			}
+			p.ready = true
+		})
+	}()
+}
+
 func cssColor(c ui.Color) string { return fmt.Sprintf("#%02x%02x%02x%02x", c.R, c.G, c.B, c.A) }
 
-func (a *app) transcriptResult(c *ui.Context, key, source string) {
+func (a *app) transcriptResult(c *ui.Context, key, source string, streaming bool) {
 	t := c.Theme()
-	in := transcriptPreviewInput{key: key, source: source, size: t.FontSize, text: t.Text, link: t.Accent, dark: t.Dark}
+	in := transcriptPreviewInput{key: key, source: source, size: t.FontSize, text: t.Text, link: t.Accent, background: tok(t).Subtle, dark: t.Dark, streaming: streaming}
 	if !a.mainTranscript.place(c, a.win, in, px(t, 110), px(t, 510)).Valid() {
 		ui.Text(c, source).Selectable()
 	}
@@ -86,12 +115,13 @@ func (b transcriptPreviewBridge) Resize(ctx context.Context, version uint64, hei
 	host := page.Window()
 	host.Update(func() {
 		a := b.app
-		for _, p := range []*transcriptPreview{&a.mainTranscript, &a.overlayTranscript} {
-			if !p.ready || p.view != page.WebView() || p.version != version || p.height == height {
+		previews := append([]*transcriptPreview{&a.mainTranscript, &a.overlayTranscript}, a.bubbleTranscripts...)
+		for _, p := range previews {
+			if p == nil || !p.ready || p.view != page.WebView() || p.version != version || p.height == height {
 				continue
 			}
 			p.height = height
-			if p == &a.overlayTranscript {
+			if p != &a.mainTranscript {
 				a.overlayRestyle()
 			}
 			break
@@ -102,11 +132,18 @@ func (b transcriptPreviewBridge) Resize(ctx context.Context, version uint64, hei
 // transcriptMarkdown returns the markup for a formatted transcript. An empty result
 // keeps ordinary dictation in the native selectable text view.
 func transcriptMarkdown(source string) string {
+	return transcriptMarkup(source, false)
+}
+
+func transcriptMarkup(source string, streaming bool) string {
 	doc := parser.New(parser.Default | parser.ExtDollarMath)
+	doc.SetStreaming(streaming)
+	doc.Set(source)
+	source = inlineMathTail(doc, streaming)
 	doc.Set(source)
 	for i := doc.Len() - 1; i > 0; i-- {
 		block := doc.Block(i)
-		if block.Kind != parser.MathBlock || !block.Open {
+		if streaming || block.Kind != parser.MathBlock || !block.Open {
 			continue
 		}
 		// A missing closing delimiter must not consume the rest of a transcript.
@@ -123,6 +160,9 @@ func transcriptMarkdown(source string) string {
 	if strings.Contains(source, "$") {
 		doc.Set(numericInlineMath(doc))
 	}
+	if streaming {
+		return highlightTranscriptCode(doc.HTML())
+	}
 	for i := 1; i < doc.Len(); i++ {
 		switch doc.Block(i).Kind {
 		case parser.Paragraph:
@@ -130,15 +170,45 @@ func transcriptMarkdown(source string) string {
 				switch inline.Kind {
 				case parser.Text, parser.SoftBreak, parser.HTML:
 				default:
-					return doc.HTML()
+					return highlightTranscriptCode(doc.HTML())
 				}
 			}
 		case parser.HTMLBlock, parser.FootnoteDefinition:
 		default:
-			return doc.HTML()
+			return highlightTranscriptCode(doc.HTML())
 		}
 	}
 	return ""
+}
+
+// Complete a streaming inline formula, or preserve its opening delimiter
+// when the answer ends before it closes. Code and existing math are excluded.
+func inlineMathTail(doc *parser.Document, streaming bool) string {
+	source := doc.Source()
+	last := doc.Len() - 1
+	if last < 1 || doc.Block(last).Kind != parser.Paragraph {
+		return source
+	}
+	for _, node := range doc.Inlines(last) {
+		if node.Kind != parser.Text {
+			continue
+		}
+		text := source[min(node.Start, len(source)):min(node.End, len(source))]
+		for i := 0; i+1 < len(text); i++ {
+			if text[i] != '\\' {
+				continue
+			}
+			if text[i+1] == '(' && !strings.Contains(source[node.Start+i+2:], `\)`) {
+				if streaming {
+					return source + `\)`
+				}
+				at := node.Start + i
+				return source[:at] + `\` + source[at:]
+			}
+			i++ // a doubled backslash is literal
+		}
+	}
+	return source
 }
 
 // The Markdown parser treats a leading digit after a dollar as currency.

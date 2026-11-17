@@ -1,4 +1,4 @@
-html, body { margin: 0; background: transparent; }
+html, body { margin: 0; background: var(--background); }
 body { font: 1rem/1.55 -apple-system, BlinkMacSystemFont, sans-serif; overflow-wrap: anywhere; }
 main { display: flow-root; }
 main > :first-child { margin-top: 0; }
@@ -32,3 +32,10 @@ hr { margin: 1em 0; }
 .math { font-size: 1.12em; }
 .math.display { display: block; padding-block: .26em; text-align: center; }
 .math.display > .katex { display: inline-block; min-width: max-content; }
+
+.token-keyword { color: light-dark(#a626a4, #d990ed); }
+.token-string { color: light-dark(#397300, #a8d880); }
+.token-comment { color: light-dark(#616b7a, #a1a9b5); font-style: italic; }
+.token-number { color: light-dark(#986000, #e5b76c); }
+.token-function { color: light-dark(#006bb3, #7fc4f3); }
+.token-invalid { color: light-dark(#b52a1d, #ff8f84); }

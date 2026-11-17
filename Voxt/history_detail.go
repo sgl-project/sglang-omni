@@ -86,8 +86,8 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 					}
 				})
 				fillCard(c).Padding(px(t, sp2), px(t, sp3)).Children(func() {
-					if key == "hist-result" && e.Kind == store.KindTranscribe && !showingDraft {
-						a.transcriptResult(c, e.ID, text)
+					if key == "hist-result" {
+						a.transcriptResult(c, e.ID, text, showingDraft)
 					} else {
 						ui.Text(c, text).Selectable()
 					}

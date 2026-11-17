@@ -85,6 +85,7 @@ type app struct {
 	historyAccessState
 	transcribeSocketState
 	mainTranscript, overlayTranscript transcriptPreview
+	bubbleTranscripts                 []*transcriptPreview
 	meetingState
 	meetingOverlayState
 	meetingsState

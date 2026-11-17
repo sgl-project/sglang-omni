@@ -296,9 +296,15 @@ func cardWave(c *ui.Context, v cardView, motion bool, phase float64) {
 // conversation follows its newest turn, and a first answer its newest
 // words as the model writes them, while they show the end.
 func (a *app) cardBody(c *ui.Context, v cardView, bodyH float32) {
-	if v.kind == store.KindTranscribe && !v.writing && v.failed == nil && bodyH > 0 {
+	blocks := cardBlocks(v)
+	count := 0
+	if v.conversation {
+		count = len(blocks)
+	}
+	a.trimBubblePreviews(count)
+	if !v.conversation && v.failed == nil && bodyH > 0 {
 		t := c.Theme()
-		in := transcriptPreviewInput{key: a.answer.id, source: v.text, size: layout.CardTextSize, text: ovCardText, link: t.Accent, dark: true}
+		in := transcriptPreviewInput{key: a.cardPreviewKey(), source: v.text, size: layout.CardTextSize, text: ovCardText, link: t.Accent, background: ui.RGB(22, 22, 26), dark: true, streaming: v.writing}
 		if preview := a.overlayTranscript.place(c.Key("ov-transcript"), a.ov.win, in, bodyH, bodyH); preview.Valid() {
 			preview.Margin(layout.CardRuleGap, layout.CardInset, 0, 0)
 			return
@@ -321,7 +327,7 @@ func (a *app) cardBody(c *ui.Context, v cardView, bodyH float32) {
 	}
 	ui.Scroll(c.Key("ov-card-body")).Height(bodyH).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).TrackScroll(st).Children(func() {
 		ui.Column(c).Padding(0, layout.CardInset, 0, 0).Children(func() {
-			for i, b := range cardBlocks(v) {
+			for i, b := range blocks {
 				a.cardBlockView(c.Key(i), b)
 			}
 		})
@@ -361,7 +367,9 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 		justify, bg, line, titleA = ui.End, ui.RGBA(255, 255, 255, 0.1), ui.RGBA(255, 255, 255, 0.12), 0.7
 	}
 	if b.live {
-		textA = 0.84
+		if b.user {
+			textA = 0.84
+		}
 		if !b.user {
 			titleA = 0.54
 		}
@@ -377,12 +385,14 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			if b.title.text != "" {
 				ui.Text(c, b.title.text).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleA)).SingleLine().Ellipsis("…").MaxWidth(b.text.wrap)
 			}
-			t := ui.Text(c, b.text.text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textA))
-			if b.user {
-				t.TextAlign(ui.End)
-			}
-			if !b.live {
-				t.Selectable()
+			if !a.bubblePreview(c, b, ui.RGBA(255, 255, 255, textA)) {
+				t := ui.Text(c, b.text.text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textA))
+				if b.user {
+					t.TextAlign(ui.End)
+				}
+				if !b.live {
+					t.Selectable()
+				}
 			}
 			if b.quote.text != "" {
 				a.cardQuoteView(c, b)
