@@ -214,7 +214,6 @@ func (a *Atlas) Repack(rects []image.Rectangle) ([]image.Point, bool) {
 	for i, r := range rects {
 		row := r.Dx() * a.BPP
 		b := slices.Grow(saved[i], row*r.Dy())[:row*r.Dy()]
-		saved[i] = b
 		for j := 0; j < r.Dy(); j++ {
 			copy(b[j*row:][:row], a.Pix[((r.Min.Y+j)*a.W+r.Min.X)*a.BPP:][:row])
 		}
