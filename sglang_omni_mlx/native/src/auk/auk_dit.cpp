@@ -17,9 +17,14 @@ namespace {
 constexpr float kRmsEpsilon = std::numeric_limits<float>::epsilon();
 constexpr float kLayerNormEpsilon = 1e-6f;
 
-mx::array Normalize(const mx::array &hidden_states) {
-  return mx::fast::layer_norm(hidden_states, std::nullopt, std::nullopt,
-                              kLayerNormEpsilon);
+// LayerNorm(x) * (1 + scale) + shift as one fused norm, scale and shift [1, 1,
+// width] shared by every row.
+mx::array ModulatedNormalize(const mx::array &hidden_states,
+                             const mx::array &shift, const mx::array &scale) {
+  return mx::fast::layer_norm(
+      hidden_states,
+      mx::reshape(mx::array(1.0f, hidden_states.dtype()) + scale, {-1}),
+      mx::reshape(shift, {-1}), kLayerNormEpsilon);
 }
 
 mx::array ApplyRotary(const mx::array &hidden_states,
@@ -122,8 +127,7 @@ Modulation Modulate(const Checkpoint &checkpoint,
   auto modulation = mx::split(
       mx::expand_dims(checkpoint.Linear(Silu(timestep), prefix + ".linear"), 1),
       6, -1);
-  const mx::array one(1.0f, hidden_states.dtype());
-  return {Normalize(hidden_states) * (one + modulation[1]) + modulation[0],
+  return {ModulatedNormalize(hidden_states, modulation[0], modulation[1]),
           modulation[2], modulation[3], modulation[4], modulation[5]};
 }
 
@@ -131,9 +135,7 @@ mx::array FeedForward(const Checkpoint &checkpoint,
                       const mx::array &hidden_states,
                       const Modulation &modulation, const std::string &prefix) {
   const mx::array normalized =
-      Normalize(hidden_states) *
-          (mx::array(1.0f, hidden_states.dtype()) + modulation.scale) +
-      modulation.shift;
+      ModulatedNormalize(hidden_states, modulation.shift, modulation.scale);
   const auto gates =
       mx::split(checkpoint.Linear(normalized, prefix + ".linear_in"), 2, -1);
   return hidden_states +
@@ -274,8 +276,8 @@ mx::array DiT::Predict(const mx::array &latents,
   } else {
   }
   if (classifier_free_guidance) {
+    // Both halves share the time embedding [1, width].
     text = mx::concatenate({text, mx::zeros_like(text)}, 0);
-    time_embedding = mx::concatenate({time_embedding, time_embedding}, 0);
     audio_mask =
         audio_mask
             ? std::optional(mx::concatenate({*audio_mask, *audio_mask}, 0))
@@ -330,8 +332,7 @@ mx::array DiT::Predict(const mx::array &latents,
                       1),
       2, -1);
   return checkpoint_.Linear(
-      Normalize(audio) * (mx::array(1.0f, dtype_) + final_modulation[0]) +
-          final_modulation[1],
+      ModulatedNormalize(audio, final_modulation[1], final_modulation[0]),
       "transformer.proj_out");
 }
 
