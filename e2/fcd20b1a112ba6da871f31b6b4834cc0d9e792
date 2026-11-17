@@ -1,0 +1,44 @@
+scripts/prepare_duo_models.py
+  s_9be4bd449be508::t_e30776f3711214 1-208
+sglang_omni/models/duo/live.py
+  s_9be4bd449be508::t_e70019f9542a30 529
+  s_9be4bd449be508::t_b2eb56f41b29a2 16-17,25-30,39
+sglang_omni/models/duo/intent_conditioning_compat.py
+  s_9be4bd449be508::t_e30776f3711214 23-25,33-34,62-65,75,94,108-109,119-120,126-127
+sglang_omni/models/duo/realtime.py
+  s_9be4bd449be508::t_e70019f9542a30 9,21-33,39,43-49,100,124,150,153,227-232,252,264-268,554,665,1033
+  s_9be4bd449be508::t_b5daf9e5f820df 661-664
+sglang_omni/models/duo/modes.py
+  s_9be4bd449be508::t_e30776f3711214 48,50-51
+sglang_omni/models/duo/geometry.py
+  s_9be4bd449be508::t_e30776f3711214 15-16,20-21,35-36
+scripts/serve_duo_realtime.py
+  s_9be4bd449be508::t_e70019f9542a30 238-241,243,294,333
+  s_9be4bd449be508::t_91512acc8605f9 242
+docs/index.rst
+  s_9be4bd449be508::t_e30776f3711214 249-255
+tests/unit_test/serve/test_realtime_duo_worker.py
+  s_9be4bd449be508::t_959fcbce241209 47,174-177,180,184-185,191-192,196-198,213-220,230-232,795
+  s_9be4bd449be508::t_b5daf9e5f820df 171-173,181-183,199-206,208-212,222-228,725-731
+  s_9be4bd449be508::t_089ddc8f6097ca 24,719-722,791-794
+docs/models/duo.md
+  s_9be4bd449be508::t_d5bd85fb4fe951 1-72
+sglang_omni/serve/realtime/types.py
+  s_9be4bd449be508::t_c155931b0a1ffd 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e2fcd20b1a112ba6da871f31b6b4834cc0d9e792",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
