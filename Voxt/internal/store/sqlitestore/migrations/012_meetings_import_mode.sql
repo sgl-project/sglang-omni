@@ -1,4 +1,4 @@
--- VoxtNew database, migration 9: a meeting can be an imported recording
+-- VoxtNew database, migration 12: a meeting can be an imported recording
 -- (mode 'import'). The mode CHECK lives on the table, so the table is
 -- rebuilt. meeting_segments references meetings with ON DELETE CASCADE
 -- and DROP TABLE deletes the parent's rows through it, so the lines are

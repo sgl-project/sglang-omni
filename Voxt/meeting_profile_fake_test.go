@@ -141,7 +141,7 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 	speech := &fakeProfileASR{segments: 65, releases: &releases}
 	detector := &fakeProfileVAD{releases: &releases}
 	dependencies := defaultProfileDependencies()
-	dependencies.decode = func(string) ([]byte, error) {
+	dependencies.decode = func(context.Context, string) ([]byte, error) {
 		return make([]byte, asr.SampleRate*2), nil
 	}
 	dependencies.newASR = func(profile.Config) (profileASR, error) { return speech, nil }
@@ -189,7 +189,7 @@ func TestMeetingProfileFakeSubtitlesWithoutVAD(t *testing.T) {
 	releases := 0
 	speech := &fakeProfileASR{releases: &releases}
 	dependencies := defaultProfileDependencies()
-	dependencies.decode = func(string) ([]byte, error) { return make([]byte, asr.SampleRate*4), nil }
+	dependencies.decode = func(context.Context, string) ([]byte, error) { return make([]byte, asr.SampleRate*4), nil }
 	dependencies.newASR = func(profile.Config) (profileASR, error) { return speech, nil }
 	recorder := profile.NewRecorder(config)
 	report, runErr := runMeetingProfile(context.Background(), config, dependencies, recorder, nil, nil)
@@ -256,7 +256,7 @@ func TestMeetingProfileRedactsLLMDetailsEverywhere(t *testing.T) {
 
 func fakeProfileVADDependencies(speech profileASR, detector profileVAD) profileDependencies {
 	dependencies := defaultProfileDependencies()
-	dependencies.decode = func(string) ([]byte, error) { return make([]byte, asr.SampleRate*2), nil }
+	dependencies.decode = func(context.Context, string) ([]byte, error) { return make([]byte, asr.SampleRate*2), nil }
 	dependencies.newASR = func(profile.Config) (profileASR, error) { return speech, nil }
 	dependencies.newVAD = func(profile.Config) (profileVAD, error) { return detector, nil }
 	return dependencies
@@ -296,7 +296,7 @@ func TestMeetingProfileFakeCorrectionFailureStillSummarizes(t *testing.T) {
 	releases := 0
 	speech := &fakeProfileASR{segments: 1, releases: &releases}
 	dependencies := defaultProfileDependencies()
-	dependencies.decode = func(string) ([]byte, error) { return make([]byte, asr.SampleRate*2), nil }
+	dependencies.decode = func(context.Context, string) ([]byte, error) { return make([]byte, asr.SampleRate*2), nil }
 	dependencies.newASR = func(profile.Config) (profileASR, error) { return speech, nil }
 	dependencies.newVAD = func(profile.Config) (profileVAD, error) {
 		return &fakeProfileVAD{releases: &releases}, nil

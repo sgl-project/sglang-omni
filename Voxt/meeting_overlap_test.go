@@ -83,7 +83,7 @@ func TestMeetingOverlap(t *testing.T) {
 		defer releaseVAD()
 		detector = model
 	}
-	pcm, err := decodeAudio(config.Audio)
+	pcm, err := decodeAudio(context.Background(), config.Audio)
 	if err != nil {
 		t.Fatal(err)
 	}

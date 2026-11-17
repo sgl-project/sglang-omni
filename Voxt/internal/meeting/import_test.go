@@ -230,3 +230,210 @@ func TestImportKeepsFileNameDateAndDuration(t *testing.T) {
 		t.Fatal("the language model ran with the automatic summary off")
 	}
 }
+
+// MTD alone can import: the selected meeting model missing (or without
+// file recognition) must not stop the import before MTD runs.
+func TestImportWorksWithMTDAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		asr  func(context.Context, Source) (TrackASR, error)
+	}{
+		{"model not downloaded", func(context.Context, Source) (TrackASR, error) {
+			return TrackASR{}, errors.New("model not installed")
+		}},
+		{"no file recognition", func(context.Context, Source) (TrackASR, error) {
+			return TrackASR{Caps: asr.Caps{}}, nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &fixingChat{}
+			diarizer := &importDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+				{Start: 0, End: time.Second, Speaker: "S01", Text: "hi"},
+			}}}
+			ctx := context.Background()
+			s, err := sqlitestore.Open(ctx, filepath.Join(t.TempDir(), "db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { s.Close() })
+			m := NewManager(Config{
+				Store:    s.Meetings(),
+				Dir:      filepath.Join(t.TempDir(), "meetings"),
+				Settings: func() settings.Meeting { return settings.Meeting{} },
+				ASR:      tc.asr,
+				Diarizer: func(context.Context) (asr.Diarizer, error) { return diarizer, nil },
+				LLM:      func(context.Context, string) (SummaryChat, error) { return chat, nil },
+			})
+			id, err := m.Import(ctx, ImportRequest{Name: "mtd-only", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(diarizer.got()) != 1 {
+				t.Fatalf("MTD requests %d", len(diarizer.got()))
+			}
+			if mt, _, err := s.Meetings().Meeting(ctx, id); err != nil || mt.Status != store.MeetingDone {
+				t.Fatalf("status %v, %v", mt, err)
+			}
+		})
+	}
+}
+
+// The "skip the live final pass" setting is for recorded meetings: an
+// import's only pass still runs with it on.
+func TestImportIgnoresNoFinalPass(t *testing.T) {
+	chat := &fixingChat{}
+	diarizer := &importDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "hi"},
+	}}}
+	plain := &importFileASR{}
+	m, repo := importFixture(t, chat, diarizer, plain)
+	m.cfg.Settings = func() settings.Meeting { return settings.Meeting{NoFinalPass: true} }
+	ctx := context.Background()
+	id, err := m.Import(ctx, ImportRequest{Name: "x", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diarizer.got()) != 1 {
+		t.Fatalf("the pass did not run: %d MTD requests", len(diarizer.got()))
+	}
+	mt, segs, err := repo.Meeting(ctx, id)
+	if err != nil || mt.Status != store.MeetingDone || len(segs) == 0 {
+		t.Fatalf("status %v, %d segments, %v", mt, len(segs), err)
+	}
+}
+
+// Continue processing after a cancel finishes the correction and the
+// summary too, not only the transcription.
+func TestReprocessCorrectsAndSummarizes(t *testing.T) {
+	chat := &fixingChat{}
+	block := make(chan struct{})
+	diarizer := &importDiarizer{block: block, result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "Box one"},
+	}}}
+	plain := &importFileASR{}
+	m, repo := importFixture(t, chat, diarizer, plain)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var id string
+	go func() {
+		var err error
+		id, err = m.Import(ctx, ImportRequest{Name: "long", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+		done <- err
+	}()
+	<-block
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	diarizer.block = nil
+	if err := m.Reprocess(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.reqs) != 2 {
+		t.Fatalf("language model requests %d, want the correction and the summary", len(chat.reqs))
+	}
+	mt, segs, err := repo.Meeting(context.Background(), id)
+	if err != nil || mt.Status != store.MeetingDone || len(segs) != 1 || segs[0].Text != "Voxt one" {
+		t.Fatalf("status %v, segments %+v, %v", mt, segs, err)
+	}
+	if mt.Title != "T" || mt.Summary == "" {
+		t.Fatalf("no summary: title %q", mt.Title)
+	}
+}
+
+// Continue processing after a cancel runs the pass even with "skip the
+// live final pass" on: an import's only pass is this one, and the
+// meeting ends done, not finishing forever.
+func TestReprocessImportIgnoresNoFinalPass(t *testing.T) {
+	chat := &fixingChat{}
+	block := make(chan struct{})
+	diarizer := &importDiarizer{block: block, result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "Box one"},
+	}}}
+	plain := &importFileASR{}
+	m, repo := importFixture(t, chat, diarizer, plain)
+	m.cfg.Settings = func() settings.Meeting { return settings.Meeting{NoFinalPass: true} }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var id string
+	go func() {
+		var err error
+		id, err = m.Import(ctx, ImportRequest{Name: "long", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+		done <- err
+	}()
+	<-block
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	diarizer.block = nil
+	if err := m.Reprocess(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if len(diarizer.got()) != 2 {
+		t.Fatalf("the pass did not run again: %d MTD requests", len(diarizer.got()))
+	}
+	mt, segs, err := repo.Meeting(context.Background(), id)
+	if err != nil || mt.Status != store.MeetingDone || len(segs) != 1 {
+		t.Fatalf("status %v, %d segments, %v", mt, len(segs), err)
+	}
+}
+
+// Continue processing tells the caller when the correction or the
+// summary fails, as the import does; the meeting itself is done.
+func TestReprocessSurfacesCorrectionFailure(t *testing.T) {
+	chat := &fixingChat{}
+	diarizer := &importDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "hi"},
+	}}}
+	plain := &importFileASR{}
+	m, repo := importFixture(t, chat, diarizer, plain)
+	ctx := context.Background()
+	id, err := m.Import(ctx, ImportRequest{Name: "x", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.LLM = func(context.Context, string) (SummaryChat, error) { return nil, errors.New("model down") }
+	if err := m.Reprocess(ctx, id); err == nil {
+		t.Fatal("a failed correction came back as a success")
+	}
+	mt, _, err := repo.Meeting(ctx, id)
+	if err != nil || mt.Status != store.MeetingDone {
+		t.Fatalf("status %v, %v", mt, err)
+	}
+}
+
+// Keep a history off refuses the import instead of storing the whole
+// transcript anyway.
+func TestImportRefusedWithoutHistory(t *testing.T) {
+	chat := &fixingChat{}
+	diarizer := &importDiarizer{}
+	plain := &importFileASR{}
+	m, repo := importFixture(t, chat, diarizer, plain)
+	m.cfg.Privacy = func() settings.Privacy { return settings.Privacy{} }
+	_, err := m.Import(context.Background(), ImportRequest{Name: "x", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+	if !errors.Is(err, ErrNoHistory) {
+		t.Fatalf("err %v", err)
+	}
+	if ms, _ := repo.ListMeetings(context.Background(), store.MeetingQuery{}); len(ms) != 0 {
+		t.Fatalf("%d meetings stored", len(ms))
+	}
+}
+
+// A failed correction or summary is the import's error, so it surfaces
+// instead of looking like a success; the meeting stays for a retry.
+func TestImportCorrectionFailureSurfaces(t *testing.T) {
+	diarizer := &importDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "hi"},
+	}}}
+	plain := &importFileASR{}
+	m, repo := importFixture(t, &fixingChat{}, diarizer, plain)
+	m.cfg.LLM = func(context.Context, string) (SummaryChat, error) { return nil, errors.New("no language model") }
+	id, err := m.Import(context.Background(), ImportRequest{Name: "x", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
+	if err == nil {
+		t.Fatal("the failed correction looked like a success")
+	}
+	if _, _, err := repo.Meeting(context.Background(), id); err != nil {
+		t.Fatalf("the meeting is gone: %v", err)
+	}
+}
