@@ -447,20 +447,32 @@ void FoldBatchNorms(WeightMap &weights, const std::string &norm_name,
 
 LstmCell LstmStep(const mx::array &gates, const std::optional<LstmCell> &state,
                   const mx::array &recurrent_weight) {
-  const mx::array all_gates =
+  // Note (XXXXRT666): the gate math compiled into one kernel, since a decode
+  // step's LSTM runs one dependent dispatch per op.
+  static const auto compiled_first =
+      mx::compile([](const std::vector<mx::array> &inputs) {
+        const std::vector<mx::array> pieces = mx::split(inputs[0], 4, -1);
+        const mx::array cell =
+            mx::multiply(mx::sigmoid(pieces[0]), mx::tanh(pieces[2]));
+        return std::vector<mx::array>{
+            mx::multiply(mx::sigmoid(pieces[3]), mx::tanh(cell)), cell};
+      });
+  static const auto compiled_next =
+      mx::compile([](const std::vector<mx::array> &inputs) {
+        const std::vector<mx::array> pieces = mx::split(inputs[0], 4, -1);
+        const mx::array cell =
+            mx::add(mx::multiply(mx::sigmoid(pieces[1]), inputs[1]),
+                    mx::multiply(mx::sigmoid(pieces[0]), mx::tanh(pieces[2])));
+        return std::vector<mx::array>{
+            mx::multiply(mx::sigmoid(pieces[3]), mx::tanh(cell)), cell};
+      });
+  const std::vector<mx::array> next =
       state.has_value()
-          ? mx::addmm(gates, state->hidden, mx::transpose(recurrent_weight))
-          : gates;
-  const std::vector<mx::array> pieces = mx::split(all_gates, 4, -1);
-  const mx::array input_gate = mx::sigmoid(pieces[0]);
-  const mx::array forget_gate = mx::sigmoid(pieces[1]);
-  const mx::array candidate = mx::tanh(pieces[2]);
-  const mx::array output_gate = mx::sigmoid(pieces[3]);
-  const mx::array cell = state.has_value()
-                             ? mx::add(mx::multiply(forget_gate, state->cell),
-                                       mx::multiply(input_gate, candidate))
-                             : mx::multiply(input_gate, candidate);
-  return {mx::multiply(output_gate, mx::tanh(cell)), cell};
+          ? compiled_next({mx::addmm(gates, state->hidden,
+                                     mx::transpose(recurrent_weight)),
+                           state->cell})
+          : compiled_first({gates});
+  return {next[0], next[1]};
 }
 
 } // namespace omni_common
