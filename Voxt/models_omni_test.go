@@ -209,6 +209,30 @@ func TestOmniDraft(t *testing.T) {
 	}
 }
 
+func omniASRRecords(path string) []omnitest.Record {
+	var out []omnitest.Record
+	for _, record := range omnitest.Of(omnitest.Records(path), "launch") {
+		if slices.Contains(record.Args, "--model-kind") && slices.Contains(record.Args, "qwen3_asr") {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+func TestOmniASRLaunchFilter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "launch.jsonl")
+	content := `{"event":"launch","args":["--model-kind","qwen3_asr"]}
+{"event":"launch","args":["--model-kind","silero_vad"]}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := omniASRRecords(path)
+	if len(got) != 1 || got[0].Args[1] != "qwen3_asr" {
+		t.Errorf("VAD after ASR dropped the ASR launch: %+v", got)
+	}
+}
+
 // TestOmniSharedDraftUnload: the 1.7B draft serves both 1.7B quants,
 // the 6bit's only once its switch is on (the download said yes for the
 // 8bit, not for it); deleting the draft unloads both speech models,
@@ -235,16 +259,16 @@ func TestOmniSharedDraftUnload(t *testing.T) {
 	if a.omniDraft(models.ASRQwen6bit) != draft {
 		t.Fatalf("switched on: omniDraft %q", a.omniDraft(models.ASRQwen6bit))
 	}
-	launches := func() []omnitest.Record { return omnitest.Of(omnitest.Records(log), "launch") }
+	launches := func() []omnitest.Record { return omniASRRecords(log) }
 	// One speech server at a time (the runtime retires a sibling's): open
 	// one, wait for its launch, then the other.
 	for i, id := range []string{models.ASRAccurate, models.ASRQwen6bit} {
 		if _, err := a.openOmniASR(context.Background(), id, a.models.Dir(id)); err != nil {
 			t.Fatal(err)
 		}
-		a.pump("the server", func() bool { return len(launches()) == i+2 }) // the VAD's is the first
+		a.pump("the server", func() bool { return len(launches()) == i+1 })
 	}
-	for _, l := range launches()[1:] {
+	for _, l := range launches() {
 		if !slices.Contains(l.Args, "--draft-model-path") {
 			t.Fatalf("the shared draft not in the launch: %v", l.Args)
 		}
