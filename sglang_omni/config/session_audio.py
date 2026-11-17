@@ -8,6 +8,12 @@ from typing import ClassVar
 from pydantic import Field, model_validator
 
 from sglang_omni.config.schema import PipelineConfig, SessionNodeConfig, StageConfig
+from sglang_omni.models.avatar_worker.node import AVATAR_WORKER_STAGE
+from sglang_omni.models.avatar_worker.node import SESSION_PORTS as AVATAR_WORKER_PORTS
+from sglang_omni.models.avatar_worker.node import (
+    AvatarWorkerStageConfig,
+    avatar_worker_stage,
+)
 from sglang_omni.models.avtr.node import AVATAR_STAGE
 from sglang_omni.models.avtr.node import SESSION_PORTS as AVATAR_PORTS
 from sglang_omni.models.avtr.node import AvatarStageConfig, avatar_stage
@@ -88,17 +94,25 @@ SPEECH_MOTION_GROUP = StageGroup(
     SPEECH_MOTION_PORTS,
     stage_ports=SpeechMotionStageConfig.session_ports,
 )
+AVATAR_WORKER_GROUP = StageGroup(
+    lambda: [avatar_worker_stage()],
+    None,
+    AVATAR_WORKER_PORTS,
+    stage_ports=AvatarWorkerStageConfig.session_ports,
+)
 PLUGIN_STAGE_GROUPS = (
     MOTION_GROUP,
     AVATAR_GROUP,
     SPEECH_VIDEO_GROUP,
     SPEECH_MOTION_GROUP,
+    AVATAR_WORKER_GROUP,
 )
 PLUGIN_STAGE_CONFIG_TYPES: dict[str, type[StageConfig]] = {
     MOTION_STAGE: MotionStageConfig,
     AVATAR_STAGE: AvatarStageConfig,
     SPEECH_VIDEO_STAGE: SpeechVideoStageConfig,
     SPEECH_MOTION_STAGE: SpeechMotionStageConfig,
+    AVATAR_WORKER_STAGE: AvatarWorkerStageConfig,
 }
 
 

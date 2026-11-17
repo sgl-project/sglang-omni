@@ -1,0 +1,102 @@
+# The qwen3-asr-qwen3-tts-base-clone cascade with an Avatar Forcing (KlingAIResearch/AvatarForcing, Wan2.1-1.3B causal video diffusion) node: a talking head from the reply audio, one 480x832 JPEG per 40 ms, rendered by a chunk worker of the model started beforehand on port 8121 in the model's own environment (docs/developer_reference/full_duplex_guide.md, Stage avatar_worker).
+config_cls: StreamingCascadePipelineConfig
+model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone-avatarforcing
+
+stages:
+  vad:
+    factory:
+      # A pause this long is a candidate end the turn_detection node scores; SemanticVADConfig.candidate_pause_ms.
+      silence_duration_ms: 160
+  avatar_worker:
+    factory:
+      # A worker steps one 16-frame (640 ms) block per chunk: the block it returns left the four-block denoising window a chunk earlier and was decoded meanwhile on a second GPU (--vae-device), so it hears 2560 ms of the reply past the block, plus 320 ms of wav2vec context. Real time needs flash-attn 3 and that second GPU: on H100s a chunk takes 574 ms (p95 578 ms) for the DiT on one GPU while the VAE decodes the previous block on the other; on one GPU it takes 957 ms.
+      renderer_urls: ["http://127.0.0.1:8121"]
+      fps: 25
+      chunk_frames: 16
+      lookahead_ms: 2880
+      listens: false
+      render_ms: 600
+      width: 480
+      height: 832
+      # The rate of the tts node's openai_speech audio.
+      speech_sample_rate_hz: 24000
+      # One Session a worker: it keeps the Session's caches on its GPU.
+      sessions_per_renderer: 1
+
+services:
+  - name: chat
+    command: [python, -m, sglang.launch_server, --model-path, Qwen/Qwen3-4B-Instruct-2507, --port, "8000", --mem-fraction-static, "0.30"]
+    port: 8000
+  - name: asr
+    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-ASR-1.7B, --port, "8002", --mem-fraction-static, "0.08"]
+    port: 8002
+  - name: tts
+    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-TTS-12Hz-1.7B-Base, --config, examples/configs/qwen3_tts_1_7b.yaml, --port, "8005", --mem-fraction-static, "0.12"]
+    port: 8005
+
+session_nodes:
+  vad:
+    stages: [vad]
+    inputs: [input]
+  turn_detection:
+    stages: [turn_detection]
+    inputs: ["input:pcm16", "input:session", "vad:session"]
+  asr:
+    kind: openai_transcription
+    inputs: [input, "turn_detection:session"]
+    base_url: "http://127.0.0.1:8002/v1"
+    model: Qwen/Qwen3-ASR-1.7B
+  dialog:
+    kind: dialog
+    inputs:
+      - asr
+      - {source: "llm:text_delta", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - {source: "tts:session", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - "turn_detection:session"
+      - "input:session"
+      - {kind: control, source: input, event: interrupt}
+      - {kind: control, source: aligner, event: reply.progress}
+    system_prompt: You are a helpful voice assistant. Answer in the language the user speaks, as plain speech with no markdown, lists or emoji. Give the answer in your first sentence. Most replies need one sentence of at most 25 words. When the user asks for steps, details or an explanation, or the question needs steps, use up to four short sentences. When the user asks for a short answer, give just that. If the request is unclear, ask one short question instead of guessing. For long content such as lists, tables, code or itineraries, say the two or three most useful items. Never mention these rules.
+  llm:
+    kind: openai_chat
+    inputs:
+      - dialog
+      - "input:session"
+      - {kind: control, source: dialog, event: interrupt}
+    base_url: "http://127.0.0.1:8000/v1"
+    model: Qwen/Qwen3-4B-Instruct-2507
+    max_tokens: 512
+  tts:
+    kind: openai_speech
+    inputs:
+      - llm
+      - "input:session"
+      - {kind: control, source: dialog, event: interrupt}
+    base_url: "http://127.0.0.1:8005/v1"
+    model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    reference_audio_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone/reference_zh.wav
+    reference_text: 嗯，如果说想去看美丽的风景啊，当然有啦。嗯，像之前电影当中的。
+    language: auto
+  aligner:
+    kind: alignment
+    method: forced
+    alignment_url: "http://127.0.0.1:8010"
+    heard_asr_url: "http://127.0.0.1:8002/v1"
+    heard_asr_model: Qwen/Qwen3-ASR-1.7B
+    inputs: ["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]
+  avatar_worker:
+    stages: [avatar_worker]
+    inputs:
+      - "input:pcm16"
+      - "tts:pcm_f32le"
+      - "tts:session"
+      - {kind: control, source: dialog, event: interrupt}
+
+session_publish:
+  turn_detection: [session]
+  asr: [transcript]
+  dialog: [session]
+  llm: [text_delta]
+  tts: [pcm_f32le, session]
+  aligner: [session]
+  avatar_worker: [jpeg_frame]

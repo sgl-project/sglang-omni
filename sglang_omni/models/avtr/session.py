@@ -43,6 +43,45 @@ WINDOW_SAMPLES = (
 RECOVERY_PROBE_S = 1.0
 
 
+@dataclass(frozen=True)
+class ChunkGeometry:
+    """How a renderer steps through the timeline: `chunk_frames` frames at `fps` per call, each call reading the agent's audio of the chunk and `lookahead_samples` past it; the user's audio it listens to lags the timeline by the same window."""
+
+    fps: float
+    chunk_frames: int
+    lookahead_samples: int
+
+    def __post_init__(self) -> None:
+        if (self.chunk_frames * SESSION_INPUT_SAMPLE_RATE_HZ) % self.fps:
+            raise ValueError(
+                f"{self.chunk_frames} frames at {self.fps} fps are not a whole number of 16 kHz samples"
+            )
+        else:
+            pass
+
+    @property
+    def chunk_samples(self) -> int:
+        return round(self.chunk_frames * SESSION_INPUT_SAMPLE_RATE_HZ / self.fps)
+
+    @property
+    def window_samples(self) -> int:
+        return self.chunk_samples + self.lookahead_samples
+
+    @property
+    def frame_ms(self) -> float:
+        return 1000 / self.fps
+
+    def frame_starts(self, chunk_start: int) -> list[int]:
+        """The timeline sample each frame of the chunk starts at, and the chunk's end last."""
+        return [
+            chunk_start + round(index * self.chunk_samples / self.chunk_frames)
+            for index in range(self.chunk_frames + 1)
+        ]
+
+
+AVTR_GEOMETRY = ChunkGeometry(VIDEO_FPS, CHUNK_FRAMES, WINDOW_SAMPLES - CHUNK_SAMPLES)
+
+
 class RendererUnavailable(Exception):
     """A renderer worker could not render a chunk: it is down, restarting or overloaded, not the chunk's fault."""
 
@@ -78,6 +117,8 @@ class AvatarSession:
     # The start of the next chunk to render; None until the user's audio arrives.
     cursor: int | None = None
     error: BaseException | None = None
+    # The worker a pinned stage renders every chunk of the Session on, chosen by its first chunk.
+    worker: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -102,17 +143,12 @@ class RenderedFrames:
     shown: int = 0
 
     def publish(self, jpeg: bytes) -> None:
-        if self.shown >= CHUNK_FRAMES:
+        if self.shown >= self.hooks.geometry.chunk_frames:
             raise RendererUnavailable(
-                f"the renderer sent more than the {CHUNK_FRAMES} frames of a chunk"
+                f"the renderer sent more than the {self.hooks.geometry.chunk_frames} frames of a chunk"
             )
         else:
-            self.hooks.publish(
-                self.work,
-                self.work.chunk_start + self.shown * FRAME_SAMPLES,
-                self.work.turns[self.shown],
-                jpeg,
-            )
+            self.hooks.publish(self.work, self.shown, jpeg)
             self.shown += 1
 
 
@@ -130,6 +166,11 @@ class AvatarHooks(SessionHooks):
     worker is free. A chunk whose worker failed is published as held frames,
     the Session's state stays the one before it, and the worker rests until
     its renderer is healthy again.
+
+    The geometry, the published stream and format default to AVTR-1's; a
+    stage of another renderer passes its own. A `pinned` stage renders every
+    chunk of a Session on the worker that took its first one, for renderers
+    that keep a Session's state themselves and pass only a handle of it.
     """
 
     def __init__(
@@ -140,6 +181,10 @@ class AvatarHooks(SessionHooks):
         input_sample_rate_hz: int = SESSION_INPUT_SAMPLE_RATE_HZ,
         reply_stream: bool = False,
         recovery_probe_s: float = RECOVERY_PROBE_S,
+        geometry: ChunkGeometry = AVTR_GEOMETRY,
+        stream: str = VIDEO,
+        media_format: str = JPEG_FRAME,
+        pinned: bool = False,
     ) -> None:
         if not renderers:
             raise ValueError("the avatar stage needs at least one renderer worker")
@@ -150,6 +195,10 @@ class AvatarHooks(SessionHooks):
         self.input_sample_rate_hz = input_sample_rate_hz
         self.reply_stream = reply_stream
         self.recovery_probe_s = recovery_probe_s
+        self.geometry = geometry
+        self.stream = stream
+        self.media_format = media_format
+        self.pinned = pinned
         self.sessions: dict[SessionIdentity, AvatarSession] = {}
         self.lock = threading.Lock()
         self.wake = threading.Condition(self.lock)
@@ -190,8 +239,17 @@ class AvatarHooks(SessionHooks):
 
     def close(self, session_identity: SessionIdentity) -> None:
         with self.lock:
-            self.sessions.pop(session_identity)
+            session = self.sessions.pop(session_identity)
             self.wake.notify_all()
+        release = (
+            None
+            if session.worker is None or not session.state
+            else getattr(self.renderers[session.worker], "release", None)
+        )
+        if release is not None:
+            threading.Thread(target=release, args=(session.state,), daemon=True).start()
+        else:
+            pass
 
     def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
         with self.lock:
@@ -229,7 +287,8 @@ class AvatarHooks(SessionHooks):
     ) -> None:
         session.audio.user.append(chunk.t_start_ms, pcm16_samples(pcm), eos=chunk.eos)
         if session.cursor is None:
-            session.cursor = session.audio.user.end // CHUNK_SAMPLES * CHUNK_SAMPLES
+            chunk = self.geometry.chunk_samples
+            session.cursor = session.audio.user.end // chunk * chunk
         else:
             pass
 
@@ -247,9 +306,15 @@ class AvatarHooks(SessionHooks):
         else:
             session.audio.replies.place(
                 cursor=session.cursor,
-                boundary=FRAME_SAMPLES,
-                min_length=WINDOW_SAMPLES,
+                boundary=self.reply_boundary(),
+                min_length=self.geometry.window_samples,
             )
+
+    def reply_boundary(self) -> int:
+        """Replies start on a frame boundary: every frame's when frames are a whole number of samples, else the chunk's."""
+        chunk = self.geometry.chunk_samples
+        frames = self.geometry.chunk_frames
+        return chunk // frames if chunk % frames == 0 else chunk
 
     def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
         """An interrupt ends the replies of its turn, or every reply without one, at the next chunk to render, and drops their later audio."""
@@ -266,29 +331,36 @@ class AvatarHooks(SessionHooks):
     def ready_chunks(self, session: AvatarSession) -> range:
         """The starts of the chunks that may render: their listening window has arrived and, while the agent's units stream, so has their speech window; once the input ended, they show placed speech."""
         audio = session.audio
+        chunk = self.geometry.chunk_samples
         if session.cursor is None or session.error is not None or session.is_rendering:
             return range(0)
         elif audio.user.is_ended:
             last = max(
-                audio.user.end // CHUNK_SAMPLES * CHUNK_SAMPLES,
-                math.ceil(audio.speech_end() / CHUNK_SAMPLES) * CHUNK_SAMPLES
-                - CHUNK_SAMPLES,
+                audio.user.end // chunk * chunk,
+                math.ceil(audio.speech_end() / chunk) * chunk - chunk,
             )
         else:
-            last = audio.user.end // CHUNK_SAMPLES * CHUNK_SAMPLES
-            while last >= session.cursor and audio.awaits_units(last + WINDOW_SAMPLES):
-                last -= CHUNK_SAMPLES
-        return range(session.cursor, last + 1, CHUNK_SAMPLES)
+            last = audio.user.end // chunk * chunk
+            while last >= session.cursor and audio.awaits_units(
+                last + self.geometry.window_samples
+            ):
+                last -= chunk
+        return range(session.cursor, last + 1, chunk)
 
-    def next_work(self) -> RenderWork | None:
-        """Take the next chunk of the first Session with one ready and move that Session last; called with the lock held.
+    def takes(self, session: AvatarSession, index: int) -> bool:
+        """Whether worker `index` may render the Session's next chunk: any worker may, unless the stage pins Sessions to the worker of their first chunk."""
+        return not self.pinned or session.worker in (None, index)
+
+    def next_work(self, index: int = 0) -> RenderWork | None:
+        """Take the next chunk worker `index` may render of the first Session with one ready and move that Session last; called with the lock held.
 
         Before the input ends the newest ready chunk renders and the older
         ready ones are held: they are late already, and rendering them would
         delay every later chunk as much.
         """
+        window = self.geometry.window_samples
         for session_identity, session in list(self.sessions.items()):
-            ready = self.ready_chunks(session)
+            ready = self.ready_chunks(session) if self.takes(session, index) else ()
             if not ready:
                 continue
             elif session.audio.user.is_ended:
@@ -301,15 +373,14 @@ class AvatarHooks(SessionHooks):
                 held={start: self.frame_turns(session, start) for start in held},
                 chunk_start=chunk_start,
                 turns=self.frame_turns(session, chunk_start),
-                speech=session.audio.speech_window(chunk_start, WINDOW_SAMPLES),
-                listen=session.audio.user.window(
-                    chunk_start - WINDOW_SAMPLES, WINDOW_SAMPLES
-                ),
+                speech=session.audio.speech_window(chunk_start, window),
+                listen=session.audio.user.window(chunk_start - window, window),
             )
             self.sessions[session_identity] = self.sessions.pop(session_identity)
             session.is_rendering = True
-            session.cursor = chunk_start + CHUNK_SAMPLES
-            session.audio.user.drop_before(session.cursor - WINDOW_SAMPLES)
+            session.worker = index if self.pinned else session.worker
+            session.cursor = chunk_start + self.geometry.chunk_samples
+            session.audio.user.drop_before(session.cursor - window)
             session.audio.units.drop_before(session.cursor)
             session.audio.replies.drop_finished(session.cursor)
             self.place(session)
@@ -318,33 +389,35 @@ class AvatarHooks(SessionHooks):
 
     def frame_turns(self, session: AvatarSession, chunk_start: int) -> list[int | None]:
         """The turn of the reply audio each frame of the chunk shows, None for a listening frame."""
+        starts = self.geometry.frame_starts(chunk_start)
         return [
-            session.audio.replies.turn_at(frame_start, FRAME_SAMPLES)
-            for frame_start in range(
-                chunk_start, chunk_start + CHUNK_SAMPLES, FRAME_SAMPLES
-            )
+            session.audio.replies.turn_at(start, end - start)
+            for start, end in zip(starts, starts[1:])
         ]
 
     def publish(
         self,
         work: RenderWork,
-        frame_start: int,
-        turn: int | None,
-        jpeg: bytes,
+        frame_index: int,
+        payload: bytes,
+        chunk_start: int | None = None,
     ) -> None:
-        """Hand one frame to the Session's reader unless the Session closed meanwhile."""
+        """Hand frame `frame_index` of the work's chunk, or of a held chunk starting at `chunk_start`, to the Session's reader unless the Session closed meanwhile."""
+        start = work.chunk_start if chunk_start is None else chunk_start
+        turns = work.turns if chunk_start is None else work.held[chunk_start]
+        frame_start = self.geometry.frame_starts(start)[frame_index]
         with self.lock:
             if self.sessions.get(work.session_identity) is work.session:
                 assert work.session.emit is not None
                 work.session.emit(
                     TimedChunk(
-                        VIDEO,
+                        self.stream,
                         frame_start * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
-                        FRAME_MS,
+                        self.geometry.frame_ms,
                         0,
-                        jpeg,
-                        format=JPEG_FRAME,
-                        turn=turn,
+                        payload,
+                        format=self.media_format,
+                        turn=turns[frame_index],
                     )
                 )
             else:
@@ -353,14 +426,14 @@ class AvatarHooks(SessionHooks):
     def take_work(self, index: int) -> RenderWork | None:
         """The worker's next chunk, waiting for one; None once the stage has no open Session, when the worker stops."""
         with self.lock:
-            work = self.next_work()
+            work = self.next_work(index)
             while work is None:
                 if not self.sessions:
                     self.workers[index] = None
                     return None
                 else:
                     self.wake.wait()
-                    work = self.next_work()
+                    work = self.next_work(index)
             return work
 
     def recover(self, index: int) -> bool:
@@ -382,30 +455,24 @@ class AvatarHooks(SessionHooks):
         """The worker of one renderer; it stops once the stage has no open Session."""
         renderer = self.renderers[index]
         while (work := self.take_work(index)) is not None:
-            for chunk_start, turns in work.held.items():
-                for frame_index, turn in enumerate(turns):
-                    self.publish(
-                        work, chunk_start + frame_index * FRAME_SAMPLES, turn, b""
-                    )
+            chunk_frames = self.geometry.chunk_frames
+            for chunk_start in work.held:
+                for frame_index in range(chunk_frames):
+                    self.publish(work, frame_index, b"", chunk_start)
             frames = RenderedFrames(hooks=self, work=work)
             try:
                 state = renderer.render(
                     work.session.state, work.speech, work.listen, frames.publish
                 )
-                if frames.shown != CHUNK_FRAMES:
+                if frames.shown != chunk_frames:
                     raise RendererUnavailable(
-                        f"the renderer sent {frames.shown} frames of a {CHUNK_FRAMES}-frame chunk"
+                        f"the renderer sent {frames.shown} frames of a {chunk_frames}-frame chunk"
                     )
                 else:
                     pass
             except RendererUnavailable as error:
-                for frame_index in range(frames.shown, CHUNK_FRAMES):
-                    self.publish(
-                        work,
-                        work.chunk_start + frame_index * FRAME_SAMPLES,
-                        work.turns[frame_index],
-                        b"",
-                    )
+                for frame_index in range(frames.shown, chunk_frames):
+                    self.publish(work, frame_index, b"")
                 with self.lock:
                     work.session.is_rendering = False
                     work.session.failed_chunks += 1
@@ -438,4 +505,10 @@ class AvatarHooks(SessionHooks):
                 self.wake.notify_all()
 
 
-__all__ = ["AvatarHooks", "AvatarRenderer", "RendererUnavailable"]
+__all__ = [
+    "AVTR_GEOMETRY",
+    "AvatarHooks",
+    "AvatarRenderer",
+    "ChunkGeometry",
+    "RendererUnavailable",
+]
