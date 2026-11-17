@@ -1,0 +1,27 @@
+{
+  "name": "palette-filter",
+  "kind": "shell-palette",
+  "shell_ui": {
+    "palette_open": true,
+    "palette_query": "mod"
+  },
+  "shell_palette": {
+    "items": [
+      {
+        "id": "go/models",
+        "group": "前往",
+        "title": "语音识别模型"
+      },
+      {
+        "id": "go/language-models",
+        "group": "前往",
+        "title": "语言模型"
+      },
+      {
+        "id": "llm-debug",
+        "group": "显示",
+        "title": "语言模型调试"
+      }
+    ]
+  }
+}

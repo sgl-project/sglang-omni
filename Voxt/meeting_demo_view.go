@@ -119,6 +119,29 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				ui.Column(c).Padding(24).Children(func() {
 					keysField(c, &host.keyRow, i18n.T("Custom keys of shortcut %d", 1), host.saveKeys, *fixture.state.KeyRecorder, host)
 				})
+			case "shell":
+				shellView(c, fixture.state.Shell, host, &host.shellUI, func() {
+					ui.Column(c).Grow(1).Center().Children(func() { ui.Text(c, fixture.name) })
+				}, func() {
+					announcementDialog(c, fixture.state.Announcement, &host.announcementOpen)
+				})
+			case "shell-nav":
+				sidebarFrame(c, fixture.state.Nav, fixture.state.Notices, host, host, &host.navUI, func() {
+					ui.Column(c).Grow(1).Center().Children(func() { ui.Text(c, fixture.name) })
+				})
+			case "shell-notices":
+				ui.Column(c).Width(260).Padding(8).Children(func() {
+					noticeStack(c, fixture.state.Notices, host)
+				})
+			case "shell-logs":
+				logsView(c, fixture.state.Logs, host, &host.logsUI, false)
+			case "shell-palette":
+				ui.Column(c).Grow(1).Center().Children(func() { ui.Text(c, fixture.name) })
+				paletteView(c, fixture.state.Palette, host, &host.paletteUI)
+			case "shell-sheet":
+				shortcutSheetView(c, fixture.state.Sheet, &host.sheetOpen)
+			case "shell-announcement":
+				announcementDialog(c, fixture.state.Announcement, &host.announcementOpen)
 			}
 		})
 	})

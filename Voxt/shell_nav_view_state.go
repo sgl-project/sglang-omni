@@ -22,8 +22,8 @@ type navPageViewState struct {
 // navGroupViewState is one section of the sidebar; the first has no
 // title.
 type navGroupViewState struct {
-	ID    string            `json:"id"`
-	Title string            `json:"title,omitempty"`
+	ID    string             `json:"id"`
+	Title string             `json:"title,omitempty"`
 	Pages []navPageViewState `json:"pages"`
 }
 
@@ -36,19 +36,19 @@ type navShortcutViewState struct {
 
 // navViewState is the sidebar's display data.
 type navViewState struct {
-	Groups           []navGroupViewState `json:"groups"`
-	Current          string              `json:"current"` // the router's section ("/home")
+	Groups           []navGroupViewState    `json:"groups"`
+	Current          string                 `json:"current"` // the router's section ("/home")
 	ShortcutPages    []navShortcutViewState `json:"shortcut_pages,omitempty"`
-	Settings         navPageViewState    `json:"settings"` // the Settings item (the dialog, not a page)
-	SettingsSelected bool                `json:"settings_selected"`
-	NoticesCount     int                 `json:"notices_count"`
-	NoticesLabel     string              `json:"notices_label,omitempty"` // "3 notifications" (the rail's tooltip)
-	ClosedSections   []string            `json:"closed_sections,omitempty"`
-	RailChosen       bool                `json:"rail_chosen"` // the user chose the layout
-	Rail             bool                `json:"rail"`        // their choice: icons only
-	SidebarWidth     float64             `json:"sidebar_width"` // DIPs at 100 %, 0 for the default
-	MinSidebarWidth  float64             `json:"min_sidebar_width"`
-	MaxSidebarWidth  float64             `json:"max_sidebar_width"`
+	Settings         navPageViewState       `json:"settings"` // the Settings item (the dialog, not a page)
+	SettingsSelected bool                   `json:"settings_selected"`
+	NoticesCount     int                    `json:"notices_count"`
+	NoticesLabel     string                 `json:"notices_label,omitempty"` // "3 notifications" (the rail's tooltip)
+	ClosedSections   []string               `json:"closed_sections,omitempty"`
+	RailChosen       bool                   `json:"rail_chosen"`   // the user chose the layout
+	Rail             bool                   `json:"rail"`          // their choice: icons only
+	SidebarWidth     float64                `json:"sidebar_width"` // DIPs at 100 %, 0 for the default
+	MinSidebarWidth  float64                `json:"min_sidebar_width"`
+	MaxSidebarWidth  float64                `json:"max_sidebar_width"`
 }
 
 // navViewStateInput is what a navViewState is built from.

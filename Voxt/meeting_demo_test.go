@@ -499,9 +499,59 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 		return state.ShortcutPrompt.OtherApp
 	case "key-recorder":
 		return keyRecorderDemoExpectedText(state.KeyRecorder)
+	case "shell":
+		return shellDemoSentinel(state)
+	case "shell-nav":
+		if len(state.Nav.Groups) > 0 && len(state.Nav.Groups[0].Pages) > 0 {
+			return state.Nav.Groups[0].Pages[0].Title
+		}
+		return fixture.name
+	case "shell-notices":
+		return state.Notices[0].Title
+	case "shell-logs":
+		if len(state.Logs.Lines) == 0 {
+			if state.Logs.Query != "" {
+				return i18n.T("Nothing matches “%s”", state.Logs.Query)
+			}
+			return i18n.T("No log lines yet.")
+		}
+		return state.Logs.Lines[0].Message
+	case "shell-palette":
+		if len(state.Palette.Items) == 0 {
+			return i18n.T("No matching commands")
+		}
+		return state.Palette.Items[0].Title
+	case "shell-sheet":
+		return i18n.T("Keyboard shortcuts")
+	case "shell-announcement":
+		return state.Announcement.Title
 	default:
 		return ""
 	}
+}
+
+// shellDemoSentinel is the text a shell fixture must show.
+func shellDemoSentinel(state meetingFixtureState) string {
+	shell := state.Shell
+	if state.ShellUI != nil {
+		if state.ShellUI.AnnouncementOpen && state.Announcement != nil {
+			return state.Announcement.Title
+		}
+		if state.ShellUI.SheetOpen {
+			return i18n.T("Keyboard shortcuts")
+		}
+		if state.ShellUI.PaletteOpen && shell.Palette != nil && len(shell.Palette.Items) > 0 {
+			return shell.Palette.Items[0].Title
+		}
+	}
+	if shell.Nav != nil && shell.Nav.RailChosen && shell.Nav.Rail {
+		// The rail keeps the cards in the Settings icon's popover.
+		return i18n.T("Settings")
+	}
+	if len(shell.Notices) > 0 {
+		return shell.Notices[0].Title
+	}
+	return i18n.T("Home")
 }
 
 func TestMeetingDemoSwitchesFixtures(t *testing.T) {

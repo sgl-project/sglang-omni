@@ -1,0 +1,479 @@
+{
+  "name": "shell-busy",
+  "kind": "shell",
+  "shell": {
+    "theme": "system",
+    "scale": 1,
+    "still": true,
+    "toasts": [
+      "Copied 2 lines"
+    ],
+    "nav": {
+      "groups": [
+        {
+          "id": "",
+          "pages": [
+            {
+              "path": "/home",
+              "title": "首页",
+              "keys": "⌘1",
+              "selected": true
+            },
+            {
+              "path": "/history",
+              "title": "历史",
+              "keys": "⌘2",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "Features",
+          "title": "功能",
+          "pages": [
+            {
+              "path": "/transcribe",
+              "title": "转录",
+              "keys": "⌘3",
+              "selected": false
+            },
+            {
+              "path": "/translate",
+              "title": "翻译",
+              "keys": "⌘4",
+              "selected": false
+            },
+            {
+              "path": "/rewrite",
+              "title": "改写",
+              "keys": "⌘5",
+              "selected": false
+            },
+            {
+              "path": "/notes",
+              "title": "笔记",
+              "selected": false
+            },
+            {
+              "path": "/meetings",
+              "title": "会议",
+              "selected": false
+            },
+            {
+              "path": "/app-enhancement",
+              "title": "应用增强",
+              "keys": "⌘6",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "Resources",
+          "title": "资源",
+          "pages": [
+            {
+              "path": "/models",
+              "title": "语音识别模型",
+              "selected": false
+            },
+            {
+              "path": "/language-models",
+              "title": "语言模型",
+              "selected": false
+            },
+            {
+              "path": "/dictionary",
+              "title": "词典",
+              "badge": "2",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "System",
+          "title": "系统",
+          "pages": [
+            {
+              "path": "/logs",
+              "title": "日志",
+              "selected": false
+            },
+            {
+              "path": "/settings",
+              "title": "设置",
+              "selected": false
+            }
+          ]
+        }
+      ],
+      "current": "/home",
+      "shortcut_pages": [
+        {
+          "path": "/home",
+          "num": 1
+        },
+        {
+          "path": "/history",
+          "num": 2
+        },
+        {
+          "path": "/transcribe",
+          "num": 3
+        },
+        {
+          "path": "/translate",
+          "num": 4
+        },
+        {
+          "path": "/rewrite",
+          "num": 5
+        },
+        {
+          "path": "/app-enhancement",
+          "num": 6
+        }
+      ],
+      "settings": {
+        "path": "/settings",
+        "title": "设置",
+        "keys": "⌘,",
+        "selected": false
+      },
+      "settings_selected": false,
+      "notices_count": 3,
+      "notices_label": "3 条通知",
+      "rail_chosen": false,
+      "rail": false,
+      "sidebar_width": 0,
+      "min_sidebar_width": 170,
+      "max_sidebar_width": 320
+    },
+    "notices": [
+      {
+        "id": "fixture-3",
+        "severity": "error",
+        "title": "Third card",
+        "body": "Before both.",
+        "action_label": "打开",
+        "time_hint": "1月2日 07:04"
+      },
+      {
+        "id": "fixture-2",
+        "severity": "warning",
+        "title": "Second card",
+        "body": "Before that.",
+        "action_label": "打开",
+        "time_hint": "1月2日 07:04"
+      },
+      {
+        "id": "fixture-1",
+        "severity": "info",
+        "title": "First card",
+        "body": "The newest thing that happened.",
+        "action_label": "打开",
+        "time_hint": "1月2日 07:04"
+      }
+    ],
+    "logs": {
+      "lines": [
+        {
+          "seq": 5,
+          "time": "09:30:04",
+          "source": "app",
+          "message": "line 5: a debug line",
+          "level": "debug"
+        },
+        {
+          "seq": 4,
+          "time": "09:30:03",
+          "source": "helper",
+          "message": "line 4: an error",
+          "level": "error"
+        },
+        {
+          "seq": 3,
+          "time": "09:30:02",
+          "source": "app",
+          "message": "line 3: a warning",
+          "level": "warning"
+        },
+        {
+          "seq": 2,
+          "time": "09:30:01",
+          "source": "helper",
+          "message": "line 2: the helper said hello",
+          "level": "info"
+        },
+        {
+          "seq": 1,
+          "time": "09:30:00",
+          "source": "app",
+          "message": "line 1: the app started",
+          "level": "info"
+        }
+      ],
+      "count": "5 行",
+      "sources": [
+        {
+          "code": "",
+          "label": "全部来源"
+        },
+        {
+          "code": "app",
+          "label": "App"
+        },
+        {
+          "code": "helper",
+          "label": "辅助进程"
+        }
+      ],
+      "source": "全部来源",
+      "query": "",
+      "log_file": false
+    },
+    "logs_height": 220,
+    "palette": {
+      "items": [
+        {
+          "id": "go/home",
+          "group": "前往",
+          "title": "首页",
+          "keys": "⌘1"
+        },
+        {
+          "id": "go/history",
+          "group": "前往",
+          "title": "历史",
+          "keys": "⌘2"
+        },
+        {
+          "id": "go/transcribe",
+          "group": "前往",
+          "title": "转录",
+          "keys": "⌘3"
+        },
+        {
+          "id": "go/translate",
+          "group": "前往",
+          "title": "翻译",
+          "keys": "⌘4"
+        },
+        {
+          "id": "go/rewrite",
+          "group": "前往",
+          "title": "改写",
+          "keys": "⌘5"
+        },
+        {
+          "id": "go/notes",
+          "group": "前往",
+          "title": "笔记"
+        },
+        {
+          "id": "go/meetings",
+          "group": "前往",
+          "title": "会议"
+        },
+        {
+          "id": "go/app-enhancement",
+          "group": "前往",
+          "title": "应用增强",
+          "keys": "⌘6"
+        },
+        {
+          "id": "go/models",
+          "group": "前往",
+          "title": "语音识别模型"
+        },
+        {
+          "id": "go/language-models",
+          "group": "前往",
+          "title": "语言模型"
+        },
+        {
+          "id": "go/dictionary",
+          "group": "前往",
+          "title": "词典"
+        },
+        {
+          "id": "go/logs",
+          "group": "前往",
+          "title": "日志"
+        },
+        {
+          "id": "go/settings",
+          "group": "前往",
+          "title": "设置",
+          "keys": "⌘,"
+        },
+        {
+          "id": "go/settings/general",
+          "group": "设置",
+          "title": "通用"
+        },
+        {
+          "id": "go/settings/permissions",
+          "group": "设置",
+          "title": "权限"
+        },
+        {
+          "id": "go/settings/audio",
+          "group": "设置",
+          "title": "音频"
+        },
+        {
+          "id": "go/settings/overlay",
+          "group": "设置",
+          "title": "浮窗样式"
+        },
+        {
+          "id": "go/settings/shortcuts",
+          "group": "设置",
+          "title": "快捷键"
+        },
+        {
+          "id": "go/settings/appearance",
+          "group": "设置",
+          "title": "外观"
+        },
+        {
+          "id": "go/settings/privacy",
+          "group": "设置",
+          "title": "隐私"
+        },
+        {
+          "id": "go/settings/storage",
+          "group": "设置",
+          "title": "存储"
+        },
+        {
+          "id": "go/settings/about",
+          "group": "设置",
+          "title": "诊断与关于"
+        },
+        {
+          "id": "palette",
+          "group": "显示",
+          "title": "命令面板",
+          "keys": "⌘K"
+        },
+        {
+          "id": "logs-panel",
+          "group": "显示",
+          "title": "显示或隐藏日志面板",
+          "keys": "⇧⌘L"
+        },
+        {
+          "id": "shortcuts",
+          "group": "显示",
+          "title": "键盘快捷键",
+          "keys": "?"
+        },
+        {
+          "id": "helper-restart",
+          "group": "显示",
+          "title": "重启辅助进程"
+        },
+        {
+          "id": "check-updates",
+          "group": "显示",
+          "title": "检查更新…"
+        },
+        {
+          "id": "llm-debug",
+          "group": "显示",
+          "title": "语言模型调试"
+        },
+        {
+          "id": "setup-guide",
+          "group": "显示",
+          "title": "打开设置引导"
+        },
+        {
+          "id": "theme/light",
+          "group": "外观",
+          "title": "主题：浅色"
+        },
+        {
+          "id": "theme/dark",
+          "group": "外观",
+          "title": "主题：深色"
+        },
+        {
+          "id": "lang/en",
+          "group": "语言",
+          "title": "English"
+        },
+        {
+          "id": "lang/zh-Hans",
+          "group": "语言",
+          "title": "简体中文"
+        }
+      ]
+    },
+    "sheet": {
+      "groups": [
+        {
+          "title": "全局",
+          "rows": [
+            {
+              "keys": "右 ⌥",
+              "title": "转录"
+            },
+            {
+              "keys": "右 ⌥ ⇧",
+              "title": "翻译"
+            },
+            {
+              "keys": "⌃ 右 ⌥",
+              "title": "改写"
+            },
+            {
+              "keys": "⌃⌥V",
+              "title": "粘贴最近结果"
+            }
+          ]
+        },
+        {
+          "title": "导航",
+          "rows": [
+            {
+              "keys": "⌘K",
+              "title": "命令面板"
+            },
+            {
+              "keys": "⌘1  ⌘2",
+              "title": "首页、历史"
+            },
+            {
+              "keys": "⌘3 … ⌘6",
+              "title": "转录、翻译、改写、应用增强"
+            },
+            {
+              "keys": "⌘,",
+              "title": "设置"
+            },
+            {
+              "keys": "⌘[  ⌘]",
+              "title": "后退、前进"
+            },
+            {
+              "keys": "⇧⌘L",
+              "title": "显示或隐藏日志面板"
+            },
+            {
+              "keys": "?",
+              "title": "键盘快捷键"
+            },
+            {
+              "keys": "Esc",
+              "title": "关闭对话框或弹出面板"
+            }
+          ]
+        }
+      ]
+    },
+    "settings_open": false
+  },
+  "shell_ui": {}
+}

@@ -217,6 +217,8 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "shortcut-prompt":
 		state := buildShortcutPromptFixture(t, scenario.shortcutPrompt)
 		fixture.ShortcutPrompt = &state
+	case "shell", "shell-nav", "shell-notices", "shell-logs", "shell-palette", "shell-sheet", "shell-announcement":
+		return buildShellFixture(t, scenario, locale)
 	case "key-recorder":
 		input := scenario.keyRecorder
 		state := buildKeyRecorderViewState(translator, input.HelperRecordsKeys, input.RawKeys)

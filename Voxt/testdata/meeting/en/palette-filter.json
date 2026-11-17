@@ -1,0 +1,27 @@
+{
+  "name": "palette-filter",
+  "kind": "shell-palette",
+  "shell_ui": {
+    "palette_open": true,
+    "palette_query": "mod"
+  },
+  "shell_palette": {
+    "items": [
+      {
+        "id": "go/models",
+        "group": "Go to",
+        "title": "Speech models"
+      },
+      {
+        "id": "go/language-models",
+        "group": "Go to",
+        "title": "Language models"
+      },
+      {
+        "id": "llm-debug",
+        "group": "View",
+        "title": "Language model debug"
+      }
+    ]
+  }
+}

@@ -45,7 +45,7 @@ type sheetRowViewState struct {
 
 // sheetGroupViewState is a section of the "?" sheet.
 type sheetGroupViewState struct {
-	Title string               `json:"title"`
+	Title string              `json:"title"`
 	Rows  []sheetRowViewState `json:"rows"`
 }
 

@@ -47,6 +47,7 @@ type meetingFixtureScenario struct {
 	meetingSettings            settingsMeetingStateInput
 	shortcutPrompt             shortcutPromptFixtureInput
 	keyRecorder                keyRecorderViewState
+	shell                      shellFixtureScenario
 }
 
 var meetingFixtureNow = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
@@ -171,6 +172,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, modelsFixtureScenarios()...)
 	scenarios = append(scenarios, featureFixtureScenarios()...)
 	scenarios = append(scenarios, settingsFixtureScenarios()...)
+	scenarios = append(scenarios, shellFixtureScenarios()...)
 	return scenarios
 }
 

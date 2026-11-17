@@ -31,6 +31,24 @@ type meetingFixtureState struct {
 	MeetingSettings       *settingsMeetingViewState   `json:"meeting_settings,omitempty"`
 	ShortcutPrompt        *shortcutPromptViewState    `json:"shortcut_prompt,omitempty"`
 	KeyRecorder           *keyRecorderViewState       `json:"key_recorder,omitempty"`
+	Shell                 *shellViewState             `json:"shell,omitempty"`
+	ShellUI               *shellFixtureUI             `json:"shell_ui,omitempty"`
+	Nav                   *navViewState               `json:"shell_nav,omitempty"`
+	Notices               []noticeViewState           `json:"shell_notices,omitempty"`
+	Logs                  *logsViewState              `json:"shell_logs,omitempty"`
+	Palette               *paletteViewState           `json:"shell_palette,omitempty"`
+	Sheet                 *sheetViewState             `json:"shell_sheet,omitempty"`
+	Announcement          *announcementViewState      `json:"shell_announcement,omitempty"`
+}
+
+// shellFixtureUI seeds the shell views' local state in the demo: which
+// of the shell's overlays is open.
+type shellFixtureUI struct {
+	PaletteOpen      bool   `json:"palette_open,omitempty"`
+	PaletteQuery     string `json:"palette_query,omitempty"`
+	PaletteSel       int    `json:"palette_sel,omitempty"`
+	SheetOpen        bool   `json:"sheet_open,omitempty"`
+	AnnouncementOpen bool   `json:"announcement_open,omitempty"`
 }
 
 type sessionOverlayFixtureUI struct {
