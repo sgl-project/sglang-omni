@@ -27,6 +27,7 @@ type navLocalUI struct {
 
 	sections map[string]*bool // sections: open or closed (seeded from the settings)
 
+	rail       bool      // the layout this frame shows (sidebarFrame decides)
 	sideW      float32   // the sidebar's width, DIPs at the theme's scale
 	sideWScale float32   // the px factor sideW was computed at
 	sideWAt    time.Time // when the user last resized it (saved after a pause)
@@ -73,6 +74,7 @@ func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState,
 	if state.RailChosen {
 		rail = state.Rail
 	}
+	local.rail = rail
 	if rail {
 		// The window controls (the traffic lights) reach past the rail:
 		// page titles move over to keep clear of them.

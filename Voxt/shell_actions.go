@@ -48,6 +48,15 @@ type shellKeyActions interface {
 	toggleLogsPanel()
 }
 
+// shellActions are the intents of the window shell's views (shell.go).
+type shellActions interface {
+	navActions
+	noticeActions
+	logsActions
+	paletteActions
+	shellKeyActions
+}
+
 // logsActions are the intents of the logs page and panel (shell_logs.go).
 type logsActions interface {
 	// copyLogLines copies the shown lines with these seqs (in the log's

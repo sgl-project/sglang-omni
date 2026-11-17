@@ -7,6 +7,5 @@
 # path  # area
 
 legacy_report.go  # legacy: exempt one-time 1.x import reporting
-shell.go  # shell
 
 ui_panels.go  # ui kit
