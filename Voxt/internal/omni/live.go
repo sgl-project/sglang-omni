@@ -282,7 +282,7 @@ func (s *live) read() {
 			s.mu.Lock()
 			text, ok := s.asm.apply(ev.Index, ev.Segment, ev.Text, ev.Final)
 			if ok && !s.finished {
-				s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
+				s.emit(asr.Event{Kind: asr.EventPartial, Text: s.plain(text)})
 			}
 			s.mu.Unlock()
 		case "error":
@@ -406,9 +406,18 @@ func (s *live) Salvage() string {
 	defer s.mu.Unlock()
 	preview := s.asm.text()
 	if s.pc != nil && len(s.pc.texts) > 0 && (preview == "" || s.pc.done >= s.previewed) {
-		return joinParts(s.pc.texts)
+		return s.plain(joinParts(s.pc.texts))
 	}
-	return preview
+	return s.plain(preview)
+}
+
+// plain is the model's plain text (Spec.plainText); a live built without
+// its ASR (tests) has none.
+func (s *live) plain(t string) string {
+	if s.a == nil {
+		return t
+	}
+	return s.a.spec.plainText(t)
 }
 
 // Close abandons the stream.
