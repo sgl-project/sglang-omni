@@ -313,7 +313,7 @@ public struct HotkeyRecognizer: Sendable {
     }
 
     /// Feeds one event; returns what fired and whether to swallow it.
-    public mutating func handle(_ input: KeyInput) -> (events: [HotkeyEvent], swallow: Bool) {
+    public mutating func handle(_ input: KeyInput, hasMarkedText: () -> Bool = { false }) -> (events: [HotkeyEvent], swallow: Bool) {
         var out = tick(now: input.t)
         var swallow = false
         switch input {
@@ -328,12 +328,12 @@ public struct HotkeyRecognizer: Sendable {
             swallow = config.swallowFn && chordBindings.contains { $0.modifiers[.fn] != nil }
         case .keyDown(let keyCode, let flags, let isRepeat, let t):
             if !pressed.isEmpty { spoiled = true; longPressDeadline = nil }
-            swallow = handleKeyDown(.key(keyCode), flags: flags, isRepeat: isRepeat, t: t, &out)
+            swallow = handleKeyDown(.key(keyCode), flags: flags, isRepeat: isRepeat, t: t, hasMarkedText: hasMarkedText, &out)
         case .keyUp(let keyCode, _, let t):
             swallow = handleKeyUp(.key(keyCode), t: t, &out)
         case .mouseDown(let button, let flags, let t):
             if !pressed.isEmpty { spoiled = true; longPressDeadline = nil }
-            swallow = handleKeyDown(.button(button), flags: flags, isRepeat: false, t: t, &out)
+            swallow = handleKeyDown(.button(button), flags: flags, isRepeat: false, t: t, hasMarkedText: hasMarkedText, &out)
         case .mouseUp(let button, let t):
             swallow = handleKeyUp(.button(button), t: t, &out)
         }
@@ -470,11 +470,12 @@ public struct HotkeyRecognizer: Sendable {
     private var keyBindings: [Binding] { config.bindings.filter { $0.press != nil }.sorted { $0.specificity > $1.specificity } }
 
     /// A key or a mouse button pressed.
-    private mutating func handleKeyDown(_ press: Press, flags: UInt64, isRepeat: Bool, t: Double, _ out: inout [HotkeyEvent]) -> Bool {
+    private mutating func handleKeyDown(_ press: Press, flags: UInt64, isRepeat: Bool, t: Double, hasMarkedText: () -> Bool, _ out: inout [HotkeyEvent]) -> Bool {
         let pressed = RawFlags.pressed(flags)
         // The cancel shortcut, only while active: its keys are swallowed
         // then, and reach the app in front at any other time.
         if config.active, let c = config.cancel, c.matches(press, pressed: pressed) {
+            if hasMarkedText() { return false }
             if !isRepeat { out.append(HotkeyEvent(binding: c.id, phase: .trigger, behavior: .tap, heldMs: nil, t: t)) }
             swallowedKeys.insert(press)
             return true
@@ -483,6 +484,7 @@ public struct HotkeyRecognizer: Sendable {
             if swallowedKeys.contains(press) { return true } // repeats of a swallowed key
             return false
         }
+        if hasMarkedText() { return false }
         let swallow = b.swallow ?? true
         if swallow { swallowedKeys.insert(press) }
         if isRepeat { return swallow }

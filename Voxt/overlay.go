@@ -201,6 +201,7 @@ func (a *app) overlayModeNow() overlayMode {
 // shows again is first transparent, until its view built the new face
 // (reveal): no frame of the last face shows.
 func (a *app) overlaySync() {
+	defer a.syncHotkeys()
 	a.paceDraft() // overlay_stream.go
 	mode := a.overlayModeNow()
 	was := a.ov.shown

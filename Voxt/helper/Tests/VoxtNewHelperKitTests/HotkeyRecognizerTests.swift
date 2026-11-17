@@ -358,6 +358,33 @@ final class HotkeyRecognizerTests: XCTestCase {
         }
         XCTAssertEqual(fired, ["hold:down", "hold:up", "dbl:trigger"])
     }
+    func testMarkedTextPassesMatchingKeysWithoutSwallowing() {
+        var c = HotkeyConfig(bindings: [
+            Binding(id: "card.copy/1", modifiers: [:], key: 8, behavior: .tap),
+            Binding(id: "card.insert/1", modifiers: [:], key: 15, behavior: .tap),
+        ], active: true, cancel: Binding(id: "cancel", modifiers: [:], key: 8, behavior: .tap))
+        var r = HotkeyRecognizer(config: c)
+        for key in [UInt16(8), 15] {
+            let down = r.handle(.keyDown(keyCode: key, flags: 0, isRepeat: false, t: 0), hasMarkedText: { true })
+            XCTAssertTrue(down.events.isEmpty)
+            XCTAssertFalse(down.swallow)
+            XCTAssertFalse(r.handle(.keyUp(keyCode: key, flags: 0, t: 10)).swallow)
+        }
+        let cancel = r.handle(.keyDown(keyCode: 8, flags: 0, isRepeat: false, t: 20), hasMarkedText: { false })
+        XCTAssertEqual(cancel.events.map(\.binding), ["cancel"])
+        XCTAssertTrue(cancel.swallow)
+        let card = r.handle(.keyDown(keyCode: 15, flags: 0, isRepeat: false, t: 30), hasMarkedText: { false })
+        XCTAssertEqual(card.events.map(\.binding), ["card.insert/1"])
+        XCTAssertTrue(card.swallow)
+        c.cancel = nil
+        r.configure(c)
+        var probeCalls = 0
+        _ = r.handle(.keyDown(keyCode: 9, flags: 0, isRepeat: false, t: 40), hasMarkedText: {
+            probeCalls += 1
+            return true
+        })
+        XCTAssertEqual(probeCalls, 0, "a nonmatching key does not need the composition probe")
+    }
 }
 
 final class PCMFramerTests: XCTestCase {

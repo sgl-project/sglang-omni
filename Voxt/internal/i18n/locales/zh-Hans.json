@@ -478,6 +478,7 @@
   "Increase": "增加",
   "Input level": "输入音量",
   "Insert": "插入",
+  "Insert into %s": "插入到 %s",
   "Insert into %s (R)": "插入到 %s（R）",
   "Insert the recognised text without waiting for the language model": "不等语言模型，直接插入识别原文",
   "Inserted": "已插入",

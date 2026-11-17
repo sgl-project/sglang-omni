@@ -490,10 +490,36 @@ const (
 )
 
 // CardBindings are the card's keys as the helper's event tap takes
-// them: bare c and r, swallowed while bound.
-func CardBindings() []proto.HotkeyBinding {
-	return []proto.HotkeyBinding{
+// them: bare c and r, swallowed while bound. Their ids carry the card's
+// generation, and a bare cancel key keeps priority over the same card key.
+func CardBindings(generation uint64, cancel *proto.HotkeyBinding) []proto.HotkeyBinding {
+	bindings := []proto.HotkeyBinding{
 		binding(CardCopy, Chord{Key: "C", Code: keyCodes["C"]}, proto.BehaviorTap),
 		binding(CardInsert, Chord{Key: "R", Code: keyCodes["R"]}, proto.BehaviorTap),
 	}
+	out := make([]proto.HotkeyBinding, 0, len(bindings))
+	for _, b := range bindings {
+		if cancel != nil && len(cancel.Modifiers) == 0 && cancel.Key != nil && *cancel.Key == *b.Key {
+			continue
+		}
+		b.ID = fmt.Sprintf("%s/%d", b.ID, generation)
+		out = append(out, b)
+	}
+	return out
+}
+
+// CardAction reads a generation-qualified card binding id.
+func CardAction(id string) (action string, generation uint64, ok bool) {
+	for _, action := range []string{CardCopy, CardInsert} {
+		rest, found := strings.CutPrefix(id, action+"/")
+		if !found {
+			continue
+		}
+		generation, err := strconv.ParseUint(rest, 10, 64)
+		if err != nil || generation == 0 {
+			return "", 0, false
+		}
+		return action, generation, true
+	}
+	return "", 0, false
 }

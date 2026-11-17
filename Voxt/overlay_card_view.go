@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -143,7 +144,18 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		a.toggleThinkMenu()
 	}
 	if v.failed == nil {
-		tip := i18n.T("Insert into %s (R)", cmpOr(v.target, i18n.T("the app")))
+		hasCardKey := func(action string) bool {
+			for _, b := range hotkey.CardBindings(1, a.hotkeyPlan().Cancel) {
+				if got, _, _ := hotkey.CardAction(b.ID); got == action {
+					return true
+				}
+			}
+			return false
+		}
+		tip := i18n.T("Insert into %s", cmpOr(v.target, i18n.T("the app")))
+		if hasCardKey(hotkey.CardInsert) {
+			tip = i18n.T("Insert into %s (R)", cmpOr(v.target, i18n.T("the app")))
+		}
 		if v.why != "" {
 			tip = v.why
 		}
@@ -151,7 +163,10 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.closeLangMenu()
 			a.insertAnswer()
 		}
-		copyIcon, copyLabel, copyTip := icons.Copy, i18n.T("Copy"), i18n.T("Copy (C)")
+		copyIcon, copyLabel, copyTip := icons.Copy, i18n.T("Copy"), i18n.T("Copy")
+		if hasCardKey(hotkey.CardCopy) {
+			copyTip = i18n.T("Copy (C)")
+		}
 		if v.copied {
 			copyIcon, copyLabel, copyTip = icons.CopyCheck, i18n.T("Copied"), i18n.T("Copied")
 		}

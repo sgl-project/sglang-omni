@@ -213,7 +213,7 @@ final class HotkeyTap: @unchecked Sendable {
         let (fired, swallow, deadline): ([HotkeyEvent], Bool, Double?) = lock.withLock {
             events += 1
             if injected { return ([], false, nil) }
-            let r = recognizer.handle(input)
+            let r = recognizer.handle(input, hasMarkedText: { front.hasMarkedText() })
             return (r.events, r.swallow, recognizer.nextDeadline)
         }
         send(fired)
