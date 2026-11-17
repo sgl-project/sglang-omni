@@ -328,6 +328,10 @@ class LLaDA2Preprocessor:
             self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
         self.merge_size = self.image_processor.merge_size
         self.factor = self.image_processor.patch_size * self.merge_size
+        # Understanding images resize at the official smart_resize_images
+        # granularity (patch_size x 2); the VQ encoder still emits one token
+        # per patch, so this only changes the crop size rounding.
+        self.understanding_factor = self.image_processor.patch_size * 2
 
         # Cache special token IDs
         self.eoi_id = self.tokenizer.convert_tokens_to_ids(EOI_TOKEN)
@@ -403,7 +407,7 @@ class LLaDA2Preprocessor:
         image_parts_by_msg: dict[int, list[str]] = {}
 
         if images:
-            cropped = resize_images(images, self.factor)
+            cropped = resize_images(images, self.understanding_factor)
             img_result = self.image_processor(images=cropped, return_tensors="pt")
             pixel_values = img_result["pixel_values"]
             image_grid_thw = img_result["image_grid_thw"]
@@ -641,6 +645,12 @@ class LLaDA2Preprocessor:
             img_prefix = ""
             if image_parts_by_msg and msg_idx in image_parts_by_msg:
                 img_prefix = "".join(image_parts_by_msg[msg_idx])
+                if task_kind == "chat":
+                    # Official understanding prompts separate the image block
+                    # from the question with a newline.
+                    img_prefix += "\n"
+                else:
+                    pass
             else:
                 pass
 
