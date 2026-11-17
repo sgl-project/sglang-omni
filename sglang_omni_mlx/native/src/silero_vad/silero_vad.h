@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/layers.h"
 #include "mlx/mlx.h"
 
 namespace silero_vad {
@@ -52,11 +53,7 @@ public:
   const TimestampOptions &defaults() const { return defaults_; }
 
 private:
-  mlx::core::array Conv1d(const mlx::core::array &x, const std::string &name,
-                          int stride, int padding) const;
-  const mlx::core::array &Weight(const std::string &name) const;
-
-  std::unordered_map<std::string, mlx::core::array> weights_;
+  omni_common::Checkpoint checkpoint_;
   int filter_length_ = 256;
   int hop_length_ = 128;
   int pad_ = 64;
