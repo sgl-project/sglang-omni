@@ -7,9 +7,9 @@ package main
 
 // shellViewState is the shell's display data for one frame.
 type shellViewState struct {
-	Theme string   `json:"theme"`
-	Scale float64  `json:"scale"`
-	Still bool     `json:"still"` // no animations: tests and snapshots, Reduce motion
+	Theme  string   `json:"theme"`
+	Scale  float64  `json:"scale"`
+	Still  bool     `json:"still"` // no animations: tests and snapshots, Reduce motion
 	Toasts []string `json:"toasts,omitempty"`
 
 	Nav     *navViewState     `json:"nav,omitempty"`
