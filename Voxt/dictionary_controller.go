@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -42,12 +43,80 @@ type dictView struct {
 	example         notesExampleCache
 	termRows        []dictionaryTermViewState
 	termRowsKey     dictionaryTermRowsCacheKey
+	view            dictionaryViewState
+	viewKey         dictionaryViewCacheKey
 }
 
 type dictionaryTermRowsCacheKey struct {
 	seq     int
 	locale  string
 	loading bool
+}
+
+// dictionaryViewCacheKey is every input of a dictionaryViewState: when it
+// matches the last build's, dictionaryPageModel reuses the state instead
+// of rebuilding it every frame.
+type dictionaryViewCacheKey struct {
+	seq             int
+	read            bool
+	loading         bool
+	err             string
+	listFor         string
+	total           int
+	legacy          bool
+	query           string
+	tab             int
+	scanOpen        bool
+	suggestionReads int
+	settings        uint64
+	locale          string
+	scanModelID     string
+	scanModelName   string
+	canScan         bool
+	scan            dictionaryScanCacheKey
+	edit            dictionaryEditCacheKey
+	notesText       string
+	notesQuery      string
+	notesFind       int
+	notesFeature    int
+}
+
+type dictionaryScanCacheKey struct {
+	modelID, modelName         string
+	counted, running, stopping bool
+	ended, stopped             bool
+	count, read, total, found  int
+	failed, failedType         string
+}
+
+type dictionaryEditCacheKey struct {
+	open                    bool
+	id, term, aliases, note string
+	enabled                 bool
+	err                     string
+	saving                  bool
+	original, suggestion    string
+}
+
+func dictionaryScanCacheKeyFor(state scanState) dictionaryScanCacheKey {
+	key := dictionaryScanCacheKey{
+		modelID: state.model.ID, modelName: state.model.Name,
+		counted: state.counted, running: state.running, stopping: state.stopping,
+		ended: state.ended, stopped: state.stopped,
+		count: state.count, read: state.read, total: state.total, found: state.found,
+	}
+	if state.failed != nil {
+		key.failed, key.failedType = state.failed.Error(), fmt.Sprintf("%T", state.failed)
+	}
+	return key
+}
+
+func dictionaryEditCacheKeyFor(local dictionaryLocalUI) dictionaryEditCacheKey {
+	edit := local.edit
+	return dictionaryEditCacheKey{
+		open: local.editOpen, id: edit.id, term: edit.term, aliases: edit.aliases, note: edit.note,
+		enabled: edit.enabled, err: edit.err, saving: edit.saving, original: edit.original, suggestion: edit.suggestion,
+	}
 }
 
 func (a *app) dictShown() {
@@ -114,19 +183,35 @@ func (a *app) dictionaryPageModel() dictionaryViewState {
 		a.dv.termRows = buildDictionaryTermViewStates(translator, a.dv.list)
 		a.dv.termRowsKey = key
 	}
-	input := dictionaryViewStateInput{
-		TermsReady: true, TermRows: a.dv.termRows, Suggestions: a.suggestions, Settings: a.prefs,
-		Installed: a.installed(local.LLM), Read: a.dv.read, Loading: a.dv.loading, Error: a.dv.err,
-		Query: a.dictUI.query, ListFor: a.dv.listFor, Total: a.dv.total, LegacyImport: a.dv.legacyAvailable,
-		Tab: a.dictUI.tab, ScanOpen: a.dictUI.scanOpen, Scan: dictionaryScanInput(a.dv.scan),
-		Edit: dictionaryTermEditInput(a.dictUI), NotesText: a.dictUI.notes.text,
-		NotesQuery: a.dictUI.notesQuery, NotesFind: a.dictUI.notesFind.cur,
+	installed := a.installed(local.LLM)
+	scanModel, canScan := dictionaryScanModel(a.prefs, installed)
+	viewKey := dictionaryViewCacheKey{
+		seq: a.dv.seq, read: a.dv.read, loading: a.dv.loading, err: a.dv.err, listFor: a.dv.listFor,
+		total: a.dv.total, legacy: a.dv.legacyAvailable, query: a.dictUI.query, tab: a.dictUI.tab, scanOpen: a.dictUI.scanOpen,
+		suggestionReads: a.suggestionReads, settings: a.settingsRevision, locale: translator.Locale(),
+		scanModelID: scanModel.ID, scanModelName: scanModel.Name, canScan: canScan,
+		scan: dictionaryScanCacheKeyFor(a.dv.scan), edit: dictionaryEditCacheKeyFor(a.dictUI),
+		notesText: a.dictUI.notes.text, notesQuery: a.dictUI.notesQuery, notesFind: a.dictUI.notesFind.cur,
 	}
-	state := buildDictionaryViewState(translator, input)
 	if a.dictUI.tab == dictNotesTab {
-		state.Notes = a.dictionaryNotesModel(a.dictionaryNotesInput(notesFeatures[a.dictUI.notesFeature]))
+		viewKey.notesFeature = a.dictUI.notesFeature
 	}
-	return state
+	if viewKey != a.dv.viewKey {
+		input := dictionaryViewStateInput{
+			TermsReady: true, TermRows: a.dv.termRows, Suggestions: a.suggestions, Settings: a.prefs,
+			Installed: installed, Read: a.dv.read, Loading: a.dv.loading, Error: a.dv.err,
+			Query: a.dictUI.query, ListFor: a.dv.listFor, Total: a.dv.total, LegacyImport: a.dv.legacyAvailable,
+			Tab: a.dictUI.tab, ScanOpen: a.dictUI.scanOpen, Scan: dictionaryScanInput(a.dv.scan),
+			Edit: dictionaryTermEditInput(a.dictUI), NotesText: a.dictUI.notes.text,
+			NotesQuery: a.dictUI.notesQuery, NotesFind: a.dictUI.notesFind.cur,
+		}
+		state := buildDictionaryViewState(translator, input)
+		if a.dictUI.tab == dictNotesTab {
+			state.Notes = a.dictionaryNotesModel(a.dictionaryNotesInput(notesFeatures[a.dictUI.notesFeature]))
+		}
+		a.dv.view, a.dv.viewKey = state, viewKey
+	}
+	return a.dv.view
 }
 
 func dictionaryTermEditInput(local dictionaryLocalUI) dictionaryTermEditStateInput {
