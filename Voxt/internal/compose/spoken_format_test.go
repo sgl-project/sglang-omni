@@ -13,6 +13,7 @@ func TestStructureSpoken(t *testing.T) {
 		{"Steps: First, read the notes. Second, send the link.", "Steps:\n\n1. read the notes.\n2. send the link."},
 		{"This morning. New paragraph. This afternoon.", "This morning.\n\nThis afternoon."},
 		{"今天开会。另起一段。明天发邮件。", "今天开会。\n\n明天发邮件。"},
+		{"有两点,第一点是整理资料,第二点是发邮件,另起一段,明天再检查。", "有两点,\n\n1. 整理资料\n2. 发邮件\n\n明天再检查。"},
 		{"First, check the address. Third, send the email.", "First, check the address. Third, send the email."},
 	} {
 		if got := StructureSpoken(example.text); got != example.want {

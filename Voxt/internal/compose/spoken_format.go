@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var spokenParagraph = regexp.MustCompile(`(?i)(^|[。！？.!?；;])\s*(?:另起一段|换段|new paragraph)[\t ]*(?:[。！？.!?；;]|$)`)
+var spokenParagraph = regexp.MustCompile(`(?i)(?:^|([。！？.!?；;])|[，,])\s*(?:另起一段|换段|new paragraph)[\t ]*(?:[。！？.!?；;，,]|$)`)
 
 var spokenOrdinal = regexp.MustCompile(`(?i)(^|[\n。！？.!?；;，,：:])[\t ]*(第[一二三四五六七八九]|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|[1-9])(?:[点项]?(?:是[、，,:：]?|[、，,:：.)）]))[\t ]*`)
 
