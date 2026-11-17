@@ -61,11 +61,11 @@ private:
   mlx::core::array EncoderLayer(const mlx::core::array &x,
                                 const mlx::core::array &positions,
                                 int layer) const;
-  mlx::core::array
-  DecoderAttention(const mlx::core::array &queries_input,
-                   const mlx::core::array &keys, const mlx::core::array &values,
-                   const std::string &prefix,
-                   const std::optional<mlx::core::array> &mask) const;
+  mlx::core::array DecoderAttention(const mlx::core::array &queries_input,
+                                    const mlx::core::array &keys,
+                                    const mlx::core::array &values,
+                                    const std::string &prefix,
+                                    bool is_causal) const;
 
   CohereConfig config_;
   // The log-mel front end's centered Hann window [512] and mel filters

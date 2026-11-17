@@ -71,12 +71,11 @@ private:
                              const mlx::core::array &keys,
                              const mlx::core::array &values,
                              const std::string &prefix, int head_count,
-                             const std::optional<mlx::core::array> &mask) const;
+                             bool is_causal) const;
   mlx::core::array EncoderLayer(const mlx::core::array &x, int layer) const;
   mlx::core::array DecoderLayer(const mlx::core::array &x, int layer,
                                 const mlx::core::array &encoder_states,
-                                const std::optional<mlx::core::array> &mask,
-                                DecoderLayerCache &cache) const;
+                                bool is_causal, DecoderLayerCache &cache) const;
 
   WhisperConfig config_;
   omni_common::Checkpoint checkpoint_;

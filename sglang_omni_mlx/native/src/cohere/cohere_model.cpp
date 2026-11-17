@@ -26,8 +26,6 @@ constexpr float kLayerNormEpsilon = 1e-5f;
 constexpr float kBatchNormEpsilon = 1e-5f;
 constexpr float kNormalizationEpsilon = 1e-5f;
 constexpr int kSubsamplingStride = 2;
-// Note (khazic): the decoder's additive causal mask value.
-constexpr float kMaskedScore = -1e9f;
 
 // The symmetric Hann window of kWindowLength, centered in kFftSize zeros.
 mx::array CenteredHannWindow() {
@@ -370,20 +368,19 @@ mx::array CohereModel::Encode(const std::vector<float> &samples) const {
   return checkpoint_.Linear(x, "bridge_proj");
 }
 
-mx::array CohereModel::DecoderAttention(
-    const mx::array &queries, const mx::array &keys, const mx::array &values,
-    const std::string &prefix, const std::optional<mx::array> &mask) const {
+mx::array CohereModel::DecoderAttention(const mx::array &queries,
+                                        const mx::array &keys,
+                                        const mx::array &values,
+                                        const std::string &prefix,
+                                        bool is_causal) const {
   const int batch = queries.shape(0);
   const int length = queries.shape(2);
   const float scale = std::pow(
       static_cast<float>(config_.decoder_width / config_.decoder_head_count),
       -0.5f);
-  const mx::array attended =
-      mask.has_value()
-          ? mx::fast::scaled_dot_product_attention(
-                queries, keys, values, scale, /*window_size=*/-1, "", *mask)
-          : mx::fast::scaled_dot_product_attention(queries, keys, values,
-                                                   scale);
+  const mx::array attended = mx::fast::scaled_dot_product_attention(
+      queries, keys, values, scale, /*window_size=*/-1,
+      is_causal ? "causal" : "");
   return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                         {batch, length, config_.decoder_width}),
                             prefix + ".out_proj");
@@ -408,20 +405,6 @@ mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
       mx::add(mx::take(embedding_table, token_ids, 0),
               mx::astype(positions, embedding_table.dtype())),
       "decoder.embedding.layer_norm", kLayerNormEpsilon);
-  std::optional<mx::array> mask;
-  if (length > 1) {
-    std::vector<int32_t> index_values(length);
-    for (int i = 0; i < length; ++i)
-      index_values[i] = i;
-    const mx::array indices(index_values.data(), {length}, mx::int32);
-    mask = mx::astype(
-        mx::multiply(mx::astype(mx::less(mx::expand_dims(indices, 1),
-                                         mx::expand_dims(indices, 0)),
-                                mx::float32),
-                     mx::array(kMaskedScore)),
-        encoder_states.dtype());
-  } else {
-  }
   for (int layer = 0; layer < config_.decoder_layer_count; ++layer) {
     const std::string prefix = "decoder.core.layers." + std::to_string(layer);
     DecoderLayerCache &cache = caches[layer];
@@ -434,9 +417,10 @@ mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
     const auto [keys, values] = cache.self_attention.UpdateAndFetch(
         SplitHeads(self_parts[1], head_count),
         SplitHeads(self_parts[2], head_count));
-    hidden = mx::add(
-        hidden, DecoderAttention(SplitHeads(self_parts[0], head_count), keys,
-                                 values, prefix + ".first_sub_layer", mask));
+    hidden = mx::add(hidden,
+                     DecoderAttention(SplitHeads(self_parts[0], head_count),
+                                      keys, values, prefix + ".first_sub_layer",
+                                      length > 1));
     if (!cache.cross_keys.has_value()) {
       const std::vector<mx::array> source_parts = mx::split(
           checkpoint_.Linear(encoder_states,
@@ -450,10 +434,10 @@ mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
         checkpoint_.LayerNorm(hidden, prefix + ".layer_norm_2",
                               kLayerNormEpsilon),
         prefix + ".second_sub_layer.query_proj");
-    hidden = mx::add(
-        hidden, DecoderAttention(SplitHeads(cross_queries, head_count),
-                                 *cache.cross_keys, *cache.cross_values,
-                                 prefix + ".second_sub_layer", std::nullopt));
+    hidden =
+        mx::add(hidden, DecoderAttention(SplitHeads(cross_queries, head_count),
+                                         *cache.cross_keys, *cache.cross_values,
+                                         prefix + ".second_sub_layer", false));
     hidden = mx::add(
         hidden, checkpoint_.Linear(
                     swift_port::Relu(checkpoint_.Linear(

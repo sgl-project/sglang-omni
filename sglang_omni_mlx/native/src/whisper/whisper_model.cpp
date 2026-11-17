@@ -21,9 +21,6 @@ using omni_common::Gelu;
 namespace {
 
 constexpr float kLayerNormEpsilon = 1e-5f;
-// Note (khazic): the decoder's additive causal mask value; it becomes -inf in
-// float16.
-constexpr float kMaskedScore = -1e9f;
 
 // Note (khazic): fixed sinusoids of the encoder positions, computed in double
 // precision.
@@ -238,19 +235,16 @@ mx::array WhisperModel::Attention(const mx::array &queries_input,
                                   const mx::array &keys,
                                   const mx::array &values,
                                   const std::string &prefix, int head_count,
-                                  const std::optional<mx::array> &mask) const {
+                                  bool is_causal) const {
   const int batch = queries_input.shape(0);
   const int length = queries_input.shape(1);
   const int width = queries_input.shape(2);
   const mx::array queries = SplitHeads(
       checkpoint_.Linear(queries_input, prefix + ".query"), head_count);
   const float scale = std::pow(static_cast<float>(width / head_count), -0.5f);
-  const mx::array attended =
-      mask.has_value()
-          ? mx::fast::scaled_dot_product_attention(
-                queries, keys, values, scale, /*window_size=*/-1, "", *mask)
-          : mx::fast::scaled_dot_product_attention(queries, keys, values,
-                                                   scale);
+  const mx::array attended = mx::fast::scaled_dot_product_attention(
+      queries, keys, values, scale, /*window_size=*/-1,
+      is_causal ? "causal" : "");
   return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                         {batch, length, width}),
                             prefix + ".out");
@@ -265,9 +259,8 @@ mx::array WhisperModel::EncoderLayer(const mx::array &x, int layer) const {
       SplitHeads(checkpoint_.Linear(normed, prefix + ".attn.key"), head_count);
   const mx::array values = SplitHeads(
       checkpoint_.Linear(normed, prefix + ".attn.value"), head_count);
-  const mx::array hidden =
-      mx::add(x, Attention(normed, keys, values, prefix + ".attn", head_count,
-                           std::nullopt));
+  const mx::array hidden = mx::add(
+      x, Attention(normed, keys, values, prefix + ".attn", head_count, false));
   return mx::add(
       hidden,
       checkpoint_.Linear(Gelu(checkpoint_.Linear(
@@ -314,7 +307,7 @@ mx::array WhisperModel::Encode(std::span<const float> padded_samples,
 
 mx::array WhisperModel::DecoderLayer(const mx::array &x, int layer,
                                      const mx::array &encoder_states,
-                                     const std::optional<mx::array> &mask,
+                                     bool is_causal,
                                      DecoderLayerCache &cache) const {
   const std::string prefix = "decoder.blocks." + std::to_string(layer);
   const int head_count = config_.text_head_count;
@@ -331,8 +324,9 @@ mx::array WhisperModel::DecoderLayer(const mx::array &x, int layer,
   }
   cache.self_keys = keys;
   cache.self_values = values;
-  mx::array hidden = mx::add(
-      x, Attention(normed, keys, values, prefix + ".attn", head_count, mask));
+  mx::array hidden =
+      mx::add(x, Attention(normed, keys, values, prefix + ".attn", head_count,
+                           is_causal));
   if (!cache.cross_keys.has_value()) {
     cache.cross_keys = SplitHeads(
         checkpoint_.Linear(encoder_states, prefix + ".cross_attn.key"),
@@ -346,7 +340,7 @@ mx::array WhisperModel::DecoderLayer(const mx::array &x, int layer,
       hidden, Attention(checkpoint_.LayerNorm(hidden, prefix + ".cross_attn_ln",
                                               kLayerNormEpsilon),
                         *cache.cross_keys, *cache.cross_values,
-                        prefix + ".cross_attn", head_count, std::nullopt));
+                        prefix + ".cross_attn", head_count, false));
   return mx::add(
       hidden,
       checkpoint_.Linear(Gelu(checkpoint_.Linear(
@@ -361,7 +355,6 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
                                std::vector<DecoderLayerCache> &caches,
                                int logit_count) const {
   const int length = token_ids.shape(1);
-  const int total_length = start_position + length;
   std::vector<int32_t> position_values(length);
   for (int i = 0; i < length; ++i)
     position_values[i] = start_position + i;
@@ -373,22 +366,9 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
                   mx::take(checkpoint_.Weight("decoder.positional_embedding"),
                            position_ids, 0),
                   0));
-  std::optional<mx::array> mask;
-  if (length > 1) {
-    std::vector<int32_t> column_values(total_length);
-    for (int i = 0; i < total_length; ++i)
-      column_values[i] = i;
-    const mx::array rows = mx::expand_dims(position_ids, 1);
-    const mx::array columns = mx::expand_dims(
-        mx::array(column_values.data(), {total_length}, mx::int32), 0);
-    mask = mx::where(mx::less_equal(columns, rows),
-                     mx::zeros({length, total_length}, hidden.dtype()),
-                     mx::full({length, total_length}, mx::array(kMaskedScore),
-                              hidden.dtype()));
-  } else {
-  }
   for (int layer = 0; layer < config_.text_layer_count; ++layer) {
-    hidden = DecoderLayer(hidden, layer, encoder_states, mask, caches[layer]);
+    hidden =
+        DecoderLayer(hidden, layer, encoder_states, length > 1, caches[layer]);
   }
   hidden = checkpoint_.LayerNorm(hidden, "decoder.ln", kLayerNormEpsilon);
   const int batch_size = hidden.shape(0);
