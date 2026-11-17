@@ -49,21 +49,23 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     MirroredMarkovHead,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
-    ACCEPTANCE_NOISE_SEED_SALT,
     EMPTY_HISTORY_TOKEN,
-    LARGEST_FLOAT32_BELOW_ONE,
-    RESIDUAL_NOISE_SEED_SALT,
     TOP_K_BOUND,
     DraftSamplingState,
     ExactAccept,
     exact_accept,
     sample_draft_block,
-    seeded_exponential_noise,
-    seeded_uniform_noise,
 )
 from sglang_omni.models.fun_cosyvoice3.model_runner import COSYVOICE3_RAS_WINDOW_SIZE
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK, derive_sampling_seed
+from sglang_omni.sampling.speculative_noise import (
+    ACCEPTANCE_NOISE_SEED_SALT,
+    LARGEST_FLOAT32_BELOW_ONE,
+    RESIDUAL_NOISE_SEED_SALT,
+    seeded_exponential_noise,
+    seeded_uniform_noise,
+)
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
 

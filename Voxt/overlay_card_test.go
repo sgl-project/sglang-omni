@@ -201,6 +201,93 @@ func TestAnswerCardStates(t *testing.T) {
 	}
 }
 
+// TestAnswerCardMarkdown (#4119): a Rewrite answer's Markdown shows in
+// the card as read, not as its source: no **, ##, backticks or $$, the
+// words and the math's TeX there, while it streams and in a
+// conversation's answer bubbles (the user's own bubble stays raw). A
+// Translate card keeps its text plain, as it goes in verbatim.
+func TestAnswerCardMarkdown(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	rw := func(st session.State, result, draft string) session.Snapshot {
+		return session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: st, Card: true, Delivery: deliver.ReasonCard,
+			Raw: "sum up the plan", Title: "The plan", Result: result, Draft: draft}
+	}
+	snap(a, rw(session.Recording, "", ""))
+	snap(a, rw(session.Done, "## Release\n\n**First** we ship, then we rest.\n\n- one\n- two\n\n$$\nx^2+y\n$$\n\nRun `go test`.", ""))
+	a.overlaySync()
+	tt := cardTester(t, a)
+	frames(tt)
+	for _, s := range tt.Texts() {
+		if strings.Contains(s, "**") || strings.Contains(s, "##") || strings.Contains(s, "`") || strings.Contains(s, "$$") {
+			t.Errorf("the card shows Markdown's source: %q", s)
+		}
+	}
+	for _, want := range []string{"Release", "First", "one", "two", "x^2+y", "go test"} {
+		if !tt.HasText(want) {
+			t.Errorf("no %q in the card (%q)", want, tt.Texts())
+		}
+	}
+
+	// The answer streaming in heals its half-written Markdown.
+	a.closeAnswer()
+	snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Composing, Card: true,
+		Draft: "**Bold** and **half"})
+	a.overlaySync()
+	frames(tt)
+	for _, s := range tt.Texts() {
+		if strings.Contains(s, "**") {
+			t.Errorf("the streaming card shows Markdown's source: %q", s)
+		}
+	}
+	if !tt.HasText("Bold") || !tt.HasText("half") {
+		t.Errorf("the streaming answer lost words (%q)", tt.Texts())
+	}
+
+	// A conversation: the answers render, what the user said stays raw.
+	snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+		Raw: "**Bold** and **half", Title: "Late", Result: "**Bold** and half"})
+	a.followUp, a.answer.conversation = "r2", true
+	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Recording})
+	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+		Raw: "make it **shorter**", Title: "Shorter", Result: "## Short\n\nBold half"})
+	a.overlaySync()
+	frames(tt)
+	for _, s := range tt.Texts() {
+		if strings.Contains(s, "##") {
+			t.Errorf("a conversation's answer shows Markdown's source: %q", s)
+		}
+	}
+	if !tt.HasText("Short") {
+		t.Errorf("the follow-up's answer did not render (%q)", tt.Texts())
+	}
+	if !tt.HasText("**shorter**") {
+		t.Errorf("the user's own words lost their text (%q)", tt.Texts())
+	}
+
+	// A Translate card's text stays plain: it goes in verbatim.
+	a.closeAnswer()
+	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Recording})
+	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+		TargetLanguage: "zh-Hans", Result: "**not bold**"})
+	a.overlaySync()
+	frames(tt)
+	if !tt.HasText("**not bold**") {
+		t.Errorf("the translation's text changed (%q)", tt.Texts())
+	}
+
+	// A long Markdown answer scrolls, as a long plain one does.
+	a.closeAnswer()
+	snap(a, rw(session.Recording, "", ""))
+	long := rw(session.Done, strings.Repeat("## 段落\n\n**加粗** 一段改写的回答，带列表和标题。\n\n- 一项\n", 20), "")
+	long.ID = "r4"
+	snap(a, long)
+	a.overlaySync()
+	frames(tt)
+	if body, _ := a.cardBodyHeight(a.cardNow()); body != layout.CardBodyMax {
+		t.Errorf("a long Markdown answer is %d high, not %d", body, layout.CardBodyMax)
+	}
+}
+
 // TestAnswerCardInk: each state as the view draws it, its texts measured
 // (as on the Mac), checked from its pixels as the Mac's overlay check
 // checks its captures: the face's size, its ink from the left padding

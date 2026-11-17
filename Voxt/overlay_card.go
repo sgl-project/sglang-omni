@@ -251,6 +251,10 @@ type cardBlock struct {
 	gap   float32 // before it
 	// selectable: the answer (its text can be selected and copied).
 	selectable bool
+	// markdown: the text renders as Markdown (a Rewrite's answer,
+	// #4119), stream: still being written (its half-written syntax
+	// heals).
+	markdown, stream bool
 	// problem: a failure's line, its icon before it.
 	problem bool
 	// bubble: a conversation's turn, title its heading (text "" for
@@ -282,7 +286,7 @@ func cardBlocks(v cardView) []cardBlock {
 				text = "…"
 			}
 			blk := cardBlock{bubble: true, user: b.user, live: b.live, text: ovSized{text, layout.BubbleTextSize, 500, inner},
-				cut: b.cut, open: b.open, turn: b.turn}
+				cut: b.cut, open: b.open, turn: b.turn, markdown: !b.user, stream: b.live && !b.user}
 			if b.quote != "" {
 				blk.quote = ovSized{b.quote, quoteSize, 0, inner}
 			}
@@ -309,7 +313,8 @@ func cardBlocks(v cardView) []cardBlock {
 		return out
 	}
 	text := strings.TrimSpace(v.text)
-	return []cardBlock{{text: ovSized{text, layout.CardTextSize, layout.CardTextWeight, bodyW}, color: ovCardText, selectable: text != ""}}
+	return []cardBlock{{text: ovSized{text, layout.CardTextSize, layout.CardTextWeight, bodyW}, color: ovCardText, selectable: text != "",
+		markdown: v.kind == store.KindRewrite && text != "", stream: v.writing}}
 }
 
 // cardTexts are the texts the card's height depends on.
@@ -330,6 +335,13 @@ func cardTexts(v cardView) []ovSized {
 // blockHeight is how high b lays out, and whether that was measured.
 func (a *app) blockHeight(b cardBlock) (float32, bool) {
 	h, exact := a.ovTextHeight(b.text)
+	if b.markdown {
+		// As the view laid the Markdown out; the plain text's measure
+		// stands in until it has.
+		if mh, ok := a.ov.mdH[mdKey{b.text.text, b.text.wrap, b.text.size}]; ok {
+			h, exact = mh, true
+		}
+	}
 	if b.problem {
 		h = max(h, layout.ProblemIcon)
 	}
