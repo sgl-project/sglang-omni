@@ -42,65 +42,19 @@ constexpr size_t kMaxInputCharacters = 4096;
 // JSON-escaped as a 12-byte surrogate pair, take 48 KiB.
 constexpr size_t kMaxRequestBodyBytes = 1024 * 1024;
 constexpr int kMaxAudioFrames = 4096;
-// A collection field of CUDA's CreateSpeechRequest and the JSON type it takes.
-struct CollectionField {
-  const char *name;
-  Json::value_t type;
-  const char *type_description;
-};
 // Note (Minyi Tang): the fields the CUDA server's Voxtral stages reject
 // (validate_voxtral_speech_params), each counted as given by the same rule:
 // sampling fields when not null, text fields when not null or "", and
 // collections when not empty. CUDA's request model first rejects a collection
 // of another type, even an empty one.
-constexpr std::array<const char *, 5> kUnsupportedSamplingFields = {
-    "repetition_penalty", "seed", "temperature", "top_k", "top_p"};
-constexpr std::array<const char *, 5> kUnsupportedTextFields = {
-    "instructions", "language", "ref_audio", "ref_text", "task_type"};
-constexpr std::array<CollectionField, 2> kUnsupportedCollectionFields = {{
-    {"references", Json::value_t::array, "a list"},
-    {"stage_params", Json::value_t::object, "an object"},
-}};
-
-// Throws naming every unsupported field body gives, in sorted order.
-void RejectUnsupportedFields(const Json &body) {
-  std::vector<std::string> given;
-  for (const char *field : kUnsupportedSamplingFields) {
-    if (!FieldOr(body, field, Json()).is_null()) {
-      given.push_back(field);
-    } else {
-    }
-  }
-  for (const char *field : kUnsupportedTextFields) {
-    const Json value = FieldOr(body, field, Json());
-    if (!value.is_null() && value != "") {
-      given.push_back(field);
-    } else {
-    }
-  }
-  for (const CollectionField &field : kUnsupportedCollectionFields) {
-    const Json value = FieldOr(body, field.name, Json());
-    if (!value.is_null() && value.type() != field.type) {
-      throw std::invalid_argument(std::string(field.name) + " must be " +
-                                  field.type_description);
-    } else if (!value.is_null() && !value.empty()) {
-      given.push_back(field.name);
-    } else {
-    }
-  }
-  if (given.empty()) {
-    return;
-  } else {
-  }
-  std::sort(given.begin(), given.end());
-  std::string fields;
-  for (const std::string &field : given) {
-    fields += (fields.empty() ? "" : ", ") + field;
-  }
-  throw std::invalid_argument(
-      "Voxtral TTS does not support these /v1/audio/speech fields: " + fields +
-      ". Supported model-specific fields are voice and max_new_tokens.");
-}
+const speech_service::UnsupportedFields kUnsupportedFields = {
+    {"repetition_penalty", "seed", "temperature", "top_k", "top_p"},
+    {"instructions", "language", "ref_audio", "ref_text", "task_type"},
+    {
+        {"references", Json::value_t::array, "a list"},
+        {"stage_params", Json::value_t::object, "an object"},
+    },
+};
 
 class VoxtralTtsService : public speech_service::SpeechServedModel {
 public:
@@ -114,7 +68,8 @@ private:
   int SampleRate() const override { return model_.codec().sample_rate(); }
 
   speech_service::SpeechJob ParseSpeech(const Json &body) override {
-    RejectUnsupportedFields(body);
+    speech_service::RejectUnsupportedFields(
+        body, kUnsupportedFields, "Voxtral TTS", "voice and max_new_tokens");
     const Json input = FieldOr(body, "input", Json());
     if (!input.is_string() ||
         omni_common::StripUnicodeWhitespace(input.get<std::string>()).empty()) {
