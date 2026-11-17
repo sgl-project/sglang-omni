@@ -24,9 +24,15 @@ func openPrivacy(t *testing.T, a *app, tt *ui.Tester) {
 	tt.SetSize(windowWidth, 1800)
 	a.navigate("/settings/privacy")
 	frames(tt)
-	// The settings dialog keeps its height: bring the section into it.
-	if r, ok := tt.Find("Other programs"); ok {
-		tt.Scroll(float32(windowWidth)*0.6, 900, 0, r.Y-700)
+	// The settings dialog keeps its height: bring the section into it,
+	// and keep the rows above it (the screenshot and copied-image
+	// switches) inside the viewport too.
+	for range 5 {
+		r, ok := tt.Find("Other programs")
+		if !ok || r.Y >= 1000 && r.Y <= 1060 {
+			break
+		}
+		tt.Scroll(float32(windowWidth)*0.6, 900, 0, (r.Y-1030)/2)
 		frames(tt)
 	}
 }

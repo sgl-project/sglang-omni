@@ -93,13 +93,8 @@ func TestRewritePage(t *testing.T) {
 	if a.lib.settings.Get().Features.Rewrite.Cleanup {
 		t.Error("clean-up not saved")
 	}
-	// The input box switch: off by default, saved when turned on.
-	if a.lib.settings.Get().Features.Rewrite.InputBox {
-		t.Error("input box on by default")
-	}
-	clickSwitch(t, tt, "Input box")
-	if !a.lib.settings.Get().Features.Rewrite.InputBox {
-		t.Error("input box not saved")
+	if has(tt, "Input box") {
+		t.Error("the input box switch is back: the box is the only Rewrite")
 	}
 	if has(tt, "Long answers in the card") {
 		t.Error("0.1.0's card length setting is back")

@@ -1,25 +1,30 @@
 package main
 
-// Rewrite's input box (settings Features.Rewrite.InputBox): the Rewrite
-// shortcut opens a small panel with an editable box instead of recording
-// at once. The user types or pastes the text to rewrite (and up to
-// boxMaxImages pictures, pasted or dropped), says the instruction as
-// before (hold the shortcut, or press it again), and Enter sends: the
-// same Rewrite prompt, the box's text in place of the selection
-// (session StartRequest.Box). Esc closes the box without sending.
+// Rewrite's card with the input box (rewrite_box_view.go draws it): the
+// Rewrite shortcut starts the microphone and opens the card together.
+// The text selected at the press shows in it as the input; while the
+// card records, the user can type more text and paste or drop up to
+// boxMaxImages pictures. The shortcut again (or Enter) finishes the
+// recording and sends: the selected text, then the typed text and the
+// pictures, then the spoken instruction, in one Rewrite request
+// (session StartRequest.Box; the box's content reaches the session
+// through Config.BoxInput, encoded once when each picture was pasted,
+// so a send again has the same bytes). Esc closes the card without
+// sending. Nothing selected, typed or pasted: the request is the speech
+// alone, as before.
 //
-// The box's window is a panel (mygo WindowOptions.Panel): it floats and
-// takes the keyboard without activating VoxtNew, so the app the user was
-// in stays in front and gets the keyboard back when the box hides.
+// The card's window is a panel (mygo WindowOptions.Panel): it floats
+// and takes the keyboard without activating VoxtNew, so the app the
+// user was in stays in front and gets the keyboard back when the card
+// hides.
 //
-// Two sessions are the box's (session_link.go tracks them by id): the
-// voice's (StartRequest.BoxVoice) only hears the instruction and keeps
-// nothing; the send's (StartRequest.Box) rewrites the box's text with
-// its pictures. A send that fails (a model that takes no images refuses
-// them) reopens the box with the error and everything kept.
+// A send that fails (a model that takes no images refuses them) brings
+// the card back with the error and everything kept: Enter sends again
+// with the same instruction (StartRequest.Text).
 
 import (
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -41,16 +46,21 @@ type rewriteBox struct {
 	open   bool
 	shown  bool      // the window shows (it hides while the send runs)
 	target proto.App // the app in front when the box opened
-	text   string
+	// session is the recording session's id ("" when it ended); sending
+	// a resend's after a failure.
+	session, sending string
+	// selection is the text selected when the shortcut fired (the
+	// session reads it; the box shows it).
+	selection string
+	text      string
 	// images are the box's pictures (JPEGs), thumbs their decoded
 	// bitmaps; limit: one over boxMaxImages was refused.
 	images [][]byte
 	thumbs []*ui.Bitmap
 	limit  bool
-	// instruction is the recognised spoken instruction, ready for Enter.
+	// instruction is the recognised spoken instruction, kept so a send
+	// that failed can go again with Enter.
 	instruction string
-	// voice and sending are the box's sessions' ids ("" for none).
-	voice, sending string
 	// err is a line the box shows: the send's failure, a picture that
 	// would not read.
 	err string
@@ -61,60 +71,76 @@ type rewriteBox struct {
 	winShown  bool
 }
 
-// openBox opens the input box (the Rewrite shortcut, InputBox on): the
-// selected text, when there is one, starts in the box.
-func (a *app) openBox(target proto.App) {
+// boxShare is the box's content as the sending session reads it
+// (Config.BoxInput, on the session's goroutine): stored on every box
+// change and every frame the card shows (a keystroke is one).
+type boxShare struct {
+	mu     sync.Mutex
+	text   string
+	images [][]byte
+}
+
+func (b *boxShare) store(text string, images [][]byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.text, b.images = text, slices.Clone(images)
+}
+
+func (b *boxShare) load() (string, [][]byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text, b.images
+}
+
+// openBox opens the input box and starts the microphone with it (the
+// Rewrite shortcut): the card shows what the session reads and hears,
+// the typed text and the pictures going with it when the recording is
+// stopped. A box that stayed open (a send failed) keeps its content.
+func (a *app) openBox(target proto.App, req session.StartRequest) {
+	req.Box = true
+	id, n := a.startSessionID(req)
+	if n != nil || id == "" {
+		return // the notice says what is missing
+	}
 	if !a.box.open {
 		a.box = rewriteBox{}
 	}
 	a.box.open, a.box.shown, a.box.err = true, true, ""
-	a.box.target = target
+	a.box.target, a.box.session = target, id
+	a.box.sending, a.box.instruction, a.box.selection = "", "", ""
 	a.box.focusText = true
 	a.boxSync()
-	id := a.box.target.PID
-	helperCall(a, proto.MethodTextSelection, proto.SelectionParams{AllowCopy: true}, 1500*time.Millisecond, func(res proto.SelectionResult, err error) {
-		// Only fill a box still empty, still the same one's.
-		if err != nil || res.Text == "" || !a.box.open || a.box.target.PID != id || a.box.text != "" {
-			return
-		}
-		a.box.text = res.Text
-		a.boxSync()
-	})
 }
 
 // closeBox closes the box and drops its content (Esc, its Close button,
-// the window's close); a voice on its way is cancelled.
+// the window's close); the recording is cancelled.
 func (a *app) closeBox() {
-	if a.box.voice != "" && a.sess.State.Live() && a.sess.ID == a.box.voice {
+	if a.box.session != "" && a.sess.State.Live() && a.sess.ID == a.box.session {
 		a.cancelSession()
 	}
 	a.box = rewriteBox{}
+	a.boxShare.store("", nil)
 	a.boxSync()
 }
 
-// boxVoiceStart hears the instruction (the shortcut with the box open).
-func (a *app) boxVoiceStart(hold string) {
-	if !a.box.open || a.sess.State.Live() {
-		return
-	}
-	a.box.err = ""
-	id, n := a.startSessionID(session.StartRequest{Kind: store.KindRewrite, BoxVoice: true, Target: a.box.target, HoldBinding: hold})
-	if n == nil && id != "" {
-		a.box.voice = id
-	}
-	a.boxSync()
-}
-
-// boxSend sends the box (Enter): the same Rewrite prompt, the box's text
-// as the source, its pictures with it. The box hides while it runs; the
-// answer comes to the answer card.
+// boxSend is Enter in the box: while it records, it finishes the
+// recording and the session sends; after a send failed, it sends the
+// kept instruction, text and pictures again.
 func (a *app) boxSend() {
-	if !a.box.open || a.box.instruction == "" || a.box.sending != "" || a.sess.State.Live() {
+	if !a.box.open {
 		return
 	}
-	in := session.TextInput{Raw: a.box.instruction, Selection: a.box.text}
-	req := session.StartRequest{Kind: store.KindRewrite, Box: true, Target: a.box.target, Text: &in, Images: a.box.images}
-	id, n := a.startSessionID(req)
+	if a.box.session != "" && a.sess.ID == a.box.session {
+		if a.sess.State == session.Recording {
+			a.stopSession()
+		}
+		return
+	}
+	if a.box.instruction == "" || a.box.sending != "" || a.sess.State.Live() {
+		return
+	}
+	in := session.TextInput{Raw: a.box.instruction, Selection: a.box.selection}
+	id, n := a.startSessionID(session.StartRequest{Kind: store.KindRewrite, Box: true, Target: a.box.target, Text: &in})
 	if n == nil && id != "" {
 		a.box.sending, a.box.err = id, ""
 		a.box.shown = false
@@ -125,34 +151,40 @@ func (a *app) boxSend() {
 // boxEnded takes the end of one of the box's sessions (sessionEnded).
 func (a *app) boxEnded(s session.Snapshot) {
 	switch s.ID {
-	case a.box.voice:
-		a.box.voice = ""
-		switch s.State {
-		case session.Done:
-			a.box.instruction = s.Spoken
-		case session.Cancelled:
-			a.box = rewriteBox{} // Esc while it listened: the box closes
-		}
-		a.boxSync()
+	case a.box.session:
+		a.box.session = ""
 	case a.box.sending:
 		a.box.sending = ""
-		switch s.State {
-		case session.Done:
-			a.box = rewriteBox{} // sent: the card holds the answer
-		case session.Failed:
-			// Nothing of the box's is dropped: it comes back with the
-			// error, the text and the pictures kept.
-			a.box.err, _, _ = sessionProblemText(s.Problem)
-			a.box.shown = true
-		default: // cancelled while it wrote: as Esc always did
-			a.box = rewriteBox{}
-		}
-		a.boxSync()
+	default:
+		return
 	}
+	switch s.State {
+	case session.Done:
+		a.box = rewriteBox{} // sent: the card holds the answer
+		a.boxShare.store("", nil)
+	case session.Failed:
+		// Nothing of the box's is dropped: it comes back with the
+		// error, the text and the pictures kept, the instruction ready
+		// for Enter.
+		a.box.err, _, _ = sessionProblemText(s.Problem)
+		if s.Spoken != "" {
+			a.box.instruction = s.Spoken
+		}
+		if s.Selection != "" {
+			a.box.selection = s.Selection
+		}
+		a.box.shown = true
+	default: // cancelled: as Esc always did
+		a.box = rewriteBox{}
+		a.boxShare.store("", nil)
+	}
+	a.boxSync()
 }
 
 // boxAttach adds a picture to the box (paste, drop), capped at
-// boxMaxImages.
+// boxMaxImages. The JPEG is encoded once, here, and kept: a send again
+// (a retry, another thinking level, a follow-up) has the same bytes in
+// the same position, which the server's prefix cache reuses.
 func (a *app) boxAttach(jpeg []byte) {
 	if len(jpeg) == 0 || !a.box.open {
 		return
@@ -240,6 +272,7 @@ func (a *app) boxDrop(files []string) {
 
 // boxSync shows, hides or refreshes the box's window. Main thread.
 func (a *app) boxSync() {
+	a.boxShare.store(a.box.text, a.box.images)
 	show := a.box.open && a.box.shown
 	if !show {
 		if a.box.win != nil && a.box.winShown {

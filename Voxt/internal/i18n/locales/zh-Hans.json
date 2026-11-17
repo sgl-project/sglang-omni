@@ -94,7 +94,6 @@
   "GitHub did not answer in time. Check your connection, or the proxy in Speech models → Network.": "GitHub 没有及时回应。请检查网络连接，或“语音识别模型 → 网络”里的代理。",
   "GitHub limits how often Voxt can check. Try again in an hour.": "GitHub 限制了检查的频率。请一小时后再试。",
   "Images sent with the instruction": "随指令发送的图片",
-  "Input box": "输入框",
   "Install it from its disk image, or with brew upgrade --cask voxt.": "从它的 dmg 安装，或运行 brew upgrade --cask voxt。",
   "Later": "稍后",
   "Looking for the newest release on GitHub.": "正在 GitHub 上查找最新版本。",
@@ -114,13 +113,10 @@
   "Send": "发送",
   "Speech recognition text": "语音识别文本",
   "Terms": "词条",
-  "The Rewrite shortcut opens a box: type or paste the text and up to 4 images, say the instruction as before, and press Enter to send. The box replaces the selected text; the prompt and the shortcut stay the same.": "按下改写快捷键打开输入框：输入或粘贴文字和最多 4 张图片，照常说出指令，按 Enter 发送。输入框代替选中的文字，提示词和快捷键不变。",
   "The dictionary is off, so the personal dictionary is not sent.": "词典已关闭，个人词典不会发送。",
   "The spoken instruction": "口述的指令",
-  "The text to rewrite": "要改写的文字",
   "This image could not be read.": "这张图片读不出来。",
   "This image could not be read; paste it (⌘V) instead.": "这张图片读不出来，请改用粘贴（⌘V）。",
-  "Type or paste the text, or drop images": "输入或粘贴文字，或拖入图片",
   "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.": "有无法识别的按键。先输入修饰键，再输入一个键，例如 Fn、RightCommand、Control+Option+Space 或 Fn+F5。",
   "Uses speculative decoding: a small draft model (%s) proposes several words at a time, and the speech model checks them. It needs the draft downloaded.": "使用推测解码：一个小的草稿模型（%s）每次先提出几个词，再由语音识别模型校验。需要先下载草稿模型。",
   "Voxt %s is available": "Voxt %s 已发布",
@@ -1707,5 +1703,8 @@
   "Could not start the meeting: %v": "没能开始会议：%v",
   "Could not transcribe the meeting again: %v": "没能重新转写这场会议：%v",
   "The speech model for meetings is not downloaded. Download it in Settings → Meetings.": "会议用的语音模型还没下载。请在“设置 → 会议”里下载。",
-  "Voxt suggests a word here when you correct one it wrote in the %d seconds after inserting, or when Scan history finds one. Nothing goes in the dictionary until you click Add. To stop them, turn off Learn from my corrections.": "Voxt 插入文字后 %d 秒内，你改了它写的词，或“扫描历史”找到了词，就会在这里建议。点“添加”之前不会放进词典。不想要建议，就关掉“从我的改正中学习”。"
+  "Voxt suggests a word here when you correct one it wrote in the %d seconds after inserting, or when Scan history finds one. Nothing goes in the dictionary until you click Add. To stop them, turn off Learn from my corrections.": "Voxt 插入文字后 %d 秒内，你改了它写的词，或“扫描历史”找到了词，就会在这里建议。点“添加”之前不会放进词典。不想要建议，就关掉“从我的改正中学习”。",
+  "More text for the rewrite": "为改写补充的文字",
+  "Type or paste more text, or drop images": "输入或粘贴更多文字，或拖入图片",
+  "With both on, the copied image goes, not the screenshot.": "两个都打开时，发送复制的图片，不发送截图。"
 }

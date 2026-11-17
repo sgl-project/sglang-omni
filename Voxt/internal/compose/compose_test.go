@@ -355,7 +355,7 @@ func TestLayersOfTheTasks(t *testing.T) {
 	out, _ := Build(Input{Task: Rewrite, Instruction: "y", Answer: true, Previous: []Turn{{Instruction: "z", Selection: "s", Answer: Answer{Title: "T", Content: "c"}}}})
 	msgs := out.Messages()
 	if len(msgs) != 4 || msgs[1].Role != "user" || msgs[2].Content != `{"title":"T","content":"c"}` || msgs[3].Content != "<instruction>\ny\n</instruction>" ||
-		msgs[1].Content != "<instruction>\nz\n</instruction>\n\n<selected_text>\ns\n</selected_text>" {
+		msgs[1].Content != "<selected_text>\ns\n</selected_text>\n\n<instruction>\nz\n</instruction>" {
 		t.Errorf("messages %+v", msgs)
 	}
 }

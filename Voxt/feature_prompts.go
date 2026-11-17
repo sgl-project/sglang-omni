@@ -139,8 +139,7 @@ func (a *app) setCardSize(feature string, step int) {
 	a.overlayRestyle()
 }
 
-// rewriteSettings are Rewrite's own: the instruction's clean-up, and
-// the input box.
+// rewriteSettings are Rewrite's own: the instruction's clean-up.
 func (a *app) rewriteSettings(c *ui.Context) {
 	f := &a.prefs.Features.Rewrite
 	sectionTitle(c, i18n.T("Rewriting"))
@@ -149,13 +148,6 @@ func (a *app) rewriteSettings(c *ui.Context) {
 			if ui.Switch(c.Key("rw-cleanup-switch"), &f.Cleanup).Label(i18n.T("Clean up the instruction")).Changed() {
 				on := f.Cleanup
 				a.updateSettings(func(s *settings.Settings) { s.Features.Rewrite.Cleanup = on })
-			}
-		})
-	settingRow(c, "rw-input-box", i18n.T("Input box"),
-		i18n.T("The Rewrite shortcut opens a box: type or paste the text and up to 4 images, say the instruction as before, and press Enter to send. The box replaces the selected text; the prompt and the shortcut stay the same."), func() {
-			if ui.Switch(c.Key("rw-input-box-switch"), &f.InputBox).Label(i18n.T("Input box")).Changed() {
-				on := f.InputBox
-				a.updateSettings(func(s *settings.Settings) { s.Features.Rewrite.InputBox = on })
 			}
 		})
 }

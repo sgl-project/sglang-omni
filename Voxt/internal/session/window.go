@@ -14,16 +14,18 @@ const windowTimeout = 3 * time.Second
 
 // shootWindow starts taking a picture of the target app's window, when
 // the settings send one to the language model (Privacy.SendWindow): at
-// the start, while the window the user speaks into is still in front.
-// Not for a try, nor in Voxt itself, nor for Transcribe without its
-// clean-up (no language model), nor when the picture would not be sent:
-// the box's own pictures, and the clipboard's, win over it.
+// the start, while the window the user speaks into is still in front
+// (the input box's session defers it to the answer's request, so that
+// pictures pasted into the box win). Not for a try, nor in Voxt itself,
+// nor for Transcribe without its clean-up (no language model), nor when
+// the picture would not be sent: the box's own pictures, and the
+// clipboard's, win over it.
 func (r *run) shootWindow() {
 	cfg := r.m.cfg
 	t := r.req.Target
 	noLLM := r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.Enhance
-	if !r.settings.Privacy.SendWindow || noLLM || cfg.Window == nil || r.req.Try || t.PID == 0 || t.PID == cfg.Self ||
-		r.req.BoxVoice || len(r.req.Images) > 0 || r.clip != nil {
+	if r.shot != nil || !r.settings.Privacy.SendWindow || noLLM || cfg.Window == nil || r.req.Try || t.PID == 0 || t.PID == cfg.Self ||
+		len(r.req.Images) > 0 || r.clip != nil {
 		return
 	}
 	done := make(chan []byte, 1)

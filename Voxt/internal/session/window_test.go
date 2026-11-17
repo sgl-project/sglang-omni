@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -217,33 +218,113 @@ func b2i(b bool) int {
 	return 0
 }
 
-// TestBoxVoice: the box's voice session only hears the instruction (the
-// box's text replaces the selection): it reads no selection and no
-// picture, asks no language model, keeps no history entry, and ends with
-// the instruction as Snapshot.Spoken.
-func TestBoxVoice(t *testing.T) {
-	model := &fakeLLM{text: "unused"}
-	sel := &fakeSelector{text: "selected text"}
-	var reads, shots int
+// TestBoxInput: the input box's session records and reads the selection
+// as ever; when the answer is asked for, the box's typed text and
+// pictures (Config.BoxInput) go with it, the pictures required, the
+// window's never taken, in one fixed order: the selection, the typed
+// text, the spoken instruction. A send again (Text) carries the same
+// bytes in the same position, so the server's prefix cache reuses them.
+func TestBoxInput(t *testing.T) {
+	box1, box2 := []byte{0xff, 0xd8, '1', 0xff, 0xd9}, []byte{0xff, 0xd8, '2', 0xff, 0xd9}
+	shot := []byte{0xff, 0xd8, 'w', 0xff, 0xd9}
+	model := &fakeLLM{text: "We ship on Friday."}
+	sel := &fakeSelector{text: "ship friday?"}
+	var shots int
 	h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
 		c.Select = sel
-		s.Privacy.SendClipboardImage, s.Privacy.SendWindow = true, true
-		c.Window = func(context.Context, int) ([]byte, error) { shots++; return []byte{'w'}, nil }
-		c.ClipboardImage = func(context.Context) ([]byte, error) { reads++; return []byte{'c'}, nil }
+		s.Privacy.SendWindow, s.Privacy.SendClipboardImage = true, true
+		c.Window = func(context.Context, int) ([]byte, error) { shots++; return shot, nil }
+		c.ClipboardImage = func(context.Context) ([]byte, error) { return nil, nil }
+		c.BoxInput = func() (string, [][]byte) { return "and cc the team", [][]byte{box1, box2} }
 	})
-	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, BoxVoice: true, Target: slack})
+	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.speak(id, 3)
 	end := h.rec.wait(t)
-	if end.State != Done || end.Spoken != "make it polite" {
-		t.Fatalf("end %s %q %+v", end.State, end.Spoken, end.Problem)
+	if end.State != Done || end.Result != "We ship on Friday." {
+		t.Fatalf("end %s %q %+v", end.State, end.Result, end.Problem)
 	}
-	if len(model.requests()) != 0 || len(sel.calls) != 0 || reads != 0 || shots != 0 {
-		t.Errorf("llm %d, selection reads %d, clipboard reads %d, window pictures %d", len(model.requests()), len(sel.calls), reads, shots)
+	if end.ImageHint != "box" || end.Typed != "and cc the team" || end.Selection != "ship friday?" {
+		t.Errorf("hint %q, typed %q, selection %q", end.ImageHint, end.Typed, end.Selection)
 	}
-	if entries := h.hist.all(); len(entries) != 0 {
-		t.Errorf("%d history entries", len(entries))
+	want := "<selected_text>\nship friday?\n</selected_text>\n\n<typed_text>\nand cc the team\n</typed_text>\n\n<instruction>\nmake it polite\n</instruction>"
+	reqs := model.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d requests", len(reqs))
+	}
+	if user := reqs[0].Messages[len(reqs[0].Messages)-1].Content; user != want {
+		t.Errorf("user message:\n%s", user)
+	}
+	if !equalBytes(reqs[0].Images, [][]byte{box1, box2}) || !reqs[0].ImagesRequired {
+		t.Errorf("images %q, required %v", reqs[0].Images, reqs[0].ImagesRequired)
+	}
+	if shots != 0 {
+		t.Errorf("%d window pictures taken, want none", shots)
+	}
+	// A send again (Text): the same bytes in the same position.
+	if _, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack,
+		Text: &TextInput{Raw: "make it polite", Selection: "ship friday?", Typed: "and cc the team"}}); err != nil {
+		t.Fatal(err)
+	}
+	if end := h.rec.wait(t); end.State != Done {
+		t.Fatalf("resend end %s %+v", end.State, end.Problem)
+	}
+	reqs = model.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("%d requests after the resend", len(reqs))
+	}
+	if !equalBytes(reqs[1].Images, reqs[0].Images) || !reqs[1].ImagesRequired {
+		t.Errorf("resend images %q, required %v", reqs[1].Images, reqs[1].ImagesRequired)
+	}
+	if user := reqs[1].Messages[len(reqs[1].Messages)-1].Content; user != want {
+		t.Errorf("resend's user message:\n%s", user)
+	}
+	if shots != 0 {
+		t.Errorf("%d window pictures taken, want none", shots)
+	}
+}
+
+// TestBoxInputTypedOnly: with nothing selected, the box's typed text is
+// the source (the selection's place); an empty box is the speech alone,
+// as ever.
+func TestBoxInputTypedOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name, typed string
+		wantUser    string
+		wantFormat  llm.Format
+	}{
+		{"typed text is the source", "a rough draft", "<selected_text>\na rough draft\n</selected_text>\n\n<instruction>\nmake it polite\n</instruction>", llm.FormatText},
+		{"an empty box is the speech", "", "<instruction>\nmake it polite\n</instruction>", llm.FormatJSON},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "We ship on Friday."}
+			if tc.wantFormat == llm.FormatJSON {
+				model.text = `{"title":"Friday","content":"We ship on Friday."}`
+			}
+			h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
+				c.Select = &fakeSelector{}
+				c.BoxInput = func() (string, [][]byte) { return tc.typed, nil }
+			})
+			id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Box: true, Target: slack})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.speak(id, 3)
+			if end := h.rec.wait(t); end.State != Done {
+				t.Fatalf("end %s %+v", end.State, end.Problem)
+			}
+			reqs := model.requests()
+			if len(reqs) != 1 {
+				t.Fatalf("%d requests", len(reqs))
+			}
+			if user := reqs[0].Messages[len(reqs[0].Messages)-1].Content; user != tc.wantUser {
+				t.Errorf("user message:\n%s", user)
+			}
+			if reqs[0].Format != tc.wantFormat {
+				t.Errorf("format %v, want %v", reqs[0].Format, tc.wantFormat)
+			}
+		})
 	}
 }

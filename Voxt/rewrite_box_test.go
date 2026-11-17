@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -38,22 +39,19 @@ func boxPNG(t *testing.T) []byte {
 	return out.Bytes()
 }
 
-// newBoxApp is a sessionApp with the input box on and a fake speech and
-// language model, ev the hotkey script.
+// newBoxApp is a sessionApp with a fake speech and language model, ev
+// the hotkey script.
 func newBoxApp(t *testing.T, ev string, chat *fakeChat) *sessionApp {
 	set, keys, _ := fileSetup(t, "make it shorter", chat)
-	return newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, func(s *settings.Settings) {
-		set(s)
-		s.Features.Rewrite.InputBox = true
-	}, keys)
+	return newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, set, keys)
 }
 
-// boxScript opens the box, starts the voice and stops it.
+// boxScript presses the Rewrite shortcut twice: the card and the
+// microphone, then the stop that sends.
 func boxScript(t *testing.T) string {
 	return script(t,
 		hotkeyLine(0, "rewrite/0", proto.PhaseTrigger),
-		hotkeyLine(400, "rewrite/0", proto.PhaseTrigger),
-		hotkeyLine(900, "rewrite/0", proto.PhaseTrigger),
+		hotkeyLine(500, "rewrite/0", proto.PhaseTrigger),
 	)
 }
 
@@ -67,22 +65,33 @@ func chatTexts(body map[string]any) string {
 	return b.String()
 }
 
-// TestRewriteBoxEndToEnd: with the input box on, the Rewrite shortcut
-// opens the box (no session, the selection pre-fills), the second press
-// hears the instruction, and Enter sends the box's text as the source
-// with its pictures (at most boxMaxImages): the answer opens in the
-// card, which shows the pictures; the voice session keeps no history.
+// lastUser is the chat request's last user message.
+func lastUserOf(body map[string]any) string {
+	msgs := body["messages"].([]any)
+	return msgs[len(msgs)-1].(map[string]any)["content"].(string)
+}
+
+// TestRewriteBoxEndToEnd: the Rewrite shortcut opens the card with the
+// input box and starts the microphone together (the pill stays hidden:
+// the card shows the recording); the selection goes into the card by
+// itself; typed text and pasted pictures go between the selection and
+// the spoken instruction in the request; the second press finishes the
+// recording and sends. The answer opens in the card, which shows the
+// pictures.
 func TestRewriteBoxEndToEnd(t *testing.T) {
 	chat := &fakeChat{text: "A shorter text."}
 	a := newBoxApp(t, boxScript(t), chat)
-	a.pump("the box", func() bool { return a.box.open })
-	if a.sess.State.Live() {
-		t.Fatal("the box opening started a session")
+	a.pump("the card and the microphone", func() bool {
+		return a.box.open && a.sess.State == session.Recording
+	})
+	if a.overlayModeNow() != ovHidden {
+		t.Errorf("a preview showed beside the card: %v", a.overlayModeNow())
 	}
-	a.pump("the selection in the box", func() bool { return a.box.text == "the selected text" })
-	a.pump("the instruction", func() bool { return a.box.instruction == "make it shorter" })
+	a.pump("the selection in the card", func() bool { return a.box.selection == "the selected text" })
 
-	// Five pictures: four go in, the fifth is refused.
+	// Typed text and five pictures while it records: four go in, the
+	// fifth is refused.
+	a.postQueue(func() { a.box.text = "and the tickets"; a.boxSync() })
 	jpeg := boxJPEG(t)
 	for range 5 {
 		a.postQueue(func() { a.boxAttach(jpeg) })
@@ -92,7 +101,6 @@ func TestRewriteBoxEndToEnd(t *testing.T) {
 		t.Errorf("%d images", len(a.box.images))
 	}
 
-	a.postQueue(a.boxSend)
 	a.pump("the answer", func() bool { return a.answer.open })
 	if a.box.open {
 		t.Error("the box stayed open after the answer")
@@ -101,9 +109,9 @@ func TestRewriteBoxEndToEnd(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("%d chats", len(reqs))
 	}
-	texts := chatTexts(reqs[0])
-	if !strings.Contains(texts, "the selected text") || !strings.Contains(texts, "make it shorter") {
-		t.Errorf("the request's source and instruction:\n%s", texts)
+	want := "<selected_text>\nthe selected text\n</selected_text>\n\n<typed_text>\nand the tickets\n</typed_text>\n\n<instruction>\nmake it shorter\n</instruction>"
+	if got := lastUserOf(reqs[0]); got != want {
+		t.Errorf("the request's order:\n%s", got)
 	}
 	imgs, _ := reqs[0]["images"].([][]byte)
 	if len(imgs) != boxMaxImages {
@@ -117,81 +125,149 @@ func TestRewriteBoxEndToEnd(t *testing.T) {
 	}
 }
 
-// TestRewriteBoxOffUnchanged: with the input box off, the Rewrite
-// shortcut records and sends as ever; no box opens.
-func TestRewriteBoxOffUnchanged(t *testing.T) {
-	chat := &fakeChat{text: "A shorter text."}
-	set, keys, _ := fileSetup(t, "make it shorter", chat)
-	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(400, "rewrite/0", proto.PhaseTrigger))
-	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, set, keys)
+// TestRewriteBoxSpeechOnlyUnchanged: nothing selected, nothing typed,
+// no picture: the quick path works as before — press, speak, press —
+// and the request is the spoken instruction alone.
+func TestRewriteBoxSpeechOnlyUnchanged(t *testing.T) {
+	chat := &fakeChat{text: `{"title":"Friday","content":"We ship on Friday."}`}
+	set, keys, _ := fileSetup(t, "write that we ship on friday", chat)
+	a := newSessionApp(t, helpertest.Opt("selection", "")+","+boxScript(t), set, keys)
+	a.pump("the card and the microphone", func() bool {
+		return a.box.open && a.sess.State == session.Recording
+	})
 	a.pump("the end", func() bool { return a.sess.State.Ended() })
-	if a.box.open {
-		t.Error("the box opened with the mode off")
+	if a.sess.State != session.Done || a.sess.Result != "We ship on Friday." {
+		t.Fatalf("end %s %q %+v", a.sess.State, a.sess.Result, a.sess.Problem)
 	}
-	if a.sess.State != session.Done {
-		t.Fatalf("end %s %+v", a.sess.State, a.sess.Problem)
+	reqs := chat.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("%d chats", len(reqs))
 	}
-	if len(chat.requests()) != 1 {
-		t.Errorf("%d chats", len(chat.requests()))
+	if got, want := lastUserOf(reqs[0]), "<instruction>\nwrite that we ship on friday\n</instruction>"; got != want {
+		t.Errorf("the speech-only request:\n%s", got)
 	}
-}
-
-// TestRewriteBoxKeepsContentOnRefusal: the language model refuses the
-// request (a model that takes no images): the box comes back with the
-// error and keeps the text and the pictures; no failed card opens.
-func TestRewriteBoxKeepsContentOnRefusal(t *testing.T) {
-	chat := &fakeChat{status: 400}
-	a := newBoxApp(t, boxScript(t), chat)
-	a.pump("the box", func() bool { return a.box.open })
-	a.pump("the selection in the box", func() bool { return a.box.text == "the selected text" })
-	a.pump("the instruction", func() bool { return a.box.instruction != "" })
-	a.postQueue(func() { a.boxAttach(boxJPEG(t)) })
-	a.pump("the picture", func() bool { return len(a.box.images) == 1 })
-	a.postQueue(a.boxSend)
-	a.pump("the failure", func() bool { return a.box.shown && a.box.err != "" })
-	if !a.box.open || a.box.text != "the selected text" || len(a.box.images) != 1 || a.box.instruction == "" {
-		t.Errorf("the box lost its content: %+v", a.box)
-	}
-	if a.answer.open {
-		t.Error("a failed card opened beside the box")
-	}
-	if entries := a.history(); len(entries) != 1 || entries[0].Status != store.StatusFailed {
-		t.Errorf("history %v", entries)
+	if imgs, _ := reqs[0]["images"].([][]byte); len(imgs) != 0 {
+		t.Errorf("%d images with speech only", len(imgs))
 	}
 }
 
-// TestRewriteBoxEscWhileListening: Esc while the box's voice records
-// cancels it and closes the box; nothing is sent.
-func TestRewriteBoxEscWhileListening(t *testing.T) {
+// TestRewriteBoxEscWithoutSending: Esc while the card records cancels
+// it and closes the card; nothing is sent.
+func TestRewriteBoxEscWithoutSending(t *testing.T) {
 	chat := &fakeChat{text: "unused"}
 	ev := script(t,
 		hotkeyLine(0, "rewrite/0", proto.PhaseTrigger),
-		hotkeyLine(300, "rewrite/0", proto.PhaseTrigger),
-		hotkeyLine(600, "cancel", proto.PhaseTrigger),
+		hotkeyLine(400, "cancel", proto.PhaseTrigger),
 	)
 	a := newBoxApp(t, ev, chat)
-	a.pump("the voice", func() bool { return a.box.voice != "" })
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
 	a.pump("the cancel", func() bool { return !a.box.open })
+	a.pump("the session's end", func() bool { return a.sess.State.Ended() })
 	if len(chat.requests()) != 0 {
 		t.Errorf("%d chats after Esc", len(chat.requests()))
 	}
 }
 
-// TestRewriteBoxView: the box's states as its view shows them: typing,
-// Enter (sends only with an instruction; Shift+Enter is a new line), the
+// TestRewriteBoxRetrySameBytes: the language model refuses the pictures
+// (a model that takes no images): the card comes back with the error
+// and keeps everything; Enter sends again, and the second request
+// carries the same image bytes in the same position, so the server's
+// prefix cache could have reused them.
+func TestRewriteBoxRetrySameBytes(t *testing.T) {
+	chat := &fakeChat{status: 400}
+	a := newBoxApp(t, boxScript(t), chat)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.pump("the selection", func() bool { return a.box.selection == "the selected text" })
+	a.postQueue(func() { a.box.text = "and the tickets"; a.boxSync() })
+	a.postQueue(func() { a.boxAttach(boxJPEG(t)) })
+	a.postQueue(func() { a.boxAttach(boxJPEG(t)) })
+	a.pump("the pictures", func() bool { return len(a.box.images) == 2 })
+
+	a.pump("the failure", func() bool { return a.box.shown && a.box.err != "" })
+	if !a.box.open || a.box.text != "and the tickets" || len(a.box.images) != 2 || a.box.instruction != "make it shorter" {
+		t.Fatalf("the box lost its content: %+v", a.box)
+	}
+	if a.answer.open {
+		t.Error("a failed card opened beside the box")
+	}
+
+	sent := len(chat.requests()) // the first send's, with the client's own retries
+	a.postQueue(a.boxSend)
+	a.pump("the resend", func() bool { return a.box.sending != "" })
+	a.pump("the second failure", func() bool { return a.box.sending == "" && a.box.shown && a.box.err != "" })
+	reqs := chat.requests()
+	if len(reqs) <= sent {
+		t.Fatalf("no resend request (%d of %d)", sent, len(reqs))
+	}
+	first, _ := reqs[0]["images"].([][]byte)
+	again, _ := reqs[sent]["images"].([][]byte)
+	if len(first) != 2 || len(again) != 2 || !bytes.Equal(first[0], again[0]) || !bytes.Equal(first[1], again[1]) {
+		t.Errorf("the resend's images differ: %q vs %q", first, again)
+	}
+	if lastUserOf(reqs[0]) != lastUserOf(reqs[sent]) {
+		t.Errorf("the resend's text differs:\n%s\n---\n%s", lastUserOf(reqs[0]), lastUserOf(reqs[sent]))
+	}
+	if entries := a.history(); len(entries) != 2 || entries[0].Status != store.StatusFailed {
+		t.Errorf("history %v", entries)
+	}
+}
+
+// TestRewriteBoxRedoSameBytes: asking the box's answer again at another
+// thinking level sends the same typed text and the same image bytes in
+// the same position, so the server's prefix cache reuses them.
+func TestRewriteBoxRedoSameBytes(t *testing.T) {
+	chat := &fakeChat{texts: []string{"A shorter text.", "A shorter text!"}}
+	a := newBoxApp(t, boxScript(t), chat)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.pump("the selection", func() bool { return a.box.selection == "the selected text" })
+	a.postQueue(func() { a.box.text = "and the tickets"; a.boxSync() })
+	a.postQueue(func() { a.boxAttach(boxJPEG(t)) })
+	a.postQueue(func() { a.boxAttach(boxJPEG(t)) })
+	a.pump("the answer", func() bool { return a.answer.open })
+	if len(chat.requests()) != 1 || a.answer.attach != "box" || len(a.answer.images) != 2 {
+		t.Fatalf("requests %d, card %+v", len(chat.requests()), a.answer)
+	}
+
+	// Another thinking level asks the same input again.
+	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
+	a.answer.llmID = "deepseek"
+	if !a.cardNow().canThink {
+		t.Fatal("no thinking levels on the card")
+	}
+	a.postQueue(func() { a.chooseThinking(&llm.Thinking{Mode: llm.ThinkOn}) })
+	a.pump("the redo", func() bool { return len(chat.requests()) == 2 && a.answer.redo == "" })
+	reqs := chat.requests()
+	first, _ := reqs[0]["images"].([][]byte)
+	again, _ := reqs[1]["images"].([][]byte)
+	if len(again) != 2 || !bytes.Equal(first[0], again[0]) || !bytes.Equal(first[1], again[1]) {
+		t.Errorf("the redo's images differ: %q vs %q", first, again)
+	}
+	if lastUserOf(reqs[0]) != lastUserOf(reqs[1]) {
+		t.Errorf("the redo's text differs:\n%s\n---\n%s", lastUserOf(reqs[0]), lastUserOf(reqs[1]))
+	}
+	if a.answer.text != "A shorter text!" {
+		t.Errorf("answer %q", a.answer.text)
+	}
+}
+
+// TestRewriteBoxView: the box's states as its view shows them: the
+// selection, typing, Enter (taken; Shift+Enter is a new line), the
 // pictures and their limit, the voice line, Esc.
 func TestRewriteBoxView(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
-	a.box = rewriteBox{open: true, shown: true, focusText: true}
+	a.box = rewriteBox{open: true, shown: true, focusText: true, session: "v1"}
+	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: "the selected text"})
 	frames(tt)
+	if !has(tt, "the selected text") {
+		t.Errorf("no selection in the card (texts %q)", firstTexts(tt))
+	}
 	tt.Type("some text")
 	frames(tt)
 	if a.box.text != "some text" {
 		t.Fatalf("text %q", a.box.text)
 	}
-	// Enter without an instruction does nothing (no newline); Shift+Enter
-	// breaks the line.
+	// Enter is taken (no newline); Shift+Enter breaks the line.
 	tt.Key(0, ui.KeyEnter)
 	tt.Key(ui.Shift, ui.KeyEnter)
 	frames(tt)
@@ -218,22 +294,18 @@ func TestRewriteBoxView(t *testing.T) {
 	if len(a.box.images) != boxMaxImages-1 {
 		t.Errorf("%d images after remove", len(a.box.images))
 	}
-	// The voice line: the hint, then the live instruction, then the
-	// recognised one with Send.
-	if !has(tt, "Say the instruction") {
-		t.Error("no hint on the voice line")
-	}
-	a.box.voice = "v1"
-	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Partial: "make it"})
+	// The voice line: the live instruction, then the recognised one
+	// kept after the recording, with Send.
+	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: "the selected text", Partial: "make it"})
 	frames(tt)
 	if !has(tt, "make it") {
 		t.Error("no live instruction")
 	}
-	a.box.voice, a.box.instruction = "", "make it shorter"
+	a.box.session, a.box.instruction = "", "make it shorter"
 	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Cancelled})
 	frames(tt)
 	if !has(tt, "Send") {
-		t.Error("no Send with an instruction")
+		t.Error("no Send with an instruction kept")
 	}
 	// Esc closes the box without sending.
 	tt.Key(0, ui.KeyEscape)
@@ -244,8 +316,7 @@ func TestRewriteBoxView(t *testing.T) {
 }
 
 // TestAnswerCardAttach: the card says which picture went to the language
-// model, in both modes: the window's, the clipboard's, or the box's as
-// thumbnails.
+// model: the window's, the clipboard's, or the box's as thumbnails.
 func TestAnswerCardAttach(t *testing.T) {
 	for _, tc := range []struct{ hint, want string }{
 		{"window", "Screenshot"},
@@ -270,7 +341,7 @@ func TestAnswerCardAttach(t *testing.T) {
 	}
 	// The box's pictures as thumbnails.
 	a, _, _ := newTestApp(t)
-	a.box = rewriteBox{open: true, sending: "r1", images: [][]byte{boxJPEG(t), boxJPEG(t)}}
+	a.box = rewriteBox{open: true, session: "r1", images: [][]byte{boxJPEG(t), boxJPEG(t)}}
 	a.box.thumbs = nil
 	for _, j := range a.box.images {
 		bmp, _ := ui.DecodeBitmap(j)

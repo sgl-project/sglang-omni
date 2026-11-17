@@ -88,6 +88,9 @@ type run struct {
 	// clip is the picture on the clipboard for Rewrite's language model
 	// (window.go), read before the selection; nil: none.
 	clip []byte
+	// typed is Rewrite's typed text: StartRequest.Text's, or the input
+	// box's (Config.BoxInput) when the answer is asked for.
+	typed string
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
@@ -180,14 +183,7 @@ func (r *run) main() {
 	r.resolve(r.req.Text == nil && !selTranslate)
 
 	if t := r.req.Text; t != nil {
-		if kind == store.KindRewrite {
-			// A box send with no pictures of its own keeps today's rule:
-			// the clipboard's picture, else the window's.
-			if r.req.Box && len(r.req.Images) == 0 {
-				r.readClipboardImage()
-			}
-			r.shootWindow()
-		}
+		r.typed = t.Typed
 		if r.awaitServices() {
 			r.write(r.spoken(strings.TrimSpace(t.Raw)), t.Selection)
 		}
@@ -210,11 +206,16 @@ func (r *run) main() {
 		// No selection: Translate hears the text, with a speech model.
 		r.resolve(true)
 		r.m.update(r, func(s *Snapshot) { s.State = Recording })
-	case kind == store.KindRewrite && r.canSelect() && !r.req.BoxVoice:
+	case kind == store.KindRewrite && r.canSelect():
 		selDone = make(chan string, 1)
 		go func() {
 			r.readClipboardImage() // first: reading the selection may ⌘C over the clipboard
-			r.shootWindow()
+			if !r.req.Box {
+				// The box's session shoots when the answer is asked for:
+				// pictures pasted into it while it records win, and a
+				// picture that will not be sent is never taken.
+				r.shootWindow()
+			}
 			selDone <- r.readSelection()
 		}()
 	}
@@ -230,13 +231,6 @@ func (r *run) main() {
 	case store.KindTranslate:
 		r.write(text, "")
 	case store.KindRewrite:
-		if r.req.BoxVoice {
-			// The box's instruction is heard: the box sends it, with its
-			// text and pictures, as a session of its own (Box).
-			r.m.update(r, func(s *Snapshot) { s.Spoken = text })
-			r.finish(Done, nil, "", finishOpts{})
-			return
-		}
 		sel := ""
 		if selDone != nil {
 			select {
@@ -488,12 +482,11 @@ func (r *run) keep(s Snapshot, status store.Status) {
 }
 
 // inHistory reports whether the session's history entry is written: not
-// for a try, nor for the box's voice (its send writes the entry), nor
-// for a note saved from its recognition (the Notes page keeps it). A
-// note whose recognition failed, or that was cancelled, keeps its entry
-// and recording, as a dictation does.
+// for a try, nor for a note saved from its recognition (the Notes page
+// keeps it). A note whose recognition failed, or that was cancelled,
+// keeps its entry and recording, as a dictation does.
 func (r *run) inHistory(status store.Status) bool {
-	if r.req.Try || r.req.BoxVoice || r.m.cfg.History == nil || !r.settings.Privacy.KeepHistory {
+	if r.req.Try || r.m.cfg.History == nil || !r.settings.Privacy.KeepHistory {
 		return false
 	}
 	return !(r.req.Note && status == store.StatusDone && !r.recognitionFailed)

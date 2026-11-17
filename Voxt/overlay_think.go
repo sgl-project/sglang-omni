@@ -202,5 +202,12 @@ func (a *app) chooseThinking(t *llm.Thinking) {
 		return
 	}
 	in := card.input
-	a.redoAnswer(session.StartRequest{Kind: card.kind, Target: card.target, Text: &in, TargetLanguage: card.lang, Thinking: t})
+	req := session.StartRequest{Kind: card.kind, Target: card.target, Text: &in, TargetLanguage: card.lang, Thinking: t}
+	if card.attach == "box" {
+		// The box's pictures go with the answer again: the same bytes
+		// in the same position, so the server's prefix cache reuses
+		// them (retryAnswer's too).
+		req.Box, req.Images = true, card.images
+	}
+	a.redoAnswer(req)
 }

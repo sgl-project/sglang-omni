@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // shotBitmap is a small bitmap for the card's and the box's picture
@@ -38,8 +40,9 @@ func shotBitmap(t *testing.T) *ui.Bitmap {
 }
 
 // boxShots renders the input box (rewrite_box_view.go) in its states:
-// empty with the voice hint, with pictures and the instruction ready
-// (Send), and at the pictures' limit with an error kept.
+// recording with the selected text in the card, typed text and two
+// pictures with the instruction being heard, and at the pictures'
+// limit with an error kept for the resend.
 func boxShots(t *testing.T, a *app, out, suffix string, dark bool) {
 	t.Helper()
 	desk := ui.RGB(246, 246, 248)
@@ -50,17 +53,24 @@ func boxShots(t *testing.T, a *app, out, suffix string, dark bool) {
 		name  string
 		setup func()
 	}{
-		{"box-open", nil},
-		{"box-images-instruction", func() {
-			a.box.text = "the release slips to thursday, sorry!"
+		{"box-recording-selection", func() {
+			a.box.session = "shot-box"
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording,
+				Selection: "hey, the release slips to thursday, sorry!"})
+		}},
+		{"box-typed-images", func() {
+			a.box.session = "shot-box"
+			a.box.text = "and the tickets too"
 			a.box.thumbs = []*ui.Bitmap{shotBitmap(t), shotBitmap(t)}
 			a.box.images = [][]byte{{1}, {2}}
-			a.box.instruction = "make it more formal"
+			snap(a, session.Snapshot{ID: "shot-box", Kind: store.KindRewrite, State: session.Recording,
+				Selection: "hey, the release slips to thursday, sorry!", Partial: "make it more formal"})
 		}},
 		{"box-limit-error", func() {
 			a.box.thumbs = []*ui.Bitmap{shotBitmap(t), shotBitmap(t), shotBitmap(t), shotBitmap(t)}
 			a.box.images = [][]byte{{1}, {2}, {3}, {4}}
 			a.box.instruction = "make it more formal"
+			a.box.selection = "hey, the release slips to thursday, sorry!"
 			a.box.limit = true
 			a.box.err = "The language model failed: bad request (400)"
 		}},

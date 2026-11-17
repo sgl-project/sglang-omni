@@ -52,8 +52,11 @@ type sessionState struct {
 	sess session.Snapshot
 	// answer is the answer card: open while a result waits there.
 	answer answerCard
-	// box is Rewrite's input box (rewrite_box.go; off by default).
-	box rewriteBox
+	// box is Rewrite's card with the input box (rewrite_box.go): the
+	// Rewrite shortcut opens it with the microphone. boxShare is its
+	// content as the sending session reads it (Config.BoxInput).
+	box      rewriteBox
+	boxShare boxShare
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
@@ -187,8 +190,9 @@ func (a *app) openSessions() {
 			}
 			return r.JPEG, err
 		},
-		Resolve: resolver(lm),
-		History: lib.store.History(),
+		BoxInput: func() (string, [][]byte) { return a.boxShare.load() },
+		Resolve:  resolver(lm),
+		History:  lib.store.History(),
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
@@ -276,7 +280,18 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	was := a.sess
 	a.sess = s
 	if a.box.open {
-		a.boxSync() // the box's voice line follows its session
+		if s.ID == a.box.session {
+			if s.Selection != "" {
+				a.box.selection = s.Selection
+			}
+			if s.Spoken != "" {
+				a.box.instruction = s.Spoken
+			}
+			if was.State == session.Recording && s.State != session.Recording {
+				a.box.shown = false // sent: the pill and the card take over
+			}
+		}
+		a.boxSync() // the box's lines follow its session
 	}
 	for _, fn := range a.onSession { // events.go: the setup guide, the sounds
 		fn(was, s)
@@ -314,7 +329,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	case s.Card && (s.Result != "" || s.State == session.Failed):
 		// The box's send failed: the box shows the error and keeps its
 		// text and pictures, no failed card.
-		if s.State != session.Failed || s.ID != a.box.sending {
+		if s.State != session.Failed || s.ID != a.box.sending && s.ID != a.box.session {
 			a.openAnswer(s)
 			a.syncHotkeys() // the cancel shortcut closes the card
 		}
