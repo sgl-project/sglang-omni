@@ -2351,7 +2351,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 (
                     "repetition_penalty",
                     sampling_params.repetition_penalty != 1.0
-                    and not self.model_runner.speculative_verifies_repetition_penalty,
+                    and self.model_runner.speculative_repetition_penalty_owner is None,
                 ),
             )
             if is_set
@@ -2882,12 +2882,7 @@ class OmniScheduler(Generic[RequestDataT]):
             with self.forward_stream_ctx:
                 self.forward_stream.wait_stream(self.schedule_stream)
                 resolve_forward_inputs(batch, self.future_map)
-                if self.model_runner.speculative_verify_takes_logits_hooks:
-                    self.tp_worker.speculative_target_worker.verify_requests = (
-                        self.build_sched_output(batch).requests
-                    )
-                else:
-                    pass
+                self.publish_verify_requests(batch)
                 with _Upstream._forward_isolation(
                     self, batch, overlap=True
                 ):  # noqa: leading-underscore  # native scheduler contract
@@ -2906,6 +2901,9 @@ class OmniScheduler(Generic[RequestDataT]):
                     batch,
                     is_prefill=is_prefill,
                     num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+                )
+                self.model_runner.record_speculative_output(
+                    batch, result, is_prefill=is_prefill
                 )
                 result.copy_done = self.device_module.Event()
                 _Upstream._relay_forward_payload(
@@ -2927,13 +2925,7 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
-        if self.model_runner.speculative_verify_takes_logits_hooks:
-            # The next step of this loop replaces the list the verify reads here.
-            self.tp_worker.speculative_target_worker.verify_requests = (
-                self.build_sched_output(batch).requests
-            )
-        else:
-            pass
+        self.publish_verify_requests(batch)
         with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             self, batch, overlap=False
         ):
@@ -2942,6 +2934,9 @@ class OmniScheduler(Generic[RequestDataT]):
             batch,
             is_prefill=is_prefill,
             num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+        )
+        self.model_runner.record_speculative_output(
+            batch, result, is_prefill=is_prefill
         )
         batch.spec_info = result.next_draft_input
         new_sequence_lengths = result.new_seq_lens
@@ -2965,6 +2960,21 @@ class OmniScheduler(Generic[RequestDataT]):
             return_hidden_states=batch.return_hidden_states,
         )
         return result
+
+    def publish_verify_requests(self, batch: ScheduleBatch) -> None:
+        """Hand this step's verify its requests in row order, when the runner hooks or penalizes verify rows."""
+        if (
+            self.model_runner.speculative_verify_takes_logits_hooks
+            or self.model_runner.speculative_penalized_rows(batch.reqs)
+        ):
+            self.tp_worker.speculative_target_worker.verify_requests = (
+                self.build_sched_output(batch).requests
+            )
+        elif self.model_runner.speculative_repetition_penalty_owner == "verify_logits":
+            # An earlier step's list would penalize this step's rows.
+            self.tp_worker.speculative_target_worker.verify_requests = []
+        else:
+            pass
 
     def build_sched_output(self, batch):
         """Wrap a ScheduleBatch into the SchedulerOutput the model runner

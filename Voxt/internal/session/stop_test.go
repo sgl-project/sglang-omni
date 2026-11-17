@@ -55,6 +55,26 @@ func TestStopLLM(t *testing.T) {
 			t.Errorf("end %s %q card %v", end.State, end.Result, end.Card)
 		}
 	})
+	// Transcribe's clean-up streams into the card too, but stopping it
+	// would drop the rest of what was said: StopLLM does nothing there,
+	// and SkipLLM puts all of it in the card, as recognised.
+	t.Run("transcribe", func(t *testing.T) {
+		h := newHarness(t, &fakeFile{text: "so the release moves to thursday"}, &fakeLLM{hang: true}, func(_ *Config, s *settings.Settings) {
+			s.Features.Transcribe.Enhance, s.Features.Transcribe.ShowCard = true, true
+		})
+		id, _ := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+		h.speak(id, 3)
+		s := h.rec.waitFor(t, "a draft in the card", func(s Snapshot) bool { return s.State == Composing && s.Card && s.Draft != "" })
+		if s.CanStop() {
+			t.Error("a clean-up can be stopped half way")
+		}
+		h.m.StopLLM(id)
+		h.m.SkipLLM(id)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Result != "so the release moves to thursday" || !end.Card || end.Inserted || len(h.text.pastes()) != 0 {
+			t.Errorf("end %s %q card %v inserted %v, pasted %q", end.State, end.Result, end.Card, end.Inserted, h.text.pastes())
+		}
+	})
 	t.Run("card off", func(t *testing.T) {
 		h := newHarness(t, &fakeFile{text: "shorter"}, &fakeLLM{hang: true}, func(c *Config, s *settings.Settings) {
 			c.Select = &fakeSelector{}
