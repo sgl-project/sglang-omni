@@ -1,9 +1,9 @@
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from scripts import overlap_summary
@@ -12,10 +12,17 @@ from scripts import profile_loop as loop
 
 class ParserTests(unittest.TestCase):
     def test_power_idle_and_contention_parsers(self):
-        self.assertEqual(loop.parse_power_source("Now drawing from 'AC Power'\n"), "AC Power")
-        self.assertEqual(loop.parse_power_source("Now drawing from 'Battery Power'\n"), "Battery Power")
+        self.assertEqual(
+            loop.parse_power_source("Now drawing from 'AC Power'\n"), "AC Power"
+        )
+        self.assertEqual(
+            loop.parse_power_source("Now drawing from 'Battery Power'\n"),
+            "Battery Power",
+        )
         self.assertEqual(loop.parse_power_source("unavailable"), "")
-        self.assertEqual(loop.parse_idle_seconds('    "HIDIdleTime" = 12345678901\n'), 12.345678901)
+        self.assertEqual(
+            loop.parse_idle_seconds('    "HIDIdleTime" = 12345678901\n'), 12.345678901
+        )
         with self.assertRaises(ValueError):
             loop.parse_idle_seconds("no idle counter")
         processes = (
@@ -24,20 +31,37 @@ class ParserTests(unittest.TestCase):
             " 12 /opt/moss_transcribe_diarize_server --draft-model-path /tmp/draft --draft-bits 4\n"
             " 13 /opt/moss_transcribe_diarize_server --supervised\n"
         )
-        self.assertEqual(loop.contending_processes(processes, {13}), ["10 qwen3_asr_server", "12 moss_transcribe_diarize_server"])
+        self.assertEqual(
+            loop.contending_processes(processes, {13}),
+            ["10 qwen3_asr_server", "12 moss_transcribe_diarize_server"],
+        )
 
     def test_contention_check_uses_pgrep_not_ps(self):
-        completed = subprocess.CompletedProcess([], 0, stdout="10 /tmp/moss_transcribe_diarize_server --supervised\n", stderr="")
-        with mock.patch("scripts.profile_loop.subprocess.run", return_value=completed) as run:
-            self.assertEqual(loop.pgrep_contenders(), ["10 moss_transcribe_diarize_server"])
+        completed = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout="10 /tmp/moss_transcribe_diarize_server --supervised\n",
+            stderr="",
+        )
+        with mock.patch(
+            "scripts.profile_loop.subprocess.run", return_value=completed
+        ) as run:
+            self.assertEqual(
+                loop.pgrep_contenders(), ["10 moss_transcribe_diarize_server"]
+            )
         arguments = run.call_args.args[0]
         self.assertEqual(arguments[:2], ["/usr/bin/pgrep", "-fl"])
         self.assertNotIn("/bin/ps", arguments)
 
     def test_pgrep_reads_full_arguments_on_this_mac(self):
-        process = subprocess.Popen(["/bin/sh", "-c", "sleep 0.2; :", "/tmp/moss_transcribe_diarize_server"])
+        process = subprocess.Popen(
+            ["/bin/sh", "-c", "sleep 0.2; :", "/tmp/moss_transcribe_diarize_server"]
+        )
         try:
-            self.assertEqual(loop.pgrep_contenders(), [f"{process.pid} moss_transcribe_diarize_server"])
+            self.assertEqual(
+                loop.pgrep_contenders(),
+                [f"{process.pid} moss_transcribe_diarize_server"],
+            )
         finally:
             self.assertEqual(process.wait(), 0)
 
@@ -50,7 +74,10 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(arguments[:2], ["/usr/sbin/ioreg", "-c"])
             return '"HIDIdleTime" = 300000000000\n'
 
-        with mock.patch("scripts.profile_loop.command_output", side_effect=output), mock.patch("scripts.profile_loop.pgrep_contenders", return_value=[]):
+        with (
+            mock.patch("scripts.profile_loop.command_output", side_effect=output),
+            mock.patch("scripts.profile_loop.pgrep_contenders", return_value=[]),
+        ):
             environment = loop.host_environment()
         self.assertEqual(environment["power_source"], "AC Power")
         self.assertEqual(environment["idle_seconds"], 300)
@@ -81,12 +108,16 @@ def raw_report(wall, status="success"):
 
 class SummaryTests(unittest.TestCase):
     def test_median_of_three_and_warning_rejection(self):
-        summary = loop.summarize_reports([raw_report(300), raw_report(100), raw_report(200)])
+        summary = loop.summarize_reports(
+            [raw_report(300), raw_report(100), raw_report(200)]
+        )
         self.assertEqual(summary["status"], "success")
         self.assertEqual(summary["median"]["total_wall_ms"], 200)
         self.assertEqual(summary["median"]["stages"]["decode[0]"]["wall_ms"], 20)
         self.assertEqual(summary["median"]["peak_rss_bytes"], {"value": 2000})
-        self.assertEqual(summary["median"]["peak_physical_footprint_bytes"], {"value": 4000})
+        self.assertEqual(
+            summary["median"]["peak_physical_footprint_bytes"], {"value": 4000}
+        )
         with self.assertRaises(ValueError):
             loop.summarize_reports([raw_report(100), raw_report(200)])
         warning = raw_report(150)
@@ -96,7 +127,10 @@ class SummaryTests(unittest.TestCase):
 
     def test_unavailable_metric_stays_null(self):
         reports = [raw_report(100), raw_report(200), raw_report(300)]
-        reports[1]["resources"]["peak_rss_bytes"] = {"value": None, "unavailable_reason": "denied"}
+        reports[1]["resources"]["peak_rss_bytes"] = {
+            "value": None,
+            "unavailable_reason": "denied",
+        }
         summary = loop.summarize_reports(reports)
         self.assertIsNone(summary["median"]["peak_rss_bytes"]["value"])
         self.assertTrue(summary["median"]["peak_rss_bytes"]["unavailable_reason"])
@@ -113,7 +147,10 @@ class SummaryTests(unittest.TestCase):
                 "llm_total_ms": {"value": wall / 3},
                 "llm_after_stop_ms": {"value": wall / 7},
             }
-            report["backlog_at_stop"] = {"asr_segments": {"value": wall / 100}, "llm_segments": {"value": wall / 50}}
+            report["backlog_at_stop"] = {
+                "asr_segments": {"value": wall / 100},
+                "llm_segments": {"value": wall / 50},
+            }
             report["stages"][0]["after_stop_ms"] = {"value": wall / 10}
             report["structure"] = {"sha256": f"structure-{wall}"}
             report["summary"] = {"sha256": f"summary-{wall}"}
@@ -122,8 +159,13 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(summary["median"]["asr_after_stop_ms"], {"value": 200 / 6})
         self.assertEqual(summary["median"]["llm_after_stop_ms"], {"value": 200 / 7})
         self.assertEqual(summary["median"]["stop_backlog_asr_segments"], {"value": 2})
-        self.assertEqual(summary["median"]["stages"]["decode[0]"]["after_stop_ms"], {"value": 20})
-        self.assertEqual(summary["structure_sha256"], ["structure-300", "structure-100", "structure-200"])
+        self.assertEqual(
+            summary["median"]["stages"]["decode[0]"]["after_stop_ms"], {"value": 20}
+        )
+        self.assertEqual(
+            summary["structure_sha256"],
+            ["structure-300", "structure-100", "structure-200"],
+        )
 
     def test_overlap_summary_command_reads_three_run_directories(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -144,12 +186,24 @@ class ValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             matrix = root / "matrix.json"
-            matrix.write_text(json.dumps({"runs": [{
-                "name": "bad",
-                "audio": str(root / "missing.wav"),
-                "model": {"id": "asr.fast", "dir": "model"},
-                "language_model": {"provider": "custom", "key": "sentinel-must-not-escape"},
-            }]}), encoding="utf-8")
+            matrix.write_text(
+                json.dumps(
+                    {
+                        "runs": [
+                            {
+                                "name": "bad",
+                                "audio": str(root / "missing.wav"),
+                                "model": {"id": "asr.fast", "dir": "model"},
+                                "language_model": {
+                                    "provider": "custom",
+                                    "key": "sentinel-must-not-escape",
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             results = root / "results"
             with self.assertRaisesRegex(ValueError, "language_model"):
                 loop.run_matrix(matrix, results, 0, 0.01, None, "1s")
@@ -159,7 +213,11 @@ class ValidationTests(unittest.TestCase):
     def test_prepare_rejects_unknown_before_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            config = {"audio": "missing.wav", "model": {"id": "asr.fast", "dir": "m"}, "unexpected": "sentinel"}
+            config = {
+                "audio": "missing.wav",
+                "model": {"id": "asr.fast", "dir": "m"},
+                "unexpected": "sentinel",
+            }
             with self.assertRaises(ValueError):
                 loop.prepare_config(config, root / "work")
             self.assertFalse((root / "work").exists())
@@ -169,7 +227,18 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 matrix = root / "matrix.json"
-                matrix.write_text(json.dumps([{"name": name, "audio": "missing.wav", "model": {"id": "asr.fast", "dir": "m"}}]), encoding="utf-8")
+                matrix.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "name": name,
+                                "audio": "missing.wav",
+                                "model": {"id": "asr.fast", "dir": "m"},
+                            }
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
                 results = root / "results"
                 with self.assertRaisesRegex(ValueError, "unsafe"):
                     loop.run_matrix(matrix, results, 0, 0.01, None, "1s")
@@ -190,17 +259,47 @@ class ProcessTests(unittest.TestCase):
         os.environ["PROFILE_LOOP_TEST_KEY"] = key
         self.addCleanup(os.environ.pop, "PROFILE_LOOP_TEST_KEY", None)
         normal = {"power_source": "AC Power", "idle_seconds": 1000, "contenders": []}
-        abnormal = {"power_source": "Battery Power", "idle_seconds": 0, "contenders": []}
-        samples = iter([normal, abnormal, normal, normal, normal, normal, normal, normal, normal, normal, normal])
+        abnormal = {
+            "power_source": "Battery Power",
+            "idle_seconds": 0,
+            "contenders": [],
+        }
+        samples = iter(
+            [
+                normal,
+                abnormal,
+                normal,
+                normal,
+                normal,
+                normal,
+                normal,
+                normal,
+                normal,
+                normal,
+                normal,
+            ]
+        )
 
         def sample_environment():
             return next(samples, normal)
 
-        command = ["/bin/sh", "-c", f"printf '%s %s %s\\n' '{endpoint}' '{model}' '{key}'; sleep 0.2"]
+        command = [
+            "/bin/sh",
+            "-c",
+            f"printf '%s %s %s\\n' '{endpoint}' '{model}' '{key}'; sleep 0.2",
+        ]
         with tempfile.TemporaryDirectory() as temporary:
             log_path = Path(temporary) / "process.log"
             environment = os.environ.copy()
-            returncode, during = loop.run_profile_process(command, environment, log_path, 300, 0.02, [endpoint, model, key], sample_environment)
+            returncode, during = loop.run_profile_process(
+                command,
+                environment,
+                log_path,
+                300,
+                0.02,
+                [endpoint, model, key],
+                sample_environment,
+            )
             self.assertEqual(returncode, 0)
             self.assertTrue(log_path.is_file())
             content = log_path.read_text(encoding="utf-8")

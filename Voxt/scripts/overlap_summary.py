@@ -12,7 +12,9 @@ from scripts.profile_loop import summarize_reports, write_json
 METHODS = ("one_shot", "serial", "overlap")
 
 
-def summarize_run_directories(run_directories: list[Path], output_dir: Path) -> dict[str, object]:
+def summarize_run_directories(
+    run_directories: list[Path], output_dir: Path
+) -> dict[str, object]:
     if len(run_directories) != 3:
         raise ValueError("exactly three overlap run directories are required")
     methods = {}
@@ -33,7 +35,13 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         methods = summarize_run_directories(arguments.runs, arguments.output_dir)
-    except (OSError, StopIteration, ValueError, KeyError, json.JSONDecodeError) as error:
+    except (
+        OSError,
+        StopIteration,
+        ValueError,
+        KeyError,
+        json.JSONDecodeError,
+    ) as error:
         parser.error(str(error))
     print(json.dumps(methods, ensure_ascii=False, indent=2))
     return 0
