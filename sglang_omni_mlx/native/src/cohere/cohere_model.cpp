@@ -362,7 +362,8 @@ mx::array CohereModel::EncoderLayer(const mx::array &x,
   return LayerNorm(hidden, prefix + ".norm_out");
 }
 
-mx::array CohereModel::Encode(const std::vector<float> &samples) const {
+mx::array CohereModel::Encode(const std::vector<float> &samples,
+                              const std::atomic<bool> *cancel) const {
   const int sample_count = static_cast<int>(samples.size());
   const mx::array audio(samples.data(), {sample_count}, mx::float32);
   mx::array emphasized = audio;
@@ -413,6 +414,7 @@ mx::array CohereModel::Encode(const std::vector<float> &samples) const {
   const mx::array positions = RelativePositions(x.shape(1), x.dtype());
   for (int layer = 0; layer < config_.encoder_layer_count; ++layer) {
     x = EncoderLayer(x, positions, layer);
+    omni_common::EncoderCheckpoint(x, cancel, layer + 1);
   }
   return Linear(x, "bridge_proj");
 }

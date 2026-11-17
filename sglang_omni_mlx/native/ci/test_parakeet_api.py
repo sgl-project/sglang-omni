@@ -66,14 +66,17 @@ def pcm_bytes_to_wav(pcm_bytes: bytes) -> bytes:
     return wav_bytes.getvalue()
 
 
+@pytest.mark.parametrize("preview", [False, True])
 def test_parakeet_final_request_returns_text_and_sentences(
     parakeet_server: SupervisedServer,
+    preview: bool,
 ) -> None:
     model_name = parakeet_server.first_event["model_name"]
     assert isinstance(model_name, str)
     assert model_name.startswith("voxt-parakeet-")
     response: HttpResponse = parakeet_server.post_form(
-        {"chunk_duration": "1200"}, corpus_wav("0006_en_short")
+        {"chunk_duration": "1200", "preview": str(preview).lower()},
+        corpus_wav("0006_en_short"),
     )
     assert response.status == 200
     result = response.json()

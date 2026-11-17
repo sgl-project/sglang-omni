@@ -48,6 +48,8 @@ public:
   Prepare(std::vector<float> samples,
           const asr_service::FormFields &form) const override {
     sensevoice::SenseVoiceOptions options;
+    options.preview =
+        omni_common::FormFlag(asr_service::TextField(form, "preview"));
     options.language = asr_service::TextField(form, "language");
     const auto use_itn = asr_service::TextField(form, "use_itn");
     if (use_itn.has_value()) {

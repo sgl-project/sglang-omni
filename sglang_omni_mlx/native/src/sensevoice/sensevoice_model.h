@@ -4,6 +4,7 @@
 // port computes them in float32.
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -47,8 +48,10 @@ public:
   // Log probabilities [4 + frames, vocabulary] of features [frames,
   // input_size]: the language, emotion, event and text normalization query
   // frames first, then the speech.
-  mlx::core::array LogProbabilities(const mlx::core::array &features,
-                                    int language_id, bool use_itn) const;
+  mlx::core::array
+  LogProbabilities(const mlx::core::array &features, int language_id,
+                   bool use_itn,
+                   const std::atomic<bool> *cancel = nullptr) const;
 
   const SenseVoiceConfig &config() const { return config_; }
 

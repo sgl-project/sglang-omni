@@ -115,12 +115,12 @@ CohereTranscriber::DecodeText(const std::vector<int> &token_ids) const {
   return vocabulary_.Decode(token_ids, special_ids_);
 }
 
-CohereTranscriber::ChunkResult
-CohereTranscriber::TranscribeChunk(const std::vector<float> &samples,
-                                   const std::vector<int> &prompt_ids,
-                                   int max_new_tokens, float temperature,
-                                   const std::atomic<bool> &cancel) const {
-  const mx::array encoder_states = model_.Encode(samples);
+CohereTranscriber::ChunkResult CohereTranscriber::TranscribeChunk(
+    const std::vector<float> &samples, const std::vector<int> &prompt_ids,
+    int max_new_tokens, float temperature, const std::atomic<bool> &cancel,
+    bool preview) const {
+  const mx::array encoder_states =
+      model_.Encode(samples, preview ? &cancel : nullptr);
   std::vector<DecoderLayerCache> caches(model_.config().decoder_layer_count);
   const auto next_token = [&](const mx::array &logits) {
     if (temperature == 0.0f) {
@@ -229,8 +229,9 @@ CohereTranscriber::Transcribe(const std::vector<float> &samples,
       chunk.resize(min_chunk_samples, 0.0f);
     } else {
     }
-    const ChunkResult chunk_result = TranscribeChunk(
-        chunk, prompt_ids, remaining_tokens, options.temperature, cancel);
+    const ChunkResult chunk_result =
+        TranscribeChunk(chunk, prompt_ids, remaining_tokens,
+                        options.temperature, cancel, options.preview);
     remaining_tokens =
         std::max(0, remaining_tokens - chunk_result.generated_token_count);
     result.generated_token_count += chunk_result.generated_token_count;

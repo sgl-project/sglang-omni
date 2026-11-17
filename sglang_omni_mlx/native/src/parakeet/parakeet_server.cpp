@@ -29,10 +29,12 @@ public:
           const asr_service::FormFields &form) const override {
     const std::optional<float> chunk_duration_seconds =
         asr_service::NumberField(form, "chunk_duration");
-    const parakeet::ParakeetOptions options =
+    parakeet::ParakeetOptions options =
         chunk_duration_seconds.has_value()
             ? parakeet::ChunkDurationOptions(*chunk_duration_seconds)
             : parakeet::ParakeetOptions();
+    options.preview =
+        omni_common::FormFlag(asr_service::TextField(form, "preview"));
     return [this, samples = std::move(samples),
             options](const std::atomic<bool> &cancel) {
       return transcriber_.Transcribe(samples, options, cancel);

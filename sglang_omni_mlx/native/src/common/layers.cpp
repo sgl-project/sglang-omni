@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "common/layers.h"
+#include "common/generation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -339,6 +340,23 @@ LstmCell LstmStep(const mx::array &gates, const std::optional<LstmCell> &state,
                                        mx::multiply(input_gate, candidate))
                              : mx::multiply(input_gate, candidate);
   return {mx::multiply(output_gate, mx::tanh(cell)), cell};
+}
+
+void EncoderCheckpoint(const mx::array &hidden, const std::atomic<bool> *cancel,
+                       int completed_layers) {
+  constexpr int kCancellationIntervalLayers = 4;
+  if (cancel == nullptr) {
+    return;
+  } else if (cancel->load()) {
+    throw GenerationCancelled();
+  } else if (completed_layers % kCancellationIntervalLayers == 0) {
+    mx::eval(hidden);
+    if (cancel->load()) {
+      throw GenerationCancelled();
+    } else {
+    }
+  } else {
+  }
 }
 
 } // namespace omni_common

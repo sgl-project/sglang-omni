@@ -5,6 +5,7 @@
 // bfloat16.
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -52,7 +53,8 @@ public:
   // Normalized log-mel frames [1, frames, features] in float32.
   mlx::core::array Features(const std::vector<float> &samples) const;
   // Encoder frames [1, frames, width] of features, in bfloat16.
-  mlx::core::array Encode(const mlx::core::array &features) const;
+  mlx::core::array Encode(const mlx::core::array &features,
+                          const std::atomic<bool> *cancel = nullptr) const;
   // The prediction network fed token (the blank feeds zeros) from state
   // [layers, 1, hidden], joined with one encoder frame [1, 1, width].
   DecoderStep Decode(const mlx::core::array &frame, int token,

@@ -35,6 +35,8 @@ struct CohereOptions {
   // point, as Voxt's voice-activity strategy does; no speech is no text.
   const silero_vad::SileroVAD *voice_activity_detector = nullptr;
   silero_vad::SpeechSegmentConfig speech_segments;
+  // Bounded encoder evaluation for disposable live previews.
+  bool preview = false;
 };
 
 class CohereTranscriber {
@@ -58,7 +60,8 @@ private:
   ChunkResult TranscribeChunk(const std::vector<float> &samples,
                               const std::vector<int> &prompt_ids,
                               int max_new_tokens, float temperature,
-                              const std::atomic<bool> &cancel) const;
+                              const std::atomic<bool> &cancel,
+                              bool preview) const;
 
   CohereModel model_;
   swift_port::SentencePieceVocabulary vocabulary_;

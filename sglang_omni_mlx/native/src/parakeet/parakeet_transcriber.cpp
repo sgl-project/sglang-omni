@@ -280,13 +280,15 @@ ParakeetTranscriber::ParakeetTranscriber(
 
 std::vector<AlignedToken>
 ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
-                                 const std::atomic<bool> &cancel) const {
+                                 const std::atomic<bool> &cancel,
+                                 bool preview) const {
   if (cancel.load()) {
     throw omni_common::GenerationCancelled();
   } else {
   }
   const ParakeetConfig &config = model_.config();
-  const mx::array encoded = model_.Encode(model_.Features(samples));
+  const mx::array encoded =
+      model_.Encode(model_.Features(samples), preview ? &cancel : nullptr);
   mx::eval(encoded);
   const int frame_count = encoded.shape(1);
   const int blank = model_.blank_id();
@@ -343,8 +345,8 @@ ParakeetTranscriber::DecodeChunk(const std::vector<float> &samples,
 
 std::vector<AlignedToken> ParakeetTranscriber::DecodeWithBlankTailRecovery(
     const std::vector<float> &samples, size_t max_chunk_samples,
-    const std::atomic<bool> &cancel) const {
-  std::vector<AlignedToken> tokens = DecodeChunk(samples, cancel);
+    const std::atomic<bool> &cancel, bool preview) const {
+  std::vector<AlignedToken> tokens = DecodeChunk(samples, cancel, preview);
   const size_t sample_rate_hertz = omni_common::kSampleRate;
   const size_t padding_samples =
       static_cast<size_t>(kRecoveryPaddingSeconds * sample_rate_hertz);
@@ -404,7 +406,8 @@ std::vector<AlignedToken> ParakeetTranscriber::DecodeWithBlankTailRecovery(
     std::vector<float> retry_samples(leading_padding_samples, 0.0f);
     retry_samples.insert(retry_samples.end(), samples.begin() + start_sample,
                          samples.begin() + end_sample);
-    std::vector<AlignedToken> retry_tokens = DecodeChunk(retry_samples, cancel);
+    std::vector<AlignedToken> retry_tokens =
+        DecodeChunk(retry_samples, cancel, preview);
     const double shift_seconds =
         (static_cast<double>(start_sample) - leading_padding_samples) /
         sample_rate_hertz;
@@ -467,9 +470,10 @@ ParakeetTranscriber::Transcribe(const std::vector<float> &samples,
                                    samples.begin() + end);
     std::vector<AlignedToken> chunk_tokens;
     if (chunk.size() >= 2) {
-      chunk_tokens =
-          automatic ? DecodeWithBlankTailRecovery(chunk, chunk_samples, cancel)
-                    : DecodeChunk(chunk, cancel);
+      chunk_tokens = automatic
+                         ? DecodeWithBlankTailRecovery(chunk, chunk_samples,
+                                                       cancel, options.preview)
+                         : DecodeChunk(chunk, cancel, options.preview);
     } else {
     }
     for (AlignedToken &token : chunk_tokens) {

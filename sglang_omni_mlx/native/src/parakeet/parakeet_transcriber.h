@@ -22,6 +22,8 @@ struct ParakeetOptions {
   // Fixed windows overlapping by 1 s; unset cuts automatic chunks at quiet
   // boundaries.
   std::optional<double> window_seconds;
+  // Bounded encoder evaluation for disposable live previews.
+  bool preview = false;
 };
 
 // The options for a requested chunk_duration: 2 to 300 seconds for fixed
@@ -54,14 +56,14 @@ public:
 private:
   // The tokens greedy TDT decoding emits on one chunk, in sentence order.
   std::vector<AlignedToken> DecodeChunk(const std::vector<float> &samples,
-                                        const std::atomic<bool> &cancel) const;
+                                        const std::atomic<bool> &cancel,
+                                        bool preview) const;
 
   // DecodeChunk, then bounded retries of an audible tail it left blank;
   // samples hold at most max_chunk_samples.
-  std::vector<AlignedToken>
-  DecodeWithBlankTailRecovery(const std::vector<float> &samples,
-                              size_t max_chunk_samples,
-                              const std::atomic<bool> &cancel) const;
+  std::vector<AlignedToken> DecodeWithBlankTailRecovery(
+      const std::vector<float> &samples, size_t max_chunk_samples,
+      const std::atomic<bool> &cancel, bool preview) const;
 
   ParakeetModel model_;
   std::vector<std::string> token_texts_;

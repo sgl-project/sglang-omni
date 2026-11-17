@@ -4,6 +4,7 @@
 // port runs them.
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -45,7 +46,8 @@ public:
   const CohereConfig &config() const { return config_; }
   // 16 kHz samples to encoder states projected to the decoder width [1,
   // frames, width].
-  mlx::core::array Encode(const std::vector<float> &samples) const;
+  mlx::core::array Encode(const std::vector<float> &samples,
+                          const std::atomic<bool> *cancel = nullptr) const;
   // Token ids [1, length] placed from start_position on, to the logits of the
   // last position [vocabulary].
   mlx::core::array Decode(const mlx::core::array &token_ids, int start_position,
