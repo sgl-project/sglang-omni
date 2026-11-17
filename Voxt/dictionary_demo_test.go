@@ -83,7 +83,7 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 		{name: "delete note", fixture: "en/notes-normal", steps: historySteps("Delete call Ana"), want: []string{`deleteDictionaryNote note-2 "call Ana"`}},
 		{name: "note keys off", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {label: "Off", click: true}}, want: []string{`setNoteKeys ""`}},
 		{name: "note keys preset", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {label: "Right ⇧", click: true}}, want: []string{`setNoteKeys "RightShift"`}},
-		{name: "note keys custom", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {label: "Custom…", click: true}}, want: []string{"setNoteHotkeyFocus true"}, check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "note keys custom", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {key: ui.KeyEnd}, {key: ui.KeyEnter}}, want: []string{"setNoteHotkeyFocus true"}, check: func(t *testing.T, host *meetingDemoHost) {
 			if !host.notesUI.keys.custom {
 				t.Fatal("custom key editor did not open")
 			}

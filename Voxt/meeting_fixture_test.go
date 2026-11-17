@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hehehai/actnowkit/shortcuts"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/codexauth"
@@ -24,7 +25,13 @@ import (
 
 func TestMeetingViewStateGolden(t *testing.T) {
 	previousLocale := i18n.Locale()
-	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	previousZone := time.Local
+	// The golden timestamps use UTC-8; a fixed zone reproduces them without host tzdata.
+	time.Local = time.FixedZone("fixture", -8*60*60)
+	t.Cleanup(func() {
+		i18n.SetLocale(previousLocale)
+		time.Local = previousZone
+	})
 	scenarios := meetingFixtureScenarios()
 	names := map[string]bool{}
 	for _, scenario := range scenarios {
