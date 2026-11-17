@@ -333,8 +333,36 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
   const std::vector<int> prompt_ids =
       PromptIds(audio_token_count, options.prompt);
   const int prompt_length = static_cast<int>(prompt_ids.size());
-  const mx::array audio_features =
-      model_.EncodeAudio(mx::stack(windows), window_token_counts);
+  // Note (XXXXRT666): each window is encoded only over the frames its tokens
+  // take, not its silent padding to 30 s; the full windows go in one batch
+  // and a shorter last one apart.
+  const int frames_per_token =
+      kWhisperEncoderStride * model_.audio_merge_size();
+  std::vector<mx::array> encoded_windows;
+  size_t batch_start = 0;
+  for (size_t window = 1; window <= windows.size(); ++window) {
+    if (window < windows.size() &&
+        window_token_counts[window] == window_token_counts[batch_start]) {
+      continue;
+    } else {
+    }
+    const int frames =
+        std::min(window_token_counts[batch_start] * frames_per_token,
+                 windows[batch_start].shape(0));
+    std::vector<mx::array> batch;
+    for (size_t index = batch_start; index < window; ++index) {
+      batch.push_back(
+          mx::slice(windows[index], {0, 0}, {frames, windows[index].shape(1)}));
+    }
+    encoded_windows.push_back(model_.EncodeAudio(
+        mx::stack(batch),
+        std::vector<int>(window_token_counts.begin() + batch_start,
+                         window_token_counts.begin() + window)));
+    batch_start = window;
+  }
+  const mx::array audio_features = encoded_windows.size() == 1
+                                       ? encoded_windows[0]
+                                       : mx::concatenate(encoded_windows, 0);
   const mx::array token_embeddings = model_.decoder().EmbedTokens(
       mx::array(prompt_ids.data(), {1, prompt_length}, mx::int32));
   const int hidden = token_embeddings.shape(2);
