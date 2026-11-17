@@ -7,8 +7,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/hehehai/actnowkit/sounds"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,10 +34,17 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // The test binary is also the fake helper (helpertest) and the fake
 // Omni server (omnitest).
+// failListModels stands for runListModels in tests: no dialog asks a
+// real server on this Mac which models it has.
+func failListModels(context.Context, settings.Provider, string, *http.Client) ([]string, error) {
+	return nil, errors.New("no model servers in tests")
+}
+
 func TestMain(m *testing.M) {
 	if helpertest.Enabled() {
 		helpertest.Main()
@@ -43,6 +52,7 @@ func TestMain(m *testing.M) {
 	if omnitest.Enabled() {
 		omnitest.Main()
 	}
+	runListModels = failListModels
 	os.Exit(runIsolated(m))
 }
 

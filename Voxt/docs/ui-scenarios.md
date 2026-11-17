@@ -15,7 +15,7 @@
 - **起点**：Mac 上有 Voxt 1.x 的数据，第一次打开 2.x。
 - **操作**：在设置引导的第一张卡片上点“导入”，看完结果后继续引导。
 - **应看到**：结果按“已导入 / 待处理 / 未导入”分组：词典的条数、历史条数、语言模型和语音服务的个数、提示词；需要重新粘贴 key 的服务逐个列在“待处理”里，并带“完成设置”的入口；导入后卡片不再出现。
-- **边界**：替换词变成“听成”别名，停用的词条保持停用；会议记录和空记录不导入，并在结果里说明；1.x 的 Options JSON 会放进“请求参数”的 `options` 里；地址或模型可能不兼容的服务，会提示用户检查。
+- **边界**：替换词变成“听成”别名，停用的词条保持停用；会议记录导入成会议（id 为 `legacy-<旧 id>`，再导入不会重复，见 voxt-migration.md），文件转录和空记录不导入，并在结果里说明；1.x 的 Options JSON 会放进“请求参数”的 `options` 里；地址或模型可能不兼容的服务，会提示用户检查。
 - **覆盖**：`TestImportLegacySettings`、`TestImportReportGroups`、`TestImportEndsTheOffer`、`TestImportRules`；手测 11.3。
 
 ## S3. 用系统听写作为语音识别模型
@@ -88,20 +88,20 @@
 - **操作**：转录或语音翻译停止录音后，浮窗显示“整理中”时点“用识别原文”，或按取消键（默认 Esc）。另试：语言模型页 → “等待语言模型”选 5 分钟。
 - **应看到**：马上插入识别原文，没有警告；历史记一条成功的记录。选了等待时长后，模型慢也会等到这个时长；语音翻译超时后插入识别原文并提示“语言模型没有及时响应”。
 - **边界**：改写在处理时没有这个按钮，回答还没开始写进卡片时按取消键仍然取消整段（写进卡片后见 S12）；选区翻译也没有；没有按钮时浮窗照旧让鼠标穿过。
-- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`、`TestLLMWaitCustom`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestTranslateTimeoutKeepsSpeech`。
+- **覆盖**：`TestSkipLLMPill`、`TestSkipLLMEndToEnd`、`TestLLMWaitRow`、`TestLLMWaitCustom`、`TestLLMWaitNoLimit`；`internal/session` 的 `TestSkipLLM`、`TestLLMWaitSetting`、`TestLLMWaitNoLimit`、`TestTranslateTimeoutKeepsSpeech`。
 
 ## S11b. 听写整理时换思考强度
 
 - **起点**：听写打开了语言模型整理，所用服务支持思考设置（比如 OpenAI、DeepSeek、智谱）。
 - **操作**：说一段话，停止录音，浮窗显示“整理中”时点“用识别原文”后面的“思考”，在浮窗里选“关闭”。
 - **应看到**：按钮上写着当前强度；选完后浮窗关上，模型用这个强度把同样的话重新整理，只插入一次结果；语言模型页里这个服务的“思考”设置不变。
-- **边界**：浮窗开着时按取消键先关浮窗，再按才是用识别原文；重选后仍可点“用识别原文”；翻译、改写和不支持思考设置的服务没有这个按钮；中英文界面按钮都在浮窗内。
-- **覆盖**：`TestPillThinkingLevel`、`TestPillThinkingLevelEndToEnd`；`internal/session` 的 `TestRethink`；截图 `overlay-composing-think*`。
+- **边界**：浮窗开着时按取消键先关浮窗，再按才是用识别原文；重选后仍可点“用识别原文”；翻译、改写处理中也有同一个按钮（#3957），改写的小窗能点；不支持思考设置的服务没有这个按钮；菜单第一行写服务设置的强度（如“高（默认）”），不写“按设置”，语言模型页改了设置菜单跟着变；中英文界面按钮都在浮窗内。
+- **覆盖**：`TestPillThinkingLevel`、`TestPillThinkingLevelEndToEnd`、`TestThinkingDefaultNamed`；`internal/session` 的 `TestRethink`；截图 `overlay-composing-think*`。
 
 ## S12. 回答写到一半停下来
 
 - **起点**：配好远程语言模型，改写打开答案卡片（默认打开）。
 - **操作**：选中一段长文字，用改写说一句会让回答很长的话；回答在卡片里一行行写出来时，点卡片右上角的“停止”，或按取消键（默认 Esc）。再试一次追问：点“继续”说一句，回答写出来时按取消键。
 - **应看到**：回答马上停住，已经写出的字留在卡片里（包括最后几个字），可以复制、插入、继续追问；没有插入到原来的 App，也没有盖掉选区；历史记一条成功的记录，结果是停下时的文字。追问停下后，对话里保留前面的回合和这次写出的部分。
-- **边界**：回答还没写出第一个字时，取消键照旧取消整段；答案卡片关掉（回答直接插入）时没有停止，取消键照旧取消整段；切换翻译语言时取消键照旧回到原来的译文；翻译的回答不边写边显示，取消键照旧。
+- **边界**：回答还没写出第一个字时，取消键照旧取消整段；答案卡片关掉（回答直接插入）时没有停止，取消键照旧取消整段；切换翻译语言时取消键照旧回到原来的译文。翻译的回答同样边写边显示，“停止”留下已写出的译文；转录的整理边写边显示，但卡片上是“用识别原文”，不是“停止”。
 - **覆盖**：`TestStopAnswerEndToEnd`、`TestStopFollowUpAnswer`；`internal/session` 的 `TestStopLLM`。

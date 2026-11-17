@@ -127,6 +127,7 @@ from sglang_omni.scheduling.types import (
     SpecTokensDetailsDict,
     StreamOutputBuilder,
 )
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils.process import terminate_gpu_worker
 
 logger = logging.getLogger(__name__)
@@ -1457,7 +1458,7 @@ class OmniScheduler(Generic[RequestDataT]):
             try:
                 req_data = self.run_request_builder(payload, active_stage)
             except Exception as exc:
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self.log_request_builder_failure(req_id, exc)
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
@@ -1480,6 +1481,15 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         self.drain_request_build_results()
         self.drain_request_admission_results()
+
+    def log_request_builder_failure(self, request_id: str, error: Exception) -> None:
+        if is_bad_request_error(error):
+            # note (ruiling): the caller already gets this message with a 400, so the traceback is noise.
+            logger.warning(
+                f"OmniScheduler: request builder rejected {request_id}: {error}"
+            )
+        else:
+            logger.exception(f"OmniScheduler: request builder failed for {request_id}")
 
     def request_build_queue_fits_workers(self) -> bool:
         """True when pending+backlog still fits in the request-build pool.
@@ -1702,7 +1712,7 @@ class OmniScheduler(Generic[RequestDataT]):
                         continue
                     else:
                         pass
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self.log_request_builder_failure(req_id, exc)
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
@@ -2101,22 +2111,43 @@ class OmniScheduler(Generic[RequestDataT]):
         kv_cache_bytes = getattr(
             getattr(self, "tp_worker", None), "kv_cache_bytes", None
         )
-        mem_fraction = runtime_context.get_schedule().mem_fraction_static
-        if kv_cache_bytes is not None:
-            mem_hint = " Try raising engine.kv_cache_bytes."
-        elif mem_fraction is not None:
-            mem_hint = (
-                f" Current mem_fraction_static is {mem_fraction:.3f}; try setting "
-                "--thinker-mem-fraction-static higher."
+        schedule = runtime_context.get_schedule()
+        context_len = int(self.model_config.context_len)
+        if request_capacity == context_len - 1 and self.draft_worker is not None:
+            capacity_hint = (
+                f" The {context_len}-token context sets this limit, not the KV "
+                "pool; a speculative draft keeps it within the draft's own "
+                "context. Lower max_tokens or shorten the input."
+            )
+        elif request_capacity == context_len - 1:
+            capacity_hint = (
+                f" The {context_len}-token model context sets this limit, not the "
+                "KV pool; lower max_tokens or shorten the input."
+            )
+        elif kv_cache_bytes is not None:
+            capacity_hint = " Try raising engine.kv_cache_bytes."
+        # note (evanderfan): SGLang caps the pool at max_total_tokens only when memory allows more, then aligns it down to a page.
+        elif (
+            schedule.max_total_tokens is not None
+            and schedule.max_total_tokens < self.max_total_num_tokens + self.page_size
+        ):
+            capacity_hint = (
+                f" engine.max_total_tokens={schedule.max_total_tokens} caps the "
+                "KV pool; try raising it."
+            )
+        elif schedule.mem_fraction_static is not None:
+            capacity_hint = (
+                f" Current engine.mem_fraction_static is "
+                f"{schedule.mem_fraction_static:.3f}; try raising it."
             )
         else:
-            mem_hint = " Try setting a higher --thinker-mem-fraction-static value."
+            capacity_hint = " Try raising engine.mem_fraction_static."
 
         return (
             "Request requires more tokens than the thinker KV cache can hold "
             f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
             f"required_tokens={required_tokens}, kv_capacity={request_capacity})."
-            f"{mem_hint}"
+            f"{capacity_hint}"
         )
 
     def select_decode_path(
@@ -2201,7 +2232,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 (
                     "repetition_penalty",
                     sampling_params.repetition_penalty != 1.0
-                    and not self.model_runner.speculative_verifies_repetition_penalty,
+                    and self.model_runner.speculative_repetition_penalty_owner is None,
                 ),
             )
             if is_set
@@ -2732,12 +2763,7 @@ class OmniScheduler(Generic[RequestDataT]):
             with self.forward_stream_ctx:
                 self.forward_stream.wait_stream(self.schedule_stream)
                 resolve_forward_inputs(batch, self.future_map)
-                if self.model_runner.speculative_verify_takes_logits_hooks:
-                    self.tp_worker.speculative_target_worker.verify_requests = (
-                        self.build_sched_output(batch).requests
-                    )
-                else:
-                    pass
+                self.publish_verify_requests(batch)
                 with _Upstream._forward_isolation(
                     self, batch, overlap=True
                 ):  # noqa: leading-underscore  # native scheduler contract
@@ -2756,6 +2782,9 @@ class OmniScheduler(Generic[RequestDataT]):
                     batch,
                     is_prefill=is_prefill,
                     num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+                )
+                self.model_runner.record_speculative_output(
+                    batch, result, is_prefill=is_prefill
                 )
                 result.copy_done = self.device_module.Event()
                 _Upstream._relay_forward_payload(
@@ -2777,13 +2806,7 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
-        if self.model_runner.speculative_verify_takes_logits_hooks:
-            # The next step of this loop replaces the list the verify reads here.
-            self.tp_worker.speculative_target_worker.verify_requests = (
-                self.build_sched_output(batch).requests
-            )
-        else:
-            pass
+        self.publish_verify_requests(batch)
         with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             self, batch, overlap=False
         ):
@@ -2792,6 +2815,9 @@ class OmniScheduler(Generic[RequestDataT]):
             batch,
             is_prefill=is_prefill,
             num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+        )
+        self.model_runner.record_speculative_output(
+            batch, result, is_prefill=is_prefill
         )
         batch.spec_info = result.next_draft_input
         new_sequence_lengths = result.new_seq_lens
@@ -2815,6 +2841,21 @@ class OmniScheduler(Generic[RequestDataT]):
             return_hidden_states=batch.return_hidden_states,
         )
         return result
+
+    def publish_verify_requests(self, batch: ScheduleBatch) -> None:
+        """Hand this step's verify its requests in row order, when the runner hooks or penalizes verify rows."""
+        if (
+            self.model_runner.speculative_verify_takes_logits_hooks
+            or self.model_runner.speculative_penalized_rows(batch.reqs)
+        ):
+            self.tp_worker.speculative_target_worker.verify_requests = (
+                self.build_sched_output(batch).requests
+            )
+        elif self.model_runner.speculative_repetition_penalty_owner == "verify_logits":
+            # An earlier step's list would penalize this step's rows.
+            self.tp_worker.speculative_target_worker.verify_requests = []
+        else:
+            pass
 
     def build_sched_output(self, batch):
         """Wrap a ScheduleBatch into the SchedulerOutput the model runner

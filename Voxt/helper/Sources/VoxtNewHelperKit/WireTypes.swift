@@ -66,6 +66,7 @@ public enum PermissionName {
     public static let accessibility = "accessibility"
     public static let speechRecognition = "speechRecognition"
     public static let screenRecording = "screenRecording"
+    public static let systemAudio = "systemAudio"
 }
 
 public struct PermissionsResult: Codable, Sendable {

@@ -42,7 +42,7 @@ func (a *app) overlaySize(mode overlayMode) (w, h int, exact bool) {
 			exact = exact && ok
 		}
 		if a.pillThinks(mode) {
-			w, ok := a.ovTextWidth(pillThinkText(a.sess.Thinking))
+			w, ok := a.ovTextWidth(a.pillThinkText())
 			row += layout.Gap + 2*10 + int(math.Ceil(float64(w)))
 			exact = exact && ok
 		}
@@ -186,7 +186,7 @@ func (a *app) overlayTexts() []ovSized {
 			out = append(out, skipText())
 		}
 		if a.pillThinks(a.ov.mode) {
-			out = append(out, pillThinkText(a.sess.Thinking))
+			out = append(out, a.pillThinkText())
 		}
 		if text, hint := pillLine(a.pillSession()); text != "" && a.prefs.Overlay.LiveLines && !hint {
 			out = append(out, liveLinesKey(text))

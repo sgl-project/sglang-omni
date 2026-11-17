@@ -112,6 +112,11 @@ type Entry struct {
 	AudioMS, ASRMS, LLMMS, TotalMS int64
 	SentMS                         int64
 
+	// Conversation is the ID of the first session of the answer card's
+	// conversation this one belongs to (its own ID when it began one);
+	// "" for older entries.
+	Conversation string
+
 	// DSP is the sound processing the speech model's copy of the
 	// recording went through (internal/dsp): "highpass", "level" or
 	// "highpass+level"; "" for none (off, older entries, nothing sent).
@@ -321,6 +326,7 @@ type Meetings interface {
 	UpdateMeeting(ctx context.Context, m Meeting) error
 	AppendSegments(ctx context.Context, seq int64, segs []MeetingSegment) error
 	UpdateSegmentTranslation(ctx context.Context, seq int64, idx int, translation string) error
+	UpdateSegmentText(ctx context.Context, seq int64, idx int, text string) error
 	ReplaceSegments(ctx context.Context, seq int64, src SegmentSource, segs []MeetingSegment) error
 	Meeting(ctx context.Context, id string) (Meeting, []MeetingSegment, error)
 	ListMeetings(ctx context.Context, q MeetingQuery) ([]Meeting, error)

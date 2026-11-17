@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 )
 
 // Service is the Keychain service of Voxt's secrets.
@@ -128,6 +129,15 @@ func (k Item) Delete() error {
 func isExit(err error, code int) bool {
 	var ee *exec.ExitError
 	return errors.As(err, &ee) && ee.ExitCode() == code
+}
+
+// Clean drops every whitespace character of a pasted key: keys hold none,
+// and a copy from wrapped text puts a space or a line break where it
+// wrapped. inner counts those dropped between the key's first and last
+// characters, which TrimSpace alone keeps.
+func Clean(s string) (key string, inner int) {
+	key = strings.Join(strings.Fields(s), "")
+	return key, utf8.RuneCountInString(strings.TrimSpace(s)) - utf8.RuneCountInString(key)
 }
 
 // Mask shows a secret without giving it away: "sk-…wxyz".

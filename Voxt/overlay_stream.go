@@ -65,7 +65,11 @@ func (a *app) paceDraft() {
 	if r.id != a.sess.ID {
 		*r = streamReveal{id: a.sess.ID}
 	}
-	if r.ticking || r.shown >= utf8.RuneCountInString(a.sess.Draft) || !a.sess.State.Live() || !a.timersRun() || a.overlayModeNow() != ovAnswer {
+	total := utf8.RuneCountInString(a.sess.Draft)
+	// The model asked again (Translate's strict retry, a fallback, another
+	// thinking level): the new answer shows at the pace from its start.
+	r.shown = min(r.shown, total)
+	if r.ticking || r.shown >= total || !a.sess.State.Live() || !a.timersRun() || a.overlayModeNow() != ovAnswer {
 		return
 	}
 	r.ticking = true

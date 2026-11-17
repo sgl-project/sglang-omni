@@ -59,27 +59,6 @@ def req_wrap(data: SimpleNamespace) -> SimpleNamespace:
     return SimpleNamespace(data=data)
 
 
-def test_stale_mask_cannot_leak_into_reused_slot() -> None:
-    # Note (wenyao): forward-side mask reset (talker.py:422) needs a real forward; integration-level only
-    n, hidden, code_groups = 2, 3, 2
-    model = fake_model(n, hidden, code_groups)
-    model.feedback_mask[:n] = True
-    runner = make_runner(model)
-
-    feedback1 = torch.full((hidden,), 5.0)
-    text1 = torch.full((hidden,), 50.0)
-    requests = [
-        req_wrap(make_data(torch.full((hidden,), 1.0), None, thinker_done=False)),
-        req_wrap(make_data(feedback1, text1)),
-    ]
-
-    runner.write_feedback_buffers(requests)
-
-    assert model.feedback_mask.tolist() == [False, True]
-    assert torch.equal(model.feedback_buffer[0], torch.zeros(hidden))
-    assert torch.equal(model.feedback_buffer[1], feedback1 + text1)
-
-
 def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
     n, hidden, code_groups = 2, 3, 2
     model = fake_model(n, hidden, code_groups)

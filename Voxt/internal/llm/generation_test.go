@@ -164,3 +164,30 @@ func TestRequestThinkingOverrides(t *testing.T) {
 		t.Errorf("no override: %s", js(b))
 	}
 }
+
+// TestThinkOffUnder (#3951): with ThinkOffUnder set, a short input goes
+// out with Voxt's default thinking (off), a long one at the service's
+// level, and the one-input override wins over both.
+func TestThinkOffUnder(t *testing.T) {
+	g := Generation{Thinking: Thinking{Mode: ThinkOn}, ThinkOffUnder: 200}
+	on := &Thinking{Mode: ThinkOn}
+	for _, c := range []struct {
+		name string
+		req  Request
+		want string
+	}{
+		{"short", Request{InputChars: 20}, `{"type":"disabled"}`},
+		{"long", Request{InputChars: 500}, `{"type":"enabled"}`},
+		{"at the limit", Request{InputChars: 200}, `{"type":"enabled"}`},
+		{"unknown length", Request{}, `{"type":"enabled"}`},
+		{"short, a level chosen for it", Request{InputChars: 20, Thinking: on}, `{"type":"enabled"}`},
+	} {
+		c.req.Messages = msgs("hi")
+		if got := js(bodyFor(t, "zhipu", "glm-4.6", g, c.req)["thinking"]); got != c.want {
+			t.Errorf("%s: thinking = %s, want %s", c.name, got, c.want)
+		}
+	}
+	if got := js(bodyFor(t, "zhipu", "glm-4.6", Generation{Thinking: Thinking{Mode: ThinkOn}}, Request{Messages: msgs("hi"), InputChars: 20})["thinking"]); got != `{"type":"enabled"}` {
+		t.Errorf("option off, short input: thinking = %s", got)
+	}
+}

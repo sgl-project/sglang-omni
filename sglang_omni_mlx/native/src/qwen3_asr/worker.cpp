@@ -3,7 +3,13 @@
 
 #include <algorithm>
 
+#include "common/generation.h"
+#include "common/transcription.h"
+
 namespace qwen3_asr {
+
+using omni_common::GenerationCancelled;
+using omni_common::TranscriptionResult;
 
 TranscriptionWorker::TranscriptionWorker(
     std::function<void()> load, std::function<void()> release_idle_memory,
@@ -126,7 +132,7 @@ void TranscriptionWorker::Run(std::promise<void> loaded,
       try {
         // Note (khazic): a request cancelled while queued never starts.
         if (jobs[0].cancel->load()) {
-          throw TranscriptionCancelled();
+          throw GenerationCancelled();
         } else {
         }
         result = jobs[0].transcription(*jobs[0].cancel);

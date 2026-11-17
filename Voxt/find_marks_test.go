@@ -207,8 +207,6 @@ func TestLogsFind(t *testing.T) {
 // its title too; Return steps through them.
 func TestMeetingsFind(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
 	repo := a.lib.store.Meetings()
 	ctx := context.Background()
 	t0 := time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)

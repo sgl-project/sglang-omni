@@ -15,7 +15,7 @@ import (
 
 // waitLabels are the choices' labels, in settings.WaitChoices' order.
 func waitLabels() []string {
-	return []string{i18n.T("Automatic"), i18n.T("1 minute"), i18n.T("2 minutes"), i18n.T("5 minutes"), i18n.T("10 minutes")}
+	return []string{i18n.T("Automatic"), i18n.T("1 minute"), i18n.T("2 minutes"), i18n.T("5 minutes"), i18n.T("10 minutes"), i18n.T("No limit")}
 }
 
 // llmWaitRow is the Language models page's wait setting: a preset, or
@@ -45,16 +45,22 @@ func (a *app) llmWaitRow(c *ui.Context) {
 			if !a.llmWaitCustom {
 				save(settings.WaitChoices[max(slices.Index(opts, a.llmWaitSel), 0)])
 			} else {
-				// the field starts at the wait it replaces, 1 for Automatic
-				a.llmWaitMin = max(a.prefs.Models.LLMWaitFor().Minutes(), 1)
+				// the field starts at the wait it replaces: 1 for Automatic,
+				// WaitMaxMinutes for No limit
+				a.llmWaitMin = min(max(a.prefs.Models.LLMWaitFor().Minutes(), 1), settings.WaitMaxMinutes)
 				save(settings.WaitMinutes(int(a.llmWaitMin)))
 			}
 		}
 		if a.llmWaitCustom {
-			if numberInput(c.Key("llm-wait-min"), &a.llmWaitMin, 1, settings.WaitMaxMinutes, 1, numOpts{Label: i18n.T("Wait for the language model in minutes")}) {
+			over := false
+			if numberInput(c.Key("llm-wait-min"), &a.llmWaitMin, 1, settings.WaitMaxMinutes, 1, numOpts{Label: i18n.T("Wait for the language model in minutes"), Over: &over}) {
 				save(settings.WaitMinutes(int(a.llmWaitMin)))
 			}
-			caption(c, i18n.T("min"))
+			if over { // typed past the most: say so rather than drop it silently (#3955)
+				caption(c, i18n.T("At most %d minutes", settings.WaitMaxMinutes))
+			} else {
+				caption(c, i18n.T("min (%d–%d)", 1, settings.WaitMaxMinutes))
+			}
 		}
 	})
 }

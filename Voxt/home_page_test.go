@@ -440,8 +440,8 @@ func TestShortcutInOwnField(t *testing.T) {
 	a.cancelSession()
 	drain()
 	frames(tt)
-	click(t, tt, "Example user message")
-	if !tt.Focused("Example user message") {
+	click(t, tt, "What the language model receives")
+	if !tt.Focused("What the language model receives") {
 		t.Fatal("the button did not take the focus")
 	}
 	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeFeature {
