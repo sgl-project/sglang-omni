@@ -219,10 +219,9 @@ Qwen3ASRTranscriber::BuildPrompt(const std::vector<float> &samples,
   return {embeddings, MaxNewTokens(samples.size(), options)};
 }
 
-Qwen3ASRTranscriber::RefreshPrompt
-Qwen3ASRTranscriber::BuildRefreshPrompt(const std::vector<float> &samples,
-                                        const TranscriptionOptions &options,
-                                        RefreshReuse &held) const {
+Qwen3ASRTranscriber::RefreshPrompt Qwen3ASRTranscriber::BuildRefreshPrompt(
+    const std::vector<float> &samples, const TranscriptionOptions &options,
+    bool uses_draft, RefreshReuse &held) const {
   const mx::array mel = PromptMel(samples, options.layout);
   const int mel_bins = mel.shape(0);
   const int frame_count = mel.shape(-1);
@@ -237,7 +236,10 @@ Qwen3ASRTranscriber::BuildRefreshPrompt(const std::vector<float> &samples,
   int held_rows = held.audio_rows.has_value() ? held.audio_rows->shape(0) : 0;
   bool is_reusable = held_frames > 0 && held_frames <= frame_count &&
                      held.head_ids == head_ids && !held.caches.empty() &&
-                     held.caches[0].offset() == audio_start + held_rows;
+                     held.caches[0].offset() == audio_start + held_rows &&
+                     (!uses_draft || (!held.draft_caches.empty() &&
+                                      held.draft_caches[0].offset() ==
+                                          audio_start + held_rows));
   if (is_reusable) {
     is_reusable =
         mx::array_equal(mx::slice(mel, {0, 0}, {mel_bins, held_frames}),
@@ -248,6 +250,10 @@ Qwen3ASRTranscriber::BuildRefreshPrompt(const std::vector<float> &samples,
   if (!is_reusable) {
     held = RefreshReuse();
     held.caches = model_.NewCaches();
+    if (uses_draft) {
+      held.draft_caches = draft_->NewCaches();
+    } else {
+    }
     held_frames = 0;
     held_rows = 0;
   } else {
@@ -326,8 +332,9 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
   // note (wilsonzheng0327): a penalty would have to be applied per block
   // position with the block's own earlier tokens; a request that asks for one
   // decodes without the draft.
-  if (reuse == nullptr && draft_.has_value() &&
-      options.repetition_penalty == 1.0f) {
+  const bool uses_draft =
+      draft_.has_value() && options.repetition_penalty == 1.0f;
+  if (reuse == nullptr && uses_draft) {
     draft_statistics = draft_->Decode(
         model_.decoder(), BuildPrompt(samples, options).embeddings,
         max_new_tokens, 0, commit, cancel, draft_policy_);
@@ -337,7 +344,7 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     std::optional<RefreshPrompt> refresh;
     if (reuse != nullptr) {
       held = std::exchange(*reuse, RefreshReuse());
-      refresh = BuildRefreshPrompt(samples, options, held);
+      refresh = BuildRefreshPrompt(samples, options, uses_draft, held);
     } else {
       held.caches = model_.NewCaches();
     }
@@ -345,53 +352,63 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     const mx::array embeddings = refresh.has_value()
                                      ? refresh->embeddings
                                      : BuildPrompt(samples, options).embeddings;
-    const std::vector<int> &guessed_ids = options.guessed_token_ids;
-    // A penalty would have to apply to the guesses' logits too.
-    const int guessed_count = options.repetition_penalty == 1.0f
-                                  ? static_cast<int>(guessed_ids.size())
-                                  : 0;
-    std::optional<mx::array> next_token;
-    bool finished = false;
-    if (guessed_count == 0) {
-      next_token = mx::argmax(model_.Decode(embeddings, caches));
+    if (uses_draft) {
+      draft_statistics =
+          draft_->Decode(model_.decoder(), embeddings,
+                         options.guessed_token_ids, max_new_tokens, 0, commit,
+                         cancel, draft_policy_, caches, held.draft_caches);
     } else {
-      // Note (XXXXRT666): the guesses ride in the prompt's pass; the logits
-      // of the prompt's last position and of each guess check them.
-      const mx::array hidden_states = model_.decoder().Forward(
-          mx::concatenate({embeddings, model_.EmbedTokens(mx::array(
-                                           guessed_ids.data(),
-                                           {1, guessed_count}, mx::int32))},
-                          1),
-          caches);
-      const int length = hidden_states.shape(1);
-      const mx::array predicted =
-          mx::argmax(model_.decoder().Logits(mx::slice(
-                         hidden_states, {0, length - guessed_count - 1, 0},
-                         {1, length, hidden_states.shape(2)})),
-                     -1);
-      mx::eval(predicted);
-      const uint32_t *predicted_ids = predicted.data<uint32_t>();
-      int accepted_count = 0;
-      while (!finished && accepted_count < guessed_count &&
-             static_cast<int>(predicted_ids[accepted_count]) ==
-                 guessed_ids[accepted_count]) {
-        finished = commit(guessed_ids[accepted_count]);
-        ++accepted_count;
+      const std::vector<int> &guessed_ids = options.guessed_token_ids;
+      // A penalty would have to apply to the guesses' logits too.
+      const int guessed_count = options.repetition_penalty == 1.0f
+                                    ? static_cast<int>(guessed_ids.size())
+                                    : 0;
+      std::optional<mx::array> next_token;
+      bool finished = false;
+      if (guessed_count == 0) {
+        next_token = mx::argmax(model_.Decode(embeddings, caches));
+      } else {
+        // Note (XXXXRT666): the guesses ride in the prompt's pass; the logits
+        // of the prompt's last position and of each guess check them.
+        const mx::array hidden_states = model_.decoder().Forward(
+            mx::concatenate({embeddings, model_.EmbedTokens(mx::array(
+                                             guessed_ids.data(),
+                                             {1, guessed_count}, mx::int32))},
+                            1),
+            caches);
+        const int length = hidden_states.shape(1);
+        const mx::array predicted =
+            mx::argmax(model_.decoder().Logits(mx::slice(
+                           hidden_states, {0, length - guessed_count - 1, 0},
+                           {1, length, hidden_states.shape(2)})),
+                       -1);
+        mx::eval(predicted);
+        const uint32_t *predicted_ids = predicted.data<uint32_t>();
+        int accepted_count = 0;
+        while (!finished && accepted_count < guessed_count &&
+               static_cast<int>(predicted_ids[accepted_count]) ==
+                   guessed_ids[accepted_count]) {
+          finished = commit(guessed_ids[accepted_count]);
+          ++accepted_count;
+        }
+        for (KVCache &cache : caches) {
+          cache.Trim(guessed_count - accepted_count);
+        }
+        next_token = mx::reshape(
+            mx::slice(predicted, {accepted_count}, {accepted_count + 1}), {});
       }
-      for (KVCache &cache : caches) {
-        cache.Trim(guessed_count - accepted_count);
+      mx::async_eval({*next_token});
+      if (!finished) {
+        model_.decoder().DecodePlain(
+            *next_token, caches, options.repetition_penalty, commit, cancel);
+      } else {
       }
-      next_token = mx::reshape(
-          mx::slice(predicted, {accepted_count}, {accepted_count + 1}), {});
-    }
-    mx::async_eval({*next_token});
-    if (!finished) {
-      model_.decoder().DecodePlain(*next_token, caches,
-                                   options.repetition_penalty, commit, cancel);
-    } else {
     }
     if (refresh.has_value()) {
       for (KVCache &cache : caches) {
+        cache.Trim(cache.offset() - refresh->kept_length);
+      }
+      for (KVCache &cache : held.draft_caches) {
         cache.Trim(cache.offset() - refresh->kept_length);
       }
       *reuse = std::move(held);

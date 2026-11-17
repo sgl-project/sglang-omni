@@ -51,6 +51,21 @@ public:
                          const std::function<bool(int)> &commit,
                          const std::atomic<bool> &cancel,
                          DraftPolicy policy = DraftPolicy::kFixed) const;
+  // The same decode over caches the caller keeps: the target's keys and
+  // values and the draft's context, over the same positions, which embeddings
+  // and the committed tokens but the last extend. guessed_ids, tokens likely
+  // to come next, are checked in the prompt's pass and kept while the target
+  // agrees. A backoff to plain decoding empties draft_caches.
+  DraftStatistics Decode(const Qwen3Decoder &target,
+                         const mlx::core::array &embeddings,
+                         const std::vector<int> &guessed_ids,
+                         int max_new_tokens, int prefill_step_tokens,
+                         const std::function<bool(int)> &commit,
+                         const std::atomic<bool> &cancel, DraftPolicy policy,
+                         std::vector<KVCache> &caches,
+                         std::vector<KVCache> &draft_caches) const;
+  // Empty caches for the draft's context.
+  std::vector<KVCache> NewCaches() const { return decoder_.NewCaches(); }
 
 private:
   DFlashDraft(LoadedDraft draft, int quantization_bits);

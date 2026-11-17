@@ -260,10 +260,7 @@ void RealtimeSession::StartSegment(long start_sample) {
   segment.start_sample = start_sample;
   segment.next_refresh_sample = start_sample + settings_.first_decode_samples;
   segment.language = language_;
-  if (transcriber_.CanReuseRefreshes()) {
-    segment.reuse = std::make_shared<RefreshReuse>();
-  } else {
-  }
+  segment.reuse = std::make_shared<RefreshReuse>();
   segment_ = std::move(segment);
 }
 

@@ -97,7 +97,7 @@ private:
     bool ran_out_of_tokens = false;
     // Where the audio of the decode the transcript came from ended.
     long transcript_end_sample = 0;
-    // What the segment's refreshes reuse; none with the speculative draft.
+    // What the segment's refreshes reuse.
     std::shared_ptr<RefreshReuse> reuse;
   };
 

@@ -243,6 +243,16 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
                                     DraftPolicy policy) const {
   std::vector<KVCache> caches = target.NewCaches();
   std::vector<KVCache> draft_caches = decoder_.NewCaches();
+  return Decode(target, embeddings, {}, max_new_tokens, prefill_step_tokens,
+                commit, cancel, policy, caches, draft_caches);
+}
+
+DraftStatistics DFlashDraft::Decode(
+    const Qwen3Decoder &target, const mx::array &embeddings,
+    const std::vector<int> &guessed_ids, int max_new_tokens,
+    int prefill_step_tokens, const std::function<bool(int)> &commit,
+    const std::atomic<bool> &cancel, DraftPolicy policy,
+    std::vector<KVCache> &caches, std::vector<KVCache> &draft_caches) const {
   std::vector<mx::array> aux_hidden_states;
   int processed = 0;
   while (prefill_step_tokens > 0 && embeddings.shape(1) - processed > 1) {
@@ -270,22 +280,55 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
     throw GenerationCancelled();
   } else {
   }
+  const int guessed_count = static_cast<int>(guessed_ids.size());
+  const int prompt_count = embeddings.shape(1) - processed;
+  bool finished = false;
+  int committed_token_count = 0;
   int anchor_id;
   {
-    const mx::array prompt_hidden = target.Forward(
-        mx::slice(embeddings, {0, processed, 0}, embeddings.shape()), caches,
-        aux_layers_, &aux_hidden_states);
-    AppendContext(aux_hidden_states, embeddings.shape(1) - processed,
+    mx::array prompt =
+        mx::slice(embeddings, {0, processed, 0}, embeddings.shape());
+    if (guessed_count > 0) {
+      prompt = mx::concatenate(
+          {prompt, target.EmbedTokens(mx::array(
+                       guessed_ids.data(), {1, guessed_count}, mx::int32))},
+          1);
+    } else {
+    }
+    const mx::array prompt_hidden =
+        target.Forward(prompt, caches, aux_layers_, &aux_hidden_states);
+    // The prediction after the prompt, then after each guess.
+    const mx::array predicted = mx::argmax(
+        target.Logits(mx::slice(
+            prompt_hidden, {0, prompt_count - 1, 0},
+            {1, prompt_count + guessed_count, prompt_hidden.shape(2)})),
+        -1);
+    mx::eval(predicted);
+    const uint32_t *predicted_ids = predicted.data<uint32_t>();
+    int accepted_count = 0;
+    while (!finished && accepted_count < guessed_count &&
+           static_cast<int>(predicted_ids[accepted_count]) ==
+               guessed_ids[accepted_count]) {
+      finished = commit(guessed_ids[accepted_count]);
+      ++accepted_count;
+    }
+    for (KVCache &cache : caches) {
+      cache.Trim(guessed_count - accepted_count);
+    }
+    AppendContext(aux_hidden_states, prompt_count + accepted_count,
                   draft_caches);
-    anchor_id = static_cast<int>(
-        mx::argmax(target.LastLogits(prompt_hidden)).item<uint32_t>());
+    committed_token_count = accepted_count;
+    anchor_id = static_cast<int>(predicted_ids[accepted_count]);
   }
   if (cancel.load()) {
     throw GenerationCancelled();
   } else {
   }
-  bool finished = commit(anchor_id);
-  int committed_token_count = 1;
+  if (!finished) {
+    finished = commit(anchor_id);
+    ++committed_token_count;
+  } else {
+  }
   DraftBackoff backoff;
   DraftStatistics statistics;
   while (!finished) {
