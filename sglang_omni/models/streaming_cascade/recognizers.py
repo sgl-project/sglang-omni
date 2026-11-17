@@ -23,6 +23,7 @@ from sglang_omni.audio.segmentation import (
     OPEN_UTTERANCE,
     UtteranceSegmenter,
 )
+from sglang_omni.audio.speaker_embedding import load_speaker_embedding_model
 from sglang_omni.audio.wav import pcm16_wav
 from sglang_omni.models.streaming_cascade.base import (
     ComponentConfig,
@@ -32,6 +33,7 @@ from sglang_omni.models.streaming_cascade.base import (
     bearer_headers,
     iterate,
     probe_models,
+    probe_openai_service,
     stop_running,
     transcript_chunk,
     with_language,
@@ -50,9 +52,8 @@ SPEAKER_SEGMENT = re.compile(
 )
 MARKUP_TAG = re.compile(r"\[[^\[\]]*\]")
 SPEAKER_TAG = re.compile(r"\[(S\d+)\]")
-# note (fweilun): the silence between the recent utterances and the new one, as measured on movies800time; the model still joins one speaker's words across it at times, which a segment over STRADDLE_MS on both sides of it shows.
-CONTEXT_SEPARATOR_MS = 600
-STRADDLE_MS = 300
+# note (fweilun): the fbank of shorter speech has too few frames to say whose voice it is, so its speaker takes a new label.
+MIN_EMBEDDING_SAMPLES = SESSION_INPUT_SAMPLE_RATE_HZ // 10
 
 
 class OpenUtterance:
@@ -260,14 +261,24 @@ class OpenAITranscriptionRecognizer(UtteranceRecognizer):
 class SpeakerTranscriptionRecognizerConfig(ComponentConfig):
     """Speaker-attributed transcripts from the /audio/transcriptions endpoint of a MOSS-Transcribe-Diarize service; one final transcript per utterance.
 
-    Each utterance is transcribed after the last context_s of the session's speech, so a speaker heard in it keeps one label; a speaker it does not hold gets a new label, and 0 transcribes each utterance alone.
+    Each utterance is transcribed alone; each of its speakers takes the label of the session speaker whose voice embedding it matches at speaker_similarity or above, and a new label otherwise.
     """
 
     kind: Literal["speaker_transcription"] = "speaker_transcription"
     base_url: str = Field(pattern=r"^https?://[^/]+")
     model: str
-    context_s: float = Field(default=20, ge=0)
+    speaker_model_path: str = "csukuangfj/speaker-embedding-models"
+    # note (fweilun): the cosine similarity with the lowest speaker error over movies800time clips and AISHELL4 meetings, of 0.2 to 0.5.
+    speaker_similarity: float = Field(default=0.3, ge=-1, le=1)
     api_key_env: str = "OPENAI_API_KEY"
+
+
+async def probe_speaker_transcription(
+    config: SpeakerTranscriptionRecognizerConfig,
+) -> None:
+    """The service answers, and the speaker model is downloaded and checked before the first session."""
+    await probe_openai_service(config)
+    await asyncio.to_thread(load_speaker_embedding_model, config.speaker_model_path)
 
 
 def seconds_ms(seconds: str) -> float:
@@ -318,31 +329,6 @@ def shifted(segment: SpeakerSegment, delta_ms: float) -> SpeakerSegment:
     )
 
 
-def match_speakers(
-    known: list[SpeakerSegment], decoded: list[SpeakerSegment]
-) -> dict[str, str]:
-    """Each decoded label paired one to one with the known label it overlaps longest in all; a label that overlaps none stays unpaired."""
-    decoded_labels = sorted({segment.speaker for segment in decoded})
-    known_labels = sorted({segment.speaker for segment in known})
-    overlap_ms = np.zeros((len(decoded_labels), len(known_labels)))
-    for decoded_segment in decoded:
-        for known_segment in known:
-            overlap_ms[
-                decoded_labels.index(decoded_segment.speaker),
-                known_labels.index(known_segment.speaker),
-            ] += max(
-                0.0,
-                min(decoded_segment.end_ms, known_segment.end_ms)
-                - max(decoded_segment.start_ms, known_segment.start_ms),
-            )
-    rows, columns = linear_sum_assignment(overlap_ms, maximize=True)
-    return {
-        decoded_labels[row]: known_labels[column]
-        for row, column in zip(rows, columns)
-        if overlap_ms[row, column] > 0
-    }
-
-
 def speaker_lines(segments: list[SpeakerSegment]) -> str:
     """One "[S01] words" line per run of one speaker's segments."""
     lines: list[tuple[str, list[str]]] = []
@@ -363,38 +349,49 @@ class SpeakerTranscriptionRecognizer(UtteranceRecognizer):
         self.client = httpx.AsyncClient(
             timeout=config.timeout_s, headers=bearer_headers(config.api_key_env)
         )
+        self.speaker_model = load_speaker_embedding_model(config.speaker_model_path)
         self.speaker_count = 0
-        # The last context_s of the session's speech, utterances apart by CONTEXT_SEPARATOR_MS of silence, and its segments with session labels on its own clock.
-        self.context_pcm = b""
-        self.context_segments: list[SpeakerSegment] = []
+        # Per session label, the sum of its speech's unit embeddings weighted by their seconds.
+        self.speaker_embeddings: dict[str, np.ndarray] = {}
 
     def adopt(self, previous: StreamComponent) -> None:
         super().adopt(previous)
         if isinstance(previous, SpeakerTranscriptionRecognizer):
             self.speaker_count = previous.speaker_count
-            self.context_pcm = previous.context_pcm
-            self.context_segments = previous.context_segments
+            self.speaker_embeddings = previous.speaker_embeddings
         else:
             pass
 
     def state_bytes(self) -> int:
-        return len(self.context_pcm) + 4 * sum(
-            len(segment.text) for segment in self.context_segments
-        )
+        return sum(embedding.nbytes for embedding in self.speaker_embeddings.values())
 
-    async def transcribe(self, pcm: bytes) -> list[SpeakerSegment]:
-        response = await request_transcription(
-            self.client,
-            self.config.base_url,
-            self.config.model,
-            pcm,
-            SESSION_INPUT_SAMPLE_RATE_HZ,
-            language=None,
-            response_format="json",
-        )
-        response.raise_for_status()
-        result = TranscriptionResult.model_validate(response.json())
-        return parse_speaker_segments(result.text, len(pcm) / PCM16_BYTES_PER_MS)
+    def embed_speakers(
+        self, pcm: bytes, segments: list[SpeakerSegment]
+    ) -> dict[str, tuple[np.ndarray, float]]:
+        """Per label of the segments, the embedding of its speech in pcm and that speech's seconds."""
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
+        samples_per_ms = SESSION_INPUT_SAMPLE_RATE_HZ / 1000
+        embeddings: dict[str, tuple[np.ndarray, float]] = {}
+        for label in dict.fromkeys(segment.speaker for segment in segments):
+            speech = np.concatenate(
+                [
+                    samples[
+                        int(segment.start_ms * samples_per_ms) : int(
+                            segment.end_ms * samples_per_ms
+                        )
+                    ]
+                    for segment in segments
+                    if segment.speaker == label
+                ]
+            )
+            if speech.size >= MIN_EMBEDDING_SAMPLES:
+                embeddings[label] = (
+                    self.speaker_model.embed(speech),
+                    speech.size / SESSION_INPUT_SAMPLE_RATE_HZ,
+                )
+            else:
+                pass
+        return embeddings
 
     async def utterance(
         self, audio: AsyncIterator[TimedChunk]
@@ -405,81 +402,60 @@ class SpeakerTranscriptionRecognizer(UtteranceRecognizer):
             return
         else:
             pass
-        segments = await self.attribute(
-            b"".join(audio_bytes(chunk) for chunk in chunks)
+        pcm = b"".join(audio_bytes(chunk) for chunk in chunks)
+        response = await request_transcription(
+            self.client,
+            self.config.base_url,
+            self.config.model,
+            pcm,
+            SESSION_INPUT_SAMPLE_RATE_HZ,
+            language=None,
+            response_format="json",
         )
-        yield transcript_chunk(
-            speaker_lines(segments),
-            True,
-            segments=[shifted(segment, chunks[0].t_start_ms) for segment in segments],
+        response.raise_for_status()
+        segments = parse_speaker_segments(
+            TranscriptionResult.model_validate(response.json()).text,
+            len(pcm) / PCM16_BYTES_PER_MS,
         )
-
-    async def attribute(self, pcm: bytes) -> list[SpeakerSegment]:
-        """The utterance's segments with session labels on its own clock; the utterance then joins the context."""
-        separator = (
-            bytes(CONTEXT_SEPARATOR_MS * PCM16_BYTES_PER_MS)
-            if self.context_pcm
-            else b""
-        )
-        joined = self.context_pcm + separator + pcm
-        offset_ms = (len(joined) - len(pcm)) / PCM16_BYTES_PER_MS
-        if not self.context_pcm:
-            utterance_segments, labels = await self.transcribe(pcm), {}
-        else:
-            joined_segments = await self.transcribe(joined)
-            joined_to_session = match_speakers(self.context_segments, joined_segments)
-            joined_utterance_segments = [
-                shifted(segment, -offset_ms)
-                for segment in joined_segments
-                if (segment.start_ms + segment.end_ms) / 2 >= offset_ms
-            ]
-            straddles = any(
-                segment.start_ms < offset_ms - STRADDLE_MS
-                and segment.end_ms > offset_ms + STRADDLE_MS
-                for segment in joined_segments
+        embeddings = await asyncio.to_thread(self.embed_speakers, pcm, segments)
+        session_labels = list(self.speaker_embeddings)
+        utterance_labels = list(embeddings)
+        labels: dict[str, str] = {}
+        if session_labels and utterance_labels:
+            voices = np.stack(
+                [self.speaker_embeddings[label] for label in session_labels]
             )
-            # note (fweilun): after the context the model may join the utterance's first words to the last context segment, or skip a short utterance; the utterance alone then gives the words, and the joined transcription their speakers.
-            if joined_utterance_segments and not straddles:
-                utterance_segments, labels = (
-                    joined_utterance_segments,
-                    joined_to_session,
-                )
-            else:
-                utterance_segments = await self.transcribe(pcm)
-                joined_on_utterance_clock = [
-                    shifted(segment, -offset_ms) for segment in joined_segments
-                ]
-                labels = {
-                    label: joined_to_session[joined_label]
-                    for label, joined_label in match_speakers(
-                        joined_on_utterance_clock, utterance_segments
-                    ).items()
-                    if joined_label in joined_to_session
-                }
-        for label in dict.fromkeys(segment.speaker for segment in utterance_segments):
+            similarity = (
+                np.stack([embeddings[label][0] for label in utterance_labels])
+                @ (voices / np.linalg.norm(voices, axis=1, keepdims=True)).T
+            )
+            rows, columns = linear_sum_assignment(similarity, maximize=True)
+            labels = {
+                utterance_labels[row]: session_labels[column]
+                for row, column in zip(rows, columns)
+                if similarity[row, column] >= self.config.speaker_similarity
+            }
+        else:
+            pass
+        for label in dict.fromkeys(segment.speaker for segment in segments):
             if label not in labels:
                 self.speaker_count += 1
                 labels[label] = f"S{self.speaker_count:02d}"
             else:
                 pass
-        segments = [
-            replace(segment, speaker=labels[segment.speaker])
-            for segment in utterance_segments
+        for label, (embedding, seconds) in embeddings.items():
+            voice = self.speaker_embeddings.get(labels[label])
+            self.speaker_embeddings[labels[label]] = (
+                embedding * seconds if voice is None else voice + embedding * seconds
+            )
+        labelled = [
+            replace(segment, speaker=labels[segment.speaker]) for segment in segments
         ]
-        cut_bytes = max(
-            len(joined) - int(self.config.context_s * 1000) * PCM16_BYTES_PER_MS, 0
+        yield transcript_chunk(
+            speaker_lines(labelled),
+            True,
+            segments=[shifted(segment, chunks[0].t_start_ms) for segment in labelled],
         )
-        cut_ms = cut_bytes / PCM16_BYTES_PER_MS
-        self.context_pcm = joined[cut_bytes:]
-        self.context_segments = [
-            shifted(segment, -cut_ms)
-            for segment in [
-                *self.context_segments,
-                *(shifted(segment, offset_ms) for segment in segments),
-            ]
-            if segment.end_ms > cut_ms
-        ]
-        return segments
 
     async def close(self) -> None:
         await self.client.aclose()

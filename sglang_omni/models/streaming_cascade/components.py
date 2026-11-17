@@ -31,6 +31,7 @@ from sglang_omni.models.streaming_cascade.recognizers import (
     StreamingTranscriptionRecognizer,
     StreamingTranscriptionRecognizerConfig,
     probe_realtime_service,
+    probe_speaker_transcription,
 )
 from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscriptConfig,
@@ -185,7 +186,7 @@ COMPONENTS.register(
     SpeakerTranscriptionRecognizer,
     consumes=RECOGNIZER_INPUTS,
     produces=frozenset({TRANSCRIPT_FORMAT}),
-    probe=probe_openai_service,
+    probe=probe_speaker_transcription,
 )
 
 

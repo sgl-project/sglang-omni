@@ -4,8 +4,8 @@
 Streams each Movies800Time clip with two or more speakers and a pause the VAD
 cuts at through one Session of the cascade's vad and speaker_transcription nodes, joins the final transcripts'
 segments into one session transcript and scores it with cpCER, CER without
-speakers and timestamp DER. Each context_s is one run; the whole clip sent to
-the service in one request is the reference run.
+speakers and timestamp DER. Each speaker_similarity is one run; the whole clip
+sent to the service in one request is the reference run.
 
 Start a MOSS-Transcribe-Diarize service first, for example the CUDA server:
 
@@ -18,7 +18,7 @@ or the native MLX server on Apple Silicon:
 Then:
 
     python -m benchmarks.eval.benchmark_cascade_speaker_transcription \
-        --base-url http://127.0.0.1:8002/v1 --context-s 20 0 \
+        --base-url http://127.0.0.1:8002/v1 --speaker-similarity 0.3 \
         --output-dir results/cascade_speaker_transcription
 """
 
@@ -115,7 +115,7 @@ def segment_markup(segments: list[SpeakerSegment]) -> str:
 
 
 def cascade_config(
-    base_url: str, model: str, context_s: float
+    base_url: str, model: str, speaker_similarity: float
 ) -> StreamingCascadePipelineConfig:
     return StreamingCascadePipelineConfig(
         model_path="speaker-transcription-benchmark",
@@ -126,7 +126,7 @@ def cascade_config(
                 "inputs": ["input", "vad:session"],
                 "base_url": base_url,
                 "model": model,
-                "context_s": context_s,
+                "speaker_similarity": speaker_similarity,
             },
         },
         session_publish={"vad": ["session"], "asr": ["transcript"]},
@@ -291,8 +291,8 @@ async def run(arguments: argparse.Namespace) -> tuple[list[str], dict[str, RunRe
     reports["whole_clip"] = RunReport(
         scores=scores(samples, whole), utterances=len(samples), predictions=whole
     )
-    for context_s in arguments.context_s:
-        config = cascade_config(arguments.base_url, arguments.model, context_s)
+    for speaker_similarity in arguments.speaker_similarity:
+        config = cascade_config(arguments.base_url, arguments.model, speaker_similarity)
         runner = MultiProcessPipelineRunner(config)
         await runner.start()
         try:
@@ -303,7 +303,7 @@ async def run(arguments: argparse.Namespace) -> tuple[list[str], dict[str, RunRe
         finally:
             await runner.stop()
         predictions = [transcript.markup for transcript in transcripts]
-        reports[f"context_s={context_s:g}"] = RunReport(
+        reports[f"speaker_similarity={speaker_similarity:g}"] = RunReport(
             scores=scores(samples, predictions),
             utterances=sum(transcript.utterances for transcript in transcripts),
             predictions=predictions,
@@ -321,7 +321,7 @@ def main() -> None:
         help="The MOSS-Transcribe-Diarize service, including /v1",
     )
     parser.add_argument("--model", default="OpenMOSS-Team/MOSS-Transcribe-Diarize")
-    parser.add_argument("--context-s", type=float, nargs="+", default=[20.0])
+    parser.add_argument("--speaker-similarity", type=float, nargs="+", default=[0.3])
     parser.add_argument("--repo-id", default=MOVIES800_REPO_ID)
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -339,10 +339,10 @@ def main() -> None:
         )
     )
     columns = (*METRICS, "count")
-    print(f"{'run':<16}" + "".join(f"{name:>24}" for name in columns))
+    print(f"{'run':<24}" + "".join(f"{name:>24}" for name in columns))
     for name, report in reports.items():
         print(
-            f"{name:<16}"
+            f"{name:<24}"
             + "".join(
                 (
                     f"{report.scores[column]:>24.2f}"

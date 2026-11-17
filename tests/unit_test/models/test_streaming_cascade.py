@@ -2466,7 +2466,7 @@ async def test_openai_transcription_leaves_the_language_out_when_the_service_nam
 
 
 # Each fake speaker holds one sample value and says its word once per 500 ms.
-SPEAKER_WORDS = {1000: "alpha", -1000: "bravo"}
+SPEAKER_WORDS = {1000: "alpha", -1000: "bravo", 2000: "charlie"}
 FRAME_MS = 10
 
 
@@ -2482,13 +2482,8 @@ def speaker_audio(value: int, duration_ms: int) -> bytes:
     return np.full(duration_ms * 16, value, dtype="<i2").tobytes()
 
 
-def fake_moss_transcribe_diarize(
-    requests_ms: list[float], join_ms: float = 0, skip_ms: float = 0
-):
-    """A MOSS-TD transcription endpoint whose labels start again at S01 in every request.
-
-    Like the model, it joins one speaker's words across a pause shorter than join_ms, and drops speech shorter than skip_ms that does not open the request.
-    """
+def fake_moss_transcribe_diarize(requests_ms: list[float]):
+    """A MOSS-TD transcription endpoint whose labels start again at S01 in every request."""
 
     def answer(request: httpx.Request) -> httpx.Response:
         body = request.content
@@ -2500,32 +2495,46 @@ def fake_moss_transcribe_diarize(
             start_ms = index * FRAME_MS
             if value == 0:
                 pass
-            elif (
-                runs
-                and runs[-1].value == value
-                and start_ms - runs[-1].end_ms < max(join_ms, FRAME_MS / 2)
-            ):
+            elif runs and runs[-1].value == value and start_ms == runs[-1].end_ms:
                 runs[-1].end_ms = start_ms + FRAME_MS
                 runs[-1].spoken_ms += FRAME_MS
             else:
                 runs.append(FakeSpeech(value, start_ms, start_ms + FRAME_MS, FRAME_MS))
-        kept = [run for run in runs if run.start_ms == 0 or run.spoken_ms >= skip_ms]
-        values = list(dict.fromkeys(run.value for run in kept))
+        values = list(dict.fromkeys(run.value for run in runs))
         markup = "".join(
             f"[{run.start_ms / 1000:.2f}][S{values.index(run.value) + 1:02d}]"
             + " ".join([SPEAKER_WORDS[run.value]] * max(round(run.spoken_ms / 500), 1))
             + f"[{run.end_ms / 1000:.2f}]"
-            for run in kept
+            for run in runs
         )
         return httpx.Response(200, json={"text": markup})
 
     return answer
 
 
+class FakeSpeakerModel:
+    """A speaker embedding model that tells the fake speakers apart by their sample value."""
+
+    def embed(self, samples: np.ndarray) -> np.ndarray:
+        values = list(SPEAKER_WORDS)
+        return np.eye(len(values))[values.index(round(float(samples[0]) * 32768))]
+
+
+@pytest.fixture
+def fake_speaker_model(monkeypatch):
+    monkeypatch.setattr(
+        "sglang_omni.models.streaming_cascade.recognizers.load_speaker_embedding_model",
+        lambda model_path: FakeSpeakerModel(),
+    )
+
+
 async def speaker_transcripts(
     recognizer, utterances: list[list[tuple[int, int]]], requests_ms: list[float]
 ) -> list[dict[str, object]]:
     """The payloads for utterances 2 s apart on the session clock, each a list of (speaker value, ms) runs closed by a commit."""
+    recognizer.client = httpx.AsyncClient(
+        transport=httpx.MockTransport(fake_moss_transcribe_diarize(requests_ms))
+    )
     inputs = []
     for index, runs in enumerate(utterances):
         pcm = b"".join(speaker_audio(value, duration_ms) for value, duration_ms in runs)
@@ -2537,107 +2546,58 @@ async def speaker_transcripts(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("context_s", "labels", "requests_ms"),
-    [
-        (20, ["S01", "S02", "S02", "S01"], [1000, 2100, 3200]),
-        (0, ["S01", "S02", "S03", "S04"], [1000, 500, 500]),
-        (0.5, ["S01", "S02", "S02", "S03"], [1000, 1600, 1600]),
-    ],
-)
-async def test_speaker_transcription_keeps_a_speaker_label_within_its_context(
-    context_s, labels, requests_ms
-):
+@pytest.mark.usefixtures("fake_speaker_model")
+async def test_speaker_transcription_keeps_the_label_of_a_voice_for_the_session():
+    """The model numbers the speakers of every request from S01; a voice heard before keeps its session label, however long ago, and a voice never heard gets a new one."""
     sent_ms: list[float] = []
-    asr = build(
-        {"kind": "speaker_transcription", **HTTP_SERVICE, "context_s": context_s}
-    )
-    asr.client = httpx.AsyncClient(
-        transport=httpx.MockTransport(fake_moss_transcribe_diarize(sent_ms))
-    )
+    asr = build({"kind": "speaker_transcription", **HTTP_SERVICE})
     payloads = await speaker_transcripts(
-        asr, [[(1000, 500), (-1000, 500)], [(-1000, 500)], [(1000, 500)]], sent_ms
+        asr,
+        [[(1000, 500), (-1000, 500)], [(-1000, 500)], [(1000, 500)], [(2000, 500)]],
+        sent_ms,
     )
     assert payloads == [
         {
-            "text": f"[{labels[0]}] alpha\n[{labels[1]}] bravo",
+            "text": "[S01] alpha\n[S02] bravo",
             "is_final": True,
             "segments": [
-                {"speaker": labels[0], "start_ms": 0, "end_ms": 500, "text": "alpha"},
-                {
-                    "speaker": labels[1],
-                    "start_ms": 500,
-                    "end_ms": 1000,
-                    "text": "bravo",
-                },
+                {"speaker": "S01", "start_ms": 0, "end_ms": 500, "text": "alpha"},
+                {"speaker": "S02", "start_ms": 500, "end_ms": 1000, "text": "bravo"},
             ],
         },
         {
-            "text": f"[{labels[2]}] bravo",
+            "text": "[S02] bravo",
             "is_final": True,
             "segments": [
-                {
-                    "speaker": labels[2],
-                    "start_ms": 2000,
-                    "end_ms": 2500,
-                    "text": "bravo",
-                }
+                {"speaker": "S02", "start_ms": 2000, "end_ms": 2500, "text": "bravo"}
             ],
         },
         {
-            "text": f"[{labels[3]}] alpha",
+            "text": "[S01] alpha",
             "is_final": True,
             "segments": [
-                {
-                    "speaker": labels[3],
-                    "start_ms": 4000,
-                    "end_ms": 4500,
-                    "text": "alpha",
-                }
+                {"speaker": "S01", "start_ms": 4000, "end_ms": 4500, "text": "alpha"}
+            ],
+        },
+        {
+            "text": "[S03] charlie",
+            "is_final": True,
+            "segments": [
+                {"speaker": "S03", "start_ms": 6000, "end_ms": 6500, "text": "charlie"}
             ],
         },
     ]
-    assert sent_ms == pytest.approx(requests_ms)
+    assert sent_ms == [1000, 500, 500, 500]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("join_ms", "skip_ms", "utterances", "texts"),
-    [
-        (
-            1000,
-            0,
-            [[(1000, 500)], [(1000, 2000)]],
-            ["[S01] alpha", "[S01] alpha alpha alpha alpha"],
-        ),
-        (0, 300, [[(1000, 500)], [(-1000, 200)]], ["[S01] alpha", "[S02] bravo"]),
-    ],
-)
-async def test_speaker_transcription_keeps_every_word_of_an_utterance_after_its_context(
-    join_ms, skip_ms, utterances, texts
-):
-    """The model joined an utterance's first words to the last context segment, which put the context's words in the utterance or none of the utterance's, and skipped a short utterance after the context, which left it empty."""
-    sent_ms: list[float] = []
-    asr = build({"kind": "speaker_transcription", **HTTP_SERVICE})
-    asr.client = httpx.AsyncClient(
-        transport=httpx.MockTransport(
-            fake_moss_transcribe_diarize(sent_ms, join_ms, skip_ms)
-        )
-    )
-    payloads = await speaker_transcripts(asr, utterances, sent_ms)
-    assert [payload["text"] for payload in payloads] == texts
-
-
-@pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_speaker_model")
 async def test_a_replacement_speaker_transcription_keeps_the_session_labels():
     sent_ms: list[float] = []
     spec = {"kind": "speaker_transcription", **HTTP_SERVICE}
-    transport = httpx.MockTransport(fake_moss_transcribe_diarize(sent_ms))
     first = build(spec)
-    first.client = httpx.AsyncClient(transport=transport)
     await speaker_transcripts(first, [[(1000, 500)]], sent_ms)
     replacement = build({**spec, "timeout_s": 30})
-    replacement.client = httpx.AsyncClient(transport=transport)
     replacement.adopt(first)
     payloads = await speaker_transcripts(
         replacement, [[(-1000, 500)], [(1000, 500)]], sent_ms

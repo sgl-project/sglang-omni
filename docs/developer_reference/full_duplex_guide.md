@@ -1411,13 +1411,14 @@ Sends each finished utterance as a 16 kHz WAV to `<base_url>/audio/transcription
 **`speaker_transcription`**
 
 
-Sends each finished utterance as a 16 kHz WAV to `<base_url>/audio/transcriptions` of a MOSS-Transcribe-Diarize service, the CUDA server or the native MLX one, and reports one final transcript whose text is one `[S01] words` line per run of one speaker and whose `segments` list each segment's `speaker`, `start_ms`, `end_ms` on the session clock and `text`. The model numbers the speakers of every request from `S01`, so the node sends the utterance after the last `context_s` of the session's speech, with the labels it gave them, and a speaker the model hears in both keeps its label; a speaker it does not hear there, such as one silent for longer than `context_s`, gets a new label. When the model joins the utterance's first words to the speech before it, or leaves the utterance out, the node transcribes the utterance alone and takes its speakers from the joined transcription. The dialog keeps the labelled text, so the language model and the history see who said what. Its transcripts carry no language, and it sends no partial transcripts.
+Sends each finished utterance as a 16 kHz WAV to `<base_url>/audio/transcriptions` of a MOSS-Transcribe-Diarize service, the CUDA server or the native MLX one, and reports one final transcript whose text is one `[S01] words` line per run of one speaker and whose `segments` list each segment's `speaker`, `start_ms`, `end_ms` on the session clock and `text`. The model numbers the speakers of every request from `S01`, so the node turns each speaker's speech in the utterance into a voice embedding with a 3D-Speaker CAM++ model, which runs on the CPU of the cascade process, and gives the speaker the label of the session speaker whose voice is most similar, at a cosine similarity of `speaker_similarity` or above; any other speaker gets a new label. A speaker keeps one label for the whole session, however long they were silent. The dialog keeps the labelled text, so the language model and the history see who said what. Its transcripts carry no language, and it sends no partial transcripts.
 
 | Option | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `base_url` | string, `http://` or `https://` | required | The service, including `/v1`. |
 | `model` | string | required | The `model` form field. |
-| `context_s` | number ≥ 0 | `20` | Seconds of the session's latest speech sent before each utterance; each request carries up to that much more audio. `0` sends the utterance alone, and every speaker of every utterance gets a new label. |
+| `speaker_model_path` | string | `csukuangfj/speaker-embedding-models` | The speaker model: a Hugging Face repository, a directory, or the ONNX file itself, whose SHA-256 must match the pinned model. The node downloads and checks it when it starts. |
+| `speaker_similarity` | number from -1 to 1 | `0.3` | The lowest cosine similarity at which a voice takes a known label. Lower merges different speakers into one label; higher splits one speaker into several. |
 | `api_key_env` | string | `OPENAI_API_KEY` | As above. |
 | `timeout_s` | number > 0 | `120` | The timeout of each request. |
 
