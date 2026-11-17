@@ -217,6 +217,11 @@ private final class CaptureRun: @unchecked Sendable {
     private var resampler: MonoResampler?
     private var inputFormat: AVAudioFormat?
     private var framer: PCMFramer
+    // The native system tap may produce no callbacks while the output is idle.
+    // Both are owned by the capture queue.
+    private var systemClock: SystemCaptureClock?
+    private var systemSilenceTimer: DispatchSourceTimer?
+    private static let silence = [Float](repeating: 0, count: 1024)
     /// The file input's name and its pacing timer (tests only).
     private var sourceName: String?
     private var fileTimer: DispatchSourceTimer?
@@ -253,8 +258,13 @@ private final class CaptureRun: @unchecked Sendable {
             return try startFile(file)
         }
         if system {
-            try startSystem()
-            return startWatchers()
+            return try queue.sync {
+                try startSystem()
+                let now = monotonicMs()
+                systemClock = SystemCaptureClock(sampleRate: rate, startedAt: now)
+                sendStarted(at: now)
+                startSystemSilenceTimer()
+            }
         }
         var reasons: [String] = []
         for uid in params.devices ?? [] where !uid.isEmpty {
@@ -336,6 +346,33 @@ private final class CaptureRun: @unchecked Sendable {
         armWatchdog(generation: gen)
     }
 
+    private func startSystemSilenceTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.lock.withLock({ self.ended }), let clock = self.systemClock else { return }
+            self.padSystemSilence(clock.silenceWhileIdle(at: monotonicMs(), written: self.framer.samplesSeen))
+            if let limit = self.maxSamples, self.framer.samplesSeen >= limit {
+                self.endAsync(reason: CaptureReason.maxSeconds)
+            }
+        }
+        systemSilenceTimer = timer
+        timer.resume()
+    }
+
+    private func padSystemSilence(_ samples: Int) {
+        let capacity = maxSamples.map { max(0, $0 - framer.samplesSeen) } ?? samples
+        var remaining = min(samples, capacity)
+        Self.silence.withUnsafeBufferPointer { silence in
+            while remaining > 0 {
+                let count = min(remaining, silence.count)
+                let (frames, _) = framer.push(UnsafeBufferPointer(rebasing: silence[..<count]))
+                emit(frames, [])
+                remaining -= count
+            }
+        }
+    }
+
     /// capture.system: a tap on the default output, whose buffers go
     /// through receive() like the engine's; a new default output restarts it.
     private func startSystem() throws {
@@ -365,7 +402,6 @@ private final class CaptureRun: @unchecked Sendable {
             tap.stop()
             throw error
         }
-        armWatchdog(generation: gen)
     }
 
     /// The test-only file input: the file's buffers go through receive()
@@ -422,6 +458,7 @@ private final class CaptureRun: @unchecked Sendable {
     /// turn. A chosen input that went away makes it deviceLost; when no
     /// other input starts, that recording ends with what it has.
     private func restart(reason: String, toDefault: Bool = false) {
+        if system && lock.withLock({ ended }) { return }
         let (attempt, preferred, wasDefault) = lock.withLock { () -> (Int, String?, Bool) in
             restarts += 1
             return (restarts, usingDefault ? nil : deviceUID, usingDefault)
@@ -486,6 +523,19 @@ private final class CaptureRun: @unchecked Sendable {
         e.reset()
     }
 
+    private func stopSource() {
+        if system && file == nil {
+            // The tap and the timer can also be used by work on this queue.
+            queue.sync {
+                systemSilenceTimer?.cancel()
+                systemSilenceTimer = nil
+                stopEngine()
+            }
+        } else {
+            stopEngine()
+        }
+    }
+
     /// The tap (or the file input): downmix to mono at the input's rate,
     /// then convert on the queue.
     private func receive(_ buffer: AVAudioPCMBuffer, generation gen: Int) {
@@ -499,12 +549,16 @@ private final class CaptureRun: @unchecked Sendable {
         queue.async { [weak self] in self?.process(copy, generation: gen, at: at) }
     }
 
-    /// On the queue: capture.started at the first audio, then convert and frame.
+    /// On the queue: convert and frame the audio. For the mic and file
+    /// inputs, the first buffer also marks the start.
     private func process(_ buffer: AVAudioPCMBuffer, generation gen: Int, at: Double) {
         // Not "ended": finish() lets the buffers already queued through.
         guard let res = lock.withLock({ gen == generation ? resampler : nil }) else { return }
         sendStarted(at: at)
         guard let converted = res.convert(buffer), let samples = converted.floatChannelData?[0] else { return }
+        if let missing = systemClock?.silenceBeforeBuffer(at: at, samples: Int(converted.frameLength), written: framer.samplesSeen) {
+            padSystemSilence(missing)
+        }
         let (fs, levels) = framer.push(UnsafeBufferPointer(start: samples, count: Int(converted.frameLength)))
         emit(fs, levels)
         if let maxSamples, framer.samplesSeen >= maxSamples {
@@ -548,7 +602,7 @@ private final class CaptureRun: @unchecked Sendable {
     private func teardown() {
         watcher?.cancel()
         if let o = configObserver { NotificationCenter.default.removeObserver(o) }
-        stopEngine()
+        stopSource()
         onEnd(self)
     }
 
@@ -575,9 +629,13 @@ private final class CaptureRun: @unchecked Sendable {
     /// partial last one) are sent first. False when it had ended.
     func finish(reason: String) -> Bool {
         guard markEnded() else { return false }
-        stopEngine()
+        let stoppedAt = monotonicMs()
+        stopSource()
         // Buffers already queued still convert: queue.sync runs after them.
         let result: CaptureResult = queue.sync {
+            if let clock = systemClock {
+                padSystemSilence(clock.silenceWhileIdle(at: stoppedAt, written: framer.samplesSeen, stopping: true))
+            }
             if let last = framer.flush() {
                 emit([last], [])
             }
