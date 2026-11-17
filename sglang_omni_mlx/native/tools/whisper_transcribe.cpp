@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/generation.h"
 #include "nlohmann/json.hpp"
 #include "whisper/whisper_transcriber.h"
 
@@ -88,7 +89,7 @@ int main(int argc, char **argv) {
         {"verify_rounds", result.verify_round_count},
         {"proposed_draft_token_count", result.proposed_draft_token_count},
         {"accepted_draft_token_count", result.accepted_draft_token_count},
-        {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
+        {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
                         .count()},
