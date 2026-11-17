@@ -88,7 +88,11 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 				})
 			})
 		}
-		textBlock("hist-result", i18n.T("Result"), i18n.T("Copy result"), e.Result)
+		result := e.Result
+		if r := a.hist.retry; r.id == e.ID && strings.TrimSpace(r.draft) != "" {
+			result = r.draft // a retry's answer as the model writes it
+		}
+		textBlock("hist-result", i18n.T("Result"), i18n.T("Copy result"), result)
 		if e.PromptText != "" {
 			textBlock("hist-prompt", i18n.T("Instruction"), i18n.T("Copy instruction"), e.PromptText)
 		}

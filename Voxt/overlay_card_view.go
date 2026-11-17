@@ -99,7 +99,10 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		if v.busy {
 			// Voxt's spinner: an arc turning once in 0.9 s, 88 %.
 			busy := i18n.T("Translating…")
-			if v.writing {
+			switch {
+			case v.writing && v.kind == store.KindTranscribe:
+				busy = i18n.T("Cleaning up…")
+			case v.writing && v.kind == store.KindRewrite:
 				busy = i18n.T("Writing…")
 			}
 			ui.Icon(c, icons.VoxtSpinner.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.88)).Shrink(0).
@@ -115,6 +118,10 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		if cardCapsule(c.Key("ov-card-stop-answer"), i18n.T("Stop"), i18n.T("Stop writing and keep the text so far")) {
 			a.closeLangMenu()
 			a.stopLLM()
+		}
+	case v.canUseTranscript:
+		if cardCapsule(c.Key("ov-card-use-transcript"), i18n.T("Use transcript"), "") {
+			a.skipLLM()
 		}
 	case v.canStop:
 		if cardCapsule(c.Key("ov-card-stop"), i18n.T("Done"), i18n.T("Stop recording the follow-up")) {
