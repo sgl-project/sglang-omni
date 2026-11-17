@@ -57,28 +57,28 @@ type dictionaryTermRowsCacheKey struct {
 // matches the last build's, dictionaryPageModel reuses the state instead
 // of rebuilding it every frame.
 type dictionaryViewCacheKey struct {
-	seq             int
-	read            bool
-	loading         bool
-	err             string
-	listFor         string
-	total           int
-	legacy          bool
-	query           string
-	tab             int
-	scanOpen        bool
-	suggestions     string
-	settings        uint64
-	locale          string
-	scanModelID     string
-	scanModelName   string
-	canScan         bool
-	scan            dictionaryScanCacheKey
-	edit            dictionaryEditCacheKey
-	notesText       string
-	notesQuery      string
-	notesFind       int
-	notesFeature    int
+	seq           int
+	read          bool
+	loading       bool
+	err           string
+	listFor       string
+	total         int
+	legacy        bool
+	query         string
+	tab           int
+	scanOpen      bool
+	suggestions   string
+	settings      uint64
+	locale        string
+	scanModelID   string
+	scanModelName string
+	canScan       bool
+	scan          dictionaryScanCacheKey
+	edit          dictionaryEditCacheKey
+	notesText     string
+	notesQuery    string
+	notesFind     int
+	notesFeature  int
 }
 
 type dictionaryScanCacheKey struct {

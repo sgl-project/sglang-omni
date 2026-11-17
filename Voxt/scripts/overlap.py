@@ -37,9 +37,7 @@ def run_command(
 
 
 def find_repository_root(command_runner: CommandRunner) -> Path:
-    command_result = command_runner(
-        ["git", "rev-parse", "--show-toplevel"], Path.cwd()
-    )
+    command_result = command_runner(["git", "rev-parse", "--show-toplevel"], Path.cwd())
     if command_result.returncode == 0:
         return Path(command_result.stdout.strip())
     else:
@@ -130,7 +128,14 @@ def count_pull_request_files(
     command_runner: CommandRunner,
 ) -> dict[str, int]:
     command_result = command_runner(
-        ["gh", "pr", "view", str(pull_request_number), "--json", "changedFiles,headRefOid,baseRefOid"],
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pull_request_number),
+            "--json",
+            "changedFiles,headRefOid,baseRefOid",
+        ],
         repository_root,
     )
     if command_result.returncode != 0:

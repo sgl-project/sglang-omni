@@ -39,7 +39,14 @@ class OverlapTest(unittest.TestCase):
                 command: list[str], working_directory: Path
             ) -> subprocess.CompletedProcess[str]:
                 self.assertEqual(working_directory, repository_root)
-                if command == ["gh", "pr", "view", "123", "--json", "changedFiles,headRefOid,baseRefOid"]:
+                if command == [
+                    "gh",
+                    "pr",
+                    "view",
+                    "123",
+                    "--json",
+                    "changedFiles,headRefOid,baseRefOid",
+                ]:
                     return subprocess.CompletedProcess(
                         command,
                         0,
@@ -62,9 +69,11 @@ class OverlapTest(unittest.TestCase):
                     )
                 elif command[:2] == ["gh", "api"]:
                     revision = command[2].rsplit("?ref=", 1)[1]
-                    file_path = command[2].removeprefix(
-                        "repos/:owner/:repo/contents/"
-                    ).split("?ref=", 1)[0]
+                    file_path = (
+                        command[2]
+                        .removeprefix("repos/:owner/:repo/contents/")
+                        .split("?ref=", 1)[0]
+                    )
                     if revision == "head" and file_path == "Voxt/page.go":
                         return subprocess.CompletedProcess(
                             command,
@@ -92,7 +101,9 @@ class OverlapTest(unittest.TestCase):
                 {"view": 1, "logic": 2, "other": 6, "unknown": 0},
             )
 
-    def test_pr_revision_controls_classification_and_deleted_files_use_base(self) -> None:
+    def test_pr_revision_controls_classification_and_deleted_files_use_base(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repository_root = Path(temporary_directory)
             (repository_root / "Voxt").mkdir()
@@ -104,9 +115,11 @@ class OverlapTest(unittest.TestCase):
                 command: list[str], working_directory: Path
             ) -> subprocess.CompletedProcess[str]:
                 revision = command[2].rsplit("?ref=", 1)[1]
-                file_path = command[2].removeprefix(
-                    "repos/:owner/:repo/contents/"
-                ).split("?ref=", 1)[0]
+                file_path = (
+                    command[2]
+                    .removeprefix("repos/:owner/:repo/contents/")
+                    .split("?ref=", 1)[0]
+                )
                 if (revision, file_path) == ("head", "Voxt/page.go"):
                     return subprocess.CompletedProcess(
                         command,
@@ -215,7 +228,9 @@ class OverlapTest(unittest.TestCase):
                     pages += 1
                     entries = []
                     if pages <= 30:
-                        entries = [{"filename": "Voxt/other.go", "status": "modified"}] * 100
+                        entries = [
+                            {"filename": "Voxt/other.go", "status": "modified"}
+                        ] * 100
                     return subprocess.CompletedProcess(
                         command, 0, stdout=json.dumps(entries), stderr=""
                     )
@@ -223,7 +238,9 @@ class OverlapTest(unittest.TestCase):
                     raise AssertionError(f"Unexpected command: {command}")
 
             with self.assertRaisesRegex(RuntimeError, "refusing an incomplete count"):
-                overlap.count_pull_request_files(3054, repository_root, fake_command_runner)
+                overlap.count_pull_request_files(
+                    3054, repository_root, fake_command_runner
+                )
             self.assertEqual(pages, 31)
 
     def test_deleted_root_files_use_origin_main_or_report_unknown(self) -> None:
