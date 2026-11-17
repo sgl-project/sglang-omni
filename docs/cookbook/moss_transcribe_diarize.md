@@ -231,7 +231,7 @@ sgl-omni serve \
 - **Context.** Every output budget leaves room for the few tokens each speculative step reserves, 16 with the default settings: a `max_new_tokens` that would not leave them is lowered to the remaining context less that reserve, where the server without a draft would take up to the remaining context.
 - **Capacity.** The draft's KV shares the pool, so one H100 80GB at `mem_fraction_static=0.80` holds about 480k tokens instead of 570k. Long audio at high concurrency fills it, and the scheduler then retracts requests and finishes them later: every `aishell4_long` file still completed at concurrency 16 and 32.
 - **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes each verify step about four times slower. Without a draft it stays on.
-- **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
+- **Sampling.** `repetition_penalty` applies as ordinary decoding does: each verified position is penalized over the transcript so far and the drafted tokens before it. On one H200 with every `movies800times` clip sent at 1.2, no request failed, and transcripts differed from a synchronous server without the draft about as often as they do with no penalty (79 and 35 of 400 at 1 and 16 concurrent requests, against 100 and 28), while the penalty itself changes 392 of 400. Throughput fell 4% at one request and 10% at 16, and the logged acceptance length 6%. Requests with `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies those penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
 - **Scheduling.** Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap each verify round with host work, which is faster at every load below. Async prefill stays off under the draft. Setting `enable_mixed_chunk` is rejected.
 
 Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (`python -m benchmarks.eval.speculative_sweep`):
@@ -249,7 +249,7 @@ Neither mode is slower than the server without a draft at any load measured, and
 
 ### Per-request plain fallback
 
-Set `asr.factory.enable_plain_fallback` to route requests with unsupported sampling options, such as `repetition_penalty=1.2`, through ordinary decoding. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
+Set `asr.factory.enable_plain_fallback` to route requests with unsupported sampling options through ordinary decoding. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
 
 ```bash
 sgl-omni serve \
