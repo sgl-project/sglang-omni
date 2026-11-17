@@ -199,6 +199,7 @@ jobs:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OMNI_CI_MODEL: ${{ needs.preflight.outputs.omni_ci_model }}
+          ASR_CI_MODEL: ${{ needs.preflight.outputs.asr_ci_model }}
           RUN_FULL_DUPLEX: ${{ needs.preflight.outputs.run_full_duplex }}
           RUN_TURN_BASED: ${{ needs.preflight.outputs.run_turn_based }}
           RUN_CASCADED: ${{ needs.preflight.outputs.run_cascaded }}
@@ -215,6 +216,12 @@ jobs:
             "${QWEN3_TTS_CUSTOM_VOICE_MODEL_PATH}" \
             "${FUN_ASR_MODEL_PATH}" \
             "${WHISPER_ASR_MODEL_PATH}"
+
+          if [[ "${ASR_CI_MODEL}" == "ark" ]]; then
+            target_model=$(omni/bin/python -c 'from tests.test_model.asr_ci_config import ASR_CI_PRESETS; print(ASR_CI_PRESETS["ark"].resolved_model_path())')
+            draft_model=$(omni/bin/python -c 'from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY; draft = next(draft for draft in DRAFT_REGISTRY if draft.model_path == "AutoArk-AI/ARK-ASR-3B" and draft.is_default_on); print(f"{draft.draft_model_path}@{draft.draft_model_revision}")')
+            bash .github/scripts/ensure_hf_models.sh omni "${target_model}" "${draft_model}"
+          fi
 
           if [[ "${OMNI_CI_MODEL}" == "minicpmo" || "${RUN_FULL_DUPLEX}" == "true" ]]; then
             bash .github/scripts/ensure_hf_models.sh omni openbmb/MiniCPM-o-4_5

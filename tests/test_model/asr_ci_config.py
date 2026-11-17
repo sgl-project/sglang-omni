@@ -54,22 +54,11 @@ class AsrCiPreset:
     revision: str | None = None
 
     def resolved_model_path(self) -> str:
-        """The weights path to serve: a pinned local snapshot, or the repo id."""
+        """Serve the repository identity with its optional checkpoint revision."""
         if self.revision is None:
             return self.model_path
-        from huggingface_hub import snapshot_download
-
-        try:
-            return snapshot_download(
-                self.model_path, revision=self.revision, local_files_only=True
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"pinned snapshot {self.model_path}@{self.revision[:12]} is "
-                "not in the local HF cache; run "
-                ".github/scripts/ensure_hf_models.sh, or: "
-                f"hf download {self.model_path} --revision {self.revision}"
-            ) from exc
+        else:
+            return f"{self.model_path}@{self.revision}"
 
 
 # Slack factors applied to worst-of-N reference values to derive CI gates.
@@ -186,6 +175,23 @@ WHISPER_ASR_RTF_P95_THRESHOLD = round(
 
 
 ASR_CI_PRESETS: dict[str, AsrCiPreset] = {
+    "ark": AsrCiPreset(
+        model_path="AutoArk-AI/ARK-ASR-3B",
+        revision="1e28271b79edc97635783bea65abc89195a09ed3",
+        display_name="ARK-ASR-3B",
+        gate_thresholds=False,
+        thresholds=AsrCiThresholdPreset(
+            en_corpus_wer_max=0.0,
+            en_sample_wer_max=0.0,
+            zh_corpus_wer_max=0.0,
+            zh_sample_wer_max=0.0,
+            throughput_min=0.0,
+            latency_mean_max_s=0.0,
+            latency_p95_max_s=0.0,
+            rtf_mean_max=0.0,
+            rtf_p95_max=0.0,
+        ),
+    ),
     "fun": AsrCiPreset(
         model_path=FUN_ASR_MODEL_PATH,
         display_name="Fun-ASR",

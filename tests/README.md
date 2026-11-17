@@ -440,9 +440,10 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flag `--tts-ci-model {higgs,moss,qwen3-tts,cosyvoice3,qwen3-tts-custom-voice}`:
   select the TTS CI model preset for `test_tts_ci.py` without editing source.
   Defaults to the `TTS_CI_MODEL` environment variable, then `higgs`.
-- CLI flag `--asr-ci-model {fun,qwen3,whisper}`: select the ASR CI model preset for
+- CLI flag `--asr-ci-model {ark,fun,qwen3,whisper}`: select the ASR CI model preset for
   `test_asr_ci_seedtts.py` without editing source. Defaults to the
   `ASR_CI_MODEL` environment variable, then `fun`.
+  `ark` serves ARK-ASR's default DFlash configuration at a pinned target revision. Select it in GitHub CI with `run-asr-ci` and `run-ark-asr-3b`. Calibration uses two H100 workers behind the managed router, at the stage's concurrency of 96.
 - CLI flag `--omni-ci-model {qwen3-omni,minicpmo}` selects the offline Omni
   model tests. It defaults to `OMNI_CI_MODEL`, then `qwen3-omni`.
   GitHub CI runs the Omni stage with `run-omni-ci`. The

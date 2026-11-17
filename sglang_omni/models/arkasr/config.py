@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from sglang_omni.config import (
     EngineArgs,
@@ -14,6 +14,8 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
+from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY
 
 _PKG = "sglang_omni.models.arkasr"
 
@@ -81,6 +83,46 @@ class ArkasrPipelineConfig(PipelineConfig):
             terminal=True,
         )
     ]
+
+    @model_validator(mode="after")
+    def apply_default_draft(self) -> Self:
+        model_repository = self.model_path.partition("@")[0]
+        draft = next(
+            (
+                candidate
+                for candidate in DRAFT_REGISTRY
+                if candidate.model_path == model_repository
+                and candidate.stage == "asr"
+                and candidate.is_default_on
+            ),
+            None,
+        )
+        stage = self.stage_named("asr")
+        engine = stage.engine
+        if (
+            draft is None
+            or engine is None
+            or engine.disable_speculative_decoding
+            or not current_platform.is_cuda()
+        ):
+            pass
+        elif {
+            "speculative_algorithm",
+            "speculative_draft_model_path",
+        } & engine.model_fields_set:
+            pass
+        else:
+            stage.engine = EngineArgs(
+                **(
+                    {
+                        "speculative_algorithm": draft.algorithm,
+                        "speculative_draft_model_path": draft.draft_model_path,
+                        **draft.engine_settings,
+                    }
+                    | engine.model_dump(exclude_unset=True)
+                )
+            )
+        return self
 
 
 EntryClass = ArkasrPipelineConfig

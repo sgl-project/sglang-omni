@@ -42,6 +42,7 @@ from sglang_omni.speculative.dflash_draft import (
     ReducedVocabularyDFlashWorker,
     materialize_draft_checkpoint,
 )
+from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 if TYPE_CHECKING:
@@ -153,6 +154,12 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         self.audio_encoder_service: ArkasrPreLMEncoderService | None = None
         self.speculative_worker_class: type[BaseSpecWorker] | None = None
         self.draft_checkpoint: TemporaryDirectory[str] | None = None
+
+    def resolve_checkpoint(self, model_path: str) -> str:
+        if "@" in model_path:
+            return resolve_checkpoint(model_path)
+        else:
+            return model_path
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.model_path = checkpoint_dir

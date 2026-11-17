@@ -15,6 +15,7 @@ import pytest
 from sglang_omni.config.manager import ConfigManager, normalize_flag_key
 from sglang_omni.config.schema import EngineArgs
 from sglang_omni.models.registry import resolve_variant
+from sglang_omni.platforms import current_platform
 from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY, PinnedDraft
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -229,7 +230,10 @@ def test_every_draft_off_by_default_is_served_in_a_doc_or_example_config() -> No
     } <= served_drafts
 
 
-def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
+def test_model_defaults_serve_exactly_the_default_on_drafts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
     registry_paths = sorted({draft.model_path for draft in DRAFT_REGISTRY})
     # note (Haoling Pu): a near-miss path stands for a sibling checkpoint without an entry, such as Qwen3-ASR 0.6B next to 1.7B.
     model_paths = registry_paths + [

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import huggingface_hub
 import pytest
 import torch
 import torch.nn as nn
@@ -310,6 +311,39 @@ def stub_arkasr_engine_build(
         model_worker=model_worker,
         build_kwargs=build_kwargs,
     )
+
+
+def test_arkasr_pinned_checkpoint_reaches_model_loaders(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Pinned repository specs previously reached Transformers as invalid repo IDs."""
+    stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+    )
+    requested_revisions: list[tuple[str, str | None]] = []
+    loaded_checkpoints: list[str] = []
+    original_setup = arkasr_builder.ArkasrEngineBuilder.pre_infra_setup
+
+    def download_checkpoint(repo_id: str, revision: str | None = None) -> str:
+        requested_revisions.append((repo_id, revision))
+        return str(tmp_path)
+
+    def record_checkpoint(
+        builder: arkasr_builder.ArkasrEngineBuilder, checkpoint_dir: str
+    ) -> None:
+        loaded_checkpoints.append(checkpoint_dir)
+        original_setup(builder, checkpoint_dir)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", download_checkpoint)
+    monkeypatch.setattr(
+        arkasr_builder.ArkasrEngineBuilder, "pre_infra_setup", record_checkpoint
+    )
+    create_sglang_arkasr_executor("AutoArk-AI/ARK-ASR-3B@pinned-revision")
+
+    assert requested_revisions == [("AutoArk-AI/ARK-ASR-3B", "pinned-revision")]
+    assert loaded_checkpoints == [str(tmp_path)]
 
 
 def write_ark_dflash_checkpoint(directory: Path) -> None:

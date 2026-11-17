@@ -22,11 +22,9 @@ hf download AutoArk-AI/ARK-ASR-3B
 
 ## Server Configuration
 
-ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default.
-Async decode is enabled by default for decode batches of at least two requests,
-allowing the shared one-step-lookahead path to overlap host-side result
-processing with the next GPU decode forward. Use `--asr.factory.enable_async_decode false` to disable
-it, or tune the crossover with `--async-lookahead-min-batch-size`.
+ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default. On CUDA, serving `AutoArk-AI/ARK-ASR-3B`, including a pinned `AutoArk-AI/ARK-ASR-3B@<revision>` specification, enables synchronous DFlash with the registry-pinned draft. Other devices and unregistered checkpoints keep plain decoding unless a draft is explicitly configured.
+
+With DFlash disabled, async decode is enabled by default for decode batches of at least two requests, allowing the shared one-step-lookahead path to overlap host-side result processing with the next GPU decode forward. Use `--asr.factory.enable_async_decode false` to disable it, or tune the crossover with `--async-lookahead-min-batch-size`.
 Request concurrency and audio-encoder batching are controlled separately:
 
 - `max_running_requests` defaults to `32` and limits requests admitted by the
@@ -71,7 +69,16 @@ sgl-omni serve \
 
 ### Speculative Decoding
 
-The decoder can verify tokens proposed by the 19-language DFlash draft [`wilsonzheng0327/ARK-ASR-3B-dflash`](https://huggingface.co/wilsonzheng0327/ARK-ASR-3B-dflash) on one CUDA GPU.
+The default decoder verifies tokens proposed by the 19-language DFlash draft [`wilsonzheng0327/ARK-ASR-3B-dflash`](https://huggingface.co/wilsonzheng0327/ARK-ASR-3B-dflash) on one CUDA GPU. Its revision is pinned in the draft registry. Use the stage's disable switch to serve without a draft:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --asr.engine.disable_speculative_decoding true \
+  --port 8000
+```
+
+The explicit form is below; use the same draft flags when serving a local checkpoint path:
 
 ```bash
 sgl-omni serve \
