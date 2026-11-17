@@ -8,6 +8,7 @@ import { DuplexSession, drawsPluginFormat, registerPluginRenderer } from "./sess
 import { MotionView, SMPLH_FLAME_MOTION, smplhFlameMotionRenderer } from "./smplh_flame_motion.js";
 import { JPEG_FRAME, VideoFrameView, jpegFrameRenderer } from "./video_frame.js";
 import { SMPLX_MOTION, SmplxMotionView, smplxMotionRenderer } from "./smplx_motion.js";
+import { BVH_MOTION, BvhMotionView, bvhMotionRenderer, bvhSkeletonOf } from "./bvh_motion.js";
 
 const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8").replace(/^import .+;$/gm, "");
 // The settings panel is the realtime page's module, served under this page's path by playground/cascade/app.py.
@@ -40,6 +41,10 @@ function createApp(sessionOptions, search = "") {
     JPEG_FRAME,
     VideoFrameView,
     jpegFrameRenderer,
+    BVH_MOTION,
+    BvhMotionView,
+    bvhMotionRenderer,
+    bvhSkeletonOf,
     window: { DEMO_WS_URL: "ws://localhost/v1/realtime", addEventListener() {} },
     location: { search },
     URLSearchParams,

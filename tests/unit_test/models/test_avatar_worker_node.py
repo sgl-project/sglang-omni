@@ -49,6 +49,7 @@ MODELS = {
     "avatarforcing": (JPEG_FRAME, 25, 16, 2240, False),
     "avatarforcing-ki": (JPEG_FRAME, 25, 10, 80, True),
     "dystream": (JPEG_FRAME, 25, 10, 80, True),
+    "sentiavatar": (BVH_MOTION, 30, 24, 1200, False),
 }
 SKELETON = {
     "joints": ["pelvis", "spine", "head"],

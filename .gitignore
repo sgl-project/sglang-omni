@@ -70,3 +70,4 @@ target/
 # CPU installer lock/backup
 .pyproject.cpu.lock
 .pyproject.cpu.bak
+examples/avatar_workers/sentiavatar_skeleton.json
