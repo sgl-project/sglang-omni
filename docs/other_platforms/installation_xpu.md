@@ -722,6 +722,60 @@ audio input, and voice cloning.
 
 **Expected result:** Play `out.wav` to hear the input text.
 
+### MiniCPM-o 4.5 AWQ (4-bit backbone, text output, single XPU)
+
+`openbmb/MiniCPM-o-4_5-awq` serves text on Intel XPU with no code change, and it is the
+faster way to run this model on a 24 GB card. SGLang registers its INT4 dense linear
+path under `AWQXPUConfig` only on XPU. The checkpoint quantizes only the `llm` backbone
+and keeps every other submodule in bf16:
+
+| | bf16 | AWQ 4-bit |
+|---|---|---|
+| `llm` backbone | 15.25 GiB | **5.68 GiB** |
+| talker (`tts`) | 0.65 GiB | 0.65 GiB |
+| vision, audio, resampler and projection | 1.56 GiB | 1.56 GiB |
+| checkpoint total | 17.46 GiB | **7.88 GiB** |
+
+Serve it text-only. Speech from this checkpoint does not work today. The checkpoint
+excludes `tts` from AWQ, but the talker's layers are named `llama.*` at runtime, so they
+are built as AWQ layers and the loader skips every bf16 talker linear weight: startup
+logs `Parameter model.layers.N... not found in params_dict` 140 times, and the first
+speech request kills the talker stage with a device-side assertion, which shuts the
+server down. The bf16 checkpoint is unaffected.
+
+**Launch**
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve --model-path openbmb/MiniCPM-o-4_5-awq \
+  --text-only \
+  --thinker.engine.mem_fraction_static 0.85 \
+  --host 0.0.0.0 --port 8000
+```
+
+**Request**
+
+```bash
+curl -s -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"openbmb/MiniCPM-o-4_5-awq","messages":[{"role":"user","content":"What is the capital of France?"}],"max_tokens":64}'
+```
+
+Measured on one Arc Pro B60, text output, 128 tokens, greedy, against the bf16
+checkpoint on the same card: TTFT 37.9 ms against 82.9, inter-token latency 14.74 ms
+against 37.34 (**2.5x**), and 692 output tokens per second at concurrency 16 against
+378. GSM8K over 100 problems scored 91% against bf16's 93%, a gap of two problems. The
+text-only command above gives the same inter-token latency, 14.74 ms.
+
+Do not read that speedup across to a quantized MoE. Weight-only 4-bit wins here because
+the dense backbone's decode is bandwidth-bound and Intel's INT4 dense kernel is well
+optimized. On XPU, AWQ and GPTQ do not cover MoE layers at all and refuse them at load.
+The one quantized MoE measured so far, Qwen3-Omni's thinker as a compressed-tensors
+W4A16 checkpoint on the Triton WNA16 runner, was slower than bf16 on the same four cards
+(123.4 ms against 106.3 ms per output token).
+
+**Expected result:** A text reply naming Paris, from a checkpoint less than half the
+size of the bf16 one.
+
 ### MiniMax Music 3 (text-to-music, two XPUs)
 **Launch**
 
