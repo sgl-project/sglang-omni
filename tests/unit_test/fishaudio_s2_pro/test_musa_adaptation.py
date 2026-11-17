@@ -34,7 +34,7 @@ def test_fast_ar_musa_uses_fa3(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     assert (
-        audio_decoder.cuda_kvcache_attention(
+        audio_decoder.musa_kvcache_attention(
             q=q, **sentinels, causal=True, num_splits=1, cache_position=-1
         )
         is q

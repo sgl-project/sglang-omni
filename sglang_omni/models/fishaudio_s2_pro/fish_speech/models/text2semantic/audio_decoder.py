@@ -153,10 +153,13 @@ def cuda_kvcache_attention(
     num_splits: int,
     cache_position: int,
 ) -> torch.Tensor:
-    """Run Fast-AR attention with the native FA3 path on CUDA/MUSA."""
-    if q.device.type == "musa":
-        from flash_attn_interface import flash_attn_with_kvcache
-    elif fast_ar_uses_fa3(q.device.index):
+    """Dispatch Fast-AR attention to the validated CUDA backend."""
+    device_index = q.device.index
+    if device_index is None:
+        raise RuntimeError("FishAudio S2-Pro Fast-AR requires an indexed CUDA device")
+    else:
+        pass
+    if fast_ar_uses_fa3(device_index):
         from sgl_kernel.flash_attn import flash_attn_with_kvcache
     else:
         return flashinfer_kvcache_attention(
@@ -168,6 +171,33 @@ def cuda_kvcache_attention(
             causal=causal,
             cache_position=cache_position,
         )
+    return flash_attn_with_kvcache(
+        q=q,
+        k_cache=k_cache,
+        v_cache=v_cache,
+        k=k,
+        v=v,
+        cache_seqlens=cache_seqlens,
+        causal=causal,
+        num_splits=num_splits,
+    )
+
+
+def musa_kvcache_attention(
+    *,
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k: torch.Tensor | None,
+    v: torch.Tensor | None,
+    cache_seqlens: torch.Tensor | None,
+    causal: bool,
+    num_splits: int,
+    cache_position: int,
+) -> torch.Tensor:
+    """Run Fast-AR attention with MATE's FA3 implementation on MUSA."""
+    from flash_attn_interface import flash_attn_with_kvcache
+
     return flash_attn_with_kvcache(
         q=q,
         k_cache=k_cache,
@@ -204,7 +234,21 @@ def flash_attn_kvcache_op(
             v=v,
             cache_position=cache_position,
         )
-    elif device_type in ("cuda", "musa"):
+    elif device_type == "musa":
+        output = musa_kvcache_attention(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            k=k,
+            v=v,
+            cache_seqlens=(
+                cache_seqlens.contiguous() if cache_seqlens is not None else None
+            ),
+            causal=causal,
+            num_splits=num_splits,
+            cache_position=cache_position,
+        )
+    elif device_type == "cuda":
         output = cuda_kvcache_attention(
             q=q,
             k_cache=k_cache,
