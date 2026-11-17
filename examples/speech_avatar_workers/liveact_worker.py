@@ -30,6 +30,7 @@ generate.py's first block precedes the audio.
 
 from __future__ import annotations
 
+import argparse
 import io
 import logging
 import os
@@ -73,17 +74,41 @@ TIMESTEPS = (1000.0, 937.5, 833.33333333, 0.0)
 TICKET = struct.Struct("<16sI")
 
 
-def geometry_info(width: int, height: int) -> dict:
+def geometry_info(width: int, height: int, half_blocks: bool = False) -> dict:
+    """A chunk is a block (32 frames); with half_blocks it is half a block (16 frames), whose window reaches back to its block's start."""
+    chunk = CHUNK_FRAMES // 2 if half_blocks else CHUNK_FRAMES
     return {
         "kind": "video",
         "model": "soulx-liveact",
         "fps": FPS,
-        "chunk_frames": CHUNK_FRAMES,
-        "context_samples": CONTEXT_FRAMES * FRAME_SAMPLES,
+        "chunk_frames": chunk,
+        "context_samples": (WINDOW_FRAMES - chunk) * FRAME_SAMPLES
+        if half_blocks
+        else CONTEXT_FRAMES * FRAME_SAMPLES,
         "lookahead_samples": LOOKAHEAD_FRAMES * FRAME_SAMPLES,
         "width": width,
         "height": height,
     }
+
+
+def model_unit(unit: int, half_blocks: bool) -> tuple:
+    """A Session's model unit as (block, half): unit 0 is block 0, then a block per unit, or with half_blocks half a block per unit (half None: the whole block)."""
+    if half_blocks and unit > 0:
+        return (unit + 1) // 2, (unit + 1) % 2
+    else:
+        return unit, None
+
+
+def model_window(unit: int, speech: np.ndarray, half_blocks: bool) -> np.ndarray:
+    """The model window's 55 frames of speech for a unit from a request's window: a block's first half sees up to its own lookahead, silence after."""
+    _, half = model_unit(unit, half_blocks)
+    if half == 0:
+        known = speech[(CHUNK_FRAMES // 2) * FRAME_SAMPLES :]
+        return np.concatenate(
+            [known, np.zeros(AUDIO_WINDOW_FRAMES * FRAME_SAMPLES - len(known), np.float32)]
+        )
+    else:
+        return speech
 
 
 @dataclass
@@ -135,6 +160,57 @@ class Tickets:
         return self.current.encode()
 
 
+class GraphedSteps:
+    """The DiT's denoising steps replayed as CUDA graphs, one per kind of step (its latent shape, step, place in the block and cache update).
+
+    A kind's first call runs normally (it compiles and warms up); its second
+    is captured, then replayed, and so is every later one. Capturing does not
+    run anything, so the model's in-place KV cache updates happen once a
+    call, as without graphs. Inputs that change between calls (the latent
+    and the speech) are copied into the graph's buffers; everything else
+    (the cache, timestep, prompt, image and y tensors) is the same tensor on
+    every call. Every rank captures the same kinds in the same order, so the
+    sequence-parallel collectives inside line up.
+    """
+
+    def __init__(self, model, torch) -> None:
+        self.model, self.torch = model, torch
+        self.seen = set()
+        self.graphs = {}
+        # One memory pool for every graph: they replay one at a time and each one's output is used before the next replays, so
+        # their temporaries can share memory.
+        self.pool = torch.cuda.graph_pool_handle()
+
+    def __call__(self, x, **kwargs):
+        torch = self.torch
+        latent, audio = x[0], kwargs["audio"]
+        key = (
+            tuple(latent.shape),
+            id(kwargs["kv_cache"]),
+            kwargs["start_idx"],
+            kwargs["update_cache"],
+            kwargs["skip_audio"],
+        )
+        graph = self.graphs.get(key)
+        if graph is None and key not in self.seen:
+            self.seen.add(key)
+            return self.model(x, **kwargs)
+        elif graph is None:
+            static_latent, static_audio = latent.clone(), audio.clone()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, pool=self.pool):
+                out = self.model([static_latent], **{**kwargs, "audio": static_audio})
+            self.graphs[key] = graph = (graph, static_latent, static_audio, out)
+            logger.info("captured a CUDA graph for %s (%d graphs)", key, len(self.graphs))
+        else:
+            pass
+        graph, static_latent, static_audio, out = graph
+        static_latent.copy_(latent)
+        static_audio.copy_(audio)
+        graph.replay()
+        return out
+
+
 class LiveActModel(ChunkModel):
     """generate.py's model setup and block loop, one request a chunk; every rank builds it and runs each step."""
 
@@ -168,10 +244,19 @@ class LiveActModel(ChunkModel):
         self.get_audio_emb, self.get_embedding = get_audio_emb, get_embedding
         self.rank, self.world_size = rank, world_size
         self.seed = args.seed
+        self.sp_cache = args.sp_cache if world_size > 1 else "seq"
         self.jpeg_quality = args.jpeg_quality
         device = self.device = rank
         if world_size > 1:
+            from model_liveact import model_memory_sp
             from model_liveact.model_memory_sp import WanModel
+
+            if args.sp_cache == "heads":
+                import liveact_sp
+
+                liveact_sp.patch(model_memory_sp, world_size, args.attention)
+            else:
+                assert world_size == 2, "the authors' sequence-split cache only works on 2 GPUs: use --sp-cache heads"
         else:
             from model_liveact.model_memory import WanModel
         width, height = (int(side) for side in args.size.split("*"))
@@ -180,18 +265,19 @@ class LiveActModel(ChunkModel):
             width // (PATCH_SIZE[2] * VAE_STRIDE[2])
         )
         self.timesteps = [
-            torch.tensor([step]).to(device, dtype=torch.float32) for step in TIMESTEPS
+            torch.tensor([step]).to(device, dtype=torch.float32)
+            for step in args.timesteps
         ]
-        kv_tokens = self.frame_len * sum(BLOCK_LATENTS) // world_size
+        self.audio_steps = set(args.audio_steps)
+        if world_size > 1 and args.sp_cache == "heads":
+            kv_shape = liveact_sp.kv_cache_shape(self.frame_len, world_size)
+        else:
+            kv_shape = [1, self.frame_len * sum(BLOCK_LATENTS) // world_size, 40, 128]
         self.kv_cache = {
             step: {
                 layer: {
-                    "k": torch.zeros(
-                        [1, kv_tokens, 40, 128], dtype=torch.bfloat16, device=device
-                    ),
-                    "v": torch.zeros(
-                        [1, kv_tokens, 40, 128], dtype=torch.bfloat16, device=device
-                    ),
+                    "k": torch.zeros(kv_shape, dtype=torch.bfloat16, device=device),
+                    "v": torch.zeros(kv_shape, dtype=torch.bfloat16, device=device),
                     "k_scale": None,
                     "v_scale": None,
                     "mean_memory": False,
@@ -200,7 +286,7 @@ class LiveActModel(ChunkModel):
                 }
                 for layer in range(40)
             }
-            for step in range(len(TIMESTEPS) - 1)
+            for step in range(len(self.timesteps) - 1)
         }
         model = WanModel.from_pretrained(
             args.ckpt_dir, torch_dtype=torch.bfloat16, low_cpu_mem_usage=False
@@ -255,8 +341,24 @@ class LiveActModel(ChunkModel):
             pass
         model = model.to(device).eval()
         self.model = torch.compile(model)
+        if args.cuda_graphs:
+            assert world_size > 1 and args.sp_cache == "heads" and args.attention == "fa3", "--cuda-graphs needs --sp-cache heads --attention fa3 (Sage's kernels do not replay)"
+            self.model = GraphedSteps(self.model, torch)
+        else:
+            pass
         self.vae.model.eval()
         self.vae.encode = torch.compile(self.vae.encode)
+        self.vae_stream = args.vae_stream
+        if args.vae_stream:
+            # The decoder's causal cache carries over from block to block (a Session's latents decode as one video), so a block
+            # decodes its own 8 latents, not 3 of the block before as well, and every frame it makes is kept.
+            self.vae.model.decode = self.vae.model.cached_decode
+        else:
+            pass
+        if args.vae_compile:
+            self.vae.model.decoder = torch.compile(self.vae.model.decoder, dynamic=False)
+        else:
+            pass
 
         transform = transforms.Compose(
             [
@@ -305,7 +407,9 @@ class LiveActModel(ChunkModel):
         torch.cuda.empty_cache()
         self.tickets = Tickets()
         self.pre_latent = None
-        self.info = geometry_info(width, height)
+        self.half_blocks = args.half_blocks
+        assert not args.half_blocks or (args.vae_stream and args.sp_cache == "heads"), "--half-blocks needs --vae-stream and --sp-cache heads"
+        self.info = geometry_info(width, height, args.half_blocks)
         self.encoder = ThreadPoolExecutor(max_workers=CHUNK_FRAMES)
         try:
             import cv2
@@ -326,8 +430,19 @@ class LiveActModel(ChunkModel):
         self.gpu = ThreadPoolExecutor(
             max_workers=1, initializer=torch.cuda.set_device, initargs=(device,)
         )
+        self.primed = None
+        if args.prime:
+            self.gpu.submit(self.prime).result()
+        else:
+            pass
         if rank == 0:
-            times = warm_up(self, args.warmup_chunks)
+            if args.cuda_graphs and args.warmup_chunks > 0:
+                # every kind of step is captured on its second sighting: enough chunks for each to come twice, and a
+                # second Session for the first chunk's kind
+                times = warm_up(self, max(args.warmup_chunks, 6 if args.half_blocks else 4))
+                times += warm_up(self, 2)
+            else:
+                times = warm_up(self, args.warmup_chunks)
             logger.info("warm-up chunk times (ms): %s", [round(t) for t in times])
         else:
             pass
@@ -387,15 +502,86 @@ class LiveActModel(ChunkModel):
         )
         return self.get_audio_emb(embedding, 0, WINDOW_FRAMES, self.device)
 
+    def prime(self) -> None:
+        """Every rank, once at start: run block 0 on silence and keep what it leaves behind for every Session's start.
+
+        Block 0 is the reference block: its frames are dropped and its only
+        audio is the 1.05 s before a Session's first chunk, which is silence
+        (the agent had not spoken). What it leaves is the same for every
+        Session: the KV cache's memory frames of every step and layer, the
+        latent the next decode overlaps, and the random generator's state. A
+        Session's first chunk restores them (a copy on the GPU) and runs
+        block 1 only, instead of blocks 0 and 1.
+        """
+        torch = self.torch
+        torch.manual_seed(self.seed)
+        silence = np.zeros(self.window_samples(), dtype=np.float32)
+        with torch.no_grad():
+            self.run_block(0, self.audio_embedding(silence))
+        memory = self.memory_tokens()
+        self.primed = {
+            "kv": {
+                (step, layer): (
+                    cache["k"][:, :memory].clone(),
+                    cache["v"][:, :memory].clone(),
+                )
+                for step, layers in self.kv_cache.items()
+                for layer, cache in layers.items()
+            },
+            "pre_latent": self.pre_latent.clone(),
+            "vae_cache": [
+                t.clone() if isinstance(t, torch.Tensor) else t
+                for t in self.vae.model._feat_map
+            ],
+            "cuda_rng": torch.cuda.get_rng_state(),
+            "cpu_rng": torch.get_rng_state(),
+        }
+        torch.cuda.synchronize()
+        logger.info(
+            "primed block 0: %.1f GB of KV cache kept on rank %d",
+            sum(k.numel() + v.numel() for k, v in self.primed["kv"].values())
+            * 2
+            / 2**30,
+            self.rank,
+        )
+
+    def memory_tokens(self) -> int:
+        """How many of a rank's cache tokens block 0 writes: its six latent frames, split by sequence or kept whole (split by heads)."""
+        frames = BLOCK_LATENTS[0] * self.frame_len
+        return frames if self.sp_cache == "heads" else frames // self.world_size
+
+    def restore_primed(self) -> None:
+        torch = self.torch
+        memory = self.memory_tokens()
+        for (step, layer), (k, v) in self.primed["kv"].items():
+            cache = self.kv_cache[step][layer]
+            cache["k"][:, :memory].copy_(k)
+            cache["v"][:, :memory].copy_(v)
+        self.pre_latent = self.primed["pre_latent"].clone()
+        if self.vae_stream:
+            self.vae.model._feat_map = [
+                t.clone() if isinstance(t, torch.Tensor) else t
+                for t in self.primed["vae_cache"]
+            ]
+        else:
+            pass
+        torch.cuda.set_rng_state(self.primed["cuda_rng"])
+        torch.set_rng_state(self.primed["cpu_rng"])
+
     def step(self, blocks: list[int], speech: np.ndarray):
         """Run the chunk's model blocks (rank 0 decided them from the ticket); returns its frames, uint8 [32, H, W, 3], on rank 0."""
         torch = self.torch
-        if blocks[0] == 0:
+        if blocks[0] == 0 and self.primed is not None:
+            self.restore_primed()
+            blocks = blocks[1:]
+        elif blocks[0] == 0:
             torch.manual_seed(self.seed)
         else:
             pass
         with torch.no_grad():
-            audio = self.audio_embedding(speech)
+            audio = self.audio_embedding(
+                model_window(blocks[-1], speech, self.half_blocks)
+            )
             for block in blocks:
                 video = self.run_block(block, audio)
         frames = None
@@ -415,25 +601,34 @@ class LiveActModel(ChunkModel):
         """generate.py's loop body for block `block` (its `_`): three denoising steps, then the VAE decode."""
         torch = self.torch
         frame_len = self.frame_len
+        block, half = model_unit(block, self.half_blocks)
         first = min(block, 1)
         start = sum(BLOCK_LATENTS[:first])
         end = sum(BLOCK_LATENTS[: first + 1])
+        update_cache = block > 1
+        if half is not None:
+            # half a block: its 4 latents attend to the memory, the block's latents before them and themselves
+            start += half * BLOCK_LATENTS[1] // 2
+            end = start + BLOCK_LATENTS[1] // 2
+            update_cache = block > 1 and half == 0
+        else:
+            pass
         with torch.autocast("cuda", dtype=torch.bfloat16):
             latent = torch.randn(
                 16,
-                BLOCK_LATENTS[first],
+                end - start,
                 self.height // VAE_STRIDE[1],
                 self.width // VAE_STRIDE[2],
                 dtype=torch.bfloat16,
                 device=self.device,
             )
-            for step in range(len(TIMESTEPS) - 1):
+            for step in range(len(self.timesteps) - 1):
                 timestep = self.timesteps[step]
                 noise_pred = self.model(
                     [latent],
                     t=timestep,
                     kv_cache=self.kv_cache[step],
-                    skip_audio=step not in (1, 2),
+                    skip_audio=step not in self.audio_steps,
                     context=self.context,
                     clip_fea=self.clip_context,
                     ref_target_masks=self.ref_target_masks,
@@ -441,12 +636,18 @@ class LiveActModel(ChunkModel):
                     y=self.y[:, :, start:end],
                     start_idx=start * frame_len,
                     end_idx=end * frame_len,
-                    update_cache=block > 1,
+                    update_cache=update_cache,
                 )[0]
                 x0_pred = latent + (-noise_pred) * (timestep[0] / 1000 - 0.0)
                 after = self.timesteps[step + 1][0] / 1000
                 latent = (1 - after) * x0_pred + torch.randn_like(x0_pred) * after
-            if first == 0:
+            if self.vae_stream:
+                if first == 0:
+                    self.vae.model.clear_decode_cache()
+                else:
+                    pass
+                video = self.vae.decode(latent)
+            elif first == 0:
                 video = self.vae.decode(latent.squeeze(0))
             else:
                 video = self.vae.decode(
@@ -478,7 +679,7 @@ class LiveActModel(ChunkModel):
         return self.idle
 
 
-def main() -> None:
+def parse_args(argv=None):
     parser = base_parser(__doc__.splitlines()[0])
     parser.add_argument("--repo", required=True)
     parser.add_argument("--ckpt-dir", required=True)
@@ -495,14 +696,66 @@ def main() -> None:
         action="store_true",
         help="generate.py --fp8_gemm: FP8 GEMMs through vLLM's kernels.",
     )
+    parser.add_argument(
+        "--timesteps",
+        type=lambda text: [float(step) for step in text.split(",")],
+        default=list(TIMESTEPS),
+        help="The denoising schedule, comma separated, ending in 0 (the distilled model's is 1000,937.5,833.33333333,0).",
+    )
+    parser.add_argument(
+        "--audio-steps",
+        type=lambda text: [int(step) for step in text.split(",")],
+        default=[1, 2],
+        help="The steps that attend to the speech (generate.py: every step but the first).",
+    )
+    parser.add_argument(
+        "--sp-cache",
+        choices=("seq", "heads"),
+        default="seq",
+        help="How the GPUs split the KV cache: by sequence (the authors' code, 2 GPUs only) or by heads (liveact_sp.py, any GPU count that divides 40).",
+    )
+    parser.add_argument(
+        "--prime",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run block 0 once at start and restore it at every Session's start (its first chunk then costs one block, not two).",
+    )
+    parser.add_argument(
+        "--vae-stream",
+        action="store_true",
+        help="Keep the VAE decoder's causal cache across a Session's blocks: decode 8 latents a block instead of 11, no seam re-decode.",
+    )
+    parser.add_argument(
+        "--vae-compile",
+        action="store_true",
+        help="torch.compile the VAE decoder (its norms and activations are most of its time uncompiled).",
+    )
+    parser.add_argument(
+        "--half-blocks",
+        action="store_true",
+        help="0.8 s chunks: each block runs as two halves of 4 latents, the second attending to the first (needs --vae-stream, --sp-cache heads).",
+    )
+    parser.add_argument(
+        "--attention",
+        choices=("sage", "fa3"),
+        default="sage",
+        help="Self-attention kernel with --sp-cache heads: SageAttention FP8 (the authors') or FlashAttention 3 BF16 (as fast, exact, CUDA-graph safe).",
+    )
+    parser.add_argument(
+        "--cuda-graphs",
+        action="store_true",
+        help="Replay the DiT's denoising steps as CUDA graphs (the steps are launch-bound, most of all on 4 GPUs).",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--jpeg-quality", type=int, default=80)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     for name in ("repo", "ckpt_dir", "wav2vec_dir", "cond_image"):
         setattr(args, name, os.path.abspath(getattr(args, name)))
-    setup_logging()
-    rank = int(os.getenv("RANK", "0"))
-    world_size = int(os.getenv("WORLD_SIZE", "1"))
+    return args
+
+
+def init_distributed(rank: int, world_size: int) -> None:
+    """torchrun's process group and xDiT's Ulysses sequence parallel over every rank, as generate.py sets them up."""
     import torch
 
     if world_size > 1:
@@ -524,6 +777,14 @@ def main() -> None:
         )
     else:
         pass
+
+
+def main() -> None:
+    args = parse_args()
+    setup_logging()
+    rank = int(os.getenv("RANK", "0"))
+    world_size = int(os.getenv("WORLD_SIZE", "1"))
+    init_distributed(rank, world_size)
     if rank == 0:
         serve(lambda: LiveActModel(args, rank, world_size), args.host, args.port)
     else:
