@@ -4,12 +4,20 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **Choose a meeting transcript's correction style** (#4134): Meeting settings now include an editable correction style. Your style replaces the built-in correction rules, while Voxt still corrects each line in place with your dictionary and Speech context and keeps the summary prompt separate. Reset to default prompt, or save a blank style, to restore the previous behavior.
+
 ### Changed
 
 - **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 
 ### 中文
+
+#### 新增
+
+- **会议转录稿可以自定义校对风格**（#4134）：会议设置新增可编辑的校对风格。你的风格会替换内置校对规则；Voxt 仍逐行校对，使用词典和识别上下文，总结提示词保持独立。点“恢复默认提示词”或保存空白风格，即可恢复原来的行为。
 
 #### 变更
 

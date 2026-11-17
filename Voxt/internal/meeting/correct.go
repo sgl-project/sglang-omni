@@ -30,13 +30,16 @@ const (
 	correctBatchRunes = 3000
 )
 
-const correctPrompt = `You proofread a meeting transcript that speech recognition wrote. The user message is a JSON array of its lines: [{"i": number, "text": "..."}].
+const correctionRequest = `You proofread a meeting transcript that speech recognition wrote. The user message is a JSON array of its lines: [{"i": number, "text": "..."}].`
 
-1. Fix what recognition got wrong, from the context of the meeting: words and characters that sound like the right ones, misheard names, product names and terms (write the glossary's terms as it gives them), and the punctuation.
+// DefaultCorrectionStyle is the built-in transcript-correction behavior.
+const DefaultCorrectionStyle = `1. Fix what recognition got wrong, from the context of the meeting: words and characters that sound like the right ones, misheard names, product names and terms (write the glossary's terms as it gives them), and the punctuation.
 2. Drop stutters ("I I I") and filler sounds (um, uh, 嗯, 呃). Keep everything else as it was said, in the language it was said in: do not rewrite, summarize, translate, merge, split, reorder or add anything.
-3. Leave a word you cannot make out as it is.
+3. Leave a word you cannot make out as it is.`
 
-Answer with only a JSON array, one item for each line, with its i: [{"i": number, "text": "the corrected line"}].`
+const correctionResponse = `Answer with only a JSON array, one item for each line, with its i: [{"i": number, "text": "the corrected line"}].`
+
+const correctPrompt = correctionRequest + "\n\n" + DefaultCorrectionStyle + "\n\n" + correctionResponse
 
 // CorrectTranscript has the language model correct a stored meeting's
 // lines in place: their times, speakers and order stay. A line the
@@ -49,7 +52,8 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 	if m.cfg.LLM == nil {
 		return fmt.Errorf("meeting: no language model")
 	}
-	chat, err := m.cfg.LLM(ctx, m.cfg.Settings().LLM)
+	currentSettings := m.cfg.Settings()
+	chat, err := m.cfg.LLM(ctx, currentSettings.LLM)
 	if err != nil {
 		return err
 	}
@@ -58,7 +62,7 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 		tc = m.cfg.Context(ctx)
 	}
 	for _, batch := range correctionBatches(segs) {
-		fixed, err := correctBatch(ctx, chat, tc, batch)
+		fixed, err := correctBatch(ctx, chat, tc, currentSettings.CorrectionStyle, batch)
 		if err != nil {
 			return err
 		}
@@ -103,7 +107,7 @@ type correctLine struct {
 
 // correctBatch asks for one batch; it returns the corrected text by
 // segment index, without the lines the answer has no text for.
-func correctBatch(ctx context.Context, chat SummaryChat, tc TranscriptContext, batch []store.MeetingSegment) (map[int]string, error) {
+func correctBatch(ctx context.Context, chat SummaryChat, tc TranscriptContext, style string, batch []store.MeetingSegment) (map[int]string, error) {
 	lines := make([]correctLine, len(batch))
 	var text strings.Builder
 	for i, s := range batch {
@@ -116,7 +120,7 @@ func correctBatch(ctx context.Context, chat SummaryChat, tc TranscriptContext, b
 	}
 	zero := 0.0
 	resp, err := chat.Chat(ctx, llm.Request{Temperature: &zero, Messages: []llm.Message{
-		{Role: llm.System, Content: correctSystem(tc, text.String())},
+		{Role: llm.System, Content: correctSystem(tc, text.String(), style)},
 		{Role: llm.User, Content: string(user)},
 	}})
 	if err != nil {
@@ -126,8 +130,12 @@ func correctBatch(ctx context.Context, chat SummaryChat, tc TranscriptContext, b
 }
 
 // correctSystem is the system prompt: the rules, then the user's context.
-func correctSystem(tc TranscriptContext, text string) string {
-	parts := []string{correctPrompt}
+func correctSystem(tc TranscriptContext, text, style string) string {
+	prompt := correctPrompt
+	if style = strings.TrimSpace(style); style != "" {
+		prompt = correctionRequest + "\n\n" + style + "\n\n" + correctionResponse
+	}
+	parts := []string{prompt}
 	if s := strings.TrimSpace(tc.Speech); s != "" {
 		parts = append(parts, "What the meeting is about, in the user's words:\n"+s)
 	}

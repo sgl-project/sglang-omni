@@ -6,11 +6,13 @@ package main
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -18,9 +20,10 @@ import (
 // meetingSettingsUI is the Meetings page settings controls (not persisted
 // in app; mode is read from settings each frame).
 type meetingSettingsUI struct {
-	mode string
-	hide bool
-	seen string
+	mode       string
+	hide       bool
+	seen       string
+	correction speechContextState
 }
 
 func (a *app) meetingSettingsKey() string {
@@ -30,9 +33,16 @@ func (a *app) meetingSettingsKey() string {
 
 func (a *app) meetingSettingsSync() {
 	if a.meetingUI == nil {
-		a.meetingUI = &meetingSettingsUI{}
+		a.meetingUI = &meetingSettingsUI{correction: speechContextState{text: meeting.DefaultCorrectionStyle}}
 	}
 	u := a.meetingUI
+	savedStyle := a.prefs.Features.Meeting.CorrectionStyle
+	if !u.correction.dirty && savedStyle != u.correction.seen {
+		u.correction.text, u.correction.seen = savedStyle, savedStyle
+		if savedStyle == "" {
+			u.correction.text = meeting.DefaultCorrectionStyle
+		}
+	}
 	seen := a.meetingSettingsKey()
 	if u.seen == seen {
 		return
@@ -82,6 +92,7 @@ func (a *app) meetingSettings(c *ui.Context) {
 	a.featureShortcuts(c, hotkey.Meeting)
 	a.meetingASRSettings(c)
 	a.meetingLLMSettings(c)
+	a.meetingCorrectionStyleSettings(c)
 	ui.Text(c, i18n.T("Get the other person's consent before you record them speaking.")).
 		FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 }
@@ -152,6 +163,37 @@ func (a *app) meetingLLMSettings(c *ui.Context) {
 					FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 			}
 		})
+}
+
+func (a *app) meetingCorrectionStyleSettings(c *ui.Context) {
+	t := c.Theme()
+	u := &a.meetingUI.correction
+	sectionTitle(c, i18n.T("Transcript correction"))
+	caption(c, i18n.T("Choose how the language model corrects the transcript. It still keeps every line and uses your dictionary and Speech context."))
+	in := ui.TextArea(c.Key("mt-correction-style"), &u.text).Label(i18n.T("Correction style for meeting transcripts")).
+		Placeholder(i18n.T("For example: keep the conversation's original tone; use concise sentences; keep English product names in English.")).MinHeight(px(t, 96))
+	a.autosave(in, u, a.saveMeetingCorrectionStyle)
+	empty := a.prefs.Features.Meeting.CorrectionStyle == "" && strings.TrimSpace(u.text) == strings.TrimSpace(meeting.DefaultCorrectionStyle)
+	if ghostButton(c.Key("mt-correction-reset"), i18n.T("Reset to default prompt")).Disabled(empty).Clicked() {
+		u.text = meeting.DefaultCorrectionStyle
+		a.saveMeetingCorrectionStyle()
+	}
+}
+
+func (a *app) saveMeetingCorrectionStyle() {
+	u := &a.meetingUI.correction
+	u.dirty = false
+	v := strings.TrimSpace(u.text)
+	if v == strings.TrimSpace(meeting.DefaultCorrectionStyle) {
+		v = ""
+	}
+	u.text, u.seen = v, v
+	if v == "" {
+		u.text = meeting.DefaultCorrectionStyle
+	}
+	if v != a.prefs.Features.Meeting.CorrectionStyle {
+		a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.CorrectionStyle = v })
+	}
 }
 
 func b2s(v bool) string {
