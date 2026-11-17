@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Qwen3-ASR 1.7B (6bit) no longer turns on Faster transcription just because its shared draft is installed**: the draft can arrive with 1.7B (8bit), but that download does not switch it on for 6bit; 6bit uses the draft only after you switch Faster transcription on.
 - **Rewrite and Translate read a block selection in a Lark doc** (#4154): selecting an image block, or a range of blocks with images and text, in a Lark doc in Chrome no longer reads as "no selection". Chrome reports such a selection to Accessibility as a single blank space, which Voxt mistook for the selected text and never tried copying; Voxt now treats a reading that is all whitespace as no reading and copies with ⌘C instead, so the selection's text (with a placeholder per image) reaches the language model.
 - **Starting a meeting works while nothing is playing** (#4130): with the system audio permission already allowed, starting a meeting on a quiet Mac failed about four seconds in, and the notice wrongly said to allow the permission in System Settings. The system audio tap was treated as dead because an idle output gave it no audio; it now waits and records the other side once sound plays. The wait is padded with silence, so sound that starts late lands at its actual time on the meeting's timeline, and a recording with a time limit still ends on its own.
 - **A microphone added in Settings → Audio no longer makes dictation hang on "Starting the microphone…"** (#4120): a chosen input that starts but never delivers sound (some microphones keep reconfiguring themselves before the first sound arrives) made Voxt rebuild the audio engine without end, so the recording never began. The rebuild is now limited like the one for a silent microphone: the second try records from the system default input, and if nothing delivers sound the recording stops with a clear error instead of hanging.
@@ -33,6 +34,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **Qwen3-ASR 1.7B (6bit) 不再仅因共享草稿模型已安装就打开“转录加速”**：草稿模型可能随 1.7B (8bit) 一起下载，但这次下载不会替 6bit 打开开关；只有你亲自打开“转录加速”后，6bit 才使用草稿模型。
 - **用 MOSS-Transcribe-Diarize 听写不会再插入说话人或时间戳标记**：在部分录音（多为英语）上，即使要求纯文本，模型也会输出区分说话人的标记（[S01]、[2.62]），听写会照原样插入。现在纯文本路径会去掉这些标记；会议的说话人转录保持不变。
 
 #### 新增

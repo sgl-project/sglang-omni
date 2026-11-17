@@ -156,7 +156,7 @@ func TestObPackWithDraft(t *testing.T) {
 	}
 	a.obDownload()
 	downloadAsked(t, a, drain, obTestDraft.ID)
-	if !a.settings.Get().Models.FasterOn(models.ASRMoss, true) {
+	if !a.settings.Get().Models.FasterOn(models.ASRMoss, true, false) {
 		t.Error("Faster transcription off with the draft installed and never switched")
 	}
 }
