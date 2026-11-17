@@ -116,6 +116,9 @@ func dictionaryScanCacheKeyFor(state scanState) dictionaryScanCacheKey {
 // and tests seed a.suggestions directly, so a read counter alone can go
 // stale.
 func dictionarySuggestionsFingerprint(suggestions []learn.Suggestion) string {
+	if len(suggestions) == 0 {
+		return ""
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d", len(suggestions))
 	for _, suggestion := range suggestions {
