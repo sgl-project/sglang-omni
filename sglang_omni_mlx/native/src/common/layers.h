@@ -104,10 +104,10 @@ mlx::core::array RouteToExperts(const mlx::core::array &hidden,
                                 const ExpertRunner &run_experts);
 
 // Transformer-XL's relative shift of position scores [batch, heads, queries,
-// positions]: a left zero column, then rows reread one step along, so each
-// row's columns line up with its keys' relative positions. Callers keep the
-// first key-count columns.
-mlx::core::array RelativeShift(const mlx::core::array &scores);
+// positions] to [batch, heads, queries, key_count]: each row's columns line up
+// with its keys' relative positions. Needs positions >= queries + key_count -
+// 1.
+mlx::core::array RelativeShift(const mlx::core::array &scores, int key_count);
 
 // Folds every batch norm module.norm_name (running statistics, weight, bias)
 // into the module's depthwise_conv before it, giving that convolution a bias,

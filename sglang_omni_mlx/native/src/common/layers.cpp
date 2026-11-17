@@ -377,17 +377,24 @@ mx::array Checkpoint::TiedProjection(const mx::array &x,
   }
 }
 
-mx::array RelativeShift(const mx::array &scores) {
+mx::array RelativeShift(const mx::array &scores, int key_count) {
   const int batch = scores.shape(0);
   const int heads = scores.shape(1);
   const int query_length = scores.shape(2);
   const int position_length = scores.shape(3);
-  mx::array padded = mx::pad(scores, {{0, 0}, {0, 0}, {0, 0}, {1, 0}});
-  padded =
-      mx::reshape(padded, {batch, heads, position_length + 1, query_length});
-  padded = mx::slice(padded, {0, 0, 1, 0},
-                     {batch, heads, position_length + 1, query_length});
-  return mx::reshape(padded, {batch, heads, query_length, position_length});
+  if (position_length < query_length + key_count - 1) {
+    throw std::invalid_argument(
+        "relative shift needs a position for every query-key distance");
+  } else {
+  }
+  // Note (XXXXRT666): the padded reshape as a view: row i starts query_length
+  // - 1 - i columns in, so no copy of the scores is made.
+  return mx::as_strided(
+      scores, {batch, heads, query_length, key_count},
+      {static_cast<int64_t>(heads) * query_length * position_length,
+       static_cast<int64_t>(query_length) * position_length,
+       position_length - 1, 1},
+      query_length - 1);
 }
 
 void FoldBatchNorms(WeightMap &weights, const std::string &norm_name,

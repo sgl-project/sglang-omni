@@ -99,21 +99,17 @@ SortformerModel::RelativePositionAttention(const mx::array &x,
       mx::add(q_by_time, checkpoint_.Weight(prefix + ".bias_u")), {0, 2, 1, 3});
   const mx::array q_with_bias_v = mx::transpose(
       mx::add(q_by_time, checkpoint_.Weight(prefix + ".bias_v")), {0, 2, 1, 3});
-  const mx::array matrix_ac =
-      mx::matmul(q_with_bias_u, mx::transpose(k, {0, 1, 3, 2}));
   mx::array matrix_bd =
       mx::matmul(q_with_bias_v, mx::transpose(p, {0, 1, 3, 2}));
-  matrix_bd = omni_common::RelativeShift(matrix_bd);
-  matrix_bd = mx::slice(matrix_bd, {0, 0, 0, 0},
-                        {matrix_bd.shape(0), matrix_bd.shape(1),
-                         matrix_bd.shape(2), matrix_ac.shape(3)});
-  mx::array scores = mx::add(matrix_ac, matrix_bd);
-  scores = mx::divide(scores,
-                      Scalar(std::sqrt(static_cast<float>(head_dim)), scores));
-  const mx::array attention = mx::softmax(scores, -1);
-  const mx::array out =
-      mx::reshape(mx::transpose(mx::matmul(attention, v), {0, 2, 1, 3}),
-                  {batch, -1, heads * head_dim});
+  const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+  // The scaled position scores ride in as the additive mask, so the fused
+  // kernel adds them to the content scores before the softmax.
+  matrix_bd = mx::multiply(omni_common::RelativeShift(matrix_bd, k.shape(2)),
+                           Scalar(scale, matrix_bd));
+  const mx::array attended = mx::fast::scaled_dot_product_attention(
+      q_with_bias_u, k, v, scale, /*window_size=*/-1, "array", matrix_bd);
+  const mx::array out = mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
+                                    {batch, -1, heads * head_dim});
   return checkpoint_.Linear(out, prefix + ".o_proj");
 }
 
