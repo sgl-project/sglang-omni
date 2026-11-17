@@ -749,6 +749,7 @@ def create_tts_engine_executor(
         stop_policy,
         acoustic_graph_max_batch_size,
         enable_fused_flow_head=enable_fused_flow_head and dense,
+        enable_streaming_output=use_streaming_vocoder,
     )
     return OmniScheduler(
         tp_worker=worker,

@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.model_loader.utils import set_default_torch_dtype
 from torch import nn
 
@@ -18,8 +20,10 @@ from sglang_omni.models.ming3_tts.acoustic import FLOW_STEPS, AcousticInputs
 from sglang_omni.models.ming3_tts.kernels import cfg_solver_step
 from sglang_omni.models.ming3_tts.model_runner import (
     LaunchedAcousticStep,
+    LaunchState,
     Ming3TTSModelRunner,
     Ming3TTSRequestData,
+    build_stream_output,
 )
 from sglang_omni.models.ming3_tts.sglang_model import (
     Ming3DenseTTSConfig,
@@ -33,7 +37,8 @@ from sglang_omni.modules.ming_audio.flow.cfm import get_epss_timesteps
 from sglang_omni.modules.ming_audio.flow.flow_loss import FlowLoss
 from sglang_omni.modules.ming_audio.vae.configuration_audio_vae import AudioVAEconfig
 from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
-from sglang_omni.scheduling.types import SchedulerRequest
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.types import RequestOutput, SchedulerRequest
 from tests.unit_test.fixtures.accelerator import require_cuda
 
 HIDDEN_SIZE = 64
@@ -171,6 +176,7 @@ def test_retraction_restores_the_resolved_launch_before_a_newer_launch(
         lambda shape, dtype: torch.empty(shape, dtype=dtype),
     )
     first_launch = runner.post_decode_launch(result, None, requests)
+    assert first_launch.host_latents is None
     runner.post_decode_launch(result, None, requests)
     assert request_data.launched_latents == 2
     request_data.req.is_retracted = True
@@ -181,6 +187,214 @@ def test_retraction_restores_the_resolved_launch_before_a_newer_launch(
     assert torch.equal(generator.get_state(), original_noise_state)
     assert request_data.latents == []
     assert request_data.feedback_embeddings == []
+    assert request_data.last_stream_latent is None
+
+
+@pytest.fixture
+def streaming_step() -> (
+    tuple[Ming3TTSModelRunner, Ming3TTSRequestData, LaunchedAcousticStep]
+):
+    runner = Ming3TTSModelRunner.__new__(Ming3TTSModelRunner)
+    runner.enable_streaming_output = True
+    runner.host_staging_buffers, runner.staging_slot = [], 0
+    runner.latent_host_buffers, runner.latent_host_slot = [], 0
+    request = Ming3TTSRequestData(
+        stage_payload=StagePayload(
+            "stream", OmniRequest("text", params={"stream": True}), {}
+        ),
+        speaker_embedding=torch.zeros(192),
+        speaker_position=0,
+        sampling_temperature=0.0,
+        noise_generator=torch.Generator().manual_seed(42),
+        latent_history=torch.zeros(1, LATENT_DIM),
+        req=SimpleNamespace(is_retracted=False, finished=lambda: False),
+    )
+    launched = LaunchedAcousticStep(
+        latents=torch.ones(1, 1, LATENT_DIM),
+        feedback_embeddings=torch.ones(1, HIDDEN_SIZE),
+        is_middle_chunk=[False],
+        host_token_ids=torch.ones(1, dtype=torch.long),
+        host_latents=torch.ones(1, 1, LATENT_DIM),
+        before_launch=[
+            LaunchState(
+                latent_history=request.latent_history,
+                next_feedback=None,
+                launched_latents=0,
+                noise_state=request.noise_generator.get_state(),
+            )
+        ],
+    )
+    return runner, request, launched
+
+
+@pytest.mark.parametrize(
+    "state", ["running", "finished", "retracted", "middle", "nonstream"]
+)
+def test_stream_commit_keeps_only_live_complete_rows(
+    streaming_step: tuple[
+        Ming3TTSModelRunner, Ming3TTSRequestData, LaunchedAcousticStep
+    ],
+    state: str,
+) -> None:
+    runner, request, launched = streaming_step
+    cached = torch.full((1, LATENT_DIM), -1.0)
+    request.last_stream_latent = cached
+    request.req = SimpleNamespace(
+        is_retracted=state == "retracted", finished=lambda: state == "finished"
+    )
+    request.stage_payload.request.params["stream"] = state != "nonstream"
+    launched.is_middle_chunk = [state == "middle"]
+    runner.post_decode_resolve(
+        launched,
+        GenerationBatchResult(),
+        None,
+        None,
+        [SchedulerRequest(request_id="stream", data=request)],
+    )
+    if state in ("finished", "retracted", "middle"):
+        assert request.latents == request.feedback_embeddings == []
+        assert request.last_stream_latent is cached
+    elif state == "nonstream":
+        assert request.last_stream_latent is None
+        assert build_stream_output("stream", request, RequestOutput("stream")) == []
+        torch.testing.assert_close(torch.stack(request.latents), launched.latents)
+    else:
+        launched.host_latents.fill_(9)
+        torch.testing.assert_close(
+            request.last_stream_latent, torch.ones(1, LATENT_DIM)
+        )
+        messages = build_stream_output(
+            "stream", request, RequestOutput("stream", finished=True)
+        )
+        assert len(messages) == 1
+        torch.testing.assert_close(messages[0].data, torch.ones(1, LATENT_DIM))
+        assert request.last_stream_latent is None
+        assert (
+            build_stream_output(
+                "stream", request, RequestOutput("stream", finished=True)
+            )
+            == []
+        )
+
+
+def test_sync_commit_resets_cached_stream_row_without_losing_pending_latents(
+    streaming_step: tuple[
+        Ming3TTSModelRunner, Ming3TTSRequestData, LaunchedAcousticStep
+    ],
+) -> None:
+    runner, request, launched = streaming_step
+    requests = [SchedulerRequest(request_id="stream", data=request)]
+    runner.commit_acoustic_step(launched, requests, [0])
+    launched.latents = torch.full_like(launched.latents, 2)
+    launched.host_latents = None
+    runner.commit_acoustic_step(launched, requests, [0])
+    assert request.last_stream_latent is None
+    messages = build_stream_output(
+        "stream", request, RequestOutput("stream", finished=True)
+    )
+    torch.testing.assert_close(
+        torch.stack([message.data for message in messages]),
+        torch.stack(request.latents),
+    )
+    assert len(messages) == 2
+    assert (
+        build_stream_output("stream", request, RequestOutput("stream", finished=True))
+        == []
+    )
+
+
+@pytest.mark.accelerator
+def test_stream_latent_staging_survives_lookahead_and_buffer_reuse(
+    streaming_step: tuple[
+        Ming3TTSModelRunner, Ming3TTSRequestData, LaunchedAcousticStep
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    require_cuda()
+    runner, request, _ = streaming_step
+    other_request = replace(request, latents=[], feedback_embeddings=[])
+    requests = [
+        SchedulerRequest(request_id="stream", data=request),
+        SchedulerRequest(request_id="other", data=other_request),
+    ]
+    result = GenerationBatchResult(
+        next_token_ids=torch.ones(2, dtype=torch.long, device="cuda")
+    )
+    values = iter((1.0, 2.0, 3.0, 4.0, 5.0))
+
+    def launch_step(
+        result: GenerationBatchResult, requests: list[SchedulerRequest]
+    ) -> LaunchedAcousticStep:
+        return LaunchedAcousticStep(
+            latents=torch.full((2, 1, LATENT_DIM), next(values), device="cuda")
+            + torch.arange(2, device="cuda")[:, None, None] * 10,
+            feedback_embeddings=torch.ones(2, HIDDEN_SIZE, device="cuda"),
+            is_middle_chunk=[False, False],
+            host_token_ids=None,
+        )
+
+    monkeypatch.setattr(runner, "launch_acoustic_step", launch_step)
+    first = runner.post_decode_launch(result, None, requests)
+    first_ready = torch.cuda.Event()
+    first_ready.record()
+    second = runner.post_decode_launch(result, None, requests)
+    second_ready = torch.cuda.Event()
+    second_ready.record()
+    assert first.host_latents.is_pinned()
+    assert first.host_latents.data_ptr() != second.host_latents.data_ptr()
+    first.latents.fill_(91)
+    first_ready.synchronize()
+    runner.post_decode_resolve(first, result, None, None, requests)
+    first_messages = []
+    for scheduled in requests:
+        cached = scheduled.data.last_stream_latent
+        first_messages.extend(
+            build_stream_output(
+                scheduled.request_id,
+                scheduled.data,
+                RequestOutput(scheduled.request_id),
+            )
+        )
+        cached.fill_(99)
+    result.next_token_ids = torch.ones(2, dtype=torch.long, device="cuda")
+    third = runner.post_decode_launch(result, None, requests)
+    third_ready = torch.cuda.Event()
+    third_ready.record()
+    assert first.host_latents.data_ptr() == third.host_latents.data_ptr()
+    for launched, ready, expected in (
+        (second, second_ready, 2.0),
+        (third, third_ready, 3.0),
+    ):
+        ready.synchronize()
+        runner.post_decode_resolve(launched, result, None, None, requests)
+        for row, scheduled in enumerate(requests):
+            messages = build_stream_output(
+                scheduled.request_id,
+                scheduled.data,
+                RequestOutput(scheduled.request_id),
+            )
+            assert len(messages) == 1
+            torch.testing.assert_close(
+                messages[0].data, torch.full((1, LATENT_DIM), expected + row * 10)
+            )
+    for row, message in enumerate(first_messages):
+        torch.testing.assert_close(
+            message.data, torch.full((1, LATENT_DIM), 1.0 + row * 10)
+        )
+    for is_streaming, enable_streaming_output in ((False, True), (True, False)):
+        request.stage_payload.request.params["stream"] = is_streaming
+        runner.enable_streaming_output = enable_streaming_output
+        result.next_token_ids = torch.ones(2, dtype=torch.long, device="cuda")
+        previous_slot = runner.latent_host_slot
+        fallback = runner.post_decode_launch(result, None, requests)
+        assert fallback.host_latents is None
+        assert runner.latent_host_slot == previous_slot
+        torch.cuda.synchronize()
+        runner.post_decode_resolve(fallback, result, None, None, requests)
+        assert all(scheduled.data.last_stream_latent is None for scheduled in requests)
+    for scheduled in requests:
+        assert torch.stack(scheduled.data.latents).shape == (5, 1, LATENT_DIM)
+        assert all(latent.is_cuda for latent in scheduled.data.latents)
 
 
 @pytest.mark.accelerator
