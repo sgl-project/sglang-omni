@@ -1,5 +1,6 @@
 """Exercise reference conditioning and prefix memory admission on CPU."""
 
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -249,6 +250,10 @@ def test_prefix_estimate_covers_observed_softmax_buffers(
 ) -> None:
     model, tokenizer = edit_model_and_tokenizer
     model.to(dtype=dtype)
+    weight_storages = {
+        tensor.untyped_storage().data_ptr()
+        for tensor in (*model.parameters(), *model.buffers())
+    }
     prompt = "edit " * 256
     queries = build_it2i_queries(model, prompt, [(32, 32)], 4.0, 1.0)
     token_lengths = [len(tokenizer.encode(query)) for query in queries]
@@ -277,6 +282,15 @@ def test_prefix_estimate_covers_observed_softmax_buffers(
         attention_storage_bytes = softmax_storage_bytes | {
             probability_storage.data_ptr(): probability_storage.nbytes()
         }
+        frame = inspect.currentframe()
+        while frame.f_code.co_name != "it2i_generate":
+            frame = frame.f_back
+            attention_storage_bytes |= {
+                value.untyped_storage().data_ptr(): value.untyped_storage().nbytes()
+                for value in frame.f_locals.values()
+                if isinstance(value, torch.Tensor)
+                and value.untyped_storage().data_ptr() not in weight_storages
+            }
         live_attention_bytes = max(
             live_attention_bytes, sum(attention_storage_bytes.values())
         )
@@ -355,6 +369,7 @@ def test_prefix_estimate_covers_allocated_caches(
     model, _ = edit_model_and_tokenizer
     model.to(dtype=dtype)
     caches = []
+    position_tensors = []
     for _ in range(2):
         cache = DynamicCache(config=model.config.llm_config)
         cache.update(
@@ -364,6 +379,10 @@ def test_prefix_estimate_covers_allocated_caches(
         )
         prepare_flash_kv_cache(cache, current_len=4096, batch_size=1)
         caches.append(cache)
+        position_tensors += [
+            torch.zeros(1, 3, 4096, dtype=torch.long),
+            torch.tensor([64]),
+        ]
     allocated_cache_bytes = sum(
         tensor.nbytes
         for cache in caches
@@ -375,10 +394,9 @@ def test_prefix_estimate_covers_allocated_caches(
             layer.flash_v_cache,
         )
     )
-    assert (
-        estimate_it2i_prefix_memory_bytes(model, [64, 64], (2048, 2048), [(32, 32)])
-        >= allocated_cache_bytes
-    )
+    assert estimate_it2i_prefix_memory_bytes(
+        model, [64, 64], (2048, 2048), [(32, 32)]
+    ) >= allocated_cache_bytes + sum(tensor.nbytes for tensor in position_tensors)
 
 
 def test_prefix_attention_is_budgeted_sequentially(

@@ -72,4 +72,4 @@ The following model-side settings are available through SenseNovaU1SamplingParam
 
 Transparent references are composited onto white. An explicit `size` determines the output dimensions. Without it, the sampling defaults remain 2048×2048. Reference preprocessing follows the historical native model's pixel budget: a minimum of 512² and a maximum of min(2048², 4096² / reference count), with dimensions aligned to 32 pixels. Editing uses the default timestep shift and CFG controls; CFG normalization and think mode are not supported on this path.
 
-Editing accepts at most 64 references and rejects an edit whose estimated prefix memory exceeds the GPU's free memory before encoding its references. SenseNova enables PyTorch expandable segments at startup unless `PYTORCH_CUDA_ALLOC_CONF` or `PYTORCH_ALLOC_CONF` is set.
+Editing accepts at most 64 references and rejects an edit whose estimated prefix memory exceeds the GPU's free memory plus the memory PyTorch has reserved but not allocated, before encoding its references. SenseNova enables PyTorch expandable segments at startup unless `PYTORCH_CUDA_ALLOC_CONF` or `PYTORCH_ALLOC_CONF` is set.

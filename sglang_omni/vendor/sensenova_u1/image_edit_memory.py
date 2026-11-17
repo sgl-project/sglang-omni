@@ -65,11 +65,24 @@ def estimate_it2i_prefix_memory_bytes(
             + attention_bytes
             + token_count * activation_bytes_per_token,
         )
-    output_tokens = (output_size_pixels[0] // image_patch_size_pixels) * (
-        output_size_pixels[1] // image_patch_size_pixels
-    )
+    output_rows = output_size_pixels[1] // image_patch_size_pixels
+    output_columns = output_size_pixels[0] // image_patch_size_pixels
+    output_tokens = output_rows * output_columns
     # note (Wes): Expanded flash caches coexist with the original prefix caches.
     expanded_cache_bytes = prefix_cache_bytes + (
         len(token_lengths) * output_tokens * cache_bytes_per_token
     )
-    return max(peak_prefix_bytes, prefix_cache_bytes + expanded_cache_bytes)
+    # note (Richard Wang): Each prefix keeps its output position indexes and cache length until denoising ends.
+    prefix_index_bytes = (
+        model._build_t2i_image_indexes(
+            output_rows,
+            output_columns,
+            torch.zeros(1, dtype=torch.long, device="meta"),
+            device="meta",
+        ).nbytes
+        + torch.int64.itemsize
+    )
+    return (
+        max(peak_prefix_bytes, prefix_cache_bytes + expanded_cache_bytes)
+        + len(token_lengths) * prefix_index_bytes
+    )
