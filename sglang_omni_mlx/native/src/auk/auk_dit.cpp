@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 
@@ -121,12 +122,16 @@ struct Modulation {
   mx::array normalized, attention_gate, shift, scale, feed_forward_gate;
 };
 
-Modulation Modulate(const Checkpoint &checkpoint,
-                    const mx::array &hidden_states, const mx::array &timestep,
-                    const std::string &prefix) {
-  auto modulation = mx::split(
-      mx::expand_dims(checkpoint.Linear(Silu(timestep), prefix + ".linear"), 1),
-      6, -1);
+// One step's row [1, 1, outputs] of a modulation precomputed for every step.
+mx::array StepRow(const mx::array &modulations, int step) {
+  return mx::reshape(
+      mx::slice(modulations, {step, 0}, {step + 1, modulations.shape(1)}),
+      {1, 1, modulations.shape(1)});
+}
+
+Modulation Modulate(const mx::array &hidden_states,
+                    const mx::array &modulations, int step) {
+  auto modulation = mx::split(StepRow(modulations, step), 6, -1);
   return {ModulatedNormalize(hidden_states, modulation[0], modulation[1]),
           modulation[2], modulation[3], modulation[4], modulation[5]};
 }
@@ -234,11 +239,8 @@ DiT::PrepareReference(const std::optional<mx::array> &reference,
   return prepared;
 }
 
-mx::array DiT::Predict(const mx::array &latents,
-                       const mx::array &projected_text,
-                       const mx::array &timestep,
-                       const PreparedReference &reference,
-                       bool classifier_free_guidance) const {
+std::map<std::string, mx::array>
+DiT::TimeModulations(const mx::array &timesteps) const {
   const auto &time_weight =
       checkpoint_.Weight("transformer.time_embed.time_mlp.0.weight");
   const int half_frequency_count = time_weight.shape(1) / 2;
@@ -247,13 +249,40 @@ mx::array DiT::Predict(const mx::array &latents,
               mx::array(static_cast<float>(-std::log(10000.0) /
                                            (half_frequency_count - 1))));
   const mx::array angles =
-      mx::reshape(timestep, {1, 1}) * mx::array(1000.0f) * frequencies;
-  mx::array time_embedding = checkpoint_.Linear(
+      mx::reshape(timesteps, {-1, 1}) * mx::array(1000.0f) * frequencies;
+  const mx::array activated = Silu(checkpoint_.Linear(
       Silu(checkpoint_.Linear(
           mx::astype(mx::concatenate({mx::sin(angles), mx::cos(angles)}, -1),
                      dtype_),
           "transformer.time_embed.time_mlp.0")),
-      "transformer.time_embed.time_mlp.2");
+      "transformer.time_embed.time_mlp.2"));
+  std::vector<std::string> prefixes;
+  for (int layer = 0; layer < config_.joint_layer_count; ++layer) {
+    const std::string prefix =
+        "transformer.transformer_blocks." + std::to_string(layer);
+    prefixes.push_back(prefix + ".attn_norm_c");
+    prefixes.push_back(prefix + ".attn_norm_x");
+  }
+  for (int layer = 0; layer < config_.single_layer_count; ++layer) {
+    prefixes.push_back("transformer.single_transformer_blocks." +
+                       std::to_string(layer) + ".attn_norm");
+  }
+  prefixes.push_back("transformer.norm_out");
+  std::map<std::string, mx::array> modulations;
+  std::vector<mx::array> outputs;
+  for (const std::string &prefix : prefixes) {
+    outputs.push_back(checkpoint_.Linear(activated, prefix + ".linear"));
+    modulations.emplace(prefix, outputs.back());
+  }
+  mx::async_eval(outputs);
+  return modulations;
+}
+
+mx::array DiT::Predict(const mx::array &latents,
+                       const mx::array &projected_text,
+                       const std::map<std::string, mx::array> &modulations,
+                       int step, const PreparedReference &reference,
+                       bool classifier_free_guidance) const {
   mx::array audio =
       EmbedAudio(mx::expand_dims(mx::astype(latents, dtype_), 0), std::nullopt);
   mx::array text = projected_text;
@@ -276,7 +305,7 @@ mx::array DiT::Predict(const mx::array &latents,
   } else {
   }
   if (classifier_free_guidance) {
-    // Both halves share the time embedding [1, width].
+    // Both halves share the step's modulations.
     text = mx::concatenate({text, mx::zeros_like(text)}, 0);
     audio_mask =
         audio_mask
@@ -293,9 +322,9 @@ mx::array DiT::Predict(const mx::array &latents,
     const std::string prefix =
         "transformer.transformer_blocks." + std::to_string(layer);
     const auto text_modulation =
-        Modulate(checkpoint_, text, time_embedding, prefix + ".attn_norm_c");
+        Modulate(text, modulations.at(prefix + ".attn_norm_c"), step);
     const auto audio_modulation =
-        Modulate(checkpoint_, audio, time_embedding, prefix + ".attn_norm_x");
+        Modulate(audio, modulations.at(prefix + ".attn_norm_x"), step);
     const auto attended = Attention(
         checkpoint_, audio_modulation.normalized, text_modulation.normalized,
         prefix + ".attn", rotary_periods_, config_.head_count, joint_mask,
@@ -315,7 +344,7 @@ mx::array DiT::Predict(const mx::array &latents,
     const std::string prefix =
         "transformer.single_transformer_blocks." + std::to_string(layer);
     const auto modulation =
-        Modulate(checkpoint_, audio, time_embedding, prefix + ".attn_norm");
+        Modulate(audio, modulations.at(prefix + ".attn_norm"), step);
     const auto attended =
         Attention(checkpoint_, modulation.normalized, std::nullopt,
                   prefix + ".attn", rotary_periods_, config_.head_count,
@@ -326,11 +355,8 @@ mx::array DiT::Predict(const mx::array &latents,
   }
   audio = mx::slice(audio, {0, token_count + reference.frame_count, 0},
                     audio.shape());
-  const auto final_modulation = mx::split(
-      mx::expand_dims(checkpoint_.Linear(Silu(time_embedding),
-                                         "transformer.norm_out.linear"),
-                      1),
-      2, -1);
+  const auto final_modulation =
+      mx::split(StepRow(modulations.at("transformer.norm_out"), step), 2, -1);
   return checkpoint_.Linear(
       ModulatedNormalize(audio, final_modulation[1], final_modulation[0]),
       "transformer.proj_out");
@@ -353,11 +379,16 @@ mx::array DiT::Sample(const mx::array &conditioning,
   const auto prepared =
       PrepareReference(reference, reference_length, use_guidance);
   mx::array latents = mx::astype(noise, mx::float32);
-  for (int step = 0; step < static_cast<int>(times.size()) - 1; ++step) {
+  const int step_count = static_cast<int>(times.size()) - 1;
+  // Note (XXXXRT666): every step's modulations come from one pass over the
+  // timesteps, so the modulation weights are read once, not once a step.
+  const std::map<std::string, mx::array> modulations =
+      TimeModulations(mx::slice(times, {0}, {step_count}));
+  for (int step = 0; step < step_count; ++step) {
     check_cancelled();
     const mx::array timestep = mx::take(times, mx::array(step));
-    mx::array velocity =
-        Predict(latents, projected_text, timestep, prepared, use_guidance);
+    mx::array velocity = Predict(latents, projected_text, modulations, step,
+                                 prepared, use_guidance);
     if (use_guidance) {
       const auto predictions = mx::split(velocity, 2, 0);
       velocity =
