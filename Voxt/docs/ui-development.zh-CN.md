@@ -68,7 +68,7 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 `TestMeetingViewStateGolden` 通过生产代码的 view state 构造器生成全部 fixture。`TestMeetingFixtureCoverage`、`TestHistoryFixtureCoverage` 和 `TestSessionFixtureCoverage` 从领域声明中读取状态和问题代码。`TestUpdatesFixtureCoverage` 枚举更新区域的显示分支和 Release 检查错误分支，`TestHomeFixtureCoverage` 枚举首页的就绪项动作，`TestOnboardingFixtureCoverage` 枚举引导的步骤、权限状态和快捷键预设，`TestAppEnhancementFixtureCoverage` 枚举应用增强的匹配来源，`TestDictionaryFixtureCoverage` 从领域声明读取词典建议来源并检查扫描阶段，`TestRemoteFixtureCoverage` 枚举语言模型区域的缺失项、问题代码、生成方式和模型等待，`TestModelsFixtureCoverage` 枚举模型种类、运行时、下载错误和模型驻留选择，`TestFeatureFixtureCoverage` 枚举功能和快捷键的问题代码，`TestSettingsFixtureCoverage` 检查设置分节、权限状态、声音来源和采集方式，`TestShellFixtureCoverage` 检查 shell 的 fixture 种类、通知级别和日志级别，并从领域声明读取辅助进程失败原因。这些测试在缺 fixture 时都会失败。
 
-视图需要新数据时，由功能侧把数据加入构造器输入和 view state，并增加一个能证明该值来自真实逻辑的场景。新增用户意图时，在所属区域的 `*_actions.go` 中加入 action，在 `app` 上实现，在 `meetingDemoHost` 上记录，并在该区域的 demo action 测试中加入点击测试。
+视图需要新数据时，由功能侧把数据加入构造器输入和 view state，并增加一个能证明该值来自真实逻辑的场景。新增正式页面的用户意图时，在所属区域的 `*_actions.go` 中加入 action，在 `app` 上实现，在 `meetingDemoHost` 上记录，并在该区域的 demo action 测试中加入点击测试。
 
 ## 接入下一个区域或 fixture 驱动的小页面
 
@@ -78,9 +78,11 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 1. 在 `meeting_fixture.go` 的 `meetingFixtureState` 中加入对应字段，并在 `meeting_fixture_test.go` 的 `buildMeetingFixture` 中加入构造分支。在 `meeting_fixture_scenarios_test.go` 中加入场景，然后重新生成 fixture。
 2. 在 `meeting_demo.go` 的 `readMeetingDemoFixture` 中接受这个 kind，并在 `meeting_demo_view.go` 的 `meetingDemoView` 中加入渲染分支。在 `selectMeetingFixture` 中初始化和重置界面本地状态。
-3. 在所属区域的 `*_actions.go` 中加入 action，在 `app` 上实现，并在 `meetingDemoHost` 上记录。
+3. 在所属区域的 `*_actions.go` 中加入 action，并在 `meetingDemoHost` 上记录。正式页面还要在 `app` 上实现这些 action；只做 demo 练习时，只需要记录实现。
 4. 在 `meeting_demo_test.go` 的 `meetingDemoSentinel` 中加入预期可见文字，并在该区域的 demo action 测试中加入控件测试。
 5. 正式页面还要由所属控制器构造状态，并在 `pages.go` 中注册视图。只做 demo 练习时，完成 fixture、视图和 action 测试即可。
+
+`TestFileSizes` 限制生产文件最多 600 行、测试文件最多 800 行。接入后会超限时，先按主题把 demo 代码拆到 `<area>_demo.go` 或 `<area>_demo_test.go`，不要压缩无关代码，也不要新增 allowlist 条目。
 
 运行 `go test ./internal/archtest` 检查新视图的 import，运行 `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage|TestSessionFixtureCoverage|TestUpdatesFixtureCoverage|TestHomeFixtureCoverage|TestOnboardingFixtureCoverage|TestAppEnhancementFixtureCoverage|TestDictionaryFixtureCoverage|TestRemoteFixtureCoverage|TestModelsFixtureCoverage|TestFeatureFixtureCoverage|TestSettingsFixtureCoverage|TestShellFixtureCoverage)$' .` 检查现有 fixture 覆盖。新区域的 golden、渲染和 action 测试放在这些测试旁边。
 

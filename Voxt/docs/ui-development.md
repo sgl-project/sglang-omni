@@ -68,7 +68,7 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 `TestMeetingViewStateGolden` builds every fixture through the production view-state builders. `TestMeetingFixtureCoverage`, `TestHistoryFixtureCoverage`, and `TestSessionFixtureCoverage` derive required states and problem codes from the domain declarations. `TestUpdatesFixtureCoverage` enumerates the updates display and release-check error branches, `TestHomeFixtureCoverage` enumerates the home readiness actions, `TestOnboardingFixtureCoverage` enumerates the onboarding steps, permission states, and shortcut presets, `TestAppEnhancementFixtureCoverage` enumerates the app enhancement match sources, `TestDictionaryFixtureCoverage` derives the dictionary suggestion sources and checks the scan stages, `TestRemoteFixtureCoverage` enumerates the remote missing and problem codes, generation choices, and model waits, `TestModelsFixtureCoverage` enumerates the model kinds, runtimes, download errors, and keep-loaded choices, `TestFeatureFixtureCoverage` enumerates the feature and shortcut problem codes, `TestSettingsFixtureCoverage` checks the settings sections, permission states, sound sources, and capture modes, and `TestShellFixtureCoverage` checks the shell's fixture kinds, notice severities, and log levels and derives the helper failure reasons. These tests fail when a fixture is missing.
 
-If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new user intent, add the action to the area's `*_actions.go` file, implement it on `app`, record it on `meetingDemoHost`, and add a click test to the area's demo action test.
+If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new production user intent, add the action to the area's `*_actions.go` file, implement it on `app`, record it on `meetingDemoHost`, and add a click test to the area's demo action test.
 
 ## Add the next area or a fixture-backed page
 
@@ -78,9 +78,11 @@ Use a short kind such as `note` for the new page. Keep the view in a `*_page.go`
 
 1. Add an optional field for the new kind to `meetingFixtureState` in `meeting_fixture.go` and a matching case to `buildMeetingFixture` in `meeting_fixture_test.go`. Add a scenario to `meeting_fixture_scenarios_test.go` and regenerate the fixtures.
 2. Accept the kind in `readMeetingDemoFixture` in `meeting_demo.go` and add its render branch to `meetingDemoView` in `meeting_demo_view.go`. Initialize and reset any local widget state in `selectMeetingFixture`.
-3. Add the action methods to the area's `*_actions.go` file, implement them on `app`, and record them on `meetingDemoHost`.
+3. Add the action methods to the area's `*_actions.go` file and record them on `meetingDemoHost`. A production page also implements them on `app`. A demo-only exercise needs only the recording implementation.
 4. Add the expected visible text to `meetingDemoSentinel` in `meeting_demo_test.go` and add controls to the area's demo action test.
 5. For a production page, construct its state in the owning controller and register the view in `pages.go`. A demo-only exercise can stop after the fixture, view, and action tests.
+
+`TestFileSizes` limits production files to 600 lines and test files to 800. If the integration would cross either limit, split the demo code by topic into `<area>_demo.go` or `<area>_demo_test.go` before adding it. Do not compress unrelated code or add an allowlist entry.
 
 Run `go test ./internal/archtest` to check the new view's imports and `go test -run '^(TestMeeting(ViewStateGolden|FixtureCoverage)|TestHistoryFixtureCoverage|TestSessionFixtureCoverage|TestUpdatesFixtureCoverage|TestHomeFixtureCoverage|TestOnboardingFixtureCoverage|TestAppEnhancementFixtureCoverage|TestDictionaryFixtureCoverage|TestRemoteFixtureCoverage|TestModelsFixtureCoverage|TestFeatureFixtureCoverage|TestSettingsFixtureCoverage|TestShellFixtureCoverage)$' .` to check existing fixture coverage. Add the new area's own golden, rendering, and action tests beside those suites.
 
