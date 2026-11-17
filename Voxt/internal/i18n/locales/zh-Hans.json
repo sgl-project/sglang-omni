@@ -740,6 +740,8 @@
   "Press %s or Start, then say what to write (\"a short note saying I will be late\"). The answer shows here and is not typed anywhere.": "按 %s 或点“开始”，说出要写什么（“写一条短消息说我会晚到”）。结果显示在这里，不会输入到任何地方。",
   "Press %s to start": "按 %s 开始",
   "Press Return to use %s.": "按 Return 使用 %s。",
+  "Return finishes dictation": "按回车完成转录",
+  "While Transcribe records, Return stops recording. The key does not add a newline after the result.": "转录录音时，按回车停止录音。结果插入后不会再输入一次回车。",
   "Press a key": "按一个键",
   "Press a shortcut anywhere, speak, and the text is typed where your cursor is.": "在任何地方按下快捷键说话，文字会输入到光标所在的位置。",
   "Transcribe writes down what you say. Press the shortcut (or Start), read the sentence below, then press it again to stop.": "转录把你说的话写成文字。按下快捷键（或点“开始”），读下面这句话，再按一次结束。",

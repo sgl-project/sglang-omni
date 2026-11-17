@@ -235,6 +235,44 @@ func TestSessionEndToEnd(t *testing.T) {
 	}
 }
 
+// TestSessionReturnFinishes: Return takes the same stop path as the
+// transcription shortcut, with Voxt or another app in front, and the
+// finishing key is not posted again after the text is inserted.
+func TestSessionReturnFinishes(t *testing.T) {
+	voxt := proto.App{PID: os.Getpid(), BundleID: selfBundleID, Name: "Voxt"}
+	other := helpertest.Apps["com.tinyspeck.slackmacgap"]
+	for _, front := range []proto.App{voxt, other} {
+		t.Run(front.Name, func(t *testing.T) {
+			chat := &fakeChat{text: "Finished sentence."}
+			set, keys, _ := fileSetup(t, "finished sentence", chat)
+			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
+			a := newSessionApp(t, ev, set, keys)
+			a.pump("the recording", func() bool { return a.sess.State == session.Recording })
+			if !strings.Contains(a.hotkeysSent, "ID:finish") {
+				t.Fatal("Return is not bound while Transcribe records")
+			}
+			a.hotkeyFired(proto.HotkeyEventParams{Binding: "finish", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
+			a.pump("the recognition", func() bool { return a.sess.State != session.Recording })
+			if a.sess.State != session.Recognizing {
+				t.Fatalf("state after stop: %s, want recognizing", a.sess.State)
+			}
+			if strings.Contains(a.hotkeysSent, "ID:finish") {
+				t.Fatalf("helper still swallows Return while recognizing: %s", a.hotkeysSent)
+			}
+			a.pump("the end", func() bool { return a.sess.State.Ended() })
+			if a.sess.State != session.Done || a.sess.Result != "Finished sentence." || !a.sess.Inserted {
+				t.Fatalf("end %+v", a.sess)
+			}
+			if p := a.pasted(); len(p) != 1 || p[0].Text != "Finished sentence." || len(p[0].Press) != 0 {
+				t.Errorf("pasted %+v", p)
+			}
+			if strings.Contains(a.hotkeysSent, "ID:finish") {
+				t.Errorf("Return is still bound after the session: %s", a.hotkeysSent)
+			}
+		})
+	}
+}
+
 // TestSessionStreamingCard: a streaming model shows its partial while
 // recording; with the answer card on, the result waits in the card,
 // whose Insert pastes it.
