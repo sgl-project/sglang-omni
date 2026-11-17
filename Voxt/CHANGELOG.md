@@ -4,12 +4,22 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed meeting transcript correction no longer applies by halves**: when the language model corrected a meeting's transcript and failed part-way, the batches already done stayed, so the summary ran over a mix of corrected and recognised lines with nothing saying which was which. The correction now lands only as a whole; a failure leaves every line as recognised.
+- **A failed or cancelled meeting's recording is deleted after seven days**: the recording was meant to be kept for seven days when the settings keep no audio, but nothing ever deleted it. It is now swept once its time is up. A finished meeting's recording still follows the settings right away.
+
 ### Changed
 
 - **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 
 ### 中文
+
+#### 修复
+
+- **会议转录稿校对失败时不再改一半**：语言模型校对会议转录稿中途失败时，已完成的批次会留下，总结因此混用校对过和未校对的文字，且看不出区别。现在校对只会整体生效，失败时每一行都保持识别原文。
+- **失败或取消的会议录音七天后会被删除**：设置不保留音频时，这类录音本应保留七天，但一直没有东西去删它。现在到期后会被清理。正常结束的会议录音仍按设置立即处理。
 
 #### 变更
 
