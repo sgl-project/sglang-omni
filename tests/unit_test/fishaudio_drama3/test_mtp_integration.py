@@ -23,6 +23,7 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
 )
+from sglang.srt.layers.attention.linear import gdn_backend
 from sglang.srt.layers.attention.linear.gdn_backend import GDNAttnBackend
 from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -2286,7 +2287,7 @@ def engine_server_args(
     builder = Drama3EngineBuilder(context_length=context_length, max_running_requests=2)
     builder.pre_infra_setup(str(checkpoint_dir))
     generation_overrides = build_generation_batch_overrides(
-        server_args_overrides=overrides,
+        server_args_overrides={"device": "cuda", **overrides},
         **builder.generation_defaults(dtype="bfloat16"),
     )
     builder.adjust_overrides(generation_overrides)
@@ -2297,6 +2298,7 @@ def engine_server_args(
 
 def test_engine_defaults_pass_its_own_validation(tmp_path: Path) -> None:
     builder, server_args = engine_server_args(tmp_path, {})
+    assert gdn_backend.GDNAttnBackend is GDNAttnBackend
 
     builder.validate_before_infrastructure(server_args)
     graph_config = resolved_view(server_args).cuda_graph_config
@@ -2307,6 +2309,7 @@ def test_engine_defaults_pass_its_own_validation(tmp_path: Path) -> None:
     assert graph_config.prefill.backend == CudaGraphBackend.BREAKABLE
     assert max(graph_config.prefill.bs) == PREFILL_CUDA_GRAPH_MAX_TOKENS
     assert server_args.prefill_decode_interval == DECODE_STEPS_BETWEEN_PREFILLS
+    assert server_args.enable_gdn_fp32_snapshots
 
 
 def test_engine_context_must_fit_the_tower_rope_table(

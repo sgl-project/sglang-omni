@@ -9,9 +9,11 @@ from contextlib import nullcontext
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.distributed.parallel_state import graph_capture
+from sglang.srt.environ import envs
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
 )
+from sglang.srt.layers.attention.linear.gdn_backend import GDNAttnBackend
 from sglang.srt.layers.quantization import QUANTIZATION_METHODS
 from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
@@ -44,10 +46,6 @@ from sglang_omni.models.fishaudio_drama3.config import (
 )
 from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
-)
-from sglang_omni.models.fishaudio_drama3.gdn_prefill_graph import (
-    GDNPrefillGraphAttnBackend,
-    install_gdn_prefill_graph,
 )
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import (
@@ -170,12 +168,10 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         QUANTIZATION_METHODS[QUANTIZATION_METHOD] = ExpertFp8Config
         QUANTIZATION_METHODS[INT4_QUANTIZATION_METHOD] = ExpertDenseInt4Config
         install_tuned_moe_configs()
-        install_gdn_prefill_graph(
-            FISH_OMNI_ARCHITECTURE,
-            max_sequences=(
-                self.max_running_requests if self.gdn_prefill_cuda_graphs else 0
-            ),
-        )
+        if not self.gdn_prefill_cuda_graphs:
+            envs.SGLANG_ENABLE_GDN_PREFILL_GRAPH_EXTEND.set(False)
+        else:
+            pass
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
@@ -197,6 +193,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         overrides.setdefault("page_size", 1)
         overrides.setdefault("tp_size", self.tp_size)
+        overrides.setdefault("enable_gdn_fp32_snapshots", True)
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
         attention_backends = {
@@ -387,10 +384,10 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         linear_backend = attention_backend.linear_attn_backend
         if not self.gdn_prefill_cuda_graphs:
             return "off, tts_engine.factory.gdn_prefill_cuda_graphs is false"
-        elif not isinstance(linear_backend, GDNPrefillGraphAttnBackend):
+        elif not isinstance(linear_backend, GDNAttnBackend):
             return f"off, the linear backend is {type(linear_backend).__name__}"
-        elif (reason := linear_backend.prefill_graph_unsupported_reason()) is not None:
-            return f"off, {reason}"
+        elif not linear_backend.supports_prefill_graph_extend():
+            return "off, GDN prefill graph is disabled or unsupported"
         elif (
             not attention_backend.use_captured_forward_metadata_for_breakable_cuda_graph
         ):

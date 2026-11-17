@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import json
 import tomllib
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from packaging.requirements import Requirement
 
@@ -25,6 +27,28 @@ def unsatisfied_requirements(dependencies: list[str]) -> list[str]:
             continue
         if installed not in requirement.specifier:
             missing.append(spec)
+        elif requirement.url is not None:
+            direct_url = json.loads(
+                importlib.metadata.distribution(requirement.name).read_text(
+                    "direct_url.json"
+                )
+                or "{}"
+            )
+            source = urlsplit(requirement.url.removeprefix("git+"))
+            repository_url, _, commit = (
+                source._replace(fragment="").geturl().rpartition("@")
+            )
+            subdirectory = parse_qs(source.fragment).get("subdirectory", [None])[0]
+            if (
+                direct_url.get("url") != repository_url
+                or direct_url.get("vcs_info", {}).get("commit_id") != commit
+                or direct_url.get("subdirectory") != subdirectory
+            ):
+                missing.append(spec)
+            else:
+                pass
+        else:
+            pass
     return missing
 
 
