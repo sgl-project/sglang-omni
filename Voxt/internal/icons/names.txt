@@ -6,6 +6,7 @@
 home-2                  # Home
 history                 # History
 microphone-3            # Transcribe
+users-group-two-rounded # Meetings
 global                  # Translate
 pen-new-round           # Rewrite
 target                  # App enhancement
