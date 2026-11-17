@@ -9,11 +9,13 @@ enum ClipboardImage {
         let (types, data, file) = await onMain { () -> ([String], [String: Data], URL?) in
             let pb = NSPasteboard.general
             let types = (pb.types ?? []).map(\.rawValue)
-            var data: [String: Data] = [:]
-            if let t = ClipboardPicture.imageTypes.first(where: types.contains) {
-                data[t] = pb.data(forType: NSPasteboard.PasteboardType(t))
-            }
             let file = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
+            var data: [String: Data] = [:]
+            if file == nil && !types.contains(NSPasteboard.PasteboardType.string.rawValue) {
+                for type in ClipboardPicture.imageTypes where types.contains(type) {
+                    data[type] = pb.data(forType: NSPasteboard.PasteboardType(type))
+                }
+            }
             return (types, data, file)
         }
         guard let image = ClipboardPicture.image(types: types, data: data, file: file, maxSide: screenSide(p.maxSide)) else {
