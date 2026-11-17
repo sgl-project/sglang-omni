@@ -109,6 +109,14 @@
       window.mygo?.call("TranscriptPreview.Resize", version, pixels).catch(() => {});
     }
   };
+  document.addEventListener("copy", (event) => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !event.clipboardData ||
+        !transcript.contains(selection.anchorNode) || !transcript.contains(selection.focusNode)) return;
+    event.clipboardData.clearData();
+    event.clipboardData.setData("text/plain", selection.toString());
+    event.preventDefault();
+  });
   window.mygo?.on("transcript-preview", render);
   render(JSON.parse(document.getElementById("transcript-data").textContent));
   new ResizeObserver(reportSize).observe(transcript);

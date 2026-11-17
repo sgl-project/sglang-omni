@@ -56,6 +56,17 @@ func TestPageSanitizesTranscriptInBrowser(t *testing.T) {
   const unsafeLink = links.find(node => node.textContent === "unsafe link");
   const safeLink = links.find(node => node.textContent === "safe link");
   unsafeLink?.click();
+  const safeBold = Array.from(root.querySelectorAll("strong")).find(node => node.textContent === "safe bold");
+  const selection = getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(safeBold);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const clipboard = new DataTransfer();
+  clipboard.setData("text/html", '<span style="background-color:#f8edf4">safe bold</span>');
+  const backgroundBeforeCopy = getComputedStyle(document.body).backgroundColor;
+  const copy = new ClipboardEvent("copy", {bubbles: true, cancelable: true, clipboardData: clipboard});
+  safeBold.dispatchEvent(copy);
   const checks = {
     transcriptVisible: getComputedStyle(root).display !== "none" &&
       root.getBoundingClientRect().height > 0 &&
@@ -67,6 +78,10 @@ func TestPageSanitizesTranscriptInBrowser(t *testing.T) {
     imageDescriptionVisible: text.includes("Image description"),
     noBlockedElements: root.querySelector("script, style, img, article") === null,
     noCodeExecuted: window.previewAttack !== true,
+    copyIsPlainText: copy.defaultPrevented && clipboard.getData("text/plain") === "safe bold" &&
+      clipboard.getData("text/html") === "" && Array.from(clipboard.types).join() === "text/plain",
+    copyKeepsBackground: getComputedStyle(document.body).backgroundColor === backgroundBeforeCopy,
+    backgroundMatches: getComputedStyle(document.body).backgroundColor === "rgb(248, 237, 244)",
     unsafeLinkDisabled: !!unsafeLink && !unsafeLink.hasAttribute("href"),
     safeMarkupPreserved: !!safeLink && safeLink.href === "https://example.com/" &&
       Array.from(root.querySelectorAll("strong")).some(node => node.textContent === "safe bold"),
@@ -76,7 +91,7 @@ func TestPageSanitizesTranscriptInBrowser(t *testing.T) {
   document.documentElement.setAttribute("data-preview-test", encodeURIComponent(JSON.stringify({checks, text})));
 })();
 </script>`
-	page := Page(Update{HTML: markup, Version: 1}, 13, "#111111", "#0000ee", "#ffffff", false) + probe
+	page := Page(Update{HTML: markup, Version: 1}, 13, "#111111", "#0000ee", "#f8edf4", false) + probe
 	dir := t.TempDir()
 	path := filepath.Join(dir, "preview.html")
 	if err := os.WriteFile(path, []byte(page), 0o600); err != nil {
@@ -109,7 +124,7 @@ func TestPageSanitizesTranscriptInBrowser(t *testing.T) {
 	for _, check := range []string{
 		"transcriptVisible", "scriptIsLiteral", "styleIsLiteral", "nestedMarkupIsLiteral",
 		"imageDescriptionVisible", "noBlockedElements", "noCodeExecuted", "unsafeLinkDisabled",
-		"safeMarkupPreserved", "noEventHandlers",
+		"safeMarkupPreserved", "noEventHandlers", "backgroundMatches", "copyIsPlainText", "copyKeepsBackground",
 	} {
 		if !result.Checks[check] {
 			t.Errorf("%s failed; visible transcript: %q", check, result.Text)
