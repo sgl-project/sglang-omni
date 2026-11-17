@@ -169,53 +169,79 @@ mx::array Flow::Decode(const std::vector<int> &speech_tokens,
       mx::astype(mx::slice(noise_, {0, 0, 0}, {1, kMelBinCount, frame_count}),
                  dtype),
       {0, 2, 1});
-  mx::array t = span(0);
-  mx::array dt = mx::squeeze(mx::subtract(span(1), span(0)));
+  // Note (XXXXRT666): the times the steps run at do not depend on x, so
+  // every step's modulations come from one pass over them, and the
+  // modulation weights are read once, not once a step.
+  std::vector<mx::array> times;
+  std::vector<mx::array> steps;
+  {
+    mx::array time = span(0);
+    for (int step = 1; step <= kFlowStepCount; ++step) {
+      const mx::array delta = mx::squeeze(mx::subtract(span(step), time));
+      times.push_back(time);
+      steps.push_back(delta);
+      time = mx::add(time, delta);
+    }
+  }
+  const std::vector<mx::array> modulations =
+      TimeModulations(mx::concatenate(times, 0));
   for (int step = 1; step <= kFlowStepCount; ++step) {
     on_step();
-    const mx::array velocity = Velocity(mx::concatenate({x, x}, 0), mu_pair, t,
-                                        speaker_pair, conditioning_pair);
+    const mx::array velocity =
+        Velocity(mx::concatenate({x, x}, 0), mu_pair, modulations, step - 1,
+                 speaker_pair, conditioning_pair);
     const std::vector<mx::array> halves = mx::split(velocity, 2, 0);
     const mx::array guided = mx::subtract(
         mx::multiply(Scalar(1.0 + kGuidanceRate, dtype), halves[0]),
         mx::multiply(Scalar(kGuidanceRate, dtype), halves[1]));
-    x = mx::add(x, mx::multiply(dt, guided));
+    x = mx::add(x, mx::multiply(steps[step - 1], guided));
     // Note (yexiaodong): one evaluation per step bounds the graph and the
     // memory it holds.
     mx::eval(x);
-    t = mx::add(t, dt);
-    if (step < kFlowStepCount) {
-      dt = mx::squeeze(mx::subtract(span(step + 1), t));
-    } else {
-    }
   }
   return mx::transpose(
       mx::slice(x, {0, prompt_frames, 0}, {1, frame_count, kMelBinCount}),
       {0, 2, 1});
 }
 
-mx::array Flow::Velocity(const mx::array &x, const mx::array &mu,
-                         const mx::array &time,
-                         const mx::array &speaker_features,
-                         const mx::array &mel_conditioning) const {
-  const mx::Dtype dtype = x.dtype();
-  const int batch = x.shape(0);
-  const int length = x.shape(1);
+std::vector<mx::array> Flow::TimeModulations(const mx::array &times) const {
+  const mx::Dtype dtype = times.dtype();
   const mx::array frequencies = mx::exp(
       mx::multiply(mx::astype(mx::arange(kTimeFrequencyCount), mx::float32),
                    mx::array(static_cast<float>(-std::log(10000.0) /
                                                 (kTimeFrequencyCount - 1)))));
   const mx::array time_angles = mx::multiply(
-      mx::expand_dims(mx::multiply(Scalar(1000.0, dtype), time), 1),
+      mx::expand_dims(mx::multiply(Scalar(1000.0, dtype), times), 1),
       mx::expand_dims(frequencies, 0));
   // Note (yuhui): the float32 sinusoid is cast before the time MLP so
   // it does not promote the half-precision DiT.
-  mx::array timestep_embedding = mx::astype(
+  const mx::array timestep_embedding = mx::astype(
       mx::concatenate({mx::sin(time_angles), mx::cos(time_angles)}, -1), dtype);
-  timestep_embedding = checkpoint_.Linear(
+  const mx::array activated = omni_common::Silu(checkpoint_.Linear(
       omni_common::Silu(checkpoint_.Linear(
           timestep_embedding, kEstimator + "time_embed.time_mlp_0")),
-      kEstimator + "time_embed.time_mlp_2");
+      kEstimator + "time_embed.time_mlp_2"));
+  std::vector<mx::array> modulations;
+  for (int block = 0; block < kDitBlockCount; ++block) {
+    modulations.push_back(checkpoint_.Linear(
+        activated, kEstimator + "transformer_blocks." + std::to_string(block) +
+                       ".attn_norm.linear"));
+  }
+  modulations.push_back(
+      checkpoint_.Linear(activated, kEstimator + "norm_out.linear"));
+  mx::async_eval(modulations);
+  return modulations;
+}
+
+mx::array Flow::Velocity(const mx::array &x, const mx::array &mu,
+                         const std::vector<mx::array> &modulations, int step,
+                         const mx::array &speaker_features,
+                         const mx::array &mel_conditioning) const {
+  const int batch = x.shape(0);
+  const int length = x.shape(1);
+  const auto step_row = [&](const mx::array &all_steps) {
+    return mx::slice(all_steps, {step, 0}, {step + 1, all_steps.shape(1)});
+  };
 
   const mx::array speakers =
       mx::broadcast_to(mx::expand_dims(speaker_features, 1),
@@ -237,18 +263,16 @@ mx::array Flow::Velocity(const mx::array &x, const mx::array &mu,
   hidden = mx::add(position, hidden);
 
   for (int block = 0; block < kDitBlockCount; ++block) {
-    hidden = Block(hidden, timestep_embedding, block);
+    hidden = Block(hidden, step_row(modulations[block]), block);
   }
   const std::vector<mx::array> modulation =
-      mx::split(checkpoint_.Linear(omni_common::Silu(timestep_embedding),
-                                   kEstimator + "norm_out.linear"),
-                2, -1);
+      mx::split(step_row(modulations.back()), 2, -1);
   return checkpoint_.Linear(
       ModulatedLayerNorm(hidden, modulation[1], modulation[0]),
       kEstimator + "proj_out");
 }
 
-mx::array Flow::Block(const mx::array &x, const mx::array &timestep_embedding,
+mx::array Flow::Block(const mx::array &x, const mx::array &step_modulation,
                       int block) const {
   const std::string prefix =
       kEstimator + "transformer_blocks." + std::to_string(block) + ".";
@@ -257,10 +281,7 @@ mx::array Flow::Block(const mx::array &x, const mx::array &timestep_embedding,
   const int width = x.shape(2);
   // Shift, scale and gate for attention, then for the feed-forward, each [1,
   // width].
-  const std::vector<mx::array> modulation =
-      mx::split(checkpoint_.Linear(omni_common::Silu(timestep_embedding),
-                                   prefix + "attn_norm.linear"),
-                6, -1);
+  const std::vector<mx::array> modulation = mx::split(step_modulation, 6, -1);
   const auto modulate = [&](const mx::array &input, int shift, int scale) {
     return ModulatedLayerNorm(input, modulation[shift], modulation[scale]);
   };
