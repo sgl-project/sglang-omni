@@ -6,36 +6,19 @@ import VoxtNewHelperKit
 /// the main thread; the picture is drawn off it.
 enum ClipboardImage {
     static func read(_ p: ClipboardImageParams) async -> ClipboardImageResult {
-        let (types, file, changeCount, index) = await onMain { () -> ([String], URL?, Int, Int?) in
+        let (types, data, file) = await onMain { () -> ([String], [String: Data], URL?) in
             let pb = NSPasteboard.general
-            let changeCount = pb.changeCount
-            let types = pb.types ?? []
+            let types = (pb.types ?? []).map(\.rawValue)
+            var data: [String: Data] = [:]
+            if let t = ClipboardPicture.imageTypes.first(where: types.contains) {
+                data[t] = pb.data(forType: NSPasteboard.PasteboardType(t))
+            }
             let file = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
-            if file != nil || types.contains(.string) {
-                return (types.map(\.rawValue), file, changeCount, nil)
-            }
-            let items = pb.pasteboardItems ?? []
-            // Pick the item the preferred format would have come from.
-            // Its alternatives must represent that same item.
-            for type in ClipboardPicture.imageTypes {
-                let format = NSPasteboard.PasteboardType(type)
-                if let index = items.firstIndex(where: { $0.types.contains(format) }) {
-                    return (items[index].types.map(\.rawValue), nil, changeCount, index)
-                }
-            }
-            return ([], nil, changeCount, nil)
+            return (types, data, file)
         }
-        let image = await ClipboardPicture.image(types: types, file: file, maxSide: screenSide(p.maxSide)) { type in
-            guard let index else { return nil }
-            return await onMain {
-                let pb = NSPasteboard.general
-                guard pb.changeCount == changeCount, let items = pb.pasteboardItems, items.indices.contains(index) else {
-                    return nil
-                }
-                let data = items[index].data(forType: NSPasteboard.PasteboardType(type))
-                return pb.changeCount == changeCount ? data : nil
-            }
+        guard let image = ClipboardPicture.image(types: types, data: data, file: file, maxSide: screenSide(p.maxSide)) else {
+            return ClipboardImageResult()
         }
-        return ClipboardImageResult(jpeg: image.flatMap(ScreenWindow.jpeg))
+        return ClipboardImageResult(jpeg: ScreenWindow.jpeg(image))
     }
 }

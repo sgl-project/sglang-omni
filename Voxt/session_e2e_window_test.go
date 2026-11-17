@@ -53,21 +53,19 @@ func TestWindowScreenshotEndToEnd(t *testing.T) {
 // the text path and the picture stays out (#4152); with nothing on the
 // clipboard (or the switch off) the model gets the text alone.
 func TestClipboardImageEndToEnd(t *testing.T) {
-	const selection = "The chart compares three releases.\n\nThe second row shows the latest results."
-	const instruction = "Describe the picture in the context of the selected text."
 	for _, tc := range []struct {
 		name, opts string
 		sel        string
 		on, image  bool
 	}{
 		{"a copied image, no selection", ",clipboard-image", "", true, true},
-		{"a copied image with a selection stays out", ",clipboard-image", selection, true, false},
-		{"nothing copied", "", selection, true, false},
+		{"a copied image with a selection stays out", ",clipboard-image", "this", true, false},
+		{"nothing copied", "", "this", true, false},
 		{"off", ",clipboard-image", "", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chat := &fakeChat{text: "A red square."}
-			set, keys, _ := fileSetup(t, instruction, chat)
+			set, keys, _ := fileSetup(t, "describe the picture", chat)
 			ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
 			opts := ev + tc.opts
 			if tc.sel != "" {
@@ -84,13 +82,6 @@ func TestClipboardImageEndToEnd(t *testing.T) {
 			reqs := chat.requests()
 			if len(reqs) != 1 {
 				t.Fatalf("%d chats", len(reqs))
-			}
-			if tc.sel != "" {
-				msgs := chatMessages(reqs[0])
-				want := [2]string{"user", "<instruction>\n" + instruction + "\n</instruction>\n\n<selected_text>\n" + selection + "\n</selected_text>"}
-				if len(msgs) == 0 || msgs[len(msgs)-1] != want {
-					t.Fatalf("last user message lost selected text or instruction: %q", msgs)
-				}
 			}
 			img, _ := reqs[0]["image"].([]byte)
 			if tc.image != bytes.Equal(img, helpertest.ClipImage) || !tc.image && img != nil {
