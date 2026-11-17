@@ -85,6 +85,11 @@ func (a *app) saveClosedSections() {
 func (a *app) sidebarFrame(c *ui.Context, page func()) {
 	t := c.Theme()
 	k := tok(t)
+	sidebar, background := k.Sidebar, k.Bg
+	if a.prefs.Appearance.Theme == settings.ThemeTransparent {
+		opacity := 1 - float32(a.windowTransparency)/100
+		sidebar, background = sidebar.Alpha(opacity), background.Alpha(opacity)
+	}
 	headerInset = 0
 	w, _ := c.Size()
 	a.narrowWindow = w < px(t, autoRailWidth)
@@ -93,9 +98,9 @@ func (a *app) sidebarFrame(c *ui.Context, page func()) {
 		// page titles move over to keep clear of them.
 		headerInset = max(0, c.TitleBar().Left-px(t, railWidth)-px(t, sp6)+px(t, sp3))
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-			ui.Column(c).Width(px(t, railWidth)).Shrink(0).Background(k.Sidebar).Children(func() { a.navRail(c) })
+			ui.Column(c).Width(px(t, railWidth)).Shrink(0).Background(sidebar).Children(func() { a.navRail(c) })
 			ui.Box(c).Width(1).Background(k.Line)
-			ui.Column(c).Grow(1).MinWidth(0).Background(k.Bg).Children(page)
+			ui.Column(c).Grow(1).MinWidth(0).Background(background).Children(page)
 		})
 		return
 	}
@@ -109,9 +114,9 @@ func (a *app) sidebarFrame(c *ui.Context, page func()) {
 		a.sideW, a.sideWScale = px(t, float32(w)), scale
 	}
 	split := ui.Split(c.Key("sidebar-split"), &a.sideW, func() {
-		ui.Column(c).Fill().Background(k.Sidebar).Children(func() { a.sidebar(c) })
+		ui.Column(c).Fill().Background(sidebar).Children(func() { a.sidebar(c) })
 	}, func() {
-		ui.Column(c).Grow(1).MinWidth(0).Background(k.Bg).Children(page)
+		ui.Column(c).Grow(1).MinWidth(0).Background(background).Children(page)
 	}).Grow(1).MinHeight(0)
 	// Keep the width in its bounds, and save it once the drag rests.
 	lo, hi := px(t, settings.MinSidebarWidth), px(t, settings.MaxSidebarWidth)
@@ -216,14 +221,14 @@ func (a *app) railButton(c *ui.Context, key string, ic icons.Icon, label, tip st
 	b := ui.ButtonBase(c.Key(key)).Size(px(t, 36), px(t, 30)).Radius(px(t, radiusControl)).Center().Tooltip(tip).Label(label)
 	switch {
 	case selected:
-		b.Background(k.Pressed)
+		b.Background(k.NavSelected)
 	case b.Hovered():
 		b.Background(k.Hover)
 	}
 	b.Children(func() {
 		col := k.Text2
 		if selected {
-			col = k.Text
+			col = k.AccentInk
 		}
 		ui.Icon(c, ic.Get(selected)).Size(px(t, 18), px(t, 18)).TextColor(col)
 		if badge != "" {
@@ -249,14 +254,12 @@ func (a *app) sidebar(c *ui.Context) {
 		}
 	})
 	a.sidebarSearch(c)
-	// The sidebar's own theme: icons in the secondary grey, the chosen
-	// page's in the text colour (MyGo draws a sidebar item's icon in the
-	// accent, and the chosen one's in the accent's text colour).
+	// MyGo draws sidebar icons with Accent and AccentText.
 	side := *t
 	side.Accent, side.AccentText = k.Text2, k.Text
 	side.SurfaceHover, side.SurfacePressed = k.G[2], k.G[3]
 	chosen := side
-	chosen.Accent = k.Text
+	chosen.Accent, chosen.AccentText = k.AccentInk, k.AccentInk
 	// Settings' item is the chosen one while its dialog shows, over the
 	// page, and the page's again once it closes.
 	if a.settingsOpen {
@@ -282,7 +285,7 @@ func (a *app) sidebar(c *ui.Context) {
 						item := ui.SidebarItem(c, p.path, p.icon.Get(sel), pageTitle(p.path)).Padding(px(t, 4), px(t, sp2))
 						c.SetTheme(t)
 						if sel {
-							item.Background(k.Pressed).FontWeight(600)
+							item.Background(k.NavSelected).TextColor(k.Text).FontWeight(600)
 						} else {
 							item.TextColor(k.G[8])
 						}

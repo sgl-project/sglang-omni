@@ -83,7 +83,7 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 						a.toast(i18n.T("Copied"))
 					}
 				})
-				fillCard(c).Padding(px(t, sp2), px(t, sp3)).Children(func() {
+				sessionTextCard(c, e.Kind).Padding(px(t, sp2), px(t, sp3)).Children(func() {
 					ui.Text(c, text).Selectable()
 				})
 			})
