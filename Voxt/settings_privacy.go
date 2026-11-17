@@ -47,10 +47,16 @@ func (a *app) privacySettings(c *ui.Context) {
 			}
 		}
 	})
-	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with what you said. When text is selected, only the text goes. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
+	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with what you said. With text selected, only the text goes unless Text and a copied image together is also on. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
 		if ui.Switch(c.Key("priv-copied"), &a.settingsForm.sendClipboard).Label(i18n.T("Send the copied image with Rewrite")).Changed() {
 			on := a.settingsForm.sendClipboard
 			a.updateSettings(func(s *settings.Settings) { s.Privacy.SendClipboardImage = on })
+		}
+	})
+	settingRow(c, "priv-copied-with-text", i18n.T("Text and a copied image together"), i18n.T("Off by default: a text selection sends only text, so an earlier copied image cannot take over. Turn on to send the selected text and the copied image together deliberately."), func() {
+		if ui.Switch(c.Key("priv-copied-with-text"), &a.settingsForm.sendClipboardWithSelection).Label(i18n.T("Send both with Rewrite")).Changed() {
+			on := a.settingsForm.sendClipboardWithSelection
+			a.updateSettings(func(s *settings.Settings) { s.Privacy.SendClipboardImageWithSelection = on })
 		}
 	})
 

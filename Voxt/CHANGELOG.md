@@ -4,6 +4,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **Rewrite can deliberately send selected text and a copied image together**: the new Settings → Privacy → Text and a copied image together switch sends both when you mean it. It is off by default, so an earlier copied image still cannot take over a text Rewrite.
+
 ### Changed
 
 - **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
@@ -11,9 +15,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **A text selection no longer takes the copied image with it** (#4152): with Settings → Privacy → Send the copied image with Rewrite on, an image copied earlier stayed on the clipboard and went to the language model even when you had selected text, so a summarize or rewrite of the selection was handled as an image task. Now a text selection takes the text path and the image stays out, including when the same selection stays in place for a follow-up; the copied image goes when no text is selected or the copy fallback returns an `[Image]` placeholder for a selected image.
+- **A text selection no longer takes the copied image with it** (#4152): with Settings → Privacy → Send the copied image with Rewrite on, an image copied earlier stayed on the clipboard and went to the language model even when you had selected text, so a summarize or rewrite of the selection was handled as an image task. Now a text selection takes the text path and the image stays out, including when the same selection stays in place for a follow-up. A copied `[Image]` placeholder sends the actual image selected through ⌘C before the old clipboard is restored, not the earlier clipboard image; literal `[Image]` text without an image stays text-only.
 
 ### 中文
+
+#### 新增
+
+- **改写可以明确同时发送选中文字和复制的图片**：设置 → 隐私 →“同时发送选中文字和复制的图片”打开后，两者一起发送。默认关闭，避免早前复制的图片取代选中文字成为改写输入。
 
 #### 变更
 
@@ -22,7 +30,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **选中文字时不再带上剪贴板里早前复制的图片**（#4152）：打开设置 → 隐私 →“改写时发送复制的图片”后，早前复制的图片留在剪贴板里，即使选中了文字也会发给语言模型，对选中内容的总结或改写被当成看图任务。现在选中文字时只走文字，图片不跟着发，追问时选区没变也一样；没有选中文字，或 ⌘C 回退返回 `[Image]` 占位来表示选中图片时，才发送复制的图片。
+- **选中文字时不再带上剪贴板里早前复制的图片**（#4152）：打开设置 → 隐私 →“改写时发送复制的图片”后，早前复制的图片留在剪贴板里，即使选中了文字也会发给语言模型，对选中内容的总结或改写被当成看图任务。现在选中文字时只走文字，图片不跟着发，追问时选区没变也一样。⌘C 回退返回 `[Image]` 占位时，发送恢复旧剪贴板之前实际选中的新图片，不是早前那张；只有 `[Image]` 文字而没有图片时仍只走文字。
 
 ## [2.1.0] - 2026-11-15
 

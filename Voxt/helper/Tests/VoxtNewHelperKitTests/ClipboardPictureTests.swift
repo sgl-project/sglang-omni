@@ -35,6 +35,15 @@ final class ClipboardPictureTests: XCTestCase {
         XCTAssertNil(ClipboardPicture.image(types: [png], data: [png: Data("not a png".utf8)], file: nil, maxSide: 1600), "broken data")
     }
 
+    func testImageSelectionPlaceholderUsesCopiedImageOnlyWhenPresent() {
+        let image = ClipboardPicture.imageForCopiedSelection(types: [text, png], data: [png: png(12, 8)], file: nil, maxSide: 1600, text: "[Image]")
+        XCTAssertEqual(image.map { [$0.width, $0.height] }, [12, 8])
+        XCTAssertNil(ClipboardPicture.imageForCopiedSelection(types: [text], data: [:], file: nil, maxSide: 1600, text: "[Image]"),
+                     "literal placeholder text without an image stays text")
+        XCTAssertNil(ClipboardPicture.imageForCopiedSelection(types: [text, png], data: [png: png(12, 8)], file: nil, maxSide: 1600, text: "caption"),
+                     "ordinary selected text does not opt into an image")
+    }
+
     func testCopiedFile() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

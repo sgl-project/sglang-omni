@@ -35,4 +35,13 @@ public enum ClipboardPicture {
         ]
         return CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary)
     }
+
+    /// The image a copy fallback selected, before it restores the clipboard.
+    /// An [Image] placeholder opts in only when image bytes or a file exist;
+    /// literal placeholder text without one remains text-only.
+    public static func imageForCopiedSelection(types: [String], data: [String: Data], file: URL?, maxSide: Int, text: String?) -> CGImage? {
+        guard text?.trimmingCharacters(in: .whitespacesAndNewlines) == "[Image]" else { return nil }
+        let withoutPlaceholder = types.filter { $0 != UTType.utf8PlainText.identifier }
+        return image(types: withoutPlaceholder, data: data, file: file, maxSide: maxSide)
+    }
 }

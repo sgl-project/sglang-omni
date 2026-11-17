@@ -48,32 +48,38 @@ func TestWindowScreenshotEndToEnd(t *testing.T) {
 }
 
 // TestClipboardImageEndToEnd: with "Send the copied image with Rewrite"
-// on and nothing selected, the helper's picture of the clipboard goes
-// with the instruction to the language model; a text selection takes
-// the text path and the picture stays out (#4152); with nothing on the
-// clipboard (or the switch off) the model gets the text alone.
+// on and nothing selected, the clipboard picture goes to the model. Text
+// selections stay text-only unless the user deliberately enables text and
+// image together. A copied placeholder returns the newly selected image,
+// never the earlier clipboard image; literal placeholder text sends none.
 func TestClipboardImageEndToEnd(t *testing.T) {
 	for _, tc := range []struct {
-		name, opts string
-		sel        string
-		on, image  bool
+		name, opts, sel   string
+		viaCopy, on, both bool
+		want              []byte
 	}{
-		{"a copied image, no selection", ",clipboard-image", "", true, true},
-		{"a copied image with a selection stays out", ",clipboard-image", "this", true, false},
-		{"nothing copied", "", "this", true, false},
-		{"off", ",clipboard-image", "", false, false},
+		{name: "a copied image, no selection", opts: ",clipboard-image", on: true, want: helpertest.ClipImage},
+		{name: "a copied image with a selection stays out", opts: ",clipboard-image", sel: "this", on: true},
+		{name: "a copied image placeholder returns the new image", opts: ",clipboard-image,copy-selection-image", sel: "[Image]", viaCopy: true, on: true, want: helpertest.Shot(812)},
+		{name: "literal placeholder text through copy stays text", opts: ",clipboard-image", sel: "[Image]", viaCopy: true, on: true},
+		{name: "deliberate text and image sends both", opts: ",clipboard-image", sel: "this", on: true, both: true, want: helpertest.ClipImage},
+		{name: "nothing copied", sel: "this", on: true},
+		{name: "off", opts: ",clipboard-image"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chat := &fakeChat{text: "A red square."}
 			set, keys, _ := fileSetup(t, "describe the picture", chat)
 			ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
 			opts := ev + tc.opts
-			if tc.sel != "" {
+			if tc.viaCopy {
+				opts = helpertest.Opt("copy-selection", tc.sel) + "," + opts
+			} else if tc.sel != "" {
 				opts = helpertest.Opt("selection", tc.sel) + "," + opts
 			}
 			a := newSessionApp(t, opts, func(s *settings.Settings) {
 				set(s)
 				s.Privacy.SendClipboardImage = tc.on
+				s.Privacy.SendClipboardImageWithSelection = tc.both
 			}, keys)
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
 			if a.sess.State != session.Done || a.sess.Result != "A red square." {
@@ -84,8 +90,8 @@ func TestClipboardImageEndToEnd(t *testing.T) {
 				t.Fatalf("%d chats", len(reqs))
 			}
 			img, _ := reqs[0]["image"].([]byte)
-			if tc.image != bytes.Equal(img, helpertest.ClipImage) || !tc.image && img != nil {
-				t.Errorf("image %q, want it %v\n%s", img, tc.image, a.logText())
+			if !bytes.Equal(img, tc.want) {
+				t.Errorf("image %q, want %q\n%s", img, tc.want, a.logText())
 			}
 		})
 	}

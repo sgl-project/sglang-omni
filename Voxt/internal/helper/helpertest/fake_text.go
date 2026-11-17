@@ -159,6 +159,9 @@ func (f *fake) textio(m proto.Message) {
 			res.Text, res.Via = sel, proto.ViaAX
 		} else if sel := f.opts["copy-selection"]; sel != "" && p.AllowCopy {
 			res.Text, res.Via, res.Steps = sel, proto.ViaCopy, append(res.Steps, "copy: changed")
+			if f.has("copy-selection-image") {
+				res.Image = Shot(812)
+			}
 		}
 		f.result(m.ID, res)
 	case proto.MethodTextPaste:

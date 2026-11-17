@@ -112,6 +112,9 @@ type Privacy struct {
 	// Rewrite's text to the language model (session/window.go); off by
 	// default.
 	SendClipboardImage bool `json:"sendClipboardImage,omitempty"`
+	// SendClipboardImageWithSelection deliberately includes that picture
+	// with selected text too; off by default so an earlier image stays out.
+	SendClipboardImageWithSelection bool `json:"sendClipboardImageWithSelection,omitempty"`
 }
 
 // Audio: the microphone and the sounds around a recording.

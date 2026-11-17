@@ -94,10 +94,16 @@ func (r *run) readSelection() string {
 		r.logf("info", "no selection (%s, %.0f ms; %s)", res.Via, res.MS, strings.Join(res.Steps, ", "))
 		return ""
 	}
-	if r.req.Kind == store.KindRewrite && !(res.Via == proto.ViaCopy && trimmed == "[Image]") {
-		// A copied [Image] placeholder denotes an image selection; other
-		// selections take the text path, including on follow-ups (#4152).
-		r.clip = nil
+	if r.req.Kind == store.KindRewrite {
+		switch {
+		case len(res.Image) > 0 && (trimmed == "[Image]" || r.settings.Privacy.SendClipboardImageWithSelection):
+			// The copy fallback returns the newly selected image before it
+			// restores the clipboard, never an earlier copied image.
+			r.clip = res.Image
+		case !r.settings.Privacy.SendClipboardImageWithSelection:
+			// Text takes the text path by default, including on follow-ups.
+			r.clip = nil
+		}
 	}
 	for _, t := range r.req.Previous {
 		// A follow-up's: the text selected before, still selected, is in

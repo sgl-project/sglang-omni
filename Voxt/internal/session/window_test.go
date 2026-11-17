@@ -81,25 +81,30 @@ func TestWindowPicture(t *testing.T) {
 // the text (or the window) and the rewrite lands.
 // Translate and a try never read the clipboard.
 func TestClipboardImage(t *testing.T) {
-	clip, shot := []byte{0xff, 0xd8, 'c', 0xff, 0xd9}, []byte{0xff, 0xd8, 'w', 0xff, 0xd9}
+	clip, selected, shot := []byte{0xff, 0xd8, 'A', 0xff, 0xd9}, []byte{0xff, 0xd8, 'B', 0xff, 0xd9}, []byte{0xff, 0xd8, 'w', 0xff, 0xd9}
 	for _, tc := range []struct {
-		name         string
-		kind         store.Kind
-		on, window   bool
-		try          bool
-		noSel        bool
-		selection    string
-		copyText     string
-		previous     []compose.Turn
-		pic          []byte
-		err          error
-		want         []byte
-		wantReadClip bool
+		name          string
+		kind          store.Kind
+		on, window    bool
+		try           bool
+		noSel         bool
+		selection     string
+		copyText      string
+		copiedImage   []byte
+		withSelection bool
+		previous      []compose.Turn
+		pic           []byte
+		err           error
+		want          []byte
+		wantReadClip  bool
 	}{
 		{name: "a selection sends no picture", kind: store.KindRewrite, on: true, pic: clip, wantReadClip: true},
 		{name: "the same selection on a follow-up sends no picture", kind: store.KindRewrite, on: true, previous: []compose.Turn{{Selection: "ship friday?"}}, pic: clip, wantReadClip: true},
-		{name: "a copied image placeholder keeps the picture", kind: store.KindRewrite, on: true, copyText: "[Image]", pic: clip, want: clip, wantReadClip: true},
-		{name: "literal placeholder text sends no picture", kind: store.KindRewrite, on: true, selection: "[Image]", pic: clip, wantReadClip: true},
+		{name: "a copied image placeholder sends the newly copied image", kind: store.KindRewrite, on: true, copyText: "[Image]", copiedImage: selected, pic: clip, want: selected, wantReadClip: true},
+		{name: "literal placeholder text through Accessibility sends no picture", kind: store.KindRewrite, on: true, selection: "[Image]", pic: clip, wantReadClip: true},
+		{name: "literal placeholder text through copy sends no picture", kind: store.KindRewrite, on: true, copyText: "[Image]", pic: clip, wantReadClip: true},
+		{name: "deliberate text and image sends the copied image", kind: store.KindRewrite, on: true, selection: "chart caption", withSelection: true, pic: clip, want: clip, wantReadClip: true},
+		{name: "newly copied text and image prefers the new image", kind: store.KindRewrite, on: true, copyText: "caption and chart", copiedImage: selected, withSelection: true, pic: clip, want: selected, wantReadClip: true},
 		{name: "no selection: the picture goes", kind: store.KindRewrite, on: true, noSel: true, pic: clip, want: clip, wantReadClip: true},
 		{name: "off", kind: store.KindRewrite, pic: clip},
 		{name: "wins over the window", kind: store.KindRewrite, on: true, window: true, noSel: true, pic: clip, want: clip, wantReadClip: true},
@@ -118,12 +123,13 @@ func TestClipboardImage(t *testing.T) {
 				sel.text = tc.selection
 			}
 			if tc.copyText != "" {
-				sel = &fakeSelector{copyText: tc.copyText}
+				sel = &fakeSelector{copyText: tc.copyText, copyImage: tc.copiedImage}
 			}
 			var reads, selBefore int
 			h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
 				c.Select = sel
 				s.Privacy.SendClipboardImage, s.Privacy.SendWindow = tc.on, tc.window
+				s.Privacy.SendClipboardImageWithSelection = tc.withSelection
 				c.Window = func(context.Context, int) ([]byte, error) { return shot, nil }
 				c.ClipboardImage = func(context.Context) ([]byte, error) {
 					sel.mu.Lock()

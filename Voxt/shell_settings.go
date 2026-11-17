@@ -35,30 +35,31 @@ type settingsState struct {
 type settingsForm struct {
 	systemLocale string // mygo.App.Locale(), read when the window opens
 
-	language        string // label
-	mainLanguage    string // label
-	theme           int
-	scale           int
-	reduceMotion    bool
-	menuBar         bool
-	dock            bool
-	copyResult      bool
-	strictShortcuts bool // Features.StrictShortcuts
-	closeToTray     bool
-	openAtLogin     bool
-	keepHistory     bool
-	keepAudio       bool
-	logText         bool
-	sendWindow      bool
-	sendClipboard   bool
-	skipSilence     bool        // !Audio.VAD.Off
-	liveResult      bool        // Audio.LiveResult
-	cleanSound      bool        // !Audio.Clean.Off
-	muteOutput      bool        // Audio.MuteOn()
-	uploadMB        float64     // Audio.UploadMB
-	maxMinutes      float64     // Audio.MaxSeconds, in minutes
-	sidebar         int         // automatic, names and icons, icons only (settings_appearance.go)
-	ovStyle         overlayForm // settings_overlay.go
+	language                   string // label
+	mainLanguage               string // label
+	theme                      int
+	scale                      int
+	reduceMotion               bool
+	menuBar                    bool
+	dock                       bool
+	copyResult                 bool
+	strictShortcuts            bool // Features.StrictShortcuts
+	closeToTray                bool
+	openAtLogin                bool
+	keepHistory                bool
+	keepAudio                  bool
+	logText                    bool
+	sendWindow                 bool
+	sendClipboard              bool
+	sendClipboardWithSelection bool
+	skipSilence                bool        // !Audio.VAD.Off
+	liveResult                 bool        // Audio.LiveResult
+	cleanSound                 bool        // !Audio.Clean.Off
+	muteOutput                 bool        // Audio.MuteOn()
+	uploadMB                   float64     // Audio.UploadMB
+	maxMinutes                 float64     // Audio.MaxSeconds, in minutes
+	sidebar                    int         // automatic, names and icons, icons only (settings_appearance.go)
+	ovStyle                    overlayForm // settings_overlay.go
 
 	historyAccess, historySelection bool // history_access.go
 
@@ -241,6 +242,7 @@ func (a *app) loadSettingsForm() {
 	f.strictShortcuts = s.Features.StrictShortcuts
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sendWindow, f.sendClipboard = s.Privacy.SendWindow, s.Privacy.SendClipboardImage
+	f.sendClipboardWithSelection = s.Privacy.SendClipboardImageWithSelection
 	f.historyAccess, f.historySelection = s.Privacy.HistoryAccess, s.Privacy.HistorySelection
 	f.skipSilence = !s.Audio.VAD.Off
 	f.liveResult = s.Audio.LiveResult
