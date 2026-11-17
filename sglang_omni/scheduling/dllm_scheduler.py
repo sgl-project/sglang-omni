@@ -452,7 +452,11 @@ class DllmScheduler:
             pass
 
     def release_context(self, request_id: str) -> None:
-        self.tree_cache.unlock(self.retained_contexts.pop(request_id, None))
+        lock = self.retained_contexts.pop(request_id, None)
+        if lock is not None:
+            self.tree_cache.unlock(lock)
+        else:
+            pass
 
     def select_runnable_rows(self, reqs: list[DllmRequest]) -> list[DllmRequest]:
         """Rows with a whole committed block encode first, then the group decodes."""

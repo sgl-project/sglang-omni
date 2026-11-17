@@ -456,6 +456,8 @@ def test_interleaved_frame_shares_the_history_kv_and_emits_only_image_tokens(
         allocator = PagedTokenToKVPoolAllocator(
             32768, block_size, torch.float32, "cpu", None, False
         )
+        # The Triton allocation kernels a CUDA host selects cannot read this CPU pool.
+        allocator.use_triton_kernels = False
         tree_cache = UnifiedRadixCache(
             CacheInitParams(
                 disable=False,

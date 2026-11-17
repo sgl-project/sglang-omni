@@ -753,6 +753,8 @@ def radix_scheduler() -> DllmScheduler:
         allocator = PagedTokenToKVPoolAllocator(
             PHASE_POOL_TOKENS, 4, torch.float32, "cpu", None, False
         )
+        # The Triton allocation kernels a CUDA host selects cannot read this CPU pool.
+        allocator.use_triton_kernels = False
         tree_cache = UnifiedRadixCache(
             CacheInitParams(
                 disable=False,
