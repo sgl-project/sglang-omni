@@ -59,6 +59,9 @@ const HotkeyCancel = "cancel"
 // event tap. Changing only the timings or Active keeps a chord in progress:
 // the app flips Active as a session starts and ends.
 type HotkeyConfigureParams struct {
+	// Sequence supersedes older configures. A newer close can therefore
+	// remove bindings even when an older open is stalled or times out.
+	Sequence uint64          `json:"sequence,omitempty"`
 	Bindings []HotkeyBinding `json:"bindings"`
 	// DoubleTapMS is the double-tap window: a second press starting
 	// within it of the first release makes a double tap (default: the

@@ -27,6 +27,7 @@ final class HotkeyTap: @unchecked Sendable {
     let front: FrontApps
     private let lock = NSLock()
     private var recognizer = HotkeyRecognizer(config: HotkeyConfig(bindings: []))
+    private let configureCoordinator = HotkeyConfigureCoordinator()
     private var tap: CFMachPort?
     private var runLoop: CFRunLoop?
     private var timer: CFRunLoopTimer?
@@ -44,14 +45,16 @@ final class HotkeyTap: @unchecked Sendable {
     }
 
     func configure(_ p: HotkeyConfigureParams) -> HotkeyStatus {
-        let c = HotkeyConfig(bindings: p.bindings, doubleTapMs: p.doubleTapMs ?? systemDoubleClickMs(),
-                             longPressMs: p.longPressMs ?? 300, tapMaxMs: p.tapMaxMs ?? 1500,
-                             swallowFn: p.swallowFn ?? false, active: p.active ?? false, cancel: p.cancel)
-        lock.withLock { recognizer.configure(c) }
-        if p.bindings.isEmpty && p.cancel == nil {
-            uninstall()
-        } else if lock.withLock({ tap == nil && retry == nil }) {
-            install()
+        configureCoordinator.configure(p) { current in
+            let c = HotkeyConfig(bindings: current.bindings, doubleTapMs: current.doubleTapMs ?? systemDoubleClickMs(),
+                                 longPressMs: current.longPressMs ?? 300, tapMaxMs: current.tapMaxMs ?? 1500,
+                                 swallowFn: current.swallowFn ?? false, active: current.active ?? false, cancel: current.cancel)
+            lock.withLock { recognizer.configure(c) }
+            if current.bindings.isEmpty && current.cancel == nil {
+                uninstall()
+            } else if lock.withLock({ tap == nil && retry == nil }) {
+                install()
+            }
         }
         return status()
     }

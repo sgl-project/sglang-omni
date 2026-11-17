@@ -208,37 +208,33 @@ func (a *app) syncHotkeys() {
 		return
 	}
 	a.hotkeysSent = key
-	if a.hotkeyConfigureBusy {
-		return
-	}
-	a.hotkeyConfigureBusy = true
+	a.hotkeyConfigureSequence++
+	params.Sequence = a.hotkeyConfigureSequence
 	helperCall(a, proto.MethodHotkeyConfigure, params, 5*time.Second, func(st proto.HotkeyStatus, err error) {
-		a.hotkeyConfigureBusy = false
-		resync := a.hotkeysSent != key
+		if params.Sequence < a.hotkeyStatusSequence {
+			return
+		}
+		a.hotkeyStatusSequence = params.Sequence
 		if err != nil {
 			if a.hotkeysSent == key {
 				a.hotkeysSent = ""
 			}
 			a.logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityWarning, Source: sessionSource, Message: "hotkey.configure: " + err.Error()})
-		} else {
-			was := a.hotkeys.Installed
-			if paused {
-				// With no bindings the helper removes its tap: off on purpose
-				// while a shortcut field records keys, not for want of
-				// Accessibility. Read as missing, it put up the "Without
-				// Accessibility" notice beside the field (whose Open Permissions
-				// went with the notice once the field lost the focus) and
-				// registered the Carbon fallback, which took the keys.
-				st.Installed = was
-			}
-			a.hotkeys = st
-			if st.Installed != was {
-				a.syncCarbon(a.hotkeyPlan())
-			}
+			return
 		}
-		if resync {
-			a.hotkeysSent = ""
-			a.syncHotkeys()
+		was := a.hotkeys.Installed
+		if paused {
+			// With no bindings the helper removes its tap: off on purpose
+			// while a shortcut field records keys, not for want of
+			// Accessibility. Read as missing, it put up the "Without
+			// Accessibility" notice beside the field (whose Open Permissions
+			// went with the notice once the field lost the focus) and
+			// registered the Carbon fallback, which took the keys.
+			st.Installed = was
+		}
+		a.hotkeys = st
+		if st.Installed != was {
+			a.syncCarbon(a.hotkeyPlan())
 		}
 	})
 }

@@ -251,6 +251,8 @@ public struct CaptureStopResult: Codable, Sendable {
 public typealias HotkeyBinding = Binding
 
 public struct HotkeyConfigureParams: Codable, Sendable {
+    /// Newer requests supersede older ones, including after a client timeout.
+    public var sequence: UInt64?
     public var bindings: [HotkeyBinding]
     public var doubleTapMs: Double?
     public var longPressMs: Double?
@@ -262,8 +264,9 @@ public struct HotkeyConfigureParams: Codable, Sendable {
     /// inactive, so its keys reach the app in front.
     public var cancel: HotkeyBinding?
 
-    public init(bindings: [HotkeyBinding], doubleTapMs: Double? = nil, longPressMs: Double? = nil, tapMaxMs: Double? = nil,
+    public init(sequence: UInt64? = nil, bindings: [HotkeyBinding], doubleTapMs: Double? = nil, longPressMs: Double? = nil, tapMaxMs: Double? = nil,
                 swallowFn: Bool? = nil, active: Bool? = nil, cancel: HotkeyBinding? = nil) {
+        self.sequence = sequence
         self.bindings = bindings
         self.doubleTapMs = doubleTapMs
         self.longPressMs = longPressMs

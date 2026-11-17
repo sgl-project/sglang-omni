@@ -6,7 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
-- **Single-letter keys on the answer card** (#4127): while the answer card shows, press c to copy the answer and r to insert it over the selection, as the card's Copy and Insert buttons do. The keys bind from the first streaming draft and only while the card is actually visible; a notice or an insertion unbinds them, and a late event cannot act on a newer card. During IME composition c and r go to the editor instead. If your cancel shortcut is c or r, it keeps priority and only the other card key is advertised. Without Accessibility the card keys do not work, like the cancel shortcut.
+- **Single-letter keys on the answer card** (#4127): while the answer card shows, press c to copy the answer and r to insert it over the selection, as the card's Copy and Insert buttons do. The keys bind from the first streaming draft and only while the card is actually visible; a notice or an insertion unbinds them, and a late event cannot act on a newer card. During IME composition bare keys go to the editor, while modified shortcuts and mouse bindings still work. If your cancel shortcut is c or r, it keeps priority and only the other card key is advertised. A stalled or timed-out open cannot reinstall c/r after a newer close unbinds them. Without Accessibility the card keys do not work, like the cancel shortcut.
 
 ### Changed
 
@@ -17,7 +17,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
-- **答案卡片的单字母键**（#4127）：答案卡片显示时，按 c 复制回答、按 r 把回答插入选中的位置，和卡片上的“复制”“插入”按钮一样。第一段流式文字出现时就绑定，卡片实际可见才有效；通知盖住卡片或插入时解绑，迟到的按键事件不会作用于新卡片。中文输入法有组合文字时，c 和 r 先给编辑器。取消键如果也是 c 或 r，取消键优先，只提示另一个卡片键。没有辅助功能时，卡片键和取消键一样不生效。
+- **答案卡片的单字母键**（#4127）：答案卡片显示时，按 c 复制回答、按 r 把回答插入选中的位置，和卡片上的“复制”“插入”按钮一样。第一段流式文字出现时就绑定，卡片实际可见才有效；通知盖住卡片或插入时解绑，迟到的按键事件不会作用于新卡片。中文输入法有组合文字时，裸键先给编辑器，带修饰键的快捷键和鼠标绑定仍照常触发。取消键如果也是 c 或 r，取消键优先，只提示另一个卡片键。旧 open 卡住或超时后，新 close 仍会解绑，旧请求完成时不会把 c/r 装回去。没有辅助功能时，卡片键和取消键一样不生效。
 
 #### 变更
 

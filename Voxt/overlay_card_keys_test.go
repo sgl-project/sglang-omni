@@ -176,30 +176,30 @@ func TestAnswerCardKeyRejectsPreviousGeneration(t *testing.T) {
 	}
 }
 
-func TestHotkeyConfigureOpenCloseSerialized(t *testing.T) {
+func TestHotkeyConfigureHiddenCardUnbindsImmediately(t *testing.T) {
 	a, fs, _ := newTestApp(t)
+	sequences := []uint64{}
 	fs.handlers[proto.MethodHotkeyConfigure] = func(raw json.RawMessage) (any, error) {
 		var p proto.HotkeyConfigureParams
 		json.Unmarshal(raw, &p)
+		sequences = append(sequences, p.Sequence)
+		if copyID, _ := configuredCardKeys(fs); copyID != "" {
+			a.closeAnswer()
+		}
 		return proto.HotkeyStatus{Installed: true, Bindings: len(p.Bindings)}, nil
 	}
-	posts := []func(){}
-	a.postQueue = func(fn func()) { posts = append(posts, fn) }
+	sequences = nil
 	a.answer = answerCard{open: true, id: "A", text: "Answer A"}
 	a.syncHotkeys()
-	a.closeAnswer()
-	for len(posts) > 0 {
-		i := 0
-		if len(posts) > 1 {
-			i = len(posts) - 1
-		}
-		fn := posts[i]
-		posts = append(posts[:i], posts[i+1:]...)
-		fn()
-	}
 	want := len(a.hotkeyPlan().Configure(false).Bindings)
 	if a.hotkeys.Bindings != want {
 		t.Errorf("helper kept %d bindings after the close completed, want %d", a.hotkeys.Bindings, want)
+	}
+	if len(sequences) < 2 || sequences[len(sequences)-2] == 0 || sequences[len(sequences)-1] <= sequences[len(sequences)-2] {
+		t.Errorf("configure sequences %v, want an increasing open and close", sequences)
+	}
+	if copyID, insertID := configuredCardKeys(fs); copyID != "" || insertID != "" {
+		t.Errorf("hidden card keys: copy %q, insert %q", copyID, insertID)
 	}
 }
 
