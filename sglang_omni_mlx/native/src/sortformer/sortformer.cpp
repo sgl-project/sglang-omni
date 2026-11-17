@@ -263,8 +263,10 @@ FeedResult SortformerModel::Feed(const std::vector<float> &samples,
   } else {
   }
   parts.push_back(chunk_embeddings);
-  // Note (Jiaxin Deng): float32 once the state holds frames, as in Swift.
-  const mx::array all_embeddings = mx::concatenate(parts, 1);
+  // Note (XXXXRT666): the state holds float32 frames; the encoder stays in the
+  // checkpoint dtype.
+  const mx::array all_embeddings =
+      mx::astype(mx::concatenate(parts, 1), model_dtype);
 
   const mx::array encoded = checkpoint_.Linear(
       FastConformer(all_embeddings), "sortformer_modules.encoder_proj");
