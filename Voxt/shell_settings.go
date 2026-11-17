@@ -226,6 +226,10 @@ func settingsDialogSize(t *ui.Theme, w, h float32) (dw, dh float32) {
 
 // settingsSection builds the section of the settings dialog r shows.
 func settingsSection(c *ui.Context, r *ui.Route, state settingsDialogViewState, actions settingsDialogActions, local settingsDialogLocalUI) {
+	// A section action changes the router before the next model rebuild.
+	if state.Path != r.Path() {
+		return
+	}
 	for _, s := range state.Sections {
 		if !r.Match("/" + s.ID) {
 			continue
