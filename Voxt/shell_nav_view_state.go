@@ -27,10 +27,18 @@ type navGroupViewState struct {
 	Pages []navPageViewState `json:"pages"`
 }
 
+// navShortcutViewState is one of the ⌘1–⌘6 pages: hidden ones keep
+// their numbers (hiding Translate leaves ⌘5 on Rewrite).
+type navShortcutViewState struct {
+	Path string `json:"path"`
+	Num  int    `json:"num"`
+}
+
 // navViewState is the sidebar's display data.
 type navViewState struct {
 	Groups           []navGroupViewState `json:"groups"`
 	Current          string              `json:"current"` // the router's section ("/home")
+	ShortcutPages    []navShortcutViewState `json:"shortcut_pages,omitempty"`
 	Settings         navPageViewState    `json:"settings"` // the Settings item (the dialog, not a page)
 	SettingsSelected bool                `json:"settings_selected"`
 	NoticesCount     int                 `json:"notices_count"`
@@ -72,6 +80,12 @@ func buildNavViewState(translator *i18n.Translator, input navViewStateInput) nav
 	}
 	if input.Notices > 0 {
 		state.NoticesLabel = translator.N(input.Notices, "%d notification", "%d notifications", input.Notices)
+	}
+	for i, path := range shortcutPages {
+		if input.Features.IsHidden(path[1:]) {
+			continue
+		}
+		state.ShortcutPages = append(state.ShortcutPages, navShortcutViewState{Path: path, Num: i + 1})
 	}
 	for _, g := range navGroups {
 		group := navGroupViewState{ID: g.id}

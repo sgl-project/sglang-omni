@@ -31,6 +31,23 @@ type navActions interface {
 	sidebarWidthChanged(width float64)
 }
 
+// paletteActions are the intents of the ⌘K palette (shell_commands.go).
+type paletteActions interface {
+	// runCommandID runs the command with this id (a row, Return).
+	runCommandID(id string)
+}
+
+// shellKeyActions are the intents of the window's own shortcuts
+// (shell_commands.go's shellShortcuts).
+type shellKeyActions interface {
+	// openPalette opens the command palette (⌘K).
+	openPalette()
+	// navigate goes to a page (⌘1–⌘6, ⌘,).
+	navigate(path string)
+	// toggleLogsPanel shows or hides the logs panel (⇧⌘L).
+	toggleLogsPanel()
+}
+
 // logsActions are the intents of the logs page and panel (shell_logs.go).
 type logsActions interface {
 	// copyLogLines copies the shown lines with these seqs (in the log's

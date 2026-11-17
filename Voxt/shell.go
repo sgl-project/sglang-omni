@@ -104,8 +104,9 @@ type shellState struct {
 	logsHeight   float32
 	logsDirty    atomic.Bool // a redraw for new lines is on its way
 
-	logsState // shell_logs_controller.go
-	navState  // shell_nav.go
+	logsState     // shell_logs_controller.go
+	navState      // shell_nav_controller.go
+	commandsState // shell_commands_controller.go
 	menuLocale string // locale the native menu was built in
 	hasMenu    bool   // the app runs (not a test): it has a menu bar to build
 }
@@ -279,7 +280,7 @@ func (a *app) view(c *ui.Context) {
 		c.Toast(m)
 	}
 	a.toasts = nil
-	a.shortcuts(c)
+	shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
 	a.syncNav()
 
 	ui.Column(c).Fill().AlignItems(ui.Stretch).Children(func() {
@@ -312,8 +313,8 @@ func (a *app) view(c *ui.Context) {
 	m, u := a.releaseDialogModel(), &a.updUI
 	releaseDialog(c, m, a, u) // updates_view.go
 	a.legacyReportDialog(c)   // legacy_report.go
-	a.palette(c)
-	a.shortcutSheet(c)
+	paletteView(c, a.paletteModel(), a, a.paletteLocal())
+	shortcutSheetView(c, a.sheetModel(), &a.sheetOpen)
 	a.toastsView(c) // last: over dialogs too
 	// A shortcut field took the focus or lost it.
 	if a.keysHeard != a.keysListening {
