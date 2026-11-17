@@ -298,7 +298,7 @@ func (r *renderer) maskedEffect(op *scene.Op, fx *scene.EffectOp, px scene.Effec
 					continue
 				}
 				lx, ly := inv.Point(wx, wy)
-				s := atlasSample(atlas, float32(g.U)+lx-box.X, float32(g.V)+ly-box.Y, int(g.U), int(g.V), int(g.UW), int(g.VH))
+				s := atlasSample(atlas, lx-box.X, ly-box.Y, int(g.U), int(g.V), int(g.UW), int(g.VH))
 				c := px.Color(lx, ly, nil)
 				a := scene.TextCoverage(s[0], unpremul(c), text.Contrast, boost, text.GammaRatios)
 				blend(r.dst.Pix[y*r.dst.Stride+4*x:][:4], c, cov*a)
