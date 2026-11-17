@@ -9,7 +9,15 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 
+### Fixed
+
+- **Deleting a draft no longer leaves an old provider using its deleted path**: a provider obtained before deletion now starts or continues without the draft instead of launching with the missing folder. This also covers the shared Qwen3-ASR draft.
+
 ### 中文
+
+#### 修复
+
+- **删除草稿模型后，旧语音识别提供方不再使用已删除的路径**：删除前取得的提供方会改为不使用草稿模型，不再带着已删除的目录启动服务。共享的 Qwen3-ASR 草稿模型也走这条路径。
 
 #### 变更
 
