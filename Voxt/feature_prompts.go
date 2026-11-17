@@ -4,9 +4,9 @@ package main
 // the preview of the whole prompt (feature_page.go).
 
 import (
+	"context"
 	"math"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -397,10 +397,46 @@ func rewriteSample() (instruction, selection string) {
 	return i18n.T("um make it shorter, no, more formal"), i18n.T("hey, the release slips to thursday because the tests are still running, sorry!")
 }
 
+// loadGlossaryTerms reads the whole dictionary for the feature pages'
+// prompt preview (a session reads the terms itself); only the last read
+// lands.
+func (a *app) loadGlossaryTerms() {
+	a.glossaryReads++
+	read := a.glossaryReads
+	repo := a.lib.store.Dictionary()
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		terms, err := repo.List(ctx, "")
+		a.post(func() {
+			if read != a.glossaryReads || err != nil {
+				return
+			}
+			a.glossaryTerms = terms
+		})
+	})
+}
+
 // composedPreview is the request a session would send with the settings
-// and the rules as typed, for the sample text.
+// and the rules as typed, for the sample text: the personal dictionary
+// (session.PromptDictionary) and the glossary's enabled terms, as a
+// session adds them (run_listen.go, write.go).
 func (a *app) composedPreview(feature string) (compose.Output, error) {
-	return compose.Build(a.previewInput(feature))
+	in := a.previewInput(feature)
+	in.Dictionary = session.PromptDictionary(a.prefs)
+	if a.prefs.Dictionary.Enabled && a.prefs.Dictionary.Glossary {
+		for _, t := range a.glossaryTerms {
+			if t.Enabled {
+				in.Glossary = append(in.Glossary, compose.Term{Term: t.Term, Aliases: t.Aliases})
+			}
+		}
+	}
+	// As savePrompt saves it: the built-in rules are no prompt of one's own,
+	// whose layers (the dictionary among them) would come in another order.
+	if strings.TrimSpace(in.TaskPrompt) == strings.TrimSpace(a.promptBuiltin(feature)) {
+		in.TaskPrompt = ""
+	}
+	return compose.Build(in)
 }
 
 // previewInput is composedPreview's input.
@@ -424,8 +460,9 @@ func (a *app) previewInput(feature string) compose.Input {
 	return in
 }
 
-// previewBody is the whole request, system prompt and messages, with the
-// variables filled in from the settings now.
+// previewBody is the whole request as one prompt, its messages joined in
+// order with no system / user headings, the variables' values marked
+// (issue #4032).
 func (a *app) previewBody(c *ui.Context, feature string) {
 	t := c.Theme()
 	p := uitext.FeaturePrefix(feature)
@@ -437,10 +474,60 @@ func (a *app) previewBody(c *ui.Context, feature string) {
 		caption(c, err.Error())
 		return
 	}
-	caption(c, i18n.T("Your rules with the variables filled in from your settings now, for a sample input. When the personal dictionary is on, it goes right after the system prompt: see How it is used on the Dictionary page."))
-	ui.Column(c.Key(p + "-preview-msgs")).Gap(px(t, sp2)).Children(func() {
-		for i, m := range out.Messages() {
-			promptCard(c, "msg-"+strconv.Itoa(i), m.Role, m.Content)
-		}
+	caption(c, i18n.T("The whole prompt for a sample input: your rules, then your personal dictionary when it is on, then the input. The values of the variables, filled in from your settings now, are marked."))
+	whole := wholePrompt(out)
+	in := a.previewInput(feature)
+	vars := compose.Variables(in, compose.TemplateSet(in.MainLanguage))
+	var values []string
+	for _, name := range featureVariables(feature) {
+		values = append(values, vars[name])
+	}
+	fillCard(c.Key(p + "-preview-prompt")).Padding(px(t, sp3)).Children(func() {
+		ui.RichText(c, markValues(tok(t).AccentInk, whole, values)...).Label(whole).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
 	})
+}
+
+// wholePrompt is out's messages, in order, as one text.
+func wholePrompt(out compose.Output) string {
+	var parts []string
+	for _, m := range out.Messages() {
+		parts = append(parts, m.Content)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// markValues splits text into spans with every occurrence of values
+// marked, the longest value first where they overlap.
+// shortcut: a value that is also a word of the dictionary or the sample is
+// marked there too; mark from the rendering if that misleads.
+func markValues(accent ui.Color, text string, values []string) []ui.Span {
+	values = slices.DeleteFunc(slices.Clone(values), func(v string) bool { return strings.TrimSpace(v) == "" })
+	slices.SortFunc(values, func(x, y string) int { return len(y) - len(x) })
+	var out []ui.Span
+	plain := 0
+	// Byte steps are safe: a value starts with a rune's first byte, which
+	// no continuation byte equals.
+	for i := 0; i < len(text); {
+		n := 0
+		for _, v := range values {
+			if strings.HasPrefix(text[i:], v) {
+				n = len(v)
+				break
+			}
+		}
+		if n == 0 {
+			i++
+			continue
+		}
+		if i > plain {
+			out = append(out, ui.Span{Text: text[plain:i]})
+		}
+		out = append(out, ui.Span{Text: text[i : i+n], Weight: 700, Color: accent, Background: accent.Alpha(0.12)})
+		i += n
+		plain = i
+	}
+	if plain < len(text) || len(out) == 0 {
+		out = append(out, ui.Span{Text: text[plain:]})
+	}
+	return out
 }

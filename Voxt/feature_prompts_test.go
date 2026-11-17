@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -9,7 +10,9 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 func TestPromptSaveUsesFullSystem(t *testing.T) {
@@ -341,10 +344,8 @@ func TestFeaturePageShowsFilledRequest(t *testing.T) {
 	if strings.Contains(out.System, "{{") || !strings.Contains(out.System, target) {
 		t.Fatalf("system prompt not filled in: %q", out.System)
 	}
-	for _, s := range []string{"system", out.System, "user", out.User} {
-		if !hasExact(tt, s) {
-			t.Errorf("preview lacks %q", s)
-		}
+	if !hasExact(tt, wholePrompt(out)) {
+		t.Errorf("preview lacks the whole prompt %q", wholePrompt(out))
 	}
 }
 
@@ -369,7 +370,159 @@ func TestFeaturePageFilledRequestEdges(t *testing.T) {
 	if strings.Contains(out.System, "{{") || !strings.HasPrefix(out.System, "把文字翻成 ") {
 		t.Fatalf("system %q", out.System)
 	}
-	if !hasExact(tt, out.System) {
+	if !hasExact(tt, wholePrompt(out)) {
 		t.Errorf("preview lacks the filled prompt %q", out.System)
+	}
+}
+
+// TestPreviewIsTheWholePrompt: What the language model receives is one
+// whole prompt, the personal dictionary in it where the request puts it,
+// with no system / user headings, and the variables' values marked
+// (issue #4032). The request it shows is the one a session sends.
+func TestPreviewIsTheWholePrompt(t *testing.T) {
+	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
+		a, tt := pageTester(t, "/"+feature)
+		tt.SetSize(windowWidth, 9000)
+		notes := "| Roth | `wrath` → Roth | 中文 retirement |"
+		a.updateSettings(func(s *settings.Settings) {
+			s.Dictionary.Enabled, s.Dictionary.Notes = true, notes
+			s.Features.Transcribe.Enhance = true
+		})
+		click(t, tt, "Your rules")
+		click(t, tt, "What the language model receives")
+		out, err := a.composedPreview(feature)
+		if err != nil {
+			t.Fatal(err)
+		}
+		whole := wholePrompt(out)
+		if want := out.System + "\n\n"; !strings.HasPrefix(whole, want) || !strings.HasSuffix(whole, out.User) {
+			t.Errorf("%s: not system then user: %q", feature, whole)
+		}
+		if !strings.Contains(out.System, notes) || !hasExact(tt, whole) {
+			t.Errorf("%s: no whole prompt with the dictionary in %q", feature, firstTexts(tt))
+		}
+		if hasExact(tt, "system") || hasExact(tt, "user") {
+			t.Errorf("%s: the preview still splits system / user", feature)
+		}
+		// What a session sends with the saved rules (run_listen.go, write.go).
+		sent := a.previewInput(feature)
+		sent.TaskPrompt, sent.Dictionary = promptOf(a.prefs, feature), session.PromptDictionary(a.prefs)
+		if want, _ := compose.Build(sent); wholePrompt(want) != whole {
+			t.Errorf("%s: the preview is not what is sent:\n%s\n---\n%s", feature, whole, wholePrompt(want))
+		}
+		// The dictionary switched off leaves it out, as a session does.
+		a.updateSettings(func(s *settings.Settings) { s.Dictionary.NotesOff = true })
+		if out, _ := a.composedPreview(feature); strings.Contains(out.System, "Roth") {
+			t.Errorf("%s: the dictionary shows while off", feature)
+		}
+		// The glossary's enabled terms are in the preview, as a session
+		// adds them (run_listen.go, write.go); the session side here is
+		// rebuilt from the store, not from the preview's cache.
+		repo := a.lib.store.Dictionary()
+		if err := repo.Put(context.Background(), store.Term{ID: "g1", Term: "Zephyrion", Aliases: []string{"zeph"}, Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+		a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = true })
+		a.loadGlossaryTerms()
+		out, err = a.composedPreview(feature)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if whole = wholePrompt(out); !strings.Contains(whole, "Zephyrion") {
+			t.Errorf("%s: no glossary term in %q", feature, whole)
+		}
+		sent = a.previewInput(feature)
+		sent.TaskPrompt, sent.Dictionary = promptOf(a.prefs, feature), session.PromptDictionary(a.prefs)
+		if terms, _ := repo.List(context.Background(), ""); a.prefs.Dictionary.Enabled && a.prefs.Dictionary.Glossary {
+			for _, tm := range terms {
+				if tm.Enabled {
+					sent.Glossary = append(sent.Glossary, compose.Term{Term: tm.Term, Aliases: tm.Aliases})
+				}
+			}
+		}
+		if want, _ := compose.Build(sent); wholePrompt(want) != whole {
+			t.Errorf("%s: the preview's glossary is not what is sent:\n%s\n---\n%s", feature, whole, wholePrompt(want))
+		}
+		if err := repo.Delete(context.Background(), "g1", ""); err != nil {
+			t.Fatal(err)
+		}
+		a.loadGlossaryTerms()
+		a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = false })
+		// A 200 row dictionary, open in the preview, still draws quickly.
+		a.updateSettings(func(s *settings.Settings) { s.Dictionary.NotesOff, s.Dictionary.Notes = false, longNotes(200) })
+		start := time.Now()
+		for range 10 {
+			tt.Frame()
+		}
+		if took := time.Since(start); took > 3*time.Second || !has(tt, "| Term199 | term 199 | row 199 |") {
+			t.Errorf("%s: 10 frames took %v", feature, took)
+		}
+		// The rules field never takes the dictionary in.
+		if strings.Contains(a.promptBuiltin(feature), "Roth") {
+			t.Errorf("%s: the built-in rules hold the dictionary", feature)
+		}
+	}
+}
+
+// TestMarkValues: the values of the variables are marked wherever they
+// land, the longest first; the rest stays plain and whole.
+func TestMarkValues(t *testing.T) {
+	text := "Translate into 简体中文. Keep English, Japanese as said. 简体中文!"
+	spans := markValues(ui.Hex("#0066ff"), text, []string{"English", "简体中文", "English, Japanese", ""})
+	var got strings.Builder
+	var marked []string
+	for _, s := range spans {
+		got.WriteString(s.Text)
+		if s.Weight == 700 {
+			marked = append(marked, s.Text)
+		}
+	}
+	if got.String() != text {
+		t.Fatalf("text changed: %q", got.String())
+	}
+	if want := []string{"简体中文", "English, Japanese", "简体中文"}; !slices.Equal(marked, want) {
+		t.Errorf("marked %q, want %q", marked, want)
+	}
+	if s := markValues(ui.Hex("#0066ff"), "", nil); len(s) != 1 || s[0].Text != "" {
+		t.Errorf("empty text: %+v", s)
+	}
+}
+
+// TestPreviewFollowsTheDictionary: the prompt preview's glossary cache
+// follows every dictionary reload, not only the start and the term
+// dialogs: a term that appears between two reloads — another profile's,
+// once profiles land — is in the whole prompt a session sends, and one
+// that goes away leaves it, with a search active too.
+func TestPreviewFollowsTheDictionary(t *testing.T) {
+	a, _ := pageTester(t, "/transcribe")
+	a.updateSettings(func(s *settings.Settings) {
+		s.Dictionary.Enabled, s.Dictionary.Glossary = true, true
+	})
+	repo := a.lib.store.Dictionary()
+	if err := repo.Put(context.Background(), store.Term{ID: "g1", Term: "Zephyrion", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	a.loadDict()
+	out, err := a.composedPreview(hotkey.Transcribe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole := wholePrompt(out); !strings.Contains(whole, "Zephyrion") {
+		t.Fatalf("the reload did not reach the preview: %q", whole)
+	}
+	if err := repo.Delete(context.Background(), "g1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Put(context.Background(), store.Term{ID: "g2", Term: "Quixotica", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	a.dv.query = "quix"
+	a.loadDict()
+	out, err = a.composedPreview(hotkey.Transcribe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole := wholePrompt(out); strings.Contains(whole, "Zephyrion") || !strings.Contains(whole, "Quixotica") {
+		t.Errorf("the filtered reload did not reach the preview: %q", whole)
 	}
 }

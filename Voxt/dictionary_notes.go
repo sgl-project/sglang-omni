@@ -4,24 +4,16 @@ package main
 // Markdown the user writes once, which Transcribe, Translate and Rewrite
 // send in the language model's system prompt, after the task's rules
 // (compose.Input.Dictionary); speech recognition never gets it. It is
-// saved as the Speech context is (autosave in models_context.go). Under it, How
-// it is used builds a request from the settings, as a session does, and
-// shows its parts and the messages sent.
+// saved as the Speech context is (autosave in models_context.go). Each
+// feature page's preview shows it in that feature's whole prompt
+// (feature_prompts.go).
 
 import (
 	"math"
-	"reflect"
-	"slices"
-	"strconv"
-	"strings"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // The Dictionary page's views (dictView.tab).
@@ -90,145 +82,8 @@ func (a *app) notesView(c *ui.Context) {
 				in.SetTextSelection(matches[d.notesFind.cur-1][0], matches[d.notesFind.cur-1][1])
 			}
 			a.autosave(in, n, a.saveNotes)
-			a.notesExample(c)
+			// Its place in each prompt shows on the feature pages (#4032).
+			caption(c, i18n.T("Each feature's page shows its own whole request, with the variables filled in: open Your rules, then What the language model receives."))
 		})
 	})
-}
-
-// notesExampleInput is a request of feature (hotkey.Transcribe,
-// Translate, Rewrite) as a session builds it from the settings
-// (session/run_listen.go, write.go), with the editor as typed and sample
-// text; no app scene, which depends on the app in front.
-func (a *app) notesExampleInput(feature string) compose.Input {
-	in := a.notesExampleRequest(feature)
-	for _, tm := range a.notesTerms() {
-		if tm.Enabled {
-			in.Glossary = append(in.Glossary, compose.Term{Term: tm.Term, Aliases: tm.Aliases})
-		}
-	}
-	return in
-}
-
-// notesTerms are the glossary's source: the dictionary's terms when the
-// glossary is sent, else nil.
-func (a *app) notesTerms() []store.Term {
-	if a.prefs.Dictionary.Enabled && a.prefs.Dictionary.Glossary {
-		return a.dv.all
-	}
-	return nil
-}
-
-// notesExampleRequest is notesExampleInput without the glossary.
-func (a *app) notesExampleRequest(feature string) compose.Input {
-	p := a.prefs
-	p.Dictionary.Notes = a.dv.notes.text
-	f := p.Features
-	in := compose.Input{
-		MainLanguage: session.MainLanguage(p, i18n.Locale()), OtherLanguages: p.General.OtherLanguages,
-		Dictionary: session.PromptDictionary(p),
-	}
-	switch feature {
-	case hotkey.Translate:
-		in.Task, in.TaskPrompt, in.Cleanup, in.Text = compose.Translate, f.Translate.Prompt, f.Translate.Cleanup, trySample()
-		in.TargetLanguage = session.TranslateTarget(p, i18n.Locale(), "")
-	case hotkey.Rewrite:
-		in.Task, in.TaskPrompt, in.Cleanup = compose.Rewrite, f.Rewrite.Prompt, f.Rewrite.Cleanup
-		in.Instruction, in.Text = rewriteSample()
-	default:
-		in.Task, in.TaskPrompt, in.Cleanup, in.Structure, in.Text = compose.Transcribe, f.Transcribe.Prompt, f.Transcribe.Cleanup, f.Transcribe.Structure, trySample()
-	}
-	return in
-}
-
-// notesFeatures are How it is used's features, in its switch's order.
-var notesFeatures = []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite}
-
-// notesExample is How it is used: the system prompt, the dictionary, the
-// user's input and the speech recognition text, then the messages sent.
-func (a *app) notesExample(c *ui.Context) {
-	t := c.Theme()
-	d := &a.dv
-	sectionTitle(c, i18n.T("How it is used"))
-	caption(c, i18n.T("An example with your settings: system prompt + personal dictionary + your input + speech recognition text = what the language model receives. The dictionary comes right after the system prompt, before anything that changes from one request to the next, so the model server can reuse its cache."))
-	caption(c, i18n.T("Each feature's page shows its own whole request, with the variables filled in: open Your rules, then What the language model receives."))
-	segmentedFit(c.Key("dict-notes-feature"), &d.notesFeature, i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite")).Label(i18n.T("Example for"))
-	feature := notesFeatures[d.notesFeature]
-	if feature == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {
-		caption(c, i18n.T("Clean-up is off, so nothing is sent to a language model."))
-	}
-	ex := a.notesExampleBuilt(feature)
-	if ex.err != nil {
-		caption(c, ex.err.Error())
-		return
-	}
-	in, system, dict := ex.in, ex.system, ex.dict
-	none := i18n.T("(none)")
-	or := func(s string) string {
-		if strings.TrimSpace(s) == "" {
-			return none
-		}
-		return s
-	}
-	userInput, speech := none, in.Text
-	if in.Task == compose.Rewrite {
-		userInput, speech = in.Text, in.Instruction
-	}
-	if dict == "" {
-		dict = i18n.T("(not sent: empty or switched off)")
-	}
-	ui.Column(c.Key("dict-notes-example")).Gap(px(t, sp2)).Children(func() {
-		promptCard(c, "dict-ex-system", i18n.T("System prompt"), system)
-		promptCard(c, "dict-ex-dict", "+ "+i18n.T("Personal dictionary"), dict)
-		if in.Task == compose.Rewrite { // only Rewrite sends a selection
-			promptCard(c, "dict-ex-input", "+ "+i18n.T("Your input (the selected text)"), or(userInput))
-		}
-		promptCard(c, "dict-ex-speech", "+ "+i18n.T("Speech recognition text"), or(speech))
-		sectionTitle(c, "= "+i18n.T("What the language model receives"))
-		for i, m := range ex.msgs {
-			promptCard(c, "dict-ex-msg-"+strconv.Itoa(i), m.Role, m.Content)
-		}
-	})
-}
-
-// promptCard is a part of a request: its title and its text, in a card.
-func promptCard(c *ui.Context, key, title, text string) {
-	t := c.Theme()
-	k := tok(t)
-	ui.Column(c.Key(key)).Gap(px(t, 4)).Children(func() {
-		ui.Text(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
-		fillCard(c).Padding(px(t, sp3)).Children(func() {
-			ui.Text(c, text).FontSize(px(t, fsCaption)).Font("monospace").Selectable()
-		})
-	})
-}
-
-// notesExampleCache is How it is used's last built request. With
-// thousands of terms Build takes milliseconds, too long to repeat on
-// every frame (a pointer move, a caret blink).
-type notesExampleCache struct {
-	in     compose.Input // the request without its glossary
-	terms  []store.Term  // its glossary's source, by identity: each read of the dictionary is a new slice
-	built  bool
-	system string // the system prompt without the dictionary
-	dict   string
-	msgs   []compose.Message
-	err    error
-}
-
-// notesExampleBuilt builds the example of feature, again only when the
-// request or the terms changed.
-func (a *app) notesExampleBuilt(feature string) *notesExampleCache {
-	ex := &a.dv.example
-	in, terms := a.notesExampleRequest(feature), a.notesTerms()
-	if ex.built && len(terms) == len(ex.terms) && (len(terms) == 0 || &terms[0] == &ex.terms[0]) && reflect.DeepEqual(in, ex.in) {
-		return ex
-	}
-	full := a.notesExampleInput(feature)
-	out, err := compose.Build(full)
-	without := full
-	without.Dictionary = ""
-	plain, _ := compose.Build(without)
-	in.OtherLanguages = slices.Clone(in.OtherLanguages) // the settings' slice could change under the key
-	*ex = notesExampleCache{in: in, terms: terms, built: true, system: plain.System, dict: out.Dictionary, msgs: out.Messages(), err: err}
-	return ex
 }

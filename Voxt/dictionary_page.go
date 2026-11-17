@@ -46,6 +46,11 @@ type dictionaryState struct {
 	// selPress is the transcribe shortcut whose selection is being read
 	// (dictionary_selection.go).
 	selPress *selectionPress
+	// glossaryTerms is the whole dictionary for the feature pages' prompt
+	// preview (feature_prompts.go), read again after each change;
+	// glossaryReads numbers the reads: only the last one lands.
+	glossaryTerms []store.Term
+	glossaryReads int
 }
 
 type dictView struct {
@@ -74,19 +79,12 @@ type dictView struct {
 	// scan is the history scan's dialog (dictionary_scan.go).
 	scan scanState
 	// tab is the view: the terms or the personal dictionary
-	// (dictionary_notes.go), whose editor is notes and whose example is
-	// of notesFeatures[notesFeature].
-	tab          int
-	notes        speechContextState
-	notesFeature int
+	// (dictionary_notes.go), whose editor is notes.
+	tab   int
+	notes speechContextState
 	// notesQuery and notesFind are the view's search (find_marks.go).
 	notesQuery string
 	notesFind  finder
-	// all are the terms of the last read without a search, for the
-	// example's glossary.
-	all []store.Term
-	// example is the personal dictionary's example, as last built.
-	example notesExampleCache
 }
 
 // termEdit is the term dialog's fields: a new term when id is "".
@@ -130,7 +128,9 @@ var (
 // dictShown runs when the router goes to the page (pageShown).
 func (a *app) dictShown() { a.loadDict() }
 
-// loadDict reads the terms of the search in the background.
+// loadDict reads the terms of the search in the background. The glossary
+// cache (loadGlossaryTerms in feature_prompts.go) follows every reload, so
+// anything that reloads the list also reaches the prompt preview.
 func (a *app) loadDict() {
 	d := &a.dv
 	d.seq++
@@ -153,7 +153,11 @@ func (a *app) loadDict() {
 			}
 			d.list, d.err = list, ""
 			if q == "" {
-				d.total, d.all = len(list), list
+				d.total = len(list)
+				a.glossaryReads++
+				a.glossaryTerms = list
+			} else {
+				a.loadGlossaryTerms()
 			}
 		})
 	})
