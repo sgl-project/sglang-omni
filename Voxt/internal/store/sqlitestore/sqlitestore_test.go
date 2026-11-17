@@ -61,7 +61,7 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 	if fi, err := os.Stat(s.History().AudioDir()); err != nil || !fi.IsDir() || filepath.Dir(s.History().AudioDir()) != dir {
 		t.Errorf("audio dir: %v", err)
 	}
-	for _, table := range []string{"documents", "history", "history_fts", "dictionary_terms", "notes", "meetings", "meeting_segments", "meeting_segments_fts"} {
+	for _, table := range []string{"documents", "history", "history_fts", "dictionary_profiles", "dictionary_terms", "notes", "meetings", "meeting_segments", "meeting_segments_fts"} {
 		rows, err := s.db.Query(ctx, `SELECT name FROM sqlite_master WHERE name = ?`, table)
 		if err != nil || len(rows.Values) != 1 {
 			t.Errorf("table %s: %v", table, err)
@@ -388,14 +388,135 @@ func TestDictionary(t *testing.T) {
 	if got := names("VOX"); got != "VoxtNew" {
 		t.Errorf("ignoring case: %q", got)
 	}
-	if err := d.Delete(ctx, "2"); err != nil {
+	if err := d.Delete(ctx, "2", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Delete(ctx, "2"); !errors.Is(err, core.ErrNotFound) {
+	if err := d.Delete(ctx, "2", ""); !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("deleted twice: %v", err)
 	}
 	if st, _ := s.Stats(ctx); st.Dictionary != 2 {
 		t.Errorf("stats %+v", st)
+	}
+}
+
+func TestDictionaryProfiles(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	d := s.Dictionary()
+	profiles, err := d.Profiles(ctx)
+	if err != nil || len(profiles) != 1 || profiles[0].ID != "default" || profiles[0].Name != "Default" || !profiles[0].Active {
+		t.Fatalf("initial profiles %+v, %v", profiles, err)
+	}
+	if err := d.Put(ctx, store.Term{ID: "default-term", Term: "Voxt", Note: "default", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CreateProfile(ctx, store.DictionaryProfile{ID: "work", Name: " Work "}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CreateProfile(ctx, store.DictionaryProfile{ID: "other", Name: "default"}); !errors.Is(err, core.ErrExists) {
+		t.Errorf("duplicate profile name: %v", err)
+	}
+	if err := d.CreateProfile(ctx, store.DictionaryProfile{ID: "empty", Name: " "}); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("empty profile name: %v", err)
+	}
+	if err := d.ActivateProfile(ctx, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.List(ctx, ""); err != nil || len(got) != 0 {
+		t.Fatalf("new profile starts with %+v, %v", got, err)
+	}
+	// The same spelling can mean something different in another profile.
+	if err := d.Put(ctx, store.Term{ID: "work-term", Term: "voxt", Note: "work", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.Get(ctx, "work-term"); got.Note != "work" {
+		t.Errorf("active Get returned %+v", got)
+	}
+	if got, _ := d.List(ctx, ""); len(got) != 1 || got[0].ID != "work-term" {
+		t.Errorf("active List returned %+v", got)
+	}
+	if err := d.ActivateProfile(ctx, "default"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.List(ctx, ""); len(got) != 1 || got[0].ID != "default-term" {
+		t.Errorf("Default's terms changed: %+v", got)
+	}
+	if err := d.RenameProfile(ctx, "work", "Office"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RenameProfile(ctx, "work", "DEFAULT"); !errors.Is(err, core.ErrExists) {
+		t.Errorf("rename to a duplicate: %v", err)
+	}
+	profiles, _ = d.Profiles(ctx)
+	if len(profiles) != 2 || profiles[1].Name != "Office" || !profiles[0].Active || profiles[1].Active {
+		t.Errorf("after rename %+v", profiles)
+	}
+	if err := d.ActivateProfile(ctx, "missing"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("activate missing: %v", err)
+	}
+	profiles, _ = d.Profiles(ctx)
+	if !profiles[0].Active {
+		t.Error("a missing profile deactivated Default")
+	}
+	// Deleting the active profile chooses a remaining one and takes its terms.
+	if err := d.ActivateProfile(ctx, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DeleteProfile(ctx, "work"); err != nil {
+		t.Fatal(err)
+	}
+	profiles, _ = d.Profiles(ctx)
+	if len(profiles) != 1 || !profiles[0].Active {
+		t.Errorf("after deleting active %+v", profiles)
+	}
+	if got, _ := d.List(ctx, ""); len(got) != 1 || got[0].ID != "default-term" {
+		t.Errorf("terms after deleting active %+v", got)
+	}
+	if stats, _ := s.Stats(ctx); stats.Dictionary != 1 {
+		t.Errorf("deleted profile left its terms behind: %+v", stats)
+	}
+	if err := d.DeleteProfile(ctx, "default"); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("delete the last profile: %v", err)
+	}
+}
+
+func TestDictionaryProfileMigrationKeepsOldTerms(t *testing.T) {
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = saved[:8]
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	at := time.Date(2026, 10, 15, 9, 0, 0, 123000000, time.UTC)
+	for _, term := range []store.Term{
+		{ID: "one", Term: "Voxt", Aliases: []string{"vox t"}, Note: "keep me", Enabled: true, CreatedAt: at, UpdatedAt: at},
+		{ID: "two", Term: "Kubernetes", Aliases: []string{"k8s"}, Enabled: false, CreatedAt: at, UpdatedAt: at},
+	} {
+		enabled := 0
+		if term.Enabled {
+			enabled = 1
+		}
+		_, err := s.db.Execute(ctx, `INSERT INTO dictionary_terms (id, term, aliases, note, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			term.ID, term.Term, `["`+term.Aliases[0]+`"]`, term.Note, enabled, at.UnixMilli(), at.UnixMilli())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	migrations = saved
+	s = openTest(t, dir)
+	profiles, err := s.Dictionary().Profiles(ctx)
+	if err != nil || len(profiles) != 1 || profiles[0].Name != "Default" || !profiles[0].Active {
+		t.Fatalf("migrated profiles %+v, %v", profiles, err)
+	}
+	got, err := s.Dictionary().List(ctx, "")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("migrated terms %+v, %v", got, err)
+	}
+	if got[1].ID != "one" || got[1].Term != "Voxt" || !slices.Equal(got[1].Aliases, []string{"vox t"}) || got[1].Note != "keep me" || !got[1].Enabled ||
+		!got[1].CreatedAt.Equal(at) || !got[1].UpdatedAt.Equal(at) || got[0].ID != "two" || got[0].Enabled {
+		t.Errorf("old dictionary changed meaning: %+v", got)
+	}
+	if got, _ := s.Dictionary().List(ctx, "k8s"); len(got) != 1 || got[0].ID != "two" {
+		t.Errorf("old aliases no longer search: %+v", got)
 	}
 }
 
