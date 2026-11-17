@@ -69,7 +69,7 @@ VoxtralTtsModel::VoxtralTtsModel(const std::filesystem::path &model_directory,
            /*has_query_key_norm=*/false,
            /*traditional_rope=*/true}),
       norm_eps_(config.at("norm_eps").get<float>()), codebook_offsets_(0),
-      time_frequencies_(0.0f) {
+      time_features_(0.0f) {
   const nlohmann::json &audio = config.at("multimodal").at("audio_model_args");
   const nlohmann::json &acoustic = audio.at("acoustic_transformer_args");
   semantic_code_count_ = audio.at("semantic_codebook_size").get<int>();
@@ -91,13 +91,26 @@ VoxtralTtsModel::VoxtralTtsModel(const std::filesystem::path &model_directory,
   codebook_offsets_ =
       mx::array(offsets.begin(), {static_cast<int>(offsets.size())}, mx::int32);
   const int frequency_count = acoustic.at("dim").get<int>() / 2;
-  time_frequencies_ = mx::exp(mx::divide(
+  const mx::array time_frequencies = mx::exp(mx::divide(
       mx::multiply(
           mx::negative(mx::log(mx::array(kTimeEmbeddingMaxPeriod))),
           mx::arange(static_cast<double>(frequency_count), mx::float32)),
       mx::array(static_cast<float>(frequency_count))));
+  // Note (XXXXRT666): the flow's timesteps are fixed, so their projections
+  // are computed once here.
+  const std::string head = kAcousticPrefix;
+  const mx::Dtype dtype = checkpoint_.Weight(head + ".norm.weight").dtype();
+  const mx::array angles = mx::multiply(
+      mx::expand_dims(mx::slice(mx::linspace(0.0, 1.0, kFlowTimesteps, dtype),
+                                {0}, {kFlowTimesteps - 1}),
+                      1),
+      mx::expand_dims(time_frequencies, 0));
+  time_features_ = checkpoint_.Linear(
+      mx::astype(mx::concatenate({mx::cos(angles), mx::sin(angles)}, -1),
+                 dtype),
+      head + ".time_projection");
 
-  std::vector<mx::array> loaded = {codebook_offsets_, time_frequencies_};
+  std::vector<mx::array> loaded = {codebook_offsets_, time_features_};
   for (const auto &[voice, frame_count] : tokenizer_.voice_frame_counts()) {
     const auto [arrays, metadata] = mx::load_safetensors(
         (model_directory / "voice_embedding" / (voice + ".safetensors"))
@@ -204,30 +217,25 @@ mx::array VoxtralTtsModel::PredictFrame(const mx::array &hidden) const {
       mx::int32);
 
   mx::array latents = mx::random::normal({1, acoustic_codebook_count_}, dtype);
-  const mx::array timesteps = mx::linspace(0.0, 1.0, kFlowTimesteps, dtype);
   // The unconditioned half sees no language hidden state.
   const mx::array language_features =
       checkpoint_.Linear(mx::concatenate({hidden, mx::zeros_like(hidden)}, 0),
                          head + ".llm_projection");
+  const int time_width = time_features_.shape(1);
   for (int step = 0; step + 1 < kFlowTimesteps; ++step) {
-    const mx::array timestep = mx::slice(timesteps, {step}, {step + 1});
-    const mx::array step_size =
-        mx::subtract(mx::slice(timesteps, {step + 1}, {step + 2}), timestep);
-    const mx::array angles = mx::multiply(
-        mx::reshape(timestep, {1, 1}), mx::expand_dims(time_frequencies_, 0));
-    const mx::array time_embedding = mx::astype(
-        mx::concatenate({mx::cos(angles), mx::sin(angles)}, -1), dtype);
     const mx::array velocity = Velocity(
         mx::concatenate({latents, latents}, 0),
-        checkpoint_.Linear(mx::concatenate({time_embedding, time_embedding}, 0),
-                           head + ".time_projection"),
+        mx::broadcast_to(mx::astype(mx::slice(time_features_, {step, 0},
+                                              {step + 1, time_width}),
+                                    dtype),
+                         {2, time_width}),
         language_features);
     const mx::array guided = mx::add(
         Scale(mx::slice(velocity, {0, 0}, {1, acoustic_codebook_count_}),
               kGuidanceScale),
         Scale(mx::slice(velocity, {1, 0}, {2, acoustic_codebook_count_}),
               1.0 - kGuidanceScale));
-    latents = mx::add(latents, mx::multiply(guided, step_size));
+    latents = mx::add(latents, Scale(guided, 1.0 / (kFlowTimesteps - 1)));
   }
   // Latents in [-1, 1] round to the nearest of the evenly spaced levels.
   const mx::array levels =
