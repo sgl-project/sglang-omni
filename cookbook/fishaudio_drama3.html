@@ -845,14 +845,15 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\<
 </section>
 <section id="deployment-performance">
 <h2>Deployment Performance<a class="headerlink" href="#deployment-performance" title="Link to this heading">#</a></h2>
-<p>On one GPU the default placement works as is: every stage runs on GPU 0, with the vocoder in its own process. With two GPUs, put the vocoder on the second one, so its decoding no longer shares a GPU with the engine:</p>
+<p>On one GPU the default placement works as is: every stage runs on GPU 0, and the vocoder runs in the engine’s process, decoding on its own high-priority CUDA stream. With two GPUs, put the vocoder in its own process on the second one, so its decoding no longer shares a GPU with the engine (one process cannot span two GPUs):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>&lt;checkpoint&gt;<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--tts_engine.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vocoder.process<span class="w"> </span>vocoder<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--vocoder.gpu<span class="w"> </span><span class="m">1</span>
 </pre></div>
 </div>
-<p>When the engine and the vocoder share one GPU, <code class="docutils literal notranslate"><span class="pre">--mps</span> <span class="pre">on</span></code> lets their processes share it through CUDA MPS (see <a class="reference internal" href="../basic_usage/mps_dp.html"><span class="std std-doc">Same-GPU Data Parallelism with CUDA MPS</span></a>). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.</p>
+<p>When the vocoder runs in its own process on the engine’s GPU (<code class="docutils literal notranslate"><span class="pre">--vocoder.process</span> <span class="pre">vocoder</span></code>), <code class="docutils literal notranslate"><span class="pre">--mps</span> <span class="pre">on</span></code> lets the two processes share it through CUDA MPS (see <a class="reference internal" href="../basic_usage/mps_dp.html"><span class="std std-doc">Same-GPU Data Parallelism with CUDA MPS</span></a>). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.</p>
 <section id="tensor-parallelism">
 <h3>Tensor Parallelism<a class="headerlink" href="#tensor-parallelism" title="Link to this heading">#</a></h3>
 <p>When the FP8 checkpoint does not fit one GPU, <code class="docutils literal notranslate"><span class="pre">--tts_engine.tp_size</span></code> splits the engine across 2 or 4 GPUs: SGLang shards the backbone, and each GPU holds its share of the codebook tower’s attention heads and MLP width; with 4 GPUs, pairs of GPUs share each of the tower’s two key/value heads, as they share the backbone’s. The FP8 routed experts are stored in 128-wide blocks, so their 512-wide intermediate splits across at most 4 GPUs. On two 32 GB GPUs, such as two RTX 5090:</p>
@@ -978,7 +979,7 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\<
 </table>
 </div>
 <p><em>Table 1. Drama 3 streaming performance on one H200. Each cell is the mean of four runs.</em></p>
-<p>A single stream gets its first audio in under 100 ms. At concurrency 16, audio is still generated about 2.7× faster than it plays back, and at concurrency 64 mean RTF stays at 0.80. In SGLang-Omni, how the pipeline stages are grouped into processes and placed on GPUs is deployment-time configuration rather than per-model code. Table 2 uses this to compare two vocoder placements at higher concurrency, with the vocoder’s default GPU share, 1,088 requests per concurrency level, and the average of six server starts. Its throughput also counts the end-of-speech frame that ends each stream.</p>
+<p>A single stream gets its first audio in under 100 ms. At concurrency 16, audio is still generated about 2.7× faster than it plays back, and at concurrency 64 mean RTF stays at 0.80. In SGLang-Omni, how the pipeline stages are grouped into processes and placed on GPUs is deployment-time configuration rather than per-model code. Table 2 uses this to compare two vocoder placements at higher concurrency, with the vocoder in its own process and its default GPU share, 1,088 requests per concurrency level, and the average of six server starts. Its throughput also counts the end-of-speech frame that ends each stream.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Vocoder placement</p></th>
@@ -1021,13 +1022,11 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\<
 </section>
 <section id="non-streaming-requests">
 <h3>Non-Streaming Requests<a class="headerlink" href="#non-streaming-requests" title="Link to this heading">#</a></h3>
-<p>The vocoder decodes a non-streaming request’s audio in one piece after the engine finishes it, batching requests that
-finish together up to a frame limit it sets at startup from its memory share (<code class="docutils literal notranslate"><span class="pre">--vocoder.gpu_memory_fraction</span></code>, 0.10
-by default) and logs:</p>
+<p>The vocoder decodes a non-streaming request’s audio in one piece after the engine finishes it, one request at a time, replaying a CUDA graph for requests of up to 512 frames (<code class="docutils literal notranslate"><span class="pre">--vocoder.factory.non_streaming_cuda_graph_max_frames</span></code>). With <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.max_batch_size</span></code> above 1 it instead batches requests that finish together, decoding them eagerly. Either way a decode takes at most a frame limit it sets at startup from the room its process leaves in the process’s memory share: the engine’s and the vocoder’s <code class="docutils literal notranslate"><span class="pre">gpu_memory_fraction</span></code> together (0.65 and 0.15 by default) while the vocoder runs in the engine’s process, the vocoder’s alone in its own process. It logs:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Drama 3 vocoder: a non-streaming decode takes up to &lt;frames&gt; padded frames of &lt;bytes&gt; bytes each; share &lt;share&gt; GiB, held &lt;held&gt; GiB
 </pre></div>
 </div>
-<p>The limit does not count the memory the vocoder process holds outside PyTorch’s allocator, so it cannot guarantee that the process stays within its share. With the engine’s share raised to 0.85 on the same GPU, concurrent non-streaming requests can run out of GPU memory. To avoid that, stream those requests (<code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code>), keep the engine’s default share of 0.70 on the GPU that runs the vocoder, or put the vocoder on a second GPU, as under Deployment.</p>
+<p>The limit does not count the memory the vocoder’s process holds outside PyTorch’s allocator, so it cannot guarantee that the process stays within its share. With the engine’s share raised to 0.85 on the same GPU, concurrent non-streaming requests can run out of GPU memory. To avoid that, stream those requests (<code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code>), keep the engine’s default share of 0.70 on the GPU that runs the vocoder, or put the vocoder on a second GPU, as under Deployment.</p>
 </section>
 </section>
 <section id="defaults-parameters">
@@ -1076,15 +1075,27 @@ by default) and logs:</p>
 <td><p>Runs the codebook tower layers of decode and first-frame steps of up to 32 rows as fused Triton kernels (row tiles of 16 and 32), eagerly or inside the CUDA graphs; larger steps and the tower’s prefill keep the module path. The kernels add in a different order, so the tower’s outputs can differ in the last bits and the sampled frames can differ.</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.tower_fused_layers</span> <span class="pre">false</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Vocoder window CUDA graphs</p></td>
-<td><p>Replays the decode of each streaming window length at batch 1 as a CUDA graph; batches and longer windows decode eagerly.</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.window_cuda_graphs</span> <span class="pre">false</span></code></p></td>
+<tr class="row-odd"><td><p>Vocoder CUDA graphs, up to 512 frames</p></td>
+<td><p>Replays streaming window decodes, and the decode of non-streaming requests of up to 512 frames padded to a multiple of 8, as CUDA graphs; a non-streaming request replays at batch 1, and non-streaming batches and longer requests decode eagerly. Beside incremental streams the vocoder halves the 512-frame cap until one request of <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> frames still fits its process’s GPU memory share, and logs each halving: with the default shares on an 80 GB GPU the cap is 256 frames. Under overlap or stateful decoding the cap does not halve, and a share too small for it stops startup with the flags to change. Costs startup time and vocoder GPU memory.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.window_cuda_graphs</span> <span class="pre">false</span></code>; the non-streaming cap with <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.non_streaming_cuda_graph_max_frames</span></code> (0 keeps only the window graphs)</p></td>
+</tr>
+<tr class="row-even"><td><p>Incremental streaming decode</p></td>
+<td><p>Each streaming window decodes only its new frames, with the stream’s decoder state kept in one of 256 slots, and windows of one length from up to 16 streams share a decode. Needs fp16 decoding on a CUDA device with FA3 (compute capability 8.x or 9.x, CUDA 12.3 or newer) and <code class="docutils literal notranslate"><span class="pre">stream_crossfade_samples</span></code> 0; elsewhere, or when the state does not fit its process’s GPU memory share, the vocoder uses overlap decoding, where each window decodes again the <code class="docutils literal notranslate"><span class="pre">stream_overlap_tokens</span></code> frames before it.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_decode</span> <span class="pre">overlap</span></code>; the slots with <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_slot_count</span></code> and the streams per decode with <code class="docutils literal notranslate"><span class="pre">--vocoder.factory.max_stream_batch_size</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Batched streaming windows, up to 4</p></td>
+<td><p>Under overlap decoding, same-length streaming windows already queued from different requests decode in one CUDA graph replay, shortest windows first; no window waits for others to arrive. At startup the vocoder times each batch size and keeps only those that save at least 5% of the GPU time of one-at-a-time replays, and logs the ratios. A batched decode can differ from a batch-1 decode in the last fp16 bits. Beside <code class="docutils literal notranslate"><span class="pre">stateful_decode</span></code>, windows do not batch.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.stream_window_batch_size</span> <span class="pre">1</span></code> replays each window alone, still shortest first</p></td>
 </tr>
 <tr class="row-even"><td><p>Vocoder fp16 decoding</p></td>
 <td><p>Decodes frames into audio in fp16.</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.decode_dtype</span> <span class="pre">float32</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Reference encode CUDA graphs, up to 20 s</p></td>
+<tr class="row-odd"><td><p>Vocoder in the engine’s process</p></td>
+<td><p>The vocoder runs in the engine’s process and decodes on its own CUDA stream, at a higher priority than the engine’s stream, so its windows do not queue behind decode steps, and the engine hands it codes without a process hop. A tensor-parallel engine or vocoder holds its process alone, and <code class="docutils literal notranslate"><span class="pre">stateful_decode</span></code> needs a dedicated vocoder process, so with any of these the vocoder runs in its own.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.process</span> <span class="pre">vocoder</span></code> runs it in its own process</p></td>
+</tr>
+<tr class="row-even"><td><p>Reference encode CUDA graphs, up to 20 s</p></td>
 <td><p>Encodes each reference by replaying a CUDA graph captured for its length rounded up to a multiple of 22 codec frames (1.02 s); the longest of the 20 graphs holds 440 frames (20.43 s), and longer references encode eagerly. The encoder is causal, so the zeros after a reference feed none of its codes, but the padded encode rounds differently from an unpadded one: on H100 about 4.5% of a reference’s code elements differ in bf16 and under 0.3% in fp32. Costs startup time and preprocessing GPU memory.</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.reference_encode_graph_max_seconds</span> <span class="pre">0</span></code> encodes every reference eagerly; another value moves the cap</p></td>
 </tr>
