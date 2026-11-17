@@ -120,16 +120,6 @@ mx::array Sample(mx::array logits, const SamplerConfig &sampler,
       mx::int32);
 }
 
-// Note (Jiaxin Deng): the talker's multimodal rotary positions are all the
-// text position for speech, which is plain rotary embedding; tables rounded
-// to bfloat16 keep the reference's codes.
-omni_common::Qwen3DecoderConfig DecoderConfig(const nlohmann::json &config) {
-  omni_common::Qwen3DecoderConfig decoder =
-      omni_common::Qwen3DecoderConfig::FromJson(config);
-  decoder.rotary_tables = true;
-  return decoder;
-}
-
 } // namespace
 
 Qwen3TtsModel::Qwen3TtsModel(const std::filesystem::path &model_directory)
@@ -141,11 +131,14 @@ Qwen3TtsModel::Qwen3TtsModel(const std::filesystem::path &model_directory,
     : checkpoint_(omni_common::LoadSafetensors(model_directory), config),
       tokenizer_(model_directory),
       speech_decoder_(model_directory / "speech_tokenizer"),
+      // Note (Jiaxin Deng): the talker's multimodal rotary positions are all
+      // the text position for speech, which is plain rotary embedding.
       talker_(checkpoint_, kTalkerPrefix,
-              DecoderConfig(config.at("talker_config"))),
+              omni_common::Qwen3DecoderConfig::FromJson(
+                  config.at("talker_config"))),
       code_predictor_(
           checkpoint_, kCodePredictorPrefix,
-          DecoderConfig(
+          omni_common::Qwen3DecoderConfig::FromJson(
               config.at("talker_config").at("code_predictor_config"))) {
   if (config.value("tts_model_type", std::string()) != "custom_voice") {
     throw std::runtime_error("only Qwen3-TTS CustomVoice checkpoints are "

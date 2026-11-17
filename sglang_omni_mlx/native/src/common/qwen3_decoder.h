@@ -28,10 +28,6 @@ struct Qwen3DecoderConfig {
   bool has_query_key_norm = true;
   // Rotates adjacent rather than half-split pairs of each head.
   bool traditional_rope = false;
-  // Rotates with cosines and sines rounded to the input's dtype, and masks
-  // a multi-token step with an additive mask, as Hugging Face-style MLX
-  // ports do, instead of the fused rope and causal attention.
-  bool rotary_tables = false;
   int hidden_size = 0;
   int vocab_size = 0;
 
@@ -104,36 +100,24 @@ public:
                                const mlx::core::array &pads) const;
 
 private:
-  // A step's rotary tables [1, 1, length, head_dim] and, for a step of more
-  // than one token, its additive causal mask [length, cached + length].
-  struct RotaryInputs {
-    mlx::core::array cosines;
-    mlx::core::array sines;
-    std::optional<mlx::core::array> mask;
-  };
-
   std::string Name(const std::string &suffix) const;
   mlx::core::array Project(const mlx::core::array &x, const std::string &prefix,
                            bool tied_embedding = false) const;
   mlx::core::array Layer(const mlx::core::array &x, int layer,
-                         omni_common::KVCache &cache,
-                         const std::optional<RotaryInputs> &rotary) const;
+                         omni_common::KVCache &cache) const;
   mlx::core::array BatchLayer(const mlx::core::array &x, int layer,
                               BatchedKVCache &cache,
                               const mlx::core::array &offsets,
                               const mlx::core::array &mask) const;
-  RotaryInputs Rotary(int length, int offset, mlx::core::Dtype dtype) const;
   // Rotates heads [batch, heads, length, head_dim] at the cache's next
-  // positions: with the step's tables when given, else with the fused rope.
+  // positions.
   mlx::core::array Rotated(const mlx::core::array &heads,
-                           const omni_common::KVCache &cache,
-                           const std::optional<RotaryInputs> &rotary) const;
+                           const omni_common::KVCache &cache) const;
   // One layer's keys, rotated at the cache's next positions, and values of x,
   // each [batch, kv_heads, length, head_dim].
   std::pair<mlx::core::array, mlx::core::array>
   KeysValues(const mlx::core::array &x, const std::string &prefix,
-             const omni_common::KVCache &cache,
-             const std::optional<RotaryInputs> &rotary) const;
+             const omni_common::KVCache &cache) const;
 
   const omni_common::Checkpoint &checkpoint_;
   std::string prefix_;
