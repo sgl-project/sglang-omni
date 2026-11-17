@@ -58,6 +58,20 @@ AudioConfig AudioConfig::FromJson(const nlohmann::json &config) {
 
 namespace {
 
+// Silu(gate) * up with the Silu in float32, one kernel.
+mx::array FloatSwiglu(const mx::array &gate, const mx::array &up) {
+  static const auto compiled = mx::compile(
+      [](const std::vector<mx::array> &inputs) {
+        const mx::array gate_float = mx::astype(inputs[0], mx::float32);
+        return std::vector<mx::array>{mx::multiply(
+            mx::astype(mx::multiply(gate_float, mx::sigmoid(gate_float)),
+                       inputs[1].dtype()),
+            inputs[1])};
+      },
+      true);
+  return compiled({gate, up})[0];
+}
+
 omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
                                    const nlohmann::json &config,
                                    const TextConfig &text_config,
@@ -312,18 +326,13 @@ mx::array Model::Embed(const mx::array &token_ids) const {
 
 mx::array Model::RmsNorm(const mx::array &hidden,
                          const std::string &prefix) const {
-  const auto normalized = mx::fast::rms_norm(mx::astype(hidden, mx::float32),
-                                             std::nullopt, text_.rms_norm_eps);
-  return mx::multiply(mx::astype(normalized, hidden.dtype()),
-                      checkpoint_.Weight(prefix + ".weight"));
+  return checkpoint_.RmsNorm(hidden, prefix, text_.rms_norm_eps);
 }
 
 mx::array Model::Mlp(const mx::array &hidden, const std::string &prefix) const {
-  const auto gate = mx::astype(
-      checkpoint_.Linear(hidden, prefix + ".gate_proj"), mx::float32);
-  const auto up = checkpoint_.Linear(hidden, prefix + ".up_proj");
   return checkpoint_.Linear(
-      mx::multiply(mx::astype(omni_common::Silu(gate), hidden.dtype()), up),
+      FloatSwiglu(checkpoint_.Linear(hidden, prefix + ".gate_proj"),
+                  checkpoint_.Linear(hidden, prefix + ".up_proj")),
       prefix + ".down_proj");
 }
 
@@ -368,10 +377,8 @@ mx::array Model::Moe(const mx::array &hidden, const std::string &prefix) const {
           checkpoint_.Weight(prefix + ".experts." + projection + ".weight"),
           std::nullopt, row_experts, sorted);
     };
-    const auto gate = mx::astype(project(rows, "gate_proj"), mx::float32);
-    const auto up = project(rows, "up_proj");
     return project(
-        mx::multiply(mx::astype(omni_common::Silu(gate), hidden.dtype()), up),
+        FloatSwiglu(project(rows, "gate_proj"), project(rows, "up_proj")),
         "down_proj");
   };
   const auto restored = omni_common::RouteToExperts(
