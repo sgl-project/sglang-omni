@@ -90,7 +90,7 @@ func (r *run) write(raw, selection string) {
 	// already there.
 	keepSpeech := kind == store.KindTranslate && selection == "" && raw != ""
 	r.m.update(r, func(s *Snapshot) {
-		s.State, s.Selection, s.Card, s.CanSkip, s.Spoken = Composing, selection, o.card != "" && !r.req.Try, keepSpeech, raw
+		s.State, s.Selection, s.Card, s.CanSkip, s.Spoken = Composing, selection, o.card != "" && !r.req.Try, keepSpeech, r.replaceWords(raw)
 		if kind == store.KindTranslate {
 			s.TargetLanguage = r.target
 		}
@@ -142,7 +142,7 @@ func (r *run) write(raw, selection string) {
 	switch {
 	case r.skipped.Load():
 		r.logf("info", "the language model was skipped after %v: the speech goes on as recognised", llmTime.Round(time.Millisecond))
-		r.finish(Done, nil, raw, o)
+		r.finish(Done, nil, r.replaceWords(raw), o)
 		return
 	case err != nil && r.stopped.Load():
 		// The user stopped it: the card keeps the answer so far, nothing
@@ -154,7 +154,7 @@ func (r *run) write(raw, selection string) {
 		return
 	case err != nil && keepSpeech && TimedOut(err):
 		r.logf("warning", "language model %s (model %s) did not answer in %v, the speech goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
-		r.finish(Done, &Problem{Code: ProblemLLM, Err: err, Degraded: true}, raw, o)
+		r.finish(Done, &Problem{Code: ProblemLLM, Err: err, Degraded: true}, r.replaceWords(raw), o)
 		return
 	}
 	if err != nil {
@@ -206,6 +206,7 @@ func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, err
 // limit (llm.FinishLength).
 func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	cfg := r.m.cfg
+	in = r.replaceInput(in)
 	out, err := compose.Build(in)
 	if err != nil {
 		return compose.Answer{}, "", false, err

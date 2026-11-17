@@ -220,7 +220,7 @@ func resolver(lm local.Services) session.Resolver {
 			// No model: speech is found by energy.
 			svc.VAD = va.VAD()
 		}
-		if kind == store.KindTranscribe && !s.Features.Transcribe.Enhance {
+		if kind == store.KindTranscribe && !s.Features.Transcribe.UsesLLM() {
 			return svc, nil
 		}
 		// A model that serves the feature (the translation model only

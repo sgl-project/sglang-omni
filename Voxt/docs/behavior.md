@@ -115,6 +115,10 @@ Auralink 的这一节对照的是远程 ASR / LLM 服务（豆包、阿里百炼
 
 ## 5. 会话与转录（M3）
 
+「转录 → 清理」可选本机整理。常规句子沿用识别文字，识别到明确的「第一、第二」或「另起一段」时才排版。这条路径在 `internal/compose` 处理文字，省去发送给语言模型的步骤。
+
+「词典 → 词语替换」保存单向规则，例如 `Project Atlas → Project A`。Voxt 在本机应用规则，直接转录时写入替换后的文字，调用语言模型时先替换请求里的转写和用户文本，再切分长文。本机历史仍可保留识别原文。使用云端语音识别时，识别服务收到原始音频。`internal/dict` 和 `internal/session` 负责这条路径。
+
 | # | Voxt 怎么做 | VoxtNew 怎么做 | 为什么 | 状态 |
 |---|---|---|---|---|
 | 5.1 | 会话身份和收尾在 `RecordingSessionLifecycle` 里，录音、识别、增强、交付、历史分散在各个 Flow 扩展（`App/Recording/*`、`SessionTextIO.swift`）里，靠 `activeRecordingSessionID` 比对丢弃过期回调 | `session.Manager` 一次只跑一个会话，一个 goroutine 按顺序走完 录音 → 识别 → 整理 → 交付 → 历史；每个回调先过 `Manager.update`：不是当前会话、或者已经收尾，就丢弃；`end` 只生效一次。快照带递增的 `Rev`，UI 只收更新的 | 一个所有者、一个顺序，Linux 上能用假实现把每条路径（取消、超时、迟到回调）都测到（`internal/session` 的表驱动测试） | ✅ |

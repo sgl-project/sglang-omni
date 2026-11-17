@@ -48,8 +48,9 @@ type dictionaryState struct {
 }
 
 type dictView struct {
-	query string
-	find  finder // Return steps through the matches (find_marks.go)
+	replacements replacementEditor
+	query        string
+	find         finder // Return steps through the matches (find_marks.go)
 	// list holds the terms read for listFor (the search); "\x00" before
 	// the first read. seq numbers the reads: only the last one lands.
 	list    []store.Term
@@ -165,6 +166,9 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	}
 	scanModel, canScan := a.scanModel()
 	widePageHeader(c, i18n.T("Dictionary"), func() {
+		if d.tab == dictReplacementsTab {
+			return
+		}
 		if d.total > 0 {
 			caption(c, i18n.N(d.total, "%d term", "%d terms", d.total)).SingleLine()
 		}
@@ -201,10 +205,14 @@ func (a *app) dictionaryPage(c *ui.Context) {
 	})
 	pageBody(c).Children(func() {
 		ui.Row(c).Padding(px(t, sp1), px(t, sp6), 0).Shrink(0).Children(func() {
-			segmentedFit(c.Key("dict-tab"), &d.tab, i18n.T("Terms"), i18n.T("Personal dictionary")).Label(i18n.T("Dictionary view"))
+			segmentedFit(c.Key("dict-tab"), &d.tab, i18n.T("Terms"), i18n.T("Personal dictionary"), i18n.T("Text replacements")).Label(i18n.T("Dictionary view"))
 		})
 		if d.tab == dictNotesTab {
 			a.notesView(c)
+			return
+		}
+		if d.tab == dictReplacementsTab {
+			a.replacementsView(c)
 			return
 		}
 		list := d.list

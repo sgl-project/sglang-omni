@@ -1691,5 +1691,13 @@
   "Could not start the meeting: %v": "没能开始会议：%v",
   "Could not transcribe the meeting again: %v": "没能重新转写这场会议：%v",
   "The speech model for meetings is not downloaded. Download it in Settings → Meetings.": "会议用的语音模型还没下载。请在“设置 → 会议”里下载。",
-  "Voxt suggests a word here when you correct one it wrote in the %d seconds after inserting, or when Scan history finds one. Nothing goes in the dictionary until you click Add. To stop them, turn off Learn from my corrections.": "Voxt 插入文字后 %d 秒内，你改了它写的词，或“扫描历史”找到了词，就会在这里建议。点“添加”之前不会放进词典。不想要建议，就关掉“从我的改正中学习”。"
+  "Voxt suggests a word here when you correct one it wrote in the %d seconds after inserting, or when Scan history finds one. Nothing goes in the dictionary until you click Add. To stop them, turn off Learn from my corrections.": "Voxt 插入文字后 %d 秒内，你改了它写的词，或“扫描历史”找到了词，就会在这里建议。点“添加”之前不会放进词典。不想要建议，就关掉“从我的改正中学习”。",
+  "Format spoken lists on this Mac": "在本机整理口述列表",
+  "Say first, second, and so on for a numbered list, or say new paragraph. Other text keeps its original wording. This mode runs on this Mac.": "说「第一、第二」可以生成编号列表，说「另起一段」可以分段。其他内容保留原话。此模式在本机运行。",
+  "Text replacements": "词语替换",
+  "Replacement rules": "替换规则",
+  "Write one rule per line. Voxt replaces the text on this Mac before Transcribe, Translate or Rewrite sends it to a language model.": "每行填写一条规则。转录、翻译和改写在发送给语言模型之前，会在本机完成词语替换。",
+  "Speech recognition receives the original audio. Choose an on-device speech model to keep the audio on this Mac.": "语音识别仍会接收原始音频。选择本地语音识别模型，音频就会留在这台 Mac 上。",
+  "Project Atlas → Project A": "阿特拉斯项目 → 项目 A",
+  "Use a source and a replacement on line %d, separated by →.": "请在第 %d 行填写原词和替换词，用 → 分隔。"
 }

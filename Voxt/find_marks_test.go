@@ -303,7 +303,7 @@ func TestDictionaryNotesFind(t *testing.T) {
 	a.navigate("/dictionary")
 	frames(tt)
 	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Notes = longNotes(200) })
-	clickSegment(t, tt, "Dictionary view", dictNotesTab, 2)
+	clickSegment(t, tt, "Dictionary view", dictNotesTab, 3)
 	click(t, tt, "Search personal dictionary")
 	tt.Type("term15")
 	frames(tt)

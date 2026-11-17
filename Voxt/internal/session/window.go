@@ -20,7 +20,7 @@ const windowTimeout = 3 * time.Second
 func (r *run) shootWindow() {
 	cfg := r.m.cfg
 	t := r.req.Target
-	noLLM := r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.Enhance
+	noLLM := r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.UsesLLM()
 	if !r.settings.Privacy.SendWindow || noLLM || cfg.Window == nil || r.req.Try || t.PID == 0 || t.PID == cfg.Self {
 		return
 	}

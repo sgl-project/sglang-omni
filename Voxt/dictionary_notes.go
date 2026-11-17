@@ -28,6 +28,7 @@ import (
 const (
 	dictTermsTab = iota
 	dictNotesTab
+	dictReplacementsTab
 )
 
 // notesPlaceholder is the editor's example: the triples of standard
@@ -106,7 +107,7 @@ func (a *app) notesExampleInput(feature string) compose.Input {
 			in.Glossary = append(in.Glossary, compose.Term{Term: tm.Term, Aliases: tm.Aliases})
 		}
 	}
-	return in
+	return session.ReplacePromptText(in, a.prefs.Dictionary.Replacements)
 }
 
 // notesTerms are the glossary's source: the dictionary's terms when the
@@ -153,7 +154,7 @@ func (a *app) notesExample(c *ui.Context) {
 	caption(c, i18n.T("Each feature's page shows its own whole request, with the variables filled in: open Your rules, then What the language model receives."))
 	segmentedFit(c.Key("dict-notes-feature"), &d.notesFeature, i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite")).Label(i18n.T("Example for"))
 	feature := notesFeatures[d.notesFeature]
-	if feature == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {
+	if feature == hotkey.Transcribe && !a.prefs.Features.Transcribe.UsesLLM() {
 		caption(c, i18n.T("Clean-up is off, so nothing is sent to a language model."))
 	}
 	ex := a.notesExampleBuilt(feature)
@@ -169,9 +170,9 @@ func (a *app) notesExample(c *ui.Context) {
 		}
 		return s
 	}
-	userInput, speech := none, in.Text
+	userInput, speech := none, ex.text
 	if in.Task == compose.Rewrite {
-		userInput, speech = in.Text, in.Instruction
+		userInput, speech = ex.text, ex.instruction
 	}
 	if dict == "" {
 		dict = i18n.T("(not sent: empty or switched off)")
@@ -206,13 +207,15 @@ func promptCard(c *ui.Context, key, title, text string) {
 // thousands of terms Build takes milliseconds, too long to repeat on
 // every frame (a pointer move, a caret blink).
 type notesExampleCache struct {
-	in     compose.Input // the request without its glossary
-	terms  []store.Term  // its glossary's source, by identity: each read of the dictionary is a new slice
-	built  bool
-	system string // the system prompt without the dictionary
-	dict   string
-	msgs   []compose.Message
-	err    error
+	in                compose.Input // the request without its glossary
+	terms             []store.Term  // its glossary's source, by identity: each read of the dictionary is a new slice
+	replacements      string
+	text, instruction string // after applying the rules
+	built             bool
+	system            string // the system prompt without the dictionary
+	dict              string
+	msgs              []compose.Message
+	err               error
 }
 
 // notesExampleBuilt builds the example of feature, again only when the
@@ -220,7 +223,9 @@ type notesExampleCache struct {
 func (a *app) notesExampleBuilt(feature string) *notesExampleCache {
 	ex := &a.dv.example
 	in, terms := a.notesExampleRequest(feature), a.notesTerms()
-	if ex.built && len(terms) == len(ex.terms) && (len(terms) == 0 || &terms[0] == &ex.terms[0]) && reflect.DeepEqual(in, ex.in) {
+	replacements := a.prefs.Dictionary.Replacements
+	if ex.built && ex.replacements == replacements && len(terms) == len(ex.terms) &&
+		(len(terms) == 0 || &terms[0] == &ex.terms[0]) && reflect.DeepEqual(in, ex.in) {
 		return ex
 	}
 	full := a.notesExampleInput(feature)
@@ -229,6 +234,10 @@ func (a *app) notesExampleBuilt(feature string) *notesExampleCache {
 	without.Dictionary = ""
 	plain, _ := compose.Build(without)
 	in.OtherLanguages = slices.Clone(in.OtherLanguages) // the settings' slice could change under the key
-	*ex = notesExampleCache{in: in, terms: terms, built: true, system: plain.System, dict: out.Dictionary, msgs: out.Messages(), err: err}
+	*ex = notesExampleCache{
+		in: in, terms: terms, replacements: replacements, built: true,
+		text: full.Text, instruction: full.Instruction,
+		system: plain.System, dict: out.Dictionary, msgs: out.Messages(), err: err,
+	}
 	return ex
 }

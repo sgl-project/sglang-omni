@@ -92,9 +92,14 @@ type Transcribe struct {
 	Enhance   bool `json:"enhance"`
 	Cleanup   bool `json:"cleanup"`
 	Structure bool `json:"structure,omitempty"`
+	// LocalStructure formats explicitly spoken lists and paragraphs on the Mac.
+	LocalStructure bool `json:"localStructure,omitempty"`
 	// ShowCard shows the text in the answer card instead of typing it.
 	ShowCard bool `json:"showCard,omitempty"`
 }
+
+// UsesLLM reports whether Transcribe asks a language model to edit its text.
+func (t Transcribe) UsesLLM() bool { return t.Enhance && !t.LocalStructure }
 
 // Translate: speech or selected text → a translation.
 type Translate struct {

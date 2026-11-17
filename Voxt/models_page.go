@@ -174,7 +174,7 @@ func (a *app) featureModel(kind local.Kind, feature string) (local.Model, bool) 
 func (a *app) usedBy(kind local.Kind, id string) string {
 	var names []string
 	for _, f := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
-		if kind == local.LLM && f == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {
+		if kind == local.LLM && f == hotkey.Transcribe && !a.prefs.Features.Transcribe.UsesLLM() {
 			continue
 		}
 		if m, ok := a.featureModel(kind, f); ok && m.ID == id {

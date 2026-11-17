@@ -22,7 +22,7 @@ func (a *app) featureModels(c *ui.Context, feature string) {
 	p := uitext.FeaturePrefix(feature)
 	u := a.fui(feature)
 	f := featureOf(a.prefs, feature)
-	enhance := feature != hotkey.Transcribe || a.prefs.Features.Transcribe.Enhance
+	enhance := feature != hotkey.Transcribe || a.prefs.Features.Transcribe.UsesLLM()
 	readyA := a.installed(local.ASR)
 	readyL := local.ForFeature(a.installed(local.LLM), feature)
 	shownA := slices.DeleteFunc(slices.Clone(readyA), func(m local.Model) bool { return a.modelHidden(m.ID) }) // models_cards.go
@@ -145,23 +145,31 @@ func modelID(opts []string, ready []local.Model, label string) string {
 func (a *app) trEnhance(c *ui.Context) {
 	sectionTitle(c, i18n.T("Clean-up"))
 	f := &a.prefs.Features.Transcribe
+	settingRow(c, "tr-local-structure", i18n.T("Format spoken lists on this Mac"),
+		i18n.T("Say first, second, and so on for a numbered list, or say new paragraph. Other text keeps its original wording. This mode runs on this Mac."), func() {
+			if ui.Switch(c.Key("tr-local-structure-switch"), &f.LocalStructure).Label(i18n.T("Format spoken lists on this Mac")).Changed() {
+				on := f.LocalStructure
+				a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.LocalStructure = on })
+			}
+		})
 	settingRow(c, "tr-enhance", i18n.T("Clean up with a language model"),
 		i18n.T("When off, or if the model fails, the text is typed as recognised."), func() {
-			if ui.Switch(c.Key("tr-enhance-switch"), &f.Enhance).Label(i18n.T("Clean up with a language model")).Changed() {
-				on := f.Enhance
+			enhance := f.UsesLLM()
+			if ui.Switch(c.Key("tr-enhance-switch"), &enhance).Label(i18n.T("Clean up with a language model")).Disabled(f.LocalStructure).Changed() {
+				on := enhance
 				a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Enhance = on })
 			}
 		})
 	settingRow(c, "tr-cleanup", i18n.T("Basic clean-up"),
 		i18n.T("Removes fillers and false starts, fixes punctuation, and turns spoken punctuation (\"comma\") into marks."), func() {
-			if ui.Switch(c.Key("tr-cleanup-switch"), &f.Cleanup).Label(i18n.T("Basic clean-up")).Disabled(!f.Enhance).Changed() {
+			if ui.Switch(c.Key("tr-cleanup-switch"), &f.Cleanup).Label(i18n.T("Basic clean-up")).Disabled(!f.UsesLLM()).Changed() {
 				on := f.Cleanup
 				a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Cleanup = on })
 			}
 		})
 	settingRow(c, "tr-structure", i18n.T("Structure"),
 		i18n.T("Makes lists and paragraphs when you dictate steps or a long text."), func() {
-			if ui.Switch(c.Key("tr-structure-switch"), &f.Structure).Label(i18n.T("Structure")).Disabled(!f.Enhance).Changed() {
+			if ui.Switch(c.Key("tr-structure-switch"), &f.Structure).Label(i18n.T("Structure")).Disabled(!f.UsesLLM()).Changed() {
 				on := f.Structure
 				a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Structure = on })
 			}

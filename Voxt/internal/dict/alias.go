@@ -9,6 +9,20 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+type replacePattern struct {
+	words []string
+	term  string
+	size  int
+}
+
+func addPattern(patterns []replacePattern, text, term string) []replacePattern {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return patterns
+	}
+	return append(patterns, replacePattern{words, term, utf8.RuneCountInString(strings.Join(words, " "))})
+}
+
 // Replace writes the enabled terms' spelling for their aliases in text,
 // a transcript: aliases are, by definition, what speech recognition
 // writes for a term ("Or Link" for Auralink). Latin aliases match whole
@@ -18,18 +32,7 @@ import (
 // changes its own output no further). An alias two terms share goes to
 // the first.
 func Replace(text string, terms []store.Term) string {
-	type pattern struct {
-		words []string // the alias (or term), split at its spaces
-		term  string   // "" for a term itself: kept as written
-		size  int      // characters, for the longest first
-	}
-	var patterns []pattern
-	add := func(s, term string) {
-		words := strings.Fields(s)
-		if len(words) > 0 {
-			patterns = append(patterns, pattern{words, term, utf8.RuneCountInString(strings.Join(words, " "))})
-		}
-	}
+	var patterns []replacePattern
 	for _, t := range terms {
 		term := strings.TrimSpace(t.Term)
 		if !t.Enabled || term == "" {
@@ -38,21 +41,29 @@ func Replace(text string, terms []store.Term) string {
 		replaced := false
 		for _, a := range t.Aliases {
 			if a = strings.TrimSpace(a); a != "" && !strings.EqualFold(a, term) {
-				add(a, term)
+				patterns = addPattern(patterns, a, term)
 				replaced = true
 			}
 		}
 		if replaced {
-			add(term, "")
+			patterns = addPattern(patterns, term, "")
 		}
 	}
+	sortPatterns(patterns)
+	return applyPatterns(text, patterns)
+}
+
+func sortPatterns(patterns []replacePattern) {
+	sort.SliceStable(patterns, func(i, j int) bool { return patterns[i].size > patterns[j].size })
+}
+
+func applyPatterns(text string, patterns []replacePattern) string {
 	if len(patterns) == 0 {
 		return text
 	}
-	sort.SliceStable(patterns, func(i, j int) bool { return patterns[i].size > patterns[j].size })
 	// Each place tries only the patterns that start with its letter, in
 	// any case, in the same order.
-	byFirst := map[rune][]pattern{}
+	byFirst := map[rune][]replacePattern{}
 	for _, p := range patterns {
 		r, _ := utf8.DecodeRuneInString(p.words[0])
 		byFirst[foldKey(r)] = append(byFirst[foldKey(r)], p)

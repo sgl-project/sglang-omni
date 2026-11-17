@@ -33,11 +33,11 @@ func (r *run) spoken(raw string) string {
 // cleaned up in pieces (compose.BuildParts); where the model fails, the
 // text goes on as recognised, with a warning.
 func (r *run) transcribe(text string) {
-	result := text
+	result := r.localTranscript(text)
 	var problem *Problem
-	if f := r.settings.Features.Transcribe; f.Enhance && r.svc.LLM != nil {
+	if f := r.settings.Features.Transcribe; f.UsesLLM() && r.svc.LLM != nil {
 		card := f.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
-		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
+		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, result })
 		llmStart := r.now()
 		cleaned, profile, err := r.cleanUp(text, nil)
 		for r.askAgain() {
@@ -53,7 +53,7 @@ func (r *run) transcribe(text string) {
 		switch {
 		case r.skipped.Load():
 			r.logf("info", "the language model was skipped after %v: the text goes on as recognised", llmTime.Round(time.Millisecond))
-			result = text
+			result = r.localTranscript(text)
 		case err != nil:
 			r.logf("warning", "language model %s (%s) failed after %v, the text goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
 			problem = &Problem{Code: ProblemLLM, Err: err, Degraded: true}
@@ -77,9 +77,10 @@ func (r *run) transcribe(text string) {
 // failure (the text itself when the request could not be composed).
 // think overrides the service's thinking (nil: its setting).
 func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) {
-	parts, err := compose.BuildParts(r.transcribeInput(text))
+	in := r.replaceInput(r.transcribeInput(text))
+	parts, err := compose.BuildParts(in)
 	if err != nil {
-		return text, "", err
+		return r.localTranscript(text), "", err
 	}
 	if len(parts) > 1 {
 		r.logf("info", "cleaning up %d characters in %d pieces", len([]rune(text)), len(parts))
@@ -92,7 +93,7 @@ func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) 
 		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
 		switch {
 		case r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():
-			return text, p.Profile(), err
+			return r.localTranscript(text), p.Profile(), err
 		case err != nil:
 			if len(parts) > 1 {
 				err = fmt.Errorf("piece %d of %d: %w", i+1, len(parts), err)

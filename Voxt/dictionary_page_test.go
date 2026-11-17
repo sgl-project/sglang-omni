@@ -288,6 +288,22 @@ func longNotes(n int) string {
 	return b.String()
 }
 
+func TestDictionaryTextReplacements(t *testing.T) {
+	a, tt := dictTester(t)
+	clickSegment(t, tt, "Dictionary view", dictReplacementsTab, 3)
+	click(t, tt, "Replacement rules")
+	tt.Type("Project Atlas")
+	if !has(tt, "Use a source and a replacement on line 1, separated by →.") {
+		t.Fatalf("missing rule validation for %q: %q", a.dv.replacements.text, firstTexts(tt))
+	}
+	tt.Type(" → Project A")
+	frames(tt)
+	click(t, tt, "Save")
+	if got := a.lib.settings.Get().Dictionary.Replacements; got != "Project Atlas → Project A" {
+		t.Fatalf("saved replacements = %q", got)
+	}
+}
+
 // TestDictionaryNotes: the Personal dictionary view saves the Markdown
 // as typed, its switch keeps it out of the prompt, and How it is used
 // shows the request a session sends with the settings, in both
@@ -297,7 +313,7 @@ func TestDictionaryNotes(t *testing.T) {
 	seedTerms(t, a)
 	a.loadDict()
 	frames(tt)
-	clickSegment(t, tt, "Dictionary view", dictNotesTab, 2)
+	clickSegment(t, tt, "Dictionary view", dictNotesTab, 3)
 	if !has(tt, "Add to the language model prompt") || !has(tt, "How it is used") || has(tt, "Search dictionary") {
 		t.Fatalf("not the notes view: %q", firstTexts(tt))
 	}
@@ -374,7 +390,7 @@ func TestDictionaryNotesExampleInputCard(t *testing.T) {
 	a, tt := dictTester(t)
 	a.loadDict()
 	frames(tt)
-	clickSegment(t, tt, "Dictionary view", dictNotesTab, 2)
+	clickSegment(t, tt, "Dictionary view", dictNotesTab, 3)
 	card := "+ Your input (the selected text)"
 	for _, step := range []struct {
 		segment int
@@ -396,7 +412,7 @@ func TestDictionaryNotesExampleCached(t *testing.T) {
 	a, tt := dictTester(t)
 	a.loadDict()
 	frames(tt)
-	clickSegment(t, tt, "Dictionary view", dictNotesTab, 2)
+	clickSegment(t, tt, "Dictionary view", dictNotesTab, 3)
 	system := func() string {
 		t.Helper()
 		frames(tt)

@@ -176,7 +176,8 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 		e.RawText = raw
 	}
 	e.Result = text
-	if e.Kind == store.KindTranscribe && (!r.settings.Features.Transcribe.Enhance || svc.LLM == nil) {
+	if e.Kind == store.KindTranscribe && (!r.settings.Features.Transcribe.UsesLLM() || svc.LLM == nil) {
+		e.Result = r.localTranscript(text)
 		return e, nil
 	}
 	stage(Composing)

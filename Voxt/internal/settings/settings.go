@@ -287,6 +287,8 @@ type Dictionary struct {
 	// out of the prompt; notes are sent by default once written.
 	Notes    string `json:"notes,omitempty"`
 	NotesOff bool   `json:"notesOff,omitempty"`
+	// Replacements are local text rules, separate from the terms sent as hints.
+	Replacements string `json:"replacements,omitempty"`
 	// Learn watches the field a Transcribe result was pasted into for
 	// 30 s and proposes a term when the user corrects a word of it
 	// (internal/learn). Off by default.

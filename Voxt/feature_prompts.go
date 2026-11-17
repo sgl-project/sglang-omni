@@ -400,7 +400,7 @@ func rewriteSample() (instruction, selection string) {
 // composedPreview is the request a session would send with the settings
 // and the rules as typed, for the sample text.
 func (a *app) composedPreview(feature string) (compose.Output, error) {
-	return compose.Build(a.previewInput(feature))
+	return compose.Build(session.ReplacePromptText(a.previewInput(feature), a.prefs.Dictionary.Replacements))
 }
 
 // previewInput is composedPreview's input.
@@ -429,7 +429,7 @@ func (a *app) previewInput(feature string) compose.Input {
 func (a *app) previewBody(c *ui.Context, feature string) {
 	t := c.Theme()
 	p := uitext.FeaturePrefix(feature)
-	if feature == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {
+	if feature == hotkey.Transcribe && !a.prefs.Features.Transcribe.UsesLLM() {
 		caption(c, i18n.T("Clean-up is off, so nothing is sent to a language model."))
 	}
 	out, err := a.composedPreview(feature)

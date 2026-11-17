@@ -427,7 +427,7 @@ func (r *run) warmLLM() {
 	var skill llm.Skill
 	switch r.req.Kind {
 	case store.KindTranscribe:
-		if !r.settings.Features.Transcribe.Enhance {
+		if !r.settings.Features.Transcribe.UsesLLM() {
 			return
 		}
 		in, skill = r.transcribeInput(""), llm.SkillTranscribeEnhance
@@ -436,7 +436,7 @@ func (r *run) warmLLM() {
 	default:
 		return
 	}
-	out, err := compose.Build(in)
+	out, err := compose.Build(r.replaceInput(in))
 	if err != nil {
 		return
 	}
