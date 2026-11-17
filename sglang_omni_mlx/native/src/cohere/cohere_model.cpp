@@ -6,6 +6,7 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "common/audio.h"
 #include "common/layers.h"
 #include "common/swift_port.h"
 #include "nlohmann/json.hpp"
@@ -45,7 +46,7 @@ mx::array CenteredHannWindow() {
 
 mx::array MelFilters(int mel_bin_count) {
   const std::vector<float> values =
-      swift_port::SlaneyMelFilterBank(kFftSize, mel_bin_count);
+      omni_common::MelFilterBank(mel_bin_count, kFftSize);
   return mx::array(values.data(), {kFftSize / 2 + 1, mel_bin_count},
                    mx::float32);
 }
