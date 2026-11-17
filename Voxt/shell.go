@@ -283,7 +283,7 @@ func (a *app) view(c *ui.Context) {
 	a.syncNav()
 
 	ui.Column(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		a.sidebarFrame(c, func() { // shell_nav.go: the sidebar or the icon rail
+		sidebarFrame(c, a.navModel(), a.noticesModel(), a, a, a.navLocal(), func() { // shell_nav.go: the sidebar or the icon rail
 			a.pages(c)
 			if a.logsPanel && section(a.router.Path()) != "/logs" {
 				// At most half the window: the page keeps its header and
@@ -296,6 +296,7 @@ func (a *app) view(c *ui.Context) {
 				})
 			}
 		})
+		a.saveClosedSections()
 	})
 	settingsDialog(c, a.settingsDialogModel(time.Now()), a, settingsDialogLocalUI{
 		Open: &a.settingsOpen, Router: a.setRouter, Form: &a.settingsForm,

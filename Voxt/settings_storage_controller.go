@@ -296,7 +296,7 @@ func (a *app) dismissMoveFailure() {
 func (a *app) resetLook() {
 	d := settings.Defaults()
 	a.updateSettings(func(s *settings.Settings) { s.Appearance, s.General.Language = d.Appearance, d.General.Language })
-	a.sideW, a.navOpen = 0, nil
+	a.navUI.sideW, a.navUI.sections = 0, nil
 	a.toast(i18n.T("The look is back to its defaults"))
 }
 
@@ -306,7 +306,7 @@ func (a *app) resetSettings() {
 		*s = settings.Defaults()
 		s.Setup.Done = true
 	})
-	a.sideW, a.navOpen = 0, nil
+	a.navUI.sideW, a.navUI.sections = 0, nil
 	a.toast(i18n.T("Every setting is back to its default"))
 }
 

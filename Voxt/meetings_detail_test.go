@@ -222,7 +222,7 @@ func TestMeetingDetailIsWideAndScrollsOnce(t *testing.T) {
 	if !ok {
 		t.Fatalf("the first line is not shown (%q)", firstTexts(tt))
 	}
-	listEnd := a.sideW + meetingListW
+	listEnd := a.navUI.sideW + meetingListW
 	if first.X < listEnd || first.W < 600 {
 		t.Fatalf("the first line is at x=%v, %v wide: want right of the list (x>%v), over 600 wide", first.X, first.W, listEnd)
 	}
@@ -238,7 +238,7 @@ func TestMeetingDetailIsWideAndScrollsOnce(t *testing.T) {
 	}
 	tt.SetSize(windowWidth, 900)
 	frames(tt)
-	if r, ok := tt.Find("line 299 " + long); !ok || r.X > a.sideW+sp6+80 {
+	if r, ok := tt.Find("line 299 " + long); !ok || r.X > a.navUI.sideW+sp6+80 {
 		t.Fatalf("in a narrow window the details are not the page alone: %v %v", r, ok)
 	}
 }

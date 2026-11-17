@@ -17,6 +17,20 @@ type noticeActions interface {
 	openMainSettings()
 }
 
+// navActions are the intents of the sidebar and the icon rail
+// (shell_nav.go).
+type navActions interface {
+	// navigate goes to a page (a sidebar or rail item).
+	navigate(path string)
+	// setRail is the user's choice of the layout: icons only.
+	setRail(on bool)
+	// openPalette opens the command palette (the search field).
+	openPalette()
+	// sidebarWidthChanged is a resize of the sidebar, once the drag
+	// rested: the settings keep the width.
+	sidebarWidthChanged(width float64)
+}
+
 // logsActions are the intents of the logs page and panel (shell_logs.go).
 type logsActions interface {
 	// copyLogLines copies the shown lines with these seqs (in the log's

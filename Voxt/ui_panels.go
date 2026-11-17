@@ -15,7 +15,7 @@ import (
 func (a *app) pageWidth(c *ui.Context) float32 {
 	t := c.Theme()
 	w, _ := c.Size()
-	side := a.sideW
+	side := a.navUI.sideW
 	if a.railMode() {
 		side = px(t, railWidth)
 	}
