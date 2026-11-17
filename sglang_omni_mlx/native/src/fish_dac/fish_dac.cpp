@@ -90,12 +90,7 @@ mx::array AudioCodec::Snake(const mx::array &x, const mx::array &alpha) {
 // gain.
 mx::array AudioCodec::TransformerNorm(const mx::array &x,
                                       const mx::array &weight) {
-  const mx::array x32 = mx::astype(x, mx::float32);
-  const mx::array normed = mx::multiply(
-      x32, mx::rsqrt(
-               mx::add(mx::mean(mx::multiply(x32, x32), -1, true),
-                       omni_common::Scalar(kTransformerNormEps, mx::float32))));
-  return mx::multiply(mx::astype(normed, x.dtype()), weight);
+  return mx::fast::rms_norm(x, weight, kTransformerNormEps);
 }
 
 mx::array AudioCodec::Convolve(const mx::array &x,
