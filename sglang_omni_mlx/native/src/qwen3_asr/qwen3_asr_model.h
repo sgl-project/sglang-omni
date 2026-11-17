@@ -28,9 +28,12 @@ public:
   // .scales are quantized as the checkpoint was.
   explicit Qwen3ASR(const std::filesystem::path &model_directory);
 
-  // [mel_bins, frames] to [audio_tokens, output_dim].
-  mlx::core::array EncodeAudio(const mlx::core::array &mel,
-                               AudioLayout layout) const;
+  // [mel_bins, frames] to [audio_tokens, output_dim]. Chunks are zero padded
+  // to the longest one, or to min_chunk_frames if that is longer.
+  mlx::core::array EncodeAudio(const mlx::core::array &mel, AudioLayout layout,
+                               int min_chunk_frames = 0) const;
+  // Mel frames per encoder attention window, as EncodeAudio forms them.
+  int EncoderWindowFrameCount() const;
   // Token ids [1, length] to embeddings [1, length, hidden].
   mlx::core::array EmbedTokens(const mlx::core::array &ids) const;
   // Logits for the last position only, [vocab].
