@@ -54,12 +54,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **A text selection no longer takes the copied image with it** (#4152): with Settings → Privacy → Send the copied image with Rewrite on, an image copied earlier stayed on the clipboard and went to the language model even when you had selected text, so a summarize or rewrite of the selection was handled as an image task. Now a text selection takes the text path and the image stays out; the copied image goes only when no text is selected.
-
-### Fixed
-
 - **Recording starts with a microphone selected in Settings → Audio** (#4120). Voxt keeps a working input running through configuration changes. If two consecutive starts deliver no audio, it switches to the system default microphone. If that attempt also delivers no audio, Voxt ends the stalled recording with an error.
-
 ### 中文
 
 
@@ -140,12 +135,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **选中文字时不再带上剪贴板里早前复制的图片**（#4152）：打开设置 → 隐私 →“改写时发送复制的图片”后，早前复制的图片留在剪贴板里，即使选中了文字也会发给语言模型，对选中内容的总结或改写被当成看图任务。现在选中文字时只走文字，图片不跟着发；没有选中文字时才发送复制的图片。
-
-#### 修复
-
 - **在设置 → 音频选定麦克风后可以正常开始录音**（#4120）。收到配置变更通知时，Voxt 会继续使用正常运行的麦克风。如果连续两次启动都未收到音频，Voxt 会切换到系统默认麦克风。如果这次也未收到音频，Voxt 会结束卡住的录音并提示错误。
-
 ## [2.1.0] - 2026-11-15
 
 ### Added

@@ -47,7 +47,7 @@ func (a *app) privacySettings(c *ui.Context) {
 			}
 		}
 	})
-	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with what you said. When text is selected, only the text goes. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
+	settingRow(c, "priv-copied", i18n.T("Send a copied image"), i18n.T("For language models that read images: when you rewrite, Voxt sends the image you copied (⌘C) to the language model with the selected text and what you said. Copied text, and copied files that are not images, are not sent. A model that takes no images gets the text alone."), func() {
 		if ui.Switch(c.Key("priv-copied"), &a.settingsForm.sendClipboard).Label(i18n.T("Send the copied image with Rewrite")).Changed() {
 			on := a.settingsForm.sendClipboard
 			a.updateSettings(func(s *settings.Settings) { s.Privacy.SendClipboardImage = on })
