@@ -31,6 +31,7 @@ PORT=8080 make serve
 - Prefer relative links (`../get_started/installation.md`), not absolute docs URLs.
 - Match existing launch / request examples in neighboring cookbooks.
 - Put shared TTS HTTP, Python, and streaming usage in [TTS Model Usage](basic_usage/tts.md). Cookbooks should link to it and keep examples that demonstrate model-specific inputs, capabilities, or behavior.
+- Put shared Omni server controls, multimodal requests, response formats, and streaming clients in [Omni Model Usage](basic_usage/omni.md). Cookbooks should link to it and retain model-specific deployment, defaults, tuning, and limitations.
 
 ## Documentation checks
 

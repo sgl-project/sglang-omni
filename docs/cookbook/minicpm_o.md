@@ -32,6 +32,7 @@ for the NPU launch command, configuration, and validated versions.
 
 ## Normal Usage
 
+For shared multimodal requests, response formats, and streaming clients, see [Omni Model Usage](../basic_usage/omni.md#general-usage). The example below shows MiniCPM-o voice conditioning with `audio.ref_audio` and the spoken transcript in `message.audio.transcript`.
 
 ```python
 import base64

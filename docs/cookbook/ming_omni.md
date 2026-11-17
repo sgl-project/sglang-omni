@@ -103,6 +103,8 @@ Use `--thinker.tp_size` to set thinker tensor parallelism and `--thinker.gpu` to
 
 ## Input and Output Examples
 
+The examples below retain Ming-specific inputs and reference outputs. For Python clients, audio decoding, and common request fields, see [Omni Model Usage](../basic_usage/omni.md#general-usage); use `ming-omni` and port `8000` for the launches on this page.
+
 ### Text Input, Text Output
 
 ```bash
@@ -115,25 +117,6 @@ curl -X POST http://localhost:8000/v1/chat/completions \
     "max_tokens": 128,
     "temperature": 0.0
   }'
-```
-
-Python:
-
-```python
-import requests
-
-resp = requests.post(
-    "http://localhost:8000/v1/chat/completions",
-    json={
-        "model": "ming-omni",
-        "messages": [{"role": "user", "content": "Explain what tensor parallelism is in one sentence."}],
-        "modalities": ["text"],
-        "max_tokens": 128,
-        "temperature": 0.0,
-    },
-)
-resp.raise_for_status()
-print(resp.json()["choices"][0]["message"]["content"])
 ```
 
 Output (text-only TP4 server, `temperature: 0.0`):
@@ -159,26 +142,6 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   }'
 ```
 
-Python:
-
-```python
-import requests
-
-resp = requests.post(
-    "http://localhost:8000/v1/chat/completions",
-    json={
-        "model": "ming-omni",
-        "messages": [{"role": "user", "content": "Describe this image in one sentence."}],
-        "images": ["https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"],
-        "modalities": ["text"],
-        "max_tokens": 64,
-        "temperature": 0.0,
-    },
-)
-resp.raise_for_status()
-print(resp.json()["choices"][0]["message"]["content"])
-```
-
 Output (the woman-and-dog beach image, `temperature: 0.0`):
 
 ```text
@@ -201,27 +164,6 @@ curl -X POST http://localhost:8000/v1/chat/completions \
     "max_tokens": 64,
     "temperature": 0.0
   }'
-```
-
-Python:
-
-```python
-import requests
-
-resp = requests.post(
-    "http://localhost:8000/v1/chat/completions",
-    json={
-        "model": "ming-omni",
-        "messages": [{"role": "user", "content": "What is said in the audio, and what is shown in the image?"}],
-        "images": ["https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"],
-        "audios": ["https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"],
-        "modalities": ["text"],
-        "max_tokens": 64,
-        "temperature": 0.0,
-    },
-)
-resp.raise_for_status()
-print(resp.json()["choices"][0]["message"]["content"])
 ```
 
 Output (English speech sample plus the beach image; truncated at `max_tokens: 64`):
@@ -250,27 +192,6 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   }'
 ```
 
-Python:
-
-```python
-import requests
-
-resp = requests.post(
-    "http://localhost:8000/v1/chat/completions",
-    json={
-        "model": "ming-omni",
-        "messages": [{"role": "user", "content": "Describe the action in this video."}],
-        "videos": ["https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen2-VL/space_woaudio.mp4"],
-        "video_max_frames": 16,
-        "modalities": ["text"],
-        "max_tokens": 96,
-        "temperature": 0.0,
-    },
-)
-resp.raise_for_status()
-print(resp.json()["choices"][0]["message"]["content"])
-```
-
 Output (short clip of two astronauts on a space station, `temperature: 0.0`):
 
 ```text
@@ -295,32 +216,6 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
   | python3 -c 'import sys, json, base64; m = json.load(sys.stdin)["choices"][0]["message"]; print(m.get("content", "")); open("ming_output.wav", "wb").write(base64.b64decode(m["audio"]["data"]))'
 ```
 
-Python:
-
-```python
-import base64
-import requests
-
-resp = requests.post(
-    "http://localhost:8000/v1/chat/completions",
-    json={
-        "model": "ming-omni",
-        "messages": [{"role": "user", "content": "Read this sentence aloud: This model understands text, images, audio, and video, and can reply with either text or speech."}],
-        "modalities": ["text", "audio"],
-        "audio": {"format": "wav"},
-        "max_tokens": 64,
-        "temperature": 0.0,
-    },
-)
-resp.raise_for_status()
-message = resp.json()["choices"][0]["message"]
-print(message.get("content", ""))
-
-audio = base64.b64decode(message["audio"]["data"])
-with open("ming_output.wav", "wb") as f:
-    f.write(audio)
-```
-
 Output (speech server, `temperature: 0.0`):
 
 ```text
@@ -337,67 +232,7 @@ Reference output:
 
 ### Streaming Speech
 
-With a streaming speech server, set `"stream": true` and consume Server-Sent Events. Audio chunks arrive in `choices[0].delta.audio.data`. To inspect the raw SSE stream with curl (use `-N` to disable buffering):
-
-```bash
-curl -N -X POST http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "ming-omni",
-    "messages": [{"role": "user", "content": "Say one friendly sentence."}],
-    "modalities": ["text", "audio"],
-    "audio": {"format": "wav"},
-    "stream": true,
-    "max_tokens": 64,
-    "temperature": 0.0
-  }'
-```
-
-Python (decodes and writes each audio chunk):
-
-```python
-import base64
-import json
-from pathlib import Path
-
-import requests
-
-chunk_paths: list[Path] = []
-
-with requests.post(
-    "http://localhost:8000/v1/chat/completions",
-    json={
-        "model": "ming-omni",
-        "messages": [{"role": "user", "content": "Say one friendly sentence."}],
-        "modalities": ["text", "audio"],
-        "audio": {"format": "wav"},
-        "stream": True,
-        "max_tokens": 64,
-        "temperature": 0.0,
-    },
-    stream=True,
-    timeout=600,
-) as resp:
-    resp.raise_for_status()
-    for line in resp.iter_lines(decode_unicode=True):
-        if not line or not line.startswith("data: "):
-            continue
-        data = line.removeprefix("data: ")
-        if data == "[DONE]":
-            break
-        event = json.loads(data)
-        delta = event["choices"][0].get("delta", {})
-        if delta.get("content"):
-            print(delta["content"], end="", flush=True)
-        audio = delta.get("audio") or {}
-        if audio.get("data"):
-            chunk = base64.b64decode(audio["data"])
-            chunk_path = Path(f"ming_stream_chunk_{len(chunk_paths):03d}.wav")
-            chunk_path.write_bytes(chunk)
-            chunk_paths.append(chunk_path)
-```
-
-The example writes each audio chunk as a separate WAV file. If you want one playback file, parse each WAV chunk and concatenate PCM frames with a standard audio library.
+Use the [shared SSE request and Python client](../basic_usage/omni.md#streaming) with model `ming-omni` and port `8000`. Ming requires its streaming speech pipeline for incremental audio chunks; see [Streaming Speech Client](#streaming-speech-client) for the deployment constraint. Each chunk is a complete WAV container. Decode the PCM frames before combining chunks into one playback file.
 
 Output: with the streaming speech pipeline the audio arrives as multiple `delta.audio.data` chunks. Against the **non-streaming** speech server (the `Text + Audio Output` command), `stream: true` still returns valid SSE but the audio comes back as a single aggregate chunk after generation — for example one text delta carrying `Hello! How can I assist you today?`, one ~276 KB aggregate WAV chunk, and a final `finish_reason: stop` event before `[DONE]`:
 
@@ -409,19 +244,11 @@ The streamed WAV chunks carry the same 44.1 kHz speech as the non-streaming repl
 
 ## Request Parameters
 
+See [Request Parameters](../basic_usage/omni.md#request-parameters) for common field definitions and video controls. The table below keeps Ming-specific defaults and behavior.
+
 | Parameter | Default | Notes |
 |---|---|---|
-| `model` | `null` | Use the `--model-name` value from launch, usually `ming-omni`. |
-| `messages` | required | OpenAI-style chat messages. Content can be a string or a list of typed media parts. |
-| `modalities` | `["text"]` | Use `["text"]` for text output and `["text", "audio"]` for speech output. |
-| `images` | `null` | List of local paths or URLs. |
 | `audios` | `null` | List of local paths or URLs. Audio is loaded at 16 kHz for the Whisper-style audio encoder. |
-| `videos` | `null` | List of local paths or URLs. |
-| `video_fps` | `null` | Optional frame sampling rate. |
-| `video_max_frames` | `null` | Optional cap on sampled frames. |
-| `video_min_pixels` | `null` | Minimum per-frame pixel budget passed to video preprocessing. |
-| `video_max_pixels` | `null` | Maximum per-frame pixel budget passed to video preprocessing. |
-| `video_total_pixels` | `null` | Total pixel budget across sampled frames. |
 | `max_tokens` | `2048` | Forwarded to Ming as `max_new_tokens`. |
 | `temperature` | `1.0` | Thinker sampling. Set 0.0 for greedy deterministic examples. |
 | `top_p` | `1.0` | Thinker sampling. |
@@ -432,7 +259,6 @@ The streamed WAV chunks carry the same 44.1 kHz speech as the non-streaming repl
 | `seed` | `null` | Forwarded as `sampling_seed`. |
 | `stream` | `false` | Use with the streaming speech pipeline for audio chunks. |
 | `audio.format` | `wav` | Chat-completions audio format. |
-| `stage_params` | `null` | Advanced per-stage parameters. |
 
 ## Benchmark Results
 
