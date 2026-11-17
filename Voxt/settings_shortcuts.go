@@ -5,8 +5,8 @@ package main
 // last result, Cancel transcription and Notes'), with their trigger and what
 // hotkey.Check finds wrong:
 // clashes, keys macOS uses, keys that need Accessibility while the event
-// tap is missing, keys another ActNow app uses too. A row opens its
-// feature's page, where it changes. Above it, the preset sets several at
+// tap is missing, keys another ActNow app uses too. Keys change in place;
+// the arrow opens the feature's page. Above it, the preset sets several at
 // once (internal/settings' Presets), and Strict shortcuts.
 
 import (
@@ -38,7 +38,7 @@ func featurePath(feature string) string {
 func (a *app) shortcutsSettings(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
-	caption(c, i18n.T("Click a shortcut to change it on its feature's page."))
+	caption(c, i18n.T("Click a shortcut, then press the keys you want."))
 	if !a.hotkeys.Installed {
 		notice(c, "sc-no-tap", noticeWarn,
 			i18n.T("Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."),
@@ -57,7 +57,7 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 		}
 	})
 	f := a.prefs.Features
-	keysW := px(t, 96)
+	keysW := px(t, 180)
 	card(c.Key("sc-table")).Gap(0).Padding(px(t, sp2)).Children(func() {
 		// The head.
 		ui.Row(c).Gap(px(t, sp2)).Padding(px(t, sp1), px(t, sp2)).AlignItems(ui.Center).Children(func() {
@@ -91,8 +91,7 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 const shortcutMarksW = 16 + sp2 + 16
 
 // shortcutRow is a row of the table: feature's i-th shortcut h (nil: it
-// has none), its keys over its trigger, its problems under it; a click
-// opens the feature's page.
+// has none), its recorder over its trigger and its problems under it.
 func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotkey, problems []string, keysW float32) {
 	t := c.Theme()
 	k := tok(t)
@@ -101,14 +100,9 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 	if h != nil {
 		keys = uitext.HotkeyText(h.Keys)
 	}
-	b := ui.ButtonBase(c.Key("sc-"+feature+"-"+itoa(i))).Padding(px(t, 6), px(t, sp2)).Radius(px(t, radiusControl)).
-		AlignItems(ui.Stretch).Label(title + " " + keys).Tooltip(i18n.T("Change on the %s page", pageTitle(featurePath(feature))))
-	if b.Hovered() {
-		b.Background(k.Hover)
-	}
-	b.Children(func() {
+	ui.Column(c.Key("sc-"+feature+"-"+itoa(i))).Padding(px(t, 6), px(t, sp2)).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 4)).Children(func() {
-			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Start).Children(func() {
 				ic := kindIcon(featureKind(feature))
 				if feature == hotkey.PasteLast {
 					ic = icons.Copy
@@ -119,25 +113,26 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 				if feature == hotkey.Note {
 					ic = notesIcon
 				}
-				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).Children(func() {
+				ui.Row(c).Height(px(t, 30)).Gap(px(t, sp2)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).Children(func() {
 					if i == 0 {
 						ui.Icon(c, ic.Linear).Size(px(t, 16), px(t, 16)).TextColor(k.Text2).Shrink(0)
 						truncText(c, title)
 					}
 				})
 				ui.Column(c).Width(keysW).Shrink(0).Gap(px(t, 2)).AlignItems(ui.Start).Children(func() {
-					if h == nil {
-						ui.Text(c, keys).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine()
-						return
+					r := a.shortcutKeyRow(feature, i)
+					a.shortcutControl(c, r, title+" "+keys, h == nil || feature == hotkey.PasteLast || feature == hotkey.CancelID || feature == hotkey.Note, func(keys string) {
+						a.setShortcutKeys(feature, i, keys)
+					})
+					if h != nil {
+						trig := uitext.TriggerText(h.Trigger)
+						if feature == hotkey.PasteLast || feature == hotkey.CancelID || feature == hotkey.Note {
+							trig = uitext.TriggerText(settings.TriggerTap)
+						}
+						ui.Text(c, trig).FontSize(px(t, fsMicro)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
 					}
-					kbd(c, keys).MinWidth(0).Ellipsis("…") // shell_commands.go
-					trig := uitext.TriggerText(h.Trigger)
-					if feature == hotkey.PasteLast || feature == hotkey.CancelID || feature == hotkey.Note {
-						trig = uitext.TriggerText(settings.TriggerTap) // always a tap
-					}
-					ui.Text(c, trig).FontSize(px(t, fsMicro)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
 				})
-				ui.Row(c).Width(px(t, shortcutMarksW)).Shrink(0).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
+				ui.Row(c).Height(px(t, 30)).AlignItems(ui.Center).Width(px(t, shortcutMarksW)).Shrink(0).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
 					if h != nil && (feature == hotkey.CancelID || hotkey.NeedsTap(*h)) { // cancel works only through the tap, while active
 						col := k.Text3
 						if !a.hotkeys.Installed {
@@ -149,7 +144,9 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 						iconMark(c, icons.DangerTriangle, k.Warning, strings.Join(problems, "\n"))
 					}
 				})
-				ui.Icon(c, icons.AltArrowRight.Linear).Size(px(t, 14), px(t, 14)).TextColor(k.Text3).Shrink(0)
+				if iconButton(c.Key("open-feature"), icons.AltArrowRight, i18n.T("Change on the %s page", pageTitle(featurePath(feature)))).Clicked() {
+					a.navigate(featurePath(feature))
+				}
 			})
 			if len(problems) > 0 {
 				ui.Column(c).Padding(0, 0, 0, px(t, 16+sp2)).Gap(px(t, 2)).Children(func() {
@@ -158,9 +155,6 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 			}
 		})
 	})
-	if b.Clicked() {
-		a.navigate(featurePath(feature))
-	}
 }
 
 // presetTitle is a shortcut preset's name ("": custom).

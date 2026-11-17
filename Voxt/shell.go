@@ -299,9 +299,16 @@ func (a *app) view(c *ui.Context) {
 	a.palette(c)
 	a.shortcutSheet(c)
 	a.toastsView(c) // last: over dialogs too
+	if !a.shortcutShown && a.shortcutEditing != nil {
+		a.closeShortcutEditor()
+	}
+	a.shortcutShown = false
 	// A shortcut field took the focus or lost it.
 	if a.keysHeard != a.keysListening {
 		a.keysListening = a.keysHeard
+		if !a.keysListening {
+			a.cancelHotkeyRecord()
+		}
 		a.syncHotkeys()
 	}
 	a.keysHeard = false

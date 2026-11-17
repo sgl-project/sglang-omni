@@ -22,7 +22,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // trTester is the test app on the Transcribe page, in a window tall
@@ -79,38 +78,31 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	if hs := saved(); len(hs) != 2 || hs[1].Keys != "RightCommand" || hs[1].Trigger != settings.TriggerTap {
 		t.Fatalf("added %+v", hs)
 	}
-	// Choose a preset through the select's state, as the Select does.
-	a.fui(hotkey.Transcribe).rows[1].sel = uitext.HotkeyText("RightShift")
-	a.chooseKeys(hotkey.Transcribe, 1, &a.fui(hotkey.Transcribe).rows[1], func() map[string]string { _, m := keyOptions("RightCommand", false); return m }())
+	click(t, tt, "Keys of shortcut 2")
+	tt.Key(ui.Ctrl|ui.Alt, ui.KeyJ)
 	frames(tt)
-	if hs := saved(); hs[1].Keys != "RightShift" {
+	if hs := saved(); hs[1].Keys != "Control+Option+J" {
 		t.Fatalf("preset not saved: %+v", hs)
 	}
 
 	// Custom keys: invalid ones show why and are not saved; valid ones are
 	// saved in canonical spelling.
-	a.fui(hotkey.Transcribe).rows[1].sel = "Custom…"
-	a.chooseKeys(hotkey.Transcribe, 1, &a.fui(hotkey.Transcribe).rows[1], nil)
-	frames(tt)
-	if !a.fui(hotkey.Transcribe).rows[1].custom || a.fui(hotkey.Transcribe).rows[1].text != "RightShift" {
-		t.Fatalf("custom row %+v", a.fui(hotkey.Transcribe).rows[1])
-	}
-	click(t, tt, "Type the keys instead")
-	click(t, tt, "Custom keys of shortcut 2")
-	for range len("RightShift") {
-		tt.Key(0, ui.KeyBackspace)
-	}
+	click(t, tt, "Keys of shortcut 2")
+	click(t, tt, "Type instead")
+	click(t, tt, "Keys of shortcut 2")
+	tt.Key(ui.Cmd, ui.KeyA)
+	tt.Key(0, ui.KeyBackspace)
 	tt.Type("ctrl+opt+K+J")
 	if !has(tt, "Only one key besides the modifiers.") {
 		t.Errorf("no parse error: %q", tt.Texts())
 	}
-	if hs := saved(); hs[1].Keys != "RightShift" {
+	if hs := saved(); hs[1].Keys != "Control+Option+J" {
 		t.Errorf("invalid keys saved: %+v", hs)
 	}
 	tt.Key(0, ui.KeyBackspace)
 	tt.Key(0, ui.KeyBackspace)
 	frames(tt)
-	if hs := saved(); hs[1].Keys != "RightShift" || !has(tt, "Press Return to use ⌃⌥K.") {
+	if hs := saved(); hs[1].Keys != "Control+Option+J" || !has(tt, "Press Return to use ⌃⌥K.") {
 		t.Errorf("saved before Return: %+v", hs)
 	}
 	tt.Key(0, ui.KeyEnter)
@@ -118,8 +110,8 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	if hs := saved(); hs[1].Keys != "Control+Option+K" {
 		t.Errorf("custom keys %+v", hs)
 	}
-	if !a.fui(hotkey.Transcribe).rows[1].custom {
-		t.Error("the custom field closed while typing")
+	if a.fui(hotkey.Transcribe).rows[1].custom {
+		t.Error("the recorder stayed open after saving")
 	}
 
 	// Remove the first.
@@ -146,15 +138,13 @@ func TestTranscribeMouseButton(t *testing.T) {
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
-	click(t, tt, "Custom…")
-	click(t, tt, "Type the keys instead")
+	click(t, tt, "Type instead")
 	if !has(tt, hint) {
 		t.Errorf("no mouse hint in %q", tt.Texts())
 	}
-	click(t, tt, "Custom keys of shortcut 1")
-	for range len(settings.DefaultTranscribe) {
-		tt.Key(0, ui.KeyBackspace)
-	}
+	click(t, tt, "Keys of shortcut 1")
+	tt.Key(ui.Cmd, ui.KeyA)
+	tt.Key(0, ui.KeyBackspace)
 	tt.Type("mouse1")
 	tt.Key(0, ui.KeyEnter)
 	frames(tt)
@@ -221,15 +211,22 @@ func TestTranscribeHotkeyConflicts(t *testing.T) {
 func TestTranscribePasteLast(t *testing.T) {
 	a, tt := trTester(t)
 	click(t, tt, "Keys to paste the last result")
-	click(t, tt, "Off")
-	if k := a.lib.settings.Get().Features.PasteLast.Keys; k != "" {
-		t.Fatalf("paste-last %q", k)
+	tt.Key(ui.Ctrl|ui.Shift, ui.KeyV)
+	frames(tt)
+	if h := a.lib.settings.Get().Features.PasteLast; h.Keys != "Control+Shift+V" || h.Trigger != settings.TriggerTap {
+		t.Fatalf("paste-last %+v", h)
+	}
+	click(t, tt, "Clear shortcut")
+	if h := a.lib.settings.Get().Features.PasteLast; h.Keys != "" {
+		t.Fatalf("cleared paste-last %+v", h)
 	}
 	click(t, tt, "Keys to paste the last result")
-	click(t, tt, "Right ⌘")
-	if k := a.lib.settings.Get().Features.PasteLast; k.Keys != "RightCommand" || k.Trigger != settings.TriggerTap {
-		t.Fatalf("paste-last %+v", k)
+	tt.Key(ui.Ctrl|ui.Alt, ui.KeyV)
+	frames(tt)
+	if h := a.lib.settings.Get().Features.PasteLast; h.Keys != "Control+Option+V" {
+		t.Fatalf("recorded again %+v", h)
 	}
+
 }
 
 func TestTranscribeServicesAndSwitches(t *testing.T) {

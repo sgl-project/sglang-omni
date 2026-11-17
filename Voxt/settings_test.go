@@ -77,18 +77,27 @@ func TestShortcutsSettings(t *testing.T) {
 	if !has(tt, "None") {
 		t.Error("a feature without shortcut")
 	}
-	// The Strict shortcuts row above the table pushes this row near the
-	// bottom; with taller fonts (Linux CI) it is below the window.
 	scrollToText(tt, "Paste the last result ⌃⌥V")
 	click(t, tt, "Paste the last result ⌃⌥V")
-	if a.settingsOpen || a.shownPath() != "/transcribe" {
-		t.Fatalf("row click: %v %s", a.settingsOpen, a.shownPath())
+	tt.Key(ui.Ctrl|ui.Shift, ui.KeyV)
+	frames(tt)
+	if !a.settingsOpen || a.lib.settings.Get().Features.PasteLast.Keys != "Control+Shift+V" {
+		t.Fatal("the shortcut must record in Settings")
 	}
-	a.navigate("/settings/shortcuts")
 	click(t, tt, "Translate Right ⌥")
-	if a.shownPath() != "/translate" {
-		t.Fatalf("Translate row: %s", a.shownPath())
+	tt.Key(ui.Ctrl|ui.Alt, ui.KeyT)
+	frames(tt)
+	if a.lib.settings.Get().Features.Translate.Hotkeys[0].Keys != "Control+Option+T" {
+		t.Fatal("Translate was not saved")
 	}
+	scrollToText(tt, "Rewrite None")
+	click(t, tt, "Rewrite None")
+	tt.Key(ui.Ctrl|ui.Alt, ui.KeyR)
+	frames(tt)
+	if hs := a.lib.settings.Get().Features.Rewrite.Hotkeys; len(hs) != 1 || hs[0].Keys != "Control+Option+R" {
+		t.Fatalf("recorded an empty binding: %+v", hs)
+	}
+
 }
 
 // TestStrictShortcutsSetting: Settings → Shortcuts has the Strict
@@ -346,5 +355,39 @@ func TestOverlayPreviewKeepsItsSide(t *testing.T) {
 		if from[1] <= from[0] {
 			t.Errorf("%s: the pill is %.1f from its edge at the largest distance, %.1f at none", pos, from[1], from[0])
 		}
+	}
+}
+
+// TestShortcutsRecordInPlace covers every shortcut without feature-page navigation.
+func TestShortcutsRecordInPlace(t *testing.T) {
+	for _, tc := range []struct{ label, feature string }{
+		{"Transcribe Right ⌥", hotkey.Transcribe},
+		{"Translate Right ⌥ ⇧", hotkey.Translate},
+		{"Rewrite ⌃ Right ⌥", hotkey.Rewrite},
+		{"Paste the last result ⌃⌥V", hotkey.PasteLast},
+		{"Cancel recording Esc", hotkey.CancelID},
+		{"Notes Right ⌘", hotkey.Note},
+	} {
+		t.Run(tc.feature, func(t *testing.T) {
+			a, _, tt := newTestApp(t)
+			a.navigate("/settings/shortcuts")
+			if a.keysListening {
+				t.Fatal("opening Settings started capture")
+			}
+			scrollToText(tt, tc.label)
+			click(t, tt, tc.label)
+			if !a.keysListening {
+				t.Fatal("clicking the shortcut did not start capture")
+			}
+			tt.Key(ui.Ctrl|ui.Alt, ui.KeyK)
+			frames(tt)
+			hs := hotkey.HotkeysOf(a.lib.settings.Get().Features, tc.feature)
+			if len(hs) != 1 || hs[0].Keys != "Control+Option+K" {
+				t.Fatalf("saved %+v", hs)
+			}
+			if !a.settingsOpen || a.keysListening {
+				t.Fatal("recording navigated away or kept capturing after save")
+			}
+		})
 	}
 }

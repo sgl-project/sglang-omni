@@ -18,9 +18,13 @@ func (a *app) beginHotkeyRecord(r *keyRow, save func(keys string)) {
 		return
 	}
 	a.cancelHotkeyRecord()
+	seq := a.recorderSeq
 	a.recorderActive = true
 	params := proto.HotkeyRecordParams{TimeoutSeconds: 15}
 	helperCall(a, proto.MethodHotkeyRecord, params, 20*time.Second, func(res proto.HotkeyRecordResult, err error) {
+		if seq != a.recorderSeq {
+			return
+		}
 		a.recorderActive = false
 		if err != nil {
 			var perr *proto.Error
@@ -29,7 +33,7 @@ func (a *app) beginHotkeyRecord(r *keyRow, save func(keys string)) {
 				case proto.CodePermissionDenied:
 					r.recordDenied = true
 				case proto.CodeTimeout:
-					// back to the idle prompt
+					r.recFocused = false // rearm while the field is still focused
 				case proto.CodeCancelled:
 				}
 			}
@@ -40,6 +44,7 @@ func (a *app) beginHotkeyRecord(r *keyRow, save func(keys string)) {
 		ch, perr := hotkey.Parse(res.Keys)
 		if perr != nil {
 			r.unknown = true
+			r.recFocused = false
 			return
 		}
 		keys := ch.String()
@@ -49,10 +54,10 @@ func (a *app) beginHotkeyRecord(r *keyRow, save func(keys string)) {
 }
 
 func (a *app) cancelHotkeyRecord() {
+	a.recorderSeq++
 	if !a.recorderActive {
 		return
 	}
-	helperCall(a, proto.MethodHotkeyCancelRecord, proto.Empty{}, 5*time.Second, func(proto.Empty, error) {
-		a.recorderActive = false
-	})
+	a.recorderActive = false
+	helperCall(a, proto.MethodHotkeyCancelRecord, proto.Empty{}, 5*time.Second, func(proto.Empty, error) {})
 }

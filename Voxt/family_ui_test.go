@@ -20,7 +20,6 @@ import (
 	"github.com/hehehai/actnowkit/registry"
 	"github.com/hehehai/actnowkit/shortcuts"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -331,11 +330,7 @@ func TestShortcutRecorderUsedBy(t *testing.T) {
 	if has(tt, "Also used by Auralink (Rewrite)") {
 		t.Fatal("warned before")
 	}
-	row := &a.fui(hotkey.Rewrite).rows[0]
-	row.sel = "Custom…"
-	a.chooseKeys(hotkey.Rewrite, 0, row, nil)
-	frames(tt)
-	click(t, tt, "Custom keys of shortcut 1")
+	click(t, tt, "Keys of shortcut 1")
 	tt.Key(ui.Ctrl|ui.Alt, ui.KeyK)
 	frames(tt)
 	if hs := a.lib.settings.Get().Features.Rewrite.Hotkeys; len(hs) != 1 || hs[0].Keys != "Control+Option+K" || !has(tt, "Also used by Auralink (Rewrite)") {

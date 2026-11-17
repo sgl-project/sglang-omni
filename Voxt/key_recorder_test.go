@@ -1,15 +1,12 @@
 package main
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-// TestKeyRecorder: Custom… takes the keys as they are pressed, with the
+// TestKeyRecorder: clicking a shortcut takes the keys as they are pressed, with the
 // app's shortcuts off meanwhile; the keys are saved at once, show as
 // macOS writes them, and still do once the page opens again. A key the
 // grammar has no name for is refused; Tab moves the focus on.
@@ -19,9 +16,8 @@ func TestKeyRecorder(t *testing.T) {
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
-	click(t, tt, "Custom…")
-	if !tt.Focused("Custom keys of shortcut 1") || !a.keysListening {
-		t.Fatalf("the recorder has no focus (%v) or the shortcuts stay on (%v)", tt.Focused("Custom keys of shortcut 1"), a.keysListening)
+	if !tt.Focused("Keys of shortcut 1") || !a.keysListening {
+		t.Fatalf("the recorder has no focus (%v) or the shortcuts stay on (%v)", tt.Focused("Keys of shortcut 1"), a.keysListening)
 	}
 	if p := a.hotkeyPlan(); len(p.Bindings) == 0 {
 		t.Fatal("the settings' plan is empty") // only what is sent is
@@ -32,12 +28,14 @@ func TestKeyRecorder(t *testing.T) {
 	if saved() != "Option+Space" || !hasExact(tt, "⌥Space") {
 		t.Fatalf("pressed ⌥Space: saved %q, shown %q", saved(), tt.Texts())
 	}
+	click(t, tt, "Keys of shortcut 1")
 	tt.Key(ui.Ctrl|ui.Shift|ui.Super, ui.KeyK)
 	frames(tt)
 	if saved() != "Control+Shift+Command+K" || !hasExact(tt, "⌃⇧⌘K") {
 		t.Fatalf("pressed ⌃⇧⌘K: saved %q", saved())
 	}
 
+	click(t, tt, "Keys of shortcut 1")
 	tt.Key(0, ui.KeyContextMenu)
 	frames(tt)
 	if saved() != "Control+Shift+Command+K" || !has(tt, "Voxt cannot use that key. Press another, or type the keys instead.") {
@@ -45,7 +43,7 @@ func TestKeyRecorder(t *testing.T) {
 	}
 	tt.Key(0, ui.KeyTab)
 	frames(tt)
-	if saved() != "Control+Shift+Command+K" || tt.Focused("Custom keys of shortcut 1") {
+	if saved() != "Control+Shift+Command+K" || tt.Focused("Keys of shortcut 1") {
 		t.Errorf("Tab was recorded (%q) or kept the focus", saved())
 	}
 	if a.keysListening {
@@ -63,9 +61,7 @@ func TestKeyRecorder(t *testing.T) {
 // focused recorder goes away.
 func TestKeyRecorderHidden(t *testing.T) {
 	a, tt := trTester(t)
-	row := &a.fui(hotkey.Transcribe).rows[0]
-	row.sel = "Custom…"
-	a.chooseKeys(hotkey.Transcribe, 0, row, nil)
+	click(t, tt, "Keys of shortcut 1")
 	frames(tt)
 	if !a.keysListening {
 		t.Fatal("not listening")
@@ -77,23 +73,61 @@ func TestKeyRecorderHidden(t *testing.T) {
 	}
 }
 
-// TestCancelKeysEsc: Cancel transcription's select offers Esc, by its
-// name, and shows it so once chosen.
+// TestCancelKeysEsc: Escape can be recorded as the cancel shortcut.
 func TestCancelKeysEsc(t *testing.T) {
 	a, tt := trTester(t)
 	click(t, tt, "Keys to cancel recording")
-	click(t, tt, "Off")
-	if k := a.lib.settings.Get().Features.Cancel.Keys; k != "" {
-		t.Fatalf("turned off: %q", k)
-	}
-	opts, byLabel := keyOptions("", true, settings.DefaultCancel)
-	if i := slices.Index(opts, "Esc"); i != 1 || byLabel["Esc"] != "Escape" {
-		t.Fatalf("options %q", opts)
+	tt.Key(ui.Ctrl, ui.KeyK)
+	frames(tt)
+	if k := a.lib.settings.Get().Features.Cancel.Keys; k != "Control+K" {
+		t.Fatalf("recorded %q", k)
 	}
 	click(t, tt, "Keys to cancel recording")
-	click(t, tt, "Esc")
+	tt.Key(0, ui.KeyEscape)
 	frames(tt)
-	if k := a.lib.settings.Get().Features.Cancel.Keys; k != "Escape" || a.fui(hotkey.Transcribe).cancel.sel != "Esc" || !hasExact(tt, "Esc") {
-		t.Errorf("chose Esc: saved %q, shown %q", k, a.fui(hotkey.Transcribe).cancel.sel)
+	if k := a.lib.settings.Get().Features.Cancel.Keys; k != "Escape" || !hasExact(tt, "Esc") {
+		t.Errorf("recorded %q", k)
+	}
+	a.navigate("/settings/shortcuts")
+	scrollToText(tt, "Cancel recording Esc")
+	click(t, tt, "Cancel recording Esc")
+	tt.Key(0, ui.KeyEscape)
+	frames(tt)
+	if !a.settingsOpen || a.keysListening || a.prefs.Features.Cancel.Keys != "Escape" {
+		t.Fatal("Escape closed Settings instead of being recorded")
+	}
+
+}
+
+// TestShortcutCaptureCancel keeps the saved binding and releases keyboard capture.
+func TestShortcutCaptureCancel(t *testing.T) {
+	a, tt := trTester(t)
+	saved := a.prefs.Features.Transcribe.Hotkeys[0].Keys
+	if a.keysListening {
+		t.Fatal("opening the page started capture")
+	}
+	click(t, tt, "Keys of shortcut 1")
+	tt.Key(0, ui.KeyContextMenu)
+	frames(tt)
+	click(t, tt, "Cancel")
+	if a.keysListening || a.prefs.Features.Transcribe.Hotkeys[0].Keys != saved {
+		t.Fatal("Cancel changed the binding or kept capture active")
+	}
+	click(t, tt, "Keys of shortcut 1")
+	click(t, tt, "Type instead")
+	click(t, tt, "Keys of shortcut 1")
+	tt.Key(ui.Cmd, ui.KeyA)
+	tt.Type("Control+Shift+K")
+	click(t, tt, "Cancel")
+	if a.prefs.Features.Transcribe.Hotkeys[0].Keys != saved {
+		t.Fatal("Cancel saved an unsubmitted typed shortcut")
+	}
+	click(t, tt, "Keys of shortcut 1")
+	a.navigate("/home")
+	frames(tt)
+	a.navigate("/transcribe")
+	frames(tt)
+	if a.keysListening {
+		t.Fatal("returning to the page resumed capture")
 	}
 }

@@ -37,7 +37,6 @@ func TestKeyRecorderHelper(t *testing.T) {
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
-	click(t, tt, "Custom…")
 	for i := 0; i < 30 && saved() != "RightOption+Space"; i++ {
 		frames(tt)
 	}
@@ -57,7 +56,6 @@ func TestKeyRecorderNoAccessibility(t *testing.T) {
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
-	click(t, tt, "Custom…")
 	for i := 0; i < 20; i++ {
 		frames(tt)
 	}
@@ -68,9 +66,13 @@ func TestKeyRecorderNoAccessibility(t *testing.T) {
 
 // TestKeyRecorderTimeout: timeout leaves the saved keys unchanged.
 func TestKeyRecorderTimeout(t *testing.T) {
+	ready := false
 	a, tt := trHelperTester(t, func(fs *fakeSupervisor) {
 		fs.handlers[proto.MethodHotkeyRecord] = func(json.RawMessage) (any, error) {
-			return nil, proto.Errorf(proto.CodeTimeout, "Recording timed out")
+			if !ready {
+				return nil, proto.Errorf(proto.CodeTimeout, "Recording timed out")
+			}
+			return proto.HotkeyRecordResult{Keys: "Control+Option+K"}, nil
 		}
 	})
 	h := settings.Hotkey{Keys: "Fn+F5", Trigger: settings.TriggerTap}
@@ -84,13 +86,18 @@ func TestKeyRecorderTimeout(t *testing.T) {
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
-	click(t, tt, "Custom…")
 	for i := 0; i < 25; i++ {
 		frames(tt)
 	}
 	if saved() != "Fn+F5" {
 		t.Fatalf("timeout changed keys: %q", saved())
 	}
+	ready = true
+	frames(tt)
+	if saved() != "Control+Option+K" {
+		t.Fatalf("capture did not resume after timeout: %q", saved())
+	}
+
 }
 
 // TestKeyRecorderCancelOnBlur: leaving the field cancels hotkey.record while
@@ -107,8 +114,7 @@ func TestKeyRecorderCancelOnBlur(t *testing.T) {
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
-	click(t, tt, "Custom…")
-	if err := tt.ClickControl("Custom keys of shortcut 1"); err != nil {
+	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
 	a.recorderActive = true
@@ -157,7 +163,6 @@ func TestKeyRecorderTapPaused(t *testing.T) {
 	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
 		t.Fatal(err)
 	}
-	click(t, tt, "Custom…")
 	for i := 0; i < 20; i++ {
 		frames(tt)
 	}
@@ -173,5 +178,23 @@ func TestKeyRecorderTapPaused(t *testing.T) {
 	}
 	if a.keysListening || lastBindings() == 0 || !a.hotkeys.Installed || has(tt, notice) {
 		t.Errorf("after the field: listening %v, %d bindings, installed %v, notice %v", a.keysListening, lastBindings(), a.hotkeys.Installed, has(tt, notice))
+	}
+}
+
+// TestKeyRecorderCancelledReply ignores a captured chord returned after cancellation.
+func TestKeyRecorderCancelledReply(t *testing.T) {
+	var a *app
+	var row keyRow
+	saved := "RightOption"
+	a, _ = trHelperTester(t, func(fs *fakeSupervisor) {
+		fs.handlers[proto.MethodHotkeyRecord] = func(json.RawMessage) (any, error) {
+			a.cancelHotkeyRecord()
+			return proto.HotkeyRecordResult{Keys: "Control+Option+K"}, nil
+		}
+		fs.handlers[proto.MethodHotkeyCancelRecord] = func(json.RawMessage) (any, error) { return proto.Empty{}, nil }
+	})
+	a.beginHotkeyRecord(&row, func(keys string) { saved = keys })
+	if saved != "RightOption" {
+		t.Fatalf("a cancelled capture saved %q", saved)
 	}
 }

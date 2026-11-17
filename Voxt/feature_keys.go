@@ -1,7 +1,7 @@
 package main
 
 // A feature page's Shortcuts section (feature_page.go): its rows of
-// shortcuts with their triggers, choosing or typing a chord, and Transcribe's
+// shortcuts with their triggers, recording or typing a chord, and Transcribe's
 // paste-the-last-result and cancel-transcription rows. Keys another ActNow
 // app uses too say so under the row, as they are chosen or typed; saving
 // stays allowed.
@@ -21,14 +21,15 @@ import (
 // keyRow is a shortcut's controls.
 type keyRow struct {
 	sel          string // the select's label
-	custom       bool   // "Custom…" chosen: the keys are pressed (key_recorder.go)
+	custom       bool   // editing keys, or a custom end word
 	typing       bool   // … or typed, when asked
 	text         string // the pressed or typed keys
 	trig         int    // 0 tap, 1 double tap, 2 long press
 	edited       bool   // the typed keys are not saved yet
 	unknown      bool   // the last key pressed has no name in the grammar
 	recFocused   bool   // the record box had focus last frame
-	recordDenied bool   // helper returned permission_denied for hotkey.record
+	before       string
+	recordDenied bool // helper returned permission_denied for hotkey.record
 }
 
 // keyPresets are the shortcuts the selects offer, in the grammar of
@@ -67,7 +68,7 @@ func (a *app) featureSync(feature string) {
 	}
 	u.seen = seen
 	hs := hotkey.HotkeysOf(a.prefs.Features, feature)
-	u.rows = make([]keyRow, len(hs))
+	u.rows = make([]keyRow, max(1, len(hs)))
 	for i, h := range hs {
 		u.rows[i] = keyRow{sel: chordLabel(h.Keys), text: h.Keys, trig: triggerIndex(h.Trigger)}
 	}
@@ -109,32 +110,6 @@ func presetOf(keys string) string {
 		}
 	}
 	return ""
-}
-
-// keyOptions are a select's options for a binding whose keys are cur:
-// the row's own presets (first), the presets, cur when it is none of
-// them, then "Custom…" (and "Off" first with off). byLabel maps each
-// label to its keys.
-func keyOptions(cur string, off bool, first ...string) (opts []string, byLabel map[string]string) {
-	byLabel = map[string]string{}
-	if off {
-		opts = append(opts, i18n.T("Off"))
-		byLabel[i18n.T("Off")] = ""
-	}
-	for _, p := range slices.Concat(first, keyPresets) {
-		l := uitext.HotkeyText(p)
-		opts = append(opts, l)
-		byLabel[l] = p
-	}
-	if cur != "" && presetOf(cur) == "" {
-		l := uitext.HotkeyText(cur)
-		if _, dup := byLabel[l]; !dup {
-			opts = append(opts, l)
-			byLabel[l] = cur
-		}
-	}
-	opts = append(opts, i18n.T("Custom…"))
-	return opts, byLabel
 }
 
 // setHotkeys changes a feature's shortcuts with fn, on the settings' own
@@ -235,18 +210,10 @@ func (a *app) keyRowView(c *ui.Context, feature string, i int, h settings.Hotkey
 	n := i + 1
 	ui.Column(c.Key(fmt.Sprintf("%s-key-%d", uitext.FeaturePrefix(feature), i))).Gap(px(t, 6)).Children(func() {
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Wrap().Gap(px(t, sp2)).AlignItems(ui.Center).Grow(1).MinWidth(0).Children(func() {
-				opts, byLabel := keyOptions(h.Keys, false)
-				if !slices.Contains(opts, r.sel) {
-					r.sel = chordLabel(h.Keys)
-				}
-				if r.custom {
-					r.sel = i18n.T("Custom…")
-				}
-				sel := ui.Select(c.Key("sel"), &r.sel, opts).Label(i18n.T("Keys of shortcut %d", n)).Width(px(t, 180)).Shrink(1).MinWidth(px(t, 120))
-				if sel.Changed() {
-					a.chooseKeys(feature, i, r, byLabel)
-				}
+			ui.Row(c).Wrap().Gap(px(t, sp2)).AlignItems(ui.Start).Grow(1).MinWidth(0).Children(func() {
+				a.shortcutControl(c, r, i18n.T("Keys of shortcut %d", n), false, func(keys string) {
+					a.setShortcutKeys(feature, i, keys)
+				})
 				tips := []string{
 					i18n.T("Press to start, press again to stop."),
 					i18n.T("Press twice quickly to start; once more to stop."),
@@ -280,16 +247,6 @@ func (a *app) keyRowView(c *ui.Context, feature string, i int, h settings.Hotkey
 				})
 			}
 		})
-		if r.custom {
-			a.keysField(c, r, i18n.T("Custom keys of shortcut %d", n), func(keys string) {
-				a.setHotkeys(feature, false, func(hs []settings.Hotkey) []settings.Hotkey {
-					if i < len(hs) {
-						hs[i].Keys = keys
-					}
-					return hs
-				})
-			})
-		}
 		problemLines(c, problems)
 		a.usedByView(c, recordedKeys(*r, h.Keys)) // settings_shortcuts_family.go: another app's keys
 	})
@@ -306,30 +263,7 @@ func recordedKeys(r keyRow, saved string) string {
 	return saved
 }
 
-// chooseKeys applies a choice of a feature's i-th shortcut select.
-func (a *app) chooseKeys(feature string, i int, r *keyRow, byLabel map[string]string) {
-	if r.sel == i18n.T("Custom…") {
-		r.custom = true
-		if hs := hotkey.HotkeysOf(a.prefs.Features, feature); i < len(hs) {
-			r.text = hs[i].Keys
-		}
-		return
-	}
-	keys, ok := byLabel[r.sel]
-	if !ok {
-		return
-	}
-	r.custom, r.text = false, keys
-	a.setHotkeys(feature, false, func(hs []settings.Hotkey) []settings.Hotkey {
-		if i < len(hs) {
-			hs[i].Keys = keys
-		}
-		return hs
-	})
-}
-
-// customKeys is the field for typed keys: they are saved (in canonical
-// spelling) on Return or when the field loses the focus, if they parse;
+// customKeys is the field for typed keys: valid keys are saved on Return;
 // until then it says why not. Not on every key: on the way to
 // "Control+Option+K" the field says "Control", a shortcut of its own.
 func (a *app) customKeys(c *ui.Context, r *keyRow, label string, save func(keys string)) {
@@ -339,7 +273,7 @@ func (a *app) customKeys(c *ui.Context, r *keyRow, label string, save func(keys 
 		r.edited = true
 	}
 	ch, err := hotkey.Parse(r.text)
-	if r.edited && err == nil && (in.Submitted() || !in.Focused()) {
+	if r.edited && err == nil && (in.Submitted()) {
 		r.edited = false
 		r.text = ch.String()
 		save(r.text)
@@ -382,29 +316,8 @@ func (a *app) trPasteRow(c *ui.Context) {
 	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.PasteLast)[0]
 	ui.Column(c.Key("tr-paste")).Gap(px(t, 6)).Children(func() {
 		settingRow(c, "tr-paste-row", i18n.T("Paste the last result"), "", func() {
-			opts, byLabel := keyOptions(cur, true)
-			if !slices.Contains(opts, r.sel) {
-				r.sel = chordLabel(cur)
-			}
-			if r.custom {
-				r.sel = i18n.T("Custom…")
-			}
-			if ui.Select(c.Key("tr-paste-sel"), &r.sel, opts).Label(i18n.T("Keys to paste the last result")).Width(px(t, 180)).Changed() {
-				if r.sel == i18n.T("Custom…") {
-					r.custom, r.text = true, cur
-					return
-				}
-				keys, ok := byLabel[r.sel]
-				if !ok {
-					return
-				}
-				r.custom, r.text = false, keys
-				a.setPasteLast(keys)
-			}
+			a.shortcutControl(c, r, i18n.T("Keys to paste the last result"), true, a.setPasteLast)
 		})
-		if r.custom {
-			a.keysField(c, r, i18n.T("Custom keys to paste the last result"), a.setPasteLast)
-		}
 		problemLines(c, problems)
 		a.usedByView(c, recordedKeys(*r, cur))
 	})
@@ -428,29 +341,8 @@ func (a *app) trCancelRow(c *ui.Context) {
 	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.CancelID)[0]
 	ui.Column(c.Key("tr-cancel")).Gap(px(t, 6)).Children(func() {
 		settingRow(c, "tr-cancel-row", i18n.T("Cancel recording"), i18n.T("The recording stays in History, so you can retry."), func() {
-			opts, byLabel := keyOptions(cur, true, settings.DefaultCancel)
-			if !slices.Contains(opts, r.sel) {
-				r.sel = chordLabel(cur)
-			}
-			if r.custom {
-				r.sel = i18n.T("Custom…")
-			}
-			if ui.Select(c.Key("tr-cancel-sel"), &r.sel, opts).Label(i18n.T("Keys to cancel recording")).Width(px(t, 180)).Changed() {
-				if r.sel == i18n.T("Custom…") {
-					r.custom, r.text = true, cur
-					return
-				}
-				keys, ok := byLabel[r.sel]
-				if !ok {
-					return
-				}
-				r.custom, r.text = false, keys
-				a.setCancelKeys(keys)
-			}
+			a.shortcutControl(c, r, i18n.T("Keys to cancel recording"), true, a.setCancelKeys)
 		})
-		if r.custom {
-			a.keysField(c, r, i18n.T("Custom keys to cancel recording"), a.setCancelKeys)
-		}
 		problemLines(c, problems)
 		a.usedByView(c, recordedKeys(*r, cur))
 	})

@@ -13,7 +13,6 @@ package main
 import (
 	"context"
 	"errors"
-	"slices"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -164,42 +163,13 @@ func (a *app) deleteNote(note store.Note) {
 // typed ones; what is wrong with them and the other ActNow apps on them.
 func (a *app) noteKeysRow(c *ui.Context) {
 	t := c.Theme()
-	n := &a.nv
 	cur := a.prefs.Features.Note.Keys
-	if seen := cur + "\x00" + i18n.Locale(); seen != n.keysFor { // changed elsewhere (Settings → Shortcuts' preset)
-		n.keysFor = seen
-		n.keys = keyRow{sel: chordLabel(cur), text: cur}
-		if cur == "" {
-			n.keys.sel = i18n.T("Off")
-		}
-	}
-	r := &n.keys
+	r := a.shortcutKeyRow(hotkey.Note, 0)
 	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.Note)[0]
 	ui.Column(c.Key("notes-keys")).Gap(px(t, 6)).Children(func() {
 		settingRow(c, "notes-keys-row", i18n.T("Shortcut"), "", func() {
-			opts, byLabel := keyOptions(cur, true)
-			if !slices.Contains(opts, r.sel) {
-				r.sel = chordLabel(cur)
-			}
-			if r.custom {
-				r.sel = i18n.T("Custom…")
-			}
-			if ui.Select(c.Key("notes-keys-sel"), &r.sel, opts).Label(i18n.T("Keys to record a note")).Width(px(t, 180)).Changed() {
-				if r.sel == i18n.T("Custom…") {
-					r.custom, r.text = true, cur
-					return
-				}
-				keys, ok := byLabel[r.sel]
-				if !ok {
-					return
-				}
-				r.custom, r.text = false, keys
-				a.setNoteKeys(keys)
-			}
+			a.shortcutControl(c, r, i18n.T("Keys to record a note"), true, a.setNoteKeys)
 		})
-		if r.custom {
-			a.keysField(c, r, i18n.T("Custom keys to record a note"), a.setNoteKeys)
-		}
 		if cur == "" {
 			caption(c, i18n.T("Set a shortcut to record notes."))
 		}

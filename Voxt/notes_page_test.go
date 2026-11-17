@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -15,7 +17,7 @@ import (
 
 // TestNotesPage: the sidebar opens it; empty, it says how to record a
 // note; it lists the notes newest first and deletes one through its
-// button; Settings → Shortcuts' row opens it; the shortcut changes here.
+// button; Settings → Shortcuts records its shortcut in place.
 func TestNotesPage(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 1200)
@@ -54,19 +56,15 @@ func TestNotesPage(t *testing.T) {
 	}
 
 	a.navigate("/settings/shortcuts")
+	scrollToText(tt, "Notes "+uitext.HotkeyText(settings.DefaultNote))
 	click(t, tt, "Notes "+uitext.HotkeyText(settings.DefaultNote))
-	if a.settingsOpen || a.shownPath() != "/notes" {
-		t.Fatalf("Notes row: %v %s", a.settingsOpen, a.shownPath())
+	tt.Key(ui.Ctrl|ui.Alt, ui.KeyN)
+	frames(tt)
+	if !a.settingsOpen {
+		t.Fatal("recording navigated away from Settings")
 	}
-	click(t, tt, "Keys to record a note")
-	click(t, tt, "Off")
-	if k := a.lib.settings.Get().Features.Note.Keys; k != "" {
-		t.Fatalf("note keys %q", k)
-	}
-	click(t, tt, "Keys to record a note")
-	click(t, tt, uitext.HotkeyText("RightShift"))
-	if k := a.lib.settings.Get().Features.Note; k.Keys != "RightShift" || k.Trigger != settings.TriggerTap {
-		t.Fatalf("note keys %+v", k)
+	if h := a.lib.settings.Get().Features.Note; h.Keys != "Control+Option+N" || h.Trigger != settings.TriggerTap {
+		t.Fatalf("note keys %+v", h)
 	}
 }
 

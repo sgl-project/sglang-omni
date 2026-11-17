@@ -1,6 +1,6 @@
 package main
 
-// The shortcut field that takes keys as they are pressed (Custom… of a
+// The shortcut field that takes keys as they are pressed (a
 // feature's, Paste the last result's, Cancel's and the note's
 // shortcuts): a key with the modifiers held, saved at once. While it
 // has the focus the app's shortcuts are off, so that the keys reach it
@@ -14,6 +14,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
@@ -64,17 +65,28 @@ func pressedKeys(ev ui.InputEvent) (string, bool) {
 	return ch.String(), true
 }
 
-// keysField is a shortcut's Custom… field: the recorder, or the typed
+// keysField is a shortcut's editor: the recorder, or the typed
 // keys once the user asked to type them.
 func (a *app) keysField(c *ui.Context, r *keyRow, label string, save func(keys string)) {
 	if r.typing {
 		a.customKeys(c, r, label, save)
-		if ghostButton(c.Key("record-keys"), i18n.T("Press the keys instead")).Clicked() {
-			r.typing, r.edited = false, false
-		}
-		return
+	} else {
+		a.keyRecorder(c, r, label, save)
 	}
-	a.keyRecorder(c, r, label, save)
+	ui.Row(c).Gap(px(c.Theme(), sp1)).AlignItems(ui.Center).Children(func() {
+		if r.typing {
+			if ghostButton(c.Key("record-keys"), i18n.T("Record instead")).Clicked() {
+				r.typing, r.edited = false, false
+			}
+		} else {
+			if ghostButton(c.Key("type-keys"), i18n.T("Type instead")).Clicked() {
+				r.typing, r.unknown = true, false
+			}
+		}
+		if iconButton(c.Key("cancel-record"), icons.CloseCircle, i18n.T("Cancel")).Clicked() {
+			a.closeShortcutEditor()
+		}
+	})
 }
 
 // keyRecorder takes the keys as they are pressed and saves them at once.
@@ -86,14 +98,15 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 	box := ui.Box(c.Key("record")).Focusable().AutoFocus().Role(ui.RoleTextField).Label(label).
 		Padding(px(t, 5), px(t, sp2)).Radius(px(t, radiusControl)).MaxWidth(px(t, 360)).Cursor(ui.CursorPointer)
 	focused := box.Focused()
-	if focused && !r.recFocused {
+	wasFocused := r.recFocused
+	r.recFocused = focused
+	if focused && !wasFocused {
 		r.recordDenied = false
 		a.beginHotkeyRecord(r, save)
 	}
-	if r.recFocused && !focused {
+	if wasFocused && !focused {
 		a.cancelHotkeyRecord()
 	}
-	r.recFocused = focused
 	if focused {
 		a.keysHeard = true
 		box.Border(1, k.Accent)
@@ -153,20 +166,7 @@ func (a *app) keyRecorder(c *ui.Context, r *keyRow, label string, save func(keys
 		})
 	case r.unknown:
 		warnLine(c, i18n.T("Voxt cannot use that key. Press another, or type the keys instead."))
-	case focused:
-		if a.helperRecordsKeys() {
-			caption(c, i18n.T("Press the shortcut you want, including fn, a left or right modifier, or a mouse button. Each press replaces the last."))
-		} else {
-			caption(c, i18n.T("Press the keys you want, such as ⌥Space. Each press replaces the last."))
-		}
 	default:
-		if a.helperRecordsKeys() {
-			caption(c, i18n.T("Click the field, then press the shortcut, including fn, a left or right modifier, or a mouse button."))
-		} else {
-			caption(c, i18n.T("Click the field and press the keys, such as ⌥Space. To use fn, a left or right modifier or a mouse button, allow Accessibility in Permissions."))
-		}
-	}
-	if ghostButton(c.Key("type-keys"), i18n.T("Type the keys instead")).Clicked() {
-		r.typing, r.unknown = true, false
+		caption(c, i18n.T("Press a shortcut to save it."))
 	}
 }
