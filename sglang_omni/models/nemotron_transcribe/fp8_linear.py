@@ -112,10 +112,14 @@ def attach_fp8_linears(
             )
         else:
             pass
-        loadable[f"{name}.weight_scale"] = weight_scale.reshape(())
-        loadable[f"{name}.input_scale"] = input_scale.reshape(())
-        parent, _, child = name.rpartition(".")
-        setattr(module.get_submodule(parent), child, Fp8Linear.replacing(linear))
+        if getattr(module, "dequantize_fp8_on_load", False):
+            loadable[f"{name}.weight"] = weight.float() * weight_scale.float()
+            del loadable[f"{name}.weight_scale"], loadable[f"{name}.input_scale"]
+        else:
+            loadable[f"{name}.weight_scale"] = weight_scale.reshape(())
+            loadable[f"{name}.input_scale"] = input_scale.reshape(())
+            parent, _, child = name.rpartition(".")
+            setattr(module.get_submodule(parent), child, Fp8Linear.replacing(linear))
     attached = set(quantized)
     unscaled = [
         name

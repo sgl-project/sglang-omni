@@ -198,6 +198,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             pass
 
     def select_fp8_perception(self, perception: nn.Module) -> None:
+        perception.dequantize_fp8_on_load = True
         fp8_linears = sum(
             isinstance(child, Fp8Linear) for child in perception.modules()
         )
@@ -205,12 +206,14 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             return
         else:
             pass
-        perception._derived_weight_cache_error = (  # noqa: leading-underscore - SGLang contract
-            "Online weight updates are unsupported for Nemotron Transcribe FP8 "
-            "encoder weights. Restart the server to load new weights."
-        )
         device = next(perception.parameters()).device
         if self.perception_fp8 and fp8_gemm_supported(device):
+            perception._derived_weight_cache_error = (  # noqa: leading-underscore - SGLang contract
+                "Online weight updates are unsupported while the Nemotron "
+                "Transcribe encoder runs FP8 GEMMs. Restart the server to load "
+                "new weights, or serve with --asr.factory.perception_fp8 false "
+                "to keep online updates."
+            )
             logger.info(
                 f"Nemotron Transcribe encoder runs {fp8_linears} linears with FP8 GEMMs"
             )
