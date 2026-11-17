@@ -7,14 +7,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Import a recording as a meeting**: Import recording… on the Meetings page turns an audio file, or the sound of a video (m4a, mp3, wav, aiff, caf, mp4, mov), into a meeting. MOSS-Transcribe-Diarize transcribes the whole file and labels every voice Speaker 1, 2, 3 and so on: the file is one mixed track, so there is no You/Others split. Then the same transcript clean-up and summary as a recorded meeting's run. The meeting keeps the file's name, date and length until the summary names it, the page shows progress with Cancel for long files, and an interrupted import can be finished with Continue processing. Importing needs MOSS-Transcribe-Diarize: without it Voxt says so and opens Speech models, instead of transcribing without speaker labels.
-- **Meetings label the other side as Speaker 1–4**: with MOSS-Transcribe-Diarize installed, Voxt uses it after a meeting to transcribe the other side with speaker labels while your lines stay Me, before transcript correction and the summary. Without it, the meeting works as before and its details link to Speech models. MOSS-Transcribe-Diarize also has a 262 MB DFlash draft, on by default once installed and controlled by the same Faster transcription switch as the other drafts.
+- **Meetings label the other side as Speaker 1–4**: with MOSS-Transcribe-Diarize installed, Voxt uses it after a meeting to transcribe the other side with speaker labels while your lines stay Me, before transcript correction and the summary. Without it, the meeting works as before and its details link to Speech models.
 
 ### 中文
 
 #### 新增
 
 - **把录音导入成会议**：会议页新增“导入录音…”，把音频文件或视频的声音（m4a、mp3、wav、aiff、caf、mp4、mov）变成一场会议。MOSS-Transcribe-Diarize 整段转录，把所有人的声音标为说话人 1、2、3……文件只有一条混合音轨，所以不分“我/对方”；之后照常校对转录稿和写总结。会议先保留文件的名字、日期和时长，总结写完后再改名；导入长文件时页面显示进度并可取消，中断的导入可以用“继续处理”完成。导入需要 MOSS-Transcribe-Diarize，未安装时 Voxt 会说明并打开语音识别模型页，不会不区分说话人就直接转录。
-- **会议把对方标为说话人 1–4**：安装 MOSS-Transcribe-Diarize 后，Voxt 在会议结束时用它转录对方的话并区分说话人，你的话仍标为“我”，然后再校对转录稿和写总结。没装时会议照常工作，会议详情提供语音识别模型页入口。MOSS-Transcribe-Diarize 还新增 262 MB 的 DFlash 草稿模型，安装后默认开启，并沿用其他草稿模型的“转录加速”开关。
+- **会议把对方标为说话人 1–4**：安装 MOSS-Transcribe-Diarize 后，Voxt 在会议结束时用它转录对方的话并区分说话人，你的话仍标为“我”，然后再校对转录稿和写总结。没装时会议照常工作，会议详情提供语音识别模型页入口。
 ### Changed
 
 - **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.

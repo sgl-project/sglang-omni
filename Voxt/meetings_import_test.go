@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -67,7 +69,7 @@ func TestMeetingImportLabelsSpeakersAndSummarizes(t *testing.T) {
 	savedC, savedD := chooseRecordingFile, decodeRecording
 	t.Cleanup(func() { chooseRecordingFile, decodeRecording = savedC, savedD })
 	chooseRecordingFile = func(a *app, then func(string)) { then(wav) }
-	decodeRecording = func(string) ([]byte, error) { return pcm, nil }
+	decodeRecording = func(context.Context, string) ([]byte, error) { return pcm, nil }
 	tt.SetSize(windowWidth, 900)
 	a.navigate("/meetings")
 	frames(tt)
@@ -142,5 +144,63 @@ func TestMeetingImportExplainsMissingMTD(t *testing.T) {
 	list, _ := a.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
 	if len(list) != 0 {
 		t.Fatalf("%d meetings without a file", len(list))
+	}
+}
+
+// With Keep a history off, Import recording… says so and offers Privacy
+// settings; no file is asked for and no meeting is made.
+func TestMeetingImportExplainsHistoryOff(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importDiarizeFake{}}
+	a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepHistory = false })
+	saved := chooseRecordingFile
+	t.Cleanup(func() { chooseRecordingFile = saved })
+	chooseRecordingFile = func(a *app, then func(string)) { t.Error("the file dialog opened with the history off") }
+	tt.SetSize(windowWidth, 900)
+	a.navigate("/meetings")
+	frames(tt)
+	if err := tt.ClickControl("Import recording…"); err != nil {
+		t.Fatalf("%v (%q)", err, firstTexts(tt))
+	}
+	frames(tt)
+	if _, ok := tt.Find("Keep a history is off"); !ok {
+		t.Fatalf("no history dialog (%q) noMTD=%v noHistory=%v keep=%v", firstTexts(tt), a.mv.importNoMTD, a.mv.importNoHistory, a.prefs.Privacy.KeepHistory)
+	}
+	if err := tt.ClickControl("Open Privacy settings"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if a.shownPath() != "/settings/privacy" {
+		t.Fatalf("went to %s", a.shownPath())
+	}
+	list, _ := a.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
+	if len(list) != 0 {
+		t.Fatalf("%d meetings without a file", len(list))
+	}
+}
+
+// Cancel reaches the decoder: a long afconvert stops instead of running
+// on while the page shows the import as cancelled.
+func TestMeetingImportDecodeCancels(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	savedD := decodeRecording
+	t.Cleanup(func() { decodeRecording = savedD })
+	started := make(chan struct{})
+	decodeRecording = func(ctx context.Context, _ string) ([]byte, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	imp := &meetingImport{name: "long.m4a", cancel: cancel}
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.runImport(ctx, imp, "long.m4a")
+		done <- err
+	}()
+	<-started
+	imp.cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
 	}
 }

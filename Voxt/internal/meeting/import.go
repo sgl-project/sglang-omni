@@ -7,12 +7,14 @@ package meeting
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -28,11 +30,19 @@ type ImportRequest struct {
 	Rate int // 0 is asr.SampleRate
 }
 
+// ErrNoHistory is an import refused while Keep a history is off: the
+// import saves the whole transcript, and unlike a recorded meeting it
+// has no Save/Discard step to ask with.
+var ErrNoHistory = errors.New("meeting: Keep a history is off")
+
 // Import stores a recording file as a meeting and runs the pass a
 // recorded meeting gets: MTD speaker labels, then the correction and
 // summary. A failure before the pass drops the meeting; a failed or
 // cancelled pass leaves it interrupted, for Continue processing.
 func (m *Manager) Import(ctx context.Context, req ImportRequest, onProgress func(float64)) (string, error) {
+	if !m.cfg.Privacy().KeepHistory {
+		return "", ErrNoHistory
+	}
 	rate := req.Rate
 	if rate <= 0 {
 		rate = asr.SampleRate
@@ -59,11 +69,24 @@ func (m *Manager) Import(ctx context.Context, req ImportRequest, onProgress func
 	if err != nil {
 		return fail(err)
 	}
-	if err := FinalizePass(ctx, m.cfg, mt, onProgress); err != nil {
+	cfg := m.cfg
+	if cfg.Settings().NoFinalPass {
+		// The "skip the live final pass" setting is for recorded
+		// meetings; an import's only pass is this one.
+		inner := cfg.Settings
+		cfg.Settings = func() settings.Meeting {
+			out := inner()
+			out.NoFinalPass = false
+			return out
+		}
+	}
+	if err := FinalizePass(ctx, cfg, mt, onProgress); err != nil {
 		return id, err
 	}
 	if !m.cfg.Settings().NoAutoSummary {
-		m.correctAndSummarize(ctx, id)
+		if err := m.correctAndSummarize(ctx, id); err != nil {
+			return id, err
+		}
 	}
 	return id, nil
 }

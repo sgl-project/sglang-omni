@@ -34,6 +34,11 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	// The correction and the summary run as after a live finalize; their
+	// failure is a warning there too (the meeting menu corrects again).
+	if !m.cfg.Settings().NoAutoSummary {
+		_ = m.correctAndSummarize(ctx, id)
+	}
 	if m.id == id {
 		m.mu.Lock()
 		m.state = StateDone
@@ -91,17 +96,24 @@ func (m *Manager) finalizeProgress(id string) func(float64) {
 }
 
 // correctAndSummarize corrects the transcript, then summarizes it; a
-// correction that fails leaves the summary to the recognised text.
-func (m *Manager) correctAndSummarize(ctx context.Context, id string) {
+// correction that fails leaves the summary to the recognised text, and
+// the caller hears of it.
+func (m *Manager) correctAndSummarize(ctx context.Context, id string) error {
+	var first error
 	if err := m.CorrectTranscript(ctx, id); err != nil {
 		m.warn("correct: " + err.Error())
+		first = err
 	}
 	if err := m.GenerateMeetingSummary(ctx, id); err != nil {
 		m.warn("summary: " + err.Error())
+		if first == nil {
+			first = err
+		}
 	}
 	if m.cfg.Updated != nil {
 		m.cfg.Updated(id)
 	}
+	return first
 }
 
 func (m *Manager) warn(msg string) {

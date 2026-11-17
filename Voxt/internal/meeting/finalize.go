@@ -119,10 +119,6 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode
 		}
 		return nil, err
 	}
-	speech, err := speechRegions(ctx, pcm, rate, cfg.VAD)
-	if err != nil {
-		return nil, err
-	}
 	total := len(pcm) / 2
 	if total == 0 {
 		return nil, nil
@@ -130,19 +126,13 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode
 	chunkP := DefaultChunkParams()
 	chunkP.Rate = rate
 	if cfg.ASR != nil {
-		ta, err := cfg.ASR(ctx, src)
-		if err != nil {
-			return nil, err
-		}
-		if ta.Caps.MaxDuration > 0 {
-			chunkP.CapMaxDur = ta.Caps.MaxDuration
-		}
-		if ta.File == nil {
-			return nil, fmt.Errorf("meeting: no file ASR for %s", src)
-		}
-		chunks := PlanChunks(speech, total, chunkP)
-		req := asr.FileRequest{
-			SampleRate: rate, Lang: ta.Lang, Prompt: ta.Prompt, Hints: ta.Hints, Format: "pcm",
+		ta, aerr := cfg.ASR(ctx, src)
+		req := asr.FileRequest{SampleRate: rate, Format: "pcm"}
+		if aerr == nil {
+			if ta.Caps.MaxDuration > 0 {
+				chunkP.CapMaxDur = ta.Caps.MaxDuration
+			}
+			req.Lang, req.Prompt, req.Hints = ta.Lang, ta.Prompt, ta.Hints
 		}
 		if diarize && src == SourceSystem {
 			var d asr.Diarizer
@@ -154,6 +144,8 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode
 				}
 			}
 			if d != nil {
+				// MTD alone does this track: the selected model's missing
+				// file ASR (aerr) must not stop an import.
 				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, onProgress)
 				if err != nil {
 					return nil, err
@@ -167,6 +159,17 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode
 				return nil, ErrNoDiarizer
 			}
 		}
+		if aerr != nil {
+			return nil, aerr
+		}
+		if ta.File == nil {
+			return nil, fmt.Errorf("meeting: no file ASR for %s", src)
+		}
+		speech, err := speechRegions(ctx, pcm, rate, cfg.VAD)
+		if err != nil {
+			return nil, err
+		}
+		chunks := PlanChunks(speech, total, chunkP)
 		segs, err := transcribeChunks(ctx, src, ta.File, req, rate, pcm, chunks, onProgress)
 		if err != nil {
 			return nil, err

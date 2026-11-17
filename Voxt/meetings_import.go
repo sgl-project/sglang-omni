@@ -53,6 +53,10 @@ func (a *app) meetingImport() {
 		a.mv.importNoMTD = true
 		return
 	}
+	if !a.prefs.Privacy.KeepHistory {
+		a.mv.importNoHistory = true
+		return
+	}
 	chooseRecordingFile(a, a.importRecording)
 }
 
@@ -76,6 +80,8 @@ func (a *app) importRecording(path string) {
 				// interrupted: the meeting's Continue processing finishes it
 			case errors.Is(err, meeting.ErrNoDiarizer):
 				n.importNoMTD = true // MTD went away between the check and the pass
+			case errors.Is(err, meeting.ErrNoHistory):
+				n.importNoHistory = true // turned off between the check and the pass
 			default:
 				a.meetingFailed("import", i18n.T("Could not import the recording: %v", err), err)
 			}
@@ -85,7 +91,7 @@ func (a *app) importRecording(path string) {
 }
 
 func (a *app) runImport(ctx context.Context, imp *meetingImport, path string) (string, error) {
-	pcm, err := decodeRecording(path)
+	pcm, err := decodeRecording(ctx, path)
 	if err != nil {
 		return "", err
 	}
@@ -122,22 +128,41 @@ func (a *app) meetingImportRow(c *ui.Context, imp *meetingImport) {
 func (a *app) meetingImportDialog(c *ui.Context) {
 	n := &a.mv
 	open := n.importNoMTD
+	if open {
+		dialogFrame(c, "mt-import-mtd", &open, i18n.T("MOSS-Transcribe-Diarize is not downloaded"), "", 420, func() {
+			ui.Text(c, i18n.T("Importing a recording needs MOSS-Transcribe-Diarize to label its speakers. Download it on the Speech models page, then import again."))
+		}, func() {
+			ui.Spacer(c)
+			if ui.Button(c.Key("mt-import-mtd-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
+				open = false
+			}
+			if primaryButton(c.Key("mt-import-mtd-open"), i18n.T("Open Speech models")).Clicked() {
+				open = false
+				a.navigate(modelsPath)
+			}
+		})
+		if !open {
+			n.importNoMTD = false
+			return
+		}
+	}
+	open = n.importNoHistory
 	if !open {
 		return
 	}
-	dialogFrame(c, "mt-import-mtd", &open, i18n.T("MOSS-Transcribe-Diarize is not downloaded"), "", 420, func() {
-		ui.Text(c, i18n.T("Importing a recording needs MOSS-Transcribe-Diarize to label its speakers. Download it on the Speech models page, then import again."))
+	dialogFrame(c, "mt-import-history", &open, i18n.T("Keep a history is off"), "", 420, func() {
+		ui.Text(c, i18n.T("Importing a recording saves it with its whole transcript and summary. Turn on Keep a history in Settings → Privacy to import one."))
 	}, func() {
 		ui.Spacer(c)
-		if ui.Button(c.Key("mt-import-mtd-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
+		if ui.Button(c.Key("mt-import-history-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
 			open = false
 		}
-		if primaryButton(c.Key("mt-import-mtd-open"), i18n.T("Open Speech models")).Clicked() {
+		if primaryButton(c.Key("mt-import-history-open"), i18n.T("Open Privacy settings")).Clicked() {
 			open = false
-			a.navigate(modelsPath)
+			a.navigate("/settings/privacy")
 		}
 	})
 	if !open {
-		n.importNoMTD = false
+		n.importNoHistory = false
 	}
 }
