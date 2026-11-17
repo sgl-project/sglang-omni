@@ -7,9 +7,53 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+type meetingDiarizerFake struct{ fakeTranscriptions }
+
+func (f *meetingDiarizerFake) Diarize(context.Context, asr.FileRequest) (asr.Result, error) {
+	return asr.Result{}, nil
+}
+
+type meetingMTDLocal struct {
+	local.NotInstalled
+	provider asr.Provider
+}
+
+func (l *meetingMTDLocal) Installed(kind local.Kind) []local.Model {
+	if kind == local.ASR {
+		return []local.Model{{Kind: local.ASR, ID: models.ASRMoss}}
+	}
+	return nil
+}
+
+func (l *meetingMTDLocal) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	if id != models.ASRMoss {
+		return nil, local.Model{}, local.NotInstalledError(local.ASR, id)
+	}
+	return l.provider, local.Model{Kind: local.ASR, ID: models.ASRMoss}, nil
+}
+
+func TestMeetingDiarizerRequiresInstalledMTD(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
+	d, err := a.meetingDiarizer(context.Background())
+	if err != nil || d != nil {
+		t.Fatalf("without MTD: diarizer %v, err %v", d, err)
+	}
+	provider := &meetingDiarizerFake{}
+	a.local = &meetingMTDLocal{provider: provider}
+	a.prefs.General.MainLanguage = "en" // an unknown language keeps the selected model
+	d, err = a.meetingDiarizer(context.Background())
+	if err != nil || d != provider {
+		t.Fatalf("with MTD: diarizer %v, err %v", d, err)
+	}
+}
 
 // A meeting gives its speech model the language hint dictation gives it
 // (the main language, which says Simplified or Traditional Chinese), on
@@ -71,5 +115,36 @@ func TestMeetingTrackASRUsesDictionary(t *testing.T) {
 		if !strings.Contains(ta.Prompt, "A Zoom call about Voxt") || ta.StreamReq.Prompt != ta.Prompt {
 			t.Errorf("%s: file Prompt %q, stream Prompt %q; want the speech context", tc.name, ta.Prompt, ta.StreamReq.Prompt)
 		}
+	}
+}
+
+// MTD knows only zh and en: a meeting in another language keeps the
+// selected model's transcription instead of a forced wrong-language one.
+// An unknown language (English UI, no main language: no hint, #3398) is
+// not zh or en either.
+func TestMeetingDiarizerLanguageGate(t *testing.T) {
+	provider := &meetingDiarizerFake{}
+	for _, tc := range []struct {
+		main string
+		want bool
+	}{
+		{"zh-Hans", true},
+		{"en", true},
+		{"ko", false},
+		{"ja", false},
+		{"", false},
+	} {
+		t.Run(tc.main, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.local = &meetingMTDLocal{provider: provider}
+			a.prefs.General.MainLanguage = tc.main
+			d, err := a.meetingDiarizer(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (d != nil) != tc.want {
+				t.Errorf("%s: diarizer %v", tc.main, d)
+			}
+		})
 	}
 }

@@ -30,7 +30,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     recording's sounds (afplay, Voxt's presets and how long each is
 │   │                     heard); the system's web proxies (CFNetwork);
 │   │                     a process's memory (proc_pid_rusage)
-│   ├── asr/              the shape of speech recognition: FileTranscriber, Streamer/Stream, error
+│   ├── asr/              the shape of speech recognition: FileTranscriber, Diarizer, Streamer/Stream, error
 │   │                     kinds, WAV/PCM helpers, the remote endpoint policy and WebSocket dial
 │   │                     (the local models are internal/local's); its subpackages are the
 │   │                     remote speech services' clients: openai (OpenAI, StepFun, Zhipu
@@ -78,7 +78,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     snapshots, the history entry; adapters over the helper (helperio.go)
 │   ├── meeting/          a meeting's owner (Manager, Snapshot for the UI, Config callbacks): the
 │   │                     two tracks' capture, live captions (Live, Committer, echo and loop checks),
-│   │                     the WAV archive, the pass after the meeting, correction, the summary and
+│   │                     the WAV archive, the pass after the meeting (including MTD speaker labels), correction, the summary and
 │   │                     its follow-ups
 │   ├── fileasr/          `Voxt transcribe` (docs/transcribe.md): the command sends a file's PCM to
 │   │                     the running app, which cuts it as a meeting does and recognises it

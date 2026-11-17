@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -116,6 +117,9 @@ type Config struct {
 	ModelHold local.Holder
 	// ASR resolves live recognition per track; nil keeps WAV-only capture (tests).
 	ASR func(ctx context.Context, src Source) (TrackASR, error)
+	// Diarizer resolves MOSS-Transcribe-Diarize for the system track's final
+	// pass; a nil diarizer keeps the selected model's plain transcription.
+	Diarizer func(ctx context.Context) (asr.Diarizer, error)
 	// VAD finds speech regions for the final pass; nil uses energy analysis.
 	VAD vad.Model
 	// Context is what the language model corrects a transcript with;

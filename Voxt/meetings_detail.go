@@ -252,6 +252,13 @@ func (a *app) meetingDetailTop(c *ui.Context, d *meetingDetail, close func()) {
 			})
 		})
 	}
+	speakerHelp := mt.Status == store.MeetingDone && mt.Mode == store.MeetingModeMeeting && !a.meetingMTDInstalled()
+	for _, seg := range d.segments {
+		if len(seg.Speaker) == 2 && seg.Speaker[0] == 's' && seg.Speaker[1] >= '1' && seg.Speaker[1] <= '4' {
+			speakerHelp = false
+			break
+		}
+	}
 	section("mt-tr", i18n.T("Transcript"), func() {
 		a.meetingPlaybackBar(c, d)
 		if len(d.segments) == 0 {
@@ -269,7 +276,16 @@ func (a *app) meetingDetailTop(c *ui.Context, d *meetingDetail, close func()) {
 				a.saveMeetingExport(file+".md", meeting.ExportMarkdown(title, exportSegs, names))
 			}
 		})
-	}, nil)
+	}, func() {
+		if speakerHelp {
+			ui.Text(c, i18n.T("Download MOSS-Transcribe-Diarize on the Speech models page to label the other side as Speaker 1–4.")).TextColor(k.Text3).Selectable()
+			ui.Row(c).Children(func() {
+				if ui.Button(c.Key("mt-open-speakers"), i18n.T("Open Speech models")).Clicked() {
+					a.navigate(modelsPath)
+				}
+			})
+		}
+	})
 }
 
 func (a *app) askMeetingFollowUp(id, question string) {
