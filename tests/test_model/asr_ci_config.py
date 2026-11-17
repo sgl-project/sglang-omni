@@ -54,11 +54,22 @@ class AsrCiPreset:
     revision: str | None = None
 
     def resolved_model_path(self) -> str:
-        """Serve the repository identity with its optional checkpoint revision."""
+        """The weights path to serve: a pinned local snapshot, or the repo id."""
         if self.revision is None:
             return self.model_path
-        else:
-            return f"{self.model_path}@{self.revision}"
+        from huggingface_hub import snapshot_download
+
+        try:
+            return snapshot_download(
+                self.model_path, revision=self.revision, local_files_only=True
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"pinned snapshot {self.model_path}@{self.revision[:12]} is "
+                "not in the local HF cache; run "
+                ".github/scripts/ensure_hf_models.sh, or: "
+                f"hf download {self.model_path} --revision {self.revision}"
+            ) from exc
 
 
 # Slack factors applied to worst-of-N reference values to derive CI gates.

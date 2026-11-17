@@ -204,10 +204,12 @@ jobs:
           RUN_TURN_BASED: ${{ needs.preflight.outputs.run_turn_based }}
           RUN_CASCADED: ${{ needs.preflight.outputs.run_cascaded }}
         run: |
+          # Qwen3-ASR-1.7B serves its DFlash draft by default, at the revision sglang_omni/speculative/draft_registry.py pins.
           bash .github/scripts/ensure_hf_models.sh omni \
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
             marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
             "${QWEN3_ASR_MODEL_PATH}" \
+            wilsonzheng0327/Qwen3-ASR-1.7B-dflash@d62bd4051e68282e02f93de774036a35f22f1373 \
             "${MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH}" \
             "${TTS_MODEL_PATH}" \
             "${MOSS_TTS_MODEL_PATH}" \
@@ -218,9 +220,9 @@ jobs:
             "${WHISPER_ASR_MODEL_PATH}"
 
           if [[ "${ASR_CI_MODEL}" == "ark" ]]; then
-            target_model=$(omni/bin/python -c 'from tests.test_model.asr_ci_config import ASR_CI_PRESETS; print(ASR_CI_PRESETS["ark"].resolved_model_path())')
-            draft_model=$(omni/bin/python -c 'from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY; draft = next(draft for draft in DRAFT_REGISTRY if draft.model_path == "AutoArk-AI/ARK-ASR-3B" and draft.is_default_on); print(f"{draft.draft_model_path}@{draft.draft_model_revision}")')
-            bash .github/scripts/ensure_hf_models.sh omni "${target_model}" "${draft_model}"
+            target_model=$(omni/bin/python -c 'from tests.test_model.asr_ci_config import ASR_CI_PRESETS; preset = ASR_CI_PRESETS["ark"]; print(f"{preset.model_path}@{preset.revision}")')
+            bash .github/scripts/ensure_hf_models.sh omni "${target_model}" \
+              wilsonzheng0327/ARK-ASR-3B-dflash@b0789bb314fab990e0f2377054c4b1947d204273
           fi
 
           if [[ "${OMNI_CI_MODEL}" == "minicpmo" || "${RUN_FULL_DUPLEX}" == "true" ]]; then

@@ -22,7 +22,7 @@ hf download AutoArk-AI/ARK-ASR-3B
 
 ## Server Configuration
 
-ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default. On CUDA, serving `AutoArk-AI/ARK-ASR-3B`, including a pinned `AutoArk-AI/ARK-ASR-3B@<revision>` specification, enables synchronous DFlash with the registry-pinned draft. Other devices and unregistered checkpoints keep plain decoding unless a draft is explicitly configured.
+ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default. On CUDA with TP=1, serving `AutoArk-AI/ARK-ASR-3B`, a pinned `AutoArk-AI/ARK-ASR-3B@<revision>` specification, or its Hugging Face cache snapshot enables synchronous DFlash with the registry-pinned draft. Other devices, TP sizes and unregistered checkpoints keep plain decoding unless a draft is explicitly configured.
 
 With DFlash disabled, async decode is enabled by default for decode batches of at least two requests, allowing the shared one-step-lookahead path to overlap host-side result processing with the next GPU decode forward. Use `--asr.factory.enable_async_decode false` to disable it, or tune the crossover with `--async-lookahead-min-batch-size`.
 Request concurrency and audio-encoder batching are controlled separately:
@@ -78,7 +78,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-The explicit form is below; use the same draft flags when serving a local checkpoint path:
+The explicit form is below; use the same draft flags when serving a local checkpoint outside the Hugging Face cache:
 
 ```bash
 sgl-omni serve \
@@ -286,6 +286,19 @@ sgl-omni serve \
 This path was validated on a MacBook Air with an M4 and 16 GB of unified
 memory using the official checkpoint and `tests/data/query_to_cars.wav`. The
 server returned the expected transcript through `/v1/audio/transcriptions`.
+
+## Ascend NPU
+
+ARK-ASR-3B runs on Ascend 910 with the provided NPU configuration:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --config examples/configs/arkasr_npu.yaml \
+  --port 8000
+```
+
+See the [NPU installation guide](../other_platforms/installation_npu.md) for environment setup.
 
 ## Marker-Token Suppression
 
