@@ -241,8 +241,10 @@ func flowSettings(st *settings.Settings) {
 
 // TestOverlayFlows: every flow from its shortcut to its result, each step
 // of the overlay recorded (10-15, third round): the anchor never moves;
-// card-enabled flows start in the card and never return to the pill;
-// other flows keep the pill until a result needs the card.
+// before the result, every flow shows the same pill (the mini pill, or
+// one line of text under its row: as wide as the text up to 300); the
+// card comes only with the result, at its one width, and never goes back
+// to the pill; a follow-up stays in its card.
 func TestOverlayFlows(t *testing.T) {
 	want := map[string]string{
 		"transcribe":                    "recording working",
@@ -251,8 +253,8 @@ func TestOverlayFlows(t *testing.T) {
 		"translate-speech-not-inserted": "working recording working notice",
 		"translate-selection":           "working",
 		"translate-selection-readonly":  "working answer",
-		"rewrite":                       "answer",
-		"rewrite-selection":             "answer",
+		"rewrite":                       "recording working answer",
+		"rewrite-selection":             "recording working answer",
 		"rewrite-no-card":               "recording working",
 		"follow-up":                     "answer",
 	}
@@ -284,8 +286,7 @@ func TestOverlayFlows(t *testing.T) {
 					// (#3644); every other result comes in the card when it
 					// is done.
 					writing := (strings.HasPrefix(fl.name, "translate") || strings.HasPrefix(fl.name, "rewrite")) && s.state == session.Composing
-					cardFromStart := fl.name == "rewrite" || fl.name == "rewrite-selection" || fl.name == "follow-up"
-					if !cardFromStart && s.state.Live() && !writing {
+					if fl.name != "follow-up" && s.state.Live() && !writing {
 						t.Errorf("step %v: a card before the result", s)
 					}
 				case ovRecording, ovWorking:

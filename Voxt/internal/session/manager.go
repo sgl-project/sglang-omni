@@ -129,7 +129,8 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	m.snap = Snapshot{
 		Rev: m.rev, ID: r.id, Kind: req.Kind, State: r.firstState(), Try: req.Try, Note: req.Note, HoldBinding: req.HoldBinding,
 		Target: req.Target, StartedAt: at, MaxLen: time.Duration(r.settings.Audio.MaxSeconds) * time.Second,
-		Card: !req.Try && !req.Note && (req.Card || len(req.Previous) > 0 || r.settings.Features.ShowsCard(string(req.Kind))),
+		Card: !req.Try && !req.Note && (req.Kind == store.KindTranscribe || req.Kind == store.KindTranslate) &&
+			(req.Card || r.settings.Features.ShowsCard(string(req.Kind))),
 	}
 	if req.Kind == store.KindTranslate {
 		r.target = TranslateTarget(r.settings, m.cfg.Locale(), req.TargetLanguage)
@@ -158,22 +159,6 @@ func (m *Manager) Stop(id string) {
 	if ok {
 		r.stopOnce.Do(func() { close(r.stop) })
 	}
-}
-
-// SubmitInstruction uses a typed Rewrite instruction instead of the recording.
-func (m *Manager) SubmitInstruction(id, text string) bool {
-	text = strings.TrimSpace(text)
-	m.mu.Lock()
-	r := m.cur
-	ok := text != "" && r != nil && r.id == id && m.snap.Kind == store.KindRewrite && m.snap.State == Recording
-	if ok {
-		r.instruction.Store(&text)
-	}
-	m.mu.Unlock()
-	if ok {
-		r.stopOnce.Do(func() { close(r.stop) })
-	}
-	return ok
 }
 
 // Cancel ends session id where it is: nothing more is delivered or kept.

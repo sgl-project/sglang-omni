@@ -135,13 +135,15 @@ func TestLiveLines(t *testing.T) {
 
 // TestRewriteWritesIntoCard: Rewrite's first answer, when it will end in
 // the card, goes to the answer card as the model writes it, the card as
-// high as the words so far. The card also stays before the first words
-// and with live text hidden; turning the card off keeps the working pill.
+// high as the words so far (it grows with them, #3644 FB41), the pill
+// until then, with Show live text off, and when the answer goes in at
+// once (the card switch off). The pill showed a loader until the whole
+// answer was in (#3644).
 func TestRewriteWritesIntoCard(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	s := session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Card: true, Partial: "make it shorter", Selection: "A long paragraph."}
 	a.sess = s
-	if m := a.overlayModeNow(); m != ovAnswer {
+	if m := a.overlayModeNow(); m != ovWorking {
 		t.Fatalf("before the first words: mode %v", m)
 	}
 	s.Draft, s.Title = "Short.", "Shorter"
@@ -154,7 +156,7 @@ func TestRewriteWritesIntoCard(t *testing.T) {
 		t.Errorf("the writing card: %q busy %v, %d×%d", v.text, v.busy, w, h)
 	}
 	a.prefs.Overlay.HideLiveText = true
-	if m := a.overlayModeNow(); m != ovAnswer {
+	if m := a.overlayModeNow(); m != ovWorking {
 		t.Errorf("Show live text off: mode %v", m)
 	}
 	a.prefs.Overlay.HideLiveText = false

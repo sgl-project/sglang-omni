@@ -271,7 +271,6 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	}
 	if s.ID != was.ID {
 		a.notice = nil
-		a.ov.instruction = ""
 	}
 	if s.State.Ended() && !was.State.Ended() {
 		a.sessionEnded(s)
@@ -312,7 +311,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		// One short line: a notice is one line, cut past NoticeW2.
 		copied = &sessionNotice{text: i18n.T("Not inserted. Copied: press ⌘V to paste."), warn: true, over: back}
 	}
-	if s.ID != "" && a.followUp != "" && (s.State == session.Cancelled || !s.Card) {
+	if s.ID != "" && a.followUp != "" && !s.Card {
 		a.followUp = "" // a follow-up that ended without an answer: the card keeps the last one
 	}
 	if s.Note && s.State == session.Done && s.Result != "" {

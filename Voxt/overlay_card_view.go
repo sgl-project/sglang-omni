@@ -25,9 +25,6 @@ func (a *app) overlayCard(c *ui.Context) {
 		msgH = layout.CardMsgGap + layout.CardMsgH
 	}
 	bodyH := float32(max(a.ov.h-layout.CardChrome-msgH, 0))
-	if v.input {
-		bodyH = max(bodyH-cardInputH, 0)
-	}
 	// The border takes layout.Border of the padding (MyGo's border box).
 	// The card moves where its background is dragged (overlayDragged): a
 	// long answer may cover what the user reads.
@@ -37,9 +34,6 @@ func (a *app) overlayCard(c *ui.Context) {
 		})
 		ui.Box(c).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
 		a.cardBody(c, v, bodyH)
-		if v.input {
-			a.cardInput(c)
-		}
 		a.cardSizeButton(c, v)
 		if v.msg != "" {
 			ui.Row(c).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Gap(6).AlignItems(ui.Center).Label(v.msg).Children(func() {
@@ -107,7 +101,7 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			busy := i18n.T("Translating…")
 			switch {
 			case !v.writing:
-				busy = i18n.T("Recognizing…")
+				busy = uitext.WorkingText(a.sess)
 			case v.writing && v.kind == store.KindTranscribe:
 				busy = i18n.T("Cleaning up…")
 			case v.writing && v.kind == store.KindRewrite:
@@ -138,7 +132,7 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		}
 		if cardCapsule(c.Key("ov-card-stop"), i18n.T("Done"), tip) {
 			a.closeLangMenu()
-			a.submitCardInput()
+			a.stopSession()
 		}
 	case v.canFollowUp:
 		if cardCapsule(c.Key("ov-card-continue"), i18n.T("Continue"), continueTip(v.follow)) {

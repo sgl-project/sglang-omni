@@ -1,9 +1,9 @@
 package main
 
 // The recording overlay: VoxtNew's one floating window,
-// redone after Voxt's (10-15): a small pill, or a card from the start
-// when the feature's card switch is on. It shows without taking focus;
-// clicking the card can give its request input the keyboard. It uses the
+// redone after Voxt's (10-15): a small pill with no buttons. It is
+// non-activating (floating.go, mygo patch 0003): clicking it leaves the
+// app the user dictates into in front, with its caret. It always uses the
 // dark tokens, whatever the appearance.
 //
 //	recording  148×48 (Voxt's compact card): the feature's icon and a
@@ -122,7 +122,6 @@ type overlayState struct {
 		// bubbleSeq numbering the copies for their timers.
 		cardScroll    ui.ScrollState
 		cardScrollKey string
-		instruction   string
 		bubbleCopied  string
 		bubbleSeq     int
 		// stream is how much of the draft streaming into it the card
@@ -157,9 +156,15 @@ func (a *app) later(d time.Duration, fn func()) {
 }
 
 // overlayModeNow decides what the overlay shows: the answer card (an
-// ended result, or a live card session from its start), a session in the
-// pill when the card is off, a notice, or nothing. Tries stay on their
-// page. Inserting a result hides the overlay.
+// ended session's result, with its own session on its way: a follow-up,
+// another language), a live session in the pill (not a try: the page
+// shows those), a notice, or nothing. A session that will end in the card
+// stays in the pill until it ends, its answer one line under the row as
+// the model writes it (Voxt's: the card comes with the result; 10-15:
+// the answer streaming into a card of its own width was one more way to
+// show text, and the card grew line by line). From the moment its result
+// is inserted a session shows nothing of its own: the text in place says
+// it, and the preview of the speech it came from would only cover it.
 func (a *app) overlayModeNow() overlayMode {
 	s := a.sess
 	live := s.State.Live() && !s.Try
@@ -169,7 +174,7 @@ func (a *app) overlayModeNow() overlayMode {
 		return ovNotice // the card that came back shows when the notice goes
 	case card && a.answer.inserting:
 		return ovHidden // Insert pastes: the card comes back if it could not (Voxt's)
-	case card, a.liveCard():
+	case card, live && a.writingAnswer(), a.liveCard():
 		return ovAnswer
 	case live && s.State == session.Delivering:
 		return ovHidden
@@ -231,7 +236,6 @@ func (a *app) overlaySync() {
 	}
 	if a.ov.win == nil {
 		opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, hudContent(a.overlayView))
-		opts.Panel, opts.NonActivating = true, false
 		opts.Vibrancy = mygo.VibrancyHUD
 		a.ov.win = mygo.NewWindow(opts)
 		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })

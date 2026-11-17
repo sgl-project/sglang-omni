@@ -23,8 +23,9 @@ package main
 // window; the user found it too wide, then 480 too, 10-15), 18 of padding on the sides and 16 under the text: as high as its text,
 // so a short answer leaves no empty space (Voxt's card is always 220 of
 // text high, 295 in all). It grows and shrinks about the overlay's anchor,
-// as the pill does (overlay.go). During recording, Rewrite offers a
-// request input; the card shows without taking focus until clicked.
+// as the pill does (overlay.go). It does not move, and nothing in it takes
+// the keyboard (a non-activating window): the cancel shortcut (the helper's event tap)
+// closes it, the Rewrite shortcut follows up.
 
 import (
 	"math"
@@ -46,7 +47,8 @@ var (
 	ovCardRule = ui.RGBA(255, 255, 255, 0.08)
 )
 
-// cardView is the input, live answer or ended result in the card.
+// cardView is what the answer card shows: an ended session's card, or
+// the answer the model is writing into it.
 type cardView struct {
 	kind  store.Kind
 	title string
@@ -84,7 +86,6 @@ type cardView struct {
 	// (overlay_stream.go, #3836). canUseTranscript: Transcribe's clean-up
 	// or Translate's speech can go in as recognised instead (#3821).
 	writing, canUseTranscript bool
-	input                     bool
 }
 
 // cardBubble is one turn's side in a conversation.
@@ -146,7 +147,6 @@ func (a *app) cardNow() cardView {
 				canUseTranscript: a.sess.CanSkip, lang: s.TargetLanguage, target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
 			v.recording, v.levels, v.heard = s.State == session.Recording, s.Levels, !s.HeardAt.IsZero()
 			v.canStop = v.recording
-			v.input = v.recording && s.Kind == store.KindRewrite
 			if v.recording && a.pillNote.id == s.ID {
 				v.msg = a.pillNote.text
 			}
@@ -159,6 +159,11 @@ func (a *app) cardNow() cardView {
 				}
 			}
 			return v
+		}
+		if a.writingAnswer() {
+			s := a.pillSession()
+			return cardView{kind: s.Kind, title: uitext.CardTitle(s.Kind, s.Title), text: a.shownDraft(s), busy: true, writing: true, canStopAnswer: a.sess.CanStop(),
+				canUseTranscript: a.sess.CanSkip, lang: s.TargetLanguage, target: s.Target.Name, size: layout.CardSizes[a.prefs.Features.CardSize(string(s.Kind))]}
 		}
 		return cardView{size: layout.CardSizes[0]} // no card: the pill shows the session
 	}
@@ -186,7 +191,6 @@ func (a *app) cardNow() cardView {
 	v.thinks = card.problem == nil && !v.conversation && len(card.turns) <= 1 && len(a.cardThinkLevels()) > 1
 	v.canThink = v.thinks && !s.State.Live()
 	v.canStop = follow && s.State == session.Recording
-	v.input = v.canStop
 	v.canStopAnswer = follow && a.sess.CanStop()
 	v.canRetry = card.problem != nil && !s.State.Live()
 	v.follow = a.featureKeys(hotkey.Rewrite)
@@ -238,17 +242,25 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-// writingAnswer says whether a first answer has visible words in the
-// live card. Follow-ups and redos already have an open answer card.
+// writingAnswer says whether a first answer (Transcribe's clean-up,
+// Translate's or Rewrite's answer) is being written, its first words in,
+// and will end in the card: the pill hands over to the answer card,
+// which the answer streams into, instead of a loader until the whole
+// answer is in (#3644). Not with Show live text off, nor for a follow-up
+// or an answer asked again (its card is open already), a try (the page
+// shows it) or an answer that goes in at once (the card switch off: the
+// pill shows it).
 func (a *app) writingAnswer() bool {
 	s := a.pillSession()
 	return !a.answer.open && s.State == session.Composing && s.Card && !s.Try && strings.TrimSpace(s.Draft) != ""
 }
 
-// liveCard keeps a card session on the same surface from its first snapshot.
+// liveCard shows Transcribe and Translate in the card from their first snapshot.
+// Rewrite keeps its existing flow.
 func (a *app) liveCard() bool {
 	s := a.sess
-	return !a.answer.open && s.State.Live() && s.Card && !s.Try && !s.Note
+	return !a.answer.open && s.State.Live() && s.Card && !s.Try && !s.Note &&
+		(s.Kind == store.KindTranscribe || s.Kind == store.KindTranslate)
 }
 
 // cardRecording says whether the card's recording waveform moves.
@@ -326,7 +338,7 @@ func cardBlocks(v cardView) []cardBlock {
 	for _, source := range v.source {
 		out = append(out, cardBlock{text: ovSized{source, 13, 0, bodyW}, color: ovText2, selectable: true})
 	}
-	if text != "" || len(out) == 0 && !v.input {
+	if text != "" || len(out) == 0 {
 		gap := float32(0)
 		if len(out) > 0 {
 			gap = 10
@@ -412,17 +424,10 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 // than layout.CardBodyMax.
 func (a *app) cardBodyMax(v cardView) int {
 	room := a.ov.area.Height - int(math.Round(a.prefs.Overlay.Margin)) - layout.Pad - layout.CardChrome
-	if v.input {
-		room -= cardInputH
-	}
 	if v.msg != "" {
 		room -= layout.CardMsgGap + layout.CardMsgH
 	}
-	minimum := layout.CardBodyMax
-	if v.input {
-		minimum -= cardInputH
-	}
-	return max(room, minimum)
+	return max(room, layout.CardBodyMax)
 }
 
 // cardSize is the card's width (its size's) and height, and whether its
@@ -431,9 +436,6 @@ func (a *app) cardSize() (w, h int, exact bool) {
 	v := a.cardNow()
 	body, exact := a.cardBodyHeight(v)
 	h = layout.CardChrome + body
-	if v.input {
-		h += cardInputH
-	}
 	if v.msg != "" {
 		h += layout.CardMsgGap + layout.CardMsgH
 	}

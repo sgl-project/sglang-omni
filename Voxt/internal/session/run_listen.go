@@ -114,8 +114,6 @@ func (r *run) listen() (string, bool) {
 		return "", false
 	}
 	cfg := r.m.cfg
-	streamCtx, cancelStream := context.WithCancel(r.ctx)
-	defer cancelStream()
 	// The recording, at once: the user is speaking already.
 	capCtx, capCancel := context.WithCancel(r.ctx)
 	defer capCancel()
@@ -149,7 +147,7 @@ func (r *run) listen() (string, bool) {
 		}
 		ch := make(chan openResult, 1)
 		go func() {
-			s, err := st.Open(streamCtx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult})
+			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult})
 			ch <- openResult{s, err}
 		}()
 		return ch
@@ -273,29 +271,6 @@ func (r *run) listen() (string, bool) {
 		captured.res.Frames, captured.res.Restarts, first.Round(time.Millisecond), r.m.Current().Device)
 	if first > slowMic {
 		r.logf("warning", "the microphone gave its first audio %v after the start: what was said before is not in the recording", first.Round(time.Millisecond))
-	}
-	if instruction := r.instruction.Load(); instruction != nil {
-		cancelStream()
-		if openDone != nil {
-			select {
-			case opened := <-openDone:
-				stream = opened.st
-			case <-r.ctx.Done():
-				r.endCancelled(stream)
-				return "", false
-			}
-		}
-		if stream != nil {
-			stream.Close()
-		}
-		if !r.resolved {
-			r.resolve(false)
-		}
-		if !r.awaitServices() {
-			return "", false
-		}
-		r.m.update(r, func(s *Snapshot) { s.Raw = *instruction })
-		return *instruction, true
 	}
 	if audioLen < cfg.MinRecording {
 		if stream != nil {

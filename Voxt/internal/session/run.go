@@ -48,11 +48,10 @@ type run struct {
 	// recorded is closed once listen's recording loop has the capture's
 	// end: the stream's Finish waits for it, so that the Final's answer
 	// never comes while that loop still runs.
-	recorded    chan struct{}
-	stopOnce    sync.Once
-	instruction atomic.Pointer[string]
-	pcm         *pcmBuffer
-	ended       bool // guarded by m.mu
+	recorded chan struct{}
+	stopOnce sync.Once
+	pcm      *pcmBuffer
+	ended    bool // guarded by m.mu
 	// onDraft is a history retry's (RetryRequest.OnDraft): it has no
 	// session, so update applies its changes to own (guarded by m.mu) and
 	// passes the draft on.
