@@ -81,7 +81,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap verification with host work. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. On one H200 with greedy decoding and the prefix cache off, the draft against the server without one:
+Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap verification with host work. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. Before the admission tuning described below, one H200 sweep with greedy decoding and the prefix cache off measured these throughput ratios against no draft:
 
 | Concurrent requests | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -125,8 +125,9 @@ To record the request build, queue and prefill timings, append `--profile-events
 
 ### Prefill Coalescing
 
-ARK-ASR holds newly built requests briefly by default so the scheduler can
-admit a larger prefill batch. The tuned defaults are 16 requests / 32 ms:
+ARK-ASR holds newly built requests briefly so the scheduler can admit a larger prefill batch. Synchronous DFlash defaults to four request-build workers and a 4 ms coalescing deadline. No draft and opt-in speculative overlap retain two workers and a 32 ms deadline. Both use a 16-request threshold. These defaults are resolved after selecting the decoding mode; explicit `request_build_max_workers` and `prefill_coalesce_wait_ms` settings take precedence.
+
+For example, to set the original coalescing deadline explicitly:
 
 ```bash
 sgl-omni serve \

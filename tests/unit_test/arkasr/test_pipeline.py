@@ -71,7 +71,6 @@ def test_arkasr_config_registered():
     assert config.stages[0].factory.encoder_max_batch_size == 8
     assert config.stages[0].factory.enable_encoder_cuda_graph is True
     assert config.stages[0].factory.prefill_coalesce_requests == 16
-    assert config.stages[0].factory.prefill_coalesce_wait_ms == 32
     assert config.stages[0].factory.prefill_coalesce_when_idle is True
     assert config.stages[0].factory.prefill_coalesce_requires_pending_builds is True
     assert (
@@ -481,6 +480,72 @@ def test_arkasr_speculative_overlap_is_an_explicit_opt_in(
         assert stub.build_kwargs["disable_overlap_schedule"] is not expected
     else:
         assert "enable_async_decode" not in stub.infra_kwargs_seen
+
+
+@pytest.mark.parametrize(
+    (
+        "with_draft",
+        "enable_async_decode",
+        "requested_wait_ms",
+        "requested_workers",
+        "expected_wait_ms",
+        "expected_workers",
+    ),
+    [
+        (False, None, None, None, 32.0, 2),
+        (True, None, None, None, 4.0, 4),
+        (True, True, None, None, 32.0, 2),
+        (False, None, 24.0, 3, 24.0, 3),
+        (True, None, 24.0, 2, 24.0, 2),
+    ],
+)
+def test_arkasr_admission_defaults_reach_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    with_draft: bool,
+    enable_async_decode: bool | None,
+    requested_wait_ms: float | None,
+    requested_workers: int | None,
+    expected_wait_ms: float,
+    expected_workers: int,
+) -> None:
+    """Resolve admission defaults after selecting the draft; preserve explicit settings and ordinary decode defaults."""
+    stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: True)
+    write_ark_dflash_checkpoint(tmp_path)
+    overrides = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+        if with_draft
+        else {}
+    )
+    config = ArkasrPipelineConfig(model_path="target")
+    factory = config.stages[0].factory
+    if requested_wait_ms is not None:
+        factory.prefill_coalesce_wait_ms = requested_wait_ms
+    else:
+        pass
+    if requested_workers is not None:
+        factory.request_build_max_workers = requested_workers
+    else:
+        pass
+    factory.enable_async_decode = enable_async_decode
+    factory.enable_encoder_cuda_graph = False
+
+    scheduler = create_sglang_arkasr_executor(
+        config.model_path,
+        **factory.model_dump(exclude_none=True),
+        server_args_overrides=overrides,
+    )
+
+    assert scheduler.prefill_coalesce_wait_ms == expected_wait_ms
+    assert scheduler.request_build_max_workers == expected_workers
 
 
 def test_arkasr_runner_opts_into_speculative_overlap(
