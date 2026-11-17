@@ -59,8 +59,8 @@ AudioConfig AudioConfig::FromJson(const nlohmann::json &config) {
 namespace {
 
 // Note (XXXXRT666): quantized at load, the experts (the shared one too) to 4
-// bits and the text layers' other linear weights to 8, which keeps the
-// transcripts.
+// bits and the text layers' other linear weights and the untied head to 8,
+// which keeps the transcripts.
 constexpr int kExpertQuantizationBits = 4;
 constexpr int kLinearQuantizationBits = 8;
 constexpr int kQuantizationGroupSize = 64;
@@ -246,11 +246,13 @@ Model::Model(const std::filesystem::path &directory,
           LoadWeights(directory, config, text_, audio_,
                       speculative_algorithm == SpeculativeAlgorithm::kNextN),
           config, kQuantizationGroupSize,
-          // Note (XXXXRT666): the router stays in float32, and the
-          // embeddings and head in bfloat16.
+          // Note (XXXXRT666): the router stays in float32 and the
+          // embeddings in bfloat16.
           [](const std::string &name) {
-            if (!name.starts_with("model.layers.") ||
-                name.ends_with(".gate.weight")) {
+            if (name == "lm_head.weight") {
+              return kLinearQuantizationBits;
+            } else if (!name.starts_with("model.layers.") ||
+                       name.ends_with(".gate.weight")) {
               return 0;
             } else if (name.find(".shared_experts.") != std::string::npos) {
               return kExpertQuantizationBits;
