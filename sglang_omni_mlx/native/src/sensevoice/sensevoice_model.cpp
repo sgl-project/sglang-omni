@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "common/layers.h"
 #include "common/swift_port.h"
 
 namespace sensevoice {
@@ -33,17 +34,6 @@ constexpr int kWithItnId = 14;
 constexpr int kWithoutItnId = 15;
 // The query rows the Swift port's embedding table holds.
 constexpr int kEmbeddingRows = 16;
-
-std::string ReadFile(const std::filesystem::path &path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream) {
-    throw std::runtime_error("cannot read " + path.string());
-  } else {
-  }
-  std::ostringstream contents;
-  contents << stream.rdbuf();
-  return contents.str();
-}
 
 // Note (Dayuxiaoshui): the bracketed list after <LearnRateCoef> N in the
 // component a tag opens, as the Swift port's regex reads am.mvn; words that
@@ -214,7 +204,8 @@ SenseVoiceModel::SenseVoiceModel(const nlohmann::json &config,
   std::vector<float> means;
   std::vector<float> inverse_stddevs;
   if (std::filesystem::exists(model_directory / "am.mvn")) {
-    const std::string statistics = ReadFile(model_directory / "am.mvn");
+    const std::string statistics =
+        omni_common::ReadFile(model_directory / "am.mvn");
     means = BracketedValues(statistics, "<AddShift>");
     inverse_stddevs = BracketedValues(statistics, "<Rescale>");
   } else if (config.contains("cmvn_means") && config.contains("cmvn_istd")) {

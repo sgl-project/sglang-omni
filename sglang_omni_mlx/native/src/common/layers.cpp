@@ -5,6 +5,7 @@
 #include <cmath>
 #include <fstream>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -152,6 +153,17 @@ mx::array RouteToExperts(const mx::array &hidden, const mx::array &indices,
   }
 }
 
+std::string ReadFile(const std::filesystem::path &path) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    throw std::runtime_error("cannot read " + path.string());
+  } else {
+  }
+  std::ostringstream contents;
+  contents << stream.rdbuf();
+  return contents.str();
+}
+
 nlohmann::json ReadJson(const std::filesystem::path &path) {
   std::ifstream stream(path);
   if (!stream) {
@@ -274,6 +286,30 @@ mx::array Checkpoint::Linear(const mx::array &x,
                      mx::transpose(Weight(prefix + ".weight")));
   } else {
     return mx::matmul(x, mx::transpose(Weight(prefix + ".weight")));
+  }
+}
+
+mx::array Checkpoint::Conv1d(const mx::array &x, const std::string &prefix,
+                             int stride, int padding, int dilation,
+                             int groups) const {
+  const mx::array y = mx::conv1d(x, Weight(prefix + ".weight"), stride, padding,
+                                 dilation, groups);
+  if (Has(prefix + ".bias")) {
+    return mx::add(y, Weight(prefix + ".bias"));
+  } else {
+    return y;
+  }
+}
+
+mx::array Checkpoint::Conv2d(const mx::array &x, const std::string &prefix,
+                             int stride, int padding, int groups) const {
+  const mx::array y =
+      mx::conv2d(x, Weight(prefix + ".weight"), {stride, stride},
+                 {padding, padding}, {1, 1}, groups);
+  if (Has(prefix + ".bias")) {
+    return mx::add(y, Weight(prefix + ".bias"));
+  } else {
+    return y;
   }
 }
 

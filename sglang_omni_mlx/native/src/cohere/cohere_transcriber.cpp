@@ -10,6 +10,7 @@
 #include "common/audio.h"
 #include "common/audio_chunks.h"
 #include "common/generation.h"
+#include "common/layers.h"
 #include "common/swift_port.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
@@ -23,17 +24,6 @@ namespace {
 // The energy-cut search around a chunk end and its smallest window.
 constexpr float kChunkSearchSeconds = 5.0f;
 constexpr float kChunkEnergyWindowMilliseconds = 100.0f;
-
-std::string ReadFile(const std::filesystem::path &path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream) {
-    throw std::runtime_error("cannot read " + path.string());
-  } else {
-  }
-  std::ostringstream contents;
-  contents << stream.rdbuf();
-  return contents.str();
-}
 
 // The code of a language code or English name; English when unknown.
 std::string LanguageCode(const std::string &language) {
@@ -100,7 +90,7 @@ CohereTranscriber::CohereTranscriber(
     : model_(model_directory),
       vocabulary_(model_directory / "tokenizer.model") {
   const nlohmann::json tokenizer_config = nlohmann::json::parse(
-      ReadFile(model_directory / "tokenizer_config.json"));
+      omni_common::ReadFile(model_directory / "tokenizer_config.json"));
   for (const auto &[id_text, token] :
        tokenizer_config.at("added_tokens_decoder").items()) {
     const int id = std::stoi(id_text);

@@ -23,6 +23,8 @@ struct QuantizationConfig {
 
 using WeightMap = std::unordered_map<std::string, mlx::core::array>;
 
+// A file's bytes; throws std::runtime_error when it cannot be read.
+std::string ReadFile(const std::filesystem::path &path);
 nlohmann::json ReadJson(const std::filesystem::path &path);
 // A YAML file as JSON, its plain scalars typed as PyYAML's safe loader types
 // them and its quoted scalars kept as strings.
@@ -45,6 +47,14 @@ public:
   const QuantizationConfig &Quantization(const std::string &prefix) const;
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
+  // Convolutions of channels-last x by prefix.weight [out, kernel..., in /
+  // groups], plus prefix.bias when the checkpoint has one.
+  mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,
+                          int stride = 1, int padding = 0, int dilation = 1,
+                          int groups = 1) const;
+  mlx::core::array Conv2d(const mlx::core::array &x, const std::string &prefix,
+                          int stride = 1, int padding = 0,
+                          int groups = 1) const;
   mlx::core::array LayerNorm(const mlx::core::array &x,
                              const std::string &prefix, float eps) const;
   mlx::core::array RmsNorm(const mlx::core::array &x, const std::string &prefix,
