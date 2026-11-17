@@ -1,7 +1,6 @@
 package i18n
 
 import (
-	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -122,13 +121,9 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string) {
 
 func readLocale(t *testing.T, tag string) map[string]string {
 	t.Helper()
-	data, err := localeFS.ReadFile("locales/" + tag + ".json")
+	m, err := readMessages(tag)
 	if err != nil {
 		t.Fatal(err)
-	}
-	m := map[string]string{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("%s: %v", tag, err)
 	}
 	return m
 }
