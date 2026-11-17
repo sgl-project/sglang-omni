@@ -606,6 +606,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-generation">Speech Generation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-editing">Speech Editing</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stage-offload">Stage Offload</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dit-q-k-fusion">DiT Q/K fusion</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#seedtts-evaluation">SeedTTS Evaluation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upstream-parity">Upstream Parity</a></li>
@@ -753,6 +754,16 @@
 <p><code class="docutils literal notranslate"><span class="pre">seed</span></code> initializes separate request-local generators for target noise and reference VAE posterior sampling, without changing the process RNG. Sampling is reproducible for fixed inputs; different batch shapes or compute backends can still produce numerical differences. Multiple structured references are rejected.</p>
 <p>Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set <code class="docutils literal notranslate"><span class="pre">--conditioning.factory.max_batch_size</span></code>, <code class="docutils literal notranslate"><span class="pre">--auk_engine.factory.max_batch_size</span></code>, or <code class="docutils literal notranslate"><span class="pre">--decode.factory.max_batch_size</span></code> to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.</p>
 </section>
+<section id="stage-offload">
+<h2>Stage Offload<a class="headerlink" href="#stage-offload" title="Link to this heading">#</a></h2>
+<p>AuK and AuK-Flash support serial weight offload on one CUDA GPU in a single process:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>tencent/AuK<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--stage-offload-components<span class="w"> </span>conditioning,dit,vae
+</pre></div>
+</div>
+<p>Requests run one at a time with batch size 1, one process replica and <code class="docutils literal notranslate"><span class="pre">tp_size=1</span></code>. Compilation and CUDA Graph settings are retained; custom capture shapes must use batch size 1. The VAE stays resident after decoding.</p>
+<p>Weights use <code class="docutils literal notranslate"><span class="pre">mmap</span></code> by default. Set <code class="docutils literal notranslate"><span class="pre">--conditioning.factory.serial_offload_cache_dir</span></code> to a writable, non-tmpfs directory, or use <code class="docutils literal notranslate"><span class="pre">--conditioning.factory.serial_offload_source</span> <span class="pre">ram</span></code> to keep weights in host memory.</p>
+</section>
 <section id="dit-q-k-fusion">
 <span id="dit-qk-fusion"></span><h2>DiT Q/K fusion<a class="headerlink" href="#dit-q-k-fusion" title="Link to this heading">#</a></h2>
 <p>On CUDA, the DiT uses a Triton kernel that fuses per-head RMSNorm with
@@ -853,6 +864,7 @@ python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> <
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-generation">Speech Generation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-editing">Speech Editing</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stage-offload">Stage Offload</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dit-q-k-fusion">DiT Q/K fusion</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#seedtts-evaluation">SeedTTS Evaluation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upstream-parity">Upstream Parity</a></li>
