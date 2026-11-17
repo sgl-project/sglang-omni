@@ -16,7 +16,7 @@
 #include "mlx/mlx.h"
 #include "nlohmann/json.hpp"
 
-namespace qwen3_asr {
+namespace omni_common {
 
 struct Qwen3DecoderConfig {
   int num_hidden_layers = 0;
@@ -140,4 +140,4 @@ private:
   Qwen3DecoderConfig config_;
 };
 
-} // namespace qwen3_asr
+} // namespace omni_common

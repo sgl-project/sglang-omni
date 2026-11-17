@@ -24,7 +24,7 @@ public:
                 qwen3_asr::RealtimeSettings realtime,
                 const std::filesystem::path &draft_directory,
                 int draft_quantization_bits,
-                qwen3_asr::DraftPolicy draft_policy)
+                omni_common::DraftPolicy draft_policy)
       : transcriber_(model_directory, draft_directory, draft_quantization_bits,
                      draft_policy),
         realtime_(realtime) {
@@ -160,7 +160,7 @@ int main(int argc, char **argv) {
   int max_batch = 1;
   std::filesystem::path draft_directory;
   int draft_quantization_bits = 0;
-  qwen3_asr::DraftPolicy draft_policy = qwen3_asr::DraftPolicy::kAdaptive;
+  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
   asr_service::ServedKind qwen3_asr;
   qwen3_asr.model_kind = "qwen3_asr";
   qwen3_asr.flags = {
@@ -182,7 +182,7 @@ int main(int argc, char **argv) {
        [&](const std::string &value) { draft_directory = value; }},
       {"--draft-policy",
        [&](const std::string &value) {
-         draft_policy = qwen3_asr::ParseDraftPolicy(value);
+         draft_policy = omni_common::ParseDraftPolicy(value);
        }},
       {"--draft-bits",
        [&](const std::string &value) {

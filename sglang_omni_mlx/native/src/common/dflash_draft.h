@@ -12,10 +12,10 @@
 
 #include "common/kv_cache.h"
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
-namespace qwen3_asr {
+namespace omni_common {
 
 enum class DraftPolicy { kAdaptive, kFixed };
 
@@ -94,4 +94,4 @@ private:
   int mask_token_id_;
 };
 
-} // namespace qwen3_asr
+} // namespace omni_common

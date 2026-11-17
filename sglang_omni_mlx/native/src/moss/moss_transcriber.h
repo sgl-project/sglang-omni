@@ -9,10 +9,10 @@
 #include <string>
 #include <vector>
 
+#include "common/dflash_draft.h"
 #include "common/tokenizer.h"
 #include "common/transcription.h"
 #include "moss/moss_model.h"
-#include "qwen3_asr/dflash_draft.h"
 
 namespace moss {
 
@@ -51,7 +51,7 @@ private:
   std::vector<int> AudioSpanIds(int audio_token_count) const;
 
   MossTranscribeDiarize model_;
-  std::optional<qwen3_asr::DFlashDraft> draft_;
+  std::optional<omni_common::DFlashDraft> draft_;
   omni_common::Tokenizer tokenizer_;
   std::vector<int> digit_token_ids_;
   int end_of_text_id_ = 0;

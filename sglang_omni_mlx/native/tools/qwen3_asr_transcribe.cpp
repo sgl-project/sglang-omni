@@ -23,7 +23,7 @@ int main(int argc, char **argv) {
   std::string model_path;
   std::string draft_model_path;
   int draft_quantization_bits = 0;
-  qwen3_asr::DraftPolicy draft_policy = qwen3_asr::DraftPolicy::kAdaptive;
+  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
   std::string encode_text;
   std::string dump_mel_filters;
   std::string encode_lines;
@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
     } else if (argument == "--draft-model-path") {
       draft_model_path = value();
     } else if (argument == "--draft-policy") {
-      draft_policy = qwen3_asr::ParseDraftPolicy(value());
+      draft_policy = omni_common::ParseDraftPolicy(value());
     } else if (argument == "--draft-bits") {
       draft_quantization_bits = std::stoi(value());
     } else if (argument == "--layout") {

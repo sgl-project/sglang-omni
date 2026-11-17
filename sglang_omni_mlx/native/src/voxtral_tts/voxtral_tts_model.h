@@ -14,8 +14,8 @@
 #include "common/generation.h"
 #include "common/kv_cache.h"
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 #include "voxtral_tts/voxtral_tts_codec.h"
 #include "voxtral_tts/voxtral_tts_tokenizer.h"
 
@@ -63,7 +63,7 @@ private:
   omni_common::Checkpoint checkpoint_;
   AudioCodec codec_;
   SpeechTokenizer tokenizer_;
-  qwen3_asr::Qwen3Decoder decoder_;
+  omni_common::Qwen3Decoder decoder_;
   float norm_eps_;
   int semantic_code_count_;
   int acoustic_codebook_count_;

@@ -16,6 +16,10 @@
 
 namespace qwen3_asr {
 
+using omni_common::BatchedKVCache;
+using omni_common::DraftPolicy;
+using omni_common::DraftStatistics;
+
 using omni_common::KVCache;
 
 using omni_common::CollapseTokenLoop;

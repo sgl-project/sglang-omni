@@ -11,6 +11,9 @@
 
 namespace qwen3_asr {
 
+using omni_common::BatchedKVCache;
+using omni_common::Qwen3DecoderConfig;
+
 using omni_common::KVCache;
 
 namespace mx = mlx::core;

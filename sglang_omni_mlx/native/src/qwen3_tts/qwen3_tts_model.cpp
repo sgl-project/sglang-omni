@@ -131,9 +131,9 @@ mx::array Sample(mx::array logits, const SamplerConfig &sampler,
 // Note (Jiaxin Deng): the talker's multimodal rotary positions are all the
 // text position for speech, which is plain rotary embedding; tables rounded
 // to bfloat16 keep the reference's codes.
-qwen3_asr::Qwen3DecoderConfig DecoderConfig(const nlohmann::json &config) {
-  qwen3_asr::Qwen3DecoderConfig decoder =
-      qwen3_asr::Qwen3DecoderConfig::FromJson(config);
+omni_common::Qwen3DecoderConfig DecoderConfig(const nlohmann::json &config) {
+  omni_common::Qwen3DecoderConfig decoder =
+      omni_common::Qwen3DecoderConfig::FromJson(config);
   decoder.rotary_tables = true;
   return decoder;
 }

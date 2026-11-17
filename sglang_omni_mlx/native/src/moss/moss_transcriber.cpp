@@ -20,6 +20,7 @@
 namespace moss {
 
 namespace mx = mlx::core;
+using omni_common::DraftStatistics;
 using omni_common::FinishReason;
 using omni_common::GenerationCancelled;
 using omni_common::IsTokenLoop;
@@ -31,7 +32,6 @@ using omni_common::SpeakerSegment;
 using omni_common::StripUnicodeWhitespace;
 using omni_common::TranscriptionResult;
 using omni_common::WhisperWindowFeatures;
-using qwen3_asr::DraftStatistics;
 
 namespace {
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "qwen3_asr/qwen3_decoder.h"
+#include "common/qwen3_decoder.h"
 
 #include <algorithm>
 #include <cassert>
@@ -9,9 +9,7 @@
 #include "common/generation.h"
 #include "common/kv_cache.h"
 
-namespace qwen3_asr {
-
-using omni_common::KVCache;
+namespace omni_common {
 
 namespace mx = mlx::core;
 
@@ -418,4 +416,4 @@ std::vector<KVCache> Qwen3Decoder::NewCaches() const {
   return std::vector<KVCache>(config_.num_hidden_layers);
 }
 
-} // namespace qwen3_asr
+} // namespace omni_common

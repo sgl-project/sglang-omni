@@ -8,9 +8,9 @@
 
 #include "common/kv_cache.h"
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_audio.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace qwen3_asr {
 
@@ -42,10 +42,10 @@ public:
   // of it encodes to the rows its windows get in the whole mel, but for the
   // rounding of matrices with other row counts.
   int WindowFrameCount() const;
-  const Qwen3Decoder &decoder() const { return decoder_; }
-  // One decode step for a batch; see Qwen3Decoder::DecodeBatch.
+  const omni_common::Qwen3Decoder &decoder() const { return decoder_; }
+  // One decode step for a batch; see omni_common::Qwen3Decoder::DecodeBatch.
   mlx::core::array DecodeBatch(const mlx::core::array &embeddings,
-                               std::vector<BatchedKVCache> &caches,
+                               std::vector<omni_common::BatchedKVCache> &caches,
                                const mlx::core::array &offsets,
                                const mlx::core::array &pads) const;
 
@@ -59,7 +59,7 @@ private:
 
   AudioEncoderConfig audio_;
   omni_common::Checkpoint checkpoint_;
-  Qwen3Decoder decoder_;
+  omni_common::Qwen3Decoder decoder_;
 };
 
 } // namespace qwen3_asr

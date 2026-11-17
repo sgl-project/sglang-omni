@@ -63,10 +63,12 @@ add_library(common STATIC
   src/common/audio.cpp
   src/common/audio_chunks.cpp
   src/common/campplus.cpp
+  src/common/dflash_draft.cpp
   src/common/form.cpp
   src/common/kv_cache.cpp
   src/common/layers.cpp
   src/common/npz.cpp
+  src/common/qwen3_decoder.cpp
   src/common/realtime_connection.cpp
   src/common/reference_audio.cpp
   src/common/text.cpp
@@ -93,8 +95,6 @@ set_source_files_properties(src/common/audio_chunks.cpp
 add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp
   src/qwen3_asr/qwen3_asr_model.cpp
-  src/qwen3_asr/qwen3_decoder.cpp
-  src/qwen3_asr/dflash_draft.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
   src/qwen3_asr/realtime.cpp)
 target_link_libraries(qwen3_asr PUBLIC common)
@@ -196,7 +196,7 @@ install(TARGETS cohere_transcribe_server cohere_transcribe RUNTIME DESTINATION b
 # Note (Dayuxiaoshui): MOSS-Transcribe-Diarize on Qwen3-ASR's decoder, WAV and
 # form handling, with its own server and parity tool.
 add_library(moss_asr STATIC src/moss/moss_model.cpp src/moss/moss_transcriber.cpp src/moss/moss_realtime.cpp)
-target_link_libraries(moss_asr PUBLIC qwen3_asr)
+target_link_libraries(moss_asr PUBLIC common)
 target_compile_options(moss_asr PRIVATE -Wall -Wextra)
 # Note (Dayuxiaoshui): a long recording's cut is the minimum of energy sums,
 # which fused multiply-adds would round differently from Voxt's Swift.
@@ -318,7 +318,7 @@ install(TARGETS ming_tts_server RUNTIME DESTINATION bin)
 # /v1/audio/speech API, and its parity tool; the text decoder reuses Qwen3's.
 add_library(voxtral_tts STATIC src/voxtral_tts/voxtral_tts_tokenizer.cpp
   src/voxtral_tts/voxtral_tts_codec.cpp src/voxtral_tts/voxtral_tts_model.cpp)
-target_link_libraries(voxtral_tts PUBLIC qwen3_asr)
+target_link_libraries(voxtral_tts PUBLIC common)
 target_compile_options(voxtral_tts PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(voxtral_tts_server src/voxtral_tts/voxtral_tts_server.cpp)
 target_link_libraries(voxtral_tts_server PRIVATE voxtral_tts speech_service)
@@ -332,7 +332,7 @@ install(TARGETS voxtral_tts_server voxtral_tts_synthesize RUNTIME DESTINATION bi
 
 add_library(music3 STATIC src/music3/music3_model.cpp src/music3/music3_ar.cpp
   src/music3/music3_acoustic.cpp src/music3/music3_audio.cpp src/music3/music3_request.cpp)
-target_link_libraries(music3 PUBLIC qwen3_asr)
+target_link_libraries(music3 PUBLIC common)
 target_compile_options(music3 PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(music3_server src/music3/music3_server.cpp src/music3/music3_service.cpp)
 target_link_libraries(music3_server PRIVATE music3 omni_service)
@@ -347,7 +347,7 @@ install(TARGETS music3_server music3_synthesize RUNTIME DESTINATION bin)
 # server's /v1/audio/speech API, and its parity tool; the talker and code
 # predictor reuse Qwen3's decoder.
 add_library(qwen3_tts STATIC src/qwen3_tts/qwen3_tts_codec.cpp src/qwen3_tts/qwen3_tts_model.cpp)
-target_link_libraries(qwen3_tts PUBLIC qwen3_asr)
+target_link_libraries(qwen3_tts PUBLIC common)
 target_compile_options(qwen3_tts PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(qwen3_tts_server src/qwen3_tts/qwen3_tts_server.cpp)
 target_link_libraries(qwen3_tts_server PRIVATE qwen3_tts asr_service)
@@ -366,7 +366,7 @@ add_library(cosyvoice3 STATIC src/cosyvoice3/cosyvoice3_vocoder.cpp
   src/cosyvoice3/cosyvoice3_audio.cpp
   src/cosyvoice3/cosyvoice3_speech_tokenizer.cpp
   src/cosyvoice3/cosyvoice3_model.cpp)
-target_link_libraries(cosyvoice3 PUBLIC qwen3_asr)
+target_link_libraries(cosyvoice3 PUBLIC common)
 target_compile_options(cosyvoice3 PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(cosyvoice3_server src/cosyvoice3/cosyvoice3_server.cpp)
 target_link_libraries(cosyvoice3_server PRIVATE cosyvoice3 asr_service)
