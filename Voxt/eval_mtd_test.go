@@ -21,6 +21,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -402,14 +403,15 @@ func TestEvalMTDSpeakers(t *testing.T) {
 			}
 			times = append(times, res.Latency)
 			got := parseMTDSegments(res.Text)
-			segs, right = speakerAccuracy(got, ranges)
+			s, r := speakerAccuracy(got, ranges)
+			segs, right = segs+s, right+r
 			score = score.Add(eval.Compare(ref, joinMTDText(res.Text)))
-			t.Logf("%s round %d: %d segments, %d right, text %q", name, round+1, segs, right, mdText(res.Text))
+			t.Logf("%s round %d: %d segments, %d right, text %q", name, round+1, s, r, mdText(res.Text))
 		}
-		tb.add(name, strings.Join(layout, "; "), segs, fmt.Sprintf("%d of %d", right, segs), pct(score.Rate()), ms(median(times)), loadRange(loads))
+		tb.add(name, strings.Join(layout, "; "), segs, fmt.Sprintf("%d of %d over %d rounds", right, segs, mtdRounds), pct(score.Rate()), ms(median(times)), loadRange(loads))
 	}
 	md.WriteString(tb.String())
-	md.WriteString("\nA label is right when the segment's speaker (the labels mapped to voices by each label's majority) matches the voice speaking at the segment's middle. The error rate is the joined text's against the clips' words.\n")
+	md.WriteString("\nA label is right when the segment's speaker (the best one-to-one assignment of labels to voices, so a voice split into two labels cannot score both right) matches the voice speaking at the segment's middle. The error rate is the joined text's against the clips' words.\n")
 	e.report(t, "mtd-speakers.md", md.String())
 }
 
@@ -471,9 +473,9 @@ func joinMTDText(text string) string {
 }
 
 // speakerAccuracy scores the labels: each segment's truth is the voice at
-// its middle, each label is mapped to the voice most of its segments
-// belong to; it returns the segment count and how many the mapping gets
-// right.
+// its middle, and the score is the best one-to-one assignment of labels
+// to voices, so a voice split into two labels cannot score both right.
+// It returns the segment count and how many the assignment gets right.
 func speakerAccuracy(segs []mtdSegment, ranges []mtdRange) (total, right int) {
 	truth := func(s mtdSegment) string {
 		mid := (s.start + s.end) / 2
@@ -485,30 +487,48 @@ func speakerAccuracy(segs []mtdSegment, ranges []mtdRange) (total, right int) {
 		return ""
 	}
 	votes := map[string]map[string]int{}
-	truths := make([]string, len(segs))
-	for i, s := range segs {
-		truths[i] = truth(s)
+	for _, s := range segs {
 		if votes[s.label] == nil {
 			votes[s.label] = map[string]int{}
 		}
-		votes[s.label][truths[i]]++
+		votes[s.label][truth(s)]++
 	}
-	mapping := map[string]string{}
-	for label, v := range votes {
-		best, n := "", -1
-		for voice, c := range v {
-			if c > n || c == n && voice < best {
-				best, n = voice, c
+	labels := slices.Sorted(maps.Keys(votes))
+	best := 0
+	var assign func(i int, used map[string]bool, score int)
+	assign = func(i int, used map[string]bool, score int) {
+		if i == len(labels) {
+			best = max(best, score)
+			return
+		}
+		assign(i+1, used, score) // unassigned: its segments are wrong
+		for voice, c := range votes[labels[i]] {
+			if voice == "" || used[voice] {
+				continue
+			}
+			used[voice] = true
+			assign(i+1, used, score+c)
+			delete(used, voice)
+		}
+	}
+	if len(labels) <= 12 {
+		assign(0, map[string]bool{}, 0)
+	} else { // beyond a plausible speaker count, a greedy pass
+		used := map[string]bool{}
+		for _, label := range labels {
+			bestVoice, n := "", -1
+			for voice, c := range votes[label] {
+				if voice != "" && !used[voice] && c > n {
+					bestVoice, n = voice, c
+				}
+			}
+			if bestVoice != "" {
+				used[bestVoice] = true
+				best += n
 			}
 		}
-		mapping[label] = best
 	}
-	for i, s := range segs {
-		if truths[i] != "" && mapping[s.label] == truths[i] {
-			right++
-		}
-	}
-	return len(segs), right
+	return len(segs), best
 }
 
 // TestEvalMTDLanguages tries MTD on one clip each of Japanese, Korean,
@@ -596,4 +616,30 @@ func sayPCM(t *testing.T, voice, text string) []byte {
 		t.Fatalf("say's clip: %d Hz × %d, %v", rate, ch, err)
 	}
 	return pcm
+}
+
+// TestSpeakerAccuracy: the one-to-one assignment scores an over-split
+// voice's extra labels wrong, and an under-merged pair wrong too.
+func TestSpeakerAccuracy(t *testing.T) {
+	ranges := []mtdRange{{voice: "A", start: 0, end: 10}, {voice: "B", start: 10, end: 20}}
+	seg := func(start, end float64, label string) mtdSegment {
+		return mtdSegment{start: start, end: end, label: label}
+	}
+	// A split into S01 and S02, B as S03: 3 of 3 by majority, 2 of 3 one-to-one.
+	if total, right := speakerAccuracy([]mtdSegment{seg(0, 5, "S01"), seg(5, 10, "S02"), seg(10, 20, "S03")}, ranges); total != 3 || right != 2 {
+		t.Errorf("over-split: %d of %d, want 2 of 3", right, total)
+	}
+	// A and B both S01, C as S02: one of them wrong either way.
+	ranges3 := append(ranges, mtdRange{voice: "C", start: 20, end: 30})
+	if total, right := speakerAccuracy([]mtdSegment{seg(0, 5, "S01"), seg(10, 15, "S01"), seg(20, 25, "S02")}, ranges3); total != 3 || right != 2 {
+		t.Errorf("under-merged: %d of %d, want 2 of 3", right, total)
+	}
+	// All right: A as S01, B as S02.
+	if total, right := speakerAccuracy([]mtdSegment{seg(0, 5, "S01"), seg(10, 20, "S02")}, ranges); total != 2 || right != 2 {
+		t.Errorf("clean: %d of %d, want 2 of 2", right, total)
+	}
+	// A gap segment (its middle in no voice) counts in the total, never right.
+	if total, right := speakerAccuracy([]mtdSegment{seg(0, 5, "S01"), seg(10, 20, "S01"), seg(25, 30, "S02")}, ranges); total != 3 || right != 1 {
+		t.Errorf("gap: %d of %d, want 1 of 3", right, total)
+	}
 }
