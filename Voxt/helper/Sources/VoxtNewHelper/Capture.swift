@@ -335,7 +335,9 @@ private final class CaptureRun: @unchecked Sendable {
         // without a sound would restart forever otherwise.
         let (attempt, preferred, wasDefault, step) = lock.withLock { () -> (Int, String?, Bool, NoAudioEscalation.Step?) in
             restarts += 1
-            let step: NoAudioEscalation.Step? = callbacksThisEngine == 0 ? escalation.silentEngine() : nil
+            // The system tap may legitimately deliver nothing for a while
+            // (nothing playing): its rebuilds are not a silence escalation.
+            let step: NoAudioEscalation.Step? = !system && callbacksThisEngine == 0 ? escalation.silentEngine() : nil
             return (restarts, usingDefault ? nil : deviceUID, usingDefault, step)
         }
         var toDefault = toDefault
