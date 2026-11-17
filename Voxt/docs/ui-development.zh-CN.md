@@ -70,6 +70,8 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 视图需要新数据时，由功能侧把数据加入构造器输入和 view state，并增加一个能证明该值来自真实逻辑的场景。新增正式页面的用户意图时，在所属区域的 `*_actions.go` 中加入 action，在 `app` 上实现，在 `meetingDemoHost` 上记录，并在该区域的 demo action 测试中加入点击测试。
 
+新增一个真正的区域时，把它的前缀加入 `internal/i18n/parity_test.go` 的 `catalogAreas`；根文件名前缀和区域名不同时，还要加入 `catalogAliases`。这个区域的文案放在 `<area>.json`，不要放在 `common.json`。
+
 ## 接入下一个区域或 fixture 驱动的小页面
 
 在现有 fixture 窗口上扩展，不要另加启动路径。新区域提供自己的 view state、actions、场景和视图，只需要改下面列出的接入点；`main.go`、`meeting_demo_enabled.go`、`meeting_demo_disabled.go` 和 `demo/mygo.json` 保持不变。其他区域需要共享加载或切换代码时再提取，不要增加 UI 版本选择开关。

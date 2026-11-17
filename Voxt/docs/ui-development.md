@@ -70,6 +70,8 @@ VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .
 
 If a view needs new data, ask the feature side to add it to the builder input and view state. Add a scenario that proves the value comes from real logic. For a new production user intent, add the action to the area's `*_actions.go` file, implement it on `app`, record it on `meetingDemoHost`, and add a click test to the area's demo action test.
 
+For a genuinely new area, add its prefix to `catalogAreas` in `internal/i18n/parity_test.go` and add a `catalogAliases` entry if its root file prefix differs from the area name. Put the area's messages in `<area>.json`, not `common.json`.
+
 ## Add the next area or a fixture-backed page
 
 Extend the existing fixture window instead of adding another startup path. A new area supplies its view state, actions, scenarios, and views. The integration points below are the only demo changes; `main.go`, `meeting_demo_enabled.go`, `meeting_demo_disabled.go`, and `demo/mygo.json` stay unchanged. Extract shared loading or selection code when another area needs it, and do not add a UI-version selector.
