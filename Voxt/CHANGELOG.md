@@ -15,6 +15,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 
 
+
 ### Fixed
 
 - **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup; the meetings' speaker transcription keeps it.
@@ -33,6 +34,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Wait for the language model offers presets up to 60 minutes**: the setting on the Language models page now offers Automatic, 1, 2, 5, 10, 30 and 60 minutes, and No limit, replacing the Custom… minutes field. A custom wait saved by an earlier version keeps its duration and shows as what it is.
 - **Return finishes dictation**: while Transcribe records, press Return to stop recording and finish through the same path as the stop shortcut. Voxt consumes that Return instead of sending it again after insertion. The Transcribe page has a Return finishes dictation switch, on by default, for users who need Return for a newline while recording.
 - **Voxt 2 installs updates inside the app** (#3961): release builds check Voxt 2's signed stable or beta feed, download the update, install it and relaunch, as Voxt 1.x did. Settings → Diagnostics & About keeps the automatic check, beta and automatic install controls. Builds without a feed still check GitHub and point to the download.
+- **Update announcements are shorter**: the current version's announcement appears once after an update, with a title and at most three short lines. **What's new** opens the full notes, also available any time in Settings → About → Updates.
+
 
 
 
@@ -74,6 +77,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **“等待语言模型”提供最长 60 分钟的预设**：语言模型页的这项设置现在可选“自动”、1、2、5、10、30、60 分钟和“不限制”，替代原来的“自定义…”分钟输入。旧版本保存的自定义等待保持原时长，并如实显示。
 - **按回车完成转录**：转录录音时，按回车停止录音，走和停止快捷键相同的后续流程。这个回车会被消费，插入结果后不会再发送一次。转录页新增“按回车完成转录”开关，默认打开；录音时需要回车换行的用户可以关闭。
 - **Voxt 2 在 App 内安装更新**（#3961）：发布构建会检查 Voxt 2 的正式版或 beta 签名更新源，下载并安装更新后重新启动，和 Voxt 1.x 一样。「设置 → 诊断与关于」保留自动检查、Beta 更新和自动安装开关。没有更新源的构建仍检查 GitHub 并提供下载地址。
+- **更新公告更短**：当前版本的公告在更新后只出现一次，一个标题加最多三行短句。“新增功能”打开完整说明，也可以随时在 设置 → 关于 → 更新 里查看。
 
 
 
@@ -82,7 +86,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 
 
+
 - **推荐的语音识别模型改为 MOSS-Transcribe-Diarize**（#4067）：设置引导和首页现在下载 MOSS-Transcribe-Diarize 及其 262 MB 的 DFlash 草稿（共 2.1 GB），一开始就开着转录加速；装好后“自动”优先用它。它支持中文和英语，识别时不用词典和识别上下文：所有功能都用这类模型时，语音识别模型页在“识别上下文”下注明这一点，会议转录稿校对仍会读它，词典仍用于语言模型整理。Qwen3-ASR 仍在语音识别模型页上，其他 ActNow app 装过的 Qwen3-ASR 会在引导里作为不用下载的选择。你在功能里明确选过的模型不变。
+
 
 
 
