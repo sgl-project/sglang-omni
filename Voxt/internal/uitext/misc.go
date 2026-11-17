@@ -100,14 +100,16 @@ func HelperFailTextFor(translator *i18n.Translator, st helper.Status) string {
 	return translator.T("Helper stopped unexpectedly")
 }
 
-func LogSourceLabel(s string) string {
+func LogSourceLabel(s string) string { return LogSourceLabelFor(i18n.CurrentTranslator(), s) }
+
+func LogSourceLabelFor(translator *i18n.Translator, s string) string {
 	switch s {
 	case "":
-		return i18n.T("All sources")
+		return translator.T("All sources")
 	case "app":
-		return i18n.T("App")
+		return translator.T("App")
 	case helper.LogSource:
-		return i18n.T("Helper")
+		return translator.T("Helper")
 	}
 	return s
 }

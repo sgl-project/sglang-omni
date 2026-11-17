@@ -62,13 +62,11 @@ type navViewStateInput struct {
 	Badges       map[string]string
 }
 
-// buildNavViewState decides the sidebar's content. The titles come from
-// pageTitle and groupTitle, which read the active language: production
-// and the fixture generator both set it before building.
+// buildNavViewState decides the sidebar's content in translator's language.
 func buildNavViewState(translator *i18n.Translator, input navViewStateInput) navViewState {
 	state := navViewState{
 		Current:          input.Current,
-		Settings:         navPageViewState{Path: settingsPath, Title: pageTitle(settingsPath), Keys: "⌘,"},
+		Settings:         navPageViewState{Path: settingsPath, Title: pageTitleFor(translator, settingsPath), Keys: "⌘,"},
 		SettingsSelected: input.SettingsOpen,
 		NoticesCount:     input.Notices,
 		ClosedSections:   input.Closed,
@@ -90,7 +88,7 @@ func buildNavViewState(translator *i18n.Translator, input navViewStateInput) nav
 	for _, g := range navGroups {
 		group := navGroupViewState{ID: g.id}
 		if g.id != "" {
-			group.Title = groupTitle(g.id)
+			group.Title = groupTitleFor(translator, g.id)
 		}
 		for _, p := range g.pages {
 			if input.Features.IsHidden(p.path[1:]) {
@@ -98,7 +96,7 @@ func buildNavViewState(translator *i18n.Translator, input navViewStateInput) nav
 			}
 			group.Pages = append(group.Pages, navPageViewState{
 				Path:     p.path,
-				Title:    pageTitle(p.path),
+				Title:    pageTitleFor(translator, p.path),
 				Keys:     pageKeys(p.path),
 				Badge:    input.Badges[p.path],
 				Selected: !input.SettingsOpen && input.Current == p.path,

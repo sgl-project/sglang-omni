@@ -56,19 +56,17 @@ func logLevelCode(level core.Severity) string {
 	return logLevelInfo
 }
 
-// buildLogsViewState decides how the filtered lines show: their times
-// and levels, the count and the filters' labels. The labels come from
-// uitext.LogSourceLabel, which reads the active language: production
-// and the fixture generator both set it before building.
+// buildLogsViewState decides how the filtered lines show in translator's
+// language: their times, levels, count and filter labels.
 func buildLogsViewState(translator *i18n.Translator, lines []core.LogEntry, source, query string, logFile bool) logsViewState {
 	state := logsViewState{
 		Count:   translator.N(len(lines), "%d line", "%d lines", len(lines)),
-		Source:  uitext.LogSourceLabel(source),
+		Source:  uitext.LogSourceLabelFor(translator, source),
 		Query:   query,
 		LogFile: logFile,
 	}
 	for _, code := range logSources {
-		state.Sources = append(state.Sources, logSourceViewState{Code: code, Label: uitext.LogSourceLabel(code)})
+		state.Sources = append(state.Sources, logSourceViewState{Code: code, Label: uitext.LogSourceLabelFor(translator, code)})
 	}
 	if len(lines) > 0 {
 		state.Lines = make([]logLineViewState, len(lines))
