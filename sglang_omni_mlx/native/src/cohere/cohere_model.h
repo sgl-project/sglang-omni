@@ -58,8 +58,6 @@ private:
   mlx::core::array EncoderSelfAttention(const mlx::core::array &x,
                                         const mlx::core::array &positions,
                                         const std::string &prefix) const;
-  mlx::core::array EncoderConvolution(const mlx::core::array &x,
-                                      const std::string &prefix) const;
   mlx::core::array EncoderLayer(const mlx::core::array &x,
                                 const mlx::core::array &positions,
                                 int layer) const;

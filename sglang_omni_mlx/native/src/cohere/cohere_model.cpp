@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "common/audio.h"
+#include "common/fastconformer.h"
 #include "common/layers.h"
 #include "common/swift_port.h"
 #include "nlohmann/json.hpp"
@@ -207,7 +208,7 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &model_directory,
       weights.erase(prefix + ".qkv_proj" + suffix);
     }
   }
-
+  omni_common::FoldBatchNorms(weights, "batch_norm", kBatchNormEpsilon);
   return weights;
 }
 
@@ -230,13 +231,13 @@ mx::array CohereModel::RelativePositions(int length, mx::Dtype dtype) const {
   // Note (khazic): relative positions from length - 1 down to -(length - 1),
   // from the table built at load, or for longer input a table of its own.
   const mx::array table =
-      mx::astype(length <= config_.relative_position_count
-                     ? relative_position_table_
-                     : RelativePositionTable(length, config_.encoder_width),
-                 dtype);
+      length <= config_.relative_position_count
+          ? relative_position_table_
+          : RelativePositionTable(length, config_.encoder_width);
   const int center = table.shape(1) / 2 + 1;
-  return mx::slice(table, {0, center - length, 0},
-                   {1, center + length - 1, table.shape(2)});
+  return mx::astype(mx::slice(table, {0, center - length, 0},
+                              {1, center + length - 1, table.shape(2)}),
+                    dtype);
 }
 
 mx::array CohereModel::EncoderSelfAttention(const mx::array &x,
@@ -278,30 +279,6 @@ mx::array CohereModel::EncoderSelfAttention(const mx::array &x,
       prefix + ".out_proj");
 }
 
-mx::array CohereModel::EncoderConvolution(const mx::array &x,
-                                          const std::string &prefix) const {
-  const std::vector<mx::array> halves = mx::split(
-      checkpoint_.Conv1d(x, prefix + ".pointwise_conv1", 1, 0, 1, 1), 2, -1);
-  mx::array hidden = mx::multiply(halves[0], mx::sigmoid(halves[1]));
-  hidden = checkpoint_.Conv1d(hidden, prefix + ".depthwise_conv", 1,
-                              (config_.convolution_kernel_size - 1) / 2, 1,
-                              config_.encoder_width);
-  // Note (khazic): batch norm with its running statistics; eps takes the
-  // statistics' dtype.
-  const mx::array &variance =
-      checkpoint_.Weight(prefix + ".batch_norm.running_var");
-  hidden = mx::multiply(
-      mx::subtract(hidden,
-                   checkpoint_.Weight(prefix + ".batch_norm.running_mean")),
-      mx::rsqrt(
-          mx::add(variance, mx::array(kBatchNormEpsilon, variance.dtype()))));
-  hidden = mx::add(
-      mx::multiply(checkpoint_.Weight(prefix + ".batch_norm.weight"), hidden),
-      checkpoint_.Weight(prefix + ".batch_norm.bias"));
-  return checkpoint_.Conv1d(swift_port::Silu(hidden),
-                            prefix + ".pointwise_conv2", 1, 0, 1, 1);
-}
-
 mx::array CohereModel::EncoderLayer(const mx::array &x,
                                     const mx::array &positions,
                                     int layer) const {
@@ -309,9 +286,8 @@ mx::array CohereModel::EncoderLayer(const mx::array &x,
   const mx::array half(0.5f, x.dtype());
   const auto feed_forward = [&](const mx::array &input,
                                 const std::string &name) {
-    return checkpoint_.Linear(swift_port::Silu(checkpoint_.Linear(
-                                  input, prefix + "." + name + ".linear1")),
-                              prefix + "." + name + ".linear2");
+    return omni_common::ConformerFeedForward(checkpoint_, input,
+                                             prefix + "." + name);
   };
   mx::array hidden = mx::add(
       x, mx::multiply(half, feed_forward(checkpoint_.LayerNorm(
@@ -323,10 +299,12 @@ mx::array CohereModel::EncoderLayer(const mx::array &x,
                        checkpoint_.LayerNorm(hidden, prefix + ".norm_self_att",
                                              kLayerNormEpsilon),
                        positions, prefix + ".self_attn"));
-  hidden = mx::add(hidden, EncoderConvolution(checkpoint_.LayerNorm(
-                                                  hidden, prefix + ".norm_conv",
-                                                  kLayerNormEpsilon),
-                                              prefix + ".conv"));
+  hidden =
+      mx::add(hidden, omni_common::ConformerConvolution(
+                          checkpoint_,
+                          checkpoint_.LayerNorm(hidden, prefix + ".norm_conv",
+                                                kLayerNormEpsilon),
+                          prefix + ".conv"));
   hidden = mx::add(
       hidden, mx::multiply(
                   half, feed_forward(checkpoint_.LayerNorm(
