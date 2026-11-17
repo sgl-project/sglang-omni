@@ -38,6 +38,8 @@ final class ClipboardPictureTests: XCTestCase {
     func testImageSelectionPlaceholderUsesCopiedImageOnlyWhenPresent() {
         let image = ClipboardPicture.imageForCopiedSelection(types: [text, png], data: [png: png(12, 8)], file: nil, maxSide: 1600, text: "[Image]")
         XCTAssertEqual(image.map { [$0.width, $0.height] }, [12, 8])
+        let mixed = ClipboardPicture.imageForCopiedSelection(types: [text, png], data: [png: png(12, 8)], file: nil, maxSide: 1600, text: "caption [Image]")
+        XCTAssertEqual(mixed.map { [$0.width, $0.height] }, [12, 8])
         XCTAssertNil(ClipboardPicture.imageForCopiedSelection(types: [text], data: [:], file: nil, maxSide: 1600, text: "[Image]"),
                      "literal placeholder text without an image stays text")
         XCTAssertNil(ClipboardPicture.imageForCopiedSelection(types: [text, png], data: [png: png(12, 8)], file: nil, maxSide: 1600, text: "caption"),
