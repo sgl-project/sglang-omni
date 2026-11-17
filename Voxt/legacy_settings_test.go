@@ -121,8 +121,8 @@ func TestParseLegacySettings(t *testing.T) {
 			t.Errorf("%s at %q, want the preset's address", id, by[id].Endpoint)
 		}
 	}
-	if g := by["gemini"].Endpoint; g != "https://example.com/v1beta/openai" || strings.Join(l.checkLLM, ",") != "ollama,gemini" {
-		t.Errorf("a custom Gemini address %q, to check %v (the Ollama on another Mac is plain http)", g, l.checkLLM)
+	if g := by["gemini"].Endpoint; g != "https://example.com/v1beta/openai" || strings.Join(l.checkLLM, ",") != "gemini" {
+		t.Errorf("a custom Gemini address %q, to check %v", g, l.checkLLM)
 	}
 	if u := by["omlx"].Generation.IncludeUsage; u == nil || *u {
 		t.Errorf("oMLX usage %v, want off as the previous Voxt had it", u)
@@ -322,9 +322,8 @@ func TestImportLegacySettings(t *testing.T) {
 			t.Errorf("imported %q lacks %q", r.imported, want)
 		}
 	}
-	// The services' keys stay behind: those that need one are to
-	// complete (not oMLX or the Whisper server on this Mac); so are the
-	// setups to check (the Ollama on another Mac's address never connects).
+	// Keys that need to be pasted again and changed API formats are to
+	// check; a LAN HTTP address no longer needs a separate to-do.
 	var todo []string
 	for _, d := range r.todo {
 		todo = append(todo, string(d.kind)+"/"+d.id)
@@ -334,7 +333,7 @@ func TestImportLegacySettings(t *testing.T) {
 			t.Errorf("to do %v lacks %s", todo, want)
 		}
 	}
-	if !slices.Contains(todo, "llm/ollama") || slices.Contains(todo, "llm/omlx") || !strings.Contains(r.text(), "Check ") || !strings.Contains(r.text(), "Change the address of Ollama") {
+	if slices.Contains(todo, "llm/ollama") || slices.Contains(todo, "llm/omlx") || !strings.Contains(r.text(), "Check ") || strings.Contains(r.text(), "Change the address of Ollama") {
 		t.Errorf("to do %v (%q)", todo, r.text())
 	}
 }

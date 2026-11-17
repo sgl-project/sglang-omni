@@ -241,24 +241,21 @@ func TestLegacyImportAsksForOptionalKey(t *testing.T) {
 	}
 }
 
-// An address this app would refuse says so, as a to-do; Resolve keeps
-// refusing it.
-func TestLegacyImportPlainHTTPElsewhere(t *testing.T) {
+// A LAN HTTP address remains usable after import, with a to-do only when
+// the old setup had a key that needs to be pasted again.
+func TestLegacyImportLANHTTP(t *testing.T) {
 	r := importSetups(t, `[{"providerID":"ollama","model":"qwen3","endpoint":"http://192.168.1.20:11434/api/chat"},
 	 {"providerID":"lmStudio","model":"m","endpoint":"http://127.0.0.1:1234/v1"}]`)
-	if !hasTodo(r, "ollama", "http to this Mac") || hasTodo(r, "ollama", "may not work") {
-		t.Errorf("no to-do naming the address rule: %q", r.text())
-	}
-	if hasTodo(r, "lmstudio", "http") {
-		t.Errorf("a server on this Mac was flagged: %q", r.text())
+	if len(r.todo) != 0 {
+		t.Errorf("usable HTTP addresses were flagged: %q", r.text())
 	}
 	r = importSetups(t, `[{"providerID":"ollama","model":"qwen3","endpoint":"http://192.168.1.20:11434/api/chat","storedCredentialPresence":{"apiKey":true}}]`)
-	if len(r.todo) != 2 || !hasTodo(r, "ollama", "needs its API key") || !hasTodo(r, "ollama", "http to this Mac") {
-		t.Errorf("a key that existed there and a refused address are two to-dos: %q", r.text())
+	if len(r.todo) != 1 || !hasTodo(r, "ollama", "needs its API key") {
+		t.Errorf("an old key needs to be pasted again: %q", r.text())
 	}
 	p, _ := oneLLM(t, `{"providerID":"ollama","model":"qwen3","endpoint":"http://192.168.1.20:11434/api/chat"}`)
-	if _, err := providers.Config(p).Resolve(); err == nil {
-		t.Errorf("%q resolved", p.Endpoint)
+	if _, err := providers.Config(p).Resolve(); err != nil {
+		t.Errorf("%q did not resolve: %v", p.Endpoint, err)
 	}
 }
 
@@ -296,10 +293,10 @@ func TestLegacyImportKeySavedHere(t *testing.T) {
 func TestLegacyRefusedAddressNotReady(t *testing.T) {
 	useKeys(t, &memKeys{m: map[string]string{}})
 	a, _, tt := newTestApp(t)
-	lan := settings.Provider{ID: "ollama", Endpoint: "http://192.168.1.20:11434/v1", Model: "qwen3"}
-	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{lan} })
+	invalid := settings.Provider{ID: "ollama", Endpoint: "ftp://192.168.1.20:11434/v1", Model: "qwen3"}
+	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{invalid} })
 	a.syncRemote()
-	if got := providers.Missing(lan, false); got != providers.MissingAddress {
+	if got := providers.Missing(invalid, false); got != providers.MissingAddress {
 		t.Errorf("Missing %q, want %q", got, providers.MissingAddress)
 	}
 	if ready := providers.Ready(a.lib.settings.Get(), func(string) bool { return true }); len(ready) != 0 {
@@ -320,7 +317,7 @@ func TestLegacyRefusedAddressNotReady(t *testing.T) {
 	if !a.provDlg.open || a.provDlg.id != "ollama" {
 		t.Errorf("Complete setup: %+v", a.provDlg.open)
 	}
-	if got := setupNeedsText(local.LLM, lan, providers.MissingAddress); !strings.Contains(got, "http to this Mac") {
+	if got := setupNeedsText(local.LLM, invalid, providers.MissingAddress); !strings.Contains(got, "http or https") {
 		t.Errorf("the notice says %q", got)
 	}
 }

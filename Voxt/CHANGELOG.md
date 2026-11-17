@@ -4,12 +4,20 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Fixed
+
+- **Language models can use an HTTP gateway**: API-key services now accept HTTP addresses on other hosts, including a private-network gateway. Voxt warns that HTTP sends the key and text without encryption; ChatGPT sign-in still requires HTTPS for remote addresses.
+
 ### Changed
 
 - **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 
 ### 中文
+
+#### 修复
+
+- **语言模型可使用 HTTP 网关**：使用 API Key 的服务现在可以连接其他主机上的 HTTP 地址，包括局域网网关。Voxt 会提示 HTTP 明文传输密钥和文本；ChatGPT 登录仍要求远程地址使用 HTTPS。
 
 #### 变更
 
