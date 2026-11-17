@@ -136,17 +136,19 @@ profile-results/
 
 ## 4. 数字口径
 
-- `stages[]` 按完成顺序记录 decode、setup、load、普通路径的 VAD、每个 `asr_chunk`、diarization、final pass、每个 correction batch、每个 summary request 和 teardown。`import` 的 MTD 路径没有 VAD 或 `asr_chunk` stage。嵌套阶段的外层 `final_pass` 最后完成；`index` 在同类阶段中从 0 开始。
+- `stages[]` 按完成顺序记录 decode、setup、load、普通路径和 MTD 分块路径的 VAD、每个 `asr_chunk`、diarization、final pass、每个 correction batch、每个 summary request 和 teardown。`import` 的 MTD 路径先调用 VAD 取得切点，再按 cap 合段，因此有 `vad` 而没有 `asr_chunk` stage。嵌套阶段的外层 `final_pass` 最后完成；`index` 在同类阶段中从 0 开始。
 - `wall_ms` 是墙钟时间。含 `audio_ms` 的阶段，`rtf = wall_ms / audio_ms`；总 RTF 是整轮墙钟除以音频时长。不要用总 RTF 代替单阶段瓶颈。
 - `queue_acquire.value` 是 Omni 获取/启动/等待模型的时间；`result_latency.value` 是 `asr.Result.Latency`，从 acquire 完成后到完整文本。两者分开，不把排队当推理。provider 未报告时为 `null`。
 - `first_final_text.value` 从 final pass 开始到第一份非空完整 ASR/MTD 文本。文件 ASR 没有 token 事件，所以 `asr_first_token.value` 永远为 `null`，不是 0 ms。
 - MTD 一次请求返回全部分人段。每段有文本、时间范围和 hash，但 `segments[].inference_duration.value` 为 `null`，因为现有 API 没有每段独立推理时间。
 - `asr_transcript` 是 final pass 后、校对前的文本；`transcript` 是校对后的最终文本；hash 是各自 UTF-8 文本的 SHA-256。`summary` 保存实际落盘的 summary JSON 和 hash。
 - 有 reference 时，`evaluation.value.asr/final.mixed_cer_wer` 都直接来自 `eval.Compare`：中文按字、英文按词，混合文本采用同一 token 化与归一化。它是混合 CER/WER，不是 DER，也不证明分人正确。
+
+  需要按真实 MTD 请求定位编辑差异时，在 `Voxt/` 运行 `go run ./scripts/meetingquality CAP_SECONDS /ABS/result.json`。脚本用同一 `eval.Tokens` 和 Levenshtein traceback，按参考 clip 在原始时间线的起点归入请求；硬切后下一段重读 1 秒，所以 cap120 的未加 padding 起点是 0/119/238/357/476/595 秒，不能简单按 0/120/240…分组。输出包含每个请求的 timeline/native 起止和 S/D/I；`go test ./scripts/meetingquality` 覆盖这个边界和请求数上限。
 - `peak_rss_bytes` 和 `peak_physical_footprint_bytes` 是每 100 ms 对 harness 与 native server 求和后的最大观测值，不是内核生命周期 high-water mark；短峰值可能漏掉。`Runtime.Processes` 同时返回 ready 和已 spawned、仍在加载的 PID，因此 ready 前的权重加载也可采样；`Running()` 的 ready 语义不变。physical footprint 包含 Metal buffer，适合观察 Apple silicon 统一内存。
 - CPU user/system 是这些进程累计 CPU 时间之和；native 进程退出后保留最后成功样本。GPU 时间、独立 GPU 内存和能耗没有安全可用的精确接口，写 `null` 和 `unavailable_reason`，不填 0。
 - start/end 记录 memory pressure、available%、swap 用量和 swapin/out 累计计数；delta 只由同次 start/end 相减。thermal 来自 `pmset -g therm` 原文，power source 来自 `pmset -g batt`。不可得字段一律是 `{"value": null, "unavailable_reason": "..."}`。
-- `native.log` 独立保存 `omni.Config.Log`（含 native 自带计时）。Omni 将 native stderr 统一标为 warning，因此正常计时行不会误判失败；native error、崩溃/停滞、草稿或 cache 回退等会使配置失效的 warning 仍会使结果无效。VAD wrapper 只计时：普通路径整轨 Speech 失败后，10 分钟窗口的神经 VAD 成功不算 fallback；只有实际进入能量分析的窗口才通过 `VADFallback` 通知并使配置失效，默认 Meeting 的 nil 通知行为不变。MTD 路径不调用 VAD，也不产生 fallback 通知。
+- `native.log` 独立保存 `omni.Config.Log`（含 native 自带计时）。Omni 将 native stderr 统一标为 warning，因此正常计时行不会误判失败；native error、崩溃/停滞、草稿或 cache 回退等会使配置失效的 warning 仍会使结果无效。VAD wrapper 只计时：普通路径整轨 Speech 失败后，10 分钟窗口的神经 VAD 成功不算 fallback；只有实际进入能量分析的窗口才通过 `VADFallback` 通知并使配置失效，默认 Meeting 的 nil 通知行为不变。MTD 分块路径也调用 VAD 取得切点，因此不能把 VAD 耗时或 fallback 当作普通 ASR 专属阶段。
 
 ## 5. pprof 与 Instruments
 

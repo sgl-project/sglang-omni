@@ -68,6 +68,7 @@ func TestMeetingImportLabelsSpeakersAndSummarizes(t *testing.T) {
 	t.Cleanup(func() { chooseRecordingFile, decodeRecording = savedC, savedD })
 	chooseRecordingFile = func(a *app, then func(string)) { then(wav) }
 	decodeRecording = func(string) ([]byte, error) { return pcm, nil }
+	a.prefs.Features.Meeting.Lang = "zh"
 	tt.SetSize(windowWidth, 900)
 	a.navigate("/meetings")
 	frames(tt)
