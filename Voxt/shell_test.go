@@ -628,3 +628,17 @@ func TestHelperProcess(t *testing.T) {
 		})
 	})
 }
+
+// A page that moved into Settings keeps its section's icon in the
+// command palette.
+func TestCommandIconsMovedPages(t *testing.T) {
+	if ic := commandIcon("go/models"); ic == nil || *ic != modelsIcon {
+		t.Error("go/models lost the Speech models icon")
+	}
+	if ic := commandIcon("go/language-models"); ic == nil || *ic != remoteIcon {
+		t.Error("go/language-models lost the Language models icon")
+	}
+	if ic := commandIcon("go/history"); ic == nil || *ic != historyIcon {
+		t.Error("go/history lost the page icon")
+	}
+}
