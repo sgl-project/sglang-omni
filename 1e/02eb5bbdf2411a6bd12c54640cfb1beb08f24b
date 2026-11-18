@@ -1,0 +1,23 @@
+sglang_omni/models/duo/live_intent.py
+  s_9be4bd449be508::t_e2e6a9c2ce2c22 69,98-101
+sglang_omni/models/duo/live_intent_srt.py
+  s_9be4bd449be508::t_210c4cf35bfad2 130,168-171
+sglang_omni/models/duo/realtime.py
+  s_9be4bd449be508::t_697072840543f2 852
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1e02eb5bbdf2411a6bd12c54640cfb1beb08f24b",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
