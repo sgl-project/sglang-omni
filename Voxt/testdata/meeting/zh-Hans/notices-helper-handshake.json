@@ -1,0 +1,14 @@
+{
+  "name": "notices-helper-handshake",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "problem/helper",
+      "severity": "error",
+      "title": "辅助进程意外停止",
+      "body": "它恢复运行前，录音和快捷键都不能用。",
+      "action_label": "重启辅助进程",
+      "time_hint": "1月2日 07:04"
+    }
+  ]
+}

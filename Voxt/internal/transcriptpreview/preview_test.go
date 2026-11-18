@@ -14,7 +14,7 @@ import (
 )
 
 func TestPageKeepsPreviewDataInJSON(t *testing.T) {
-	html := Page(Update{HTML: `<p><script>attack()</script></p>`, Version: 7}, 13, "#123456", "#123456", "#fafafa", false)
+	html := Page(Update{HTML: `<p><script>attack()</script></p>`, Version: 7}, 13, 0, "#123456", "#123456", "#fafafa", false)
 	if strings.Contains(html, "<script>attack()") || !strings.Contains(html, `\u003cscript\u003eattack()`) {
 		t.Fatal("transcript markup escaped the JSON data script")
 	}
@@ -68,6 +68,8 @@ func TestPageSanitizesTranscriptInBrowser(t *testing.T) {
   const copy = new ClipboardEvent("copy", {bubbles: true, cancelable: true, clipboardData: clipboard});
   safeBold.dispatchEvent(copy);
   const checks = {
+    paddingInsideViewport: getComputedStyle(root).paddingRight === "10px" &&
+      root.getBoundingClientRect().right === document.documentElement.clientWidth,
     transcriptVisible: getComputedStyle(root).display !== "none" &&
       root.getBoundingClientRect().height > 0 &&
       text.includes("Visible start") && text.includes("Visible end"),
@@ -91,7 +93,7 @@ func TestPageSanitizesTranscriptInBrowser(t *testing.T) {
   document.documentElement.setAttribute("data-preview-test", encodeURIComponent(JSON.stringify({checks, text})));
 })();
 </script>`
-	page := Page(Update{HTML: markup, Version: 1}, 13, "#111111", "#0000ee", "#f8edf4", false) + probe
+	page := Page(Update{HTML: markup, Version: 1}, 13, 10, "#111111", "#0000ee", "#f8edf4", false) + probe
 	dir := t.TempDir()
 	path := filepath.Join(dir, "preview.html")
 	if err := os.WriteFile(path, []byte(page), 0o600); err != nil {
@@ -122,7 +124,7 @@ func TestPageSanitizesTranscriptInBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, check := range []string{
-		"transcriptVisible", "scriptIsLiteral", "styleIsLiteral", "nestedMarkupIsLiteral",
+		"paddingInsideViewport", "transcriptVisible", "scriptIsLiteral", "styleIsLiteral", "nestedMarkupIsLiteral",
 		"imageDescriptionVisible", "noBlockedElements", "noCodeExecuted", "unsafeLinkDisabled",
 		"safeMarkupPreserved", "noEventHandlers", "backgroundMatches", "copyIsPlainText", "copyKeepsBackground",
 	} {

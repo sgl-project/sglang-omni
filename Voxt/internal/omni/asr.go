@@ -58,6 +58,18 @@ func (a *ASR) WithDraft(dir string) *ASR {
 	return &c
 }
 
+// WithInstruction is a copy of a whose requests and live sessions carry
+// instruction as the prompt instead of the model's own Instruction: the
+// evals run a model that takes no context at another of its tasks
+// (MOSS's diarization, "" for the server's built-in task). A model with
+// a context ignores it (its prompt is the request's).
+func (a *ASR) WithInstruction(instruction string) *ASR {
+	c := *a
+	c.spec = a.spec.clone()
+	c.spec.ASR.Instruction = instruction
+	return &c
+}
+
 // WithVAD is a copy of a that comes with v, Silero (nil: none), for the
 // session's speech detection (VAD, local.VoiceActivity).
 func (a *ASR) WithVAD(v *VAD) *ASR {

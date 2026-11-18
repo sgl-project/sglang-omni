@@ -78,6 +78,28 @@ func TestStorageModels(t *testing.T) {
 	}
 }
 
+func TestStorageReopenKeepsReport(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	measurements := 0
+	oldDiskFree := diskFree
+	diskFree = func(string) int64 {
+		measurements++
+		return 65536
+	}
+	t.Cleanup(func() { diskFree = oldDiskFree })
+
+	a.navigate("/settings/storage")
+	report := a.stReport
+	if report == nil || measurements != 1 {
+		t.Fatalf("first open: report=%p, measurements=%d", report, measurements)
+	}
+	a.navigate("/settings/general")
+	a.navigate("/settings/storage")
+	if a.stReport != report || measurements != 1 {
+		t.Fatalf("reopen measured again: report=%p, want %p; measurements=%d, want 1", a.stReport, report, measurements)
+	}
+}
+
 // TestEraseStopsWhenRecordingsStay: Erase with the recordings in a folder
 // outside the data folder, where one cannot be deleted. Nothing is
 // erased and VoxtNew does not restart; a toast says why. It used to

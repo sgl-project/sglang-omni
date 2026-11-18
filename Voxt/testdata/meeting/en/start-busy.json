@@ -1,0 +1,8 @@
+{
+  "name": "start-busy",
+  "kind": "start",
+  "start": {
+    "code": "meeting.busy",
+    "text": "A meeting is already recording."
+  }
+}

@@ -24,7 +24,7 @@ type Update struct {
 }
 
 // Page embeds the renderer and the JSON-escaped markup in a self-contained page.
-func Page(update Update, size float32, textColor, linkColor, backgroundColor string, dark bool) string {
+func Page(update Update, size, rightPadding float32, textColor, linkColor, backgroundColor string, dark bool) string {
 	data, _ := json.Marshal(update)
 	scheme := "light"
 	if dark {
@@ -34,8 +34,8 @@ func Page(update Update, size float32, textColor, linkColor, backgroundColor str
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-preview'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
-<style>:root{color-scheme:%s;color:%s;--link:%s;--background:%s;font-size:%gpx}%s</style>
+<style>:root{color-scheme:%s;color:%s;--link:%s;--background:%s;font-size:%gpx;--padding-right:%gpx}%s</style>
 <main id="transcript"></main>
 <script type="application/json" id="transcript-data">%s</script>
-<script nonce="preview">%s</script><script nonce="preview">%s</script>`, scheme, textColor, linkColor, backgroundColor, size, css, data, katex, script)
+<script nonce="preview">%s</script><script nonce="preview">%s</script>`, scheme, textColor, linkColor, backgroundColor, size, rightPadding, css, data, katex, script)
 }
