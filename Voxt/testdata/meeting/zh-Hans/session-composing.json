@@ -75,7 +75,9 @@
         "show_raw": false,
         "raw_title": "",
         "timings": "",
-        "problem_code": ""
+        "problem_code": "",
+        "session_id": "fixture-onboarding-try",
+        "transcript": true
       }
     },
     "footer": {

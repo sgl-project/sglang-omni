@@ -81,7 +81,9 @@
         "show_raw": true,
         "raw_title": "识别原文",
         "timings": "录音 3.0 秒 · 识别 0.8 秒 · 整理 1.1 秒 · 总计 5.0 秒 · Fixture speech model, Fixture language model",
-        "problem_code": "empty"
+        "problem_code": "empty",
+        "session_id": "fixture-onboarding-try",
+        "transcript": true
       }
     },
     "footer": {

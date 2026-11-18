@@ -24,4 +24,6 @@ type onboardingActions interface {
 	importLegacy()
 	completeOnboardingLegacyTodo(kind, id string)
 	applyShortcutPreset(preset string)
+	// transcriptResult: as tryCardActions' (transcript_preview_controller.go).
+	transcriptResult(c *uiContext, key, source string, transcript, streaming bool) bool
 }

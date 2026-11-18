@@ -239,6 +239,9 @@ func buildOnboardingTry(translator *i18n.Translator, input onboardingViewStateIn
 		Levels: snapshot.Levels, Heard: !snapshot.HeardAt.IsZero(), Partial: strings.TrimSpace(snapshot.Partial),
 		Block: onboardingNotice(translator, input.Block),
 	}
+	if mine {
+		card.SessionID, card.Transcript = snapshot.ID, snapshot.Kind == store.KindTranscribe
+	}
 	if mine && card.Recording {
 		elapsed := snapshot.Elapsed(input.Now)
 		seconds := int(elapsed.Seconds())
@@ -257,7 +260,7 @@ func buildOnboardingTry(translator *i18n.Translator, input onboardingViewStateIn
 		}
 	}
 	if mine && snapshot.State.Ended() {
-		card.Result, card.Raw = snapshot.Result, strings.TrimSpace(snapshot.Raw)
+		card.Result, card.Highlights, card.Raw = snapshot.Result, snapshot.Highlights, strings.TrimSpace(snapshot.Raw)
 		card.ShowRaw = card.Raw != "" && card.Raw != strings.TrimSpace(snapshot.Result)
 		card.RawTitle = translator.T("As recognised")
 		if snapshot.Kind == store.KindRewrite {

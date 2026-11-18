@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"math"
 	"reflect"
 	"slices"
@@ -513,6 +514,34 @@ func TestOnboardingWelcomeViewStateCache(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
 	if fourth := a.onboardingViewState(); fourth.StepTitles[obWelcome] != "欢迎" {
 		t.Fatalf("cached welcome kept the old locale: %q", fourth.StepTitles[obWelcome])
+	}
+}
+
+// The guide's Try result tints the dictionary's words, as the feature pages' Try does.
+func TestOnboardingTryDictionaryHighlights(t *testing.T) {
+	const result = "Voxt uses SGLang."
+	a, tt := obTester(t)
+	readyModels(a)
+	a.ob.step = obTranscribe
+	a.ob.tries[obTranscribe] = "mine"
+	s := obSnap(a, "mine", store.KindTranscribe, session.Done)
+	s.Result = result
+	a.sessionChanged(s)
+	frames(tt)
+	if r, ok := tt.Find(result); ok {
+		tt.Scroll(windowWidth/2, windowHeight/2, 0, r.Y-windowHeight/2) // the result sits below the guide's fold
+		frames(tt)
+	}
+	before := bytes.Clone(tt.Image().Pix)
+	s.Rev++
+	s.Highlights = testDictionaryHighlights(result)
+	a.sessionChanged(s)
+	frames(tt)
+	if bytes.Equal(before, tt.Image().Pix) {
+		t.Error("the matched terms have no visible highlight")
+	}
+	if !hasExact(tt, result) {
+		t.Errorf("the whole result is not readable: %q", tt.Texts())
 	}
 }
 

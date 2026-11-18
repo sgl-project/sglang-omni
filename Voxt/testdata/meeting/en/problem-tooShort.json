@@ -75,7 +75,9 @@
         "show_raw": true,
         "raw_title": "As recognised",
         "timings": "Recording 3.0 s · Recognition 0.8 s · Clean-up 1.1 s · Total 5.0 s · Fixture speech model, Fixture language model",
-        "problem_code": "tooShort"
+        "problem_code": "tooShort",
+        "session_id": "fixture-onboarding-try",
+        "transcript": true
       }
     },
     "footer": {

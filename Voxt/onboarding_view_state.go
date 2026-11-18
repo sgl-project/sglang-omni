@@ -139,6 +139,11 @@ type onboardingTryCardViewState struct {
 	RawTitle    string                     `json:"raw_title"`
 	Timings     string                     `json:"timings"`
 	ProblemCode string                     `json:"problem_code"`
+	// SessionID keys the draft's and the result's preview (#4105).
+	SessionID string `json:"session_id,omitempty"`
+	// Transcript: this card's own transcription, drawn on the transcript face.
+	Transcript bool            `json:"transcript,omitempty"`
+	Highlights []textHighlight `json:"highlights,omitempty"`
 }
 
 type onboardingTryViewState struct {

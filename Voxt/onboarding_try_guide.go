@@ -52,8 +52,10 @@ func obTryCard(c *ui.Context, prefix string, state onboardingTryCardViewState, a
 				}
 			})
 			if state.Draft != "" && state.Composing {
-				fillCard(c.Key(prefix + "-try-draft")).Padding(px(t, sp3)).Children(func() {
-					ui.Text(c, state.Draft).Selectable()
+				sessionTextCard(c.Key(prefix+"-try-draft"), state.Transcript).Padding(px(t, sp3)).Children(func() {
+					if !actions.transcriptResult(c, state.SessionID, state.Draft, state.Transcript, true) {
+						ui.Text(c, state.Draft).Selectable()
+					}
 				})
 			}
 			return
@@ -168,8 +170,10 @@ func obTryEnded(c *ui.Context, prefix string, state onboardingTryCardViewState, 
 			actions.copyOnboardingResult(state.Result)
 		}
 	})
-	fillCard(c.Key(prefix + "-try-result")).Padding(px(t, sp3)).Children(func() {
-		ui.Text(c, state.Result).Selectable()
+	sessionTextCard(c.Key(prefix+"-try-result"), state.Transcript).Padding(px(t, sp3)).Children(func() {
+		if !actions.transcriptResult(c, state.SessionID, state.Result, state.Transcript, false) {
+			dictionaryText(c, state.Result, state.Highlights).Selectable()
+		}
 	})
 	if state.ShowRaw {
 		ui.Column(c).Gap(px(t, 4)).Children(func() {
