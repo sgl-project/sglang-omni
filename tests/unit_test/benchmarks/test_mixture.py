@@ -11,6 +11,7 @@ from benchmarks.metrics.mixture import (
     MixtureRepeatResult,
     aggregate_mixture_sweep,
     compute_mixture_summaries,
+    mixture_failed_requests,
     stream_finish_gap_max_s,
 )
 
@@ -94,6 +95,7 @@ def test_summaries_count_only_requests_that_finished_in_the_window() -> None:
     }
     assert window["pool_cycles"] == {"non_streaming": 1.75, "streaming": 1.25}
     assert window["drain_s"] == 5.0
+    assert mixture_failed_requests(summaries) == 2
 
 
 @pytest.mark.parametrize(

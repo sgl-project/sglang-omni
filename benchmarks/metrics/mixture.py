@@ -220,6 +220,13 @@ def compute_mixture_summaries(
     }
 
 
+def mixture_failed_requests(summaries: MixtureSummaries) -> int:
+    """Failed requests of one load in and outside the window. Each one stopped its client."""
+    return summaries["summary"]["failed_requests"] + sum(
+        summaries["mixture"]["outside_window_failed_requests"].values()
+    )
+
+
 def normalized_work(
     summary_by_class: dict[RequestClass, dict[str, float | int | None]],
     references_s_per_s: dict[RequestClass, float],
@@ -257,9 +264,7 @@ def aggregate_mixture_sweep(
                 "streaming_clients": load.streaming_clients,
                 "repeats": len(repeat_results),
                 "failed_requests": sum(
-                    result["summary"]["failed_requests"]
-                    + sum(result["mixture"]["outside_window_failed_requests"].values())
-                    for result in repeat_results
+                    mixture_failed_requests(result) for result in repeat_results
                 ),
                 "summary": {
                     name: aggregate_numbers(

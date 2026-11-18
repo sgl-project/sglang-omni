@@ -125,6 +125,7 @@ from benchmarks.metrics.mixture import (
     MixtureRepeatResult,
     aggregate_mixture_sweep,
     compute_mixture_summaries,
+    mixture_failed_requests,
     print_mixture_summary,
 )
 from benchmarks.metrics.performance import (
@@ -575,6 +576,8 @@ async def run_tts_mixture_benchmark(
             ("request_rate", config.request_rate != float("inf")),
             ("arrival_seed", config.arrival_seed is not None),
             ("subtalker_dosample_ratio", config.subtalker_dosample_ratio is not None),
+            ("inline_ref_audio", config.inline_ref_audio),
+            ("server_process_id", config.server_process_id is not None),
         )
         if is_set
     ]
@@ -599,7 +602,7 @@ async def run_tts_mixture_benchmark(
     ):
         logger.warning(
             f"{load.total_clients} clients exceed running plus queued requests, "
-            "so server rejections will count as failures"
+            "so a rejected request stops its client and fails the run"
         )
     else:
         pass
@@ -1040,6 +1043,23 @@ async def run_tts_concurrency_sweep(
     return payload
 
 
+def raise_if_mixture_failed(failed_requests_by_output_dir: dict[str, int]) -> None:
+    """Fail after the results are saved when a load had failed requests, since each one stopped its client."""
+    failed_points = [
+        f"{output_dir} ({failed_requests} failed)"
+        for output_dir, failed_requests in failed_requests_by_output_dir.items()
+        if failed_requests > 0
+    ]
+    if failed_points:
+        raise RuntimeError(
+            "these mixture loads had failed requests, and a failed request stops "
+            f"its client: {', '.join(failed_points)}. per_request in "
+            "speed_results.json has the errors"
+        )
+    else:
+        pass
+
+
 async def run_tts_mixture_sweep(
     config: TtsSeedttsBenchmarkConfig,
     loads: list[MixtureLoad],
@@ -1101,6 +1121,13 @@ async def run_tts_mixture_sweep(
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
     logger.info(f"Wrote mixture sweep to {out_path}")
+    raise_if_mixture_failed(
+        {
+            result["output_dir"]: mixture_failed_requests(result)
+            for repeat_results in repeat_results_by_load.values()
+            for result in repeat_results
+        }
+    )
     return payload
 
 
@@ -1162,6 +1189,7 @@ async def benchmark(config: TtsSeedttsBenchmarkConfig) -> dict:
         )
     else:
         print_mixture_summary(results, config.model)
+        raise_if_mixture_failed({config.output_dir: mixture_failed_requests(results)})
     return results
 
 
@@ -1620,6 +1648,8 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
                     args.subtalker_dosample_ratio is not None,
                 ),
                 ("--warmup other than 0", args.warmup not in (None, 0)),
+                ("--inline-ref-audio", args.inline_ref_audio),
+                ("--server-pid", args.server_process_id is not None),
                 ("--transcribe-only", args.transcribe_only),
                 ("--similarity-only", args.similarity_only),
                 ("--utmos-only", args.utmos_only),

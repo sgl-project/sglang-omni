@@ -7,12 +7,13 @@ import base64
 import io
 import json
 import os
+import re
 import socket
 import sys
 import threading
 import wave
 from collections.abc import AsyncIterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import BinaryIO
@@ -994,6 +995,14 @@ def test_parse_mixture_loads_rejects_malformed_loads(value: str) -> None:
             "--mixture cannot be combined with --warmup other than 0",
         ),
         (
+            ["--mixture", "48+16", "--inline-ref-audio"],
+            "--mixture cannot be combined with --inline-ref-audio",
+        ),
+        (
+            ["--mixture", "48+16", "--server-pid", "123"],
+            "--mixture cannot be combined with --server-pid",
+        ),
+        (
             ["--mixture", "48+16", "--transcribe-only"],
             "--mixture cannot be combined with --transcribe-only",
         ),
@@ -1144,9 +1153,13 @@ async def test_mixture_sweep_writes_per_load_output_dirs(
         "60",
     )
 
-    await run_tts_mixture_sweep(config, loads, repeats=repeats)
+    with pytest.raises(RuntimeError) as error:
+        await run_tts_mixture_sweep(config, loads, repeats=repeats)
 
     expected_dirs = [str(tmp_path / name) for name in point_names]
+    for point_dir in expected_dirs:
+        failed_requests = 2 if "ns48_s16" in point_dir else 1
+        assert f"{point_dir} ({failed_requests} failed)" in str(error.value)
     assert [point.output_dir for point in seen] == expected_dirs
     assert [(point.mixture, point.concurrency) for point in seen] == [
         (load, load.total_clients) for load in loads for _ in range(repeats)
@@ -1174,12 +1187,11 @@ async def test_mixture_sweep_writes_per_load_output_dirs(
     assert per_repeat_dirs == expected_dirs[:repeats]
 
 
-@pytest.mark.asyncio
-async def test_mixture_run_against_a_fake_server_tags_both_classes(
-    tmp_path: Path,
-) -> None:
-    """Each class reaches the server in its own mode and every request is saved."""
-    stream_flags: list[bool] = []
+@asynccontextmanager
+async def fake_speech_server(
+    stream_flags: list[bool], streaming_status: int
+) -> AsyncIterator[str]:
+    """Serve WAV to non streaming requests and PCM or the given error status to streams."""
     wav_buffer = io.BytesIO()
     with wave.open(wav_buffer, "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -1191,7 +1203,9 @@ async def test_mixture_run_against_a_fake_server_tags_both_classes(
         payload = await request.json()
         stream_flags.append(bool(payload.get("stream")))
         await asyncio.sleep(0.01)
-        if payload.get("stream"):
+        if payload.get("stream") and streaming_status != 200:
+            return web.Response(status=streaming_status, text="queue full")
+        elif payload.get("stream"):
             return web.Response(
                 body=bytes(1600),
                 content_type="audio/pcm",
@@ -1216,24 +1230,33 @@ async def test_mixture_run_against_a_fake_server_tags_both_classes(
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.setblocking(False)
-        base_url = f"http://127.0.0.1:{listener.getsockname()[1]}"
         await web.SockSite(server, listener).start()
         try:
-            config = TtsSeedttsBenchmarkConfig(
-                model="tts",
-                meta="unused",
-                base_url=base_url,
-                output_dir=str(tmp_path),
-                concurrency=3,
-                mixture=MixtureLoad(non_streaming_clients=2, streaming_clients=1),
-                mixture_duration_s=0.2,
-                mixture_settle_s=0.05,
-            )
-            results = await tts.run_tts_seedtts_benchmark(
-                config, samples=[make_sample(f"s{index}") for index in range(4)]
-            )
+            yield f"http://127.0.0.1:{listener.getsockname()[1]}"
         finally:
             await server.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_mixture_run_against_a_fake_server_tags_both_classes(
+    tmp_path: Path,
+) -> None:
+    """Each class reaches the server in its own mode and every request is saved."""
+    stream_flags: list[bool] = []
+    async with fake_speech_server(stream_flags, streaming_status=200) as base_url:
+        config = TtsSeedttsBenchmarkConfig(
+            model="tts",
+            meta="unused",
+            base_url=base_url,
+            output_dir=str(tmp_path),
+            concurrency=3,
+            mixture=MixtureLoad(non_streaming_clients=2, streaming_clients=1),
+            mixture_duration_s=0.2,
+            mixture_settle_s=0.05,
+        )
+        results = await tts.run_tts_seedtts_benchmark(
+            config, samples=[make_sample(f"s{index}") for index in range(4)]
+        )
 
     per_request = results["per_request"]
     assert set(results["summary_by_class"]) == {"non_streaming", "streaming"}
@@ -1256,6 +1279,41 @@ async def test_mixture_run_against_a_fake_server_tags_both_classes(
 
 
 @pytest.mark.asyncio
+async def test_a_mixture_whose_streams_are_rejected_fails_after_saving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Streams rejected with 503 read like starved streams, and the run used to exit 0."""
+    monkeypatch.setattr(
+        tts,
+        "_load_benchmark_samples",
+        lambda config: [make_sample(f"s{index}") for index in range(4)],
+    )
+    stream_flags: list[bool] = []
+    async with fake_speech_server(stream_flags, streaming_status=503) as base_url:
+        config = TtsSeedttsBenchmarkConfig(
+            model="tts",
+            meta="unused",
+            base_url=base_url,
+            output_dir=str(tmp_path),
+            concurrency=3,
+            warmup=0,
+            mixture=MixtureLoad(non_streaming_clients=2, streaming_clients=1),
+            mixture_duration_s=0.2,
+            mixture_settle_s=0.05,
+        )
+        with pytest.raises(RuntimeError, match=re.escape(f"{tmp_path} (1 failed)")):
+            await tts.benchmark(config)
+
+    assert stream_flags.count(True) == 1
+    saved = json.loads((tmp_path / "speed_results.json").read_text())
+    assert [
+        entry["error"]
+        for entry in saved["per_request"]
+        if entry["request_class"] == "streaming"
+    ] == ["HTTP 503: queue full"]
+
+
+@pytest.mark.asyncio
 async def test_mixture_config_rejects_settings_the_runner_ignores() -> None:
     """A config built without the CLI used to run a mixture load with these dropped."""
     config = TtsSeedttsBenchmarkConfig(
@@ -1267,6 +1325,8 @@ async def test_mixture_config_rejects_settings_the_runner_ignores() -> None:
         request_rate=4.0,
         arrival_seed=3,
         subtalker_dosample_ratio=0.5,
+        inline_ref_audio=True,
+        server_process_id=123,
     )
     with pytest.raises(ValueError) as error:
         await tts.run_tts_seedtts_benchmark(config)
@@ -1276,6 +1336,8 @@ async def test_mixture_config_rejects_settings_the_runner_ignores() -> None:
         "request_rate",
         "arrival_seed",
         "subtalker_dosample_ratio",
+        "inline_ref_audio",
+        "server_process_id",
     ):
         assert name in str(error.value)
 
