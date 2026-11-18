@@ -332,7 +332,7 @@ func Build(in Input) (Output, error) {
 		add("scene", render("scene", map[string]string{"SCENE_PROMPT": Render(strings.TrimSpace(s.Prompt), vars, nil)}))
 	}
 	out := Output{Language: set}
-	g := Glossary(in.Glossary, in.Instruction+"\n"+in.Text, set)
+	g := Glossary(in.Glossary, in.Instruction+"\n"+in.Text+"\n"+in.Typed, set)
 	if len(distinctTerms(in.Glossary)) <= GlossaryAllUpTo {
 		if g != "" {
 			add("glossary", render("glossary", map[string]string{"GLOSSARY": g}))

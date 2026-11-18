@@ -439,7 +439,7 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 		input.AttachmentCount = max(len(a.answer.images), len(a.answer.thumbs))
 	} else if input.Writing {
 		input.AttachmentKind = snapshot.ImageHint
-		if snapshot.ID == a.box.sending {
+		if snapshot.ID == a.box.session || snapshot.ID == a.box.sending {
 			input.AttachmentKind = "box"
 			input.AttachmentCount = max(len(a.box.images), len(a.box.thumbs))
 		}
@@ -458,7 +458,7 @@ func (a *app) refreshSessionCardProjection(projection *sessionOverlayProjection,
 	a.ov.ui.cardThumbs = nil
 	if a.answer.open {
 		a.ov.ui.cardThumbs = a.answer.thumbs
-	} else if a.writingAnswer() && a.sess.ID == a.box.sending {
+	} else if a.writingAnswer() && (a.sess.ID == a.box.session || a.sess.ID == a.box.sending) {
 		a.ov.ui.cardThumbs = a.box.thumbs
 	}
 	input := a.sessionCardProjectionInput()

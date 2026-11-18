@@ -439,7 +439,7 @@ func (r *run) keep(s Snapshot, status store.Status) {
 		TotalMS: s.Timings.Total.Milliseconds(), DSP: s.DSP, GainDB: s.GainDB,
 	}
 	if r.req.Kind == store.KindRewrite {
-		e.PromptText, e.RawText = s.Raw, "" // the spoken instruction
+		e.PromptText, e.RawText = s.Raw, s.Typed // the spoken instruction and typed input
 	}
 	if s.Timings.LLM == 0 {
 		e.LLMProvider, e.LLMModel = "", ""

@@ -544,3 +544,74 @@ func TestRewriteBoxDropKeepsBatchOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestRewriteBoxShortcutWaitsForConversion(t *testing.T) {
+	a := newBoxApp(t, boxScript(t), &fakeChat{text: "A shorter text."})
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	seq := a.boxReserve()
+	a.stopSession()
+	if a.sess.State != session.Recording || !a.boxSendQueued {
+		t.Fatalf("stop went ahead with a picture converting: state %s queued %v", a.sess.State, a.boxSendQueued)
+	}
+	a.boxConverted(a.boxGen, seq, nil, "")
+	a.pump("the queued stop", func() bool { return a.sess.State != session.Recording })
+}
+
+func TestRewriteBoxFollowUpsKeepImages(t *testing.T) {
+	chat := &fakeChat{texts: []string{"First answer.", "Second answer.", "Third answer."}}
+	a := newBoxApp(t, boxScript(t), chat)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(func() { a.boxAttach(boxJPEG(t)) })
+	a.pump("the first answer", func() bool { return a.answer.open })
+	for turn := 1; turn <= 2; turn++ {
+		if !a.followUpAnswer("") {
+			t.Fatalf("follow-up %d did not start", turn)
+		}
+		a.pump("the follow-up recording", func() bool { return a.sess.State == session.Recording })
+		a.stopSession()
+		a.pump("the follow-up answer", func() bool { return a.answer.open && a.sess.State.Ended() })
+		if a.answer.attach != "box" || len(a.answer.images) != 1 || len(a.answer.thumbs) != 1 {
+			t.Fatalf("follow-up %d lost the image: %+v", turn, a.answer)
+		}
+	}
+	for index, request := range chat.requests() {
+		images, _ := request["images"].([][]byte)
+		if len(images) != 1 {
+			t.Errorf("request %d has %d images, want one", index, len(images))
+		}
+	}
+}
+
+func TestBoxPasteRoute(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		formats []transfer.Format
+		files   []string
+		want    boxPasteRoute
+	}{
+		{"finder image and filename", []transfer.Format{transfer.FileList, transfer.Text}, []string{"/tmp/photo.heic"}, boxPasteHelper},
+		{"finder text file", []transfer.Format{transfer.FileList, transfer.Text}, []string{"/tmp/notes.txt"}, boxPasteText},
+		{"jpeg only", []transfer.Format{transfer.Format("image/jpeg")}, nil, boxPasteHelper},
+		{"heic only", []transfer.Format{transfer.Format("image/heic")}, nil, boxPasteHelper},
+		{"png", []transfer.Format{transfer.PNG}, nil, boxPasteDirect},
+		{"text", []transfer.Format{transfer.Text}, nil, boxPasteText},
+		{"empty", nil, nil, boxPasteText},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := boxPasteRouteFor(test.formats, test.files); got != test.want {
+				t.Errorf("route %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRewriteBoxStreamingAttachment(t *testing.T) {
+	a := newBoxApp(t, boxScript(t), &fakeChat{text: "A streaming answer.", delay: 100 * time.Millisecond})
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.postQueue(func() { a.boxAttach(boxJPEG(t)) })
+	a.pump("the streaming answer", func() bool { return a.writingAnswer() })
+	card := a.cachedCard()
+	if card.AttachmentKind != "box" || card.AttachmentCount != 1 || len(a.ov.ui.cardThumbs) != 1 {
+		t.Fatalf("streaming attachment %+v, thumbnails %d", card, len(a.ov.ui.cardThumbs))
+	}
+}

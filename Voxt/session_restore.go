@@ -65,7 +65,11 @@ func cardFromHistory(entries []store.Entry, conversation string) (answerCard, bo
 	for _, entry := range turns {
 		card.id, card.text, card.title, card.llmID = entry.ID, entry.Result, entry.Title, entry.LLMProvider
 		card.target = proto.App{BundleID: entry.AppBundle, Name: entry.AppName}
-		card.input = session.TextInput{Raw: entry.RawText, Selection: entry.SourceText}
+		typed := ""
+		if entry.Kind == store.KindRewrite {
+			typed = entry.RawText
+		}
+		card.input = session.TextInput{Raw: entry.RawText, Selection: entry.SourceText, Typed: typed}
 		if !hasRewrite {
 			card.lang = entry.TargetLang
 			continue
@@ -76,7 +80,7 @@ func cardFromHistory(entries []store.Entry, conversation string) (answerCard, bo
 			instruction = i18n.T("Translate into %s", uitext.TargetLanguageLabel(entry.TargetLang))
 			selection = cmpOr(entry.SourceText, entry.RawText)
 		}
-		card.turns = append(card.turns, compose.Turn{Instruction: instruction, Selection: selection,
+		card.turns = append(card.turns, compose.Turn{Instruction: instruction, Selection: selection, Typed: typed,
 			Answer: compose.Answer{Title: entry.Title, Content: entry.Result}})
 		card.input.Raw = entry.PromptText
 	}

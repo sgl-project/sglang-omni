@@ -23,7 +23,9 @@ package main
 // with the same instruction (StartRequest.Text).
 
 import (
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -256,46 +258,88 @@ func (a *app) boxRemoveImage(i int) {
 	a.boxSync()
 }
 
-// boxPaste is ⌘V in the box: a picture on the clipboard goes into the
-// box (text it also holds wins, as with the copied-image setting); an
-// image file copied in Finder comes through the helper (HEIC too); text
-// pastes as ever. It reports whether the key was taken.
-func (a *app) boxPaste(svc boxUIServices) bool {
-	formats := svc.ClipboardFormats()
-	has := func(f transfer.Format) bool { return slices.Contains(formats, f) }
+type boxPasteRoute int
+
+const (
+	boxPasteText boxPasteRoute = iota
+	boxPasteDirect
+	boxPasteHelper
+)
+
+func boxPasteRouteFor(formats []transfer.Format, files []string) boxPasteRoute {
+	has := func(format transfer.Format) bool { return slices.Contains(formats, format) }
 	switch {
+	case has(transfer.FileList):
+		if boxImageFiles(files) {
+			return boxPasteHelper
+		}
+		return boxPasteText
 	case has(transfer.Text) || has(transfer.HTML):
-		return false
+		return boxPasteText
 	case has(transfer.PNG):
-		raw, err := svc.ReadClipboardData(transfer.PNG).Read(transfer.PNG)
-		if err != nil {
+		return boxPasteDirect
+	case len(formats) > 0:
+		return boxPasteHelper
+	default:
+		return boxPasteText
+	}
+}
+
+func boxImageFiles(files []string) bool {
+	for _, path := range files {
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".png", ".jpg", ".jpeg", ".gif", ".heic", ".heif", ".tif", ".tiff", ".webp":
 			return true
 		}
-		gen := a.boxGen
-		seq := a.boxReserve()
-		a.async(func() {
-			jpeg, err := imgconv.JPEG(raw)
-			a.post(func() {
-				errText := ""
-				if err != nil {
-					errText, jpeg = i18n.T("This image could not be read."), nil
-				}
-				a.boxConverted(gen, seq, jpeg, errText)
-			})
-		})
-		return true
-	case has(transfer.FileList):
-		gen := a.boxGen
-		seq := a.boxReserve()
-		helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
-			if err != nil {
-				res.JPEG = nil
-			}
-			a.boxConverted(gen, seq, res.JPEG, "")
-		})
-		return true
 	}
 	return false
+}
+
+// boxPaste is ⌘V in the box: an image file copied in Finder goes through
+// the helper even when the clipboard also holds its filename; other image
+// formats use the helper too, while text without an image pastes as ever.
+func (a *app) boxPaste(svc boxUIServices) bool {
+	formats := svc.ClipboardFormats()
+	var files []string
+	if slices.Contains(formats, transfer.FileList) {
+		files, _ = svc.ReadClipboardData(transfer.FileList).Files()
+	}
+	route := boxPasteRouteFor(formats, files)
+	if route == boxPasteText {
+		return false
+	}
+	if route == boxPasteHelper {
+		return a.boxPasteFromHelper()
+	}
+	raw, err := svc.ReadClipboardData(transfer.PNG).Read(transfer.PNG)
+	if err != nil {
+		return true
+	}
+	gen := a.boxGen
+	seq := a.boxReserve()
+	a.async(func() {
+		jpeg, err := imgconv.JPEG(raw)
+		a.post(func() {
+			errText := ""
+			if err != nil {
+				errText, jpeg = i18n.T("This image could not be read."), nil
+			}
+			a.boxConverted(gen, seq, jpeg, errText)
+		})
+	})
+	return true
+}
+
+func (a *app) boxPasteFromHelper() bool {
+	gen := a.boxGen
+	seq := a.boxReserve()
+	helperCall(a, proto.MethodClipboardImage, proto.ClipboardImageParams{}, 3*time.Second, func(res proto.ClipboardImageResult, err error) {
+		if err != nil {
+			res.JPEG = nil
+		}
+		a.boxConverted(gen, seq, res.JPEG, "")
+	})
+	return true
 }
 
 // boxDrop takes picture files dropped on the box.

@@ -123,6 +123,10 @@ func (a *app) startTry(kind store.Kind) (string, *sessionNotice) {
 func (a *app) stopSession() {
 	a.closeLangMenu()
 	if a.mgr != nil && a.sess.State == session.Recording {
+		if a.box.open && a.sess.ID == a.box.session && a.boxPending > 0 {
+			a.boxSendQueued = true
+			return
+		}
 		a.mgr.Stop(a.sess.ID)
 	}
 }

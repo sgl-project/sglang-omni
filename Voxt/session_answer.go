@@ -50,6 +50,9 @@ func (a *app) openAnswer(s session.Snapshot) {
 		if a.followUp != "" && a.answer.id == a.followUp {
 			card.turns, card.conv = append(card.turns, a.answer.turns...), a.answer.conv
 			card.conversation, card.ui.quotesOpen = a.answer.conversation, a.answer.ui.quotesOpen
+			if a.answer.attach == "box" {
+				card.attach, card.images, card.thumbs = "box", a.answer.images, a.answer.thumbs
+			}
 			if card.why == "" {
 				card.why = a.answer.why
 			}

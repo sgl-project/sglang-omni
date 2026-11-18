@@ -202,8 +202,9 @@ func TestFollowUpDeadlines(t *testing.T) {
 	long := strings.Repeat("a long selection ", 1250)
 	model := &pacedLLM{scripts: []script{{text: "Shorter."}}}
 	h := newHarness(t, &fakeFile{text: "make it shorter"}, &llm.Client{Backend: model}, nil)
+	typed := strings.Repeat(" typed context", 1000)
 	id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack,
-		Previous: []compose.Turn{{Instruction: "summarise this", Selection: long, Answer: compose.Answer{Content: "A summary."}}}})
+		Previous: []compose.Turn{{Instruction: "summarise this", Selection: long, Typed: typed, Answer: compose.Answer{Content: "A summary."}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +214,7 @@ func TestFollowUpDeadlines(t *testing.T) {
 	}
 	model.mu.Lock()
 	defer model.mu.Unlock()
-	want := h.m.cfg.LLMBase + time.Duration(len(long))*llmPrefillPerChar
+	want := h.m.cfg.LLMBase + time.Duration(len(long)+len(typed))*llmPrefillPerChar
 	if len(model.reqs) != 1 || model.reqs[0].Timeout < want {
 		t.Fatalf("deadline %v, want at least %v", model.reqs[0].Timeout, want)
 	}

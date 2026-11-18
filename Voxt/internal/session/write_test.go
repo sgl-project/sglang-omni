@@ -203,6 +203,21 @@ func TestWrite(t *testing.T) {
 			},
 		},
 		{
+			name: "rewrite with typed input", kind: store.KindRewrite,
+			req: StartRequest{Text: &TextInput{Raw: "polish", Selection: "draft", Typed: "extra"}},
+			llm: &fakeLLM{text: "Polished."}, states: "composing done", state: Done, result: "Polished.", card: deliver.ReasonCard,
+			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
+				request := model.requests()[0]
+				if request.InputChars != len("polishdraftextra") {
+					t.Errorf("input chars %d, want %d", request.InputChars, len("polishdraftextra"))
+				}
+				entry := h.hist.all()[0]
+				if entry.PromptText != "polish" || entry.RawText != "extra" || entry.SourceText != "draft" {
+					t.Errorf("entry %+v", entry)
+				}
+			},
+		},
+		{
 			// Rewrite's card switch off: the rewrite goes over the
 			// selection at once, as a translation does.
 			name: "rewrite the selection, no card", kind: store.KindRewrite, sel: &fakeSelector{text: "hey team, ship friday?"}, llm: &fakeLLM{text: "Team: we ship on Friday."},

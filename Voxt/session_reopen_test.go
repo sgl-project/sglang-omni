@@ -98,6 +98,15 @@ func TestCardFromHistoryTranslation(t *testing.T) {
 	}
 }
 
+func TestCardFromHistoryTypedText(t *testing.T) {
+	entry := reopenEntry("rewrite", "polish", "Polished", time.Now())
+	entry.RawText, entry.SourceText = "typed context", "draft"
+	card, ok := cardFromHistory([]store.Entry{entry}, "rewrite")
+	if !ok || len(card.turns) != 1 || card.turns[0].Typed != "typed context" || card.input.Typed != "typed context" {
+		t.Fatalf("restored %+v", card)
+	}
+}
+
 // Closing a card leaves it in the menu; reopening restores every turn and its
 // target's current process, and Rewrite sends those turns with the follow-up.
 func TestReopenCardAndFollowUp(t *testing.T) {
