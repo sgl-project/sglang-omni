@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "common/tokenizer.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/transcription.h"
 #include "whisper/whisper_model.h"
 
 namespace whisper {
@@ -42,7 +42,7 @@ public:
                      const std::filesystem::path &draft_directory,
                      int draft_steps);
 
-  qwen3_asr::TranscriptionResult
+  omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const WhisperOptions &options,
              const std::atomic<bool> &cancel) const;
 
@@ -65,10 +65,12 @@ private:
   // suppressed logits: sampled at a positive temperature, else the most likely.
   mlx::core::array NextToken(mlx::core::array logits, bool first_step,
                              float temperature) const;
-  WindowResult TranscribeWindow(const std::vector<float> &window_samples,
-                                const std::vector<int> &prompt_ids,
-                                int max_new_tokens, float temperature,
-                                const std::atomic<bool> &cancel) const;
+  // Windows' encoder states [windows, 1500, width] decoded together, one step
+  // for all unfinished ones at a time, or one window alone with the draft.
+  std::vector<WindowResult>
+  TranscribeWindows(const mlx::core::array &encoder_states,
+                    const std::vector<int> &prompt_ids, int max_new_tokens,
+                    float temperature, const std::atomic<bool> &cancel) const;
   // Greedy decoding with the draft after the prompt the caches hold and the
   // first token after it: each round the target verifies the draft's
   // proposals and keeps the agreeing ones plus its own next token.

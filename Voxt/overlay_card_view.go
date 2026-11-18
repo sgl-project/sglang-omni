@@ -52,23 +52,28 @@ func (a *app) overlayCard(c *ui.Context) {
 // medium, large and back, as the feature's page does. It sits in the
 // corner under the text, where the header has no room left at 440.
 func (a *app) cardSizeButton(c *ui.Context, v cardView) {
-	step := a.prefs.Features.CardSize(string(v.kind))
+	if next, ok := sizeStepButton(c.Key("ov-card-size"), a.prefs.Features.CardSize(string(v.kind))); ok {
+		a.closeLangMenu()
+		a.setCardSize(string(v.kind), next)
+	}
+}
+
+// sizeStepButton is the corner button that steps a card from size step
+// to the next, and from the largest back to the smallest.
+func sizeStepButton(c *ui.Context, step int) (next int, clicked bool) {
 	label, icon, next := i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic, step+1
 	if next == settings.CardSizeSteps {
 		label, icon, next = i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic, 0
 	}
-	b := ui.ButtonBase(c.Key("ov-card-size")).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
+	b := ui.ButtonBase(c).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
 		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
 	alpha := float32(0.42)
 	if b.Hovered() {
 		alpha = 0.92
 	}
-	if b.Children(func() {
+	return next, b.Children(func() {
 		ui.Icon(c, icon.Linear).Size(layout.CardSizeBtnIcon, layout.CardSizeBtnIcon).TextColor(ui.RGBA(255, 255, 255, alpha))
-	}).Clicked() {
-		a.closeLangMenu()
-		a.setCardSize(string(v.kind), next)
-	}
+	}).Clicked()
 }
 
 // cardHeader is the card's header: what it is, then what it offers.
@@ -94,7 +99,10 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		if v.busy {
 			// Voxt's spinner: an arc turning once in 0.9 s, 88 %.
 			busy := i18n.T("Translating…")
-			if v.writing {
+			switch {
+			case v.writing && v.kind == store.KindTranscribe:
+				busy = i18n.T("Cleaning up…")
+			case v.writing && v.kind == store.KindRewrite:
 				busy = i18n.T("Writing…")
 			}
 			ui.Icon(c, icons.VoxtSpinner.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.88)).Shrink(0).
@@ -110,6 +118,10 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 		if cardCapsule(c.Key("ov-card-stop-answer"), i18n.T("Stop"), i18n.T("Stop writing and keep the text so far")) {
 			a.closeLangMenu()
 			a.stopLLM()
+		}
+	case v.canUseTranscript:
+		if cardCapsule(c.Key("ov-card-use-transcript"), i18n.T("Use transcript"), "") {
+			a.skipLLM()
 		}
 	case v.canStop:
 		if cardCapsule(c.Key("ov-card-stop"), i18n.T("Done"), i18n.T("Stop recording the follow-up")) {
@@ -127,7 +139,7 @@ func (a *app) cardHeader(c *ui.Context, v cardView) {
 			a.retryAnswer("")
 		}
 	}
-	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking"), thinkText(v.think), icons.Tuning2, v.canThink) {
+	if v.thinks && cardIconButton(c.Key("ov-card-think"), i18n.T("Thinking level"), askAgainText(v.think, a.llmGeneration(a.answer.llmID)), icons.Tuning2, v.canThink) {
 		a.toggleThinkMenu()
 	}
 	if v.failed == nil {
@@ -284,6 +296,20 @@ func cardWave(c *ui.Context, v cardView, motion bool, phase float64) {
 // conversation follows its newest turn, and a first answer its newest
 // words as the model writes them, while they show the end.
 func (a *app) cardBody(c *ui.Context, v cardView, bodyH float32) {
+	blocks := cardBlocks(v)
+	count := 0
+	if v.conversation {
+		count = len(blocks)
+	}
+	a.trimBubblePreviews(count)
+	if !v.conversation && v.failed == nil && bodyH > 0 {
+		t := c.Theme()
+		in := transcriptPreviewInput{key: a.cardPreviewKey(), source: v.text, size: layout.CardTextSize, text: ovCardText, link: t.Accent, background: ui.RGB(22, 22, 26), dark: true, streaming: v.writing}
+		if preview := a.overlayTranscript.place(c.Key("ov-transcript"), a.ov.win, in, bodyH, bodyH); preview.Valid() {
+			preview.Margin(layout.CardRuleGap, layout.CardInset, 0, 0)
+			return
+		}
+	}
 	st := &a.ov.cardScroll
 	key := a.answer.id + "/" + a.sess.ID
 	if v.conversation {
@@ -301,7 +327,7 @@ func (a *app) cardBody(c *ui.Context, v cardView, bodyH float32) {
 	}
 	ui.Scroll(c.Key("ov-card-body")).Height(bodyH).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).TrackScroll(st).Children(func() {
 		ui.Column(c).Padding(0, layout.CardInset, 0, 0).Children(func() {
-			for i, b := range cardBlocks(v) {
+			for i, b := range blocks {
 				a.cardBlockView(c.Key(i), b)
 			}
 		})
@@ -341,7 +367,9 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 		justify, bg, line, titleA = ui.End, ui.RGBA(255, 255, 255, 0.1), ui.RGBA(255, 255, 255, 0.12), 0.7
 	}
 	if b.live {
-		textA = 0.84
+		if b.user {
+			textA = 0.84
+		}
 		if !b.user {
 			titleA = 0.54
 		}
@@ -357,12 +385,14 @@ func (a *app) cardBubbleView(c *ui.Context, b cardBlock) {
 			if b.title.text != "" {
 				ui.Text(c, b.title.text).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleA)).SingleLine().Ellipsis("…").MaxWidth(b.text.wrap)
 			}
-			t := ui.Text(c, b.text.text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textA))
-			if b.user {
-				t.TextAlign(ui.End)
-			}
-			if !b.live {
-				t.Selectable()
+			if !a.bubblePreview(c, b, ui.RGBA(255, 255, 255, textA)) {
+				t := ui.Text(c, b.text.text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textA))
+				if b.user {
+					t.TextAlign(ui.End)
+				}
+				if !b.live {
+					t.Selectable()
+				}
 			}
 			if b.quote.text != "" {
 				a.cardQuoteView(c, b)

@@ -149,6 +149,9 @@ type remoteState struct {
 	// keyMasks are the saved keys' masks by account (the signed-in email
 	// for ChatGPT), "" for none; an account not in it was not read yet.
 	keyMasks map[string]string
+	// keySpaced are the accounts whose saved key has whitespace in it
+	// (saved before Save dropped it), which services refuse.
+	keySpaced map[string]bool
 	// provTests are the last connection tests, by account.
 	provTests map[string]providerTest
 	provDlg   providerDialog
@@ -168,6 +171,7 @@ type providerTest struct {
 func (a *app) withRemote(base local.Services) local.Services {
 	a.keys = newKeyring()
 	a.keyMasks = map[string]string{}
+	a.keySpaced = map[string]bool{}
 	a.provTests = map[string]providerTest{}
 	a.remote = providers.NewServices(base, setupName, a.openRemote, a.openSpeech)
 	a.readUnreadKeys()
@@ -255,17 +259,20 @@ func (a *app) loadKeyMasks(accounts []string) {
 	}
 	kr := a.keys
 	a.async(func() {
-		masks := map[string]string{}
+		masks, spaced := map[string]string{}, map[string]bool{}
 		for _, acct := range accounts {
 			v, err := kr.Get(acct)
 			if err != nil {
 				v = ""
 			}
 			masks[acct] = maskFor(acct, v)
+			_, inner := secrets.Clean(v)
+			spaced[acct] = inner > 0 && acct != chatgptAccount()
 		}
 		a.post(func() {
 			for k, v := range masks {
 				a.keyMasks[k] = v
+				a.keySpaced[k] = spaced[k]
 			}
 			a.syncRemote()
 		})

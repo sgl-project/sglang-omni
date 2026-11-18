@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/qwen3_asr_model.h"
+#include "common/kv_cache.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,6 +10,10 @@
 #include <vector>
 
 namespace qwen3_asr {
+
+using omni_common::Qwen3DecoderConfig;
+
+using omni_common::KVCache;
 
 namespace mx = mlx::core;
 
@@ -29,6 +34,20 @@ mx::array SinusoidalPositions(int length, int channels) {
   return mx::concatenate({mx::sin(scaled_time), mx::cos(scaled_time)}, 1);
 }
 
+// Note (XXXXRT666): the audio tower runs in float16. Its bfloat16 weights
+// would otherwise be promoted to the float32 log-mel's dtype, recast on every
+// call, and keep the convolutions and GEMMs in float32.
+omni_common::WeightMap HalfPrecisionAudioTower(omni_common::WeightMap weights) {
+  for (auto &[name, weight] : weights) {
+    if (name.starts_with("audio_tower.") &&
+        mx::issubdtype(weight.dtype(), mx::floating)) {
+      weight = mx::astype(weight, mx::float16);
+    } else {
+    }
+  }
+  return weights;
+}
+
 } // namespace
 
 Qwen3ASR::Qwen3ASR(const std::filesystem::path &model_directory)
@@ -37,7 +56,9 @@ Qwen3ASR::Qwen3ASR(const std::filesystem::path &model_directory)
 
 Qwen3ASR::Qwen3ASR(const nlohmann::json &config,
                    const std::filesystem::path &model_directory)
-    : checkpoint_(omni_common::LoadSafetensors(model_directory), config),
+    : checkpoint_(HalfPrecisionAudioTower(
+                      omni_common::LoadSafetensors(model_directory)),
+                  config),
       decoder_(checkpoint_, "model",
                Qwen3DecoderConfig::FromJson(
                    config.at("thinker_config").at("text_config"))) {
@@ -93,6 +114,7 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
   const int chunk_frame_count = audio_.n_window * 2;
   const int frame_count = mel.shape(-1);
   const int mel_bins = mel.shape(0);
+  const mx::array half_mel = mx::astype(mel, mx::float16);
   std::vector<int> chunk_starts;
   std::vector<int> chunk_lengths;
   for (int start = 0; start < frame_count; start += chunk_frame_count) {
@@ -115,7 +137,7 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
     std::vector<mx::array> padded_chunks;
     for (int i = block_start; i < block_end; ++i) {
       const mx::array chunk =
-          mx::slice(mel, {0, chunk_starts[i]},
+          mx::slice(half_mel, {0, chunk_starts[i]},
                     {mel_bins, chunk_starts[i] + chunk_lengths[i]});
       padded_chunks.push_back(
           mx::pad(chunk, {{0, 0}, {0, longest_chunk - chunk_lengths[i]}}));
@@ -145,8 +167,10 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
                                        : mx::concatenate(conv_blocks, 0),
                                    "audio_tower.conv_out");
   const int conv_frames = x.shape(1);
-  x = mx::add(
-      x, mx::expand_dims(SinusoidalPositions(conv_frames, audio_.d_model), 0));
+  x = mx::add(x, mx::expand_dims(mx::astype(SinusoidalPositions(conv_frames,
+                                                                audio_.d_model),
+                                            x.dtype()),
+                                 0));
 
   std::vector<int> credited_lengths;
   for (const int length : chunk_lengths) {
@@ -241,15 +265,14 @@ mx::array Qwen3ASR::Decode(const mx::array &embeddings,
   return decoder_.LastLogits(decoder_.Forward(embeddings, caches));
 }
 
-mx::array Qwen3ASR::DecodeBatch(const mx::array &embeddings,
-                                std::vector<BatchedKVCache> &caches,
-                                const mx::array &offsets,
-                                const mx::array &pads) const {
-  return decoder_.DecodeBatch(embeddings, caches, offsets, pads);
-}
-
 std::vector<KVCache> Qwen3ASR::NewCaches() const {
   return decoder_.NewCaches();
+}
+
+int Qwen3ASR::WindowFrameCount() const {
+  const int chunk_frame_count = audio_.n_window * 2;
+  return std::max(1, audio_.n_window_infer / chunk_frame_count) *
+         chunk_frame_count;
 }
 
 } // namespace qwen3_asr

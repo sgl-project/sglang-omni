@@ -58,12 +58,13 @@ func (a *app) commands() []command {
 
 	look := i18n.T("Appearance")
 	for _, th := range []struct{ id, title, en string }{
-		{"system", i18n.T("Theme: follow the system"), "Theme: follow the system"},
-		{"light", i18n.T("Theme: light"), "Theme: light"},
-		{"dark", i18n.T("Theme: dark"), "Theme: dark"},
+		{settings.ThemeSystem, i18n.T("Theme: follow the system"), "Theme: follow the system"},
+		{settings.ThemeDark, i18n.T("Theme: dark"), "Theme: dark"},
+		{settings.ThemeLight, i18n.T("Theme: light"), "Theme: light"},
+		{settings.ThemeTransparent, i18n.T("Theme: transparent"), "Theme: transparent"},
 	} {
 		add("theme/"+th.id, look, th.title, th.en, "", a.prefs.Appearance.Theme != th.id, func() {
-			a.updateSettings(func(s *settings.Settings) { s.Appearance.Theme = th.id })
+			a.setAppearanceMode(th.id)
 		})
 	}
 	lang := i18n.T("Language")
@@ -325,13 +326,11 @@ func (a *app) buildMenu() {
 	}
 	// Check for Updates… goes after About (updates.go).
 	appItems := append([]*mygo.MenuItem{{Role: mygo.RoleAbout, Label: i18n.T("About Voxt")}}, a.updateMenuItems(act)...)
-	if a.meetingEnabled() {
-		appItems = append(appItems, &mygo.MenuItem{Label: i18n.T("Start meeting"), Click: act(func() {
-			if !a.meetingActive() {
-				a.startMeeting()
-			}
-		})})
-	}
+	appItems = append(appItems, &mygo.MenuItem{Label: i18n.T("Start meeting"), Click: act(func() {
+		if !a.meetingActive() {
+			a.startMeeting()
+		}
+	})})
 	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 		{Label: "Voxt", Submenu: append(appItems,
 			mygo.Separator(),

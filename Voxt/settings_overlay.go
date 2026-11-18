@@ -205,7 +205,7 @@ func (a *app) overlayPreview(c *ui.Context) {
 			place.Bottom(off)
 		}
 		place.Children(func() {
-			c.SetTheme(overlayTheme())
+			c.SetTheme(a.overlayTheme())
 			row, _ := recordingPillRow(s, true, o.ShowTime, 0, func(k ovSized) (float32, bool) {
 				width, _ := c.MeasureText(k.wrap, k.span())
 				return width, true
@@ -216,7 +216,7 @@ func (a *app) overlayPreview(c *ui.Context) {
 				// too to paint over the blur.
 				ui.Box(c).Absolute().Fill().Radius(radius).Material(glass.Blur{Radius: 8})
 				face := ui.Column(c.Key("ov-preview-face")).Absolute().Left(0).Top(0).Right(0).Bottom(0)
-				faceStyle(face, o, ovRecording, layout.PillH).Children(func() {
+				faceStyle(c, face, o, ovRecording, layout.PillH).Children(func() {
 					overlayPill(c, s, ovRecording, pillLook{time: o.ShowTime, w: w}, "")
 				})
 			})

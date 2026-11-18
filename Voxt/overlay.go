@@ -170,6 +170,8 @@ func (a *app) overlayModeNow() overlayMode {
 	live := s.State.Live() && !s.Try
 	card := a.answer.open && (!live || a.cardSessionLive())
 	switch {
+	case a.notice != nil && a.notice.over:
+		return ovNotice // the card that came back shows when the notice goes
 	case card && a.answer.inserting:
 		return ovHidden // Insert pastes: the card comes back if it could not (Voxt's)
 	case card, live && a.writingAnswer():
@@ -285,11 +287,12 @@ func (a *app) overlayDragged() {
 }
 
 // syncPassThrough lets the pointer through the small pill (recording,
-// working: nothing in it takes a click, but Use transcript), but not through the face with
+// working: nothing in it takes a click, but Use transcript and the
+// thinking capsule), but not through the face with
 // live text in lines (Overlay.LiveLines): it is dragged as the card is,
 // and the wheel scrolls its text.
 func (a *app) syncPassThrough() {
-	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking && !canSkip(a.sess, ovWorking)) && !a.prefs.Overlay.LiveLines
+	pass := (a.ov.mode == ovRecording || a.ov.mode == ovWorking && !canSkip(a.sess, ovWorking) && !a.pillThinks(ovWorking)) && !a.prefs.Overlay.LiveLines
 	if pass == a.ov.passThrough {
 		return
 	}
@@ -408,11 +411,19 @@ func (a *app) closeOverlay() {
 	a.ov.shown, a.ov.visible = false, false
 }
 
-// overlayTheme is the overlay's theme: the dark tokens, always.
-func overlayTheme() *ui.Theme {
+// overlayTheme uses the chosen palette's dark variant for the HUD.
+func (a *app) overlayTheme() *ui.Theme {
 	th := *ui.DarkTheme()
-	styleTheme(&th)
+	styleTheme(&th, a.prefs.Appearance.Palette)
 	return &th
+}
+
+func (a *app) invalidatePaletteOverlays() {
+	for _, window := range []*mygo.Window{a.ov.win, a.ov.lang.win, a.meetOvWin} {
+		if window != nil {
+			window.Invalidate()
+		}
+	}
 }
 
 // overlayMotion says whether the waveform and the loader move.

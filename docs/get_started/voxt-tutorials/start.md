@@ -2,21 +2,21 @@
 
 [English](en/start.md)
 
-使用 Apple 芯片的 Mac 需要 macOS 15 或更新版本。第一次安装，选 **Voxt 2.0.3 正式版**。需要验证最新改动时，选下方的 Beta 路线。
+使用 Apple 芯片的 Mac 需要 macOS 15 或更新版本。第一次安装，选 **Voxt 2.1.0 正式版**。需要验证最新改动时，选下方的 Beta 路线。
 
-## 下载 2.0.3 正式版
+## 下载 2.1.0 正式版
 
-[一键下载 Voxt 2.0.3（Apple 芯片）](https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg)
+[一键下载 Voxt 2.1.0（Apple 芯片）](https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.0/Voxt-2.1.0-arm64.dmg)
 
 也可以从以下入口找到同一个版本号的安装包。
 
 - 仓库首页往下到 **News**，找到 **Voxt 2.0**，点 **Download**。 [SGLang Omni News](https://github.com/sgl-project/sglang-omni#news)
-- 在 **Voxt v2.0.3** 发布页展开 **Assets**，点 `Voxt-2.0.3-arm64.dmg`。 [GitHub Releases](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.0.3)
-- 在 **v2.0.3** 条目点 **Download**。Changelog 可能给这条加上 **Beta** 标签，选择文件名为 `Voxt-2.0.3-arm64.dmg` 的包。 [Voxt Changelog](https://voxt.actnow.dev/changelog)
+- 在 **Voxt v2.1.0** 发布页展开 **Assets**，点 `Voxt-2.1.0-arm64.dmg`。 [GitHub Releases](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.1.0)
+- 在 **v2.1.0** 条目点 **Download**。Changelog 可能给这条加上 **Beta** 标签，选择文件名为 `Voxt-2.1.0-arm64.dmg` 的包。 [Voxt Changelog](https://voxt.actnow.dev/changelog)
 
 ## 下载 Beta
 
-`main` 每合入一次 Voxt 的改动，就会自动构建一个 Beta，版本号形如 `2.0.3-beta.YYYYMMDD.N`（日期加构建序号）。Beta 比正式版新，也可能不稳定。
+`main` 每合入一次 Voxt 的改动，就会自动构建一个 Beta，版本号形如 `2.1.1-beta.YYYYMMDD.N`（日期加构建序号）。Beta 比正式版新，也可能不稳定。
 
 当前最新的是 **Voxt Beta #40**：[下载 `Voxt-2.0.3-beta.20261112.40-arm64`](https://github.com/sgl-project/sglang-omni/actions/runs/43128787320/artifacts/13904657773)（约 33 MB，需要登录 GitHub，2026 年 11 月 26 日过期）。过期后，或者想找更新的构建：
 
@@ -56,4 +56,4 @@ Beta 不会自己更新：想换更新的 Beta，或者回到正式版，重新�
 
 ## 交给 Agent
 
-> 按本页在 Apple 芯片 Mac 上安装 Voxt 2.0.3 正式版。只有我明确要求 Beta 时才下载 Actions 的 Beta 包。遇到替换旧版、导入历史或 macOS 权限授权时让我确认。下载推荐的本地语音识别模型，等到显示可用。用空白文本框和一句测试内容确认转录能输出，告诉我安装的版本和结果。
+> 按本页在 Apple 芯片 Mac 上安装 Voxt 2.1.0 正式版。只有我明确要求 Beta 时才下载 Actions 的 Beta 包。遇到替换旧版、导入历史或 macOS 权限授权时让我确认。下载推荐的本地语音识别模型，等到显示可用。用空白文本框和一句测试内容确认转录能输出，告诉我安装的版本和结果。

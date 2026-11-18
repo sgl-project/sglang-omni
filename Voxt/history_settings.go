@@ -136,12 +136,7 @@ func (a *app) histRecordingsSection(c *ui.Context) {
 	h := a.lib.store.History()
 	busy := hs.busy != ""
 	sectionTitleText(c, i18n.T("Recordings"))
-	settingRow(c, "hist-set-audio", i18n.T("Keep recordings"), i18n.T("When off, failed or cancelled recordings are still kept for 7 days so you can retry them."), func() {
-		if ui.Switch(c.Key("hist-set-audio"), &a.settingsForm.keepAudio).Label(i18n.T("Save each recording")).Disabled(!a.prefs.Privacy.KeepHistory).Changed() {
-			on := a.settingsForm.keepAudio
-			a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepAudio = on })
-		}
-	})
+	// Keep recordings is Settings → Privacy's switch only (#3895).
 	chosen := a.prefs.History.AudioDir
 	shown := chosen
 	if shown == "" {
