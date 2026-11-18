@@ -37,8 +37,9 @@ def test_upsampling_preserves_filters_and_skips_zero_padding(
     monkeypatch: pytest.MonkeyPatch, causal: bool, fixed_filter: bool
 ) -> None:
     module = UpSample1d(
-        channels=3, causal=causal, fixed_filter=fixed_filter, ratio=2, kernel_size=11
+        channels=3, causal=causal, fixed_filter=fixed_filter, ratio=2, kernel_size=3
     ).double()
+    assert module.pad == 0
     generator = torch.Generator().manual_seed(42)
     with torch.no_grad():
         module.filter.copy_(torch.randn(module.filter.shape, generator=generator))
@@ -102,7 +103,10 @@ def test_npu_native_upsampling_preserves_long_waveforms(
         torch.device(current_platform.device_type, device_module.current_device())
     )
     adapt_audio_vae_upsampling(module)
-    assert module.forward.__func__ is codec_module.upsample_forward
+    expected_forward = (
+        codec_module.upsample_forward if module.pad == 0 else UpSample1d.forward
+    )
+    assert module.forward.__func__ is expected_forward
     actual = module(waveform.to(module.filter.device)).cpu()
     assert torch.isfinite(actual).all()
     torch.testing.assert_close(actual, expected, rtol=1e-3, atol=3e-4)

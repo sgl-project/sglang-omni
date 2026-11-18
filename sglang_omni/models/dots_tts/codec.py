@@ -49,10 +49,6 @@ def decoder_forward(module: nn.Module, latents: torch.Tensor) -> torch.Tensor:
 
 def upsample_forward(module: UpSample1d, waveform: torch.Tensor) -> torch.Tensor:
     channels = waveform.shape[1]
-    if module.pad:
-        waveform = F.pad(waveform, (module.pad, module.pad), mode="replicate")
-    else:
-        pass
     weight = (
         module.filter.expand(channels, -1, -1) if module.fixed_filter else module.filter
     )
@@ -72,6 +68,7 @@ def adapt_audio_vae_upsampling(audio_vae: torch.nn.Module) -> None:
         for module in audio_vae.modules():
             if (
                 isinstance(module, UpSample1d)
+                and module.pad == 0
                 and module.filter.device.type == current_platform.device_type
             ):
                 module.forward = MethodType(upsample_forward, module)

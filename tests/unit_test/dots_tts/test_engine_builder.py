@@ -98,11 +98,6 @@ def test_vocoder_decoder_precision_validation(
         "resolve_concrete_device",
         lambda *_args: SimpleNamespace(type=device_type),
     )
-    monkeypatch.setattr(
-        stages,
-        "current_platform",
-        SimpleNamespace(is_npu=lambda: device_type == "npu", device_type=device_type),
-    )
 
     class CodecReached(Exception):
         pass
