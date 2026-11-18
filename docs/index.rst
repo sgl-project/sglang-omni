@@ -246,3 +246,10 @@ Community & Resources
    developer_reference/rl_admin_control.md
    developer_reference/ci_labels.md
    developer_reference/bump_version.md
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Duo backend
+
+   developer_reference/realtime_video_output
+   models/duo
