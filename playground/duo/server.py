@@ -780,7 +780,7 @@ def main() -> None:
     parser.add_argument("--backend-url", required=True)
     parser.add_argument("--sample-directory", type=Path, required=True)
     parser.add_argument("--portrait-directory", type=Path, required=True)
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18081)
     options = parser.parse_args()
     logging.basicConfig(level=logging.INFO)

@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'HELP'
+Usage: sgl-omni-duo {prepare|merge|asr|backend|web} [extra arguments]
+Run asr, backend, and web in separate terminals in the same Python environment.
+Open http://localhost:18081. Only loopback interfaces are bound by default.
+DUO_MODEL_DIR contains Duo-1.0-causal-base, Duo-1.0-distill and prepared outputs.
+DUO_ASSET_DIR contains sample/ and portraits/. See the Duo deployment README.
+HELP
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  prepare|merge|asr|backend|web) stage=$1; shift ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [[ -f "$script_dir/server.py" && -f "$script_dir/../../scripts/serve_duo_realtime.py" ]]; then
+  web_dir=$script_dir
+  tools_dir=$script_dir/../../scripts
+else
+  web_dir=$script_dir/../share/sglang-omni/duo
+  tools_dir=$web_dir/scripts
+fi
+python_bin=${PYTHON_BIN:-python}
+asr_port=${DUO_ASR_PORT:-18084}
+backend_port=${DUO_BACKEND_PORT:-18082}
+
+if [[ "$stage" == web ]]; then
+  : "${DUO_ASSET_DIR:?Set DUO_ASSET_DIR to the directory containing sample/ and portraits/}"
+  exec "$python_bin" "$web_dir/server.py" --host 127.0.0.1 --port "${DUO_WEB_PORT:-18081}" \
+    --backend-url "http://127.0.0.1:$backend_port" --sample-directory "$DUO_ASSET_DIR/sample" \
+    --portrait-directory "$DUO_ASSET_DIR/portraits" "$@"
+fi
+
+: "${DUO_MODEL_DIR:?Set DUO_MODEL_DIR to the local model directory}"
+base=$DUO_MODEL_DIR/Duo-1.0-causal-base
+prepared=$DUO_MODEL_DIR/prepared-duo
+intent=$DUO_MODEL_DIR/duo-intent-merged
+case "$stage" in
+  prepare)
+    exec "$python_bin" "$tools_dir/prepare_duo_models.py" --release "$DUO_MODEL_DIR/Duo-1.0-distill" \
+      --base-release "$base" --codec-config-dir "${DUO_CODEC_CONFIG_DIR:?Set DUO_CODEC_CONFIG_DIR to the Codec YAML directory}" \
+      --output "$prepared" --rope new --adaln-timestep new "$@" ;;
+  merge)
+    exec "$python_bin" "$tools_dir/merge_duo_intent_adapter.py" --intent "$base/intent" \
+      --intent-adapter "$base/intent_adapter" --output "$intent" "$@" ;;
+  asr)
+    export CUDA_VISIBLE_DEVICES=${DUO_ASR_GPU:-3}
+    exec "$python_bin" -m sglang_omni.cli serve --host 127.0.0.1 --port "$asr_port" \
+      --model-path "$base/speech/recognizer" --model-name duo-asr \
+      --asr.engine.max_running_requests 1 --asr.engine.enable_torch_compile false \
+      --asr.engine.mem_fraction_static 0.1 --asr.factory.pre_lm_cache_max_entries 1 \
+      --asr.factory.prefill_coalesce_wait_ms 0.01 "$@" ;;
+  backend)
+    export TORCHTITAN_LIVE=1
+    export OMP_NUM_THREADS=${OMP_NUM_THREADS:-4} MKL_NUM_THREADS=${MKL_NUM_THREADS:-4}
+    export TOKENIZERS_PARALLELISM=false SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0
+    exec "$python_bin" "$tools_dir/serve_duo_realtime.py" --host 127.0.0.1 --port "$backend_port" \
+      --codec-model-path "$prepared/codec" --intent-model-path "$intent" --intent-adapter-path "$base/intent_adapter" \
+      --intent-backend native --intent-tp-size 4 --intent-worker-devices 0 1 2 3 \
+      --realization-checkpoint "$prepared/realization" --realization-backend native --realization-stage dmd \
+      --steps 4 --flow-shift 5 --realization-tp-size 8 --realization-sp-size 1 \
+      --realization-device cuda:0 --realization-worker-devices 0 1 2 3 4 5 6 7 --realization-optimize-copy-sync --overlap-intent-codec \
+      --realization-kv-window-tokens 65536 --realization-reference-window-chunks 14 \
+      --realization-kv-workspace-capacity-tokens 131072 --codec-device cuda:4 --codec-worker-devices 4 5 6 7 \
+      --codec-decode-backend solarx --codec-attention-backend torch_cudnn_sdpa \
+      --max-context-tokens 32768 --intent-kv-window-tokens 32768 --asr-base-url "http://127.0.0.1:$asr_port/v1" \
+      --asr-model-name duo-asr --height 768 --width 576 "$@" ;;
+esac

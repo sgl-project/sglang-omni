@@ -43,38 +43,7 @@ Merge the matching Intent adapter before launching native Qwen TP workers. Keep 
 
 An eight-GPU deployment places Intent TP4 on GPUs 0–3, Realization TP8 on GPUs 0–7, and four-tile Codec decoding on GPUs 4–7. Intent for the next block can overlap Codec for the previous block; Realization waits for shared GPU work before starting. Codec tiling is spatial tile parallelism, not transformer TP.
 
-Start Qwen3-ASR in a separate terminal using the same environment:
-
-```bash
-CUDA_VISIBLE_DEVICES=3 python -m sglang_omni.cli serve \
-  --model-path /models/Duo-1.0-causal-base/speech/recognizer --model-name duo-asr \
-  --asr.engine.max_running_requests 1 --asr.engine.enable_torch_compile false \
-  --asr.engine.mem_fraction_static 0.1 --port 18084
-```
-
-```bash
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 TOKENIZERS_PARALLELISM=false
-export SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0
-python scripts/serve_duo_realtime.py \
-  --codec-model-path /models/prepared-duo/codec \
-  --intent-model-path /models/duo-intent-merged \
-  --intent-adapter-path /models/Duo-1.0-causal-base/intent_adapter \
-  --intent-backend native --intent-tp-size 4 --intent-worker-devices 0 1 2 3 \
-  --realization-checkpoint /models/prepared-duo/realization \
-  --realization-backend native --realization-stage dmd --steps 4 --flow-shift 5 \
-  --realization-tp-size 8 --realization-sp-size 1 \
-  --realization-worker-devices 0 1 2 3 4 5 6 7 \
-  --realization-optimize-copy-sync --overlap-intent-codec \
-  --realization-kv-window-tokens 65536 --realization-reference-window-chunks 14 \
-  --realization-kv-workspace-capacity-tokens 131072 \
-  --realization-kv-reset-interval-blocks 43 \
-  --codec-device cuda:4 --codec-worker-devices 4 5 6 7 \
-  --codec-decode-backend solarx --codec-attention-backend torch_cudnn_sdpa \
-  --max-context-tokens 32768 --intent-kv-window-tokens 32768 \
-  --asr-base-url http://127.0.0.1:18084/v1 --asr-model-name duo-asr \
-  --height 768 --width 576 --port 18082
-```
+The CUDA wheel installs the `sgl-omni-duo` launcher. From a source checkout you can also use `./playground/duo/sgl-omni-duo`. Follow the [local deployment commands](../../playground/duo/README.md) to start ASR, the backend and the playground. All three services bind to IPv4 loopback by default.
 
 The realtime audio/video path requires ASR for input PCM, including silent PCM blocks. ASR is not silently enabled when its endpoint is omitted.
 

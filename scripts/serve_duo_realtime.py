@@ -243,7 +243,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--warmup-blocks", type=int, default=40)
     parser.add_argument("--warmup-description", type=Path)
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8089)
     parser.add_argument(
         "--no-cuda-graph",

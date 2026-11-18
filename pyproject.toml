@@ -189,6 +189,14 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "!sglang_omni/**" = ["ANN401"]
 
+[tool.setuptools]
+script-files = ["playground/duo/sgl-omni-duo"]
+
+[tool.setuptools.data-files]
+"share/sglang-omni/duo" = ["playground/duo/server.py", "playground/duo/*.js", "playground/duo/index.html", "playground/duo/style.css", "playground/duo/personas.json", "playground/duo/README.md"]
+"share/sglang-omni/duo/scripts" = ["scripts/prepare_duo_models.py", "scripts/merge_duo_intent_adapter.py", "scripts/serve_duo_realtime.py"]
+"share/sglang-omni/duo/docs" = ["docs/models/duo.md"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
