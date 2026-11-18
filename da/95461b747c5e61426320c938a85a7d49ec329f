@@ -1,0 +1,25 @@
+sglang_omni/config/manager.py
+  s_9be4bd449be508::t_7dc860d0ee0897 38-39
+sglang_omni/models/duo/pipeline.py
+  s_9be4bd449be508::t_fc556014d66b09 101-102
+sglang_omni/models/duo/realtime.py
+  s_9be4bd449be508::t_75d26685e61e83 310-315
+sglang_omni/serve/launcher.py
+  s_9be4bd449be508::t_a55e44bc114e7f 835-836,901-902
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "da95461b747c5e61426320c938a85a7d49ec329f",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
