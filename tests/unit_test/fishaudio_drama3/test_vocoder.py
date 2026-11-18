@@ -18,6 +18,7 @@ from dac.nn.layers import Snake1d
 
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
+    PhaseLinearUpsample,
     add_bias,
     snake_channels_last_kernel,
 )
@@ -2091,3 +2092,99 @@ def test_incremental_and_fallback_windows_record_actual_decode_frames(
         [4, 14, 26, 58, 44] if fallback else emitted
     )
     assert starts[-1]["metadata"]["is_final"] == 1
+
+
+@pytest.mark.parametrize(
+    ("device", "dtype", "tolerance"),
+    [
+        ("cpu", torch.float64, 1e-12),
+        pytest.param("cuda", torch.float16, 1e-3, marks=pytest.mark.accelerator),
+    ],
+)
+@pytest.mark.parametrize("stride_frames", [1, 2, 4])
+@pytest.mark.parametrize("has_bias", [False, True])
+@pytest.mark.parametrize("frame_count", [1, 11])
+def test_phase_projection_preserves_transposed_convolution_samples(
+    device: str,
+    dtype: torch.dtype,
+    tolerance: float,
+    stride_frames: int,
+    has_bias: bool,
+    frame_count: int,
+) -> None:
+    if device == "cuda":
+        require_cuda()
+    else:
+        pass
+    torch.manual_seed(frame_count + stride_frames)
+    convolution = torch.nn.ConvTranspose1d(
+        4, 6, stride_frames, stride=stride_frames, bias=has_bias
+    ).to(device=device, dtype=dtype)
+    upsample = PhaseLinearUpsample(convolution)
+    hidden_states = torch.randn(2, 4, frame_count * 2, device=device, dtype=dtype)[
+        ..., ::2
+    ]
+
+    with torch.no_grad():
+        expected = convolution(hidden_states)
+        actual = upsample(hidden_states)
+
+    assert actual.is_contiguous()
+    torch.testing.assert_close(actual, expected, rtol=tolerance, atol=tolerance)
+
+
+@pytest.mark.parametrize(
+    ("kernel_size", "stride_frames", "groups", "dilation", "padding", "output_padding"),
+    [
+        (4, 2, 1, 1, 0, 0),
+        (2, 2, 2, 1, 0, 0),
+        (2, 2, 1, 2, 0, 0),
+        (2, 2, 1, 1, 1, 0),
+        (2, 2, 1, 1, 0, 1),
+    ],
+)
+def test_phase_projection_rejects_unsupported_convolutions(
+    kernel_size: int,
+    stride_frames: int,
+    groups: int,
+    dilation: int,
+    padding: int,
+    output_padding: int,
+) -> None:
+    convolution = torch.nn.ConvTranspose1d(
+        4,
+        6,
+        kernel_size,
+        stride=stride_frames,
+        groups=groups,
+        dilation=dilation,
+        padding=padding,
+        output_padding=output_padding,
+    )
+    with pytest.raises(ValueError, match="non-overlapping"):
+        PhaseLinearUpsample(convolution)
+
+
+@pytest.mark.accelerator
+def test_phase_projection_keeps_the_codec_available_for_stateful_decode() -> None:
+    """Constructing the window decoder must not replace modules the stateful decoder reads."""
+    require_cuda()
+    codec = tiny_codec().cuda()
+    codec.fold_weight_norm()
+    decoder = ChannelsLastDecoder(codec, dtype=torch.float16)
+    codes = torch.randint(0, 16, (1, 10, 24), device="cuda")
+    with torch.inference_mode():
+        convolution = codec.quantizer.upsample[0][0].conv
+        with patch.object(convolution, "forward", wraps=convolution.forward) as native:
+            expected = decoder(codes.clone())
+        if torch.cuda.get_device_capability() == (10, 0):
+            assert native.call_count == 0
+        else:
+            assert native.call_count == 1
+        stateful = StatefulDACDecoder(codec, dtype=torch.float16, capacity=1)
+        state = stateful.create_state()
+        try:
+            decoded = stateful.decode_delta(codes, state)
+        finally:
+            stateful.release_state(state)
+    torch.testing.assert_close(decoded.float(), expected.float(), rtol=2e-2, atol=2e-2)
