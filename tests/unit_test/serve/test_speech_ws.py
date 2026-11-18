@@ -1265,8 +1265,8 @@ def test_speech_websocket_resamples_audio_and_reports_output_rate(
                 assert done["type"] == "audio.done" and done["error"] is False
                 assert done["total_bytes"] == len(audio_bytes)
                 break
-    expected_pcm, _ = encode_audio(
+    expected_pcm = encode_audio(
         audio, response_format="pcm", output_sample_rate=sample_rate
-    )
+    ).audio_bytes
     assert audio_bytes == expected_pcm
     assert len(audio_bytes) == round(audio.size * sample_rate / 24000) * 2

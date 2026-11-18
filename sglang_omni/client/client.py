@@ -16,7 +16,6 @@ import numpy as np
 from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
     FORMAT_MIME_TYPES,
-    PYAV_ENCODE_CONFIGS,
     audio_to_base64,
     encode_audio,
     to_numpy,
@@ -502,7 +501,7 @@ class Client:
         else:
             pass
 
-        audio_bytes, mime_type = await asyncio.to_thread(
+        encoded_audio = await asyncio.to_thread(
             encode_audio, audio_data, **encode_kwargs
         )
 
@@ -510,30 +509,17 @@ class Client:
         # to WAV if the requested codec is unavailable).
         actual_format = response_format
         for ext, mt in FORMAT_MIME_TYPES.items():
-            if mt == mime_type:
+            if mt == encoded_audio.mime_type:
                 actual_format = ext
                 break
             else:
                 pass
 
-        encoded_sample_rate = output_sample_rate or sample_rate or DEFAULT_SAMPLE_RATE
-        if actual_format == "opus":
-            encoded_sample_rate = 48000
-        elif actual_format in PYAV_ENCODE_CONFIGS:
-            encoded_sample_rate = min(
-                PYAV_ENCODE_CONFIGS[actual_format]["valid_rates"],
-                key=lambda supported_sample_rate: abs(
-                    supported_sample_rate - encoded_sample_rate
-                ),
-            )
-        else:
-            pass
-
         return SpeechResult(
-            audio_bytes=audio_bytes,
-            mime_type=mime_type,
+            audio_bytes=encoded_audio.audio_bytes,
+            mime_type=encoded_audio.mime_type,
             format=actual_format,
-            sample_rate=encoded_sample_rate,
+            sample_rate=encoded_audio.sample_rate,
             usage=last_chunk.usage if last_chunk else None,
             spec_tokens_details=last_chunk.spec_tokens_details if last_chunk else None,
             finish_reason=(

@@ -19,6 +19,7 @@ from pydantic import (
     model_validator,
 )
 
+from sglang_omni.client.audio import MAX_AUDIO_OUTPUT_SAMPLE_RATE
 from sglang_omni.client.types import UsageInfo
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
@@ -472,7 +473,9 @@ class CreateSpeechRequest(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "wav"
-    sample_rate: int | None = Field(default=None, gt=0, strict=True)
+    sample_rate: int | None = Field(
+        default=None, gt=0, le=MAX_AUDIO_OUTPUT_SAMPLE_RATE, strict=True
+    )
     speed: float = 1.0
     stream: bool = False
     stream_format: Literal["audio", "sse"] = "audio"
@@ -563,7 +566,9 @@ class CreateSpeechBatchRequest(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "wav"
-    sample_rate: int | None = Field(default=None, gt=0, strict=True)
+    sample_rate: int | None = Field(
+        default=None, gt=0, le=MAX_AUDIO_OUTPUT_SAMPLE_RATE, strict=True
+    )
     speed: float = 1.0
     stream: bool = False
     task_type: str | None = None
@@ -645,7 +650,9 @@ class SpeechStreamSessionConfig(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "pcm"
-    sample_rate: int | None = Field(default=None, gt=0, strict=True)
+    sample_rate: int | None = Field(
+        default=None, gt=0, le=MAX_AUDIO_OUTPUT_SAMPLE_RATE, strict=True
+    )
     speed: float = 1.0
     stream_audio: bool = False
     split_granularity: str = "sentence"

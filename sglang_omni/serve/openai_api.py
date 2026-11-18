@@ -2165,7 +2165,7 @@ async def speech_audio_response(
     speech_stream_outcomes: SpeechStreamOutcomes,
     enable_speech_sse_named_events: bool,
     return_spec_tokens_details: bool,
-    output_sample_rate: int | None,
+    output_sample_rate: int | None = None,
 ) -> StreamingResponse:
     """Stream PCM/WAV bytes or SSE after the first audio sets the headers."""
     audio_stream = SpeechAudioStream(output_sample_rate=output_sample_rate, speed=speed)

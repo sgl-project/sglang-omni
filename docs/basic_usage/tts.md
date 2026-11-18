@@ -510,7 +510,7 @@ These fields are accepted by the shared speech endpoint. Model support and defau
 | `input` | string | (required) | Text to synthesize |
 | `voice` | string | `"default"` | Preset or uploaded voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus`. Explicit values override the default in every mode. HTTP streaming accepts only `wav` or `pcm` |
-| `sample_rate` | int | `null` | Positive output sample rate in Hz, for example `8000`, `16000`, `22050`, `44100`, or `48000`. Omit it to preserve the model's native rate. WAV and PCM accept custom rates; compressed formats require a rate supported by their encoder. Explicit Opus output rates must be `48000` |
+| `sample_rate` | int | `null` | Output sample rate from `1` to `192000` Hz, for example `8000`, `16000`, `22050`, `44100`, or `48000`. Omit it to preserve the model's native rate. WAV and PCM accept custom rates; compressed formats require a rate supported by their encoder. Explicit Opus output rates must be `48000` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw WAV streaming by default. Set `response_format="pcm"` for raw PCM, or `stream_format="sse"` for SSE events |
 | `stream_format` | string | `"audio"` | Streaming transport: `audio` returns raw WAV or PCM bytes when streaming is enabled; `sse` enables SSE even when `stream` is omitted or false. SSE uses data-only `message` events by default. The server startup flag `--enable-speech-sse-named-events` selects the framing and error type shown in the [SSE Event Framing table](#sse-event-framing) |

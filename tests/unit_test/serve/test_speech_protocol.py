@@ -10,13 +10,18 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from sglang_omni.client import audio as client_audio
 from sglang_omni.client.client import build_params
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.preprocessing import resource_connector
 from sglang_omni.serve import speech_service
-from sglang_omni.serve.protocol import CreateSpeechRequest
+from sglang_omni.serve.protocol import (
+    CreateSpeechBatchRequest,
+    CreateSpeechRequest,
+    SpeechStreamSessionConfig,
+)
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 
@@ -1340,6 +1345,24 @@ def test_output_sample_rate_stays_in_serving_layer() -> None:
     request = service.parse_request({"input": "Hello.", "sample_rate": 16000})
     generate_request = service.build_generate_request(request)
     assert "sample_rate" not in generate_request.metadata["tts_params"]
+
+
+@pytest.mark.parametrize(
+    "request_type",
+    [CreateSpeechRequest, CreateSpeechBatchRequest, SpeechStreamSessionConfig],
+)
+def test_output_sample_rate_limit(
+    request_type: type[
+        CreateSpeechRequest | CreateSpeechBatchRequest | SpeechStreamSessionConfig
+    ],
+) -> None:
+    """Oversized output rates must be rejected before they can allocate resampled audio."""
+    payload = {"input": "Hello.", "items": [{"input": "Hello."}]}
+    request = request_type.model_validate({**payload, "sample_rate": 192000})
+    assert request.sample_rate == 192000
+    with pytest.raises(ValidationError) as error:
+        request_type.model_validate({**payload, "sample_rate": 192001})
+    assert error.value.errors()[0]["loc"] == ("sample_rate",)
 
 
 @pytest.mark.parametrize("batch", [False, True])

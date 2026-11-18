@@ -727,6 +727,7 @@ def test_batch_speech_reuses_shared_default_reference_loads() -> None:
 
 def test_batch_speech_resamples_defaults_and_item_overrides() -> None:
     """A sample-rate override must affect only its own audio and result metadata."""
+    output_sample_rate = 44100
     speech_client = FixedSpeechClient(np.zeros(24000, dtype=np.float32))
     client = TestClient(create_app(speech_client, model_name="tts"))
     response = client.post(
@@ -735,15 +736,17 @@ def test_batch_speech_resamples_defaults_and_item_overrides() -> None:
             "sample_rate": 8000,
             "items": [
                 {"input": "Hello."},
-                {"input": "Hello.", "sample_rate": 44100},
-                {"input": "Hello.", "sample_rate": -1},
+                {"input": "Hello.", "sample_rate": output_sample_rate},
+                {"input": "Hello.", "sample_rate": 192001},
             ],
         },
     )
     assert response.status_code == 200
     body = response.json()
     assert (body["succeeded"], body["failed"]) == (2, 1)
-    for result, sample_rate in zip(body["results"][:2], (8000, 44100), strict=True):
+    for result, sample_rate in zip(
+        body["results"][:2], (8000, output_sample_rate), strict=True
+    ):
         audio_bytes = base64.b64decode(result["audio_data"])
         assert result["sample_rate"] == sample_rate
         assert struct.unpack("<I", audio_bytes[24:28]) == (sample_rate,)

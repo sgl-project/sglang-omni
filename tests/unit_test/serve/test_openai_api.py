@@ -2032,7 +2032,6 @@ def test_raw_audio_send_failure_aborts_inner_speech_stream(
             gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
             request_id="req-1",
             speed=1.0,
-            output_sample_rate=None,
             response_format=response_format,
             speech_stream_outcomes=speech_stream_outcomes,
             stream_format="audio",
@@ -5194,9 +5193,9 @@ def test_speech_output_sample_rate_matches_buffered_and_streamed_audio(
     sample_rate = output_sample_rate or 24000
     assert response.status_code == 200, response.text
     assert response.headers["x-sample-rate"] == str(sample_rate)
-    expected_pcm, _ = encode_audio(
+    expected_pcm = encode_audio(
         audio, response_format="pcm", output_sample_rate=output_sample_rate
-    )
+    ).audio_bytes
     if transport == "sse":
         events = parse_speech_sse_events(response.text, False)
         assert events[-1]["type"] == "speech.audio.done"
@@ -5216,7 +5215,7 @@ def test_speech_output_sample_rate_matches_buffered_and_streamed_audio(
     assert len(audio_bytes) == round(sample_count * sample_rate / 24000) * 2
 
 
-@pytest.mark.parametrize("sample_rate", [0, "16000", True])
+@pytest.mark.parametrize("sample_rate", [0, "16000", True, 192001])
 def test_speech_rejects_invalid_output_sample_rate_before_generation(
     sample_rate: int | str | bool,
 ) -> None:
