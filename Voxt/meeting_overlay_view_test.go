@@ -19,7 +19,7 @@ func overlayModel(snapshot meeting.Snapshot, collapsed bool, size int, menu meet
 func (a *app) meetingOverlayView(c *ui.Context) {
 	model := a.meetingOverlayModel()
 	mode, faceHeight := meetingOverlayFace(model)
-	style := meetingOverlayFaceStyle{radius: faceRadius(a.prefs.Overlay, mode, faceHeight), alpha: layout.FaceAlpha(a.prefs.Overlay)}
+	style := meetingOverlayFaceStyle{radius: faceRadius(a.prefs.Overlay, mode, faceHeight), alpha: layout.FaceAlpha(a.prefs.Overlay), palette: a.prefs.Appearance.Palette}
 	animation := meetingOverlayAnimation{motion: a.overlayMotion(), phase: a.overlayPhase()}
 	meetingOverlayView(c, a.meetOvView, model, a, &a.meetOvUI, animation, style)
 }
@@ -27,7 +27,7 @@ func (a *app) meetingOverlayView(c *ui.Context) {
 func (a *app) meetingOverlayBenchmarkView(c *ui.Context) {
 	model := a.meetOvModel
 	mode, faceHeight := meetingOverlayFace(model)
-	style := meetingOverlayFaceStyle{radius: faceRadius(a.prefs.Overlay, mode, faceHeight), alpha: layout.FaceAlpha(a.prefs.Overlay)}
+	style := meetingOverlayFaceStyle{radius: faceRadius(a.prefs.Overlay, mode, faceHeight), alpha: layout.FaceAlpha(a.prefs.Overlay), palette: a.prefs.Appearance.Palette}
 	animation := meetingOverlayAnimation{motion: a.overlayMotion(), phase: a.overlayPhase()}
 	meetingOverlayView(c, a.meetOvView, model, a, &a.meetOvUI, animation, style)
 }

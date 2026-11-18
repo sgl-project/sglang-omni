@@ -44,7 +44,7 @@
       {
         "id": "appearance",
         "title": "外观",
-        "english": "Appearance theme size sidebar"
+        "english": "Appearance theme color palette transparency size sidebar"
       },
       {
         "id": "privacy",
@@ -77,7 +77,8 @@
       "live_layout_options": [
         "单行",
         "多行"
-      ]
+      ],
+      "palette": "#0d9384"
     }
   }
 }

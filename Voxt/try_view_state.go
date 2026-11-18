@@ -8,6 +8,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -57,6 +58,10 @@ type tryCardViewState struct {
 	// SessionID keys the draft's and the result's preview (#4105).
 	SessionID string             `json:"session_id,omitempty"`
 	Ended     *tryEndedViewState `json:"ended,omitempty"`
+	// Transcript: this card's own transcription, drawn on the transcript face.
+	Transcript bool `json:"transcript,omitempty"`
+	// CustomPalette: a chosen accent, so Start and Stop are accent buttons, not record ones.
+	CustomPalette bool `json:"custom_palette,omitempty"`
 }
 
 type tryNoticeStateInput struct {
@@ -67,6 +72,7 @@ type tryNoticeStateInput struct {
 }
 
 type tryCardStateInput struct {
+	Palette  string
 	Prefix   string
 	Feature  string
 	Mine     bool
@@ -108,6 +114,8 @@ func buildTryCardViewState(translator *i18n.Translator, input tryCardStateInput)
 	state := tryCardViewState{
 		Prefix: input.Prefix, Feature: input.Feature, State: string(snapshot.State), Mode: "idle", Intro: input.Intro,
 		StartLabel: translator.T("Start"), Busy: snapshot.State.Live(), Block: buildTryNotice(translator, input.Block),
+		Transcript:    input.Mine && snapshot.Kind == store.KindTranscribe,
+		CustomPalette: input.Palette != "" && input.Palette != settings.DefaultPalette,
 	}
 	if snapshot.Problem != nil {
 		state.ProblemCode = snapshot.Problem.Code

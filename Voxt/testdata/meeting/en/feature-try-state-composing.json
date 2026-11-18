@@ -390,7 +390,8 @@
       "busy_text": "A transcription is running.",
       "working_text": "Cleaning up…",
       "draft": "The meeting moves to Thursday at four.",
-      "session_id": "fixture-try"
+      "session_id": "fixture-try",
+      "transcript": true
     }
   }
 }

@@ -67,7 +67,7 @@ func settingsSectionIcon(id string) icons.Icon {
 // forced light or dark theme, the UI scale, which grows the text and the
 // spacing (sizes of our own scale with px), and the design tokens
 // (ui_tokens.go) over MyGo's colours.
-func applyTheme(c *ui.Context, theme string, scale float64) {
+func applyTheme(c *ui.Context, theme string, scale float64, palette string) {
 	sys := c.Theme()
 	th := *sys
 	if (theme == "light" && sys.Dark) || (theme == "dark" && !sys.Dark) {
@@ -84,7 +84,7 @@ func applyTheme(c *ui.Context, theme string, scale float64) {
 		th.FontSize *= s
 		th.Spacing = th.Space(1) * s
 	}
-	styleTheme(&th)
+	styleTheme(&th, palette)
 	c.SetTheme(&th)
 }
 
@@ -132,14 +132,14 @@ func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settin
 								Justify(ui.Start).Label(s.Title).Checked(sel)
 							switch {
 							case sel:
-								b.Background(k.Pressed)
+								b.Background(k.NavSelected)
 							case b.Hovered():
 								b.Background(k.Hover)
 							}
 							b.Children(func() {
 								col := k.Text2
 								if sel {
-									col = k.Text
+									col = k.AccentInk
 								}
 								ui.Icon(c, settingsSectionIcon(s.ID).Get(sel)).Size(px(t, 16), px(t, 16)).TextColor(col)
 								txt := ui.Text(c, s.Title).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)

@@ -3,13 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -129,5 +133,66 @@ func TestFormattedAnswerCopyAndInsert(t *testing.T) {
 				t.Errorf("inserted %q", pasted)
 			}
 		})
+	}
+}
+
+// Both PRs edit these containers: keep their transcript tint after merging.
+func TestFormattedTranscriptCardPalette(t *testing.T) {
+	const source = `**Energy**: \(E=mc^2\)`
+	for _, dark := range []bool{false, true} {
+		for _, view := range []string{"history", "draft", "result"} {
+			t.Run(fmt.Sprintf("%s/dark=%t", view, dark), func(t *testing.T) {
+				a, _, _ := newTestApp(t)
+				a.updateSettings(func(s *settings.Settings) { s.Appearance.Palette = "#b25280" })
+				a.sess = session.Snapshot{ID: "formatted", Kind: store.KindTranscribe, Try: true, State: session.Done, Result: source}
+				if view == "draft" {
+					a.sess.State = session.Composing
+					a.sess.Draft = source
+				}
+				entry := store.Entry{ID: "formatted", Kind: store.KindTranscribe, Status: store.StatusDone, Result: source}
+				tt := ui.NewTester(func(c *ui.Context) {
+					th := *c.Theme()
+					styleTheme(&th, a.prefs.Appearance.Palette)
+					c.SetTheme(&th)
+					ui.Column(c).Fill().Children(func() {
+						if view == "history" {
+							state := buildHistoryDetailViewState(i18n.CurrentTranslator(), historyDetailStateInput{Entry: entry}, time.Now())
+							historyDetail(c, state, a, &a.histUI)
+						} else {
+							var block *sessionNotice
+							a.tryCard(c, tryOpts{prefix: "formatted", mine: true, block: &block})
+						}
+					})
+				}, 600, 700)
+				a.copyText = func(text string) error { tt.SetClipboard(text); return nil }
+				tt.SetDark(dark)
+				frames(tt)
+				r, ok := tt.Find(source)
+				if !ok {
+					t.Fatal("formatted result is missing")
+				}
+				want := paletteTokens("#b25280", dark).TranscriptFace
+				got := tt.Image().RGBAAt(int(r.X-4), int(r.Y+1))
+				if got.R != want.R || got.G != want.G || got.B != want.B {
+					t.Fatalf("result background %v, want %v", got, want)
+				}
+				if view != "draft" {
+					click(t, tt, "Copy result")
+					if tt.Clipboard() != source {
+						t.Fatalf("copied %q, want the source text", tt.Clipboard())
+					}
+					after := tt.Image().RGBAAt(int(r.X-4), int(r.Y+1))
+					if after != got {
+						t.Fatalf("copy changed the card background: %v -> %v", got, after)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDefaultPaletteMatchesSettings(t *testing.T) {
+	if defaultPalette != settings.DefaultPalette {
+		t.Fatalf("defaultPalette %q, settings.DefaultPalette %q", defaultPalette, settings.DefaultPalette)
 	}
 }

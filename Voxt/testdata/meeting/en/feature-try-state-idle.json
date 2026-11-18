@@ -389,7 +389,8 @@
       "busy": false,
       "busy_text": "",
       "working_text": "",
-      "draft": ""
+      "draft": "",
+      "transcript": true
     }
   }
 }

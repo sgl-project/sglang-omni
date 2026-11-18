@@ -77,5 +77,5 @@ func overlaySettings(c *ui.Context, state settingsOverlayViewState, actions sett
 	})
 
 	sectionTitle(c, i18n.T("Preview"))
-	local.previewState().overlayPreview(c)
+	local.previewState(state.Palette).overlayPreview(c)
 }

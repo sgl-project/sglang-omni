@@ -54,18 +54,19 @@ func pillMenuFrame(pill mygo.Rectangle, top bool, rows int) mygo.Rectangle {
 	return mygo.Rectangle{X: x - layout.Pad, Y: y - layout.Pad, Width: ovLangW + 2*layout.Pad, Height: height + 2*layout.Pad}
 }
 
-func sessionLanguageMenuContent(state func() sessionMenuViewState, actions sessionOverlayActions, local *sessionOverlayLocalUI) func(*ui.Context) {
+func sessionLanguageMenuContent(state func() sessionMenuViewState, palette func() string, actions sessionOverlayActions, local *sessionOverlayLocalUI) func(*ui.Context) {
 	return func(context *ui.Context) {
-		sessionLanguageMenuView(context, state(), actions, local)
+		sessionLanguageMenuView(context, state(), palette(), actions, local)
 	}
 }
 
-func sessionLanguageMenuView(context *ui.Context, state sessionMenuViewState, actions sessionOverlayActions, local *sessionOverlayLocalUI) {
-	context.SetTheme(overlayTheme())
+func sessionLanguageMenuView(context *ui.Context, state sessionMenuViewState, palette string, actions sessionOverlayActions, local *sessionOverlayLocalUI) {
+	context.SetTheme(overlayTheme(palette))
 	defer context.Root().Background(ui.Transparent)
+	k := tok(context.Theme())
 	ui.Column(context).Fill().Padding(layout.Pad).Children(func() {
-		ui.Column(context.Key("ov-lang-face")).Fill().Radius(ovLangRadius).Background(ui.RGBA(30, 30, 34, 0.98)).
-			Border(1, ui.RGBA(255, 255, 255, 0.12)).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA)).
+		ui.Column(context.Key("ov-lang-face")).Fill().Radius(ovLangRadius).Background(k.OverlayFace.Mix(ui.RGB(255, 255, 255), 0.035).Alpha(0.98)).
+			Border(1, k.OverlayLine).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA)).
 			Label(state.Label).Children(func() {
 			ui.Scroll(context.Key("ov-lang-scroll")).Fill().TrackScroll(&local.langScroll).Children(func() {
 				ui.Column(context).Padding(ovLangPad - layout.Border).Children(func() {

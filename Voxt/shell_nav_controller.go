@@ -39,6 +39,7 @@ type navCacheKey struct {
 	settingsOpen bool
 	notices      int
 	locale       string
+	transparency float64 // the slider's preview, while dragged
 }
 
 // railMode reports whether the sidebar shows icons only: the user's
@@ -90,6 +91,7 @@ func (a *app) navModel() *navViewState {
 		settings: a.settingsRevision, suggestions: len(a.suggestions),
 		current: section(a.router.Path()), nav: a.nav, settingsOpen: a.settingsOpen,
 		notices: len(a.notices), locale: i18n.Locale(),
+		transparency: a.windowTransparency,
 	}
 	if key != a.navViewKey {
 		badges := map[string]string{}
@@ -108,6 +110,8 @@ func (a *app) navModel() *navViewState {
 			SettingsOpen: a.settingsOpen,
 			Notices:      len(a.notices),
 			Badges:       badges,
+
+			WindowTransparency: a.windowTransparency,
 		})
 		a.navViewKey = key
 	}

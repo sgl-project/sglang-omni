@@ -404,7 +404,8 @@
         "raw_title": "识别原文",
         "raw": "um so the meeting moves to Thursday at three, no, at four",
         "timings_text": "录音 3.2 秒 · 识别 0.8 秒 · 整理 1.1 秒 · 总计 5.3 秒 · Fixture speech model, Fixture language model"
-      }
+      },
+      "transcript": true
     }
   }
 }

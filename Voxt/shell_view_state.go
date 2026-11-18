@@ -13,10 +13,14 @@ type shellViewState struct {
 	// plays; nil once it has.
 	Opening *openingViewState `json:"opening,omitempty"`
 
-	Theme  string   `json:"theme"`
-	Scale  float64  `json:"scale"`
-	Still  bool     `json:"still"` // no animations: tests and snapshots, Reduce motion
-	Toasts []string `json:"toasts,omitempty"`
+	Theme string  `json:"theme"`
+	Scale float64 `json:"scale"`
+	// AccentPalette is the chosen colour ("#0d9384"); Transparent clears
+	// the window's root fill (the transparent theme).
+	AccentPalette string   `json:"accent_palette,omitempty"`
+	Transparent   bool     `json:"transparent,omitempty"`
+	Still         bool     `json:"still"` // no animations: tests and snapshots, Reduce motion
+	Toasts        []string `json:"toasts,omitempty"`
 
 	Nav     *navViewState     `json:"nav,omitempty"`
 	Notices []noticeViewState `json:"notices,omitempty"`

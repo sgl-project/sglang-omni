@@ -77,6 +77,7 @@
           "text": "weekly plan\nI'll send the new agenda tonight"
         }
       ],
+      "transcript": true,
       "sections": [
         {
           "title": "详细信息",

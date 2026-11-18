@@ -63,6 +63,7 @@
       },
       "recording_kept_text": "",
       "text_blocks": null,
+      "transcript": true,
       "sections": [
         {
           "title": "详细信息",

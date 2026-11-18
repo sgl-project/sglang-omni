@@ -62,15 +62,17 @@ type historyFactSectionViewState struct {
 }
 
 type historyDetailViewState struct {
-	ID                string                        `json:"id"`
-	ErrorText         string                        `json:"error_text"`
-	ErrorDetail       string                        `json:"error_detail"`
-	ErrorWarning      bool                          `json:"error_warning"`
-	CanReveal         bool                          `json:"can_reveal"`
-	Retry             historyRetryViewState         `json:"retry"`
-	RecordingKeptText string                        `json:"recording_kept_text"`
-	TextBlocks        []historyTextBlockViewState   `json:"text_blocks"`
-	Sections          []historyFactSectionViewState `json:"sections"`
+	ID                string                      `json:"id"`
+	ErrorText         string                      `json:"error_text"`
+	ErrorDetail       string                      `json:"error_detail"`
+	ErrorWarning      bool                        `json:"error_warning"`
+	CanReveal         bool                        `json:"can_reveal"`
+	Retry             historyRetryViewState       `json:"retry"`
+	RecordingKeptText string                      `json:"recording_kept_text"`
+	TextBlocks        []historyTextBlockViewState `json:"text_blocks"`
+	// Transcript: the entry is a transcription, its texts on the transcript face.
+	Transcript bool                          `json:"transcript,omitempty"`
+	Sections   []historyFactSectionViewState `json:"sections"`
 }
 
 type historyEmptyViewState struct {
@@ -282,7 +284,7 @@ func buildHistoryEmptyViewState(translator *i18n.Translator, kind store.Kind, qu
 func buildHistoryDetailViewState(translator *i18n.Translator, input historyDetailStateInput, now time.Time) *historyDetailViewState {
 	entry := input.Entry
 	state := &historyDetailViewState{
-		ID: entry.ID, ErrorDetail: entry.Error, CanReveal: entry.Audio != "",
+		ID: entry.ID, ErrorDetail: entry.Error, CanReveal: entry.Audio != "", Transcript: entry.Kind == store.KindTranscribe,
 		Retry: buildHistoryRetryViewState(translator, entry, input.Retry),
 	}
 	if entry.Error != "" {

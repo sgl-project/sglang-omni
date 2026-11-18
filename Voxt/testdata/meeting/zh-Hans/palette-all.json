@@ -162,14 +162,19 @@
         "title": "打开设置引导"
       },
       {
+        "id": "theme/dark",
+        "group": "外观",
+        "title": "主题：深色"
+      },
+      {
         "id": "theme/light",
         "group": "外观",
         "title": "主题：浅色"
       },
       {
-        "id": "theme/dark",
+        "id": "theme/transparent",
         "group": "外观",
-        "title": "主题：深色"
+        "title": "主题：透明"
       },
       {
         "id": "lang/en",

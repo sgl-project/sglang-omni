@@ -44,7 +44,7 @@
       {
         "id": "appearance",
         "title": "Appearance",
-        "english": "Appearance theme size sidebar"
+        "english": "Appearance theme color palette transparency size sidebar"
       },
       {
         "id": "privacy",
@@ -77,7 +77,8 @@
       "live_layout_options": [
         "One line",
         "Lines"
-      ]
+      ],
+      "palette": "#0d9384"
     }
   }
 }

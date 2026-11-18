@@ -98,7 +98,12 @@ type shellLocalUI struct {
 // areas' dialogs (wired by the caller), then the palette, the sheet and
 // the toasts over everything.
 func shellView(c *ui.Context, state *shellViewState, actions shellActions, local *shellLocalUI, page func(), dialogs func()) {
-	applyTheme(c, state.Theme, state.Scale)
+	applyTheme(c, state.Theme, state.Scale, state.AccentPalette)
+	if state.Transparent {
+		// Local widget themes reset the root fill. Clear it after the
+		// build so only the sidebar and page supply the window's tint.
+		defer c.Root().Background(ui.Transparent)
+	}
 	t := c.Theme()
 	if state.Still {
 		// Tests and snapshots show every change at once, as does the

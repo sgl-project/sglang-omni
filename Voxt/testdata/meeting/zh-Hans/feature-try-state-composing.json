@@ -390,7 +390,8 @@
       "busy_text": "正在转录。",
       "working_text": "整理中…",
       "draft": "The meeting moves to Thursday at four.",
-      "session_id": "fixture-try"
+      "session_id": "fixture-try",
+      "transcript": true
     }
   }
 }

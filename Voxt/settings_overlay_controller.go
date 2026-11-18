@@ -12,7 +12,9 @@ import (
 const ovSaveDelay = 400 * time.Millisecond
 
 func (a *app) overlaySettingsModel() settingsOverlayViewState {
-	return buildSettingsOverlayViewState(i18n.CurrentTranslator(), a.prefs.Overlay)
+	state := buildSettingsOverlayViewState(i18n.CurrentTranslator(), a.prefs.Overlay)
+	state.Palette = a.prefs.Appearance.Palette
+	return state
 }
 
 // loadOverlayForm sets the controls from the settings, unless a change

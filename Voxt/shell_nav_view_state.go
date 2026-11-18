@@ -49,6 +49,9 @@ type navViewState struct {
 	SidebarWidth     float64                `json:"sidebar_width"` // DIPs at 100 %, 0 for the default
 	MinSidebarWidth  float64                `json:"min_sidebar_width"`
 	MaxSidebarWidth  float64                `json:"max_sidebar_width"`
+	// Transparency is how much of the sidebar and page backgrounds the
+	// transparent theme lets through, 0 to 1 (0: opaque).
+	Transparency float32 `json:"transparency,omitempty"`
 }
 
 // navViewStateInput is what a navViewState is built from.
@@ -60,6 +63,9 @@ type navViewStateInput struct {
 	SettingsOpen bool
 	Notices      int
 	Badges       map[string]string
+	// WindowTransparency is the transparency shown, in percent: the
+	// saved one, or the slider's while it is dragged.
+	WindowTransparency float64
 }
 
 // buildNavViewState decides the sidebar's content in translator's language.
@@ -75,6 +81,9 @@ func buildNavViewState(translator *i18n.Translator, input navViewStateInput) nav
 		SidebarWidth:     input.Appearance.SidebarWidth,
 		MinSidebarWidth:  settings.MinSidebarWidth,
 		MaxSidebarWidth:  settings.MaxSidebarWidth,
+	}
+	if input.Appearance.Theme == settings.ThemeTransparent {
+		state.Transparency = float32(input.WindowTransparency) / 100
 	}
 	if input.Notices > 0 {
 		state.NoticesLabel = translator.N(input.Notices, "%d notification", "%d notifications", input.Notices)

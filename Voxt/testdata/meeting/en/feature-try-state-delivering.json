@@ -389,7 +389,8 @@
       "busy": true,
       "busy_text": "A transcription is running.",
       "working_text": "Inserting…",
-      "draft": ""
+      "draft": "",
+      "transcript": true
     }
   }
 }

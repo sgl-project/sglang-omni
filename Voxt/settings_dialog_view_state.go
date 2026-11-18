@@ -20,7 +20,7 @@ func buildSettingsSections(translator *i18n.Translator) []settingsSectionCatalog
 		{"audio", translator.T("Audio"), "Audio microphone input device sounds silence"},
 		{"overlay", translator.T("Overlay style"), "Overlay style position opacity corners recording pill"},
 		{"shortcuts", translator.T("Shortcuts"), "Shortcuts hotkeys keys fn"},
-		{"appearance", translator.T("Appearance"), "Appearance theme size sidebar"},
+		{"appearance", translator.T("Appearance"), "Appearance theme color palette transparency size sidebar"},
 		{"privacy", translator.T("Privacy"), "Privacy history audio logs"},
 		{"storage", translator.T("Storage"), "Storage disk data folder reset"},
 		// "About" in English: "Diagnostics and about" does not fit the

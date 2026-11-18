@@ -72,6 +72,7 @@ func (a *app) syncLangMenu() {
 				}
 				return *a.ov.projection.view.Menu
 			},
+			func() string { return a.prefs.Appearance.Palette },
 			a,
 			&a.ov.ui,
 		)

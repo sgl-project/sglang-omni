@@ -389,7 +389,8 @@
       "busy": true,
       "busy_text": "正在转录。",
       "working_text": "插入中…",
-      "draft": ""
+      "draft": "",
+      "transcript": true
     }
   }
 }

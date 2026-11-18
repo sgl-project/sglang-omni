@@ -398,7 +398,8 @@
         "raw_title": "",
         "raw": "",
         "timings_text": ""
-      }
+      },
+      "transcript": true
     }
   }
 }

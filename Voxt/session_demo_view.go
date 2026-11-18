@@ -53,7 +53,7 @@ func sessionDemoOverlayView(context *ui.Context, host *meetingDemoHost) {
 	if placement.menuState != nil {
 		ui.Box(context).Absolute().Left(float32(placement.menu.X)).Top(float32(placement.menu.Y)).
 			Width(float32(placement.menu.Width)).Height(float32(placement.menu.Height)).Children(func() {
-			sessionLanguageMenuView(context, *placement.menuState, host, &host.sessionUI)
+			sessionLanguageMenuView(context, *placement.menuState, "", host, &host.sessionUI)
 		})
 	}
 }

@@ -162,14 +162,19 @@
         "title": "Open setup guide"
       },
       {
+        "id": "theme/dark",
+        "group": "Appearance",
+        "title": "Theme: dark"
+      },
+      {
         "id": "theme/light",
         "group": "Appearance",
         "title": "Theme: light"
       },
       {
-        "id": "theme/dark",
+        "id": "theme/transparent",
         "group": "Appearance",
-        "title": "Theme: dark"
+        "title": "Theme: transparent"
       },
       {
         "id": "lang/en",

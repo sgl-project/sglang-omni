@@ -58,6 +58,7 @@ func (a *app) tryCardState(options tryOpts) (tryCardViewState, tryCardActions) {
 
 func (a *app) tryCardStateAt(options tryOpts, now time.Time) (tryCardViewState, tryCardActions) {
 	input := newTryCardStateInput(options.prefix, options.feature, options.mine, options.intro, *options.block, a.sess, now)
+	input.Palette = a.prefs.Appearance.Palette
 	state := buildTryCardViewState(i18n.CurrentTranslator(), input)
 	return state, &tryController{app: a, options: options}
 }
@@ -87,6 +88,6 @@ func (controller *tryController) runTryNoticeAction(action string) {
 	controller.app.noticeAction(action)
 }
 
-func (controller *tryController) transcriptResult(c *uiContext, key, source string, streaming bool) bool {
-	return controller.app.transcriptResult(c, key, source, streaming)
+func (controller *tryController) transcriptResult(c *uiContext, key, source string, transcript, streaming bool) bool {
+	return controller.app.transcriptResult(c, key, source, transcript, streaming)
 }

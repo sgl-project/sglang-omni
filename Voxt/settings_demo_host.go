@@ -94,6 +94,9 @@ func (host *meetingDemoHost) setSidebarChoice(choice string) {
 	host.record("setSidebarChoice %s", choice)
 }
 func (host *meetingDemoHost) setReduceMotion(on bool) { host.record("setReduceMotion %t", on) }
+func (host *meetingDemoHost) setPaletteColor(color string) {
+	host.record("setPaletteColor %s", color)
+}
 func (host *meetingDemoHost) setInterfaceScale(scale float64) {
 	host.record("setInterfaceScale %g", scale)
 }

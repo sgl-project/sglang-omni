@@ -489,10 +489,10 @@ func (a *app) overlayBenchmarkView(context *ui.Context) {
 func (a *app) langMenuView(context *ui.Context) {
 	a.refreshSessionOverlay(time.Now())
 	if a.ov.projection.view.Menu == nil {
-		sessionLanguageMenuView(context, sessionMenuViewState{SelectedIndex: -1}, a, &a.ov.ui)
+		sessionLanguageMenuView(context, sessionMenuViewState{SelectedIndex: -1}, a.prefs.Appearance.Palette, a, &a.ov.ui)
 		return
 	}
-	sessionLanguageMenuView(context, *a.ov.projection.view.Menu, a, &a.ov.ui)
+	sessionLanguageMenuView(context, *a.ov.projection.view.Menu, a.prefs.Appearance.Palette, a, &a.ov.ui)
 }
 
 // hudTester tests a view of a floating window (floating.go), whose text

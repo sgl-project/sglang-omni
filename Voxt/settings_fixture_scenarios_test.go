@@ -125,6 +125,10 @@ func settingsFixtureScenarios() []meetingFixtureScenario {
 	lightAppearance := newSettingsFixtureScenario("settings-appearance-light", "appearance")
 	lightAppearance.settings.preferences.Appearance.Theme = "light"
 	scenarios = append(scenarios, lightAppearance)
+	transparentAppearance := newSettingsFixtureScenario("settings-appearance-transparent", "appearance")
+	transparentAppearance.settings.preferences.Appearance.Theme = settings.ThemeTransparent
+	transparentAppearance.settings.preferences.Appearance.Palette = "#b25280"
+	scenarios = append(scenarios, transparentAppearance)
 	scale90 := newSettingsFixtureScenario("settings-appearance-scale-90", "appearance")
 	scale90.settings.preferences.Appearance.Scale = 0.9
 	scenarios = append(scenarios, scale90)

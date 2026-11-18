@@ -404,7 +404,8 @@
         "raw_title": "As recognised",
         "raw": "um so the meeting moves to Thursday at three, no, at four",
         "timings_text": "Recording 3.2 s · Recognition 0.8 s · Clean-up 1.1 s · Total 5.3 s · Fixture speech model, Fixture language model"
-      }
+      },
+      "transcript": true
     }
   }
 }

@@ -45,8 +45,8 @@ func historyDetail(c *ui.Context, state *historyDetailViewState, actions history
 						actions.copyHistoryText(block.Text)
 					}
 				})
-				fillCard(c).Padding(px(t, sp2), px(t, sp3)).Children(func() {
-					if !block.Formatted || !actions.transcriptResult(c, state.ID, block.Text, block.Streaming) {
+				sessionTextCard(c, state.Transcript).Padding(px(t, sp2), px(t, sp3)).Children(func() {
+					if !block.Formatted || !actions.transcriptResult(c, state.ID, block.Text, state.Transcript, block.Streaming) {
 						ui.Text(c, block.Text).Selectable()
 					}
 				})

@@ -23,7 +23,6 @@
   "Copy all lines shown": "复制显示的全部行",
   "Copy this line": "复制这一行",
   "Could not change “Open at login”: %v": "无法更改“登录时打开”：%v",
-  "Could not save the settings: %v": "无法保存设置：%v",
   "Cut": "剪切",
   "Deselect": "取消选择",
   "Edit": "编辑",
@@ -98,5 +97,6 @@
   "Language models no longer used": "不再使用的语言模型",
   "Network…": "网络…",
   "What's new": "更新内容",
-  "Voxt no longer uses these. Delete them to free up space.": "Voxt 已不再使用这些模型，可以删除以释放空间。"
+  "Voxt no longer uses these. Delete them to free up space.": "Voxt 已不再使用这些模型，可以删除以释放空间。",
+  "Theme: transparent": "主题：透明"
 }

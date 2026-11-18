@@ -70,6 +70,7 @@
           "text": "recognised before the failure"
         }
       ],
+      "transcript": true,
       "sections": [
         {
           "title": "详细信息",

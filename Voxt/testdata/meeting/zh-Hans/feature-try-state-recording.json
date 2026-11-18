@@ -407,7 +407,8 @@
         "live_text": "so the meeting moves to Thursday"
       },
       "working_text": "",
-      "draft": ""
+      "draft": "",
+      "transcript": true
     }
   }
 }

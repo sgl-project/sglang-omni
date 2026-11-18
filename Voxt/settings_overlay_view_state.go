@@ -22,6 +22,7 @@ type settingsOverlayPreviewState struct {
 	pill       sessionOverlayViewState
 	faceRadius float32
 	faceAlpha  float32
+	palette    string
 }
 
 type settingsOverlayViewState struct {
@@ -34,6 +35,8 @@ type settingsOverlayViewState struct {
 	LiveText          bool     `json:"live_text"`
 	LiveLayout        int      `json:"live_layout"`
 	LiveLayoutOptions []string `json:"live_layout_options"`
+	// Palette is the appearance's accent the preview's pill takes.
+	Palette string `json:"palette,omitempty"`
 }
 
 func buildSettingsOverlayViewState(translator *i18n.Translator, overlay settings.Overlay) settingsOverlayViewState {
@@ -69,7 +72,7 @@ func (f *overlayForm) overlay() settings.Overlay {
 // previewState is the preview's pill and face, projected through the
 // session overlay's production builders so the preview draws what the
 // overlay draws; the renderer stays a view and reads only this state.
-func (f *overlayForm) previewState() settingsOverlayPreviewState {
+func (f *overlayForm) previewState(palette string) settingsOverlayPreviewState {
 	overlay := f.overlay()
 	return settingsOverlayPreviewState{
 		Position: overlay.Position, Opacity: overlay.Opacity, Radius: overlay.Radius,
@@ -79,5 +82,6 @@ func (f *overlayForm) previewState() settingsOverlayPreviewState {
 		}, time.Now()),
 		faceRadius: faceRadius(overlay, ovRecording, layout.PillH),
 		faceAlpha:  layout.FaceAlpha(overlay),
+		palette:    palette,
 	}
 }

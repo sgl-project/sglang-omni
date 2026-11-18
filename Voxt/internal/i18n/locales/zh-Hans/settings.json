@@ -257,5 +257,9 @@
   "Text to clean up, translate or rewrite goes to the language model you set up in Settings → Language models. With a local server such as Ollama, it stays on this Mac. Otherwise it goes to that service.": "要整理、翻译或改写的文字会发给你在“设置 → 语言模型”里设置的语言模型。用本机上的服务（例如 Ollama）时，文字不会离开这台 Mac，否则会发给那个服务。",
   "Read": "查看全文",
   "What's new in %s": "%s 更新内容",
-  "No model installed. Download one in Settings → Speech models.": "还没安装模型，请在“设置 → 语音识别模型”里下载。"
+  "No model installed. Download one in Settings → Speech models.": "还没安装模型，请在“设置 → 语音识别模型”里下载。",
+  "Color": "颜色",
+  "Reset color": "恢复默认颜色",
+  "Transparent": "透明",
+  "Window transparency": "窗口透明度"
 }

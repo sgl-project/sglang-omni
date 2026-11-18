@@ -60,6 +60,12 @@ type shellState struct {
 	logsHeight   float32
 	logsDirty    atomic.Bool // a redraw for new lines is on its way
 
+	// The palette and transparency saves (settings_appearance_controller.go).
+	paletteRevision         atomic.Uint64
+	paletteSavePending      bool
+	transparencySavePending bool
+	transparencyRevision    atomic.Uint64
+
 	logsState     // shell_logs_controller.go
 	navState      // shell_nav_controller.go
 	commandsState // shell_commands_controller.go
@@ -203,6 +209,7 @@ func (a *app) openWindow() {
 		StateKey:       "main",
 		TitleBarStyle:  mygo.TitleBarHiddenInset,
 		TitleBarHeight: titleBarHeight,
+		Transparent:    true,
 		Content:        shellContent(a.view),
 		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
 	})
@@ -231,9 +238,11 @@ func (a *app) shellModel() *shellViewState {
 	model := &a.shellViewModel
 	*model = shellViewState{
 		Theme: a.prefs.Appearance.Theme, Scale: a.prefs.Appearance.Scale,
-		Still:  a.win == nil || a.prefs.Appearance.ReduceMotion,
-		Toasts: a.toasts,
-		Nav:    a.navModel(), Notices: a.noticesModel(),
+		AccentPalette: a.prefs.Appearance.Palette,
+		Transparent:   a.prefs.Appearance.Theme == settings.ThemeTransparent,
+		Still:         a.win == nil || a.prefs.Appearance.ReduceMotion,
+		Toasts:        a.toasts,
+		Nav:           a.navModel(), Notices: a.noticesModel(),
 		Palette: &a.paletteView, Sheet: &a.sheetView,
 		LogsHeight:   a.logsHeight,
 		SettingsOpen: a.settingsOpen,
@@ -278,12 +287,17 @@ func (a *app) view(c *uiContext) {
 	model.Opening = a.openingModel(c.Preferences().ReduceMotion) // opening_controller.go
 	now := time.Now()
 	shellView(c, model, a, a.shellLocal(), func() { a.pages(c) }, func() {
+		a.transparencyDragging = false
 		settingsDialog(c, a.settingsDialogModel(now), a, settingsDialogLocalUI{
 			Open: &a.settingsOpen, Router: a.setRouter, Form: &a.settingsForm,
 			HistoryAccess: &a.histAccessUI, Storage: &a.storageState.settingsStorageLocalUI,
 			Updates: &a.updUI, Models: &a.modelsLocalUI,
 			Remote: remoteLocalUI{wait: &a.llmWaitLocalUI, dialog: &a.provDlg.providerDialogLocalUI},
 		})
+		// The transparency slider previews while dragged and saves once it rests.
+		if !a.transparencyDragging && int(a.windowTransparency) != a.prefs.Appearance.WindowTransparency {
+			a.saveWindowTransparency()
+		}
 		// The Speech and Language models sections' dialogs, over Settings.
 		models := a.modelsPageModel()
 		modelDeleteDialogs(c, &models.Delete, a, &a.modelsLocalUI) // models_delete.go

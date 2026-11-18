@@ -15,7 +15,7 @@ import (
 
 type transcriptPreviewInput struct {
 	key, source            string
-	size                   float32
+	size, rightPadding     float32
 	text, link, background uiColor
 	dark                   bool
 	streaming              bool
@@ -40,7 +40,7 @@ func (p *transcriptPreview) request(win *mygo.Window, in transcriptPreviewInput)
 	old := p.input
 	p.input = in
 	p.version++
-	if old.key != in.key || old.size != in.size || old.text != in.text || old.link != in.link || old.dark != in.dark || old.background != in.background || p.view != nil && p.view.IsDestroyed() {
+	if old.key != in.key || old.size != in.size || old.rightPadding != in.rightPadding || old.text != in.text || old.link != in.link || old.dark != in.dark || old.background != in.background || p.view != nil && p.view.IsDestroyed() {
 		p.height, p.ready, p.loaded = 0, false, false
 	}
 	win.Update(func() { p.update(win) })
@@ -78,7 +78,7 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 			}
 			data := transcriptpreview.Update{HTML: markup, Version: version, Streaming: in.streaming}
 			if !p.loaded {
-				p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
+				p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, in.rightPadding, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
 				p.loaded = true
 			} else {
 				_ = transcriptUpdate.EmitPage(p.view.Page(), data)
@@ -93,10 +93,16 @@ func cssColor(c uiColor) string { return fmt.Sprintf("#%02x%02x%02x%02x", c.R, c
 // transcriptResult shows a result (history, Try) in the main window's
 // preview and says whether it did; the view draws the plain text if not.
 // Part of historyActions and tryCardActions.
-func (a *app) transcriptResult(c *uiContext, key, source string, streaming bool) bool {
+// A transcription's preview sits on its card's transcript face.
+func (a *app) transcriptResult(c *uiContext, key, source string, transcript, streaming bool) bool {
 	t := c.Theme()
-	in := transcriptPreviewInput{key: key, source: source, size: t.FontSize, text: t.Text, link: t.Accent, background: tok(t).Subtle, dark: t.Dark, streaming: streaming}
-	return a.mainTranscript.place(c, a.win, in, px(t, 110), px(t, 510)).Valid()
+	in := transcriptPreviewInput{key: key, source: source, size: t.FontSize, rightPadding: px(t, sp3-2), text: t.Text, link: t.Accent,
+		background: sessionTextBackground(t, transcript), dark: t.Dark, streaming: streaming}
+	view := a.mainTranscript.place(c, a.win, in, px(t, 110), px(t, 510))
+	if view.Valid() {
+		view.Margin(0, -in.rightPadding, 0, 0)
+	}
+	return view.Valid()
 }
 
 type transcriptPreviewBridge struct{ app *app }

@@ -23,13 +23,9 @@ type meetingOverlayAnimation struct {
 }
 
 type meetingOverlayFaceStyle struct {
-	radius float32
-	alpha  float32
-}
-
-func meetingOverlayFaceInk(element ui.Element, style meetingOverlayFaceStyle) ui.Element {
-	return element.Fill().Radius(style.radius).Background(ui.RGBA(22, 22, 26, style.alpha)).
-		Border(1, ui.RGBA(255, 255, 255, 0.12)).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA))
+	radius  float32
+	alpha   float32
+	palette string
 }
 
 func meetingOverlayContent(
@@ -54,7 +50,7 @@ func meetingOverlayView(
 	animation meetingOverlayAnimation,
 	style meetingOverlayFaceStyle,
 ) {
-	c.SetTheme(overlayTheme())
+	c.SetTheme(overlayTheme(style.palette))
 	defer c.Root().Background(ui.Transparent)
 	if !animation.motion {
 		c.DisableAnimations()
@@ -62,7 +58,7 @@ func meetingOverlayView(
 		c.After(layout.Tick)
 	}
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
-		face := meetingOverlayFaceInk(ui.Column(c.Key("mt-face")), style).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
+		face := faceStyle(c, ui.Column(c.Key("mt-face")), style.radius, style.alpha).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
 		if model.ShowExpanded {
 			face.Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border)
 		}

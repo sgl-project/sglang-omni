@@ -19,6 +19,7 @@ type settingsAppearanceActions interface {
 	setInterfaceScale(scale float64)
 	setSidebarChoice(choice string)
 	setReduceMotion(on bool)
+	setPaletteColor(color string) // "#0d9384"
 }
 
 type settingsPrivacyActions interface {

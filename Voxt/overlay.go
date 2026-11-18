@@ -50,6 +50,7 @@ type sessionOverlayLocal struct {
 type sessionOverlayLayout struct {
 	Width, Height int
 	Radius, Alpha float32
+	Palette       string
 	ShowTime      bool
 	LiveLines     bool
 	Top           bool
@@ -95,7 +96,7 @@ func sessionOverlayView(
 	onMeasured func([]sessionOverlayMeasurement),
 	onReveal func(),
 ) {
-	context.SetTheme(overlayTheme())
+	context.SetTheme(overlayTheme(layoutState.Palette))
 	defer context.Root().Background(ui.Transparent)
 	sessionOverlayMeasure(context, state, layoutState, onMeasured)
 	if layoutState.Reveal && onReveal != nil {
@@ -115,21 +116,22 @@ func sessionOverlayView(
 	ui.Column(context).Fill().Padding(layout.Pad).Children(func() {
 		switch state.Mode {
 		case ovAnswer:
-			faceStyle(ui.Column(context.Key("ov-face")), layoutState.Radius, layoutState.Alpha).Children(func() {
+			faceStyle(context, ui.Column(context.Key("ov-face")), layoutState.Radius, layoutState.Alpha).Children(func() {
 				overlayCard(context, state, layoutState, actions, local, animation, onMeasured)
 			})
 		case ovNotice:
 			overlayNotice(context, state.Notice, layoutState.Radius, layoutState.Alpha, actions)
 		default:
-			faceStyle(ui.Column(context.Key("ov-face")), layoutState.Radius, layoutState.Alpha).DragWindow().Children(func() {
+			faceStyle(context, ui.Column(context.Key("ov-face")), layoutState.Radius, layoutState.Alpha).DragWindow().Children(func() {
 				overlayPill(context, state, look, actions)
 			})
 		}
 	})
 }
 
-func overlayTheme() *ui.Theme {
+// overlayTheme is the HUD's theme: the dark variant of palette.
+func overlayTheme(palette string) *ui.Theme {
 	theme := *ui.DarkTheme()
-	styleTheme(&theme)
+	styleTheme(&theme, palette)
 	return &theme
 }

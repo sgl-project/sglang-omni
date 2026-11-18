@@ -44,7 +44,7 @@
       {
         "id": "appearance",
         "title": "外观",
-        "english": "Appearance theme size sidebar"
+        "english": "Appearance theme color palette transparency size sidebar"
       },
       {
         "id": "privacy",
@@ -66,13 +66,15 @@
       "theme": 0,
       "theme_options": [
         "系统",
+        "深色",
         "浅色",
-        "深色"
+        "透明"
       ],
       "theme_values": [
         "system",
+        "dark",
         "light",
-        "dark"
+        "transparent"
       ],
       "scale": 1,
       "scale_options": [
@@ -98,7 +100,12 @@
         "names",
         "icons"
       ],
-      "reduce_motion": false
+      "reduce_motion": false,
+      "palette": "#0d9384",
+      "default_palette": "#0d9384",
+      "transparent": false,
+      "min_transparency": 5,
+      "max_transparency": 15
     }
   }
 }

@@ -164,6 +164,7 @@ func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
 	model.Width, model.Height = a.ov.w, a.ov.h
 	model.Radius = faceRadius(a.prefs.Overlay, a.ov.mode, a.ov.h)
 	model.Alpha = layout.FaceAlpha(a.prefs.Overlay)
+	model.Palette = a.prefs.Appearance.Palette
 	model.ShowTime, model.LiveLines = a.prefs.Overlay.ShowTime, a.prefs.Overlay.LiveLines
 	model.Top = a.prefs.Overlay.Position == "top"
 	model.Reveal, model.Measured = a.ov.reveal, a.ov.textW
@@ -274,6 +275,15 @@ func (a *app) overlayRestyle() {
 	}
 	a.syncOverlayMaterial()
 	a.ov.win.Invalidate()
+}
+
+// invalidatePaletteOverlays redraws the overlay windows in a new palette.
+func (a *app) invalidatePaletteOverlays() {
+	for _, window := range []*mygo.Window{a.ov.win, a.ov.lang.win, a.meetOvWin} {
+		if window != nil {
+			window.Invalidate()
+		}
+	}
 }
 
 func (a *app) closeOverlay() {

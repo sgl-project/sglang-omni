@@ -4,6 +4,7 @@
   "shell": {
     "theme": "system",
     "scale": 1,
+    "accent_palette": "#0d9384",
     "still": true,
     "nav": {
       "groups": [
