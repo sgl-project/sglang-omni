@@ -49,9 +49,8 @@ public:
   // Reads config.json and the weights (*.safetensors, else weights.npz) of an
   // mlx-community Whisper checkpoint.
   explicit WhisperModel(const std::filesystem::path &model_directory);
-  // Reads only the decoder of a draft checkpoint, in the target's dtype, to
-  // decode against the target's encoder states; refuses a draft whose decoder
-  // cannot read them.
+  // Loads the decoder of a native MLX or Transformers draft in the target's
+  // dtype to decode against the target's encoder states.
   WhisperModel(const std::filesystem::path &draft_directory,
                const WhisperModel &target);
 

@@ -49,10 +49,8 @@ func checkDir(dir string) error {
 }
 
 // WithDraft is a copy of a whose server verifies the speculative draft
-// installed in dir (the DFlash draft the catalogue pairs with the model:
-// --draft-model-path), decoding several tokens a step; "" none. The
-// same model with another draft is another server,
-// so the switch restarts the model (Runtime.acquire).
+// installed in dir (--draft-model-path), decoding several tokens a step.
+// An empty dir disables it. Changing the draft restarts the model (Runtime.acquire).
 func (a *ASR) WithDraft(dir string) *ASR {
 	c := *a
 	c.draft = dir
