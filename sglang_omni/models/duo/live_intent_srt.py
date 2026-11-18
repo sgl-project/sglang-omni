@@ -127,7 +127,7 @@ class SRTFrameIntentPlanner(FrameIntentPlanner):
         kv_window_tokens: int | None = None,
     ) -> None:
         devices = devices if devices is not None else (device.index,)
-        self.tokenizer, _ = prepare_tokenizer(args)
+        self.tokenizer, protocol_ids = prepare_tokenizer(args)
         if not args.origin_intent:
             manifest_path = Path(args.intent) / "duplex_adapter_merge.json"
             if not manifest_path.is_file():
@@ -165,6 +165,10 @@ class SRTFrameIntentPlanner(FrameIntentPlanner):
             for token in SPECIALS
             if token == "<wait>" or token.startswith("<emo_")
         } | {self.end_token_id}
+        if "<speak>" in protocol_ids:
+            allowed.add(protocol_ids["<speak>"])
+        else:
+            pass
         forbidden = sorted(set(self.tokenizer.all_special_ids) - allowed)
         context = multiprocessing.get_context("spawn")
         self.connections: list[Connection] = []

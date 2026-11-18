@@ -66,6 +66,7 @@ class LiveIntentPlanner:
         max_context_tokens: int,
         max_new_tokens: int,
         vision_device: str | None = None,
+        speak_token_id: int | None = None,
     ) -> None:
         self.processor = processor
         self.model = model
@@ -94,6 +95,10 @@ class LiveIntentPlanner:
             for token in intent_conditioning.intent.SPECIALS
             if token == "<wait>" or token.startswith("<emo_")
         } | {self.end_token_id}
+        if speak_token_id is not None:
+            allowed.add(speak_token_id)
+        else:
+            pass
         self.forbidden_token_ids = sorted(set(self.tokenizer.all_special_ids) - allowed)
         self.states: dict[str, LiveIntentState] = {}
 

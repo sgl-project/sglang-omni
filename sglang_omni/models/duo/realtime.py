@@ -849,6 +849,7 @@ def load_duo_live_resources(
                 max_context_tokens=max_context_tokens,
                 max_new_tokens=max_new_tokens,
                 vision_device=intent_vision_device,
+                speak_token_id=identity.get("special_ids", {}).get("<speak>"),
             )
             if kernel_backend == "sglang":
                 use_intent_kernels(intent)
