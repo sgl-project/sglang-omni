@@ -142,15 +142,90 @@ func TestFinalizeReplacesMicSegments(t *testing.T) {
 type countingVAD struct {
 	calls        int
 	sampleCounts []int
+	regions      []vad.Segment
 }
 
 func (v *countingVAD) Speech(_ context.Context, pcm []byte, _ int) ([]vad.Segment, error) {
 	v.calls++
 	v.sampleCounts = append(v.sampleCounts, len(pcm)/2)
+	if v.regions != nil {
+		return v.regions, nil
+	}
 	return []vad.Segment{{Start: 0, End: len(pcm) / 2}}, nil
 }
 
 func (v *countingVAD) Open(context.Context) (vad.ModelStream, error) { return nil, nil }
+
+func TestFinalizeReadsTwoTrackSegmentsInTimeOrder(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	meetDir := filepath.Join(root, "meetings", "m-time-order")
+	if err := os.MkdirAll(meetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeWAV(t, meetDir, "mic.wav", tonePCM(rateSamples(30*time.Second)))
+	writeWAV(t, meetDir, "system.wav", tonePCM(rateSamples(30*time.Second)))
+	mt, err := db.Meetings().CreateMeeting(ctx, store.Meeting{
+		ID: "m-time-order", CreatedAt: time.Now(), Status: store.MeetingDone,
+		Mode: store.MeetingModeMeeting, Audio: "m-time-order", DurationMS: 30000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	micASR := &seqFileASR{texts: []string{"mic-0", "mic-20"}}
+	sysASR := &seqFileASR{texts: []string{"sys-0", "sys-10"}}
+	detector := &countingVAD{}
+	cfg := meeting.Config{
+		Store:    db.Meetings(),
+		Dir:      filepath.Join(root, "meetings"),
+		VAD:      detector,
+		Settings: func() settings.Meeting { return settings.Meeting{} },
+		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
+			switch src {
+			case meeting.SourceMic:
+				detector.regions = []vad.Segment{{Start: 0, End: rateSamples(5 * time.Second)}, {Start: rateSamples(20 * time.Second), End: rateSamples(25 * time.Second)}}
+				return meeting.TrackASR{Caps: micASR.Caps(), File: micASR}, nil
+			case meeting.SourceSystem:
+				detector.regions = []vad.Segment{{Start: 0, End: rateSamples(5 * time.Second)}, {Start: rateSamples(10 * time.Second), End: rateSamples(15 * time.Second)}}
+				return meeting.TrackASR{Caps: sysASR.Caps(), File: sysASR}, nil
+			default:
+				return meeting.TrackASR{}, nil
+			}
+		},
+	}
+	if err := meeting.FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, segments, err := db.Meetings().Meeting(ctx, "m-time-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		text string
+		idx  int
+	}{{"mic-0", 0}, {"sys-0", 2}, {"sys-10", 3}, {"mic-20", 1}}
+	if len(segments) != len(want) {
+		t.Fatalf("segments %+v", segments)
+	}
+	for i, expected := range want {
+		segment := segments[i]
+		if segment.Text != expected.text || segment.Idx != expected.idx {
+			t.Errorf("segment[%d] = %+v, want text %q with idx %d", i, segment, expected.text, expected.idx)
+		}
+		if i > 0 && segments[i-1].StartMS > segment.StartMS {
+			t.Errorf("segments are not chronological: %+v", segments)
+		}
+	}
+	if segments[0].StartMS != segments[1].StartMS {
+		t.Errorf("the equal-start tie moved: %+v", segments)
+	}
+}
 
 func TestFinalizeChunkOverridesAndDisabledVAD(t *testing.T) {
 	ctx := context.Background()
