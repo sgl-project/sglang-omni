@@ -151,6 +151,10 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		os.Exit(3)
 	}
 	for end := time.Now().Add(o.Delay); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if r.Context().Err() != nil {
+			record(o, Record{Event: "final-cancelled", Samples: samples})
+			return
+		}
 		_, _ = io.WriteString(w, ":\n\n")
 		flush()
 	}
@@ -167,8 +171,11 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 	if o.Echo && fields["prompt"] != "" {
 		text += strings.Join(strings.Split(fields["prompt"], "\n"), "，") + "。"
 	}
-	done, _ := json.Marshal(map[string]any{"type": "transcript.text.done", "text": text,
-		"generation_metadata": map[string]any{"generated_token_count": 10, "language": language, "finish_reason": "stop"}})
+	metadata := map[string]any{"generated_token_count": 10, "language": language, "finish_reason": "stop"}
+	if o.WindowTexts != nil {
+		metadata["window_texts"] = o.WindowTexts
+	}
+	done, _ := json.Marshal(map[string]any{"type": "transcript.text.done", "text": text, "generation_metadata": metadata})
 	fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", done)
 	flush()
 }
