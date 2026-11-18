@@ -43,7 +43,19 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
+
+func setSnapshotMode(a *app, tt *ui.Tester, dark bool) {
+	tt.SetDark(dark)
+	mode := settings.ThemeLight
+	if dark {
+		mode = settings.ThemeDark
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Appearance.Theme = mode })
+}
 
 var (
 	// snapEpoch is the time at which every snapshot test starts.

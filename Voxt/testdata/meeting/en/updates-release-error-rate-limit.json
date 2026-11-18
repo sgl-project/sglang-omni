@@ -1,0 +1,14 @@
+{
+  "name": "updates-release-error-rate-limit",
+  "kind": "updates-release",
+  "updates_release": {
+    "available": true,
+    "done": true,
+    "newer": false,
+    "title": "Couldn't check for updates",
+    "subtitle": "",
+    "error_text": "GitHub limits how often Voxt can check. Try again in an hour.",
+    "notes": "",
+    "download": ""
+  }
+}

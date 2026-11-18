@@ -39,7 +39,101 @@ func trTester(t *testing.T) (*app, *ui.Tester) {
 // readyModels installs a speech model and a language model (fakes).
 func readyModels(a *app) {
 	a.local = readyLocal()
+	a.modelStatus[fakeASRModel.ID] = models.Status{Installed: true}
 	a.checkModels() // as installing does: the models' card goes
+}
+
+func TestFeaturePageModelCache(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	_, _ = a.featurePageModel(hotkey.Transcribe)
+	first, _ := a.featurePageModel(hotkey.Transcribe)
+	second, _ := a.featurePageModel(hotkey.Transcribe)
+	if &first.Shortcuts.Rows[0] != &second.Shortcuts.Rows[0] {
+		t.Fatal("stable frame rebuilt the feature page")
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Structure = true })
+	changed, _ := a.featurePageModel(hotkey.Transcribe)
+	if &first.Shortcuts.Rows[0] == &changed.Shortcuts.Rows[0] {
+		t.Fatal("settings change kept stale feature state")
+	}
+	again, _ := a.featurePageModel(hotkey.Transcribe)
+	settled, _ := a.featurePageModel(hotkey.Transcribe)
+	if &again.Shortcuts.Rows[0] != &settled.Shortcuts.Rows[0] {
+		t.Fatal("synchronized settings did not reuse feature state")
+	}
+	local := a.fui(hotkey.Transcribe)
+	local.rules, local.find = true, "meeting"
+	find, _ := a.featurePageModel(hotkey.Transcribe)
+	if &settled.Shortcuts.Rows[0] == &find.Shortcuts.Rows[0] {
+		t.Fatal("local find change kept stale feature state")
+	}
+	a.sessionChanged(trySnapshot(a, session.Done))
+	ended, _ := a.featurePageModel(hotkey.Transcribe)
+	if &find.Shortcuts.Rows[0] == &ended.Shortcuts.Rows[0] {
+		t.Fatal("session revision kept stale feature state")
+	}
+}
+
+type featureCacheLocal struct {
+	*fakeLocal
+	alternate local.Model
+}
+
+func (f *featureCacheLocal) Installed(kind local.Kind) []local.Model {
+	models := f.fakeLocal.Installed(kind)
+	if kind == local.ASR {
+		models = append(models, f.alternate)
+	}
+	return models
+}
+
+func TestFeaturePageModelCacheContent(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	readyModels(a)
+	a.local = &featureCacheLocal{fakeLocal: a.local.(*fakeLocal), alternate: local.Model{Kind: local.ASR, ID: "fixture-unused-speech", Name: "Fixture unused speech model", Stream: true}}
+	ready, _ := a.featurePageModel(hotkey.Transcribe)
+	if len(ready.Models.ASR.Options) != 3 || ready.Shortcuts.EndWord == nil {
+		t.Fatalf("ready model state %+v", ready.Models.ASR)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Models.Hidden = []string{"fixture-unused-speech"} })
+	hidden, _ := a.featurePageModel(hotkey.Transcribe)
+	if len(hidden.Models.ASR.Options) != 2 {
+		t.Fatalf("hidden model options %+v", hidden.Models.ASR.Options)
+	}
+	if hidden.Shortcuts.EndWord == nil {
+		t.Fatal("hiding an installed streaming model removed its end-word row")
+	}
+	local := a.fui(hotkey.Transcribe)
+	local.block = &sessionNotice{text: "first block"}
+	blocked, _ := a.featurePageModel(hotkey.Transcribe)
+	if blocked.Try.Block.Text != "first block" {
+		t.Fatalf("block text %q", blocked.Try.Block.Text)
+	}
+	local.block = &sessionNotice{text: "second block"}
+	blockedAgain, _ := a.featurePageModel(hotkey.Transcribe)
+	if blockedAgain.Try.Block.Text != "second block" {
+		t.Fatalf("updated block text %q", blockedAgain.Try.Block.Text)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	localized, _ := a.featurePageModel(hotkey.Transcribe)
+	if localized.Title != "转录" {
+		t.Fatalf("locale title %q", localized.Title)
+	}
+	a.sessionChanged(trySnapshot(a, session.Recording))
+	recording, _ := a.featurePageModel(hotkey.Transcribe)
+	if recording.Try.Recording.ElapsedText != "0:03" {
+		t.Fatalf("elapsed text %q", recording.Try.Recording.ElapsedText)
+	}
+	a.sess.HeardAt = a.sess.HeardAt.Add(-time.Second)
+	later, _ := a.featurePageModel(hotkey.Transcribe)
+	if later.Try.Recording.ElapsedText != "0:04" {
+		t.Fatalf("later elapsed text %q", later.Try.Recording.ElapsedText)
+	}
+	a.sessionChanged(trySnapshot(a, session.Done))
+	done, _ := a.featurePageModel(hotkey.Transcribe)
+	if done.Try.Ended.Result != "The meeting moves to Thursday at four." {
+		t.Fatalf("session result %q", done.Try.Ended.Result)
+	}
 }
 
 func TestTranscribePageRenders(t *testing.T) {
@@ -81,7 +175,7 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 	}
 	// Choose a preset through the select's state, as the Select does.
 	a.fui(hotkey.Transcribe).rows[1].sel = uitext.HotkeyText("RightShift")
-	a.chooseKeys(hotkey.Transcribe, 1, &a.fui(hotkey.Transcribe).rows[1], func() map[string]string { _, m := keyOptions("RightCommand", false); return m }())
+	a.chooseFeatureShortcut(hotkey.Transcribe, 1, "RightShift")
 	frames(tt)
 	if hs := saved(); hs[1].Keys != "RightShift" {
 		t.Fatalf("preset not saved: %+v", hs)
@@ -89,8 +183,8 @@ func TestTranscribeHotkeysEdit(t *testing.T) {
 
 	// Custom keys: invalid ones show why and are not saved; valid ones are
 	// saved in canonical spelling.
-	a.fui(hotkey.Transcribe).rows[1].sel = "Custom…"
-	a.chooseKeys(hotkey.Transcribe, 1, &a.fui(hotkey.Transcribe).rows[1], nil)
+	click(t, tt, "Keys of shortcut 2")
+	click(t, tt, "Custom…")
 	frames(tt)
 	if !a.fui(hotkey.Transcribe).rows[1].custom || a.fui(hotkey.Transcribe).rows[1].text != "RightShift" {
 		t.Fatalf("custom row %+v", a.fui(hotkey.Transcribe).rows[1])
@@ -263,6 +357,56 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	clickSwitch(t, tt, "Basic clean-up")
 	if !a.lib.settings.Get().Features.Transcribe.Cleanup {
 		t.Error("clean-up changed while disabled")
+	}
+}
+
+// TestFeatureModelControls: each feature manages its speech model where it
+// picks one, from the first download through deletion and download progress.
+func TestFeatureModelControls(t *testing.T) {
+	a, tt := trTester(t)
+	const download = "Download Qwen3-ASR 1.7B (8bit)"
+	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
+		a.navigate("/" + feature)
+		frames(tt)
+		if !slices.Contains(tt.AccessLabels(), download) {
+			t.Errorf("%s has no inline download: %q", feature, tt.AccessLabels())
+		}
+	}
+	a.navigate("/transcribe")
+	seedModels(t, a, models.ASRAccurate, models.VADSilero)
+	frames(tt)
+	if !has(tt, "2.5 GB on disk") || !slices.Contains(tt.AccessLabels(), "Delete Qwen3-ASR 1.7B (8bit)…") {
+		t.Fatalf("installed model's controls: %q", tt.AccessLabels())
+	}
+	click(t, tt, "Delete Qwen3-ASR 1.7B (8bit)…")
+	click(t, tt, "Delete Qwen3-ASR 1.7B (8bit)")
+	if a.models.Installed(models.ASRAccurate) || !slices.Contains(tt.AccessLabels(), download) {
+		t.Error("the deleted model does not offer its download again")
+	}
+	m, _ := models.Lookup(models.ASRAccurate)
+	a.modelStatus[m.ID] = models.Status{Downloading: true, Done: m.Size() / 2, Total: m.Size()}
+	frames(tt)
+	if !has(tt, "Downloading: ") || !slices.Contains(tt.AccessLabels(), "Cancel downloading Qwen3-ASR 1.7B (8bit)") {
+		t.Errorf("download progress: %q", tt.Texts())
+	}
+}
+
+// TestFeatureRemoteModelControls: a feature reads and edits the remote
+// language model it picked without opening the Language models section.
+func TestFeatureRemoteModelControls(t *testing.T) {
+	a, tt := trTester(t)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{{ID: "ollama", Model: "qwen3:8b"}}
+		s.Features.Transcribe.LLM = "ollama"
+	})
+	a.syncRemote()
+	frames(tt)
+	if !has(tt, "Ready") || !slices.Contains(tt.AccessLabels(), "Edit Ollama") {
+		t.Fatalf("remote model's controls: %q", tt.AccessLabels())
+	}
+	click(t, tt, "Edit Ollama")
+	if !a.provDlg.open || a.provDlg.id != "ollama" {
+		t.Errorf("edit opened %+v", a.provDlg)
 	}
 }
 
@@ -521,7 +665,7 @@ func TestTranscribeFullPage(t *testing.T) {
 			a, tt := trTester(t)
 			a.navigate("/" + feature)
 			tt.SetSize(w, 2600)
-			tt.SetDark(dark)
+			setSnapshotMode(a, tt, dark)
 			readyModels(a)
 			if feature == hotkey.Transcribe {
 				a.updateSettings(func(s *settings.Settings) {
@@ -612,7 +756,7 @@ func TestSectionTitleAdd(t *testing.T) {
 			}
 			a.setRules(sampleRules())
 			a.navigate("/app-enhancement")
-			a.aePage.sel = "g-chat"
+			a.aeUI.sel = "g-chat"
 			tt.SetSize(size[0], 1600) // the Apps section, below the prompt
 			check("Apps", "Add apps…", i18n.T("Remove %s", "Slack"))
 		}

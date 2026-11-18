@@ -1,0 +1,21 @@
+{
+  "name": "history-page-loading",
+  "kind": "history",
+  "history": {
+    "read": false,
+    "error": "",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": []
+  }
+}
