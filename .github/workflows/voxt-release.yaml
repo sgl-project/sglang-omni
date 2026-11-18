@@ -138,6 +138,12 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
+      - name: Stable behavior regression tests
+        if: env.IS_RELEASE == 'true'
+        run: |
+          CGO_ENABLED=0 go test -count=1 ./...
+          swift test --package-path helper
+
       - name: Import the signing identity
         if: env.IS_SIGNED == 'true'
         env:
