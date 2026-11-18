@@ -1238,6 +1238,8 @@ async def chat_stream_events(
     requested_modalities = req.modalities or ["text"]
     finish_reason: str | None = None
     final_usage: UsageResponse | None = None
+    text_terminal_finished = False
+    text_owns_completion = "text" in requested_modalities
     spec_tokens_details: SpecTokensDetailsDict | None = None
 
     chunk_stream = client.completion_stream(
@@ -1255,13 +1257,26 @@ async def chat_stream_events(
             else:
                 pass
             if chunk.finish_reason is not None:
-                finish_reason = chunk.finish_reason
-                if chunk.usage is not None:
-                    final_usage = UsageResponse(
-                        prompt_tokens=chunk.usage.prompt_tokens or 0,
-                        completion_tokens=chunk.usage.completion_tokens or 0,
-                        total_tokens=chunk.usage.total_tokens or 0,
-                    )
+                # When text is requested its terminal owns the completion
+                # metadata, since an audio terminal finishing later reports its
+                # own codec frame counts. An audio-only stream keeps last-wins.
+                if (
+                    not text_owns_completion
+                    or chunk.modality == "text"
+                    or not text_terminal_finished
+                ):
+                    finish_reason = chunk.finish_reason
+                    if chunk.usage is not None:
+                        final_usage = UsageResponse(
+                            prompt_tokens=chunk.usage.prompt_tokens or 0,
+                            completion_tokens=chunk.usage.completion_tokens or 0,
+                            total_tokens=chunk.usage.total_tokens or 0,
+                        )
+                    elif text_owns_completion and chunk.modality == "text":
+                        final_usage = None
+                    else:
+                        pass
+                    text_terminal_finished = chunk.modality == "text"
                 else:
                     pass
                 has_payload = (

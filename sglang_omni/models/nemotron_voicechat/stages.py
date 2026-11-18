@@ -37,7 +37,7 @@ from sglang_omni.models.weight_loader import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.transcription import (
-    police_request_audio,
+    police_request_media,
     resolve_audio_source,
 )
 from sglang_omni.proto import StagePayload
@@ -71,7 +71,7 @@ def create_preprocessing_executor(
         # Channel 0, not a downmix: this model speaks the other side of the
         # conversation, so a two-party recording carries the agent on channel 1.
         channels = load_audio(
-            police_request_audio(resolve_audio_source(payload)),
+            police_request_media(resolve_audio_source(payload)),
             source_name="VoiceChat",
             target_sample_rate=INPUT_SAMPLE_RATE,
             mono=False,
