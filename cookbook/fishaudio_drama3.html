@@ -1151,7 +1151,7 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 </tbody>
 </table>
 </div>
-<p>Both quantize with MLX affine groups of 64 and keep the embeddings in bf16, the norm gains and the codec in fp32; the 8-bit checkpoint quantizes only the routed experts. The 4-bit checkpoint peaks above the GPU working set of a 32 or 36 GB Mac; the 8-bit one fits the 55.7 GB working set of a 64 GB Mac, with nothing else holding much memory. Both were measured on a 64 GB Mac. Download a pinned checkpoint, then build with the native runtime’s MLX 0.32.3 toolchain:</p>
+<p>Both quantize with MLX affine groups of 64 and keep the embeddings in bf16, the norm gains and the codec in fp32; the 8-bit checkpoint quantizes only the routed experts. The 4-bit checkpoint peaks above the GPU working set of a 32 or 36 GB Mac; the 8-bit one fits the 55.7 GB working set of a 64 GB Mac, with nothing else holding much memory. Both were measured on a 64 GB Mac. Download a pinned checkpoint, then build with the native runtime’s pinned MLX toolchain:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>sglang_omni_mlx/native/ci/provision_models.py<span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_DATA</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model<span class="w"> </span>mlx-community/fish-audio-drama-3-4bit
 sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_RUNTIME</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_BUILD</span><span class="s2">"</span>

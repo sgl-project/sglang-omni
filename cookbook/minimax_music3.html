@@ -710,7 +710,7 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 <p>The standalone <code class="docutils literal notranslate"><span class="pre">music3_server</span></code> runs entirely in C++ under
 <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/</span></code>; it uses the same HTTP request fields as the examples
 below. Download the pinned converted checkpoint, then build with the native
-runtime’s existing MLX 0.32.3 toolchain:</p>
+runtime’s pinned MLX toolchain:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>sglang_omni_mlx/native/ci/provision_models.py<span class="w"> </span><span class="s2">"</span><span class="nv">$MUSIC3_DATA</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model<span class="w"> </span>mlx-community/MiniMax-Music3-mxfp8
 sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span class="s2">"</span><span class="nv">$MUSIC3_RUNTIME</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$MUSIC3_BUILD</span><span class="s2">"</span>
