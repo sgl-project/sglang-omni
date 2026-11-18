@@ -1,0 +1,19 @@
+sglang_omni/utils/audio.py
+  s_9be4bd449be508::t_93d78b430fc7ef 22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "576f9121dc41d36c4e24cdb2a5d310a63f4f2026",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
