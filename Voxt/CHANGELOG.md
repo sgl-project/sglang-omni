@@ -29,6 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Rewrite sends a copied WebP image**: with "Send the copied image with Rewrite" on, an image copied as WebP only was skipped without a message; it now reaches the model like PNG, JPEG, HEIC and TIFF.
 - **Translate into your main language no longer returns what you said unchanged** (#4153): with English as your main language, translating Chinese speech into English could give back the Chinese, with no error. The prompt told the model both to translate into English and that your main language is never a language to translate into, and its example was an English clean-up with no translation in it. Translate's prompt no longer says that, and its example now always translates from another language into the target.
 - **Transcribe shows and inserts only the cleaned text, never the model's commentary about its edits** (#4086): with the language-model step on, a model that explains what it changed ("I removed the filler…") had that explanation inserted as if it were part of the transcript. The clean-up now asks for the final text between <output> tags and only the text between them is streamed into the card, shown and inserted; an answer without the tags is used as before. When you say the tags themselves, only the one outer pair the model adds around your text goes, and Rewrite and Translate answers keep such tags in their text (HTML you asked for, say).
 - **Rewrite and Translate read a block selection in a Lark doc**: selecting an image block, or a range of blocks with images and text, in a Lark doc in Chrome no longer reads as "no selection". Chrome reports such a selection to Accessibility as a single blank space, which Voxt mistook for the selected text and never tried copying; Voxt now treats a reading that is all whitespace as no reading and copies with ⌘C instead, so the selection's text (with a placeholder per image) reaches the language model.
@@ -65,6 +66,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **改写会发送复制的 WebP 图片**：打开「改写时发送复制的图片」后，只有 WebP 格式的复制图片以前会被跳过且没有提示；现在和 PNG、JPEG、HEIC、TIFF 一样发给模型。
 - **翻译成主要语言时不再原样返回你说的话**（#4153）：主要语言是英文时，把中文语音翻译成英文可能原样返回中文，也不报错。提示词一边要求翻译成英文，一边说主要语言不是翻译的目标语言，示例还是一段没有翻译的英文整理。现在翻译的提示词不再这样说，示例也总是从另一种语言翻译成目标语言。
 - **转录只显示和插入整理后的文字，不再混入模型对自己改动的说明**（#4086）：打开语言模型整理时，有的模型会在整理结果后面解释自己改了什么（“我删掉了……”），这段说明会被当成转录稿插入。现在转录的整理要求模型把最终文本放在 <output> 标签之间，只有标签里的内容会边写边进入卡片、显示和插入；没有标签的回答照原来的方式使用。你口述的内容本身有这对标签时，只去掉模型在最外面加的一对；改写和翻译的回答保留文本里的这类标签（比如按要求生成的 HTML）。
 - **改写和翻译能读到 Lark 文档里的块级选区**：在 Chrome 的 Lark 文档里选中一个图片块，或选中图片加文字的一段块，不再读成“没有选中”。Chrome 把这样的选区经无障碍接口报成一个空格，Voxt 以前把它当成选中的文字，不再尝试复制；现在全白的读取结果按没读到处理，改用 ⌘C 复制，选区文字（每张图一个占位符）会发给语言模型。
