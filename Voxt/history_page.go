@@ -1,390 +1,241 @@
 package main
 
-// The History page (/history): finished sessions by feature
-// (Transcribe, Translate, Rewrite) or of every feature (All, each row
-// naming its feature), newest first, searchable (the store's
-// full-text index), and the details of one in a side panel beside the
-// list, or over it when the window is narrow: its texts to copy, where it
-// went, the models, the time of each stage, why it failed,
-// its recording in Finder, and Delete. An entry's context menu has the
-// same (history_menu.go).
-//
-// The History settings dialog (history_settings.go) holds what the
-// history keeps: its recordings and the automatic clean-up.
-//
-// The page keeps the entries of its tab and search in memory, read in the
-// background when it shows, when the tab or the search changes, and when a
-// session keeps an entry (historyChanged).
+// The History page (/history): a searchable list and an optional detail panel.
 
 import (
-	"context"
-	"slices"
 	"strings"
 	"time"
 
-	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// historyLimit is how many entries the list holds at most: the newest.
-const historyLimit = 500
-
-// Widths of the details panel and of the list beside it (DIPs at 100 %):
-// under both, the panel shows over the list. Both fit beside the sidebar
-// in the default window (800 wide: a 600-wide page) and beside the rail in
-// the smallest (680).
 const (
 	historyPanelW   = 290
 	historyListMinW = 300
 )
 
-// historyState is the History page's view state.
-type historyState struct {
-	hist    historyView
-	histSet histSettingsState // history_settings.go
-}
-
-// historyView is the History page's state.
-type historyView struct {
-	tab   int    // the kind shown: an index in store.Kinds, len(store.Kinds) for All
-	query string // the search field
-	find  finder // Return steps through the matches (find_marks.go)
-	// list holds the entries read for listFor (the kind and the search),
-	// "" before the first read; seq numbers the reads, so that only the
-	// last one lands.
-	list    []store.Entry
-	listFor string
-	seq     int
-	loading bool
-	stale   bool   // an entry changed while the page was not shown
-	err     string // the last read's error
-	sel     string // the entry in the details panel
-	listUI  ui.ListState
-	// The Delete dialog: open, and the entry it deletes.
+type historyLocalUI struct {
+	tab    int
+	query  string
+	find   finder
+	sel    string
+	listUI ui.ListState
 	delAsk bool
 	delID  string
-	retry  entryRetry // the entry made again from its recording (history_retry.go)
 }
 
-// revealInFinder shows a file in Finder; tests replace it.
-var revealInFinder = func(path string) { mygo.Shell.ShowItemInFolder(path) }
-
-// kind is the kind of the tab shown, "" for All.
-func (h *historyView) kind() store.Kind {
-	if h.tab == len(store.Kinds) {
-		return ""
-	}
-	return store.Kinds[min(max(h.tab, 0), len(store.Kinds)-1)]
-}
-
-// historyTabs names the tabs: store.Kinds, then All.
-func historyTabs() []string {
-	return []string{i18n.T("Transcribe"), i18n.T("Translate"), i18n.T("Rewrite"), i18n.T("All")}
-}
-
-// kindName names an entry's feature, as its tab does.
-func kindName(k store.Kind) string {
-	if i := slices.Index(store.Kinds, k); i >= 0 {
-		return historyTabs()[i]
-	}
-	return string(k)
-}
-
-// wants says what the list should hold: the kind and the search.
-func (h *historyView) wants() string {
-	return string(h.kind()) + "\x00" + strings.TrimSpace(h.query)
-}
-
-// selected is the entry in the details panel, nil for none.
-func (h *historyView) selected() *store.Entry {
-	if h.sel == "" {
-		return nil
-	}
-	for i := range h.list {
-		if h.list[i].ID == h.sel {
-			return &h.list[i]
-		}
-	}
-	return nil
-}
-
-// loadHistory reads the entries of the tab and the search in the
-// background.
-func (a *app) loadHistory() {
-	h := &a.hist
-	h.seq++
-	h.loading, h.stale = true, false
-	seq, kind, search, want := h.seq, h.kind(), strings.TrimSpace(h.query), h.wants()
-	hs := a.lib.store.History()
-	a.async(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		list, err := hs.List(ctx, store.HistoryQuery{Kind: kind, Search: search, Limit: historyLimit})
-		a.post(func() {
-			if seq != a.hist.seq {
-				return // a newer read is on its way
-			}
-			h := &a.hist
-			h.loading, h.listFor = false, want
-			if err != nil {
-				h.err = err.Error()
-				return
-			}
-			h.list, h.err = list, ""
-			if h.selected() == nil {
-				h.sel = ""
-			}
-		})
-	})
-}
-
-// historyChanged runs when the history changed (an entry kept, changed
-// or deleted, a try ended): the observers of onHistory (events.go) hear
-// of it.
-func (a *app) historyChanged() {
-	for _, fn := range a.onHistory {
-		fn()
-	}
-}
-
-// historyReload reads the history again now when the page shows, else
-// when it shows next.
-func (a *app) historyReload() {
-	if a.currentPage() == "history" {
-		a.loadHistory()
-		return
-	}
-	a.hist.stale = true
-}
-
-// historyShown runs when the router goes to the History page (pageShown).
-func (a *app) historyShown() { a.loadHistory() }
-
-// historyPage builds the page.
-func (a *app) historyPage(c *ui.Context) {
+func historyPage(c *ui.Context, state *historyViewState, actions historyActions, local *historyLocalUI, pageWidth float32) {
 	t := c.Theme()
-	h := &a.hist
-	// A read that pageShown did not start: the first, or after a change.
-	if !h.loading && (h.listFor == "" || h.stale) {
-		a.loadHistory()
+	query := strings.TrimSpace(local.query)
+	hits := findHits(query, len(state.Rows), func(index int) []string {
+		return []string{state.Rows[index].Title}
+	})
+	if local.find.advance(hits[len(state.Rows)]) {
+		row, _ := rowOf(hits, local.find.cur)
+		local.listUI.ScrollIntoView(row)
 	}
+	current, currentAt := rowOf(hits, local.find.cur)
 	widePageHeader(c, i18n.T("History"), func() {
-		if n := len(h.list); n > 0 {
-			label := i18n.N(n, "%d entry", "%d entries", n)
-			if n >= historyLimit {
-				label = i18n.T("Newest %d", n)
-			}
-			caption(c, label).SingleLine()
+		if state.CountLabel != "" {
+			caption(c, state.CountLabel).SingleLine()
 		}
 	})
-	list, q := h.list, strings.TrimSpace(h.query)
-	hits := findHits(q, len(list), func(i int) []string {
-		line, _ := historyLine(list[i], q)
-		return []string{line}
-	})
-	if h.find.advance(hits[len(list)]) {
-		row, _ := rowOf(hits, h.find.cur)
-		h.listUI.ScrollIntoView(row)
-	}
-	cur, curAt := rowOf(hits, h.find.cur)
 	pageBody(c).Children(func() {
 		ui.Row(c).Padding(px(t, sp1), px(t, sp6), px(t, sp3)).Gap(px(t, sp2)).AlignItems(ui.Center).Shrink(0).Children(func() {
-			if ui.Segmented(c.Key("hist-tab"), &h.tab, historyTabs()...).Label(i18n.T("Feature")).Shrink(0).Changed() {
-				h.sel = ""
-				a.loadHistory()
+			if ui.Segmented(c.Key("hist-tab"), &local.tab, state.Tabs...).Label(i18n.T("Feature")).Shrink(0).Changed() {
+				actions.showHistoryTab(local.tab)
 			}
-			if h.find.field(c, "hist-search", &h.query, i18n.T("Search"), px(t, 360)).Label(i18n.T("Search history")).Changed() {
-				a.loadHistory()
+			if local.find.field(c, "hist-search", &local.query, i18n.T("Search"), px(t, 360)).Label(i18n.T("Search history")).Changed() {
+				actions.searchHistory(local.query)
 			}
-			if hits[len(list)] > 0 { // the store's search also finds words in other forms and fields
-				h.find.count(c, q, hits[len(list)])
+			if hits[len(state.Rows)] > 0 {
+				local.find.count(c, query, hits[len(state.Rows)])
 			}
-			a.historySettingsButton(c) // history_settings.go
+			if state.SettingsAvailable && iconButton(c.Key("hist-settings"), icons.Tuning2, i18n.T("History settings")).Shrink(0).Clicked() {
+				actions.openHistorySettingsDialog()
+			}
 		})
-		a.historyFolderNotice(c)
-		if !a.prefs.Privacy.KeepHistory {
+		if state.FolderNotice != "" {
+			ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
+				notice(c, "hist-missing", noticeWarn, state.FolderNotice, "", func() {
+					if ghostButton(c.Key("hist-missing-open"), i18n.T("History settings")).Clicked() {
+						actions.openHistorySettingsDialog()
+					}
+				}, nil)
+			})
+		}
+		if !state.KeepHistory {
 			ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
 				notice(c, "hist-off", noticeInfo, i18n.T("History is off, so new results are not kept."), "", func() {
 					if ghostButton(c.Key("hist-privacy"), i18n.T("Privacy settings")).Clicked() {
-						a.navigate("/settings/privacy")
+						actions.openHistoryPrivacy()
 					}
 				}, nil)
 			})
 		}
-		if h.err != "" {
+		if state.Error != "" {
 			ui.Column(c).Padding(0, px(t, sp6), px(t, sp3)).Shrink(0).Children(func() {
-				notice(c, "hist-err", noticeError, i18n.T("Could not read the history."), h.err, func() {
+				notice(c, "hist-err", noticeError, i18n.T("Could not read the history."), state.Error, func() {
 					if ghostButton(c.Key("hist-retry"), i18n.T("Try again")).Clicked() {
-						a.loadHistory()
+						actions.loadHistory()
 					}
 				}, nil)
 			})
 		}
-		sel := h.selected()
-		w := px(t, historyPanelW)
-		inline := a.pageWidth(c)-w >= px(t, historyListMinW)
+		width := px(t, historyPanelW)
+		inline := pageWidth-width >= px(t, historyListMinW)
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 				switch {
-				case h.listFor == "":
-					// The first read is on its way: no empty state yet.
-				case len(list) == 0:
-					a.historyEmpty(c)
+				case !state.Read:
+				case state.Empty != nil:
+					historyEmpty(c, state.Empty, actions)
 				default:
-					c.After(time.Minute) // the times are relative
-					ui.List(c.Key("hist-list"), &h.listUI, len(list)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
-						ItemKey(func(i int) any { return list[i].ID }).Rows(func(r ui.ListRow) {
+					c.After(time.Minute)
+					ui.List(c.Key("hist-list"), &local.listUI, len(state.Rows)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
+						ItemKey(func(index int) any { return state.Rows[index].ID }).Rows(func(row ui.ListRow) {
 						at := -1
-						if r.Index == cur {
-							at = curAt
+						if row.Index == current {
+							at = currentAt
 						}
-						a.historyRow(c, list[r.Index], q, at)
+						historyRow(c, &state.Rows[row.Index], query, at, actions, local)
 					})
 				}
 			})
-			if sel != nil {
+			if state.Detail != nil {
 				closePanel := func() {
-					if !h.delAsk { // a click in the Delete dialog is outside the drawer
-						h.sel = ""
+					if !local.delAsk {
+						actions.closeHistoryDetail()
 					}
 				}
-				sidePanel(c, "hist-detail", w, inline, i18n.T("Entry details"), closePanel, func() {
-					a.historyDetail(c, *sel)
+				sidePanel(c, "hist-detail", width, inline, i18n.T("Entry details"), closePanel, func() {
+					historyDetail(c, state.Detail, actions, local)
 				})
 			}
 		})
 	})
-	a.historyDeleteDialog(c)
-	a.historySettingsDialog(c)
 }
 
-// historyEmpty is the list's empty state: nothing kept yet for the tab,
-// or nothing matching the search.
-func (a *app) historyEmpty(c *ui.Context) {
-	h := &a.hist
-	if q := strings.TrimSpace(h.query); q != "" {
-		if r := []rune(q); len(r) > 40 {
-			q = string(r[:40]) + "…"
-		}
-		emptyState(c, icons.Magnifer, i18n.T("Nothing matches “%s”", q),
-			"", func() {
-				if ghostButton(c.Key("hist-clear-search"), i18n.T("Clear search")).Clicked() {
-					h.query = ""
-					a.loadHistory()
-				}
-			})
+func historyEmpty(c *ui.Context, state *historyEmptyViewState, actions historyActions) {
+	if state.Search {
+		emptyState(c, icons.Magnifer, state.Title, "", func() {
+			if ghostButton(c.Key("hist-clear-search"), state.ActionLabel).Clicked() {
+				actions.searchHistory("")
+			}
+		})
 		return
 	}
-	switch h.kind() {
-	case "":
-		emptyState(c, icons.History, i18n.T("No history yet"),
-			i18n.T("Transcriptions, translations and rewrites show up here."), nil)
-	case store.KindTranslate:
-		emptyState(c, translateIcon, i18n.T("No translations yet"),
-			i18n.T("Translations show up here with their source."), func() {
-				if ghostButton(c.Key("hist-go-translate"), i18n.T("Set up Translate")).Clicked() {
-					a.navigate("/translate")
-				}
-			})
-	case store.KindRewrite:
-		emptyState(c, rewriteIcon, i18n.T("No rewrites yet"),
-			i18n.T("Rewrites show up here with your instruction."), func() {
-				if ghostButton(c.Key("hist-go-rewrite"), i18n.T("Set up Rewrite")).Clicked() {
-					a.navigate("/rewrite")
-				}
-			})
-	default:
-		emptyState(c, icons.History, i18n.T("No transcriptions yet"),
-			i18n.T("Each result shows up here."), func() {
-				if ghostButton(c.Key("hist-go-transcribe"), i18n.T("Set up Transcribe")).Clicked() {
-					a.navigate("/transcribe")
-				}
-			})
+	icon := icons.History
+	key := "hist-go-transcribe"
+	switch state.Kind {
+	case "translate":
+		icon = translateIcon
+		key = "hist-go-translate"
+	case "rewrite":
+		icon = rewriteIcon
+		key = "hist-go-rewrite"
 	}
-}
-
-// historyRow is an entry in the list: the first line of its result (why
-// it failed, when it did), its marks, and when, in which app and how long
-// it was spoken. A click shows its details, or hides them; its context
-// menu copies, shows or deletes it. The matches of the search q in its
-// first line are marked, at the current one (-1 for none).
-func (a *app) historyRow(c *ui.Context, e store.Entry, q string, at int) {
-	t := c.Theme()
-	k := tok(t)
-	h := &a.hist
-	title, failed := historyLine(e, q)
-	row := ui.ButtonBase(c.Key("hist-row-"+e.ID)).Padding(px(t, sp2), px(t, sp2)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
-		Label(title).Gap(px(t, sp2)).AlignItems(ui.Start).
-		Role(ui.RoleGroup) // a group, not a button: assistive technology reaches its Retry chip too
-	switch {
-	case h.sel == e.ID:
-		row.Background(k.Pressed)
-	case row.Hovered():
-		row.Background(k.Hover)
-	}
-	if row.Clicked() {
-		if h.sel == e.ID {
-			h.sel = ""
-		} else {
-			h.sel = e.ID
+	var action func()
+	if state.ActionLabel != "" {
+		action = func() {
+			if ghostButton(c.Key(key), state.ActionLabel).Clicked() {
+				actions.openHistoryFeature(state.Kind)
+			}
 		}
 	}
-	a.entryMenu(c, row, e, true, func() { h.sel = e.ID }) // history_menu.go
+	emptyState(c, icon, state.Title, state.Body, action)
+}
+
+func historyRow(c *ui.Context, state *historyRowViewState, query string, at int, actions historyActions, local *historyLocalUI) {
+	t := c.Theme()
+	colors := tok(t)
+	row := ui.ButtonBase(c.Key("hist-row-"+state.ID)).Padding(px(t, sp2), px(t, sp2)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
+		Label(state.Title).Gap(px(t, sp2)).AlignItems(ui.Start).Role(ui.RoleGroup)
+	switch {
+	case state.Selected:
+		row.Background(colors.Pressed)
+	case row.Hovered():
+		row.Background(colors.Hover)
+	}
+	if row.Clicked() {
+		if state.Selected {
+			actions.closeHistoryDetail()
+		} else {
+			actions.openHistoryDetail(state.ID)
+		}
+	}
+	entryMenu(c, row, state, actions, local, true, func() { actions.openHistoryDetail(state.ID) })
 	row.Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 3)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				tx := markedText(c, title, q, at).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
-				if failed {
-					tx.TextColor(k.Text2)
+				text := markedText(c, state.Title, query, at).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+				if state.FailedTitle {
+					text.TextColor(colors.Text2)
 				}
-				a.entryStatus(c, e) // history_retry.go
+				entryStatus(c, state, actions)
 			})
-			meta := uitext.EntryMeta(e)
-			if h.kind() == "" {
-				meta = kindName(e.Kind) + " · " + meta
-			}
-			ui.Text(c, meta).FontSize(px(t, fsCaption)).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
+			ui.Text(c, state.Meta).FontSize(px(t, fsCaption)).TextColor(colors.Text3).SingleLine().Ellipsis("…").MinWidth(0)
 		})
 	})
 }
 
-// historyLine is the line an entry's row shows: its title, or, when the
-// search q is not in it, the first line of its text holding q (#3869).
-func historyLine(e store.Entry, q string) (line string, failed bool) {
-	title, failed := uitext.EntryTitle(e)
-	if q == "" || len(findFolded(title, q)) > 0 {
-		return title, failed
-	}
-	for _, s := range []string{e.Result, e.RawText, e.SourceText} {
-		for l := range strings.SplitSeq(s, "\n") {
-			if l = strings.TrimSpace(l); len(findFolded(l, q)) > 0 {
-				return l, false
-			}
+func entryStatus(c *ui.Context, state *historyRowViewState, actions historyActions) {
+	t := c.Theme()
+	colors := tok(t)
+	switch {
+	case state.Retry.Active:
+		ui.Row(c.Key("hist-retrying")).Gap(px(t, 4)).AlignItems(ui.Center).Shrink(0).Children(func() {
+			ui.Spinner(c).Size(px(t, 12), px(t, 12))
+			ui.Text(c, state.Retry.StageText).FontSize(px(t, fsMicro)).TextColor(colors.Text2).SingleLine()
+		})
+	case state.Retry.Available && state.Retry.Wanted:
+		button := ui.ButtonBase(c.Key("hist-retry-chip")).Padding(px(t, 1), px(t, 6)).Radius(px(t, 4)).Gap(px(t, 3)).AlignItems(ui.Center).Shrink(0).
+			Label(i18n.T("Retry")).Tooltip(i18n.T("Recognise the recording again")).Disabled(state.Retry.Disabled)
+		background := colors.Hover
+		if button.Hovered() && !state.Retry.Disabled {
+			background = colors.Pressed
 		}
+		button.Background(background).Children(func() {
+			ui.Icon(c, icons.Refresh.Linear).Size(px(t, 11), px(t, 11)).TextColor(colors.Danger)
+			ui.Text(c, i18n.T("Retry")).FontSize(px(t, fsMicro)).TextColor(colors.Danger).SingleLine()
+		})
+		if button.Clicked() {
+			actions.retryHistoryEntry(state.ID)
+		}
+	default:
+		entryMarks(c, state.Marks)
 	}
-	return title, failed
 }
 
-// entryMarks are an entry's status marks: failed or cancelled, or left
-// in the answer card, or copied from it.
-func entryMarks(c *ui.Context, e store.Entry) {
-	k := tok(c.Theme())
-	switch e.Status {
-	case store.StatusFailed:
-		tagChip(c, i18n.T("Failed")).TextColor(k.Danger).Tooltip(i18n.T("No recording was kept, so it cannot be retried"))
-		return
-	case store.StatusCancelled:
-		tagChip(c, i18n.T("Cancelled"))
+func entryMarks(c *ui.Context, marks []historyMarkViewState) {
+	colors := tok(c.Theme())
+	for _, mark := range marks {
+		chip := tagChip(c, mark.Label).Tooltip(mark.Tooltip)
+		if mark.Tone == "danger" {
+			chip.TextColor(colors.Danger)
+		}
+	}
+}
+
+func entryRetryButton(c *ui.Context, state *historyDetailViewState, actions historyActions) {
+	t := c.Theme()
+	if !state.Retry.Available {
 		return
 	}
-	switch e.Delivery {
-	case "card":
-		tagChip(c, i18n.T("Not inserted")).Tooltip(i18n.T("Shown in the answer card, not inserted"))
-	case "copy":
-		tagChip(c, i18n.T("Copied")).Tooltip(i18n.T("Copied from the answer card"))
+	if state.Retry.Active {
+		ui.Row(c.Key("hist-detail-retrying")).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+			ui.Spinner(c).Size(px(t, 16), px(t, 16))
+			caption(c, state.Retry.StageText)
+		})
+		return
+	}
+	button := secondaryIconButton(c.Key("hist-detail-retry"), icons.Refresh, state.Retry.Label).Label(state.Retry.Label).Disabled(state.Retry.Disabled)
+	if state.Retry.Tooltip != "" {
+		button.Tooltip(state.Retry.Tooltip)
+	}
+	if button.Clicked() {
+		actions.retryHistoryEntry(state.ID)
 	}
 }

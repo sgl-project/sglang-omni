@@ -59,6 +59,8 @@ type Opts struct {
 	// Text is a Final's text (default "fake transcript"); "{n}" in it is
 	// the request's number (1 for the server's first Final).
 	Text string
+	// WindowTexts adds Whisper's per-window metadata to a Final.
+	WindowTexts []string
 	// FailFrom: the Finals from this one on (1 = the first) answer an
 	// error event, as ModeError does; 0: none.
 	FailFrom int
@@ -81,6 +83,10 @@ type Opts struct {
 	// NoDraft is a server from before --draft-model-path: it refuses the
 	// flag as an unknown argument.
 	NoDraft bool
+	// Segments adds two speaker segments to every Final answer.
+	Segments bool
+	// TokenLimit ends the Final at the generation budget.
+	TokenLimit bool
 }
 
 // Env is the environment that makes a test binary a fake with o.
@@ -89,11 +95,14 @@ func Env(o Opts) []string {
 	v.Set("mode", o.Mode)
 	v.Set("log", o.Log)
 	v.Set("text", o.Text)
+	v["windows"] = o.WindowTexts
 	v.Set("delay", o.Delay.String())
 	v.Set("load", o.Load.String())
 	v.Set("failfrom", strconv.Itoa(o.FailFrom))
 	v.Set("older", strconv.FormatBool(o.Older))
 	v.Set("nodraft", strconv.FormatBool(o.NoDraft))
+	v.Set("segments", strconv.FormatBool(o.Segments))
+	v.Set("tokenlimit", strconv.FormatBool(o.TokenLimit))
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
 	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
@@ -105,12 +114,14 @@ func Enabled() bool { return os.Getenv(EnvFake) != "" }
 
 func opts() Opts {
 	v, _ := url.ParseQuery(os.Getenv(EnvFake))
-	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text")}
+	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text"), WindowTexts: v["windows"]}
 	o.Delay, _ = time.ParseDuration(v.Get("delay"))
 	o.Load, _ = time.ParseDuration(v.Get("load"))
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
 	o.Older, _ = strconv.ParseBool(v.Get("older"))
 	o.NoDraft, _ = strconv.ParseBool(v.Get("nodraft"))
+	o.Segments, _ = strconv.ParseBool(v.Get("segments"))
+	o.TokenLimit, _ = strconv.ParseBool(v.Get("tokenlimit"))
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
 	o.LiveDrop, _ = strconv.ParseBool(v.Get("livedrop"))

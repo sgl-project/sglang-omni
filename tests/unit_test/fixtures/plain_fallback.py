@@ -87,6 +87,8 @@ def create_plain_fallback_scheduler(
             prefill_coalesce_requests=0,
             server_args_overrides=server_overrides,
         )
+    # note (wilsonzheng0327): the probes send plain requests with repetition_penalty, which the Qwen3-ASR draft would otherwise serve.
+    scheduler.model_runner.speculative_repetition_penalty_owner = None
     return scheduler
 
 

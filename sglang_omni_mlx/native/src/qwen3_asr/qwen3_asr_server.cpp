@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "qwen3_asr/asr_service.h"
+#include "common/asr_service.h"
 #include "qwen3_asr/realtime.h"
 #include "silero_vad/vad_service.h"
 #include "sortformer/sortformer_service.h"
@@ -24,7 +24,7 @@ public:
                 qwen3_asr::RealtimeSettings realtime,
                 const std::filesystem::path &draft_directory,
                 int draft_quantization_bits,
-                qwen3_asr::DraftPolicy draft_policy)
+                omni_common::DraftPolicy draft_policy)
       : transcriber_(model_directory, draft_directory, draft_quantization_bits,
                      draft_policy),
         realtime_(realtime) {
@@ -83,7 +83,7 @@ public:
   }
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
+                   omni_server::TranscriptionWorker &worker) override {
     realtime_sessions_ = [this,
                           &worker](qwen3_asr::RealtimeSession::Sender sender) {
       return std::make_shared<qwen3_asr::RealtimeSession>(
@@ -113,11 +113,11 @@ public:
   }
   bool Transcribes() const override { return false; }
   std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &) const override {
+  RequestStates(const omni_server::TranscriptionWorker &) const override {
     return service_.RequestStates();
   }
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &) override {
+                   omni_server::TranscriptionWorker &) override {
     service_.Register(context);
   }
 
@@ -138,11 +138,11 @@ public:
   }
   bool Transcribes() const override { return false; }
   std::map<std::string, int>
-  RequestStates(const qwen3_asr::TranscriptionWorker &) const override {
+  RequestStates(const omni_server::TranscriptionWorker &) const override {
     return service_.RequestStates();
   }
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &) override {
+                   omni_server::TranscriptionWorker &) override {
     service_.Register(context);
   }
 
@@ -160,7 +160,7 @@ int main(int argc, char **argv) {
   int max_batch = 1;
   std::filesystem::path draft_directory;
   int draft_quantization_bits = 0;
-  qwen3_asr::DraftPolicy draft_policy = qwen3_asr::DraftPolicy::kAdaptive;
+  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
   asr_service::ServedKind qwen3_asr;
   qwen3_asr.model_kind = "qwen3_asr";
   qwen3_asr.flags = {
@@ -182,7 +182,7 @@ int main(int argc, char **argv) {
        [&](const std::string &value) { draft_directory = value; }},
       {"--draft-policy",
        [&](const std::string &value) {
-         draft_policy = qwen3_asr::ParseDraftPolicy(value);
+         draft_policy = omni_common::ParseDraftPolicy(value);
        }},
       {"--draft-bits",
        [&](const std::string &value) {
@@ -214,6 +214,7 @@ int main(int argc, char **argv) {
     }
   };
   qwen3_asr.max_batch = [&]() { return max_batch; };
+  qwen3_asr.batch_runner = qwen3_asr::BatchableTranscriptionRunner();
   qwen3_asr.load = [&](const std::filesystem::path &model_directory) {
     auto model = std::make_unique<Qwen3ASRModel>(
         model_directory,
