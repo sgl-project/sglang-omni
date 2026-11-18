@@ -74,11 +74,13 @@ type General struct {
 	CopyResult bool `json:"copyResult,omitempty"`
 }
 
-// Appearance: theme, scale and the sidebar.
+// Appearance: the main window's visual settings.
 type Appearance struct {
-	Theme        string  `json:"theme"`        // "system" | "light" | "dark"
-	Scale        float64 `json:"scale"`        // UI scale, 0.9–1.25 (1 = 100 %)
-	ReduceMotion bool    `json:"reduceMotion"` // in addition to the system setting
+	Theme              string  `json:"theme"`              // "system" | "light" | "dark" | "transparent"
+	Palette            string  `json:"palette"`            // user-selected color as #rrggbb
+	WindowTransparency int     `json:"windowTransparency"` // percent, used in transparent mode
+	Scale              float64 `json:"scale"`              // UI scale, 0.9–1.25 (1 = 100 %)
+	ReduceMotion       bool    `json:"reduceMotion"`       // in addition to the system setting
 	// Rail shows the sidebar as icons only. Without it the sidebar is
 	// automatic (icons only in a narrow window) unless RailChosen: the
 	// user chose names and icons. SidebarWidth is its width in DIPs at
@@ -295,7 +297,8 @@ type Dictionary struct {
 
 // Setup: the first-run guide.
 type Setup struct {
-	Done bool `json:"done,omitempty"`
+	Done         bool `json:"done,omitempty"`
+	OpeningShown bool `json:"openingShown,omitempty"`
 	// Tried: a session (a try or a real one, any feature) has given a
 	// result once, or the history had one: Home stops offering its Try
 	// area. It stays when the history is cleared.
@@ -354,7 +357,7 @@ func Defaults() Settings {
 	return Settings{
 		Version:    Version,
 		General:    General{MenuBar: true, CloseToTray: true},
-		Appearance: Appearance{Theme: "system", Scale: 1},
+		Appearance: Appearance{Theme: ThemeSystem, Palette: DefaultPalette, WindowTransparency: DefaultWindowTransparency, Scale: 1},
 		Privacy:    Privacy{KeepHistory: true},
 		Audio:      Audio{Sounds: true},
 		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},

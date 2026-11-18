@@ -10,6 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
@@ -29,6 +30,7 @@ from sglang_omni.models.arkasr.encoder_service import (
 )
 from sglang_omni.models.arkasr.request_builders import ArkASRRequestData
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.npu import validate_npu_graph_environment
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
@@ -160,6 +162,24 @@ class ArkasrEngineBuilder(AsrEngineBuilder[ArkASRRequestData]):
         self.audio_token_id = int(getattr(hf_config, "audio_token_id", 151663))
         encoder_token_count = self.feature_extractor.nb_max_frames // 2
         self.context_length = encoder_token_count + self.max_new_tokens + 8
+
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        """Reject incompatible runtime settings before allocating engine resources."""
+        cfg = resolved_view(server_args)
+        # NPU pre-LM graphs need independent Host queues so a blocked stream does not stall submission on another stream. See the Host queue guidance in docs/other_platforms/installation_npu.md.
+        if (
+            current_platform.is_npu()
+            and self.enable_pre_lm_encoder
+            and (
+                self.enable_encoder_cuda_graph
+                or cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED
+                or cfg.cuda_graph_config.prefill.backend != CudaGraphBackend.DISABLED
+            )
+        ):
+            validate_npu_graph_environment(self.model_name)
+        else:
+            pass
+        super().validate_before_infrastructure(server_args)
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         defaults: GenerationDefaults = {
