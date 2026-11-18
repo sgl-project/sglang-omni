@@ -1,0 +1,208 @@
+{
+  "name": "shell-sheet",
+  "kind": "shell",
+  "shell": {
+    "theme": "system",
+    "scale": 1,
+    "accent_palette": "#0d9384",
+    "still": true,
+    "nav": {
+      "groups": [
+        {
+          "id": "",
+          "pages": [
+            {
+              "path": "/home",
+              "title": "首页",
+              "keys": "⌘1",
+              "selected": true
+            },
+            {
+              "path": "/history",
+              "title": "历史",
+              "keys": "⌘2",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "Features",
+          "title": "功能",
+          "pages": [
+            {
+              "path": "/transcribe",
+              "title": "转录",
+              "keys": "⌘3",
+              "selected": false
+            },
+            {
+              "path": "/translate",
+              "title": "翻译",
+              "keys": "⌘4",
+              "selected": false
+            },
+            {
+              "path": "/rewrite",
+              "title": "改写",
+              "keys": "⌘5",
+              "selected": false
+            },
+            {
+              "path": "/notes",
+              "title": "笔记",
+              "selected": false
+            },
+            {
+              "path": "/meetings",
+              "title": "会议",
+              "selected": false
+            },
+            {
+              "path": "/app-enhancement",
+              "title": "应用增强",
+              "keys": "⌘6",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "Resources",
+          "title": "资源",
+          "pages": [
+            {
+              "path": "/dictionary",
+              "title": "词典",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "System",
+          "title": "系统",
+          "pages": [
+            {
+              "path": "/logs",
+              "title": "日志",
+              "selected": false
+            },
+            {
+              "path": "/settings",
+              "title": "设置",
+              "selected": false
+            }
+          ]
+        }
+      ],
+      "current": "/home",
+      "shortcut_pages": [
+        {
+          "path": "/home",
+          "num": 1
+        },
+        {
+          "path": "/history",
+          "num": 2
+        },
+        {
+          "path": "/transcribe",
+          "num": 3
+        },
+        {
+          "path": "/translate",
+          "num": 4
+        },
+        {
+          "path": "/rewrite",
+          "num": 5
+        },
+        {
+          "path": "/app-enhancement",
+          "num": 6
+        }
+      ],
+      "settings": {
+        "path": "/settings",
+        "title": "设置",
+        "keys": "⌘,",
+        "selected": false
+      },
+      "settings_selected": false,
+      "notices_count": 0,
+      "rail_chosen": false,
+      "rail": false,
+      "sidebar_width": 0,
+      "min_sidebar_width": 170,
+      "max_sidebar_width": 320
+    },
+    "logs_height": 220,
+    "palette": {
+      "items": null
+    },
+    "sheet": {
+      "groups": [
+        {
+          "title": "全局",
+          "rows": [
+            {
+              "keys": "右 ⌥",
+              "title": "转录"
+            },
+            {
+              "keys": "右 ⌥ ⇧",
+              "title": "翻译"
+            },
+            {
+              "keys": "⌃ 右 ⌥",
+              "title": "改写"
+            },
+            {
+              "keys": "⌃⌥V",
+              "title": "粘贴最近结果"
+            }
+          ]
+        },
+        {
+          "title": "导航",
+          "rows": [
+            {
+              "keys": "⌘K",
+              "title": "命令面板"
+            },
+            {
+              "keys": "⌘1  ⌘2",
+              "title": "首页、历史"
+            },
+            {
+              "keys": "⌘3 … ⌘6",
+              "title": "转录、翻译、改写、应用增强"
+            },
+            {
+              "keys": "⌘,",
+              "title": "设置"
+            },
+            {
+              "keys": "⌘[  ⌘]",
+              "title": "后退、前进"
+            },
+            {
+              "keys": "⇧⌘L",
+              "title": "显示或隐藏日志面板"
+            },
+            {
+              "keys": "?",
+              "title": "键盘快捷键"
+            },
+            {
+              "keys": "Esc",
+              "title": "关闭对话框或弹出面板"
+            }
+          ]
+        }
+      ]
+    },
+    "settings_open": false
+  },
+  "shell_ui": {
+    "sheet_open": true
+  }
+}

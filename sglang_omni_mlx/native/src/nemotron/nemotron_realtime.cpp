@@ -21,7 +21,7 @@ constexpr int64_t kMaxSessionSeconds = 24 * 60 * 60;
 } // namespace
 
 NemotronRealtimeSession::NemotronRealtimeSession(
-    qwen3_asr::TranscriptionWorker &worker,
+    omni_server::TranscriptionWorker &worker,
     const NemotronTranscriber &transcriber, Sender sender)
     : RealtimeConnection(std::move(sender)), worker_(worker),
       transcriber_(transcriber) {}

@@ -359,6 +359,11 @@ func Build(in Input) (Output, error) {
 	} else {
 		out.User = out.withGlossary(UserMessage(in.Text))
 		if input, answer, ok := Example(in); ok {
+			if in.Task == Transcribe {
+				// The example answers in the form the output contract
+				// asks for: the final text between <output> tags.
+				answer = outputOpen + "\n" + answer + "\n" + outputClose
+			}
 			out.History = []Message{{Role: "user", Content: UserMessage(input)}, {Role: "assistant", Content: answer}}
 		}
 	}
@@ -546,9 +551,27 @@ func distinctTerms(terms []Term) []Term {
 	return out
 }
 
+// CleanOutput tidies a Transcribe clean-up's answer to input: the
+// content of the <output> tags the clean-up's contract asks for when
+// they are there and the input did not have them (never the model's
+// commentary outside them, #4086); when the input itself has the tags,
+// one outermost pair the model wrapped its whole answer in goes and the
+// text keeps its own tags. Then Clean's tidy. Only the Transcribe
+// clean-up asks for the tags: Rewrite's and Translate's answers go to
+// Clean, so tags their text itself has (HTML they were asked for) stay.
+func CleanOutput(out, input string) string {
+	s := strings.TrimSpace(out)
+	if strings.Contains(input, outputOpen) {
+		s = unwrappedOutput(s)
+	} else if content, ok := taggedOutput(s); ok {
+		s = strings.TrimSpace(content)
+	}
+	return Clean(s, input)
+}
+
 // Clean tidies a model's answer to input: without the <input> tags a
-// model echoed, or the quotes it wrapped the whole answer in (unless the
-// input was quoted so itself).
+// model echoed, or the quotes it wrapped the whole answer in (unless
+// the input was quoted so itself).
 func Clean(out, input string) string {
 	s := strings.TrimSpace(out)
 	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "<input>"), "</input>"))

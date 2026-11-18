@@ -36,7 +36,7 @@ func TestMeetingSpeechSettings(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 2400)
 	a.navigate("/meetings")
-	a.mv.setOpen = true
+	a.mvUI.setOpen = true
 	frames(tt)
 	if !slices.Contains(tt.AccessLabels(), "Speech model for meetings") {
 		t.Fatalf("no speech model menu: %q", tt.AccessLabels())
@@ -88,7 +88,7 @@ func TestMeetingSpeechSettingsNoModel(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 2400)
 	a.navigate("/meetings")
-	a.mv.setOpen = true
+	a.mvUI.setOpen = true
 	frames(tt)
 	_ = tt.ClickControl("Speech model for meetings")
 	frames(tt)

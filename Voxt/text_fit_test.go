@@ -124,21 +124,39 @@ func TestTranslationsFit(t *testing.T) {
 	if mode == "" {
 		t.Skip("audit; set VOXTNEW_TEXTFIT_AUDIT=1 (meaningful on macOS)")
 	}
-	load := func(name string) map[string]string {
-		b, err := os.ReadFile("internal/i18n/locales/" + name)
-		if err != nil {
-			t.Fatal(err)
-		}
+	// load merges a locale's catalog: locales/<tag>.json when it exists,
+	// then every locales/<tag>/*.json (zh-Hans is split by area).
+	load := func(tag string) map[string]string {
 		m := map[string]string{}
-		if err := json.Unmarshal(b, &m); err != nil {
-			t.Fatal(err)
+		read := func(path string) {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sub := map[string]string{}
+			if err := json.Unmarshal(b, &sub); err != nil {
+				t.Fatal(err)
+			}
+			for k, v := range sub {
+				m[k] = v
+			}
+		}
+		if _, err := os.Stat("internal/i18n/locales/" + tag + ".json"); err == nil {
+			read("internal/i18n/locales/" + tag + ".json")
+		}
+		if entries, err := os.ReadDir("internal/i18n/locales/" + tag); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+					read("internal/i18n/locales/" + tag + "/" + e.Name())
+				}
+			}
 		}
 		return m
 	}
 	var report strings.Builder
 	fmt.Fprintf(&report, "# %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	total := 0
-	zh, en := load("zh-Hans.json"), load("en.json")
+	zh, en := load("zh-Hans"), load("en")
 	catalogues := map[string][]string{}
 	for k, v := range zh {
 		catalogues["zh-Hans"] = append(catalogues["zh-Hans"], v)

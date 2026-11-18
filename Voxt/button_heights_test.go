@@ -16,7 +16,7 @@ func TestButtonHeights(t *testing.T) {
 	names := []string{"ui.Button", "primary", "primaryIcon", "secondaryIcon", "ghost", "ghostIcon", "dropButton", "record"}
 	view := func(c *ui.Context) {
 		th := *c.Theme()
-		styleTheme(&th)
+		styleTheme(&th, "")
 		c.SetTheme(&th)
 		els = els[:0]
 		ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
@@ -59,7 +59,7 @@ func TestNumberInput(t *testing.T) {
 	var stepsH float32
 	view := func(c *ui.Context) {
 		th := *c.Theme()
-		styleTheme(&th)
+		styleTheme(&th, "")
 		c.SetTheme(&th)
 		ui.Column(c).Padding(20).AlignItems(ui.Start).Children(func() {
 			if numberInput(c.Key("keep"), &v, 0, 1010, 10, numOpts{Label: "Keep at most", Width: 180}) {
