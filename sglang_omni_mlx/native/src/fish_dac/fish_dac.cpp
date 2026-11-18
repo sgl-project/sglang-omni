@@ -29,10 +29,19 @@ constexpr int kLatentFrameSamples = kFrameSamples / 4;
 // Note (Jiaxin Deng): the encoder's convolutions reach about 14 latent frames
 // back and the decoder's about 19, so each runs in windows with this context:
 // a whole long utterance's convolution unfoldings would need tens of GB.
-constexpr int kConvolutionWindowFrames = 256;
+constexpr int kEncodeWindowFrames = 256;
+// Note (Minyi Tang): decoding windows half as long hold about 1.2 GB less of
+// the decoder's activations, at the same speed and with the same samples.
+constexpr int kDecodeWindowFrames = 128;
 constexpr int kConvolutionContextFrames = 32;
 constexpr const char *kEncoderTransformer = "encoder.block.4.block.5";
 constexpr const char *kPreModule = "quantizer.pre_module";
+// The weights only Encode reads, and those only decoding reads; the codebooks
+// both read are in neither.
+constexpr std::string_view kEncodingPrefixes[] = {
+    "encoder.", "quantizer.downsample.", "quantizer.pre_module."};
+constexpr std::string_view kDecodingPrefixes[] = {
+    "decoder.", "quantizer.upsample.", "quantizer.post_module."};
 // The (g, v) name suffixes of a weight-normed convolution: parametrized, or
 // the older weight_g and weight_v.
 constexpr std::pair<std::string_view, std::string_view> kWeightNormSuffixes[] =
@@ -153,9 +162,12 @@ mx::array AudioCodec::WindowMask(int query_begin, int total, int window,
 // Note (Yitong Li): the fold keeps the reference's operation order, which
 // Voxtral's differs from, for bit-identical audio.
 omni_common::WeightMap
-AudioCodec::LoadWeights(const std::filesystem::path &model_directory) {
+AudioCodec::LoadWeights(const std::filesystem::path &model_directory,
+                        bool for_encoding) {
   auto [loaded, metadata] =
       mx::load_safetensors((model_directory / "codec.safetensors").string());
+  const auto &skipped_prefixes =
+      for_encoding ? kDecodingPrefixes : kEncodingPrefixes;
   const std::string_view plain_kernel = ".conv.weight";
   std::set<std::string> transposed_prefixes;
   for (int block = 0; block < kDownsampleCount; ++block) {
@@ -180,6 +192,10 @@ AudioCodec::LoadWeights(const std::filesystem::path &model_directory) {
                  name.ends_with(suffixes.second);
         });
     if (name.ends_with(".causal_mask") ||
+        std::any_of(std::begin(skipped_prefixes), std::end(skipped_prefixes),
+                    [&name](std::string_view prefix) {
+                      return name.starts_with(prefix);
+                    }) ||
         (weight_norm != std::end(kWeightNormSuffixes) &&
          name.ends_with(weight_norm->first))) {
       continue;
@@ -207,10 +223,12 @@ AudioCodec::LoadWeights(const std::filesystem::path &model_directory) {
 }
 
 AudioCodec::AudioCodec(const std::filesystem::path &model_directory)
-    : AudioCodec(LoadWeights(model_directory)) {}
+    : AudioCodec(model_directory, LoadWeights(model_directory, false)) {}
 
-AudioCodec::AudioCodec(omni_common::WeightMap weights)
-    : checkpoint_(weights, nlohmann::json::object()) {
+AudioCodec::AudioCodec(std::filesystem::path model_directory,
+                       omni_common::WeightMap weights)
+    : model_directory_(std::move(model_directory)),
+      checkpoint_(weights, nlohmann::json::object()) {
   const std::string_view kernel_suffix = ".kernel";
   for (const auto &[name, kernel] : weights) {
     if (name.ends_with(kernel_suffix)) {
@@ -395,6 +413,16 @@ mx::array AudioCodec::DecodeCode(const mx::array &codes,
 }
 
 mx::array AudioCodec::Encode(const std::vector<float> &samples) const {
+  const mx::array codes =
+      AudioCodec(model_directory_, LoadWeights(model_directory_, true))
+          .EncodeLoaded(samples);
+  // Note (Minyi Tang): the freed encoding weights would otherwise stay in
+  // MLX's buffer cache.
+  mx::clear_cache();
+  return codes;
+}
+
+mx::array AudioCodec::EncodeLoaded(const std::vector<float> &samples) const {
   const int length = static_cast<int>(samples.size());
   const int padded_length =
       (length + kFrameSamples - 1) / kFrameSamples * kFrameSamples;
@@ -417,10 +445,9 @@ mx::array AudioCodec::Encode(const std::vector<float> &samples) const {
 
   const int latent_frames = padded_length / kLatentFrameSamples;
   std::vector<mx::array> windows;
-  for (int start = 0; start < latent_frames;
-       start += kConvolutionWindowFrames) {
+  for (int start = 0; start < latent_frames; start += kEncodeWindowFrames) {
     const int context = std::min(start, kConvolutionContextFrames);
-    const int stop = std::min(start + kConvolutionWindowFrames, latent_frames);
+    const int stop = std::min(start + kEncodeWindowFrames, latent_frames);
     mx::array y =
         CausalConvolve(SliceTime(audio, (start - context) * kLatentFrameSamples,
                                  stop * kLatentFrameSamples),
@@ -578,10 +605,9 @@ mx::array AudioCodec::Decode(const mx::array &codes) const {
 
   const int latent_frames = x.shape(2);
   std::vector<mx::array> windows;
-  for (int start = 0; start < latent_frames;
-       start += kConvolutionWindowFrames) {
+  for (int start = 0; start < latent_frames; start += kDecodeWindowFrames) {
     const int context = std::min(start, kConvolutionContextFrames);
-    const int stop = std::min(start + kConvolutionWindowFrames, latent_frames);
+    const int stop = std::min(start + kDecodeWindowFrames, latent_frames);
     mx::array y = CausalConvolve(SliceTime(x, start - context, stop),
                                  "decoder.model.0", 7, 1, 1, 1);
     for (int block = 0; block < 4; ++block) {
