@@ -211,9 +211,13 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
     /// The shortcut that cancels while active (id "cancel", a tap). Nil:
     /// nothing cancels. Never judged while inactive.
     public var cancel: Binding?
+    /// The app's configuration number: it counts up per hotkey.configure,
+    /// and requests can land out of order, so a configuration only
+    /// replaces a newer one never (configure returns false for it).
+    public var generation: Int
 
     public init(bindings: [Binding], doubleTapMs: Double = 500, longPressMs: Double = 300, tapMaxMs: Double = 1500,
-                swallowFn: Bool = false, active: Bool = false, cancel: Binding? = nil) {
+                swallowFn: Bool = false, active: Bool = false, cancel: Binding? = nil, generation: Int = 0) {
         self.bindings = bindings
         self.doubleTapMs = doubleTapMs
         self.longPressMs = longPressMs
@@ -221,6 +225,7 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
         self.swallowFn = swallowFn
         self.active = active
         self.cancel = cancel
+        self.generation = generation
     }
 }
 
@@ -286,10 +291,16 @@ public struct HotkeyRecognizer: Sendable {
     /// Sets the config. Changing only the timings or "active" keeps a
     /// chord in progress (Go flips active as a session starts, while the
     /// key that started it may still be down).
-    public mutating func configure(_ c: HotkeyConfig) {
+    /// Applies c, unless c is older than the configuration in effect
+    /// (its generation is smaller): requests land out of order, and the
+    /// last state the app sent must win, not the last to arrive.
+    @discardableResult
+    public mutating func configure(_ c: HotkeyConfig) -> Bool {
+        if c.generation < config.generation { return false }
         let same = c.bindings == config.bindings
         config = c
         if !same { reset() }
+        return true
     }
 
     /// Forgets transient state (the tap was disabled, the config changed).

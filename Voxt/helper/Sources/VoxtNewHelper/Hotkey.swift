@@ -46,8 +46,11 @@ final class HotkeyTap: @unchecked Sendable {
     func configure(_ p: HotkeyConfigureParams) -> HotkeyStatus {
         let c = HotkeyConfig(bindings: p.bindings, doubleTapMs: p.doubleTapMs ?? systemDoubleClickMs(),
                              longPressMs: p.longPressMs ?? 300, tapMaxMs: p.tapMaxMs ?? 1500,
-                             swallowFn: p.swallowFn ?? false, active: p.active ?? false, cancel: p.cancel)
-        lock.withLock { recognizer.configure(c) }
+                             swallowFn: p.swallowFn ?? false, active: p.active ?? false, cancel: p.cancel,
+                             generation: p.generation ?? 0)
+        // Requests run on their own tasks, so they can land out of order;
+        // a configuration older than the one in effect changes nothing.
+        guard lock.withLock({ recognizer.configure(c) }) else { return status() }
         if p.bindings.isEmpty && p.cancel == nil {
             uninstall()
         } else if lock.withLock({ tap == nil && retry == nil }) {
@@ -223,12 +226,14 @@ final class HotkeyTap: @unchecked Sendable {
         return swallow
     }
 
-    /// Sends what fired, with the app in front (as cached at this moment).
+    /// Sends what fired, with the app in front (as cached at this moment)
+    /// and the configuration the events were decided under.
     private func send(_ fired: [HotkeyEvent]) {
         guard !fired.isEmpty else { return }
         let app = front.cached
+        let generation = lock.withLock { recognizer.config.generation }
         sendQueue.async { [out] in
-            for e in fired { out.notify(Method.hotkeyEvent, HotkeyEventParams(e, front: app)) }
+            for e in fired { out.notify(Method.hotkeyEvent, HotkeyEventParams(e, front: app, generation: generation)) }
         }
     }
 

@@ -124,6 +124,21 @@ func (s *sessionApp) pump(what string, cond func() bool) {
 	}
 }
 
+// settle runs posted functions for d, so an action with an asynchronous
+// effect (a session's stop) has landed before a negative assertion.
+func (s *sessionApp) settle(d time.Duration) {
+	s.t.Helper()
+	deadline := time.After(d)
+	for {
+		select {
+		case fn := <-s.queue:
+			fn()
+		case <-deadline:
+			return
+		}
+	}
+}
+
 // pasted is what the fake helper pasted.
 func (s *sessionApp) pasted() []proto.PasteParams {
 	data, _ := os.ReadFile(s.pasteLog)
@@ -269,6 +284,57 @@ func TestSessionReturnFinishes(t *testing.T) {
 			if strings.Contains(a.hotkeysSent, "ID:finish") {
 				t.Errorf("Return is still bound after the session: %s", a.hotkeysSent)
 			}
+		})
+	}
+}
+
+// TestSessionStaleFinishEvent: a Return event the helper decided under a
+// dictation's old configuration (S1 ended another way before the event
+// arrived) must not stop the next dictation (S2), whichever binding
+// Return has: Finish, Paste last, or the feature shortcut. Only an event
+// from the current configuration acts.
+func TestSessionStaleFinishEvent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		set     func(*settings.Settings)
+		binding string
+	}{
+		{name: "finish", binding: "finish"},
+		{name: "paste last on Return", set: func(s *settings.Settings) {
+			s.Features.PasteLast = settings.Hotkey{Keys: "Return", Trigger: settings.TriggerTap}
+		}, binding: "paste-last"},
+		{name: "shortcut on Return", set: func(s *settings.Settings) {
+			s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Return", Trigger: settings.TriggerTap}}
+		}, binding: "transcribe/0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &fakeChat{text: "Finished sentence."}
+			set, keys, _ := fileSetup(t, "finished sentence", chat)
+			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
+			a := newSessionApp(t, ev, func(s *settings.Settings) {
+				set(s)
+				if tc.set != nil {
+					tc.set(s)
+				}
+			}, keys)
+			a.pump("the recording", func() bool { return a.sess.State == session.Recording })
+			s1 := a.sess.ID
+			stale := proto.HotkeyEventParams{Binding: tc.binding, Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Generation: a.hotkeyGen}
+			a.stopSession()
+			a.pump("the first session's end", func() bool { return a.sess.State.Ended() })
+			a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap})
+			a.pump("the second recording", func() bool { return a.sess.State == session.Recording })
+			if a.sess.ID == s1 {
+				t.Fatal("the second dictation did not start")
+			}
+			a.hotkeyFired(stale)
+			a.settle(250 * time.Millisecond) // a wrongly accepted stop lands asynchronously
+			if a.sess.State != session.Recording {
+				t.Fatalf("a Return event from the first dictation's configuration stopped the second: %+v", a.sess)
+			}
+			// An event from the current configuration still finishes it.
+			a.hotkeyFired(proto.HotkeyEventParams{Binding: tc.binding, Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Generation: a.hotkeyGen})
+			a.pump("the second session's end", func() bool { return a.sess.State.Ended() })
 		})
 	}
 }

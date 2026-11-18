@@ -107,6 +107,29 @@ final class HotkeyRecognizerTests: XCTestCase {
         XCTAssertEqual(run(c, [(0, 54, rcmd), (60, 54, 0)]), ["rc:trigger"])
     }
 
+    /// hotkey.configure requests run on their own tasks and can land out
+    /// of order: an older configuration arriving last must change nothing.
+    func testConfigureKeepsTheNewestGeneration() {
+        let ret = Binding(id: "finish", modifiers: [:], key: 36, behavior: .tap)
+        let old = HotkeyConfig(bindings: [Binding(id: "transcribe", modifiers: [.fn: .any], behavior: .tap), ret], generation: 1)
+        let new = HotkeyConfig(bindings: [Binding(id: "transcribe", modifiers: [.fn: .any], behavior: .tap)], generation: 2)
+        var r = HotkeyRecognizer(config: HotkeyConfig(bindings: []))
+        XCTAssertTrue(r.configure(new))
+        XCTAssertFalse(r.configure(old))
+        XCTAssertEqual(r.config.bindings.map(\.id), ["transcribe"])
+        XCTAssertEqual(r.config.generation, 2)
+        // In order both apply; an old app's generation-less configurations
+        // (all 0) apply over one another, as before.
+        var s = HotkeyRecognizer(config: HotkeyConfig(bindings: []))
+        XCTAssertTrue(s.configure(old))
+        XCTAssertTrue(s.configure(new))
+        XCTAssertEqual(s.config.bindings.map(\.id), ["transcribe"])
+        var u = HotkeyRecognizer(config: HotkeyConfig(bindings: []))
+        XCTAssertTrue(u.configure(HotkeyConfig(bindings: [ret])))
+        XCTAssertTrue(u.configure(HotkeyConfig(bindings: [])))
+        XCTAssertEqual(u.config.bindings.map(\.id), [])
+    }
+
     func testLongPressWaitsForMoreSpecific() {
         let c = HotkeyConfig(bindings: [
             Binding(id: "t", modifiers: [.fn: .any], behavior: .longPress),

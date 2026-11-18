@@ -51,6 +51,13 @@ func (a *app) strictFeature() string {
 // hotkeyFired acts on a shortcut (the helper's hotkey.event, or a Carbon
 // shortcut).
 func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
+	// An event the helper decided under a configuration since replaced
+	// (it was on its way when the session changed) belongs to that old
+	// configuration, not to whatever runs now: drop it. Generation 0 is
+	// an old helper or a Carbon shortcut the app fired itself.
+	if e.Generation > 0 && e.Generation < a.hotkeyGen {
+		return
+	}
 	target := a.front
 	if e.Front != nil {
 		target = *e.Front
@@ -176,6 +183,8 @@ func (a *app) syncHotkeys() {
 		return
 	}
 	a.hotkeysSent = key
+	a.hotkeyGen++
+	params.Generation = a.hotkeyGen
 	helperCall(a, proto.MethodHotkeyConfigure, params, 5*time.Second, func(st proto.HotkeyStatus, err error) {
 		if err != nil {
 			a.hotkeysSent = ""

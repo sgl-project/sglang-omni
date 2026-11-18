@@ -67,6 +67,10 @@ type sessionState struct {
 	// with MyGo while the event tap is missing.
 	hotkeysSent string
 	carbon      []string
+	// hotkeyGen numbers the hotkey.configure requests sent (1 on the
+	// first). The helper applies only a newer one and reports it on the
+	// events it decides under it; hotkeyFired drops the rest.
+	hotkeyGen int64
 	// keysListening: a shortcut field takes pressed keys (key_recorder.go),
 	// and the shortcuts are off meanwhile; keysHeard is this frame's.
 	keysListening, keysHeard bool
