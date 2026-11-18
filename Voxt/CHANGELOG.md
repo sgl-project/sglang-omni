@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Recording starts with a microphone selected in Settings → Audio** (#4120). Voxt keeps a working input running through configuration changes. If two consecutive starts deliver no audio, it switches to the system default microphone. If that attempt also delivers no audio, Voxt ends the stalled recording with an error.
+- **A saved note no longer looks like an error**: after you recorded a note with the note shortcut, the "Saved to Notes" notice showed the red error mark, so a note that was saved looked as if it had failed. The notice now shows the green tick, as "Added to the dictionary" does.
 
 ### 中文
 
@@ -25,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **在设置 → 音频选定麦克风后可以正常开始录音**（#4120）。收到配置变更通知时，Voxt 会继续使用正常运行的麦克风。如果连续两次启动都未收到音频，Voxt 会切换到系统默认麦克风。如果这次也未收到音频，Voxt 会结束卡住的录音并提示错误。
+- **存好的笔记不再像出错**：用笔记快捷键录完后，“已存到笔记”的通知显示的是红色的错误图标，明明存好了，看起来却像失败了。现在显示绿色的对勾，和“已加入词典”一样。
 
 ## [2.1.0] - 2026-11-15
 

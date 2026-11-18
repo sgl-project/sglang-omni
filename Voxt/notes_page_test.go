@@ -70,12 +70,13 @@ func TestNotesPage(t *testing.T) {
 	}
 }
 
-// TestNoteNotices: a saved note says so in the overlay; one that could
+// TestNoteNotices: a saved note says so in the overlay, as done and not
+// as an error (the note shortcut did what it is for); one that could
 // not be saved says the answer card shows it.
 func TestNoteNotices(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.sessionEnded(session.Snapshot{ID: "s1", Kind: store.KindTranscribe, State: session.Done, Note: true, Result: "buy milk"})
-	if a.notice == nil || a.notice.text != "Saved to Notes" || a.notice.warn {
+	if a.notice == nil || a.notice.text != "Saved to Notes" || !a.notice.ok || a.notice.warn {
 		t.Errorf("saved: %+v", a.notice)
 	}
 	a.sessionEnded(session.Snapshot{ID: "s2", Kind: store.KindTranscribe, State: session.Done, Note: true, Result: "buy milk", Card: true,
