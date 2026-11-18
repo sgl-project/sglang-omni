@@ -295,17 +295,25 @@ func (a *app) dismissMoveFailure() {
 // resetLook restores the appearance and the language.
 func (a *app) resetLook() {
 	d := settings.Defaults()
+	a.paletteRevision.Add(1)
+	a.transparencyRevision.Add(1)
+	a.paletteSavePending, a.transparencySavePending = false, false
 	a.updateSettings(func(s *settings.Settings) { s.Appearance, s.General.Language = d.Appearance, d.General.Language })
+	a.loadAppearancePreview()
 	a.navUI.sideW, a.navUI.sections = 0, nil
 	a.toast(i18n.T("The look is back to its defaults"))
 }
 
 // resetSettings restores every setting (the setup stays done).
 func (a *app) resetSettings() {
+	a.paletteRevision.Add(1)
+	a.transparencyRevision.Add(1)
+	a.paletteSavePending, a.transparencySavePending = false, false
 	a.updateSettings(func(s *settings.Settings) {
 		*s = settings.Defaults()
 		s.Setup.Done = true
 	})
+	a.loadAppearancePreview()
 	a.navUI.sideW, a.navUI.sections = 0, nil
 	a.toast(i18n.T("Every setting is back to its default"))
 }
