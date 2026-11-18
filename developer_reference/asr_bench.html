@@ -644,19 +644,19 @@
 <h2>What is Measured<a class="headerlink" href="#what-is-measured" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>CI stage</p></th>
+<tr class="row-odd"><th class="head"><p>CI job</p></th>
 <th class="head"><p>Model</p></th>
 <th class="head"><p>Data</p></th>
 <th class="head"><p>Concurrency</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>1</p></td>
+<tr class="row-even"><td><p>MOSS-TD multi-speaker</p></td>
 <td><p>MOSS-Transcribe-Diarize, multiple speakers</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">movies800times</span></code> (800 samples, run once without and once with streaming), <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> (20), <code class="docutils literal notranslate"><span class="pre">googletime</span></code> (25)</p></td>
 <td><p>16</p></td>
 </tr>
-<tr class="row-odd"><td><p>2</p></td>
+<tr class="row-odd"><td><p>SeedTTS ASR</p></td>
 <td><p>Qwen3-ASR-1.7B, Whisper-large-v3 or Fun-ASR-Nano</p></td>
 <td><p>SeedTTS EN (1088) and ZH (2020)</p></td>
 <td><p>32</p></td>
@@ -664,7 +664,7 @@
 </tbody>
 </table>
 </div>
-<p>CI stage 1 also has <code class="docutils literal notranslate"><span class="pre">aishell4_long90</span></code>, one 90 minute sample stitched together from three <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> clips. It only runs through pytest (see <a class="reference internal" href="#run-the-ci-tests"><span class="std std-ref">Run the CI tests</span></a>). CI stage 2 runs one of the three models per CI run, picked at random unless a <code class="docutils literal notranslate"><span class="pre">run-fun-asr-nano-2512</span></code>, <code class="docutils literal notranslate"><span class="pre">run-qwen3-asr-1.7b</span></code> or <code class="docutils literal notranslate"><span class="pre">run-whisper-large-v3</span></code> label is set with <code class="docutils literal notranslate"><span class="pre">run-asr-ci</span></code>.</p>
+<p>The MOSS-TD multi-speaker job also has <code class="docutils literal notranslate"><span class="pre">aishell4_long90</span></code>, one 90 minute sample stitched together from three <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> clips. It only runs through pytest (see <a class="reference internal" href="#run-the-ci-tests"><span class="std std-ref">Run the CI tests</span></a>). The SeedTTS ASR job runs one of the three models per CI run, picked at random unless a <code class="docutils literal notranslate"><span class="pre">run-fun-asr-nano-2512</span></code>, <code class="docutils literal notranslate"><span class="pre">run-qwen3-asr-1.7b</span></code> or <code class="docutils literal notranslate"><span class="pre">run-whisper-large-v3</span></code> label pins it; that label alone also runs SeedTTS ASR without the MOSS-TD job.</p>
 <p>This page uses one server on one GPU, with the same datasets, concurrency and request settings as CI.</p>
 </section>
 <section id="variables">
@@ -1069,10 +1069,10 @@ python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> <
 <h2>Caveats<a class="headerlink" href="#caveats" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>Private datasets.</strong> <code class="docutils literal notranslate"><span class="pre">movies800time</span></code>, <code class="docutils literal notranslate"><span class="pre">AISHELL4</span></code> and <code class="docutils literal notranslate"><span class="pre">googletime</span></code> are private and cannot be pinned by the client. Compare the loaded fingerprints and remote heads in <code class="docutils literal notranslate"><span class="pre">moss_dataset_revisions.txt</span></code> before comparing MOSS-Transcribe-Diarize numbers from different machines or dates.</p></li>
-<li><p><strong>Known flaky stage.</strong> On 2026-10-09, 5 sampled CI stage 1 jobs reached only 43.2 to 44.7 req/s on <code class="docutils literal notranslate"><span class="pre">movies800times</span></code> in their first pytest attempt. After the server restarted for the second attempt, they reached 57.0 to 59.1 req/s. The cause is not known. A compile or file cache on disk is the likely suspect. CI sets <code class="docutils literal notranslate"><span class="pre">TORCHINDUCTOR_CACHE_DIR</span></code> to <code class="docutils literal notranslate"><span class="pre">$OMNI_CI_HOME/.torchinductor</span></code>. Outside CI, SGLang-Omni uses <code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/torchinductor</span></code> unless <code class="docutils literal notranslate"><span class="pre">TORCHINDUCTOR_CACHE_DIR</span></code> is set, as Step 4 does.</p></li>
+<li><p><strong>Known flaky job.</strong> On 2026-10-09, 5 sampled MOSS-TD multi-speaker CI jobs reached only 43.2 to 44.7 req/s on <code class="docutils literal notranslate"><span class="pre">movies800times</span></code> in their first pytest attempt. After the server restarted for the second attempt, they reached 57.0 to 59.1 req/s. The cause is not known. A compile or file cache on disk is the likely suspect. CI sets <code class="docutils literal notranslate"><span class="pre">TORCHINDUCTOR_CACHE_DIR</span></code> to <code class="docutils literal notranslate"><span class="pre">$OMNI_CI_HOME/.torchinductor</span></code>. Outside CI, SGLang-Omni uses <code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/torchinductor</span></code> unless <code class="docutils literal notranslate"><span class="pre">TORCHINDUCTOR_CACHE_DIR</span></code> is set, as Step 4 does.</p></li>
 <li><p><strong>Token budget on movies800times.</strong> Sending a fixed 65536 token budget instead of none lets a clip that loops run far past the duration scaled budget. That changes throughput and latency a lot. Check <code class="docutils literal notranslate"><span class="pre">config.max_new_tokens</span></code> in <code class="docutils literal notranslate"><span class="pre">transcribe_diarize_speed_results.json</span></code> before comparing with CI.</p></li>
 <li><p><strong>Warmup sees the scored audio.</strong> <code class="docutils literal notranslate"><span class="pre">--warmup</span></code> sends the same audio as the timed pass. Any cache keyed on audio content, file path or sample ID would hit on every timed request and make throughput meaningless.</p></li>
-<li><p><strong>Stage 2 is one model per CI run.</strong> A CI run measures only the model it picked. Run all three blocks of Step 5 here to see all of them.</p></li>
+<li><p><strong>SeedTTS ASR is one model per CI run.</strong> A CI run measures only the model it picked. Run all three blocks of Step 5 here to see all of them.</p></li>
 </ul>
 <p>For a profile of where the time goes, see the model profiling skill in <code class="docutils literal notranslate"><span class="pre">.claude/skills/model-profiling/</span></code>.</p>
 </section>
