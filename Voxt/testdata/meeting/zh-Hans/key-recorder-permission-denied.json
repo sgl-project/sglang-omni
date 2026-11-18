@@ -1,0 +1,21 @@
+{
+  "name": "key-recorder-permission-denied",
+  "kind": "key-recorder",
+  "key_recorder": {
+    "helper_records_keys": true,
+    "displayed_keys": "fn F5",
+    "typed": {
+      "valid": true,
+      "canonical_keys": "Fn+F5",
+      "formatted_keys": "fn F5",
+      "error_text": ""
+    },
+    "raw_keys": "Fn+F5",
+    "custom": true,
+    "typing": false,
+    "edited": false,
+    "unknown": false,
+    "record_denied": true,
+    "focused": true
+  }
+}

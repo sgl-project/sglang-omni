@@ -1,0 +1,38 @@
+{
+  "name": "notes-empty",
+  "kind": "notes",
+  "notes": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "count_label": "",
+    "rows": [],
+    "edit": {
+      "id": "",
+      "draft": "",
+      "saving": false
+    },
+    "shortcut": {
+      "keys": "RightCommand",
+      "current_text": "Right ⌘",
+      "problems": null,
+      "problem_codes": null,
+      "system_codes": null,
+      "used_by": null,
+      "empty_hint": "Press Right ⌘ in any app, speak, and press it again. What you say is saved here instead of typed.",
+      "set_hint": false,
+      "helper_records": false,
+      "custom": false,
+      "typing": false,
+      "edited": false,
+      "text": "RightCommand",
+      "editing_text": "Right ⌘",
+      "parsed_keys": "RightCommand",
+      "parse_error": "",
+      "parse_code": "",
+      "edited_hint": "",
+      "record_denied": false,
+      "unknown": false
+    }
+  }
+}

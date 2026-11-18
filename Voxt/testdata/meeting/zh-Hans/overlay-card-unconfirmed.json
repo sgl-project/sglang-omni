@@ -1,0 +1,121 @@
+{
+  "name": "overlay-card-unconfirmed",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot4",
+    "state": "done",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "shot4",
+      "kind": "",
+      "title": "转录结果",
+      "message": "文字没有出现在输入位置，已放到剪贴板，按 ⌘V 粘贴。",
+      "why": "文字没有出现在输入位置，已放到剪贴板。按 ⌘V 粘贴，或者再插入一次。",
+      "target_name": "Arc",
+      "thinking": {},
+      "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
+      "insert_tooltip": "文字没有出现在输入位置，已放到剪贴板。按 ⌘V 粘贴，或者再插入一次。",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "answer",
+          "kind": "body",
+          "turn": 0,
+          "text": "详情中的左右滑动不够流畅，会卡住。",
+          "selectable": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": false,
+      "failed": false,
+      "copied": false,
+      "heard": false,
+      "can_insert": true,
+      "can_copy": true,
+      "can_follow_up": false,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}

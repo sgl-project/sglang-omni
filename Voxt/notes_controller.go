@@ -1,0 +1,210 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
+)
+
+type notesState struct {
+	nv   notesView
+	nvUI notesLocalUI
+}
+
+type notesView struct {
+	list    []store.Note
+	read    bool
+	seq     int
+	loading bool
+	err     string
+	view    notesViewState
+	viewKey notesViewCacheKey
+}
+
+type notesViewCacheKey struct {
+	seq           int
+	locale        string
+	loading       bool
+	problems      string
+	minute        int64
+	location      string
+	zoneOffset    int
+	keys          string
+	helperRecords bool
+	editing       notesShortcutStateInput
+	usedBy        string
+	edit          notesEditViewState
+}
+
+func (a *app) loadNotes() {
+	notes := &a.nv
+	notes.seq++
+	notes.loading = true
+	seq := notes.seq
+	repo := a.lib.store.Notes()
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		list, err := repo.List(ctx)
+		a.post(func() {
+			notes := &a.nv
+			if seq != notes.seq {
+				return
+			}
+			notes.loading, notes.read = false, true
+			if err != nil {
+				notes.err = err.Error()
+				return
+			}
+			notes.list, notes.err = list, ""
+		})
+	})
+}
+
+func (a *app) prepareNotesPage() {
+	if !a.nv.read && !a.nv.loading {
+		a.loadNotes()
+	}
+	current := a.prefs.Features.Note.Keys
+	if seen := current + "\x00" + i18n.Locale(); seen != a.nvUI.keysFor {
+		a.nvUI.keysFor = seen
+		a.nvUI.keys = keyRow{text: current}
+	}
+}
+
+func (a *app) notesPageModel(now time.Time) notesViewState {
+	local := &a.nvUI
+	current := a.prefs.Features.Note.Keys
+	usedBy := a.usedByLines(recordedKeys(local.keys, current))
+	_, zoneOffset := now.Zone()
+	editing := notesShortcutStateInput{
+		Custom: local.keys.custom, Typing: local.keys.typing,
+		Edited: local.keys.edited, Text: local.keys.text, RecordDenied: local.keys.recordDenied, Unknown: local.keys.unknown,
+	}
+	problems := uitext.HotkeyProblemsFor(i18n.CurrentTranslator(), a.prefs.Features, hotkey.Note)[0]
+	key := notesViewCacheKey{
+		seq: a.nv.seq, locale: i18n.Locale(), loading: a.nv.loading, problems: strings.Join(problems, "\x00"),
+		minute: now.Unix() / 60, location: now.Location().String(), zoneOffset: zoneOffset,
+		keys: current, helperRecords: a.helperRecordsKeys(), editing: editing, usedBy: strings.Join(usedBy, "\x00"),
+		edit: notesEditViewState{ID: local.editID, Draft: local.draft, Saving: local.saving},
+	}
+	if key != a.nv.viewKey {
+		a.nv.view = buildNotesViewState(i18n.CurrentTranslator(), notesViewStateInput{
+			Notes: a.nv.list, Read: a.nv.read, Loading: a.nv.loading, Error: a.nv.err,
+			Features: a.prefs.Features, Now: now, HelperRecords: key.helperRecords, UsedBy: usedBy, Editing: editing, Edit: key.edit,
+		})
+		a.nv.viewKey = key
+	}
+	return a.nv.view
+}
+
+func (a *app) copyNote(text string) { a.copyFeatureText(text) }
+
+// saveNoteEdit saves text as the note id, keeping its time and source app.
+func (a *app) saveNoteEdit(id, text string) {
+	index := slices.IndexFunc(a.nv.list, func(note store.Note) bool { return note.ID == id })
+	if index < 0 {
+		return
+	}
+	note := a.nv.list[index]
+	note.Text = text
+	a.nvUI.saving = true
+	repo := a.lib.store.Notes()
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := repo.Put(ctx, note)
+		a.post(func() {
+			local := &a.nvUI
+			local.saving = false
+			if err != nil {
+				a.toast(i18n.T("Could not save the note: %v", err))
+				return
+			}
+			if local.editID == note.ID {
+				local.editID, local.draft = "", ""
+			}
+			a.loadNotes()
+		})
+	})
+}
+
+func (a *app) deleteDictionaryNote(id, text string) {
+	a.deleteNote(store.Note{ID: id, Text: text})
+}
+
+func (a *app) deleteNote(note store.Note) {
+	repo := a.lib.store.Notes()
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := repo.Delete(ctx, note.ID)
+		a.post(func() {
+			if err != nil && !errors.Is(err, core.ErrNotFound) {
+				a.toast(i18n.T("Could not delete the note: %v", err))
+				return
+			}
+			a.toast(i18n.T("Deleted “%s”", noteExcerpt(note.Text)))
+			a.loadNotes()
+		})
+	})
+}
+
+func (a *app) setNoteKeys(keys string) {
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Note = settings.Hotkey{Keys: keys, Trigger: settings.TriggerTap}
+	})
+	a.nvUI.keysFor = keys + "\x00" + i18n.Locale()
+}
+
+// saveRecordedNoteKeys saves the keys the note shortcut's editor recorded
+// and closes it (shortcut_control.go).
+func (a *app) saveRecordedNoteKeys(keys string) {
+	a.setNoteKeys(keys)
+	row := &a.nvUI.keys
+	row.custom, row.typing, row.recFocused = false, false, false
+	a.closeShortcutEditor()
+}
+
+func (a *app) recordNoteKeys(keys string) notesShortcutViewState {
+	chord, err := hotkey.Parse(keys)
+	a.nvUI.keys.unknown = err != nil
+	if err == nil {
+		a.nvUI.keys.text, a.nvUI.keys.edited = chord.String(), false
+		a.saveRecordedNoteKeys(chord.String())
+	}
+	return a.notesPageModel(time.Now()).Shortcut
+}
+
+func (a *app) updateNoteKeysDraft(text string) notesShortcutViewState {
+	a.nvUI.keys.text, a.nvUI.keys.edited = text, true
+	return a.notesPageModel(time.Now()).Shortcut
+}
+
+// setNoteHotkeyFocus follows the note recorder's focus: capture starts
+// when it takes the focus (again after a timeout clears recFocused) and
+// stops when it loses it.
+func (a *app) setNoteHotkeyFocus(focused bool) {
+	row := &a.nvUI.keys
+	wasFocused := row.recFocused
+	row.recFocused = focused
+	if focused {
+		a.keysHeard = true
+		if !wasFocused {
+			a.beginHotkeyRecord(row, a.saveRecordedNoteKeys)
+		}
+	} else if wasFocused {
+		a.cancelHotkeyRecord()
+	}
+}
+
+func (a *app) openNotePermissions() { a.navigate("/settings/permissions") }

@@ -64,7 +64,8 @@ func TestKeyRecorderNoAccessibility(t *testing.T) {
 	}
 }
 
-// TestKeyRecorderTimeout: timeout leaves the saved keys unchanged.
+// TestKeyRecorderTimeout: timeout leaves the saved keys unchanged, and the
+// field still focused captures again.
 func TestKeyRecorderTimeout(t *testing.T) {
 	ready := false
 	a, tt := trHelperTester(t, func(fs *fakeSupervisor) {
@@ -93,11 +94,12 @@ func TestKeyRecorderTimeout(t *testing.T) {
 		t.Fatalf("timeout changed keys: %q", saved())
 	}
 	ready = true
-	frames(tt)
+	for i := 0; i < 30 && saved() != "Control+Option+K"; i++ {
+		frames(tt)
+	}
 	if saved() != "Control+Option+K" {
 		t.Fatalf("capture did not resume after timeout: %q", saved())
 	}
-
 }
 
 // TestKeyRecorderCancelOnBlur: leaving the field cancels hotkey.record while

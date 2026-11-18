@@ -11,31 +11,35 @@ import (
 // earlier user and assistant message before the input. Small local models
 // follow the clean-up rules much better after one example (docs/eval.md).
 // Speech only (Transcribe, or Translate of speech) with Cleanup on; for
-// Translate, when the template set has the answer in the target language
-// (its own, or the other set's: English and Simplified Chinese).
+// Translate, when a template set translates into the target language
+// (English and Simplified Chinese: each set's example-translated is in the
+// other set's language).
 func Example(in Input) (input, answer string, ok bool) {
 	if !in.Cleanup || in.Task != Transcribe && (in.Task != Translate || in.Selected) {
 		return "", "", false
 	}
 	set := TemplateSet(in.MainLanguage)
-	name := "example-clean"
-	if in.Task == Translate {
-		target := ""
-		switch strings.ToLower(strings.TrimSpace(in.TargetLanguage)) {
-		case "zh-hans", "zh-cn", "zh-sg", "zh":
-			target = Chinese
-		default:
-			if lang.Canonical(in.TargetLanguage) == "en" {
-				target = English
-			}
-		}
-		switch target {
-		case "":
-			return "", "", false
-		case set:
-		default:
-			name = "example-translated"
+	if in.Task == Transcribe {
+		return template(set, "example-input"), template(set, "example-clean"), true
+	}
+	target := ""
+	switch strings.ToLower(strings.TrimSpace(in.TargetLanguage)) {
+	case "zh-hans", "zh-cn", "zh-sg", "zh":
+		target = Chinese
+	default:
+		if lang.Canonical(in.TargetLanguage) == "en" {
+			target = English
 		}
 	}
-	return template(set, "example-input"), template(set, name), true
+	// The set whose example translates into the target: never a
+	// same-language clean-up, which would teach the model to echo.
+	switch target {
+	case English:
+		set = Chinese
+	case Chinese:
+		set = English
+	default:
+		return "", "", false
+	}
+	return template(set, "example-input"), template(set, "example-translated"), true
 }

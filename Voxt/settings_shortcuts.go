@@ -5,84 +5,72 @@ package main
 // last result, Cancel transcription and Notes'), with their trigger and what
 // hotkey.Check finds wrong:
 // clashes, keys macOS uses, keys that need Accessibility while the event
-// tap is missing, keys another ActNow app uses too. Keys change in place;
-// the arrow opens the feature's page. Above it, the preset sets several at
-// once (internal/settings' Presets), and Strict shortcuts.
+// tap is missing, keys another ActNow app uses too. Keys change in place
+// (shortcut_control.go); the arrow opens the feature's page. Above it, the
+// preset sets several at once (internal/settings' Presets), and Strict
+// shortcuts.
 
 import (
-	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// featurePath is the page a shortcut changes on.
-func featurePath(feature string) string {
-	switch feature {
-	case hotkey.Translate:
-		return "/translate"
-	case hotkey.Rewrite:
-		return "/rewrite"
-	case hotkey.Note:
-		return "/notes"
+type settingsShortcutsLocalUI struct {
+	strictShortcuts bool
+	rows            map[string]*keyRow // the rows' editors, by settingsShortcutRowViewState.Key
+}
+
+// row is the editor of the row named key.
+func (local *settingsShortcutsLocalUI) row(key string) *keyRow {
+	if local.rows == nil {
+		local.rows = map[string]*keyRow{}
 	}
-	return "/transcribe" // Transcribe, Paste the last result, Cancel transcription
+	row := local.rows[key]
+	if row == nil {
+		row = &keyRow{}
+		local.rows[key] = row
+	}
+	return row
 }
 
 // shortcutsSettings is the Shortcuts section of the settings dialog.
-func (a *app) shortcutsSettings(c *ui.Context) {
+func shortcutsSettings(c *ui.Context, state settingsShortcutsViewState, actions settingsShortcutsActions, local *settingsShortcutsLocalUI) {
 	t := c.Theme()
 	k := tok(t)
 	caption(c, i18n.T("Click a shortcut, then press the keys you want."))
-	if !a.hotkeys.Installed {
+	if !state.AccessibilityInstalled {
 		notice(c, "sc-no-tap", noticeWarn,
 			i18n.T("Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it."),
 			"", func() {
 				if ui.Button(c.Key("sc-open-perms"), i18n.T("Open Permissions")).Clicked() {
-					a.navigate("/settings/permissions")
+					actions.openShortcutPermissions()
 				}
 			}, nil)
 	}
-	a.shortcutPresetPicker(c, "sc")
+	shortcutPresetPicker(c, "sc", state.Preset, actions)
 	// Above the table, which fills the default window (#3916).
 	settingRow(c, "sc-strict", i18n.T("Strict shortcuts"), i18n.T("While recording, only the shortcut that started it stops it. Off: any feature's shortcut stops."), func() {
-		if ui.Switch(c.Key("sc-strict-switch"), &a.settingsForm.strictShortcuts).Label(i18n.T("Strict shortcuts")).Changed() {
-			on := a.settingsForm.strictShortcuts
-			a.updateSettings(func(s *settings.Settings) { s.Features.StrictShortcuts = on })
+		if ui.Switch(c.Key("sc-strict-switch"), &local.strictShortcuts).Label(i18n.T("Strict shortcuts")).Changed() {
+			actions.setStrictShortcuts(local.strictShortcuts)
 		}
 	})
-	f := a.prefs.Features
-	keysW := px(t, 180)
+	keysWidth := px(t, 180)
 	card(c.Key("sc-table")).Gap(0).Padding(px(t, sp2)).Children(func() {
 		// The head.
 		ui.Row(c).Gap(px(t, sp2)).Padding(px(t, sp1), px(t, sp2)).AlignItems(ui.Center).Children(func() {
-			head := func(s string) ui.Element {
-				return ui.Text(c, s).FontSize(px(t, fsMicro)).FontWeight(600).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
+			head := func(text string) ui.Element {
+				return ui.Text(c, text).FontSize(px(t, fsMicro)).FontWeight(600).TextColor(k.Text3).SingleLine().Ellipsis("…").MinWidth(0)
 			}
 			head(i18n.T("Feature")).Grow(1)
-			head(i18n.T("Shortcut")).Width(keysW).Shrink(0)
+			head(i18n.T("Shortcut")).Width(keysWidth).Shrink(0)
 			ui.Box(c).Width(px(t, shortcutMarksW+14+sp2)).Shrink(0) // the marks and the chevron
 		})
-		for _, feat := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID, hotkey.Note) {
-			if f.IsHidden(feat) {
-				continue
-			}
-			hs := hotkey.HotkeysOf(f, feat)
-			problems := uitext.HotkeyProblems(f, feat) // feature_keys_text.go
-			if len(hs) == 0 {
-				a.shortcutRow(c, feat, 0, nil, nil, keysW)
-				continue
-			}
-			for i := range hs {
-				// The other ActNow apps on the same keys (settings_shortcuts_family.go).
-				lines := append(slices.Clone(problems[i]), a.conflictLines(feat, i)...)
-				a.shortcutRow(c, feat, i, &hs[i], lines, keysW)
-			}
+		for _, row := range state.Rows {
+			shortcutRow(c, row, actions, local.row(row.Key), state.AccessibilityInstalled, keysWidth)
 		}
 	})
 }
@@ -90,154 +78,102 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 // shortcutMarksW is the room of a row's marks (Accessibility, a problem).
 const shortcutMarksW = 16 + sp2 + 16
 
-// shortcutRow is a row of the table: feature's i-th shortcut h (nil: it
-// has none), its recorder over its trigger and its problems under it.
-func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotkey, problems []string, keysW float32) {
+// shortcutRow is a row of the table: its keys, recorded in place, over its
+// trigger, its problems under it; the arrow opens the feature's page.
+func shortcutRow(c *ui.Context, row settingsShortcutRowViewState, actions settingsShortcutsActions, editor *keyRow, accessibilityInstalled bool, keysWidth float32) {
 	t := c.Theme()
 	k := tok(t)
-	title := uitext.FeatureTitle(feature)
-	keys := i18n.T("None")
-	if h != nil {
-		keys = uitext.HotkeyText(h.Keys)
-	}
-	ui.Column(c.Key("sc-"+feature+"-"+itoa(i))).Padding(px(t, 6), px(t, sp2)).Children(func() {
+	ui.Column(c.Key("sc-"+row.Feature+"-"+strconv.Itoa(row.Index))).Padding(px(t, 6), px(t, sp2)).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 4)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Start).Children(func() {
-				ic := kindIcon(featureKind(feature))
-				if feature == hotkey.PasteLast {
-					ic = icons.Copy
-				}
-				if feature == hotkey.CancelID {
-					ic = icons.CloseCircle
-				}
-				if feature == hotkey.Note {
-					ic = notesIcon
-				}
 				ui.Row(c).Height(px(t, 30)).Gap(px(t, sp2)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).Children(func() {
-					if i == 0 {
-						ui.Icon(c, ic.Linear).Size(px(t, 16), px(t, 16)).TextColor(k.Text2).Shrink(0)
-						truncText(c, title)
+					if row.Index == 0 {
+						ui.Icon(c, shortcutIcon(row.Icon).Linear).Size(px(t, 16), px(t, 16)).TextColor(k.Text2).Shrink(0)
+						truncText(c, row.Title)
 					}
 				})
-				ui.Column(c).Width(keysW).Shrink(0).Gap(px(t, 2)).AlignItems(ui.Start).Children(func() {
-					r := a.shortcutKeyRow(feature, i)
-					a.shortcutControl(c, r, title+" "+keys, h == nil || feature == hotkey.PasteLast || feature == hotkey.CancelID || feature == hotkey.Note, func(keys string) {
-						a.setShortcutKeys(feature, i, keys)
+				ui.Column(c).Width(keysWidth).Shrink(0).Gap(px(t, 2)).AlignItems(ui.Start).Children(func() {
+					label := row.Title + " " + row.KeyText
+					save := func(keys string) { actions.setShortcutKeys(row.Feature, row.Index, keys) }
+					keysText := ""
+					if row.HasShortcut {
+						keysText = row.KeyText
+					}
+					shortcutControl(c, editor, label, row.Keys, keysText, row.CanClear, actions, save, func(save func(string)) {
+						keysField(c, editor, label, save, row.Recorder, actions)
 					})
-					if h != nil {
-						trig := uitext.TriggerText(h.Trigger)
-						if feature == hotkey.PasteLast || feature == hotkey.CancelID || feature == hotkey.Note {
-							trig = uitext.TriggerText(settings.TriggerTap)
-						}
-						ui.Text(c, trig).FontSize(px(t, fsMicro)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
+					if row.HasShortcut {
+						ui.Text(c, row.TriggerText).FontSize(px(t, fsMicro)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
 					}
 				})
 				ui.Row(c).Height(px(t, 30)).AlignItems(ui.Center).Width(px(t, shortcutMarksW)).Shrink(0).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
-					if h != nil && (feature == hotkey.CancelID || hotkey.NeedsTap(*h)) { // cancel works only through the tap, while active
-						col := k.Text3
-						if !a.hotkeys.Installed {
-							col = k.Warning
+					if row.NeedsAccessibility {
+						color := k.Text3
+						if !accessibilityInstalled {
+							color = k.Warning
 						}
-						iconMark(c, icons.Accessibility, col, i18n.T("Works only with Accessibility access."))
+						iconMark(c, icons.Accessibility, color, i18n.T("Works only with Accessibility access."))
 					}
-					if len(problems) > 0 {
-						iconMark(c, icons.DangerTriangle, k.Warning, strings.Join(problems, "\n"))
+					if len(row.Problems) > 0 {
+						iconMark(c, icons.DangerTriangle, k.Warning, strings.Join(row.Problems, "\n"))
 					}
 				})
-				if iconButton(c.Key("open-feature"), icons.AltArrowRight, i18n.T("Change on the %s page", pageTitle(featurePath(feature)))).Clicked() {
-					a.navigate(featurePath(feature))
+				if iconButton(c.Key("open-feature"), icons.AltArrowRight, i18n.T("Change on the %s page", row.PageTitle)).Clicked() {
+					actions.openShortcutFeature(row.Path)
 				}
 			})
-			if len(problems) > 0 {
+			if len(row.Problems) > 0 {
 				ui.Column(c).Padding(0, 0, 0, px(t, 16+sp2)).Gap(px(t, 2)).Children(func() {
-					problemLines(c, problems) // feature_keys.go
+					problemLines(c, row.Problems) // feature_keys.go
 				})
 			}
 		})
 	})
 }
 
-// presetTitle is a shortcut preset's name ("": custom).
-func presetTitle(p string) string {
-	switch p {
-	case settings.PresetOption:
-		return i18n.T("Right ⌥ (default)")
-	case settings.PresetFn:
-		return i18n.T("fn (Auralink's keys)")
-	case settings.PresetCommand:
-		return i18n.T("⌘ combination")
-	case settings.PresetMouseMiddle:
-		return i18n.T("Middle mouse + fn⇧")
+func shortcutIcon(code string) icons.Icon {
+	switch code {
+	case "paste":
+		return icons.Copy
+	case "cancel":
+		return icons.CloseCircle
+	case "note":
+		return icons.Notes
+	case "translate":
+		return icons.Global
+	case "rewrite":
+		return icons.PenNewRound
+	default:
+		return icons.Microphone3
 	}
-	return i18n.T("Custom")
-}
-
-// presetAbout is one line on who a preset suits (setup guide).
-func presetAbout(p string) string {
-	switch p {
-	case settings.PresetOption:
-		return i18n.T("Right ⌥: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink.")
-	case settings.PresetFn:
-		return i18n.T("fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources.")
-	case settings.PresetCommand:
-		return i18n.T("⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing.")
-	case settings.PresetMouseMiddle:
-		return i18n.T("Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility.")
-	}
-	return ""
 }
 
 // shortcutPresetPicker is the preset dropdown and warnings (settings and
 // the setup guide). key prefixes control ids ("sc" or "ob").
-func (a *app) shortcutPresetPicker(c *ui.Context, key string) {
+func shortcutPresetPicker(c *ui.Context, key string, state shortcutPresetPickerViewState, actions shortcutPresetActions) {
 	t := c.Theme()
-	cur := settings.PresetOf(a.prefs.Features)
-	about := i18n.T("Shortcuts you changed yourself stay as they are.")
-	if key == "ob" {
-		about = i18n.T("You can change them later in Settings → Shortcuts.")
+	selected := state.Selected
+	options := make([]string, len(state.Options))
+	selectedAbout := ""
+	for index, option := range state.Options {
+		options[index] = option.Title
+		if option.Title == state.Selected {
+			selectedAbout = option.About
+		}
 	}
-	settingRow(c, key+"-preset", i18n.T("Preset"), about, func() {
-		var opts []string
-		for _, p := range settings.Presets {
-			opts = append(opts, presetTitle(p))
-		}
-		if cur == "" {
-			opts = append(opts, presetTitle(cur))
-		}
-		sel := presetTitle(cur)
-		if ui.Select(c.Key(key+"-preset-sel"), &sel, opts).Label(i18n.T("Shortcut preset")).Width(px(t, 220)).Changed() {
-			for _, p := range settings.Presets {
-				if presetTitle(p) == sel {
-					a.applyShortcutPreset(p)
+	settingRow(c, key+"-preset", i18n.T("Preset"), state.About, func() {
+		if ui.Select(c.Key(key+"-preset-sel"), &selected, options).Label(i18n.T("Shortcut preset")).Width(px(t, 220)).Changed() {
+			for _, option := range state.Options {
+				if option.ID != "" && option.Title == selected {
+					actions.applyShortcutPreset(option.ID)
 				}
 			}
 		}
 	})
-	if line := presetAbout(cur); line != "" && key == "ob" {
-		caption(c, line)
+	if selectedAbout != "" && key == "ob" {
+		caption(c, selectedAbout)
 	}
-	a.shortcutPresetWarnings(c, cur)
-}
-
-// shortcutPresetWarnings are preset-specific cautions under the dropdown.
-func (a *app) shortcutPresetWarnings(c *ui.Context, cur string) {
-	switch cur {
-	case settings.PresetFn:
-		warnLine(c, i18n.T("Auralink uses fn too, so while it runs, both apps react to these keys."))
-		warnLine(c, i18n.T("macOS may react to fn too (the Globe key). If it gets in the way, set it to Do Nothing in System Settings → Keyboard."))
-	case settings.PresetMouseMiddle:
-		if !a.hotkeys.Installed {
-			warnLine(c, i18n.T("Mouse-button shortcuts need Accessibility. Use Start in the guide, or grant it in Permissions."))
-		}
+	for _, warning := range state.Warnings {
+		warnLine(c, warning)
 	}
-}
-
-// applyShortcutPreset gives the shortcuts the user did not change preset
-// p's keys, or says that there are none.
-func (a *app) applyShortcutPreset(p string) {
-	if f := a.prefs.Features; !settings.ApplyPreset(&f, p) {
-		a.toast(i18n.T("You changed every shortcut yourself, so the preset leaves them as they are."))
-		return
-	}
-	a.updateSettings(func(s *settings.Settings) { settings.ApplyPreset(&s.Features, p) })
 }

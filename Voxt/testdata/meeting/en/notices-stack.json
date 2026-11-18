@@ -1,0 +1,30 @@
+{
+  "name": "notices-stack",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "fixture-3",
+      "severity": "error",
+      "title": "Third card",
+      "body": "Before both.",
+      "action_label": "Open",
+      "time_hint": "Jan 2 07:04"
+    },
+    {
+      "id": "fixture-2",
+      "severity": "warning",
+      "title": "Second card",
+      "body": "Before that.",
+      "action_label": "Open",
+      "time_hint": "Jan 2 07:04"
+    },
+    {
+      "id": "fixture-1",
+      "severity": "info",
+      "title": "First card",
+      "body": "The newest thing that happened.",
+      "action_label": "Open",
+      "time_hint": "Jan 2 07:04"
+    }
+  ]
+}

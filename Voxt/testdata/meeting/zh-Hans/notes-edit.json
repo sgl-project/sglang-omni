@@ -1,0 +1,57 @@
+{
+  "name": "notes-edit",
+  "kind": "notes",
+  "notes": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "count_label": "2 条笔记",
+    "rows": [
+      {
+        "id": "note-2",
+        "text": "call Ana",
+        "time_text": "1 小时前",
+        "app_name": "Slack",
+        "copy_text": "复制：call Ana",
+        "edit_text": "编辑 call Ana",
+        "delete_text": "删除 call Ana"
+      },
+      {
+        "id": "note-1",
+        "text": "buy milk",
+        "time_text": "2 小时前",
+        "app_name": "",
+        "copy_text": "复制：buy milk",
+        "edit_text": "编辑 buy milk",
+        "delete_text": "删除 buy milk"
+      }
+    ],
+    "edit": {
+      "id": "note-2",
+      "draft": "call Ana tomorrow",
+      "saving": false
+    },
+    "shortcut": {
+      "keys": "RightCommand",
+      "current_text": "右 ⌘",
+      "problems": null,
+      "problem_codes": null,
+      "system_codes": null,
+      "used_by": null,
+      "empty_hint": "在任意 App 里按 右 ⌘，说完再按一次。说的内容会存到这里，不会输入到光标处。",
+      "set_hint": false,
+      "helper_records": false,
+      "custom": false,
+      "typing": false,
+      "edited": false,
+      "text": "RightCommand",
+      "editing_text": "右 ⌘",
+      "parsed_keys": "RightCommand",
+      "parse_error": "",
+      "parse_code": "",
+      "edited_hint": "",
+      "record_denied": false,
+      "unknown": false
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "name": "notes-shortcut-system-app-switcher",
+  "kind": "notes",
+  "notes": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "count_label": "2 notes",
+    "rows": [
+      {
+        "id": "note-2",
+        "text": "call Ana",
+        "time_text": "1 hour ago",
+        "app_name": "Slack",
+        "copy_text": "Copy: call Ana",
+        "edit_text": "Edit call Ana",
+        "delete_text": "Delete call Ana"
+      },
+      {
+        "id": "note-1",
+        "text": "buy milk",
+        "time_text": "2 hours ago",
+        "app_name": "",
+        "copy_text": "Copy: buy milk",
+        "edit_text": "Edit buy milk",
+        "delete_text": "Delete buy milk"
+      }
+    ],
+    "edit": {
+      "id": "",
+      "draft": "",
+      "saving": false
+    },
+    "shortcut": {
+      "keys": "Command+Tab",
+      "current_text": "⌘Tab",
+      "problems": [
+        "macOS uses these keys for the app switcher."
+      ],
+      "problem_codes": [
+        "system"
+      ],
+      "system_codes": [
+        "appSwitcher"
+      ],
+      "used_by": null,
+      "empty_hint": "Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.",
+      "set_hint": false,
+      "helper_records": false,
+      "custom": false,
+      "typing": false,
+      "edited": false,
+      "text": "Command+Tab",
+      "editing_text": "⌘Tab",
+      "parsed_keys": "RightCommand",
+      "parse_error": "",
+      "parse_code": "",
+      "edited_hint": "",
+      "record_denied": false,
+      "unknown": false
+    }
+  }
+}

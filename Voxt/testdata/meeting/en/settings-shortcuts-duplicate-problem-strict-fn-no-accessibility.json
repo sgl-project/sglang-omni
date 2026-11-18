@@ -1,0 +1,347 @@
+{
+  "name": "settings-shortcuts-duplicate-problem-strict-fn-no-accessibility",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/shortcuts",
+    "shown_path": "/settings/shortcuts",
+    "sections": [
+      {
+        "id": "general",
+        "title": "General",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "Speech models",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "Language models",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "Permissions",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "Audio",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "Overlay style",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "Shortcuts",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "Appearance",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "Privacy",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "Storage",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "About",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "shortcuts": {
+      "accessibility_installed": false,
+      "strict_shortcuts": true,
+      "preset": {
+        "options": [
+          {
+            "id": "option",
+            "title": "Right ⌥ (default)",
+            "about": "Right ⌥: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink."
+          },
+          {
+            "id": "fn",
+            "title": "fn (Auralink's keys)",
+            "about": "fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources."
+          },
+          {
+            "id": "command",
+            "title": "⌘ combination",
+            "about": "⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing."
+          },
+          {
+            "id": "mouseMiddle",
+            "title": "Middle mouse + fn⇧",
+            "about": "Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility."
+          },
+          {
+            "id": "",
+            "title": "Custom",
+            "about": ""
+          }
+        ],
+        "selected": "Custom",
+        "about": "Shortcuts you changed yourself stay as they are.",
+        "warnings": null
+      },
+      "rows": [
+        {
+          "key": "transcribe-0",
+          "feature": "transcribe",
+          "index": 0,
+          "keys": "Fn",
+          "path": "/transcribe",
+          "title": "Transcribe",
+          "page_title": "Transcribe",
+          "icon": "transcribe",
+          "key_text": "fn",
+          "trigger_text": "Tap",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "can_clear": false,
+          "problems": [
+            "Paste the last result has the same keys and trigger, so only one of them works."
+          ],
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "fn",
+            "typed": {
+              "valid": true,
+              "canonical_keys": "Fn",
+              "formatted_keys": "fn",
+              "error_text": ""
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          }
+        },
+        {
+          "key": "transcribe-1",
+          "feature": "transcribe",
+          "index": 1,
+          "keys": "Fn",
+          "path": "/transcribe",
+          "title": "Transcribe",
+          "page_title": "Transcribe",
+          "icon": "transcribe",
+          "key_text": "fn",
+          "trigger_text": "Tap",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "can_clear": false,
+          "problems": [
+            "The same keys as shortcut 1."
+          ],
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "fn",
+            "typed": {
+              "valid": true,
+              "canonical_keys": "Fn",
+              "formatted_keys": "fn",
+              "error_text": ""
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          }
+        },
+        {
+          "key": "translate-0",
+          "feature": "translate",
+          "index": 0,
+          "keys": "Bad+",
+          "path": "/translate",
+          "title": "Translate",
+          "page_title": "Translate",
+          "icon": "translate",
+          "key_text": "Bad+",
+          "trigger_text": "Tap",
+          "has_shortcut": true,
+          "needs_accessibility": false,
+          "can_clear": false,
+          "problems": [
+            "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5."
+          ],
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "Bad+",
+            "typed": {
+              "valid": false,
+              "canonical_keys": "",
+              "formatted_keys": "",
+              "error_text": "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5."
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          }
+        },
+        {
+          "key": "rewrite-0",
+          "feature": "rewrite",
+          "index": 0,
+          "keys": "A",
+          "path": "/rewrite",
+          "title": "Rewrite",
+          "page_title": "Rewrite",
+          "icon": "rewrite",
+          "key_text": "A",
+          "trigger_text": "Tap",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "can_clear": false,
+          "problems": [
+            "A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn."
+          ],
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "A",
+            "typed": {
+              "valid": true,
+              "canonical_keys": "A",
+              "formatted_keys": "A",
+              "error_text": ""
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          }
+        },
+        {
+          "key": "paste-last-0",
+          "feature": "paste-last",
+          "index": 0,
+          "keys": "Fn",
+          "path": "/transcribe",
+          "title": "Paste the last result",
+          "page_title": "Transcribe",
+          "icon": "paste",
+          "key_text": "fn",
+          "trigger_text": "Tap",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "can_clear": true,
+          "problems": [
+            "Transcribe has the same keys and trigger, so only one of them works."
+          ],
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "fn",
+            "typed": {
+              "valid": true,
+              "canonical_keys": "Fn",
+              "formatted_keys": "fn",
+              "error_text": ""
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          }
+        },
+        {
+          "key": "cancel-0",
+          "feature": "cancel",
+          "index": 0,
+          "keys": "Command+C",
+          "path": "/transcribe",
+          "title": "Cancel recording",
+          "page_title": "Transcribe",
+          "icon": "cancel",
+          "key_text": "⌘C",
+          "trigger_text": "Tap",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "can_clear": true,
+          "problems": [
+            "macOS uses these keys for copy, paste and other editing commands."
+          ],
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "⌘C",
+            "typed": {
+              "valid": true,
+              "canonical_keys": "Command+C",
+              "formatted_keys": "⌘C",
+              "error_text": ""
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          }
+        },
+        {
+          "key": "note-0",
+          "feature": "note",
+          "index": 0,
+          "keys": "RightCommand",
+          "path": "/notes",
+          "title": "Notes",
+          "page_title": "Notes",
+          "icon": "note",
+          "key_text": "Right ⌘",
+          "trigger_text": "Tap",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "can_clear": true,
+          "problems": null,
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "Right ⌘",
+            "typed": {
+              "valid": true,
+              "canonical_keys": "RightCommand",
+              "formatted_keys": "Right ⌘",
+              "error_text": ""
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,285 @@
+{
+  "name": "feature-translate-target-warning",
+  "kind": "feature",
+  "feature": {
+    "feature": "translate",
+    "prefix": "tl",
+    "title": "翻译",
+    "caption": "就地翻译选中的文字；没有选中时，翻译你说的话。",
+    "refresh_recording": false,
+    "shortcuts": {
+      "prefix": "tl",
+      "hotkeys_installed": true,
+      "helper_records_keys": false,
+      "empty_text": "",
+      "rewrite_hint": false,
+      "rows": [
+        {
+          "keys": "RightOption+Shift",
+          "value": "右 ⌥ ⇧",
+          "trigger": 0,
+          "custom_editing": false,
+          "typing": false,
+          "edited": false,
+          "record_denied": false,
+          "unknown": false,
+          "recorder_focused": false,
+          "custom": {
+            "input_text": "",
+            "keys_text": "",
+            "canonical": "",
+            "parsed": false,
+            "error_text": "请输入按键，例如 Control+Option+Space。"
+          },
+          "needs_accessibility": true,
+          "problems": null,
+          "problem_codes": null,
+          "used_by": null
+        }
+      ]
+    },
+    "models": {
+      "prefix": "tl",
+      "before": null,
+      "after": null,
+      "asr_label": "翻译使用的语音识别模型",
+      "llm_label": "翻译使用的语言模型",
+      "asr": {
+        "value": "自动（现在用：Fixture speech model）",
+        "options": [
+          {
+            "label": "自动（现在用：Fixture speech model）",
+            "value": "",
+            "custom": false
+          },
+          {
+            "label": "Fixture speech model",
+            "value": "fixture-speech",
+            "custom": false
+          }
+        ],
+        "disabled": false
+      },
+      "llm": {
+        "value": "自动（现在用：Fixture language model）",
+        "options": [
+          {
+            "label": "自动（现在用：Fixture language model）",
+            "value": "",
+            "custom": false
+          },
+          {
+            "label": "Fixture language model",
+            "value": "fixture-language",
+            "custom": false
+          }
+        ],
+        "disabled": false
+      },
+      "fallback": {
+        "value": "无",
+        "options": [
+          {
+            "label": "无",
+            "value": "",
+            "custom": false
+          },
+          {
+            "label": "Fixture language model",
+            "value": "fixture-language",
+            "custom": false
+          }
+        ],
+        "disabled": true
+      },
+      "cleanup": {
+        "enhance": true,
+        "cleanup": true,
+        "structure": false
+      }
+    },
+    "prompt": {
+      "target": {
+        "value": "自动（现在用：英语）",
+        "options": [
+          {
+            "label": "自动（现在用：英语）",
+            "value": "",
+            "custom": false
+          },
+          {
+            "label": "英语",
+            "value": "en",
+            "custom": false
+          },
+          {
+            "label": "简体中文",
+            "value": "zh-Hans",
+            "custom": false
+          },
+          {
+            "label": "繁体中文",
+            "value": "zh-Hant",
+            "custom": false
+          },
+          {
+            "label": "日语",
+            "value": "ja",
+            "custom": false
+          },
+          {
+            "label": "韩语",
+            "value": "ko",
+            "custom": false
+          },
+          {
+            "label": "西班牙语",
+            "value": "es",
+            "custom": false
+          },
+          {
+            "label": "法语",
+            "value": "fr",
+            "custom": false
+          },
+          {
+            "label": "德语",
+            "value": "de",
+            "custom": false
+          },
+          {
+            "label": "意大利语",
+            "value": "it",
+            "custom": false
+          },
+          {
+            "label": "葡萄牙语",
+            "value": "pt",
+            "custom": false
+          },
+          {
+            "label": "俄语",
+            "value": "ru",
+            "custom": false
+          },
+          {
+            "label": "荷兰语",
+            "value": "nl",
+            "custom": false
+          },
+          {
+            "label": "土耳其语",
+            "value": "tr",
+            "custom": false
+          },
+          {
+            "label": "波兰语",
+            "value": "pl",
+            "custom": false
+          },
+          {
+            "label": "乌克兰语",
+            "value": "uk",
+            "custom": false
+          },
+          {
+            "label": "阿拉伯语",
+            "value": "ar",
+            "custom": false
+          },
+          {
+            "label": "希伯来语",
+            "value": "he",
+            "custom": false
+          },
+          {
+            "label": "印地语",
+            "value": "hi",
+            "custom": false
+          },
+          {
+            "label": "泰语",
+            "value": "th",
+            "custom": false
+          },
+          {
+            "label": "越南语",
+            "value": "vi",
+            "custom": false
+          },
+          {
+            "label": "印度尼西亚语",
+            "value": "id",
+            "custom": false
+          },
+          {
+            "label": "马来语",
+            "value": "ms",
+            "custom": false
+          }
+        ],
+        "disabled": false
+      },
+      "target_warning": true,
+      "cleanup": true,
+      "card": {
+        "show": false,
+        "size": 0
+      },
+      "rules": {
+        "open": true,
+        "preview_open": true,
+        "find_query": "",
+        "settings_open": false,
+        "prompt": "Translate Chinese into English.",
+        "summary": "31 字",
+        "reset_disabled": false,
+        "matches": null,
+        "variables": [
+          {
+            "name": "USER_MAIN_LANGUAGE",
+            "token": "{{USER_MAIN_LANGUAGE}}",
+            "text": "你的主要语言，来自通用设置。所有功能都用到。 现在：中文"
+          },
+          {
+            "name": "USER_OTHER_LANGUAGES",
+            "token": "{{USER_OTHER_LANGUAGES}}",
+            "text": "你的其他语言，来自通用设置。所有功能都用到。 现在：（无）"
+          },
+          {
+            "name": "TARGET_LANGUAGE",
+            "token": "{{TARGET_LANGUAGE}}",
+            "text": "来自翻译页的“目标语言”菜单。只有翻译用到。 现在：英语"
+          },
+          {
+            "name": "APP_NAME",
+            "token": "{{APP_NAME}}",
+            "text": "最前面的 App，在它匹配某个应用增强分组时填入。用于该分组生效的功能。 现在：（无）"
+          }
+        ],
+        "enhance_off": false,
+        "preview_error": "",
+        "preview_prompt": "Translate Chinese into English.\n\n\u003cinput\u003e\n呃，帮我把那个周报，嗯，发给小王，不对，是发给小李，今天下班前。今天下班前一定要发，就是说，今天下班前一定要发出去。\n\u003c/input\u003e\n\nPlease send the weekly report to Xiao Li before the end of today. It must go out before the end of today.\n\n\u003cinput\u003e\n嗯那个会议改到周四三点，不对，四点\n\u003c/input\u003e",
+        "preview_values": [
+          "中文",
+          "",
+          "英语",
+          ""
+        ]
+      }
+    },
+    "try": {
+      "prefix": "tl",
+      "feature": "translate",
+      "state": "",
+      "problem_code": "",
+      "mode": "idle",
+      "intro": "按 右 ⌥ ⇧ 或点“开始”，说一两句话。译文显示在这里，不会输入到任何地方。",
+      "start_label": "开始",
+      "busy": false,
+      "busy_text": "",
+      "working_text": "",
+      "draft": ""
+    }
+  }
+}

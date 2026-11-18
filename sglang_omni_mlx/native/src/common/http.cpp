@@ -174,4 +174,12 @@ Field(const std::map<std::string, omni_common::FormField> &form,
   }
 }
 
+bool SendWebSocketText(mg_connection *connection, const std::string &text) {
+  mg_lock_connection(connection);
+  const int written = mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_TEXT,
+                                         text.data(), text.size());
+  mg_unlock_connection(connection);
+  return written > 0;
+}
+
 } // namespace omni_server

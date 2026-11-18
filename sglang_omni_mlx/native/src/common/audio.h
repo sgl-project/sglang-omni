@@ -25,12 +25,14 @@ std::vector<float> DecodeWav(std::string_view wav_bytes,
 // Samples as 16-bit little-endian PCM, clipped to [-1, 1] and scaled by
 // 32767 as the CUDA server's encode_pcm does.
 std::string Pcm16Bytes(const std::vector<float> &samples);
-// A mono 16-bit WAV file around PCM bytes.
-std::string WavBytes(const std::string &pcm, int sample_rate);
+// A 16-bit WAV file around PCM bytes, channels interleaved.
+std::string WavBytes(const std::string &pcm, int sample_rate,
+                     int channel_count = 1);
 
-// Slaney-scale, Slaney-normalized filters [frequency_bins, mel_bins], built in
-// float32 in the same order as Voxt's Swift front end.
-const std::vector<float> &MelFilterBank(int mel_bin_count = kMelBinCount);
+// Slaney-scale, Slaney-normalized filters [fft_size / 2 + 1, mel_bins] for
+// 16 kHz audio, built in float32 in the same order as Voxt's Swift front end.
+const std::vector<float> &MelFilterBank(int mel_bin_count = kMelBinCount,
+                                        int fft_size = kFftSize);
 const std::vector<float> &PeriodicHannWindow();
 
 // A centered STFT's final frame: Whisper's processor drops it, Voxt's Swift

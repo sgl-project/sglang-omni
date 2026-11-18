@@ -1,9 +1,11 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 )
 
 // TestKeyRecorder: clicking a shortcut takes the keys as they are pressed, with the
@@ -73,7 +75,8 @@ func TestKeyRecorderHidden(t *testing.T) {
 	}
 }
 
-// TestCancelKeysEsc: Escape can be recorded as the cancel shortcut.
+// TestCancelKeysEsc: Escape can be recorded as the cancel shortcut, also
+// in Settings, where it does not close the dialog.
 func TestCancelKeysEsc(t *testing.T) {
 	a, tt := trTester(t)
 	click(t, tt, "Keys to cancel recording")
@@ -96,7 +99,6 @@ func TestCancelKeysEsc(t *testing.T) {
 	if !a.settingsOpen || a.keysListening || a.prefs.Features.Cancel.Keys != "Escape" {
 		t.Fatal("Escape closed Settings instead of being recorded")
 	}
-
 }
 
 // TestShortcutCaptureCancel keeps the saved binding and releases keyboard capture.
@@ -130,4 +132,49 @@ func TestShortcutCaptureCancel(t *testing.T) {
 	if a.keysListening {
 		t.Fatal("returning to the page resumed capture")
 	}
+}
+
+func TestKeyRecorderUIInputEquivalence(t *testing.T) {
+	modifiers := []struct {
+		flag ui.Modifiers
+		name string
+	}{{ui.Ctrl, "Control"}, {ui.Alt, "Option"}, {ui.Shift, "Shift"}, {ui.Super, "Command"}}
+	checks := 0
+	for key, keyName := range uiKeyNames {
+		for bits := 0; bits < 1<<len(modifiers); bits++ {
+			event := ui.InputEvent{Key: key}
+			var parts []string
+			for index, modifier := range modifiers {
+				if bits&(1<<index) != 0 {
+					event.Mods |= modifier.flag
+					parts = append(parts, modifier.name)
+				}
+			}
+			joined := strings.Join(append(parts, keyName), "+")
+			chord, err := hotkey.Parse(joined)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", joined, err)
+			}
+			got, ok := pressedKeys(event)
+			if !ok || got != chord.String() {
+				t.Fatalf("pressedKeys(%+v) = %q, %v; Parse(%q).String() = %q", event, got, ok, joined, chord.String())
+			}
+			checks++
+		}
+	}
+	for _, event := range []ui.InputEvent{
+		{Key: ui.KeyContextMenu, PhysicalKey: ui.KeyK},
+		{Key: ui.KeyK, PhysicalKey: ui.KeyUnknown},
+	} {
+		got, ok := pressedKeys(event)
+		if !ok || got != "K" {
+			t.Fatalf("physical-key fallback (%+v) = %q, %v", event, got, ok)
+		}
+		checks++
+	}
+	if got, ok := pressedKeys(ui.InputEvent{Key: ui.KeyContextMenu, PhysicalKey: ui.KeyUnknown}); ok || got != "" {
+		t.Fatalf("unknown key = %q, %v", got, ok)
+	}
+	checks++
+	t.Logf("%d UI-input checks matched hotkey.Parse canonicalization", checks)
 }

@@ -1,0 +1,141 @@
+{
+  "name": "overlay-rewrite-failed",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot42",
+    "state": "failed",
+    "problem_code": "llm",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "shot42",
+      "kind": "rewrite",
+      "title": "AI answer",
+      "target_name": "Slack",
+      "thinking": {},
+      "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
+      "problem_code": "llm",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "problem",
+          "kind": "problem",
+          "turn": 0,
+          "text": "The language model failed: The model stopped or did not answer. Try again in a moment.",
+          "selectable": false
+        },
+        {
+          "key": "problem-more",
+          "kind": "problem-more",
+          "turn": 0,
+          "text": "language model stopped",
+          "selectable": true
+        },
+        {
+          "key": "source-0",
+          "kind": "source",
+          "turn": 0,
+          "text": "make it more formal",
+          "selectable": true
+        },
+        {
+          "key": "source-last",
+          "kind": "source",
+          "turn": 0,
+          "text": "hey, the release slips to thursday, sorry!",
+          "selectable": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": false,
+      "failed": true,
+      "copied": false,
+      "heard": false,
+      "can_insert": false,
+      "can_copy": false,
+      "can_follow_up": false,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": true,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

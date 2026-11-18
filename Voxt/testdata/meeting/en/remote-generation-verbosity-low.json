@@ -1,0 +1,168 @@
+{
+  "name": "remote-generation-verbosity-low",
+  "kind": "remote-dialog",
+  "remote_dialog": {
+    "open": true,
+    "kind": "llm",
+    "id": "fixture",
+    "account": "llm.fixture",
+    "name": "Fixture service",
+    "subtitle": "Remote language model · OpenAI-compatible API",
+    "what": "Recognised and selected text is sent to the server at the address below.",
+    "has_key_url": true,
+    "key": {
+      "info": "Optional for a server on this Mac. Saved in this Mac's Keychain.",
+      "placeholder": "Saved: •••• · paste a new one to replace it",
+      "has_saved": true
+    },
+    "endpoint": {
+      "info": "The API root of any OpenAI-compatible server, ending in /v1. Only https://, or http:// to this Mac.",
+      "placeholder": "https://…/v1"
+    },
+    "model_options": [
+      "fixture-model",
+      "other-model",
+      "Other model…"
+    ],
+    "other_model": "Other model…",
+    "generation": {
+      "think_options": [
+        {
+          "title": "Default",
+          "value": ""
+        },
+        {
+          "title": "Thinking off",
+          "value": "off"
+        },
+        {
+          "title": "Thinking on",
+          "value": "on"
+        },
+        {
+          "title": "Effort",
+          "value": "effort"
+        },
+        {
+          "title": "Budget",
+          "value": "budget"
+        }
+      ],
+      "thinking": "on",
+      "effort_options": [
+        {
+          "title": "None",
+          "value": "none"
+        },
+        {
+          "title": "Minimal",
+          "value": "minimal"
+        },
+        {
+          "title": "Low",
+          "value": "low"
+        },
+        {
+          "title": "Medium",
+          "value": "medium"
+        },
+        {
+          "title": "High",
+          "value": "high"
+        },
+        {
+          "title": "Extra high",
+          "value": "xhigh"
+        },
+        {
+          "title": "Max",
+          "value": "max"
+        }
+      ],
+      "effort_selection": "None",
+      "short_under_placeholder": "200",
+      "show_max": true,
+      "verbosity_options": [
+        {
+          "title": "Default",
+          "value": ""
+        },
+        {
+          "title": "Low",
+          "value": "low"
+        },
+        {
+          "title": "Medium",
+          "value": "medium"
+        },
+        {
+          "title": "High",
+          "value": "high"
+        }
+      ],
+      "show_keep_alive": true,
+      "show_usage": true,
+      "api_options": [
+        {
+          "title": "Chat Completions",
+          "value": ""
+        },
+        {
+          "title": "Responses",
+          "value": "responses"
+        }
+      ],
+      "service_default": "Service default",
+      "show_temperature": true,
+      "show_top_p": true,
+      "show_top_k": true,
+      "show_min_p": true,
+      "show_penalties": true,
+      "show_seed": true,
+      "response_format_options": [
+        {
+          "title": "Plain text",
+          "value": ""
+        },
+        {
+          "title": "JSON",
+          "value": "json"
+        },
+        {
+          "title": "JSON Schema",
+          "value": "jsonSchema"
+        }
+      ],
+      "logprobs_cap": true,
+      "stop_cap": true,
+      "show_extra_body": true,
+      "extra_body_example": "{\"options\": {\"num_ctx\": 8192}}",
+      "form": {
+        "think": "Thinking on",
+        "format": "Plain text",
+        "verbosity": "Low",
+        "usage": true,
+        "advanced": true,
+        "api": "Chat Completions"
+      }
+    },
+    "can_test": true,
+    "test": {
+      "state": "empty"
+    },
+    "show_remove": true,
+    "saving": false,
+    "unsaved": false,
+    "form": {
+      "model": "fixture-model",
+      "generation": {
+        "think": "Thinking on",
+        "format": "Plain text",
+        "verbosity": "Low",
+        "usage": true,
+        "advanced": true,
+        "api": "Chat Completions"
+      }
+    }
+  }
+}
