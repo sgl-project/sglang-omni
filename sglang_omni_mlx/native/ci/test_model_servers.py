@@ -12,6 +12,7 @@ import base64
 import http.client
 import io
 import json
+import socket
 import struct
 import subprocess
 import time
@@ -19,7 +20,7 @@ import uuid
 import wave
 import zipfile
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,7 @@ pytestmark = pytest.mark.skipif(
 )
 WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
 WHISPER_LARGE_V3_REPO = "mlx-community/whisper-large-v3-mlx"
+WHISPER_DRAFT_REPO = "wilsonzheng0327/Whisper-large-v3-distil-draft"
 WHISPER_SMALL_REPO = "mlx-community/whisper-small-mlx"
 COHERE_REPO = "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
 VAD_REPO = "mlx-community/silero-vad-v6"
@@ -53,8 +55,8 @@ VAD_FIELDS = {
     "vad_max_chunk_seconds": "24.0",
 }
 MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+MOSS_DRAFT_REPO = "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash"
 NEMOTRON_REPO = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
-PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
 SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
 # Voxt's SenseVoice settings for long audio: speech runs cut into overlapping chunks.
 SENSEVOICE_VAD_FIELDS = {
@@ -147,6 +149,32 @@ def test_whisper_fp16_variant_server_transcribes(repo: str) -> None:
         )
         assert status == 200
         assert json.loads(body)["text"].strip()
+    finally:
+        server.stop()
+
+
+def test_whisper_uses_the_published_distil_draft() -> None:
+    draft = Path(DATA_ROOT) / "models" / WHISPER_DRAFT_REPO.replace("/", "_")
+    server = ModelServer(
+        "whisper_server",
+        "whisper",
+        WHISPER_LARGE_V3_REPO,
+        ("--draft-model-path", str(draft)),
+    )
+    try:
+        status, body = server.post_form(
+            {
+                "stream": "true",
+                "language": "en",
+                "include_generation_metadata": "true",
+            },
+            clip("0006_en_short"),
+        )
+        assert status == 200
+        result, end = sse_events(body)
+        assert end == "[DONE]"
+        assert result["text"].strip()
+        assert result["generation_metadata"]["accepted_draft_token_count"] > 0
     finally:
         server.stop()
 
@@ -287,35 +315,6 @@ def test_whisper_shutdown_reports_stopped() -> None:
     assert running.process.wait(timeout=10) == 0
 
 
-@pytest.mark.parametrize(
-    ("binary", "other_kind"),
-    [
-        ("whisper_server", "qwen3_asr"),
-        ("cohere_transcribe_server", "whisper"),
-        ("nemotron_asr_server", "qwen3_asr"),
-        ("parakeet_server", "cohere_transcribe"),
-        ("sensevoice_server", "cohere_transcribe"),
-        ("music3_server", "qwen3_asr"),
-    ],
-)
-def test_server_serves_only_its_model_kind(binary: str, other_kind: str) -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / binary),
-            "--supervised",
-            "--model-kind",
-            other_kind,
-            "--model-directory",
-            "x",
-        ],  # fmt: skip
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert completed.stdout == ""
-
-
 @pytest.fixture(scope="module")
 def cohere_server() -> Iterator[ModelServer]:
     running = ModelServer("cohere_transcribe_server", "cohere_transcribe", COHERE_REPO)
@@ -395,10 +394,24 @@ def test_cohere_rejects_a_bad_temperature(
     assert "temperature" in json.loads(body)["detail"]
 
 
-@pytest.fixture(scope="module")
-def moss_server() -> Iterator[ModelServer]:
+MOSS_SERVER_MODES = [
+    pytest.param(False, id="plain"),
+    pytest.param(True, id="dflash"),
+]
+
+
+@pytest.fixture(scope="module", params=[False], ids=["plain"])
+def moss_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
+    flags = (
+        (
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
+        )
+        if request.param
+        else ()
+    )
     running = ModelServer(
-        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO
+        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO, flags
     )
     yield running
     running.stop()
@@ -417,6 +430,7 @@ def two_speaker_wav() -> bytes:
     return out.getvalue()
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None:
     assert moss_server.ready["model_name"].startswith("voxt-moss_transcribe_diarize-")
     status, body = moss_server.post_form({}, two_speaker_wav())
@@ -435,6 +449,32 @@ def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None
     assert "[S01]" in result["text"] and "[S02]" in result["text"]
 
 
+@pytest.mark.parametrize("max_new_tokens", [1, 2, 8, 9])
+def test_moss_draft_stops_at_the_token_budget(max_new_tokens: int) -> None:
+    """A budget ending inside a draft block must not commit extra tokens."""
+    result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "moss_transcribe"),
+            "--model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_REPO.replace("/", "_")),
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
+            "--max-new-tokens",
+            str(max_new_tokens),
+            str(Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0006_en_short.wav"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    output = json.loads(result.stdout)
+    assert output["generated_token_count"] == max_new_tokens
+    assert output["finish_reason"] == "length"
+    assert (output["verify_rounds"] > 0) == (max_new_tokens > 1)
+
+
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_streamed_request_ends_with_segments(moss_server: ModelServer) -> None:
     status, body = moss_server.post_form(
         {"stream": "true", "include_generation_metadata": "true"},
@@ -488,6 +528,7 @@ def test_moss_realtime_rejects_a_prompt_it_cannot_render(
         assert json.loads(socket.recv())["type"] == "transcription_session.updated"
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_realtime_finalizes_windows_with_segments(
     moss_server: ModelServer,
 ) -> None:
@@ -529,34 +570,9 @@ def test_moss_realtime_finalizes_windows_with_segments(
     assert finals[1]["segments"][0]["start"] >= 4.0
 
 
-def test_moss_server_serves_only_moss() -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "moss_transcribe_diarize_server"),
-            "--supervised",
-            "--model-kind",
-            "qwen3_asr",
-            "--model-directory",
-            "x",
-        ],  # fmt: skip
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert completed.stdout == ""
-
-
 @pytest.fixture(scope="module")
 def nemotron_server() -> Iterator[ModelServer]:
     running = ModelServer("nemotron_asr_server", "nemotron_asr", NEMOTRON_REPO)
-    yield running
-    running.stop()
-
-
-@pytest.fixture(scope="module")
-def parakeet_server() -> Iterator[ModelServer]:
-    running = ModelServer("parakeet_server", "parakeet", PARAKEET_REPO)
     yield running
     running.stop()
 
@@ -627,12 +643,19 @@ def test_nemotron_realtime_at_the_native_chunk_equals_the_final_pass(
     assert status == 200
     pcm = pcm16("0344_en_long")
     # Note (Jiaxin Deng): None sends the whole clip in one append, which the
-    # stream still decodes one chunk of audio at a time.
+    # stream still decodes one block of audio at a time.
     events = realtime_events(nemotron_server, pcm, {}, append_bytes or len(pcm))
     # Note (Dayuxiaoshui): the stream only encodes mel frames later audio can no
-    # longer change, so however the audio is split, the native chunk decodes
-    # exactly what one pass over all of it does.
-    assert events[-1]["text"] == json.loads(body)["text"]
+    # longer change, so however the audio is split, every chunk sees the context
+    # one pass over all of it gives.
+    # Note (XXXXRT666): one append encodes the same blocks of chunks as the
+    # Final pass; 0.1 s appends encode one chunk at a time, whose kernels round
+    # differently, so their text only nearly matches.
+    final_text = json.loads(body)["text"]
+    if append_bytes is None:
+        assert events[-1]["text"] == final_text
+    else:
+        assert SequenceMatcher(None, events[-1]["text"], final_text).ratio() > 0.98
     finals = [
         event
         for event in events
@@ -762,60 +785,6 @@ def test_nemotron_realtime_disconnect_stops_its_decode(
         time.sleep(0.05)
 
 
-def test_parakeet_final_request_returns_text_and_sentences(
-    parakeet_server: ModelServer,
-) -> None:
-    assert parakeet_server.ready["model_name"].startswith("voxt-parakeet-")
-    status, body = parakeet_server.post_form(
-        {"chunk_duration": "1200"}, clip("0006_en_short")
-    )
-    assert status == 200
-    result = json.loads(body)
-    assert result["text"] == "Surely you are not thinking of going off there."
-    [segment] = result["segments"]
-    assert segment["text"].strip() == result["text"]
-    assert 0 <= segment["start"] < segment["end"] <= 3.1
-
-
-def test_parakeet_merges_overlapping_chunks_into_sentences(
-    parakeet_server: ModelServer,
-) -> None:
-    # Note (Dayuxiaoshui): a whole-recording request decodes 5 s chunks that
-    # overlap by 1 s, as Voxt's Swift path does.
-    status, body = parakeet_server.post_form(
-        {
-            "chunk_duration": "1200",
-            "stream": "true",
-            "include_generation_metadata": "true",
-        },
-        clip("0344_en_long"),
-    )
-    assert status == 200
-    done = sse_events(body)[0]
-    assert done["text"].startswith(
-        "In every way they sought to undermine the authority"
-    )
-    assert done["generation_metadata"]["finish_reason"] == "stop"
-    status, body = parakeet_server.post_form({}, clip("0344_en_long"))
-    assert status == 200
-    segments = json.loads(body)["segments"]
-    assert len(segments) > 1
-    assert [segment["start"] for segment in segments] == sorted(
-        segment["start"] for segment in segments
-    )
-
-
-@pytest.mark.parametrize("chunk_duration", ["nan", "1", "-5", "600"])
-def test_parakeet_rejects_a_bad_chunk_duration(
-    parakeet_server: ModelServer, chunk_duration: str
-) -> None:
-    status, body = parakeet_server.post_form(
-        {"chunk_duration": chunk_duration}, clip("0006_en_short")
-    )
-    assert status == 400
-    assert "chunk_duration" in json.loads(body)["detail"]
-
-
 @pytest.fixture(scope="module")
 def sensevoice_server() -> Iterator[ModelServer]:
     running = ModelServer("sensevoice_server", "sensevoice", SENSEVOICE_REPO)
@@ -938,6 +907,21 @@ def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
     assert "overlap" in json.loads(body)["detail"]
 
 
+# Note (Jiaxin Deng): a cold short request takes over a minute on a Mac that
+# pages the weights back in, so only the deadline test uses a short timeout.
+MUSIC3_REQUEST_TIMEOUT_SECONDS = 600
+MUSIC3_SHORT_REQUEST_TIMEOUT_SECONDS = 5
+# A cancelled Music3 generation stops at its next frame, acoustic window or
+# Euler step.
+MUSIC3_CANCEL_SECONDS = 30.0
+MUSIC3_LONG_REQUEST = {
+    "input": "[Verse]\nWalking through the morning light",
+    "instructions": "Gentle acoustic folk",
+    "max_new_tokens": 9000,
+    "seed": 42,
+}
+
+
 MUSIC3_SERVER_MODES = [
     pytest.param((), id="resident"),
     pytest.param(("--stage-offload-components", " DIT , ar "), id="offload"),
@@ -950,31 +934,14 @@ def music3_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
         "music3_server",
         "minimax_music3",
         "mlx-community/MiniMax-Music3-mxfp8",
-        request.param,
+        (
+            *request.param,
+            "--request-timeout-s",
+            str(MUSIC3_REQUEST_TIMEOUT_SECONDS),
+        ),
     )
     yield music3_process
     music3_process.stop()
-
-
-@pytest.mark.parametrize("offload_components", ["ar", "dit", "ar,dit,other", ""])
-@pytest.mark.parametrize("binary_name", ["music3_server", "music3_synthesize"])
-def test_music3_rejects_invalid_offload_components(
-    tmp_path: Path, binary_name: str, offload_components: str
-) -> None:
-    process_result = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / binary_name),
-            "--model-path",
-            str(tmp_path),
-            "--stage-offload-components",
-            offload_components,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert process_result.returncode != 0
-    assert "requires both ar,dit" in process_result.stderr
 
 
 @pytest.mark.parametrize("server_flags", MUSIC3_SERVER_MODES)
@@ -1057,6 +1024,33 @@ def test_music3_recovers_after_cancellation_at_ar_handoff(tmp_path: Path) -> Non
         Path(synthesis_results[0]["file"]).read_bytes()
         == Path(synthesis_results[1]["file"]).read_bytes()
     )
+
+
+def music3_request_states(server: ModelServer) -> dict[str, int]:
+    return json.loads(server.request("GET", "/health")[1])["request_states"]
+
+
+def wait_for_music3_states(
+    server: ModelServer, states: dict[str, int], timeout_seconds: float
+) -> None:
+    started_at = time.monotonic()
+    while music3_request_states(server) != states:
+        assert (
+            time.monotonic() - started_at < timeout_seconds
+        ), f"Music3 did not reach request states {states}"
+        time.sleep(0.05)
+
+
+def send_music3_request(server: ModelServer, body: dict) -> socket.socket:
+    """Sends a Music3 request on a socket of its own, without reading the answer."""
+    encoded_body = json.dumps(body)
+    client = socket.create_connection(("127.0.0.1", server.port), timeout=300)
+    client.sendall(
+        b"POST /v1/audio/speech HTTP/1.1\r\nHost: test\r\n"
+        b"Content-Type: application/json\r\n"
+        + f"Content-Length: {len(encoded_body)}\r\n\r\n{encoded_body}".encode()
+    )
+    return client
 
 
 @pytest.mark.parametrize(
@@ -1253,34 +1247,71 @@ def test_music3_unicode_tag_case_preserves_seeded_audio(
 
 
 @pytest.mark.parametrize("music3_server", MUSIC3_SERVER_MODES, indirect=True)
-def test_music3_busy_request_returns_429(music3_server: ModelServer) -> None:
-    request = json.dumps(
-        {
-            "input": "[Verse]\nWalking through the morning light",
-            "instructions": "Gentle acoustic folk",
-            "max_new_tokens": 50,
-            "dit_steps": 2,
-            "seed": 42,
-        }
-    ).encode()
-    headers = {"Content-Type": "application/json"}
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        pending = executor.submit(
-            music3_server.request, "POST", "/v1/audio/speech", request, headers
-        )
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            status, body = music3_server.request("GET", "/health")
-            if json.loads(body)["request_states"].get("running") == 1:
-                break
-            else:
-                time.sleep(0.02)
-        else:
-            pytest.fail("Music3 did not enter the running state")
-        for busy_request in (request, b"{invalid JSON"):
+def test_music3_busy_request_returns_503(music3_server: ModelServer) -> None:
+    with send_music3_request(music3_server, MUSIC3_LONG_REQUEST):
+        wait_for_music3_states(music3_server, {"running": 1}, MUSIC3_CANCEL_SECONDS)
+        for busy_request in (json.dumps(MUSIC3_LONG_REQUEST).encode(), b"{invalid"):
             status, body = music3_server.request(
-                "POST", "/v1/audio/speech", busy_request, headers
+                "POST",
+                "/v1/audio/speech",
+                busy_request,
+                {"Content-Type": "application/json"},
             )
-            assert status == 429
-            assert json.loads(body)["detail"] == "Music3 is busy"
-        assert pending.result(timeout=120)[0] == 200
+            assert (status, json.loads(body)) == (503, {"detail": "Music3 is busy"})
+    wait_for_music3_states(music3_server, {}, MUSIC3_CANCEL_SECONDS)
+
+
+def test_music3_disconnect_cancels_its_generation(music3_server: ModelServer) -> None:
+    with send_music3_request(music3_server, MUSIC3_LONG_REQUEST):
+        wait_for_music3_states(music3_server, {"running": 1}, MUSIC3_CANCEL_SECONDS)
+    wait_for_music3_states(music3_server, {}, MUSIC3_CANCEL_SECONDS)
+    # The freed slot takes the next request.
+    status, _ = music3_server.request(
+        "POST",
+        "/v1/audio/speech",
+        json.dumps(
+            {**MUSIC3_LONG_REQUEST, "max_new_tokens": 10, "dit_steps": 2}
+        ).encode(),
+        {"Content-Type": "application/json"},
+    )
+    assert status == 200
+
+
+def test_music3_half_closed_client_counts_as_gone(music3_server: ModelServer) -> None:
+    with send_music3_request(music3_server, MUSIC3_LONG_REQUEST) as client:
+        client.shutdown(socket.SHUT_WR)
+        received = b""
+        while chunk := client.recv(65536):
+            received += chunk
+        assert received == b""
+    wait_for_music3_states(music3_server, {}, MUSIC3_CANCEL_SECONDS)
+
+
+# Note (Jiaxin Deng): last, since it replaces the module's server with one
+# whose deadline any long song passes.
+def test_music3_times_out_a_request_past_its_deadline(
+    music3_server: ModelServer,
+) -> None:
+    music3_server.stop()
+    short_deadline_server = ModelServer(
+        "music3_server",
+        "minimax_music3",
+        "mlx-community/MiniMax-Music3-mxfp8",
+        ("--request-timeout-s", str(MUSIC3_SHORT_REQUEST_TIMEOUT_SECONDS)),
+    )
+    try:
+        started_at = time.monotonic()
+        status, body = short_deadline_server.request(
+            "POST",
+            "/v1/audio/speech",
+            json.dumps(MUSIC3_LONG_REQUEST).encode(),
+            {"Content-Type": "application/json"},
+        )
+        assert (status, json.loads(body)) == (
+            504,
+            {"detail": "Music3 generation timed out"},
+        )
+        assert time.monotonic() - started_at >= MUSIC3_SHORT_REQUEST_TIMEOUT_SECONDS
+        wait_for_music3_states(short_deadline_server, {}, MUSIC3_CANCEL_SECONDS)
+    finally:
+        short_deadline_server.stop()

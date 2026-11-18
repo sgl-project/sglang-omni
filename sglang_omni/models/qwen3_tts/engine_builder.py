@@ -26,6 +26,8 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts.config import (
+    QWEN3_TTS_MAX_QUEUED_REQUESTS,
+    QWEN3_TTS_MAX_RUNNING_REQUESTS,
     load_qwen3_tts_checkpoint_config,
     normalize_qwen3_tts_model_type,
 )
@@ -253,9 +255,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         self.stream_output_builder: (
             StreamOutputBuilder[Qwen3TTSSGLangRequestData] | None
         ) = None
-        # note (luojiaxuan): the factory assigns this before generation_defaults
-        # runs, but Qwen3TTSPipelineConfig.generation_admission_defaults builds a
-        # bare builder just to read the admission keys, so it needs a value.
+        # note (ratish): the factory assigns this before generation_defaults runs; a builder
+        # that never builds reads the defaults of an unknown checkpoint.
         self.checkpoint_dir: str = ""
 
     def resolve_checkpoint(self, model_path: str) -> str:
@@ -281,8 +282,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         # note(ratish): the decode graph ladder follows the running bound, so it
         # is not set here.
         defaults: GenerationDefaults = {
-            "max_running_requests": 64,
-            "max_queued_requests": 64,
+            "max_running_requests": QWEN3_TTS_MAX_RUNNING_REQUESTS,
+            "max_queued_requests": QWEN3_TTS_MAX_QUEUED_REQUESTS,
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
@@ -326,13 +327,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         else:
             pass
         prefill_fields: dict[str, list[int] | int] = {}
-        # note (luojiaxuan): the generic ladder starts at 4, and a replay falls back to
-        # eager when its bucket exceeds twice the real token count, so a 1-token prefill
-        # lands in bucket 4 and misses. Measured over 3203 prefills at 10 and 20 RPS on
-        # H100 CustomVoice, 1301 of them (40.6%) are exactly one token, and they are the
-        # only shapes that fall back: 2 and 3 already replay inside bucket 4. Adding the
-        # single 1 bucket takes the fallback rate to zero, so the default is the shared
-        # ladder plus that bucket rather than a hand-picked list.
+        # note (luojiaxuan): ladders deferred to SGLang can still omit bucket 1 and force cached single-token prefills to run eagerly.
         if (
             prefill.bs[0] != 1
             and self.server_args_overrides.get("cuda_graph_bs_prefill") is None
@@ -383,11 +378,17 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             device=device,
             dtype=self.dtype,
             attn_implementation=self.attn_implementation,
+            float32_encoder=model.tts_model_type == "base",
         )
         model.load_speech_tokenizer(speech_tokenizer)
         # note (luojiaxuan): only Base checkpoints serve x-vector clones, so the
         # other variants skip the probe and the per-step mask.
         if self.leading_silence_mask_frames > 0 and model.tts_model_type == "base":
+            # note (ratish): the probe runs this thread's first GEMM on the device, and a cuBLAS workspace made inside its float32 activations keeps them reserved when the KV pool is sized.
+            if current_platform.is_cuda():
+                torch.cuda.current_blas_handle()
+            else:
+                pass
             self.silence_codec_ids = derive_silence_codec_ids(speech_tokenizer, device)
             logger.info(
                 f"Qwen3-TTS masks {self.silence_codec_ids.numel()} silence codec ids "
@@ -546,10 +547,12 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Qwen3TTSSGLangRequestData]:
         # note (ratish): requests build on the scheduler thread: preprocessing already did the
         # model work, and a pooled build that misses the pass waits a whole engine step for admission.
+        # note (ratish): on the default stream the talker's steps run in order with the vocoder's whole-utterance decodes, so the talker takes a stream of its own, above the vocoder's.
         return {
             "stream_output_builder": self.stream_output_builder,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
+            "should_run_top_priority_stream": current_platform.is_cuda(),
         }
 
     def make_abort_callback(self) -> Callable[[str], None]:

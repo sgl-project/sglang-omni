@@ -10,7 +10,6 @@ from typing import Literal
 
 import torch
 
-from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -50,14 +49,6 @@ def create_ar_executor(
     serial_offload_source: Literal["mmap", "ram"] = "mmap",
     serial_offload_cache_dir: str | None = None,
 ):
-    if not (
-        current_platform.is_cuda()
-        or current_platform.is_musa()
-        or current_platform.is_xpu()
-    ):
-        raise RuntimeError("MiniMax Music 3 requires CUDA/MUSA/XPU backend")
-    else:
-        pass
     torch.backends.cudnn.enabled = False
     torch.backends.cuda.enable_cudnn_sdp(False)
 
@@ -101,6 +92,7 @@ def create_dit_dav_executor(
     compile_acoustic: bool = True,
     breakable_cuda_graph: bool = False,
     breakable_cuda_graph_min_free_gb: float | None = None,
+    fp32_flex_attention: bool | None = None,
     cache_dit_fn_compute_blocks: int = 2,
     cache_dit_bn_compute_blocks: int = 2,
     cache_dit_max_warmup_steps: int = 4,
@@ -122,6 +114,7 @@ def create_dit_dav_executor(
         compile_acoustic=compile_acoustic,
         breakable_cuda_graph=breakable_cuda_graph,
         breakable_cuda_graph_min_free_gb=breakable_cuda_graph_min_free_gb,
+        fp32_flex_attention=fp32_flex_attention,
         cache_dit_fn_compute_blocks=cache_dit_fn_compute_blocks,
         cache_dit_bn_compute_blocks=cache_dit_bn_compute_blocks,
         cache_dit_max_warmup_steps=cache_dit_max_warmup_steps,

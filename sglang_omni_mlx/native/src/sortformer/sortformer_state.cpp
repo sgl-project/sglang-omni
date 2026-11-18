@@ -6,6 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
+#include "common/layers.h"
 #include "sortformer/sortformer.h"
 
 // Note (Jiaxin Deng): Swift never fuses a multiply and an add; segment times
@@ -20,10 +21,7 @@ namespace {
 
 constexpr float kInfinity = std::numeric_limits<float>::infinity();
 
-// Note (Jiaxin Deng): Swift scalar operands take the array's dtype.
-mx::array Scalar(float value, const mx::array &like) {
-  return mx::array(value, like.dtype());
-}
+using omni_common::Scalar;
 
 void UpdateSilenceProfile(StreamingState &state, const mx::array &embeddings,
                           const mx::array &predictions,
@@ -201,7 +199,7 @@ void CompressSpeakerCache(mx::array &embeddings, mx::array &predictions,
       mx::take_along_axis(predictions, prediction_indices, 1);
   gathered_predictions =
       mx::where(disabled_mask, mx::array(0.0f), gathered_predictions);
-  mx::eval({gathered_embeddings, gathered_predictions});
+  mx::async_eval({gathered_embeddings, gathered_predictions});
   embeddings = gathered_embeddings;
   predictions = gathered_predictions;
 }
@@ -250,8 +248,9 @@ void MaybeCompressState(StreamingState &state, int spkcache_max, int fifo_max,
       mx::slice(state.fifo, {0, pop_length, 0}, {1, fifo_length, width});
   state.fifo_preds = mx::slice(state.fifo_preds, {0, pop_length, 0},
                                {1, fifo_length, speakers});
-  mx::eval({state.spkcache, state.spkcache_preds, state.fifo, state.fifo_preds,
-            state.mean_silence_embedding, state.silence_frame_count});
+  mx::async_eval({state.spkcache, state.spkcache_preds, state.fifo,
+                  state.fifo_preds, state.mean_silence_embedding,
+                  state.silence_frame_count});
 }
 
 std::vector<Segment>

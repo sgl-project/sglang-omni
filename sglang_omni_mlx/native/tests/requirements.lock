@@ -1,0 +1,3 @@
+pytest==9.1.1
+rapidfuzz==3.14.6
+websockets==17.2

@@ -1,0 +1,1622 @@
+// Copyright 2020 The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Modified by the MyGo contributors: uint and uvecN.
+
+package shader
+
+import (
+	"fmt"
+	"go/ast"
+	gconstant "go/constant"
+	"go/token"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/egoist/mygo/internal/shaderir"
+)
+
+func canTruncateToInteger(v gconstant.Value) bool {
+	return gconstant.ToInt(v).Kind() != gconstant.Unknown
+}
+
+func canTruncateToFloat(v gconstant.Value) bool {
+	return gconstant.ToFloat(v).Kind() != gconstant.Unknown
+}
+
+// argumentName returns a phrase naming the i-th of the n arguments to the function fn in an error message.
+func argumentName(fn string, i, n int) string {
+	if n > 1 {
+		return fmt.Sprintf("the %s argument to %s", ordinal(i+1), fn)
+	}
+	return "argument to " + fn
+}
+
+// argCountErrorPos returns the position of the first argument after the n expected ones, or the closing
+// parenthesis of e if there are no more than n. argPositions holds the position of each argument of e.
+func argCountErrorPos(e *ast.CallExpr, argPositions []token.Pos, n int) token.Pos {
+	if len(argPositions) > n {
+		return argPositions[n]
+	}
+	return e.Rparen
+}
+
+// maxConstShift bounds constant shifts so that folding cannot allocate an
+// enormous number (e.g. 1<<(1<<40)) and exhaust memory.
+const maxConstShift = 1 << 16
+
+var textureVariableRe = regexp.MustCompile(`\A__t(\d+)\z`)
+
+// shiftCount validates the constant shift count c of the operator op and returns it.
+func (cs *compileState) shiftCount(pos token.Pos, op token.Token, c gconstant.Value) (uint, bool) {
+	if c.Kind() != gconstant.Int {
+		cs.addError(pos, fmt.Sprintf("unexpected %s type for: %s", c.String(), op))
+		return 0, false
+	}
+	if gconstant.Sign(c) < 0 {
+		cs.addError(pos, fmt.Sprintf("negative shift count: %s", c.String()))
+		return 0, false
+	}
+	shift, ok := gconstant.Int64Val(c)
+	if !ok || shift > maxConstShift {
+		cs.addError(pos, fmt.Sprintf("shift count too large: %s", c.String()))
+		return 0, false
+	}
+	return uint(shift), true
+}
+
+func (cs *compileState) parseExpr(block *block, fname string, expr ast.Expr, markLocalVariableUsed bool) ([]shaderir.Expr, []shaderir.Type, []shaderir.Stmt, bool) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		switch e.Kind {
+		case token.INT:
+			// The type is not determined yet.
+			return []shaderir.Expr{
+				{
+					Type:  shaderir.NumberExpr,
+					Const: gconstant.MakeFromLiteral(e.Value, e.Kind, 0),
+				},
+			}, []shaderir.Type{{}}, nil, true
+		case token.FLOAT:
+			// The type is not determined yet.
+			return []shaderir.Expr{
+				{
+					Type:  shaderir.NumberExpr,
+					Const: gconstant.MakeFromLiteral(e.Value, e.Kind, 0),
+				},
+			}, []shaderir.Type{{}}, nil, true
+		default:
+			cs.addError(e.Pos(), fmt.Sprintf("literal not implemented: %#v", e))
+		}
+
+	case *ast.BinaryExpr:
+		var stmts []shaderir.Stmt
+
+		// Parse LHS first for the order of the statements.
+		lhs, ts, ss, ok := cs.parseExpr(block, fname, e.X, markLocalVariableUsed)
+		if !ok {
+			return nil, nil, nil, false
+		}
+		if len(lhs) != 1 {
+			cs.addError(e.Pos(), fmt.Sprintf("multiple-value context is not available at a binary operator: %s", e.X))
+			return nil, nil, nil, false
+		}
+		stmts = append(stmts, ss...)
+		if len(ts) == 0 {
+			cs.addError(e.Pos(), fmt.Sprintf("unexpected binary operator: %s", e.X))
+			return nil, nil, nil, false
+		}
+		lhst := ts[0]
+
+		rhs, ts, ss, ok := cs.parseExpr(block, fname, e.Y, markLocalVariableUsed)
+		if !ok {
+			return nil, nil, nil, false
+		}
+		if len(rhs) != 1 {
+			cs.addError(e.Pos(), fmt.Sprintf("multiple-value context is not available at a binary operator: %s", e.Y))
+			return nil, nil, nil, false
+		}
+		stmts = append(stmts, ss...)
+		if len(ts) == 0 {
+			cs.addError(e.Pos(), fmt.Sprintf("unexpected binary operator: %s", e.Y))
+			return nil, nil, nil, false
+		}
+		rhst := ts[0]
+
+		if lhs[0].Type == shaderir.Blank || rhs[0].Type == shaderir.Blank {
+			cs.addError(e.Pos(), "cannot use _ as value")
+			return nil, nil, nil, false
+		}
+
+		op := e.Op
+		// https://pkg.go.dev/go/constant/#BinaryOp
+		// "To force integer division of Int operands, use op == token.QUO_ASSIGN instead of
+		// token.QUO; the result is guaranteed to be Int in this case."
+		if op == token.QUO && lhs[0].Const != nil && lhs[0].Const.Kind() == gconstant.Int && rhs[0].Const != nil && rhs[0].Const.Kind() == gconstant.Int {
+			op = token.QUO_ASSIGN
+		}
+
+		op2, ok := shaderir.OpFromToken(e.Op, lhst, rhst)
+		if !ok {
+			cs.addError(e.Pos(), fmt.Sprintf("unexpected operator: %s", e.Op))
+			return nil, nil, nil, false
+		}
+
+		// Resolve untyped constants.
+		l, r, ok := shaderir.ResolveUntypedConstsForBinaryOp(op2, lhs[0].Const, rhs[0].Const, lhst, rhst)
+		if !ok {
+			cs.addError(e.Pos(), fmt.Sprintf("types don't match: %s %s %s", typeString(lhst, lhs[0].Const), op, typeString(rhst, rhs[0].Const)))
+			return nil, nil, nil, false
+		}
+		lhs[0].Const, rhs[0].Const = l, r
+
+		// A shift of an untyped constant by a count that is not one is
+		// untyped (Expr.Untyped), as are operations of such shifts and
+		// untyped constants: their type comes from their context.
+		untypedInt := func(e *shaderir.Expr, t shaderir.Type) bool {
+			return e.Untyped || e.Const != nil && t.Main == shaderir.None && e.Const.Kind() == gconstant.Int
+		}
+		shift := op2 == shaderir.LeftShift || op2 == shaderir.RightShift
+		var untyped bool
+		switch op2 {
+		case shaderir.LeftShift, shaderir.RightShift:
+			untyped = untypedInt(&lhs[0], lhst)
+		case shaderir.Add, shaderir.Sub, shaderir.ComponentWiseMul, shaderir.Div, shaderir.ModOp, shaderir.And, shaderir.AndNot, shaderir.Or, shaderir.Xor:
+			untyped = untypedInt(&lhs[0], lhst) && untypedInt(&rhs[0], rhst)
+		}
+		// An untyped shift takes the type of a uint it goes with.
+		if lhs[0].Untyped && !shift && rhst.Scalar() == shaderir.Uint {
+			lhst = shaderir.Type{Main: shaderir.Uint}
+		}
+		if rhs[0].Untyped && !shift && lhst.Scalar() == shaderir.Uint {
+			rhst = shaderir.Type{Main: shaderir.Uint}
+		}
+
+		// If either is typed, resolve the other type.
+		// If both are untyped, keep them untyped.
+		if lhst.Main != shaderir.None || rhst.Main != shaderir.None {
+			// An integer constant takes the other operand's kind of integer, or int
+			// for a shift's count.
+			lkind, rkind := shaderir.Int, shaderir.Int
+			if rhst.Scalar() == shaderir.Uint && !shift {
+				lkind = shaderir.Uint
+			}
+			if lhst.Scalar() == shaderir.Uint && !shift {
+				rkind = shaderir.Uint
+			}
+			if lhs[0].Const != nil && lhst.Main == shaderir.None {
+				switch lhs[0].Const.Kind() {
+				case gconstant.Float:
+					lhst = shaderir.Type{Main: shaderir.Float}
+				case gconstant.Int:
+					lhst = shaderir.Type{Main: lkind}
+				case gconstant.Bool:
+					lhst = shaderir.Type{Main: shaderir.Bool}
+				}
+			}
+			if rhs[0].Const != nil && rhst.Main == shaderir.None {
+				switch rhs[0].Const.Kind() {
+				case gconstant.Float:
+					rhst = shaderir.Type{Main: shaderir.Float}
+				case gconstant.Int:
+					rhst = shaderir.Type{Main: rkind}
+				case gconstant.Bool:
+					rhst = shaderir.Type{Main: shaderir.Bool}
+				}
+			}
+		}
+
+		t, ok := shaderir.TypeFromBinaryOp(op2, lhst, rhst, lhs[0].Const, rhs[0].Const)
+		if !ok {
+			cs.addError(e.Pos(), fmt.Sprintf("types don't match: %s %s %s", typeString(lhst, lhs[0].Const), op, typeString(rhst, rhs[0].Const)))
+			return nil, nil, nil, false
+		}
+
+		// A constant zero divisor is an error even when the dividend is not a constant.
+		if (op == token.QUO || op == token.QUO_ASSIGN || op == token.REM) && isConstZero(rhs[0].Const) {
+			cs.addError(e.Y.Pos(), "division by zero")
+			return nil, nil, nil, false
+		}
+
+		if lhs[0].Const != nil && rhs[0].Const != nil {
+			var v gconstant.Value
+			switch op {
+			case token.LAND, token.LOR:
+				b := gconstant.BoolVal(gconstant.BinaryOp(lhs[0].Const, op, rhs[0].Const))
+				v = gconstant.MakeBool(b)
+			case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+				v = gconstant.MakeBool(gconstant.Compare(lhs[0].Const, op, rhs[0].Const))
+			case token.SHL, token.SHR:
+				shift, ok := cs.shiftCount(e.Pos(), e.Op, rhs[0].Const)
+				if !ok {
+					return nil, nil, nil, false
+				}
+				v = gconstant.Shift(lhs[0].Const, op, shift)
+			default:
+				v = gconstant.BinaryOp(lhs[0].Const, op, rhs[0].Const)
+			}
+
+			return []shaderir.Expr{
+				{
+					Type:     shaderir.NumberExpr,
+					Const:    v,
+					Unsigned: t.Main == shaderir.Uint,
+				},
+			}, []shaderir.Type{t}, stmts, true
+		}
+
+		if (e.Op == token.SHL || e.Op == token.SHR) && rhs[0].Const != nil {
+			if _, ok := cs.shiftCount(e.Pos(), e.Op, rhs[0].Const); !ok {
+				return nil, nil, nil, false
+			}
+		}
+
+		return []shaderir.Expr{
+			{
+				Type:    shaderir.Binary,
+				Op:      op2,
+				Exprs:   []shaderir.Expr{lhs[0], rhs[0]},
+				Untyped: untyped,
+			},
+		}, []shaderir.Type{t}, stmts, true
+
+	case *ast.CallExpr:
+		var (
+			args         []shaderir.Expr
+			argts        []shaderir.Type
+			argPositions []token.Pos
+			stmts        []shaderir.Stmt
+		)
+
+		// Parse the argument first for the order of the statements.
+		for _, a := range e.Args {
+			es, ts, ss, ok := cs.parseExpr(block, fname, a, markLocalVariableUsed)
+			if !ok {
+				return nil, nil, nil, false
+			}
+			if len(es) == 0 {
+				cs.addError(a.Pos(), "cannot use an expression with no value as an argument")
+				return nil, nil, nil, false
+			}
+			if len(es) > 1 && len(e.Args) > 1 {
+				cs.addError(a.Pos(), fmt.Sprintf("single-value context and multiple-value context cannot be mixed: %s", e.Fun))
+				return nil, nil, nil, false
+			}
+			for _, expr := range es {
+				if expr.Type == shaderir.Blank {
+					cs.addError(a.Pos(), "cannot use _ as value")
+					return nil, nil, nil, false
+				}
+			}
+			args = append(args, es...)
+			argts = append(argts, ts...)
+			for range es {
+				argPositions = append(argPositions, a.Pos())
+			}
+			stmts = append(stmts, ss...)
+		}
+
+		callee, ok := cs.parseCallee(block, e.Fun)
+		if !ok {
+			return nil, nil, nil, false
+		}
+
+		// For built-in functions, we can call this in this position. Return an expression for the function
+		// call.
+		if callee.Type == shaderir.BuiltinFuncExpr {
+			// Process compile-time evaluations.
+			switch callee.BuiltinFunc {
+			case shaderir.Len, shaderir.Cap:
+				if len(args) != 1 {
+					cs.addError(argCountErrorPos(e, argPositions, 1), fmt.Sprintf("number of %s's arguments must be 1 but %d", callee.BuiltinFunc, len(args)))
+					return nil, nil, nil, false
+				}
+				if argts[0].Main != shaderir.Array {
+					cs.addError(argPositions[0], fmt.Sprintf("%s takes an array but %s", callee.BuiltinFunc, typeString(argts[0], args[0].Const)))
+					return nil, nil, nil, false
+				}
+				return []shaderir.Expr{
+					{
+						Type:  shaderir.NumberExpr,
+						Const: gconstant.MakeInt64(int64(argts[0].Length)),
+					},
+				}, []shaderir.Type{{Main: shaderir.Int}}, stmts, true
+			case shaderir.BoolF:
+				if len(args) == 1 && args[0].Const != nil {
+					if args[0].Const.Kind() != gconstant.Bool {
+						cs.addError(argPositions[0], fmt.Sprintf("cannot convert %s to type bool", args[0].Const.String()))
+						return nil, nil, nil, false
+					}
+					return []shaderir.Expr{
+						{
+							Type:  shaderir.NumberExpr,
+							Const: args[0].Const,
+						},
+					}, []shaderir.Type{{Main: shaderir.Bool}}, stmts, true
+				}
+			case shaderir.IntF:
+				if len(args) == 1 && args[0].Const != nil {
+					// For constants, a cast-like function doesn't work as a cast.
+					// For example, `int(1.1)` is invalid.
+					v := gconstant.ToInt(args[0].Const)
+					if v.Kind() == gconstant.Unknown {
+						cs.addError(argPositions[0], fmt.Sprintf("cannot convert %s to type int", args[0].Const.String()))
+						return nil, nil, nil, false
+					}
+					return []shaderir.Expr{
+						{
+							Type:  shaderir.NumberExpr,
+							Const: v,
+						},
+					}, []shaderir.Type{{Main: shaderir.Int}}, stmts, true
+				}
+			case shaderir.UintF:
+				if len(args) == 1 && args[0].Const != nil {
+					v := gconstant.ToInt(args[0].Const)
+					if v.Kind() == gconstant.Unknown || gconstant.Sign(v) < 0 {
+						cs.addError(argPositions[0], fmt.Sprintf("cannot convert %s to type uint", args[0].Const.String()))
+						return nil, nil, nil, false
+					}
+					return []shaderir.Expr{
+						{
+							Type:     shaderir.NumberExpr,
+							Const:    v,
+							Unsigned: true,
+						},
+					}, []shaderir.Type{{Main: shaderir.Uint}}, stmts, true
+				}
+			case shaderir.FloatF:
+				if len(args) == 1 && args[0].Const != nil {
+					v := gconstant.ToFloat(args[0].Const)
+					if v.Kind() == gconstant.Unknown {
+						cs.addError(argPositions[0], fmt.Sprintf("cannot convert %s to type float", args[0].Const.String()))
+						return nil, nil, nil, false
+					}
+					return []shaderir.Expr{
+						{
+							Type:  shaderir.NumberExpr,
+							Const: v,
+						},
+					}, []shaderir.Type{{Main: shaderir.Float}}, stmts, true
+				}
+			}
+
+			// Process the expression as a regular function call.
+			var finalType shaderir.Type
+			switch callee.BuiltinFunc {
+			case shaderir.BoolF:
+				if err := checkArgsForBoolBuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				finalType = shaderir.Type{Main: shaderir.Bool}
+			case shaderir.IntF:
+				if err := checkArgsForIntBuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				finalType = shaderir.Type{Main: shaderir.Int}
+			case shaderir.UintF:
+				if err := checkArgsForUintBuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				finalType = shaderir.Type{Main: shaderir.Uint}
+			case shaderir.UVec2F, shaderir.UVec3F, shaderir.UVec4F:
+				n := map[shaderir.BuiltinFunc]int{shaderir.UVec2F: 2, shaderir.UVec3F: 3, shaderir.UVec4F: 4}[callee.BuiltinFunc]
+				if err := checkArgsForUVecBuiltinFunc(n, args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				for i := range args {
+					if args[i].Const != nil && argts[i].Main == shaderir.None {
+						args[i].Const = gconstant.ToInt(args[i].Const)
+						argts[i] = shaderir.Type{Main: shaderir.Uint}
+					}
+				}
+				finalType = shaderir.Type{Main: shaderir.VectorOf(shaderir.Uint, n)}
+			case shaderir.FloatF:
+				if err := checkArgsForFloatBuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				finalType = shaderir.Type{Main: shaderir.Float}
+			case shaderir.Vec2F:
+				if err := checkArgsForVec2BuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				for i := range args {
+					if args[i].Const == nil {
+						continue
+					}
+					args[i].Const = gconstant.ToFloat(args[i].Const)
+					argts[i] = shaderir.Type{Main: shaderir.Float}
+				}
+				finalType = shaderir.Type{Main: shaderir.Vec2}
+			case shaderir.Vec3F:
+				if err := checkArgsForVec3BuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				for i := range args {
+					if args[i].Const == nil {
+						continue
+					}
+					args[i].Const = gconstant.ToFloat(args[i].Const)
+					argts[i] = shaderir.Type{Main: shaderir.Float}
+				}
+				finalType = shaderir.Type{Main: shaderir.Vec3}
+			case shaderir.Vec4F:
+				if err := checkArgsForVec4BuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				for i := range args {
+					if args[i].Const == nil {
+						continue
+					}
+					args[i].Const = gconstant.ToFloat(args[i].Const)
+					argts[i] = shaderir.Type{Main: shaderir.Float}
+				}
+				finalType = shaderir.Type{Main: shaderir.Vec4}
+			case shaderir.IVec2F:
+				if err := checkArgsForIVec2BuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				finalType = shaderir.Type{Main: shaderir.IVec2}
+			case shaderir.IVec3F:
+				if err := checkArgsForIVec3BuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				finalType = shaderir.Type{Main: shaderir.IVec3}
+			case shaderir.IVec4F:
+				if err := checkArgsForIVec4BuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				finalType = shaderir.Type{Main: shaderir.IVec4}
+			case shaderir.Mat2F:
+				if err := checkArgsForMat2BuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				if len(args) == 1 && argts[0].Main == shaderir.Mat2 {
+					// A matrix constructor with a matrix argument is a copy. Return the argument itself
+					// so that the backends see a single argument only for a scalar.
+					return args, argts, stmts, true
+				}
+				for i := range args {
+					if args[i].Const == nil {
+						continue
+					}
+					args[i].Const = gconstant.ToFloat(args[i].Const)
+					argts[i] = shaderir.Type{Main: shaderir.Float}
+				}
+				finalType = shaderir.Type{Main: shaderir.Mat2}
+			case shaderir.Mat3F:
+				if err := checkArgsForMat3BuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				if len(args) == 1 && argts[0].Main == shaderir.Mat3 {
+					return args, argts, stmts, true
+				}
+				for i := range args {
+					if args[i].Const == nil {
+						continue
+					}
+					args[i].Const = gconstant.ToFloat(args[i].Const)
+					argts[i] = shaderir.Type{Main: shaderir.Float}
+				}
+				finalType = shaderir.Type{Main: shaderir.Mat3}
+			case shaderir.Mat4F:
+				if err := checkArgsForMat4BuiltinFunc(args, argts); err != nil {
+					cs.addError(e.Pos(), err.Error())
+					return nil, nil, nil, false
+				}
+				if len(args) == 1 && argts[0].Main == shaderir.Mat4 {
+					return args, argts, stmts, true
+				}
+				for i := range args {
+					if args[i].Const == nil {
+						continue
+					}
+					args[i].Const = gconstant.ToFloat(args[i].Const)
+					argts[i] = shaderir.Type{Main: shaderir.Float}
+				}
+				finalType = shaderir.Type{Main: shaderir.Mat4}
+			case shaderir.TexelAt:
+				if len(args) != 2 {
+					cs.addError(argCountErrorPos(e, argPositions, 2), fmt.Sprintf("number of %s's arguments must be 2 but %d", callee.BuiltinFunc, len(args)))
+					return nil, nil, nil, false
+				}
+				if argts[0].Main != shaderir.Texture {
+					cs.addError(argPositions[0], fmt.Sprintf("cannot use %s as texture value in %s", argts[0].String(), argumentName(string(callee.BuiltinFunc), 0, len(args))))
+					return nil, nil, nil, false
+				}
+				if argts[1].Main != shaderir.Vec2 {
+					cs.addError(argPositions[1], fmt.Sprintf("cannot use %s as vec2 value in %s", argts[1].String(), argumentName(string(callee.BuiltinFunc), 1, len(args))))
+					return nil, nil, nil, false
+				}
+				finalType = shaderir.Type{Main: shaderir.Vec4}
+			case shaderir.FrontFacing:
+				if len(args) != 0 {
+					cs.addError(argCountErrorPos(e, argPositions, 0), fmt.Sprintf("number of %s's arguments must be 0 but %d", callee.BuiltinFunc, len(args)))
+					return nil, nil, nil, false
+				}
+				if fname != cs.fragmentEntry {
+					cs.addError(e.Pos(), fmt.Sprintf("frontfacing is available only in %s", cs.fragmentEntry))
+					return nil, nil, nil, false
+				}
+				finalType = shaderir.Type{Main: shaderir.Bool}
+			case shaderir.DiscardF:
+				if len(args) != 0 {
+					cs.addError(argCountErrorPos(e, argPositions, 0), fmt.Sprintf("number of %s's arguments must be 0 but %d", callee.BuiltinFunc, len(args)))
+					return nil, nil, nil, false
+				}
+				if fname != cs.fragmentEntry {
+					cs.addError(e.Pos(), fmt.Sprintf("discard is available only in %s", cs.fragmentEntry))
+					return nil, nil, nil, false
+				}
+				stmts = append(stmts, shaderir.Stmt{
+					Type: shaderir.Discard,
+				})
+				return nil, nil, stmts, true
+			case shaderir.Clamp, shaderir.Mix, shaderir.Smoothstep, shaderir.Faceforward, shaderir.Refract:
+				// 3 arguments
+				if len(args) != 3 {
+					cs.addError(argCountErrorPos(e, argPositions, 3), fmt.Sprintf("number of %s's arguments must be 3 but %d", callee.BuiltinFunc, len(args)))
+					return nil, nil, nil, false
+				}
+				switch callee.BuiltinFunc {
+				case shaderir.Clamp:
+					if kind, _ := resolveConstKind(args, argts); kind != gconstant.Unknown {
+						switch kind {
+						case gconstant.Int:
+							kind := integerKind(args, argts)
+							for i, arg := range args {
+								if arg.Const == nil {
+									if argts[i].Main != kind {
+										cs.addError(argPositions[i], fmt.Sprintf("%s's arguments don't match: %s, %s, and %s", callee.BuiltinFunc, argts[0].String(), argts[1].String(), argts[2].String()))
+										return nil, nil, nil, false
+									}
+									continue
+								}
+								v := gconstant.ToInt(arg.Const)
+								if v.Kind() == gconstant.Unknown {
+									cs.addError(argPositions[i], fmt.Sprintf("cannot convert %s to type int", arg.Const.String()))
+									return nil, nil, nil, false
+								}
+								args[i].Const = gconstant.ToInt(args[i].Const)
+								argts[i] = shaderir.Type{Main: kind}
+							}
+						case gconstant.Float:
+							for i, arg := range args {
+								if arg.Const == nil {
+									if argts[i].Main != shaderir.Float {
+										cs.addError(argPositions[i], fmt.Sprintf("%s's arguments don't match: %s, %s, and %s", callee.BuiltinFunc, argts[0].String(), argts[1].String(), argts[2].String()))
+										return nil, nil, nil, false
+									}
+									continue
+								}
+								v := gconstant.ToFloat(arg.Const)
+								if v.Kind() == gconstant.Unknown {
+									cs.addError(argPositions[i], fmt.Sprintf("cannot convert %s to type float", arg.Const.String()))
+									return nil, nil, nil, false
+								}
+								args[i].Const = gconstant.ToFloat(args[i].Const)
+								argts[i] = shaderir.Type{Main: shaderir.Float}
+							}
+						}
+					}
+					if argts[0].IsIntegerVector() {
+						for i := 1; i < 3; i++ {
+							if args[i].Const != nil {
+								v := gconstant.ToInt(args[i].Const)
+								if v.Kind() == gconstant.Unknown {
+									cs.addError(argPositions[i], fmt.Sprintf("cannot convert %s to type int", args[i].Const.String()))
+									return nil, nil, nil, false
+								}
+								args[i].Const = v
+								argts[i] = shaderir.Type{Main: argts[0].Scalar()}
+							}
+						}
+					}
+					if argts[0].IsFloatVector() {
+						for i := 1; i < 3; i++ {
+							if args[i].Const != nil {
+								v := gconstant.ToFloat(args[i].Const)
+								if v.Kind() == gconstant.Unknown {
+									cs.addError(argPositions[i], fmt.Sprintf("cannot convert %s to type float", args[i].Const.String()))
+									return nil, nil, nil, false
+								}
+								args[i].Const = v
+								argts[i] = shaderir.Type{Main: shaderir.Float}
+							}
+						}
+					}
+				default:
+					for i := range args {
+						// If the argument is a non-typed constant value, treat this as a float value (#1874).
+						if args[i].Const != nil && argts[i].Main == shaderir.None && gconstant.ToFloat(args[i].Const).Kind() != gconstant.Unknown {
+							args[i].Const = gconstant.ToFloat(args[i].Const)
+							argts[i] = shaderir.Type{Main: shaderir.Float}
+						}
+					}
+				}
+				for i := range args {
+					switch callee.BuiltinFunc {
+					case shaderir.Clamp:
+						if argts[i].Main != shaderir.Float && !argts[i].IsFloatVector() && !argts[i].IsInteger() {
+							cs.addError(argPositions[i], fmt.Sprintf("cannot use %s as float, vecN, int, or ivecN value in %s", argts[i].String(), argumentName(string(callee.BuiltinFunc), i, len(args))))
+							return nil, nil, nil, false
+						}
+					default:
+						if argts[i].Main != shaderir.Float && !argts[i].IsFloatVector() {
+							cs.addError(argPositions[i], fmt.Sprintf("cannot use %s as float, vec2, vec3, or vec4 value in %s", argts[i].String(), argumentName(string(callee.BuiltinFunc), i, len(args))))
+							return nil, nil, nil, false
+						}
+					}
+				}
+				switch callee.BuiltinFunc {
+				case shaderir.Clamp:
+					if !((argts[0].Equal(&argts[1]) && argts[0].Equal(&argts[2])) ||
+						(argts[0].IsFloatVector() && argts[1].Main == shaderir.Float && argts[2].Main == shaderir.Float) ||
+						(argts[0].IsIntVector() && argts[1].Main == shaderir.Int && argts[2].Main == shaderir.Int) ||
+						(argts[0].IsUintVector() && argts[1].Main == shaderir.Uint && argts[2].Main == shaderir.Uint)) {
+						cs.addError(e.Pos(), fmt.Sprintf("the second and the third arguments for %s must equal the first argument %s or float or int but %s and %s", callee.BuiltinFunc, argts[0].String(), argts[1].String(), argts[2].String()))
+						return nil, nil, nil, false
+					}
+				case shaderir.Mix:
+					if !argts[0].Equal(&argts[1]) {
+						cs.addError(argPositions[1], fmt.Sprintf("%s and %s don't match in argument to %s", argts[0].String(), argts[1].String(), callee.BuiltinFunc))
+						return nil, nil, nil, false
+					}
+					if !argts[0].Equal(&argts[2]) && argts[2].Main != shaderir.Float {
+						cs.addError(argPositions[2], fmt.Sprintf("the third argument for %s must equal the first/second argument %s or float but %s", callee.BuiltinFunc, argts[0].String(), argts[2].String()))
+						return nil, nil, nil, false
+					}
+				case shaderir.Smoothstep:
+					if (!argts[0].Equal(&argts[1]) || !argts[0].Equal(&argts[2])) && (argts[0].Main != shaderir.Float || argts[1].Main != shaderir.Float) {
+						cs.addError(e.Pos(), fmt.Sprintf("the first and the second arguments for %s must equal the third argument %s or float but %s and %s", callee.BuiltinFunc, argts[2].String(), argts[0].String(), argts[1].String()))
+						return nil, nil, nil, false
+					}
+				case shaderir.Refract:
+					if !argts[0].Equal(&argts[1]) {
+						cs.addError(argPositions[1], fmt.Sprintf("%s and %s don't match in argument to %s", argts[0].String(), argts[1].String(), callee.BuiltinFunc))
+						return nil, nil, nil, false
+					}
+					if argts[2].Main != shaderir.Float {
+						cs.addError(argPositions[2], fmt.Sprintf("cannot use %s as float value in %s", argts[2].String(), argumentName(string(callee.BuiltinFunc), 2, len(args))))
+						return nil, nil, nil, false
+					}
+				default:
+					if !argts[0].Equal(&argts[1]) || !argts[0].Equal(&argts[2]) {
+						pos := argPositions[1]
+						if argts[0].Equal(&argts[1]) {
+							pos = argPositions[2]
+						}
+						cs.addError(pos, fmt.Sprintf("all the argument types for %s must be the same but %s, %s, and %s", callee.BuiltinFunc, argts[0].String(), argts[1].String(), argts[2].String()))
+						return nil, nil, nil, false
+					}
+				}
+
+				switch callee.BuiltinFunc {
+				case shaderir.Smoothstep:
+					finalType = argts[2]
+				default:
+					finalType = argts[0]
+				}
+
+			case shaderir.Min, shaderir.Max:
+				if len(args) < 1 {
+					cs.addError(argCountErrorPos(e, argPositions, 1), fmt.Sprintf("number of %s's arguments must be 1 or more but %d", callee.BuiltinFunc, len(args)))
+					return nil, nil, nil, false
+				}
+
+				var hasVectors bool
+				var hasScalars bool
+				for i := range argts {
+					if argts[i].IsFloatVector() || argts[i].IsIntegerVector() {
+						hasVectors = true
+						continue
+					}
+					if argts[i].Main == shaderir.Float || argts[i].Main == shaderir.Int || argts[i].Main == shaderir.Uint || argts[i].Main == shaderir.None {
+						hasScalars = true
+						continue
+					}
+				}
+
+				// Resolve the constant values.
+				if hasVectors && hasScalars {
+					// Vector values and scalar values are mixed. Resolve the constant kind based on the first vector argument.
+					if argts[0].IsIntegerVector() {
+						for i := 1; i < len(args); i++ {
+							if args[i].Const != nil {
+								v := gconstant.ToInt(args[i].Const)
+								if v.Kind() == gconstant.Unknown {
+									cs.addError(argPositions[i], fmt.Sprintf("cannot convert %s to type int", args[i].Const.String()))
+									return nil, nil, nil, false
+								}
+								args[i].Const = v
+								argts[i] = shaderir.Type{Main: argts[0].Scalar()}
+							}
+						}
+					} else if argts[0].IsFloatVector() {
+						for i := 1; i < len(args); i++ {
+							if args[i].Const != nil {
+								v := gconstant.ToFloat(args[i].Const)
+								if v.Kind() == gconstant.Unknown {
+									cs.addError(argPositions[i], fmt.Sprintf("cannot convert %s to type float", args[i].Const.String()))
+									return nil, nil, nil, false
+								}
+								args[i].Const = v
+								argts[i] = shaderir.Type{Main: shaderir.Float}
+							}
+						}
+					} else {
+						cs.addError(argPositions[0], fmt.Sprintf("cannot use %s as vecN or ivecN value in %s", argts[0].String(), argumentName(string(callee.BuiltinFunc), 0, len(args))))
+						return nil, nil, nil, false
+					}
+				} else {
+					// Vector values and scalar values are not mixed. Resolve the constant kind based on all the arguments.
+					if kind, _ := resolveConstKind(args, argts); kind != gconstant.Unknown {
+						switch kind {
+						case gconstant.Int:
+							kind := integerKind(args, argts)
+							for i, arg := range args {
+								if arg.Const == nil {
+									if argts[i].Main != kind {
+										cs.addError(argPositions[i], fmt.Sprintf("%s's arguments must all be compatible types but got %s", callee.BuiltinFunc, argts[i].String()))
+										return nil, nil, nil, false
+									}
+									continue
+								}
+								v := gconstant.ToInt(arg.Const)
+								if v.Kind() == gconstant.Unknown {
+									cs.addError(argPositions[i], fmt.Sprintf("cannot convert %s to type int", arg.Const.String()))
+									return nil, nil, nil, false
+								}
+								args[i].Const = gconstant.ToInt(args[i].Const)
+								argts[i] = shaderir.Type{Main: kind}
+							}
+						case gconstant.Float:
+							for i, arg := range args {
+								if arg.Const == nil {
+									if argts[i].Main != shaderir.Float {
+										cs.addError(argPositions[i], fmt.Sprintf("%s's arguments must all be compatible types but got %s", callee.BuiltinFunc, argts[i].String()))
+										return nil, nil, nil, false
+									}
+									continue
+								}
+								v := gconstant.ToFloat(arg.Const)
+								if v.Kind() == gconstant.Unknown {
+									cs.addError(argPositions[i], fmt.Sprintf("cannot convert %s to type float", arg.Const.String()))
+									return nil, nil, nil, false
+								}
+								args[i].Const = gconstant.ToFloat(args[i].Const)
+								argts[i] = shaderir.Type{Main: shaderir.Float}
+							}
+						}
+					}
+				}
+
+				for i := range args {
+					if argts[i].Main != shaderir.Float && !argts[i].IsFloatVector() && !argts[i].IsInteger() {
+						cs.addError(argPositions[i], fmt.Sprintf("cannot use %s as float, vecN, int, or ivecN value in %s", argts[i].String(), argumentName(string(callee.BuiltinFunc), i, len(args))))
+						return nil, nil, nil, false
+					}
+				}
+
+				if len(args) > 1 {
+					baseType := argts[0]
+					for i := 1; i < len(args); i++ {
+						if len(args) == 2 {
+							if !baseType.Equal(&argts[i]) {
+								// Only allow vector + scalar (not scalar + vector)
+								if !((baseType.IsFloatVector() && argts[i].Main == shaderir.Float) || (baseType.IsIntegerVector() && argts[i].Main == baseType.Scalar())) {
+									cs.addError(argPositions[i], fmt.Sprintf("invalid arguments %s and %s for %s", baseType.String(), argts[i].String(), callee.BuiltinFunc))
+									return nil, nil, nil, false
+								}
+							}
+						} else {
+							if !baseType.Equal(&argts[i]) {
+								cs.addError(argPositions[i], fmt.Sprintf("all argument types must be the same but got %s and %s for variadic %s", baseType.String(), argts[i].String(), callee.BuiltinFunc))
+								return nil, nil, nil, false
+							}
+						}
+					}
+				}
+
+				finalType = argts[0]
+
+			case shaderir.Atan2, shaderir.Pow, shaderir.Mod, shaderir.Step, shaderir.Distance, shaderir.Dot, shaderir.Cross, shaderir.Reflect:
+				// 2 arguments
+				if len(args) != 2 {
+					cs.addError(argCountErrorPos(e, argPositions, 2), fmt.Sprintf("number of %s's arguments must be 2 but %d", callee.BuiltinFunc, len(args)))
+					return nil, nil, nil, false
+				}
+
+				switch callee.BuiltinFunc {
+				default:
+					for i := range args {
+						if args[i].Const != nil && argts[i].Main == shaderir.None {
+							// If the argument is a non-typed constant value, treat this as a float value (#1874).
+							if gconstant.ToFloat(args[i].Const).Kind() != gconstant.Unknown {
+								args[i].Const = gconstant.ToFloat(args[i].Const)
+								argts[i] = shaderir.Type{Main: shaderir.Float}
+							}
+						}
+					}
+				}
+
+				for i := range args {
+					if argts[i].Main != shaderir.Float && !argts[i].IsFloatVector() {
+						cs.addError(argPositions[i], fmt.Sprintf("cannot use %s as float, vec2, vec3, or vec4 value in %s", argts[i].String(), argumentName(string(callee.BuiltinFunc), i, len(args))))
+						return nil, nil, nil, false
+					}
+				}
+
+				switch callee.BuiltinFunc {
+				case shaderir.Mod:
+					if !argts[0].Equal(&argts[1]) && argts[1].Main != shaderir.Float {
+						cs.addError(argPositions[1], fmt.Sprintf("the second argument for %s must equal the first argument %s or float but %s", callee.BuiltinFunc, argts[0].String(), argts[1].String()))
+						return nil, nil, nil, false
+					}
+				case shaderir.Step:
+					if !argts[0].Equal(&argts[1]) && argts[0].Main != shaderir.Float {
+						cs.addError(argPositions[0], fmt.Sprintf("the first argument for %s must equal the second argument %s or float but %s", callee.BuiltinFunc, argts[1].String(), argts[0].String()))
+						return nil, nil, nil, false
+					}
+				case shaderir.Cross:
+					for i := range argts {
+						if argts[i].Main != shaderir.Vec3 {
+							cs.addError(argPositions[i], fmt.Sprintf("cannot use %s as vec3 value in %s", argts[i].String(), argumentName(string(callee.BuiltinFunc), i, len(args))))
+							return nil, nil, nil, false
+						}
+					}
+				default:
+					if !argts[0].Equal(&argts[1]) {
+						cs.addError(argPositions[1], fmt.Sprintf("%s and %s don't match in argument to %s", argts[0].String(), argts[1].String(), callee.BuiltinFunc))
+						return nil, nil, nil, false
+					}
+				}
+				switch callee.BuiltinFunc {
+				case shaderir.Distance, shaderir.Dot:
+					finalType = shaderir.Type{Main: shaderir.Float}
+				case shaderir.Step:
+					finalType = argts[1]
+				default:
+					finalType = argts[0]
+				}
+
+			default:
+				// 1 argument
+				if len(args) != 1 {
+					cs.addError(argCountErrorPos(e, argPositions, 1), fmt.Sprintf("number of %s's arguments must be 1 but %d", callee.BuiltinFunc, len(args)))
+					return nil, nil, nil, false
+				}
+
+				if args[0].Const != nil && argts[0].Main == shaderir.None {
+					switch callee.BuiltinFunc {
+					case shaderir.Abs, shaderir.Sign:
+						if args[0].Const.Kind() == gconstant.Int {
+							argts[0] = shaderir.Type{Main: shaderir.Int}
+						}
+						if args[0].Const.Kind() == gconstant.Float {
+							argts[0] = shaderir.Type{Main: shaderir.Float}
+						}
+					default:
+						// If the argument is a non-typed constant value, treat this as a float value (#1874).
+						if gconstant.ToFloat(args[0].Const).Kind() != gconstant.Unknown {
+							args[0].Const = gconstant.ToFloat(args[0].Const)
+							argts[0] = shaderir.Type{Main: shaderir.Float}
+						}
+					}
+				}
+				switch callee.BuiltinFunc {
+				case shaderir.Transpose:
+					if !argts[0].IsMatrix() {
+						cs.addError(argPositions[0], fmt.Sprintf("cannot use %s as mat2, mat3, or mat4 value in %s", argts[0].String(), argumentName(string(callee.BuiltinFunc), 0, len(args))))
+						return nil, nil, nil, false
+					}
+				case shaderir.Abs, shaderir.Sign:
+					if argts[0].Main != shaderir.Float && !argts[0].IsFloatVector() && argts[0].Main != shaderir.Int && !argts[0].IsIntVector() {
+						cs.addError(argPositions[0], fmt.Sprintf("cannot use %s as float, vecN, int, or ivecN value in %s", argts[0].String(), argumentName(string(callee.BuiltinFunc), 0, len(args))))
+						return nil, nil, nil, false
+					}
+				default:
+					if argts[0].Main != shaderir.Float && !argts[0].IsFloatVector() {
+						cs.addError(argPositions[0], fmt.Sprintf("cannot use %s as float, vec2, vec3, or vec4 value in %s", argts[0].String(), argumentName(string(callee.BuiltinFunc), 0, len(args))))
+						return nil, nil, nil, false
+					}
+				}
+				if callee.BuiltinFunc == shaderir.Length {
+					finalType = shaderir.Type{Main: shaderir.Float}
+				} else {
+					finalType = argts[0]
+				}
+			}
+			return []shaderir.Expr{
+				{
+					Type:  shaderir.Call,
+					Exprs: append([]shaderir.Expr{callee}, args...),
+				},
+			}, []shaderir.Type{finalType}, stmts, true
+		}
+
+		f := cs.funcs[callee.Index]
+
+		if len(f.ir.InParams) < len(args) {
+			cs.addError(argCountErrorPos(e, argPositions, len(f.ir.InParams)), fmt.Sprintf("too many arguments in call to %s", e.Fun))
+			return nil, nil, nil, false
+		}
+		if len(f.ir.InParams) > len(args) {
+			cs.addError(argCountErrorPos(e, argPositions, len(f.ir.InParams)), fmt.Sprintf("not enough arguments in call to %s", e.Fun))
+			return nil, nil, nil, false
+		}
+
+		for i, p := range f.ir.InParams {
+			if !canAssign(&p, &argts[i], &args[i]) {
+				cs.addError(argPositions[i], fmt.Sprintf("cannot use type %s as type %s in %s", typeString(argts[i], args[i].Const), p.String(), argumentName(f.name, i, len(args))))
+				return nil, nil, nil, false
+			}
+
+			if args[i].Const != nil {
+				switch p.Main {
+				case shaderir.Int, shaderir.Uint:
+					args[i].Const = gconstant.ToInt(args[i].Const)
+					argts[i] = shaderir.Type{Main: p.Main}
+				case shaderir.Float:
+					args[i].Const = gconstant.ToFloat(args[i].Const)
+					argts[i] = shaderir.Type{Main: shaderir.Float}
+				}
+			}
+		}
+
+		var outParams []int
+		for _, p := range f.ir.OutParams {
+			idx := block.totalLocalVariableCount()
+			block.vars = append(block.vars, variable{
+				typ: p,
+			})
+			args = append(args, shaderir.Expr{
+				Type:  shaderir.LocalVariable,
+				Index: idx,
+			})
+			outParams = append(outParams, idx)
+		}
+
+		if t := f.ir.Return; t.Main != shaderir.None {
+			if len(outParams) != 0 {
+				cs.addError(e.Pos(), fmt.Sprintf("a function returning value cannot have out-params so far: %s", e.Fun))
+				return nil, nil, nil, false
+			}
+
+			// The actual expression here is just a local variable that includes the result of the
+			// function call.
+			return []shaderir.Expr{
+				{
+					Type:  shaderir.Call,
+					Exprs: append([]shaderir.Expr{callee}, args...),
+				},
+			}, []shaderir.Type{t}, stmts, true
+		}
+
+		// Even if the function doesn't return anything, calling the function should be done earlier to keep
+		// the evaluation order.
+		stmts = append(stmts, shaderir.Stmt{
+			Type: shaderir.ExprStmt,
+			Exprs: []shaderir.Expr{
+				{
+					Type:  shaderir.Call,
+					Exprs: append([]shaderir.Expr{callee}, args...),
+				},
+			},
+		})
+
+		if len(outParams) == 0 {
+			// TODO: Is this an error?
+		}
+
+		// These local-variable expressions are used by callers of an outside function.
+		var exprs []shaderir.Expr
+		for _, p := range outParams {
+			exprs = append(exprs, shaderir.Expr{
+				Type:  shaderir.LocalVariable,
+				Index: p,
+			})
+		}
+		return exprs, f.ir.OutParams, stmts, true
+
+	case *ast.Ident:
+		if e.Name == "_" {
+			// In the context where a local variable is marked as used, any expression must have its
+			// meaning. Then, a blank identifier is not available there.
+			if markLocalVariableUsed {
+				cs.addError(e.Pos(), "cannot use _ as value")
+				return nil, nil, nil, false
+			}
+			return []shaderir.Expr{
+				{
+					Type: shaderir.Blank,
+				},
+			}, []shaderir.Type{{}}, nil, true
+		}
+		expr, t, ok := cs.parseIdent(block, e, markLocalVariableUsed)
+		if !ok {
+			return nil, nil, nil, false
+		}
+		if expr.Type == shaderir.FunctionExpr || expr.Type == shaderir.BuiltinFuncExpr {
+			cs.addError(e.Pos(), fmt.Sprintf("function %s is used as a value without a call", e.Name))
+			return nil, nil, nil, false
+		}
+		return []shaderir.Expr{expr}, []shaderir.Type{t}, nil, true
+
+	case *ast.ParenExpr:
+		return cs.parseExpr(block, fname, e.X, markLocalVariableUsed)
+
+	case *ast.SelectorExpr:
+		exprs, types, stmts, ok := cs.parseExpr(block, fname, e.X, true)
+		if !ok {
+			return nil, nil, nil, false
+		}
+		if len(exprs) != 1 {
+			cs.addError(e.Pos(), fmt.Sprintf("multiple-value context is not available at a selector: %s", e.X))
+			return nil, nil, nil, false
+		}
+
+		if len(types) == 0 || !isValidSwizzling(e.Sel.Name, types[0]) {
+			cs.addError(e.Sel.Pos(), fmt.Sprintf("unexpected swizzling: %s", e.Sel.Name))
+			return nil, nil, nil, false
+		}
+
+		var t shaderir.Type
+		switch types[0].Main {
+		case shaderir.Vec2, shaderir.Vec3, shaderir.Vec4:
+			switch len(e.Sel.Name) {
+			case 1:
+				t.Main = shaderir.Float
+			case 2:
+				t.Main = shaderir.Vec2
+			case 3:
+				t.Main = shaderir.Vec3
+			case 4:
+				t.Main = shaderir.Vec4
+			}
+		case shaderir.IVec2, shaderir.IVec3, shaderir.IVec4:
+			switch len(e.Sel.Name) {
+			case 1:
+				t.Main = shaderir.Int
+			case 2:
+				t.Main = shaderir.IVec2
+			case 3:
+				t.Main = shaderir.IVec3
+			case 4:
+				t.Main = shaderir.IVec4
+			}
+		case shaderir.UVec2, shaderir.UVec3, shaderir.UVec4:
+			t.Main = shaderir.VectorOf(shaderir.Uint, len(e.Sel.Name))
+		}
+		if t.Equal(&shaderir.Type{}) {
+			cs.addError(e.Sel.Pos(), fmt.Sprintf("unexpected swizzling: %s", e.Sel.Name))
+			return nil, nil, nil, false
+		}
+		swizzling, set := normalizeSwizzling(e.Sel.Name)
+		return []shaderir.Expr{
+			{
+				Type: shaderir.FieldSelector,
+				Exprs: []shaderir.Expr{
+					exprs[0],
+					{
+						Type:         shaderir.SwizzlingExpr,
+						Swizzling:    swizzling,
+						SwizzlingSet: set,
+					},
+				},
+			},
+		}, []shaderir.Type{t}, stmts, true
+
+	case *ast.UnaryExpr:
+		exprs, ts, stmts, ok := cs.parseExpr(block, fname, e.X, markLocalVariableUsed)
+		if !ok {
+			return nil, nil, nil, false
+		}
+		if len(exprs) != 1 {
+			cs.addError(e.Pos(), fmt.Sprintf("multiple-value context is not available at a unary operator: %s", e.X))
+			return nil, nil, nil, false
+		}
+		if len(ts) == 0 {
+			cs.addError(e.Pos(), fmt.Sprintf("unexpected unary operator: %s", e.X))
+			return nil, nil, nil, false
+		}
+		if exprs[0].Type == shaderir.Blank {
+			cs.addError(e.Pos(), "cannot use _ as value")
+			return nil, nil, nil, false
+		}
+
+		if exprs[0].Const != nil {
+			// go/constant.UnaryOp panics when the operator is not defined on the constant's kind.
+			var valid bool
+			switch e.Op {
+			case token.ADD, token.SUB:
+				valid = exprs[0].Const.Kind() == gconstant.Int || exprs[0].Const.Kind() == gconstant.Float
+			case token.NOT:
+				valid = exprs[0].Const.Kind() == gconstant.Bool
+			case token.XOR:
+				valid = exprs[0].Const.Kind() == gconstant.Int
+			}
+			if !valid {
+				cs.addError(e.Pos(), fmt.Sprintf("invalid operation: operator %s not defined on %s", e.Op, exprs[0].Const.String()))
+				return nil, nil, nil, false
+			}
+			// The complement of a uint is in its 32 bits.
+			var prec uint
+			if ts[0].Main == shaderir.Uint {
+				prec = 32
+			}
+			v := gconstant.UnaryOp(e.Op, exprs[0].Const, prec)
+			// Use the original type as it is.
+			// Keep the type untyped if the original expression is untyped (#2705).
+			return []shaderir.Expr{
+				{
+					Type:     shaderir.NumberExpr,
+					Const:    v,
+					Unsigned: exprs[0].Unsigned,
+				},
+			}, ts[:1], stmts, true
+		}
+
+		var op shaderir.Op
+		switch e.Op {
+		case token.ADD:
+			op = shaderir.Add
+		case token.SUB:
+			op = shaderir.Sub
+		case token.NOT:
+			op = shaderir.NotOp
+		case token.XOR:
+			op = shaderir.ComplementOp
+		default:
+			cs.addError(e.Pos(), fmt.Sprintf("unexpected operator: %s", e.Op))
+			return nil, nil, nil, false
+		}
+
+		var valid bool
+		switch e.Op {
+		case token.ADD, token.SUB:
+			valid = ts[0].IsInteger() || ts[0].Main == shaderir.Float || ts[0].IsFloatVector() || ts[0].IsMatrix()
+		case token.NOT:
+			valid = ts[0].Main == shaderir.Bool
+		case token.XOR:
+			valid = ts[0].IsInteger()
+		}
+		if !valid {
+			cs.addError(e.Pos(), fmt.Sprintf("invalid operation: operator %s not defined on %s", e.Op, ts[0].String()))
+			return nil, nil, nil, false
+		}
+		return []shaderir.Expr{
+			{
+				Type:    shaderir.Unary,
+				Op:      op,
+				Exprs:   exprs,
+				Untyped: exprs[0].Untyped,
+			},
+		}, ts[:1], stmts, true
+
+	case *ast.CompositeLit:
+		var t shaderir.Type
+		var ok bool
+		if at, isArray := e.Type.(*ast.ArrayType); isArray && isEllipsis(at.Len) {
+			// The length of a [...] array is the number of the elements.
+			t, ok = cs.parseArrayType(block, fname, at, int64(len(e.Elts)))
+		} else {
+			t, ok = cs.parseType(block, fname, e.Type)
+		}
+		if !ok {
+			return nil, nil, nil, false
+		}
+		if t.Main != shaderir.Array {
+			cs.addError(e.Pos(), fmt.Sprintf("invalid composite literal type %s", t.String()))
+			return nil, nil, nil, false
+		}
+		if t.Length < len(e.Elts) {
+			// KeyValueExpr is not supported yet. Just compare the length.
+			cs.addError(e.Elts[t.Length].Pos(), fmt.Sprintf("too many values in %s literal", t.String()))
+			return nil, nil, nil, false
+		}
+
+		idx := block.totalLocalVariableCount()
+		block.vars = append(block.vars, variable{
+			typ: t,
+		})
+
+		var stmts []shaderir.Stmt
+		for i, e := range e.Elts {
+			exprs, ets, ss, ok := cs.parseExpr(block, fname, e, markLocalVariableUsed)
+			if !ok {
+				return nil, nil, nil, false
+			}
+			if len(exprs) != 1 || len(ets) != 1 {
+				cs.addError(e.Pos(), "multiple-value context is not available at a composite literal")
+				return nil, nil, nil, false
+			}
+
+			expr := exprs[0]
+			if expr.Const == nil {
+				if !canAssign(&t.Sub[0], &ets[0], &expr) {
+					cs.addError(e.Pos(), fmt.Sprintf("cannot use type %s as type %s in array literal", ets[0].String(), t.Sub[0].String()))
+					return nil, nil, nil, false
+				}
+			} else {
+				switch t.Sub[0].Main {
+				case shaderir.Bool:
+					if expr.Const.Kind() != gconstant.Bool {
+						cs.addError(e.Pos(), fmt.Sprintf("cannot convert %s to type bool", expr.Const.String()))
+						return nil, nil, nil, false
+					}
+				case shaderir.Int, shaderir.Uint:
+					if !canTruncateToInteger(expr.Const) {
+						cs.addError(e.Pos(), fmt.Sprintf("constant %s truncated to integer", expr.Const.String()))
+						return nil, nil, nil, false
+					}
+					expr.Const = gconstant.ToInt(expr.Const)
+				case shaderir.Float:
+					if !canTruncateToFloat(expr.Const) {
+						cs.addError(e.Pos(), fmt.Sprintf("constant %s truncated to float", expr.Const.String()))
+						return nil, nil, nil, false
+					}
+					expr.Const = gconstant.ToFloat(expr.Const)
+				default:
+					cs.addError(e.Pos(), fmt.Sprintf("constant %s cannot be used for the array type %s", expr.Const.String(), t.String()))
+					return nil, nil, nil, false
+				}
+			}
+
+			stmts = append(stmts, ss...)
+			stmts = append(stmts, shaderir.Stmt{
+				Type: shaderir.Assign,
+				Exprs: []shaderir.Expr{
+					{
+						Type: shaderir.Index,
+						Exprs: []shaderir.Expr{
+							{
+								Type:  shaderir.LocalVariable,
+								Index: idx,
+							},
+							{
+								Type:  shaderir.NumberExpr,
+								Const: gconstant.MakeInt64(int64(i)),
+							},
+						},
+					},
+					expr,
+				},
+			})
+		}
+
+		return []shaderir.Expr{
+			{
+				Type:  shaderir.LocalVariable,
+				Index: idx,
+			},
+		}, []shaderir.Type{t}, stmts, true
+
+	case *ast.IndexExpr:
+		var stmts []shaderir.Stmt
+
+		// Parse the index first
+		exprs, its, ss, ok := cs.parseExpr(block, fname, e.Index, true)
+		if !ok {
+			return nil, nil, nil, false
+		}
+		stmts = append(stmts, ss...)
+
+		if len(exprs) != 1 || len(its) != 1 {
+			cs.addError(e.Index.Pos(), "multiple-value context is not available at an index expression")
+			return nil, nil, nil, false
+		}
+		idx := exprs[0]
+		if idx.Const != nil {
+			if !cs.forceToInt(e.Index, &idx) {
+				return nil, nil, nil, false
+			}
+		} else if its[0].Main != shaderir.Int && its[0].Main != shaderir.Uint {
+			cs.addError(e.Index.Pos(), fmt.Sprintf("index must be int but %s", its[0].String()))
+			return nil, nil, nil, false
+		}
+
+		exprs, ts, ss, ok := cs.parseExpr(block, fname, e.X, markLocalVariableUsed)
+		if !ok {
+			return nil, nil, nil, false
+		}
+		stmts = append(stmts, ss...)
+		if len(exprs) != 1 {
+			cs.addError(e.Pos(), "multiple-value context is not available at an index expression")
+			return nil, nil, nil, false
+		}
+		if len(ts) == 0 {
+			cs.addError(e.Pos(), "unexpected index expression")
+			return nil, nil, nil, false
+		}
+		x := exprs[0]
+		t := ts[0]
+
+		// Check the length only when the index is a constant.
+		if idx.Const != nil {
+			var length int
+			switch {
+			case t.Main == shaderir.Array:
+				length = t.Length
+			case t.IsFloatVector() || t.IsIntegerVector():
+				length = t.VectorElementCount()
+			case t.IsMatrix():
+				length = t.MatrixSize()
+			default:
+				cs.addError(e.Pos(), fmt.Sprintf("index operator cannot be applied to the type %s", typeString(t, x.Const)))
+				return nil, nil, nil, false
+			}
+			v, ok := gconstant.Int64Val(gconstant.ToInt(idx.Const))
+			if !ok {
+				cs.addError(e.Index.Pos(), fmt.Sprintf("constant %s cannot be used as an index", idx.Const.String()))
+				return nil, nil, nil, false
+			}
+			if v < 0 || int(v) >= length {
+				cs.addError(e.Index.Pos(), fmt.Sprintf("index out of range: %d", v))
+				return nil, nil, nil, false
+			}
+		}
+
+		var typ shaderir.Type
+		switch t.Main {
+		case shaderir.Vec2, shaderir.Vec3, shaderir.Vec4:
+			typ = shaderir.Type{Main: shaderir.Float}
+		case shaderir.IVec2, shaderir.IVec3, shaderir.IVec4:
+			typ = shaderir.Type{Main: shaderir.Int}
+		case shaderir.UVec2, shaderir.UVec3, shaderir.UVec4:
+			typ = shaderir.Type{Main: shaderir.Uint}
+		case shaderir.Mat2:
+			typ = shaderir.Type{Main: shaderir.Vec2}
+		case shaderir.Mat3:
+			typ = shaderir.Type{Main: shaderir.Vec3}
+		case shaderir.Mat4:
+			typ = shaderir.Type{Main: shaderir.Vec4}
+		case shaderir.Array:
+			typ = t.Sub[0]
+		default:
+			cs.addError(e.Pos(), fmt.Sprintf("index operator cannot be applied to the type %s", typeString(t, x.Const)))
+			return nil, nil, nil, false
+		}
+
+		return []shaderir.Expr{
+			{
+				Type: shaderir.Index,
+				Exprs: []shaderir.Expr{
+					x,
+					idx,
+				},
+			},
+		}, []shaderir.Type{typ}, stmts, true
+
+	default:
+		cs.addError(e.Pos(), fmt.Sprintf("expression not implemented: %#v", e))
+	}
+	return nil, nil, nil, false
+}
+
+// parseIdent resolves a non-blank identifier in the scope of block.
+//
+// A function name resolves to an expression without a type.
+func (cs *compileState) parseIdent(block *block, e *ast.Ident, markLocalVariableUsed bool) (shaderir.Expr, shaderir.Type, bool) {
+	if i, t, ok := block.findLocalVariable(e.Name, markLocalVariableUsed); ok {
+		return shaderir.Expr{
+			Type:  shaderir.LocalVariable,
+			Index: i,
+		}, t, true
+	}
+	if c, ok := block.findConstant(e.Name); ok {
+		return shaderir.Expr{
+			Type:     shaderir.NumberExpr,
+			Const:    c.value,
+			Unsigned: c.typ.Main == shaderir.Uint,
+		}, c.typ, true
+	}
+	if i, ok := cs.findFunction(e.Name); ok {
+		return shaderir.Expr{
+			Type:  shaderir.FunctionExpr,
+			Index: i,
+		}, shaderir.Type{}, true
+	}
+	if i, ok := cs.findUniformVariable(e.Name); ok {
+		return shaderir.Expr{
+			Type:  shaderir.UniformVariable,
+			Index: i,
+		}, cs.ir.Uniforms[i], true
+	}
+	if f, ok := shaderir.ParseBuiltinFunc(e.Name); ok {
+		return shaderir.Expr{
+			Type:        shaderir.BuiltinFuncExpr,
+			BuiltinFunc: f,
+		}, shaderir.Type{}, true
+	}
+	if m := textureVariableRe.FindStringSubmatch(e.Name); m != nil {
+		i, _ := strconv.Atoi(m[1])
+		if i >= cs.ir.TextureCount {
+			cs.addError(e.Pos(), fmt.Sprintf("texture index out of range: %s", e.Name))
+			return shaderir.Expr{}, shaderir.Type{}, false
+		}
+		return shaderir.Expr{
+			Type:  shaderir.TextureVariable,
+			Index: i,
+		}, shaderir.Type{Main: shaderir.Texture}, true
+	}
+	if e.Name == "true" || e.Name == "false" {
+		return shaderir.Expr{
+			Type:  shaderir.NumberExpr,
+			Const: gconstant.MakeBool(e.Name == "true"),
+		}, shaderir.Type{Main: shaderir.Bool}, true
+	}
+	cs.addError(e.Pos(), fmt.Sprintf("unexpected identifier: %s", e.Name))
+	return shaderir.Expr{}, shaderir.Type{}, false
+}
+
+// parseCallee resolves the callee of a call expression to a function expression.
+func (cs *compileState) parseCallee(block *block, e ast.Expr) (shaderir.Expr, bool) {
+	switch e := e.(type) {
+	case *ast.ParenExpr:
+		return cs.parseCallee(block, e.X)
+	case *ast.Ident:
+		if e.Name == "_" {
+			cs.addError(e.Pos(), "cannot use _ as value")
+			return shaderir.Expr{}, false
+		}
+		expr, _, ok := cs.parseIdent(block, e, false)
+		if !ok {
+			return shaderir.Expr{}, false
+		}
+		if expr.Type != shaderir.FunctionExpr && expr.Type != shaderir.BuiltinFuncExpr {
+			cs.addError(e.Pos(), fmt.Sprintf("function callee must be a function name but %s", e.Name))
+			return shaderir.Expr{}, false
+		}
+		return expr, true
+	}
+	cs.addError(e.Pos(), fmt.Sprintf("function callee must be a function name but %s", e))
+	return shaderir.Expr{}, false
+}
+
+// normalizeSwizzling returns s spelled in the xyzw set, and the set s is written in.
+// s must be a valid swizzle.
+func normalizeSwizzling(s string) (string, shaderir.SwizzlingSet) {
+	var set shaderir.SwizzlingSet
+	switch s[0] {
+	case 'x', 'y', 'z', 'w':
+		set = shaderir.SwizzlingSetXYZW
+	case 'r', 'g', 'b', 'a':
+		set = shaderir.SwizzlingSetRGBA
+	case 's', 't', 'p', 'q':
+		set = shaderir.SwizzlingSetSTPQ
+	}
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case 'r', 's':
+			return 'x'
+		case 'g', 't':
+			return 'y'
+		case 'b', 'p':
+			return 'z'
+		case 'a', 'q':
+			return 'w'
+		default:
+			return r
+		}
+	}, s), set
+}
+
+func isValidSwizzling(swizzling string, t shaderir.Type) bool {
+	if !shaderir.IsValidSwizzling(swizzling) {
+		return false
+	}
+
+	switch t.Main {
+	case shaderir.Vec2, shaderir.IVec2, shaderir.UVec2:
+		return !strings.ContainsAny(swizzling, "zwbapq")
+	case shaderir.Vec3, shaderir.IVec3, shaderir.UVec3:
+		return !strings.ContainsAny(swizzling, "waq")
+	case shaderir.Vec4, shaderir.IVec4, shaderir.UVec4:
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveConstKind(exprs []shaderir.Expr, ts []shaderir.Type) (kind gconstant.Kind, allConsts bool) {
+	if len(exprs) != len(ts) {
+		panic("not reached")
+	}
+
+	allConsts = true
+	for _, expr := range exprs {
+		if expr.Const == nil {
+			allConsts = false
+		}
+	}
+
+	if !allConsts {
+		for _, t := range ts {
+			if t.Main == shaderir.None {
+				continue
+			}
+			if t.Main == shaderir.Float {
+				return gconstant.Float, false
+			}
+			if t.Main == shaderir.Int || t.Main == shaderir.Uint {
+				return gconstant.Int, false
+			}
+			return gconstant.Unknown, false
+		}
+	}
+
+	kind = gconstant.Unknown
+	for _, t := range ts {
+		switch t.Main {
+		case shaderir.None:
+			continue
+		case shaderir.Int, shaderir.Uint:
+			switch kind {
+			case gconstant.Unknown:
+				kind = gconstant.Int
+			case gconstant.Int:
+			case gconstant.Float:
+				return gconstant.Unknown, true
+			}
+		case shaderir.Float:
+			switch kind {
+			case gconstant.Unknown:
+				kind = gconstant.Float
+			case gconstant.Int:
+				return gconstant.Unknown, true
+			case gconstant.Float:
+			}
+		}
+	}
+
+	if kind != gconstant.Unknown {
+		return kind, true
+	}
+
+	// Prefer floats over integers for non-typed constant values.
+	// For example, max(1.0, 1) should return a float value.
+	for _, expr := range exprs {
+		if expr.Const.Kind() == gconstant.Float {
+			return gconstant.Float, true
+		}
+	}
+
+	return gconstant.Int, true
+}
+
+// integerKind returns the kind of integer, int or uint, of the typed ones
+// among args, int when none is typed.
+func integerKind(args []shaderir.Expr, argts []shaderir.Type) shaderir.BasicType {
+	for i := range args {
+		if args[i].Const == nil && argts[i].Main == shaderir.Uint {
+			return shaderir.Uint
+		}
+	}
+	return shaderir.Int
+}

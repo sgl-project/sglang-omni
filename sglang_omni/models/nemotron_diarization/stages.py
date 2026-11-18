@@ -11,6 +11,7 @@ import msgspec
 import numpy as np
 import torch
 
+import sglang_omni.platforms as platforms
 from sglang_omni.client.types import DiarizationResult, SamplingParams
 from sglang_omni.models.nemotron_diarization.backend import (
     SAMPLE_RATE,
@@ -128,7 +129,7 @@ class DiarizationTask:
 
 
 class DiarizationWorker:
-    """Model state shared by every task, and one CUDA stream per worker thread."""
+    """Model state shared by every task, and one device stream per worker thread."""
 
     def __init__(
         self,
@@ -139,12 +140,15 @@ class DiarizationWorker:
     ) -> None:
         self.model = model
         self.device = device
+        self.device_module = torch.get_device_module(
+            platforms.current_platform.device_type
+        )
         self.live_sessions = LiveSessions(model, device, max_live_sessions)
         if max_concurrency > 1:
             # note (Richard Wang): One stream per thread, matching cuBLAS per-stream workspaces.
             self.thread_streams = local()
-            self.loaded = torch.cuda.Event()
-            self.loaded.record(torch.cuda.current_stream(device))
+            self.loaded = self.device_module.Event()
+            self.loaded.record(self.device_module.current_stream(device))
         else:
             self.thread_streams = None
         self.default_params = SamplingParams().to_dict()
@@ -154,16 +158,18 @@ class DiarizationWorker:
     def compute_context(self) -> Iterator[None]:
         """Run one step and settle its device work before the task can move."""
         if self.thread_streams is None:
-            stream = torch.cuda.current_stream(self.device)
+            stream = self.device_module.current_stream(self.device)
             context = nullcontext()
         else:
             stream = getattr(self.thread_streams, "stream", None)
             if stream is None:
-                stream = self.thread_streams.stream = torch.cuda.Stream(self.device)
+                stream = self.thread_streams.stream = self.device_module.Stream(
+                    self.device
+                )
                 stream.wait_event(self.loaded)
             else:
                 pass
-            context = torch.cuda.stream(stream)
+            context = self.device_module.stream(stream)
         try:
             with context:
                 yield

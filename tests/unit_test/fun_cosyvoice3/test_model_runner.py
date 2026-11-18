@@ -422,6 +422,9 @@ def test_cosyvoice3_speech_head_returns_float32_logits() -> None:
             hidden_states
         )
     )
+    # note (wilsonzheng0327): SGLang's Qwen2ForCausalLM.__init__ sets this, and
+    # object.__new__ above skips that constructor.
+    model.capture_aux_hidden_states = False
     forward_batch = SimpleNamespace(
         forward_mode=SimpleNamespace(is_decode=lambda: True, is_extend=lambda: False)
     )
@@ -452,6 +455,7 @@ def test_cosyvoice3_precompile_leaves_the_first_penalized_samples_nothing_to_com
             input_embeds
         )
     )
+    model.capture_aux_hidden_states = False
     torch.compiler.reset()
 
     with get_context().override_server_args(sampling_backend="flashinfer"):
@@ -462,7 +466,9 @@ def test_cosyvoice3_precompile_leaves_the_first_penalized_samples_nothing_to_com
         for rows in (1, 3):
             forward_batch = SimpleNamespace(
                 forward_mode=SimpleNamespace(
-                    is_decode=lambda: False, is_extend=lambda: True
+                    is_decode=lambda: False,
+                    is_extend=lambda: True,
+                    is_target_verify=lambda: False,
                 ),
                 extend_seq_lens=torch.full((rows,), 2, device="cuda"),
             )
@@ -560,3 +566,65 @@ def test_cuda_prefill_graphs_replay_the_composed_rows_as_the_eager_forward(
         record.extend_token_counts[0] > 1 and record.prefix_token_counts[0] > 0
         for record in records
     )
+
+
+@pytest.mark.parametrize("prefix,length", [(0, 6), (3, 2), (4, 2), (5, 1)])
+def test_cosyvoice3_prefill_replays_speech_history(prefix: int, length: int) -> None:
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.model = torch.nn.Module()
+    runner.model.speech_embedding = torch.nn.Embedding.from_pretrained(
+        torch.arange(6, dtype=torch.float32).reshape(3, 2)
+    )
+    request = SimpleNamespace(
+        data=SimpleNamespace(
+            req=SimpleNamespace(
+                output_ids=[1, 2],
+                prefix_len=prefix,
+                extend_len=length,
+            ),
+            prompt_input_embeds=torch.arange(8, dtype=torch.float32).reshape(4, 2) + 10,
+        )
+    )
+    batch = SimpleNamespace(input_ids=torch.zeros(length, dtype=torch.long))
+
+    result = runner.build_prefill_input_embeds(batch, [request])
+
+    expected = torch.tensor(
+        [[10, 11], [12, 13], [14, 15], [16, 17], [2, 3], [4, 5]], dtype=torch.float32
+    )
+    torch.testing.assert_close(
+        result, expected[prefix : prefix + length], rtol=0, atol=0
+    )
+
+
+def test_cosyvoice3_prefill_batches_fresh_and_retracted_requests() -> None:
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.model = torch.nn.Module()
+    runner.model.speech_embedding = torch.nn.Embedding.from_pretrained(
+        torch.arange(6, dtype=torch.bfloat16).reshape(3, 2), freeze=False
+    )
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(
+                    output_ids=output_ids,
+                    prefix_len=0,
+                    extend_len=2 + len(output_ids),
+                ),
+                prompt_input_embeds=torch.tensor(
+                    [[10, 11], [12, 13]], dtype=torch.float32
+                ),
+            )
+        )
+        for output_ids in ([1, 2], [])
+    ]
+    batch = SimpleNamespace(input_ids=torch.zeros(6, dtype=torch.long))
+
+    with torch.enable_grad():
+        result = runner.build_prefill_input_embeds(batch, requests)
+
+    expected = torch.tensor(
+        [[10, 11], [12, 13], [2, 3], [4, 5], [10, 11], [12, 13]], dtype=torch.bfloat16
+    )
+    torch.testing.assert_close(result, expected, rtol=0, atol=0)
+    assert not result.requires_grad

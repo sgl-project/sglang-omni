@@ -83,7 +83,8 @@ RESULTS_FILE: Final[str] = "transcribe_diarize_results.json"
 ASR_RESULTS_FILE: Final[str] = "transcribe_diarize_asr_results.json"
 SPEED_RESULTS_FILE: Final[str] = "transcribe_diarize_speed_results.json"
 DEFAULT_SERVER_MEM_FRACTION_STATIC: Final[float] = 0.80
-DEFAULT_MAX_NEW_TOKENS: Final[int] = 65536
+# note (wilsonzheng0327): the budget the multi-speaker CI sends for the long-meeting presets; for movies800times it sends none.
+LONG_AUDIO_MAX_NEW_TOKENS: Final[int] = 65536
 MOVIES800TIMES_EXPECTED_SAMPLE_COUNT: Final[int] = 800
 AISHELL4_LONG_EXPECTED_SAMPLE_COUNT: Final[int] = 20
 GOOGLETIME_EXPECTED_SAMPLE_COUNT: Final[int] = 25
@@ -212,6 +213,7 @@ class DatasetConfig:
     expected_column: str
     output_dir: str
     expected_sample_count: int | None
+    max_new_tokens: int | None
     key_metrics_order: tuple[str, ...]
     diarization_metrics_percent_order: tuple[str, ...]
 
@@ -226,6 +228,7 @@ DATASET_CONFIGS: Final[dict[str, DatasetConfig]] = {
         expected_column="transcription",
         output_dir=MOVIES800TIMES_OUTPUT_DIR,
         expected_sample_count=MOVIES800TIMES_EXPECTED_SAMPLE_COUNT,
+        max_new_tokens=None,
         key_metrics_order=MOVIES800TIMES_KEY_METRICS_ORDER,
         diarization_metrics_percent_order=(
             MOVIES800TIMES_DIARIZATION_METRICS_PERCENT_ORDER
@@ -240,6 +243,7 @@ DATASET_CONFIGS: Final[dict[str, DatasetConfig]] = {
         expected_column="transcription",
         output_dir=AISHELL4_LONG_OUTPUT_DIR,
         expected_sample_count=AISHELL4_LONG_EXPECTED_SAMPLE_COUNT,
+        max_new_tokens=LONG_AUDIO_MAX_NEW_TOKENS,
         key_metrics_order=AISHELL4_LONG_KEY_METRICS_ORDER,
         diarization_metrics_percent_order=(
             AISHELL4_LONG_DIARIZATION_METRICS_PERCENT_ORDER
@@ -254,6 +258,7 @@ DATASET_CONFIGS: Final[dict[str, DatasetConfig]] = {
         expected_column="transcription",
         output_dir=GOOGLETIME_OUTPUT_DIR,
         expected_sample_count=GOOGLETIME_EXPECTED_SAMPLE_COUNT,
+        max_new_tokens=LONG_AUDIO_MAX_NEW_TOKENS,
         key_metrics_order=GOOGLETIME_KEY_METRICS_ORDER,
         diarization_metrics_percent_order=(
             GOOGLETIME_DIARIZATION_METRICS_PERCENT_ORDER
@@ -488,6 +493,15 @@ def _add_dataset_args(
         help="Optional number of samples to evaluate. Defaults to the full split.",
     )
     parser.add_argument("--output-dir", default=dataset_config.output_dir)
+    parser.add_argument(
+        "--max-new-tokens",
+        type=_positive_int,
+        default=dataset_config.max_new_tokens,
+        help=(
+            "max_new_tokens forwarded to /v1/audio/transcriptions. Unset, the "
+            "server scales the budget with audio duration."
+        ),
+    )
 
 
 def _add_request_args(parser: argparse.ArgumentParser) -> None:
@@ -510,12 +524,6 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         help="Requests per second (inf = send all at once).",
     )
     parser.add_argument("--request-timeout-s", type=int, default=1800)
-    parser.add_argument(
-        "--max-new-tokens",
-        type=_positive_int,
-        default=DEFAULT_MAX_NEW_TOKENS,
-        help="Optional max_new_tokens forwarded to /v1/audio/transcriptions.",
-    )
     parser.add_argument(
         "--stream",
         action="store_true",

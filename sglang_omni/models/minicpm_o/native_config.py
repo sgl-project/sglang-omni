@@ -21,6 +21,8 @@ THINKER_GPU_MEMORY_FRACTION = 0.52
 TALKER_CONTEXT_LENGTH = 4096
 # note (Junnan Li): One vocoder forward with the chunk graphs costs about this much before its width adds to it.
 FORWARD_FLOOR_MS = 45
+# note (wenyao): The thinker writes text faster than the talker speaks it, so a turn the model ends can still owe speech; at most this many more units speak it.
+MAX_DRAIN_UNITS = 3
 
 
 def stages() -> list[StageConfig]:
@@ -128,6 +130,28 @@ class MiniCPMODuplexSpeech(BaseModel):
 DEFAULT_SPEECH_SETTINGS = MiniCPMODuplexSpeech()
 
 
+class MiniCPMODuplexWindow(BaseModel):
+    """The checkpoint's DuplexWindowConfig for thinker history; of its modes, off and basic are served."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sliding_window_mode: Literal["off", "basic"] = "basic"
+    basic_window_high_tokens: int = Field(default=8000, ge=1)
+    basic_window_low_tokens: int = Field(default=6000, ge=1)
+
+    @model_validator(mode="after")
+    def check_watermarks(self) -> "MiniCPMODuplexWindow":
+        if self.basic_window_low_tokens >= self.basic_window_high_tokens:
+            raise ValueError(
+                "window.basic_window_low_tokens must be below window.basic_window_high_tokens"
+            )
+        else:
+            return self
+
+
+DEFAULT_WINDOW_SETTINGS = MiniCPMODuplexWindow()
+
+
 class MiniCPMODuplexPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "MiniCPMO"
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
@@ -145,6 +169,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
     sampling: MiniCPMODuplexSampling = Field(default_factory=MiniCPMODuplexSampling)
     vision: MiniCPMODuplexVision = Field(default_factory=MiniCPMODuplexVision)
     speech: MiniCPMODuplexSpeech = Field(default_factory=MiniCPMODuplexSpeech)
+    window: MiniCPMODuplexWindow = Field(default_factory=MiniCPMODuplexWindow)
     entry_stage: str = "perception"
     stages: list[StageConfig] = Field(default_factory=stages)
 
@@ -181,7 +206,10 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 pass
             return kwargs
         elif stage_name == "thinker":
-            kwargs = {"server_args_overrides": {"max_running_requests": request_slots}}
+            kwargs = {
+                "server_args_overrides": {"max_running_requests": request_slots},
+                **self.window.model_dump(),
+            }
             stage = self.stage_named(stage_name)
             # note (Junnan Li): A thinker memory size the deployment writes wins; a fraction counts as written when it differs from the default.
             if (

@@ -7,9 +7,12 @@ import asyncio
 import base64
 import itertools
 import json
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from http import HTTPStatus
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -21,6 +24,9 @@ from websockets.http11 import Request, Response
 
 from benchmarks.duplex import v15_runner
 from benchmarks.duplex.client import ADMISSION_RETRIES, PACKET_MS
+from benchmarks.duplex.profiles import ProfileName
+from benchmarks.duplex.reference_export import export_runs
+from benchmarks.duplex.serving import summarize_level
 from benchmarks.duplex.v15_audio import normalize_audio, reconstruct_output
 from benchmarks.duplex.v15_dataset import SUBSETS, discover_samples, inventory
 from benchmarks.duplex.v15_runner import run_samples
@@ -29,6 +35,7 @@ from tests.unit_test.fixtures.duplex_fakes import (
     FIXTURE_SAMPLES,
     SERVER,
     DuplexPeer,
+    PeerMode,
     write_dataset,
     write_sample,
 )
@@ -568,10 +575,14 @@ class CappedPeerServer:
         capacity: int | None = None,
         hold_s: float = 0.0,
         initial_denials: int = 0,
+        rejected_updates: int = 0,
+        mode: PeerMode = "healthy",
     ) -> None:
         self.capacity = capacity
         self.hold_s = hold_s
         self.initial_denials = initial_denials
+        self.rejected_updates = rejected_updates
+        self.mode = mode
         self.open_count = 0
         self.peak_open = 0
         self.denials = 0
@@ -593,7 +604,9 @@ class CappedPeerServer:
 
     async def handler(self, websocket: ServerConnection) -> None:
         try:
-            await DuplexPeer().handler(websocket)
+            await DuplexPeer(self.mode, rejected_updates=self.rejected_updates).handler(
+                websocket
+            )
         finally:
             await asyncio.sleep(self.hold_s)
             self.open_count -= 1
@@ -612,6 +625,107 @@ class CappedPeerServer:
                 timeout_s=5.0,
                 **kwargs,
             )
+
+
+@pytest.mark.parametrize(
+    ("rejected_updates", "mode", "final_rejections", "runtime_failures"),
+    [(2, "healthy", 0, 0), (3, "healthy", 1, 0), (2, "server_error", 0, 2)],
+)
+def test_mixed_admission_outcomes_reach_reports_and_reference_export(
+    tmp_path: Path,
+    rejected_updates: int,
+    mode: PeerMode,
+    final_rejections: int,
+    runtime_failures: int,
+) -> None:
+    """Recovery and clean exhaustion need consistent counts across both transports."""
+    dataset, output = tmp_path / "dataset", tmp_path / "run"
+    write_dataset(dataset)
+    server = CappedPeerServer(
+        initial_denials=1, rejected_updates=rejected_updates, mode=mode
+    )
+    run = asyncio.run(server.record(dataset, output, sample_ids=["user_backchannel/1"]))
+    load = run["load"]
+    assert load["variants_with_admission_denials"] == 1
+    assert load["variants_with_admission_rejections"] == 2
+    assert load["variants_with_admission_events"] == 2
+    assert load["http_admission_denial_events"] == 1
+    assert load["session_admission_rejection_events"] == 2 * rejected_updates
+    assert load["admission_denial_events"] == 1 + 2 * rejected_updates
+    assert load["variants_rejected"] == final_rejections
+    assert load["variants_failed"] == runtime_failures
+    level = summarize_level(output, 0.08)
+    assert level["sessions_rejected"] == final_rejections
+    assert level["sessions_failed"] == runtime_failures
+    assert level["sessions_with_admission_events"] == 2
+    assert level["http_admission_denial_events"] == 1
+    assert level["session_admission_rejection_events"] == 2 * rejected_updates
+    assert level["admission_denial_events"] == 1 + 2 * rejected_updates
+    assert "no admission denials" in level["unmet_targets"]
+    assert "no admission rejections" in level["unmet_targets"]
+    for variant in run["samples"][0]["variants"].values():
+        report = json.loads(
+            (output / variant["directory"] / "report.json").read_text()
+        )["cases"][0]
+        assert report["failure_kind"] == variant["failure_kind"]
+        if variant["failure_kind"] == "admission_rejected":
+            assert report["artifact_errors"] == []
+        else:
+            pass
+    exported = export_runs([output], tmp_path / "reference", "fixture")
+    assert (
+        exported["counts"]["eligible_variants"]
+        == 2 - final_rejections - runtime_failures
+    )
+
+
+@pytest.mark.parametrize("transport", ["http", "session"])
+def test_reconstruction_failure_preserves_admission_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transport: Literal["http", "session"],
+) -> None:
+    """Output reconstruction errors must not erase already observed rejections."""
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+
+    def fail_reconstruction(
+        variant_dir: Path, *, profile: ProfileName
+    ) -> dict[str, JsonValue]:
+        raise OSError(f"Cannot reconstruct {variant_dir} for {profile}")
+
+    monkeypatch.setattr(v15_runner, "reconstruct_output", fail_reconstruction)
+    server = CappedPeerServer(
+        initial_denials=2 * (ADMISSION_RETRIES + 1) if transport == "http" else 0,
+        rejected_updates=ADMISSION_RETRIES + 1 if transport == "session" else 0,
+    )
+    # The monkeypatch only reaches a post-processing thread, not a spawned worker process.
+    with ThreadPoolExecutor(max_workers=1) as postprocess:
+        run = asyncio.run(
+            server.record(
+                dataset,
+                output,
+                sample_ids=["user_backchannel/1"],
+                postprocess=postprocess,
+            )
+        )
+    load = run["load"]
+    assert load["variants_failed"] == 2
+    assert load["variants_rejected"] == 0
+    assert load["variants_with_admission_events"] == 2
+    assert load["admission_denial_events"] == 8
+    assert load["http_admission_denial_events"] == (8 if transport == "http" else 0)
+    assert load["session_admission_rejection_events"] == (
+        8 if transport == "session" else 0
+    )
+    level = summarize_level(output, 0.08)
+    assert level["sessions_failed"] == 2
+    assert level["sessions_rejected"] == 0
+    assert level["admission_denials"] == (2 if transport == "http" else 0)
+    assert level["admission_denial_events"] == load["admission_denial_events"]
+    assert (
+        "no admission denials" if transport == "http" else "no admission rejections"
+    ) in level["unmet_targets"]
 
 
 def test_run_samples_keeps_at_most_concurrency_sessions_open(tmp_path: Path) -> None:
@@ -669,13 +783,77 @@ def test_slow_report_write_does_not_delay_another_sessions_input(
         write_json(path, value)
 
     monkeypatch.setattr(v15_runner, "write_json", slow_report_write)
-    result = asyncio.run(CappedPeerServer().record(dataset, output, concurrency=2))
+    # note (edwingao28): A thread pool keeps the patched write in this process.
+    with ThreadPoolExecutor(max_workers=1) as postprocess:
+        result = asyncio.run(
+            CappedPeerServer().record(
+                dataset, output, concurrency=2, postprocess=postprocess
+            )
+        )
 
     assert result["load"]["input_pacing_violations"] == 0
     assert result["summary"]["variants"]["pass"] == 2
     for variant in result["samples"][0]["variants"].values():
         report = json.loads((output / variant["directory"] / "report.json").read_text())
         assert report["cases"][0]["status"] == "pass"
+    assert json.loads((output / "run.json").read_text()) == result
+
+
+GIL_HOLD_S = 1.5
+# One sort of this many floats is one C call, which keeps the GIL for well over 80 ms,
+# as parsing a whole trace or a full collection of a large heap does.
+GIL_HOLD_SORT_ITEMS = 2_000_000
+
+
+def test_post_processing_that_holds_the_gil_does_not_delay_another_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replay in the recording process kept the GIL from the loop pacing open sessions."""
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    sample_directory = write_sample(dataset, "user_interruption", "1")
+    soundfile.write(
+        str(sample_directory / "clean_input.wav"),
+        np.tile(FIXTURE_SAMPLES, 6),
+        16000,
+        subtype="PCM_16",
+    )
+    replay_run = v15_runner.replay_run
+
+    def gil_holding_replay_run(variant_dir: Path) -> dict[str, JsonValue]:
+        values = np.random.default_rng(0).random(GIL_HOLD_SORT_ITEMS).tolist()
+        deadline_s = time.perf_counter() + GIL_HOLD_S
+        while time.perf_counter() < deadline_s:
+            sorted(values)
+        return replay_run(variant_dir)
+
+    # note (edwingao28): The patch reaches only this process, so replay spins only here.
+    monkeypatch.setattr(v15_runner, "replay_run", gil_holding_replay_run)
+    result = asyncio.run(CappedPeerServer().record(dataset, output, concurrency=2))
+
+    assert result["load"]["input_pacing_violations"] == 0
+    assert result["load"]["client_loop"]["lags_over_tolerance"] == 0
+    assert result["summary"]["variants"]["pass"] == 2
+
+
+def test_run_samples_shuts_down_the_post_processing_pool_it_owns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_sample(dataset, "user_interruption", "1")
+    pools: list[ProcessPoolExecutor] = []
+    make_pool = v15_runner.postprocess_executor
+
+    def tracked_pool(workers: int) -> ProcessPoolExecutor:
+        pools.append(make_pool(workers))
+        return pools[-1]
+
+    monkeypatch.setattr(v15_runner, "postprocess_executor", tracked_pool)
+    result = asyncio.run(CappedPeerServer().record(dataset, output, concurrency=2))
+
+    assert len(pools) == 1
+    with pytest.raises(RuntimeError, match="after shutdown"):
+        pools[0].submit(os.getpid)
+    assert result["summary"]["variants"]["pass"] == 2
     assert json.loads((output / "run.json").read_text()) == result
 
 
@@ -704,8 +882,8 @@ def test_run_samples_accounts_sessions_the_server_refuses_past_its_cap(
     ]
     denied = [variant for variant in variants if variant["status"] == "fail"]
     assert denied and all(
-        any("admission denied" in violation for violation in variant["violations"])
-        and variant["output"]["admission_denials"] == ADMISSION_RETRIES
+        variant["failure_kind"] == "admission_rejected"
+        and variant["output"]["admission_denials"] == ADMISSION_RETRIES + 1
         for variant in denied
     )
     assert all(

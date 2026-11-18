@@ -1,0 +1,33 @@
+{
+  "name": "logs-filter",
+  "kind": "shell-logs",
+  "shell_logs": {
+    "lines": [
+      {
+        "seq": 2,
+        "time": "09:30:01",
+        "source": "helper",
+        "message": "line 2: the helper said hello",
+        "level": "info"
+      }
+    ],
+    "count": "1 行",
+    "sources": [
+      {
+        "code": "",
+        "label": "全部来源"
+      },
+      {
+        "code": "app",
+        "label": "App"
+      },
+      {
+        "code": "helper",
+        "label": "辅助进程"
+      }
+    ],
+    "source": "全部来源",
+    "query": "line 2",
+    "log_file": false
+  }
+}

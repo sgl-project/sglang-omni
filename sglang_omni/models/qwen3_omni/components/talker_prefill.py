@@ -14,8 +14,12 @@ from typing import TYPE_CHECKING, TypedDict
 
 import torch
 from safetensors import safe_open
+from sglang.srt.utils.common import async_h2d
 
-from sglang_omni.models.qwen3_omni.components.talker_input import build_prefill_input
+from sglang_omni.models.qwen3_omni.components.talker_input import (
+    build_prefill_input,
+    host_tensor_to_device,
+)
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -172,6 +176,7 @@ class TalkerPrefillBuilder:
         self.device = model.model.codec_embedding.weight.device
         self.dtype = model.activation_dtype
         self.thinker_embed_cache: dict[int, torch.Tensor] = {}
+        self.projected_text_cache: dict[int, torch.Tensor] = {}
         self.tts_special_cache: (
             tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None
         ) = None
@@ -207,24 +212,26 @@ class TalkerPrefillBuilder:
         # note (ratish): a session turn reuses its slot's KV and sends no prompt rows, so it
         # keeps zeros at the multimodal rows, the only prompt rows the hidden is read at.
         if captured_positions is not None:
-            # note (ratish): checked on the CPU prompt ids, so the device mask is never read back.
-            multimodal_token_ids = prompt_ids.new_tensor(
-                [
-                    int(token_id)
-                    for token_id in (
-                        self.audio_token_id,
-                        self.image_token_id,
-                        self.video_token_id,
-                    )
-                    if token_id is not None
-                ]
-            )
-            prompt_positions = torch.isin(prompt_ids, multimodal_token_ids)
             assert (
                 captured_positions
-                == prompt_positions.nonzero(as_tuple=True)[0].tolist()
+                == multimodal_mask[: prompt_ids.shape[0]]
+                .nonzero(as_tuple=True)[0]
+                .tolist()
             ), "the thinker's prompt hidden rows are not the prompt's multimodal rows"
-            prompt_hidden[captured_positions] = prompt_chunk.data.to(prompt_hidden)
+            if captured_positions:
+                hidden_rows = prompt_chunk.data
+                # note (ratish): rows relayed through shared memory arrive on the CPU, where a pageable copy waits for the device.
+                if hidden_rows.is_cpu:
+                    hidden_rows = host_tensor_to_device(hidden_rows, self.device)
+                else:
+                    pass
+                prompt_hidden.index_copy_(
+                    0,
+                    async_h2d(captured_positions, dtype=torch.long, device=self.device),
+                    hidden_rows.to(prompt_hidden),
+                )
+            else:
+                pass
         else:
             pass
         thinker_hidden = torch.cat([prompt_hidden, assistant_embed], dim=0)
@@ -320,30 +327,37 @@ class TalkerPrefillBuilder:
     def project_assistant_chunk(self, chunk: StreamItem) -> torch.Tensor:
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
-        if token_id is not None:
-            chunk_tensor = self.load_prompt_token_embeddings(
-                torch.tensor([int(token_id)], dtype=torch.long)
-            )
-        else:
+        if token_id is None:
             chunk_tensor = chunk.data.to(
                 device=self.device, dtype=self.dtype
             ).unsqueeze(0)
-        projected = self.model.text_projection(chunk_tensor)
-        return projected[0].detach()
+            return self.model.text_projection(chunk_tensor)[0].detach()
+        else:
+            pass
+        # note (ratish): a token's projected row depends only on its id, so each id is projected once and every request shares the row, as the tts special rows are shared.
+        projected = self.projected_text_cache.get(int(token_id))
+        if projected is None:
+            chunk_tensor = self.load_prompt_token_embeddings(
+                torch.tensor([int(token_id)], dtype=torch.long)
+            )
+            projected = self.model.text_projection(chunk_tensor)[0].detach()
+            self.projected_text_cache[int(token_id)] = projected
+        else:
+            pass
+        return projected
 
     def build_multimodal_mask(self, token_ids: torch.Tensor) -> torch.Tensor:
-        mask = torch.zeros(token_ids.shape[0], dtype=torch.bool, device=self.device)
-        token_ids = token_ids.to(device=self.device)
-        for token_id in (
-            self.audio_token_id,
-            self.image_token_id,
-            self.video_token_id,
-        ):
-            if token_id is not None:
-                mask |= token_ids == int(token_id)
-            else:
-                pass
-        return mask
+        """The CPU mask of multimodal placeholder rows in CPU token ids."""
+        multimodal_token_ids = [
+            int(token_id)
+            for token_id in (
+                self.audio_token_id,
+                self.image_token_id,
+                self.video_token_id,
+            )
+            if token_id is not None
+        ]
+        return torch.isin(token_ids, token_ids.new_tensor(multimodal_token_ids))
 
     def get_tts_special_embeds(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.tts_special_cache is None:
@@ -409,7 +423,9 @@ class TalkerPrefillBuilder:
             ],
             dim=0,
         )
-        gathered = unique_rows.index_select(0, inverse.to(device=unique_rows.device))
+        gathered = unique_rows.index_select(
+            0, host_tensor_to_device(inverse, unique_rows.device)
+        )
         return gathered.view(token_ids.shape[0], unique_rows.shape[-1])
 
     def prompt_model_inputs(self, state: Qwen3OmniPipelineState) -> dict[str, object]:

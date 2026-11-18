@@ -31,13 +31,13 @@ from sglang_omni.utils import predictor_layers
 from sglang_omni.utils.predictor_layers import (
     HIDDEN_SIZE,
     MAX_FUSED_ROWS,
-    PredictorLayerShape,
     add_rmsnorm_rounded,
     codebook_step,
     decode_attention,
     resolve_fused_predictor_layers,
     resolve_predictor_layer_shape,
     split_count,
+    supports_decode_attention,
     supports_exact_add_rmsnorm,
 )
 from tests.unit_test.fixtures.qwen_predictor import TupleLinear
@@ -158,6 +158,9 @@ def build_talker(
     )
     talker.predictor_rope_stores_kv = False
     talker.predictor_exact_add_norm = True
+    talker.predictor_triton_attention = supports_decode_attention(
+        NUM_HEADS, NUM_KV_HEADS, DTYPE
+    )
     talker.predictor_fused_layers = None
     return talker
 
@@ -341,6 +344,35 @@ def test_fused_layer_tracks_the_reference_like_the_plain_path(batch_size: int) -
 @accelerator
 @pytest.mark.accelerator
 @pytest.mark.usefixtures("published_server_args")
+@pytest.mark.parametrize("batch_size", [1, 16, 64])
+def test_plain_path_on_the_triton_attention_tracks_the_reference_like_sdpa(
+    batch_size: int,
+) -> None:
+    device = torch.device("cuda")
+    talker = build_talker(device, seed=41)
+    steps = predictor_inputs(device, batch_size, seed=42)
+    talker.predictor_triton_attention = False
+    sdpa = run_sequence(talker, steps)
+    talker.predictor_triton_attention = True
+    triton_attention = run_sequence(talker, steps)
+    reference = Reference(talker, batch_size)
+    cache_len = 0
+    with torch.no_grad():
+        for step, sdpa_out, triton_out in zip(steps, sdpa, triton_attention):
+            expected = reference.forward(step, cache_len)
+            sdpa_error = relative_error(sdpa_out, expected)
+            triton_error = relative_error(triton_out, expected)
+            assert triton_error <= 1.25 * sdpa_error + 1e-4, (
+                cache_len,
+                sdpa_error,
+                triton_error,
+            )
+            cache_len += step.shape[1]
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
 def test_fused_layer_is_deterministic_and_batch_invariant() -> None:
     device = torch.device("cuda")
     talker = fuse(build_talker(device, seed=5))
@@ -447,6 +479,24 @@ def test_resolver_keeps_the_plain_path_for_a_quantized_projection() -> None:
         resolve_predictor_layer_shape(talker.code_predictor, PREDICTOR_LEN, device)
         is None
     )
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
+def test_launches_beyond_the_shared_memory_pipeline_fewer_stages_with_the_same_bits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At 64 rows the qkv and gate_up launches need more shared memory over three stages
+    than SM 8.6, 8.9 and 12.x GPUs give a block, and the predictor failed to load there;
+    a launch beyond the GPU's shared memory must step down and give the same bits."""
+    device = torch.device("cuda")
+    steps = predictor_inputs(device, MAX_FUSED_ROWS // 2, seed=27)
+    expected = run_sequence(fuse(build_talker(device, seed=26)), steps)
+    monkeypatch.setattr(predictor_layers, "NUM_STAGES", 6)
+    actual = run_sequence(fuse(build_talker(device, seed=26)), steps)
+    for expected_output, actual_output in zip(expected, actual, strict=True):
+        assert torch.equal(actual_output, expected_output)
 
 
 @accelerator
@@ -617,6 +667,18 @@ def test_exact_add_rmsnorm_applies_to_the_predictor_shape_only(
     )
 
 
+def test_decode_attention_applies_to_bf16_caches_on_cuda_where_the_pair_fits_a_tile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(predictor_layers, "HAS_TRITON", True)
+    monkeypatch.setattr(predictor_layers, "current_platform", ROCMOmniPlatform())
+    assert not supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, DTYPE)
+    monkeypatch.setattr(predictor_layers, "current_platform", CUDAOmniPlatform())
+    assert supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, DTYPE)
+    assert not supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, torch.float16)
+    assert not supports_decode_attention(NUM_HEADS, 1, DTYPE)
+
+
 @accelerator
 @pytest.mark.accelerator
 def test_codebook_step_matches_argmax_gather_and_add() -> None:
@@ -656,18 +718,19 @@ def test_decode_attention_tracks_fp32_and_reads_no_slot_past_a_rows_position(
     generator = torch.Generator(device=device).manual_seed(34)
     row_groups = 3
     end = cache_len + tokens_per_row
-    q = torch.randn(
+    qkv = torch.randn(
         row_groups * tokens_per_row,
-        NUM_HEADS * HEAD_DIM,
+        (NUM_HEADS + 2 * num_kv_heads) * HEAD_DIM,
         device=device,
         generator=generator,
     ).to(DTYPE)
+    q = qkv[:, : NUM_HEADS * HEAD_DIM]
     cache_shape = (row_groups, PREDICTOR_LEN, num_kv_heads, HEAD_DIM)
     k_cache = torch.randn(cache_shape, device=device, generator=generator).to(DTYPE)
     v_cache = torch.randn(cache_shape, device=device, generator=generator).to(DTYPE)
     k_cache[:, end:] = float("nan")
     v_cache[:, end:] = float("nan")
-    attention_output = torch.empty_like(q)
+    attention_output = torch.empty(q.shape, device=device, dtype=DTYPE)
     decode_attention(
         q=q,
         tokens_per_row=tokens_per_row,
@@ -675,15 +738,6 @@ def test_decode_attention_tracks_fp32_and_reads_no_slot_past_a_rows_position(
         v_cache=v_cache,
         end=end,
         attention_output=attention_output,
-        shape=PredictorLayerShape(
-            hidden_size=HIDDEN,
-            head_dim=HEAD_DIM,
-            num_q_heads=NUM_HEADS,
-            num_kv_heads=num_kv_heads,
-            intermediate_size=INTERMEDIATE,
-            split_qkv=1,
-            split_hidden=1,
-        ),
     )
     queries = q.view(row_groups, tokens_per_row, NUM_HEADS, HEAD_DIM).transpose(1, 2)
     keys = k_cache[:, :end].transpose(1, 2)

@@ -62,6 +62,40 @@ def test_encoder_matches_reference() -> None:
     torch.testing.assert_close(actual, reference["expected"], rtol=1e-5, atol=1e-6)
 
 
+def test_padded_batch_matches_separate_mels() -> None:
+    torch.manual_seed(0)
+    config = AudioEncoderConfig(
+        n_mels=4,
+        n_audio_ctx=32,
+        n_audio_state=8,
+        n_audio_head=2,
+        n_audio_layer=2,
+        downsampler_kernel_size_list=[3],
+        downsampler_stride_list=[2],
+        whisper_chunk_size=32,
+    )
+    encoder = Ming3AudioEncoder(
+        config,
+        hidden_size=16,
+        should_upcast_layer_norm=True,
+        should_batch_chunks=False,
+    ).eval()
+    long_mel = torch.randn(20, config.n_mels)
+    short_mel = torch.randn(9, config.n_mels)
+    with torch.inference_mode():
+        batched = encoder.embed_mels([long_mel, short_mel])
+        separate = [
+            encoder.embed_mels([long_mel])[0],
+            encoder.embed_mels([short_mel])[0],
+        ]
+    assert [row.shape[0] for row in batched] == [
+        config.output_length(20),
+        config.output_length(9),
+    ]
+    torch.testing.assert_close(batched[0], separate[0], rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(batched[1], separate[1], rtol=1e-5, atol=1e-5)
+
+
 def test_unbatched_chunks_encode_independently_of_neighbors() -> None:
     torch.manual_seed(0)
     config = AudioEncoderConfig(

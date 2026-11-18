@@ -635,6 +635,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
         session_request=request,
     )
     scheduler = Mock(spec=OmniScheduler)
+    scheduler.enable_overlap = False
     scheduler.scheduler_thread_id = None
     scheduler.request_admission_lock = threading.RLock()
     scheduler.deferred_request_payloads = {}
@@ -776,10 +777,11 @@ def test_ar_bridge_binds_the_native_request_and_hands_an_aborted_unit_to_the_ada
     adapter.bind_request = Mock()
     order: list[str] = []
     adapter.on_abort = Mock(side_effect=lambda identity, unit: order.append("model"))
-    scheduler = Mock()
+    scheduler = Mock(max_req_len=100)
     scheduler.model_config.vocab_size = 100
     native = scheduler.session_controller.get.return_value
     native.session_id = identity.id
+    native.req_nodes = {}
     native.abort_req.side_effect = lambda: order.append("native")
     native_request = Mock(origin_input_ids=[10, 20, 30], to_finish=None)
     native.create_req.return_value = native_request

@@ -50,9 +50,10 @@ class ExactWhisperStreamOutputBuilder:
         else:
             pass
         token_id = None if request_output.data is None else int(request_output.data)
+        # note (wilsonzheng0327): a speculative round hands over its tokens one at a time after the request has finished, so only the final flush may end the stream; ending it on the round's first token emits half a multi-byte character.
         delta = request_data.exact_text_stream_state.step(
             token_id,
-            terminal=request_output.finished or request.finished(),
+            terminal=request_output.finished,
             now_seconds=time.perf_counter(),
         )
         if not delta:

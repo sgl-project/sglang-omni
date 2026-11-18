@@ -11,6 +11,7 @@ import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
+from sglang_omni.models.fishaudio_drama3.config import DEFAULT_REFERENCE_SAMPLING
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.stream_windows import (
     frames_in_complete_windows,
@@ -27,6 +28,8 @@ MINIMUM_PROMPT_ROWS = 2
 REQUEST_ERROR_PREFIX = "Drama 3 request:"
 # Batch sampling info stores top_k as int32.
 MAXIMUM_TOP_K = torch.iinfo(torch.int32).max
+# Reference sampling's epsilon_cutoff for a request that sets none.
+REFERENCE_EPSILON_CUTOFF = 1e-3
 VOCODER_STAGE = "vocoder"
 
 
@@ -34,7 +37,8 @@ VOCODER_STAGE = "vocoder"
 class Drama3GenerationInput:
     """One request: prompt frame rows [rows, 1 + num_codebooks] and sampling knobs.
 
-    max_new_tokens None lets the engine fill the remaining context, up to its cap.
+    max_new_tokens None lets the engine fill the remaining context, up to its cap;
+    epsilon_cutoff None leaves the cutoff to the engine's sampler.
     """
 
     prompt_rows: torch.Tensor
@@ -42,6 +46,7 @@ class Drama3GenerationInput:
     temperature: float
     top_k: int
     top_p: float
+    epsilon_cutoff: float | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -55,11 +60,15 @@ class Drama3GenerationResult:
 
 @dataclass
 class Drama3RequestData(SGLangARRequestData):
-    """frame_rows holds the prompt rows and then every sampled frame, eos included."""
+    """frame_rows holds the prompt rows and then every sampled frame, eos included;
+    prompt_frames holds the same prompt rows as an int64 CPU tensor for prefill
+    staging. The prompt rows in both never change."""
 
     frame_rows: list[list[int]] = field(default_factory=list)
+    prompt_frames: torch.Tensor | None = None
     prompt_row_count: int = 0
     streamed_frame_count: int = 0
+    epsilon_cutoff: float = 0.0
 
 
 class Drama3RequestBuilder:
@@ -72,6 +81,7 @@ class Drama3RequestBuilder:
         context_length: int,
         max_prompt_rows: int,
         max_new_tokens_cap: int,
+        reference_sampling: bool = DEFAULT_REFERENCE_SAMPLING,
     ) -> None:
         self.vocab_size = config.text_config.vocab_size
         self.codebook_size = config.audio_decoder_config.vocab_size
@@ -84,6 +94,7 @@ class Drama3RequestBuilder:
         self.max_new_tokens_cap = checked_int(
             max_new_tokens_cap, "max_new_tokens_cap", 1
         )
+        self.reference_sampling = reference_sampling
 
     def __call__(self, payload: StagePayload) -> Drama3RequestData:
         generation_input = payload.data
@@ -110,6 +121,7 @@ class Drama3RequestBuilder:
         prompt_row_count = prompt_rows.shape[0]
         remaining_rows = self.context_length - prompt_row_count
         requested_max_new_tokens = generation_input.max_new_tokens
+        requested_epsilon_cutoff = generation_input.epsilon_cutoff
         if prompt_row_count < MINIMUM_PROMPT_ROWS:
             raise ValueError(
                 f"{REQUEST_ERROR_PREFIX} a prompt needs at least "
@@ -181,8 +193,26 @@ class Drama3RequestBuilder:
                 f"{REQUEST_ERROR_PREFIX} top_p must be in (0, 1]; got "
                 f"{generation_input.top_p}"
             )
+        elif requested_epsilon_cutoff is not None and not (
+            0.0 <= requested_epsilon_cutoff < 1.0
+        ):
+            raise ValueError(
+                f"{REQUEST_ERROR_PREFIX} epsilon_cutoff must be in [0, 1); got "
+                f"{requested_epsilon_cutoff}"
+            )
+        elif requested_epsilon_cutoff and not self.reference_sampling:
+            raise ValueError(
+                f"{REQUEST_ERROR_PREFIX} epsilon_cutoff needs reference sampling; "
+                f"start the server with --tts_engine.factory.reference_sampling true"
+            )
         else:
             pass
+        if requested_epsilon_cutoff is not None:
+            epsilon_cutoff = requested_epsilon_cutoff
+        elif self.reference_sampling:
+            epsilon_cutoff = REFERENCE_EPSILON_CUTOFF
+        else:
+            epsilon_cutoff = 0.0
         max_new_tokens = (
             min(self.max_new_tokens_cap, remaining_rows)
             if requested_max_new_tokens is None
@@ -215,7 +245,11 @@ class Drama3RequestBuilder:
             top_k=generation_input.top_k,
             top_p=generation_input.top_p,
             frame_rows=frame_rows,
+            prompt_frames=prompt_rows.to(
+                device="cpu", memory_format=torch.contiguous_format, copy=True
+            ),
             prompt_row_count=len(frame_rows),
+            epsilon_cutoff=epsilon_cutoff,
         )
 
 

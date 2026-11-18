@@ -67,7 +67,8 @@ class ScriptedAdapter(InteractionAdapter):
     reply: list[OutputEvent] = field(default_factory=list)
     unconsumed_samples: int = 0
     is_holding_input: bool = False
-    open_error: str | None = None
+    open_error: Exception | None = None
+    is_holding_open: bool = False
     close_error: str | None = None
     should_stall_close: bool = False
     units: list[Unit] = field(default_factory=list)
@@ -79,9 +80,12 @@ class ScriptedAdapter(InteractionAdapter):
         self, session_id: str, config: SessionConfiguration, emit: OutputSink
     ) -> None:
         if self.open_error is not None:
-            raise RuntimeError(self.open_error)
+            raise self.open_error
+        elif self.is_holding_open:
+            await asyncio.Event().wait()
         else:
             self.output_sink = emit
+            self.is_closed = False
 
     async def process(self, unit: Unit) -> int | tuple[int, int]:
         assert self.output_sink is not None

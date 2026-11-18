@@ -117,12 +117,12 @@ def build_admission_coordinator(
 def reset_recorder() -> None:
     recorder = get_recorder()
     if recorder.is_active():
-        recorder.stop()
+        recorder.stop(wait=True)
     else:
         pass
     yield
     if recorder.is_active():
-        recorder.stop()
+        recorder.stop(wait=True)
     else:
         pass
 
@@ -146,7 +146,7 @@ def test_ready_capture_and_emission_are_scoped_to_one_profiler_run(
             ready_run_id=observation.run_id,
         )
     )
-    recorder.stop()
+    recorder.stop(wait=True)
 
     second_path = recorder.start("run-b", str(tmp_path / "run-b"), "coordinator")
     asyncio.run(
@@ -157,7 +157,7 @@ def test_ready_capture_and_emission_are_scoped_to_one_profiler_run(
             ready_run_id=observation.run_id,
         )
     )
-    recorder.stop()
+    recorder.stop(wait=True)
 
     assert [event["event_name"] for event in read_events(first_path)] == [
         "session_unit_ready",
@@ -201,7 +201,7 @@ def test_queue_full_retry_admits_exact_sequence_once(tmp_path: Path) -> None:
             )
             == 1
         )
-        recorder.stop()
+        recorder.stop(wait=True)
 
         events = read_events(path)
         ready_events = [
@@ -232,7 +232,7 @@ def test_payload_is_not_copied_into_event_metadata(tmp_path: Path) -> None:
     emit_session_output_event(
         request_id="request-3", output_chunk=output_chunk, timestamp_ns=200
     )
-    recorder.stop()
+    recorder.stop(wait=True)
 
     events = read_events(path)
     assert events[0]["metadata"] == {
@@ -467,7 +467,7 @@ def test_bypassed_event_emitter_records_reason(tmp_path: Path) -> None:
         stage="ar-stage",
         timestamp_ns=40,
     )
-    recorder.stop()
+    recorder.stop(wait=True)
 
     stage = build_duplex_session_metrics(read_events(path))["units"][0]["stages"][0]
     assert stage["timing_status"] == "bypassed"
@@ -481,6 +481,7 @@ def test_stage_start_observation_does_not_cross_profiler_runs(tmp_path: Path) ->
     observation = capture_session_stage_start()
     assert observation is not None
     run_id, timestamp_ns = observation
+    recorder.stop(wait=True)
 
     run_b_path = recorder.start("run-b", str(tmp_path / "run-b"), "stage")
     emit_session_stage_started(
@@ -490,6 +491,6 @@ def test_stage_start_observation_does_not_cross_profiler_runs(tmp_path: Path) ->
         timestamp_ns=timestamp_ns,
         expected_run_id=run_id,
     )
-    recorder.stop()
+    recorder.stop(wait=True)
 
     assert read_events(run_b_path) == []

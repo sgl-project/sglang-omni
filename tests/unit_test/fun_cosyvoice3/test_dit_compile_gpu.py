@@ -8,7 +8,6 @@ import copy
 
 import pytest
 import torch
-from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
 
 from sglang_omni.models.fun_cosyvoice3 import stages
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
@@ -16,6 +15,7 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     PackedDiT,
     PackedRows,
     pack_rows,
+    supports_ragged_attention,
 )
 
 cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
@@ -117,8 +117,8 @@ def test_the_compiled_chunk_mask_matches_eager(static_chunk_size: int) -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_production_packed_dit_compile_is_as_close_to_float32_as_eager() -> None:
-    if not _is_fa3_supported():
-        pytest.skip("FA3 is unavailable on this device")
+    if not supports_ragged_attention(torch.device("cuda")):
+        pytest.skip("Ragged attention is unavailable on this device")
 
     torch.manual_seed(3)
     dit = (

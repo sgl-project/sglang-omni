@@ -6,6 +6,7 @@ import asyncio
 import queue
 import threading
 import time
+from collections import deque
 from types import SimpleNamespace
 
 import pytest
@@ -376,6 +377,8 @@ def test_omni_scheduler_abort_pause_ends_each_dropped_request() -> None:
     scheduler.active_request_ids = lambda: ["req-1", "req-2"]
     scheduler.abort = lambda request_id, **_kwargs: aborted.append(request_id)
     scheduler.running_batch = scheduler.cur_batch = scheduler.last_batch = None
+    scheduler.async_pending = None
+    scheduler.result_queue = deque()
     scheduler.is_entry_rank = True
     scheduler.outbox = queue.Queue()
 

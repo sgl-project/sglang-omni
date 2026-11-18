@@ -50,6 +50,14 @@ def test_an_oversized_stop_regex_is_a_bad_request() -> None:
     assert is_bad_request_error(error)
 
 
+def test_cfg_capacity_rejection_is_a_bad_request() -> None:
+    error = RuntimeError(
+        "CFG request group requires 3 running requests, but max_running_requests=2"
+    )
+
+    assert generation_error_status_code(error) == 400
+
+
 def test_request_id_conflicts_are_bad_requests() -> None:
     async def conflict_messages() -> list[str]:
         coordinator = Coordinator(

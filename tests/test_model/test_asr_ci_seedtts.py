@@ -26,7 +26,6 @@ from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.eval.benchmark_asr_seedtts import run_asr_seedtts_once
 from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.wer import print_asr_speed_summary, print_asr_wer_summary
-from benchmarks.tasks.asr import DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
 from tests.test_model.asr_ci_config import select_asr_ci_preset
 from tests.test_model.omni_router_utils import (
     CiRouterTopology,
@@ -39,7 +38,7 @@ from tests.utils import MetricCheckCollector
 MODEL_NAME, PRESET = select_asr_ci_preset()
 THRESHOLDS = PRESET.thresholds
 
-ASR_CI_CONCURRENCY = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
+ASR_CI_CONCURRENCY = 96
 ASR_CI_WARMUP_REQUESTS = ASR_CI_CONCURRENCY * 2
 SEEDTTS_ASR_EN_SAMPLES = 1088
 SEEDTTS_ASR_ZH_SAMPLES = 2020

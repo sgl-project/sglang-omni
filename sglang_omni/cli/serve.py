@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Annotated, Literal, NoReturn
 
+import click
 import typer
 import yaml
+from typer.core import TyperCommand
 
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
@@ -17,12 +20,15 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.models.auk.config import AuKPipelineConfig
 from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
+from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
 )
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.serve.realtime.types import RuntimeLimits
+from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY
 from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 from sglang_omni.utils.logging import configure_dependency_loggers
 from sglang_omni.utils.process import exit_without_teardown
@@ -31,6 +37,20 @@ logger = logging.getLogger(__name__)
 
 
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+
+class ServeCommand(TyperCommand):
+    """Serve command that also takes the model path as its first argument."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        # note (Chenyang): sglang serve rewrites a leading positional the same
+        # way, so both CLIs parse one command line identically.
+        if args and not args[0].startswith("-"):
+            args = ["--model-path", *args]
+        else:
+            pass
+        return super().parse_args(ctx, args)
 
 
 def launch_server(*args: object, **kwargs: object) -> NoReturn:
@@ -305,12 +325,70 @@ def apply_tensor_parallel_engine_overrides(
     in the stage's engine block -- from the model default, the file, or a
     dotted flag -- is left exactly as it was set.
     """
-    config_cls = type(pipeline_config)
-    writes = tensor_parallel_engine_writes(pipeline_config)
+    return apply_engine_writes(
+        pipeline_config, tensor_parallel_engine_writes(pipeline_config)
+    )
+
+
+def default_draft_engine_writes(
+    pipeline_config: PipelineConfig,
+) -> dict[str, object]:
+    """The default-on registry drafts the launched model path and TP size get, as dotted-path writes.
+
+    docs/developer_reference/config.md states the rules. The revision is left
+    to EngineArgs.overrides, so a draft path a source sets does not inherit it.
+    """
+    if not current_platform.is_cuda():
+        return {}
+    else:
+        pass
+    model_path_parts = Path(pipeline_config.model_path).parts
+    default_drafts = {
+        draft.stage: draft
+        for draft in DRAFT_REGISTRY
+        if draft.is_default_on
+        and (
+            draft.model_path == pipeline_config.model_path.partition("@")[0]
+            or "models--" + draft.model_path.replace("/", "--") in model_path_parts
+        )
+    }
+    writes: dict[str, object] = {}
+    for stage in pipeline_config.stages:
+        if (
+            stage.name in default_drafts
+            and stage.engine is not None
+            and stage.tp_size == 1
+            and not stage.engine.disable_speculative_decoding
+        ):
+            already_set = stage.engine.overrides()
+            for key, value in default_drafts[stage.name].engine_overrides().items():
+                if key != "speculative_draft_model_revision" and key not in already_set:
+                    writes[f"stages.{stage.name}.engine.{key}"] = value
+                else:
+                    pass
+        else:
+            pass
+    return writes
+
+
+def apply_default_draft_engine_overrides(
+    pipeline_config: PipelineConfig,
+) -> PipelineConfig:
+    """Write the default-on draft settings the resolved configuration implies."""
+    return apply_engine_writes(
+        pipeline_config, default_draft_engine_writes(pipeline_config)
+    )
+
+
+def apply_engine_writes(
+    pipeline_config: PipelineConfig, writes: dict[str, object]
+) -> PipelineConfig:
+    """Apply derived dotted-path writes through ConfigPath and re-validate."""
     if not writes:
         return pipeline_config
     else:
         pass
+    config_cls = type(pipeline_config)
     data = pipeline_config.model_dump()
     for path_text, value in writes.items():
         ConfigPath.parse(path_text, config_cls).write(data, value)
@@ -343,7 +421,9 @@ def apply_stage_offload_cli_overrides(
     else:
         pass
 
-    if not isinstance(pipeline_config, MiniMaxMusic3PipelineConfig):
+    if not isinstance(
+        pipeline_config, (MiniMaxMusic3PipelineConfig, AuKPipelineConfig)
+    ):
         raise typer.BadParameter(
             "--stage-offload-components is not supported by this pipeline"
         )
@@ -360,6 +440,7 @@ def serve(
         typer.Option(
             help=(
                 "The Hugging Face model ID or the path to the model directory. "
+                "May also be given as the first positional argument. "
                 "Required unless --config provides model_path."
             )
         ),
@@ -433,6 +514,17 @@ def serve(
             help="Maximum number of items accepted by /v1/audio/speech/batch.",
         ),
     ] = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    enable_speech_sse_named_events: Annotated[
+        bool,
+        typer.Option(
+            "--enable-speech-sse-named-events",
+            help=(
+                "Enable named SSE events for /v1/audio/speech with "
+                "stream_format=sse. Adds event lines and reports failures as "
+                "speech.audio.error. Omit to preserve data-only frames."
+            ),
+        ),
+    ] = False,
     mem_fraction_static: Annotated[
         float | None,
         typer.Option(
@@ -473,7 +565,7 @@ def serve(
         typer.Option(
             "--skip-server-warmup",
             "--skip_server_warmup",
-            help="Report ready without sending the pipeline's warmup requests first.",
+            help="Report ready without running the pipeline's warmup first.",
         ),
     ] = False,
     realtime_session_update_timeout_s: Annotated[
@@ -509,10 +601,17 @@ def serve(
     ``--vocoder.factory.max_concurrency 8``, ``--talker_ar.gpu 1``,
     ``--thinker.process thinker``.
     """
-    logging.basicConfig(
-        level=getattr(logging, log_level.upper()),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    root_logger = logging.getLogger()
+    logging.basicConfig(level=log_level.upper(), format=LOG_FORMAT)
+    # note (Chenyang): sglang serve installs a root console handler before this
+    # runs, which makes basicConfig a no-op. Set the level and the console
+    # format directly so both CLIs log alike, and keep plugin handlers intact.
+    root_logger.setLevel(log_level.upper())
+    for root_handler in root_logger.handlers:
+        if type(root_handler) is logging.StreamHandler:
+            root_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        else:
+            pass
     configure_dependency_loggers()
 
     validate_colocate_cli_request(
@@ -603,6 +702,7 @@ def serve(
         merged_config,
         stage_offload_components=stage_offload_components,
     )
+    merged_config = apply_default_draft_engine_overrides(merged_config)
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 
     if should_print_merged_config(colocate=colocate, log_level=log_level):
@@ -624,5 +724,6 @@ def serve(
         ),
         allowed_media_domains=normalize_allowed_media_domains(allowed_media_domain),
         tts_batch_max_items=validate_tts_batch_max_items(tts_batch_max_items),
+        enable_speech_sse_named_events=enable_speech_sse_named_events,
         skip_server_warmup=skip_server_warmup,
     )

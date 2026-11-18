@@ -209,7 +209,7 @@ def check(
         summary_lines.append(f"Recorded waveforms in {write_path}.")
     elif device not in golden["devices"]:
         failures.append(
-            "no Music3 golden for this chip; review and import the golden-outputs artifact"
+            "no Music3 golden for this chip; review and import this chip's --outputs"
         )
     else:
         reference_waveforms = golden["devices"][device]["clips"]

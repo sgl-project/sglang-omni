@@ -2,7 +2,7 @@
 
 [Ming-flash-omni-2.0](https://huggingface.co/inclusionAI/Ming-flash-omni-2.0) is a multimodal omni model that accepts text, image, audio, and video inputs and can return text or text + audio through SGLang-Omni's OpenAI-compatible `/v1/chat/completions` endpoint. In SGLang-Omni, Ming is served as a multi-stage pipeline: media preprocessing and encoders prepare multimodal embeddings, the thinker generates text, and the talker turns response text into 44.1 kHz speech.
 
-Start with `sgl-omni serve` for Ming. The generic OmniServe entry point now knows how to build the Ming text and speech pipelines from the model path, so the commands below are the customer-facing launch path. For general chat request fields that also apply to Qwen3-Omni, see [Qwen3-Omni](./qwen3_omni.md).
+Start with `sgl-omni serve` for Ming. The generic OmniServe entry point now knows how to build the Ming text and speech pipelines from the model path, so the commands below are the customer-facing launch path. For general chat request fields that also apply to Qwen3-Omni, see [Omni Model Usage](../basic_usage/omni.md).
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download inclusionAI/Ming-flash-omni-2.0
 ```
 
-For Intel GPUs, follow the [Ming-Omni XPU recipe](../get_started/installation_xpu.md#ming-omni-omni-chat-and-speech-one-or-two-xpus).
+For Intel GPUs, follow the [Ming-Omni XPU recipe](../other_platforms/installation_xpu.md#ming-omni-omni-chat-and-speech-one-or-two-xpus).
 
 The speech path expects the checkpoint to include the `talker/` assets, including `talker/data/voice_name.json` and `talker/vae/`. The default voice in the current Ming speech pipeline is `DB30`. `campplus.onnx` and `talker_tn` are optional runtime helpers: missing `campplus.onnx` disables speaker embedding extraction, and missing `talker_tn` falls back to identity text normalization.
 
@@ -231,6 +231,8 @@ The audio clip features a woman's voice, while the image depicts a woman and a d
 ```
 
 ### Video Input
+
+Video files decode on parallel decoders that share min(16, the preprocessing stage's CPUs) FFmpeg threads, split evenly among a request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
 
 Video files use the same top-level request style. Limit frame count or pixel budget for predictable latency:
 

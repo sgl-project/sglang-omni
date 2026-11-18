@@ -10,7 +10,6 @@ from pathlib import Path
 from pydantic import JsonValue
 
 from benchmarks.duplex.fdb.common import (
-    ENGINE_LABEL,
     LISTENING_DIR,
     V10_DIR,
     JudgeName,
@@ -438,7 +437,7 @@ def render(run_root: Path, engine: str, judge: JudgeName) -> str:
 
 
 def aggregate(settings: Settings) -> None:
-    results = render(settings.run_root, ENGINE_LABEL, settings.judge)
+    results = render(settings.run_root, settings.engine.name, settings.judge)
     results_path = settings.run_root / "RESULTS.md"
     results_path.write_text(results, encoding="utf-8")
     log(results)

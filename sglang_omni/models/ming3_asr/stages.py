@@ -14,10 +14,15 @@ from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import AutoConfig, PreTrainedTokenizerFast
 
+from sglang_omni.models.ming3_asr.encoder_service import Ming3ASRPreLMEncoderService
 from sglang_omni.models.ming3_asr.preprocessing import (
     Ming3ASRPreprocessor,
     TranscriptionState,
     extract_transcript,
+)
+from sglang_omni.models.ming3_asr.text_streaming import (
+    Ming3ASRRequestData,
+    Ming3ASRStreamOutputBuilder,
 )
 from sglang_omni.modules.ming_audio.audio_encoder import (
     AudioEncoderConfig,
@@ -32,7 +37,6 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
-from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     build_sglang_server_args,
 )
@@ -50,7 +54,10 @@ class Ming3ASRConfig(Ming3AudioConfig):
         text_config: dict[str, JsonValue] | None = None,
         **kwargs: JsonValue,
     ) -> None:
-        super().__init__(text_config, **kwargs)
+        fields = dict(text_config or {})
+        # note (wirybeaver): ASR normalizes selected expert probabilities even when the checkpoint omits this flag.
+        fields.setdefault("norm_topk_prob", True)
+        super().__init__(fields, **kwargs)
 
 
 def load_checkpoint_config(model_path: str) -> dict[str, JsonValue]:
@@ -69,12 +76,40 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
     return SimpleScheduler(preprocessor)
 
 
-def create_audio_encoder_executor(
+def create_thinker_executor(
     model_path: str,
     *,
+    max_seq_len: int,
+    max_new_tokens: int,
+    stream_emit_interval_seconds: float,
+    pre_lm_max_batch_size: int,
+    pre_lm_max_batch_wait_ms: int,
+    request_build_max_workers: int,
+    request_build_max_pending: int,
     device: str | None = None,
     gpu_id: int | None = None,
-) -> SimpleScheduler:
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
+    server_args_overrides: dict[str, JsonValue] | None = None,
+    total_gpu_memory_fraction: float | None = None,
+) -> OmniScheduler[Ming3ASRRequestData]:
+    if tp_size != 1:
+        raise ValueError(f"Ming ASR thinker supports tp_size 1, got {tp_size}")
+    else:
+        pass
+    if pre_lm_max_batch_size < 1:
+        raise ValueError(
+            f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
+        )
+    else:
+        pass
+    if pre_lm_max_batch_wait_ms < 0:
+        raise ValueError(
+            f"pre_lm_max_batch_wait_ms must be >= 0, got {pre_lm_max_batch_wait_ms}"
+        )
+    else:
+        pass
     resolved_device = resolve_concrete_device(device, gpu_id)
     configuration = load_checkpoint_config(model_path)
     encoder = Ming3AudioEncoder(
@@ -85,31 +120,6 @@ def create_audio_encoder_executor(
     )
     encoder.load_checkpoint(model_path)
     encoder = encoder.eval().to(resolved_device, dtype=torch.bfloat16)
-
-    @torch.inference_mode()
-    def encode(payload: StagePayload) -> StagePayload:
-        state: TranscriptionState = payload.data
-        state["audio_embeddings"] = encoder(state["features"]).cpu()
-        state["features"] = []
-        return payload
-
-    return SimpleScheduler(encode)
-
-
-def create_thinker_executor(
-    model_path: str,
-    *,
-    max_seq_len: int,
-    max_new_tokens: int,
-    device: str | None = None,
-    gpu_id: int | None = None,
-    tp_rank: int = 0,
-    tp_size: int = 1,
-    nccl_port: int | None = None,
-    server_args_overrides: dict[str, JsonValue] | None = None,
-    total_gpu_memory_fraction: float | None = None,
-) -> OmniScheduler:
-    resolved_device = resolve_concrete_device(device, gpu_id)
     AutoConfig.register(Ming3ASRConfig.model_type, Ming3ASRConfig, exist_ok=True)
     ModelRegistry.models["BailingMoeV3ForCausalLM"] = Ming3AudioThinker
     overrides = dict(server_args_overrides or {})
@@ -136,10 +146,20 @@ def create_thinker_executor(
         )
     )
     tokenizer = PreTrainedTokenizerFast.from_pretrained(model_path)
-    end_token_id = load_checkpoint_config(model_path)["text_config"]["eos_token_id"]
+    end_token_id = configuration["text_config"]["eos_token_id"]
+    encoder_service = Ming3ASRPreLMEncoderService(
+        encoder,
+        max_batch_size=pre_lm_max_batch_size,
+        max_batch_wait_ms=pre_lm_max_batch_wait_ms,
+    )
 
-    def build_request(payload: StagePayload) -> SGLangARRequestData:
+    def build_request(payload: StagePayload) -> Ming3ASRRequestData:
         state: TranscriptionState = payload.data
+        if state["features"]:
+            state["audio_embeddings"] = encoder_service.encode(state["features"])
+            state["features"] = []
+        else:
+            pass
         parameters = payload.request.params
         sampling = SamplingParams(
             temperature=parameters.get("temperature", 0.0),
@@ -159,7 +179,7 @@ def create_thinker_executor(
             vocab_size=model_config.vocab_size,
             eos_token_ids={end_token_id},
         )
-        return SGLangARRequestData(
+        return Ming3ASRRequestData(
             input_ids=state["input_ids"],
             req=request,
             model_inputs={
@@ -170,13 +190,19 @@ def create_thinker_executor(
             temperature=sampling.temperature,
             output_ids=request.output_ids,
             stage_payload=payload,
+            language=parameters.get("language"),
         )
 
-    def build_result(request: SGLangARRequestData) -> StagePayload:
+    def build_result(request: Ming3ASRRequestData) -> StagePayload:
         payload = request.stage_payload
-        generated_text = tokenizer.decode(request.output_ids, skip_special_tokens=True)
+        generated_text = tokenizer.decode(
+            request.output_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
         payload.data = {
-            "text": extract_transcript(generated_text),
+            "text": extract_transcript(generated_text, language=request.language),
+            "finish_reason": request.finish_reason,
             "usage": {
                 "prompt_tokens": len(request.input_ids),
                 "completion_tokens": len(request.output_ids),
@@ -194,4 +220,10 @@ def create_thinker_executor(
         model_runner=Ming3AudioModelRunner(worker, SGLangOutputProcessor()),
         request_builder=build_request,
         result_adapter=build_result,
+        request_build_max_workers=request_build_max_workers,
+        request_build_max_pending=request_build_max_pending,
+        shutdown_callback=encoder_service.close,
+        stream_output_builder=Ming3ASRStreamOutputBuilder(
+            tokenizer, interval_seconds=stream_emit_interval_seconds
+        ),
     )

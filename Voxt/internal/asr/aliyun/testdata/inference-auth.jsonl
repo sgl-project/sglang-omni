@@ -1,0 +1,4 @@
+{"@":"note","text":"Messages shaped after Model Studio, Fun-ASR-Realtime server events (help.aliyun.com/zh/model-studio/fun-asr-server-events: task-started, result-generated, task-finished, task-failed examples) and Voxt RemoteASRAliyunStreaming.swift; texts are made up."}
+{"@":"note","text":"InvalidApiKey: Model Studio error codes (Invalid API-key provided.)."}
+{"@":"wait","for":"start"}
+{"header":{"task_id":"<task-id>","event":"task-failed","error_code":"InvalidApiKey","error_message":"Invalid API-key provided.","attributes":{}},"payload":{}}

@@ -16,17 +16,16 @@ import torch
 from torch import Tensor
 
 from sglang_omni.models.minimax_music3.serial_offload import (
-    StageResidency,
     get_coordinator,
     torch_memory_saver,
 )
-from sglang_omni.models.minimax_music3.weight_cache import checkpoint_identity
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
+from sglang_omni.scheduling.stage_residency import StageResidency
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
+from sglang_omni.scheduling.weight_cache import checkpoint_identity
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 from .checkpoint import load_torch_state, resolve_checkpoint
@@ -140,6 +139,7 @@ class MiniMaxMusic3AcousticDecoder:
         compile_acoustic: bool = True,
         breakable_cuda_graph: bool = False,
         breakable_cuda_graph_min_free_gb: float | None = None,
+        fp32_flex_attention: bool | None,
         cache_dit_fn_compute_blocks: int = 2,
         cache_dit_bn_compute_blocks: int = 2,
         cache_dit_max_warmup_steps: int = 4,
@@ -147,25 +147,9 @@ class MiniMaxMusic3AcousticDecoder:
         cache_dit_max_continuous_cached_steps: int = 1,
         serial_offload: bool = False,
     ) -> None:
-        if not (
-            current_platform.is_cuda()
-            or current_platform.is_musa()
-            or current_platform.is_xpu()
-        ):
-            raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires CUDA/MUSA/XPU backend"
-            )
-        else:
-            pass
         torch.backends.cudnn.enabled = False
         torch.backends.cuda.enable_cudnn_sdp(False)
         self.device = torch.device(device)
-        if self.device.type not in ("cuda", "musa", "xpu"):
-            raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA/XPU device"
-            )
-        else:
-            pass
         self.dtype = resolve_acoustic_dtype(dtype)
         if self.dtype is torch.float32:
             # note (chenyang): TF32 keeps float32's range with a 10-bit mantissa
@@ -183,6 +167,24 @@ class MiniMaxMusic3AcousticDecoder:
         self.attention_backend = attention_backend.strip().lower()
         self.cache_dit = boolean("cache_dit", cache_dit)
         self.compile_acoustic = boolean("compile_acoustic", compile_acoustic)
+        supports_fp32_flex_attention = (
+            self.device.type == "cuda"
+            and self.dtype is torch.float32
+            and self.attention_backend == "torch_sdpa"
+        )
+        if fp32_flex_attention is None:
+            self.fp32_flex_attention = supports_fp32_flex_attention
+        else:
+            self.fp32_flex_attention = boolean(
+                "fp32_flex_attention", fp32_flex_attention
+            )
+            if self.fp32_flex_attention and not supports_fp32_flex_attention:
+                raise ValueError(
+                    "MiniMax Music 3 fp32_flex_attention requires "
+                    "CUDA, dtype=float32, and attention_backend=torch_sdpa"
+                )
+            else:
+                pass
         self.breakable_cuda_graph_requested = boolean(
             "breakable_cuda_graph", breakable_cuda_graph
         )
@@ -250,7 +252,7 @@ class MiniMaxMusic3AcousticDecoder:
             f"MiniMax Music 3 PyTorch DIT/DAV loaded device={self.device} dtype={self.dtype} dit_parameters={sum((parameter.numel() for parameter in self.dit.parameters()))} dav_parameters={sum((parameter.numel() for parameter in self.dav.parameters()))} folded_weight_norms={removed_weight_norms} elapsed={time.perf_counter() - load_started:.1f}s"
         )
         logger.info(
-            f"MiniMax Music 3 acoustic runtime dit_steps={self.dit_steps} dit_cfg_scale={self.dit_cfg_scale:.3f} attention_backend={self.attention_backend} cache_dit={self.cache_dit} compile_acoustic={self.compile_acoustic} breakable_cuda_graph={self.breakable_cuda_graph} breakable_cuda_graph_requested={self.breakable_cuda_graph_requested}"
+            f"MiniMax Music 3 acoustic runtime dit_steps={self.dit_steps} dit_cfg_scale={self.dit_cfg_scale:.3f} attention_backend={self.attention_backend} fp32_flex_attention={self.dit.fp32_flex_attention} cache_dit={self.cache_dit} compile_acoustic={self.compile_acoustic} breakable_cuda_graph={self.breakable_cuda_graph} breakable_cuda_graph_requested={self.breakable_cuda_graph_requested}"
         )
         self.residency: StageResidency | None = None
         if self.serial_offload_enabled:
@@ -319,6 +321,7 @@ class MiniMaxMusic3AcousticDecoder:
             self.dit = MiniMaxMusic3DIT(
                 compute_dtype=self.dtype,
                 attention_backend=self.attention_backend,
+                fp32_flex_attention=self.fp32_flex_attention,
             )
         self.dit.load_state_dict(state, strict=True, assign=True)
         del state

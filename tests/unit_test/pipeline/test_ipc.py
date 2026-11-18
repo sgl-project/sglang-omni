@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import gc
 import signal
+import threading
 import weakref
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from traceback import format_exception
 from types import FrameType, SimpleNamespace
@@ -39,6 +40,7 @@ from sglang_omni.serve.protocol import (
     ChatMessage,
     CreateSpeechRequest,
 )
+from sglang_omni.serve.realtime.types import ProtocolError
 from sglang_omni.serve.server_warmup import (
     TranscriptionWarmupRequest,
     warmup_tone_wav_bytes,
@@ -503,6 +505,7 @@ async def run_launcher_with_fake_runner(
     replica_counts: tuple[int, ...] = (1,),
     host: str = "0.0.0.0",
     created_runners: list[object] | None = None,
+    runner_stop_error: Exception | None = None,
 ) -> tuple[object, FastAPI, SimpleNamespace]:
     app = FastAPI()
     profiler_calls = SimpleNamespace(starts=[], stops=[])
@@ -547,6 +550,10 @@ async def run_launcher_with_fake_runner(
 
         async def stop(self) -> None:
             self.stopped = True
+            if runner_stop_error is not None:
+                raise runner_stop_error
+            else:
+                pass
 
         async def wait_failed(self) -> None:
             await asyncio.Future()
@@ -926,6 +933,7 @@ async def test_launcher_sends_one_warmup_request_per_replica_of_the_most_replica
         base_url: str,
         requests: list[ChatCompletionRequest],
         timeout_s: float,
+        realtime_warmup: Callable[[float], Awaitable[None]] | None,
     ) -> Coroutine[None, None, None]:
         warmup_requests.append(requests)
         return asyncio.sleep(0)
@@ -968,6 +976,7 @@ async def test_launcher_warms_up_through_the_bind_host_or_loopback_for_a_wildcar
         base_url: str,
         requests: list[ChatCompletionRequest],
         timeout_s: float,
+        realtime_warmup: Callable[[float], Awaitable[None]] | None,
     ) -> Coroutine[None, None, None]:
         warmup_base_urls.append(base_url)
         return asyncio.sleep(0)
@@ -1001,6 +1010,100 @@ async def test_failed_warmup_stops_the_server_before_it_reports_up(
             base_url="http://127.0.0.1:8000",
             requests=[request],
             timeout_s=5,
+        )
+
+    assert app.state.server_status is ServerStatus.STARTING
+    assert server.should_exit is True
+
+
+@pytest.mark.asyncio
+async def test_realtime_warmup_runs_before_the_server_reports_up() -> None:
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    warmup_calls: list[tuple[ServerStatus, float]] = []
+
+    async def warm_up_realtime(timeout_s: float) -> None:
+        warmup_calls.append((app.state.server_status, timeout_s))
+
+    await launcher.warm_up_server(
+        server,
+        app,
+        StubCoordinator(),
+        base_url="http://127.0.0.1:8000",
+        requests=[],
+        timeout_s=5,
+        realtime_warmup=warm_up_realtime,
+    )
+
+    assert warmup_calls == [(ServerStatus.STARTING, 5)]
+    assert app.state.server_status is ServerStatus.UP
+
+
+@pytest.mark.asyncio
+async def test_cancelled_server_warmup_cancels_the_realtime_warmup() -> None:
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    started = asyncio.Event()
+    cancelled: list[bool] = []
+
+    async def warm_up_realtime(timeout_s: float) -> None:
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    warmup = asyncio.create_task(
+        launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[],
+            timeout_s=30,
+            realtime_warmup=warm_up_realtime,
+        )
+    )
+    await started.wait()
+
+    warmup.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await warmup
+
+    assert cancelled == [True]
+    assert app.state.server_status is ServerStatus.STARTING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("warmup session failed"),
+        ProtocolError("admission_rejected", "warmup session refused"),
+    ],
+)
+async def test_failed_realtime_warmup_stops_the_server_before_it_reports_up(
+    error: Exception,
+) -> None:
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+
+    async def warm_up_realtime(timeout_s: float) -> None:
+        raise error
+
+    with pytest.raises(type(error), match=str(error)):
+        await launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[],
+            timeout_s=5,
+            realtime_warmup=warm_up_realtime,
         )
 
     assert app.state.server_status is ServerStatus.STARTING
@@ -1043,7 +1146,7 @@ async def test_launcher_uses_runner_and_mounts_profiler_routes(
     finally:
         rec = get_recorder()
         if rec.is_active():
-            rec.stop()
+            rec.stop(wait=True)
 
 
 def test_start_profile_request_only_mode_does_not_require_trace_template(
@@ -1081,7 +1184,127 @@ def test_start_profile_request_only_mode_does_not_require_trace_template(
     finally:
         rec = get_recorder()
         if rec.is_active():
-            rec.stop()
+            rec.stop(wait=True)
+
+
+@pytest.mark.parametrize("endpoint", ["/start_profile", "/start_request_profile"])
+def test_profiler_start_routes_pass_event_buffer_capacity(
+    endpoint: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRecorder:
+        def __init__(self) -> None:
+            self.capacities: list[int | None] = []
+
+        def start(
+            self,
+            run_id: str,
+            event_dir: str,
+            stage: str,
+            *,
+            event_buffer_capacity: int | None = None,
+        ) -> str:
+            self.capacities.append(event_buffer_capacity)
+            return "/tmp/events.jsonl"
+
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.capacities: list[int | None] = []
+
+        async def broadcast_start(
+            self,
+            run_id: str,
+            trace_path_template: str,
+            config: dict[str, object] | None = None,
+            stages: list[str] | None = None,
+            event_dir: str | None = None,
+            enable_torch: bool = True,
+            event_buffer_capacity: int | None = None,
+        ) -> None:
+            self.capacities.append(event_buffer_capacity)
+
+    recorder = FakeRecorder()
+    control = FakeProfilerControl()
+    monkeypatch.setattr(launcher, "_get_event_recorder", lambda: recorder)
+    app = FastAPI()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+    event_dir = str(tmp_path / "events")
+    body: dict[str, object] = {
+        "run_id": "capacity-test",
+        "event_dir": event_dir,
+        "event_buffer_capacity": 1500,
+    }
+    if endpoint == "/start_profile":
+        body["enable_torch"] = False
+    else:
+        pass
+
+    with TestClient(app) as client:
+        response = client.post(endpoint, json=body)
+
+    assert response.status_code == 200
+    assert recorder.capacities == [1500]
+    assert control.capacities == [1500]
+
+
+@pytest.mark.parametrize("invalid_capacity", [0, -1, True, 1.5, "1500"])
+def test_profiler_start_routes_reject_invalid_event_buffer_capacity(
+    invalid_capacity: object,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRecorder:
+        def __init__(self) -> None:
+            self.starts = 0
+
+        def start(
+            self,
+            run_id: str,
+            event_dir: str,
+            stage: str,
+            *,
+            event_buffer_capacity: int | None = None,
+        ) -> str:
+            self.starts += 1
+            return "/tmp/events.jsonl"
+
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.starts = 0
+
+        async def broadcast_start(
+            self,
+            run_id: str,
+            trace_path_template: str,
+            config: dict[str, object] | None = None,
+            stages: list[str] | None = None,
+            event_dir: str | None = None,
+            enable_torch: bool = True,
+            event_buffer_capacity: int | None = None,
+        ) -> None:
+            self.starts += 1
+
+    recorder = FakeRecorder()
+    control = FakeProfilerControl()
+    monkeypatch.setattr(launcher, "_get_event_recorder", lambda: recorder)
+    app = FastAPI()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+    event_dir = str(tmp_path / "events")
+    request_body: dict[str, object] = {
+        "run_id": "invalid-capacity",
+        "event_dir": event_dir,
+        "enable_torch": False,
+        "event_buffer_capacity": invalid_capacity,
+    }
+
+    with TestClient(app) as client:
+        for endpoint in ("/start_profile", "/start_request_profile"):
+            response = client.post(endpoint, json=request_body)
+            assert response.status_code == 422
+
+    assert recorder.starts == 0
+    assert control.starts == 0
 
 
 class RecordingProfilerControl:
@@ -1157,6 +1380,96 @@ async def test_launcher_stops_runner_when_server_raises(
     assert len(runners) == 1
     assert runners[0].started
     assert runners[0].stopped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runner_stop_error",
+    [None, RuntimeError("runner stop failed")],
+    ids=["runner-stop-success", "runner-stop-failure"],
+)
+async def test_coordinator_shutdown_always_finalizes_profiler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner_stop_error: Exception | None,
+) -> None:
+    recorder = get_recorder()
+    if recorder.is_active():
+        recorder.stop(wait=True)
+    else:
+        pass
+    event_dir = tmp_path / "events"
+    recorder.start("shutdown-finalization", str(event_dir), "coordinator")
+
+    server_serve = AsyncMock(return_value=None)
+    if runner_stop_error is None:
+        await run_launcher_with_fake_runner(
+            config=make_config(tmp_path),
+            serve_mock=server_serve,
+            monkeypatch=monkeypatch,
+        )
+    else:
+        with pytest.raises(RuntimeError, match="runner stop failed"):
+            await run_launcher_with_fake_runner(
+                config=make_config(tmp_path),
+                serve_mock=server_serve,
+                monkeypatch=monkeypatch,
+                runner_stop_error=runner_stop_error,
+            )
+    assert recorder.is_active() is False
+    assert len(list(event_dir.glob("run_status_*.json"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_coordinator_shutdown_waits_for_profiler_off_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = get_recorder()
+    if recorder.is_active():
+        recorder.stop(wait=True)
+    else:
+        pass
+    recorder.start("coordinator-shutdown", str(tmp_path / "events"), "coordinator")
+
+    loop = asyncio.get_running_loop()
+    wait_started = asyncio.Event()
+    release_wait = threading.Event()
+
+    def wait_for_finalizations(timeout_seconds: float) -> bool:
+        del timeout_seconds
+        loop.call_soon_threadsafe(wait_started.set)
+        return release_wait.wait(timeout=5)
+
+    monkeypatch.setattr(recorder, "wait_for_finalizations", wait_for_finalizations)
+    server_serve = AsyncMock(side_effect=RuntimeError("server failed"))
+    task = asyncio.create_task(
+        run_launcher_with_fake_runner(
+            config=make_config(tmp_path),
+            serve_mock=server_serve,
+            monkeypatch=monkeypatch,
+        )
+    )
+    try:
+        await asyncio.wait_for(wait_started.wait(), timeout=5)
+        assert task.done() is False
+        release_wait.set()
+        with pytest.raises(RuntimeError, match="server failed"):
+            await task
+    finally:
+        release_wait.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        else:
+            pass
+        if recorder.is_active():
+            recorder.stop(wait=True)
+        else:
+            pass
 
 
 @pytest.mark.asyncio

@@ -172,6 +172,43 @@ def test_device_history_matches_host_penalty_and_min_new_tokens() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("masks_chunk_boundary_eos", "masked_steps"),
+    [(True, [25, 29, 50]), (False, [])],
+    ids=["several-chunks", "one-chunk"],
+)
+def test_a_request_of_several_chunks_stops_only_at_an_eos_off_the_chunk_boundaries(
+    masks_chunk_boundary_eos: bool, masked_steps: list[int]
+) -> None:
+    """A request that speaks several chunks of owed text ended at the codec EOS the talker samples at its first chunk boundary; it must still stop at an EOS between boundaries."""
+    runner = MiniCPMOTalkerModelRunner.__new__(MiniCPMOTalkerModelRunner)
+    runner.model = SimpleNamespace(codec_eos_id=CODEC_EOS_ID)
+    steps = [0, 24, 25, 29, 30, 50]
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(output_ids=[0] * step),
+                talker_model_inputs={
+                    "rep_penalty": 1.0,
+                    "masks_chunk_boundary_eos": masks_chunk_boundary_eos,
+                },
+            )
+        )
+        for step in steps
+    ]
+    logits = torch.zeros(len(steps), VOCAB_SIZE)
+
+    runner.process_sampling_logits(
+        LogitsProcessorOutput(next_token_logits=logits, hidden_states=None), requests
+    )
+
+    assert [
+        step
+        for step, row_logits in zip(steps, logits, strict=True)
+        if row_logits[CODEC_EOS_ID] == float("-inf")
+    ] == masked_steps
+
+
 def test_a_failed_sampling_graph_capture_falls_back_to_eager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

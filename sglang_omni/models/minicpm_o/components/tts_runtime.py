@@ -9,10 +9,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-from sglang_omni.models.minicpm_o.components.code2wav import (
-    OUTPUT_SAMPLE_RATE,
-    MiniCPMOCode2Wav,
-)
+from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
     SILENCE_TOKEN_ID,
     SpeakerPrompt,
@@ -156,13 +153,6 @@ class MiniCPMOVocoderRuntime:
                 waveform = None
             else:
                 waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-                if (
-                    not requests[index].end_of_turn
-                    and waveform.size < OUTPUT_SAMPLE_RATE
-                ):
-                    waveform = np.pad(waveform, (OUTPUT_SAMPLE_RATE - waveform.size, 0))
-                else:
-                    pass
             if requests[index].end_of_turn:
                 self.reset_turn_state(states[index])
             else:

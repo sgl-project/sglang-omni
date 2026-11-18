@@ -67,12 +67,13 @@ class AudioVAE(PreTrainedModel):
         else:
             pass
 
-    def encode_latent(self, waveform, waveform_length):
+    def encode_latent(self, waveform, waveform_length, generator=None):
         """
         Encodes a raw waveform to obtain its acoustic latent representation.
         Args:
             waveform: The input audio waveform, shape (B, T_wav).
             waveform_length: The length of each waveform, shape (B,).
+            generator: Optional generator for the posterior sample; None uses the global one.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: A tuple containing:
@@ -90,7 +91,7 @@ class AudioVAE(PreTrainedModel):
         h = h.transpose(1, 2)  # [B, d, T]
 
         posterior = OobleckDiagonalGaussianDistribution(h)
-        latent = posterior.sample()  # [B, d/2, T]
+        latent = posterior.sample(generator=generator)  # [B, d/2, T]
         latent = latent.transpose(1, 2)
         return latent, frame_num
 

@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.distributed.parallel_state import graph_capture
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
 )
@@ -28,20 +30,32 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_ENABLE_ASYNC_DECODE,
     DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS,
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
+    DEFAULT_GDN_PREFILL_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
+    DEFAULT_REFERENCE_SAMPLING,
+    DEFAULT_REFERENCE_SAMPLING_FALLBACK,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
     DEFAULT_TOWER_FUSED_LAYERS,
     DEFAULT_TRITON_SAMPLING,
+    ReferenceSamplingFallback,
 )
 from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
 )
+from sglang_omni.models.fishaudio_drama3.gdn_prefill_graph import (
+    GDNPrefillGraphAttnBackend,
+    install_gdn_prefill_graph,
+)
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
-from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
+from sglang_omni.models.fishaudio_drama3.model_inputs import (
+    Drama3DecodeBuffers,
+    Drama3DecodeStatePool,
+)
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
+from sglang_omni.models.fishaudio_drama3.moe_configs import install_tuned_moe_configs
 from sglang_omni.models.fishaudio_drama3.quantization import (
     INT4_QUANTIZATION_METHOD,
     QUANTIZATION_METHOD,
@@ -65,6 +79,7 @@ from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     MAX_FUSED_ROWS,
 )
 from sglang_omni.models.fishaudio_drama3.tower_prefill import Drama3TowerPrefill
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
@@ -83,8 +98,8 @@ logger = logging.getLogger(__name__)
 
 
 class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
-    """Single-GPU engine replaying decode CUDA graphs; no radix, chunked prefill or
-    overlap."""
+    """Engine on one GPU or one tensor-parallel rank, replaying decode CUDA graphs;
+    no radix, chunked prefill or overlap."""
 
     model_name = "Fish Audio Drama 3"
     supports_breakable_prefill_cuda_graph = (
@@ -107,10 +122,18 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         first_frame_cuda_graph_max_requests: int = (
             DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS
         ),
+        gdn_prefill_cuda_graphs: bool = DEFAULT_GDN_PREFILL_CUDA_GRAPHS,
         triton_sampling: bool = DEFAULT_TRITON_SAMPLING,
+        reference_sampling: bool = DEFAULT_REFERENCE_SAMPLING,
+        reference_sampling_fallback: ReferenceSamplingFallback = (
+            DEFAULT_REFERENCE_SAMPLING_FALLBACK
+        ),
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        tp_rank: int = 0,
+        tp_size: int = 1,
+        nccl_port: int | None = None,
     ) -> None:
         self.context_length = context_length
         self.max_running_requests = max_running_requests
@@ -121,15 +144,24 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.max_new_tokens_cap = max_new_tokens_cap
         self.first_frame_cuda_graphs = first_frame_cuda_graphs
         self.first_frame_cuda_graph_max_requests = first_frame_cuda_graph_max_requests
+        self.gdn_prefill_cuda_graphs = gdn_prefill_cuda_graphs
         self.triton_sampling = triton_sampling
+        self.reference_sampling = reference_sampling
+        self.reference_sampling_fallback = reference_sampling_fallback
         self.tower_fused_layers = tower_fused_layers
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.tp_rank = tp_rank
+        self.tp_size = tp_size
+        self.nccl_port = nccl_port
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
 
     def resolve_checkpoint(self, model_path: str) -> str:
         return resolve_checkpoint(model_path)
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        return {"tp_rank": self.tp_rank, "nccl_port": self.nccl_port}
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         """Register the classes the checkpoint names; the directory is the contract."""
@@ -137,6 +169,13 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         ModelRegistry.models[FISH_OMNI_ARCHITECTURE] = Drama3ForCausalLM
         QUANTIZATION_METHODS[QUANTIZATION_METHOD] = ExpertFp8Config
         QUANTIZATION_METHODS[INT4_QUANTIZATION_METHOD] = ExpertDenseInt4Config
+        install_tuned_moe_configs()
+        install_gdn_prefill_graph(
+            FISH_OMNI_ARCHITECTURE,
+            max_sequences=(
+                self.max_running_requests if self.gdn_prefill_cuda_graphs else 0
+            ),
+        )
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
@@ -157,6 +196,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         overrides.setdefault("page_size", 1)
+        overrides.setdefault("tp_size", self.tp_size)
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
         attention_backends = {
@@ -207,12 +247,15 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 "Drama 3 keeps page_size=1 and the KV cache in the model dtype"
             )
         elif (
-            parallel_sizes != (1, 1, 1) or server_args.speculative_algorithm is not None
+            parallel_sizes != (self.tp_size, 1, 1)
+            or server_args.speculative_algorithm is not None
         ):
             raise ValueError(
-                f"Drama 3 runs on one rank without speculative decoding; got "
-                f"tp/pp/dp={parallel_sizes} and "
-                f"speculative_algorithm={server_args.speculative_algorithm}"
+                f"Drama 3 runs on the tts_engine stage's {self.tp_size} tensor-parallel "
+                f"ranks without pipeline or data parallelism or speculative decoding; "
+                f"got tp/pp/dp={parallel_sizes} and "
+                f"speculative_algorithm={server_args.speculative_algorithm}; set "
+                f"--tts_engine.tp_size for tensor parallelism"
             )
         elif self.context_length > max_position_embeddings:
             raise ValueError(
@@ -232,15 +275,21 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         gpu_id: int,
         server_args: ServerArgs,
     ) -> None:
-        """Allocate the decode buffers before graph capture; the checkpoint and
-        GPU arguments are the interface contract."""
+        """Allocate the decode buffers and state pool before graph capture; the
+        checkpoint and GPU arguments are the interface contract."""
         sglang_runner = model_worker.model_runner
         model = sglang_runner.model
         assert isinstance(model, Drama3ForCausalLM)
+        frame_width = 1 + model.config.audio_decoder_config.num_codebooks
         # No decode batch or captured graph size exceeds the request slots.
         model.decode_buffers = Drama3DecodeBuffers.allocate(
             row_count=sglang_runner.req_to_token_pool.size,
-            frame_width=1 + model.config.audio_decoder_config.num_codebooks,
+            frame_width=frame_width,
+            device=torch.device(device),
+        )
+        model.state_pool = Drama3DecodeStatePool.allocate(
+            request_slot_count=sglang_runner.req_to_token_pool.size,
+            frame_width=frame_width,
             device=torch.device(device),
         )
         prefill_graph_config = resolved_view(server_args).cuda_graph_config.prefill
@@ -257,7 +306,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 self.context_length,
                 largest_prefill_graph_token_count,
             ),
-            frame_width=1 + model.config.audio_decoder_config.num_codebooks,
+            frame_width=frame_width,
             device=torch.device(device),
         )
         audio_decoder = model.audio_decoder
@@ -266,7 +315,13 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             audio_decoder.codebook_size,
             audio_decoder.main_token_candidate_ids.shape[0],
         )
-        if not self.triton_sampling:
+        if self.reference_sampling:
+            audio_decoder.reference_sampling_fallback = self.reference_sampling_fallback
+            logger.info(
+                f"Drama 3 codebook sampling: reference sampling in PyTorch, "
+                f"{self.reference_sampling_fallback} fallback"
+            )
+        elif not self.triton_sampling:
             logger.info(
                 "Drama 3 codebook sampling: PyTorch, "
                 "tts_engine.factory.triton_sampling is false"
@@ -298,7 +353,20 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             audio_decoder.enable_fused_layers(torch.device(device))
             logger.info(
                 f"Drama 3 tower fused layers: on for passes up to {MAX_FUSED_ROWS} "
-                f"rows ({', '.join(FUSED_KERNELS)})"
+                f"rows ({', '.join(FUSED_KERNELS)}); fused frame embeddings and "
+                f"decode-row staging: "
+                f"{'on' if audio_decoder.fused_frame_embeddings else 'off'}"
+            )
+        if audio_decoder.sampler is None:
+            pass
+        elif (
+            head_reason := audio_decoder.enable_head_sampling(torch.device(device))
+        ) is not None:
+            logger.info(f"Drama 3 fused codebook head sampling: off, {head_reason}")
+        else:
+            logger.info(
+                f"Drama 3 fused codebook head sampling: on for passes up to "
+                f"{MAX_FUSED_ROWS} rows"
             )
         sglang_runner.extra_prefill_graph_attention_layers = list(model.tower_attention)
         sglang_runner.prefill_graph_runner_class = RequestIdPrefillCudaGraphRunner
@@ -310,6 +378,29 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         else:
             pass
 
+    def gdn_prefill_graph_status(self) -> str:
+        """Whether the breakable prefill graphs capture the GDN extend, and why not."""
+        sglang_runner = self.sglang_runner
+        assert sglang_runner is not None
+        attention_backend = sglang_runner.attn_backend
+        assert isinstance(attention_backend, HybridLinearAttnBackend)
+        linear_backend = attention_backend.linear_attn_backend
+        if not self.gdn_prefill_cuda_graphs:
+            return "off, tts_engine.factory.gdn_prefill_cuda_graphs is false"
+        elif not isinstance(linear_backend, GDNPrefillGraphAttnBackend):
+            return f"off, the linear backend is {type(linear_backend).__name__}"
+        elif (reason := linear_backend.prefill_graph_unsupported_reason()) is not None:
+            return f"off, {reason}"
+        elif (
+            not attention_backend.use_captured_forward_metadata_for_breakable_cuda_graph
+        ):
+            return "off, the prefill runs eager or without the breakable graph"
+        else:
+            return (
+                f"on, each prefill graph captures the linear-attention extend of up "
+                f"to {attention_backend.prefill_cuda_graph_max_batch_size} requests"
+            )
+
     def post_cuda_graph_setup(
         self, model: Drama3ForCausalLM, server_args: ServerArgs
     ) -> None:
@@ -318,6 +409,9 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         attention_backend = sglang_runner.attn_backend
         decode_graph_runner = sglang_runner.decode_cuda_graph_runner
         decode_graph_config = resolved_view(server_args).cuda_graph_config.decode
+        logger.info(
+            f"Drama 3 GDN prefill CUDA graphs: {self.gdn_prefill_graph_status()}"
+        )
         if not self.first_frame_cuda_graphs:
             logger.info(
                 "Drama 3 first-frame CUDA graphs: off, "
@@ -334,16 +428,20 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 self.first_frame_cuda_graph_max_requests, decode_graph_runner.max_bs
             )
             text_config = model.config.text_config
-            first_frame_graphs = Drama3FirstFrameGraphs.capture(
-                sample_first_frames=model.sample_first_frames,
-                attention_backend=attention_backend,
-                max_request_count=max_request_count,
-                vocab_size=int(model.audio_decoder.main_token_candidate_ids.shape[0]),
-                hidden_size=text_config.hidden_size,
-                hidden_dtype=sglang_runner.model_config.dtype,
-                frame_width=1 + model.config.audio_decoder_config.num_codebooks,
-                device=model.lm_head.weight.device,
-            )
+            # Tensor-parallel tower all-reduces record through the graph-safe communicators.
+            with graph_capture() if self.tp_size > 1 else nullcontext():
+                first_frame_graphs = Drama3FirstFrameGraphs.capture(
+                    sample_first_frames=model.sample_first_frames,
+                    attention_backend=attention_backend,
+                    max_request_count=max_request_count,
+                    vocab_size=int(
+                        model.audio_decoder.main_token_candidate_ids.shape[0]
+                    ),
+                    hidden_size=text_config.hidden_size,
+                    hidden_dtype=sglang_runner.model_config.dtype,
+                    frame_width=1 + model.config.audio_decoder_config.num_codebooks,
+                    device=model.lm_head.weight.device,
+                )
             model.first_frame_graphs = first_frame_graphs
             logger.info(
                 f"Drama 3 first-frame CUDA graphs: on for 1..{max_request_count} "
@@ -375,6 +473,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 context_length=self.context_length,
                 max_prompt_rows=self.max_prompt_rows,
                 max_new_tokens_cap=self.max_new_tokens_cap,
+                reference_sampling=self.reference_sampling,
             ),
             Drama3ResultAdapter(eos_token_id=model.config.eos_token_id),
         )

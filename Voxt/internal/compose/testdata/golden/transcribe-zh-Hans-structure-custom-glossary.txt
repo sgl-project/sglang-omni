@@ -1,0 +1,14 @@
+# profile: custom:glossary
+# layers: custom glossary
+
+Write 中文 with full-width punctuation. Keep {{UNKNOWN}} as is.
+
+术语表：下面的词按这里的写法输出，即使语音识别听成了别的写法。
+- Kubernetes
+- VoxtNew（可能被听成：aura link、奥拉链接）
+- DeepSeek（可能被听成：deep seek）
+
+---- user ----
+<input>
+嗯那个 aura link 的发布大概完成了百分之七十，不对，百分之八十
+</input>

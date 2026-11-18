@@ -77,6 +77,7 @@ from sglang_omni.serve.realtime.types import (
     ProtocolError,
     RuntimeLimits,
     Unit,
+    failure_code,
     samples_to_ms,
 )
 
@@ -366,17 +367,18 @@ class SessionBridge(InteractionAdapter):
                 pass
         except Exception as exc:
             if ContextExhaustedError.matches(exc):
-                failure_code = ContextExhaustedError.CODE
+                code = ContextExhaustedError.CODE
             else:
+                code = failure_code(exc)
+            if code == CLOSE_REASON_INTERNAL:
                 logger.exception("Session bridge output reader failed")
-                failure_code = CLOSE_REASON_INTERNAL
+            else:
+                pass
             self.reader_error = exc
             if self.input_done is not None and not self.input_done.done():
                 self.input_done.set_exception(exc)
             elif not self.is_closing:
-                await self.output_sink(
-                    TurnFailure("server_error", failure_code, str(exc))
-                )
+                await self.output_sink(TurnFailure("server_error", code, str(exc)))
             else:
                 pass
 

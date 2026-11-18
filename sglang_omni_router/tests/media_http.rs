@@ -209,6 +209,12 @@ fn handle_connection(
                 route_worker: header_value(&head, "x-sglang-omni-route-worker").map(str::to_owned),
             });
         let response: &[u8] = match path.as_str() {
+        "/v1/audio/speech" if contains_bytes(&body, b"\"stream_format\":\"sse\"") => {
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 56\r\n\r\ndata: {\"type\":\"speech.audio.delta\",\"audio\":\"V0FWRQ==\"}\n\n"
+        }
+        "/v1/audio/speech" if contains_bytes(&body, b"\"stream\":true") && !contains_bytes(&body, b"\"response_format\":\"pcm\"") => {
+            b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: 4\r\nX-Sample-Rate: 24000\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\nX-SGLang-Omni-Speech-Id: speech-resource\r\n\r\nWAVE"
+        }
         "/v1/audio/speech" if contains_bytes(&body, b"\"stream\":true") => {
             b"HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\nContent-Length: 4\r\nX-Sample-Rate: 24000\r\nX-Channels: 1\r\nX-Bit-Depth: 16\r\nX-SGLang-Omni-Speech-Id: speech-resource\r\n\r\nPCM!"
         }
@@ -764,6 +770,49 @@ fn qwen_task_types_select_the_matching_worker_profile() {
     assert_eq!(custom.captures().len(), 1);
 }
 
+/// Streaming WAV was rejected before reaching a compatible worker.
+#[test]
+fn wav_streaming_selects_a_streaming_capable_worker_and_preserves_bytes() {
+    let _guard = socket_guard();
+    let non_streaming = Worker::start();
+    let streaming = Worker::start();
+    let router = RouterProcess::start_with(&[&non_streaming, &streaming], |address| {
+        speech_stream_mode_config(
+            address,
+            &[
+                (&non_streaming, "[\"wav\", \"pcm\"]", "[\"non_streaming\"]"),
+                (&streaming, "[\"wav\", \"pcm\"]", "[\"streaming\"]"),
+            ],
+        )
+    });
+    for (body, content_type, audio_bytes) in [
+        (
+            br#"{"model":"tts","input":"hello","stream":true}"#.as_slice(),
+            "audio/wav",
+            b"WAVE".as_slice(),
+        ),
+        (
+            br#"{"model":"tts","input":"hello","stream":false,"stream_format":"sse"}"#.as_slice(),
+            "text/event-stream",
+            b"data: {\"type\":\"speech.audio.delta\",\"audio\":\"V0FWRQ==\"}\n\n".as_slice(),
+        ),
+    ] {
+        let (response, capture) = roundtrip(
+            &streaming,
+            &router,
+            MediaRoute::Speech.path(),
+            "application/json",
+            body,
+        );
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        assert_eq!(header(&response, "content-type"), Some(content_type));
+        assert_eq!(response_body(&response), audio_bytes);
+        assert_eq!(capture.body, body);
+    }
+    assert!(non_streaming.captures().is_empty());
+    assert_eq!(streaming.captures().len(), 2);
+}
+
 #[test]
 fn sse_stream_format_selects_only_a_streaming_capable_worker() {
     let _guard = socket_guard();
@@ -1171,7 +1220,7 @@ fn heterogeneous_media_classification_selects_only_a_correlated_capable_worker()
     assert_eq!(capable.captures().len() + limited.captures().len(), 2);
 
     let invalid_streaming_speech =
-        br#"{"model":"tts","input":"x","stream":true,"response_format":"wav"}"#;
+        br#"{"model":"tts","input":"x","stream":true,"response_format":"mp3"}"#;
     let response = request(
         router.address,
         "POST",
