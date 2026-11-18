@@ -15,6 +15,8 @@ stages:
     gpu_memory_fraction: 0.70
     factory:
       max_running_requests: 8
+      # For 16 concurrent requests, raise this to 16 and set the vocoder share
+      # to 0.15 with max_new_tokens 1000; 0.16 does not fit on 32 GB.
       # 2048 frames does not fit beside the stateful decoder on 32 GB.
       max_new_tokens: 1024
 

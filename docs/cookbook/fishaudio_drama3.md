@@ -266,23 +266,47 @@ pipeline idles at about 31,690 MiB of the card's 32,607 MiB, so
 `max_new_tokens` 1024 fits and 2048 does not. Raise `max_new_tokens` only after
 measuring the vocoder share on your card.
 
+For 16 concurrent requests, raise `max_running_requests` to 16 and change the
+budget: engine 0.70, vocoder 0.15, `max_new_tokens` 1000. A 0.16 vocoder share
+left too little headroom on 32 GB and startup ran out of memory in repeated
+attempts, and at 0.15 with 1024 frames the share holds only 1,020 padded
+frames. The official prompts generate about 90
+tokens, so the lower cap does not bind.
+
 `stateful_decode` also covers SM120, where the FA3-based incremental path
 (`--vocoder.factory.stream_decode incremental`) is unavailable and otherwise
-falls back to overlap decoding. Measured with eight streaming English prompts
-of about 5-7 s each, two runs per point, on one RTX 5090:
+falls back to overlap decoding. Measured with all 1,088 SeedTTS English
+prompts, streaming and cloning each prompt's own reference, on one RTX 5090:
 
-| Concurrency | Stateful throughput (audio s/s) | Stateful TTFA | Overlap throughput (audio s/s) | Overlap TTFA |
+| Concurrency | Stateful throughput (audio s/s) | Overlap throughput (audio s/s) | Stateful first audio | Overlap first audio |
 |---:|---:|---:|---:|---:|
-| 1 | 7.7 | 181 ms | 7.2 | 190 ms |
-| 2 | 11.4 | 241 ms | 10.5 | 270 ms |
-| 4 | 19.4 | 276 ms | 17.7 | 298 ms |
-| 8 | 29.2 | 354 ms | 28.7 | 358 ms |
+| 1 | 7.12 | 7.15 | 74 ms | 74 ms |
+| 8 | 27.16 | 27.41 | 112 ms | 109 ms |
+| 16 | 38.86 | 37.68 | 144 ms | 204 ms |
 
-*Table 5. Drama 3 int4 streaming throughput and mean TTFA on one RTX 5090.*
+*Table 5. Drama 3 int4 streaming throughput and mean time to first audio on one
+RTX 5090.*
 
-Stateful decoding is 6-10% faster than overlap at concurrency 1-4 and costs
-about 1.7 GiB more GPU memory (31,732 MiB versus 30,072 MiB peak). At concurrency 8
-the engine becomes the bottleneck and the two are within run-to-run spread.
+Stateful and overlap are within 1% at concurrency 1 and 8. At 16 stateful is
+3.1% faster and its first-audio tail is much shorter (p99 0.29 s versus 4.83 s).
+Stateful costs about 1.7 GiB more GPU memory (31,732 MiB versus 30,072 MiB peak
+at concurrency 8).
+
+Quality on the same 1,088 prompts, one run per path:
+
+| Metric | Stateful | Overlap |
+|---|---:|---:|
+| WER (corpus) | 1.52% | 1.95% |
+| WER, excluding samples above 50% | 1.45% | 1.79% |
+| Speaker similarity | 63.25 | 63.15 |
+| UTMOS | 3.905 | 3.895 |
+
+*Table 6. Drama 3 int4 quality on SeedTTS English, one RTX 5090.*
+
+The two paths are within stochastic sampling noise: stateful has slightly lower
+WER and slightly higher speaker similarity and UTMOS. Rare requests can end at
+the first frame (`Drama 3 generated no audio frames`, HTTP 500); both paths
+showed this in 0-1 of 1,088 requests per run, on different prompts.
 
 ### High Concurrency
 
