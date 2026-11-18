@@ -87,7 +87,11 @@ func TestDraftDeletedOldProvider(t *testing.T) {
 // flag; the model starts again without it and the log says so.
 func TestDraftRefused(t *testing.T) {
 	f := newFake(t, omnitest.Opts{NoDraft: true}, nil)
-	a := f.asr(t, ASRFast).WithDraft(filepath.Join(f.dir, "draft"))
+	draft := filepath.Join(f.dir, "draft")
+	if err := os.MkdirAll(draft, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := f.asr(t, ASRFast).WithDraft(draft)
 	if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(2*time.Second, 0.3), Format: "pcm"}); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +99,7 @@ func TestDraftRefused(t *testing.T) {
 	if len(launches) != 1 || slices.Contains(launches[0].Args, "--draft-model-path") {
 		t.Errorf("launches %+v", launches)
 	}
-	f.waitLogged(t, "starting without it")
+	f.waitLogged(t, "did not start with its draft")
 }
 
 // TestDraftDeleted: deleting the draft unloads its model's server
