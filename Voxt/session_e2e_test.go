@@ -42,11 +42,17 @@ type sessionApp struct {
 // the settings set changes and the local models svc (nil: none).
 func newSessionApp(t *testing.T, opts string, set func(*settings.Settings), svc local.Services) *sessionApp {
 	t.Helper()
+	return newSessionAppIn(t, t.TempDir(), opts, set, svc)
+}
+
+// newSessionAppIn starts the app over dir, which an earlier app may have used.
+func newSessionAppIn(t *testing.T, dir, opts string, set func(*settings.Settings), svc local.Services) *sessionApp {
+	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	lib, err := openLibrary(t.TempDir())
+	lib, err := openLibrary(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +340,7 @@ func TestSessionEscapeAndFailures(t *testing.T) {
 			t.Errorf("session %s, notice %+v", a.sess.State, a.notice)
 		}
 		a.noticeAction(a.notice.action)
-		if a.router.Path() != modelsPath || a.ov.mode != ovHidden {
+		if a.shownPath() != modelsPath || a.ov.mode != ovHidden {
 			t.Errorf("went to %s, overlay %s", a.router.Path(), a.ov.mode)
 		}
 	})

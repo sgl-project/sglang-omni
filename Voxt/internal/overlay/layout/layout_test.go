@@ -72,3 +72,26 @@ func TestMicLoader(t *testing.T) {
 		t.Errorf("pulse at its top: %v %v", a, s)
 	}
 }
+
+// TestBubbleTextWidth: a Rewrite input fits its widest line, including its
+// heading and selection, up to the conversation bubble's usual maximum.
+func TestBubbleTextWidth(t *testing.T) {
+	const maxWidth = BubbleW - 2*BubblePadX
+	for _, tc := range []struct {
+		name               string
+		text, title, quote float32
+		want               float32
+	}{
+		{name: "English word", text: 42, title: 24, want: 42},
+		{name: "Chinese word and heading", text: 13, title: 22, want: 22},
+		{name: "one line", text: 184, title: 24, want: 184},
+		{name: "long paragraph", text: 900, title: 24, want: maxWidth},
+		{name: "selection is widest", text: 42, title: 24, quote: 120, want: 120},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := BubbleTextWidth(tc.text, tc.title, tc.quote, maxWidth); got != tc.want {
+				t.Errorf("BubbleTextWidth(%v, %v, %v, %v) = %v, want %v", tc.text, tc.title, tc.quote, maxWidth, got, tc.want)
+			}
+		})
+	}
+}

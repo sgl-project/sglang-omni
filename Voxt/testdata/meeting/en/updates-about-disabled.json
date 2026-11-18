@@ -1,0 +1,17 @@
+{
+  "name": "updates-about-disabled",
+  "kind": "updates-settings",
+  "updates_settings": {
+    "available": true,
+    "known": true,
+    "enabled": false,
+    "check_only": false,
+    "bundle_updated": false,
+    "auto_check": true,
+    "auto_install": false,
+    "beta": false,
+    "check_description": "This copy cannot update itself because it is a development build or is in a folder Voxt cannot write to. Move Voxt to Applications.",
+    "automatic_description": "Once a day. Voxt asks before installing.",
+    "beta_note": "Releases only."
+  }
+}

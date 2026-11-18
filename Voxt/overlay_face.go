@@ -1,77 +1,21 @@
 package main
 
-// The overlay's face (overlay.go): its view, the pill's material and row,
-// the live line, the group's name, the working and notice texts and the
-// features' icons.
+// The overlay's face (overlay.go): the pill's material and row, the live
+// line, the group's name, the working and notice texts and the features'
+// icons.
 
 import (
+	_ "embed"
 	"math"
-	"strings"
+	"sync"
 	"time"
 
+	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
-
-// overlayView is the overlay window's content.
-func (a *app) overlayView(c *ui.Context) {
-	c.SetTheme(a.overlayTheme())
-	// The root draws the theme's background unless told not to: in this
-	// transparent window only the face may show. Last, once the view is
-	// built: the kit's ink buttons swap the theme while they build
-	// (AudioSmith's pill).
-	defer c.Root().Background(ui.Transparent)
-	a.overlayMeasure(c)
-	if a.ov.reveal {
-		// This frame draws the new face: opaque from the next one.
-		a.ov.reveal = false
-		a.post(a.revealOverlay)
-	}
-	motion := a.overlayMotion()
-	if !motion {
-		c.DisableAnimations()
-	}
-	switch {
-	case motion && (a.ov.mode == ovRecording || a.ov.mode == ovWorking || a.ov.mode == ovAnswer && (a.cardRecording() || a.cardNow().spinning())):
-		c.After(layout.Tick)
-	case a.ov.mode == ovRecording && a.prefs.Overlay.ShowTime:
-		c.After(250 * time.Millisecond) // the time
-	}
-	look := pillLook{time: a.prefs.Overlay.ShowTime, lines: a.prefs.Overlay.LiveLines, scroll: &a.ov.lines, motion: motion, phase: a.overlayPhase(), w: a.ov.w}
-	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
-		o := a.prefs.Overlay
-		switch a.ov.mode {
-		case ovAnswer:
-			// Voxt's card does not move (isMovableByWindowBackground off):
-			// its text is selectable.
-			faceStyle(c, ui.Column(c.Key("ov-face")), o, ovAnswer, a.ov.h).Children(func() { a.overlayCard(c) })
-		case ovNotice:
-			a.overlayNotice(c)
-		default:
-			// In lines it moves where it is dragged, as the card; the small
-			// pill lets the pointer through (syncPassThrough).
-			faceStyle(c, ui.Column(c.Key("ov-face")), o, a.ov.mode, a.ov.h).DragWindow().Children(func() {
-				think := ""
-				if a.pillThinks(a.ov.mode) {
-					think = a.pillThinkText().text
-				}
-				skip, thinkClicked := overlayPill(c, a.pillSession(), a.ov.mode, look, think) // mute_link.go: the output's note
-				if skip {
-					a.skipLLM()
-				}
-				if thinkClicked {
-					a.togglePillThinkMenu()
-				}
-			})
-		}
-	})
-}
 
 // Colours of the face; the live text's is Voxt's: white, 85 %.
 var (
@@ -83,21 +27,11 @@ var (
 
 const ovLiveAlpha = 0.85
 
-// faceRadius is the face's corner radius in mode, h DIPs high: the
-// setting's, at most a capsule for the pill.
-func faceRadius(o settings.Overlay, mode overlayMode, h int) float32 {
-	radius := float32(o.Radius)
-	if mode != ovAnswer {
-		radius = min(radius, float32(h)/2)
-	}
-	return radius
-}
-
-// faceStyle gives e, the face, its look in mode, h DIPs high: the radius,
-// the translucent fill, the hairline and the shadow. Give it children.
-func faceStyle(c *ui.Context, e ui.Element, o settings.Overlay, mode overlayMode, h int) ui.Element {
+// faceStyle gives e, the face, its radius and translucent fill, hairline and
+// shadow. Give it children.
+func faceStyle(c *ui.Context, e ui.Element, radius, alpha float32) ui.Element {
 	k := tok(c.Theme())
-	return e.Fill().Radius(faceRadius(o, mode, h)).Background(k.OverlayFace.Alpha(layout.FaceAlpha(o))).
+	return e.Fill().Radius(radius).Background(k.OverlayFace.Alpha(alpha)).
 		Border(1, k.OverlayLine).Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA))
 }
 
@@ -113,16 +47,13 @@ type pillLook struct {
 	w      int
 }
 
-// overlayPill is the recording and working pill of s in mode, look.w
-// wide: the feature's icon, the waveform or the loader, the time and the
-// matched group when they show, in a row centred in the pill (Voxt's
-// compact card); with live text the row and the text's line under it,
-// both centred, in the wider padding of Voxt's card with text. While the
-// language model works on speech that can go in as said, the row ends
-// with Use transcript (canSkip), then the thinking capsule labelled think
-// ("": none; #3940); it reports a click on each.
-func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillLook, think string) (skip, thinkClicked bool) {
-	text, hint := pillLine(s)
+// overlayPill draws the recording or working pill from state: the feature's
+// icon, waveform or loader, optional time and scene, live line, and any skip
+// or thinking capsule. Its controls go through actions.
+func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, actions sessionOverlayActions) {
+	pill := &state.Pill
+	text, hint := pill.LiveText, pill.LiveHint
+	var skip, thinkClicked bool
 	// The face's border takes layout.Border of its padding (MyGo's border box).
 	col := ui.Column(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
 	if text != "" || look.lines {
@@ -133,37 +64,36 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 	}
 	col.Children(func() {
 		ui.Row(c).Height(layout.RowH).Shrink(0).Gap(layout.Gap).AlignItems(ui.Center).Children(func() {
-			if mode == ovRecording && s.Waiting != session.WaitNone {
-				startingIcon(c, s, look)
+			if state.Mode == ovRecording && pill.Starting {
+				startingIcon(c, pill, look)
 			} else {
 				ui.Box(c).Size(layout.IconSlot, layout.RowH).Shrink(0).Center().Children(func() {
-					ui.Icon(c, overlayKindIcon(s.Kind).Bold).Size(layout.IconSize, layout.IconSize).TextColor(ovIcon).Shrink(0).Label(uitext.KindTitle(s.Kind))
+					ui.Icon(c, overlayKindIcon(pill.Kind).Bold).Size(layout.IconSize, layout.IconSize).TextColor(ovIcon).Shrink(0).Label(pill.Title)
 				})
 			}
-			if mode == ovRecording && s.Waiting == session.WaitNone {
-				title := uitext.KindTitle(s.Kind)
-				ui.Text(c, title).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0).
-					Label(i18n.T("Recording mode: %s", title))
+			if state.Mode == ovRecording && !pill.Starting {
+				ui.Text(c, pill.Title).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0).
+					Label(i18n.T("Recording mode: %s", pill.Title))
 			}
-			if mode == ovRecording {
-				waveform(c, s.Levels, !s.HeardAt.IsZero(), look)
+			if state.Mode == ovRecording {
+				waveform(c, pill.Levels[:], pill.Heard, look)
 				if look.time {
 					ui.Box(c).Size(layout.TimeW, layout.RowH).Shrink(0).Center().Children(func() {
-						ui.Text(c, clock(s.Elapsed(time.Now()))).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
+						ui.Text(c, pill.ElapsedText).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
 					})
 				}
 			} else {
-				overlayLoader(c, uitext.WorkingText(s), look, layout.WaveSlotW)
+				overlayLoader(c, pill.WorkingLabel, look, layout.WaveSlotW)
 			}
-			if name := uitext.SceneShort(s); name != "" {
-				ui.Text(c, name).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).
-					Label(i18n.T("App enhancement: %s", uitext.SceneLabel(s)))
+			if pill.SceneText != "" {
+				ui.Text(c, pill.SceneText).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).
+					Label(i18n.T("App enhancement: %s", pill.SceneLabel))
 			}
-			if canSkip(s, mode) {
-				skip = cardCapsule(c.Key("ov-skip"), skipText().text, i18n.T("Insert the recognised text without waiting for the language model"))
+			if pill.CanSkip {
+				skip = cardCapsule(c.Key("ov-skip"), pill.SkipLabel, pill.SkipTooltip)
 			}
-			if think != "" {
-				thinkClicked = cardCapsule(c.Key("ov-think"), think, "")
+			if pill.CanThink && pill.ThinkingLabel != "" {
+				thinkClicked = cardCapsule(c.Key("ov-think"), pill.ThinkingLabel, "")
 			}
 		})
 		switch {
@@ -174,84 +104,34 @@ func overlayPill(c *ui.Context, s session.Snapshot, mode overlayMode, look pillL
 				ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText2).SingleLine().Shrink(0)
 			})
 		case text != "" && look.lines:
-			liveLines(c.Key("ov-lines"), look.scroll, s.ID, text)
+			liveLines(c.Key("ov-lines"), look.scroll, state.SessionID, text)
 		case text != "":
-			liveLine(c.Key("ov-live-"+s.ID), text, float32(max(look.w, layout.PillW)-2*layout.LivePadX), look.motion)
+			liveLine(c.Key("ov-live-"+state.SessionID), text, float32(max(look.w, layout.PillW)-2*layout.LivePadX), look.motion)
 		case look.lines:
 			ui.Box(c).Height(layout.LineH).Shrink(0) // the first line's room, before any text
 		}
 	})
-	return skip, thinkClicked
-}
-
-// canSkip: the pill in mode offers Use transcript (session.Manager's
-// SkipLLM, #3821).
-func canSkip(s session.Snapshot, mode overlayMode) bool {
-	return mode == ovWorking && s.State == session.Composing && s.CanSkip
-}
-
-// skipText is Use transcript's label as it draws (cardCapsule's).
-func skipText() ovSized { return ovSized{i18n.T("Use transcript"), 11, 600, 0} }
-
-// pillLine is the line under the pill's row: the live text, else (hint)
-// "Starting the microphone…" while the microphone gives no audio (what
-// is said then is lost); "" for none. A speech model that is still
-// loading shows only the starting icon (the user, 10-21): the recording
-// works meanwhile, so no line is needed.
-func pillLine(s session.Snapshot) (text string, hint bool) {
-	if note := limitNote(s, time.Now()); note != "" {
-		return note, true
+	if skip {
+		actions.skipLLM()
 	}
-	if text := liveLineText(s); text != "" {
-		return text, false
+	if thinkClicked {
+		actions.togglePillThinkMenu()
 	}
-	if s.Waiting == session.WaitMic {
-		if w := uitext.WaitText(s); w != "" {
-			return w, true
-		}
-	}
-	return "", false
-}
-
-// limitNote warns while recording that a limit of Settings → Audio is
-// near (#3840): in the last minute before the length limit stops the
-// recording, and from 30 s before it passes the upload size limit (it
-// then goes to the speech model in pieces); "" for none.
-func limitNote(s session.Snapshot, now time.Time) string {
-	if s.State != session.Recording {
-		return ""
-	}
-	at := s.Elapsed(now)
-	switch {
-	case s.MaxLen > 0 && s.MaxLen-at <= time.Minute:
-		return i18n.T("The length limit stops the recording in %s", clock(max(0, s.MaxLen-at)))
-	case s.UploadLen > 0 && at >= s.UploadLen:
-		return i18n.T("Over the upload size limit: Voxt sends the recording in pieces")
-	case s.UploadLen > 0 && s.UploadLen-at <= 30*time.Second:
-		return i18n.T("Near the upload size limit: Voxt will send the recording in pieces")
-	}
-	return ""
 }
 
 // startingIcon is the feature's icon while the microphone or the speech
 // model starts (Voxt's initializing icon): it breathes, and a ring pings
 // out of it (layout.MicRing, layout.MicPulse); still without motion.
-func startingIcon(c *ui.Context, s session.Snapshot, look pillLook) {
+func startingIcon(c *ui.Context, pill *sessionPillViewState, look pillLook) {
 	d, ringA := layout.MicRing(look.phase, look.motion)
 	iconA, scale := layout.MicPulse(look.phase, look.motion)
-	ui.Box(c.Key("ov-starting")).Size(layout.IconSlot, layout.RowH).Shrink(0).Center().Label(uitext.WaitText(s)).Children(func() {
+	ui.Box(c.Key("ov-starting")).Size(layout.IconSlot, layout.RowH).Shrink(0).Center().Label(pill.WaitingLabel).Children(func() {
 		ring := float32(d)
 		ui.Box(c).Absolute().Left((layout.IconSlot-ring)/2).Top((layout.RowH-ring)/2).Size(ring, ring).Radius(ring/2).
 			Border(1.2, ui.RGBA(255, 255, 255, float32(ringA)))
-		ui.Icon(c, overlayKindIcon(s.Kind).Bold).Size(layout.IconSize, layout.IconSize).TextColor(ui.RGBA(255, 255, 255, float32(iconA))).
+		ui.Icon(c, overlayKindIcon(pill.Kind).Bold).Size(layout.IconSize, layout.IconSize).TextColor(ui.RGBA(255, 255, 255, float32(iconA))).
 			Scale(float32(scale), float32(scale)).Shrink(0)
 	})
-}
-
-// liveLineText is the live text as its line shows it: its spaces and
-// line breaks one space each.
-func liveLineText(s session.Snapshot) string {
-	return strings.Join(strings.Fields(liveText(s)), " ")
 }
 
 // linesScroll is the scroll of session id's live text in lines: following
@@ -344,90 +224,121 @@ func fadeSpans(text string, off float32, measure func(string) float32) (string, 
 	return string(r[lo:]), from, spans
 }
 
-// liveText is the text the pill shows under it: the live ASR partials
-// while recording and recognising, never a file model's Final nor the
-// language model's drafts (FB6). While the language model works, a
-// stream's words become the recognised text as it was sent to the model
-// (Rewrite's spoken instruction too): the stream's last partial can
-// differ from it. Without live words, the selection (selected text to
-// translate). The pill went blank then (#3644).
-func liveText(s session.Snapshot) string {
-	partial := strings.TrimSpace(s.Partial)
-	switch s.State {
-	case session.Recording, session.Recognizing:
-		return partial
-	case session.Composing, session.Delivering:
-		if partial != "" {
-			return cmpOr(strings.TrimSpace(s.Spoken), partial)
-		}
-		return strings.TrimSpace(s.Selection)
-	}
-	return ""
-}
-
 // overlayKindIcon is a feature's icon in the overlay: Voxt's mode icons
 // (10-15: the overlay's icons are Voxt's, the app's pages keep Solar's).
-func overlayKindIcon(k store.Kind) icons.Icon {
-	switch k {
-	case store.KindTranslate:
+func overlayKindIcon(kind string) icons.Icon {
+	switch kind {
+	case "translate":
 		return icons.VoxtTranslate
-	case store.KindRewrite:
+	case "rewrite":
 		return icons.VoxtRewrite
 	}
 	return icons.VoxtTranscribe
 }
 
-// kindIcon is a feature's icon; uitext.KindTitle its name.
-func kindIcon(k store.Kind) icons.Icon {
-	switch k {
-	case store.KindTranslate:
-		return translateIcon
-	case store.KindRewrite:
-		return rewriteIcon
-	}
-	return transcribeIcon
-}
-
 // overlayNotice is a notice: the pill with an icon and one line in place
 // of the waveform; with an action, a click on it runs the action.
-func (a *app) overlayNotice(c *ui.Context) {
-	t := c.Theme()
-	n := a.notice
-	if n == nil {
+func overlayNotice(c *ui.Context, notice *sessionNoticeViewState, radius, alpha float32, actions sessionOverlayActions) {
+	if notice == nil {
 		return
 	}
-	label := noticeActionLabel(n.action)
+	t := c.Theme()
 	content := func() {
 		// Centred, as the pill's row: a notice narrower than layout.NoticeW
 		// keeps its sides even. The border takes layout.Border of the padding.
 		ui.Row(c).Fill().Padding(0, layout.PillPadX-layout.Border).Gap(layout.Gap).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			ic, col := icons.DangerCircle, tok(t).Danger
-			switch {
-			case n.ok:
-				ic, col = icons.CheckCircle, tok(t).Success
-			case n.warn:
-				ic, col = icons.DangerTriangle, tok(t).Warning
+			icon, color := icons.DangerCircle, tok(t).Danger
+			switch notice.Tone {
+			case sessionNoticeSuccess:
+				icon, color = icons.CheckCircle, tok(t).Success
+			case sessionNoticeWarning:
+				icon, color = icons.DangerTriangle, tok(t).Warning
 			}
 			ui.Box(c).Size(layout.IconSlot, layout.RowH).Shrink(0).Center().Children(func() {
-				ui.Icon(c, ic.Bold).Size(layout.IconSize, layout.IconSize).TextColor(col).Shrink(0)
+				ui.Icon(c, icon.Bold).Size(layout.IconSize, layout.IconSize).TextColor(color).Shrink(0)
 			})
-			ui.Text(c, n.text).FontSize(layout.NoticeSize).TextColor(ovText).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
-			if label != "" {
+			ui.Text(c, notice.Text).FontSize(layout.NoticeSize).TextColor(ovText).SingleLine().Ellipsis("…").Shrink(1).MinWidth(0)
+			if notice.ActionLabel != "" {
 				ui.Icon(c, icons.AltArrowRight.Linear).Size(14, 14).TextColor(ovText2).Shrink(0).Margin(0, 0, 0, -2)
 			}
 		})
 	}
-	o := a.prefs.Overlay
-	if label == "" {
-		faceStyle(c, ui.Column(c.Key("ov-face")), o, ovNotice, a.ov.h).DragWindow().Label(n.text).Children(content)
+	if notice.ActionLabel == "" {
+		faceStyle(c, ui.Column(c.Key("ov-face")), radius, alpha).DragWindow().Label(notice.Text).Children(content)
 		return
 	}
-	b := faceStyle(c, ui.ButtonBase(c.Key("ov-notice")), o, ovNotice, a.ov.h).Label(n.text + " · " + label)
-	if b.Hovered() {
-		face := tok(t).OverlayFace.Mix(ui.RGB(255, 255, 255), 0.055)
-		b.Background(face.Alpha(min(layout.FaceAlpha(o)+0.06, 1)))
+	button := faceStyle(c, ui.ButtonBase(c.Key("ov-notice")), radius, alpha).Label(notice.Text + " · " + notice.ActionLabel)
+	if button.Hovered() {
+		button.Background(tok(t).OverlayFace.Mix(ui.RGB(255, 255, 255), 0.055).Alpha(min(alpha+0.06, 1)))
 	}
-	if b.Children(content).Clicked() {
-		a.noticeAction(n.action)
+	if button.Children(content).Clicked() {
+		actions.noticeAction(notice.Action)
 	}
+}
+
+// The preview's background: a desktop picture (Voxt's, Apache-2.0: see
+// NOTICE), decoded once.
+//
+//go:embed assets/overlay-preview-background.png
+var ovPreviewPNG []byte
+
+var ovPreviewBackground = sync.OnceValue(func() *ui.Bitmap {
+	b, _ := ui.DecodeBitmap(ovPreviewPNG)
+	return b
+})
+
+// The preview card: as wide as the section, ovPreviewH high, its corners
+// ovPreviewRadius (Voxt's); the pill at least ovPreviewInset from its
+// top or bottom edge.
+const (
+	ovPreviewH      = 150
+	ovPreviewRadius = 18
+	ovPreviewInset  = 12
+)
+
+// overlayPreview is the overlay's pill as it draws, at its size, in its
+// dark theme, over a desktop picture that shows through it blurred (the
+// desktop does, on the Mac), after Voxt's preview: where the settings put
+// it (the bottom or the top, the distance from the edge to scale with
+// its half of the card), as opaque, as round, with the time when it
+// shows it. A change shows at once.
+func (state settingsOverlayPreviewState) overlayPreview(c *ui.Context) {
+	t := c.Theme()
+	pill := state.pill
+	cardH := px(t, ovPreviewH)
+	// The distance from the edge, from none to ovMaxMargin, across the
+	// room in the pill's half of the card: at the largest the pill still
+	// shows on its side (#3785).
+	room := max(cardH/2-layout.PillH-px(t, ovPreviewInset), 0)
+	off := px(t, ovPreviewInset) + room*float32(min(max(state.Margin, 0), ovMaxMargin)/ovMaxMargin)
+	ui.Box(c.Key("ov-preview")).FillWidth().MinWidth(0).Height(cardH).Shrink(0).Radius(px(t, ovPreviewRadius)).Clip().
+		Background(ui.RGB(40, 90, 170)).Label(i18n.T("Preview of the overlay")).Children(func() {
+		if bg := ovPreviewBackground(); bg != nil {
+			ui.Image(c, bg).Absolute().Left(0).Top(0).Right(0).Bottom(0).Fit(ui.Cover)
+		}
+		place := ui.Row(c).Absolute().Left(0).Right(0).Height(layout.PillH).Justify(ui.Center)
+		if state.Position == "top" {
+			place.Top(off)
+		} else {
+			place.Bottom(off)
+		}
+		place.Children(func() {
+			c.SetTheme(overlayTheme(state.palette))
+			row, _ := recordingPillRow(&pill.Pill, true, state.ShowTime, 0, func(k ovSized) (float32, bool) {
+				width, _ := c.MeasureText(k.wrap, k.span())
+				return width, true
+			})
+			w := row + 2*layout.PillPadX
+			ui.Box(c.Key("ov-preview-pill")).Size(float32(w), layout.PillH).Shrink(0).Children(func() {
+				// The blur of what is under it, then the face, positioned
+				// too to paint over the blur.
+				ui.Box(c).Absolute().Fill().Radius(state.faceRadius).Material(glass.Blur{Radius: 8})
+				face := ui.Column(c.Key("ov-preview-face")).Absolute().Left(0).Top(0).Right(0).Bottom(0)
+				faceStyle(c, face, state.faceRadius, state.faceAlpha).Children(func() {
+					overlayPill(c, &pill, pillLook{time: state.ShowTime, w: w}, nil)
+				})
+			})
+			c.SetTheme(t)
+		})
+	})
 }
