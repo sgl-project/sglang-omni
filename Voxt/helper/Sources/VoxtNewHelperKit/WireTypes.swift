@@ -392,7 +392,7 @@ public enum SelectionVia {
 
 public struct SelectionResult: Codable, Sendable {
     public var text: String?
-    /// The JPEG the copy fallback read before restoring the old clipboard.
+    /// The JPEG from the image the copy fallback captured before restoring the old clipboard.
     public var image: Data?
     public var via: String
     public var ms: Double

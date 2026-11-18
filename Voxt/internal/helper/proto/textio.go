@@ -38,8 +38,8 @@ type SelectionParams struct {
 }
 
 // SelectionResult is the text ("" for none) and how it was read. Image
-// is the JPEG the copy fallback read before restoring the old clipboard,
-// so a selected image does not get confused with an earlier copied one.
+// is the JPEG from the image the copy fallback captured before restoring
+// the old clipboard, so a selected image is not an earlier copied one.
 type SelectionResult struct {
 	Text  string   `json:"text,omitempty"`
 	Image []byte   `json:"image,omitempty"`

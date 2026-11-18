@@ -16,7 +16,6 @@
 package settings
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -406,10 +405,17 @@ func Migrate(data []byte) (Settings, error) {
 	migrateShowCard(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
 	migrateOptionsJSON(data, &s.Providers)
-	if s.Version < 4 && !bytes.Contains(data, []byte(`"sendClipboardImageWithSelection"`)) {
-		// Older documents predate the text-only guard: keep their original
-		// selected-text-plus-image behavior. Fresh installs default it off.
-		s.Privacy.SendClipboardImageWithSelection = true
+	if s.Version < 4 {
+		var document struct {
+			Privacy map[string]json.RawMessage `json:"privacy"`
+		}
+		if json.Unmarshal(data, &document) == nil {
+			if _, explicit := document.Privacy["sendClipboardImageWithSelection"]; !explicit {
+				// Older documents predate the text-only guard: keep their original
+				// selected-text-plus-image behavior. Fresh installs default it off.
+				s.Privacy.SendClipboardImageWithSelection = true
+			}
+		}
 	}
 	s.Version = Version
 	return normalize(s), nil

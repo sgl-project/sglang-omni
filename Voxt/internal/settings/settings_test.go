@@ -162,6 +162,13 @@ func TestMigrateClipboardImageWithSelection(t *testing.T) {
 	if explicit.Privacy.SendClipboardImageWithSelection {
 		t.Error("an explicit text-only choice was not preserved")
 	}
+	unrelated, err := Migrate([]byte(`{"version":1,"privacy":{"notes":"sendClipboardImageWithSelection"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unrelated.Privacy.SendClipboardImageWithSelection {
+		t.Error("unrelated text was mistaken for an explicit text-only choice")
+	}
 	if Defaults().Privacy.SendClipboardImageWithSelection {
 		t.Error("a fresh install should default to text-only")
 	}

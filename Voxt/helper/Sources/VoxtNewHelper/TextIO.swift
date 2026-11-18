@@ -165,20 +165,20 @@ final class TextIO: @unchecked Sendable {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
         guard changed else { return (nil, nil, "copy: clipboard unchanged" + held) }
-        let (text, image) = await onMain { () -> (String?, Data?) in
+        let (text, types, data, file) = await onMain { () -> (String?, [String], [String: Data], URL?) in
             let pb = NSPasteboard.general
             let text = pb.string(forType: .string)
             let types = (pb.types ?? []).map(\.rawValue)
             var data: [String: Data] = [:]
-            if let type = ClipboardPicture.imageTypes.first(where: types.contains) {
+            for type in ClipboardPicture.imageTypes where types.contains(type) {
                 data[type] = pb.data(forType: NSPasteboard.PasteboardType(type))
             }
             let file = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
-            let selected = ClipboardPicture.imageForCopiedSelection(types: types, data: data, file: file, maxSide: screenMaxSide, text: text)
-            let jpeg = selected.flatMap { ScreenWindow.jpeg($0) }
             Clipboard.restore(pb, snap)
-            return (text, jpeg)
+            return (text, types, data, file)
         }
+        let selected = ClipboardPicture.imageForCopiedSelection(types: types, data: data, file: file, maxSide: screenMaxSide, text: text)
+        let image = selected.flatMap { ScreenWindow.jpeg($0) }
         return (text?.isEmpty == false ? text : nil, image, "copy: changed" + held)
     }
 

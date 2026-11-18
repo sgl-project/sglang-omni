@@ -55,6 +55,15 @@ final class ClipboardPictureTests: XCTestCase {
                      "ordinary selected text does not opt into an image")
     }
 
+    func testImageSelectionFallsBackFromUnreadablePNGToTIFF() {
+        let tiff = UTType.tiff.identifier
+        let validPNG = imageData(40, 20)
+        let unreadablePNG = Data(validPNG.prefix(8))
+        let validTIFF = imageData(30, 60, type: .tiff)
+        let image = ClipboardPicture.imageForCopiedSelection(types: [text, png, tiff], data: [png: unreadablePNG, tiff: validTIFF], file: nil, maxSide: 1600, text: "caption [Image]")
+        XCTAssertEqual(image.map { [$0.width, $0.height] }, [30, 60])
+    }
+
     func testReadsLaterFormatOnlyWhenNeeded() async {
         let tiff = UTType.tiff.identifier
         let validPNG = imageData(40, 20)

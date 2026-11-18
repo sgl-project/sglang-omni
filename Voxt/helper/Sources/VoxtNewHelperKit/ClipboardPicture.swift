@@ -41,7 +41,7 @@ public enum ClipboardPicture {
         return nil
     }
 
-    /// The image a copy fallback selected, before it restores the clipboard.
+    /// The image a copy fallback captured from the copied selection.
     /// An [Image] placeholder opts in only when image bytes or a file exist;
     /// literal placeholder text without one remains text-only.
     public static func imageForCopiedSelection(types: [String], data: [String: Data], file: URL?, maxSide: Int, text: String?) -> CGImage? {
