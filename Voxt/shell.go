@@ -58,7 +58,8 @@ func px(t *ui.Theme, n float32) float32 { return n * t.FontSize / baseFontSize }
 
 // shellState is the shell's view state and the services it owns.
 type shellState struct {
-	router *ui.Router
+	router         *ui.Router
+	openingStarted time.Time
 	// nav is the sidebar's choice; navShown the router path it was last
 	// synced from (see syncNav).
 	nav, navShown string
@@ -233,6 +234,7 @@ func (a *app) openWindow() {
 	a.hasMenu = true
 	a.applyLocale() // the system's language, unless the settings name one
 	a.buildMenu()
+	a.startOpening()
 	a.win = mygo.NewWindow(mygo.WindowOptions{
 		Title:          "Voxt",
 		Width:          windowWidth,
@@ -267,6 +269,9 @@ func (a *app) view(c *ui.Context) {
 		// Tests and snapshots show every change at once, as does the
 		// user's Reduce motion.
 		c.DisableAnimations()
+	}
+	if a.openingView(c) {
+		return
 	}
 	for _, m := range a.toasts {
 		c.Toast(m)
