@@ -164,8 +164,8 @@ func LanguageMismatch(text, target string) bool {
 	return len(candidates) > 0 && !candidates[lang.Canonical(target)]
 }
 
-// neutralName reports a single capitalized token with no vocabulary evidence.
-// Product and personal names stay valid in every script, not just Latin ones.
+// neutralName reports a single capitalized Latin token with no vocabulary
+// evidence. Product and personal names stay valid across target scripts.
 func neutralName(text string) bool {
 	tokens := letterTokens(text)
 	if len(tokens) != 1 {
@@ -179,7 +179,7 @@ func neutralName(text string) bool {
 		}
 	}
 	for _, r := range tokens[0] {
-		return unicode.IsUpper(r)
+		return unicode.Is(unicode.Latin, r) && unicode.IsUpper(r)
 	}
 	return false
 }

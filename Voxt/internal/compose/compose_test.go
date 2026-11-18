@@ -453,6 +453,7 @@ func TestLanguageMismatch(t *testing.T) {
 		{"Kubernetes", "zh-Hans", false},
 		{"Kubernetes", "ja", false},
 		{"Kubernetes", "ru", false},
+		{"Привет", "en", true},
 		{"para", "pt", false},
 		{"on", "fr", false},
 		{"son", "fr", false},
