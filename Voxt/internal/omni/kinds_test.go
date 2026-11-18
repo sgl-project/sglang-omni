@@ -95,20 +95,16 @@ func TestWhisperFinalSkipsDigitalSilenceTail(t *testing.T) {
 }
 
 // TestKinds: Voxt 1.x's other speech models run on servers of their own
-// with their model's launch flags, take no context, and spell the language
-// hint their server's way.
+// with only the common launch flags (their servers refuse Qwen3-ASR's),
+// take no context, and spell the language hint their server's way.
 func TestKinds(t *testing.T) {
 	for _, s := range ASRModels() {
 		qwen := s.Kind == kindQwen3ASR
 		if qwen != (s.Binary == "") || qwen != (s.ASR.ContextTerms > 0) || qwen != (s.ASR.TokensPerSecond > 0) {
 			t.Errorf("%s: kind %s, binary %q, context %d, %v tokens a second", s.ID, s.Kind, s.Binary, s.ASR.ContextTerms, s.ASR.TokensPerSecond)
 		}
-		wantArgs := "--model-kind " + s.Kind
-		if s.Kind == kindMoss {
-			wantArgs += " --full-precision"
-		}
-		if args := strings.Join(s.launchArgs(true), " "); !qwen && args != wantArgs {
-			t.Errorf("%s: launch args %q, want %q", s.ID, args, wantArgs)
+		if args := strings.Join(s.launchArgs(true), " "); !qwen && args != "--model-kind "+s.Kind {
+			t.Errorf("%s: launch args %q", s.ID, args)
 		}
 		if realtime := s.Kind == kindQwen3ASR || s.Kind == kindNemotron || s.Kind == kindMoss; realtime != s.ASR.Realtime {
 			t.Errorf("%s: realtime %v", s.ID, s.ASR.Realtime)

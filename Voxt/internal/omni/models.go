@@ -329,9 +329,5 @@ func (s Spec) launchArgs(cacheLimit bool) []string {
 			args = append(args, "--cache-limit-mb", itoa(a.CacheMB))
 		}
 	}
-	// MOSS's load-time quantization can change the transcription's language.
-	if s.Kind == kindMoss {
-		args = append(args, "--full-precision")
-	}
 	return args
 }

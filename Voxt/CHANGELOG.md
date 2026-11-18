@@ -6,13 +6,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **MOSS-Transcribe-Diarize no longer uses load-time quantization**: English transcription keeps the model's weights at their stored precision.
+- **MOSS-Transcribe-Diarize keeps short recordings' full feature windows**: short English clips keep their silent padding so the encoder sees the same bidirectional-attention context as the original runtime.
 
 ### 中文
 
 #### 修复
 
-- **MOSS-Transcribe-Diarize 不再在加载时量化权重**：英文识别使用模型原有精度的权重。
+- **MOSS-Transcribe-Diarize 保留短录音的完整特征窗口**：短英文音频保留静音填充，让编码器看到与原始运行时相同的双向注意力上下文。
 
 ## [2.1.1] - 2026-11-17
 

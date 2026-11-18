@@ -181,6 +181,63 @@ func TestEvalMTD(t *testing.T) {
 	e.report(t, "mtd.md", md.String())
 }
 
+// TestEvalMTDExpectedLanguages checks the two short English clips whose
+// translations into other languages prompted the native-runtime regression.
+func TestEvalMTDExpectedLanguages(t *testing.T) {
+	e := evalSetup(t)
+	if os.Getenv("VOXTNEW_MTD_DIR") == "" {
+		t.Skip("set VOXTNEW_MTD_DIR to the MTD snapshot")
+	}
+	exe, _ := os.Executable()
+	server, err := omni.Locate(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := omni.NewRuntime(omni.Config{Binary: server, Log: func(level, msg string) {
+		if level != "info" && level != "debug" {
+			t.Logf("omni %s: %s", level, msg)
+		}
+	}})
+	defer rt.Close()
+	ctx := context.Background()
+	for _, cfg := range mtdConfigs(t, e) {
+		if cfg.id != models.ASRMoss {
+			continue
+		}
+		a, err := omni.NewASR(rt, cfg.id, cfg.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.draft != "" {
+			a = a.WithDraft(cfg.draft)
+		}
+		checked, failures := 0, 0
+		for _, c := range e.clips() {
+			if c.ID != "en-1" && c.ID != "en-3" {
+				continue
+			}
+			checked++
+			res, err := a.Transcribe(ctx, asr.FileRequest{Audio: c.PCM, Format: "pcm", Lang: c.Lang, Hints: e.set.Dictionary})
+			if err != nil {
+				t.Fatalf("%s %s: %v", cfg.name, c.ID, err)
+			}
+			for _, want := range c.Must {
+				if !strings.Contains(res.Text, want) {
+					failures++
+					t.Errorf("%s %s: expected English %q in %q", cfg.name, c.ID, want, res.Text)
+				}
+			}
+		}
+		if checked == 0 {
+			t.Fatal("en-1 and en-3 are required; leave VOXTNEW_EVAL_ONLY unset or include both")
+		}
+		if failures > 0 {
+			t.Errorf("%s: %d expected-language assertions failed", cfg.name, failures)
+		}
+		rt.Unload(cfg.id)
+	}
+}
+
 // mtdAccuracy is one config's error-rate table by set, over all rounds.
 func mtdAccuracy(name string, runs []*mtdRun) string {
 	var b strings.Builder
