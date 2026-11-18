@@ -3,13 +3,11 @@ package main
 import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // historyDetailDivider keeps resizing within the detail and list minimum widths.
-func (a *app) historyDetailDivider(c *ui.Context, width, limit float32) float32 {
+func historyDetailDivider(c *ui.Context, actions historyActions, local *historyLocalUI, width, limit float32) float32 {
 	t := c.Theme()
-	h := &a.hist
 	lo, scale := px(t, historyPanelW), px(t, 1)
 	next, held := width, false
 	ui.Box(c.Key("hist-divider")).Width(1).Shrink(0).Background(tok(t).Line).Children(func() {
@@ -38,15 +36,15 @@ func (a *app) historyDetailDivider(c *ui.Context, width, limit float32) float32 
 	})
 	next = min(max(next, lo), limit)
 	if next != width {
-		h.panelWidth = next / scale
+		local.panelWidth = next / scale
 	}
-	if h.panelResizing && !held || next != width && !held {
-		saved := float64(h.panelWidth)
+	if local.panelResizing && !held || next != width && !held {
+		saved := float64(local.panelWidth)
 		if saved <= historyPanelW {
 			saved = 0
 		}
-		a.updateSettings(func(s *settings.Settings) { s.Appearance.HistoryDetailWidth = saved })
+		actions.saveHistoryDetailWidth(saved)
 	}
-	h.panelResizing = held
+	local.panelResizing = held
 	return next
 }

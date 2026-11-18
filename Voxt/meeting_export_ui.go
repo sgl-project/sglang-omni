@@ -16,10 +16,12 @@ func (a *app) toggleMeetingTranslation(id string) {
 	if a.meetMgr == nil || id == "" {
 		return
 	}
+	a.meetOvUI.menu = meetingMenuNone
 	target := meeting.TranslateTargetLanguage(a.prefs.Features.Meeting.TranslateTarget)
 	cur := a.meetSnap.Translate
 	if cur != "" {
 		target = ""
 	}
 	_ = a.meetMgr.SetTranslate(id, target)
+	a.syncMeetingOverlay()
 }

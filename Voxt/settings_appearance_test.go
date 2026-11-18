@@ -7,7 +7,9 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -39,10 +41,10 @@ func TestAppearancePalette(t *testing.T) {
 	if hasExact(tt, "Hex") {
 		t.Fatal("hover opened the color editor")
 	}
-	tt.ClickAt(colorRow.X+colorRow.W-12, y) // the swatch
+	tt.ClickAt(colorRow.X+colorRow.W-12, y) // the Default label
 	frames(tt)
 	if !hasExact(tt, "Hex") {
-		t.Fatal("clicking the color swatch did not open the editor")
+		t.Fatal("clicking the Default label did not open the editor")
 	}
 	tt.ClickAt(colorRow.X+5, y) // the title
 	frames(tt)
@@ -69,7 +71,7 @@ func TestAppearancePalette(t *testing.T) {
 	if ap := a.settings.Get().Appearance; ap.Palette != "#b25280" || ap.Theme != settings.ThemeDark {
 		t.Fatalf("saved dark appearance = %+v", ap)
 	}
-	if got := tok(a.overlayTheme()).OverlayFace; got != paletteTokens("#b25280", true).OverlayFace {
+	if got := tok(overlayTheme(a.currentSessionOverlayLayout().Palette)).OverlayFace; got != paletteTokens("#b25280", true).OverlayFace {
 		t.Fatalf("overlay face = %v", got)
 	}
 	tt.SetSize(windowMinWidth, windowMinHeight)
@@ -155,18 +157,27 @@ func TestDefaultAppearanceRetainsOriginalPalette(t *testing.T) {
 	}
 }
 
+// The default palette's Try buttons keep the record colours, through the
+// production view state (#4180).
 func TestDefaultRecordingButtonColor(t *testing.T) {
 	for _, dark := range []bool{false, true} {
 		a, _, _ := newTestApp(t)
+		var block *sessionNotice
+		state, _ := a.tryCardState(tryOpts{prefix: "tr", mine: true, block: &block})
+		if state.CustomPalette {
+			t.Fatalf("default palette %q reads as custom", a.prefs.Appearance.Palette)
+		}
 		draw := func(original bool) *ui.Tester {
 			tt := ui.NewTester(func(c *ui.Context) {
-				a.applyTheme(c)
+				th := *c.Theme()
+				styleTheme(&th, a.prefs.Appearance.Palette)
+				c.SetTheme(&th)
 				c.DisableAnimations()
 				ui.Column(c).Children(func() {
 					if original {
 						recordButton(c, "Start")
 					} else {
-						a.tryRecordButton(c, "Start")
+						tryRecordButton(c, "Start", state.CustomPalette)
 					}
 				})
 			}, 200, 100)
@@ -192,6 +203,12 @@ func TestDefaultRecordingButtonColor(t *testing.T) {
 				t.Errorf("dark=%t state=%d: default recording button differs from its original colors", dark, state)
 			}
 		}
+	}
+	a, _, _ := newTestApp(t)
+	a.prefs.Appearance.Palette = "#b25280"
+	var block *sessionNotice
+	if state, _ := a.tryCardState(tryOpts{prefix: "tr", mine: true, block: &block}); !state.CustomPalette {
+		t.Error("a custom palette reads as the default")
 	}
 }
 
@@ -363,8 +380,62 @@ func TestPaletteContrast(t *testing.T) {
 	}
 }
 
-func TestPalettePreviews(t *testing.T) {
-	runSnapshots(t, "VOXTNEW_PALETTE_PREVIEWS", func(t *testing.T, out string) {
+func TestResetInvalidatesPreviewSaves(t *testing.T) {
+	for _, reset := range []struct {
+		name string
+		fn   func(*app)
+	}{
+		{"resetLook", (*app).resetLook},
+		{"resetSettings", (*app).resetSettings},
+	} {
+		for _, preview := range []string{"palette", "transparency"} {
+			t.Run(reset.name+"/"+preview, func(t *testing.T) {
+				a, _, _ := newTestApp(t)
+				var revision uint64
+				if preview == "palette" {
+					a.paletteSavePending = true
+					revision = a.paletteRevision.Add(1)
+				} else {
+					a.transparencySavePending = true
+					revision = a.transparencyRevision.Add(1)
+				}
+				reset.fn(a)
+				if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+					if preview == "palette" && a.paletteRevision.Load() == revision {
+						s.Appearance.Palette = "#000001"
+					}
+					if preview == "transparency" && a.transparencyRevision.Load() == revision {
+						s.Appearance.WindowTransparency = settings.MaxWindowTransparency
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if got := a.settings.Get().Appearance; got.Palette != settings.DefaultPalette || got.WindowTransparency != settings.DefaultWindowTransparency {
+					t.Errorf("stale preview survived reset: %+v", got)
+				}
+				if a.prefs.Appearance.Palette != settings.DefaultPalette || int(a.windowTransparency) != settings.DefaultWindowTransparency {
+					t.Errorf("stale preview remains visible: color %v, transparency %v", a.prefs.Appearance.Palette, a.windowTransparency)
+				}
+				if a.paletteSavePending || a.transparencySavePending {
+					t.Error("reset left preview saves pending")
+				}
+			})
+		}
+	}
+}
+
+func TestPalettePreviewsUseMainSnapshotGate(t *testing.T) {
+	out, err := exec.Command("go", "test", "-list", "^TestSnapshotsPalettePreviews$").CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "\nTestSnapshotsPalettePreviews\n") {
+		t.Errorf("palette previews are not selected by the main snapshot gate: %s", out)
+	}
+}
+
+func TestSnapshotsPalettePreviews(t *testing.T) {
+	runSnapshots(t, "VOXTNEW_SNAPSHOTS", func(t *testing.T, out string) {
 		a, _, tt := newTestApp(t)
 		a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
 		a.navigate("/settings/appearance")

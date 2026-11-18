@@ -14,7 +14,7 @@ func TestHistoryDetailResizeBounds(t *testing.T) {
 	seedHistory(t, a)
 	tt.SetSize(1100, 740)
 	a.navigate("/history")
-	a.hist.sel = histInserted
+	a.histUI.sel = histInserted
 	frames(tt)
 	detailWidth := func() float32 {
 		r, ok := tt.Find("Entry details")
@@ -47,7 +47,7 @@ func TestHistoryDetailResizeBounds(t *testing.T) {
 	if saved := a.settings.Get().Appearance.HistoryDetailWidth; saved != settings.MaxHistoryDetailWidth {
 		t.Fatalf("saved width %g", saved)
 	}
-	a.hist.panelWidth = 0
+	a.histUI.panelWidth = 0
 	frames(tt)
 	if got := detailWidth(); got != settings.MaxHistoryDetailWidth {
 		t.Fatalf("forgot saved width %g", got)
@@ -100,7 +100,7 @@ func TestHistoryDetailResizeScale(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.Appearance.Scale = 1.25 })
 	tt.SetSize(1200, 800)
 	a.navigate("/history")
-	a.hist.sel = histInserted
+	a.histUI.sel = histInserted
 	frames(tt)
 	r, ok := tt.Find("Entry details")
 	if !ok || r.W != historyPanelW*1.25 {

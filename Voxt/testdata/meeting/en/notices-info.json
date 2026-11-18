@@ -1,0 +1,14 @@
+{
+  "name": "notices-info",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "fixture-1",
+      "severity": "info",
+      "title": "First card",
+      "body": "The newest thing that happened.",
+      "action_label": "Open",
+      "time_hint": "Jan 2 07:04"
+    }
+  ]
+}
