@@ -102,11 +102,11 @@ func TestSoundPairs(t *testing.T) {
 	if s := r.settings.Get().Audio; s.StartSound != "tally" {
 		t.Fatalf("▶ chose %q", s.StartSound)
 	}
-	if ch, left := r.previewPlaying(); ch != "pebble" || left <= 0 || !has(r.tt, "Stop Soft") {
+	if ch, left := r.previewPlayingAt(time.Now()); ch != "pebble" || left <= 0 || !has(r.tt, "Stop Soft") {
 		t.Fatalf("playing %q %v", ch, left)
 	}
 	click(t, r.tt, "Stop Soft")
-	if ch, _ := r.previewPlaying(); ch != "" || !has(r.tt, "Play Soft") {
+	if ch, _ := r.previewPlayingAt(time.Now()); ch != "" || !has(r.tt, "Play Soft") {
 		t.Errorf("stopped %q", ch)
 	}
 	r.chooseSounds("chime", "tink")

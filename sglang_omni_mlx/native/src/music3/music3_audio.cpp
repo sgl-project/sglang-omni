@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <utility>
 
+#include "common/audio.h"
+
 namespace music3 {
 
 uint64_t AcousticSeed(uint64_t seed, int chunk_index) {
@@ -137,26 +139,7 @@ std::vector<float> ResampleStereo(const mlx::core::array &waveform) {
 
 std::string EncodeAudio(const std::vector<float> &samples, bool pcm) {
   std::string bytes;
-  bytes.reserve(samples.size() * 2 + (pcm ? 0 : 44));
-  const auto append = [&](uint32_t value, int count) {
-    for (int i = 0; i < count; ++i)
-      bytes.push_back(static_cast<char>(value >> (8 * i)));
-  };
-  if (!pcm) {
-    bytes += "RIFF";
-    append(36 + samples.size() * 2, 4);
-    bytes += "WAVEfmt ";
-    append(16, 4);
-    append(1, 2);
-    append(2, 2);
-    append(kSampleRate, 4);
-    append(kSampleRate * 4, 4);
-    append(4, 2);
-    append(16, 2);
-    bytes += "data";
-    append(samples.size() * 2, 4);
-  } else {
-  }
+  bytes.reserve(samples.size() * 2);
   for (float sample : samples) {
     if (!std::isfinite(sample)) {
       throw std::runtime_error("Music3 generated nonfinite audio");
@@ -164,9 +147,11 @@ std::string EncodeAudio(const std::vector<float> &samples, bool pcm) {
     }
     const int16_t value = static_cast<int16_t>(
         std::clamp(std::nearbyint(sample * 32768.0f), -32768.0f, 32767.0f));
-    append(static_cast<uint16_t>(value), 2);
+    bytes.push_back(static_cast<char>(value & 0xff));
+    bytes.push_back(
+        static_cast<char>((static_cast<uint16_t>(value) >> 8) & 0xff));
   }
-  return bytes;
+  return pcm ? bytes : omni_common::WavBytes(bytes, kSampleRate, 2);
 }
 
 } // namespace music3

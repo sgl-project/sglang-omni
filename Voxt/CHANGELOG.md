@@ -8,21 +8,101 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Choose a meeting transcript's correction style** (#4134): Meeting settings now include an editable correction style. Your style replaces the built-in correction rules, while Voxt still corrects each line in place with your dictionary and Speech context and keeps the summary prompt separate. Reset to default prompt, or save a blank style, to restore the previous behavior.
 
-### Changed
-
-- **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
-- **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
-
 ### 中文
 
 #### 新增
 
 - **会议转录稿可以自定义校对风格**（#4134）：会议设置新增可编辑的校对风格。你的风格会替换内置校对规则；Voxt 仍逐行校对，使用词典和识别上下文，总结提示词保持独立。点“恢复默认提示词”或保存空白风格，即可恢复原来的行为。
 
+## [2.1.1] - 2026-11-17
+
+### Added
+
+- **Meetings label the other side as Speaker 1, 2, 3 and so on**: with MOSS-Transcribe-Diarize installed, Voxt uses it after a meeting to transcribe the other side with speaker labels while your lines stay Me, before transcript correction and the summary. Long meetings go to it in pieces, so dictation waits at most one piece, and a voice keeps its number across the pieces. In a language MOSS-Transcribe-Diarize does not know (it knows Chinese and English), or when the language is left automatic so it cannot be told, the meeting keeps the selected model's transcription. Without it, the meeting works as before and its details link to Speech models.
+- **Copy and edit notes in place, and see their source app**: each note has Copy and Edit buttons. Save writes the edit back to the note, and Cancel leaves it unchanged. If Voxt knows the frontmost app at capture time, new notes show its name.
+- **Reopen recent cards from the menu bar**: the new Reopen card section lists up to five Rewrite or Translate conversations from the last 24 hours whose current answer was not inserted. Open one to continue with all its turns, including after restarting Voxt. With the menu bar icon off, the Dock menu has the same list. Deleting or clearing history removes its rows. Turning off Keep a history hides the list, and Settings → Privacy now says so.
+- **Dictionary profiles**: keep named sets of dictionary entries for different situations. Existing entries move into the active Default profile with their meaning unchanged. Create, rename, delete, and switch profiles on the Dictionary page; Transcribe, Translate, and Rewrite use only the active profile. Hammerspoon, macOS Shortcuts, and shell scripts can switch without opening the Dictionary page by running `open -g 'voxtnew://dictionary/profile?name=Work'`. See docs/dictionary-profiles.md.
+- **Rewrite's answer card renders Markdown** (#4119): the language model answers in Markdown, and the card now shows a Rewrite answer as it reads — headings, bold, lists, code, and a formula's TeX — instead of the raw markers, the way the chat apps show replies, while it streams in and in a conversation's answers. What you said stays as written. Copy and Insert still use the answer's original text.
+- **Wait for the language model offers presets up to 60 minutes**: the setting on the Language models page now offers Automatic, 1, 2, 5, 10, 30 and 60 minutes, and No limit, replacing the Custom… minutes field. A custom wait saved by an earlier version keeps its duration and shows as what it is.
+- **Voxt 2 installs updates inside the app** (#3961): release builds check Voxt 2's signed stable or beta feed, download the update, install it and relaunch, as Voxt 1.x did. Settings → Diagnostics & About keeps the automatic check, beta and automatic install controls. Builds without a feed still check GitHub and point to the download.
+- **Update announcements are shorter**: the current version's announcement appears once after an update, with a title and at most three short lines. **What's new** opens the full notes, also available any time in Settings → About → Updates.
+- **Dictionary highlights in Transcribe**: the Try preview and answer card highlight recognised text that matches an enabled dictionary term or alias.
+- **Pick an accent color and make the window transparent** (#4123, #4180): Settings → Appearance has a Color picker with a light and a dark preview, and Reset color goes back to the default teal. Buttons, the selected sidebar item, the recording window and the answer card follow the color. The Transparent theme makes the sidebar and the page background see-through, and its Window transparency slider sets how much. With the default color, Try's Start and Stop buttons and level bars keep their red-orange.
+- **A first-use opening** (#4173): before the first setup guide, Voxt plays a short opening once. Existing setups and Reduce motion skip it.
+- **Faster transcription for MOSS-Transcribe-Diarize and Whisper Large v3** (#4133): both speech models get the Faster transcription switch on their cards.
+
+### Changed
+
+- **Formatted results**: Transcribe, Translate and Rewrite show Markdown, highlighted code and LaTeX in Try it, History details and answer cards, including streaming answers and follow-ups. Copy and Insert use the source text.
+- **Transcribe and Translate stream into the answer card too**: with the answer card on, a translation and Transcribe's cleaned-up text now show in the card as the language model writes them, as Rewrite's answer already did. You no longer wait in the recording window until the whole text is in. Stop keeps the translation written so far. Transcribe's card offers Use transcript instead of Stop (the cancel shortcut does the same): it puts all of what you said in the card as recognised, because a clean-up stopped part way would lose the rest. Another language picked in the card, or another thinking level, streams over the card's text, and the old text comes back if that fails. Retry and Transcribe again in History show the new result in the details as it is written. With the answer card off, the result still goes in whole once it is ready.
+- **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
+- **The thinking button names its setting** (#4066): the thinking button in the recording window and on the answer card now reads, for example, "Thinking level: High" or "Thinking level: On (default)" instead of "Ask again: Thinking (High)". Click it to pick another level for this input; as before, picking one stops the answer and asks again. This is the same in Transcribe, Translate and Rewrite.
+- **Manage models beside each feature's model picker and in Settings**: Transcribe, Translate and Rewrite show whether the selected speech model is installed or downloading, and let you download, cancel or delete it without leaving the page. With no speech model installed, they offer the recommended download. Selected remote services show their state and Edit dialog there too. Speech models and Language models are now Settings sections instead of separate sidebar pages. Old deep links and command-palette entries open the new sections.
+- **The built-in speech models run on a reworked native runtime** (#4181, #4184, #4187, #4188, #4189, #4190): Voxt's on-device runtime now uses MLX 0.32.5 built from a pinned commit. Several speech encoders and vocoders run in half precision, decoder layers are quantized at load, decode steps are queued ahead, and graph evaluations no longer wait where nothing reads the result. Models, settings and downloads stay the same.
+- **Each page's view state and actions are separated from its drawing code** (#4073): an internal change, with no change to features, looks or speed. Every page state now renders from test fixtures, without a microphone, a model or a permission.
+- **The prompt preview is the whole prompt** (#4033): the preview on Transcribe, Translate and Rewrite includes your personal dictionary and shows the translation languages filled in. The Dictionary page no longer has its own example.
+- **Whisper transcribes long recordings faster** (#4138): up to four 30-second windows decode together.
+
+### Fixed
+
+- **Rewrite sends a copied WebP image**: with "Send the copied image with Rewrite" on, an image copied as WebP only was skipped without a message; it now reaches the model like PNG, JPEG, HEIC and TIFF.
+- **Translate into your main language no longer returns what you said unchanged** (#4153): with English as your main language, translating Chinese speech into English could give back the Chinese, with no error. The prompt told the model both to translate into English and that your main language is never a language to translate into, and its example was an English clean-up with no translation in it. Translate's prompt no longer says that, and its example now always translates from another language into the target.
+- **Transcribe shows and inserts only the cleaned text, never the model's commentary about its edits** (#4086): with the language-model step on, a model that explains what it changed ("I removed the filler…") had that explanation inserted as if it were part of the transcript. The clean-up now asks for the final text between <output> tags and only the text between them is streamed into the card, shown and inserted; an answer without the tags is used as before. When you say the tags themselves, only the one outer pair the model adds around your text goes, and Rewrite and Translate answers keep such tags in their text (HTML you asked for, say).
+- **Rewrite and Translate read a block selection in a Lark doc**: selecting an image block, or a range of blocks with images and text, in a Lark doc in Chrome no longer reads as "no selection". Chrome reports such a selection to Accessibility as a single blank space, which Voxt mistook for the selected text and never tried copying; Voxt now treats a reading that is all whitespace as no reading and copies with ⌘C instead, so the selection's text (with a placeholder per image) reaches the language model.
+- **Rewrite input bubbles fit what you said**: short instructions use a narrow bubble, longer instructions grow to the usual width and wrap, and long conversations still scroll.
+- **A failed meeting transcript correction no longer applies by halves**: when the language model corrected a meeting's transcript and failed part-way, the batches already done stayed, so the summary ran over a mix of corrected and recognised lines with nothing saying which was which. The correction now lands only as a whole; a failure, the model's or the save's, leaves every line as recognised.
+- **A failed or cancelled meeting's recording is deleted after seven days**: the recording was meant to be kept for seven days when the settings keep no audio, but nothing ever deleted it. It is now swept once its time is up, and a recording that cannot be deleted stays tracked and is tried again instead of being forgotten on disk. A finished meeting's recording still follows the settings right away.
+- **Recording starts with a microphone selected in Settings → Audio** (#4120). Voxt keeps a working input running through configuration changes. If two consecutive starts deliver no audio, it switches to the system default microphone. If that attempt also delivers no audio, Voxt ends the stalled recording with an error.
+- **Reset look and Reset all settings stay reset after a color or transparency preview** (#4174): a preview save still pending from before the reset could write the old color or transparency back over the defaults. Reset now cancels pending preview saves and shows the default look at once. Palette previews also run in the normal snapshot gate.
+- **Rewrite keeps a copied image when its first format cannot be read** (#4107): Voxt falls back to another format of the same clipboard item.
+- **Meetings start while system audio is silent** (#4132): recording starts at once and picks up system audio when something plays.
+- **Meeting start errors say what failed** (#4128): the permission guidance shows only when a permission was denied. Other failures name the audio source and offer a retry or a microphone-only recording.
+- **The meeting waveform and silence warning follow idle and paused system audio** (#4195): the waveform returns to quiet when output stops, the 30-second silence warning can appear, and paused time no longer counts toward it.
+
+### 中文
+
+#### 新增
+
+- **会议把对方标为说话人 1、2、3……**：安装 MOSS-Transcribe-Diarize 后，Voxt 在会议结束时用它转录对方的话并区分说话人，你的话仍标为“我”，然后再校对转录稿和写总结。长会议分段送给它，听写最多等一段，同一个人的编号跨段不变。遇到它不认识的语种（它只认识中文和英文），或语言保持自动而无法判断时，会议沿用所选模型的转录。没装时会议照常工作，会议详情提供语音识别模型页入口。
+- **笔记可以一键复制、原地编辑，并显示来源 App**：每条笔记都有“复制”和“编辑”按钮。编辑后点“保存”会写回这条笔记，点“取消”则不改内容。Voxt 能确定按下快捷键时的前台 App 时，新笔记也会显示这个 App。
+- **从菜单栏重新打开最近的卡片**：新的「重新打开卡片」一栏最多列出 5 段最近 24 小时内的改写或翻译对话，当前回答已经插入的不列出。点开即可带着所有轮次继续，重启 Voxt 后也可以。菜单栏图标关闭时，程序坞菜单提供同样的列表。删除记录或清空历史后，对应行也会移除。关闭「保存历史」后不显示这一栏，「设置 → 隐私」里已注明。
+- **词典分组**：为不同场合保存几组词条。现有词条移入当前使用的“默认”分组，含义不变。在词典页新建、改名、删除和切换分组；转录、翻译和改写只用当前分组。Hammerspoon、macOS 快捷指令和 shell 脚本可以不打开词典页就切换：运行 `open -g 'voxtnew://dictionary/profile?name=Work'`。见 docs/dictionary-profiles.md。
+- **改写的答案卡片按 Markdown 排版显示**（#4119）：语言模型的回答是 Markdown，卡片现在按排版显示改写的回答——标题、加粗、列表、代码和公式的 TeX——不再是原始符号，和主流聊天 App 一样；边写边显示和对话里的回答也一样。你自己说的话原样显示。复制和插入用的仍是回答原文。
+- **“等待语言模型”提供最长 60 分钟的预设**：语言模型页的这项设置现在可选“自动”、1、2、5、10、30、60 分钟和“不限制”，替代原来的“自定义…”分钟输入。旧版本保存的自定义等待保持原时长，并如实显示。
+- **Voxt 2 在 App 内安装更新**（#3961）：发布构建会检查 Voxt 2 的正式版或 beta 签名更新源，下载并安装更新后重新启动，和 Voxt 1.x 一样。「设置 → 诊断与关于」保留自动检查、Beta 更新和自动安装开关。没有更新源的构建仍检查 GitHub 并提供下载地址。
+- **更新公告更短**：当前版本的公告在更新后只出现一次，一个标题加最多三行短句。“新增功能”打开完整说明，也可以随时在 设置 → 关于 → 更新 里查看。
+- **转录里的词典高亮**：试用预览和答案卡片会高亮识别文字中命中启用词条或别名的部分。
+- **自选主题色，窗口可以透明**（#4123、#4180）：「设置 → 外观」新增“颜色”选择器，附浅色和深色预览，“恢复默认颜色”回到默认的青绿色。按钮、侧边栏选中项、录音窗口和答案卡片都跟随这个颜色。“透明”主题让侧边栏和页面背景半透明，“窗口透明度”滑块调节透明程度。使用默认颜色时，“试一试”的开始、停止按钮和音量条保持原来的橙红色。
+- **首次使用的开场动画**（#4173）：第一次打开设置向导前播放一段简短开场，只播一次。已经设置过的，或打开了「减少动态效果」的，不播放。
+- **MOSS-Transcribe-Diarize 和 Whisper Large v3 支持加速转录**（#4133）：这两个语音模型的卡片上有了加速转录开关。
+
 #### 变更
 
+- **结果支持排版**：转录、翻译和改写在“试一试”、历史详情和答案卡片中显示 Markdown、代码高亮和 LaTeX 公式，也支持流式输出和连续追问。复制和插入使用原文。
 - **转录和翻译的结果也边写边显示在答案卡片里**：打开答案卡片时，译文和转录整理后的文字会随语言模型的输出逐步出现在卡片里，和改写的回答一样，不用再在录音窗口里等全部写完。翻译可以点“停止”，留下已写出的译文。转录的卡片没有“停止”，而是“用识别原文”（按取消键也一样）：把你说的整段按识别结果放进卡片，因为整理停在半路会丢掉后面的内容。在卡片里换一种语言或换一个思考强度时，新的回答也边写边替换卡片里的文字，失败时卡片回到原来的文字。历史记录里的“重试”和“重新识别”会在详情里边写边显示新结果。答案卡片关着时，结果仍在写完后一次插入。
 - **语言模型处理时，录音窗口显示发给它的文字**：用流式语音识别模型时，录音窗口下面一行改为显示发给语言模型的识别结果（最终识别结果，词典别名已替换），不再是最后一条实时文字，两者可能不同。不是流式的语音识别模型照旧不显示文字，没有语言模型时也照旧。
+- **思考按钮直接写思考强度**（#4066）：录音窗口和答案卡片上的思考按钮改成“思考强度：高”“思考强度：已开启（默认）”这样的写法，不再写“重新问：思考（高）”。点它就能为这次输入换一个强度，和以前一样，选了就停掉这次回答、重新问。转录、翻译、改写都一样。
+- **在功能选模型的地方和“设置”里管理模型**：转录、翻译、改写页直接显示所选语音识别模型的下载、取消、删除和状态，没装时可直接下载推荐模型；远程服务也显示状态，并可就地打开编辑对话框。语音识别模型和语言模型从独立侧边栏页面改为“设置”里的两节，旧深链和命令面板入口仍打开对应设置节。
+- **内置语音模型换上重写后的本地运行时**（#4181、#4184、#4187、#4188、#4189、#4190）：Voxt 的本地运行时改用从固定提交构建的 MLX 0.32.5。多个语音编码器和声码器改用半精度运行，解码层在加载时量化，解码步骤提前排队，没人读取结果的计算不再同步等待。模型、设置和下载都不变。
+- **每个页面的视图状态和操作与绘制代码分开**（#4073）：内部改动，功能、外观和速度都不变。现在每种页面状态都能用测试数据渲染，不需要麦克风、模型或权限。
+- **提示词预览是完整的提示词**（#4033）：转录、翻译、改写页的预览包含个人词典，翻译的几种语言显示为填好的值。词典页不再单独放示例。
+- **Whisper 转录长录音更快**（#4138）：最多四个 30 秒的窗口一起解码。
+
+#### 修复
+
+- **改写会发送复制的 WebP 图片**：打开「改写时发送复制的图片」后，只有 WebP 格式的复制图片以前会被跳过且没有提示；现在和 PNG、JPEG、HEIC、TIFF 一样发给模型。
+- **翻译成主要语言时不再原样返回你说的话**（#4153）：主要语言是英文时，把中文语音翻译成英文可能原样返回中文，也不报错。提示词一边要求翻译成英文，一边说主要语言不是翻译的目标语言，示例还是一段没有翻译的英文整理。现在翻译的提示词不再这样说，示例也总是从另一种语言翻译成目标语言。
+- **转录只显示和插入整理后的文字，不再混入模型对自己改动的说明**（#4086）：打开语言模型整理时，有的模型会在整理结果后面解释自己改了什么（“我删掉了……”），这段说明会被当成转录稿插入。现在转录的整理要求模型把最终文本放在 <output> 标签之间，只有标签里的内容会边写边进入卡片、显示和插入；没有标签的回答照原来的方式使用。你口述的内容本身有这对标签时，只去掉模型在最外面加的一对；改写和翻译的回答保留文本里的这类标签（比如按要求生成的 HTML）。
+- **改写和翻译能读到 Lark 文档里的块级选区**：在 Chrome 的 Lark 文档里选中一个图片块，或选中图片加文字的一段块，不再读成“没有选中”。Chrome 把这样的选区经无障碍接口报成一个空格，Voxt 以前把它当成选中的文字，不再尝试复制；现在全白的读取结果按没读到处理，改用 ⌘C 复制，选区文字（每张图一个占位符）会发给语言模型。
+- **改写输入气泡随内容调整**：短指令用窄气泡，长指令加宽到常用宽度并换行，长对话仍然可以滚动。
+- **会议转录稿校对失败时不再改一半**：语言模型校对会议转录稿中途失败时，已完成的批次会留下，总结因此混用校对过和未校对的文字，且看不出区别。现在校对只会整体生效，无论模型还是保存失败，每一行都保持识别原文。
+- **失败或取消的会议录音七天后会被删除**：设置不保留音频时，这类录音本应保留七天，但一直没有东西去删它。现在到期后会被清理；删不掉的录音会保留记录、之后重试，不会被遗忘在磁盘上。正常结束的会议录音仍按设置立即处理。
+- **在设置 → 音频选定麦克风后可以正常开始录音**（#4120）。收到配置变更通知时，Voxt 会继续使用正常运行的麦克风。如果连续两次启动都未收到音频，Voxt 会切换到系统默认麦克风。如果这次也未收到音频，Voxt 会结束卡住的录音并提示错误。
+- **重置外观和重置全部设置不会被之前的颜色或透明度预览改回**（#4174）：重置前尚未保存的预览会在重置后写回旧的颜色或透明度，覆盖默认值。现在重置会取消未保存的预览，并立即显示默认外观。调色板预览也纳入正常快照门禁。
+- **改写在首选格式读不出来时仍能带上复制的图片**（#4107）：改用同一剪贴板内容的另一种格式。
+- **系统没有声音时也能开始会议**（#4132）：录音立即开始，有声音播放时开始录系统声音。
+- **开始会议失败时说明是哪里失败**（#4128）：只有权限被拒绝时才提示去开权限；其他失败会指出是哪一路声音，并提供重试或只录麦克风。
+- **会议波形和静音提醒跟着系统声音的空闲和暂停走**（#4195）：系统不出声时波形回到静音，30 秒静音提醒能正常出现，暂停的时间不再算进去。
 
 ## [2.1.0] - 2026-11-15
 
@@ -56,6 +136,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **The meeting window looks like the other windows**: it starts with the meeting icon and a menu of meeting modes, the timer is on the right in grey as when you dictate, and the microphone and the other side each have a waveform. Delete and the choices you use less are in a More menu. Expanded, it grows with the transcript, and a button makes it larger. Speakers are You and Others in the window, the details and the summary, and live text is upright, as in dictation.
 - **Each feature page shows the whole request and what each variable is** (#4016): on the Transcribe, Translate and Rewrite pages, Your rules lists only the variables that feature fills, each with where its value comes from, which features use it and its value now. {{TARGET_LANGUAGE}} is offered on the Translate page only. What the language model receives, under Your rules, shows the system prompt and the messages as they are sent, with the variables filled in from your settings and a sample input. The Dictionary page's How it is used points to these previews. What Voxt sends to the language model has not changed.
+- **The prompt preview on the feature pages is one whole prompt, with your personal dictionary** (#4032): What the language model receives, under Your rules on the Transcribe, Translate and Rewrite pages, now shows the prompt as one text, without system and user headings, and includes your personal dictionary where Voxt sends it, right after your rules. The values Voxt fills in for the variables, such as the target language and your main and other languages on the Translate page, are marked, so you can see where each one goes. The Dictionary page no longer has its own example (How it is used) and points to the feature pages instead. What Voxt sends to the language model has not changed.
 - **Wait for the language model takes your own number of minutes** (#3941): besides Automatic, 1, 2, 5 and 10 minutes, the setting on the Language models page has Custom…, which shows a minutes field. Type or step any whole number from 1 to 60, and Voxt waits at least that long for Transcribe, Translate and Rewrite, as with the presets. The field says its range, min (1–60), and a number over 60 shows At most 60 minutes instead (#3955); a number outside 1 to 60 is not saved. Settings saved before keep their wait.
 - **Translate's menu says Target language, and the page says when your prompt ignores it** (#3956): the menu on the Translate page is now labeled Target language, and the page explains how Translate works: speech recognition writes what you said in your own language, and the language model translates it into the target language. A prompt of your own in Your rules replaces the built-in one, so it gets the menu's language only where it says {{TARGET_LANGUAGE}}. When it does not, the page warns that the menu does nothing and has a button that adds the variable. The rules field now starts from the built-in prompt with {{TARGET_LANGUAGE}} in it, not the language's name, so a prompt you edit from it keeps following the menu.
 - **The meeting window looks like the dictation window** (#3986): collapsed, it is as tall as the recording pill and has the same padding; expanded, it has the answer card's padding, the line under the controls and the same text size for the transcript.
@@ -150,6 +231,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **会议浮窗和其他浮窗一个样子**：开头是会议图标和会议模式菜单，计时像听写时一样放在右边、灰色，麦克风和对方各一条波形。删除和不常用的选项收进“更多”菜单。展开后跟着转录稿长高，还有一个按钮可以放大。浮窗、详情和总结里说话人都叫“你”和“对方”，实时文字和听写一样用正体。
 - **每个功能页显示完整的请求和每个变量的含义**（#4016）：转录、翻译、改写页的“你的规则”只列出这个功能会填的变量，每个都写明值从哪里来、哪些功能用到、现在是什么。{{TARGET_LANGUAGE}} 只在翻译页出现。“你的规则”下的“语言模型收到的内容”按发送时的样子显示系统提示词和各条消息，变量按你的设置填好，输入用一段示例。词典页的“怎么使用”会指向这些预览。Voxt 发给语言模型的内容没有变。
+- **功能页的提示词预览是一整段，并带上个人词典**（#4032）：转录、翻译、改写页“你的规则”下的“语言模型收到的内容”现在把提示词显示成一整段文字，不再分系统和用户两块，并且把个人词典放在 Voxt 发送时的位置，紧跟在你的规则后面。Voxt 给变量填进去的值会标出来，比如翻译页的目标语言、主要语言和其他语言，一眼能看到每个变量落在哪里。词典页去掉了自己的示例（“怎么使用”），改为指向各功能页。Voxt 发给语言模型的内容没有变。
 - **“等待语言模型”可以自己填分钟数**（#3941）：语言模型页的这个设置除了自动、1、2、5、10 分钟，多了“自定义…”，选它后旁边出现分钟数输入框。填或点加减到 1 到 60 之间的整数，转录、翻译、改写就至少等这么久，和预设一样。输入框旁写着范围“分钟（1–60）”，填超过 60 的数会显示“最多 60 分钟”（#3955）；超出 1 到 60 的数不保存。以前存的设置照旧。
 - **翻译页的菜单叫“目标语言”，提示词不认这个菜单时页面会提醒**（#3956）：翻译页的菜单改名为“目标语言”，页面上说明翻译怎么做：语音识别按你说的语言写下文字，语言模型再把它翻译成目标语言。“你的规则”里你自己的提示词会替换内置的那一份，只有写了 {{TARGET_LANGUAGE}} 的地方才用菜单选的语言。没写时，页面提醒这个菜单不起作用，并给一个按钮把变量加进去。规则输入框现在从带 {{TARGET_LANGUAGE}} 的内置提示词开始，不再写成具体语言名，在它基础上改出来的提示词仍然跟着菜单走。
 - **会议浮窗和听写浮窗一个样子**（#3986）：收起时和录音胶囊一样高、内边距相同；展开时用回答卡片的内边距、按钮下面的分隔线和同样大小的字幕文字。

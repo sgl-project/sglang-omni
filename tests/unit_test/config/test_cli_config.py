@@ -16,7 +16,7 @@ disk, which these tests have no weights for.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 from unittest import mock
 
 import pytest
@@ -460,7 +460,13 @@ class TestTensorParallelDerivation:
 class TestModelPathWithConfig:
     """``--config`` plus ``--model-path``: the flag wins, as it does in serve."""
 
-    def test_resolve_prefers_the_flag_over_the_file(self, runner, plain_config_file):
+    @pytest.mark.parametrize("show", ["config", "diff"])
+    def test_resolve_prefers_the_flag_over_the_file(
+        self,
+        runner: CliRunner,
+        plain_config_file: Path,
+        show: Literal["config", "diff"],
+    ) -> None:
         result = runner.invoke(
             config_app,
             [
@@ -469,11 +475,17 @@ class TestModelPathWithConfig:
                 str(plain_config_file),
                 "--model-path",
                 "local/checkout",
+                "--show",
+                show,
             ],
         )
 
         assert result.exit_code == 0, output_of(result)
-        assert yaml.safe_load(result.stdout)["model_path"] == "local/checkout"
+        if show == "config":
+            assert yaml.safe_load(result.stdout)["model_path"] == "local/checkout"
+        else:
+            assert "model_path: 'dummy' -> 'local/checkout'" in result.stdout
+            assert "name: 'dummy' -> 'local/checkout'" in result.stdout
 
     def test_explain_names_the_flag_as_the_winner(self, runner, plain_config_file):
         result = runner.invoke(
@@ -490,7 +502,11 @@ class TestModelPathWithConfig:
 
         assert result.exit_code == 0, output_of(result)
         assert "model_path = 'local/checkout'" in result.stdout
+        assert (
+            "'dummy'  <- yaml file" in result.stdout and "[superseded]" in result.stdout
+        )
         assert "cli flag (--model-path)  [winner]" in result.stdout
+        assert "model default" not in result.stdout
 
 
 class TestBroadcastFlagOnConfigCommands:

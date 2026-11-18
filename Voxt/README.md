@@ -36,7 +36,7 @@ Voice input built on speech recognition plus a language model's polish. Any-to-a
 - **Nothing you said is lost.** When recognition fails, the recording is kept and **Retry** in History recognises it again.
 - **A conversation in the answer card.** A result can wait in a floating card: keep asking follow-ups by voice, then copy or insert the answer.
 - **Your models, your data.** Speech runs on your Mac with Qwen3-ASR or MOSS-Transcribe-Diarize, served by the SGLang-Omni MLX runtime, or goes to a cloud speech API you set up. The language model is anything with an OpenAI-compatible API: SGLang MLX or Ollama on your Mac, or a service such as DeepSeek V4.1 and Kimi K3.1, the two our team uses most. Where your data goes is yours to decide.
-- **Optional DFlash acceleration for Qwen3-ASR.** **Faster transcription** adds a small draft model, and the speech model transcribes faster by speculative decoding.
+- **Optional speculative decoding for Qwen3-ASR, MOSS-Transcribe-Diarize, and Whisper Large v3.** Open **Faster transcription** on the model's card to download its draft.
 - **And more**: sign in with ChatGPT instead of pasting an API key, a fallback model for Translate, your own prompts, and History export to Markdown or JSONL.
 
 Already on Voxt 1.x? See [Coming from Voxt 1.x](#coming-from-voxt-1x). Every change, version by version: [CHANGELOG.md](CHANGELOG.md).
@@ -61,7 +61,7 @@ Tap **right ⌥ Option**. What you say is typed where your cursor is. The text s
 
 - **App enhancement**: groups of apps and websites with their own prompt and a key pressed after inserting, such as a casual tone in chats and Return to send.
 - **Dictionary**: names and jargon that the speech model expects and the language model writes as you spell them. Voxt suggests new terms from your history and from the corrections you make.
-- **Meetings**: choose Start meeting in the menu bar menu or on the Meetings page. Voxt records your microphone, the other side's audio, or both, and shows live captions. After the meeting, a language model corrects the transcript with your dictionary and writes a summary you can ask follow-up questions about. Recording the other side needs System Audio Recording permission.
+- **Meetings**: choose Start meeting in the menu bar menu or on the Meetings page. Voxt records your microphone, the other side's audio, or both, and shows live captions. With MOSS-Transcribe-Diarize installed, the finished transcript labels the other side as Speaker 1–4 while your lines stay Me. After the meeting, a language model corrects the transcript with your dictionary and writes a summary you can ask follow-up questions about. Recording the other side needs System Audio Recording permission.
 - **Notes**: tap right ⌘, speak, and Voxt saves what you said as a note instead of typing it.
 - **History**: every result, with search, **Retry** from the recording, and export.
 
@@ -71,7 +71,7 @@ Every shortcut can be changed on its feature's page, and Settings → Shortcuts 
 
 ### New to Voxt
 
-1. **Download** [`Voxt-2.1.0-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
+1. **Download** [`Voxt-2.1.1-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
 
 2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit), 2.5 GB), and set up a language model for clean-up, Translate and Rewrite.
 3. **Tap the right Option key** in any app, speak, and tap it again.
@@ -114,12 +114,12 @@ Speech is recognised **on your Mac** by the [SGLang-Omni MLX runtime](../sglang_
 
 - **More local models**: MOSS-Transcribe-Diarize (Chinese and English, live text), Nemotron 3.5 ASR 0.6B (28 languages, live text), Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Large v3 and Small (about 100 languages), Parakeet TDT 0.6B v3 (25 European languages), SenseVoice Small (Chinese, Cantonese, English, Japanese, Korean) and Cohere Transcribe 03-2026 (14 languages). macOS's own System dictation is there too, with nothing to download.
 - **Qwen3-ASR** knows 30 languages and 22 Chinese dialects, and uses your dictionary; the other models you download do not.
-- **Faster transcription** (DFlash): on the Qwen3-ASR 1.7B (8bit) and 0.6B (4bit) cards, turn on its switch and download a draft model (726 MB and 262 MB). It proposes several words at a time for the speech model to check. Turn the switch off and the model works as before; the draft stays on disk until you delete it.
+- **Faster transcription** is available on the Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit), MOSS-Transcribe-Diarize, and Whisper Large v3 cards. Turn on the switch to download the DFlash draft for Qwen3-ASR or MOSS (726 MB, 262 MB, or 262 MB, respectively), or the Distil draft for Whisper (1.5 GB). Turning off the switch resumes ordinary decoding and keeps the draft on disk.
 - **Cloud speech APIs**, if you prefer one: OpenAI Transcribe, Doubao (Volcengine), Zhipu GLM-ASR, Aliyun Bailian, StepFun, Xiaomi MiMo and Google Gemini.
 
 ### Language models
 
-Clean-up, Translate and Rewrite use the language model you set up on the Language models page, over its OpenAI-compatible API:
+Clean-up, Translate and Rewrite use the language model you set up in Settings → Language models, over its OpenAI-compatible API:
 
 - **On your Mac**, so the text stays here: Ollama, LM Studio, oMLX, SGLang MLX, or any other compatible server.
 - **A service**: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI and OpenRouter.
@@ -160,7 +160,7 @@ Apache License 2.0 ([LICENSE](LICENSE)), as the rest of this repository. Copyrig
 
 [![Back to top][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.0/Voxt-2.1.0-arm64.dmg
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.1/Voxt-2.1.1-arm64.dmg
 [beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
 [beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
 [beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml

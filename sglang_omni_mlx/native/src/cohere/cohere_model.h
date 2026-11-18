@@ -10,8 +10,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/kv_cache.h"
+#include "common/layers.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace cohere_transcribe {
 
@@ -31,7 +32,7 @@ struct CohereConfig {
 // Self-attention keys and values grow by one token per step; cross-attention
 // keys and values are projected once from the encoder output.
 struct DecoderLayerCache {
-  qwen3_asr::KVCache self_attention;
+  omni_common::KVCache self_attention;
   std::optional<mlx::core::array> cross_keys;
   std::optional<mlx::core::array> cross_values;
 };
@@ -46,35 +47,26 @@ public:
   // 16 kHz samples to encoder states projected to the decoder width [1,
   // frames, width].
   mlx::core::array Encode(const std::vector<float> &samples) const;
-  // Token ids [1, length] placed from start_position on, to the logits of the
-  // last position [vocabulary].
+  // Token ids [rows, length] placed from start_position on, to the logits of
+  // each row's last position [rows, vocabulary]. encoder_mask, additive
+  // [rows, 1, 1, frames], hides the encoder frames past a shorter row's.
   mlx::core::array Decode(const mlx::core::array &token_ids, int start_position,
                           const mlx::core::array &encoder_states,
+                          const std::optional<mlx::core::array> &encoder_mask,
                           std::vector<DecoderLayerCache> &caches) const;
 
 private:
-  const mlx::core::array &Weight(const std::string &name) const;
-  mlx::core::array Linear(const mlx::core::array &x,
-                          const std::string &prefix) const;
-  mlx::core::array LayerNorm(const mlx::core::array &x,
-                             const std::string &prefix) const;
-  mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,
-                          int padding, int groups) const;
-  mlx::core::array Conv2d(const mlx::core::array &x, const std::string &prefix,
-                          int stride, int padding, int groups) const;
   mlx::core::array RelativePositions(int length, mlx::core::Dtype dtype) const;
   mlx::core::array EncoderSelfAttention(const mlx::core::array &x,
                                         const mlx::core::array &positions,
                                         const std::string &prefix) const;
-  mlx::core::array EncoderConvolution(const mlx::core::array &x,
-                                      const std::string &prefix) const;
   mlx::core::array EncoderLayer(const mlx::core::array &x,
                                 const mlx::core::array &positions,
                                 int layer) const;
   mlx::core::array
   DecoderAttention(const mlx::core::array &queries_input,
                    const mlx::core::array &keys, const mlx::core::array &values,
-                   const std::string &prefix,
+                   const std::string &prefix, bool is_causal,
                    const std::optional<mlx::core::array> &mask) const;
 
   CohereConfig config_;
@@ -87,7 +79,7 @@ private:
   mlx::core::array relative_position_table_;
   // The decoder's fixed sinusoidal positions [max_sequence_length, width].
   mlx::core::array decoder_positions_;
-  std::unordered_map<std::string, mlx::core::array> weights_;
+  omni_common::Checkpoint checkpoint_;
 };
 
 } // namespace cohere_transcribe
