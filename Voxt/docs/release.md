@@ -2,7 +2,7 @@
 
 Voxt（内部名 VoxtNew）是 sglang-omni 仓库里的开源 app（Apache-2.0），ActNow 家族的一员。**从 2.0.0 起，正式版在 sglang-omni 的 GitHub Release 发布**：推一个 `voxt-vX.Y.Z` tag，[Voxt Release](../../.github/workflows/voxt-release.yaml) 工作流在 GitHub 的 macos-26 runner 上构建，用 `voxt-release` 环境里的 Developer ID（Xiaofeng Cao，Team **RY2TQTYSKQ**，和 Swift 版 Voxt 1.x 同一个）签名并公证，把 dmg 放进草稿 Release（见下面的“从 tag 发布”，2026-11-06 定）。§0 起写的是之前的方案：在 mac-air 上用 wei guan（779M533DL5）的 Developer ID 签名、用 york@actnow.dev 公证、发到官网 actnow.dev（产品页 <https://actnow.dev/voxtnew>，更新源 `https://actnow.dev/updates/voxtnew`，VoxtNew 自己的更新密钥见 §1.3），留到有了更新通道时参考。
 
-> **还差官网这一边**：VoxtNew 的产品页已经上线，ingest token 已经发（`RELEASE_INGEST_TOKEN_VOXTNEW`）。还要 ActNow 项目在面板 /panel/releases 的 voxtnew 设置里填上公钥 `MbROqANE8pK8IQ8hdtUtR/m5SqUY2nTgzHwrQt04Zps=`（已在 `notices/from-voxtnew.md` 里请他们填）：填了以后后台才校验更新包的签名。
+> **还差官网这一边**：VoxtNew 的产品页已经上线，ingest token 已经发（`RELEASE_INGEST_TOKEN_VOXTNEW`）。还要 ActNow 项目在面板 /panel/releases 的 voxtnew 设置里填上公钥 `PPX1glcG71+Xyk/V2veU1p0QeyX1RKRFPeAG2++lUEE=`（已在 `notices/from-voxtnew.md` 里请他们填）：填了以后后台才校验更新包的签名。
 
 发布版本在一台 Apple 芯片的 Mac 上用一条命令构建：[scripts/release.sh](../scripts/release.sh)。它编译辅助进程和 Omni 运行时（语音识别），把两者放进 app，`go tool mygo build` 打包、签名、（可选）公证，[scripts/release-verify.sh](../scripts/release-verify.sh) 检查结果，最后用官网的发布脚本 [scripts/actnow-publish.sh](../scripts/actnow-publish.sh)（`https://actnow.dev/actnow-publish.sh` 的原样副本，见 §2.3）把文件交给官网后台，或者只做 `--dry-run`。
 
@@ -200,10 +200,10 @@ york@actnow.dev 要开启双重认证（App 专用密码需要）。也可以改
 
 ### 1.3 更新签名密钥
 
-VoxtNew 有**自己的**一对密钥（10-17 在 mac-air 上用 `go tool mygo keygen` 生成，不再和 Auralink 共用）：
+Voxt 2 有**自己的**一对密钥（2026-11-17 在 Mac Studio 上用 `go tool mygo keygen` 生成。它取代了 10-17 给 VoxtNew 生成的那一对：那把私钥不在 Voxt 2 的发布机器上，2.1.1 之前也没有 Voxt 2 构建用过它）：
 
-- 公钥 `MbROqANE8pK8IQ8hdtUtR/m5SqUY2nTgzHwrQt04Zps=`，Voxt Release 工作流写进构建时的 `updates.publicKey`；旧的 actnow.dev 发布流程也要在官网面板 /panel/releases 的 voxtnew 设置里填同一个（由 ActNow 项目填）。
-- 私钥在 mac-air 的 `~/.config/voxtnew-release/update-keys/mygo-update.key`（600，目录 700；同目录的 `mygo-update.pub` 是公钥），GitHub 正式版和 beta 构建用 `voxt-release` 环境里的同一把 `MYGO_UPDATER_PRIVATE_KEY`，**不进仓库**、不进日志。
+- 公钥 `PPX1glcG71+Xyk/V2veU1p0QeyX1RKRFPeAG2++lUEE=`，Voxt Release 工作流写进构建时的 `updates.publicKey`；旧的 actnow.dev 发布流程仍用 VoxtNew 原来的那对密钥，和这里无关。
+- 私钥在 Mac Studio 的 `~/.config/voxtnew-release/update-keys/mygo-update.key`（600，目录 700；同目录的 `mygo-update.pub` 是公钥），GitHub 正式版和 beta 构建用 `voxt-release` 环境里的同一把 `MYGO_UPDATER_PRIVATE_KEY`，**不进仓库**、不进日志。
 
 `release.sh` 有身份签名时自己找私钥：环境变量 `MYGO_UPDATER_PRIVATE_KEY`（密钥本身），否则 `VOXTNEW_UPDATE_KEY` 指的文件（默认就是上面那个路径），交给 MyGo 的是文件路径（`updates.privateKey`），密钥不进命令行和环境。开始前它核对私钥和 `release/mygo.release.json` 的公钥是一对，不是就停下。
 
