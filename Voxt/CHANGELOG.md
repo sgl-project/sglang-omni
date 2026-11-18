@@ -2,22 +2,7 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
-## [2.1.1] - 2026-11-17
-
-### Added
-
-- **Meetings label the other side as Speaker 1, 2, 3 and so on**: with MOSS-Transcribe-Diarize installed, Voxt uses it after a meeting to transcribe the other side with speaker labels while your lines stay Me, before transcript correction and the summary. Long meetings go to it in pieces, so dictation waits at most one piece, and a voice keeps its number across the pieces. In a language MOSS-Transcribe-Diarize does not know (it knows Chinese and English), or when the language is left automatic so it cannot be told, the meeting keeps the selected model's transcription. Without it, the meeting works as before and its details link to Speech models.
-- **Copy and edit notes in place, and see their source app**: each note has Copy and Edit buttons. Save writes the edit back to the note, and Cancel leaves it unchanged. If Voxt knows the frontmost app at capture time, new notes show its name.
-- **Reopen recent cards from the menu bar**: the new Reopen card section lists up to five Rewrite or Translate conversations from the last 24 hours whose current answer was not inserted. Open one to continue with all its turns, including after restarting Voxt. With the menu bar icon off, the Dock menu has the same list. Deleting or clearing history removes its rows. Turning off Keep a history hides the list, and Settings → Privacy now says so.
-- **Dictionary profiles**: keep named sets of dictionary entries for different situations. Existing entries move into the active Default profile with their meaning unchanged. Create, rename, delete, and switch profiles on the Dictionary page; Transcribe, Translate, and Rewrite use only the active profile. Hammerspoon, macOS Shortcuts, and shell scripts can switch without opening the Dictionary page by running `open -g 'voxtnew://dictionary/profile?name=Work'`. See docs/dictionary-profiles.md.
-- **Rewrite's answer card renders Markdown** (#4119): the language model answers in Markdown, and the card now shows a Rewrite answer as it reads — headings, bold, lists, code, and a formula's TeX — instead of the raw markers, the way the chat apps show replies, while it streams in and in a conversation's answers. What you said stays as written. Copy and Insert still use the answer's original text.
-- **Wait for the language model offers presets up to 60 minutes**: the setting on the Language models page now offers Automatic, 1, 2, 5, 10, 30 and 60 minutes, and No limit, replacing the Custom… minutes field. A custom wait saved by an earlier version keeps its duration and shows as what it is.
-- **Voxt 2 installs updates inside the app** (#3961): release builds check Voxt 2's signed stable or beta feed, download the update, install it and relaunch, as Voxt 1.x did. Settings → Diagnostics & About keeps the automatic check, beta and automatic install controls. Builds without a feed still check GitHub and point to the download.
-- **Update announcements are shorter**: the current version's announcement appears once after an update, with a title and at most three short lines. **What's new** opens the full notes, also available any time in Settings → About → Updates.
-- **Dictionary highlights in Transcribe**: the Try preview and answer card highlight recognised text that matches an enabled dictionary term or alias.
-- **Pick an accent color and make the window transparent** (#4123, #4180): Settings → Appearance has a Color picker with a light and a dark preview, and Reset color goes back to the default teal. Buttons, the selected sidebar item, the recording window and the answer card follow the color. The Transparent theme makes the sidebar and the page background see-through, and its Window transparency slider sets how much. With the default color, Try's Start and Stop buttons and level bars keep their red-orange.
-- **A first-use opening** (#4173): before the first setup guide, Voxt plays a short opening once. Existing setups and Reduce motion skip it.
-- **Faster transcription for MOSS-Transcribe-Diarize and Whisper Large v3** (#4133): both speech models get the Faster transcription switch on their cards.
+## [Unreleased]
 
 ### Fixed
 

@@ -11,6 +11,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -44,6 +45,20 @@ func releaseAppcastJSON(t *testing.T, args ...string) map[string]string {
 		t.Fatalf("release-appcast.sh %v printed %q: %v", args, out, err)
 	}
 	return fields
+}
+
+func TestChangelogKeepsTranslationFixesUnreleased(t *testing.T) {
+	contents, err := os.ReadFile("CHANGELOG.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(contents)
+	unreleased := strings.Index(text, "## [Unreleased]")
+	translation := strings.Index(text, "Translate does not silently deliver an untranslated answer")
+	release := strings.Index(text, "## [2.1.1]")
+	if strings.Count(text, "## [2.1.1]") != 1 || unreleased < 0 || translation < unreleased || release < translation {
+		t.Fatalf("translation fixes are not in one unreleased section: unreleased=%d translation=%d release=%d", unreleased, translation, release)
+	}
 }
 
 func TestReleaseAppcastInfoPlistIsNewerThanVoxt1(t *testing.T) {
