@@ -64,11 +64,19 @@ func TestMain(m *testing.M) {
 // in its data folder (familyConfig), and the environment points
 // elsewhere too, for what resolves the defaults.
 func runIsolated(m *testing.M) int {
+	// A Unix socket's path holds at most 104 bytes on macOS, and the tests
+	// bind sockets in their temporary folders: keep those short however
+	// long TMPDIR is.
+	short, err := os.MkdirTemp("/tmp", "vx")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(short)
+	os.Setenv("TMPDIR", short)
 	tmp, err := os.MkdirTemp("", "voxtnew-family-")
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(tmp)
 	realHub = models.Hub()
 	realCache, _ := os.UserCacheDir()
 	// LegacyHubs always considers ~/.cache/huggingface/hub; point HOME away so
