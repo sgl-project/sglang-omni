@@ -8,11 +8,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
+### Fixed
+
+- **The answer card lets go of a formula preview it no longer shows**: hiding or closing the card closes its previews; an answer that ends up as plain text drops the preview and the height it had measured, so the card no longer keeps a gap or a stale formula, and a finished stream measures its final height instead of keeping the half-rendered one.
+
 ### 中文
 
 #### 新增
 
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
+
+#### 修复
+
+- **回答卡片释放不再显示的公式预览**：隐藏或关闭卡片时关闭预览；回答最终是纯文本时丢掉预览和它量出的高度，卡片不再留空白或显示过时的公式；流式输出结束后按最终渲染重新测量高度。
 
 ## [2.1.1] - 2026-11-17
 

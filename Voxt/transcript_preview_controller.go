@@ -28,22 +28,41 @@ type transcriptPreview struct {
 	version                        uint64
 	height                         int
 	ready, loaded, running, closed bool
+	// restyle relayouts an overlay card when a preview it measured goes
+	// away; the main window's preview leaves it nil.
+	restyle func()
 }
 
 var transcriptUpdate = mygo.NewEvent[transcriptpreview.Update]("transcript-preview")
 
 // request takes the input a frame shows and renders it when it changed.
 func (p *transcriptPreview) request(win *mygo.Window, in transcriptPreviewInput) {
-	if p.input == in && (p.view == nil || !p.view.IsDestroyed()) {
+	if !p.adopt(in) {
 		return
+	}
+	win.Update(func() { p.update(win) })
+}
+
+// adopt records the input a frame shows and reports whether the markup
+// must be parsed anew. A view that died with its input unchanged (the
+// overlay hid) renders again; a frame revives a closed preview. A stream
+// that ends drops the height its partial markup measured: the final
+// render measures it anew (Resize).
+func (p *transcriptPreview) adopt(in transcriptPreviewInput) bool {
+	if p.input == in && (p.view == nil || !p.view.IsDestroyed()) {
+		return false
 	}
 	old := p.input
 	p.input = in
 	p.version++
+	p.closed = false
 	if old.key != in.key || old.size != in.size || old.rightPadding != in.rightPadding || old.text != in.text || old.link != in.link || old.dark != in.dark || old.background != in.background || p.view != nil && p.view.IsDestroyed() {
 		p.height, p.ready, p.loaded = 0, false, false
 	}
-	win.Update(func() { p.update(win) })
+	if old.streaming && !in.streaming {
+		p.height = 0
+	}
+	return true
 }
 
 // Only one parse runs per preview. Updates arriving meanwhile replace the
@@ -66,7 +85,20 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 				return
 			}
 			if markup == "" {
-				p.ready = false
+				// The text turned plain: the native text view takes over,
+				// so the page and the height it measured go away. A nil
+				// view keeps adopt from parsing the same input again.
+				measured := p.height > 0
+				p.height, p.ready, p.loaded = 0, false, false
+				if p.view != nil {
+					if !p.view.IsDestroyed() {
+						p.view.Destroy()
+					}
+					p.view = nil
+				}
+				if measured && p.restyle != nil {
+					p.restyle()
+				}
 				return
 			}
 			if p.view == nil || p.view.IsDestroyed() {
@@ -109,14 +141,14 @@ type transcriptPreviewBridge struct{ app *app }
 
 func (b transcriptPreviewBridge) Resize(ctx context.Context, version uint64, height int) {
 	page := mygo.CallerPage(ctx)
-	if page == nil || page.WebView() == nil || height < 1 {
+	if page == nil || page.WebView() == nil || page.WebView().IsDestroyed() || height < 1 {
 		return
 	}
 	page.Window().Update(func() {
 		a := b.app
 		previews := append([]*transcriptPreview{&a.mainTranscript, &a.overlayTranscript}, a.bubbleTranscripts...)
 		for _, preview := range previews {
-			if preview == nil || !preview.ready || preview.view != page.WebView() || preview.version != version || preview.height == height {
+			if preview == nil || !preview.ready || preview.view != page.WebView() || preview.view.IsDestroyed() || preview.version != version || preview.height == height {
 				continue
 			}
 			preview.height = height

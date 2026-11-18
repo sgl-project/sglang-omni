@@ -236,6 +236,7 @@ func (a *app) overlayFadeOut() {
 		if a.ov.win != nil {
 			a.ov.win.Hide()
 		}
+		a.closeOverlayPreviews()
 	}
 	if a.prefs.Appearance.ReduceMotion {
 		hide()
@@ -294,6 +295,8 @@ func (a *app) closeOverlay() {
 		a.ov.win.Destroy()
 		a.ov.win = nil
 	}
+	a.overlayTranscript = transcriptPreview{}
+	a.bubbleTranscripts = nil
 	a.ov.shown, a.ov.visible = false, false
 }
 
