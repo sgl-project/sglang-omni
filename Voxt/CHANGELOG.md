@@ -2,6 +2,18 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+
+- **MOSS-Transcribe-Diarize no longer uses load-time quantization**: English transcription keeps the model's weights at their stored precision, avoiding the wrong-language results seen with quantized weights.
+
+### 中文
+
+#### 修复
+
+- **MOSS-Transcribe-Diarize 不再在加载时量化权重**：英文识别使用模型原有精度的权重，避免量化权重把英文识别成其他语言。
+
 ## [2.1.1] - 2026-11-17
 
 ### Added
