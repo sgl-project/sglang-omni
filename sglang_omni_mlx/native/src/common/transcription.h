@@ -45,6 +45,8 @@ struct TranscriptionResult {
   double result_rebuild_ms = 0.0;
   double cache_clear_ms = 0.0;
   double native_total_ms = 0.0;
+  // Ordered text of each window in a multi-window Whisper request.
+  std::vector<std::string> window_texts;
 };
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,
