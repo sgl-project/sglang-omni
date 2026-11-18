@@ -9,6 +9,10 @@ final class Writer: @unchecked Sendable {
     private let lock = NSLock()
     private let encoder = makeEncoder()
 
+    init(handle: FileHandle) {
+        self.handle = handle
+    }
+
     init() {
         let fd = dup(STDOUT_FILENO)
         dup2(STDERR_FILENO, STDOUT_FILENO)

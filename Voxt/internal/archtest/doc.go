@@ -11,6 +11,10 @@
 //   - TestImports: the layering of internal/ (imports_test.go has the rules
 //     and why), and every import of one internal package by another listed
 //     in imports.txt, so that a new dependency shows in review.
+//   - TestViewFiles: root view files depend only on view state, actions,
+//     local UI state, the UI kit and the listed UI packages; they do no I/O,
+//     start no goroutines and take no app. Existing violations are in
+//     view-allowlist.txt, one per file, and each migration removes its files.
 //   - TestLongFuncs: reports (t.Log, go test -v) functions over 150 lines.
 //   - TestNotice: every module go.mod requires is named in NOTICE with its
 //     version and has its licence text in LICENSES/ (AGENTS.md, "Licence").

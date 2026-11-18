@@ -133,8 +133,10 @@ AudioCodec::PrepareWeights(omni_common::WeightMap weights,
   weights.erase(codebook + "cluster_usage");
   weights.erase(codebook + "embedding_sum");
   // Folds a weight-normed kernel (out, in, kernel), or (in, out, kernel) when
-  // transposed, into MLX's (out, kernel, in).
-  const auto fold = [&](const std::string &module, bool transposed) {
+  // transposed, into MLX's (out, kernel, in), a transposed one's then split
+  // into its stride-1 phases.
+  const auto fold = [&](const std::string &module, int transposed_stride) {
+    const bool transposed = transposed_stride > 0;
     const std::string stem = module + ".conv.parametrizations.weight.";
     const mx::array direction = weights.at(stem + "original1");
     const mx::array direction32 = mx::astype(direction, mx::float32);
@@ -148,19 +150,22 @@ AudioCodec::PrepareWeights(omni_common::WeightMap weights,
         direction.dtype());
     weights.insert_or_assign(
         module + ".conv.weight",
-        mx::transpose(weight, transposed ? std::vector<int>{1, 2, 0}
-                                         : std::vector<int>{0, 2, 1}));
+        transposed ? omni_common::TransposedConvolutionPhases(
+                         mx::transpose(weight, {1, 2, 0}), transposed_stride)
+                   : mx::transpose(weight, {0, 2, 1}));
     weights.erase(stem + "original0");
     weights.erase(stem + "original1");
   };
   for (size_t index = 0; index < blocks.size(); ++index) {
     if (blocks[index].kind != BlockKind::kTransformer) {
       fold(prefix + ".decoder_blocks." + std::to_string(index),
-           blocks[index].kind == BlockKind::kTransposedConvolution);
+           blocks[index].kind == BlockKind::kTransposedConvolution
+               ? blocks[index].stride
+               : 0);
     } else {
     }
   }
-  fold(prefix + ".output_proj", false);
+  fold(prefix + ".output_proj", 0);
   return weights;
 }
 
@@ -200,9 +205,9 @@ mx::array AudioCodec::Decode(const mx::array &codes) const {
           hidden, checkpoint_.Weight(block_prefix + ".conv.weight"),
           block.stride, "edge");
     } else if (block.kind == BlockKind::kTransposedConvolution) {
-      hidden = mx::conv_transpose1d(
+      hidden = omni_common::ConvolveTransposed(
           hidden, checkpoint_.Weight(block_prefix + ".conv.weight"),
-          block.stride);
+          block.stride, block.kernel_size);
       // Causal: drops the trailing kernel minus stride steps.
       hidden =
           mx::slice(hidden, {0, 0, 0},
@@ -255,7 +260,7 @@ mx::array AudioCodec::TransformerLayer(const mx::array &x,
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, keys, values,
       static_cast<float>(std::pow(static_cast<double>(head_dim_), -0.5)),
-      "array", mx::expand_dims(bias, 0));
+      /*window_size=*/-1, "array", mx::expand_dims(bias, 0));
   const mx::array hidden = mx::add(
       x, mx::multiply(checkpoint_.Weight(prefix + ".attention_scale"),
                       checkpoint_.Linear(
@@ -265,15 +270,15 @@ mx::array AudioCodec::TransformerLayer(const mx::array &x,
   const mx::array feed_forward_input =
       checkpoint_.RmsNorm(hidden, prefix + ".ffn_norm", norm_eps_);
   return mx::add(
-      hidden, mx::multiply(
-                  checkpoint_.Weight(prefix + ".ffn_scale"),
-                  checkpoint_.Linear(
-                      mx::multiply(
-                          omni_common::Silu(checkpoint_.Linear(
-                              feed_forward_input, prefix + ".feed_forward.w1")),
-                          checkpoint_.Linear(feed_forward_input,
-                                             prefix + ".feed_forward.w3")),
-                      prefix + ".feed_forward.w2")));
+      hidden,
+      mx::multiply(checkpoint_.Weight(prefix + ".ffn_scale"),
+                   checkpoint_.Linear(
+                       omni_common::Swiglu(
+                           checkpoint_.Linear(feed_forward_input,
+                                              prefix + ".feed_forward.w1"),
+                           checkpoint_.Linear(feed_forward_input,
+                                              prefix + ".feed_forward.w3")),
+                       prefix + ".feed_forward.w2")));
 }
 
 std::vector<float> CodecStream::Push(const mx::array &frame_codes) {

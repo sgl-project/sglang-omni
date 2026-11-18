@@ -18,6 +18,13 @@ void AppendUtf8(uint32_t code_point, std::string &out);
 size_t CodePointCount(const std::string &text);
 // Strips every Unicode space from both ends.
 std::string StripUnicodeWhitespace(const std::string &text);
+// Whether text contains needle.
+bool Contains(const std::string &text, const char *needle);
+// Whether text has a space no combining mark attaches to, as Swift's
+// String.contains(" ") compares grapheme clusters.
+bool ContainsStandaloneSpace(const std::string &text);
+// text with ASCII letters lowercased, byte by byte as std::tolower does.
+std::string AsciiLowercase(std::string text);
 // Greedy loop guard: the last 24 tokens use at most 3 distinct ids.
 bool IsTokenLoop(const std::vector<int> &output_ids);
 // The ids up to the first copy of a looping tail's unit: the shortest unit
