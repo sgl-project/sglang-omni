@@ -241,8 +241,6 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
                                     const std::function<bool(int)> &commit,
                                     const std::atomic<bool> &cancel,
                                     DraftPolicy policy) const {
-  DraftStatistics statistics;
-  const auto started = std::chrono::steady_clock::now();
   std::vector<KVCache> caches = target.NewCaches();
   std::vector<KVCache> draft_caches = decoder_.NewCaches();
   std::vector<mx::array> aux_hidden_states;
@@ -282,10 +280,6 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
     anchor_id = static_cast<int>(
         mx::argmax(target.LastLogits(prompt_hidden)).item<uint32_t>());
   }
-  const auto decode_started = std::chrono::steady_clock::now();
-  statistics.prefill_ms =
-      std::chrono::duration<double, std::milli>(decode_started - started)
-          .count();
   if (cancel.load()) {
     throw GenerationCancelled();
   } else {
@@ -293,6 +287,7 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
   bool finished = commit(anchor_id);
   int committed_token_count = 1;
   DraftBackoff backoff;
+  DraftStatistics statistics;
   while (!finished) {
     if (cancel.load()) {
       throw GenerationCancelled();
@@ -432,9 +427,6 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
       }
     }
   }
-  statistics.decode_ms = std::chrono::duration<double, std::milli>(
-                             std::chrono::steady_clock::now() - decode_started)
-                             .count();
   return statistics;
 }
 
