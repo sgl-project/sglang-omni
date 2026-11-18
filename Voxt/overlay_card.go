@@ -278,6 +278,7 @@ type cardBlock struct {
 	quote     ovSized
 	cut, open bool
 	turn      int
+	index     int // stable position of the bubble in the card
 }
 
 // quoteGap is the space above a bubble's selection and its Show all
@@ -297,7 +298,7 @@ func cardBlocks(v cardView) []cardBlock {
 				text = "…"
 			}
 			blk := cardBlock{bubble: true, user: b.user, live: b.live, text: ovSized{text, layout.BubbleTextSize, 500, inner},
-				cut: b.cut, open: b.open, turn: b.turn, markdown: !b.user, stream: b.live && !b.user}
+				cut: b.cut, open: b.open, turn: b.turn, index: i, markdown: !b.user, stream: b.live && !b.user}
 			if b.quote != "" {
 				blk.quote = ovSized{b.quote, quoteSize, 0, inner}
 			}
@@ -353,6 +354,11 @@ func (a *app) blockHeight(b cardBlock) (float32, bool) {
 			h, exact = mh, true
 		}
 	}
+	if b.bubble {
+		if height, ok := a.bubblePreviewHeight(b); ok {
+			h, exact = height, true
+		}
+	}
 	if b.problem {
 		h = max(h, layout.ProblemIcon)
 	}
@@ -383,10 +389,15 @@ func (a *app) cardBodyHeight(v cardView) (int, bool) {
 	bodyMax := a.cardBodyMax(v)
 	var h float32
 	exact := true
-	for _, b := range cardBlocks(v) {
-		bh, ok := a.blockHeight(b)
-		h += b.gap + bh
-		exact = exact && ok
+	if p := &a.overlayTranscript; !v.conversation && v.failed == nil &&
+		p.ready && p.input.key == a.cardPreviewKey() && (p.input.source == v.text || v.writing) && p.height > 0 {
+		h = float32(p.height)
+	} else {
+		for _, b := range cardBlocks(v) {
+			bh, ok := a.blockHeight(b)
+			h += b.gap + bh
+			exact = exact && ok
+		}
 	}
 	if v.writing || v.conversation && v.busy && !v.recording {
 		// An answer on its way: the card grows a few lines at a time,

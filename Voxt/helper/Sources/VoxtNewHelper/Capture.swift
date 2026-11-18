@@ -9,9 +9,9 @@ import Foundation
 // (PCM16 LE) with capture.level about 20 times a second (PCMFramer).
 //
 // capture.start is a job: capture.started at the first audio (when the
-// tap starts, for capture.system: an idle output has no audio yet), then
-// the frames, and its answer when it ends; capture.stop flushes the
-// queued audio and the partial last frame before the job answers.
+// tap starts, for capture.system: an idle output has no audio yet), then the
+// frames, and its answer when it ends; capture.stop flushes the queued
+// audio and the partial last frame before the job answers.
 //
 // - Devices are tried in the user's order (Core Audio UIDs), then the
 //   default input (fellBack).
@@ -22,15 +22,14 @@ import Foundation
 //   that was silent counts the same (NoAudioEscalation). The second
 //   silent engine starts on the default input, a third ends the job (an
 //   error when no audio came at all); an engine with audio resets it.
-// - A configuration change (default device switched, AirPods connected)
-//   rebuilds the engine. An input going away moves the recording to the
+// - A configuration change rebuilds a stopped engine or follows a new
+//   default input. An input going away moves the recording to the
 //   next of devices still connected, else the default input (deviceLost;
 //   the default input follows the new default); none left ends it.
 // - Tests only: VOXTNEW_HELPER_CAPTURE_FILE names an audio file that
 //   stands in for the microphone (CaptureFileConfig): the same conversion,
 //   framing, notifications and endings, at a microphone's pace, without
 //   asking for the microphone. capture.system: SystemCapture.swift.
-
 
 // MARK: Capture
 
@@ -168,16 +167,13 @@ private final class CaptureRun: @unchecked Sendable {
             return try startFile(file)
         }
         if system {
-            // On the queue, so no tap buffer is processed before the
-            // clock exists.
-            try queue.sync {
+            return try queue.sync {
                 try startSystem()
                 let now = monotonicMs()
                 systemClock = SystemCaptureClock(sampleRate: rate, startedAt: now)
                 sendStarted(at: now)
                 startSystemSilenceTimer()
             }
-            return startWatchers()
         }
         var reasons: [String] = []
         for uid in params.devices ?? [] where !uid.isEmpty {
@@ -259,6 +255,33 @@ private final class CaptureRun: @unchecked Sendable {
         armWatchdog(generation: gen)
     }
 
+    private func startSystemSilenceTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.lock.withLock({ self.ended }), let clock = self.systemClock else { return }
+            self.padSystemSilence(clock.silenceWhileIdle(at: monotonicMs(), written: self.framer.samplesSeen))
+            if let limit = self.maxSamples, self.framer.samplesSeen >= limit {
+                self.endAsync(reason: CaptureReason.maxSeconds)
+            }
+        }
+        systemSilenceTimer = timer
+        timer.resume()
+    }
+
+    private func padSystemSilence(_ samples: Int) {
+        let capacity = maxSamples.map { max(0, $0 - framer.samplesSeen) } ?? samples
+        var remaining = min(samples, capacity)
+        Self.silence.withUnsafeBufferPointer { silence in
+            while remaining > 0 {
+                let count = min(remaining, silence.count)
+                let (frames, _) = framer.push(UnsafeBufferPointer(rebasing: silence[..<count]))
+                emit(frames, [])
+                remaining -= count
+            }
+        }
+    }
+
     /// capture.system: a tap on the default output, whose buffers go
     /// through receive() like the engine's; a new default output restarts it.
     private func startSystem() throws {
@@ -287,35 +310,6 @@ private final class CaptureRun: @unchecked Sendable {
             lock.withLock { if self.tap === tap { self.tap = nil } }
             tap.stop()
             throw error
-        }
-    }
-
-    /// Pads the idle gaps a system tap leaves, so the track keeps the
-    /// recording's clock and maxSeconds still ends a silent one.
-    private func startSystemSilenceTimer() {
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
-        timer.setEventHandler { [weak self] in
-            guard let self, !self.lock.withLock({ self.ended }), let clock = self.systemClock else { return }
-            self.padSystemSilence(clock.silenceWhileIdle(at: monotonicMs(), written: self.framer.samplesSeen))
-            if let limit = self.maxSamples, self.framer.samplesSeen >= limit {
-                self.endAsync(reason: CaptureReason.maxSeconds)
-            }
-        }
-        systemSilenceTimer = timer
-        timer.resume()
-    }
-
-    private func padSystemSilence(_ samples: Int) {
-        let capacity = maxSamples.map { max(0, $0 - framer.samplesSeen) } ?? samples
-        var remaining = min(samples, capacity)
-        Self.silence.withUnsafeBufferPointer { silence in
-            while remaining > 0 {
-                let count = min(remaining, silence.count)
-                let (frames, _) = framer.push(UnsafeBufferPointer(rebasing: silence[..<count]))
-                emit(frames, [])
-                remaining -= count
-            }
         }
     }
 
@@ -353,43 +347,38 @@ private final class CaptureRun: @unchecked Sendable {
 
     private func armWatchdog(generation gen: Int) {
         queue.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            guard let self else { return }
-            let (stale, silent) = self.lock.withLock { (self.ended || self.generation != gen, self.callbacksThisEngine == 0) }
-            guard !stale, silent else { return }
-            self.restart(reason: CaptureReason.noCallback)
+            self?.restart(reason: CaptureReason.noCallback, silentGeneration: gen)
         }
     }
 
     /// Rebuilds the engine (on the queue), on the inputs of restartOrder in
     /// turn. A chosen input that went away makes it deviceLost; when no
     /// other input starts, that recording ends with what it has.
-    private func restart(reason: String, toDefault: Bool = false) {
-        // A tap change queued before the end must not start a new tap.
-        if system && lock.withLock({ ended }) { return }
-        // An engine rebuilt before its first buffer counts like the
-        // watchdog's silence: an input that keeps reconfiguring itself
-        // without a sound would restart forever otherwise.
-        let (attempt, preferred, wasDefault, step) = lock.withLock { () -> (Int, String?, Bool, NoAudioEscalation.Step?) in
+    private func restart(reason: String, silentGeneration: Int? = nil) {
+        let restart = lock.withLock { () -> (attempt: Int, preferred: String?, wasDefault: Bool, step: NoAudioEscalation.Step?)? in
+            guard !ended else { return nil }
+            if let silentGeneration {
+                guard generation == silentGeneration, callbacksThisEngine == 0 else { return nil }
+            }
+            // A microphone rebuild before the first buffer counts like a watchdog timeout.
+            // For system audio only the watchdog counts, as output changes can happen before playback begins.
+            let silent = callbacksThisEngine == 0 && (!system || silentGeneration != nil)
             restarts += 1
-            // The system tap may legitimately deliver nothing for a while
-            // (nothing playing): its rebuilds are not a silence escalation.
-            let step: NoAudioEscalation.Step? = !system && callbacksThisEngine == 0 ? escalation.silentEngine() : nil
+            let step = silent ? escalation.silentEngine() : nil
             return (restarts, usingDefault ? nil : deviceUID, usingDefault, step)
         }
-        var toDefault = toDefault
-        switch step {
-        case .end:
+        guard let (attempt, preferred, wasDefault, step) = restart else { return }
+        if step == .end {
             let id = lock.withLock { deviceID }
-            return endAsync(noAudio: "No input gave audio: \(deviceName(id)) delivered nothing, \(lock.withLock { escalation.silentEngines }) engines in a row")
-        case .default:
-            toDefault = true
-        case .order, nil:
-            break
+            if system {
+                return endAsync(noAudio: "No input gave audio: \(deviceName(id)) delivered nothing within 1.2 s, 2 times")
+            }
+            return endAsync(noAudio: "No input gave audio: \(deviceName(id)) delivered nothing on three consecutive starts")
         }
         stopEngine()
         let gone = !system && preferred.map { findDevice(uid: $0).map(isAlive) != true } ?? false
         var failure: Error?
-        for uid in system ? [nil] : restartOrder(devices: params.devices ?? [], current: preferred, gone: gone, toDefault: toDefault) {
+        for uid in system ? [nil] : restartOrder(devices: params.devices ?? [], current: preferred, gone: gone, toDefault: step == .default) {
             do {
                 try system ? startSystem() : startEngine(uid: uid)
                 failure = nil
@@ -414,8 +403,20 @@ private final class CaptureRun: @unchecked Sendable {
 
     private func startWatchers() {
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil) { [weak self] n in
-            guard let self, let e = n.object as? AVAudioEngine, self.lock.withLock({ e === self.engine && !self.ended }) else { return }
-            self.queue.async { self.restart(reason: CaptureReason.configurationChange) }
+            guard let self, let notifiedEngine = n.object as? AVAudioEngine else { return }
+            let notifiedGeneration: Int? = self.lock.withLock {
+                notifiedEngine === self.engine && !self.ended ? self.generation : nil
+            }
+            guard let notifiedGeneration else { return }
+            self.queue.async {
+                let (engine, usingDefault, deviceID) = self.lock.withLock {
+                    (self.generation == notifiedGeneration && !self.ended ? self.engine : nil, self.usingDefault, self.deviceID)
+                }
+                guard let engine else { return }
+                // Setting CurrentDevice can report a configuration change after the engine is already running on that device.
+                if engine.isRunning && (!usingDefault || inputDeviceIDs().defaultID == deviceID) { return }
+                self.restart(reason: CaptureReason.configurationChange)
+            }
         }
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 0.25, repeating: 0.25)
@@ -465,7 +466,7 @@ private final class CaptureRun: @unchecked Sendable {
         let mono: AVAudioFormat? = lock.withLock {
             guard gen == generation, !ended else { return nil }
             callbacksThisEngine += 1
-            if callbacksThisEngine == 1 { escalation.engineHeard() }
+            if !system && callbacksThisEngine == 1 { escalation.engineHeard() }
             return resampler?.mono
         }
         guard let mono, let copy = MonoResampler.downmix(buffer, into: mono) else { return }

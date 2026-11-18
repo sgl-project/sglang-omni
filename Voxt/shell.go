@@ -58,7 +58,8 @@ func px(t *ui.Theme, n float32) float32 { return n * t.FontSize / baseFontSize }
 
 // shellState is the shell's view state and the services it owns.
 type shellState struct {
-	router *ui.Router
+	router         *ui.Router
+	openingStarted time.Time
 	// nav is the sidebar's choice; navShown the router path it was last
 	// synced from (see syncNav).
 	nav, navShown string
@@ -233,6 +234,7 @@ func (a *app) openWindow() {
 	a.hasMenu = true
 	a.applyLocale() // the system's language, unless the settings name one
 	a.buildMenu()
+	a.startOpening()
 	a.win = mygo.NewWindow(mygo.WindowOptions{
 		Title:          "Voxt",
 		Width:          windowWidth,
@@ -242,6 +244,7 @@ func (a *app) openWindow() {
 		StateKey:       "main",
 		TitleBarStyle:  mygo.TitleBarHiddenInset,
 		TitleBarHeight: titleBarHeight,
+		Transparent:    true,
 		Content:        ui.View(a.view),
 		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
 	})
@@ -262,11 +265,19 @@ func startHidden(atLogin bool, g settings.General) bool {
 func (a *app) view(c *ui.Context) {
 	a.mainUI = c.Services()
 	a.applyTheme(c)
+	if a.prefs.Appearance.Theme == settings.ThemeTransparent {
+		// Local widget themes reset the root fill. Clear it after the
+		// build so only the sidebar and page supply the window's tint.
+		defer c.Root().Background(ui.Transparent)
+	}
 	t := c.Theme()
 	if a.win == nil || a.prefs.Appearance.ReduceMotion {
 		// Tests and snapshots show every change at once, as does the
 		// user's Reduce motion.
 		c.DisableAnimations()
+	}
+	if a.openingView(c) {
+		return
 	}
 	for _, m := range a.toasts {
 		c.Toast(m)
@@ -290,7 +301,11 @@ func (a *app) view(c *ui.Context) {
 			}
 		})
 	})
-	a.settingsDialog(c)       // shell_settings.go
+	a.transparencyDragging = false
+	a.settingsDialog(c) // shell_settings.go
+	if !a.transparencyDragging && int(a.windowTransparency) != a.prefs.Appearance.WindowTransparency {
+		a.saveWindowTransparency()
+	}
 	a.onboarding(c)           // onboarding_view.go
 	a.shortcutPromptDialog(c) // settings_shortcuts_family.go
 	a.announcementDialog(c)   // announcements.go

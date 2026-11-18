@@ -117,7 +117,7 @@ func (a *app) applyMeetingOverlayProtection() {
 }
 
 func (a *app) meetingOverlayView(c *ui.Context) {
-	c.SetTheme(overlayTheme())
+	c.SetTheme(a.overlayTheme())
 	// Only the face shows in this transparent window (overlayView's).
 	defer c.Root().Background(ui.Transparent)
 	s := a.meetSnap
@@ -133,7 +133,7 @@ func (a *app) meetingOverlayView(c *ui.Context) {
 		// The face is the handle that moves the window (syncMeetingOverlay
 		// keeps it where it is dragged): it may cover the meeting's window.
 		// The dictation pill's padding, or the answer card's when expanded (#3986).
-		face := faceStyle(ui.Column(c.Key("mt-face")), a.prefs.Overlay, mode, faceH).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
+		face := faceStyle(c, ui.Column(c.Key("mt-face")), a.prefs.Overlay, mode, faceH).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
 		if model.ShowExpanded {
 			face.Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border)
 		}

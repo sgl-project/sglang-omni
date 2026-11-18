@@ -25,7 +25,8 @@ func TestMigrate(t *testing.T) {
 	// A partial document keeps what it has and gains the defaults.
 	s, err = Migrate([]byte(`{"version":1,"general":{"language":"zh-Hans","menuBar":false},"privacy":{"keepHistory":false},"unknown":1}`))
 	if err != nil || s.General.Language != "zh-Hans" || s.General.MenuBar || s.Privacy.KeepHistory || s.Appearance.Scale != 1 ||
-		s.Appearance.Theme != "system" || len(s.Features.Transcribe.Hotkeys) != 1 || s.Features.Cancel.Keys != DefaultCancel {
+		s.Appearance.Theme != ThemeSystem || s.Appearance.Palette != DefaultPalette || s.Appearance.WindowTransparency != DefaultWindowTransparency ||
+		len(s.Features.Transcribe.Hotkeys) != 1 || s.Features.Cancel.Keys != DefaultCancel {
 		t.Fatalf("partial: %+v %v", s, err)
 	}
 	// A cancel the user turned off stays off; a chosen key stays.
@@ -79,6 +80,8 @@ func TestStore(t *testing.T) {
 		s.General.Language = "zh-Hans"
 		s.Appearance.Scale = 1.12
 		s.Appearance.Theme = "sepia"
+		s.Appearance.Palette = " #B25280 "
+		s.Appearance.WindowTransparency = 25
 		s.Appearance.SidebarWidth = 900
 		s.General.OtherLanguages = []string{" en ", "en", ""}
 		s.Features.Translate.Hotkeys = append(s.Features.Translate.Hotkeys, Hotkey{Keys: " "}, Hotkey{Keys: "Option+T", Trigger: "weird"})
@@ -87,7 +90,7 @@ func TestStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := s.Get()
-	if got.General.Language != "zh-Hans" || got.Appearance.Scale != 1.1 || got.Appearance.Theme != "system" ||
+	if got.General.Language != "zh-Hans" || got.Appearance.Scale != 1.1 || got.Appearance.Theme != ThemeSystem || got.Appearance.Palette != "#b25280" || got.Appearance.WindowTransparency != MaxWindowTransparency ||
 		got.Appearance.SidebarWidth != MaxSidebarWidth || !reflect.DeepEqual(got.General.OtherLanguages, []string{"en"}) ||
 		len(got.Features.Translate.Hotkeys) != 2 || got.Features.Translate.Hotkeys[1].Trigger != TriggerTap || got.Overlay.Opacity != 0.5 {
 		t.Fatalf("normalized: %+v", got)
@@ -122,6 +125,23 @@ func TestStore(t *testing.T) {
 	broken, err := Open(ctx, d, nil)
 	if err == nil || !reflect.DeepEqual(broken.Get(), Defaults()) {
 		t.Errorf("broken: %+v %v", broken.Get(), err)
+	}
+}
+
+func TestWindowTransparencyBounds(t *testing.T) {
+	for _, c := range []struct{ input, want int }{{-10, MinWindowTransparency}, {0, MinWindowTransparency}, {8, 8}, {35, MaxWindowTransparency}} {
+		s := Defaults()
+		s.Appearance.WindowTransparency = c.input
+		if got := normalize(s).Appearance.WindowTransparency; got != c.want {
+			t.Errorf("transparency %d normalized to %d, want %d", c.input, got, c.want)
+		}
+	}
+}
+
+func TestMigrateLegacyAppearance(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":1,"appearance":{"theme":"system","windowTransparency":35}}`))
+	if err != nil || s.Appearance.Theme != ThemeSystem || s.Appearance.WindowTransparency != MaxWindowTransparency {
+		t.Fatalf("legacy appearance = %+v, %v", s.Appearance, err)
 	}
 }
 

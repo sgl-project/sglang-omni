@@ -151,6 +151,10 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		os.Exit(3)
 	}
 	for end := time.Now().Add(o.Delay); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if r.Context().Err() != nil {
+			record(o, Record{Event: "final-cancelled", Samples: samples})
+			return
+		}
 		_, _ = io.WriteString(w, ":\n\n")
 		flush()
 	}
@@ -171,8 +175,11 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 	if o.TokenLimit {
 		finish = "length"
 	}
-	body := map[string]any{"type": "transcript.text.done", "text": text,
-		"generation_metadata": map[string]any{"generated_token_count": 10, "language": language, "finish_reason": finish}}
+	metadata := map[string]any{"generated_token_count": 10, "language": language, "finish_reason": finish}
+	if o.WindowTexts != nil {
+		metadata["window_texts"] = o.WindowTexts
+	}
+	body := map[string]any{"type": "transcript.text.done", "text": text, "generation_metadata": metadata}
 	if o.Segments {
 		body["segments"] = []map[string]any{
 			{"start": 0.5, "end": 1.5, "speaker": "S01", "text": "first"},

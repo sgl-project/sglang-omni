@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 - **说过的话不会丢。** 识别失败时录音会保留，在历史里点“重试”就能重新识别。
 - **答案卡片里自由地连续交互。** 结果可以留在浮动的卡片里，接着用语音追问，再复制或插入。
 - **充分的模型生态，数据由你定义。** 语音既能使用本地由 SGLang-Omni MLX Runtime 强力支持的 Qwen3-ASR 或 MOSS-Transcribe-Diarize，也能接入云端 ASR API。语言模型方面，任何提供 OpenAI compatible API 的模型都可以作为强力支持：无论是 SGLang MLX、Ollama，还是我们团队常用的 DeepSeek V4.1 和 Kimi K3.1。数据去哪里，由你决定。
-- **Qwen3-ASR 和 MOSS-Transcribe-Diarize 可选的 DFlash 转录加速。** “转录加速”加一个小的草稿模型，用推测解码让语音识别模型更快。
+- **Qwen3-ASR、MOSS-Transcribe-Diarize 和 Whisper Large v3 支持投机解码。** 在模型卡片打开“转录加速”即可下载对应的草稿模型。
 - **还有**：ChatGPT 登录（不用填 API Key）、翻译备用模型、自定义提示词，以及 Markdown / JSONL 历史导出。
 
 已经在用 Voxt 1.x？看[从 Voxt 1.x 升级](#从-voxt-1x-升级)。各版本的改动见 [CHANGELOG.md](CHANGELOG.md)。
@@ -115,7 +115,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 
 - **更多本地模型**：Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）、Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo / Large v3 / Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）和 Cohere Transcribe 03-2026（14 种语言）。macOS 自带的系统听写也可以用，无需下载。
 - **Qwen3-ASR** 支持 30 种语言和 22 种中文方言，并且会用到你的词典；其他可下载的模型不用词典。
-- **转录加速**（DFlash）：在 Qwen3-ASR 和 MOSS-Transcribe-Diarize 的卡片上打开开关并下载一个草稿模型（Qwen3-ASR 1.7B 726 MB，8bit 和 6bit 共用；0.6B 和 MOSS 各 262 MB），它每步先提出几个词，再由语音识别模型校验。关掉开关，模型照常工作；草稿留在磁盘上，直到你删除它。
+- **转录加速**可在 Qwen3-ASR 1.7B (8bit)、Qwen3-ASR 0.6B (4bit)、MOSS-Transcribe-Diarize 和 Whisper Large v3 的卡片上开启。打开开关后，Qwen3-ASR 和 MOSS 可下载 DFlash 草稿模型（分别为 726 MB、262 MB 和 262 MB），Whisper 可下载 Distil 草稿模型（1.5 GB）。关闭开关后恢复普通解码，草稿模型留在本地。
 - **云端语音 API**，如果你更想用：OpenAI Transcribe、豆包（火山引擎）、智谱 GLM-ASR、阿里云百炼、阶跃星辰、小米 MiMo 和 Google Gemini。
 
 ### 语言模型
