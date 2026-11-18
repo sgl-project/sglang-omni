@@ -18,6 +18,7 @@ from sglang_omni.models.personaplex.architecture import (
 )
 from sglang_omni.models.personaplex.components.mimi import MimiCodec, MimiEncodeState
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
+from sglang_omni.models.personaplex.mimi_encode_graph import MimiEncodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.timeline import no_codes
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -105,6 +106,23 @@ class PreprocessingHooks(SessionHooks):
         self.states.pop(session_identity, None)
 
 
+class BatchedPreprocessingHooks(BatchedSessionHooks):
+    def __init__(self, prepare_prompt: PromptPreparer) -> None:
+        self.hooks = PreprocessingHooks(prepare_prompt)
+
+    def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        self.hooks.open(session_identity, request)
+
+    def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
+        return [
+            self.hooks.append(append.chunk, append.payload, append.context)
+            for append in appends
+        ]
+
+    def close(self, session_identity: SessionIdentity) -> None:
+        self.hooks.close(session_identity)
+
+
 class MimiEncodeHooks(SessionHooks):
     """Encodes each unit with the session's streaming encoder state."""
 
@@ -153,6 +171,104 @@ class MimiEncodeHooks(SessionHooks):
 
     def close(self, session_identity: SessionIdentity) -> None:
         self.states.pop(session_identity)
+
+
+class BatchedMimiEncodeHooks(BatchedSessionHooks):
+    def __init__(self, encode_slots: MimiEncodeSlots) -> None:
+        self.encode_slots = encode_slots
+        self.device = encode_slots.codec.device
+        self.slot_indices: dict[SessionIdentity, int] = {}
+
+    @torch.inference_mode()
+    def warm_up_serving_thread(self) -> None:
+        """Warm the codec on the serving thread before the first session."""
+        slot_index = self.encode_slots.acquire()
+        self.encode_slots.encode_step(
+            torch.zeros(1, 1, SAMPLES_PER_FRAME, device=self.device),
+            [slot_index],
+            frame=0,
+        )
+        self.encode_slots.release(slot_index)
+
+    def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        # Note (Junnan Li): The stage opens at most as many sessions as it has slots.
+        self.slot_indices[session_identity] = self.encode_slots.acquire()
+
+    @torch.inference_mode()
+    def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
+        states = [PersonaPlexState.from_dict(append.payload.data) for append in appends]
+        frames_by_index: dict[int, int] = {}
+        for index, (append, state) in enumerate(zip(appends, states, strict=True)):
+            if state.voice_waveform is not None:
+                state.voice_codes = encode_waveform(
+                    self.encode_slots.codec, self.device, state.voice_waveform
+                )
+                state.voice_waveform = None
+            else:
+                pass
+            if is_empty_end_of_input(append.chunk):
+                state.user_codes = no_codes()
+            else:
+                frames_by_index[index] = state.waveform.shape[-1] // SAMPLES_PER_FRAME
+        if frames_by_index:
+            waveforms = [
+                states[index].waveform.reshape(-1) for index in frames_by_index
+            ]
+            device_waveforms = dict(
+                zip(
+                    frames_by_index,
+                    torch.cat(waveforms)
+                    .to(device=self.device)
+                    .split([waveform.shape[0] for waveform in waveforms]),
+                    strict=True,
+                )
+            )
+        else:
+            device_waveforms = {}
+        step_indices: list[list[int]] = []
+        step_codes: list[torch.Tensor] = []
+        for frame in range(max(frames_by_index.values(), default=0)):
+            indices = [
+                index for index, frames in frames_by_index.items() if frames > frame
+            ]
+            waveform = torch.stack(
+                [
+                    device_waveforms[index][
+                        frame * SAMPLES_PER_FRAME : (frame + 1) * SAMPLES_PER_FRAME
+                    ]
+                    for index in indices
+                ]
+            )
+            # Note (Junnan Li): Copy each step's codes out; the next step overwrites
+            # them.
+            step_codes.append(
+                self.encode_slots.encode_step(
+                    waveform.view(len(indices), 1, SAMPLES_PER_FRAME),
+                    [
+                        self.slot_indices[appends[index].context.session_identity]
+                        for index in indices
+                    ],
+                    frame=frame,
+                ).clone()
+            )
+            step_indices.append(indices)
+        if step_codes:
+            codes_by_index: dict[int, list[torch.Tensor]] = defaultdict(list)
+            rows = iter(torch.cat(step_codes).cpu())
+            for indices in step_indices:
+                for index in indices:
+                    codes_by_index[index].append(next(rows))
+            for index, codes in codes_by_index.items():
+                states[index].user_codes = torch.cat(codes, dim=-1).T.clone()
+        else:
+            pass
+        for append, state in zip(appends, states, strict=True):
+            state.waveform = None
+            append.payload.data = state.to_dict()
+        return [append.payload for append in appends]
+
+    def close(self, session_identity: SessionIdentity) -> None:
+        self.encode_slots.release(self.slot_indices.pop(session_identity))
 
 
 @dataclass(kw_only=True)
@@ -233,6 +349,7 @@ class Code2WavHooks(BatchedSessionHooks):
 
 
 __all__ = [
+    "BatchedMimiEncodeHooks",
     "Code2WavHooks",
     "MimiEncodeHooks",
     "PromptPreparer",

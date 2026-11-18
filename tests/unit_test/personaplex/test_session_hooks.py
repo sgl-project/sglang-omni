@@ -11,6 +11,7 @@ from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.session_hooks import (
+    BatchedPreprocessingHooks,
     Code2WavHooks,
     MimiEncodeHooks,
     PreprocessingHooks,
@@ -65,6 +66,27 @@ def test_only_the_first_unit_carries_the_prompt():
     assert states[0].text_prompt_ids == PROMPT_IDS
     assert states[1].text_prompt_ids == []
     torch.testing.assert_close(states[1].waveform, waveform, atol=1e-4, rtol=0)
+
+
+def test_batched_preprocessing_matches_per_unit_preprocessing():
+    prepare = lambda request: PersonaPlexState(text_prompt_ids=PROMPT_IDS)
+    single = open_hooks(PreprocessingHooks(prepare))
+    batched = open_hooks(BatchedPreprocessingHooks(prepare))
+    waveform = torch.linspace(-0.5, 0.5, SAMPLES_PER_FRAME)
+    for index in range(2):
+        chunk = unit(index, waveform_to_pcm16(waveform))
+        single_payload = payload()
+        single.append(chunk, single_payload, context([]))
+        batched_payload = payload()
+        batched.append_batch(
+            [SessionAppend(chunk=chunk, payload=batched_payload, context=context([]))]
+        )
+        expected = PersonaPlexState.from_dict(single_payload.data)
+        actual = PersonaPlexState.from_dict(batched_payload.data)
+        assert actual.text_prompt_ids == expected.text_prompt_ids
+        assert torch.equal(actual.waveform, expected.waveform)
+    single.close(CALL)
+    batched.close(CALL)
 
 
 def test_units_must_be_whole_frames_of_pcm16():

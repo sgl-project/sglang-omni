@@ -198,6 +198,25 @@ class TransformerState:
         for layer in self.layers:
             layer.reset()
 
+    def select_rows(self, rows: torch.Tensor) -> TransformerState:
+        """A device index keeps the selection capturable."""
+        return TransformerState(
+            offset=self.offset.index_select(0, rows),
+            layers=[
+                AttentionState(
+                    keys=layer.keys.index_select(0, rows),
+                    values=layer.values.index_select(0, rows),
+                )
+                for layer in self.layers
+            ],
+        )
+
+    def row_tensors(self) -> list[torch.Tensor]:
+        return [
+            self.offset,
+            *(tensor for layer in self.layers for tensor in (layer.keys, layer.values)),
+        ]
+
 
 class MimiTransformer(StreamingModule):
     """Eight layers over [B, C, T] frames at the SEANet rate (25 Hz)."""
