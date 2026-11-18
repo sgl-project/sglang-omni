@@ -18,6 +18,8 @@ LLaDA2.0-Uni unifies multimodal understanding and generation into a simple Mask 
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
+For Ascend NPU, follow [Installation — NPU](../other_platforms/installation_npu.md#llada20-uni) for the two-device split and the NPU execution settings.
+
 ## Server Configuration
 
 The default `omni` pipeline runs preprocessing, image encoding, and the

@@ -267,3 +267,24 @@ Use this command to launch MiniMax-Music3 on Ascend NPU:
 ```bash
 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --dit_dav.factory.compile_acoustic False --minimax_music3_ar.engine.enable_deterministic_inference False
 ```
+
+### LLaDA2.0-Uni
+
+The omni pipeline needs two devices, because the thinker and the image decoder do not fit on one card together: the thinker is a 16B bf16 model, and the image decoder allocates about 9.4 GiB of attention buffers for a 1024x1024 image. Start the server with one device per stage:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=10,11 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni \
+  --variant omni --port 8000 \
+  --thinker.engine.enable_torch_compile false --thinker.engine.mem_fraction_static 0.65 \
+  --image_decode.gpu 1 --image_decode.gpu_memory_fraction 0.9 \
+  --image_decode.factory.decode_mode decoder-turbo
+```
+
+`--image_decode.gpu 1` selects the second visible device, and the thinker and image encoder stay on the first. The text-only variant fits on a single device:
+
+```bash
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --text-only --port 8000 \
+  --thinker.engine.enable_torch_compile false
+```
+
+Keep `torch.compile` disabled on NPU, where dynamo tracing reaches the triton driver and crashes. The CFG thinker uses SGLang's `ascend` attention backend and stays in eager mode; startup rejects a CFG deployment that enables CUDA graphs because the ascend CFG path cannot capture them. Validated on Ascend 910 / torch 2.10 / torch_npu 2.10.0.post6 / SGLang 0.5.23.
