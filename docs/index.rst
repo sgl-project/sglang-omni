@@ -202,6 +202,7 @@ Community & Resources
    cookbook/companies/zyphra.md
    cookbook/companies/autoark_ai.md
    cookbook/companies/mistral_ai.md
+   cookbook/companies/sesame.md
    cookbook/companies/dots_studio.md
 
 .. toctree::

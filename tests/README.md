@@ -809,6 +809,15 @@ that happened to contain an older version of the test.
   - code-predictor CUDA-graph bit-identity, capture-failure fallback, top-k
     ladder masking, and enablement gating (env, `disable_cuda_graph`, TP).
 
+- `unit_test/csm_tts/`: CSM-1B unit tests:
+  - pipeline / registry / example-YAML contracts and abort callback wiring
+  - preprocessing sampling defaults and empty-input rejection
+  - request-builder extra_key and frame-budget clamp
+  - HF text-config backbone view (not audio vocab)
+  - sampler EOS machine, last-token gather, prefill rids / sidecar
+  - streaming vocoder clear_stream_state
+  - weight remap contracts
+
 - `unit_test/higgs_tts/`: Higgs TTS unit tests:
   - OmniScheduler-backed AR stage factory wiring
   - upstream Transformers codec binding and bundled-config state-dict structure
