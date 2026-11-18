@@ -30,3 +30,8 @@ func Listen(path string) (net.Listener, error) {
 func dial(path string) (net.Conn, error) {
 	return net.Dial("unix", path)
 }
+
+// Dial connects to the endpoint Listen made at path (a socket here, an
+// endpoint file with a TCP address on Windows), for the other internal
+// sockets that share this transport (internal/fileasr).
+func Dial(path string) (net.Conn, error) { return dial(path) }

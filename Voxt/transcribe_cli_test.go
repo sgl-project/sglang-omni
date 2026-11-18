@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/fileasr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/historyapi"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 )
 
@@ -40,7 +40,7 @@ func transcribeServerOpen(t *testing.T, open func(context.Context, string) (file
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	path := filepath.Join(dir, fileasr.SocketName)
-	ln, err := net.Listen("unix", path)
+	ln, err := historyapi.Listen(path)
 	if err != nil {
 		t.Fatal(err)
 	}

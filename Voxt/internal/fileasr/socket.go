@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/historyapi"
 )
 
 // SocketName is the socket's name in the default data folder.
@@ -138,7 +139,7 @@ func (c *counter) Read(p []byte) (int, error) {
 // each as it comes. It writes while it reads, so that neither side waits
 // on the other's full buffer.
 func Transcribe(path, lang string, pcm []byte, each func(Segment) error) error {
-	conn, err := net.Dial("unix", path)
+	conn, err := historyapi.Dial(path)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}

@@ -154,6 +154,11 @@ func dial(path string) (net.Conn, error) {
 	return connection, nil
 }
 
+// Dial connects to the endpoint Listen made at path (a socket on Unix),
+// for the other internal sockets that share this transport
+// (internal/fileasr).
+func Dial(path string) (net.Conn, error) { return dial(path) }
+
 func readEndpoint(path string) (endpoint, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

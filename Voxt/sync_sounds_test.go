@@ -94,7 +94,9 @@ func TestSyncSoundsOnlyReplacesItsOwnCache(t *testing.T) {
 				}
 			}
 			command := shellWithFakeBin("sh", fakeBinDir, filepath.Join(root, "scripts/sync-sounds.sh"))
-			command.Env = environment
+			// shellWithFakeBin's env is replaced here, so the fake bin's
+			// PATH goes back on top (its Windows form is in the command).
+			command.Env = append(environment, "PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			output, err := command.CombinedOutput()
 			_, statErr := os.Stat(ownFile)
 			if testCase.userDir && statErr != nil {
