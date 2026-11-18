@@ -795,11 +795,6 @@ def test_qwen3_asr_dflash_build_overlaps_by_default_and_cleans_resources(
         qwen3_asr_builder.current_platform, "is_npu", lambda: platform == "npu"
     )
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
-    # note (siju-samuel): the platform must allow launch-first prefill, or the
-    # async_prefill assert below passes without the DFlash exclusion.
-    monkeypatch.setattr(
-        qwen3_asr_builder.current_platform, "enable_async_prefill", lambda: True
-    )
     monkeypatch.setenv("PER_STREAM_QUEUE", "1")
     monkeypatch.setenv("TASK_QUEUE_ENABLE", "1")
     monkeypatch.delenv("ASCEND_LAUNCH_BLOCKING", raising=False)
@@ -1233,22 +1228,44 @@ def test_qwen3_asr_metadata_graph_is_off_only_on_xpu(
     )
 
 
-@pytest.mark.parametrize("platform_enables_async_prefill", [True, False])
-def test_qwen3_asr_async_prefill_follows_the_platform(
-    monkeypatch: pytest.MonkeyPatch, platform_enables_async_prefill: bool
+@pytest.mark.parametrize(
+    ("platform", "enable_async_decode", "expected_async_prefill"),
+    [
+        ("cuda", True, True),
+        ("cuda", False, True),
+        ("xpu", True, True),
+        ("xpu", False, False),
+        ("cpu", True, False),
+    ],
+    ids=[
+        "cuda_async_decode_on",
+        "cuda_async_decode_off",
+        "xpu_async_decode_on",
+        "xpu_async_decode_off",
+        "other_platform",
+    ],
+)
+def test_qwen3_asr_async_prefill_follows_platform_and_async_decode(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    enable_async_decode: bool,
+    expected_async_prefill: bool,
 ) -> None:
-    """Launch-first prefill is a platform policy, not a CUDA-only path: any
-    platform whose hook says yes gets it."""
+    """XPU launches whole-prompt prefills ahead only with async decode on, since
+    the launch-first drain admits finished request builds out of queue order."""
     patch_engine_dependencies(monkeypatch)
     monkeypatch.setattr(
-        qwen3_asr_builder.current_platform,
-        "enable_async_prefill",
-        lambda: platform_enables_async_prefill,
+        qwen3_asr_builder.current_platform, "is_cuda", lambda: platform == "cuda"
+    )
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_xpu", lambda: platform == "xpu"
     )
 
-    scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor("dummy")
+    scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy", enable_async_decode=enable_async_decode
+    )
 
-    assert scheduler.async_prefill is platform_enables_async_prefill
+    assert scheduler.async_prefill is expected_async_prefill
 
 
 @pytest.mark.parametrize("decode_backend", ["fa3", "flashinfer"])

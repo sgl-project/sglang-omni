@@ -614,7 +614,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             ),
             # note (rsi): ASR prompts fit one chunk, so a prefill's first
             # tokens can be resolved after the next decode launches.
-            "async_prefill": current_platform.enable_async_prefill()
+            # note (siju-samuel): on XPU this follows async decode, or a run with
+            # async decode off would still admit finished builds out of order.
+            "async_prefill": (
+                current_platform.is_cuda()
+                or (current_platform.is_xpu() and self.enable_async_decode)
+            )
             and self.draft_checkpoint is None,
             "request_build_max_workers": (
                 1 if use_torch_mps else self.request_build_max_workers

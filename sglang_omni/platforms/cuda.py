@@ -63,9 +63,6 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
 
         return CudaDeviceGraphBackend()
 
-    def enable_async_prefill(self) -> bool:
-        return True
-
     def enable_codec_decode_graph(self) -> bool:
         return True
 
