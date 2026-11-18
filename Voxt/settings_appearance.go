@@ -105,11 +105,11 @@ func (a *app) paletteSettings(c *ui.Context) {
 				arrow.Opacity(0)
 			}
 			ui.Spacer(c)
-			color := a.colorPalette
-			ui.Box(c).Size(px(t, 23), px(t, 23)).Radius(px(t, 6)).Background(k.Subtle).Border(1, k.Line).Padding(px(t, 2)).Children(func() {
-				ui.Box(c).Fill().Radius(px(t, 4)).Border(1, ui.RGBA(255, 255, 255, 0.16)).
-					Gradient(color.Mix(ui.RGB(255, 255, 255), 0.09), color.Mix(ui.RGB(0, 0, 0), 0.09), 180)
-			})
+			value := i18n.T("Custom")
+			if a.prefs.Appearance.Palette == "" || a.prefs.Appearance.Palette == settings.DefaultPalette {
+				value = i18n.T("Default")
+			}
+			ui.Text(c, value).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Shrink(0)
 		})
 		trigger.Changed()
 		panel := parts.Panel(func() {

@@ -21,6 +21,9 @@ func TestAppearancePalette(t *testing.T) {
 	if !hasExact(tt, "Color") || hasExact(tt, "Hex") {
 		t.Fatal("the color editor should start folded")
 	}
+	if !hasExact(tt, "Default") {
+		t.Fatal("the original palette should say Default instead of showing a custom color")
+	}
 	colorRow, colorOK := tt.Find("Color")
 	themeRow, themeOK := tt.Find("Theme")
 	if !colorOK || !themeOK || math.Abs(float64(colorRow.X-themeRow.X)) > 1 {
@@ -59,6 +62,9 @@ func TestAppearancePalette(t *testing.T) {
 	if ap := a.settings.Get().Appearance; ap.Palette != "#b25280" || ap.Theme != settings.ThemeSystem {
 		t.Fatalf("saved custom color = %+v", ap)
 	}
+	if hasExact(tt, "Default") || !hasExact(tt, "Custom") {
+		t.Fatal("the chosen custom color should say Custom instead of Default")
+	}
 	click(t, tt, "Dark")
 	if ap := a.settings.Get().Appearance; ap.Palette != "#b25280" || ap.Theme != settings.ThemeDark {
 		t.Fatalf("saved dark appearance = %+v", ap)
@@ -72,6 +78,9 @@ func TestAppearancePalette(t *testing.T) {
 	click(t, tt, "Reset color")
 	if ap := a.settings.Get().Appearance; ap.Palette != settings.DefaultPalette || ap.Scale != 1.25 {
 		t.Fatalf("reset appearance at minimum window size = %+v", ap)
+	}
+	if !hasExact(tt, "Default") {
+		t.Fatal("resetting the color did not restore the Default indicator")
 	}
 	a.navigate("/settings/general")
 	a.navigate("/settings/appearance")
