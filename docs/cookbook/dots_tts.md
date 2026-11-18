@@ -88,6 +88,22 @@ Incremental / bucketed tail-KV allocation is not implemented yet; capacity is st
 
 Use `examples/configs/dots_tts_npu.yaml` with the pinned MeanFlow checkpoint and dots_tts 0.2.1. Follow the [NPU installation guide](../other_platforms/installation_npu.md) for runtime requirements. SOAR and base checkpoints have not been validated on NPU.
 
+### Install model dependencies
+
+Set up the Ascend runtime first, then install the model dependency in the same Python environment you will use to run the server. The command pins Torch and Torchaudio to their installed versions while allowing pip to resolve the remaining dependencies.
+
+If a Pynini wheel is unavailable for your platform, install the OpenFst development libraries and a C++ toolchain before running pip.
+
+```bash
+python -m pip install "dots.tts==0.2.1" -c <(
+  python -c 'from importlib.metadata import version; print("torch==" + version("torch")); print("torchaudio==" + version("torchaudio"))'
+)
+```
+
+### Start the server
+
+After the installation succeeds, select the visible NPU and start the service.
+
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0
 sgl-omni serve \
