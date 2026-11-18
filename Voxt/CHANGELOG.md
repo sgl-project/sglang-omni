@@ -12,6 +12,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Translate never pastes an untranslated answer** (#4153): if the language model returns the source text or an answer in the wrong script, Voxt asks again with stricter instructions. If the answer still is not translated, Voxt shows the failure and offers a retry instead of replacing the selection or inserting the speech as though translation succeeded.
 - **Recording starts with a microphone selected in Settings → Audio** (#4120). Voxt keeps a working input running through configuration changes. If two consecutive starts deliver no audio, it switches to the system default microphone. If that attempt also delivers no audio, Voxt ends the stalled recording with an error.
 
 ### 中文
@@ -24,6 +25,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **翻译不会再粘贴未翻译的回答**（#4153）：语言模型返回原文或错误文字系统的回答时，Voxt 会用更严格的指令重试。如果结果仍未翻译，Voxt 会显示失败并允许重试，不再把选区或语音原文当成翻译成功的结果替换或插入。
 - **在设置 → 音频选定麦克风后可以正常开始录音**（#4120）。收到配置变更通知时，Voxt 会继续使用正常运行的麦克风。如果连续两次启动都未收到音频，Voxt 会切换到系统默认麦克风。如果这次也未收到音频，Voxt 会结束卡住的录音并提示错误。
 
 ## [2.1.0] - 2026-11-15

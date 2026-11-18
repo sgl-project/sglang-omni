@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -160,6 +161,12 @@ func (r *run) write(raw, selection string) {
 	if err != nil {
 		r.logf("warning", "language model %s (model %s) failed after %v: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
 		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: err}, true)
+		return
+	}
+	// Same-script and numeric answers can be valid; fail only on evidence of the wrong script.
+	if kind == store.KindTranslate && strings.IndexFunc(source, unicode.IsLetter) >= 0 && !compose.Written(source, in.TargetLanguage) && compose.Untranslated(source, res.Content, in.TargetLanguage) {
+		r.logf("warning", "the translation still looks untranslated after the strict retry")
+		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: errors.New("the language model did not translate the text")}, true)
 		return
 	}
 	r.logf("info", "wrote %s in %v", r.logText(res.Content), llmTime.Round(time.Millisecond))
