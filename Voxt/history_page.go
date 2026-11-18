@@ -26,6 +26,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -38,7 +39,7 @@ const historyLimit = 500
 // in the default window (800 wide: a 600-wide page) and beside the rail in
 // the smallest (680).
 const (
-	historyPanelW   = 290
+	historyPanelW   = settings.MinHistoryDetailWidth
 	historyListMinW = 300
 )
 
@@ -56,14 +57,16 @@ type historyView struct {
 	// list holds the entries read for listFor (the kind and the search),
 	// "" before the first read; seq numbers the reads, so that only the
 	// last one lands.
-	list    []store.Entry
-	listFor string
-	seq     int
-	loading bool
-	stale   bool   // an entry changed while the page was not shown
-	err     string // the last read's error
-	sel     string // the entry in the details panel
-	listUI  ui.ListState
+	list          []store.Entry
+	listFor       string
+	seq           int
+	loading       bool
+	stale         bool   // an entry changed while the page was not shown
+	err           string // the last read's error
+	sel           string // the entry in the details panel
+	listUI        ui.ListState
+	panelWidth    float32 // detail width in DIPs at 100 %
+	panelResizing bool
 	// The Delete dialog: open, and the entry it deletes.
 	delAsk bool
 	delID  string
@@ -225,8 +228,16 @@ func (a *app) historyPage(c *ui.Context) {
 			})
 		}
 		sel := h.selected()
-		w := px(t, historyPanelW)
-		inline := a.pageWidth(c)-w >= px(t, historyListMinW)
+		if h.panelWidth == 0 {
+			h.panelWidth = float32(a.prefs.Appearance.HistoryDetailWidth)
+			if h.panelWidth == 0 {
+				h.panelWidth = historyPanelW
+			}
+		}
+		lo := px(t, historyPanelW)
+		hi := max(lo, min(px(t, settings.MaxHistoryDetailWidth), a.pageWidth(c)-px(t, historyListMinW)-1))
+		w := min(max(px(t, h.panelWidth), lo), hi)
+		inline := a.pageWidth(c)-lo-1 >= px(t, historyListMinW)
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 				switch {
@@ -252,9 +263,16 @@ func (a *app) historyPage(c *ui.Context) {
 						h.sel = ""
 					}
 				}
-				sidePanel(c, "hist-detail", w, inline, i18n.T("Entry details"), closePanel, func() {
-					a.historyDetail(c, *sel)
-				})
+				if inline {
+					w = a.historyDetailDivider(c, w, hi)
+					ui.Scroll(c.Key("hist-detail")).Width(w).Shrink(0).Label(i18n.T("Entry details")).Children(func() {
+						a.historyDetail(c, *sel)
+					})
+				} else {
+					sidePanel(c, "hist-detail", lo, false, i18n.T("Entry details"), closePanel, func() {
+						a.historyDetail(c, *sel)
+					})
+				}
 			}
 		})
 	})
