@@ -12,6 +12,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Meeting audio meters keep updating during system silence**: when the Mac stops delivering system audio buffers, the waveform returns to silence and the existing sustained-silence reminder can still appear.
 - **Recording starts with a microphone selected in Settings → Audio** (#4120). Voxt keeps a working input running through configuration changes. If two consecutive starts deliver no audio, it switches to the system default microphone. If that attempt also delivers no audio, Voxt ends the stalled recording with an error.
 
 ### 中文
@@ -24,6 +25,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **系统静音时会议音量表继续更新**：Mac 不再提供系统音频缓冲区时，波形会回到静音状态，已有的持续静音提醒也能正常触发。
 - **在设置 → 音频选定麦克风后可以正常开始录音**（#4120）。收到配置变更通知时，Voxt 会继续使用正常运行的麦克风。如果连续两次启动都未收到音频，Voxt 会切换到系统默认麦克风。如果这次也未收到音频，Voxt 会结束卡住的录音并提示错误。
 
 ## [2.1.0] - 2026-11-15
