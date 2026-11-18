@@ -2,6 +2,18 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+
+- **History and Home refresh after a cancelled session**: cancelling a recording that kept a history entry now updates an open History page and refreshes Home instead of leaving them stale until restart or another session.
+
+### 中文
+
+#### 修复
+
+- **取消录音后历史和首页会立即刷新**：取消一段已写入历史的录音后，当前打开的历史记录页和首页会立即刷新，不再需要重启或等下一次会话才看到变化。
+
 ## [2.1.1] - 2026-11-17
 
 ### Added

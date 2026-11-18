@@ -343,9 +343,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	} else if copied != nil {
 		a.showNotice(*copied)
 	}
-	if s.State != session.Cancelled {
-		a.historyChanged()
-	}
+	a.historyChanged()
 }
 
 // showNotice shows a notice in the overlay; it hides by itself.
