@@ -413,6 +413,29 @@ func TestUntranslated(t *testing.T) {
 	}
 }
 
+func TestLanguageMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		text, target string
+		want         bool
+	}{
+		{"Good morning", "en", false},
+		{"Good morning", "fr", true},
+		{"Goodbye", "fr", true},
+		{"Hola", "en", true},
+		{"Hola", "es", false},
+		{"Bonjour, comment ça va ?", "fr", false},
+		{"Bonjour, comment ça va ?", "en", true},
+		{"Kubernetes", "fr", false},
+		{"12:30", "fr", false},
+		{"Voxt supports 中文", "en", true},
+		{"我们周五发布", "zh-Hans", false},
+	} {
+		if got := LanguageMismatch(tc.text, tc.target); got != tc.want {
+			t.Errorf("LanguageMismatch(%q, %s) = %v, want %v", tc.text, tc.target, got, tc.want)
+		}
+	}
+}
+
 func TestParseAnswer(t *testing.T) {
 	for _, tc := range []struct {
 		text string

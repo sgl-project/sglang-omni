@@ -12,7 +12,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **Chinese-to-English translation does not paste a Chinese source as English** (#4153): if the language model returns the source or an answer in the wrong script, Voxt asks again with stricter instructions. If the answer still has clear wrong-script evidence, Voxt shows the failure and offers a retry instead of replacing the selection or inserting the speech as though translation succeeded. Ambiguous answers written only in a Latin script keep the existing behavior after that retry.
+- **Chinese-to-English translation does not paste a Chinese source as English** (#4153): if the language model returns the source or an answer in the wrong script, Voxt asks again with stricter instructions. If the answer still has clear wrong-script evidence, Voxt shows the failure and offers a retry instead of replacing the selection or inserting the speech as though translation succeeded. Answers whose languages remain ambiguous keep the existing behavior after that retry; established cross-language echoes fail instead.
 - **Recording starts with a microphone selected in Settings → Audio** (#4120). Voxt keeps a working input running through configuration changes. If two consecutive starts deliver no audio, it switches to the system default microphone. If that attempt also delivers no audio, Voxt ends the stalled recording with an error.
 
 ### 中文
@@ -25,7 +25,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **中译英不会再把中文原文当成英文译文粘贴**（#4153）：语言模型返回原文或错误文字系统的回答时，Voxt 会用更严格的指令重试。如果结果仍有明确的错误文字系统证据，Voxt 会显示失败并允许重试，不再把选区或语音原文当成翻译成功的结果替换或插入。只用拉丁字母、无法判断语言的回答在重试后仍按原方式处理。
+- **中译英不会再把中文原文当成英文译文粘贴**（#4153）：语言模型返回原文或错误文字系统的回答时，Voxt 会用更严格的指令重试。如果结果仍有明确的错误文字系统证据，Voxt 会显示失败并允许重试，不再把选区或语音原文当成翻译成功的结果替换或插入。无法确认语言差异的回答在重试后仍按原方式处理；能确认原文与目标语言不同的原样回答会显示失败。
 - **在设置 → 音频选定麦克风后可以正常开始录音**（#4120）。收到配置变更通知时，Voxt 会继续使用正常运行的麦克风。如果连续两次启动都未收到音频，Voxt 会切换到系统默认麦克风。如果这次也未收到音频，Voxt 会结束卡住的录音并提示错误。
 
 ## [2.1.0] - 2026-11-15

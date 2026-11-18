@@ -47,7 +47,7 @@ func LanguageName(code, set string) string {
 //
 // A source already in the target's script (Chinese into Chinese) is never
 // judged untranslated. Ambiguous Latin text is still retried, then accepted
-// unless ScriptMismatch gives positive evidence for a hard failure.
+// unless LanguageMismatch gives positive evidence for a hard failure.
 func Untranslated(source, result, target string) bool {
 	src, res := fold(source), fold(result)
 	if src == "" || res == "" {
@@ -84,6 +84,53 @@ func ScriptMismatch(text, target string) bool {
 		}
 	}
 	return false
+}
+
+// LanguageMismatch reports positive evidence that text is not in target.
+// Script mismatches count. For Latin text, common English, French, and
+// Spanish vocabulary can establish a mismatch; unknown words and
+// language-neutral names do not.
+func LanguageMismatch(text, target string) bool {
+	if ScriptMismatch(text, target) {
+		return true
+	}
+	if !isLatin(target) {
+		return false
+	}
+	detected := latinLanguage(text)
+	return detected != "" && detected != lang.Canonical(target)
+}
+
+// commonLatinWords identifies a language from function words and common
+// greetings, not from capitalization or a script shared with another language.
+var commonLatinWords = map[string][]string{
+	"en": {"the", "a", "an", "and", "or", "is", "are", "am", "to", "of", "in", "on", "for", "with", "this", "that", "these", "those", "good", "morning", "goodbye", "hello", "hi", "world", "friends", "you", "your", "we", "our", "it", "its", "thank", "thanks", "please", "yes", "no"},
+	"fr": {"le", "la", "les", "des", "de", "du", "et", "ou", "est", "sont", "à", "au", "aux", "ce", "cette", "ces", "bonjour", "salut", "bonsoir", "comment", "ça", "va", "merci", "je", "tu", "il", "elle", "une", "un", "nous", "vous", "ils", "elles", "pas", "oui", "non"},
+	"es": {"el", "la", "los", "las", "de", "del", "y", "o", "es", "son", "en", "con", "por", "para", "una", "un", "hola", "adiós", "gracias", "cómo", "como", "qué", "que", "sí", "no", "buenos", "buenas", "días", "noches", "señor", "señora", "yo", "tú", "usted", "nosotros", "ellos", "ellas"},
+}
+
+func latinLanguage(text string) string {
+	scores := map[string]int{}
+	for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) }) {
+		for code, words := range commonLatinWords {
+			for _, common := range words {
+				if word == common {
+					scores[code]++
+					break
+				}
+			}
+		}
+	}
+	if scores["en"] > scores["fr"] && scores["en"] > scores["es"] {
+		return "en"
+	}
+	if scores["fr"] > scores["en"] && scores["fr"] > scores["es"] {
+		return "fr"
+	}
+	if scores["es"] > scores["en"] && scores["es"] > scores["fr"] {
+		return "es"
+	}
+	return ""
 }
 
 // Written says whether most of text's words are in the script of the
