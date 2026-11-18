@@ -112,6 +112,19 @@ def test_image_pipeline_config_round_trip() -> None:
     )
 
 
+def test_native_sp2_decoder_config() -> None:
+    config_path = (
+        Path(__file__).resolve().parents[3]
+        / "examples/configs/llada2_uni_native_sp2.yaml"
+    )
+    config = ConfigManager.from_file(str(config_path)).config
+    stage = next(stage for stage in config.stages if stage.name == IMAGE_DECODE_STAGE)
+    placement = build_stage_placement_plan(config)
+    assert set(placement.gpus) == {0, 1, 2}
+    assert stage.allow_child_processes and stage.runtime_gpu_ids == [1, 2]
+    assert stage.factory.backend == "sglang" and stage.factory.attention_backend == "fa"
+
+
 def native_worker(
     rank: int, directory: str, cfg: DecoderConfig, dtype: torch.dtype
 ) -> None:
