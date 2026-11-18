@@ -473,7 +473,7 @@ def create_vocoder_executor(
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
-    running_stream_count: int | None = None,
+    stream_capacity: int | None = None,
     shares_engine_speech_tokenizer: bool,
 ) -> Qwen3TTSStreamingVocoderScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
@@ -574,5 +574,5 @@ def create_vocoder_executor(
             torch.npu.set_option({"ALLOW_INTERNAL_FORMAT": previous_internal_format})
     else:
         scheduler.warmup_now()
-    scheduler.log_cuda_graph_coverage(running_stream_count)
+    scheduler.log_cuda_graph_coverage(stream_capacity)
     return scheduler

@@ -46,7 +46,8 @@ class Qwen3TTSStageFactoryKwargs(TypedDict, total=False):
     initial_cuda_graph: bool
     followup_cuda_graph: bool
     async_decode: bool
-    running_stream_count: int
+    stream_capacity: int
+    codec_state_slots: int
     shares_engine_speech_tokenizer: bool
 
 
@@ -133,14 +134,16 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
                     "server_args_overrides", {}
                 ),
             }
-            if "max_running_requests" in server_args_overrides:
-                running_request_count = int(
-                    server_args_overrides["max_running_requests"]
+            admission_defaults = type(self).generation_admission_defaults()
+            # note (ratish): a stream keeps its Codec slot until its last decode, after its engine slot frees, so a vocoder holds every request admitted, queued ones included, and the arena is sized to that.
+            admitted_request_count = sum(
+                (
+                    int(server_args_overrides[name])
+                    if server_args_overrides.get(name) is not None
+                    else admission_defaults[name]
                 )
-            else:
-                running_request_count = type(self).generation_admission_defaults()[
-                    "max_running_requests"
-                ]
+                for name in ("max_running_requests", "max_queued_requests")
+            )
             engine_process = stage_process_name(engine_stage)
             vocoder_stage = self.stage_named(stage_name)
             vocoder_process = stage_process_name(vocoder_stage)
@@ -157,15 +160,17 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             if vocoder_process == engine_process:
                 # note (Haoling Pu): each replica of a shared process decodes the
                 # streams its own engine runs.
-                kwargs["running_stream_count"] = running_request_count
+                stream_capacity = admitted_request_count
             else:
                 # note (Haoling Pu): requests bind to vocoder replicas round-robin
                 # with no per-replica cap, so one replica may hold every stream
                 # the engine replicas run together.
-                kwargs["running_stream_count"] = (
-                    running_request_count
+                stream_capacity = (
+                    admitted_request_count
                     * self.processes.get(engine_process, ProcessConfig()).num_replicas
                 )
+            kwargs["stream_capacity"] = stream_capacity
+            kwargs["codec_state_slots"] = stream_capacity
         else:
             pass
         # The vocoder captures its decode graphs during the asynchronous decode

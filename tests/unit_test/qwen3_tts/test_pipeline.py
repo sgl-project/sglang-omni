@@ -531,7 +531,7 @@ def test_qwen3_tts_engine_attaches_its_process_speech_tokenizer_before_the_pool(
         def warmup_now(self) -> None:
             pass
 
-        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
+        def log_cuda_graph_coverage(self, stream_capacity: int | None) -> None:
             pass
 
     class FakeTalker:
@@ -3095,8 +3095,8 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
         def warmup_now(self) -> None:
             captured["warmed"] = True
 
-        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
-            captured["running_stream_count"] = running_stream_count
+        def log_cuda_graph_coverage(self, stream_capacity: int | None) -> None:
+            captured["stream_capacity"] = stream_capacity
 
     monkeypatch.setattr(
         qwen3_stages,
@@ -3156,8 +3156,8 @@ def vocoder_factory_capture(
         def warmup_now(self) -> None:
             captured["warmed"] = True
 
-        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
-            captured["running_stream_count"] = running_stream_count
+        def log_cuda_graph_coverage(self, stream_capacity: int | None) -> None:
+            captured["stream_capacity"] = stream_capacity
 
     monkeypatch.setattr(
         qwen3_stages,
@@ -3230,7 +3230,7 @@ def test_vocoder_factory_scopes_npu_internal_format_to_capture(
             else:
                 pass
 
-        def log_cuda_graph_coverage(self, running_stream_count: int | None) -> None:
+        def log_cuda_graph_coverage(self, stream_capacity: int | None) -> None:
             pass
 
     def set_option(options: dict[str, str]) -> None:
@@ -3306,11 +3306,11 @@ def test_qwen3_tts_config_starts_a_declining_platform_decoding_synchronously(
         raising=False,
     )
 
+    admitted = sum(config.generation_admission_defaults().values())
     assert config.stage_factory_kwargs("vocoder") == {
         "async_decode": False,
-        "running_stream_count": config.generation_admission_defaults()[
-            "max_running_requests"
-        ],
+        "stream_capacity": admitted,
+        "codec_state_slots": admitted,
         "shares_engine_speech_tokenizer": True,
     }
     assert config.stage_factory_kwargs("tts_engine") == {}
@@ -3327,10 +3327,10 @@ def test_qwen3_tts_config_leaves_a_measured_platform_alone(
         raising=False,
     )
 
+    admitted = sum(config.generation_admission_defaults().values())
     assert config.stage_factory_kwargs("vocoder") == {
-        "running_stream_count": config.generation_admission_defaults()[
-            "max_running_requests"
-        ],
+        "stream_capacity": admitted,
+        "codec_state_slots": admitted,
         "shares_engine_speech_tokenizer": True,
     }
     assert config.stage_factory_kwargs("tts_engine") == {}
@@ -11564,19 +11564,19 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
 
 
 @pytest.mark.parametrize(
-    ("running_stream_count", "warning_count"), [(None, 0), (64, 0), (65, 1)]
+    ("stream_capacity", "warning_count"), [(None, 0), (64, 0), (65, 1)]
 )
 def test_qwen3_tts_vocoder_warns_when_streams_can_outnumber_codec_slots(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    running_stream_count: int | None,
+    stream_capacity: int | None,
     warning_count: int,
 ) -> None:
     scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=qwen3_streaming_vocoder.logger.name):
-        scheduler.log_cuda_graph_coverage(running_stream_count)
+        scheduler.log_cuda_graph_coverage(stream_capacity)
 
     info_messages = [
         record.getMessage()
@@ -11595,7 +11595,7 @@ def test_qwen3_tts_vocoder_warns_when_streams_can_outnumber_codec_slots(
     )
     assert len(warning_messages) == warning_count
     assert all(
-        message.endswith(f"to at least {running_stream_count}.")
+        message.endswith(f"to at least {stream_capacity}.")
         for message in warning_messages
     )
 
@@ -11665,16 +11665,14 @@ def test_qwen3_tts_vocoder_without_stateful_decoder_logs_the_left_context_path(
     ]
 
 
-def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_running_stream_count(
+def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_stream_capacity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert (
-        vocoder_factory_capture(monkeypatch, running_stream_count=96)[
-            "running_stream_count"
-        ]
+        vocoder_factory_capture(monkeypatch, stream_capacity=96)["stream_capacity"]
         == 96
     )
-    assert vocoder_factory_capture(monkeypatch)["running_stream_count"] is None
+    assert vocoder_factory_capture(monkeypatch)["stream_capacity"] is None
 
 
 def test_qwen3_tts_vocoder_codec_state_reaches_model_info(
