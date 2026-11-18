@@ -80,7 +80,14 @@ func (a *app) tryCard(c *ui.Context, o tryOpts) {
 	s := a.sess
 	try := o.mine
 	clear := func() { *o.block = nil }
-	card(c.Key(p + "-try")).Children(func() {
+	tryPanel := card(c.Key(p + "-try"))
+	if try && s.Kind == store.KindTranscribe && s.State == session.Recording {
+		k := tok(t)
+		if k.TranscriptFace != k.Subtle {
+			tryPanel.Background(k.TranscriptFace)
+		}
+	}
+	tryPanel.Children(func() {
 		switch {
 		case try && s.State == session.Recording:
 			a.tryRecording(c, p, s)
@@ -94,8 +101,8 @@ func (a *app) tryCard(c *ui.Context, o tryOpts) {
 				}
 			})
 			if d := strings.TrimSpace(s.Draft); d != "" && s.State == session.Composing {
-				fillCard(c.Key(p + "-try-draft")).Padding(px(t, sp3)).Children(func() {
-					a.transcriptResult(c, s.ID, d, true)
+				sessionTextCard(c.Key(p+"-try-draft"), s.Kind).Padding(px(t, sp3)).Children(func() {
+					a.transcriptResult(c, s.Kind, s.ID, d, true)
 				})
 			}
 			return
@@ -114,7 +121,7 @@ func (a *app) tryCard(c *ui.Context, o tryOpts) {
 				label = i18n.T("Try again")
 			}
 			busy := s.State.Live()
-			if recordButton(c.Key(p+"-try-start"), label).Label(i18n.T("Start a test")).Disabled(busy).Clicked() {
+			if ui.PrimaryButton(c.Key(p+"-try-start"), label).Border(1, ui.Color{}).Label(i18n.T("Start a test")).Disabled(busy).Clicked() {
 				*o.block = o.start()
 			}
 			if busy {
@@ -160,7 +167,7 @@ func (a *app) tryRecording(c *ui.Context, p string, s session.Snapshot) {
 		ui.Text(c, live).MaxLines(4).Ellipsis("…")
 	}
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-		if recordButton(c.Key(p+"-try-stop"), i18n.T("Stop")).Label(i18n.T("Stop recording")).Clicked() {
+		if ui.PrimaryButton(c.Key(p+"-try-stop"), i18n.T("Stop")).Border(1, ui.Color{}).Label(i18n.T("Stop recording")).Clicked() {
 			a.stopSession()
 		}
 		if ghostButton(c.Key(p+"-try-cancel"), i18n.T("Cancel")).Clicked() {
@@ -170,13 +177,13 @@ func (a *app) tryRecording(c *ui.Context, p string, s session.Snapshot) {
 }
 
 // levelBars draws the input levels as session.Bars bars, newest on the
-// right, in the recording colour once the microphone is heard.
+// right, in the theme colour once the microphone is heard.
 func levelBars(c *ui.Context, levels []float64, heard bool) {
 	t := c.Theme()
 	k := tok(t)
 	ui.Row(c.Key("tr-wave")).Grow(1).MinWidth(0).Height(px(t, 24)).Gap(px(t, 3)).AlignItems(ui.Center).Label(i18n.T("Input level")).Children(func() {
 		pad := session.Bars - len(levels)
-		col := k.Record
+		col := k.Accent
 		if !heard {
 			col = k.G[5]
 		}
@@ -222,8 +229,8 @@ func (a *app) tryEnded(c *ui.Context, p string, s session.Snapshot, clear func()
 			a.toast(i18n.T("Copied"))
 		}
 	})
-	fillCard(c.Key(p + "-try-result")).Padding(px(t, sp3)).Children(func() {
-		a.transcriptResult(c, s.ID, s.Result, false)
+	sessionTextCard(c.Key(p+"-try-result"), s.Kind).Padding(px(t, sp3)).Children(func() {
+		a.transcriptResult(c, s.Kind, s.ID, s.Result, false)
 	})
 	if raw := strings.TrimSpace(s.Raw); raw != "" && raw != strings.TrimSpace(s.Result) {
 		title := i18n.T("As recognised")
@@ -238,4 +245,16 @@ func (a *app) tryEnded(c *ui.Context, p string, s session.Snapshot, clear func()
 	if line := uitext.TimingsText(s); line != "" {
 		caption(c, line)
 	}
+}
+
+func sessionTextCard(c *ui.Context, kind store.Kind) ui.Element {
+	return fillCard(c).Background(sessionTextBackground(c.Theme(), kind))
+}
+
+// The native card and its embedded Markdown page must use the same fill.
+func sessionTextBackground(t *ui.Theme, kind store.Kind) ui.Color {
+	if kind == store.KindTranscribe {
+		return tok(t).TranscriptFace
+	}
+	return tok(t).Subtle
 }
