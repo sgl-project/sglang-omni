@@ -391,6 +391,9 @@ func TestUntranslated(t *testing.T) {
 		{"我们周五发布", "我们在周五发版", "en", true},        // still Chinese
 		{"我们周五发布", "我们周五发布 Release", "en", true}, // the source plus one English word
 		{"发布", "Release 发布", "en", true},         // the same echo before its translation
+		{"猫", "Cat 猫", "en", true},
+		{"发布", "We release 发布", "en", true},
+		{"Good morning", "Bonjour Good morning", "fr", true},
 		{"我们周五发布", "We ship on Friday.", "en", false},
 		{"我们周五发布", "我们周五发布", "zh-Hans", false},       // already Chinese: nothing to redo
 		{"Good morning", "Good morning", "en", true}, // Latin is ambiguous: retry, then accept

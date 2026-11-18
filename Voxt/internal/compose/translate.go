@@ -65,6 +65,9 @@ func Untranslated(source, result, target string) bool {
 	if src == res {
 		return isLatin(target) || ScriptMismatch(source, target)
 	}
+	if strings.Contains(res, src) && (isLatin(target) || ScriptMismatch(source, target)) {
+		return true // a whole source beside its translation is an echo, not a preserved name
+	}
 	if resLetters > 0 && resShare >= 0.25 && !strings.Contains(res, src) {
 		return false // enough target text to allow preserved names, not a source echo
 	}

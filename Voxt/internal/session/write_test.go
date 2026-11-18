@@ -175,6 +175,8 @@ func TestWrite(t *testing.T) {
 		{name: "English con can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "con"}, llm: &fakeLLM{text: "con"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "con", pasted: true},
 		{name: "an English goodbye is not a French translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Goodbye"}, llm: &fakeLLM{text: "Goodbye"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing failed", state: Failed, problem: ProblemLLM, check: requests(2)},
 		{name: "a Spanish greeting is not an English translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Hola"}, llm: &fakeLLM{text: "Hola"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM, check: requests(2)},
+		{name: "a translation before its Chinese source is still an echo", kind: store.KindTranslate, sel: &fakeSelector{text: "猫"}, llm: &fakeLLM{text: "Cat 猫"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "English words before a Chinese source are still an echo", kind: store.KindTranslate, sel: &fakeSelector{text: "发布"}, llm: &fakeLLM{text: "We release 发布"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
 		{name: "a preserved name in the strict retry is delivered", kind: store.KindTranslate, sel: &fakeSelector{text: "发布“豆包”"}, llm: &fakeLLM{texts: []string{"发布“豆包”", "Release \"豆包\""}},
 			req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "Release \"豆包\"", pasted: true,
 			check: requests(2),
