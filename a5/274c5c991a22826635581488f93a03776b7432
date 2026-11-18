@@ -1,0 +1,29 @@
+sglang_omni/models/duo/live.py
+  s_9be4bd449be508::t_2b923a21cedf45 1-687
+sglang_omni/models/duo/reference.py
+  s_9be4bd449be508::t_12222bfdbcdb7f 1-11,12-23,31-223
+sglang_omni/models/duo/reference_parallel.py
+  s_9be4bd449be508::t_c26f21f6128774 1-372
+sglang_omni/models/duo/streaming.py
+  s_9be4bd449be508::t_8fa466fb44d2e0 1-399
+tests/unit_test/kernels/test_duo_transport.py
+  s_9be4bd449be508::t_94cdb75faa17d8 1-94
+tests/unit_test/serve/test_duo_inputs.py
+  s_9be4bd449be508::t_e6f656c8840be0 1-14,18-21,22-152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a5274c5c991a22826635581488f93a03776b7432",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
