@@ -274,8 +274,8 @@ private final class CaptureRun: @unchecked Sendable {
         Self.silence.withUnsafeBufferPointer { silence in
             while remaining > 0 {
                 let count = min(remaining, silence.count)
-                let (frames, _) = framer.push(UnsafeBufferPointer(rebasing: silence[..<count]))
-                emit(frames, [])
+                let (frames, levels) = framer.push(UnsafeBufferPointer(rebasing: silence[..<count]))
+                emit(frames, levels)
                 remaining -= count
             }
         }
