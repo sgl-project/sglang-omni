@@ -13,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -121,7 +122,7 @@ func (a *app) tryCard(c *ui.Context, o tryOpts) {
 				label = i18n.T("Try again")
 			}
 			busy := s.State.Live()
-			if ui.PrimaryButton(c.Key(p+"-try-start"), label).Border(1, ui.Color{}).Label(i18n.T("Start a test")).Disabled(busy).Clicked() {
+			if a.tryRecordButton(c.Key(p+"-try-start"), label).Label(i18n.T("Start a test")).Disabled(busy).Clicked() {
 				*o.block = o.start()
 			}
 			if busy {
@@ -167,7 +168,7 @@ func (a *app) tryRecording(c *ui.Context, p string, s session.Snapshot) {
 		ui.Text(c, live).MaxLines(4).Ellipsis("…")
 	}
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-		if ui.PrimaryButton(c.Key(p+"-try-stop"), i18n.T("Stop")).Border(1, ui.Color{}).Label(i18n.T("Stop recording")).Clicked() {
+		if a.tryRecordButton(c.Key(p+"-try-stop"), i18n.T("Stop")).Label(i18n.T("Stop recording")).Clicked() {
 			a.stopSession()
 		}
 		if ghostButton(c.Key(p+"-try-cancel"), i18n.T("Cancel")).Clicked() {
@@ -183,7 +184,7 @@ func levelBars(c *ui.Context, levels []float64, heard bool) {
 	k := tok(t)
 	ui.Row(c.Key("tr-wave")).Grow(1).MinWidth(0).Height(px(t, 24)).Gap(px(t, 3)).AlignItems(ui.Center).Label(i18n.T("Input level")).Children(func() {
 		pad := session.Bars - len(levels)
-		col := k.Accent
+		col := k.Waveform
 		if !heard {
 			col = k.G[5]
 		}
@@ -195,6 +196,13 @@ func levelBars(c *ui.Context, levels []float64, heard bool) {
 			ui.Box(c).Width(px(t, 3)).Height(px(t, float32(3+min(max(v, 0), 1)*21))).Radius(px(t, 1.5)).Background(col)
 		}
 	})
+}
+
+func (a *app) tryRecordButton(c *ui.Context, label string) ui.Element {
+	if a.prefs.Appearance.Palette == "" || a.prefs.Appearance.Palette == settings.DefaultPalette {
+		return recordButton(c, label)
+	}
+	return ui.PrimaryButton(c, label).Border(1, ui.Color{})
 }
 
 // tryEnded is a finished try: its result (or why there is none), what
