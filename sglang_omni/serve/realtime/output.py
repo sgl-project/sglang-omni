@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from sglang_omni.proto.streams import VideoFrameFormat
+
 ResponseStatus = Literal["completed", "cancelled", "failed", "incomplete"]
 
 
@@ -32,6 +34,22 @@ class TextFinished(ResponseEvent):
 class AudioDelta(ResponseEvent):
     item_id: str
     pcm: bytes
+    t_start_ms: float | None = None
+    duration_ms: float | None = None
+
+
+@dataclass(frozen=True)
+class VideoDelta(ResponseEvent):
+    item_id: str
+    frame: bytes
+    format: VideoFrameFormat
+    t_start_ms: float
+    duration_ms: float
+
+
+@dataclass(frozen=True)
+class VideoFinished(ResponseEvent):
+    item_id: str
 
 
 @dataclass(frozen=True)
@@ -64,6 +82,7 @@ class ResponseFinished(ResponseEvent):
     status: ResponseStatus
     reason: str
     usage: dict[str, int | float | None] | None = None
+    has_video: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,6 +123,8 @@ OutputEvent = (
     | ResponseProgress
     | ResponseHeard
     | AudioFinished
+    | VideoDelta
+    | VideoFinished
     | ResponseFinished
     | TurnFailure
     | SpeechStarted

@@ -46,6 +46,7 @@ from sglang_omni.proto.streams import (
     TURN_INTERRUPTED,
     TURN_QUEUED,
     TURN_STARTED,
+    VIDEO,
     ImagePort,
     SessionPorts,
 )
@@ -65,6 +66,8 @@ from sglang_omni.serve.realtime.output import (
     TextDelta,
     TextFinished,
     TurnFailure,
+    VideoDelta,
+    VideoFinished,
 )
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
@@ -107,6 +110,10 @@ OUTPUT_DECODERS: dict[str, Callable[[bytes], bytes]] = {
 
 def capabilities_of(ports: SessionPorts) -> Capabilities:
     output_modalities = ("text", "audio") if ports.output is not None else ("text",)
+    if ports.video_output is not None:
+        output_modalities += ("video",)
+    else:
+        pass
     return Capabilities(
         interaction="turn_based",
         input_sample_rate_hz=ports.audio_input.sample_rate_hz,
@@ -117,6 +124,11 @@ def capabilities_of(ports: SessionPorts) -> Capabilities:
         ),
         output_modalities=output_modalities,
         max_granted_modalities=len(output_modalities),
+        output_video_format=(
+            ports.video_output.format
+            if ports.video_output is not None
+            else "image/jpeg"
+        ),
         turn_control=(*ports.turn_detection_types, None),
         native_unit_ms=ports.unit_ms,
         tail_policy="flush",
@@ -185,6 +197,10 @@ class SessionBridge(InteractionAdapter):
             self.decode_output = OUTPUT_DECODERS[ports.output.format]
         else:
             pass
+        if ports.video_output is not None:
+            self.projections[(VIDEO, ports.video_output.format)] = self.on_video
+        else:
+            pass
         self.controls: dict[str, Callable[[OutputChunk], list[OutputEvent]]] = {
             SPEECH_STARTED: self.on_speech_started,
             SPEECH_STOPPED: self.on_speech_stopped,
@@ -221,6 +237,7 @@ class SessionBridge(InteractionAdapter):
         self.item_turns: dict[str, int | None] = {}
         self.response_text = ""
         self.has_audio = False
+        self.has_video = False
 
     def set_limits(self, runtime_limits: RuntimeLimits) -> None:
         self.cleanup_timeout_s = runtime_limits.cleanup_timeout_s
@@ -425,6 +442,7 @@ class SessionBridge(InteractionAdapter):
             self.turn_count += 1
             self.response_text = ""
             self.has_audio = False
+            self.has_video = False
             return [ResponseStarted(self.response_id)]
 
     def on_transcript(self, output: OutputChunk) -> list[OutputEvent]:
@@ -452,6 +470,32 @@ class SessionBridge(InteractionAdapter):
                 self.response_id,
                 self.response_item_id,
                 self.decode_output(output.payload),
+                t_start_ms=(
+                    output.t_start_ms if self.ports.video_output is not None else None
+                ),
+                duration_ms=(
+                    output.duration_ms if self.ports.video_output is not None else None
+                ),
+            )
+        )
+        return events
+
+    def on_video(self, output: OutputChunk) -> list[OutputEvent]:
+        assert self.ports.video_output is not None
+        if not isinstance(output.payload, bytes):
+            raise ValueError("video output must contain one encoded frame")
+        else:
+            pass
+        events = self.start_response(output.turn)
+        self.has_video = True
+        events.append(
+            VideoDelta(
+                self.response_id,
+                self.response_item_id,
+                output.payload,
+                self.ports.video_output.format,
+                output.t_start_ms,
+                output.duration_ms,
             )
         )
         return events
@@ -502,8 +546,19 @@ class SessionBridge(InteractionAdapter):
             events.append(AudioFinished(*ids))
         else:
             pass
+        if self.has_video:
+            events.append(VideoFinished(*ids))
+        else:
+            pass
         events.append(
-            ResponseFinished(*ids, self.response_text, self.has_audio, status, reason)
+            ResponseFinished(
+                *ids,
+                self.response_text,
+                self.has_audio,
+                status,
+                reason,
+                has_video=self.has_video,
+            )
         )
         self.ended_response = (self.response_turn, *ids)
         self.response_id = None

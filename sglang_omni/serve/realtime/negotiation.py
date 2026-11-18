@@ -230,6 +230,16 @@ class SessionNegotiation:
             )
         else:
             pass
+        if self.capabilities.input_samples_per_slice:
+            duration_ms = round(
+                self.capabilities.input_duration_ms(
+                    self.capabilities.input_unit_samples(candidate)
+                )
+            )
+            granted["native_unit_ms"] = duration_ms
+            granted["first_unit_ms"] = duration_ms
+        else:
+            pass
         granted.update(
             {
                 "output_modalities": granted_modalities,

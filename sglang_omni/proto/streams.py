@@ -5,10 +5,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from typing import Literal, get_args
 
 from sglang_omni.proto.session import OutputChunk, TimedChunk
 
 AUDIO = "audio"
+VIDEO = "video"
+VideoFrameFormat = Literal["image/jpeg", "image/png"]
 IMAGE = "image"
 TEXT = "text"
 TRANSCRIPT = "transcript"
@@ -136,6 +139,17 @@ class ImagePort:
 
 
 @dataclass(frozen=True)
+class VideoPort:
+    format: VideoFrameFormat
+
+    def __post_init__(self) -> None:
+        if self.format not in get_args(VideoFrameFormat):
+            raise ValueError("video output requires JPEG or PNG frames")
+        else:
+            pass
+
+
+@dataclass(frozen=True)
 class SessionPorts:
     """What a pipeline's Session accepts and produces; `input` is one audio port and the image ports of the nodes that see; hot_settings are the realtime session fields a CONFIGURE control may change while it is open; turn_detection_types are the `turn_detection.type` values its nodes implement."""
 
@@ -146,6 +160,7 @@ class SessionPorts:
     hot_settings: frozenset[str] = frozenset()
     sampling_parameters: tuple[str, ...] = ()
     turn_detection_types: tuple[str, ...] = ()
+    video_output: VideoPort | None = None
 
     def __post_init__(self) -> None:
         audio_ports = [port for port in self.input if isinstance(port, AudioPort)]
@@ -178,12 +193,21 @@ class SessionPorts:
             )
         else:
             pass
+        if (
+            self.video_output is not None
+            and node.video_output is not None
+            and self.video_output != node.video_output
+        ):
+            raise ValueError("published video must share one frame format")
+        else:
+            pass
         return replace(
             self,
             input=tuple(dict.fromkeys(self.input + node.input)),
             output=published_audio_port(
                 port for port in (self.output, node.output) if port is not None
             ),
+            video_output=self.video_output or node.video_output,
             controls=self.controls | node.controls,
             hot_settings=self.hot_settings | node.hot_settings,
             sampling_parameters=self.sampling_parameters

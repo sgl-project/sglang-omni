@@ -16,6 +16,7 @@ from pydantic import (
 )
 from typing_extensions import TypedDict
 
+from sglang_omni.proto.streams import VideoFrameFormat
 from sglang_omni.serve.realtime.reference_audio import (
     MAX_REFERENCE_AUDIO_BYTES,
     normalize_reference_wav,
@@ -43,6 +44,10 @@ class ImageFormat(TypedDict):
     max_slice_nums: int
 
 
+class VideoFormat(TypedDict):
+    type: VideoFrameFormat
+
+
 class TurnDetectionConfig(TypedDict, total=False):
     type: str
     threshold: float | None
@@ -64,6 +69,20 @@ class AudioOutputConfig(TypedDict, total=False):
 class AudioConfig(TypedDict, total=False):
     input: AudioInputConfig
     output: AudioOutputConfig
+
+
+class RealizationDescription(TypedDict, total=False):
+    appearance: str
+    environment: str
+    initial_pose: str
+
+
+class RealizationSessionConfig(TypedDict, total=False):
+    description: RealizationDescription
+    seed: Annotated[int, Field(ge=0, le=4294967295)]
+    sample_id: str
+    decode: Literal["duo_1_4", "duo_5_17"]
+    reference_image: str
 
 
 class TimebaseConfig(TypedDict, total=False):
@@ -137,6 +156,7 @@ class SessionExtension(TypedDict, total=False):
     reference_audio: AudioReference
     tts_reference_audio: AudioReference
     max_slice_nums: Annotated[int, Field(ge=1)]
+    realization: RealizationSessionConfig
 
 
 class SessionConfiguration(TypedDict, total=False):
@@ -166,6 +186,7 @@ class GrantedCapabilities(TypedDict, total=False):
     input_image_format: ImageFormat
     input_audio_format: AudioFormat
     output_audio_format: AudioFormat
+    output_video_format: VideoFormat
     native_unit_ms: int
     first_unit_ms: int
     microturn_ms: str | float | None

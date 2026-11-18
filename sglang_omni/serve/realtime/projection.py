@@ -5,6 +5,7 @@ from typing import Literal
 
 from typing_extensions import TypedDict
 
+from sglang_omni.proto.streams import VideoFrameFormat
 from sglang_omni.serve.realtime.control import (
     Accepted,
     Cleared,
@@ -33,6 +34,8 @@ from sglang_omni.serve.realtime.output import (
     TextDelta,
     TextFinished,
     TurnFailure,
+    VideoDelta,
+    VideoFinished,
 )
 from sglang_omni.serve.realtime.schema import (
     AudioConfig,
@@ -44,7 +47,7 @@ from sglang_omni.serve.realtime.schema import (
 
 
 class ResponseContent(TypedDict, total=False):
-    type: Literal["output_text", "output_audio"]
+    type: Literal["output_text", "output_audio", "output_video"]
     text: str
     transcript: str
 
@@ -133,6 +136,7 @@ class ServerEvent(TypedDict, total=False):
     tail_policy: TailPolicy
     text_end: int
     audio_ms: float
+    format: VideoFrameFormat
 
 
 def project_output(
@@ -159,6 +163,10 @@ def project_output(
             content.append(dict(type="output_audio", transcript=event.text))
         else:
             pass
+        if event.has_video:
+            content.append(dict(type="output_video"))
+        else:
+            pass
         return dict(
             type="response.done",
             response=dict(
@@ -183,7 +191,11 @@ def project_output(
         is_done = isinstance(event, (TextFinished, AudioFinished))
         if is_audio:
             content_name = "output_audio"
-        elif output_modalities == ("audio",):
+        elif (
+            output_modalities is not None
+            and "audio" in output_modalities
+            and "text" not in output_modalities
+        ):
             content_name = "output_audio_transcript"
         else:
             content_name = "output_text"
@@ -196,6 +208,14 @@ def project_output(
         )
         if isinstance(event, AudioDelta):
             server_event["delta"] = base64.b64encode(event.pcm).decode("ascii")
+            if event.t_start_ms is not None and event.duration_ms is not None:
+                server_event["sglang"] = dict(
+                    media_time=dict(
+                        t_start_ms=event.t_start_ms, duration_ms=event.duration_ms
+                    )
+                )
+            else:
+                pass
         elif isinstance(event, TextDelta):
             server_event["delta"] = event.text
         elif isinstance(event, TextFinished) and (
@@ -204,6 +224,30 @@ def project_output(
             server_event["transcript"] = event.text
         elif isinstance(event, TextFinished):
             server_event["text"] = event.text
+        else:
+            pass
+        return server_event
+    elif isinstance(event, (VideoDelta, VideoFinished)):
+        server_event = dict(
+            type=(
+                "sglang.response.video.delta"
+                if isinstance(event, VideoDelta)
+                else "sglang.response.video.done"
+            ),
+            response_id=event.response_id,
+            item_id=event.item_id,
+            output_index=0,
+        )
+        if isinstance(event, VideoDelta):
+            server_event.update(
+                delta=base64.b64encode(event.frame).decode("ascii"),
+                format=event.format,
+                sglang=dict(
+                    media_time=dict(
+                        t_start_ms=event.t_start_ms, duration_ms=event.duration_ms
+                    )
+                ),
+            )
         else:
             pass
         return server_event

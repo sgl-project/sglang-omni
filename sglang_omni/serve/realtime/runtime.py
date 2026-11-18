@@ -39,7 +39,12 @@ from sglang_omni.serve.realtime.control import (
     Updated,
 )
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
-from sglang_omni.serve.realtime.output import OutputEvent, ResponseStatus, TurnFailure
+from sglang_omni.serve.realtime.output import (
+    OutputEvent,
+    ResponseStatus,
+    TurnFailure,
+    VideoDelta,
+)
 from sglang_omni.serve.realtime.output_buffer import OutputBuffer
 from sglang_omni.serve.realtime.schema import (
     GrantedCapabilities,
@@ -99,6 +104,7 @@ class SessionRuntime:
         self.next_unit_index = 0
         # note (wenyao): A turn-based session ends turns with its own VAD, so holding audio until a unit fills would end turns up to a unit late.
         self.forwards_partial_units = capabilities.interaction == "turn_based"
+        self.unit_samples = capabilities.input_unit_samples({})
         self.open_unit_samples = 0
         self.open_unit_start_sample = 0
         self.cleared_unit_receipt: Unit | None = None
@@ -119,6 +125,14 @@ class SessionRuntime:
         self.processing_unit: ContextVar[Unit | None] = ContextVar(
             "realtime_unit", default=None
         )
+
+    @property
+    def unit_bytes(self) -> int:
+        return self.unit_samples * PCM16_BYTES_PER_SAMPLE
+
+    @property
+    def unit_ms(self) -> float:
+        return self.capabilities.input_duration_ms(self.unit_samples)
 
     @property
     def pending_samples(self) -> int:
@@ -195,6 +209,11 @@ class SessionRuntime:
             return
         elif isinstance(event, TurnFailure):
             self.fail(event.message, event.code)
+        elif (
+            isinstance(event, VideoDelta)
+            and event.format != self.capabilities.output_video_format
+        ):
+            raise ValueError("producer video format differs from deployment")
         else:
             producing_unit = unit or self.processing_unit.get()
             modalities = (
@@ -227,6 +246,7 @@ class SessionRuntime:
                 self.config, self.state, patch
             )
             if self.state == "CREATED":
+                self.unit_samples = self.capabilities.input_unit_samples(candidate)
                 adapter = self.adapter_factory()
                 adapter.set_limits(self.limits)
                 self.is_admitting = True
@@ -348,15 +368,11 @@ class SessionRuntime:
                 )
             else:
                 pass
-            pending_unit_count_before = (
-                self.uncut_unit_bytes // self.capabilities.native_unit_bytes
-            )
+            pending_unit_count_before = self.uncut_unit_bytes // self.unit_bytes
             self.pending_pcm.extend(pcm)
             self.accepted_samples += len(pcm) // PCM16_BYTES_PER_SAMPLE
             self.next_append_sequence += 1
-            pending_unit_count_after = (
-                self.uncut_unit_bytes // self.capabilities.native_unit_bytes
-            )
+            pending_unit_count_after = self.uncut_unit_bytes // self.unit_bytes
             newly_ready_unit_count = (
                 pending_unit_count_after - pending_unit_count_before
             )
@@ -383,13 +399,9 @@ class SessionRuntime:
             pending_start_ms = self.capabilities.input_duration_ms(
                 self.accepted_samples - self.pending_samples - self.open_unit_samples
             )
-            pending_unit_offset = math.floor(
-                (t_ms - pending_start_ms) / self.capabilities.native_unit_ms
-            )
+            pending_unit_offset = math.floor((t_ms - pending_start_ms) / self.unit_ms)
             unit_index = self.next_unit_index + pending_unit_offset
-            pending_units = math.ceil(
-                self.uncut_unit_bytes / self.capabilities.native_unit_bytes
-            )
+            pending_units = math.ceil(self.uncut_unit_bytes / self.unit_bytes)
             if "image" not in self.capabilities.input_modalities:
                 raise ProtocolError("not_supported", "image input is not granted")
             elif self.is_input_ended:
@@ -484,7 +496,7 @@ class SessionRuntime:
             if self.is_input_ended:
                 raise ProtocolError("invalid_state", "audio input already ended")
             elif self.capabilities.tail_policy == "reject" and (
-                self.uncut_unit_bytes % self.capabilities.native_unit_bytes
+                self.uncut_unit_bytes % self.unit_bytes
             ):
                 raise ProtocolError(
                     "invalid_state", "partial native unit; append more audio before EOS"
@@ -492,12 +504,8 @@ class SessionRuntime:
             else:
                 pass
             self.is_input_ended = True
-            pending_unit_count = (
-                self.uncut_unit_bytes // self.capabilities.native_unit_bytes
-            )
-            has_partial_unit = bool(
-                self.uncut_unit_bytes % self.capabilities.native_unit_bytes
-            )
+            pending_unit_count = self.uncut_unit_bytes // self.unit_bytes
+            has_partial_unit = bool(self.uncut_unit_bytes % self.unit_bytes)
             if has_partial_unit:
                 self.mark_ready_units(self.next_unit_index + pending_unit_count, 1)
             elif not pending_unit_count:
@@ -520,7 +528,7 @@ class SessionRuntime:
 
         A session forwarding partial units cuts the pending audio up to the end of its unit; any other session cuts whole units.
         """
-        unit_bytes = self.capabilities.native_unit_bytes
+        unit_bytes = self.unit_bytes
         unit_pcm_bytes = min(
             unit_bytes - self.open_unit_samples * PCM16_BYTES_PER_SAMPLE,
             len(self.pending_pcm),
@@ -602,8 +610,7 @@ class SessionRuntime:
                         and (
                             not self.pending_pcm
                             if self.forwards_partial_units
-                            else len(self.pending_pcm)
-                            < self.capabilities.native_unit_bytes
+                            else len(self.pending_pcm) < self.unit_bytes
                         )
                     ):
                         continue

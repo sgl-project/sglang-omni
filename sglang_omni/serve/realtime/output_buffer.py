@@ -18,6 +18,8 @@ from sglang_omni.serve.realtime.output import (
     ResponseStatus,
     TextDelta,
     TextFinished,
+    VideoDelta,
+    VideoFinished,
 )
 from sglang_omni.serve.realtime.types import (
     PCM16_BYTES_PER_SAMPLE,
@@ -37,6 +39,8 @@ def envelope_size_bytes(envelope: Envelope) -> int:
     event = envelope.event
     if isinstance(event, AudioDelta):
         return math.ceil(len(event.pcm) / 3) * 4 + ENVELOPE_BYTES
+    elif isinstance(event, VideoDelta):
+        return (len(event.frame) + 2) // 3 * 4 + 2 * ENVELOPE_BYTES
     elif isinstance(
         event, (TextDelta, TextFinished, ResponseFinished, InputTranscription)
     ):
@@ -57,6 +61,8 @@ class ResponseState:
     is_text_done_sent: bool = False
     is_audio_done_sent: bool = False
     is_audio_visible: bool = False
+    is_video_done_sent: bool = False
+    is_video_visible: bool = False
 
 
 class OutputBuffer:
@@ -112,8 +118,20 @@ class OutputBuffer:
             and "audio" not in modalities
         ):
             return
-        elif isinstance(event, ResponseFinished) and "audio" not in modalities:
-            event = replace(event, has_audio=False)
+        elif (
+            isinstance(event, (VideoDelta, VideoFinished)) and "video" not in modalities
+        ):
+            return
+        elif isinstance(event, (TextDelta, TextFinished)) and not (
+            "text" in modalities or "audio" in modalities
+        ):
+            return
+        elif isinstance(event, ResponseFinished):
+            event = replace(
+                event,
+                has_audio=event.has_audio and "audio" in modalities,
+                has_video=event.has_video and "video" in modalities,
+            )
         else:
             pass
         if isinstance(event, ResponseStarted):
@@ -126,6 +144,8 @@ class OutputBuffer:
                 AudioDelta,
                 ResponseProgress,
                 AudioFinished,
+                VideoDelta,
+                VideoFinished,
                 ResponseFinished,
             ),
         ):
@@ -154,6 +174,14 @@ class OutputBuffer:
                 PCM16_BYTES_PER_SAMPLE
             ):
                 raise RuntimeError("producer emitted invalid PCM16")
+            elif isinstance(event, VideoDelta) and (
+                not event.frame
+                or not math.isfinite(event.t_start_ms)
+                or not math.isfinite(event.duration_ms)
+                or event.t_start_ms < 0
+                or event.duration_ms <= 0
+            ):
+                raise RuntimeError("producer emitted an empty or untimed video frame")
             elif isinstance(event, ResponseFinished):
                 response_state.is_terminal = True
                 if event.status == "cancelled":
@@ -162,7 +190,7 @@ class OutputBuffer:
                         (envelope, size_bytes)
                         for envelope, size_bytes in self.queued_envelopes
                         if not (
-                            isinstance(envelope.event, AudioDelta)
+                            isinstance(envelope.event, (AudioDelta, VideoDelta))
                             and envelope.event.response_id == event.response_id
                         )
                     )
@@ -192,7 +220,7 @@ class OutputBuffer:
             self.responses[response_id] = ResponseState(output_modalities=modalities)
 
     def finish_responses(self, status: ResponseStatus, reason: str) -> None:
-        """Queue at most three closing events per visible response."""
+        """Close each visible response and its published media streams."""
         for response_id, response_state in list(self.responses.items()):
             if (
                 response_state.is_terminal_sent
@@ -208,9 +236,9 @@ class OutputBuffer:
             response_state.has_close_terminals_queued = True
             item_id = response_state.item_id or "item_" + response_id
             closing_events: list[OutputEvent] = []
-            if (
-                not response_state.is_text_done_sent
-                and response_state.output_modalities
+            if not response_state.is_text_done_sent and (
+                "text" in response_state.output_modalities
+                or "audio" in response_state.output_modalities
             ):
                 closing_events.append(
                     TextFinished(response_id, item_id, response_state.text)
@@ -224,6 +252,13 @@ class OutputBuffer:
                 closing_events.append(AudioFinished(response_id, item_id))
             else:
                 pass
+            if (
+                response_state.is_video_visible
+                and not response_state.is_video_done_sent
+            ):
+                closing_events.append(VideoFinished(response_id, item_id))
+            else:
+                pass
             closing_events.append(
                 ResponseFinished(
                     response_id,
@@ -232,6 +267,7 @@ class OutputBuffer:
                     response_state.is_audio_visible,
                     status,
                     reason,
+                    has_video=response_state.is_video_visible,
                 )
             )
             for closing_event in closing_events:
@@ -255,6 +291,10 @@ class OutputBuffer:
             self.responses[event.response_id].is_audio_done_sent = True
         elif isinstance(event, AudioDelta):
             self.responses[event.response_id].is_audio_visible = True
+        elif isinstance(event, VideoFinished):
+            self.responses[event.response_id].is_video_done_sent = True
+        elif isinstance(event, VideoDelta):
+            self.responses[event.response_id].is_video_visible = True
         else:
             pass
 
@@ -276,7 +316,8 @@ class OutputBuffer:
             or (
                 envelope.is_control
                 and isinstance(
-                    envelope.event, (TextFinished, AudioFinished, ResponseFinished)
+                    envelope.event,
+                    (TextFinished, AudioFinished, VideoFinished, ResponseFinished),
                 )
             )
         )

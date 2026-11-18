@@ -118,19 +118,23 @@ class SharedRealtimeSession:
             server_event["event_id"] = "evt_" + uuid.uuid4().hex
             if envelope.unit is not None:
                 unit = envelope.unit
-                server_event.setdefault("sglang", {}).update(
+                metadata = server_event.setdefault("sglang", {})
+                metadata.update(
                     {
                         "unit_id": unit.unit_id,
                         "chunk_seq": envelope.chunk_index,
-                        "media_time": dict(
-                            t_start_ms=self.runtime.capabilities.input_duration_ms(
-                                unit.start_sample
-                            ),
-                            duration_ms=self.runtime.capabilities.input_duration_ms(
-                                unit.real_samples
-                            ),
-                        ),
                     }
+                )
+                metadata.setdefault(
+                    "media_time",
+                    dict(
+                        t_start_ms=self.runtime.capabilities.input_duration_ms(
+                            unit.start_sample
+                        ),
+                        duration_ms=self.runtime.capabilities.input_duration_ms(
+                            unit.real_samples
+                        ),
+                    ),
                 )
             else:
                 pass
