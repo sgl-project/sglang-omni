@@ -28,11 +28,10 @@ sgl-omni-duo merge
 
 | Terminal | Command | Local endpoint |
 |---|---|---|
-| 1 | `sgl-omni-duo asr` | http://127.0.0.1:18084/v1/models |
-| 2 | `sgl-omni-duo backend` | ws://127.0.0.1:18082/v1/realtime |
-| 3 | `sgl-omni-duo web` | http://localhost:18081/ |
+| 1 | `sgl-omni serve --model-path "$DUO_MODEL_DIR" --enable-realtime --host 127.0.0.1 --port 18082` | ws://127.0.0.1:18082/v1/realtime |
+| 2 | `sgl-omni-duo web` | http://localhost:18081/ |
 
-Open the playground when `curl -fsS http://127.0.0.1:18081/status` returns `"ready": true`. For remote GPUs, forward the loopback port with `ssh -L 18081:127.0.0.1:18081 user@gpu-host`, then open the same localhost URL. Set `DUO_ASR_PORT`, `DUO_BACKEND_PORT`, or `DUO_WEB_PORT` consistently in all terminals to change ports. Extra command-line arguments are forwarded to the selected service. For example, `sgl-omni-duo backend --realization-kv-reset-interval-blocks 43` enables periodic reset. The packaged model guide is installed under `share/sglang-omni/duo/docs/duo.md`.
+Open the playground when `curl -fsS http://127.0.0.1:18081/status` returns `"ready": true`. For remote GPUs, forward the loopback port with `ssh -L 18081:127.0.0.1:18081 user@gpu-host`, then open the same localhost URL. Set the gateway’s `DUO_BACKEND_PORT` to the serve port. `DUO_WEB_PORT` changes the browser port. Extra command-line arguments are forwarded to the selected service. For example, `--realization-kv-reset-interval-blocks 43` enables periodic reset. The packaged model guide is installed under `share/sglang-omni/duo/docs/duo.md`.
 
 Supply the seaside portrait at `portraits/seaside/portrait.jpg`. The example clip requires sorted JPEG files in `sample/frames/` at 24 FPS, aligned mono PCM16 at 16 kHz in `sample/audio.pcm`, and a browser preview at `sample/example.mp4`. Include at least 17 frames and 11,333 audio samples. The gateway reads the sample at startup.
 

@@ -104,7 +104,18 @@ class DuoLiveResources:
     supports_realization_kv_reset: bool = False
     realization_kv_reset_interval_blocks: int | None = None
     reference_size: tuple[int, int] | None = None
+    block_executor: ThreadPoolExecutor | None = None
     decode_executor: ThreadPoolExecutor | None = None
+
+    def configuration(self) -> dict[str, str | bool | int | None]:
+        prefix, suffix = self.hooks.planner.system_prompt_fragments()
+        return {
+            "realization_kv_reset_supported": self.manual_reset_enabled,
+            "realization_kv_reset_interval_blocks": self.realization_kv_reset_interval_blocks,
+            "system_prompt_prefix": prefix,
+            "system_prompt_suffix": suffix,
+            "video_lookahead_blocks": self.hooks.codecs.video_lookahead_blocks,
+        }
 
     @property
     def manual_reset_enabled(self) -> bool:
@@ -295,8 +306,8 @@ class DuoRealtimeAdapter(InteractionAdapter):
             request=OmniRequest(None),
             data=None,
         )
-        decoded = await asyncio.to_thread(
-            self.run_block, request, chunk, payload, context
+        decoded = await asyncio.get_running_loop().run_in_executor(
+            self.resources.block_executor, self.run_block, request, chunk, payload, context
         )
         if reset_realization_kv:
             self.applied_reset_generation = reset_generation

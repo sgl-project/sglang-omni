@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 
-from fastapi import WebSocket
+from fastapi import APIRouter, WebSocket
 
 from sglang_omni.audio.semantic_vad import SemanticEOUModel
 from sglang_omni.client import Client
@@ -34,6 +34,9 @@ class RealtimeDeployment:
     max_connections: int = 128
     # note (Junnan Li): called once with the warmup timeout in seconds, before the server reports ready.
     warmup: Callable[[float], Awaitable[None]] | None = None
+
+    router: APIRouter | None = None
+    shutdown: Callable[[], None] | None = None
 
     def __post_init__(self) -> None:
         if type(self.max_connections) is not int or self.max_connections < 1:

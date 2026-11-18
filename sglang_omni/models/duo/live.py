@@ -8,6 +8,7 @@ import time
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from typing import Protocol
 
 import httpx
 import msgspec
@@ -77,6 +78,10 @@ class GeneratedLiveBlock:
     video_latent: torch.Tensor
     audio_latent: torch.Tensor
     metrics: dict[str, str | int | float]
+
+
+class Recognizer(Protocol):
+    def transcribe(self, pcm16: bytes) -> str: ...
 
 
 class LiveWhisper:
@@ -156,7 +161,7 @@ class LiveDuoSessionHooks(SessionHooks):
         codecs: DuoCodecs,
         *,
         max_blocks: int,
-        asr: LiveWhisper | LiveQwenASR | None = None,
+        asr: Recognizer | None = None,
         release_intent_workspace: bool = False,
         reference_cache_entries: int = 2,
         input_executor: ThreadPoolExecutor | None = None,

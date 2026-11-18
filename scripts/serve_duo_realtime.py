@@ -326,16 +326,7 @@ def main() -> None:
         realtime_deployment=deployment,
     )
 
-    @app.get("/duo/configuration")
-    def realization_configuration() -> dict[str, str | bool | int | None]:
-        prefix, suffix = resources.hooks.planner.system_prompt_fragments()
-        return {
-            "realization_kv_reset_supported": resources.manual_reset_enabled,
-            "realization_kv_reset_interval_blocks": resources.realization_kv_reset_interval_blocks,
-            "system_prompt_prefix": prefix,
-            "system_prompt_suffix": suffix,
-            "video_lookahead_blocks": resources.hooks.codecs.video_lookahead_blocks,
-        }
+    app.get("/duo/configuration")(resources.configuration)
 
     original_lifespan = app.router.lifespan_context
 

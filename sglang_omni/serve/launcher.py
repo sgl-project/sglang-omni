@@ -753,6 +753,7 @@ async def run_server(
             len(gpu_ids),
         )
 
+        realtime_deployment = None
         try:
             warmup_factory = type(pipeline_config).server_warmup_request_factory
             if skip_server_warmup or warmup_factory is None:
@@ -829,6 +830,8 @@ async def run_server(
                 audio_chunking=pipeline_config.resolved_audio_chunking,
                 interleaved_output=type(pipeline_config).interleaved_output,
             )
+            if realtime_deployment and realtime_deployment.router:
+                app.include_router(realtime_deployment.router)
             profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
             profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
             mount_profiler_routes(app, profiler_ctl, profiler_dir)
@@ -890,7 +893,11 @@ async def run_server(
         finally:
             logger.info("Shutting down pipeline …")
             try:
-                await mp_runner.stop()
+                try:
+                    if realtime_deployment and realtime_deployment.shutdown:
+                        await asyncio.to_thread(realtime_deployment.shutdown)
+                finally:
+                    await mp_runner.stop()
             finally:
                 recorder = _get_event_recorder()
                 try:

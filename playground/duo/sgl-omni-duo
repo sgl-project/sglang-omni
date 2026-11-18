@@ -4,7 +4,8 @@ set -euo pipefail
 usage() {
   cat <<'HELP'
 Usage: sgl-omni-duo {prepare|merge|asr|backend|web} [extra arguments]
-Run asr, backend, and web in separate terminals in the same Python environment.
+Start the integrated backend with sgl-omni serve --model-path "$DUO_MODEL_DIR" --enable-realtime --host 127.0.0.1 --port 18082.
+Use web in a second terminal. The legacy asr/backend commands support standalone deployments.
 Open http://localhost:18081. Only loopback interfaces are bound by default.
 DUO_MODEL_DIR contains Duo-1.0-causal-base, Duo-1.0-distill and prepared outputs.
 DUO_ASSET_DIR contains sample/ and portraits/. See the Duo deployment README.

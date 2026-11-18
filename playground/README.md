@@ -57,22 +57,16 @@ export DUO_CODEC_CONFIG_DIR=/path/to/Duo/duo/models/realization/modules/native_v
 ./playground/duo/sgl-omni-duo merge
 ```
 
-Start the two backend services in separate terminals and leave them running:
+Start the complete backend in one terminal. The registered Duo pipeline owns the Qwen3-ASR worker on GPU 3, Intent TP4 on GPUs 0–3, Realization TP8 on GPUs 0–7 and four Codec tiles on GPUs 4–7.
 
 ```bash
-# Terminal 1: Qwen3-ASR on localhost:18084
-./playground/duo/sgl-omni-duo asr
+sgl-omni serve --model-path "$DUO_MODEL_DIR" --enable-realtime --host 127.0.0.1 --port 18082
 ```
 
-```bash
-# Terminal 2: Duo /v1/realtime on localhost:18082
-./playground/duo/sgl-omni-duo backend
-```
-
-Once the backend is ready, start the browser gateway in a third terminal. Supply `portraits/seaside/portrait.jpg` under `$DUO_ASSET_DIR`, along with `sample/frames/*.jpg` (24 FPS), `sample/audio.pcm` (aligned 16 kHz mono PCM16) and `sample/example.mp4`. Use a clip with speech to try a spoken exchange.
+Once the backend is ready, start the browser gateway in a second terminal. Supply `portraits/seaside/portrait.jpg` under `$DUO_ASSET_DIR`, along with `sample/frames/*.jpg` (24 FPS), `sample/audio.pcm` (aligned 16 kHz mono PCM16) and `sample/example.mp4`. Use a clip with speech to try a spoken exchange.
 
 ```bash
-# Terminal 3: check backend readiness, then launch the frontend
+# Terminal 2: check backend readiness, then launch the frontend
 curl -fsS http://127.0.0.1:18082/duo/configuration && ./playground/duo/sgl-omni-duo web
 ```
 

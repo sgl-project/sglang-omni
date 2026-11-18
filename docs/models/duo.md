@@ -43,11 +43,13 @@ Merge the matching Intent adapter before launching native Qwen TP workers. Keep 
 
 An eight-GPU deployment places Intent TP4 on GPUs 0–3, Realization TP8 on GPUs 0–7, and four-tile Codec decoding on GPUs 4–7. Intent for the next block can overlap Codec for the previous block; Realization waits for shared GPU work before starting. Codec tiling is spatial tile parallelism, not transformer TP.
 
-The CUDA wheel installs the `sgl-omni-duo` launcher. From a source checkout you can also use `./playground/duo/sgl-omni-duo`. Follow the [local deployment commands](../../playground/duo/README.md) to start ASR, the backend and the playground. All three services bind to IPv4 loopback by default.
+Start the registered pipeline with one command after preparing the weights. Qwen3-ASR runs as a pipeline-managed GPU worker and receives transcription requests through the coordinator.
 
-The realtime audio/video path requires ASR for input PCM, including silent PCM blocks. ASR is not silently enabled when its endpoint is omitted.
+```bash
+sgl-omni serve --model-path /models --enable-realtime --host 127.0.0.1 --port 18082
+```
 
-Add `--realization-modelopt-checkpoint /models/Duo-1.0-distill-quant/realization --realization-fp8-direct-kernels` to use released FP8 Linear weights. FP8 Attention additionally requires a compatible built library and calibration profile via the separate attention options. The BF16 Attention path remains available.
+Add `--realization-modelopt-checkpoint /models/Duo-1.0-distill-quant/realization` to use released FP8 Linear weights with direct kernels. The default attention precision is BF16.
 
 ## Streaming and state
 

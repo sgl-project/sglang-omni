@@ -26,6 +26,15 @@ def resolve_config_cls_for_model_path(model_path: str):
     # note (db-ol): a pinned <repo-id>@<revision> spec resolves metadata at
     # the pinned revision without materializing the snapshot. The weights
     # download happens later, when resolve_checkpoint loads a stage.
+    if all(
+        os.path.isdir(os.path.join(model_path, part))
+        for part in (
+            "prepared-duo/realization",
+            "duo-intent-merged",
+            "Duo-1.0-causal-base/speech/recognizer",
+        )
+    ):
+        return PIPELINE_CONFIG_REGISTRY.get_config("Duo")
     repo_id, revision = model_path, None
     if "@" in model_path and not os.path.isdir(model_path):
         repo_id, _, pinned = model_path.partition("@")
