@@ -79,7 +79,7 @@ More running requests on two GPUs, transcribing held-out clips with the load equ
 
 Usage notes:
 
-- Verifying on the Kimi delta attention layers keeps one state per proposed token per running request, about 4.9 GB per GPU for the draft at 8 requests. Where a table says the server does not start, it stops at startup with `Loaded weights leave no GPU memory for the KV cache`, and raising `mem_fraction_static` does not help.
+- Verifying on the Kimi delta attention layers records each proposed token's inputs in a ring buffer and folds the accepted prefix into the state (`--thinker.engine.enable_linear_replayssm_spec`, on by default with the draft). The speed tables above predate this change: where a row says the server does not start, keeping a full state per proposed token (~4.9 GB per GPU at 8 requests) left no GPU memory for the KV cache.
 - On four GPUs (`--thinker.tp_size 4`) the draft starts with 32 running requests and served 18.33 held-out clips/s, against 16.13 with MTP and 13.96 without a draft at the same cap.
 - SeedTTS English WER is 1.227% and Chinese CER 0.747% with the draft, against 1.219% and 0.741% without it. One at a time, MTP output is identical to the server without a draft; the draft's is identical on 81 of 84 held-out transcripts and differs more on long answers. At 8 at a time, both agree with the server without a draft on 263-264 of 280 transcripts, because greedy decoding on this thinker depends on the batch.
 - The draft decodes synchronously. Keep `repetition_penalty=1`. The draft rejects a request `seed` when sampling; greedy and one-token requests still accept a seed. Standalone speech synthesis is unaffected.
