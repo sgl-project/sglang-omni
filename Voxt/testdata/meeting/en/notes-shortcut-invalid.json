@@ -1,0 +1,116 @@
+{
+  "name": "notes-shortcut-invalid",
+  "kind": "notes",
+  "notes": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "count_label": "2 notes",
+    "rows": [
+      {
+        "id": "note-2",
+        "text": "call Ana",
+        "time_text": "1 hour ago",
+        "app_name": "Slack",
+        "copy_text": "Copy: call Ana",
+        "edit_text": "Edit call Ana",
+        "delete_text": "Delete call Ana"
+      },
+      {
+        "id": "note-1",
+        "text": "buy milk",
+        "time_text": "2 hours ago",
+        "app_name": "",
+        "copy_text": "Copy: buy milk",
+        "edit_text": "Edit buy milk",
+        "delete_text": "Delete buy milk"
+      }
+    ],
+    "edit": {
+      "id": "",
+      "draft": "",
+      "saving": false
+    },
+    "shortcut": {
+      "keys": "NotAKey",
+      "current_text": "NotAKey",
+      "options": [
+        {
+          "label": "Off",
+          "keys": ""
+        },
+        {
+          "label": "Right ⌥",
+          "keys": "RightOption"
+        },
+        {
+          "label": "Right ⌥ ⇧",
+          "keys": "RightOption+Shift"
+        },
+        {
+          "label": "⌃ Right ⌥",
+          "keys": "Control+RightOption"
+        },
+        {
+          "label": "Right ⌘",
+          "keys": "RightCommand"
+        },
+        {
+          "label": "Right ⇧",
+          "keys": "RightShift"
+        },
+        {
+          "label": "fn",
+          "keys": "Fn"
+        },
+        {
+          "label": "fn ⇧",
+          "keys": "Fn+Shift"
+        },
+        {
+          "label": "fn ⌃",
+          "keys": "Fn+Control"
+        },
+        {
+          "label": "⌥Space",
+          "keys": "Option+Space"
+        },
+        {
+          "label": "⌃⌥Space",
+          "keys": "Control+Option+Space"
+        },
+        {
+          "label": "NotAKey",
+          "keys": "NotAKey"
+        },
+        {
+          "label": "Custom…",
+          "keys": ""
+        }
+      ],
+      "problems": [
+        "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5."
+      ],
+      "problem_codes": [
+        "invalid"
+      ],
+      "system_codes": null,
+      "used_by": null,
+      "empty_hint": "Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.",
+      "set_hint": false,
+      "helper_records": false,
+      "selection": "NotAKey",
+      "custom": false,
+      "typing": false,
+      "edited": false,
+      "text": "NotAKey",
+      "editing_text": "NotAKey",
+      "parsed_keys": "RightCommand",
+      "parse_error": "",
+      "parse_code": "",
+      "edited_hint": "",
+      "record_denied": false,
+      "unknown": false
+    }
+  }
+}

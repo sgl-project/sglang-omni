@@ -26,6 +26,21 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
+func TestCardRedoKeepsScrollKeyWhenWritingStarts(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
+	card := &sessionCardViewState{ID: "old-card", Blocks: []sessionCardBlock{{Kind: sessionCardBody, Text: "old answer"}}}
+	tester := ui.NewTester(func(context *ui.Context) { cardBody(context, "redo-session", card, 120, a, local, nil) }, 400, 300)
+	frames(tester)
+	card.Writing = true
+	card.Live[0] = sessionCardWritingBlock("new answer", store.KindRewrite)
+	card.LiveCount = 1
+	frames(tester)
+	if local.Overlay.cardScrollKey != "old-card/redo-session" {
+		t.Fatalf("redo changed scroll key to %q", local.Overlay.cardScrollKey)
+	}
+}
+
 // cardLong is a translation longer than the card's 220 of text.
 var cardLong = strings.Repeat("goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。", 12)
 
@@ -144,6 +159,13 @@ func cardSteps() []cardStep {
 				Title: "Running late", Result: "Sorry, I am running about ten minutes late: please start without me.", LLM: session.Model{ID: "deepseek"}})
 			a.answer.think = &llm.Thinking{Mode: llm.ThinkOff}
 		}, body: -1, insert: true, copy: true, followUp: true, think: true},
+		{name: "transcribe-dictionary", apply: func(a *app) {
+			a.closeAnswer()
+			const result = "Voxt uses SGLang."
+			snap(a, session.Snapshot{ID: "d1", Kind: store.KindTranscribe, State: session.Recording})
+			snap(a, session.Snapshot{ID: "d1", Kind: store.KindTranscribe, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+				Result: result, Highlights: testDictionaryHighlights(result)})
+		}, insert: true, copy: true},
 	}
 }
 
@@ -161,11 +183,11 @@ func TestAnswerCardStates(t *testing.T) {
 			for _, st := range cardSteps() {
 				st.apply(a)
 				a.overlaySync()
-				v := a.cardNow()
+				v := a.cachedCard()
 				if a.ov.mode != ovAnswer || !a.ov.shown || a.ov.passThrough || a.ov.w != layout.AnswerW {
 					t.Fatalf("%s: %s shown %v pass %v %d wide", st.name, a.ov.mode, a.ov.shown, a.ov.passThrough, a.ov.w)
 				}
-				body, _ := a.cardBodyHeight(v)
+				body, _ := a.cardBodyHeight(&v)
 				_, line := guessText(ovSized{"x", layout.CardTextSize, layout.CardTextWeight, layout.CardBodyW})
 				switch st.body {
 				case 0:
@@ -185,11 +207,11 @@ func TestAnswerCardStates(t *testing.T) {
 				if st.msg {
 					want += layout.CardMsgGap + layout.CardMsgH
 				}
-				if a.ov.h != want || (v.msg != "") != st.msg {
-					t.Errorf("%s: %d high, want %d (line %q)", st.name, a.ov.h, want, v.msg)
+				if a.ov.h != want || (v.Message != "") != st.msg {
+					t.Errorf("%s: %d high, want %d (line %q)", st.name, a.ov.h, want, v.Message)
 				}
 				anchored(t, st.name, a.prefs.Overlay, a.ov.frame)
-				got := []bool{v.canInsert, v.canCopy, v.canFollowUp, v.canStop, v.canRetry, v.canLang, v.busy, v.conversation, v.thinks}
+				got := []bool{v.CanInsert, v.CanCopy, v.CanFollowUp, v.CanStop, v.CanRetry, v.CanLanguage, v.Busy, v.Conversation, v.ShowThinking}
 				exp := []bool{st.insert, st.copy, st.followUp, st.stop, st.retry, st.lang, st.busy, st.convo, st.think}
 				for i := range got {
 					if got[i] != exp[i] {
@@ -199,6 +221,93 @@ func TestAnswerCardStates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAnswerCardMarkdown (#4119): a Rewrite answer's Markdown shows in
+// the card as read, not as its source: no **, ##, backticks or $$, the
+// words and the math's TeX there, while it streams and in a
+// conversation's answer bubbles (the user's own bubble stays raw). A
+// Translate card keeps its text plain, as it goes in verbatim.
+func TestAnswerCardMarkdown(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	rw := func(st session.State, result, draft string) session.Snapshot {
+		return session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: st, Card: true, Delivery: deliver.ReasonCard,
+			Raw: "sum up the plan", Title: "The plan", Result: result, Draft: draft}
+	}
+	snap(a, rw(session.Recording, "", ""))
+	snap(a, rw(session.Done, "## Release\n\n**First** we ship, then we rest.\n\n- one\n- two\n\n$$\nx^2+y\n$$\n\nRun `go test`.", ""))
+	a.overlaySync()
+	tt := cardTester(t, a)
+	frames(tt)
+	for _, s := range tt.Texts() {
+		if strings.Contains(s, "**") || strings.Contains(s, "##") || strings.Contains(s, "`") || strings.Contains(s, "$$") {
+			t.Errorf("the card shows Markdown's source: %q", s)
+		}
+	}
+	for _, want := range []string{"Release", "First", "one", "two", "x^2+y", "go test"} {
+		if !tt.HasText(want) {
+			t.Errorf("no %q in the card (%q)", want, tt.Texts())
+		}
+	}
+
+	// The answer streaming in heals its half-written Markdown.
+	a.closeAnswer()
+	snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Composing, Card: true,
+		Draft: "**Bold** and **half"})
+	a.overlaySync()
+	frames(tt)
+	for _, s := range tt.Texts() {
+		if strings.Contains(s, "**") {
+			t.Errorf("the streaming card shows Markdown's source: %q", s)
+		}
+	}
+	if !tt.HasText("Bold") || !tt.HasText("half") {
+		t.Errorf("the streaming answer lost words (%q)", tt.Texts())
+	}
+
+	// A conversation: the answers render, what the user said stays raw.
+	snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+		Raw: "**Bold** and **half", Title: "Late", Result: "**Bold** and half"})
+	a.followUp, a.answer.conversation = "r2", true
+	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Recording})
+	snap(a, session.Snapshot{ID: "r3", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+		Raw: "make it **shorter**", Title: "Shorter", Result: "## Short\n\nBold half"})
+	a.overlaySync()
+	frames(tt)
+	for _, s := range tt.Texts() {
+		if strings.Contains(s, "##") {
+			t.Errorf("a conversation's answer shows Markdown's source: %q", s)
+		}
+	}
+	if !tt.HasText("Short") {
+		t.Errorf("the follow-up's answer did not render (%q)", tt.Texts())
+	}
+	if !tt.HasText("**shorter**") {
+		t.Errorf("the user's own words lost their text (%q)", tt.Texts())
+	}
+
+	// A Translate card's text stays plain: it goes in verbatim.
+	a.closeAnswer()
+	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Recording})
+	snap(a, session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Done, Card: true, Delivery: deliver.ReasonCard,
+		TargetLanguage: "zh-Hans", Result: "**not bold**"})
+	a.overlaySync()
+	frames(tt)
+	if !tt.HasText("**not bold**") {
+		t.Errorf("the translation's text changed (%q)", tt.Texts())
+	}
+
+	// A long Markdown answer scrolls, as a long plain one does.
+	a.closeAnswer()
+	snap(a, rw(session.Recording, "", ""))
+	long := rw(session.Done, strings.Repeat("## 段落\n\n**加粗** 一段改写的回答，带列表和标题。\n\n- 一项\n", 20), "")
+	long.ID = "r4"
+	snap(a, long)
+	a.overlaySync()
+	frames(tt)
+	if body, _ := a.cardBodyHeight(a.cachedCardRef()); body != layout.CardBodyMax {
+		t.Errorf("a long Markdown answer is %d high, not %d", body, layout.CardBodyMax)
 	}
 }
 
@@ -214,8 +323,8 @@ func TestAnswerCardInk(t *testing.T) {
 		st.apply(a)
 		a.overlaySync()
 		img := renderOverlay(t, a)
-		v := a.cardNow()
-		k, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, v))
+		v := a.cachedCard()
+		k, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, &v))
 		for _, b := range bad {
 			t.Errorf("%s: %s", st.name, b)
 		}
@@ -223,8 +332,8 @@ func TestAnswerCardInk(t *testing.T) {
 		if st.body == 0 && !st.msg && a.ov.h > layout.CardChrome+24 {
 			t.Errorf("%s: one line of text, the card %d high", st.name, a.ov.h)
 		}
-		if scrolls := a.ov.cardScroll.MaxY > 0; scrolls != (st.body == layout.CardBodyMax) && !v.conversation {
-			t.Errorf("%s: scrolls %v (%v)", st.name, scrolls, a.ov.cardScroll.MaxY)
+		if scrolls := a.ov.ui.cardScroll.MaxY > 0; scrolls != (st.body == layout.CardBodyMax) && !v.Conversation {
+			t.Errorf("%s: scrolls %v (%v)", st.name, scrolls, a.ov.ui.cardScroll.MaxY)
 		}
 		if dir := os.Getenv("VOXTNEW_INK"); dir != "" {
 			var b bytes.Buffer
@@ -258,8 +367,8 @@ func TestAnswerCardInteraction(t *testing.T) {
 	// so); the card does not move.
 	card := a.ov.frame
 	click(t, tt, "Translate into")
-	if !a.answer.langOpen || !a.ov.lang.shown || a.ov.frame != card {
-		t.Fatalf("menu: open %v shown %v, card %+v (was %+v)", a.answer.langOpen, a.ov.lang.shown, a.ov.frame, card)
+	if !a.answer.ui.langOpen || !a.ov.lang.shown || a.ov.frame != card {
+		t.Fatalf("menu: open %v shown %v, card %+v (was %+v)", a.answer.ui.langOpen, a.ov.lang.shown, a.ov.frame, card)
 	}
 	mt := hudTester(a.langMenuView, a.ov.lang.frame.Width, a.ov.lang.frame.Height)
 	frames(mt)
@@ -272,7 +381,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 		t.Fatal(err)
 	}
 	frames(mt)
-	if a.answer.langOpen || a.ov.lang.shown || a.answer.msg != "No language model is set up." || a.answer.lang != "zh-Hans" || !a.answer.open || a.ov.frame.Y+a.ov.frame.Height != card.Y+card.Height {
+	if a.answer.ui.langOpen || a.ov.lang.shown || a.answer.msg != "No language model is set up." || a.answer.lang != "zh-Hans" || !a.answer.open || a.ov.frame.Y+a.ov.frame.Height != card.Y+card.Height {
 		t.Errorf("another language: %+v, menu %v", a.answer, a.ov.lang.shown)
 	}
 	// Escape closes the menu, not the card.
@@ -280,8 +389,8 @@ func TestAnswerCardInteraction(t *testing.T) {
 	a.overlaySync()
 	click(t, tt, "Translate into")
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
-	if a.answer.langOpen || a.ov.lang.shown || !a.answer.open {
-		t.Errorf("Escape on the menu: open %v, card %v", a.answer.langOpen, a.answer.open)
+	if a.answer.ui.langOpen || a.ov.lang.shown || !a.answer.open {
+		t.Errorf("Escape on the menu: open %v, card %v", a.answer.ui.langOpen, a.answer.open)
 	}
 	// Copy: the mark, then Copy again.
 	click(t, tt, "Copy")
@@ -318,7 +427,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	if !a.answer.open || a.ov.mode != ovAnswer || a.followUp != "" || a.answer.text == "" {
 		t.Errorf("escape on a follow-up: %s %+v", a.ov.mode, a.answer)
 	}
-	if v := a.cardNow(); !v.conversation || !v.canFollowUp || len(v.bubbles) != 2 {
+	if v := a.cachedCard(); !v.Conversation || !v.CanFollowUp || len(cardBubblesForTest(v)) != 2 {
 		t.Errorf("after the cancel %+v", v)
 	}
 	// An answer's bubble shows Copy under the pointer.
@@ -336,11 +445,11 @@ func TestAnswerCardInteraction(t *testing.T) {
 	// Its Copy: 8 from the bubble's top right corner, 22 high.
 	tt.ClickAt(title.X-layout.BubblePadX+layout.BubbleW-8-10, title.Y-layout.BubblePadY+8+11)
 	frames(tt)
-	if tt.Clipboard() != "Running late\n\nSorry, I am running about ten minutes late: please start without me." || a.ov.bubbleCopied == "" {
+	if tt.Clipboard() != "Running late\n\nSorry, I am running about ten minutes late: please start without me." || a.ov.ui.bubbleCopied == "" {
 		t.Errorf("bubble copied %q", tt.Clipboard())
 	}
 	ft.advance(bubbleMark)
-	if a.ov.bubbleCopied != "" {
+	if a.ov.ui.bubbleCopied != "" {
 		t.Error("the bubble's mark stays")
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
@@ -364,10 +473,10 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 	for _, tc := range inputs {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
-			v := cardView{conversation: true, size: layout.CardSizes[0], bubbles: []cardBubble{{user: true, title: "You", text: tc.text}}}
-			block := cardBlocks(v)[0]
+			card := &sessionCardViewState{Conversation: true, Blocks: []sessionCardBlock{{Kind: sessionCardBubble, User: true, Title: "You", Text: tc.text}}}
+			local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
 			tt := hudTester(func(c *ui.Context) {
-				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { a.cardBlockView(c, block) })
+				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { cardBlockView(c, "", card, card.Blocks[0], 0, a, local, nil) })
 			}, layout.AnswerW, 500)
 			frames(tt)
 			title, ok := tt.Find("You")
@@ -397,9 +506,9 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 				turns: []compose.Turn{{Instruction: tc.text, Answer: compose.Answer{Content: "Done."}}}}
 			a.overlaySync()
 			renderOverlay(t, a)
-			body, _ := a.cardBodyHeight(a.cardNow())
-			if body != layout.CardBodyMax || a.ov.cardScroll.MaxY <= 0 {
-				t.Errorf("long input body %d high, scroll limit %v", body, a.ov.cardScroll.MaxY)
+			body, _ := a.cardBodyHeight(a.cachedCardRef())
+			if body != layout.CardBodyMax || a.ov.ui.cardScroll.MaxY <= 0 {
+				t.Errorf("long input body %d high, scroll limit %v", body, a.ov.ui.cardScroll.MaxY)
 			}
 		})
 	}
@@ -485,13 +594,13 @@ func TestLanguageMenuPlace(t *testing.T) {
 			}
 			// Another app in front: it goes; the card stays.
 			a.helperNotified(appActivated(proto.App{PID: 9, BundleID: "com.apple.Notes", Name: "Notes"}))
-			if a.ov.lang.shown || a.answer.langOpen || !a.answer.open {
+			if a.ov.lang.shown || a.answer.ui.langOpen || !a.answer.open {
 				t.Errorf("another app: menu %v", a.ov.lang.shown)
 			}
 			// The card going takes it.
 			a.toggleLangMenu()
 			a.closeAnswer()
-			if a.ov.lang.shown || a.answer.langOpen {
+			if a.ov.lang.shown || a.answer.ui.langOpen {
 				t.Error("the menu stays without the card")
 			}
 		})
@@ -600,7 +709,7 @@ func TestCardSizes(t *testing.T) {
 		size layout.CardSize
 	}{{store.KindRewrite, layout.CardSizes[2]}, {store.KindTranslate, layout.CardSizes[0]}} {
 		a.answer = answerCard{open: true, kind: c.kind, text: long}
-		want := layout.CardChrome + a.cardBodyMax(a.cardNow())
+		want := layout.CardChrome + a.cardBodyMax(a.cachedCardRef())
 		if w, h, _ := a.cardSize(); w != c.size.W || h != want {
 			t.Errorf("%s: %d×%d, want %d×%d", c.kind, w, h, c.size.W, want)
 		}
@@ -609,7 +718,7 @@ func TestCardSizes(t *testing.T) {
 	a.answer = answerCard{open: true, kind: store.KindRewrite, text: long}
 	a.overlaySync()
 	img := renderOverlay(t, a)
-	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cardNow())); len(bad) > 0 || a.ov.w != layout.CardSizes[2].W {
+	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cachedCardRef())); len(bad) > 0 || a.ov.w != layout.CardSizes[2].W {
 		t.Errorf("the large card, %d wide: %v", a.ov.w, bad)
 	}
 	if dir := os.Getenv("VOXTNEW_INK"); dir != "" {

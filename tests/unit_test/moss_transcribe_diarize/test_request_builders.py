@@ -469,10 +469,8 @@ def test_request_builder_scales_default_output_budget_with_duration() -> None:
     assert data.req.sampling_params.max_new_tokens == expected
 
 
-def test_default_budget_leaves_a_draft_its_reserve_at_the_context_limit() -> None:
-    """Audio long enough to fill the context failed under a draft: the scheduler clamped
-    the default budget to the remaining context, then refused it for the draft's reserve.
-    """
+def test_every_budget_leaves_a_draft_its_reserve_at_the_context_limit() -> None:
+    """A budget past the context failed under a draft, while the server without one clamps it: the scheduler clamped it to the remaining context, then refused it for the draft's reserve. That hit audio long enough to fill the context with the default budget, and any client max_new_tokens past the context."""
     processor = FakeProcessor()
     audio = {"audios": [wav_bytes(num_samples=16000 * 60)]}
     prompt_length = len(
@@ -488,12 +486,16 @@ def test_default_budget_leaves_a_draft_its_reserve_at_the_context_limit() -> Non
     )
 
     default_budget = request_builder(payload_with_inputs(audio)).req.sampling_params
-    client_budget = request_builder(
+    oversized_client_budget = request_builder(
         payload_with_inputs(audio, params={"max_new_tokens": 500})
+    ).req.sampling_params
+    fitting_client_budget = request_builder(
+        payload_with_inputs(audio, params={"max_new_tokens": 100})
     ).req.sampling_params
 
     assert default_budget.max_new_tokens == remaining_tokens - 1 - 16
-    assert client_budget.max_new_tokens == 500
+    assert oversized_client_budget.max_new_tokens == remaining_tokens - 1 - 16
+    assert fitting_client_budget.max_new_tokens == 100
 
 
 def test_request_builder_explicit_max_new_tokens_beats_duration_budget() -> None:

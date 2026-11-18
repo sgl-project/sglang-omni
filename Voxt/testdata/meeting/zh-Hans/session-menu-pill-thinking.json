@@ -1,0 +1,190 @@
+{
+  "name": "session-menu-pill-thinking",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot21",
+    "state": "composing",
+    "mode": "working",
+    "pill": {
+      "kind": "transcribe",
+      "title": "转录",
+      "working_label": "整理中…",
+      "live_text": "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划",
+      "elapsed_text": "0:00",
+      "thinking_label": "思考强度：已关闭",
+      "skip_label": "用识别原文",
+      "skip_tooltip": "不等语言模型，直接插入识别原文",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": true,
+      "can_think": true
+    },
+    "menu": {
+      "kind": "pill-thinking",
+      "label": "思考强度",
+      "options": [
+        {
+          "thinking": {},
+          "label": "默认",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "none"
+          },
+          "label": "无",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "minimal"
+          },
+          "label": "极低",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "low"
+          },
+          "label": "低",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "medium"
+          },
+          "label": "中",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "high"
+          },
+          "label": "高",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "xhigh"
+          },
+          "label": "超高",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "max"
+          },
+          "label": "最高",
+          "selected": false
+        }
+      ],
+      "selected_index": -1
+    }
+  },
+  "session_ui": {
+    "menu": "pill-thinking",
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    },
+    "pill_thinking_menu": {
+      "kind": "pill-thinking",
+      "label": "思考强度",
+      "options": [
+        {
+          "thinking": {},
+          "label": "默认",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "none"
+          },
+          "label": "无",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "minimal"
+          },
+          "label": "极低",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "low"
+          },
+          "label": "低",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "medium"
+          },
+          "label": "中",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "high"
+          },
+          "label": "高",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "xhigh"
+          },
+          "label": "超高",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "max"
+          },
+          "label": "最高",
+          "selected": false
+        }
+      ],
+      "selected_index": -1
+    }
+  }
+}

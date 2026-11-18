@@ -1,0 +1,49 @@
+{
+  "name": "overlay-lines-start",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot13",
+    "state": "recording",
+    "mode": "recording",
+    "pill": {
+      "kind": "",
+      "title": "Transcribe",
+      "working_label": "Recognising…",
+      "elapsed_text": "0:01",
+      "levels": [
+        0.35,
+        0.493827662,
+        0.602441295,
+        0.649248496,
+        0.622789228,
+        0.529541643,
+        0.392336002,
+        0.244765032,
+        0.122959251,
+        0.056740965,
+        0.062322718,
+        0.138337902,
+        0.266175351,
+        0.414535996,
+        0.54709598,
+        0.631399993
+      ],
+      "heard": true,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}

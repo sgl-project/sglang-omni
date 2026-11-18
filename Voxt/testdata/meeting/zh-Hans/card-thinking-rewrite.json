@@ -1,0 +1,181 @@
+{
+  "name": "card-thinking-rewrite",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 20,
+    "session_id": "r5",
+    "state": "done",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "r5",
+      "kind": "rewrite",
+      "title": "Running late",
+      "target_name": "Slack",
+      "thinking": {
+        "mode": "off"
+      },
+      "thinking_label": "思考强度：已关闭",
+      "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
+      "insert_tooltip": "插入到 Slack",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "answer",
+          "kind": "body",
+          "turn": 0,
+          "text": "Sorry, I am running about ten minutes late: please start without me.",
+          "selectable": true,
+          "markdown": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": false,
+      "failed": false,
+      "copied": false,
+      "heard": false,
+      "can_insert": true,
+      "can_copy": true,
+      "can_follow_up": true,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": false,
+      "show_thinking": true,
+      "can_think": true
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    },
+    "card_thinking_menu": {
+      "kind": "card-thinking",
+      "label": "思考强度",
+      "options": [
+        {
+          "thinking": {},
+          "label": "默认",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "off"
+          },
+          "label": "已关闭",
+          "selected": true
+        },
+        {
+          "thinking": {
+            "mode": "on"
+          },
+          "label": "已开启",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "none"
+          },
+          "label": "无",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "low"
+          },
+          "label": "低",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "high"
+          },
+          "label": "高",
+          "selected": false
+        },
+        {
+          "thinking": {
+            "mode": "effort",
+            "effort": "max"
+          },
+          "label": "最高",
+          "selected": false
+        }
+      ],
+      "selected_index": 1
+    }
+  }
+}
