@@ -102,8 +102,9 @@ func (r *run) readSelection() string {
 			// The copy fallback returns the newly selected image before it
 			// restores the clipboard, never an earlier copied image.
 			r.clip = res.Image
-		case !r.settings.Privacy.SendClipboardImageWithSelection:
-			// Text takes the text path by default, including on follow-ups.
+		case trimmed == "[Image]" || !r.settings.Privacy.SendClipboardImageWithSelection:
+			// Text takes the text path by default. A placeholder without a
+			// newly decoded image never revives the earlier clipboard image.
 			r.clip = nil
 		}
 	}

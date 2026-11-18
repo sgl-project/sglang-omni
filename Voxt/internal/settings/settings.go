@@ -24,7 +24,7 @@ import (
 
 // Version is the schema version Defaults writes. Bump it when a field's
 // meaning changes, and migrate older documents in Migrate.
-const Version = 4
+const Version = 5
 
 // Settings is the whole document.
 type Settings struct {
@@ -405,7 +405,7 @@ func Migrate(data []byte) (Settings, error) {
 	migrateShowCard(data, &s.Features)
 	migrateSoundPreset(&s.Audio)
 	migrateOptionsJSON(data, &s.Providers)
-	if s.Version < 4 {
+	if s.Version < 5 {
 		var document struct {
 			Privacy map[string]json.RawMessage `json:"privacy"`
 		}

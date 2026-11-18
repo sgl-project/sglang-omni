@@ -67,6 +67,7 @@ func TestClipboardImageEndToEnd(t *testing.T) {
 		{name: "a fresh selection stays out", opts: ",clipboard-image", sel: selection, on: true},
 		{name: "a copied image placeholder returns the new image", opts: ",clipboard-image,copy-selection-image", sel: "[Image]", viaCopy: true, on: true, want: helpertest.Shot(812)},
 		{name: "literal placeholder text through copy stays text", opts: ",clipboard-image", sel: "[Image]", viaCopy: true, on: true},
+		{name: "undecodable placeholder text stays text with text and image on", opts: ",clipboard-image", sel: "[Image]", viaCopy: true, on: true, both: true},
 		{name: "deliberate text and image sends both", opts: ",clipboard-image", sel: selection, on: true, both: true, want: helpertest.ClipImage},
 		{name: "privacy off drops an image placeholder", opts: ",clipboard-image,copy-selection-image", sel: "[Image]", viaCopy: true},
 		{name: "privacy off drops mixed content even with text and image on", opts: ",clipboard-image,copy-selection-image", sel: "caption [Image]", viaCopy: true, both: true},

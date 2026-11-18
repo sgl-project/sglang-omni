@@ -106,6 +106,7 @@ func TestClipboardImage(t *testing.T) {
 		{name: "a copied image placeholder sends the newly copied image", kind: store.KindRewrite, on: true, copyText: "[Image]", copiedImage: selected, pic: clip, want: selected, wantReadClip: true},
 		{name: "literal placeholder text through Accessibility sends no picture", kind: store.KindRewrite, on: true, selection: "[Image]", pic: clip, wantReadClip: true},
 		{name: "literal placeholder text through copy sends no picture", kind: store.KindRewrite, on: true, copyText: "[Image]", pic: clip, wantReadClip: true},
+		{name: "undecodable placeholder text sends no earlier picture", kind: store.KindRewrite, on: true, copyText: "[Image]", withSelection: true, pic: clip, wantReadClip: true},
 		{name: "deliberate text and image sends the copied image", kind: store.KindRewrite, on: true, selection: "chart caption", withSelection: true, pic: clip, want: clip, wantReadClip: true},
 		{name: "newly copied text and image prefers the new image", kind: store.KindRewrite, on: true, copyText: "caption [Image]", copiedImage: selected, withSelection: true, pic: clip, want: selected, wantReadClip: true},
 		{name: "privacy off drops an image placeholder", kind: store.KindRewrite, copyText: "[Image]", copiedImage: selected, pic: clip, wantReadClip: false},

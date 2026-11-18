@@ -155,12 +155,27 @@ func TestMigrateClipboardImageWithSelection(t *testing.T) {
 	if !legacy.Privacy.SendClipboardImageWithSelection {
 		t.Error("an older document lost selected text plus copied image")
 	}
+	versionFour, err := Migrate([]byte(`{"version":4,"privacy":{"sendClipboardImage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !versionFour.Privacy.SendClipboardImageWithSelection {
+		t.Error("a version-4 document without the new key lost selected text plus copied image")
+	}
 	explicit, err := Migrate([]byte(`{"version":1,"privacy":{"sendClipboardImageWithSelection":false}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if explicit.Privacy.SendClipboardImageWithSelection {
 		t.Error("an explicit text-only choice was not preserved")
+	}
+	raw, _ := json.Marshal(explicit)
+	reloaded, err := Migrate(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Privacy.SendClipboardImageWithSelection {
+		t.Error("an explicit text-only choice did not survive a save and reload")
 	}
 	unrelated, err := Migrate([]byte(`{"version":1,"privacy":{"notes":"sendClipboardImageWithSelection"}}`))
 	if err != nil {
