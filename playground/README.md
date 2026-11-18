@@ -7,7 +7,7 @@ Browser playgrounds for SGLang-Omni.
 | `realtime/` | Native full-duplex audio/video (MiniCPM-o validated). | HTML / CSS / JS |
 | `qwen-omni/` | Qwen3-Omni — multimodal chat (text / audio / image / video). | HTML / CSS / JS |
 | `s2pro/` | S2 Pro — text-to-speech with voice cloning, streaming and non-streaming. | Gradio |
-| [duo/](duo/) | Duo — streaming video and speech with a reference portrait. | HTML / CSS / JS |
+| `duo/` | Duo — streaming video and speech with a reference portrait. | HTML / CSS / JS |
 | `higgs/` | Higgs Audio v3 — multilingual TTS with inline control tokens (emotion / style / sfx / prosody) and streaming. | HTML / CSS / JS |
 
 Each `start.sh` launches the backend, waits for `/health`, then launches the
@@ -37,6 +37,46 @@ SGLANG_OMNI_API_BASE=http://localhost:8000 \
 Open <http://localhost:7860> — backend at <http://localhost:8000>.
 
 Override ports with `--port` (backend) and `--playground-port` (UI).
+
+## Duo realtime video and speech
+
+Use the Duo-enabled Omni environment with the matching SGLang Diffusion components and eight CUDA GPUs. From the repository root, set these local paths in each terminal:
+
+```bash
+export DUO_MODEL_DIR="$PWD/models"
+export DUO_ASSET_DIR="$PWD/assets"
+export DUO_MODEL_SOURCE=/path/to/Duo/third_party/duo
+export PYTHONPATH="$DUO_MODEL_SOURCE${PYTHONPATH:+:$PYTHONPATH}"
+```
+
+For a first deployment, place the `Duo-1.0-causal-base` and `Duo-1.0-distill` releases under `$DUO_MODEL_DIR`, then prepare the codec, realization and merged intent weights once:
+
+```bash
+export DUO_CODEC_CONFIG_DIR=/path/to/Duo/duo/models/realization/modules/native_vae
+./playground/duo/sgl-omni-duo prepare
+./playground/duo/sgl-omni-duo merge
+```
+
+Start the two backend services in separate terminals and leave them running:
+
+```bash
+# Terminal 1: Qwen3-ASR on localhost:18084
+./playground/duo/sgl-omni-duo asr
+```
+
+```bash
+# Terminal 2: Duo /v1/realtime on localhost:18082
+./playground/duo/sgl-omni-duo backend
+```
+
+Once the backend is ready, start the browser gateway in a third terminal. Supply `portraits/seaside/portrait.jpg` under `$DUO_ASSET_DIR`, along with `sample/frames/*.jpg` (24 FPS), `sample/audio.pcm` (aligned 16 kHz mono PCM16) and `sample/example.mp4`. Use a clip with speech to try a spoken exchange.
+
+```bash
+# Terminal 3: check backend readiness, then launch the frontend
+curl -fsS http://127.0.0.1:18082/duo/configuration && ./playground/duo/sgl-omni-duo web
+```
+
+Open <http://localhost:18081>. For a remote GPU host, forward the frontend port with `ssh -L 18081:127.0.0.1:18081 user@host`. When using the installed CUDA wheel, use `sgl-omni-duo` in place of `./playground/duo/sgl-omni-duo`.
 
 ## S2 Pro TTS
 
