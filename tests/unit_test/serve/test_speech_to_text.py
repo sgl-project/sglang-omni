@@ -212,6 +212,23 @@ def test_av_duration_measures_the_audio_track_of_a_longer_video() -> None:
     )
 
 
+def test_av_duration_falls_back_to_the_container_without_a_track_duration() -> None:
+    audio_seconds, sample_rate_hz = 3, 48000
+    webm_buffer = io.BytesIO()
+    with av.open(webm_buffer, mode="w", format="webm") as container:
+        audio_stream = container.add_stream("libopus", rate=sample_rate_hz)
+        audio_stream.layout = "mono"
+        silence = np.zeros((1, audio_seconds * sample_rate_hz), dtype=np.float32)
+        audio_frame = av.AudioFrame.from_ndarray(silence, format="fltp", layout="mono")
+        audio_frame.sample_rate, audio_frame.pts = sample_rate_hz, 0
+        container.mux(audio_stream.encode(audio_frame))
+        container.mux(audio_stream.encode())
+
+    assert speech_to_text.av_duration(webm_buffer.getvalue()) == pytest.approx(
+        audio_seconds, abs=0.1
+    )
+
+
 def test_probe_keeps_estimated_containers_on_av(monkeypatch) -> None:
     import soundfile
 
