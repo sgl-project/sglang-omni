@@ -11,10 +11,12 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/dflash_draft.h"
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/tokenizer.h"
 #include "common/transcription.h"
-#include "qwen3_asr/dflash_draft.h"
+#include "common/worker.h"
 #include "qwen3_asr/qwen3_asr_model.h"
 
 namespace qwen3_asr {
@@ -66,9 +68,9 @@ struct RefreshReuse {
   // The prompt's tokens before the audio.
   std::vector<int> head_ids;
   // Keys and values of head_ids and audio_rows.
-  std::vector<KVCache> caches;
+  std::vector<omni_common::KVCache> caches;
   // The draft's context over them; empty without the draft.
-  std::vector<KVCache> draft_caches;
+  std::vector<omni_common::KVCache> draft_caches;
 };
 
 struct BatchRequest {
@@ -91,7 +93,8 @@ public:
       const std::filesystem::path &model_directory,
       const std::filesystem::path &draft_directory = {},
       int draft_quantization_bits = 0,
-      DraftPolicy draft_policy = DraftPolicy::kAdaptive);
+      omni_common::DraftPolicy draft_policy =
+          omni_common::DraftPolicy::kAdaptive);
 
   std::vector<int> PromptIds(int audio_token_count,
                              const TranscriptionOptions &options) const;
@@ -146,14 +149,14 @@ private:
   omni_common::TranscriptionResult FinishedResult(
       const std::vector<int> &output_ids, const TranscriptionOptions &options,
       omni_common::FinishReason finish_reason, bool stopped_on_token_loop,
-      const DraftStatistics &draft_statistics = {}) const;
+      const omni_common::DraftStatistics &draft_statistics = {}) const;
 
   struct BatchRow;
   // Prefills every request; one that fails is reported finished with its
   // error and gets no row.
   std::vector<BatchRow> PrefillRows(const std::vector<BatchRequest> &requests,
                                     const BatchFinished &on_finished) const;
-  static std::vector<BatchedKVCache>
+  static std::vector<omni_common::BatchedKVCache>
   StackCaches(const std::vector<BatchRow> &rows);
   // Decodes the rows together until each has finished or been cancelled,
   // reporting each as it does.
@@ -174,12 +177,12 @@ private:
   int end_of_text_id_;
   int im_end_id_;
   std::vector<int> asr_text_ids_;
-  std::optional<DFlashDraft> draft_;
-  DraftPolicy draft_policy_;
+  std::optional<omni_common::DFlashDraft> draft_;
+  omni_common::DraftPolicy draft_policy_;
 };
 
 // One request the worker may decode together with others. Called alone it
-// transcribes serially; the worker finds it through
+// transcribes serially; BatchableTranscriptionRunner finds it through
 // std::function::target<BatchableTranscription>().
 struct BatchableTranscription {
   const Qwen3ASRTranscriber *transcriber;
@@ -191,5 +194,9 @@ struct BatchableTranscription {
     return transcriber->Transcribe(samples, options, cancel);
   }
 };
+
+// The worker's batching of consecutive BatchableTranscription requests,
+// decoded together by their transcriber's TranscribeBatch.
+omni_server::BatchRunner BatchableTranscriptionRunner();
 
 } // namespace qwen3_asr

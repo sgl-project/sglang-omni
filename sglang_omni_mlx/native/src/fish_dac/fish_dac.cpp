@@ -317,10 +317,9 @@ mx::array AudioCodec::TransformerLayer(
                                      prefix + ".attention_layer_scale.gamma")));
   const mx::array normed =
       TransformerNorm(hidden, checkpoint_.Weight(prefix + ".ffn_norm.weight"));
-  const mx::array gated = mx::multiply(
-      omni_common::Silu(
-          mx::matmul(normed, mx::transpose(checkpoint_.Weight(
-                                 prefix + ".feed_forward.w1.weight")))),
+  const mx::array gated = omni_common::Swiglu(
+      mx::matmul(normed, mx::transpose(checkpoint_.Weight(
+                             prefix + ".feed_forward.w1.weight"))),
       mx::matmul(normed, mx::transpose(checkpoint_.Weight(
                              prefix + ".feed_forward.w3.weight"))));
   const mx::array feed_forward = mx::matmul(

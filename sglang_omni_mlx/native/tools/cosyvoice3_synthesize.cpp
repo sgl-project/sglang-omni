@@ -27,6 +27,7 @@
 
 #include "common/audio.h"
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "cosyvoice3/cosyvoice3_model.h"
 #include "nlohmann/json.hpp"
 
@@ -163,7 +164,7 @@ int main(int argc, char **argv) {
                          target_ids.end());
   std::vector<float> first_logits;
   if (!tokens_output_path.empty()) {
-    std::vector<qwen3_asr::KVCache> caches = model.NewCaches();
+    std::vector<omni_common::KVCache> caches = model.NewCaches();
     const mx::array logits = mx::astype(
         model.ForwardEmbeddings(
             model.BuildPromptEmbeddings(prompt_text_ids, prompt_speech_tokens),

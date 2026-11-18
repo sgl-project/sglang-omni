@@ -265,15 +265,15 @@ mx::array AudioCodec::TransformerLayer(const mx::array &x,
   const mx::array feed_forward_input =
       checkpoint_.RmsNorm(hidden, prefix + ".ffn_norm", norm_eps_);
   return mx::add(
-      hidden, mx::multiply(
-                  checkpoint_.Weight(prefix + ".ffn_scale"),
-                  checkpoint_.Linear(
-                      mx::multiply(
-                          omni_common::Silu(checkpoint_.Linear(
-                              feed_forward_input, prefix + ".feed_forward.w1")),
-                          checkpoint_.Linear(feed_forward_input,
-                                             prefix + ".feed_forward.w3")),
-                      prefix + ".feed_forward.w2")));
+      hidden,
+      mx::multiply(checkpoint_.Weight(prefix + ".ffn_scale"),
+                   checkpoint_.Linear(
+                       omni_common::Swiglu(
+                           checkpoint_.Linear(feed_forward_input,
+                                              prefix + ".feed_forward.w1"),
+                           checkpoint_.Linear(feed_forward_input,
+                                              prefix + ".feed_forward.w3")),
+                       prefix + ".feed_forward.w2")));
 }
 
 std::vector<float> CodecStream::Push(const mx::array &frame_codes) {

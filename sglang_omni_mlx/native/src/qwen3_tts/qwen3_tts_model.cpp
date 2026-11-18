@@ -10,6 +10,8 @@
 #include <stdexcept>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
+#include "common/text.h"
 
 namespace qwen3_tts {
 
@@ -26,15 +28,6 @@ constexpr int kControlCodeCount = 1024;
 // and <|im_end|>\n<|im_start|>assistant\n after it.
 constexpr int kRoleTokenCount = 3;
 constexpr int kClosingTokenCount = 5;
-
-std::string Lower(const std::string &text) {
-  std::string lowered;
-  for (const char character : text) {
-    lowered.push_back(
-        static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
-  }
-  return lowered;
-}
 
 // Rows [start, stop) of x [1, length, hidden].
 mx::array Rows(const mx::array &x, int start, int stop) {
@@ -130,9 +123,9 @@ mx::array Sample(mx::array logits, const SamplerConfig &sampler,
 // Note (Jiaxin Deng): the talker's multimodal rotary positions are all the
 // text position for speech, which is plain rotary embedding; tables rounded
 // to bfloat16 keep the reference's codes.
-qwen3_asr::Qwen3DecoderConfig DecoderConfig(const nlohmann::json &config) {
-  qwen3_asr::Qwen3DecoderConfig decoder =
-      qwen3_asr::Qwen3DecoderConfig::FromJson(config);
+omni_common::Qwen3DecoderConfig DecoderConfig(const nlohmann::json &config) {
+  omni_common::Qwen3DecoderConfig decoder =
+      omni_common::Qwen3DecoderConfig::FromJson(config);
   decoder.rotary_tables = true;
   return decoder;
 }
@@ -181,7 +174,7 @@ Qwen3TtsModel::Qwen3TtsModel(const std::filesystem::path &model_directory,
   codec_think_bos_id_ = talker.at("codec_think_bos_id").get<int>();
   codec_think_eos_id_ = talker.at("codec_think_eos_id").get<int>();
   for (const auto &[name, id] : talker.at("spk_id").items()) {
-    speaker_ids_.emplace(Lower(name), id.get<int>());
+    speaker_ids_.emplace(omni_common::AsciiLowercase(name), id.get<int>());
   }
   // The JSON object above sorts its keys; the speakers' order is the file's.
   std::ifstream config_file(model_directory / "config.json");
@@ -189,16 +182,18 @@ Qwen3TtsModel::Qwen3TtsModel(const std::filesystem::path &model_directory,
       nlohmann::ordered_json::parse(config_file);
   for (const auto &[name, id] :
        ordered_config.at("talker_config").at("spk_id").items()) {
-    speaker_names_.push_back(Lower(name));
+    speaker_names_.push_back(omni_common::AsciiLowercase(name));
   }
   for (const auto &[name, dialect] : talker.at("spk_is_dialect").items()) {
     if (dialect.is_string()) {
-      speaker_dialects_.emplace(Lower(name), Lower(dialect.get<std::string>()));
+      speaker_dialects_.emplace(
+          omni_common::AsciiLowercase(name),
+          omni_common::AsciiLowercase(dialect.get<std::string>()));
     } else {
     }
   }
   for (const auto &[name, id] : talker.at("codec_language_id").items()) {
-    language_ids_.emplace(Lower(name), id.get<int>());
+    language_ids_.emplace(omni_common::AsciiLowercase(name), id.get<int>());
   }
   if (speech_decoder_.codebook_count() != codebook_count_) {
     throw std::runtime_error("the speech decoder and the talker disagree on "
@@ -212,14 +207,14 @@ SpeechPrompt Qwen3TtsModel::BuildPrompt(const std::string &text,
                                         const std::string &language,
                                         const std::string &instructions) const {
   SpeechPrompt prompt;
-  const std::string speaker_name = Lower(speaker);
+  const std::string speaker_name = omni_common::AsciiLowercase(speaker);
   const auto found_speaker = speaker_ids_.find(speaker_name);
   if (found_speaker == speaker_ids_.end()) {
     throw std::invalid_argument("unknown speaker " + speaker);
   } else {
   }
   prompt.speaker_id = found_speaker->second;
-  const std::string language_name = Lower(language);
+  const std::string language_name = omni_common::AsciiLowercase(language);
   if (language_name != "auto") {
     const auto found_language = language_ids_.find(language_name);
     if (found_language == language_ids_.end()) {
@@ -304,7 +299,7 @@ mx::array Qwen3TtsModel::PredictCodes(const mx::array &hidden,
                                       const mx::array &first_code,
                                       const SamplerConfig &sampler,
                                       mx::random::KeySequence &keys) const {
-  std::vector<qwen3_asr::KVCache> caches = code_predictor_.NewCaches();
+  std::vector<omni_common::KVCache> caches = code_predictor_.NewCaches();
   std::vector<mx::array> codes = {first_code};
   mx::array input = mx::concatenate(
       {hidden, checkpoint_.Embed(first_code, std::string(kTalkerPrefix) +
@@ -420,7 +415,7 @@ omni_common::FinishReason Qwen3TtsModel::Generate(
     }
   }
   std::vector<int> history;
-  std::vector<qwen3_asr::KVCache> caches = talker_.NewCaches();
+  std::vector<omni_common::KVCache> caches = talker_.NewCaches();
   for (int frame = 0; frame < max_frames; ++frame) {
     if (cancel.load()) {
       throw omni_common::GenerationCancelled();

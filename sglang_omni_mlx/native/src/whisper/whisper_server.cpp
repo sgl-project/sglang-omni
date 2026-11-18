@@ -13,7 +13,7 @@
 #include <optional>
 #include <stdexcept>
 
-#include "qwen3_asr/asr_service.h"
+#include "common/asr_service.h"
 #include "whisper/whisper_transcriber.h"
 
 namespace {

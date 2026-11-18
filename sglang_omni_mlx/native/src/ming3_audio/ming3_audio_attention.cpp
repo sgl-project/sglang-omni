@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Antgroup and The HuggingFace Inc. team. All rights reserved.
+#include "common/kv_cache.h"
 #include "ming3_audio/ming3_audio_model.h"
 
 #include <cmath>
@@ -85,7 +86,7 @@ RunDeltaRule(const mx::array &queries, const mx::array &keys,
 
 mx::array Model::LatentAttention(const mx::array &hidden,
                                  const std::string &prefix,
-                                 qwen3_asr::KVCache &cache) const {
+                                 omni_common::KVCache &cache) const {
   const int length = hidden.shape(1), heads = text_.num_attention_heads;
   const int cached_tokens = cache.offset();
   const int rotary_width = text_.qk_rope_head_dim;

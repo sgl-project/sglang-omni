@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "common/fastconformer.h"
 #include "common/layers.h"
 #include "sortformer/sortformer_checkpoint.h"
 
@@ -15,23 +16,15 @@ namespace mx = mlx::core;
 namespace {
 
 using omni_common::Scalar;
+using omni_common::Silu;
 
 std::vector<mx::array> ReluGraph(const std::vector<mx::array> &inputs) {
   return {mx::maximum(inputs[0], Scalar(0.0f, inputs[0]))};
 }
 
-std::vector<mx::array> SiluGraph(const std::vector<mx::array> &inputs) {
-  return {mx::multiply(inputs[0], mx::sigmoid(inputs[0]))};
-}
-
-// Note (Jiaxin Deng): compiled shapeless to match MLXNN relu and silu.
+// Note (Jiaxin Deng): compiled shapeless to match MLXNN relu.
 mx::array Relu(const mx::array &x) {
   static const auto compiled = mx::compile(ReluGraph, true);
-  return compiled({x})[0];
-}
-
-mx::array Silu(const mx::array &x) {
-  static const auto compiled = mx::compile(SiluGraph, true);
   return compiled({x})[0];
 }
 
@@ -45,71 +38,17 @@ int SubsampledLength(int frame_count, int stage_count) {
   return length;
 }
 
-// Note (Jiaxin Deng): computed in float32 and cast to the activations' dtype,
-// as Swift does.
-mx::array RelativePositionalEncoding(int length, int width, mx::Dtype dtype) {
-  std::vector<float> positions;
-  for (int position = length - 1; position >= -(length - 1); --position) {
-    positions.push_back(static_cast<float>(position));
-  }
-  std::vector<float> dimensions;
-  for (int dimension = 0; dimension < width; dimension += 2) {
-    dimensions.push_back(static_cast<float>(dimension));
-  }
-  const int position_count = static_cast<int>(positions.size());
-  const mx::array position_array(positions.data(), {position_count},
-                                 mx::float32);
-  const mx::array dimension_array(
-      dimensions.data(), {static_cast<int>(dimensions.size())}, mx::float32);
-  const mx::array divisor = mx::exp(mx::multiply(
-      dimension_array, mx::array(static_cast<float>(
-                           -std::log(10000.0) / static_cast<double>(width)))));
-  const mx::array angles = mx::multiply(mx::expand_dims(position_array, 1),
-                                        mx::expand_dims(divisor, 0));
-  const mx::array encoding =
-      mx::reshape(mx::stack({mx::sin(angles), mx::cos(angles)}, -1),
-                  {position_count, width});
-  return mx::astype(mx::expand_dims(encoding, 0), dtype);
-}
-
 } // namespace
 
 SortformerModel::SortformerModel(const std::filesystem::path &model_directory)
     : config_(LoadConfig(model_directory)), features_(config_.processor),
-      weights_(LoadCheckpoint(model_directory, config_)) {}
-
-const mx::array &SortformerModel::Weight(const std::string &name) const {
-  const auto found = weights_.find(name);
-  if (found == weights_.end()) {
-    throw std::runtime_error("Sortformer checkpoint is missing " + name);
-  } else {
-  }
-  return found->second;
-}
+      checkpoint_(LoadCheckpoint(model_directory, config_),
+                  nlohmann::json::object()) {}
 
 float SortformerModel::frame_duration() const {
   return static_cast<float>(config_.processor.hop_length *
                             config_.fc_encoder.subsampling_factor) /
          static_cast<float>(config_.processor.sampling_rate);
-}
-
-mx::array SortformerModel::Linear(const mx::array &x,
-                                  const std::string &prefix) const {
-  // Note (Jiaxin Deng): addmm with bias, matmul without, as MLXNN Linear.
-  const auto bias = weights_.find(prefix + ".bias");
-  if (bias != weights_.end()) {
-    return mx::addmm(bias->second, x,
-                     mx::transpose(Weight(prefix + ".weight")));
-  } else {
-    return mx::matmul(x, mx::transpose(Weight(prefix + ".weight")));
-  }
-}
-
-mx::array SortformerModel::LayerNorm(const mx::array &x,
-                                     const std::string &prefix,
-                                     float eps) const {
-  return mx::fast::layer_norm(x, Weight(prefix + ".weight"),
-                              Weight(prefix + ".bias"), eps);
 }
 
 mx::array SortformerModel::PreEncode(const mx::array &features) const {
@@ -118,11 +57,8 @@ mx::array SortformerModel::PreEncode(const mx::array &features) const {
   const int padding = (fc.subsampling_conv_kernel_size - 1) / 2;
   const auto conv = [&](const mx::array &x, const std::string &name,
                         int conv_stride, int conv_padding, int groups) {
-    const std::string prefix = "fc_encoder.subsampling." + name;
-    return mx::add(mx::conv2d(x, Weight(prefix + ".weight"),
-                              {conv_stride, conv_stride},
-                              {conv_padding, conv_padding}, {1, 1}, groups),
-                   Weight(prefix + ".bias"));
+    return checkpoint_.Conv2d(x, "fc_encoder.subsampling." + name, conv_stride,
+                              conv_padding, groups);
   };
   const int channels = fc.subsampling_conv_channels;
   mx::array h = mx::expand_dims(mx::transpose(features, {0, 2, 1}), -1);
@@ -137,7 +73,7 @@ mx::array SortformerModel::PreEncode(const mx::array &features) const {
   const int channel_count = h.shape(3);
   h = mx::reshape(mx::transpose(h, {0, 1, 3, 2}),
                   {batch, time, channel_count * frequency});
-  return Linear(h, "fc_encoder.subsampling.linear");
+  return checkpoint_.Linear(h, "fc_encoder.subsampling.linear");
 }
 
 mx::array
@@ -149,9 +85,10 @@ SortformerModel::RelativePositionAttention(const mx::array &x,
   const int batch = x.shape(0);
   const auto project = [&](const mx::array &input, const std::string &name,
                            int input_batch) {
-    return mx::transpose(mx::reshape(Linear(input, prefix + "." + name),
-                                     {input_batch, -1, heads, head_dim}),
-                         {0, 2, 1, 3});
+    return mx::transpose(
+        mx::reshape(checkpoint_.Linear(input, prefix + "." + name),
+                    {input_batch, -1, heads, head_dim}),
+        {0, 2, 1, 3});
   };
   const mx::array q = project(x, "q_proj", batch);
   const mx::array k = project(x, "k_proj", batch);
@@ -159,9 +96,9 @@ SortformerModel::RelativePositionAttention(const mx::array &x,
   const mx::array q_by_time = mx::transpose(q, {0, 2, 1, 3});
   const mx::array p = project(position_embedding, "relative_k_proj", 1);
   const mx::array q_with_bias_u = mx::transpose(
-      mx::add(q_by_time, Weight(prefix + ".bias_u")), {0, 2, 1, 3});
+      mx::add(q_by_time, checkpoint_.Weight(prefix + ".bias_u")), {0, 2, 1, 3});
   const mx::array q_with_bias_v = mx::transpose(
-      mx::add(q_by_time, Weight(prefix + ".bias_v")), {0, 2, 1, 3});
+      mx::add(q_by_time, checkpoint_.Weight(prefix + ".bias_v")), {0, 2, 1, 3});
   const mx::array matrix_ac =
       mx::matmul(q_with_bias_u, mx::transpose(k, {0, 1, 3, 2}));
   mx::array matrix_bd =
@@ -177,33 +114,7 @@ SortformerModel::RelativePositionAttention(const mx::array &x,
   const mx::array out =
       mx::reshape(mx::transpose(mx::matmul(attention, v), {0, 2, 1, 3}),
                   {batch, -1, heads * head_dim});
-  return Linear(out, prefix + ".o_proj");
-}
-
-mx::array
-SortformerModel::ConformerConvolution(const mx::array &x,
-                                      const std::string &prefix) const {
-  const auto conv = [&](const mx::array &input, const std::string &name,
-                        int padding, int groups) {
-    return mx::add(mx::conv1d(input, Weight(prefix + "." + name + ".weight"), 1,
-                              padding, 1, groups),
-                   Weight(prefix + "." + name + ".bias"));
-  };
-  mx::array h = conv(x, "pointwise_conv1", 0, 1);
-  const std::vector<mx::array> halves = mx::split(h, 2, -1);
-  h = mx::multiply(halves[0], mx::sigmoid(halves[1]));
-  h = conv(h, "depthwise_conv", (config_.fc_encoder.conv_kernel_size - 1) / 2,
-           config_.fc_encoder.hidden_size);
-  const mx::array &running_var = Weight(prefix + ".norm.running_var");
-  h = mx::add(
-      mx::multiply(
-          mx::divide(
-              mx::subtract(h, Weight(prefix + ".norm.running_mean")),
-              mx::sqrt(mx::add(running_var, Scalar(1e-5f, running_var)))),
-          Weight(prefix + ".norm.weight")),
-      Weight(prefix + ".norm.bias"));
-  h = Silu(h);
-  return conv(h, "pointwise_conv2", 0, 1);
+  return checkpoint_.Linear(out, prefix + ".o_proj");
 }
 
 mx::array SortformerModel::ConformerLayer(const mx::array &x,
@@ -214,24 +125,27 @@ mx::array SortformerModel::ConformerLayer(const mx::array &x,
   const std::string prefix = "fc_encoder.layers." + std::to_string(layer);
   const auto feed_forward = [&](const mx::array &input,
                                 const std::string &name) {
-    return Linear(Silu(Linear(input, prefix + "." + name + ".linear1")),
-                  prefix + "." + name + ".linear2");
+    return omni_common::ConformerFeedForward(checkpoint_, input,
+                                             prefix + "." + name);
   };
   mx::array residual = x;
-  mx::array h = feed_forward(LayerNorm(x, prefix + ".norm_feed_forward1", kEps),
-                             "feed_forward1");
+  mx::array h = feed_forward(
+      checkpoint_.LayerNorm(x, prefix + ".norm_feed_forward1", kEps),
+      "feed_forward1");
   residual = mx::add(residual, mx::multiply(h, Scalar(kFeedForwardFactor, h)));
   h = RelativePositionAttention(
-      LayerNorm(residual, prefix + ".norm_self_att", kEps), position_embedding,
-      prefix + ".self_attn");
+      checkpoint_.LayerNorm(residual, prefix + ".norm_self_att", kEps),
+      position_embedding, prefix + ".self_attn");
   residual = mx::add(residual, h);
-  h = ConformerConvolution(LayerNorm(residual, prefix + ".norm_conv", kEps),
-                           prefix + ".conv");
+  h = omni_common::ConformerConvolution(
+      checkpoint_, checkpoint_.LayerNorm(residual, prefix + ".norm_conv", kEps),
+      prefix + ".conv");
   residual = mx::add(residual, h);
-  h = feed_forward(LayerNorm(residual, prefix + ".norm_feed_forward2", kEps),
-                   "feed_forward2");
+  h = feed_forward(
+      checkpoint_.LayerNorm(residual, prefix + ".norm_feed_forward2", kEps),
+      "feed_forward2");
   residual = mx::add(residual, mx::multiply(h, Scalar(kFeedForwardFactor, h)));
-  return LayerNorm(residual, prefix + ".norm_out", kEps);
+  return checkpoint_.LayerNorm(residual, prefix + ".norm_out", kEps);
 }
 
 mx::array SortformerModel::FastConformer(const mx::array &embeddings) const {
@@ -242,8 +156,10 @@ mx::array SortformerModel::FastConformer(const mx::array &embeddings) const {
     x = mx::multiply(x, Scalar(scale, x));
   } else {
   }
-  const mx::array position_embedding = RelativePositionalEncoding(
-      x.shape(1), config_.fc_encoder.hidden_size, x.dtype());
+  const mx::array position_embedding =
+      mx::astype(omni_common::RelativePositionTable(
+                     x.shape(1), config_.fc_encoder.hidden_size),
+                 x.dtype());
   for (int layer = 0; layer < config_.fc_encoder.num_hidden_layers; ++layer) {
     x = ConformerLayer(x, position_embedding, layer);
   }
@@ -261,9 +177,10 @@ mx::array SortformerModel::TransformerLayer(const mx::array &x,
   const int head_dim = tf.d_model / heads;
   const float scale = std::pow(static_cast<float>(head_dim), -0.5f);
   const auto project = [&](const std::string &name) {
-    return mx::transpose(mx::reshape(Linear(x, prefix + ".self_attn." + name),
-                                     {batch, -1, heads, head_dim}),
-                         {0, 2, 1, 3});
+    return mx::transpose(
+        mx::reshape(checkpoint_.Linear(x, prefix + ".self_attn." + name),
+                    {batch, -1, heads, head_dim}),
+        {0, 2, 1, 3});
   };
   const mx::array q = project("q_proj");
   const mx::array k = project("k_proj");
@@ -275,12 +192,16 @@ mx::array SortformerModel::TransformerLayer(const mx::array &x,
   const mx::array attended =
       mx::reshape(mx::transpose(mx::matmul(attention, v), {0, 2, 1, 3}),
                   {batch, length, tf.d_model});
-  mx::array h = mx::add(x, Linear(attended, prefix + ".self_attn.out_proj"));
-  h = LayerNorm(h, prefix + ".self_attn_layer_norm", tf.layer_norm_eps);
+  mx::array h =
+      mx::add(x, checkpoint_.Linear(attended, prefix + ".self_attn.out_proj"));
+  h = checkpoint_.LayerNorm(h, prefix + ".self_attn_layer_norm",
+                            tf.layer_norm_eps);
   const mx::array residual = h;
-  h = Linear(Relu(Linear(h, prefix + ".fc1")), prefix + ".fc2");
+  h = checkpoint_.Linear(Relu(checkpoint_.Linear(h, prefix + ".fc1")),
+                         prefix + ".fc2");
   h = mx::add(residual, h);
-  return LayerNorm(h, prefix + ".final_layer_norm", tf.layer_norm_eps);
+  return checkpoint_.LayerNorm(h, prefix + ".final_layer_norm",
+                               tf.layer_norm_eps);
 }
 
 mx::array
@@ -298,14 +219,16 @@ SortformerModel::SpeakerProbabilities(const mx::array &embeddings) const {
                       {1, 2});
   const mx::array positions = mx::arange(length, mx::int32);
   mx::array x =
-      mx::add(embeddings, mx::take(Weight("tf_encoder.embed_positions.weight"),
-                                   positions, 0));
+      mx::add(embeddings,
+              mx::take(checkpoint_.Weight("tf_encoder.embed_positions.weight"),
+                       positions, 0));
   for (int layer = 0; layer < config_.tf_encoder.encoder_layers; ++layer) {
     x = TransformerLayer(x, additive_mask, layer);
   }
   mx::array h = Relu(x);
-  h = Relu(Linear(h, "sortformer_modules.first_hidden_to_hidden"));
-  h = mx::sigmoid(Linear(h, "sortformer_modules.single_hidden_to_spks"));
+  h = Relu(checkpoint_.Linear(h, "sortformer_modules.first_hidden_to_hidden"));
+  h = mx::sigmoid(
+      checkpoint_.Linear(h, "sortformer_modules.single_hidden_to_spks"));
   return mx::multiply(h, mx::expand_dims(valid, 2));
 }
 
@@ -332,7 +255,7 @@ FeedResult SortformerModel::Feed(const std::vector<float> &samples,
 
   // Note (Jiaxin Deng): pre-encoded in the checkpoint dtype, as in Swift.
   const mx::Dtype model_dtype =
-      Weight("sortformer_modules.encoder_proj.weight").dtype();
+      checkpoint_.Weight("sortformer_modules.encoder_proj.weight").dtype();
   mx::array chunk_embeddings = PreEncode(mx::astype(features, model_dtype));
   const int chunk_length = SubsampledLength(features.shape(2), 3);
   const int width = chunk_embeddings.shape(2);
@@ -362,8 +285,8 @@ FeedResult SortformerModel::Feed(const std::vector<float> &samples,
   // Note (Jiaxin Deng): float32 once the state holds frames, as in Swift.
   const mx::array all_embeddings = mx::concatenate(parts, 1);
 
-  const mx::array encoded =
-      Linear(FastConformer(all_embeddings), "sortformer_modules.encoder_proj");
+  const mx::array encoded = checkpoint_.Linear(
+      FastConformer(all_embeddings), "sortformer_modules.encoder_proj");
   const mx::array all_predictions = SpeakerProbabilities(encoded);
   const int speakers = all_predictions.shape(2);
   const int chunk_start = cache_length + fifo_length + left_length;

@@ -23,6 +23,8 @@ struct QuantizationConfig {
 
 using WeightMap = std::unordered_map<std::string, mlx::core::array>;
 
+// A file's bytes; throws std::runtime_error when it cannot be read.
+std::string ReadFile(const std::filesystem::path &path);
 nlohmann::json ReadJson(const std::filesystem::path &path);
 // A YAML file as JSON, its plain scalars typed as PyYAML's safe loader types
 // them and its quoted scalars kept as strings.
@@ -45,6 +47,14 @@ public:
   const QuantizationConfig &Quantization(const std::string &prefix) const;
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
+  // Convolutions of channels-last x by prefix.weight [out, kernel..., in /
+  // groups], plus prefix.bias when the checkpoint has one.
+  mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,
+                          int stride = 1, int padding = 0, int dilation = 1,
+                          int groups = 1) const;
+  mlx::core::array Conv2d(const mlx::core::array &x, const std::string &prefix,
+                          int stride = 1, int padding = 0,
+                          int groups = 1) const;
   mlx::core::array LayerNorm(const mlx::core::array &x,
                              const std::string &prefix, float eps) const;
   mlx::core::array RmsNorm(const mlx::core::array &x, const std::string &prefix,
@@ -93,6 +103,12 @@ mlx::core::array RouteToExperts(const mlx::core::array &hidden,
 // row's columns line up with its keys' relative positions. Callers keep the
 // first key-count columns.
 mlx::core::array RelativeShift(const mlx::core::array &scores);
+
+// Folds every batch norm module.norm_name (running statistics, weight, bias)
+// into the module's depthwise_conv before it, giving that convolution a bias,
+// and drops the norm's tensors.
+void FoldBatchNorms(WeightMap &weights, const std::string &norm_name,
+                    float eps);
 
 // One LSTM step in MLXNN's formulation. gates [1, 4 * hidden] are x * Wx^T +
 // bias in input, forget, candidate, output order; with no state the step

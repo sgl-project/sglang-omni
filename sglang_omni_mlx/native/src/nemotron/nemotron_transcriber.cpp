@@ -4,8 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include <CoreFoundation/CoreFoundation.h>
-
+#include "common/fastconformer.h"
 #include "common/generation.h"
 #include "common/swift_port.h"
 #include "common/text.h"
@@ -26,33 +25,12 @@ constexpr const char *kWordMarker = "\xE2\x96\x81"; // U+2581
 // sample alone (which Swift decodes as one mel frame) gives no text here.
 constexpr int kMinFrontEndSamples = 2;
 
-bool Contains(const std::string &text, const char *needle) {
-  return text.find(needle) != std::string::npos;
-}
-
-// Note (Dayuxiaoshui): Swift's String.contains(" ") compares grapheme
-// clusters, so a space that a combining mark attaches to is not a space; a
-// word marker before a Thai vowel sign is one such piece.
-bool ContainsStandaloneSpace(const std::string &text) {
-  const std::vector<uint32_t> code_points = omni_common::CodePoints(text);
-  const CFCharacterSetRef combining =
-      CFCharacterSetGetPredefined(kCFCharacterSetNonBase);
-  for (size_t index = 0; index < code_points.size(); ++index) {
-    if (code_points[index] == ' ' && (index + 1 == code_points.size() ||
-                                      !CFCharacterSetIsLongCharacterMember(
-                                          combining, code_points[index + 1]))) {
-      return true;
-    } else {
-    }
-  }
-  return false;
-}
-
-sortformer::ProcessorConfig FrontEnd(const std::filesystem::path &directory) {
+omni_common::NemoProcessorConfig
+FrontEnd(const std::filesystem::path &directory) {
   const nlohmann::json config =
       omni_common::ReadJson(directory / "config.json").at("preprocessor");
   const int sample_rate = config.at("sample_rate").get<int>();
-  sortformer::ProcessorConfig front_end;
+  omni_common::NemoProcessorConfig front_end;
   front_end.feature_size = config.at("features").get<int>();
   front_end.sampling_rate = sample_rate;
   front_end.fft_size = config.at("n_fft").get<int>();
@@ -76,10 +54,11 @@ NemotronTranscriber::NemotronTranscriber(
          marker = text.find(kWordMarker, marker + 1)) {
       text.replace(marker, std::string(kWordMarker).size(), " ");
     }
-    standalone_spaces_.push_back(ContainsStandaloneSpace(text));
+    standalone_spaces_.push_back(omni_common::ContainsStandaloneSpace(text));
     token_texts_.push_back(text);
     const bool language_tag = piece.size() > 1 && piece.front() == '<' &&
-                              piece.back() == '>' && Contains(piece, "-");
+                              piece.back() == '>' &&
+                              omni_common::Contains(piece, "-");
     const bool control = piece.size() > 3 && piece.rfind("<|", 0) == 0 &&
                          piece.compare(piece.size() - 2, 2, "|>") == 0;
     special_tokens_.push_back(language_tag || control || piece == "<unk>" ||
@@ -224,7 +203,9 @@ void NemotronStream::Decode(int mel_frame_limit, bool flush,
             ? layer_caches_[0].attention_inputs->shape(1)
             : 0;
     const mx::array positions =
-        model.RelativePositions(attention_frames + high - low, hidden.dtype());
+        mx::astype(omni_common::RelativePositionTable(
+                       attention_frames + high - low, config.model_width),
+                   hidden.dtype());
     for (int layer = 0; layer < config.layer_count; ++layer) {
       hidden =
           model.StreamLayer(hidden, layer, positions, layer_caches_[layer]);
@@ -341,14 +322,15 @@ omni_common::TranscriptionResult NemotronStream::Result() const {
     } else {
     }
     sentence += token.text;
-    const bool closes = Contains(token.text, "!") ||
-                        Contains(token.text, "?") ||
-                        Contains(token.text, "\xE3\x80\x82") || // 。
-                        Contains(token.text, "\xEF\xBC\x9F") || // ？
-                        Contains(token.text, "\xEF\xBC\x81") || // ！
-                        (Contains(token.text, ".") &&
-                         (index + 1 == tokens_.size() ||
-                          tokens_[index + 1].has_standalone_space));
+    const bool closes =
+        omni_common::Contains(token.text, "!") ||
+        omni_common::Contains(token.text, "?") ||
+        omni_common::Contains(token.text, "\xE3\x80\x82") || // 。
+        omni_common::Contains(token.text, "\xEF\xBC\x9F") || // ？
+        omni_common::Contains(token.text, "\xEF\xBC\x81") || // ！
+        (omni_common::Contains(token.text, ".") &&
+         (index + 1 == tokens_.size() ||
+          tokens_[index + 1].has_standalone_space));
     if (closes || index + 1 == tokens_.size()) {
       result.segments.push_back(
           {sentence_start, token.start_seconds + frame_seconds, "", sentence});

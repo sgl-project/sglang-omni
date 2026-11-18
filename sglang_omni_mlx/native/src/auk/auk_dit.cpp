@@ -136,9 +136,10 @@ mx::array FeedForward(const Checkpoint &checkpoint,
       modulation.shift;
   const auto gates =
       mx::split(checkpoint.Linear(normalized, prefix + ".linear_in"), 2, -1);
-  return hidden_states + modulation.feed_forward_gate *
-                             checkpoint.Linear(Silu(gates[0]) * gates[1],
-                                               prefix + ".linear_out");
+  return hidden_states +
+         modulation.feed_forward_gate *
+             checkpoint.Linear(omni_common::Swiglu(gates[0], gates[1]),
+                               prefix + ".linear_out");
 }
 
 } // namespace

@@ -11,8 +11,8 @@
 #include <vector>
 
 #include "common/layers.h"
+#include "common/nemo_features.h"
 #include "mlx/mlx.h"
-#include "sortformer/sortformer_features.h"
 
 namespace parakeet {
 
@@ -72,20 +72,13 @@ private:
                 const std::filesystem::path &model_directory);
   mlx::core::array Conv2d(const mlx::core::array &x, const std::string &prefix,
                           int groups) const;
-  mlx::core::array FeedForward(const mlx::core::array &x,
-                               const std::string &prefix) const;
-  mlx::core::array Attention(const mlx::core::array &x,
-                             const mlx::core::array &positions,
-                             const std::string &prefix) const;
-  mlx::core::array Convolution(const mlx::core::array &x,
-                               const std::string &prefix) const;
   // [frame, token, hidden, cell] to [token and duration class, hidden, cell].
   std::vector<mlx::core::array>
   DecodeGraph(const std::vector<mlx::core::array> &inputs) const;
 
   ParakeetConfig config_;
-  sortformer::ProcessorConfig front_end_;
-  sortformer::FeatureExtractor features_;
+  omni_common::NemoProcessorConfig front_end_;
+  omni_common::NemoFeatureExtractor features_;
   omni_common::Checkpoint checkpoint_;
   int prediction_width_ = 0;
   // Note (Dayuxiaoshui): the decoder step compiled, as the Swift port runs it.

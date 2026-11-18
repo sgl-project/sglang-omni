@@ -4,7 +4,7 @@
 #include <array>
 #include <cassert>
 
-namespace qwen3_asr {
+namespace omni_common {
 
 // Request-local measurements; a single slow round cannot disable the draft.
 class DraftBackoff {
@@ -69,4 +69,4 @@ private:
   double plain_seconds_per_token_ = 0.0;
 };
 
-} // namespace qwen3_asr
+} // namespace omni_common

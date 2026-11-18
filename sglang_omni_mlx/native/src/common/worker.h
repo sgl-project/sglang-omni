@@ -17,9 +17,8 @@
 #include <vector>
 
 #include "common/transcription.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
 
-namespace qwen3_asr {
+namespace omni_server {
 
 using CancelFlag = std::shared_ptr<std::atomic<bool>>;
 
@@ -32,21 +31,41 @@ inline CancelFlag NewCancelFlag() {
 using Transcription =
     std::function<omni_common::TranscriptionResult(const std::atomic<bool> &)>;
 
+// Called on the worker thread with the result, or with the exception the
+// transcription raised (GenerationCancelled included).
+using Completion = std::function<void(
+    std::optional<omni_common::TranscriptionResult>, std::exception_ptr)>;
+
+// One queued request of a batch: its transcription and its cancel flag.
+struct BatchItem {
+  const Transcription *transcription;
+  const std::atomic<bool> *cancel;
+};
+
+// Reports the batch item at an index the moment it finishes.
+using BatchCompletion =
+    std::function<void(size_t, std::optional<omni_common::TranscriptionResult>,
+                       std::exception_ptr)>;
+
+// How a model decodes queued requests together: which transcriptions can
+// join a batch, and the decode of a batch of them.
+struct BatchRunner {
+  std::function<bool(const Transcription &)> accepts;
+  std::function<void(const std::vector<BatchItem> &, const BatchCompletion &)>
+      run;
+};
+
 // Runs requests in queue order on one model and one MLX stream. Each runs
-// alone unless max_batch is above 1, in which case consecutive queued
-// BatchableTranscription requests are decoded together.
+// alone unless max_batch is above 1 and a batch runner is given, in which case
+// consecutive queued requests it accepts are decoded together.
 class TranscriptionWorker {
 public:
-  // Called on the worker thread with the result, or with the exception the
-  // transcription raised (GenerationCancelled included).
-  using Completion = std::function<void(
-      std::optional<omni_common::TranscriptionResult>, std::exception_ptr)>;
-
   // Runs load on the worker thread; throws what load throws. Up to max_batch
-  // queued BatchableTranscription requests decode together.
+  // queued requests batch_runner accepts decode together.
   TranscriptionWorker(std::function<void()> load,
                       std::function<void()> release_idle_memory,
-                      int max_batch = 1);
+                      int max_batch = 1,
+                      std::optional<BatchRunner> batch_runner = std::nullopt);
   ~TranscriptionWorker();
   TranscriptionWorker(const TranscriptionWorker &) = delete;
   TranscriptionWorker &operator=(const TranscriptionWorker &) = delete;
@@ -78,10 +97,11 @@ private:
   // from serial on borderline tokens, so the default of 1 keeps every request
   // serial and deterministic.
   int max_batch_;
+  std::optional<BatchRunner> batch_runner_;
   int running_count_ = 0;
   bool running_ = false;
   bool stopping_ = false;
   std::thread thread_;
 };
 
-} // namespace qwen3_asr
+} // namespace omni_server

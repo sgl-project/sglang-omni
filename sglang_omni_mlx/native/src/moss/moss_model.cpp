@@ -9,10 +9,10 @@ namespace moss {
 namespace mx = mlx::core;
 using omni_common::Gelu;
 using omni_common::LoadSafetensors;
+using omni_common::Qwen3DecoderConfig;
 using omni_common::ReadJson;
 using omni_common::Silu;
 using omni_common::WeightMap;
-using qwen3_asr::Qwen3DecoderConfig;
 
 namespace {
 

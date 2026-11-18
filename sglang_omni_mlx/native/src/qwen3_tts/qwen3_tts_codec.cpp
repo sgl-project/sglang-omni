@@ -242,9 +242,9 @@ mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer,
   const mx::array mlp_input =
       RmsNorm(hidden, prefix + ".post_attention_layernorm");
   const mx::array mlp_output = checkpoint_.Linear(
-      mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                       mlp_input, prefix + ".mlp.gate_proj")),
-                   checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
+      omni_common::Swiglu(
+          checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj"),
+          checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
       prefix + ".mlp.down_proj");
   return mx::add(hidden, mx::multiply(checkpoint_.Weight(
                                           prefix + ".mlp_layer_scale.scale"),

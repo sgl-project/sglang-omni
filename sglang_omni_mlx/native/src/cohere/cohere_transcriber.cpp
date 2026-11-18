@@ -10,7 +10,9 @@
 #include "common/audio.h"
 #include "common/audio_chunks.h"
 #include "common/generation.h"
+#include "common/layers.h"
 #include "common/swift_port.h"
+#include "common/text.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
 
@@ -24,17 +26,6 @@ namespace {
 constexpr float kChunkSearchSeconds = 5.0f;
 constexpr float kChunkEnergyWindowMilliseconds = 100.0f;
 
-std::string ReadFile(const std::filesystem::path &path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream) {
-    throw std::runtime_error("cannot read " + path.string());
-  } else {
-  }
-  std::ostringstream contents;
-  contents << stream.rdbuf();
-  return contents.str();
-}
-
 // The code of a language code or English name; English when unknown.
 std::string LanguageCode(const std::string &language) {
   static const std::map<std::string, std::string> table = {
@@ -47,9 +38,7 @@ std::string LanguageCode(const std::string &language) {
       {"vietnamese", "vi"}, {"vi", "vi"}, {"korean", "ko"},     {"ko", "ko"},
   };
   std::string key = language;
-  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
+  key = omni_common::AsciiLowercase(key);
   const auto found = table.find(key);
   return found == table.end() ? "en" : found->second;
 }
@@ -100,7 +89,7 @@ CohereTranscriber::CohereTranscriber(
     : model_(model_directory),
       vocabulary_(model_directory / "tokenizer.model") {
   const nlohmann::json tokenizer_config = nlohmann::json::parse(
-      ReadFile(model_directory / "tokenizer_config.json"));
+      omni_common::ReadFile(model_directory / "tokenizer_config.json"));
   for (const auto &[id_text, token] :
        tokenizer_config.at("added_tokens_decoder").items()) {
     const int id = std::stoi(id_text);

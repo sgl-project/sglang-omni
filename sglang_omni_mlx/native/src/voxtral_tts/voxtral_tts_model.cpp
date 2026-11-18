@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
 
 namespace voxtral_tts {
 
@@ -147,7 +148,7 @@ omni_common::FinishReason VoxtralTtsModel::Generate(
                                 0),
                 embeddings);
 
-  std::vector<qwen3_asr::KVCache> caches = decoder_.NewCaches();
+  std::vector<omni_common::KVCache> caches = decoder_.NewCaches();
   mx::array hidden = LastHidden(prompt_embeddings, caches);
   for (int frame = 0; frame < max_frames; ++frame) {
     if (cancel.load()) {
@@ -174,7 +175,7 @@ omni_common::FinishReason VoxtralTtsModel::Generate(
 
 mx::array
 VoxtralTtsModel::LastHidden(const mx::array &embeddings,
-                            std::vector<qwen3_asr::KVCache> &caches) const {
+                            std::vector<omni_common::KVCache> &caches) const {
   const mx::array hidden = decoder_.Forward(embeddings, caches);
   const int length = hidden.shape(1);
   const int dimension = hidden.shape(2);
@@ -303,10 +304,10 @@ mx::array VoxtralTtsModel::AcousticLayer(const mx::array &x, int layer) const {
   return mx::add(
       hidden,
       checkpoint_.Linear(
-          mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                           feed_forward_input, prefix + ".feed_forward.w1")),
-                       checkpoint_.Linear(feed_forward_input,
-                                          prefix + ".feed_forward.w3")),
+          omni_common::Swiglu(checkpoint_.Linear(feed_forward_input,
+                                                 prefix + ".feed_forward.w1"),
+                              checkpoint_.Linear(feed_forward_input,
+                                                 prefix + ".feed_forward.w3")),
           prefix + ".feed_forward.w2"));
 }
 

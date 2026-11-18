@@ -8,7 +8,9 @@
 #include <stdexcept>
 
 #include "common/generation.h"
+#include "common/layers.h"
 #include "common/swift_port.h"
+#include "common/text.h"
 #include "common/transcription.h"
 #include "nlohmann/json.hpp"
 
@@ -42,25 +44,9 @@ const std::map<std::string, std::string> &LanguageNameToCode() {
   return table;
 }
 
-nlohmann::json ReadJson(const std::filesystem::path &path) {
-  std::ifstream stream(path);
-  if (!stream) {
-    throw std::runtime_error("cannot read " + path.string());
-  } else {
-  }
-  return nlohmann::json::parse(stream);
-}
-
-std::string Lowercase(std::string text) {
-  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return text;
-}
-
 // "<|en|>" or "EN" to "en".
 std::string LanguageKey(const std::string &text) {
-  std::string key = Lowercase(text);
+  std::string key = omni_common::AsciiLowercase(text);
   if (key.size() >= 4 && key.compare(0, 2, "<|") == 0 &&
       key.compare(key.size() - 2, 2, "|>") == 0) {
     return key.substr(2, key.size() - 4);
@@ -141,7 +127,7 @@ WhisperTranscriber::WhisperTranscriber(
   } else {
   }
   const nlohmann::json tokenizer_config =
-      ReadJson(model_directory / "tokenizer_config.json");
+      omni_common::ReadJson(model_directory / "tokenizer_config.json");
   clean_up_tokenization_spaces_ =
       tokenizer_config.value("clean_up_tokenization_spaces", true);
   std::map<std::string, int> added_token_ids;
@@ -153,7 +139,7 @@ WhisperTranscriber::WhisperTranscriber(
     special_token_ids_.insert(id);
   }
   const nlohmann::json generation =
-      ReadJson(model_directory / "generation_config.json");
+      omni_common::ReadJson(model_directory / "generation_config.json");
   const auto token_id = [&](const char *generation_key,
                             const std::string &content) -> std::optional<int> {
     if (generation.contains(generation_key)) {

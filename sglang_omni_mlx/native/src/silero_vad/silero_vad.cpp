@@ -22,16 +22,36 @@ mx::array Relu(const mx::array &x) {
   return mx::maximum(x, mx::array(0.0f, x.dtype()));
 }
 
+// The 16 kHz branch's weights, without its prefix.
+omni_common::WeightMap
+LoadBranchWeights(const std::filesystem::path &model_directory) {
+  omni_common::WeightMap weights;
+  for (const auto &entry :
+       std::filesystem::directory_iterator(model_directory)) {
+    if (entry.path().extension() != ".safetensors") {
+      continue;
+    } else {
+    }
+    auto [loaded, metadata] = mx::load_safetensors(entry.path().string());
+    for (auto &[name, array] : loaded) {
+      // Note (Jiaxin Deng): val_* are conversion reference values, not weights.
+      if (name.rfind(kBranchPrefix, 0) == 0) {
+        weights.insert_or_assign(name.substr(std::string(kBranchPrefix).size()),
+                                 array);
+      } else {
+      }
+    }
+  }
+  return weights;
+}
+
 } // namespace
 
-SileroVAD::SileroVAD(const std::filesystem::path &model_directory) {
-  std::ifstream config_stream(model_directory / "config.json");
-  if (!config_stream) {
-    throw std::runtime_error("cannot read config.json in " +
-                             model_directory.string());
-  } else {
-  }
-  const nlohmann::json config = nlohmann::json::parse(config_stream);
+SileroVAD::SileroVAD(const std::filesystem::path &model_directory)
+    : checkpoint_(LoadBranchWeights(model_directory),
+                  nlohmann::json::object()) {
+  const nlohmann::json config =
+      omni_common::ReadJson(model_directory / "config.json");
   const nlohmann::json &branch = config.at("branch_16k");
   if (branch.at("sample_rate").get<int>() != kSampleRate ||
       branch.at("chunk_size").get<int>() != kChunkSamples ||
@@ -47,52 +67,12 @@ SileroVAD::SileroVAD(const std::filesystem::path &model_directory) {
                config.value("min_speech_duration_ms", 250),
                config.value("min_silence_duration_ms", 100),
                config.value("speech_pad_ms", 30)};
-  for (const auto &entry :
-       std::filesystem::directory_iterator(model_directory)) {
-    if (entry.path().extension() != ".safetensors") {
-      continue;
-    } else {
-    }
-    auto [loaded, metadata] = mx::load_safetensors(entry.path().string());
-    for (auto &[name, array] : loaded) {
-      // Note (Jiaxin Deng): val_* are conversion reference values, not weights.
-      if (name.rfind(kBranchPrefix, 0) == 0) {
-        weights_.insert_or_assign(
-            name.substr(std::string(kBranchPrefix).size()), array);
-      } else {
-      }
-    }
-  }
   for (const char *name :
        {"stft_conv.weight", "conv1.weight", "conv1.bias", "conv2.weight",
         "conv2.bias", "conv3.weight", "conv3.bias", "conv4.weight",
         "conv4.bias", "lstm.Wx", "lstm.Wh", "lstm.bias", "final_conv.weight",
         "final_conv.bias"}) {
-    Weight(name);
-  }
-  std::vector<mx::array> parameters;
-  for (const auto &[name, array] : weights_)
-    parameters.push_back(array);
-  mx::eval(parameters);
-}
-
-const mx::array &SileroVAD::Weight(const std::string &name) const {
-  const auto found = weights_.find(name);
-  if (found == weights_.end()) {
-    throw std::runtime_error("Silero VAD checkpoint is missing " + name);
-  } else {
-  }
-  return found->second;
-}
-
-mx::array SileroVAD::Conv1d(const mx::array &x, const std::string &name,
-                            int stride, int padding) const {
-  mx::array y = mx::conv1d(x, Weight(name + ".weight"), stride, padding);
-  const auto bias = weights_.find(name + ".bias");
-  if (bias != weights_.end()) {
-    return mx::add(y, bias->second);
-  } else {
-    return y;
+    checkpoint_.Weight(name);
   }
 }
 
@@ -110,7 +90,7 @@ float SileroVAD::Feed(const float *chunk, StreamState &state) const {
                           {static_cast<int>(reflected_indices.size())},
                           mx::int32);
   x = mx::concatenate({x, mx::take(x, indices, -1)}, -1);
-  x = mx::conv1d(mx::expand_dims(x, -1), Weight("stft_conv.weight"),
+  x = mx::conv1d(mx::expand_dims(x, -1), checkpoint_.Weight("stft_conv.weight"),
                  hop_length_, 0);
   const int frames = x.shape(1);
   const mx::array real = mx::slice(x, {0, 0, 0}, {1, frames, cutoff_});
@@ -118,14 +98,15 @@ float SileroVAD::Feed(const float *chunk, StreamState &state) const {
       mx::slice(x, {0, 0, cutoff_}, {1, frames, cutoff_ * 2});
   x = mx::sqrt(
       mx::add(mx::multiply(real, real), mx::multiply(imaginary, imaginary)));
-  x = Relu(Conv1d(x, "conv1", 1, 1));
-  x = Relu(Conv1d(x, "conv2", 2, 1));
-  x = Relu(Conv1d(x, "conv3", 2, 1));
-  x = Relu(Conv1d(x, "conv4", 1, 1));
+  x = Relu(checkpoint_.Conv1d(x, "conv1", 1, 1));
+  x = Relu(checkpoint_.Conv1d(x, "conv2", 2, 1));
+  x = Relu(checkpoint_.Conv1d(x, "conv3", 2, 1));
+  x = Relu(checkpoint_.Conv1d(x, "conv4", 1, 1));
 
   // Note (Jiaxin Deng): MLXNN's LSTM formulation, to match Swift (one timestep
   // per 512-sample chunk).
-  x = mx::addmm(Weight("lstm.bias"), x, mx::transpose(Weight("lstm.Wx")));
+  x = mx::addmm(checkpoint_.Weight("lstm.bias"), x,
+                mx::transpose(checkpoint_.Weight("lstm.Wx")));
   std::optional<omni_common::LstmCell> lstm =
       state.hidden.has_value()
           ? std::optional<omni_common::LstmCell>({*state.hidden, *state.cell})
@@ -135,11 +116,11 @@ float SileroVAD::Feed(const float *chunk, StreamState &state) const {
     const mx::array gates =
         mx::reshape(mx::slice(x, {0, step, 0}, {1, step + 1, 4 * kLstmHidden}),
                     {1, 4 * kLstmHidden});
-    lstm = omni_common::LstmStep(gates, lstm, Weight("lstm.Wh"));
+    lstm = omni_common::LstmStep(gates, lstm, checkpoint_.Weight("lstm.Wh"));
     hidden_steps.push_back(lstm->hidden);
   }
   mx::array out = Relu(mx::stack(hidden_steps, -2));
-  out = mx::sigmoid(Conv1d(out, "final_conv", 1, 0));
+  out = mx::sigmoid(checkpoint_.Conv1d(out, "final_conv", 1, 0));
   const mx::array probability = mx::mean(mx::squeeze(out, -1), 1, true);
   mx::eval({probability, lstm->hidden, lstm->cell});
   state.hidden = lstm->hidden;
@@ -225,6 +206,16 @@ ProbabilitiesToTimestamps(const std::vector<float> &probabilities,
     }
   }
   return padded;
+}
+
+const SileroVAD &SileroVADCache::Load(const std::string &model_directory) {
+  if (model_ == nullptr || model_directory_ != model_directory) {
+    model_.reset();
+    model_ = std::make_unique<SileroVAD>(model_directory);
+    model_directory_ = model_directory;
+  } else {
+  }
+  return *model_;
 }
 
 } // namespace silero_vad

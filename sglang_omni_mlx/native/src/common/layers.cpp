@@ -5,6 +5,7 @@
 #include <cmath>
 #include <fstream>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -152,6 +153,17 @@ mx::array RouteToExperts(const mx::array &hidden, const mx::array &indices,
   }
 }
 
+std::string ReadFile(const std::filesystem::path &path) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    throw std::runtime_error("cannot read " + path.string());
+  } else {
+  }
+  std::ostringstream contents;
+  contents << stream.rdbuf();
+  return contents.str();
+}
+
 nlohmann::json ReadJson(const std::filesystem::path &path) {
   std::ifstream stream(path);
   if (!stream) {
@@ -277,6 +289,30 @@ mx::array Checkpoint::Linear(const mx::array &x,
   }
 }
 
+mx::array Checkpoint::Conv1d(const mx::array &x, const std::string &prefix,
+                             int stride, int padding, int dilation,
+                             int groups) const {
+  const mx::array y = mx::conv1d(x, Weight(prefix + ".weight"), stride, padding,
+                                 dilation, groups);
+  if (Has(prefix + ".bias")) {
+    return mx::add(y, Weight(prefix + ".bias"));
+  } else {
+    return y;
+  }
+}
+
+mx::array Checkpoint::Conv2d(const mx::array &x, const std::string &prefix,
+                             int stride, int padding, int groups) const {
+  const mx::array y =
+      mx::conv2d(x, Weight(prefix + ".weight"), {stride, stride},
+                 {padding, padding}, {1, 1}, groups);
+  if (Has(prefix + ".bias")) {
+    return mx::add(y, Weight(prefix + ".bias"));
+  } else {
+    return y;
+  }
+}
+
 mx::array Checkpoint::LayerNorm(const mx::array &x, const std::string &prefix,
                                 float eps) const {
   return mx::fast::layer_norm(x, Weight(prefix + ".weight"),
@@ -332,6 +368,54 @@ mx::array RelativeShift(const mx::array &scores) {
   padded = mx::slice(padded, {0, 0, 1, 0},
                      {batch, heads, position_length + 1, query_length});
   return mx::reshape(padded, {batch, heads, query_length, position_length});
+}
+
+void FoldBatchNorms(WeightMap &weights, const std::string &norm_name,
+                    float eps) {
+  const std::string suffix = "." + norm_name + ".running_mean";
+  std::vector<std::string> modules;
+  for (const auto &[name, weight] : weights) {
+    if (name.ends_with(suffix)) {
+      modules.push_back(name.substr(0, name.size() - suffix.size()));
+    } else {
+    }
+  }
+  const auto float_weight = [&](const std::string &name) {
+    return mx::astype(weights.at(name), mx::float32);
+  };
+  for (const std::string &module : modules) {
+    const std::string norm = module + "." + norm_name;
+    const std::string convolution = module + ".depthwise_conv";
+    const mx::array scale =
+        mx::multiply(float_weight(norm + ".weight"),
+                     mx::rsqrt(mx::add(float_weight(norm + ".running_var"),
+                                       mx::array(eps))));
+    const mx::array convolution_bias = weights.contains(convolution + ".bias")
+                                           ? float_weight(convolution + ".bias")
+                                           : mx::zeros_like(scale);
+    const mx::array &kernel = weights.at(convolution + ".weight");
+    mx::Shape scale_shape(kernel.ndim(), 1);
+    scale_shape[0] = kernel.shape(0);
+    const mx::Dtype dtype = kernel.dtype();
+    weights.insert_or_assign(
+        convolution + ".weight",
+        mx::astype(mx::multiply(mx::astype(kernel, mx::float32),
+                                mx::reshape(scale, scale_shape)),
+                   dtype));
+    weights.insert_or_assign(
+        convolution + ".bias",
+        mx::astype(
+            mx::add(
+                mx::multiply(mx::subtract(convolution_bias,
+                                          float_weight(norm + ".running_mean")),
+                             scale),
+                float_weight(norm + ".bias")),
+            dtype));
+    for (const char *part : {".weight", ".bias", ".running_mean",
+                             ".running_var", ".num_batches_tracked"}) {
+      weights.erase(norm + part);
+    }
+  }
 }
 
 LstmCell LstmStep(const mx::array &gates, const std::optional<LstmCell> &state,

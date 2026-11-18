@@ -10,10 +10,17 @@
 
 #include "common/audio.h"
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/text.h"
 #include "common/transcription.h"
 
 namespace qwen3_asr {
+
+using omni_common::BatchedKVCache;
+using omni_common::DraftPolicy;
+using omni_common::DraftStatistics;
+
+using omni_common::KVCache;
 
 using omni_common::CollapseTokenLoop;
 using omni_common::FinishReason;
@@ -61,13 +68,6 @@ std::string Strip(const std::string &text) {
   return text.substr(begin, end - begin);
 }
 
-std::string Lowercase(std::string text) {
-  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return text;
-}
-
 std::optional<size_t> FindSubsequence(const std::vector<int> &values,
                                       const std::vector<int> &pattern) {
   if (pattern.size() > values.size()) {
@@ -95,7 +95,7 @@ mx::array PromptMel(const std::vector<float> &samples, AudioLayout layout) {
 
 std::optional<std::string> NormalizeLanguage(const std::string &language) {
   const std::string stripped = Strip(language);
-  const std::string normalized = Lowercase(stripped);
+  const std::string normalized = omni_common::AsciiLowercase(stripped);
   if (stripped.empty()) {
     return std::nullopt;
   } else if (normalized == "cn" || normalized.rfind("zh-", 0) == 0 ||
@@ -109,7 +109,7 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
   } else {
   }
   for (const auto &[unused_code, name] : LanguageCodeToName()) {
-    if (Lowercase(name) == normalized) {
+    if (omni_common::AsciiLowercase(name) == normalized) {
       return name;
     } else {
     }
@@ -612,9 +612,10 @@ Qwen3ASRTranscriber::SplitOutput(const std::vector<int> &output_ids,
         true));
     const size_t separator = prefix.find(' ');
     if (separator != std::string::npos &&
-        Lowercase(prefix.substr(0, separator)) == "language") {
+        omni_common::AsciiLowercase(prefix.substr(0, separator)) ==
+            "language") {
       const std::string value = Strip(prefix.substr(separator + 1));
-      if (!value.empty() && Lowercase(value) != "none") {
+      if (!value.empty() && omni_common::AsciiLowercase(value) != "none") {
         detected = value;
       } else {
       }
@@ -637,6 +638,28 @@ Qwen3ASRTranscriber::SplitOutput(const std::vector<int> &output_ids,
   } else {
   }
   return {text, language};
+}
+
+omni_server::BatchRunner BatchableTranscriptionRunner() {
+  return {[](const omni_server::Transcription &transcription) {
+            return transcription.target<BatchableTranscription>() != nullptr;
+          },
+          [](const std::vector<omni_server::BatchItem> &items,
+             const omni_server::BatchCompletion &finish) {
+            std::vector<BatchRequest> requests;
+            const Qwen3ASRTranscriber *transcriber = nullptr;
+            for (const omni_server::BatchItem &item : items) {
+              const auto *batchable =
+                  item.transcription->target<BatchableTranscription>();
+              transcriber = batchable->transcriber;
+              requests.push_back(
+                  {&batchable->samples, &batchable->options, item.cancel});
+            }
+            transcriber->TranscribeBatch(
+                requests, [&](size_t i, BatchOutcome outcome) {
+                  finish(i, std::move(outcome.result), outcome.error);
+                });
+          }};
 }
 
 } // namespace qwen3_asr

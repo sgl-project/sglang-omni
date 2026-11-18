@@ -117,12 +117,12 @@ mx::array AudioTransformer::Forward(mx::array hidden,
     const mx::array mlp_input = checkpoint_.RmsNorm(
         hidden, prefix + ".post_attention_layernorm", epsilon_);
     hidden = mx::add(
-        hidden, checkpoint_.Linear(
-                    mx::multiply(
-                        omni_common::Silu(checkpoint_.Linear(
-                            mlp_input, prefix + ".mlp.gate_proj")),
-                        checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
-                    prefix + ".mlp.down_proj"));
+        hidden,
+        checkpoint_.Linear(
+            omni_common::Swiglu(
+                checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj"),
+                checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
+            prefix + ".mlp.down_proj"));
   }
   return checkpoint_.RmsNorm(hidden, prefix_ + ".norm", epsilon_);
 }

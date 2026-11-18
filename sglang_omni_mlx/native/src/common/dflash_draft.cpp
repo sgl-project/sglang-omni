@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "qwen3_asr/dflash_draft.h"
+#include "common/dflash_draft.h"
 
 #include <algorithm>
 #include <chrono>
@@ -11,12 +11,11 @@
 #include <utility>
 #include <vector>
 
+#include "common/draft_backoff.h"
 #include "common/generation.h"
-#include "qwen3_asr/draft_backoff.h"
+#include "common/kv_cache.h"
 
-namespace qwen3_asr {
-
-using omni_common::GenerationCancelled;
+namespace omni_common {
 
 namespace mx = mlx::core;
 
@@ -124,7 +123,7 @@ LoadedDraft CheckedDraft(const std::filesystem::path &directory,
   return {std::move(config), std::move(weights)};
 }
 
-nlohmann::json QuantizationConfig(int quantization_bits) {
+nlohmann::json DraftQuantizationConfig(int quantization_bits) {
   nlohmann::json config;
   if (quantization_bits > 0) {
     config["quantization"] = {{"group_size", kQuantizationGroupSize},
@@ -173,7 +172,7 @@ DFlashDraft::DFlashDraft(const std::filesystem::path &directory,
 
 DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
     : checkpoint_(QuantizeWeights(std::move(draft.weights), quantization_bits),
-                  QuantizationConfig(quantization_bits)),
+                  DraftQuantizationConfig(quantization_bits)),
       decoder_(checkpoint_, "",
                Qwen3DecoderConfig::FromJson(
                    draft.config.at("transformer_layer_config"))),
@@ -472,4 +471,4 @@ DraftStatistics DFlashDraft::Decode(
   return statistics;
 }
 
-} // namespace qwen3_asr
+} // namespace omni_common

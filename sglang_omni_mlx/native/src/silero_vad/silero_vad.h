@@ -3,11 +3,13 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "common/layers.h"
 #include "mlx/mlx.h"
 
 namespace silero_vad {
@@ -52,11 +54,7 @@ public:
   const TimestampOptions &defaults() const { return defaults_; }
 
 private:
-  mlx::core::array Conv1d(const mlx::core::array &x, const std::string &name,
-                          int stride, int padding) const;
-  const mlx::core::array &Weight(const std::string &name) const;
-
-  std::unordered_map<std::string, mlx::core::array> weights_;
+  omni_common::Checkpoint checkpoint_;
   int filter_length_ = 256;
   int hop_length_ = 128;
   int pad_ = 64;
@@ -68,5 +66,17 @@ private:
 std::vector<Timestamp>
 ProbabilitiesToTimestamps(const std::vector<float> &probabilities,
                           long sample_count, const TimestampOptions &options);
+
+// The Silero VAD of the last directory asked for, loaded on first use. The old
+// model goes before a new one loads, so two never sit in memory together; a
+// server keeps one, since Voxt sends the same directory every time.
+class SileroVADCache {
+public:
+  const SileroVAD &Load(const std::string &model_directory);
+
+private:
+  std::unique_ptr<SileroVAD> model_;
+  std::string model_directory_;
+};
 
 } // namespace silero_vad

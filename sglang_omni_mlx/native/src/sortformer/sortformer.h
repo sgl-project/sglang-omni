@@ -8,8 +8,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/layers.h"
+#include "common/nemo_features.h"
 #include "mlx/mlx.h"
-#include "sortformer/sortformer_features.h"
 
 namespace sortformer {
 
@@ -66,7 +67,7 @@ struct Config {
   FastConformerConfig fc_encoder;
   TransformerConfig tf_encoder;
   ModulesConfig modules;
-  ProcessorConfig processor;
+  omni_common::NemoProcessorConfig processor;
 };
 
 // One stream's state between feeds (Swift StreamingState). The arrays start as
@@ -118,7 +119,9 @@ public:
   explicit SortformerModel(const std::filesystem::path &model_directory);
 
   const Config &config() const { return config_; }
-  const FeatureExtractor &features() const { return features_; }
+  const omni_common::NemoFeatureExtractor &features() const {
+    return features_;
+  }
   // Seconds per diarization frame: hop_length * subsampling / sample rate.
   float frame_duration() const;
 
@@ -128,18 +131,11 @@ public:
                   const FeedOptions &options = {}) const;
 
 private:
-  const mlx::core::array &Weight(const std::string &name) const;
-  mlx::core::array Linear(const mlx::core::array &x,
-                          const std::string &prefix) const;
-  mlx::core::array LayerNorm(const mlx::core::array &x,
-                             const std::string &prefix, float eps) const;
   mlx::core::array PreEncode(const mlx::core::array &features) const;
   mlx::core::array
   RelativePositionAttention(const mlx::core::array &x,
                             const mlx::core::array &position_embedding,
                             const std::string &prefix) const;
-  mlx::core::array ConformerConvolution(const mlx::core::array &x,
-                                        const std::string &prefix) const;
   mlx::core::array ConformerLayer(const mlx::core::array &x,
                                   const mlx::core::array &position_embedding,
                                   int layer) const;
@@ -151,8 +147,8 @@ private:
   SpeakerProbabilities(const mlx::core::array &embeddings) const;
 
   Config config_;
-  FeatureExtractor features_;
-  std::unordered_map<std::string, mlx::core::array> weights_;
+  omni_common::NemoFeatureExtractor features_;
+  omni_common::Checkpoint checkpoint_;
 };
 
 // Per-speaker segments of frames with probability > threshold, as Swift

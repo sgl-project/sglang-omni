@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/layers.h"
 #include "mlx/mlx.h"
 
 namespace whisper {
@@ -66,31 +67,18 @@ public:
                           int logit_count) const;
 
 private:
-  mlx::core::array LogMel(std::span<const float> window_samples) const;
-  const mlx::core::array &Weight(const std::string &name) const;
-  mlx::core::array Linear(const mlx::core::array &x,
-                          const std::string &prefix) const;
-  mlx::core::array LayerNorm(const mlx::core::array &x,
-                             const std::string &prefix) const;
-  mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,
-                          int stride) const;
   mlx::core::array Attention(const mlx::core::array &queries_input,
                              const mlx::core::array &keys,
                              const mlx::core::array &values,
                              const std::string &prefix, int head_count,
-                             const std::optional<mlx::core::array> &mask) const;
+                             bool is_causal) const;
   mlx::core::array EncoderLayer(const mlx::core::array &x, int layer) const;
   mlx::core::array DecoderLayer(const mlx::core::array &x, int layer,
                                 const mlx::core::array &encoder_states,
-                                const std::optional<mlx::core::array> &mask,
-                                DecoderLayerCache &cache) const;
+                                bool is_causal, DecoderLayerCache &cache) const;
 
   WhisperConfig config_;
-  // The log-mel front end's periodic Hann window [400] and mel filters
-  // [201, mel_bins].
-  mlx::core::array hann_window_;
-  mlx::core::array mel_filters_;
-  std::unordered_map<std::string, mlx::core::array> weights_;
+  omni_common::Checkpoint checkpoint_;
 };
 
 } // namespace whisper

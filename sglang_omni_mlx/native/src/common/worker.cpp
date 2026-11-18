@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "qwen3_asr/worker.h"
+#include "common/worker.h"
 
 #include <algorithm>
 
 #include "common/generation.h"
 #include "common/transcription.h"
 
-namespace qwen3_asr {
+namespace omni_server {
 
 using omni_common::GenerationCancelled;
 using omni_common::TranscriptionResult;
 
 TranscriptionWorker::TranscriptionWorker(
     std::function<void()> load, std::function<void()> release_idle_memory,
-    int max_batch)
-    : max_batch_(max_batch) {
+    int max_batch, std::optional<BatchRunner> batch_runner)
+    : max_batch_(max_batch), batch_runner_(std::move(batch_runner)) {
   std::promise<void> loaded;
   std::future<void> loaded_future = loaded.get_future();
   thread_ = std::thread(&TranscriptionWorker::Run, this, std::move(loaded),
@@ -74,9 +74,10 @@ void TranscriptionWorker::Run(std::promise<void> loaded,
       queue_.pop_front();
       // Whatever batchable requests are already waiting decode together;
       // nothing waits for more to arrive.
-      if (jobs.front().transcription.target<BatchableTranscription>()) {
+      if (batch_runner_.has_value() &&
+          batch_runner_->accepts(jobs.front().transcription)) {
         while (static_cast<int>(jobs.size()) < max_batch_ && !queue_.empty() &&
-               queue_.front().transcription.target<BatchableTranscription>()) {
+               batch_runner_->accepts(queue_.front().transcription)) {
           jobs.push_back(std::move(queue_.front()));
           queue_.pop_front();
         }
@@ -104,20 +105,12 @@ void TranscriptionWorker::Run(std::promise<void> loaded,
     if (jobs.size() > 1) {
       // Note (khazic): a request cancelled while queued never starts; the
       // batch checks each flag before it prefills.
-      std::vector<BatchRequest> requests;
-      const Qwen3ASRTranscriber *transcriber = nullptr;
+      std::vector<BatchItem> items;
       for (const Job &job : jobs) {
-        const auto *batchable =
-            job.transcription.target<BatchableTranscription>();
-        transcriber = batchable->transcriber;
-        requests.push_back(
-            {&batchable->samples, &batchable->options, job.cancel.get()});
+        items.push_back({&job.transcription, job.cancel.get()});
       }
       try {
-        transcriber->TranscribeBatch(
-            requests, [&](size_t i, BatchOutcome outcome) {
-              finish(i, std::move(outcome.result), outcome.error);
-            });
+        batch_runner_->run(items, finish);
       } catch (...) {
         for (size_t i = 0; i < jobs.size(); ++i) {
           if (!finished[i]) {
@@ -200,4 +193,4 @@ void TranscriptionWorker::CancelAll() {
   }
 }
 
-} // namespace qwen3_asr
+} // namespace omni_server
