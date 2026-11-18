@@ -31,16 +31,28 @@ type transcriptPreview struct {
 	// restyle relayouts an overlay card when a preview it measured goes
 	// away; the main window's preview leaves it nil.
 	restyle func()
+	// queue replaces Window.Update in tests, so a test observes the parse
+	// and its completion without a running event loop.
+	queue func(*mygo.Window, func())
 }
 
 var transcriptUpdate = mygo.NewEvent[transcriptpreview.Update]("transcript-preview")
+
+// schedule runs fn on the window's queue.
+func (p *transcriptPreview) schedule(win *mygo.Window, fn func()) {
+	if p.queue != nil {
+		p.queue(win, fn)
+		return
+	}
+	win.Update(fn)
+}
 
 // request takes the input a frame shows and renders it when it changed.
 func (p *transcriptPreview) request(win *mygo.Window, in transcriptPreviewInput) {
 	if !p.adopt(in) {
 		return
 	}
-	win.Update(func() { p.update(win) })
+	p.schedule(win, func() { p.update(win) })
 }
 
 // adopt records the input a frame shows and reports whether the markup
@@ -76,7 +88,7 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 	p.running = true
 	go func() {
 		markup := transcriptMarkup(in.source, in.streaming)
-		win.Update(func() {
+		p.schedule(win, func() {
 			p.running = false
 			if p.closed || win.IsDestroyed() {
 				return

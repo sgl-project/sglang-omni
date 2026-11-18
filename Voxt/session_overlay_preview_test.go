@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/egoist/mygo"
+)
 
 // The answer card's formula preview follows the card's lifecycle: a
 // finished stream measures its final height, a hidden or closed card
@@ -41,13 +45,21 @@ func TestPlainEndingRelayoutsTheCard(t *testing.T) {
 	// A stream whose markup only heals while it streams (the unclosed $$
 	// is preserved by inlineMathTail) ends as plain text with the source
 	// unchanged: adopt already dropped the height, and the final parse
-	// must still take the page down and relayout the card.
+	// must still take the page down and relayout the card. The window's
+	// queue runs inline so the test observes the completed parse; the
+	// two hops are request scheduling the parse and the parse scheduling
+	// its completion.
 	in := transcriptPreviewInput{key: "card", source: "so $$x^2", streaming: true}
 	if transcriptMarkup(in.source, true) == "" {
 		t.Fatal("this regression needs a nonempty streaming markup")
 	}
 	if transcriptMarkup(in.source, false) != "" {
 		t.Fatal("this regression needs the final markup to be plain")
+	}
+	hops := make(chan struct{}, 4)
+	schedule := func(_ *mygo.Window, fn func()) {
+		fn()
+		hops <- struct{}{}
 	}
 	restyled := 0
 	preview := &transcriptPreview{
@@ -56,17 +68,13 @@ func TestPlainEndingRelayoutsTheCard(t *testing.T) {
 		ready:   true,
 		height:  132,
 		restyle: func() { restyled++ },
+		queue:   schedule,
 	}
 	final := in
 	final.streaming = false
-	if !preview.adopt(final) {
-		t.Fatal("a stream that ends renders once more")
-	}
-	if preview.height != 0 {
-		t.Fatalf("adopt kept the stream's height %d", preview.height)
-	}
-	// The parse adopt scheduled, completed the way update completes it.
-	preview.parsed(nil, preview.input, transcriptMarkup(preview.input.source, preview.input.streaming))
+	preview.request(&mygo.Window{}, final)
+	<-hops
+	<-hops
 	if preview.ready || preview.height != 0 || preview.view != nil {
 		t.Fatalf("the plain ending kept the page: ready=%v height=%d view=%v", preview.ready, preview.height, preview.view != nil)
 	}
@@ -75,8 +83,10 @@ func TestPlainEndingRelayoutsTheCard(t *testing.T) {
 	}
 	// Plain from the start: no page ever showed, no relayout.
 	restyled = 0
-	plain := &transcriptPreview{input: in, restyle: func() { restyled++ }}
-	plain.parsed(nil, plain.input, transcriptMarkup(plain.input.source, false))
+	plain := &transcriptPreview{restyle: func() { restyled++ }, queue: schedule}
+	plain.request(&mygo.Window{}, final)
+	<-hops
+	<-hops
 	if restyled != 0 {
 		t.Fatalf("a preview that never showed relayouts (restyled %d times)", restyled)
 	}
