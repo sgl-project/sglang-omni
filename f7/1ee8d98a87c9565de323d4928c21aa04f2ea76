@@ -1,0 +1,23 @@
+sglang_omni/models/duo/realtime.py
+  s_9be4bd449be508::t_e06fcb4ec8e8dc 1-20,46-51,53-76,77-1080
+sglang_omni/utils/audio.py
+  s_9be4bd449be508::t_6d257af399e9dc 22-26
+tests/unit_test/serve/test_realtime_duo_worker.py
+  s_9be4bd449be508::t_922733af3cb954 1-15,22-40,41-535
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f71ee8d98a87c9565de323d4928c21aa04f2ea76",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
