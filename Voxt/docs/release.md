@@ -200,10 +200,10 @@ york@actnow.dev 要开启双重认证（App 专用密码需要）。也可以改
 
 ### 1.3 更新签名密钥
 
-VoxtNew 有**自己的**一对密钥（10-17 在 mac-air 上用 `go tool mygo keygen` 生成，不再和 Auralink 共用）：
+Voxt 2 有**自己的**一对密钥（用 `go tool mygo keygen` 生成，取代了 10-17 给 VoxtNew 生成的那一对；2.1.1 之前没有 Voxt 2 构建用过旧的那对）：
 
-- 公钥 `MbROqANE8pK8IQ8hdtUtR/m5SqUY2nTgzHwrQt04Zps=`，Voxt Release 工作流写进构建时的 `updates.publicKey`；旧的 actnow.dev 发布流程也要在官网面板 /panel/releases 的 voxtnew 设置里填同一个（由 ActNow 项目填）。
-- 私钥在 mac-air 的 `~/.config/voxtnew-release/update-keys/mygo-update.key`（600，目录 700；同目录的 `mygo-update.pub` 是公钥），GitHub 正式版和 beta 构建用 `voxt-release` 环境里的同一把 `MYGO_UPDATER_PRIVATE_KEY`，**不进仓库**、不进日志。
+- 公钥 `PPX1glcG71+Xyk/V2veU1p0QeyX1RKRFPeAG2++lUEE=`，Voxt Release 工作流写进构建时的 `updates.publicKey`；旧的 actnow.dev 发布流程仍用 VoxtNew 原来的那对密钥，和这里无关。
+- 私钥在发布用的 Mac 上：`~/.config/voxtnew-release/update-keys/mygo-update.key`（600，目录 700；同目录的 `mygo-update.pub` 是公钥），GitHub 正式版和 beta 构建用 `voxt-release` 环境里的同一把 `MYGO_UPDATER_PRIVATE_KEY`，**不进仓库**、不进日志。
 
 `release.sh` 有身份签名时自己找私钥：环境变量 `MYGO_UPDATER_PRIVATE_KEY`（密钥本身），否则 `VOXTNEW_UPDATE_KEY` 指的文件（默认就是上面那个路径），交给 MyGo 的是文件路径（`updates.privateKey`），密钥不进命令行和环境。开始前它核对私钥和 `release/mygo.release.json` 的公钥是一对，不是就停下。
 
