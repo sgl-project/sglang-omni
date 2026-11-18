@@ -1,45 +1,18 @@
 # Fun-ASR-Nano
 
-[Fun-ASR-Nano](https://arxiv.org/abs/2509.12508) is a multilingual audio
-transcription model served
-through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. It accepts
-one uploaded audio file per request and returns text.
-
-Fun-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 400. Use `/v1/audio/transcriptions`.
+[Fun-ASR-Nano](https://arxiv.org/abs/2509.12508) transcribes audio through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. It runs one ASR stage on one GPU and accepts clips up to 30 seconds.
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md),
-then download the model:
+Follow the [installation guide](../get_started/installation.md) or the [Apple Silicon installation guide](../other_platforms/installation_apple_silicon.md). Use the Hugging Face variant of the checkpoint shown below.
 
 ```bash
-# Use the -hf variant
 hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
-```
-
-## Apple Silicon
-
-Fun-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
-with the [Apple Silicon installer](../other_platforms/installation_apple_silicon.md)
-and follow its environment-activation and `DYLD_LIBRARY_PATH` steps; TorchCodec
-needs Homebrew's keg-only FFmpeg libraries on the path before the server starts.
-
-Use the official `FunAudioLLM/Fun-ASR-Nano-2512-hf` checkpoint with unquantized
-BF16 weights; no converted artifact is needed.
-Inference runs one request at a time and additional requests queue. Use
-`temperature=0` and upload audio segments no longer than 30 seconds. JSON and
-SSE transcription are supported; quantized checkpoints are not.
-
-### Torch/MPS
-
-```bash
-sgl-omni serve \
-  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
 ```
 
 ## Server Configuration
 
-Fun-ASR-Nano runs a single ASR stage on one GPU.
+Start the server on port 8000.
 
 ```bash
 sgl-omni serve \
@@ -49,6 +22,8 @@ sgl-omni serve \
 
 ## Transcribe Audio
 
+Run this request from the repository root to transcribe the included English sample. If you installed from a package, [download the sample WAV](../get_started/quickstart.md#send-a-request) and replace `tests/data/query_to_cars.wav` with its path. The JSON response contains the transcript in `text`.
+
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F model=FunAudioLLM/Fun-ASR-Nano-2512-hf \
@@ -57,166 +32,52 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F response_format=json
 ```
 
-```python
-import requests
-
-with open("tests/data/query_to_cars.wav", "rb") as f:
-    resp = requests.post(
-        "http://localhost:8000/v1/audio/transcriptions",
-        data={
-            "model": "FunAudioLLM/Fun-ASR-Nano-2512-hf",
-            "language": "en",
-            "response_format": "json",
-        },
-        files={"file": ("query_to_cars.wav", f, "audio/wav")},
-        timeout=300,
-    )
-
-resp.raise_for_status()
-print(resp.json()["text"])
-```
+For the [shared Python example](../basic_usage/asr.md#basic-transcription), set `model` to `FunAudioLLM/Fun-ASR-Nano-2512-hf` and add `"language": "en"` to the form data for this sample.
 
 ## Stream Transcription
 
-Set the multipart `stream` field to `true` and keep `response_format` as
-`json` or `text` to receive Server-Sent Events (SSE):
-
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/transcriptions \
-  -F model=FunAudioLLM/Fun-ASR-Nano-2512-hf \
-  -F file=@tests/data/query_to_cars.wav \
-  -F language=en \
-  -F response_format=json \
-  -F stream=true
-```
-
-The response contains zero or more `transcript.text.delta` events, followed
-by one `transcript.text.done` event with the complete post-processed
-transcript, then `data: [DONE]`. Streaming primarily reduces time to first
-text; it does not change the final transcript.
+Use the [shared SSE example](../basic_usage/asr.md#stream-transcription) and set `model` to `FunAudioLLM/Fun-ASR-Nano-2512-hf`. Keep `language=en` for the sample. Once the full clip is uploaded, the server streams transcript text over Server-Sent Events.
 
 ## Request Parameters
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `file` | file | required | Audio file uploaded as multipart form data |
-| `model` | string | server default | Model identifier |
-| `language` | string | unset | Language hint. `en`/`english`/`英文` transcribe to English; `zh`/`cn`/`chinese`/`中文` (or unset) transcribes to Chinese; other values pass through as the target language |
-| `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
-| `stream` | boolean | `false` | Emit SSE text deltas. Streaming accepts only `json` or `text` response formats |
-| `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default. A negative value returns HTTP 422 |
-| `max_new_tokens` | integer | duration-based | Generation budget scaled to the audio duration. Explicit values must be between 1 and 200 |
+See [ASR Model Usage](../basic_usage/asr.md#request-parameters) for the shared fields. Fun-ASR-Nano handles these fields as follows.
+
+| Parameter | Fun-ASR-Nano behavior |
+|---|---|
+| `language` | `en`, `english`, and `英文` request English output. `zh`, `cn`, `chinese`, and `中文` use the same generic transcription prompt as an omitted value. Other values are passed through to the model's language prompt. |
+| `prompt` | Supply a comma-separated list of names or terms to bias transcription toward those words. |
+| `response_format` | Use `json`, `text`, or `verbose_json` for a complete response. `verbose_json` puts a non-empty transcript in one segment spanning the clip. Subtitle formats require model-derived timestamps and return HTTP 400 for Fun-ASR-Nano. |
+| `temperature` | Defaults to `0.0` (greedy decoding). Torch/MPS requires this value. |
+| `max_new_tokens` | Defaults to a budget scaled to the clip duration. With the stock configuration, explicit values range from 1 to 200. |
+
+## Apple Silicon
+
+Follow the [Apple Silicon installation guide](../other_platforms/installation_apple_silicon.md) for environment activation and FFmpeg library setup.
+
+### Torch/MPS
+
+Use the [server command above](#server-configuration) with the official BF16 checkpoint. This path processes one request at a time and queues additional requests. Use `temperature=0` with JSON or SSE transcription.
 
 ## Speculative Decoding
 
-The decoder can verify tokens proposed by the DFlash draft [`wilsonzheng0327/Fun-ASR-Nano-dflash`](https://huggingface.co/wilsonzheng0327/Fun-ASR-Nano-dflash) on one CUDA GPU. The example config pins the draft revision:
+On one CUDA GPU, use the checked-in [DFlash configuration](https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/fun_asr_nano_dflash.yaml) to load the pinned draft alongside the target model. Start the server with this configuration from the repository root.
 
 ```bash
 sgl-omni serve --config examples/configs/fun_asr_nano_dflash.yaml --port 8000
 ```
 
-- **Accuracy.** The decoder verifies every proposed token. On SeedTTS, corpus WER is 1.86% in both modes for EN, and 1.44% without the draft against 1.42% with it for ZH.
-- **Sampling.** `temperature` works. Requests with `repetition_penalty` are rejected, because the draft worker applies penalties once per verify block.
-- **Latency.** Streaming time to first text is 5% higher at concurrency 1 (13.7 against 13.0 ms median), lower at 4, and about 20% higher at 16. At 64 the median is 70% higher and p95 about the same.
-- **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes the draft half as fast as no draft at concurrency 1. Without a draft it stays on, since it speeds up concurrency 1 by about 17%. A server with the draft therefore starts in about 30 s, against about 3 minutes without it.
-- **Cost.** The draft's KV takes about 15% of the pool, and async decode is off.
-
-The 70-layer audio encoder takes a large share of each request, so the gain is well below the draft's accept length of about 5.3 tokens per verify. Speedup over the same config without the draft, on one H200 with SGLang 0.5.23, two fresh servers per side in A B B A order, and 600 SeedTTS clips per language with the prefix cache off:
-
-| Concurrency | SeedTTS EN | SeedTTS ZH |
-|---:|---:|---:|
-| 1 | 1.34x | 1.28x |
-| 4 | 1.61x | 1.42x |
-| 8 | 1.29x | 1.20x |
-| 16 | 1.08x | 1.06x |
-| 32 | 1.13x | 1.10x |
-| 64 | 1.11x | 1.07x |
-
-SeedTTS clips average 4.7 s. SeedTTS EN at concurrency 1 goes from 32.4 to 43.2 samples per second, and p95 latency is 2 to 39% lower at every concurrency in both languages.
+With this profile, requests that set `repetition_penalty` are rejected. The profile disables torch compile and async decode. See the [DFlash evaluation](https://github.com/sgl-project/sglang-omni/pull/3453) for accuracy, throughput, and time to first text at different concurrency levels.
 
 ## Benchmarking
 
-SeedTTS EN/ZH concurrency/WER benchmarking for Fun-ASR-Nano lives in
-`benchmarks/eval/benchmark_asr_seedtts.py`. Pass the Fun-ASR-Nano model
-path with `--model-path`.
-
-```bash
-# Download the test set once:
-python -m benchmarks.dataset.prepare --dataset seedtts
-
-# Launch Fun-ASR-Nano:
-sgl-omni serve --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
-
-# Sweep the full SeedTTS EN set (1088 clips) at 1..64 concurrency, 3 repeats:
-python -m benchmarks.eval.benchmark_asr_seedtts \
-  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
-  --concurrencies 1,2,4,8,16,32,64 --repeats 3
-
-# Quick smoke on a 20-sample subset:
-python -m benchmarks.eval.benchmark_asr_seedtts \
-  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
-  --max-samples 20 --concurrencies 2 --repeats 1
-
-# Measure text TTFT and inter-chunk latency through the SSE endpoint:
-python -m benchmarks.eval.benchmark_asr_seedtts \
-  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
-  --max-samples 20 --concurrencies 2 --repeats 1 --stream
-```
+Follow the [ASR benchmark runbook](../developer_reference/asr_bench.md) for the pinned model and dataset revisions. Use the Fun-ASR-Nano checkpoint for `--model-path` in the [shared SeedTTS example](../basic_usage/asr.md#benchmarking).
 
 ## Benchmark Results
 
-Measured on a single H100 80 GB (bf16, DP=1) against the full SeedTTS sets,
-with the pre-coalescing stage defaults (`max_running_requests=32`,
-`request_build_max_pending=16`, prefill coalescing off). Each row is the mean
-of 3 runs with one discarded warmup pass per level. RTF is processing time
-divided by audio duration (lower is better). RTFx is successful input-audio
-seconds divided by wall-clock seconds (higher is better).
-
-SeedTTS EN (1088 clips, mean clip length 4.69 s). Corpus WER was 0.0171 at
-every level through concurrency 32:
-
-| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | RTFx |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 26.44 | 0.038 | 0.047 | 0.0082 | 124 |
-| 2 | 42.55 | 0.047 | 0.058 | 0.0102 | 200 |
-| 4 | 62.35 | 0.064 | 0.088 | 0.0139 | 293 |
-| 8 | 90.24 | 0.088 | 0.121 | 0.0192 | 423 |
-| 16 | 127.46 | 0.125 | 0.167 | 0.0270 | 598 |
-| 32 | 127.44 | 0.249 | 0.334 | 0.0539 | 598 |
-| 64 | 137.98 | 0.453 | 0.542 | 0.0988 | 647 |
-
-SeedTTS ZH (2020 clips, mean clip length 4.68 s). Corpus WER, effectively
-character level after normalization, was 0.0135 at every level through
-concurrency 32:
-
-| Concurrency | Throughput (samples/s) | Mean latency (s) | p95 latency (s) | RTF mean | RTFx |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 26.96 | 0.037 | 0.048 | 0.0080 | 126 |
-| 2 | 45.97 | 0.043 | 0.056 | 0.0094 | 215 |
-| 4 | 58.28 | 0.069 | 0.093 | 0.0148 | 273 |
-| 8 | 79.76 | 0.100 | 0.138 | 0.0216 | 373 |
-| 16 | 138.23 | 0.116 | 0.160 | 0.0249 | 647 |
-| 32 | 167.42 | 0.190 | 0.264 | 0.0410 | 784 |
-| 64 | 165.75 | 0.381 | 0.475 | 0.0825 | 776 |
-
-A single worker sheds requests with HTTP 503 by design once the
-request-build backlog is full; the current default admits at most 32 pending
-builds per worker. Under the pre-coalescing defaults above (16 pending
-builds) that cost roughly 2 to 5 percent of requests at concurrency 64.
-Qwen3-ASR shows the same shedding behavior at this level. For higher client
-concurrency, serve behind the DP=2 managed router, matching the ASR CI
-topology.
+See the [recorded H100 80 GB results](https://github.com/sgl-project/sglang-omni/blob/eeaf0390f5bcd4cd335217622db253df03c7fc7a/docs/cookbook/fun_asr.md#benchmark-results) for the SeedTTS English and Chinese sweeps and the queue settings used in that run.
 
 ## Known Limitations
 
-- The endpoint accepts one uploaded file per request.
-- Each uploaded audio segment must be 30 seconds or shorter, matching the
-  official Fun-ASR VAD segment limit. Split longer recordings before upload.
-- `prompt` carries context biasing: a comma-separated list of terms likely to
-  appear in the audio (names, jargon). Each term becomes a hotword in the
-  model's prompt. Biasing raises the model's preference for the supplied
-  terms; it does not force them, and an irrelevant list can hurt accuracy.
-- `itn` and explicit `hotwords` remain available to in-process callers of the
-  request builder; explicit `hotwords` take precedence over `prompt`.
-- Audio is resampled to 16 kHz before transcription.
-- bf16 is strongly recommended; fp16 can overflow to NaN in the adaptor path.
+- Split recordings longer than 30 seconds before uploading. The server resamples audio to 16 kHz before feature extraction.
+- Use the transcription route. Fun-ASR-Nano returns HTTP 400 on [the speech translation route](../basic_usage/audio_translations.md).
+- Use BF16 weights. FP16 can overflow in the audio adaptor, and Torch/MPS requires the unquantized checkpoint.
