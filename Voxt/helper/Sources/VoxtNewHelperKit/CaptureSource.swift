@@ -98,6 +98,41 @@ public func restartOrder(devices: [String], current: String?, gone: Bool, toDefa
     return order + [nil]
 }
 
+/// Counts the engines of one recording that delivered no audio: the
+/// watchdog's silent engine and any engine rebuilt (a configuration
+/// change, a lost input) before its first buffer count the same, so an
+/// input that keeps reconfiguring itself without a sound cannot loop
+/// forever. The second silent engine starts on the default input, a
+/// third ends the job; an engine that delivers audio resets the count.
+public struct NoAudioEscalation: Sendable {
+    /// What the next engine start does after a silent one.
+    public enum Step: Sendable {
+        /// Try the inputs of restartOrder again.
+        case order
+        /// Go straight to the default input.
+        case `default`
+        /// Give up: no input is delivering audio.
+        case end
+    }
+
+    /// The engines in a row that delivered no audio.
+    public private(set) var silentEngines = 0
+
+    public init() {}
+
+    /// The engine being replaced delivered no audio.
+    public mutating func silentEngine() -> Step {
+        silentEngines += 1
+        return silentEngines > 2 ? .end : silentEngines == 2 ? .default : .order
+    }
+
+    /// The running engine delivered audio: the next silence counts from
+    /// one again.
+    public mutating func engineHeard() {
+        silentEngines = 0
+    }
+}
+
 // MARK: The test-only file input
 
 /// VOXTNEW_HELPER_CAPTURE_FILE (tests only): capture.start records this

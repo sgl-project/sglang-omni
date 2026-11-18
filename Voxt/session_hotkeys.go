@@ -79,7 +79,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	if a.pressDuringSelection(e) { // dictionary_selection.go
 		return
 	}
-	if e.Binding == proto.HotkeyCancel && a.answer.langOpen {
+	if e.Binding == proto.HotkeyCancel && a.answer.ui.langOpen {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
 		return
 	}
@@ -107,11 +107,11 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		}
 		switch action {
 		case hotkey.CardCopy: // the card's c: what its Copy does (#4127)
-			if a.cardNow().canCopy {
-				a.copyAnswer(func(s string) { a.copyRecent(s) })
+			if a.answer.open && a.answer.text != "" {
+				a.copyAnswer()
 			}
 		case hotkey.CardInsert: // the card's r: what its Insert does
-			if a.cardNow().canInsert {
+			if a.answer.open && a.answer.problem == nil && a.answer.text != "" && !a.cardSessionLive() {
 				a.insertAnswer()
 			}
 		}

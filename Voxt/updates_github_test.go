@@ -269,13 +269,13 @@ func TestReleaseDialog(t *testing.T) {
 		t.Fatalf("checking: %q", firstTexts(tt))
 	}
 	click(t, tt, "Cancel")
-	if a.relOpen || has(tt, "Checking for updates…") {
+	if a.updUI.relOpen || has(tt, "Checking for updates…") {
 		t.Error("Cancel did not close it")
 	}
 	q()
 	a.postQueue = nil
 	frames(tt)
-	if a.relOpen {
+	if a.updUI.relOpen {
 		t.Error("the late answer opened it")
 	}
 
@@ -284,12 +284,12 @@ func TestReleaseDialog(t *testing.T) {
 		t.Fatalf("available: %q", firstTexts(tt))
 	}
 	click(t, tt, "Download")
-	if a.relOpen || !slices.Equal(*got, []string{"https://dl/dmg-2.0.4"}) {
-		t.Errorf("Download: open %v, opened %v", a.relOpen, *got)
+	if a.updUI.relOpen || !slices.Equal(*got, []string{"https://dl/dmg-2.0.4"}) {
+		t.Errorf("Download: open %v, opened %v", a.updUI.relOpen, *got)
 	}
 	a.checkForUpdates()
 	click(t, tt, "Later")
-	if a.relOpen {
+	if a.updUI.relOpen {
 		t.Error("Later did not close it")
 	}
 	if slices.ContainsFunc(a.notices, func(n core.Notification) bool { return n.ID == problemRelease }) {
@@ -303,7 +303,7 @@ func TestReleaseDialog(t *testing.T) {
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
-	if a.relOpen {
+	if a.updUI.relOpen {
 		t.Error("Escape did not close it")
 	}
 
@@ -318,7 +318,7 @@ func TestReleaseDialog(t *testing.T) {
 		t.Errorf("try again: %q", firstTexts(tt))
 	}
 	click(t, tt, "Done")
-	if a.relOpen {
+	if a.updUI.relOpen {
 		t.Error("Done did not close it")
 	}
 }
@@ -341,8 +341,8 @@ func TestReleaseAutoCheck(t *testing.T) {
 
 	a.autoCheckReleases()
 	a.autoCheckReleases() // a day has not passed: no second request
-	if c := cards(a); len(c) != 1 || c[0].Title != "Voxt 2.0.4 is available" || a.relOpen || len(srv.requests) != 1 {
-		t.Fatalf("cards %+v, dialog %v, requests %d", c, a.relOpen, len(srv.requests))
+	if c := cards(a); len(c) != 1 || c[0].Title != "Voxt 2.0.4 is available" || a.updUI.relOpen || len(srv.requests) != 1 {
+		t.Fatalf("cards %+v, dialog %v, requests %d", c, a.updUI.relOpen, len(srv.requests))
 	}
 	a.navigate("/home")
 	if !has(tt, "Voxt 2.0.4 is available") || !has(tt, "Download") {
@@ -395,8 +395,8 @@ func TestReleaseAutoCheck(t *testing.T) {
 	a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck = time.Time{} })
 	n := len(a.notices)
 	a.autoCheckReleases()
-	if len(a.notices) != n || a.relOpen || len(a.toasts) != 0 {
-		t.Errorf("a failure showed: %+v %v %q", a.notices, a.relOpen, a.toasts)
+	if len(a.notices) != n || a.updUI.relOpen || len(a.toasts) != 0 {
+		t.Errorf("a failure showed: %+v %v %q", a.notices, a.updUI.relOpen, a.toasts)
 	}
 	a.upd.SetAutomaticChecks(false)
 	before := len(srv.requests)

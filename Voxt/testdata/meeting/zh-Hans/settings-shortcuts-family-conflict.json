@@ -1,0 +1,179 @@
+{
+  "name": "settings-shortcuts-family-conflict",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/shortcuts",
+    "shown_path": "/settings/shortcuts",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "语音识别模型",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "语言模型",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "shortcuts": {
+      "accessibility_installed": true,
+      "strict_shortcuts": false,
+      "preset": {
+        "options": [
+          {
+            "id": "option",
+            "title": "右 ⌥（默认）",
+            "about": "右 ⌥：单手就能按，是 Voxt 的默认方案。fn 是地球键或与 Auralink 共用时，选它更合适。"
+          },
+          {
+            "id": "fn",
+            "title": "fn（和 Auralink 相同）",
+            "about": "fn：与 Auralink 和很多 Voxt 1.x 的设置一致。注意可能与地球键或输入法冲突。"
+          },
+          {
+            "id": "command",
+            "title": "⌘ 组合",
+            "about": "⌘ 组合：只用右 ⌘，离字母键远。适合要用 Option 键打字的用户。"
+          },
+          {
+            "id": "mouseMiddle",
+            "title": "鼠标中键 + fn⇧",
+            "about": "鼠标中键 + fn⇧：单击滚轮转录，双击改写。鼠标快捷键需要辅助功能权限。"
+          }
+        ],
+        "selected": "右 ⌥（默认）",
+        "about": "你自己改过的快捷键保持不变。",
+        "warnings": null
+      },
+      "rows": [
+        {
+          "feature": "transcribe",
+          "index": 0,
+          "path": "/transcribe",
+          "title": "转录",
+          "page_title": "转录",
+          "icon": "transcribe",
+          "key_text": "右 ⌥",
+          "trigger_text": "点按",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "problems": [
+            "Fixture Other App 的“Fixture transcription”也在用"
+          ]
+        },
+        {
+          "feature": "translate",
+          "index": 0,
+          "path": "/translate",
+          "title": "翻译",
+          "page_title": "翻译",
+          "icon": "translate",
+          "key_text": "右 ⌥ ⇧",
+          "trigger_text": "点按",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "problems": null
+        },
+        {
+          "feature": "rewrite",
+          "index": 0,
+          "path": "/rewrite",
+          "title": "改写",
+          "page_title": "改写",
+          "icon": "rewrite",
+          "key_text": "⌃ 右 ⌥",
+          "trigger_text": "点按",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "problems": null
+        },
+        {
+          "feature": "paste-last",
+          "index": 0,
+          "path": "/transcribe",
+          "title": "粘贴最近结果",
+          "page_title": "转录",
+          "icon": "paste",
+          "key_text": "⌃⌥V",
+          "trigger_text": "点按",
+          "has_shortcut": true,
+          "needs_accessibility": false,
+          "problems": null
+        },
+        {
+          "feature": "cancel",
+          "index": 0,
+          "path": "/transcribe",
+          "title": "取消录音",
+          "page_title": "转录",
+          "icon": "cancel",
+          "key_text": "Esc",
+          "trigger_text": "点按",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "problems": null
+        },
+        {
+          "feature": "note",
+          "index": 0,
+          "path": "/notes",
+          "title": "笔记",
+          "page_title": "笔记",
+          "icon": "note",
+          "key_text": "右 ⌘",
+          "trigger_text": "点按",
+          "has_shortcut": true,
+          "needs_accessibility": true,
+          "problems": null
+        }
+      ]
+    }
+  }
+}

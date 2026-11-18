@@ -188,7 +188,12 @@ func (a *Atlas) Repack(rects []image.Rectangle) ([]image.Point, bool) {
 		order[i] = i
 	}
 	slices.SortFunc(order, func(i, j int) int {
-		return cmp.Or(cmp.Compare(rects[j].Dy(), rects[i].Dy()), cmp.Compare(rects[j].Dx(), rects[i].Dx()))
+		return cmp.Or(
+			cmp.Compare(rects[j].Dy(), rects[i].Dy()),
+			cmp.Compare(rects[j].Dx(), rects[i].Dx()),
+			cmp.Compare(rects[i].Min.Y, rects[j].Min.Y),
+			cmp.Compare(rects[i].Min.X, rects[j].Min.X),
+		)
 	})
 	plan := Atlas{W: a.W, H: a.H, top: a.H}
 	pos := make([]image.Point, len(rects))
