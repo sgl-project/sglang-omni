@@ -1,0 +1,14 @@
+{
+  "name": "updates-release-checking",
+  "kind": "updates-release",
+  "updates_release": {
+    "available": true,
+    "done": false,
+    "newer": false,
+    "title": "Checking for updates…",
+    "subtitle": "",
+    "error_text": "",
+    "notes": "",
+    "download": ""
+  }
+}
