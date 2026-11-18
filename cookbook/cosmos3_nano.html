@@ -604,6 +604,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#requirements">Requirements</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#interleaved-understanding-and-generation">Interleaved understanding and generation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#direct-generation">Direct generation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#intel-xpu">Intel XPU</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reusing-the-serving-pipeline">Reusing the serving pipeline</a></li>
 </ul>
             </nav>
@@ -659,6 +660,51 @@ curl<span class="w"> </span>-N<span class="w"> </span>http://127.0.0.1:8000/gene
 <h2>Direct generation<a class="headerlink" href="#direct-generation" title="Link to this heading">#</a></h2>
 <p>For native generation without interleaving, change <code class="docutils literal notranslate"><span class="pre">config_cls</span></code> to <code class="docutils literal notranslate"><span class="pre">Cosmos3PipelineConfig</span></code>. This uses visible GPU 0 and serves the native image, video and action routes described in <a class="reference internal" href="../basic_usage/native_media_routes.html"><span class="std std-doc">native media routes</span></a>. SDK generation returns caller-owned saved files. Actions are served by the native action route.</p>
 <p>The Policy-DROID checkpoint uses <code class="docutils literal notranslate"><span class="pre">raw_action_dim=8</span></code> in the joint position action space, as NVIDIA’s reference policy server does. Match observation layout, units and normalization to the checkpoint.</p>
+</section>
+<section id="intel-xpu">
+<h2>Intel XPU<a class="headerlink" href="#intel-xpu" title="Link to this heading">#</a></h2>
+<p>On Intel GPUs, first follow the <a class="reference internal" href="../other_platforms/installation_xpu.html"><span class="std std-doc">Intel XPU installation instructions</span></a>. The configurations above need no other change: both stages take an XPU memory default, because the resident placement this checkpoint asks for needs more device memory than the Intel cards serving it today hold. The generation stage streams the DiT layer by layer, which native SGLang selects on CUDA only; on a card large enough to hold the DiT resident, <code class="docutils literal notranslate"><span class="pre">layerwise_offload_components:</span> <span class="pre">null</span></code> under <code class="docutils literal notranslate"><span class="pre">stages.generation.factory.server_args_overrides</span></code> in the config file clears the selection. The Reasoner stage carries a <code class="docutils literal notranslate"><span class="pre">gpu_memory_fraction</span></code> of 0.80, because native’s own automatic fraction of 0.591 leaves no room for the KV cache once the 16.33 GiB understanding tower has loaded. Set <code class="docutils literal notranslate"><span class="pre">stages.reasoner.gpu_memory_fraction</span></code> to another budget, or to <code class="docutils literal notranslate"><span class="pre">null</span></code> for native’s automatic fraction; an <code class="docutils literal notranslate"><span class="pre">engine.mem_fraction_static</span></code> entry wins over the budget as on every engine stage.</p>
+<p>Measured on one Intel Arc Pro B60 per stage (23.91 GiB each), at the default 35 denoising steps, with the checkpoint on a local disk:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Workflow</p></th>
+<th class="head"><p>Request</p></th>
+<th class="head"><p>Time</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Interleaved</p></td>
+<td><p>image generation and its understanding turn, 640x640</p></td>
+<td><p>45.5 s</p></td>
+</tr>
+<tr class="row-odd"><td><p>Interleaved</p></td>
+<td><p>video generation and its understanding turn, 480x480, 17 frames</p></td>
+<td><p>47.0 s</p></td>
+</tr>
+<tr class="row-even"><td><p>Interleaved</p></td>
+<td><p>two generations and three understanding turns, 640x640</p></td>
+<td><p>75.3 s</p></td>
+</tr>
+<tr class="row-odd"><td><p>Interleaved</p></td>
+<td><p>two requests at once, 640x640 each</p></td>
+<td><p>72.9 s for both</p></td>
+</tr>
+<tr class="row-even"><td><p>Direct</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/v1/images/generations</span></code>, 640x640</p></td>
+<td><p>31.9 s, 5.56 GiB peak</p></td>
+</tr>
+<tr class="row-odd"><td><p>Direct</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/v1/videos</span></code>, 480x480, 17 frames</p></td>
+<td><p>39 s</p></td>
+</tr>
+<tr class="row-even"><td><p>Direct</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/v1/actions/generations</span></code>, inverse dynamics, 16 steps of 9 channels</p></td>
+<td><p>18.2 s</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The generation stage holds about 26 GiB of pinned host memory for the streamed DiT, so leave that much host memory per generation stage. Seeded image generation repeats byte for byte across requests on one server. Audiovisual generation is untested on Intel GPUs, as are the action routes of the Policy-DROID checkpoint; <code class="docutils literal notranslate"><span class="pre">action_mode</span></code> <code class="docutils literal notranslate"><span class="pre">forward_dynamics</span></code> interleaving works with a <code class="docutils literal notranslate"><span class="pre">domain_name</span></code> the checkpoint knows.</p>
 </section>
 <section id="reusing-the-serving-pipeline">
 <h2>Reusing the serving pipeline<a class="headerlink" href="#reusing-the-serving-pipeline" title="Link to this heading">#</a></h2>
@@ -717,6 +763,7 @@ curl<span class="w"> </span>-N<span class="w"> </span>http://127.0.0.1:8000/gene
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#requirements">Requirements</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#interleaved-understanding-and-generation">Interleaved understanding and generation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#direct-generation">Direct generation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#intel-xpu">Intel XPU</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reusing-the-serving-pipeline">Reusing the serving pipeline</a></li>
 </ul>
   </nav></div>
