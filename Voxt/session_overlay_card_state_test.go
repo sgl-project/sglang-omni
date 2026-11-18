@@ -57,7 +57,8 @@ func chineseLanguageTitle(t *testing.T, title string) string {
 }
 
 func TestSessionCardRedoStreamsOnlyNewAnswerAndTitle(t *testing.T) {
-	answer := answerCard{open: true, id: "rewrite-old", kind: store.KindRewrite, text: "committed answer", redo: "rewrite-new"}
+	answer := answerCard{open: true, id: "rewrite-old", kind: store.KindRewrite, text: "committed answer", redo: "rewrite-new",
+		turns: []compose.Turn{{Instruction: "old instruction", Answer: compose.Answer{Content: "committed answer"}}}}
 	input := sessionCardProjectionInput{
 		Snapshot: session.Snapshot{ID: "rewrite-new", Kind: store.KindRewrite, State: session.Composing, Draft: "streamed answer"},
 		Answer:   answer, Own: true, ShownDraft: "streamed answer",

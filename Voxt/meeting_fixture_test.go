@@ -52,9 +52,6 @@ func TestMeetingViewStateGolden(t *testing.T) {
 				}
 				fixture := buildMeetingFixture(t, scenario, locale)
 				if page := fixture.Page; page != nil {
-					if page.HasMore && page.MeetingCount < meetingsPageSize {
-						t.Fatalf("paginated fixture has %d meetings, want at least %d", page.MeetingCount, meetingsPageSize)
-					}
 					if page.Detail != nil {
 						selected := 0
 						for _, item := range page.Items {
@@ -68,6 +65,9 @@ func TestMeetingViewStateGolden(t *testing.T) {
 						if selected != 1 {
 							t.Fatalf("open detail %q has %d selected rows, want 1", page.Detail.ID, selected)
 						}
+					}
+					if page.HasMore && page.MeetingCount < meetingsPageSize {
+						t.Fatalf("paginated fixture has %d meetings, want at least %d", page.MeetingCount, meetingsPageSize)
 					}
 				}
 				data, err := json.MarshalIndent(fixture, "", "  ")
