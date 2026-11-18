@@ -174,37 +174,14 @@ Qwen3Decoder::Qwen3Decoder(const omni_common::Checkpoint &checkpoint,
                            std::string prefix, Qwen3DecoderConfig config)
     : checkpoint_(checkpoint), prefix_(std::move(prefix)), config_(config) {}
 
-Qwen3Decoder::Qwen3Decoder(const Qwen3Decoder &other,
-                           bool batch_single_row_projections)
-    : checkpoint_(other.checkpoint_), prefix_(other.prefix_),
-      config_(other.config_),
-      batch_single_row_projections_(batch_single_row_projections) {}
-
 std::string Qwen3Decoder::Name(const std::string &suffix) const {
   return prefix_.empty() ? suffix : prefix_ + "." + suffix;
 }
 
 mx::array Qwen3Decoder::Project(const mx::array &x, const std::string &prefix,
                                 bool tied_embedding) const {
-  mx::array input = x;
-  if (batch_single_row_projections_ && x.size() == x.shape(-1) &&
-      checkpoint_.Has(prefix + ".scales") &&
-      checkpoint_.Quantization(prefix).mode == "affine") {
-    // note (ZaneZhang-67): MLX 0.32.3's single-row affine kernel rounds
-    // differently from block verification. Batch only the projection, not KV
-    // positions, to retain the block kernel's arithmetic after a fallback.
-    input = mx::concatenate({x, x}, 1);
-  } else {
-  }
-  const mx::array output = tied_embedding
-                               ? checkpoint_.TiedProjection(input, prefix)
-                               : checkpoint_.Linear(input, prefix);
-  if (input.shape(1) != x.shape(1)) {
-    return mx::slice(output, {0, 0, 0},
-                     {x.shape(0), x.shape(1), output.shape(2)});
-  } else {
-    return output;
-  }
+  return tied_embedding ? checkpoint_.TiedProjection(x, prefix)
+                        : checkpoint_.Linear(x, prefix);
 }
 
 mx::array Qwen3Decoder::EmbedTokens(const mx::array &ids) const {
@@ -235,13 +212,15 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer, KVCache &cache,
   std::optional<mx::array> attended;
   if (rotary.has_value() && rotary->mask.has_value()) {
     attended = mx::fast::scaled_dot_product_attention(
-        queries, cached_keys, cached_values, scale, "", *rotary->mask);
+        queries, cached_keys, cached_values, scale, /*window_size=*/-1, "",
+        *rotary->mask);
   } else if (rotary.has_value()) {
     attended = mx::fast::scaled_dot_product_attention(queries, cached_keys,
                                                       cached_values, scale);
   } else {
     attended = mx::fast::scaled_dot_product_attention(
-        queries, cached_keys, cached_values, scale, length > 1 ? "causal" : "");
+        queries, cached_keys, cached_values, scale, /*window_size=*/-1,
+        length > 1 ? "causal" : "");
   }
   const mx::array hidden =
       mx::add(x, Project(mx::reshape(mx::transpose(*attended, {0, 2, 1, 3}),
@@ -424,7 +403,7 @@ mx::array Qwen3Decoder::BatchLayer(const mx::array &x, int layer,
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, cached_keys, cached_values,
       static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
-      "array", mask);
+      /*window_size=*/-1, "array", mask);
   const mx::array hidden = mx::add(
       x, checkpoint_.Linear(
              mx::reshape(mx::transpose(attended, {0, 2, 1, 3}), {batch, 1, -1}),

@@ -361,14 +361,13 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
       throw GenerationCancelled();
     } else {
     }
-    const Qwen3Decoder plain_target(target, true);
     std::vector<std::vector<mx::array>> probe_hidden_states;
     const uint32_t warm_anchor_id = static_cast<uint32_t>(anchor_id);
-    const mx::array warm_hidden = plain_target.Forward(
+    const mx::array warm_hidden = target.Forward(
         target.EmbedTokens(mx::array(&warm_anchor_id, {1, 1}, mx::uint32)),
         caches, aux_layers_, &probe_hidden_states.emplace_back());
     anchor_id = static_cast<int>(
-        mx::argmax(plain_target.LastLogits(warm_hidden)).item<uint32_t>());
+        mx::argmax(target.LastLogits(warm_hidden)).item<uint32_t>());
     finished = commit(anchor_id);
     ++committed_token_count;
     if (finished) {
@@ -378,10 +377,10 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
     } else {
     }
     const uint32_t probe_anchor_id = static_cast<uint32_t>(anchor_id);
-    const mx::array probe_hidden = plain_target.Forward(
+    const mx::array probe_hidden = target.Forward(
         target.EmbedTokens(mx::array(&probe_anchor_id, {1, 1}, mx::uint32)),
         caches, aux_layers_, &probe_hidden_states.emplace_back());
-    mx::array next_token = mx::argmax(plain_target.LastLogits(probe_hidden));
+    mx::array next_token = mx::argmax(target.LastLogits(probe_hidden));
     mx::eval({next_token});
     int measured_token_count = 0;
     const auto probe_commit = [&](int token_id) {
@@ -392,8 +391,8 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
       return finished || measured_token_count == kPlainProbeTokenCount - 1;
     };
     const auto probe_started = std::chrono::steady_clock::now();
-    plain_target.DecodePlain(next_token, caches, 1.0f, probe_commit, cancel,
-                             aux_layers_, &probe_hidden_states);
+    target.DecodePlain(next_token, caches, 1.0f, probe_commit, cancel,
+                       aux_layers_, &probe_hidden_states);
     // note (ZaneZhang-67): measure completed work with the same queued
     // lookahead as ordinary decoding, not the host's lazy graph construction.
     mx::eval({next_token});
@@ -413,7 +412,7 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
       probe_hidden_states.clear();
       aux_hidden_states.clear();
       draft_caches.clear();
-      plain_target.DecodePlain(next_token, caches, 1.0f, commit, cancel);
+      target.DecodePlain(next_token, caches, 1.0f, commit, cancel);
       break;
     } else {
       // note (ZaneZhang-67): plain queued the committed anchor's successor;
