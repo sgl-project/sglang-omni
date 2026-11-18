@@ -388,13 +388,16 @@ func TestUntranslated(t *testing.T) {
 		{"Use Google Cloud", "用 Google Cloud", "zh-Hans", false},         // names dominate this short answer
 		{"Deploy Kubernetes today", "今天部署 Kubernetes", "zh-Hans", false}, // a name stays Latin
 		{"我们周五发布", "我们周五发布。", "en", true},
-		{"我们周五发布", "我们在周五发版", "en", true}, // still Chinese
+		{"我们周五发布", "我们在周五发版", "en", true},        // still Chinese
+		{"我们周五发布", "我们周五发布 Release", "en", true}, // the source plus one English word
 		{"我们周五发布", "We ship on Friday.", "en", false},
-		{"我们周五发布", "我们周五发布", "zh-Hans", false},        // already Chinese: nothing to redo
-		{"Good morning", "Good morning", "en", false}, // already English
-		{"Good morning", "Good morning", "fr", true},  // English, not French
-		{"Kubernetes", "Kubernetes", "fr", false},     // no language evidence
-		{"Bonjour, comment ça va ?", "Bonjour, comment ça va ?", "fr", false},
+		{"我们周五发布", "我们周五发布", "zh-Hans", false},       // already Chinese: nothing to redo
+		{"Good morning", "Good morning", "en", true}, // Latin is ambiguous: retry, then accept
+		{"Good morning", "Good morning", "fr", true},
+		{"Goodbye", "Goodbye", "fr", true},
+		{"Hola", "Hola", "en", true},
+		{"Kubernetes", "Kubernetes", "fr", true},
+		{"Bonjour, comment ça va ?", "Bonjour, comment ça va ?", "fr", true},
 		{"Bonjour, comment ça va ?", "Bonjour, comment ça va ?", "en", true},
 		{"Good morning", "Bonjour", "fr", false},
 		{"Привет", "Привет", "ru", false},
@@ -402,7 +405,7 @@ func TestUntranslated(t *testing.T) {
 		{"Hello", "Hello", "ru", true},
 		{"", "x", "en", false},
 		{"x", "", "en", false},
-		{"12:30", "12:30", "en", false},
+		{"12:30", "12:30", "en", true},
 	} {
 		if got := Untranslated(tc.src, tc.res, tc.target); got != tc.want {
 			t.Errorf("Untranslated(%q, %q, %s) = %v", tc.src, tc.res, tc.target, got)

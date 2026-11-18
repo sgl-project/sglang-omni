@@ -162,7 +162,7 @@ func (r *run) write(raw, selection string) {
 		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: err}, true)
 		return
 	}
-	if kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) {
+	if kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && compose.ScriptMismatch(source, in.TargetLanguage) {
 		r.logf("warning", "the translation still looks untranslated after the strict retry")
 		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: ErrNotTranslated}, true)
 		return

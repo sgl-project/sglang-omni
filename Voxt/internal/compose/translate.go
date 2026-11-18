@@ -40,13 +40,14 @@ func LanguageName(code, set string) string {
 // Untranslated reports whether a translation into target looks like it
 // was not made, and is worth asking again (Input.Strict):
 //
-//   - it is the source again and positive script or language evidence says
-//     it is not in target;
-//   - or it has no letters in the target's script while the source is not in
-//     that script either. Preserved names can use the other script.
+//   - it is the source again, ignoring case, spaces and punctuation;
+//   - or it is mostly outside the target's script while the source is too.
+//     At least a quarter of the answer in that script can preserve names;
+//     an echo of the whole source plus a word does not count.
 //
 // A source already in the target's script (Chinese into Chinese) is never
-// judged untranslated. Numbers and language-neutral names stay valid too.
+// judged untranslated. Ambiguous Latin text is still retried, then accepted
+// unless ScriptMismatch gives positive evidence for a hard failure.
 func Untranslated(source, result, target string) bool {
 	src, res := fold(source), fold(result)
 	if src == "" || res == "" {
@@ -62,55 +63,27 @@ func Untranslated(source, result, target string) bool {
 		return false // the source is in the target's script already
 	}
 	if src == res {
-		return differentLanguage(source, target)
+		return isLatin(target) || ScriptMismatch(source, target)
 	}
-	return resLetters > 0 && resShare == 0 && srcShare < 0.5
+	if resLetters > 0 && resShare >= 0.25 && !strings.HasPrefix(res, src) {
+		return false // enough target text to allow preserved names, not a source echo
+	}
+	return resLetters > 0 && resShare < 0.5 && srcShare < 0.5
 }
 
-// differentLanguage reports positive evidence that text is not in target. It
-// deliberately returns false for numbers, language-neutral names, and Latin
-// languages it cannot tell apart instead of rejecting a valid unchanged answer.
-func differentLanguage(text, target string) bool {
+// ScriptMismatch reports a letter outside target's script. Latin-only text
+// has no such evidence, so it never distinguishes English from French.
+func ScriptMismatch(text, target string) bool {
 	is := scriptOf(target)
 	if is == nil {
 		return false
 	}
-	hasLetters := false
 	for _, r := range text {
-		if !unicode.IsLetter(r) {
-			continue
-		}
-		hasLetters = true
-		if !is(r) {
+		if unicode.IsLetter(r) && !is(r) {
 			return true
 		}
 	}
-	if !hasLetters || !isLatin(target) {
-		return false
-	}
-	detected := latinLanguage(text)
-	return detected != "" && detected != lang.Canonical(target)
-}
-
-// latinLanguage identifies only English and French from common words. An
-// unknown or tied answer is no evidence, not a guess.
-func latinLanguage(text string) string {
-	english, french := 0, 0
-	for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) }) {
-		switch word {
-		case "the", "a", "an", "and", "or", "is", "are", "to", "of", "in", "on", "for", "with", "this", "that", "these", "those", "good", "morning", "hello", "world", "friends", "you", "your", "we", "our", "it", "its":
-			english++
-		case "le", "la", "les", "des", "de", "du", "et", "ou", "est", "sont", "à", "au", "aux", "ce", "cette", "ces", "bonjour", "comment", "ça", "va", "je", "tu", "il", "elle", "une", "un", "nous", "vous", "ils", "elles", "pas":
-			french++
-		}
-	}
-	if english == french {
-		return ""
-	}
-	if english > french {
-		return "en"
-	}
-	return "fr"
+	return false
 }
 
 // Written says whether most of text's words are in the script of the
