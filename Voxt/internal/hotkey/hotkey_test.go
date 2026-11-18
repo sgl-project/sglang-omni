@@ -134,6 +134,18 @@ func TestBuildDefaults(t *testing.T) {
 	}
 }
 
+// TestBuildLeavesOutAHiddenNotes: hiding Notes in Settings → General
+// stops its shortcut, as hiding Translate stops Translate's (#4224).
+func TestBuildLeavesOutAHiddenNotes(t *testing.T) {
+	f := settings.Defaults().Features
+	f.Hidden = []string{settings.HideNotes}
+	for _, b := range Build(f, Features).Bindings {
+		if b.ID == Note {
+			t.Fatalf("hidden Notes still binds %+v", b)
+		}
+	}
+}
+
 func TestBuildSkipsBadAndDuplicates(t *testing.T) {
 	f := settings.Features{Transcribe: settings.Transcribe{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
 		{Keys: "Fn"}, {Keys: "Hyper"}, {Keys: "Fn", Trigger: settings.TriggerTap}, {Keys: "Fn", Trigger: settings.TriggerDouble},

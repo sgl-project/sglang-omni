@@ -6,12 +6,14 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Hide Notes and Meetings** (#4224): Settings → General → Shown features now lists Notes and Meetings. Unchecked, their pages leave the sidebar and the command palette, and Notes' shortcut stops; their settings, notes and meetings are kept.
 - **A reference of every setting, for scripts and agents** ([docs/settings.md](docs/settings.md), #4050): each setting's place in the settings document, its type, allowed values, default and the page it is on; how to change one with SQLite while Voxt is quit, what Voxt does with a wrong value, and how to roll back.
 
 ### 中文
 
 #### 新增
 
+- **可以隐藏笔记和会议**（#4224）：设置 → 通用 → 显示的功能里新增了笔记和会议。取消勾选后，它们的页面会从侧边栏和命令面板中移除，笔记的快捷键也会停用；相关设置、笔记和会议记录都会保留。
 - **给脚本和 agent 用的设置参考**（[docs/settings.md](docs/settings.md)，#4050）：每一项设置在设置文档里的位置、类型、可选值、默认值和所在页面；Voxt 退出时怎样用 SQLite 修改一项、值写错时 Voxt 会怎样处理，以及怎样回滚。
 
 ## [2.1.1] - 2026-11-17
