@@ -19,7 +19,6 @@ class TtsCiModelPreset:
     startup_timeout: int = 180
     gate_thresholds: bool = True
     num_gpus_per_worker: int = 1
-    max_codec_eos_failures: int = 0
     # note (luojiaxuan): a checkpoint that serves named voices takes the text
     # alone, so the reference fields above go unused and the reference-based
     # similarity stage has nothing to score.
@@ -51,7 +50,6 @@ class TtsCiLatencyPoint:
     # note (luojiaxuan): None until the point is calibrated, so the stage
     # prints the value without judging it.
     ttfp_median_max_s: float | None = None
-    max_codec_eos_failures: int = 0
 
 
 @dataclass(frozen=True)
@@ -261,8 +259,6 @@ QWEN3_TTS_LATENCY_VC_R1_TTFP_MEDIAN_REF_S = 0.0237
 QWEN3_TTS_LATENCY_VC_R20_TTFP_MEDIAN_REF_S = 0.0267
 QWEN3_TTS_LATENCY_CUSTOM_VOICE_R1_TTFP_MEDIAN_REF_S = 0.0153
 QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_MEDIAN_REF_S = 0.0172
-# note (XIN GAO): One confirmed missing-EOS response in 1088 requests on H100 in PR 2425.
-QWEN3_TTS_SEEDTTS_MAX_CODEC_EOS_FAILURES = 1
 
 
 def latency_gate(reference_s: float) -> float:
@@ -280,7 +276,6 @@ QWEN3_TTS_VC_LATENCY_GATES = TtsCiLatencyPreset(
             request_rate=20.0,
             samples=1088,
             ttfp_median_max_s=latency_gate(QWEN3_TTS_LATENCY_VC_R20_TTFP_MEDIAN_REF_S),
-            max_codec_eos_failures=QWEN3_TTS_SEEDTTS_MAX_CODEC_EOS_FAILURES,
         ),
     ),
     calibrated=True,
@@ -328,7 +323,6 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
         model=TtsCiModelPreset(
             model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
             ref_format="references",
-            max_codec_eos_failures=QWEN3_TTS_SEEDTTS_MAX_CODEC_EOS_FAILURES,
             # note (luojiaxuan): a cold Inductor cache compiles the vocoder steady
             # shapes at startup, which takes two workers past five minutes.
             startup_timeout=900,

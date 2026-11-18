@@ -38,7 +38,6 @@ class RequestResult:
     tok_per_s: float = 0.0
     finish_reason: FinishReason = FinishReason.UNKNOWN
     speech_outcome_id: str = ""
-    speech_stream_interrupted: bool = False
     server_worker_id: str = ""
     wav_path: str = ""
     error: str = ""

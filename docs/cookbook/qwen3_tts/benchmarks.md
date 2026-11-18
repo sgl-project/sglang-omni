@@ -68,7 +68,7 @@ TTFA measures arrival of the first PCM payload, not the first audible speech; it
 
 ### Runaway Regression
 
-`benchmarks.eval.benchmark_tts_generation_budget` sends each case twice with the same text, voice, and seed: once with the legacy 2048-frame limit and once with the server default. It saves the audio, finish reasons, codec frame counts, and chunk timings. A default-budget failure passes the regression gate only when its paired baseline also fails for confirmed missing codec EOS. Other errors fail the gate, and every case must complete naturally with the default budget for at least one seed. An HTTP 200 response with `finish_reason=length` is an incomplete result and fails the gate.
+`benchmarks.eval.benchmark_tts_generation_budget` sends each case twice with the same text, voice, and seed: once with the legacy 2048-frame limit and once with the server default. It saves the audio, finish reasons, codec frame counts, and chunk timings. Any request failure or response with `finish_reason=length` fails the probe because generation did not complete naturally.
 
 Create a request template, for example `request.json`:
 
@@ -94,6 +94,6 @@ python -m benchmarks.eval.benchmark_tts_generation_budget \
   --repeats 8 --seed 123 --output-dir results/budget-runaway
 ```
 
-Add `--stream` to check raw PCM streams and `--worker-log <worker.log>` for each worker to identify missing-EOS failures after audio starts. An interrupted transfer without matching worker evidence fails the gate. Failed requests remain errors in `results.jsonl` and count toward `summary.json`'s `failed` field; `regression_failures` and the exit status report the same gate used by TTS CI. Output directories must be new. A fixed seed does not make waveforms bitwise identical because prefix-cache state and batch composition can change between requests.
+Add `--stream` to check raw PCM streams. Output directories must be new. A fixed seed does not make waveforms bitwise identical because prefix-cache state and batch composition can change between requests.
 
 The TTS CI non-streaming and streaming stages run this probe for Qwen3-TTS on four short cases with eight seeds, 64 requests per stage, and upload `results.jsonl` with the audio of the pairs that failed.

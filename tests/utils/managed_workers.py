@@ -12,9 +12,7 @@ import socket
 import subprocess
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from contextlib import nullcontext
 from dataclasses import dataclass
-from pathlib import Path
 
 import httpx
 
@@ -27,7 +25,6 @@ class ManagedWorkerProcess:
     url: str
     process: subprocess.Popen[bytes]
     process_group_id: int
-    log_file: Path | None = None
 
 
 def port_is_available(port: int, host: str = "127.0.0.1") -> bool:
@@ -72,7 +69,6 @@ def start_workers(
     worker_gpu_ids: list[str] | None,
     worker_extra_args: str = "",
     worker_env: dict[str, str] | None = None,
-    worker_log_directory: Path | None = None,
 ) -> list[ManagedWorkerProcess]:
     if shutil.which("sgl-omni") is None:
         raise RuntimeError("'sgl-omni' was not found on PATH")
@@ -121,27 +117,16 @@ def start_workers(
                 f"Starting managed Omni worker {worker_index} on {worker_url} "
                 f"with {placement}: {shlex.join(worker_command)}"
             )
-            log_file = (
-                worker_log_directory / f"worker-{port}.log"
-                if worker_log_directory is not None
-                else None
+            process = subprocess.Popen(
+                worker_command,
+                env=environment,
+                start_new_session=True,
             )
-            with (
-                log_file.open("wb") if log_file is not None else nullcontext()
-            ) as log_handle:
-                process = subprocess.Popen(
-                    worker_command,
-                    env=environment,
-                    start_new_session=True,
-                    stdout=log_handle,
-                    stderr=subprocess.STDOUT if log_handle is not None else None,
-                )
             workers.append(
                 ManagedWorkerProcess(
                     url=worker_url,
                     process=process,
                     process_group_id=process.pid,
-                    log_file=log_file,
                 )
             )
     except BaseException:

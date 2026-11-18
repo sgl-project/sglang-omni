@@ -43,8 +43,6 @@ from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.dataset.seedtts import load_seedtts_samples
 from benchmarks.eval.benchmark_tts_generation_budget import (
     PROBE_CASES,
-    codec_eos_request_ids,
-    generation_budget_failures,
     run_generation_probe,
 )
 from benchmarks.eval.benchmark_tts_seedtts import (
@@ -69,10 +67,6 @@ from tests.test_model.omni_router_utils import (
     router_get_json,
 )
 from tests.test_model.tts_ci_config import select_tts_ci_preset
-from tests.test_model.tts_ci_eos import (
-    assert_expected_codec_eos_failures,
-    record_codec_eos_failures,
-)
 from tests.utils import (
     QWEN3_ASR_WER_CONCURRENCY,
     MetricCheckCollector,
@@ -91,7 +85,6 @@ MODEL_NAME, TTS_CI_PRESET = select_tts_ci_preset()
 PRESET = TTS_CI_PRESET.model
 THRESHOLDS = TTS_CI_PRESET.thresholds
 TTS_MODEL_PATH = PRESET.model_path
-IS_QWEN3_TTS = "qwen3-tts" in TTS_MODEL_PATH.lower()
 
 SEEDTTS_50_DATASET_LABEL = format_benchmark_dataset_label(
     dataset="seedtts-50",
@@ -164,7 +157,7 @@ def check_and_print_tts_speed_summary(
 
 
 def run_benchmark(
-    router: ManagedRouterHandle,
+    port: int,
     testset: str,
     output_dir: str,
     *,
@@ -177,7 +170,7 @@ def run_benchmark(
 ) -> dict:
     benchmark_config = TtsSeedttsBenchmarkConfig(
         model=TTS_MODEL_PATH,
-        port=router.port,
+        port=port,
         meta=testset,
         output_dir=output_dir,
         concurrency=concurrency,
@@ -193,20 +186,6 @@ def run_benchmark(
     )
     speed_results = asyncio.run(run_tts_seedtts_benchmark(benchmark_config))
     validate_speed_results_keys(speed_results)
-    if IS_QWEN3_TTS:
-        record_codec_eos_failures(
-            speed_results["per_request"],
-            [
-                worker.log_file
-                for worker in router.workers
-                if worker.log_file is not None
-            ],
-        )
-        (Path(output_dir) / "speed_results.json").write_text(
-            json.dumps(speed_results, indent=2, ensure_ascii=False) + "\n"
-        )
-    else:
-        pass
     check_and_print_tts_speed_summary(
         output_dir,
         concurrency=concurrency,
@@ -439,7 +418,6 @@ def assert_tts_audio_result_integrity(
     *,
     label: str,
     collector: MetricCheckCollector,
-    max_codec_eos_failures: int = 0,
 ) -> None:
     failed_rows = [
         request for request in per_request if request.get("is_success") is not True
@@ -460,12 +438,10 @@ def assert_tts_audio_result_integrity(
             f"{label}: summary failed_requests={failed_requests}, "
             f"per_request failures={len(failed_rows)}",
         )
-    assert_expected_codec_eos_failures(
-        per_request,
-        max_codec_eos_failures=max_codec_eos_failures,
-        label=label,
-        collector=collector,
-    )
+        collector.check(
+            failed_requests == 0,
+            f"{label}: failed_requests={failed_requests}, expected 0",
+        )
     if isinstance(failed_requests, int) and isinstance(completed_requests, int):
         collector.check(
             completed_requests + failed_requests == len(per_request),
@@ -513,7 +489,6 @@ def store_consistency_inputs(
         per_request,
         label=f"TTS {mode} c{concurrency}",
         collector=checks,
-        max_codec_eos_failures=PRESET.max_codec_eos_failures,
     )
     if mode == "non_stream":
         output_tokens_mean = summary.get("output_tokens_mean", 0)
@@ -652,7 +627,7 @@ def generate_consistency_inputs(
         if non_stream_key not in PER_REQUEST_STORE:
             output_dir = str(output_root / f"vc_nonstream_c{concurrency}")
             results = run_benchmark(
-                router_server,
+                router_server.port,
                 dataset_repo,
                 output_dir,
                 concurrency=concurrency,
@@ -667,7 +642,7 @@ def generate_consistency_inputs(
         if stream_key not in PER_REQUEST_STORE:
             output_dir = str(output_root / f"vc_stream_c{concurrency}")
             results = run_benchmark(
-                router_server,
+                router_server.port,
                 dataset_repo,
                 output_dir,
                 concurrency=concurrency,
@@ -773,7 +748,6 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
         named_voice=not PRESET.voice_clone,
-        capture_worker_logs=IS_QWEN3_TTS,
     ) as router:
         yield router
 
@@ -831,7 +805,7 @@ def test_qwen3_tts_repeated_short_speech_budget(
     request: pytest.FixtureRequest, tmp_path: Path, stream: bool
 ) -> None:
     """The server default never cuts repeated short speech that the 2048-frame limit let finish."""
-    if not IS_QWEN3_TTS:
+    if "qwen3-tts" not in TTS_MODEL_PATH.lower():
         pytest.skip("The codec-frame budget belongs to Qwen3-TTS")
     else:
         pass
@@ -866,14 +840,7 @@ def test_qwen3_tts_repeated_short_speech_budget(
                 output_dir,
                 keep_passing_audio=False,
             )
-        request_ids = codec_eos_request_ids(
-            [
-                worker.log_file
-                for worker in router_server.workers
-                if worker.log_file is not None
-            ]
-        )
-        failures = generation_budget_failures(results, request_ids)
+        failures = [result.model_dump() for result in results if result.errors]
         assert not failures, f"Generation-budget failures: {failures}"
 
     asyncio.run(run())
@@ -894,7 +861,7 @@ def test_voice_cloning_non_streaming(
         before_workers = router_get_json(router_server.port, "/diagnostics")
         try:
             results = run_benchmark(
-                router_server,
+                router_server.port,
                 dataset_repo,
                 output_dir,
                 concurrency=concurrency,
@@ -945,7 +912,7 @@ def test_voice_cloning_streaming(
         before_workers = router_get_json(router_server.port, "/diagnostics")
         try:
             results = run_benchmark(
-                router_server,
+                router_server.port,
                 dataset_repo,
                 output_dir,
                 concurrency=concurrency,
@@ -994,12 +961,14 @@ def test_voice_cloning_streaming_consistency(
             checks.fail(f"vc_stream_c{concurrency} results missing")
         if ns is None or st is None:
             continue
-        # note (XIN GAO): The speed checks already validate the reason for every failed request.
+        # Note: (Jiaxin Deng) request coverage, the zero-failure budget and
+        # stream-vs-non-stream duration agreement are correctness, not tuned
+        # numbers, so they hold for a preset that is still observing.
         assert_streaming_consistency(
             ns,
             st,
             expected_stream_count=len(ns),
-            max_failed_requests=PRESET.max_codec_eos_failures,
+            max_failed_requests=0,
             collector=checks,
         )
     checks.assert_all()

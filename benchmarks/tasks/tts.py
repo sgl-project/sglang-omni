@@ -1431,24 +1431,19 @@ def make_tts_send_fn(
                 if response.status != 200:
                     result.error = f"HTTP {response.status}: {await response.text()}"
                 elif stream:
+                    await _handle_raw_pcm_streaming_response(
+                        response, result, start_time, save_audio_dir
+                    )
                     result.speech_outcome_id = response.headers.get(
                         "X-SGLang-Omni-Speech-Id", ""
                     )
                     result.server_worker_id = response.headers.get(
                         "X-SGLang-Omni-Worker", ""
                     )
-                    await _handle_raw_pcm_streaming_response(
-                        response, result, start_time, save_audio_dir
-                    )
                 else:
                     await _handle_non_streaming_response(
                         response, result, start_time, save_audio_dir
                     )
-        except aiohttp.ClientPayloadError as exc:
-            result.speech_stream_interrupted = bool(
-                result.speech_outcome_id and result.first_audio_payload_bytes
-            )
-            result.error = str(exc)
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             result.error = str(exc)
         finally:

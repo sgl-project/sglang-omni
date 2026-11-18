@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import Future
-from typing import BinaryIO, Literal
+from typing import Literal
 from unittest.mock import Mock
 
 import pytest
@@ -48,12 +48,8 @@ def created_workers(
         *,
         env: dict[str, str],
         start_new_session: bool,
-        stdout: BinaryIO | None,
-        stderr: int | None,
     ) -> FakeProcess:
         assert start_new_session
-        assert stdout is None
-        assert stderr is None
         process = FakeProcess(12345 + len(created), command, env)
         created.append(process)
         return process
