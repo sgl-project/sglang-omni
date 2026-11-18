@@ -77,8 +77,8 @@ Attention(const Checkpoint &checkpoint, const mx::array &hidden_states,
           : std::nullopt;
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       projection.queries, projection.keys, projection.values,
-      1.0f / std::sqrt(static_cast<float>(projection.queries.shape(3))), "",
-      mask);
+      1.0f / std::sqrt(static_cast<float>(projection.queries.shape(3))),
+      /*window_size=*/-1, "", mask);
   const int batch_count = hidden_states.shape(0),
             frame_count = hidden_states.shape(1);
   const mx::array merged =

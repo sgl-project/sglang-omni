@@ -17,6 +17,9 @@ func TestCatalog(t *testing.T) {
 	seen := map[string]bool{}
 	defaults := map[Kind]int{}
 	hexRE := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	if !slices.EqualFunc(slices.Collect(All()), Catalog(), func(a, b Model) bool { return a.ID == b.ID }) {
+		t.Error("All is not Catalog's models in Catalog's order")
+	}
 	for _, m := range Catalog() {
 		if seen[m.ID] {
 			t.Errorf("%s twice", m.ID)
@@ -84,7 +87,7 @@ func TestCatalog(t *testing.T) {
 	}
 	for _, id := range []string{ASRAccurate, ASRFast, VADSilero, LLMBalanced, LLMFast, LLMTranslate, LLMQwen3, LLMGemma4,
 		ASRQwen6bit, ASRWhisperTurbo, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall,
-		ASRAccurateDraft, ASRFastDraft} {
+		ASRAccurateDraft, ASRFastDraft, ASRMossDraft, ASRWhisperLargeDraft} {
 		if !seen[id] {
 			t.Errorf("%s missing", id)
 		}
@@ -108,7 +111,7 @@ func TestFamilyPins(t *testing.T) {
 	// The drafts are proposed to the family pins table too; until an
 	// actnowkit release lists them, TestOmniPins alone checks their pins.
 	unpinned := []string{ASRQwen6bit, ASRWhisperLarge, ASRWhisperSmall, ASRParakeet, ASRSenseVoice, ASRCohere, ASRNemotron, ASRMoss, AuxWhisperLarge, AuxWhisperSmall,
-		ASRAccurateDraft, ASRFastDraft}
+		ASRAccurateDraft, ASRFastDraft, ASRMossDraft, ASRWhisperLargeDraft}
 	mine := map[string]fammodels.Pin{}
 	for _, p := range fammodels.PinsOfApp("voxtnew") {
 		mine[p.Repo] = p

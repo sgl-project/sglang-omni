@@ -1,7 +1,9 @@
 package omni
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +14,85 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
 )
+
+func TestWhisperFinalBatchesQuietCuts(t *testing.T) {
+	pcm := append(tone(32*time.Second, 0.3), silence(time.Second)...)
+	pcm = append(pcm, tone(32*time.Second, 0.3)...)
+
+	for _, tc := range []struct {
+		name        string
+		windowTexts []string
+		want        string
+		requests    int
+	}{
+		{"batch", []string{"第一段", "末尾", "第二段", ""}, "第一段 末尾第二段", 1},
+		{"older runtime", nil, "片段片段", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t, omnitest.Opts{Text: "片段", WindowTexts: tc.windowTexts, RecordAudio: true}, withServers(t, "whisper_server"))
+			a := f.asr(t, ASRWhisperTurbo)
+			chunks := a.spec.ASR.splitChunks(pcm)
+			if len(chunks) != 2 || len(chunks[0].pcm) <= whisperWindowBytes || len(chunks[1].pcm) <= whisperWindowBytes {
+				t.Fatal("the fixture should cut into two chunks of more than 30 seconds")
+			}
+			res, err := a.Transcribe(t.Context(), asr.FileRequest{Audio: pcm, Format: "pcm", Lang: "zh-Hans"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			finals := f.records("final")
+			if res.Text != tc.want || len(finals) != tc.requests {
+				t.Fatalf("%q in %d requests, want %q in %d requests", res.Text, len(finals), tc.want, tc.requests)
+			}
+			audio, err := base64.StdEncoding.DecodeString(finals[0].Audio)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(audio) != 4*whisperWindowBytes {
+				t.Fatalf("sent %d bytes, want four 30-second windows", len(audio))
+			}
+			for i, chunk := range chunks {
+				padded := audio[i*2*whisperWindowBytes : (i+1)*2*whisperWindowBytes]
+				if !bytes.Equal(padded[:len(chunk.pcm)], chunk.pcm) ||
+					len(bytes.Trim(padded[len(chunk.pcm):], "\x00")) != 0 {
+					t.Errorf("chunk %d audio or padding changed", i)
+				}
+			}
+		})
+	}
+}
+
+func TestWhisperFinalSkipsDigitalSilenceTail(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		speechTime   time.Duration
+		chunkSeconds float64
+		cutSearch    time.Duration
+		lastSample   byte
+		wantSamples  int
+		wantText     string
+	}{
+		{"digital silence", 2 * time.Second, 2, 0, 0, 2 * sampleRate, "speech"},
+		{"quiet audio", 2 * time.Second, 2, 0, 1, 60 * sampleRate, "speech tail"},
+		{"zero window within a chunk", 30 * time.Second, 30, 5 * time.Second, 0, 30 * sampleRate, "speech"},
+		{"nonzero window within a chunk", 30 * time.Second, 30, 5 * time.Second, 1, 31 * sampleRate, "speech"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t, omnitest.Opts{Text: "speech", WindowTexts: []string{"speech", "tail"}}, withServers(t, "whisper_server"))
+			a := f.asr(t, ASRWhisperTurbo)
+			a.spec.ASR.ChunkSeconds, a.spec.ASR.CutSearch = tc.chunkSeconds, tc.cutSearch
+			pcm := append(tone(tc.speechTime, 0.3), silence(time.Second)...)
+			pcm[len(pcm)-2] = tc.lastSample
+			result, err := a.Transcribe(t.Context(), asr.FileRequest{Audio: pcm, Format: "pcm"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			finals := f.records("final")
+			if result.Text != tc.wantText || len(finals) != 1 || finals[0].Samples != tc.wantSamples {
+				t.Fatalf("got %q and %+v, want %q from one request of %d samples", result.Text, finals, tc.wantText, tc.wantSamples)
+			}
+		})
+	}
+}
 
 // TestKinds: Voxt 1.x's other speech models run on servers of their own
 // with only the common launch flags (their servers refuse Qwen3-ASR's),
@@ -119,6 +200,38 @@ func TestBatchPreview(t *testing.T) {
 	f.rt.Close()
 	if l := f.records("live"); len(l) != 0 {
 		t.Errorf("a socket was opened: %+v", l)
+	}
+}
+
+func TestWhisperFinishCancelsInFlightPreview(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Delay: time.Second, Text: "text {n}"}, withServers(t, "whisper_server"))
+	a := f.asr(t, ASRWhisperTurbo)
+	st, err := a.Open(t.Context(), asr.StreamRequest{SampleRate: sampleRate, Lang: "en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sendAll(t, st, tone(time.Second, 0.3))
+	eventually(t, "the preview request reached the server", func() bool {
+		return len(f.records("final")) == 1
+	})
+	sendAll(t, st, tone(time.Second/2, 0.3))
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the server saw the preview disconnect", func() bool {
+		return len(f.records("final-cancelled")) == 1
+	})
+	events := drain(t, st)
+	if len(events) != 1 || events[0].Kind != asr.EventFinal || events[0].Text != "text 2" {
+		t.Fatalf("events %+v, want just the second request's final", events)
+	}
+	requests := f.records("final")
+	if len(requests) != 2 || requests[1].Samples != 3*sampleRate/2 {
+		t.Fatalf("requests %+v, want the final to include all samples", requests)
+	}
+	if requests[0].Fields["preview"] != "true" || requests[1].Fields["preview"] != "" {
+		t.Fatalf("requests %+v, want only the preview to request fast disconnect detection", requests)
 	}
 }
 

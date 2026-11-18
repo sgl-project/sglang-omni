@@ -70,6 +70,8 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 			caption(c, s)
 		}
 		// The texts there are, each with Copy.
+		retry := a.hist.retry
+		showingDraft := retry.id == e.ID && strings.TrimSpace(retry.draft) != ""
 		textBlock := func(key, title, copyLabel, text string) {
 			text = strings.TrimSpace(text)
 			if text == "" {
@@ -83,12 +85,20 @@ func (a *app) historyDetail(c *ui.Context, e store.Entry) {
 						a.toast(i18n.T("Copied"))
 					}
 				})
-				fillCard(c).Padding(px(t, sp2), px(t, sp3)).Children(func() {
-					ui.Text(c, text).Selectable()
+				sessionTextCard(c, e.Kind).Padding(px(t, sp2), px(t, sp3)).Children(func() {
+					if key == "hist-result" {
+						a.transcriptResult(c, e.Kind, e.ID, text, showingDraft)
+					} else {
+						ui.Text(c, text).Selectable()
+					}
 				})
 			})
 		}
-		textBlock("hist-result", i18n.T("Result"), i18n.T("Copy result"), e.Result)
+		result := e.Result
+		if showingDraft {
+			result = retry.draft // a retry's answer as the model writes it
+		}
+		textBlock("hist-result", i18n.T("Result"), i18n.T("Copy result"), result)
 		if e.PromptText != "" {
 			textBlock("hist-prompt", i18n.T("Instruction"), i18n.T("Copy instruction"), e.PromptText)
 		}

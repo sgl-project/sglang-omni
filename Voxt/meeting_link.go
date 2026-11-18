@@ -7,11 +7,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -58,7 +61,14 @@ func (a *app) openMeetings() {
 		MainLanguage: func() string {
 			return uitext.LangLabel(a.prefs.General.MainLanguage)
 		},
+		Context:         a.meetingTranscriptContext,
 		SystemCaptureOK: a.systemCaptureOK,
+		Warn: func(msg string) {
+			a.post(func() {
+				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: msg})
+			})
+		},
+		Updated: func(id string) { a.post(func() { a.meetingUpdated(id) }) },
 	})
 	a.meetMgr.Subscribe(func(s meeting.Snapshot) {
 		a.post(func() { a.meetingChanged(s) })
@@ -82,7 +92,15 @@ func (a *app) meetingActive() bool {
 }
 
 func (a *app) meetingChanged(s meeting.Snapshot) {
+	prev := a.meetSnap
 	a.meetSnap = s
+	if s.ID != prev.ID || s.State != prev.State {
+		a.meetOvMenu = meetingMenuNone // a menu for the state it opened in
+	}
+	if a.mv.read && (s.ID != prev.ID || s.State != prev.State) {
+		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
+	}
+	a.followMeeting(s, prev)
 	a.syncMeetingOverlay()
 	a.syncHotkeys()
 	if a.tray != nil {
@@ -102,7 +120,7 @@ func meetingModeFrom(s settings.Meeting) meeting.Mode {
 }
 
 func (a *app) startMeeting() {
-	if !a.meetingEnabled() || a.meetMgr == nil {
+	if a.meetMgr == nil {
 		return
 	}
 	a.async(func() {
@@ -111,7 +129,7 @@ func (a *app) startMeeting() {
 		_, err := a.meetMgr.Start(ctx, meeting.StartRequest{Mode: meetingModeFrom(a.prefs.Features.Meeting)})
 		if err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "start: " + err.Error()})
+				a.meetingFailed("start", meetingStartProblem(err), err)
 			})
 		}
 	})
@@ -133,7 +151,7 @@ func (a *app) meetingPauseResume() {
 		}
 		if err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: err.Error()})
+				a.meetingFailed("pause", i18n.T("Could not pause or resume the meeting: %v", err), err)
 			})
 		}
 	})
@@ -148,7 +166,7 @@ func (a *app) meetingFinish() {
 		ctx := context.Background()
 		if err := a.meetMgr.Finish(ctx, id); err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "finish: " + err.Error()})
+				a.meetingFailed("finish", i18n.T("Could not end the meeting: %v", err), err)
 			})
 		}
 	})
@@ -162,7 +180,7 @@ func (a *app) meetingSave() {
 	a.async(func() {
 		if err := a.meetMgr.Save(context.Background(), id); err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "save: " + err.Error()})
+				a.meetingFailed("save", i18n.T("Could not save the meeting: %v", err), err)
 			})
 			return
 		}
@@ -179,11 +197,57 @@ func (a *app) meetingReprocess(id string) {
 		defer cancel()
 		if err := a.meetMgr.Reprocess(ctx, id); err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "reprocess: " + err.Error()})
+				a.meetingFailed("reprocess", i18n.T("Could not transcribe the meeting again: %v", err), err)
 			})
 			return
 		}
 		a.post(a.loadMeetings)
+	})
+}
+
+// meetingTranscriptContext is the dictionary and speech context a
+// transcript's correction gets, as dictation's clean-up has them.
+func (a *app) meetingTranscriptContext(ctx context.Context) meeting.TranscriptContext {
+	d := a.prefs.Dictionary
+	tc := meeting.TranscriptContext{Notes: session.PromptDictionary(a.prefs), Speech: d.SpeechContext}
+	if d.Enabled && d.Glossary {
+		terms, _ := a.lib.store.Dictionary().List(ctx, "")
+		for _, t := range terms {
+			if t.Enabled {
+				tc.Terms = append(tc.Terms, compose.Term{Term: t.Term, Aliases: t.Aliases})
+			}
+		}
+	}
+	return tc
+}
+
+// meetingCorrect corrects a stored meeting's transcript with the language
+// model, then summarizes it again.
+func (a *app) meetingCorrect(id string) {
+	if a.meetMgr == nil || id == "" {
+		return
+	}
+	n := &a.mv
+	if n.detail != nil && n.detail.id == id {
+		n.detail.correcting = true
+	}
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+		defer cancel()
+		err := a.meetMgr.CorrectTranscript(ctx, id)
+		if err == nil {
+			err = a.meetMgr.GenerateMeetingSummary(ctx, id)
+		}
+		a.post(func() {
+			if err != nil {
+				a.toast(i18n.T("Could not correct the transcript: %v", err))
+				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "correct: " + err.Error()})
+			}
+			if n.detail != nil && n.detail.id == id {
+				a.openMeetingDetail(id)
+			}
+			a.loadMeetings()
+		})
 	})
 }
 
@@ -195,7 +259,7 @@ func (a *app) meetingSetMode(mode meeting.Mode) {
 	a.async(func() {
 		if err := a.meetMgr.SetMode(context.Background(), id, mode); err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: err.Error()})
+				a.meetingFailed("mode", i18n.T("Could not change the meeting mode: %v", err), err)
 			})
 		}
 	})
@@ -209,8 +273,45 @@ func (a *app) meetingDiscard() {
 	a.async(func() {
 		if err := a.meetMgr.Discard(context.Background(), id); err != nil {
 			a.post(func() {
-				a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "discard: " + err.Error()})
+				a.meetingFailed("discard", i18n.T("Could not discard the meeting: %v", err), err)
 			})
 		}
 	})
+}
+
+// meetingFailed tells the user an action on the meeting failed, and logs
+// it: a failure only in the log looked like a button that did nothing
+// (11-15, Start meeting without the speech model).
+func (a *app) meetingFailed(what, msg string, err error) {
+	a.toast(msg)
+	a.logs.Append(core.LogEntry{Time: time.Now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: what + ": " + err.Error()})
+}
+
+// meetingStartProblem is what the user reads when a meeting does not start.
+func meetingStartProblem(err error) string {
+	var se *meeting.StartError
+	switch {
+	case errors.Is(err, local.ErrNotInstalled):
+		return i18n.T("The speech model for meetings is not downloaded. Download it in Settings → Meetings.")
+	case errors.Is(err, meeting.ErrBusy):
+		return i18n.T("A meeting is already recording.")
+	case errors.As(err, &se):
+		if se.Guidance == meeting.GuidanceModel {
+			return i18n.T("Could not load the speech model for meetings: %v", se.Err)
+		}
+		denied := errors.Is(se.Err, &proto.Error{Code: proto.CodePermissionDenied})
+		switch se.Source {
+		case meeting.SourceSystem:
+			if denied {
+				return i18n.T("Could not record system audio. Allow system audio recording for Voxt in System Settings → Privacy & Security → Screen & System Audio Recording, or record the microphone only.")
+			}
+			return i18n.T("Could not record system audio. Try again, or record the microphone only.")
+		case meeting.SourceMic:
+			if denied {
+				return i18n.T("Could not record the microphone. Allow Voxt in System Settings → Privacy & Security → Microphone.")
+			}
+			return i18n.T("Could not record the microphone. Check your input device and try again.")
+		}
+	}
+	return i18n.T("Could not start the meeting: %v", err)
 }

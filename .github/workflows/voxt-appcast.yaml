@@ -143,7 +143,7 @@ jobs:
 
           # The update window shows the published release notes, as for Voxt 1.x.
           body="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body --jq .body)"
-          if [[ -z "${body//[[:space:]]/}" ]]; then
+          if [[ ! "$body" =~ [^[:space:]] ]]; then
             echo "::error::Write the notes of $TAG on its release page, then run Voxt Appcast for it"
             exit 1
           else

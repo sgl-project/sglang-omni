@@ -2,6 +2,12 @@
 
 Qwen3-TTS is a multi-codebook text-to-speech model family that streams 24 kHz speech in 10 languages. The `12Hz` checkpoint name refers to the codec frame rate. SGLang-Omni serves [Base](#voice-cloning) for voice cloning, [CustomVoice](#customvoice) for built-in speakers, and [VoiceDesign](#voicedesign) for voices described in natural language through the OpenAI-compatible `/v1/audio/speech` endpoint.
 
+![Qwen3-TTS architecture](../_static/image/qwen3-tts-architecture.png)
+
+Qwen3-TTS is one Qwen3 LM with two tracks. The text track carries an instruction, such as "Please speak with a warm and encouraging voice.", beside the words to speak. The other track is 12 Hz multi-codebook codec tokens, with a speaker embedding on that track. An MTP module predicts the residual codebooks and sums them into codec embeddings, and a streaming codec decoder turns those embeddings into the waveform. CustomVoice instructions, VoiceDesign descriptions, and Base reference clips are three ways of filling the speaker and instruction side of this same stack.
+
+Adapted from the Model Architecture figure in the [Qwen3-TTS repository](https://github.com/QwenLM/Qwen3-TTS#model-architecture) ([technical report](https://arxiv.org/abs/2601.15621)).
+
 <span id="quick-start"></span>
 
 ## Prerequisites

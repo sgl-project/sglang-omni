@@ -21,6 +21,13 @@ func Oklch(l, c, h float32) Color {
 	return fromWide(float32(gamut.Encode(r)), float32(gamut.Encode(g)), float32(gamut.Encode(b)))
 }
 
+// Oklch returns c's lightness, chroma and hue in degrees, ignoring alpha.
+func (c Color) Oklch() (lightness, chroma, hue float32) {
+	r, g, b := c.extended()
+	l, ch, h := gamut.Oklch(gamut.Oklab(gamut.Decode(float64(r)), gamut.Decode(float64(g)), gamut.Decode(float64(b))))
+	return float32(l), float32(ch), float32(h)
+}
+
 // wideRGB is the red, green and blue of a color outside the sRGB gamut,
 // sRGB-encoded and beyond 0 to 1 (extended sRGB), in fixed point: wideOne
 // is 1. They reach ±4, beyond what any display shows, in steps finer than
