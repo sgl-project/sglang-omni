@@ -26,6 +26,13 @@ REF_AUDIO = _DATA / "query_to_cars.wav"
 REF_TEXT = "How many cars are there in the picture?"
 REF_KEYWORD = "car"
 
+# Hy-SimulMT translates rather than transcribes. The reference clip is English, and
+# /v1/audio/translations always targets English, so the lane asks the transcription
+# route for English to Chinese, as the recipe does. Any Chinese rendering of the
+# question names the car.
+TRANSLATION_SOURCE_LANGUAGE = "en"
+TRANSLATION_KEYWORD = "\u8f66"
+
 SPOKEN_TEXT = "The quick brown fox jumps over the lazy dog."
 MIN_SPEECH_SECONDS = 1.0
 
@@ -98,7 +105,7 @@ def exercise_transcription(base_url: str, checkpoint: str, model: XpuModel) -> s
             f"{base_url}/v1/audio/transcriptions",
             files={"file": (REF_AUDIO.name, handle.read(), "audio/wav")},
             data={"model": checkpoint},
-            timeout=REQUEST_TIMEOUT,
+            timeout=max(REQUEST_TIMEOUT, model.request_seconds),
         )
     assert response.status_code == 200, f"http {response.status_code}: {response.text}"
     heard = response.json().get("text", "")
@@ -108,6 +115,28 @@ def exercise_transcription(base_url: str, checkpoint: str, model: XpuModel) -> s
         f"did not recover {REF_TEXT!r}"
     )
     return f"heard {heard.strip()!r}"
+
+
+def exercise_translation(base_url: str, checkpoint: str, model: XpuModel) -> str:
+    with REF_AUDIO.open("rb") as handle:
+        response = requests.post(
+            f"{base_url}/v1/audio/transcriptions",
+            files={"file": (REF_AUDIO.name, handle.read(), "audio/wav")},
+            data={
+                "model": checkpoint,
+                "language": TRANSLATION_SOURCE_LANGUAGE,
+                "response_format": "json",
+            },
+            timeout=max(REQUEST_TIMEOUT, model.request_seconds),
+        )
+    assert response.status_code == 200, f"http {response.status_code}: {response.text}"
+    translated = response.json().get("text", "")
+    assert translated.strip(), f"empty translation of {REF_TEXT!r}"
+    assert TRANSLATION_KEYWORD in translated, (
+        f"translation {translated!r} does not contain {TRANSLATION_KEYWORD!r} (car), "
+        f"so it did not render {REF_TEXT!r} into Chinese"
+    )
+    return f"translated to {translated.strip()!r}"
 
 
 def speak(base_url: str, payload: dict, label: str) -> str:
@@ -279,6 +308,7 @@ def exercise_chat_speech(base_url: str, checkpoint: str, model: XpuModel) -> str
 
 EXERCISES = {
     "transcription": exercise_transcription,
+    "translation": exercise_translation,
     "speech_cloned": exercise_speech_cloned,
     "speech_builtin_voice": exercise_speech_builtin_voice,
     "speech_default_voice": exercise_speech_default_voice,

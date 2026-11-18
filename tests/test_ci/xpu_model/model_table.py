@@ -79,6 +79,9 @@ class XpuModel:
     # Pairs rather than a dict so the row stays hashable and frozen.
     env: tuple[tuple[str, str], ...] = ()
     startup_seconds: int = 900
+    # For a model whose first request does one-off work: the lane waits the longer
+    # of this and its own request timeout. 0 keeps the lane's default.
+    request_seconds: int = 0
     # (family, extra serve args) pairs, applied after serve_args on that family.
     device_args: tuple[tuple[str, tuple[str, ...]], ...] = ()
     # Why the device lane cannot serve this one; empty when it can.
@@ -107,8 +110,8 @@ class XpuModel:
     def checkpoint_env(self) -> str:
         """Env var pointing this row at a local copy.
 
-        Derived rather than spelled out per row: twenty-six hand-written names
-        are twenty-six chances to paste the wrong one, and nothing outside this
+        Derived rather than spelled out per row: twenty-eight hand-written names
+        are twenty-eight chances to paste the wrong one, and nothing outside this
         package names them literally.
         """
         return f"OMNI_XPU_{self.key.upper().replace('-', '_')}_MODEL"
@@ -185,6 +188,42 @@ XPU_MODELS: tuple[XpuModel, ...] = (
         repo_id="AutoArk-AI/ARK-ASR-3B",
         cards=1,
         kind="transcription",
+    ),
+    XpuModel(
+        key="ming3-asr-tiny",
+        package="ming3_asr",
+        architecture="MingV3ASRForConditionalGeneration",
+        variant=None,
+        stages=("preprocessing", "thinker"),
+        repo_id="inclusionAI/Ming-3.0-asr-tiny",
+        # About 22 GB of a 24 GB card, so it needs an otherwise idle one.
+        cards=1,
+        kind="transcription",
+        # The first request compiles and tunes the backbone's linear-attention Triton
+        # kernels for its audio length: 279 s on a B60 with a cold cache, which a fresh
+        # CI container always has, against a 300 s default.
+        request_seconds=900,
+    ),
+    XpuModel(
+        key="hy-simulmt",
+        package="hy_simulmt",
+        architecture="HYV3SpeechForCausalLM",
+        variant=None,
+        stages=("asr",),
+        repo_id="tencent/Hy-SimulMT-30B-A3B",
+        # 57 GiB of bf16 weights: TP=4 is the smallest layout that fits 24 GB cards.
+        cards=4,
+        kind="translation",
+        serve_args=(
+            "--asr.tp_size",
+            "4",
+            "--asr.gpu",
+            "[0, 1, 2, 3]",
+            "--mem-fraction-static",
+            "0.75",
+            "--enable-realtime",
+        ),
+        startup_seconds=1800,
     ),
     XpuModel(
         key="qwen3-tts",
