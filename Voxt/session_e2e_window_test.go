@@ -46,3 +46,47 @@ func TestWindowScreenshotEndToEnd(t *testing.T) {
 		})
 	}
 }
+
+// TestClipboardImageEndToEnd: with "Send the copied image with Rewrite"
+// on, the helper's picture of the clipboard goes with the selection and
+// the instruction to the language model; with nothing on the clipboard
+// (or the switch off) the model gets the text alone.
+func TestClipboardImageEndToEnd(t *testing.T) {
+	const selection = "The chart compares three releases.\n\nThe second row shows the latest results."
+	const instruction = "Describe the picture in the context of the selected text."
+	for _, tc := range []struct {
+		name, opts string
+		on, image  bool
+	}{
+		{"a copied image", ",clipboard-image", true, true},
+		{"nothing copied", "", true, false},
+		{"off", ",clipboard-image", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &fakeChat{text: "A red square."}
+			set, keys, _ := fileSetup(t, instruction, chat)
+			ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+			a := newSessionApp(t, helpertest.Opt("selection", selection)+","+ev+tc.opts, func(s *settings.Settings) {
+				set(s)
+				s.Privacy.SendClipboardImage = tc.on
+			}, keys)
+			a.pump("the end", func() bool { return a.sess.State.Ended() })
+			if a.sess.State != session.Done || a.sess.Result != "A red square." {
+				t.Fatalf("end %+v", a.sess)
+			}
+			reqs := chat.requests()
+			if len(reqs) != 1 {
+				t.Fatalf("%d chats", len(reqs))
+			}
+			msgs := chatMessages(reqs[0])
+			want := [2]string{"user", "<instruction>\n" + instruction + "\n</instruction>\n\n<selected_text>\n" + selection + "\n</selected_text>"}
+			if len(msgs) == 0 || msgs[len(msgs)-1] != want {
+				t.Fatalf("last user message lost selected text or instruction: %q", msgs)
+			}
+			img, _ := reqs[0]["image"].([]byte)
+			if tc.image != bytes.Equal(img, helpertest.ClipImage) || !tc.image && img != nil {
+				t.Errorf("image %q, want it %v\n%s", img, tc.image, a.logText())
+			}
+		})
+	}
+}

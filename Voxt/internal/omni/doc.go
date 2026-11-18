@@ -22,10 +22,9 @@
 // internal/models'; this package gets a model's folder. An ASR may carry
 // the VAD (WithVAD): its VAD method is local.VoiceActivity, how a session
 // finds the Silero model beside the speech model. It may carry a
-// speculative draft (WithDraft): the DFlash draft the catalogue pairs
-// with the model goes to the server as --draft-model-path, which then
-// decodes several tokens a step; a server that refuses the draft starts
-// again without it.
+// speculative draft (WithDraft): the catalogue's draft path goes to the
+// server as --draft-model-path, so it can decode several tokens a step.
+// A server that refuses the draft starts again without it.
 //
 // # Processes (Runtime)
 //

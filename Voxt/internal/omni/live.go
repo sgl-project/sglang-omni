@@ -37,6 +37,8 @@ type live struct {
 	conn   *websocket.Conn // nil: a model without a realtime API (the batch preview)
 	out    chan []byte     // messages for the socket's writer
 
+	cancelBatchPreview context.CancelFunc
+
 	// language and bias are the Final's: the model's language hint ("":
 	// it detects) and the context bias.
 	language string
@@ -117,7 +119,9 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 		go s.read()
 	} else {
 		s.tick = make(chan struct{}, 1)
-		go s.previewBatch()
+		previewContext, cancelPreview := context.WithCancel(sctx)
+		s.cancelBatchPreview = cancelPreview
+		go s.previewBatch(previewContext)
 	}
 	// With LiveResult the socket's text is the result: no Final to shorten.
 	if a.spec.ASR.PiecesAfter > 0 && !(req.LiveResult && conn != nil) {
@@ -308,6 +312,9 @@ func (s *live) Finish() error {
 	}
 	s.finished = true
 	pcm := s.audio
+	if s.cancelBatchPreview != nil {
+		s.cancelBatchPreview()
+	}
 	if s.req.LiveResult && s.preview {
 		s.mu.Unlock()
 		go s.finishLive(pcm)

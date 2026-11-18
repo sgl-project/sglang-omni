@@ -103,6 +103,8 @@ func ModelErrorText(err error) (msg, more string) {
 			return i18n.T("The remote service refused the API key."), more
 		case llm.CodeModelNotFound:
 			return i18n.T("The remote service does not have this model."), more
+		case llm.CodeAddress:
+			return i18n.T("Nothing answers at the remote model's address. Check the address on the Language models page."), more
 		case llm.CodeConfig:
 			return i18n.T("The remote model's address is not allowed. Use https://, or http:// for an address on this Mac."), more
 		case llm.CodeTimeout:

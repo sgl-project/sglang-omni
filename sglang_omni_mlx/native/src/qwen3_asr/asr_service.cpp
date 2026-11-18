@@ -11,8 +11,10 @@
 
 #include "civetweb.h"
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/http.h"
 #include "common/service.h"
+#include "common/transcription.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/worker.h"
 
@@ -21,15 +23,16 @@ namespace asr_service {
 namespace {
 
 namespace mx = mlx::core;
+using omni_common::TranscriptionResult;
 using omni_server::BadRequest;
 using omni_server::Json;
 using omni_server::ReadBody;
 using omni_server::WriteJson;
 using qwen3_asr::CancelFlag;
-using qwen3_asr::TranscriptionResult;
 using qwen3_asr::TranscriptionWorker;
 
 constexpr auto kHeartbeatInterval = std::chrono::milliseconds(250);
+constexpr auto kPreviewHeartbeatInterval = std::chrono::milliseconds(50);
 
 struct ServerState {
   TranscriptionWorker *worker = nullptr;
@@ -40,7 +43,7 @@ struct ServerState {
 // Speaker segments, for models that produce them.
 void AddSegments(Json &body, const TranscriptionResult &result) {
   if (!result.segments.empty()) {
-    body["segments"] = qwen3_asr::SpeakerSegmentsJson(result.segments);
+    body["segments"] = omni_common::SpeakerSegmentsJson(result.segments);
   } else {
   }
 }
@@ -54,7 +57,19 @@ Json DoneEvent(const TranscriptionResult &result,
         {"generated_token_count", result.generated_token_count},
         {"language",
          result.language.has_value() ? Json(*result.language) : Json()},
-        {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)}};
+        {"finish_reason", omni_common::FinishReasonName(result.finish_reason)}};
+    if (!result.window_texts.empty()) {
+      event["generation_metadata"]["window_texts"] = result.window_texts;
+    }
+    if (result.verify_round_count > 0) {
+      event["generation_metadata"]["verify_round_count"] =
+          result.verify_round_count;
+      event["generation_metadata"]["proposed_draft_token_count"] =
+          result.proposed_draft_token_count;
+      event["generation_metadata"]["accepted_draft_token_count"] =
+          result.accepted_draft_token_count;
+    } else {
+    }
   } else {
   }
   return event;
@@ -133,7 +148,11 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
                         "Connection: close\r\n\r\n");
   // Note (Jiaxin Deng): SSE comment heartbeats fail to write once the peer is
   // gone, which cancels the decode it was waiting for.
-  while (future.wait_for(kHeartbeatInterval) != std::future_status::ready) {
+  const auto heartbeat_interval =
+      omni_common::FormFlag(TextField(*form, "preview"))
+          ? kPreviewHeartbeatInterval
+          : kHeartbeatInterval;
+  while (future.wait_for(heartbeat_interval) != std::future_status::ready) {
     if (mg_write(connection, ":\n\n", 3) <= 0) {
       cancel->store(true);
     } else {
@@ -142,7 +161,7 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
   try {
     const TranscriptionResult result = future.get();
     WriteSse(connection, DoneEvent(result, include_generation_metadata).dump());
-  } catch (const qwen3_asr::TranscriptionCancelled &) {
+  } catch (const omni_common::GenerationCancelled &) {
     return 200;
   } catch (const std::exception &error) {
     std::cerr << "transcription failed: " << typeid(error).name() << "\n";

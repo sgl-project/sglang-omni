@@ -14,6 +14,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 import torch
+from transformers import AutoFeatureExtractor, FeatureExtractionMixin, Wav2Vec2BertModel
 
 if TYPE_CHECKING:
     from neucodec import NeuCodec
@@ -27,6 +28,7 @@ from sglang_omni.models.audar_tts.protocol import (
     parse_speech_codes,
 )
 from sglang_omni.models.audar_tts.request_builders import build_audar_state
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
@@ -44,6 +46,7 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 DEFAULT_GGUF_FILENAME = "Audar-TTS-V1-Turbo-Q4_K_M.gguf"
 DEFAULT_CODEC_MODEL = "neuphonic/neucodec"
+DEFAULT_CODEC_W2V_MODEL = "facebook/w2v-bert-2.0"
 REFERENCE_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 MIN_REFERENCE_SECONDS = 5.0
@@ -93,6 +96,57 @@ def load_llama_cpp_ggml() -> ModuleType:
     return llama_cpp_ggml
 
 
+CODEC_HOP_LENGTH = 480
+_local_codec_construction_lock = threading.Lock()
+
+
+class LocalFeatureExtractorLoader:
+    def __init__(
+        self,
+        model_class: type[AutoFeatureExtractor],
+        local_path: Path,
+    ) -> None:
+        self.model_class = model_class
+        self.local_path = local_path
+
+    def from_pretrained(self, model_name_or_path: str) -> FeatureExtractionMixin:
+        if model_name_or_path == DEFAULT_CODEC_W2V_MODEL:
+            return self.model_class.from_pretrained(
+                str(self.local_path),
+                local_files_only=True,
+            )
+        else:
+            return self.model_class.from_pretrained(model_name_or_path)
+
+
+class LocalW2VModelLoader:
+    def __init__(
+        self,
+        model_class: type[Wav2Vec2BertModel],
+        local_path: Path,
+    ) -> None:
+        self.model_class = model_class
+        self.local_path = local_path
+
+    def from_pretrained(
+        self,
+        model_name_or_path: str,
+        *,
+        output_hidden_states: bool,
+    ) -> Wav2Vec2BertModel:
+        if model_name_or_path == DEFAULT_CODEC_W2V_MODEL:
+            return self.model_class.from_pretrained(
+                str(self.local_path),
+                output_hidden_states=output_hidden_states,
+                local_files_only=True,
+            )
+        else:
+            return self.model_class.from_pretrained(
+                model_name_or_path,
+                output_hidden_states=output_hidden_states,
+            )
+
+
 @dataclass(frozen=True)
 class ReferenceInput:
     source_kind: str
@@ -101,9 +155,71 @@ class ReferenceInput:
 
 
 @lru_cache(maxsize=None)
-def load_codec(model: str, revision: str, device: str) -> NeuCodec:
+def load_codec(
+    model: str,
+    revision: str,
+    device: str,
+    codec_w2v_model_path: str | None = None,
+) -> NeuCodec:
     NeuCodec = load_neucodec()
-    return NeuCodec.from_pretrained(model, revision=revision).eval().to(device)
+    local_codec_dir = Path(model).expanduser()
+    is_local = local_codec_dir.is_dir()
+    weights_path: Path | None = None
+    w2v_path: Path | None = None
+    if is_local:
+        local_codec_dir = resolve_model_path(str(local_codec_dir))
+        weights_path = local_codec_dir / "pytorch_model.bin"
+        requested_w2v_path = Path(
+            codec_w2v_model_path or DEFAULT_CODEC_W2V_MODEL
+        ).expanduser()
+        try:
+            w2v_path = resolve_model_path(
+                str(requested_w2v_path),
+                local_files_only=True,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise FileNotFoundError(
+                "A local NeuCodec directory requires a resolvable W2V snapshot; "
+                f"set codec_w2v_model_path explicitly: {requested_w2v_path}"
+            ) from exc
+        if not weights_path.is_file() or not w2v_path.is_dir():
+            raise FileNotFoundError(
+                "A local NeuCodec directory needs pytorch_model.bin and a "
+                f"resolvable W2V snapshot: {local_codec_dir}, {w2v_path}"
+            )
+        else:
+            pass
+    else:
+        pass
+
+    with _local_codec_construction_lock:
+        if is_local:
+            import neucodec.model as neucodec_model
+
+            assert w2v_path is not None
+            feature_extractor_class = neucodec_model.AutoFeatureExtractor
+            w2v_model_class = neucodec_model.Wav2Vec2BertModel
+            neucodec_model.AutoFeatureExtractor = LocalFeatureExtractorLoader(
+                feature_extractor_class, w2v_path
+            )
+            neucodec_model.Wav2Vec2BertModel = LocalW2VModelLoader(
+                w2v_model_class, w2v_path
+            )
+            try:
+                codec = NeuCodec(OUTPUT_SAMPLE_RATE, CODEC_HOP_LENGTH)
+            finally:
+                neucodec_model.AutoFeatureExtractor = feature_extractor_class
+                neucodec_model.Wav2Vec2BertModel = w2v_model_class
+        else:
+            codec = NeuCodec.from_pretrained(model, revision=revision)
+
+    if is_local:
+        assert weights_path is not None
+        state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+        codec.load_state_dict(state_dict, strict=False)
+    else:
+        pass
+    return codec.eval().to(device)
 
 
 @lru_cache(maxsize=None)
@@ -201,6 +317,7 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
         device: str,
         codec_model: str,
         codec_revision: str,
+        codec_w2v_model_path: str | None = None,
         codec_lock: threading.Lock | None = None,
     ) -> None:
         self.codec = codec
@@ -209,7 +326,10 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
         self.model_revision = codec_revision
         self.codec_lock = codec_lock or threading.Lock()
         self.encoder_config_hash = hash_bytes(
-            f"sample_rate:{REFERENCE_SAMPLE_RATE}".encode("utf-8")
+            (
+                f"sample_rate:{REFERENCE_SAMPLE_RATE};"
+                f"w2v:{codec_w2v_model_path or DEFAULT_CODEC_W2V_MODEL}"
+            ).encode("utf-8")
         )
 
     def normalize_input(self, raw_input: object) -> ReferenceInput:
@@ -238,6 +358,7 @@ def create_reference_encoder_executor(
     gpu_id: int | None = None,
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
+    codec_w2v_model_path: str | None = None,
     cache_max_items: int = 256,
     cache_max_bytes: int = 64 * 1024 * 1024,
     max_concurrency: int = 8,
@@ -245,13 +366,19 @@ def create_reference_encoder_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
-    codec = load_codec(codec_model, codec_revision, device)
+    codec = load_codec(
+        codec_model,
+        codec_revision,
+        device,
+        codec_w2v_model_path=codec_w2v_model_path,
+    )
     reference_service = ReferenceEncodeService(
         AudarReferenceEncodeHook(
             codec=codec,
             device=device,
             codec_model=codec_model,
             codec_revision=codec_revision,
+            codec_w2v_model_path=codec_w2v_model_path,
             codec_lock=codec_lock(codec_model, codec_revision, device),
         ),
         max_items=cache_max_items,
@@ -441,11 +568,17 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
+    codec_w2v_model_path: str | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
-    codec = load_codec(codec_model, codec_revision, device)
+    codec = load_codec(
+        codec_model,
+        codec_revision,
+        device,
+        codec_w2v_model_path=codec_w2v_model_path,
+    )
     lock = codec_lock(codec_model, codec_revision, device)
 
     async def _decode(payload: StagePayload) -> StagePayload:

@@ -10,13 +10,11 @@
 
 任务：按上面的规则，返回可以直接插入的听写文本。
 
-<dictionary>
 | Standard spelling | Correction mapping | Condition / cue |
 |---|---|---|
 | 101; 280; I-80; SR-85 | `幺零幺` → 101 | Bay Area highways; keep the I- / SR- prefix as spoken |
 | 401(k); Roth | `401 K` / `四零一 K` → 401(k); `罗斯` → Roth | retirement accounts |
 | AAPL; NVDA; TSLA | — | tickers, all caps, only when the ticker itself is said |
-</dictionary>
 
 场景：文字会插入到 Slack。用户为这个场景写的规则：
 Casual.
@@ -27,7 +25,7 @@ Casual.
 - VoxtNew（可能被听成：aura link、奥拉链接）
 - DeepSeek（可能被听成：deep seek）
 
-输出：只输出最终文本，不要加引号、标签、解释或 <input> 标签。如果没有任何有意义的内容，返回空字符串。
+输出：只输出最终文本，不要加引号、标签、解释或 <input> 标签。只有说话者明确要求时，才添加加粗、斜体或代码块等 Markdown 格式。明确口述的数学公式用 LaTeX：行内用 \(...\)，独立公式另起一行用 \[...\]。保留原有公式，金额照常写。如果没有任何有意义的内容，返回空字符串。
 
 ---- user ----
 <input>

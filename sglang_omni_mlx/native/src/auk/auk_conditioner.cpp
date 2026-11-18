@@ -282,7 +282,7 @@ mx::array Conditioner::TextLayer(const mx::array &hidden, int layer) const {
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, keys, values,
       static_cast<float>(std::pow(static_cast<double>(head_size), -0.5)),
-      "causal");
+      /*window_size=*/-1, "causal");
   const mx::array residual = mx::add(
       hidden,
       checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),

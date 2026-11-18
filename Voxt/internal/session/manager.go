@@ -2,10 +2,12 @@ package session
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -121,11 +123,12 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
 	}
 	r.llmCtx, r.llmStop = context.WithCancel(ctx)
+	r.think = req.Thinking
 	m.cur = r
 	m.rev++
 	m.snap = Snapshot{
 		Rev: m.rev, ID: r.id, Kind: req.Kind, State: r.firstState(), Try: req.Try, Note: req.Note, HoldBinding: req.HoldBinding,
-		Target: req.Target, StartedAt: at,
+		Target: req.Target, StartedAt: at, MaxLen: time.Duration(r.settings.Audio.MaxSeconds) * time.Second,
 	}
 	if req.Kind == store.KindTranslate {
 		r.target = TranslateTarget(r.settings, m.cfg.Locale(), req.TargetLanguage)
@@ -174,12 +177,47 @@ func (m *Manager) Cancel(id string) {
 func (m *Manager) SkipLLM(id string) {
 	m.mu.Lock()
 	r := m.cur
-	ok := r != nil && r.id == id && m.snap.State == Composing && m.snap.CanSkip
-	m.mu.Unlock()
-	if ok {
+	if r != nil && r.id == id && m.snap.State == Composing && m.snap.CanSkip {
 		r.skipped.Store(true)
 		r.llmStop()
 	}
+	m.mu.Unlock()
+}
+
+// StopLLM ends session id's answer where it is, when its snapshot says it
+// can (Snapshot.CanStop): the request to the model ends and the card keeps
+// the answer so far, to copy, insert or follow up (#3886).
+func (m *Manager) StopLLM(id string) {
+	m.mu.Lock()
+	r := m.cur
+	if r != nil && r.id == id && m.snap.CanStop() {
+		r.stopped.Store(true)
+		r.llmStop()
+	}
+	m.mu.Unlock()
+}
+
+// Rethink asks the language model again at thinking level t (nil: the
+// service's setting) while it works on session id's Transcribe text or
+// Translate's or Rewrite's answer (#3940, #3957: the preview's thinking
+// menu): the request ends where it is and the model starts again from
+// the start; only the new answer goes in. The service's setting stays.
+// Otherwise it does nothing.
+func (m *Manager) Rethink(id string, t *llm.Thinking) {
+	m.mu.Lock()
+	r := m.cur
+	m.mu.Unlock()
+	if r == nil || r.id != id {
+		return
+	}
+	m.update(r, func(s *Snapshot) {
+		if !slices.Contains([]store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite}, s.Kind) || s.State != Composing || r.skipped.Load() || r.stopped.Load() {
+			return
+		}
+		s.Thinking, r.think = t, t
+		r.rethink.Store(true)
+		r.llmStop()
+	})
 }
 
 // update changes the snapshot of run r, if r is still the current,
@@ -187,7 +225,17 @@ func (m *Manager) SkipLLM(id string) {
 func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
 	m.mu.Lock()
 	if m.cur != r || r.ended {
+		changed := false
+		if r.onDraft != nil { // a history retry: its own snapshot
+			was := r.own.Draft
+			fn(&r.own)
+			changed = r.own.Draft != was
+		}
+		draft := r.own.Draft
 		m.mu.Unlock()
+		if changed {
+			r.onDraft(draft)
+		}
 		return false
 	}
 	fn(&m.snap)

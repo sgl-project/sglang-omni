@@ -6,14 +6,13 @@ import "strings"
 // task's own layers and before the scene, glossary and input, so the
 // system prompt's prefix stays the same from one request to the next
 // (the model server's prompt cache keeps it). The layer is the user's
-// notes as written, in <dictionary> tags, with no text of Voxt's around
-// them: every prompt the user sees can be edited (#3872). It returns the
-// layer.
+// notes as written, with no text or tags of Voxt's around them: every
+// prompt the user sees can be edited (#3872). It returns the layer.
 func addDictionary(in Input, add func(layer, text string)) string {
-	if strings.TrimSpace(in.Dictionary) == "" {
+	layer := strings.TrimSpace(in.Dictionary)
+	if layer == "" {
 		return ""
 	}
-	layer := wrap("dictionary", in.Dictionary)
 	add("dictionary", layer)
 	return layer
 }

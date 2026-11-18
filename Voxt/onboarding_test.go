@@ -4,6 +4,7 @@ import (
 	"math"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -25,6 +26,54 @@ func obTester(t *testing.T) (*app, *ui.Tester) {
 		t.Fatal("a fresh install did not open the guide")
 	}
 	return a, tt
+}
+
+func TestOpeningLeadsToGuideOnce(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.startOpening()
+	a.maybeOnboard()
+	frames(tt)
+	if a.openingStarted.IsZero() || has(tt, "Get started") {
+		t.Fatal("the first launch did not show the opening before the guide")
+	}
+	if !a.lib.settings.Get().Setup.OpeningShown || a.prefs.Setup.Done {
+		t.Fatal("the opening did not persist independently of guide completion")
+	}
+	a.openingStarted = time.Now().Add(-openingDuration)
+	frames(tt)
+	if !a.openingStarted.IsZero() || !has(tt, "Get started") {
+		t.Fatal("the opening did not finish at the setup guide")
+	}
+	a.prefs = a.lib.settings.Get()
+	a.startOpening()
+	if !a.openingStarted.IsZero() {
+		t.Fatal("an unfinished guide replayed the opening")
+	}
+	a.closeOnboarding()
+	a.openOnboarding()
+	frames(tt)
+	if !a.openingStarted.IsZero() || !has(tt, "Get started") {
+		t.Fatal("reopening the guide replayed the opening")
+	}
+}
+
+func TestOpeningSkipsExistingSetupsAndReducedMotion(t *testing.T) {
+	for _, mode := range []string{"existing", "app-reduced-motion", "system-reduced-motion"} {
+		t.Run(mode, func(t *testing.T) {
+			a, _, tt := newTestApp(t)
+			a.updateSettings(func(s *settings.Settings) {
+				s.Setup.Done = mode == "existing"
+				s.Appearance.ReduceMotion = mode == "app-reduced-motion"
+			})
+			tt.SetPreferences(ui.Preferences{ReduceMotion: mode == "system-reduced-motion"})
+			a.startOpening()
+			a.maybeOnboard()
+			frames(tt)
+			if !a.openingStarted.IsZero() || (mode != "existing" && !has(tt, "Get started")) {
+				t.Fatal("an existing setup or reduced motion did not skip the opening")
+			}
+		})
+	}
 }
 
 // obSnap is a try's snapshot of kind in state st.
@@ -382,6 +431,30 @@ func TestOnboardingComesBack(t *testing.T) {
 	a.openOnboarding()
 	if a.ob.step != obWelcome {
 		t.Errorf("after finishing: step %d", a.ob.step)
+	}
+}
+
+// TestOnboardingTryStepLeaves: #3917, Set up a language model on the
+// Translate and Rewrite try steps navigated behind the guide, so it
+// seemed to do nothing. It leaves like the Models step's button.
+func TestOnboardingTryStepLeaves(t *testing.T) {
+	for _, c := range []struct {
+		step  int
+		title string
+	}{{obTranslate, "Translate"}, {obRewrite, "Rewrite"}} {
+		a, tt := obTester(t)
+		readyASROnly(a)
+		a.obGo(c.step)
+		frames(tt)
+		tt.Scroll(windowWidth*0.6, windowHeight*0.5, 0, 600) // the notice is under the fold
+		click(t, tt, "Set up a language model")
+		if a.ob.open || a.shownPath() != remotePath || !has(tt, "The setup guide is paused at the "+c.title+" step.") {
+			t.Fatalf("%s: open %v, %s, %q", c.title, a.ob.open, a.shownPath(), tt.Texts())
+		}
+		click(t, tt, "Back to the setup guide")
+		if !a.ob.open || a.ob.step != c.step {
+			t.Fatalf("%s back: open %v, step %d", c.title, a.ob.open, a.ob.step)
+		}
 	}
 }
 

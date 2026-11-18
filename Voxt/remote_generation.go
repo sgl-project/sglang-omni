@@ -25,6 +25,8 @@ import (
 // their titles (settings parses them).
 type genForm struct {
 	think, effort, budget           string
+	shortOff                        bool   // Off for short inputs (#3951)
+	shortUnder                      string // its limit, in characters; "": shortUnderDefault
 	maxTokens, temperature, topP    string
 	topK, minP, seed                string
 	presence, frequency, repetition string
@@ -123,6 +125,14 @@ func titles(values []string, titleOf func(string) string) []string {
 	return out
 }
 
+// shortUnderDefault is Off for short inputs' limit when its field is
+// empty: about a sentence or two.
+const shortUnderDefault = 200
+
+// thinks says thinking mode m asks the model to think, so Off for short
+// inputs changes something.
+func thinks(m string) bool { return m == llm.ThinkOn || m == llm.ThinkEffort || m == llm.ThinkBudget }
+
 // genFormOf is the form of saved settings g.
 func genFormOf(g settings.Generation) genForm {
 	f := genForm{
@@ -137,6 +147,9 @@ func genFormOf(g settings.Generation) genForm {
 	}
 	if g.ThinkingBudget > 0 {
 		f.budget = strconv.Itoa(g.ThinkingBudget)
+	}
+	if f.shortOff = g.ThinkingOffUnder > 0; f.shortOff {
+		f.shortUnder = strconv.Itoa(g.ThinkingOffUnder)
 	}
 	return f
 }
@@ -186,6 +199,12 @@ func (f *genForm) settings() (g settings.Generation, bad string) {
 	case llm.ThinkBudget:
 		if b := integer(f.budget, i18n.T("Budget tokens")); b != nil {
 			g.ThinkingBudget = *b
+		}
+	}
+	if f.shortOff && thinks(g.Thinking) {
+		g.ThinkingOffUnder = shortUnderDefault
+		if n := integer(f.shortUnder, i18n.T("Fewer characters than")); n != nil && *n > 0 {
+			g.ThinkingOffUnder = *n
 		}
 	}
 	// 0 asks for no limit, as an empty field does (the request would ask
@@ -284,6 +303,14 @@ func (a *app) generationFields(c *ui.Context, d *providerDialog) {
 				}
 			})
 		})
+		if thinks(valueOf(f.think, caps.ThinkModes, thinkTitle)) {
+			fieldInfo(c, i18n.T("Off for short inputs"), "", func() {
+				ui.Switch(c.Key("gen-short"), &f.shortOff).Label(i18n.T("Off for short inputs"))
+			})
+			if f.shortOff {
+				num("gen-short-under", i18n.T("Fewer characters than"), strconv.Itoa(shortUnderDefault), &f.shortUnder)
+			}
+		}
 	}
 	if caps.MaxOutputTokens {
 		num("gen-max", i18n.T("Max output tokens (optional)"), i18n.T("e.g. 4096"), &f.maxTokens)

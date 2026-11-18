@@ -21,6 +21,7 @@ To install Beta `2.0.3-beta.20261112.40`, sign in to GitHub, download and unzip 
 - **Translate (Shift + Right Option)**. Translate speech or selected text.
 - **Rewrite (Control + Right Option)**. Select text and say how you want it rewritten.
 - **Notes (Right Command)**. Speak to save a note in Voxt.
+- **Meetings**. Start one from the menu bar menu. Voxt shows live captions of you and the other side, then corrects the transcript and writes a summary.
 
 Set up a language model in Voxt to use Translate and Rewrite. Voxt also has a custom dictionary, history retry and export, and app-specific prompts.
 
@@ -37,7 +38,7 @@ voxt-tutorials/en/index
 voxt-tutorials/index
 ```
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.0.3/Voxt-2.0.3-arm64.dmg
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.0/Voxt-2.1.0-arm64.dmg
 [beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/43128787320/artifacts/13904657773
 [beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/43128787320#artifacts
 [beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml

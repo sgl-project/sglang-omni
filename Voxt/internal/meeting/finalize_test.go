@@ -305,3 +305,63 @@ func tonePCM(samples int) []byte {
 	}
 	return out
 }
+
+// #3982: the final pass drops mic segments that are the system speech
+// heard from the speakers, and keeps the user's own words.
+func TestFinalizeDropsMicEcho(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	meetDir := filepath.Join(root, "meetings", "m3")
+	if err := os.MkdirAll(meetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	long := tonePCM(rateSamples(30 * time.Second)) // two chunks per track
+	writeWAV(t, meetDir, "mic.wav", long)
+	writeWAV(t, meetDir, "system.wav", long)
+	mt, _ := db.Meetings().CreateMeeting(ctx, store.Meeting{
+		ID: "m3", CreatedAt: time.Now(), Status: store.MeetingDone,
+		Mode: store.MeetingModeMeeting, Audio: "m3",
+	})
+	echo := "然后一下出来，就是那整整齐齐的这个感觉。"
+	own := "我自己不是做app这个背景的，所以觉得有点抽象。"
+	micASR := &seqFileASR{texts: []string{"然后一下出来，就是那整整齐的这个感觉。", own}}
+	sysASR := &seqFileASR{texts: []string{echo, "嗯。"}}
+	cfg := meeting.Config{
+		Store:    db.Meetings(),
+		Dir:      filepath.Join(root, "meetings"),
+		Settings: func() settings.Meeting { return settings.Meeting{} },
+		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
+			if src == meeting.SourceMic {
+				return meeting.TrackASR{Caps: micASR.Caps(), File: micASR}, nil
+			}
+			return meeting.TrackASR{Caps: sysASR.Caps(), File: sysASR}, nil
+		},
+	}
+	if err := meeting.FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, segs, err := db.Meetings().Meeting(ctx, "m3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mic, sys []string
+	for _, s := range segs {
+		if s.Source == store.SegmentMic {
+			mic = append(mic, s.Text)
+		} else {
+			sys = append(sys, s.Text)
+		}
+	}
+	if len(mic) != 1 || mic[0] != own {
+		t.Fatalf("mic segments %q, want only %q", mic, own)
+	}
+	if len(sys) != 2 || sys[0] != echo {
+		t.Fatalf("system segments %q", sys)
+	}
+}

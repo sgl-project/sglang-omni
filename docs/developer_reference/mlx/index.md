@@ -60,6 +60,17 @@ The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned
 
 `moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
 
+Qwen3-ASR uses adaptive backoff by default: after warmup and two four-round windows, a five-token plain probe measures cost per committed token. If both windows are over 5% slower, the request continues with plain decoding and the existing target KV cache. Otherwise speculation resumes. A winning plain measurement expires after 64 post-warmup draft rounds; an observed slowdown can trigger an earlier recheck.
+
+The probe and fallback batch single-row affine projections to avoid MLX 0.32.3's scalar/batched rounding discontinuity on M5. Only matrix rows are padded: each step still advances the target KV cache by one real token. Standalone plain decoding is unchanged.
+
+`--draft-policy fixed` preserves always-draft behavior; the exact golden checker uses it because adaptive switching can change low-precision near-ties. MOSS-TD retains fixed drafting.
+
+`whisper_server` and `whisper_transcribe` take `--draft-model-path DIR` and `--draft-steps N` (proposals per round, 7 by default). The draft is a distil Whisper decoder: each round it proposes N tokens and the target verifies them in one pass, so a greedy request keeps the target's transcript; a request with a positive `temperature` samples without the draft. The draft decodes the target's encoder states, so only its decoder is loaded, in the target's dtype, after its width, vocabulary and text positions are checked against the target. For `mlx-community/whisper-large-v3-mlx`, convert `wilsonzheng0327/Whisper-large-v3-distil-draft` (pinned in `ci/model_pins.json`) with `python ci/convert_whisper_draft.py HF_DIRECTORY NATIVE_DIRECTORY`. The CLI reports `verify_rounds`, `proposed_draft_token_count` and `accepted_draft_token_count` per file.
+
+A drafted request that sets `include_generation_metadata` also gets `verify_round_count`, `proposed_draft_token_count` and `accepted_draft_token_count` in its done event's `generation_metadata`, for every server above; the target's own token each round counts in neither token count.
+For adaptive Qwen3-ASR, the draft counts cover speculative rounds only; plain probes and fallback tokens do not contribute.
+
 ## Rule 2: Contribution requirements
 
 **Placement and reuse**
