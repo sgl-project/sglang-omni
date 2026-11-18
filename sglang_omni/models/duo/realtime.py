@@ -307,7 +307,12 @@ class DuoRealtimeAdapter(InteractionAdapter):
             data=None,
         )
         decoded = await asyncio.get_running_loop().run_in_executor(
-            self.resources.block_executor, self.run_block, request, chunk, payload, context
+            self.resources.block_executor,
+            self.run_block,
+            request,
+            chunk,
+            payload,
+            context,
         )
         if reset_realization_kv:
             self.applied_reset_generation = reset_generation

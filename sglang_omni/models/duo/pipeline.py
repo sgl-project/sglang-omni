@@ -98,6 +98,8 @@ def create_deployment(client: Client, config: DuoPipelineConfig):
         worker.shutdown()
         if resources.shutdown:
             resources.shutdown()
+        else:
+            pass
 
     return replace(
         build_duo_realtime_deployment(resources), router=router, shutdown=shutdown

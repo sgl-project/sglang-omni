@@ -832,6 +832,8 @@ async def run_server(
             )
             if realtime_deployment and realtime_deployment.router:
                 app.include_router(realtime_deployment.router)
+            else:
+                pass
             profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
             profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
             mount_profiler_routes(app, profiler_ctl, profiler_dir)
@@ -896,6 +898,8 @@ async def run_server(
                 try:
                     if realtime_deployment and realtime_deployment.shutdown:
                         await asyncio.to_thread(realtime_deployment.shutdown)
+                    else:
+                        pass
                 finally:
                     await mp_runner.stop()
             finally:

@@ -35,6 +35,8 @@ def resolve_config_cls_for_model_path(model_path: str):
         )
     ):
         return PIPELINE_CONFIG_REGISTRY.get_config("Duo")
+    else:
+        pass
     repo_id, revision = model_path, None
     if "@" in model_path and not os.path.isdir(model_path):
         repo_id, _, pinned = model_path.partition("@")
