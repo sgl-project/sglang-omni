@@ -261,3 +261,40 @@ func TestReleaseAppcastHardwareRequirementKept(t *testing.T) {
 		}
 	}
 }
+
+// A beta's version exists only in CI, and MyGo signs its update only with
+// notes under that exact heading (third_party/mygo/cmd/mygo/updates.go,
+// releaseNotes): beta-changelog gives it Unreleased's notes, else a line.
+func TestReleaseAppcastBetaChangelog(t *testing.T) {
+	const version = "2.1.2-beta.20261118.74"
+	const released = "## [2.1.1] - 2026-11-17\n\n- Old.\n"
+	section := func(changelog string) string {
+		_, rest, ok := strings.Cut(changelog, "\n## ["+version+"]\n")
+		if !ok {
+			t.Fatalf("no %s heading in:\n%s", version, changelog)
+		}
+		notes, _, _ := strings.Cut(rest, "\n## ")
+		return strings.TrimSpace(notes)
+	}
+	for _, test := range []struct{ name, changelog, want string }{
+		{"no Unreleased", "# Changelog\n\nIntro.\n\n" + released, "A beta of Voxt built from main at abc123."},
+		{"Unreleased", "# Changelog\n\n## [Unreleased]\n\n- New \\d.\n\n" + released, "- New \\d."},
+		{"no section yet", "# Changelog\n", "A beta of Voxt built from main at abc123."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out, err := runReleaseAppcast(t, test.changelog, "beta-changelog", version, "abc123")
+			if err != nil {
+				t.Fatalf("beta-changelog: %v", err)
+			}
+			if got := section(out); got != test.want {
+				t.Errorf("the beta's notes are %q, want %q", got, test.want)
+			}
+			if !strings.HasPrefix(out, "# Changelog\n") || strings.Contains(test.changelog, released) != strings.Contains(out, released) {
+				t.Errorf("the other sections changed:\n%s", out)
+			}
+		})
+	}
+	if out, err := runReleaseAppcast(t, "", "beta-changelog", "2.1.2", "abc123"); err == nil {
+		t.Errorf("a release version got a beta section:\n%s", out)
+	}
+}
