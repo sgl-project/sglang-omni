@@ -144,7 +144,6 @@ def harness() -> Iterator[Harness]:
     scheduler.cpu_preparation = None
     scheduler.cpu_preparation_closed = False
     scheduler.is_processing_inputs = False
-    scheduler.has_preparation_slot_credit = False
     scheduler.preparation_shutdown_lock = threading.Lock()
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = encoder.close

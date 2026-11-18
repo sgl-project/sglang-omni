@@ -330,43 +330,53 @@ def test_completed_preparation_does_not_retain_request_through_future_callbacks(
     assert len(harness.admitted) == 1
 
 
-def test_cpu_failure_racing_with_claim_is_reported_once(harness):
+def test_cpu_failure_racing_with_claim_is_reported_once(harness, monkeypatch, caplog):
+    """A delayed worker callback must not publish a failure twice or affect a reused ID."""
     scheduler = harness.scheduler
-    callback_started = threading.Event()
-    release_callback = threading.Event()
-    callback_finished = threading.Event()
-    main_thread = threading.get_ident()
-    original = scheduler.cpu_prepared
-    errors = []
+    worker_blocked = threading.Event()
+    release_worker = threading.Event()
+    worker_drained = threading.Event()
+    executor = scheduler.request_build_executor
+    original_submit = executor.submit
 
-    def prepared(reference, future):
-        if threading.get_ident() != main_thread:
-            callback_started.set()
-            assert release_callback.wait(10)
-            try:
-                original(reference, future)
-            except Exception as error:
-                errors.append(error)
-            finally:
-                callback_finished.set()
-        else:
-            original(reference, future)
+    def hold_worker(future):
+        worker_blocked.set()
+        assert release_worker.wait(10)
 
-    scheduler.cpu_prepared = prepared
+    def submit_with_barrier(*args):
+        future = original_submit(*args)
+        future.add_done_callback(hold_worker)
+        return future
+
     request = payload()
     request.request.params["max_new_tokens"] = -1
     try:
-        enqueue(scheduler, request)
-        preparation = scheduler.cpu_preparation
-        assert callback_started.wait(10)
+        with monkeypatch.context() as patch:
+            patch.setattr(executor, "submit", submit_with_barrier)
+            enqueue(scheduler, request)
+        assert worker_blocked.wait(10)
         process(scheduler)
-        assert preparation.build_future.done()
         error = scheduler.outbox.get_nowait()
-        assert error.type == "error"
+        assert error.type == "error" and error.request_id == request.request_id
         assert scheduler.outbox.empty()
+        assert not harness.admitted and harness.encoder.calls == 0
+
+        scheduler.aborted_request_ids.discard(request.request_id)
+        harness.frontend.release.clear()
+        enqueue(scheduler, payload(request.request_id))
+        process(scheduler)
+        assert harness.frontend.started.wait(10)
+        # note (swsqy): both workers are occupied, so only the old worker can run the marker after its callbacks return.
+        executor.submit(worker_drained.set)
+        release_worker.set()
+        assert worker_drained.wait(10)
+        assert not scheduler.pending_request_builds[request.request_id][2].done()
     finally:
-        release_callback.set()
-    assert callback_finished.wait(10)
-    assert not errors
-    assert harness.encoder.calls == 0
-    assert not harness.admitted
+        release_worker.set()
+        harness.frontend.release.set()
+
+    await_build(scheduler, request.request_id)
+    assert [result.req.rid for result in harness.admitted] == [request.request_id]
+    assert harness.encoder.calls == 1
+    assert scheduler.cpu_preparation is None and scheduler.outbox.empty()
+    assert "exception calling callback" not in caplog.text

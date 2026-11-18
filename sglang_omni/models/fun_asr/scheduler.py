@@ -6,9 +6,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass
-from functools import partial
 from typing import Unpack
-from weakref import ReferenceType, ref
 
 from sglang_omni.models.fun_asr.request_builders import (
     FunASRRequestBuilder,
@@ -91,7 +89,6 @@ class FunASRScheduler(OmniScheduler[FunASRRequestData]):
         self.cpu_preparation: CPUPreparation | None = None
         self.cpu_preparation_closed = False
         self.is_processing_inputs = False
-        self.has_preparation_slot_credit = False
         self.preparation_shutdown_lock = threading.Lock()
         super().__init__(**scheduler_arguments)
 
@@ -120,7 +117,6 @@ class FunASRScheduler(OmniScheduler[FunASRRequestData]):
                 and not self.waiting_queue_is_full()
                 and not self.pending_request_builds
                 and self.request_build_max_pending > 1
-                and self.request_build_slots_in_use() < self.request_build_max_pending
             ):
                 snapshot = snapshot_cpu_payload(message.data)
             else:
@@ -135,15 +131,11 @@ class FunASRScheduler(OmniScheduler[FunASRRequestData]):
                     # note (Codex): a concurrently closed executor must not reject an otherwise valid inbox message.
                     pass
                 else:
-                    preparation = CPUPreparation(
+                    self.cpu_preparation = CPUPreparation(
                         payload=message.data,
                         snapshot=snapshot,
                         cpu_future=future,
                         active_stage=active_stage,
-                    )
-                    self.cpu_preparation = preparation
-                    future.add_done_callback(
-                        partial(self.cpu_prepared, ref(preparation))
                     )
             else:
                 pass
@@ -177,22 +169,24 @@ class FunASRScheduler(OmniScheduler[FunASRRequestData]):
                 event_name="scheduler_cpu_prepare_end",
             )
 
-    def request_build_slots_in_use(self) -> int:
-        preparation = self.cpu_preparation
+    def request_build_slots_in_use(
+        self, head_payload: StagePayload | None = None
+    ) -> int:
         pending = self.pending_request_builds
-        if (
-            preparation is not None
-            and not preparation.cancelled
-            and not self.has_preparation_slot_credit
-            and (
-                preparation.payload.request_id not in pending
-                or pending[preparation.payload.request_id][2]
-                is not preparation.build_future
-            )
-        ):
-            return len(pending) + 1
-        else:
+        preparation = self.cpu_preparation
+        if preparation is None or preparation.cancelled:
             return len(pending)
+        elif (
+            head_payload is preparation.payload
+            and not pending
+            and not self.backlogged_request_build_payloads
+        ):
+            # note (swsqy): the selected head already owns its build slot.
+            return len(pending)
+        else:
+            entry = pending.get(preparation.payload.request_id)
+            already_counted = entry is not None and entry[2] is preparation.build_future
+            return len(pending) if already_counted else len(pending) + 1
 
     def recv_requests(self) -> list[StagePayload]:
         with self.request_admission_lock:
@@ -224,25 +218,6 @@ class FunASRScheduler(OmniScheduler[FunASRRequestData]):
             self.is_processing_inputs = True
         super().sleep_during_idle()
 
-    def stage_request_build_payloads(
-        self, recv_reqs: list[StagePayload]
-    ) -> tuple[list[StagePayload], list[StagePayload]]:
-        with self.request_admission_lock:
-            preparation = self.cpu_preparation
-            # note (Codex): the prepared head already owns a slot; counting it twice would reject a request accepted by the ordinary path.
-            self.has_preparation_slot_credit = bool(
-                preparation is not None
-                and not preparation.cancelled
-                and recv_reqs
-                and recv_reqs[0] is preparation.payload
-                and not self.pending_request_builds
-                and not self.backlogged_request_build_payloads
-            )
-            try:
-                return super().stage_request_build_payloads(recv_reqs)
-            finally:
-                self.has_preparation_slot_credit = False
-
     def submit_request_build(
         self, payload: StagePayload, active_stage: str | None
     ) -> Future[FunASRRequestData]:
@@ -260,36 +235,22 @@ class FunASRScheduler(OmniScheduler[FunASRRequestData]):
                 stage=active_stage,
                 event_name="scheduler_cpu_prepare_claimed",
             )
-            if preparation.cpu_future.done():
-                self.cpu_prepared(ref(preparation), preparation.cpu_future)
-            else:
-                pass
+            preparation.cpu_future.add_done_callback(self.cpu_prepared)
             return preparation.build_future
         else:
             return super().submit_request_build(payload, active_stage)
 
-    def cpu_prepared(
-        self,
-        preparation_reference: ReferenceType[CPUPreparation],
-        future: Future[PreparedFunASRInput],
-    ) -> None:
-        preparation = preparation_reference()
-        if preparation is None:
-            return
-        else:
-            pass
+    def cpu_prepared(self, future: Future[PreparedFunASRInput]) -> None:
         with self.request_admission_lock:
-            if preparation.cancelled or self.cpu_preparation_closed:
-                self.release_cancelled_preparation(preparation)
+            preparation = self.cpu_preparation
+            if preparation is None or preparation.cpu_future is not future:
                 return
-            elif (
-                preparation.build_future is None
-                or preparation.build_future.done()
-                or preparation.finish_future is not None
-            ):
+            elif preparation.cancelled or self.cpu_preparation_closed:
+                self.cpu_preparation = None
                 return
             else:
                 pass
+            assert preparation.build_future is not None
             executor = self.request_build_executor
             assert executor is not None
             try:
@@ -298,15 +259,10 @@ class FunASRScheduler(OmniScheduler[FunASRRequestData]):
                     self.finish_prepared_request, preparation, prepared
                 )
             except Exception as error:
+                self.cpu_preparation = None
                 preparation.build_future.set_exception(error)
-                if self.cpu_preparation is preparation:
-                    self.cpu_preparation = None
-                else:
-                    pass
             else:
-                preparation.finish_future.add_done_callback(
-                    partial(self.request_build_finished, ref(preparation))
-                )
+                preparation.finish_future.add_done_callback(self.request_build_finished)
 
     def finish_prepared_request(
         self, preparation: CPUPreparation, prepared: PreparedFunASRInput
@@ -330,51 +286,35 @@ class FunASRScheduler(OmniScheduler[FunASRRequestData]):
                 event_name="scheduler_request_build_end",
             )
 
-    def request_build_finished(
-        self,
-        preparation_reference: ReferenceType[CPUPreparation],
-        future: Future[FunASRRequestData],
-    ) -> None:
-        preparation = preparation_reference()
-        if preparation is None:
-            return
-        else:
-            pass
+    def request_build_finished(self, future: Future[FunASRRequestData]) -> None:
         with self.request_admission_lock:
+            preparation = self.cpu_preparation
+            if preparation is None or preparation.finish_future is not future:
+                return
+            else:
+                self.cpu_preparation = None
             result_future = preparation.build_future
             assert result_future is not None
-            if not result_future.cancelled():
+            if result_future.cancelled():
+                return
+            else:
                 try:
                     result = future.result()
                 except Exception as error:
                     result_future.set_exception(error)
                 else:
                     result_future.set_result(result)
-            else:
-                pass
-            if self.cpu_preparation is preparation:
-                self.cpu_preparation = None
-            else:
-                pass
-
-    def release_cancelled_preparation(self, preparation: CPUPreparation) -> None:
-        if (
-            self.cpu_preparation is preparation
-            and preparation.cpu_future.done()
-            and (preparation.finish_future is None or preparation.finish_future.done())
-        ):
-            self.cpu_preparation = None
-        else:
-            pass
 
     def cancel_cpu_preparation(self, preparation: CPUPreparation) -> None:
-        preparation.cancelled = True
-        if preparation.build_future is not None:
-            preparation.build_future.cancel()
+        if preparation.cancelled:
+            return
         else:
-            pass
-        # note (Codex): keep the early slot until cancelled work leaves the executor. Logical admission capacity is released as in ordinary aborts.
-        self.release_cancelled_preparation(preparation)
+            preparation.cancelled = True
+        if preparation.build_future is None:
+            # note (swsqy): an unclaimed request has no completion callback yet. Keep its slot until the worker consumes it.
+            preparation.cpu_future.add_done_callback(self.cpu_prepared)
+        else:
+            preparation.build_future.cancel()
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
         with self.request_admission_lock:

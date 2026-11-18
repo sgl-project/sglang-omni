@@ -1496,7 +1496,10 @@ class OmniScheduler(Generic[RequestDataT]):
         assert executor is not None
         return executor.submit(self.run_request_builder, payload, active_stage)
 
-    def request_build_slots_in_use(self) -> int:
+    def request_build_slots_in_use(
+        self, head_payload: StagePayload | None = None
+    ) -> int:
+        """Count occupied build slots when selecting the next input group."""
         return len(self.pending_request_builds)
 
     def request_build_queue_fits_workers(self) -> bool:
@@ -1619,7 +1622,8 @@ class OmniScheduler(Generic[RequestDataT]):
             backlog_ids = {payload.request_id for payload in backlog}
             capacity = max(
                 0,
-                self.request_build_max_pending - self.request_build_slots_in_use(),
+                self.request_build_max_pending
+                - self.request_build_slots_in_use(recv_reqs[0] if recv_reqs else None),
             )
             selected: list[StagePayload] = []
             selected_ids: set[str] = set()
