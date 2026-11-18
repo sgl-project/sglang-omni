@@ -28,6 +28,23 @@ constexpr int kControlCodeCount = 1024;
 // and <|im_end|>\n<|im_start|>assistant\n after it.
 constexpr int kRoleTokenCount = 3;
 constexpr int kClosingTokenCount = 5;
+// Note (XXXXRT666): the layers are quantized at load, the talker's to 8 bits
+// and the code predictor's, which a frame runs 15 times, to 4; the speech
+// keeps its words, which a 4-bit talker did not. The embeddings and heads stay
+// in the checkpoint dtype.
+constexpr int kTalkerQuantizationBits = 8;
+constexpr int kCodePredictorQuantizationBits = 4;
+constexpr int kQuantizationGroupSize = 64;
+
+int LayerBits(const std::string &name) {
+  if (name.starts_with("talker.model.layers.")) {
+    return kTalkerQuantizationBits;
+  } else if (name.starts_with("talker.code_predictor.model.layers.")) {
+    return kCodePredictorQuantizationBits;
+  } else {
+    return 0;
+  }
+}
 
 // Rows [start, stop) of x [1, length, hidden].
 mx::array Rows(const mx::array &x, int start, int stop) {
@@ -89,7 +106,9 @@ Qwen3TtsModel::Qwen3TtsModel(const std::filesystem::path &model_directory)
 
 Qwen3TtsModel::Qwen3TtsModel(const std::filesystem::path &model_directory,
                              const nlohmann::json &config)
-    : checkpoint_(omni_common::LoadSafetensors(model_directory), config),
+    : checkpoint_(omni_common::QuantizedCheckpoint(
+          omni_common::LoadSafetensors(model_directory), config,
+          kQuantizationGroupSize, LayerBits)),
       tokenizer_(model_directory),
       speech_decoder_(model_directory / "speech_tokenizer"),
       // Note (Jiaxin Deng): the talker's multimodal rotary positions are all

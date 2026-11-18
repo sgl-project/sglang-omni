@@ -72,6 +72,24 @@ private:
   std::unordered_map<std::string, QuantizationConfig> quantization_by_prefix_;
 };
 
+// Whether models quantize weights at load (QuantizedCheckpoint and their own
+// expert stacks); --full-precision clears it before a model loads.
+void SetLoadTimeQuantization(bool enabled);
+bool LoadTimeQuantization();
+
+// The bits a weight is quantized to at load, by name; 0 leaves it as stored.
+using QuantizationBits = std::function<int(const std::string &name)>;
+
+// A checkpoint of weights whose two-dimensional .weight arrays are quantized
+// at load to bits_for's bits in groups of group_size, as an MLX checkpoint
+// stores them (.weight packed, with .scales and .biases), with each quantized
+// layer's quantization added to config. Rows not a whole number of groups
+// stay as stored, and every weight does without LoadTimeQuantization or when
+// config already has a quantization, the checkpoint's own.
+Checkpoint QuantizedCheckpoint(WeightMap weights, nlohmann::json config,
+                               int group_size,
+                               const QuantizationBits &bits_for);
+
 // A scalar operand as MLX's Python and Swift bindings make one: a constant
 // of the other operand's dtype, so a half-precision tensor is not promoted.
 mlx::core::array Scalar(float value, mlx::core::Dtype dtype);

@@ -16,6 +16,10 @@
 //       [--mel-output mel.npy] [--mel-input mel.npy]
 //
 // --mel-output saves the flow's mel; --mel-input vocodes a given mel.
+//
+// --full-precision loads the weights as stored, without load-time
+// quantization.
+
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -28,6 +32,7 @@
 #include "common/audio.h"
 #include "common/generation.h"
 #include "common/kv_cache.h"
+#include "common/layers.h"
 #include "cosyvoice3/cosyvoice3_model.h"
 #include "nlohmann/json.hpp"
 
@@ -54,7 +59,10 @@ int main(int argc, char **argv) {
   std::string reference_input_path;
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
-    if (i + 1 >= argc) {
+    if (argument == "--full-precision") {
+      omni_common::SetLoadTimeQuantization(false);
+      continue;
+    } else if (i + 1 >= argc) {
       std::cerr << argv[0] << ": missing value for " << argument << "\n";
       return 2;
     } else {

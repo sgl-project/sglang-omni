@@ -20,6 +20,28 @@ using omni_common::Gelu;
 
 namespace {
 
+constexpr int kMlpQuantizationBits = 8;
+constexpr int kHeadQuantizationBits = 8;
+constexpr int kQuantizationGroupSize = 64;
+// The tied output projection under its own name, so it can be quantized while
+// the token embedding's rows stay as stored.
+constexpr const char *kOutputProjection = "decoder.output_projection";
+
+// Note (XXXXRT666): the decoder's MLPs and output projection run in 8 bits,
+// quantized at load, in the target and in the draft alike; attention stays in
+// the checkpoint dtype, since quantizing it changed large-v3's mixed-language
+// transcripts.
+int DecoderQuantizationBits(const std::string &name) {
+  if (name == std::string(kOutputProjection) + ".weight") {
+    return kHeadQuantizationBits;
+  } else if (name.starts_with("decoder.blocks.") &&
+             name.find(".mlp") != std::string::npos) {
+    return kMlpQuantizationBits;
+  } else {
+    return 0;
+  }
+}
+
 constexpr float kLayerNormEpsilon = 1e-5f;
 
 // Note (khazic): fixed sinusoids of the encoder positions, computed in double
@@ -177,6 +199,8 @@ TargetWeights(const std::filesystem::path &model_directory,
                    weights.at("encoder.conv1.weight").dtype()));
   } else {
   }
+  weights.insert_or_assign(std::string(kOutputProjection) + ".weight",
+                           weights.at("decoder.token_embedding.weight"));
   return weights;
 }
 
@@ -212,6 +236,8 @@ DraftWeights(const std::filesystem::path &draft_directory,
   for (auto &[name, weight] : weights) {
     weight = mx::astype(weight, dtype);
   }
+  weights.insert_or_assign(std::string(kOutputProjection) + ".weight",
+                           weights.at("decoder.token_embedding.weight"));
   return weights;
 }
 
@@ -219,17 +245,20 @@ DraftWeights(const std::filesystem::path &draft_directory,
 
 WhisperModel::WhisperModel(const std::filesystem::path &model_directory)
     : config_(ReadConfig(model_directory)),
-      checkpoint_(TargetWeights(model_directory, config_),
-                  nlohmann::json::object()) {}
+      checkpoint_(omni_common::QuantizedCheckpoint(
+          TargetWeights(model_directory, config_), nlohmann::json::object(),
+          kQuantizationGroupSize, DecoderQuantizationBits)) {}
 
 WhisperModel::WhisperModel(const std::filesystem::path &draft_directory,
                            const WhisperModel &target)
     : config_(ReadConfig(draft_directory, /*draft=*/true)),
-      checkpoint_(DraftWeights(draft_directory, config_, target.config_,
-                               target.checkpoint_
-                                   .Weight("decoder.token_embedding.weight")
-                                   .dtype()),
-                  nlohmann::json::object()) {}
+      checkpoint_(omni_common::QuantizedCheckpoint(
+          DraftWeights(
+              draft_directory, config_, target.config_,
+              target.checkpoint_.Weight("decoder.token_embedding.weight")
+                  .dtype()),
+          nlohmann::json::object(), kQuantizationGroupSize,
+          DecoderQuantizationBits)) {}
 
 mx::array WhisperModel::Attention(const mx::array &queries_input,
                                   const mx::array &keys,
@@ -372,8 +401,12 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
                   {batch_size * logit_count, width});
   // Note (khazic): tied output projection: the token embedding used as a linear
   // layer.
-  return mx::matmul(rows, mx::transpose(checkpoint_.Weight(
-                              "decoder.token_embedding.weight")));
+  if (checkpoint_.Has(std::string(kOutputProjection) + ".weight")) {
+    return checkpoint_.Linear(rows, kOutputProjection);
+  } else {
+    return mx::matmul(rows, mx::transpose(checkpoint_.Weight(
+                                "decoder.token_embedding.weight")));
+  }
 }
 
 void KeepCacheRows(std::vector<DecoderLayerCache> &caches,

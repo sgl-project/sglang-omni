@@ -120,10 +120,16 @@ std::string Qwen3Decoder::Name(const std::string &suffix) const {
   return prefix_.empty() ? suffix : prefix_ + "." + suffix;
 }
 
-mx::array Qwen3Decoder::Project(const mx::array &x, const std::string &prefix,
-                                bool tied_embedding) const {
-  return tied_embedding ? checkpoint_.TiedProjection(x, prefix)
-                        : checkpoint_.Linear(x, prefix);
+mx::array Qwen3Decoder::Project(const mx::array &x,
+                                const std::string &prefix) const {
+  return checkpoint_.Linear(x, prefix);
+}
+
+mx::array Qwen3Decoder::OutputProjection(const mx::array &x) const {
+  const std::string projection = Name("output_projection");
+  return checkpoint_.Has(projection + ".weight")
+             ? checkpoint_.Linear(x, projection)
+             : checkpoint_.TiedProjection(x, Name("embed_tokens"));
 }
 
 mx::array Qwen3Decoder::EmbedTokens(const mx::array &ids) const {
@@ -227,7 +233,7 @@ mx::array Qwen3Decoder::LastLogits(const mx::array &hidden_states) const {
       mx::slice(hidden_states, {0, length - 1, 0},
                 {hidden_states.shape(0), length, hidden_states.shape(2)}),
       Name("norm"), config_.rms_norm_eps);
-  const mx::array logits = Project(last, Name("embed_tokens"), true);
+  const mx::array logits = OutputProjection(last);
   return mx::reshape(logits, {logits.shape(-1)});
 }
 
@@ -238,9 +244,8 @@ mx::array Qwen3Decoder::Rotated(const mx::array &heads,
 }
 
 mx::array Qwen3Decoder::Logits(const mx::array &hidden_states) const {
-  const mx::array logits = Project(
-      checkpoint_.RmsNorm(hidden_states, Name("norm"), config_.rms_norm_eps),
-      Name("embed_tokens"), true);
+  const mx::array logits = OutputProjection(
+      checkpoint_.RmsNorm(hidden_states, Name("norm"), config_.rms_norm_eps));
   return mx::reshape(logits, {hidden_states.shape(1), logits.shape(-1)});
 }
 
@@ -374,8 +379,7 @@ mx::array Qwen3Decoder::DecodeBatch(const mx::array &embeddings,
   }
   const mx::array normed =
       checkpoint_.RmsNorm(hidden, Name("norm"), config_.rms_norm_eps);
-  const mx::array logits =
-      checkpoint_.TiedProjection(normed, Name("embed_tokens"));
+  const mx::array logits = OutputProjection(normed);
   return mx::reshape(logits, {logits.shape(0), logits.shape(-1)});
 }
 

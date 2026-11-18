@@ -58,6 +58,13 @@ AudioConfig AudioConfig::FromJson(const nlohmann::json &config) {
 
 namespace {
 
+// Note (XXXXRT666): quantized at load, the experts (the shared one too) to 4
+// bits and the text layers' other linear weights and the untied head to 8,
+// which keeps the transcripts.
+constexpr int kExpertQuantizationBits = 4;
+constexpr int kLinearQuantizationBits = 8;
+constexpr int kQuantizationGroupSize = 64;
+
 // Silu(gate) * up with the Silu in float32, one kernel.
 mx::array FloatSwiglu(const mx::array &gate, const mx::array &up) {
   static const auto compiled = mx::compile(
@@ -120,11 +127,25 @@ omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
         experts.push_back(weights.at(name));
         weights.erase(name);
       }
-      // note (altale): gather_mm needs [expert, in, out], unlike checkpoint
-      // linear weights.
-      auto stacked = mx::swapaxes(mx::stack(experts), -1, -2);
-      mx::async_eval({stacked});
-      weights.emplace(prefix + projection + ".weight", std::move(stacked));
+      if (omni_common::LoadTimeQuantization() &&
+          experts.front().shape(-1) % kQuantizationGroupSize == 0) {
+        // Note (XXXXRT666): the experts stack as [expert, out, in], quantized
+        // along in, for gather_qmm; experts whose rows do not split into whole
+        // groups stay as stored.
+        const std::vector<mx::array> parts =
+            mx::quantize(mx::stack(experts), kQuantizationGroupSize,
+                         kExpertQuantizationBits);
+        mx::async_eval(parts);
+        weights.emplace(prefix + projection + ".weight", parts[0]);
+        weights.emplace(prefix + projection + ".scales", parts[1]);
+        weights.emplace(prefix + projection + ".biases", parts[2]);
+      } else {
+        // note (altale): gather_mm needs [expert, in, out], unlike checkpoint
+        // linear weights.
+        auto stacked = mx::swapaxes(mx::stack(experts), -1, -2);
+        mx::async_eval({stacked});
+        weights.emplace(prefix + projection + ".weight", std::move(stacked));
+      }
     }
   }
   // note (altale): Prepare fixed layouts and FP32 parameters once for the
@@ -221,10 +242,24 @@ Model::Model(const std::filesystem::path &directory,
       audio_(AudioConfig::FromJson(config.at("audio_config"))),
       context_tokens_(std::min(context_tokens, text_.max_position_embeddings)),
       speculative_algorithm_(speculative_algorithm),
-      checkpoint_(
+      checkpoint_(omni_common::QuantizedCheckpoint(
           LoadWeights(directory, config, text_, audio_,
                       speculative_algorithm == SpeculativeAlgorithm::kNextN),
-          config),
+          config, kQuantizationGroupSize,
+          // Note (XXXXRT666): the router stays in float32 and the
+          // embeddings in bfloat16.
+          [](const std::string &name) {
+            if (name == "lm_head.weight") {
+              return kLinearQuantizationBits;
+            } else if (!name.starts_with("model.layers.") ||
+                       name.ends_with(".gate.weight")) {
+              return 0;
+            } else if (name.find(".shared_experts.") != std::string::npos) {
+              return kExpertQuantizationBits;
+            } else {
+              return kLinearQuantizationBits;
+            }
+          })),
       tokenizer_(directory),
       stop_tokens_(omni_common::ReadJson(directory / "generation_config.json")
                        .at("eos_token_id")
@@ -372,10 +407,18 @@ mx::array Model::Moe(const mx::array &hidden, const std::string &prefix) const {
                                const mx::array &row_experts, bool sorted) {
     const auto project = [&](const mx::array &input,
                              const std::string &projection) {
-      return mx::gather_mm(
-          input,
-          checkpoint_.Weight(prefix + ".experts." + projection + ".weight"),
-          std::nullopt, row_experts, sorted);
+      const std::string name = prefix + ".experts." + projection;
+      if (!checkpoint_.Has(name + ".scales")) {
+        return mx::gather_mm(input, checkpoint_.Weight(name + ".weight"),
+                             std::nullopt, row_experts, sorted);
+      } else {
+      }
+      return mx::gather_qmm(input, checkpoint_.Weight(name + ".weight"),
+                            checkpoint_.Weight(name + ".scales"),
+                            checkpoint_.Weight(name + ".biases"), std::nullopt,
+                            row_experts, true, kQuantizationGroupSize,
+                            kExpertQuantizationBits, "affine", std::nullopt,
+                            sorted);
     };
     return project(
         FloatSwiglu(project(rows, "gate_proj"), project(rows, "up_proj")),

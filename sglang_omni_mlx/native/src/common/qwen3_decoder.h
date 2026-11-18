@@ -65,8 +65,9 @@ struct PrefilledSequence {
 class Qwen3Decoder {
 public:
   // Weights under prefix (layers, norm, embed_tokens), or at the top level
-  // when the prefix is empty; the output projection is the tied embedding
-  // table.
+  // when the prefix is empty; the output projection is output_projection
+  // when the checkpoint has one (the tied table quantized apart from the
+  // embedding), else the tied embedding table.
   Qwen3Decoder(const omni_common::Checkpoint &checkpoint, std::string prefix,
                Qwen3DecoderConfig config);
 
@@ -115,8 +116,10 @@ public:
 
 private:
   std::string Name(const std::string &suffix) const;
-  mlx::core::array Project(const mlx::core::array &x, const std::string &prefix,
-                           bool tied_embedding = false) const;
+  mlx::core::array Project(const mlx::core::array &x,
+                           const std::string &prefix) const;
+  // Logits of normalized hidden states x.
+  mlx::core::array OutputProjection(const mlx::core::array &x) const;
   mlx::core::array Layer(const mlx::core::array &x, int layer,
                          omni_common::KVCache &cache) const;
   mlx::core::array BatchLayer(const mlx::core::array &x, int layer,

@@ -30,6 +30,9 @@ constexpr int kKeyValueHeadCount = 2;
 constexpr int kHeadDimension = 64;
 constexpr int kTextVocabularySize = 151936;
 constexpr int kMaxPositionEmbeddings = kMaxContextTokens;
+constexpr int kAttentionQuantizationBits = 8;
+constexpr int kMlpQuantizationBits = 4;
+constexpr int kQuantizationGroupSize = 64;
 constexpr float kRmsNormEpsilon = 1e-6f;
 constexpr float kRopeTheta = 1000000.0f;
 // The recent speech tokens a sampled token must not repeat, else it is drawn
@@ -463,7 +466,20 @@ LoadCheckpoint(const std::filesystem::path &model_directory) {
   require_shape("flow.spk_embed_affine_layer.weight",
                 {kMelBinCount, kSpeakerEmbeddingSize});
   require_shape("hifigan.conv_pre.conv.weight", {512, 5, kMelBinCount});
-  return omni_common::Checkpoint(std::move(weights), config);
+  // Note (XXXXRT666): the LLM's layers are quantized at load, attention to 8
+  // bits and the MLPs to 4; the speech keeps its words, and a token reads a
+  // third of the bytes.
+  return omni_common::QuantizedCheckpoint(
+      std::move(weights), config, kQuantizationGroupSize,
+      [](const std::string &name) {
+        if (!name.starts_with("model.layers.")) {
+          return 0;
+        } else if (name.find(".self_attn.") != std::string::npos) {
+          return kAttentionQuantizationBits;
+        } else {
+          return kMlpQuantizationBits;
+        }
+      });
 }
 
 mx::array TokenIds(const std::vector<int> &token_ids, int vocabulary_size) {

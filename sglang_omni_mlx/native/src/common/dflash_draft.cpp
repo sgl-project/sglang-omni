@@ -123,46 +123,6 @@ LoadedDraft CheckedDraft(const std::filesystem::path &directory,
   return {std::move(config), std::move(weights)};
 }
 
-nlohmann::json DraftQuantizationConfig(int quantization_bits) {
-  nlohmann::json config;
-  if (quantization_bits > 0) {
-    config["quantization"] = {{"group_size", kQuantizationGroupSize},
-                              {"bits", quantization_bits}};
-  } else {
-  }
-  return config;
-}
-
-// Quantizes the two-dimensional weights (the linear layers and lm_head) as
-// an MLX checkpoint stores them: .weight packed, with .scales and .biases.
-omni_common::WeightMap QuantizeWeights(omni_common::WeightMap weights,
-                                       int quantization_bits) {
-  if (quantization_bits == 0) {
-    return weights;
-  } else {
-  }
-  omni_common::WeightMap quantized;
-  while (!weights.empty()) {
-    const auto stored = weights.extract(weights.begin());
-    const std::string &name = stored.key();
-    const mx::array &array = stored.mapped();
-    if (array.ndim() == 2) {
-      const std::vector<mx::array> parts =
-          mx::quantize(array, kQuantizationGroupSize, quantization_bits);
-      // note (wilsonzheng0327): evaluated one weight at a time, so each
-      // stored weight is released before the next one is read.
-      mx::eval(parts);
-      const std::string prefix = name.substr(0, name.size() - 7);
-      quantized.insert_or_assign(prefix + ".weight", parts[0]);
-      quantized.insert_or_assign(prefix + ".scales", parts[1]);
-      quantized.insert_or_assign(prefix + ".biases", parts[2]);
-    } else {
-      quantized.insert_or_assign(name, array);
-    }
-  }
-  return quantized;
-}
-
 } // namespace
 
 DFlashDraft::DFlashDraft(const std::filesystem::path &directory,
@@ -171,8 +131,12 @@ DFlashDraft::DFlashDraft(const std::filesystem::path &directory,
     : DFlashDraft(CheckedDraft(directory, target), quantization_bits) {}
 
 DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
-    : checkpoint_(QuantizeWeights(std::move(draft.weights), quantization_bits),
-                  DraftQuantizationConfig(quantization_bits)),
+    : checkpoint_(omni_common::QuantizedCheckpoint(
+          std::move(draft.weights), nlohmann::json::object(),
+          kQuantizationGroupSize,
+          [quantization_bits](const std::string &) {
+            return quantization_bits;
+          })),
       decoder_(checkpoint_, "",
                Qwen3DecoderConfig::FromJson(
                    draft.config.at("transformer_layer_config"))),

@@ -2,6 +2,7 @@
 #include "common/layers.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <fstream>
 #include <set>
@@ -107,6 +108,63 @@ LogScaleSnakeGraph(const std::vector<mx::array> &inputs) {
 }
 
 } // namespace
+
+namespace {
+
+std::atomic<bool> load_time_quantization{true};
+
+} // namespace
+
+void SetLoadTimeQuantization(bool enabled) { load_time_quantization = enabled; }
+
+bool LoadTimeQuantization() { return load_time_quantization; }
+
+Checkpoint QuantizedCheckpoint(WeightMap weights, nlohmann::json config,
+                               int group_size,
+                               const QuantizationBits &bits_for) {
+  if ((config.contains("quantization") &&
+       !config.at("quantization").is_null()) ||
+      !LoadTimeQuantization()) {
+    return Checkpoint(std::move(weights), config);
+  } else {
+  }
+  WeightMap quantized;
+  nlohmann::json layers = nlohmann::json::object();
+  int largest_bits = 0;
+  while (!weights.empty()) {
+    const auto stored = weights.extract(weights.begin());
+    const std::string &name = stored.key();
+    const mx::array &array = stored.mapped();
+    // A row that does not split into whole groups stays as stored.
+    const int bits = array.ndim() == 2 && name.ends_with(".weight") &&
+                             mx::issubdtype(array.dtype(), mx::floating) &&
+                             array.shape(1) % group_size == 0
+                         ? bits_for(name)
+                         : 0;
+    if (bits > 0) {
+      const std::vector<mx::array> parts =
+          mx::quantize(array, group_size, bits);
+      // note (wilsonzheng0327): evaluated one weight at a time, so each
+      // stored weight is released before the next one is read.
+      mx::eval(parts);
+      const std::string layer = name.substr(0, name.size() - 7);
+      quantized.insert_or_assign(layer + ".weight", parts[0]);
+      quantized.insert_or_assign(layer + ".scales", parts[1]);
+      quantized.insert_or_assign(layer + ".biases", parts[2]);
+      layers[layer] = {{"group_size", group_size}, {"bits", bits}};
+      largest_bits = std::max(largest_bits, bits);
+    } else {
+      quantized.insert_or_assign(name, array);
+    }
+  }
+  if (largest_bits > 0) {
+    layers["group_size"] = group_size;
+    layers["bits"] = largest_bits;
+    config["quantization"] = std::move(layers);
+  } else {
+  }
+  return Checkpoint(std::move(quantized), config);
+}
 
 mx::array Scalar(float value, mx::Dtype dtype) {
   return mx::array(value, dtype);
