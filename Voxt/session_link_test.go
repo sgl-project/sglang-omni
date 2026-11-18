@@ -108,6 +108,10 @@ func TestResolverWithoutSpeech(t *testing.T) {
 	}
 }
 
+// TestReturnFinishQueuedStateChange: a Return the helper still reports as
+// Finish from the old configuration (its new one is on its way) stops
+// nothing once the setting is off or the recording is not a plain
+// Transcribe one.
 func TestReturnFinishQueuedStateChange(t *testing.T) {
 	a := &app{sess: session.Snapshot{State: session.Recording, Kind: store.KindTranscribe}}
 	a.prefs = settings.Defaults()
@@ -125,6 +129,11 @@ func TestReturnFinishQueuedStateChange(t *testing.T) {
 	a.prefs.Features.Transcribe.ReturnFinishes = true
 	if d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes()); d.Action != hotkey.None {
 		t.Errorf("event from the old Transcribe configuration stopped Translate: %+v", d)
+	}
+	a.sess.Kind = store.KindTranscribe
+	a.sess.Note = true
+	if d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes()); d.Action != hotkey.None {
+		t.Errorf("event from the old Transcribe configuration stopped a note dictation: %+v", d)
 	}
 }
 
