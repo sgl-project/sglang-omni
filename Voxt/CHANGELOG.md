@@ -24,6 +24,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **While the language model works, the recording window shows what it got**: the line under the recording window now shows the recognised text as it went to the language model (the final recognition, with your dictionary's aliases replaced), instead of the last live text of a streaming speech model, which can differ. A speech model that does not stream still shows no text there, and without a language model the window works as before.
 - **The thinking button names its setting** (#4066): the thinking button in the recording window and on the answer card now reads, for example, "Thinking level: High" or "Thinking level: On (default)" instead of "Ask again: Thinking (High)". Click it to pick another level for this input; as before, picking one stops the answer and asks again. This is the same in Transcribe, Translate and Rewrite.
 - **Manage models beside each feature's model picker and in Settings**: Transcribe, Translate and Rewrite show whether the selected speech model is installed or downloading, and let you download, cancel or delete it without leaving the page. With no speech model installed, they offer the recommended download. Selected remote services show their state and Edit dialog there too. Speech models and Language models are now Settings sections instead of separate sidebar pages. Old deep links and command-palette entries open the new sections.
+- **The built-in speech models run on a reworked native runtime** (#4181, #4184, #4187, #4188, #4189, #4190): Voxt's on-device runtime now uses MLX 0.32.5 built from a pinned commit. Several speech encoders and vocoders run in half precision, decoder layers are quantized at load, decode steps are queued ahead, and graph evaluations no longer wait where nothing reads the result. Models, settings and downloads stay the same.
 - **Each page's view state and actions are separated from its drawing code** (#4073): an internal change, with no change to features, looks or speed. Every page state now renders from test fixtures, without a microphone, a model or a permission.
 
 ### Fixed
@@ -58,6 +59,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **语言模型处理时，录音窗口显示发给它的文字**：用流式语音识别模型时，录音窗口下面一行改为显示发给语言模型的识别结果（最终识别结果，词典别名已替换），不再是最后一条实时文字，两者可能不同。不是流式的语音识别模型照旧不显示文字，没有语言模型时也照旧。
 - **思考按钮直接写思考强度**（#4066）：录音窗口和答案卡片上的思考按钮改成“思考强度：高”“思考强度：已开启（默认）”这样的写法，不再写“重新问：思考（高）”。点它就能为这次输入换一个强度，和以前一样，选了就停掉这次回答、重新问。转录、翻译、改写都一样。
 - **在功能选模型的地方和“设置”里管理模型**：转录、翻译、改写页直接显示所选语音识别模型的下载、取消、删除和状态，没装时可直接下载推荐模型；远程服务也显示状态，并可就地打开编辑对话框。语音识别模型和语言模型从独立侧边栏页面改为“设置”里的两节，旧深链和命令面板入口仍打开对应设置节。
+- **内置语音模型换上重写后的本地运行时**（#4181、#4184、#4187、#4188、#4189、#4190）：Voxt 的本地运行时改用从固定提交构建的 MLX 0.32.5。多个语音编码器和声码器改用半精度运行，解码层在加载时量化，解码步骤提前排队，没人读取结果的计算不再同步等待。模型、设置和下载都不变。
 - **每个页面的视图状态和操作与绘制代码分开**（#4073）：内部改动，功能、外观和速度都不变。现在每种页面状态都能用测试数据渲染，不需要麦克风、模型或权限。
 
 #### 修复
