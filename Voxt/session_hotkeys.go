@@ -58,7 +58,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	if a.pressDuringSelection(e) { // dictionary_selection.go
 		return
 	}
-	if e.Binding == proto.HotkeyCancel && a.answer.langOpen {
+	if e.Binding == proto.HotkeyCancel && a.answer.ui.langOpen {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
 		return
 	}
@@ -126,7 +126,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	case hotkey.Stop:
 		a.stopSession()
 	case hotkey.Cancel:
-		if a.writingAnswer() {
+		if a.writingAnswer() && a.sess.CanStop() {
 			a.stopLLM() // the writing card's Stop: the answer so far stays (#3886)
 			return
 		}

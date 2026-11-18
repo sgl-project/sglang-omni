@@ -1,0 +1,53 @@
+{
+  "name": "remote-speech-problem-timeout",
+  "kind": "remote-dialog",
+  "remote_dialog": {
+    "open": true,
+    "kind": "asr",
+    "id": "fixture",
+    "account": "asr.fixture",
+    "name": "Fixture service",
+    "subtitle": "Remote speech recognition · the recording, once you stop",
+    "what": "Your recordings are sent to Fixture service to be recognised.",
+    "has_key_url": true,
+    "key": {
+      "info": "Optional for a server on this Mac. Saved in this Mac's Keychain.",
+      "placeholder": "Saved: •••• · paste a new one to replace it",
+      "has_saved": true
+    },
+    "endpoint": {
+      "info": "Leave it empty for the service's own. Only https://, or http:// to this Mac.",
+      "placeholder": "https://…/v1"
+    },
+    "model_options": [
+      "fixture-model",
+      "other-model",
+      "Other model…"
+    ],
+    "other_model": "Other model…",
+    "recognition_prompt": true,
+    "can_test": true,
+    "test": {
+      "state": "failure",
+      "code": "timeout",
+      "text": "Failed",
+      "long_text": "The speech model took too long.",
+      "tooltip": "The speech model took too long.\n\nredacted fixture detail",
+      "long_tooltip": "The speech model took too long.\n\nredacted fixture detail"
+    },
+    "show_remove": true,
+    "saving": false,
+    "unsaved": false,
+    "form": {
+      "model": "fixture-model",
+      "generation": {
+        "think": "Thinking on",
+        "format": "Plain text",
+        "verbosity": "Default",
+        "usage": true,
+        "advanced": true,
+        "api": "Chat Completions"
+      }
+    }
+  }
+}

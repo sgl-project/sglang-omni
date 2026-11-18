@@ -7,10 +7,11 @@ import (
 
 // Problem keys shown in the meeting overlay (i18n message ids in package main).
 const (
-	ProblemKeySystemSilent = "meeting.system.silent"
-	ProblemKeyLiveBacklog  = "meeting.live.backlog"
-	ProblemKeyDiskLow      = "meeting.disk.low"
-	ProblemKeyHelperOld    = "meeting.helper.old"
+	ProblemKeySystemSilent  = "meeting.system.silent"
+	ProblemKeyLiveBacklog   = "meeting.live.backlog"
+	ProblemKeyDiskLow       = "meeting.disk.low"
+	ProblemKeyHelperOld     = "meeting.helper.old"
+	ProblemKeyTrackDegraded = "meeting.track.degraded."
 )
 
 const (

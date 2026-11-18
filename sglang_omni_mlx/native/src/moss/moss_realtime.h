@@ -11,16 +11,17 @@
 #include <string>
 #include <vector>
 
+#include "common/realtime_connection.h"
+#include "common/transcription.h"
+#include "common/worker.h"
 #include "moss/moss_transcriber.h"
 #include "nlohmann/json.hpp"
-#include "qwen3_asr/realtime.h"
-#include "qwen3_asr/worker.h"
 
 namespace moss {
 
-class MossRealtimeSession : public qwen3_asr::RealtimeConnection {
+class MossRealtimeSession : public omni_server::RealtimeConnection {
 public:
-  MossRealtimeSession(qwen3_asr::TranscriptionWorker &worker,
+  MossRealtimeSession(omni_server::TranscriptionWorker &worker,
                       const MossTranscriber &transcriber, Sender sender);
 
   bool Handle(const nlohmann::json &message) override;
@@ -44,17 +45,17 @@ private:
   Decode TakeFinalWindow(int sample_count);
   MossOptions DecodeOptions(const Decode &decode) const;
   // The worker's job for decode.
-  qwen3_asr::Transcription DecodeJob(const Decode &decode,
-                                     MossOptions options) const;
+  omni_server::Transcription DecodeJob(const Decode &decode,
+                                       MossOptions options) const;
   // Note (Dayuxiaoshui): a final window is committed before its event is sent,
   // so a client that has seen every window has seen everything committed.
   void Publish(const Decode &decode,
-               const qwen3_asr::TranscriptionResult &result);
+               const omni_common::TranscriptionResult &result);
   // Note (Dayuxiaoshui): waits out a decode in flight first, since it reads
   // the pending audio this finalizes.
   void Flush();
 
-  qwen3_asr::TranscriptionWorker &worker_;
+  omni_server::TranscriptionWorker &worker_;
   const MossTranscriber &transcriber_;
 
   // Session state; decodes finish on the worker thread.
@@ -67,7 +68,7 @@ private:
   bool decoding_ = false;
   std::optional<std::chrono::steady_clock::time_point> last_decode_time_;
   std::vector<std::string> committed_texts_;
-  std::vector<qwen3_asr::SpeakerSegment> committed_segments_;
+  std::vector<omni_common::SpeakerSegment> committed_segments_;
 };
 
 } // namespace moss

@@ -1,6 +1,7 @@
 package dict
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -40,5 +41,35 @@ func TestReplace(t *testing.T) {
 	}
 	if got := Replace("Or Link", nil); got != "Or Link" {
 		t.Errorf("no terms: %q", got)
+	}
+}
+
+// TestHighlightSpans: the highlighter uses Replace's case, alias,
+// whole-word, Chinese and longest-match rules, and includes terms without
+// aliases. Byte ranges keep multibyte text intact for the UI.
+func TestHighlightSpans(t *testing.T) {
+	terms := []store.Term{
+		{Term: "SGLang", Aliases: []string{"S G Long"}, Enabled: true},
+		{Term: "Voxt", Enabled: true},
+		{Term: "火山引擎", Aliases: []string{"火山 引擎"}, Enabled: true},
+		{Term: "Go", Enabled: true},
+		{Term: "Go Lang", Enabled: true},
+		{Term: "Off", Enabled: false},
+	}
+	for _, tc := range []struct {
+		name, text string
+		want       []Span
+	}{
+		{"English terms and aliases ignore case", "sglang, S G LONG and VOXT", []Span{{0, 6}, {8, 16}, {21, 25}}},
+		{"Chinese term and alias", "火山 引擎和火山引擎", []Span{{0, 13}, {16, 28}}},
+		{"longest overlapping term", "go lang go", []Span{{0, 7}, {8, 10}}},
+		{"word boundaries and disabled terms", "VoxtNew and Off stay", nil},
+		{"empty", "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HighlightSpans(tc.text, terms); !slices.Equal(got, tc.want) {
+				t.Errorf("HighlightSpans(%q) = %+v, want %+v", tc.text, got, tc.want)
+			}
+		})
 	}
 }

@@ -1,19 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/qwen3_asr_transcriber.h"
-#include "common/audio.h"
-#include "common/text.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <utility>
+
+#include "common/audio.h"
+#include "common/generation.h"
+#include "common/kv_cache.h"
+#include "common/text.h"
+#include "common/transcription.h"
 
 namespace qwen3_asr {
 
+using omni_common::DraftPolicy;
+using omni_common::DraftStatistics;
+
+using omni_common::KVCache;
+
 using omni_common::CollapseTokenLoop;
+using omni_common::FinishReason;
+using omni_common::GenerationCancelled;
 using omni_common::IsTokenLoop;
 using omni_common::IsUnicodeSpace;
+using omni_common::TranscriptionResult;
 
 namespace mx = mlx::core;
 
@@ -23,6 +36,9 @@ constexpr const char *kAsrTextMarker = "<asr_text>";
 constexpr const char *kAudioPad = "<|audio_pad|>";
 constexpr int kOutputTokensPerAudioSecond = 10;
 constexpr int kMinDefaultOutputTokens = 128;
+// The last mel frames, whose STFT windows take the reflected tail, change as
+// realtime audio arrives.
+constexpr int kReflectedTailFrames = 2;
 
 const std::map<std::string, std::string> &LanguageCodeToName() {
   static const std::map<std::string, std::string> table = {
@@ -51,13 +67,6 @@ std::string Strip(const std::string &text) {
   return text.substr(begin, end - begin);
 }
 
-std::string Lowercase(std::string text) {
-  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return text;
-}
-
 std::optional<size_t> FindSubsequence(const std::vector<int> &values,
                                       const std::vector<int> &pattern) {
   if (pattern.size() > values.size()) {
@@ -73,36 +82,19 @@ std::optional<size_t> FindSubsequence(const std::vector<int> &values,
   return std::nullopt;
 }
 
+// The log-mel features the prompt's audio is encoded from.
+mx::array PromptMel(const std::vector<float> &samples, AudioLayout layout) {
+  return omni_common::LogMel(samples,
+                             layout == AudioLayout::kReference
+                                 ? omni_common::FinalStftFrame::kDropped
+                                 : omni_common::FinalStftFrame::kKept);
+}
+
 } // namespace
-
-const char *FinishReasonName(FinishReason reason) {
-  return reason == FinishReason::kStop ? "stop" : "length";
-}
-
-nlohmann::ordered_json
-SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments) {
-  nlohmann::ordered_json array = nlohmann::ordered_json::array();
-  for (const SpeakerSegment &segment : segments) {
-    nlohmann::ordered_json json = {{"start", segment.start_seconds},
-                                   {"end", segment.end_seconds},
-                                   {"speaker", segment.speaker},
-                                   {"text", segment.text}};
-    for (const auto &[name, value] : {std::pair{"language", &segment.language},
-                                      std::pair{"emotion", &segment.emotion},
-                                      std::pair{"event", &segment.event}}) {
-      if (value->has_value()) {
-        json[name] = **value;
-      } else {
-      }
-    }
-    array.push_back(std::move(json));
-  }
-  return array;
-}
 
 std::optional<std::string> NormalizeLanguage(const std::string &language) {
   const std::string stripped = Strip(language);
-  const std::string normalized = Lowercase(stripped);
+  const std::string normalized = omni_common::AsciiLowercase(stripped);
   if (stripped.empty()) {
     return std::nullopt;
   } else if (normalized == "cn" || normalized.rfind("zh-", 0) == 0 ||
@@ -116,7 +108,7 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
   } else {
   }
   for (const auto &[unused_code, name] : LanguageCodeToName()) {
-    if (Lowercase(name) == normalized) {
+    if (omni_common::AsciiLowercase(name) == normalized) {
       return name;
     } else {
     }
@@ -126,12 +118,14 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
 
 Qwen3ASRTranscriber::Qwen3ASRTranscriber(
     const std::filesystem::path &model_directory,
-    const std::filesystem::path &draft_directory, int draft_quantization_bits)
+    const std::filesystem::path &draft_directory, int draft_quantization_bits,
+    DraftPolicy draft_policy)
     : model_(model_directory), tokenizer_(model_directory),
       audio_pad_id_(tokenizer_.AddedTokenId(kAudioPad)),
       end_of_text_id_(tokenizer_.AddedTokenId("<|endoftext|>")),
       im_end_id_(tokenizer_.AddedTokenId("<|im_end|>")),
-      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)) {
+      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)),
+      draft_policy_(draft_policy) {
   if (!draft_directory.empty()) {
     draft_.emplace(draft_directory, draft_quantization_bits,
                    model_.decoder().config());
@@ -160,7 +154,7 @@ Qwen3ASRTranscriber::PromptIds(int audio_token_count,
   return ids;
 }
 
-std::pair<std::vector<int>, std::string>
+RetainedText
 Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
                                     int rollback_token_count) const {
   const std::vector<int> token_ids = tokenizer_.Encode(text);
@@ -177,19 +171,30 @@ Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
                         replacement) == 0) {
       retained.pop_back();
     } else {
-      return {retained, decoded};
+      return {retained, decoded,
+              std::vector<int>(token_ids.begin() + retained.size(),
+                               token_ids.end())};
     }
   }
-  return {{}, ""};
+  return {{}, "", token_ids};
+}
+
+int Qwen3ASRTranscriber::MaxNewTokens(size_t sample_count,
+                                      const TranscriptionOptions &options) {
+  // Note (Jiaxin Deng): an unset or zero budget means the default.
+  return options.max_new_tokens.value_or(0) != 0
+             ? *options.max_new_tokens
+             : std::max(kMinDefaultOutputTokens,
+                        static_cast<int>(
+                            std::ceil(static_cast<double>(sample_count) /
+                                      omni_common::kSampleRate *
+                                      kOutputTokensPerAudioSecond)));
 }
 
 Qwen3ASRTranscriber::Prompt
 Qwen3ASRTranscriber::BuildPrompt(const std::vector<float> &samples,
                                  const TranscriptionOptions &options) const {
-  const mx::array mel =
-      omni_common::LogMel(samples, options.layout == AudioLayout::kReference
-                                       ? omni_common::FinalStftFrame::kDropped
-                                       : omni_common::FinalStftFrame::kKept);
+  const mx::array mel = PromptMel(samples, options.layout);
   const int audio_token_count = TokenCount(mel.shape(-1), options.layout);
   const std::vector<int> prompt_ids = PromptIds(audio_token_count, options);
   const mx::array audio_features = model_.EncodeAudio(mel, options.layout);
@@ -210,30 +215,98 @@ Qwen3ASRTranscriber::BuildPrompt(const std::vector<float> &samples,
                                  embeddings.dtype()),
                       0),
       {0, audio_start, 0}, {1, audio_start + filled, hidden});
-
-  // Note (Jiaxin Deng): an unset or zero budget means the default.
-  const int max_new_tokens =
-      options.max_new_tokens.value_or(0) != 0
-          ? *options.max_new_tokens
-          : std::max(
-                kMinDefaultOutputTokens,
-                static_cast<int>(std::ceil(static_cast<double>(samples.size()) /
-                                           omni_common::kSampleRate *
-                                           kOutputTokensPerAudioSecond)));
-  return {embeddings, max_new_tokens};
+  return {embeddings, MaxNewTokens(samples.size(), options)};
 }
 
-TranscriptionResult
-Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
-                                const TranscriptionOptions &options,
-                                const std::atomic<bool> &cancel) const {
-  if (cancel.load()) {
-    throw TranscriptionCancelled();
+Qwen3ASRTranscriber::RefreshPrompt Qwen3ASRTranscriber::BuildRefreshPrompt(
+    const std::vector<float> &samples, const TranscriptionOptions &options,
+    bool uses_draft, RefreshReuse &held) const {
+  const mx::array mel = PromptMel(samples, options.layout);
+  const int mel_bins = mel.shape(0);
+  const int frame_count = mel.shape(-1);
+  const int audio_token_count = TokenCount(frame_count, options.layout);
+  const std::vector<int> prompt_ids = PromptIds(audio_token_count, options);
+  const int audio_start = static_cast<int>(
+      std::find(prompt_ids.begin(), prompt_ids.end(), audio_pad_id_) -
+      prompt_ids.begin());
+  const std::vector<int> head_ids(prompt_ids.begin(),
+                                  prompt_ids.begin() + audio_start);
+  int held_frames = held.mel.has_value() ? held.mel->shape(1) : 0;
+  int held_rows = held.audio_rows.has_value() ? held.audio_rows->shape(0) : 0;
+  bool is_reusable = held_frames > 0 && held_frames <= frame_count &&
+                     held.head_ids == head_ids && !held.caches.empty() &&
+                     held.caches[0].offset() == audio_start + held_rows &&
+                     (!uses_draft || (!held.draft_caches.empty() &&
+                                      held.draft_caches[0].offset() ==
+                                          audio_start + held_rows));
+  if (is_reusable) {
+    is_reusable =
+        mx::array_equal(mx::slice(mel, {0, 0}, {mel_bins, held_frames}),
+                        *held.mel)
+            .item<bool>();
   } else {
   }
-  const Prompt prompt = BuildPrompt(samples, options);
-  const mx::array &embeddings = prompt.embeddings;
-  const int max_new_tokens = prompt.max_new_tokens;
+  if (!is_reusable) {
+    held = RefreshReuse();
+    held.caches = model_.NewCaches();
+    if (uses_draft) {
+      held.draft_caches = draft_->NewCaches();
+    } else {
+    }
+    held_frames = 0;
+    held_rows = 0;
+  } else {
+  }
+  const mx::array new_rows = model_.EncodeAudio(
+      mx::slice(mel, {0, held_frames}, {mel_bins, frame_count}),
+      options.layout);
+  const int reused_length = held_rows > 0 ? audio_start + held_rows : 0;
+  const std::vector<int> rest_ids(prompt_ids.begin() + reused_length,
+                                  prompt_ids.end());
+  mx::array embeddings = model_.EmbedTokens(mx::array(
+      rest_ids.data(), {1, static_cast<int>(rest_ids.size())}, mx::int32));
+  // Note (Jiaxin Deng): the Swift layout can reserve more placeholders than
+  // encoder rows; those keep the audio_pad embedding, surplus rows are dropped.
+  const int filled =
+      std::min(audio_token_count, held_rows + new_rows.shape(0)) - held_rows;
+  const int rows_start = audio_start + held_rows - reused_length;
+  const int hidden = embeddings.shape(2);
+  embeddings = mx::slice_update(
+      embeddings,
+      mx::expand_dims(
+          mx::astype(mx::slice(new_rows, {0, 0}, {filled, new_rows.shape(1)}),
+                     embeddings.dtype()),
+          0),
+      {0, rows_start, 0}, {1, rows_start + filled, hidden});
+
+  const int window_frame_count = model_.WindowFrameCount();
+  const int complete_frames = std::max(0, frame_count - kReflectedTailFrames) /
+                              window_frame_count * window_frame_count;
+  const int complete_rows =
+      complete_frames > 0 ? TokenCount(complete_frames, options.layout) : 0;
+  if (complete_frames > held_frames && complete_rows <= held_rows + filled) {
+    const mx::array completed_rows = mx::slice(
+        new_rows, {0, 0}, {complete_rows - held_rows, new_rows.shape(1)});
+    held.mel = mx::slice(mel, {0, 0}, {mel_bins, complete_frames});
+    held.audio_rows =
+        held_rows > 0 ? mx::concatenate({*held.audio_rows, completed_rows}, 0)
+                      : completed_rows;
+  } else {
+  }
+  held.head_ids = head_ids;
+  return {embeddings, held.audio_rows.has_value()
+                          ? audio_start + held.audio_rows->shape(0)
+                          : 0};
+}
+
+TranscriptionResult Qwen3ASRTranscriber::Transcribe(
+    const std::vector<float> &samples, const TranscriptionOptions &options,
+    const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
+  if (cancel.load()) {
+    throw GenerationCancelled();
+  } else {
+  }
+  const int max_new_tokens = MaxNewTokens(samples.size(), options);
   const auto is_stop = [&](int token_id) {
     return IsStopToken(token_id, options);
   };
@@ -258,42 +331,87 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
   // note (wilsonzheng0327): a penalty would have to be applied per block
   // position with the block's own earlier tokens; a request that asks for one
   // decodes without the draft.
-  if (draft_.has_value() && options.repetition_penalty == 1.0f) {
-    draft_statistics = draft_->Decode(model_.decoder(), embeddings,
-                                      max_new_tokens, 0, commit, cancel);
+  const bool uses_draft =
+      draft_.has_value() && options.repetition_penalty == 1.0f;
+  if (reuse == nullptr && uses_draft) {
+    draft_statistics = draft_->Decode(
+        model_.decoder(), BuildPrompt(samples, options).embeddings,
+        max_new_tokens, 0, commit, cancel, draft_policy_);
   } else {
-    std::vector<KVCache> caches = model_.NewCaches();
-    const mx::array prefill_logits = model_.Decode(embeddings, caches);
-    mx::array next_token = mx::argmax(prefill_logits);
-    mx::async_eval({next_token});
-    // Note (Minyi Tang): only generated tokens are penalized, as on CUDA; the
-    // scales stay lazy so penalizing adds no host sync to the queued step.
-    mx::array penalty_by_token_id =
-        mx::ones(prefill_logits.shape(), mx::float32);
-    bool finished = false;
-    while (!finished) {
-      if (cancel.load()) {
-        throw TranscriptionCancelled();
+    // A failed refresh leaves reuse empty, so the next one starts over.
+    RefreshReuse held;
+    std::optional<RefreshPrompt> refresh;
+    if (reuse != nullptr) {
+      held = std::exchange(*reuse, RefreshReuse());
+      refresh = BuildRefreshPrompt(samples, options, uses_draft, held);
+    } else {
+      held.caches = model_.NewCaches();
+    }
+    std::vector<KVCache> &caches = held.caches;
+    const mx::array embeddings = refresh.has_value()
+                                     ? refresh->embeddings
+                                     : BuildPrompt(samples, options).embeddings;
+    if (uses_draft) {
+      draft_statistics =
+          draft_->Decode(model_.decoder(), embeddings,
+                         options.guessed_token_ids, max_new_tokens, 0, commit,
+                         cancel, draft_policy_, caches, held.draft_caches);
+    } else {
+      const std::vector<int> &guessed_ids = options.guessed_token_ids;
+      // A penalty would have to apply to the guesses' logits too.
+      const int guessed_count = options.repetition_penalty == 1.0f
+                                    ? static_cast<int>(guessed_ids.size())
+                                    : 0;
+      std::optional<mx::array> next_token;
+      bool finished = false;
+      if (guessed_count == 0) {
+        next_token = mx::argmax(model_.Decode(embeddings, caches));
+      } else {
+        // Note (XXXXRT666): the guesses ride in the prompt's pass; the logits
+        // of the prompt's last position and of each guess check them.
+        const mx::array hidden_states = model_.decoder().Forward(
+            mx::concatenate({embeddings, model_.EmbedTokens(mx::array(
+                                             guessed_ids.data(),
+                                             {1, guessed_count}, mx::int32))},
+                            1),
+            caches);
+        const int length = hidden_states.shape(1);
+        const mx::array predicted =
+            mx::argmax(model_.decoder().Logits(mx::slice(
+                           hidden_states, {0, length - guessed_count - 1, 0},
+                           {1, length, hidden_states.shape(2)})),
+                       -1);
+        mx::eval(predicted);
+        const uint32_t *predicted_ids = predicted.data<uint32_t>();
+        int accepted_count = 0;
+        while (!finished && accepted_count < guessed_count &&
+               static_cast<int>(predicted_ids[accepted_count]) ==
+                   guessed_ids[accepted_count]) {
+          finished = commit(guessed_ids[accepted_count]);
+          ++accepted_count;
+        }
+        for (KVCache &cache : caches) {
+          cache.Trim(guessed_count - accepted_count);
+        }
+        next_token = mx::reshape(
+            mx::slice(predicted, {accepted_count}, {accepted_count + 1}), {});
+      }
+      mx::async_eval({*next_token});
+      if (!finished) {
+        model_.decoder().DecodePlain(
+            *next_token, caches, options.repetition_penalty, commit, cancel);
       } else {
       }
-      const mx::array token = next_token;
-      // Note (Jiaxin Deng): queue the next step before reading this token, so
-      // the GPU decodes while the stop rules are checked.
-      mx::array logits =
-          model_.Decode(model_.EmbedTokens(mx::reshape(token, {1, 1})), caches);
-      if (options.repetition_penalty != 1.0f) {
-        penalty_by_token_id =
-            mx::put_along_axis(penalty_by_token_id, mx::reshape(token, {1}),
-                               mx::array(options.repetition_penalty), 0);
-        logits = mx::astype(logits, mx::float32);
-        logits = mx::where(mx::less(logits, mx::array(0.0f)),
-                           mx::multiply(logits, penalty_by_token_id),
-                           mx::divide(logits, penalty_by_token_id));
-      } else {
+    }
+    if (refresh.has_value()) {
+      for (KVCache &cache : caches) {
+        cache.Trim(cache.offset() - refresh->kept_length);
       }
-      next_token = mx::argmax(logits);
-      mx::async_eval({next_token});
-      finished = commit(static_cast<int>(token.item<uint32_t>()));
+      for (KVCache &cache : held.draft_caches) {
+        cache.Trim(cache.offset() - refresh->kept_length);
+      }
+      *reuse = std::move(held);
+    } else {
     }
   }
   return FinishedResult(output_ids, options, finish_reason,
@@ -329,12 +447,9 @@ TranscriptionResult Qwen3ASRTranscriber::FinishedResult(
 
 struct Qwen3ASRTranscriber::BatchRow {
   size_t request_index;
-  int prompt_length;
   int max_new_tokens;
-  std::vector<KVCache> prefill_caches;
-  mx::array first_token;
+  omni_common::PrefilledSequence sequence;
   std::vector<int> output_ids;
-  bool is_done = false;
 };
 
 void Qwen3ASRTranscriber::TranscribeBatch(
@@ -357,7 +472,7 @@ Qwen3ASRTranscriber::PrefillRows(const std::vector<BatchRequest> &requests,
   for (size_t i = 0; i < requests.size(); ++i) {
     try {
       if (requests[i].cancel->load()) {
-        throw TranscriptionCancelled();
+        throw GenerationCancelled();
       } else {
       }
       const Prompt prompt =
@@ -366,32 +481,16 @@ Qwen3ASRTranscriber::PrefillRows(const std::vector<BatchRequest> &requests,
       const mx::array first_token =
           mx::argmax(model_.Decode(prompt.embeddings, caches));
       mx::async_eval({first_token});
-      rows.push_back({i,
-                      prompt.embeddings.shape(1),
-                      prompt.max_new_tokens,
-                      std::move(caches),
-                      first_token,
-                      {}});
+      rows.push_back(
+          {i,
+           prompt.max_new_tokens,
+           {std::move(caches), prompt.embeddings.shape(1), first_token},
+           {}});
     } catch (...) {
       on_finished(i, {std::nullopt, std::current_exception()});
     }
   }
   return rows;
-}
-
-std::vector<BatchedKVCache>
-Qwen3ASRTranscriber::StackCaches(const std::vector<BatchRow> &rows) {
-  const int layer_count = static_cast<int>(rows[0].prefill_caches.size());
-  std::vector<BatchedKVCache> caches;
-  caches.reserve(layer_count);
-  for (int layer = 0; layer < layer_count; ++layer) {
-    std::vector<std::pair<mx::array, mx::array>> filled;
-    for (const BatchRow &row : rows) {
-      filled.push_back(row.prefill_caches[layer].Filled());
-    }
-    caches.emplace_back(filled);
-  }
-  return caches;
 }
 
 bool Qwen3ASRTranscriber::AcceptToken(BatchRow &row, int token_id,
@@ -418,67 +517,27 @@ bool Qwen3ASRTranscriber::AcceptToken(BatchRow &row, int token_id,
 void Qwen3ASRTranscriber::DecodeRows(const std::vector<BatchRequest> &requests,
                                      std::vector<BatchRow> &rows,
                                      const BatchFinished &on_finished) const {
-  const int batch = static_cast<int>(rows.size());
-  int longest_prompt = 0;
-  std::vector<mx::array> first_tokens;
-  // Rows are left-padded to the longest prompt; the pad slots are masked out.
-  std::vector<int32_t> pads;
-  // Each row's true position, which differs from the shared cache index.
-  std::vector<int32_t> positions;
-  for (const BatchRow &row : rows) {
-    longest_prompt = std::max(longest_prompt, row.prompt_length);
-    first_tokens.push_back(mx::reshape(row.first_token, {1}));
-    positions.push_back(row.prompt_length);
-  }
-  for (const BatchRow &row : rows) {
-    pads.push_back(longest_prompt - row.prompt_length);
-  }
-  std::vector<BatchedKVCache> caches = StackCaches(rows);
-  // The stacked caches hold the prefill keys and values; drop the per-row
-  // copies so the decode does not keep both alive.
+  std::vector<omni_common::PrefilledSequence> sequences;
   for (BatchRow &row : rows) {
-    row.prefill_caches.clear();
+    sequences.push_back(std::move(row.sequence));
   }
-  const mx::array pad_counts(pads.data(), {batch, 1}, mx::int32);
-  mx::array next_tokens = mx::concatenate(first_tokens, 0);
-  mx::async_eval({next_tokens});
-  int active_count = batch;
-  while (active_count > 0) {
-    const mx::array tokens = next_tokens;
-    // Queue the next step for the whole batch before reading this one, as the
-    // single-request loop does.
-    next_tokens = mx::argmax(
-        model_.DecodeBatch(
-            model_.EmbedTokens(mx::reshape(tokens, {batch, 1})), caches,
-            mx::array(positions.data(), {batch}, mx::int32), pad_counts),
-        -1);
-    mx::async_eval({next_tokens});
-    mx::eval(tokens);
-    const uint32_t *token_ids = tokens.data<uint32_t>();
-    for (int i = 0; i < batch; ++i) {
-      BatchRow &row = rows[i];
-      ++positions[i];
-      if (row.is_done) {
-        continue;
-      } else {
-      }
-      const BatchRequest &request = requests[row.request_index];
-      BatchOutcome outcome;
-      if (request.cancel->load()) {
-        outcome.error = std::make_exception_ptr(TranscriptionCancelled());
-        row.is_done = true;
-      } else if (AcceptToken(row, static_cast<int>(token_ids[i]),
-                             *request.options, outcome)) {
-        row.is_done = true;
-      } else {
-      }
-      if (row.is_done) {
-        --active_count;
-        on_finished(row.request_index, std::move(outcome));
-      } else {
-      }
-    }
-  }
+  model_.decoder().DecodeGreedyBatch(
+      sequences, [&](size_t index, int token_id) {
+        BatchRow &row = rows[index];
+        const BatchRequest &request = requests[row.request_index];
+        BatchOutcome outcome;
+        bool is_done = true;
+        if (request.cancel->load()) {
+          outcome.error = std::make_exception_ptr(GenerationCancelled());
+        } else {
+          is_done = AcceptToken(row, token_id, *request.options, outcome);
+        }
+        if (is_done) {
+          on_finished(row.request_index, std::move(outcome));
+        } else {
+        }
+        return is_done;
+      });
 }
 
 std::pair<std::string, std::optional<std::string>>
@@ -493,9 +552,10 @@ Qwen3ASRTranscriber::SplitOutput(const std::vector<int> &output_ids,
         true));
     const size_t separator = prefix.find(' ');
     if (separator != std::string::npos &&
-        Lowercase(prefix.substr(0, separator)) == "language") {
+        omni_common::AsciiLowercase(prefix.substr(0, separator)) ==
+            "language") {
       const std::string value = Strip(prefix.substr(separator + 1));
-      if (!value.empty() && Lowercase(value) != "none") {
+      if (!value.empty() && omni_common::AsciiLowercase(value) != "none") {
         detected = value;
       } else {
       }
@@ -518,6 +578,28 @@ Qwen3ASRTranscriber::SplitOutput(const std::vector<int> &output_ids,
   } else {
   }
   return {text, language};
+}
+
+omni_server::BatchRunner BatchableTranscriptionRunner() {
+  return {[](const omni_server::Transcription &transcription) {
+            return transcription.target<BatchableTranscription>() != nullptr;
+          },
+          [](const std::vector<omni_server::BatchItem> &items,
+             const omni_server::BatchCompletion &finish) {
+            std::vector<BatchRequest> requests;
+            const Qwen3ASRTranscriber *transcriber = nullptr;
+            for (const omni_server::BatchItem &item : items) {
+              const auto *batchable =
+                  item.transcription->target<BatchableTranscription>();
+              transcriber = batchable->transcriber;
+              requests.push_back(
+                  {&batchable->samples, &batchable->options, item.cancel});
+            }
+            transcriber->TranscribeBatch(
+                requests, [&](size_t i, BatchOutcome outcome) {
+                  finish(i, std::move(outcome.result), outcome.error);
+                });
+          }};
 }
 
 } // namespace qwen3_asr

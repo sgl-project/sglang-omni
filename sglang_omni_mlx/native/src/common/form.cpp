@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "common/form.h"
+#include "common/text.h"
 
 #include <algorithm>
 #include <cctype>
@@ -7,13 +8,6 @@
 namespace omni_common {
 
 namespace {
-
-std::string Lowercase(std::string text) {
-  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return text;
-}
 
 std::string Trim(const std::string &text) {
   size_t begin = 0;
@@ -27,7 +21,7 @@ std::string Trim(const std::string &text) {
 
 std::optional<std::string> HeaderParameter(const std::string &header,
                                            const std::string &parameter) {
-  const std::string lowered = Lowercase(header);
+  const std::string lowered = omni_common::AsciiLowercase(header);
   size_t position = 0;
   while ((position = lowered.find(parameter + "=", position)) !=
          std::string::npos) {
@@ -58,7 +52,8 @@ std::optional<std::string> HeaderParameter(const std::string &header,
 
 std::optional<std::map<std::string, FormField>>
 ParseMultipartForm(const std::string &content_type, const std::string &body) {
-  if (Lowercase(content_type).rfind("multipart/form-data", 0) != 0) {
+  if (omni_common::AsciiLowercase(content_type)
+          .rfind("multipart/form-data", 0) != 0) {
     return std::nullopt;
   } else {
   }
@@ -107,7 +102,8 @@ ParseMultipartForm(const std::string &content_type, const std::string &body) {
         line_end = headers.size();
       const std::string line =
           headers.substr(line_start, line_end - line_start);
-      if (Lowercase(line).rfind("content-disposition:", 0) == 0) {
+      if (omni_common::AsciiLowercase(line).rfind("content-disposition:", 0) ==
+          0) {
         name = HeaderParameter(line, "name");
         filename = HeaderParameter(line, "filename");
       } else {
@@ -129,7 +125,7 @@ bool FormFlag(const std::optional<std::string> &value) {
     return false;
   } else {
   }
-  const std::string normalized = Lowercase(Trim(*value));
+  const std::string normalized = omni_common::AsciiLowercase(Trim(*value));
   return normalized == "1" || normalized == "true" || normalized == "yes" ||
          normalized == "on";
 }

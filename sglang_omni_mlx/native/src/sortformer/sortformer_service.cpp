@@ -106,14 +106,6 @@ void SocketReady(mg_connection *connection, void *data) {
                       {}});
 }
 
-bool SendText(mg_connection *connection, const std::string &text) {
-  mg_lock_connection(connection);
-  const int written = mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_TEXT,
-                                         text.data(), text.size());
-  mg_unlock_connection(connection);
-  return written > 0;
-}
-
 int SocketData(mg_connection *connection, int bits, char *data, size_t length,
                void *service_data) {
   auto *service = static_cast<SortformerService *>(service_data);
@@ -135,11 +127,12 @@ int SocketData(mg_connection *connection, int bits, char *data, size_t length,
   if (opcode == MG_WEBSOCKET_OPCODE_TEXT ||
       socket->fragments.size() + length >
           service->MaxFeedSamples() * sizeof(float)) {
-    SendText(connection,
-             Json({{"error", "A feed is a binary message of at most " +
-                                 std::to_string(service->MaxFeedSamples()) +
-                                 " samples."}})
-                 .dump());
+    omni_server::SendWebSocketText(
+        connection,
+        Json({{"error", "A feed is a binary message of at most " +
+                            std::to_string(service->MaxFeedSamples()) +
+                            " samples."}})
+            .dump());
     return 0;
   } else {
   }
@@ -153,11 +146,12 @@ int SocketData(mg_connection *connection, int bits, char *data, size_t length,
   const size_t sample_count = message.size() / sizeof(float);
   if (message.size() % sizeof(float) != 0 || sample_count < 2 ||
       sample_count > service->MaxFeedSamples()) {
-    SendText(connection,
-             Json({{"error", "A feed is 2 to " +
-                                 std::to_string(service->MaxFeedSamples()) +
-                                 " float32 little-endian samples."}})
-                 .dump());
+    omni_server::SendWebSocketText(
+        connection,
+        Json({{"error", "A feed is 2 to " +
+                            std::to_string(service->MaxFeedSamples()) +
+                            " float32 little-endian samples."}})
+            .dump());
     return 0;
   } else {
   }
@@ -165,7 +159,8 @@ int SocketData(mg_connection *connection, int bits, char *data, size_t length,
   std::memcpy(samples.data(), message.data(), message.size());
   for (const float sample : samples) {
     if (!std::isfinite(sample)) {
-      SendText(connection, Json({{"error", "Audio must be finite."}}).dump());
+      omni_server::SendWebSocketText(
+          connection, Json({{"error", "Audio must be finite."}}).dump());
       return 0;
     } else {
     }
@@ -173,8 +168,10 @@ int SocketData(mg_connection *connection, int bits, char *data, size_t length,
   try {
     const FeedResult result =
         service->Feed(samples, socket->stream, socket->options);
-    return SendText(connection, ResultJson(result, socket->stream).dump()) ? 1
-                                                                           : 0;
+    return omni_server::SendWebSocketText(
+               connection, ResultJson(result, socket->stream).dump())
+               ? 1
+               : 0;
   } catch (const std::exception &error) {
     // Note (Jiaxin Deng): returning 0 closes the socket; log the type only,
     // never audio.

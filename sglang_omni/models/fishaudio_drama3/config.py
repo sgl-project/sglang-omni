@@ -12,6 +12,7 @@ from sglang_omni.config.schema import (
     FactoryArgs,
     PipelineConfig,
     StageConfig,
+    stage_process_name,
 )
 from sglang_omni.config.topology import compile_logical_processes
 
@@ -25,6 +26,7 @@ DEFAULT_MAX_PROMPT_ROWS = 8192
 DEFAULT_STREAM_STRIDE = 4
 DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP = (10, 12, 32)
 DEFAULT_STREAM_FOLLOWUP_STRIDE = 64
+DEFAULT_STREAM_WINDOW_BATCH_SIZE = 4
 DEFAULT_FIRST_FRAME_CUDA_GRAPHS = True
 DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS = 16
 DEFAULT_GDN_PREFILL_CUDA_GRAPHS = True
@@ -102,7 +104,10 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     stream_followup_stride: int = Field(default=DEFAULT_STREAM_FOLLOWUP_STRIDE, ge=1)
     stream_overlap_tokens: int = Field(default=32, ge=0)
     stream_crossfade_samples: int = Field(default=0, ge=0)
-    max_batch_size: int = Field(default=8, ge=1)
+    # note (Wenyao Gao): one non-streaming request per decode, since its CUDA graph
+    # replays at batch 1 and a batch would decode eagerly, padded to its longest
+    # request, after a batching wait.
+    max_batch_size: int = Field(default=1, ge=1)
     max_batch_wait_ms: int = Field(default=2, ge=0)
     stateful_decode: bool = False
     stateful_gemm_upsample: bool | None = None
@@ -110,6 +115,13 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     stateful_fuse_snake_history: bool | None = None
     stateful_compile_attention: bool | None = None
     window_cuda_graphs: bool = True
+    # note (Wenyao Gao): with window_cuda_graphs, non-streaming requests of up to this
+    # many frames also replay a CUDA graph, padded to a multiple of 8 frames; 0
+    # decodes them eagerly.
+    non_streaming_cuda_graph_max_frames: int = Field(default=512, ge=0)
+    stream_window_batch_size: int = Field(
+        default=DEFAULT_STREAM_WINDOW_BATCH_SIZE, ge=1
+    )
     decode_dtype: Literal["float32", "float16"] = "float16"
     # Incremental streams decode only new frames, needing float16 on CUDA; elsewhere,
     # and with "overlap", windows re-decode stream_overlap_tokens frames each.
@@ -179,7 +191,7 @@ class Drama3PipelineConfig(PipelineConfig):
         ),
         Drama3VocoderStageConfig(
             name="vocoder",
-            process="vocoder",
+            process="pipeline",
             factory_path=f"{PACKAGE}.stages.create_vocoder_executor",
             gpu=0,
             gpu_memory_fraction=VOCODER_GPU_MEMORY_FRACTION,
@@ -194,6 +206,17 @@ class Drama3PipelineConfig(PipelineConfig):
         return factory.stateful_decode
 
     def model_post_init(self, __context: object = None) -> None:
+        engine = self.stage_named("tts_engine")
+        vocoder = self.stage_named("vocoder")
+        # note (Wenyao Gao): a tensor-parallel stage holds its process alone, and
+        # stateful decoding needs the vocoder's own, so for either the vocoder leaves
+        # the engine's process.
+        if (
+            engine.tp_size > 1 or vocoder.tp_size > 1 or self.uses_stateful_codec()
+        ) and vocoder.process == stage_process_name(engine):
+            vocoder.process = vocoder.name
+        else:
+            pass
         super().model_post_init(__context)
         preprocessing_extra = (
             self.stage_named("preprocessing").factory.model_extra or {}
