@@ -1,6 +1,6 @@
 # VoxtNew's patches to MyGo (Auralink's)
 
-0001 and 0002 are AudioSmith's patches (AudioSmith @f171c86), carried over unchanged: Auralink shares its UI kit and hits the same MyGo issues; their examples are AudioSmith's, where they were found. 0003 to 0007 are Auralink's own (VoxtNew started as Auralink, NOTICE); 0008 to 0015 are VoxtNew's.
+0001 and 0002 are AudioSmith's patches (AudioSmith @f171c86), carried over unchanged: Auralink shares its UI kit and hits the same MyGo issues; their examples are AudioSmith's, where they were found. 0003 to 0007 are Auralink's own (VoxtNew started as Auralink, NOTICE); 0008 to 0017 are VoxtNew's.
 
 VoxtNew builds against `third_party/mygo` (the `replace` in `go.mod`): MyGo at the version `go.mod` requires, with these patches, made by `scripts/vendor-mygo.sh` from the module cache. The copy leaves out MyGo's website, docs, examples, CI, tests and test data; `scripts/vendor-mygo.sh --check` tells whether it is exactly what the script makes. Never edit `third_party/mygo` by hand: change a patch and run the script. A patch's hunks in the parts the copy leaves out (its `docs/`) are skipped there and kept in the patch for upstream.
 
