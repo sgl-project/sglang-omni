@@ -16,10 +16,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Update announcements are shorter**: the current version's announcement appears once after an update, with a title and at most three short lines. **What's new** opens the full notes, also available any time in Settings → About → Updates.
 - **Dictionary highlights in Transcribe**: the Try preview and answer card highlight recognised text that matches an enabled dictionary term or alias.
 - **Pick an accent color and make the window transparent** (#4123, #4180): Settings → Appearance has a Color picker with a light and a dark preview, and Reset color goes back to the default teal. Buttons, the selected sidebar item, the recording window and the answer card follow the color. The Transparent theme makes the sidebar and the page background see-through, and its Window transparency slider sets how much. With the default color, Try's Start and Stop buttons and level bars keep their red-orange.
-- **Press Return to finish dictation** (#4046): while Transcribe records, Return stops and inserts the text. A switch in Settings, on by default, turns it off for people who press Return for a new line.
-- **The answer card's c and r keys** (#4164): while the card shows, c copies the answer and r replaces the selected text. At other times the letters type as usual, also with an input method on.
 - **A first-use opening** (#4173): before the first setup guide, Voxt plays a short opening once. Existing setups and Reduce motion skip it.
-- **Faster transcription for more speech models** (#3827, #4133): Qwen3-ASR 1.7B (6bit) uses the 1.7B draft, and MOSS-Transcribe-Diarize and Whisper Large v3 get the Faster transcription switch.
+- **Faster transcription for MOSS-Transcribe-Diarize and Whisper Large v3** (#4133): both speech models get the Faster transcription switch on their cards.
 
 ### Changed
 
@@ -30,10 +28,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Manage models beside each feature's model picker and in Settings**: Transcribe, Translate and Rewrite show whether the selected speech model is installed or downloading, and let you download, cancel or delete it without leaving the page. With no speech model installed, they offer the recommended download. Selected remote services show their state and Edit dialog there too. Speech models and Language models are now Settings sections instead of separate sidebar pages. Old deep links and command-palette entries open the new sections.
 - **The built-in speech models run on a reworked native runtime** (#4181, #4184, #4187, #4188, #4189, #4190): Voxt's on-device runtime now uses MLX 0.32.5 built from a pinned commit. Several speech encoders and vocoders run in half precision, decoder layers are quantized at load, decode steps are queued ahead, and graph evaluations no longer wait where nothing reads the result. Models, settings and downloads stay the same.
 - **Each page's view state and actions are separated from its drawing code** (#4073): an internal change, with no change to features, looks or speed. Every page state now renders from test fixtures, without a microphone, a model or a permission.
-- **MOSS-Transcribe-Diarize is the recommended speech model** (#4069): the setup guide and Home recommend it, with its draft and Faster transcription on. A model you picked on a feature's page stays as you picked it.
 - **The prompt preview is the whole prompt** (#4033): the preview on Transcribe, Translate and Rewrite includes your personal dictionary and shows the translation languages filled in. The Dictionary page no longer has its own example.
 - **Whisper transcribes long recordings faster** (#4138): up to four 30-second windows decode together.
-- **Finding speech in a long recording is faster** (#4161): voice activity detection on a whole recording waits for the GPU once per 8 seconds of audio instead of once per chunk. A 95-second clip went from 6.2 s to 0.9 s with identical results.
 
 ### Fixed
 
@@ -47,7 +43,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Recording starts with a microphone selected in Settings → Audio** (#4120). Voxt keeps a working input running through configuration changes. If two consecutive starts deliver no audio, it switches to the system default microphone. If that attempt also delivers no audio, Voxt ends the stalled recording with an error.
 - **Reset look and Reset all settings stay reset after a color or transparency preview** (#4174): a preview save still pending from before the reset could write the old color or transparency back over the defaults. Reset now cancels pending preview saves and shows the default look at once. Palette previews also run in the normal snapshot gate.
 - **Rewrite keeps a copied image when its first format cannot be read** (#4107): Voxt falls back to another format of the same clipboard item.
-- **A Rewrite of selected text no longer sends an image you copied earlier** (#4163).
 - **Meetings start while system audio is silent** (#4132): recording starts at once and picks up system audio when something plays.
 - **Meeting start errors say what failed** (#4128): the permission guidance shows only when a permission was denied. Other failures name the audio source and offer a retry or a microphone-only recording.
 - **The meeting waveform and silence warning follow idle and paused system audio** (#4195): the waveform returns to quiet when output stops, the 30-second silence warning can appear, and paused time no longer counts toward it.
@@ -66,10 +61,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **更新公告更短**：当前版本的公告在更新后只出现一次，一个标题加最多三行短句。“新增功能”打开完整说明，也可以随时在 设置 → 关于 → 更新 里查看。
 - **转录里的词典高亮**：试用预览和答案卡片会高亮识别文字中命中启用词条或别名的部分。
 - **自选主题色，窗口可以透明**（#4123、#4180）：「设置 → 外观」新增“颜色”选择器，附浅色和深色预览，“恢复默认颜色”回到默认的青绿色。按钮、侧边栏选中项、录音窗口和答案卡片都跟随这个颜色。“透明”主题让侧边栏和页面背景半透明，“窗口透明度”滑块调节透明程度。使用默认颜色时，“试一试”的开始、停止按钮和音量条保持原来的橙红色。
-- **按回车结束听写**（#4046）：转录录音时按回车，停止录音并插入文字。设置里有开关，默认打开；录音时习惯按回车换行的可以关掉。
-- **答案卡片的 c 和 r 键**（#4164）：卡片显示时，按 c 复制答案，按 r 替换选中的文字。其他时候字母照常输入，开着输入法也一样。
 - **首次使用的开场动画**（#4173）：第一次打开设置向导前播放一段简短开场，只播一次。已经设置过的，或打开了「减少动态效果」的，不播放。
-- **更多语音模型支持加速转录**（#3827、#4133）：Qwen3-ASR 1.7B（6bit）使用 1.7B 的草稿模型；MOSS-Transcribe-Diarize 和 Whisper Large v3 也有了加速转录开关。
+- **MOSS-Transcribe-Diarize 和 Whisper Large v3 支持加速转录**（#4133）：这两个语音模型的卡片上有了加速转录开关。
 
 #### 变更
 
@@ -80,10 +73,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **在功能选模型的地方和“设置”里管理模型**：转录、翻译、改写页直接显示所选语音识别模型的下载、取消、删除和状态，没装时可直接下载推荐模型；远程服务也显示状态，并可就地打开编辑对话框。语音识别模型和语言模型从独立侧边栏页面改为“设置”里的两节，旧深链和命令面板入口仍打开对应设置节。
 - **内置语音模型换上重写后的本地运行时**（#4181、#4184、#4187、#4188、#4189、#4190）：Voxt 的本地运行时改用从固定提交构建的 MLX 0.32.5。多个语音编码器和声码器改用半精度运行，解码层在加载时量化，解码步骤提前排队，没人读取结果的计算不再同步等待。模型、设置和下载都不变。
 - **每个页面的视图状态和操作与绘制代码分开**（#4073）：内部改动，功能、外观和速度都不变。现在每种页面状态都能用测试数据渲染，不需要麦克风、模型或权限。
-- **推荐的语音模型改为 MOSS-Transcribe-Diarize**（#4069）：设置向导和首页推荐它，并默认带上草稿模型、打开加速转录。在功能页选过的模型保持不变。
 - **提示词预览是完整的提示词**（#4033）：转录、翻译、改写页的预览包含个人词典，翻译的几种语言显示为填好的值。词典页不再单独放示例。
 - **Whisper 转录长录音更快**（#4138）：最多四个 30 秒的窗口一起解码。
-- **在长录音里找出说话部分更快**（#4161）：对整段录音做语音检测时，每 8 秒音频才等一次 GPU，而不是每一小段等一次。一段 95 秒的录音从 6.2 秒降到 0.9 秒，结果完全相同。
 
 #### 修复
 
@@ -97,7 +88,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **在设置 → 音频选定麦克风后可以正常开始录音**（#4120）。收到配置变更通知时，Voxt 会继续使用正常运行的麦克风。如果连续两次启动都未收到音频，Voxt 会切换到系统默认麦克风。如果这次也未收到音频，Voxt 会结束卡住的录音并提示错误。
 - **重置外观和重置全部设置不会被之前的颜色或透明度预览改回**（#4174）：重置前尚未保存的预览会在重置后写回旧的颜色或透明度，覆盖默认值。现在重置会取消未保存的预览，并立即显示默认外观。调色板预览也纳入正常快照门禁。
 - **改写在首选格式读不出来时仍能带上复制的图片**（#4107）：改用同一剪贴板内容的另一种格式。
-- **改写选中的文字时不再带上之前复制的图片**（#4163）。
 - **系统没有声音时也能开始会议**（#4132）：录音立即开始，有声音播放时开始录系统声音。
 - **开始会议失败时说明是哪里失败**（#4128）：只有权限被拒绝时才提示去开权限；其他失败会指出是哪一路声音，并提供重试或只录麦克风。
 - **会议波形和静音提醒跟着系统声音的空闲和暂停走**（#4195）：系统不出声时波形回到静音，30 秒静音提醒能正常出现，暂停的时间不再算进去。
