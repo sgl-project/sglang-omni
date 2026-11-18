@@ -2,6 +2,18 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+
+- **A shortcut pressed on Home after your first result keeps its result** (#4199): with Voxt's window in front on Home, a Transcribe, Translate or Rewrite shortcut still ran as a Try after Home had stopped offering its Try area. The result showed nowhere and History kept no entry, so History could list fewer sessions than you ran. Once Home has no Try area, the shortcut now runs a normal session, as on History or Settings: the result shows, and History keeps it. Before your first result, Home's Try area works as before, and so do the Try areas on the Transcribe, Translate and Rewrite pages.
+
+### 中文
+
+#### 修复
+
+- **得到第一个结果后，在首页按快捷键的结果不再丢失**（#4199）：Voxt 窗口在前台、停在首页时，首页已经不显示「试一试」了，按转录、翻译或改写的快捷键却仍按试一试处理。结果哪里都不显示，历史里也没有记录，所以历史的条数会比实际用的次数少。现在首页没有试一试区域时，按快捷键和在历史、设置页一样走正常流程：结果照常显示，历史也会记下。第一次得到结果之前，首页的试一试不变；转录、翻译、改写页上的试一试也不变。
+
 ## [2.1.1] - 2026-11-17
 
 ### Added
