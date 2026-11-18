@@ -16,7 +16,7 @@ import sys
 from sglang_omni.profiler.views import build_report, format_table
 
 
-def _main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m sglang_omni.profiler",
         description="Render request-level profiler views",
@@ -42,8 +42,16 @@ def _main(argv: list[str] | None = None) -> int:
     if args.format == "json":
         text = json.dumps(report, indent=2)
     else:
+        completeness = report["completeness"]
+        reasons = ", ".join(completeness["incomplete_reasons"])
+        completeness_line = f"# Completeness: {completeness['state']}"
+        if reasons:
+            completeness_line += f" ({reasons})"
+        else:
+            pass
         text = (
             f"# Requests: {report['request_count']}\n\n"
+            f"{completeness_line}\n\n"
             "## Stage breakdown\n"
             + format_table(
                 report["stage_breakdown"],
@@ -60,6 +68,8 @@ def _main(argv: list[str] | None = None) -> int:
         sys.stdout.write(text)
         if not text.endswith("\n"):
             sys.stdout.write("\n")
+        else:
+            pass
     else:
         with open(args.out, "w", encoding="utf-8") as fp:
             fp.write(text)
@@ -67,4 +77,6 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(_main())
+    raise SystemExit(main())
+else:
+    pass

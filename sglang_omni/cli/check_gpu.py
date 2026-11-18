@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import sys
+from contextlib import redirect_stdout
 from typing import Annotated
 
 import typer
@@ -21,21 +23,20 @@ def check_gpu(
         bool,
         typer.Option(
             "--strict",
-            help="Exit nonzero when warnings are present or no CUDA GPU is visible.",
+            help="Exit nonzero when warnings are present or no GPU is visible.",
         ),
     ] = False,
 ) -> None:
     """Report GPU mapping, runtime versions, and installed backends."""
 
-    report = collect_gpu_diagnostics()
+    with redirect_stdout(sys.stderr if json_output else sys.stdout):
+        report = collect_gpu_diagnostics()
     if json_output:
         typer.echo(json.dumps(report, indent=2, sort_keys=True))
     else:
         typer.echo(render_gpu_diagnostics(report))
 
-    if strict and (
-        report["warnings"]
-        or not report["environment"]["cuda_available"]
-        or not report["gpus"]
-    ):
+    if strict and (report["warnings"] or not report["gpus"]):
         raise typer.Exit(code=1)
+    else:
+        pass

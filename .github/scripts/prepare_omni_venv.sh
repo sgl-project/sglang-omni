@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Full rebuild of OMNI_CI_HOME (never reuses an existing tree).
+# Full rebuild of OMNI_CI_HOME. It reuses the existing tree only when another
+# job of the same PR rebuilt it while this one waited for the lock.
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
@@ -31,18 +32,31 @@ if ! flock -w 3600 200; then
   exit 1
 fi
 
+# Jobs of one PR share OMNI_CI_HOME and can run at the same time. When another
+# job rebuilt it while this one waited for the lock, rebuilding again would
+# delete the venv that job is already testing with.
+if bash "${SCRIPT_DIR}/validate_omni_env_reusable.sh" "${VENV_NAME}" > /dev/null 2>&1; then
+  echo "Reusing ${HOST}: another job prepared it while this one waited for the lock"
+  rm -rf "./${VENV_NAME}"
+  ln -sfn "${HOST}" "./${VENV_NAME}"
+  exit 0
+fi
+
 echo "Preparing fresh ${HOST} (full rebuild)"
 rm -f "${OMNI_CI_HOME}/.omni-env-complete"
 rm -rf "${OMNI_CI_HOME}"
 mkdir -p "${OMNI_CI_HOME}"
-uv venv --system-site-packages "${HOST}" -p /usr/bin/python3.12
+# The image installs Python with uv; /usr/bin/python3 is a wrapper for this interpreter.
+uv venv --system-site-packages "${HOST}" -p /opt/sglang/bin/python3
+# Process the image's .pth files too: SGLang is installed editable upstream.
+echo 'import site; site.addsitedir("/opt/sglang/lib/python3.12/site-packages")' > "${HOST}/lib/python3.12/site-packages/sglang-image.pth"
 
 rm -rf "./${VENV_NAME}"
 ln -sfn "${HOST}" "./${VENV_NAME}"
 source "${VENV_NAME}/bin/activate"
 
 mapfile -t MISSING_REQUIREMENTS < <(
-  python "${SCRIPT_DIR}/omni_missing_dependencies.py" pyproject.toml
+  python "${SCRIPT_DIR}/omni_missing_dependencies.py" --extra minicpm-o --extra fun-cosyvoice3 pyproject.toml
 )
 if [ "${#MISSING_REQUIREMENTS[@]}" -gt 0 ]; then
   echo "Installing dependencies missing from the image:"
@@ -58,6 +72,15 @@ if [ "${#OVERRIDE_REQUIREMENTS[@]}" -gt 0 ]; then
   python -m pip install --no-deps "${OVERRIDE_REQUIREMENTS[@]}"
 fi
 uv pip install --no-deps -e .
+
+COSYVOICE_COMMIT=074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
+COSYVOICE_PATH="${HOST}/src/CosyVoice"
+git clone --filter=blob:none --no-checkout https://github.com/FunAudioLLM/CosyVoice.git "${COSYVOICE_PATH}"
+git -C "${COSYVOICE_PATH}" checkout --detach "${COSYVOICE_COMMIT}"
+git -C "${COSYVOICE_PATH}" submodule update --init --depth=1 third_party/Matcha-TTS
+# Note (Jiannan Li): TTS jobs replace PYTHONPATH, so persist both source paths in the venv.
+printf '%s\n' "${COSYVOICE_PATH}" "${COSYVOICE_PATH}/third_party/Matcha-TTS" \
+  > "${HOST}/lib/python3.12/site-packages/cosyvoice.pth"
 
 if ! bash "${SCRIPT_DIR}/validate_omni_venv_imports.sh" "${VENV_NAME}"; then
   exit 1

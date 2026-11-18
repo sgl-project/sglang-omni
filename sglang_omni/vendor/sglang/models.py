@@ -14,6 +14,7 @@ from typing import Optional, Tuple
 
 import sglang.srt.models.utils as _sglang_models_utils
 import torch
+from sglang.kernels.ops.attention.rope import FusedSetKVBufferArg
 from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.models.utils import (
     create_fused_set_kv_buffer_arg,
@@ -52,6 +53,7 @@ def apply_qk_norm(
 _sglang_models_utils.apply_qk_norm = apply_qk_norm
 
 __all__ = [
+    "FusedSetKVBufferArg",
     "apply_qk_norm",
     "create_fused_set_kv_buffer_arg",
     "enable_fused_set_kv_buffer",

@@ -3,11 +3,18 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from enum import Enum
-from typing import Annotated, Any, NamedTuple, Optional
+from typing import Annotated, NamedTuple, Optional
 
 import typer
 import yaml
 
+from sglang_omni.cli.serve import (
+    apply_engine_writes,
+    default_draft_engine_writes,
+    patches_from_broadcast_flags,
+    resolve_variant,
+    tensor_parallel_engine_writes,
+)
 from sglang_omni.config.compat import canonicalize_dotted_key
 from sglang_omni.config.manager import ConfigManager, resolve_config_cls_for_model_path
 from sglang_omni.config.patch import (
@@ -22,9 +29,10 @@ from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.config.sources import (
     dump_user_config,
     patches_from_dotted_cli,
-    patches_from_model_path_flag,
     sources_from_config_file,
 )
+from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.pipeline.replicas import warn_replica_device_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +41,14 @@ config_app = typer.Typer(help="Inspect, resolve and export the pipeline configur
 _MODEL_PATH_HELP = "The Hugging Face model ID or the path to the model directory."
 _CONFIG_HELP = "Path to a pipeline config file, as accepted by `sgl-omni serve`."
 _TEXT_ONLY_HELP = "Use the thinker-only pipeline, as `sgl-omni serve --text-only` does."
+VARIANT_HELP = "Use this pipeline variant, as `sgl-omni serve --variant` does."
 _MEM_FRACTION_HELP = (
     "Set engine.mem_fraction_static on every SGLang engine stage, as "
     "`sgl-omni serve --mem-fraction-static` does."
 )
 
 
-def _dump_yaml(data: Any) -> str:
+def dump_yaml(data: object) -> str:
     return yaml.dump(
         data,
         sort_keys=False,  # preserve order
@@ -61,7 +70,7 @@ def view(
     """View the model's pipeline configuration."""
     config_cls = resolve_config_cls_for_model_path(model_path)
     config = config_cls(model_path=model_path)
-    print(_dump_yaml(dump_user_config(config)))
+    print(dump_yaml(dump_user_config(config)))
 
 
 @config_app.command()
@@ -85,9 +94,11 @@ def export(
     # export config in a yaml file
     if output_path is None:
         output_path = f"./config_{config.name}.yaml"
+    else:
+        pass
 
     with open(output_path, "w") as f:
-        f.write(_dump_yaml(dump_user_config(config)))
+        f.write(dump_yaml(dump_user_config(config)))
     print(f"Pipeline config exported to {output_path}")
 
 
@@ -113,11 +124,12 @@ class Resolution(NamedTuple):
     resolved: ResolvedConfig
 
 
-def _resolve_sources(
+def resolve_sources(
     *,
     model_path: str | None,
     config_file: str | None,
     text_only: bool,
+    variant: str | None,
     mem_fraction_static: float | None,
     argv: list[str],
 ) -> Resolution:
@@ -128,30 +140,22 @@ def _resolve_sources(
     difference is that a launch throws the provenance away and this keeps it,
     which is what lets these commands answer *which source set this value*.
     """
-    # Local import: serve owns the broadcast flag's fan-out and the TP
-    # derivation; importing them here keeps the two commands building
-    # identical configurations.
-    from sglang_omni.cli.serve import (
-        apply_tensor_parallel_engine_overrides,
-        patches_from_broadcast_flags,
-        tensor_parallel_engine_writes,
-    )
-
     if config_file is None and model_path is None:
         raise typer.BadParameter("--model-path is required unless --config is set")
+    else:
+        pass
+    selected_variant = resolve_variant(
+        config=config_file, text_only=text_only, variant=variant
+    )
 
     try:
         if config_file:
-            baseline, patches = sources_from_config_file(config_file)
-            if model_path is not None:
-                # `serve` semantics: given both, the flag is a command line
-                # source and outranks the file's own model_path.
-                patches = patches.merge(
-                    patches_from_model_path_flag(model_path, baseline)
-                )
+            baseline, patches = sources_from_config_file(
+                config_file, model_path_override=model_path
+            )
         else:
             manager = ConfigManager.from_model_path(
-                str(model_path), variant="text" if text_only else None
+                str(model_path), variant=selected_variant
             )
             baseline, patches = manager.config, ConfigPatchSet()
 
@@ -165,10 +169,19 @@ def _resolve_sources(
             patches_from_dotted_cli(extra_args, baseline, origin="command line")
         )
         resolved = ConfigResolver(baseline).resolve(patches)
-        # The same post-merge derivation `serve` runs; it only fills engine
+        if config_file and model_path is not None:
+            # note (kermit): The checkpoint selected at construction is a CLI value, so it has no model default.
+            resolved.provenance.baseline.pop("model_path", None)
+        else:
+            pass
+        logical_plan, logical_stages = compile_logical_processes(resolved.config)
+        warn_replica_device_overrides(logical_stages, logical_plan)
+        # The same post-merge derivations serve runs; they only fill engine
         # keys no source set, so the previewed config is the launched one.
-        derivation_writes = tensor_parallel_engine_writes(resolved.config)
-        derived = apply_tensor_parallel_engine_overrides(resolved.config)
+        draft_writes = default_draft_engine_writes(resolved.config)
+        drafted = apply_engine_writes(resolved.config, draft_writes)
+        derivation_writes = tensor_parallel_engine_writes(drafted)
+        derived = apply_engine_writes(drafted, derivation_writes)
         # The derivation may fill a key a source explicitly cleared (an
         # engine key set to none is unset again, and unset keys are the
         # derivation's to fill). Re-record what the launched config holds so
@@ -178,20 +191,35 @@ def _resolve_sources(
             resolved.provenance.record_resolved(patch.key, patch.path.read(derived))
         # A purely derived key has no patch; give it an entry of its own so
         # explain names the derivation instead of claiming a model default.
-        derivation_source = ConfigSource(
-            SourceKind.MODEL_DEFAULT,
-            detail="derived from the resolved TP settings at launch",
+        derivation_sources = (
+            (
+                draft_writes,
+                ConfigSource(
+                    SourceKind.MODEL_DEFAULT,
+                    detail="the model's default draft, added at launch",
+                ),
+            ),
+            (
+                derivation_writes,
+                ConfigSource(
+                    SourceKind.MODEL_DEFAULT,
+                    detail="derived from the resolved TP settings at launch",
+                ),
+            ),
         )
-        for path_text, value in derivation_writes.items():
-            if resolved.provenance.touched(path_text):
-                continue
-            derivation_patch = ConfigPatch.create(
-                path_text, value, derivation_source, root=type(baseline)
-            )
-            resolved.provenance.record(derivation_patch, winning=True)
-            resolved.provenance.record_resolved(
-                path_text, derivation_patch.path.read(derived)
-            )
+        for writes, derivation_source in derivation_sources:
+            for path_text, value in writes.items():
+                if resolved.provenance.touched(path_text):
+                    continue
+                else:
+                    pass
+                derivation_patch = ConfigPatch.create(
+                    path_text, value, derivation_source, root=type(baseline)
+                )
+                resolved.provenance.record(derivation_patch, winning=True)
+                resolved.provenance.record_resolved(
+                    path_text, derivation_patch.path.read(derived)
+                )
         return Resolution(baseline, replace(resolved, config=derived))
     except (ConfigPathError, ValueError) as exc:
         # An unknown path, a path the schema will not let a user write, two
@@ -212,6 +240,7 @@ def resolve(
     text_only: Annotated[
         bool, typer.Option("--text-only", help=_TEXT_ONLY_HELP)
     ] = False,
+    variant: Annotated[str | None, typer.Option("--variant", help=VARIANT_HELP)] = None,
     mem_fraction_static: Annotated[
         float | None, typer.Option("--mem-fraction-static", help=_MEM_FRACTION_HELP)
     ] = None,
@@ -234,33 +263,60 @@ def resolve(
         sgl-omni config resolve --model-path Qwen/Qwen3-Omni \\
             --thinker.tp_size 4 --show diff
     """
-    resolution = _resolve_sources(
+    resolution = resolve_sources(
         model_path=model_path,
         config_file=config,
         text_only=text_only,
+        variant=variant,
         mem_fraction_static=mem_fraction_static,
         argv=ctx.args,
     )
     provenance = resolution.resolved.provenance
 
     if show is ResolveOutput.config:
-        print(_dump_yaml(dump_user_config(resolution.resolved.config)))
+        print(dump_yaml(dump_user_config(resolution.resolved.config)))
         return
+    else:
+        pass
 
     if show is ResolveOutput.diff:
         # Against the baseline config rather than against the recorded patches,
         # so that a field an alias carried along is shown as changed too.
-        changes = diff_configs(resolution.baseline, resolution.resolved.config)
+        baseline_values = resolution.baseline.model_dump()
+        file_model_path = next(
+            (
+                entry.value
+                for entry in provenance.entries.get("model_path", [])
+                if entry.source.kind is SourceKind.YAML_FILE and not entry.winning
+            ),
+            None,
+        )
+        if model_path is not None and isinstance(file_model_path, str):
+            # note (kermit): Preserve the diff against the YAML path without loading that checkpoint.
+            baseline_values["model_path"] = file_model_path
+            if resolution.baseline.name == resolution.baseline.model_path:
+                baseline_values["name"] = file_model_path
+            else:
+                pass
+        else:
+            pass
+        changes = diff_configs(baseline_values, resolution.resolved.config)
         if not changes:
             print("No configuration source changed the pipeline's defaults.")
             return
+        else:
+            pass
         for change in changes:
             print(f"{change.path}: {change.expected!r} -> {change.actual!r}")
         return
+    else:
+        pass
 
     if not provenance.paths():
         print("No configuration source touched the pipeline's defaults.")
         return
+    else:
+        pass
     print("\n\n".join(provenance.explain(path) for path in provenance.paths()))
 
 
@@ -293,6 +349,7 @@ def explain(
     text_only: Annotated[
         bool, typer.Option("--text-only", help=_TEXT_ONLY_HELP)
     ] = False,
+    variant: Annotated[str | None, typer.Option("--variant", help=VARIANT_HELP)] = None,
     mem_fraction_static: Annotated[
         float | None, typer.Option("--mem-fraction-static", help=_MEM_FRACTION_HELP)
     ] = None,
@@ -302,10 +359,11 @@ def explain(
         sgl-omni config explain stages.thinker.factory.max_seq_len \\
             --config omni.yaml --thinker.factory.max_seq_len 8192
     """
-    resolution = _resolve_sources(
+    resolution = resolve_sources(
         model_path=model_path,
         config_file=config,
         text_only=text_only,
+        variant=variant,
         mem_fraction_static=mem_fraction_static,
         argv=ctx.args,
     )
@@ -315,12 +373,16 @@ def explain(
         if not provenance.paths():
             print("No configuration source touched the pipeline's defaults.")
             return
+        else:
+            pass
         for touched in provenance.paths():
             winner = provenance.winner(touched)
             assert winner is not None  # a touched path always has a winner
             value = provenance.resolved_value(touched, winner.value)
             print(f"{touched} = {value!r}  <- {winner.source.describe()}")
         return
+    else:
+        pass
 
     try:
         canonical = canonicalize_dotted_key(path, resolution.baseline)
@@ -332,6 +394,8 @@ def explain(
     if provenance.touched(compiled.raw):
         print(provenance.explain(compiled.raw))
         return
+    else:
+        pass
     try:
         value = compiled.read(resolution.resolved.config)
     except ConfigPathError:

@@ -69,6 +69,29 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Speculative Decoding
+
+The decoder can verify tokens proposed by the 19-language DFlash draft [`wilsonzheng0327/ARK-ASR-3B-dflash`](https://huggingface.co/wilsonzheng0327/ARK-ASR-3B-dflash) on one CUDA GPU.
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --asr.engine.speculative_algorithm DFLASH \
+  --asr.engine.speculative_draft_model_path wilsonzheng0327/ARK-ASR-3B-dflash \
+  --port 8000
+```
+
+Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap verification with host work. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. On one H200 with greedy decoding and the prefix cache off, the draft against the server without one:
+
+| Concurrent requests | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| SeedTTS English, synchronous | 2.02x | 1.92x | 1.62x | 1.45x | 1.15x | 1.13x | 1.86x |
+| SeedTTS English, overlapped | 2.08x | 2.05x | 1.75x | 1.51x | 1.20x | 1.17x | 1.83x |
+| SeedTTS Chinese, synchronous | 1.74x | 1.60x | 1.56x | 1.39x | 1.18x | 1.21x | 2.00x |
+| SeedTTS Chinese, overlapped | 1.84x | 1.65x | 1.65x | 1.44x | 1.21x | 1.20x | 1.74x |
+
+WER stays at 1.11-1.13% on English and CER at 0.86-0.89% on Chinese, and p95 latency drops at every load in both modes. The larger gain at 64 comes from the default cap of 32 running requests, under which the server without a draft slows from 32 to 64 concurrent requests; with `--asr.engine.max_running_requests 64 --asr.engine.cuda_graph_max_bs 64` on both sides, the gain at 16, 32 and 64 is 1.12x, 1.18x and 1.06x synchronous and 1.30x, 1.27x and 1.13x overlapped. Overlap delays streamed first text: first-output p95 against the server without a draft is -4%, +6% and +15% at 1, 4 and 16 concurrent requests synchronous, and +8%, +23% and +31% overlapped. The draft reserves 13% of the KV pool. The draft checkpoint sets the default block size; `--asr.engine.speculative_num_draft_tokens` overrides it. The default context budget includes speculative KV reserve; an explicit `--context-length` must leave room for that reserve as well as the prompt and output.
+
 ### Prefill Coalescing
 
 ARK-ASR holds newly built requests briefly by default so the scheduler can
@@ -77,14 +100,14 @@ admit a larger prefill batch. The tuned defaults are 16 requests / 32 ms:
 ```bash
 sgl-omni serve \
   --model-path AutoArk-AI/ARK-ASR-3B \
-  --prefill-coalesce-requests 16 \
-  --prefill-coalesce-wait-ms 32 \
+  --asr.factory.prefill_coalesce_requests 16 \
+  --asr.factory.prefill_coalesce_wait_ms 32 \
   --port 8000
 ```
 
 Admission is released after either the request threshold or wait deadline is
 reached; it can release earlier when pending request-build work drains. Set
-`--prefill-coalesce-requests 0` to disable coalescing. Tune these values for the
+`--asr.factory.prefill_coalesce_requests 0` to disable coalescing. Tune these values for the
 target request distribution and latency requirements.
 
 ## Transcribe Audio
@@ -116,6 +139,31 @@ resp.raise_for_status()
 print(resp.json()["text"])
 ```
 
+## Stream Transcription
+
+Set the multipart `stream` field to `true` and keep `response_format` as
+`json` or `text` to receive Server-Sent Events (SSE):
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=AutoArk-AI/ARK-ASR-3B \
+  -F file=@tests/data/query_to_cars.wav \
+  -F language=en \
+  -F response_format=json \
+  -F stream=true
+```
+
+The response contains zero or more `transcript.text.delta` events, followed
+by one `transcript.text.done` event with the complete post-processed
+transcript, then `data: [DONE]`. Streaming primarily reduces time to first
+text; it does not change the final transcript.
+
+Treat `transcript.text.done` as the authoritative transcript: it is the same
+post-processed string as the non-stream `text` field. Incremental
+`transcript.text.delta` events are a live preview. Concatenating them may
+differ from `done` by leading or trailing whitespace (the final adapter
+`.strip()`s the full decode). Persist `done.text`, not `"".join(deltas)`.
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
@@ -124,7 +172,8 @@ print(resp.json()["text"])
 | `model` | string | server default | Model identifier |
 | `language` | string | `en` | Language hint recorded on the request. The transcription instruction is a fixed English prompt (`Please transcribe this audio.`); ARK-ASR auto-detects the spoken language, so this field does not switch prompt templates. |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
-| `temperature` | float | `0` (greedy) | Sampling temperature. When unset or `0`, SGLang's sampling normalization selects greedy decoding (`top_k=1`); no non-zero temperature is substituted. |
+| `stream` | boolean | `false` | Emit SSE text deltas. Streaming accepts only `json` or `text` response formats |
+| `temperature` | float | `0` (greedy) | Sampling temperature. When unset or `0`, SGLang's sampling normalization selects greedy decoding (`top_k=1`); no non-zero temperature is substituted. A negative value returns HTTP 422. |
 
 ### Response Formats
 
@@ -167,6 +216,37 @@ audio's duration cannot be probed, `duration` and the segment end time are `0.0`
 - A `float16` path is also exposed. The encoder layers clamp the post-residual
   activations under fp16 (matching the reference `modeling_audio.py`) so large
   activations stay finite; this clamp is a no-op under `bfloat16`.
+
+## Apple Silicon
+
+On macOS arm64, ARK-ASR-3B runs through the existing Torch/MPS compatibility
+path without a converted checkpoint or model-specific code changes:
+
+```bash
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --model-name AutoArk-AI/ARK-ASR-3B \
+  --asr.engine.max_running_requests 1 \
+  --port 8000
+```
+
+This path was validated on a MacBook Air with an M4 and 16 GB of unified
+memory using the official checkpoint and `tests/data/query_to_cars.wav`. The
+server returned the expected transcript through `/v1/audio/transcriptions`.
+
+## Ascend NPU
+
+ARK-ASR-3B runs on Ascend 910 with the provided NPU configuration:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --config examples/configs/arkasr_npu.yaml \
+  --port 8000
+```
+
+See the [NPU installation guide](../other_platforms/installation_npu.md) for environment setup.
 
 ## Marker-Token Suppression
 
@@ -261,12 +341,26 @@ SeedTTS reference audio through `/v1/audio/transcriptions`. Pass
 `benchmarks.tasks.asr`.
 
 ```bash
+# Download the test set once:
+python -m benchmarks.dataset.prepare --dataset seedtts
+
+# Launch ARK-ASR:
 sgl-omni serve --model-path AutoArk-AI/ARK-ASR-3B --port 8000
 
 # Sweep the full SeedTTS EN set (1088 clips) at 1..64 concurrency, 3 repeats:
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --port 8000 --model-path AutoArk-AI/ARK-ASR-3B \
   --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
+
+# Quick smoke on a 20-sample subset:
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 --model-path AutoArk-AI/ARK-ASR-3B \
+  --max-samples 20 --concurrencies 2 --repeats 1
+
+# Measure text TTFT and inter-chunk latency through the SSE endpoint:
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 --model-path AutoArk-AI/ARK-ASR-3B \
+  --max-samples 20 --concurrencies 2 --repeats 1 --stream
 ```
 
 The script reports corpus WER, throughput, and latency per concurrency level.

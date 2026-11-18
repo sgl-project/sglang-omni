@@ -18,6 +18,8 @@ class StagePlacement:
     gpu_ids: tuple[int, ...]
     tp_size: int
     total_gpu_memory_fraction: float | None
+    kv_cache_bytes: int | None = None
+    total_reserve_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,8 @@ class GpuPlacement:
     total_gpu_memory_fraction: float
     has_memory_fraction: bool
     missing_fraction_stage_names: tuple[str, ...]
+    total_kv_cache_bytes: int
+    total_reserve_bytes: int
 
 
 @dataclass(frozen=True)
@@ -53,7 +57,7 @@ class StagePlacementPlanner:
     """Build a model-agnostic placement plan from pipeline stage config."""
 
     def __init__(self, config: PipelineConfig):
-        self._config = config
+        self.config = config
 
     def build(
         self,
@@ -62,27 +66,34 @@ class StagePlacementPlanner:
         apply_policy: bool = True,
         replica_instances: dict[str, tuple[str, ...]] | None = None,
     ) -> StagePlacementPlan:
-        stages = stages_cfg if stages_cfg is not None else self._config.stages
+        stages = stages_cfg if stages_cfg is not None else self.config.stages
         placements: dict[str, StagePlacement] = {}
-        gpu_entries: dict[int, list[tuple[str, float | None]]] = defaultdict(list)
+        gpu_entries: dict[int, list[StagePlacement]] = defaultdict(list)
 
         for stage in stages:
             gpu_ids = _resolve_stage_gpu_ids(stage)
             if not gpu_ids:
                 continue
+            else:
+                pass
 
-            fraction = stage.gpu_memory_fraction
-            placements[stage.name] = StagePlacement(
+            kv_cache_bytes = (
+                stage.engine.kv_cache_bytes if stage.engine is not None else None
+            )
+            placement = StagePlacement(
                 stage_name=stage.name,
                 gpu_ids=gpu_ids,
                 tp_size=stage.tp_size,
-                total_gpu_memory_fraction=fraction,
+                total_gpu_memory_fraction=stage.gpu_memory_fraction,
+                kv_cache_bytes=kv_cache_bytes,
+                total_reserve_bytes=stage.total_reserve_bytes,
             )
+            placements[stage.name] = placement
             for gpu_id in gpu_ids:
-                gpu_entries[gpu_id].append((stage.name, fraction))
+                gpu_entries[gpu_id].append(placement)
 
         gpu_plans = {
-            gpu_id: _build_gpu_placement(gpu_id, entries)
+            gpu_id: build_gpu_placement(gpu_id, entries)
             for gpu_id, entries in gpu_entries.items()
         }
         plan = StagePlacementPlan(
@@ -90,13 +101,15 @@ class StagePlacementPlanner:
             gpus=gpu_plans,
             replica_instances=dict(replica_instances or {}),
         )
-        self._validate_memory_budgets(plan)
+        self.validate_memory_budgets(plan)
         if apply_policy:
-            _apply_placement_policy(self._config, plan)
+            apply_placement_policy(self.config, plan)
+        else:
+            pass
         return plan
 
-    def _validate_memory_budgets(self, plan: StagePlacementPlan) -> None:
-        limit = self._config.placement.max_total_gpu_memory_fraction_per_gpu
+    def validate_memory_budgets(self, plan: StagePlacementPlan) -> None:
+        limit = self.config.placement.max_total_gpu_memory_fraction_per_gpu
         for gpu in plan.gpus.values():
             if gpu.total_gpu_memory_fraction > limit + 1e-9:
                 raise ValueError(
@@ -104,6 +117,63 @@ class StagePlacementPlanner:
                     f"{gpu.total_gpu_memory_fraction:.3f} exceeds placement limit "
                     f"{limit:.3f}"
                 )
+            else:
+                pass
+
+
+def validate_gpu_capacity(plan: StagePlacementPlan) -> None:
+    """Fail before spawn when declared budgets exceed a GPU's physical memory.
+
+    Fractions and byte reserves are combined in the byte domain, so mixed
+    fraction/byte colocation cannot overcommit a card while each domain's own
+    sum still looks fine. The KV pools summed over every stage instance on a
+    card, replica instances included, are a hard lower bound on their own, so
+    they are checked even when no stage declares a total reserve. Skipped when
+    device metadata is unavailable.
+    """
+
+    from sglang_omni.utils.gpu_memory import format_bytes_gib, get_gpu_device_info
+
+    for gpu_id, gpu in sorted(plan.gpus.items()):
+        if gpu.total_reserve_bytes <= 0 and gpu.total_kv_cache_bytes <= 0:
+            continue
+        else:
+            pass
+        info = get_gpu_device_info(gpu_id)
+        if info.total_memory_bytes is None:
+            continue
+        else:
+            pass
+        declared = (
+            gpu.total_gpu_memory_fraction * info.total_memory_bytes
+            + gpu.total_reserve_bytes
+        )
+        if gpu.total_reserve_bytes > 0 and declared > info.total_memory_bytes:
+            raise ValueError(
+                f"GPU {gpu_id} declared budgets exceed physical memory: "
+                f"fraction {gpu.total_gpu_memory_fraction:.3f} of "
+                f"{format_bytes_gib(info.total_memory_bytes)} plus "
+                f"total_reserve_bytes {format_bytes_gib(gpu.total_reserve_bytes)} "
+                f"= {format_bytes_gib(int(declared))}. Lower the stage budgets "
+                "or move a stage to another GPU."
+            )
+        else:
+            pass
+        if gpu.total_kv_cache_bytes > info.total_memory_bytes:
+            kv_stages = sorted(
+                placement.stage_name
+                for placement in plan.stages.values()
+                if placement.kv_cache_bytes and gpu_id in placement.gpu_ids
+            )
+            raise ValueError(
+                f"GPU {gpu_id} declared KV pools alone exceed physical memory: "
+                f"{format_bytes_gib(info.total_memory_bytes)} of VRAM against "
+                f"{format_bytes_gib(gpu.total_kv_cache_bytes)} summed over "
+                f"engine.kv_cache_bytes of {', '.join(kv_stages)}. Lower "
+                "engine.kv_cache_bytes or reduce the replica count."
+            )
+        else:
+            pass
 
 
 def build_stage_placement_plan(
@@ -127,6 +197,8 @@ def resolve_stage_gpu_ids(
     placement = plan.stages.get(stage_cfg.name)
     if placement is None:
         return [None] * stage_cfg.tp_size
+    else:
+        pass
     return list(placement.gpu_ids)
 
 
@@ -145,64 +217,98 @@ def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
     # enforced by StageConfig validation, but launcher helpers mutate
     # tp_size and gpu after construction, so re-check the TP shape here
     # rather than expanding a scalar into duplicate ranks.
+    if stage.runtime_gpu_ids is not None:
+        stage.model_post_init()
+        return tuple(stage.runtime_gpu_ids)
+    else:
+        pass
     gpu = stage.gpu
     if gpu is None:
         return ()
+    else:
+        pass
     if isinstance(gpu, int):
         if stage.tp_size > 1:
             raise ValueError(
                 f"Stage {stage.name!r}: TP placement requires a list of "
                 f"{stage.tp_size} unique GPU ids, got scalar gpu={gpu}"
             )
+        else:
+            pass
         return (gpu,)
+    else:
+        pass
     gpu_ids = tuple(int(gpu_id) for gpu_id in gpu)
     if len(gpu_ids) != stage.tp_size or len(set(gpu_ids)) != len(gpu_ids):
         raise ValueError(
             f"Stage {stage.name!r}: TP placement requires a list of "
             f"{stage.tp_size} unique GPU ids, got gpu={list(gpu)}"
         )
+    else:
+        pass
     return gpu_ids
 
 
-def _build_gpu_placement(
+def build_gpu_placement(
     gpu_id: int,
-    entries: list[tuple[str, float | None]],
+    entries: list[StagePlacement],
 ) -> GpuPlacement:
     total = 0.0
+    total_kv_cache_bytes = 0
+    total_reserve_bytes = 0
     has_memory_fraction = False
     missing: set[str] = set()
     stage_names: list[str] = []
-    for stage_name, fraction in entries:
-        stage_names.append(stage_name)
-        if fraction is None:
-            missing.add(stage_name)
-            continue
-        has_memory_fraction = True
-        total += fraction
+    for entry in entries:
+        stage_names.append(entry.stage_name)
+        if entry.total_gpu_memory_fraction is None:
+            missing.add(entry.stage_name)
+        else:
+            has_memory_fraction = True
+            total += entry.total_gpu_memory_fraction
+
+        if entry.kv_cache_bytes is not None:
+            total_kv_cache_bytes += entry.kv_cache_bytes
+        else:
+            pass
+        if entry.total_reserve_bytes is not None:
+            total_reserve_bytes += entry.total_reserve_bytes
+        else:
+            pass
     return GpuPlacement(
         gpu_id=gpu_id,
         stage_names=tuple(stage_names),
         total_gpu_memory_fraction=total,
         has_memory_fraction=has_memory_fraction,
         missing_fraction_stage_names=tuple(sorted(missing)),
+        total_kv_cache_bytes=total_kv_cache_bytes,
+        total_reserve_bytes=total_reserve_bytes,
     )
 
 
-def _apply_placement_policy(
+def apply_placement_policy(
     config: PipelineConfig,
     plan: StagePlacementPlan,
 ) -> None:
     if config.placement_policy is None:
         return
+    else:
+        pass
     policy = import_string(config.placement_policy)
     if inspect.isclass(policy):
         policy = policy()
+    else:
+        pass
     if hasattr(policy, "validate"):
         policy.validate(config, plan)
         return
+    else:
+        pass
     if callable(policy):
         policy(config, plan)
         return
+    else:
+        pass
     raise TypeError(
         f"placement_policy {config.placement_policy!r} must be callable or expose "
         "validate(config, plan)"

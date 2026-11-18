@@ -8,11 +8,11 @@ from pathlib import Path
 
 import torch
 
-from sglang_omni.models.ming_tts.reference_encode import _MingTTSReferenceEncodeHook
+from sglang_omni.models.ming_tts.reference_encode import MingTTSReferenceEncodeHook
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 
-class _StubEncoder:
+class StubEncoder:
     """Only the attributes the hook consults; no AudioVAE/CampPlus weights."""
 
     sample_rate = 44100
@@ -22,7 +22,7 @@ class _StubEncoder:
     def __init__(self) -> None:
         self.encode_calls: list[str] = []
 
-    def _encode_reference(self, ref_audio: str) -> dict:
+    def encode_reference(self, ref_audio: str) -> dict:
         self.encode_calls.append(ref_audio)
         return {
             "prompt_latent_token_count": 1,
@@ -30,15 +30,15 @@ class _StubEncoder:
         }
 
 
-def _write_wav_like(path: Path, middle: bytes) -> None:
+def write_wav_like(path: Path, middle: bytes) -> None:
     """Same-size payloads that differ only in the middle bytes."""
     assert len(middle) == 4
     path.write_bytes(b"RIFF" + b"\x00" * 9000 + middle + b"\x00" * 9000 + b"data")
 
 
-def _hook_and_service(tmp_path) -> tuple[_StubEncoder, ReferenceEncodeService]:
-    encoder = _StubEncoder()
-    hook = _MingTTSReferenceEncodeHook(encoder, model_identity=str(tmp_path))
+def hook_and_service(tmp_path) -> tuple[StubEncoder, ReferenceEncodeService]:
+    encoder = StubEncoder()
+    hook = MingTTSReferenceEncodeHook(encoder, model_identity=str(tmp_path))
     return encoder, ReferenceEncodeService(hook, max_items=16, max_bytes=1 << 20)
 
 
@@ -46,11 +46,11 @@ def test_same_size_references_do_not_share_a_cache_entry(tmp_path) -> None:
     """Two same-size files differing only in the middle must key separately;
     a sampled head/tail hash would collide here and serve the wrong speaker."""
     a, b = tmp_path / "a.wav", tmp_path / "b.wav"
-    _write_wav_like(a, b"AAAA")
-    _write_wav_like(b, b"BBBB")
+    write_wav_like(a, b"AAAA")
+    write_wav_like(b, b"BBBB")
     assert a.stat().st_size == b.stat().st_size
 
-    encoder, service = _hook_and_service(tmp_path)
+    encoder, service = hook_and_service(tmp_path)
     artifact_a = service.get_or_encode(str(a))
     artifact_b = service.get_or_encode(str(b))
 
@@ -63,9 +63,9 @@ def test_same_size_references_do_not_share_a_cache_entry(tmp_path) -> None:
 
 def test_same_reference_file_hits_the_cache(tmp_path) -> None:
     ref = tmp_path / "ref.wav"
-    _write_wav_like(ref, b"AAAA")
+    write_wav_like(ref, b"AAAA")
 
-    encoder, service = _hook_and_service(tmp_path)
+    encoder, service = hook_and_service(tmp_path)
     service.get_or_encode(str(ref))
     service.get_or_encode(str(ref))
 
@@ -75,12 +75,12 @@ def test_same_reference_file_hits_the_cache(tmp_path) -> None:
 
 def test_rewritten_reference_is_not_served_stale(tmp_path) -> None:
     ref = tmp_path / "ref.wav"
-    _write_wav_like(ref, b"AAAA")
+    write_wav_like(ref, b"AAAA")
 
-    encoder, service = _hook_and_service(tmp_path)
+    encoder, service = hook_and_service(tmp_path)
     first = service.get_or_encode(str(ref))
 
-    _write_wav_like(ref, b"BBBB")
+    write_wav_like(ref, b"BBBB")
     os.utime(ref, (1_700_000_000, 1_700_000_000))
     second = service.get_or_encode(str(ref))
 

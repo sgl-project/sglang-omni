@@ -14,6 +14,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.arkasr"
 
@@ -60,7 +61,6 @@ class ArkasrPipelineConfig(PipelineConfig):
             process="asr",
             factory_path=f"{_PKG}.stages.create_sglang_arkasr_executor",
             factory=ArkasrFactoryArgs(
-                device="cuda:0",
                 max_new_tokens=256,
                 encoder_max_batch_size=8,
                 enable_encoder_cuda_graph=True,
@@ -84,6 +84,13 @@ class ArkasrPipelineConfig(PipelineConfig):
             terminal=True,
         )
     ]
+
+    def resolved_env_defaults(self) -> dict[str, str]:
+        # Set before worker startup: torch_npu caches its Host queue settings.
+        if current_platform.is_npu():
+            return {"PER_STREAM_QUEUE": "1", **self.env_defaults}
+        else:
+            return dict(self.env_defaults)
 
 
 EntryClass = ArkasrPipelineConfig

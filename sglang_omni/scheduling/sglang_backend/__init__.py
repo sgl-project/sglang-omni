@@ -8,6 +8,7 @@ from sglang_omni.scheduling.sglang_backend.request_data import (
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
+    pin_resolved_device_type,
 )
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "SGLangOutputProcessor",
     "apply_encoder_mem_reserve",
     "build_sglang_server_args",
+    "pin_resolved_device_type",
 ]

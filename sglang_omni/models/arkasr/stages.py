@@ -3,22 +3,25 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+
+from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
 
 
 def create_sglang_arkasr_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     max_running_requests: int = 32,
     encoder_max_batch_size: int = 8,
     max_new_tokens: int = 256,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
-    enable_torch_compile: bool = False,
-    enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    enable_torch_compile: bool | None = None,
+    enable_async_decode: bool | None = None,
+    async_decode_min_batch_size: int = 1,
     mm_attention_backend: str | None = None,
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
@@ -33,11 +36,10 @@ def create_sglang_arkasr_executor(
     pre_lm_max_batch_wait_ms: int = 0,
     pre_lm_max_pending: int = 32,
     enable_encoder_cuda_graph: bool = False,
-    server_args_overrides: dict[str, Any] | None = None,
+    stream_emit_interval_s: float = 0.05,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
-    from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
-
-    return ArkasrEngineBuilder(
+    builder = ArkasrEngineBuilder(
         max_running_requests=max_running_requests,
         encoder_max_batch_size=encoder_max_batch_size,
         max_new_tokens=max_new_tokens,
@@ -62,12 +64,21 @@ def create_sglang_arkasr_executor(
         pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
         pre_lm_max_pending=pre_lm_max_pending,
         enable_encoder_cuda_graph=enable_encoder_cuda_graph,
-    ).build(
-        model_path,
-        device=device,
-        dtype=dtype,
-        server_args_overrides=server_args_overrides,
+        stream_emit_interval_s=stream_emit_interval_s,
     )
+    try:
+        return builder.build(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            server_args_overrides=server_args_overrides,
+        )
+    finally:
+        if builder.draft_checkpoint is not None:
+            builder.draft_checkpoint.cleanup()
+        else:
+            pass
 
 
 def create_arkasr_executor(*args, **kwargs):

@@ -6,11 +6,12 @@ Audio embeddings are scattered into ``<|audio|>`` placeholder positions via
 """
 
 import logging
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from sglang.srt.managers.mm_utils import (
     MultiModalityDataPaddingPatternMultimodalTokens,
     general_mm_embed_routine,
@@ -56,16 +57,30 @@ class ArkasrForConditionalGeneration(nn.Module):
         self.encoder_max_batch_size = self.DEFAULT_ENCODER_MAX_BATCH_SIZE
         self.encoder_cuda_graph_runner = None
 
+    def get_input_embeddings(self) -> VocabParallelEmbedding:
+        return self.language_model.get_input_embeddings()
+
+    @property
+    def lm_head(self) -> VocabParallelEmbedding:
+        return self.language_model.lm_head
+
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        # note (Ruilin Gao): Qwen2 exposes pre-layer capture through its EAGLE3 hook.
+        self.language_model.set_eagle3_layers_to_capture(layer_ids)
+
     def set_encoder_max_batch_size(self, max_batch_size: int) -> None:
         if max_batch_size < 1:
             raise ValueError(
                 f"encoder_max_batch_size must be >= 1, got {max_batch_size}"
             )
+        else:
+            pass
         self.encoder_max_batch_size = max_batch_size
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
 
+    @torch.no_grad()
     def get_audio_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
         """Encode cache-miss audio items in bounded sequential microbatches.
 
@@ -80,16 +95,18 @@ class ArkasrForConditionalGeneration(nn.Module):
             raise ValueError(
                 "ARK-ASR get_audio_feature requires at least one audio item"
             )
+        else:
+            pass
         outputs = []
         for start in range(0, len(items), self.encoder_max_batch_size):
             outputs.append(
-                self._encode_audio_batch(
+                self.encode_audio_batch(
                     items[start : start + self.encoder_max_batch_size]
                 )
             )
         return torch.cat(outputs, dim=0)
 
-    def _encode_audio_batch(self, items: List[MultimodalDataItem]) -> torch.Tensor:
+    def encode_audio_batch(self, items: List[MultimodalDataItem]) -> torch.Tensor:
         """Pad and encode one bounded batch of audio items."""
         device = next(self.audio_encoder.parameters()).device
         dtype = self.audio_encoder.dtype
@@ -100,14 +117,20 @@ class ArkasrForConditionalGeneration(nn.Module):
         for item in items:
             if item.feature is None:
                 raise ValueError("ARK-ASR audio item is missing mel features")
+            else:
+                pass
             feature = item.feature
             if feature.ndim == 2:
                 feature = feature.unsqueeze(0)
+            else:
+                pass
             if feature.ndim != 3 or feature.shape[0] != 1:
                 raise ValueError(
                     "ARK-ASR expects item.feature shaped [mel_bins, T] or "
                     f"[1, mel_bins, T], got {tuple(feature.shape)}"
                 )
+            else:
+                pass
             if mel_bins is None:
                 mel_bins = int(feature.shape[1])
             elif feature.shape[1] != mel_bins:
@@ -115,6 +138,8 @@ class ArkasrForConditionalGeneration(nn.Module):
                     "ARK-ASR audio features in one batch must share mel_bins; "
                     f"expected {mel_bins}, got {feature.shape[1]}"
                 )
+            else:
+                pass
 
             frames = int(feature.shape[-1])
             mask = getattr(item, "feature_attention_mask", None)
@@ -123,12 +148,16 @@ class ArkasrForConditionalGeneration(nn.Module):
             else:
                 if mask.ndim == 1:
                     mask = mask.unsqueeze(0)
+                else:
+                    pass
                 if mask.shape != (1, frames):
                     raise ValueError(
                         "ARK-ASR feature_attention_mask shape "
                         f"{tuple(mask.shape)} does not match feature frames "
                         f"{(1, frames)}"
                     )
+                else:
+                    pass
                 mask = mask.to(dtype=torch.bool)
                 valid_frames = int(mask.sum().item())
                 is_right_padded = bool(mask[0, :valid_frames].all()) and not bool(
@@ -139,6 +168,8 @@ class ArkasrForConditionalGeneration(nn.Module):
                         "ARK-ASR feature_attention_mask must mark a non-empty "
                         "right-padded valid prefix"
                     )
+                else:
+                    pass
 
             features.append(feature[:, :, :valid_frames])
             mel_lengths.append(valid_frames)
@@ -157,6 +188,8 @@ class ArkasrForConditionalGeneration(nn.Module):
         encoded = None
         if self.encoder_cuda_graph_runner is not None:
             encoded = self.encoder_cuda_graph_runner.run(batched, mel_lengths)
+        else:
+            pass
 
         if encoded is None:
             # note (guozhihao-224): B=1 is unpadded; leave mask=None to match
@@ -169,6 +202,8 @@ class ArkasrForConditionalGeneration(nn.Module):
                     mel_lengths, device=device, dtype=torch.long
                 ).unsqueeze(1)
             encoded = self.audio_encoder(batched, attention_mask=encoder_mask)
+        else:
+            pass
         outputs = []
         for batch_index, mel_length in enumerate(mel_lengths):
             num_tokens = arkasr_num_audio_tokens(
@@ -182,7 +217,7 @@ class ArkasrForConditionalGeneration(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> torch.Tensor:
         return general_mm_embed_routine(
             input_ids=input_ids,
@@ -206,8 +241,12 @@ class ArkasrForConditionalGeneration(nn.Module):
         for name, loaded_weight in weights:
             if "rotary_emb.inv_freq" in name:
                 continue
+            else:
+                pass
             if tie and "lm_head.weight" in name:
                 continue
+            else:
+                pass
 
             # checkpoint layout:
             #   audio_encoder.whisper.*   audio_encoder.layer_norm.*  audio_encoder.adapting.*
@@ -218,38 +257,58 @@ class ArkasrForConditionalGeneration(nn.Module):
                     name = "language_model." + name
                 elif name.startswith("lm_head."):
                     name = "language_model." + name
+                else:
+                    pass
+            else:
+                pass
 
             if is_audio:
                 # audio tower params load directly (no qkv stacking: q/k/v are separate
                 # Linear layers in WhisperRoPESdpaAttention, matching the checkpoint)
                 if name.endswith(".bias") and name not in params_dict:
                     continue
+                else:
+                    pass
                 if name not in params_dict:
                     logger.debug("arkasr: skip unmatched audio weight %s", name)
                     continue
+                else:
+                    pass
                 param = params_dict[name]
                 getattr(param, "weight_loader", default_weight_loader)(
                     param, loaded_weight
                 )
                 continue
+            else:
+                pass
 
             for param_name, weight_name, shard_id in llm_stacked_params:
                 if weight_name not in name:
                     continue
+                else:
+                    pass
                 mapped = name.replace(weight_name, param_name)
                 if mapped.endswith(".bias") and mapped not in params_dict:
                     continue
+                else:
+                    pass
                 if mapped not in params_dict:
                     continue
+                else:
+                    pass
                 param = params_dict[mapped]
                 param.weight_loader(param, loaded_weight, shard_id)
                 break
             else:
                 if name.endswith(".bias") and name not in params_dict:
                     continue
+                else:
+                    pass
                 if name not in params_dict:
                     logger.debug("arkasr: skip unmatched llm weight %s", name)
                     continue
+                else:
+                    pass
                 param = params_dict[name]
                 getattr(param, "weight_loader", default_weight_loader)(
                     param, loaded_weight

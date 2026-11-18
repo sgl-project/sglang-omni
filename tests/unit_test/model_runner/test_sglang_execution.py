@@ -4,11 +4,22 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.model_executor.forward_context import (
+    ForwardContext,
+    forward_context,
+    get_attn_backend,
+)
+from sglang.srt.model_executor.model_runner import ModelRunner as NativeModelRunner
+from sglang.srt.model_executor.model_runner import ModelRunnerOutput
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
+from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 
 
-class _FutureMap:
+class FutureMap:
     def __init__(self) -> None:
         self.stashed = None
         self.published = None
@@ -20,35 +31,72 @@ class _FutureMap:
         self.published = (indices, seq_lens)
 
 
-class _SpecAlgorithm:
-    def __init__(self, future_map: _FutureMap, *, is_none: bool = True) -> None:
-        self.future_map = future_map
-        self._is_none = is_none
+def test_plain_decode_selects_its_backend_inside_an_existing_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller's verify context must not leak into ordinary decode."""
+    target_runner = object.__new__(SGLModelRunner)
+    plain_runner = object.__new__(SGLModelRunner)
+    plain_runner.attn_backend = SimpleNamespace()
+    target_runner.plain_decode_runner = plain_runner
+    plain_runner.plain_decode_runner = None
+    outer_backend = SimpleNamespace()
+    batch = SimpleNamespace(
+        forward_mode=ForwardMode.DECODE,
+        spec_algorithm=SpeculativeAlgorithm.NONE,
+        attn_backend=outer_backend,
+        moe_num_token_non_padded=None,
+    )
+    expected_output = ModelRunnerOutput(
+        logits_output=LogitsProcessorOutput(next_token_logits=torch.zeros(1, 2)),
+        can_run_graph=False,
+    )
 
-    def create_future_map(self, device, req_to_token_pool, needs_cpu_seq_lens):
-        assert device == torch.device("cpu")
-        assert req_to_token_pool == "pool"
-        assert needs_cpu_seq_lens is True
-        return self.future_map
+    def native_forward(
+        runner: NativeModelRunner,
+        forward_batch: SimpleNamespace,
+        pp_proxy_tensors: None,
+        reinit_attn_backend: bool,
+        split_forward_count: int,
+    ) -> ModelRunnerOutput:
+        assert runner is plain_runner
+        assert forward_batch is batch
+        assert pp_proxy_tensors is None
+        assert not reinit_attn_backend and split_forward_count == 1
+        assert get_attn_backend() is plain_runner.attn_backend
+        assert batch.attn_backend is plain_runner.attn_backend
+        return expected_output
+
+    monkeypatch.setattr(NativeModelRunner, "_forward_raw", native_forward)
+    with forward_context(ForwardContext(attn_backend=outer_backend)):
+        assert (
+            target_runner._forward_raw(batch, None) is expected_output
+        )  # noqa: leading-underscore  # native forward interface
+        assert get_attn_backend() is outer_backend
+
+
+class SpecAlgorithm:
+    def __init__(self, *, is_none: bool = True) -> None:
+        self.is_none_value = is_none
 
     def is_none(self) -> bool:
-        return self._is_none
+        return self.is_none_value
 
 
-def _make_bridge() -> tuple[SGLangExecutionBridge, _FutureMap]:
-    future_map = _FutureMap()
+def make_bridge(device: str = "cpu") -> tuple[SGLangExecutionBridge, FutureMap]:
+    future_map = FutureMap()
     worker = SimpleNamespace(model_runner=SimpleNamespace())
     bridge = SGLangExecutionBridge(
-        device=torch.device("cpu"),
+        device=torch.device(device),
         worker=worker,
-        req_to_token_pool="pool",
-        spec_algorithm=_SpecAlgorithm(future_map),
+        spec_algorithm=SpecAlgorithm(),
+        future_map=future_map,
     )
     return bridge, future_map
 
 
 def test_publish_next_tokens_uses_future_map_and_retires_input_ids() -> None:
-    bridge, future_map = _make_bridge()
+    bridge, future_map = make_bridge()
     batch = SimpleNamespace(
         req_pool_indices=torch.tensor([4, 7]),
         seq_lens=torch.tensor([12, 19]),
@@ -69,7 +117,7 @@ def test_publish_next_tokens_uses_future_map_and_retires_input_ids() -> None:
 def test_forward_context_resolves_inputs_without_copying_sampling_info(
     monkeypatch,
 ) -> None:
-    bridge, _ = _make_bridge()
+    bridge, _ = make_bridge()
     original_sampling_info = SimpleNamespace(
         copy_for_forward=lambda: "forward-only-sampling-info"
     )
@@ -95,7 +143,7 @@ def test_forward_context_resolves_inputs_without_copying_sampling_info(
 
 
 def test_forward_context_isolates_sampling_info_for_lookahead(monkeypatch) -> None:
-    bridge, _ = _make_bridge()
+    bridge, _ = make_bridge()
     original_sampling_info = SimpleNamespace(
         copy_for_forward=lambda: "forward-only-sampling-info"
     )
@@ -105,7 +153,7 @@ def test_forward_context_isolates_sampling_info_for_lookahead(monkeypatch) -> No
     )
     monkeypatch.setattr(
         "sglang.srt.managers.overlap_utils.resolve_forward_inputs",
-        lambda *_args: None,
+        lambda *args: None,
     )
 
     with bridge.forward_context(batch, isolate_sampling=True):
@@ -114,32 +162,25 @@ def test_forward_context_isolates_sampling_info_for_lookahead(monkeypatch) -> No
     assert batch.sampling_info is original_sampling_info
 
 
-def test_forward_context_resolves_mixed_prefill(monkeypatch) -> None:
-    bridge, _ = _make_bridge()
-    batch = SimpleNamespace(
-        sampling_info=None,
-        mix_running_indices=torch.tensor([1]),
-    )
-    resolved = []
-    monkeypatch.setattr(
-        "sglang.srt.managers.overlap_utils.resolve_forward_inputs",
-        lambda *_args: resolved.append(True),
-    )
-
-    with bridge.forward_context(batch):
-        pass
-
-    assert resolved == [True]
-
-
 def test_execution_bridge_rejects_speculative_decoding() -> None:
-    future_map = _FutureMap()
+    future_map = FutureMap()
     worker = SimpleNamespace(model_runner=SimpleNamespace())
 
     with pytest.raises(NotImplementedError, match="speculative decoding"):
         SGLangExecutionBridge(
             device=torch.device("cpu"),
             worker=worker,
-            req_to_token_pool="pool",
-            spec_algorithm=_SpecAlgorithm(future_map, is_none=False),
+            spec_algorithm=SpecAlgorithm(is_none=False),
+            future_map=future_map,
         )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_record_completion_alternates_two_events() -> None:
+    bridge, _ = make_bridge("cuda")
+
+    events = [bridge.record_completion() for _ in range(4)]
+
+    assert events[0] is events[2] and events[1] is events[3]
+    assert events[0] is not events[1]

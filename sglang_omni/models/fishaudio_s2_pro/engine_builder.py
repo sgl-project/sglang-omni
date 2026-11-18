@@ -5,14 +5,34 @@ from __future__ import annotations
 
 import importlib
 import os
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
+from sglang.srt.server_args import ServerArgs
+from transformers import PreTrainedTokenizerFast
+
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
+from sglang_omni.platforms import current_platform
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.engine_factory import (
+    GenerationDefaults,
+    SchedulerExtras,
+    TtsEngineBuilder,
+)
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.vendor.sglang.server_args import override_server_args
 from sglang_omni.vendor.sglang.utils import is_flashinfer_available
+
+if TYPE_CHECKING:
+
+    from sglang_omni.models.fishaudio_s2_pro.model_runner import FishS2ProModelRunner
+    from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
+else:
+    pass
 
 _VALIDATED_AUTO_ATTENTION_BACKENDS = {
     89: "flashinfer",
@@ -22,13 +42,25 @@ _VALIDATED_AUTO_ATTENTION_BACKENDS = {
 }
 
 
-def _resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
+def resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
+    if current_platform.is_npu():
+        # Ascend NPU uses the built-in "ascend" attention backend.
+        return "ascend"
+    else:
+        pass
+    if current_platform.is_musa():
+        return "fa3"
+    else:
+        pass
+
     sm_version = get_visible_gpu_sm_version(gpu_id)
     if sm_version is None:
         raise RuntimeError(
             "FishAudio S2-Pro cannot validate Fast-AR attention because "
             f"CUDA compute capability for gpu_id={gpu_id} could not be detected."
         )
+    else:
+        pass
 
     backend = _VALIDATED_AUTO_ATTENTION_BACKENDS.get(sm_version)
     if backend is None:
@@ -37,6 +69,8 @@ def _resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
             "supported architectures are SM89, SM90, SM100, and SM120. "
             "A Slow-AR attention_backend override cannot bypass this requirement."
         )
+    else:
+        pass
 
     if backend == "flashinfer" and not is_flashinfer_available():
         raise RuntimeError(
@@ -45,10 +79,12 @@ def _resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
             "SGLANG_IS_FLASHINFER_AVAILABLE is not false; a Slow-AR "
             "attention_backend override cannot bypass this requirement."
         )
+    else:
+        pass
     return backend
 
 
-class FishS2ProEngineBuilder(TtsEngineBuilder):
+class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangRequestData]):
     model_name = "FishAudio S2-Pro"
     context_length = 4096
 
@@ -57,11 +93,13 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         *,
         max_new_tokens: int,
         ras_window: int,
+        enable_async_decode: bool = False,
     ) -> None:
         self.max_new_tokens = max_new_tokens
         self.ras_window = ras_window
-        self.adapter: Any | None = None
-        self.tokenizer: Any | None = None
+        self.enable_async_decode = enable_async_decode
+        self.adapter: S2ProTokenizerAdapter | None = None
+        self.tokenizer: PreTrainedTokenizerFast | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
@@ -73,8 +111,25 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         self,
         *,
         dtype: str,
-    ) -> dict[str, Any]:
+    ) -> GenerationDefaults:
         del dtype
+        if current_platform.is_npu():
+            # NPU graph decode avoids the ascend backend's eager concurrent-
+            # decode content corruption. Limit concurrency to the validated NPU
+            # level and lower mem_fraction for prefill headroom.
+            return {
+                "max_running_requests": 16,
+                "disable_cuda_graph": False,
+                "cuda_graph_backend_decode": "full",
+                "mem_fraction_static": 0.75,
+                "chunked_prefill_size": 8192,
+                "dtype": "bfloat16",
+                "enable_torch_compile": False,
+                "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
+            }
+        else:
+            pass
+
         sm_version = get_visible_gpu_sm_version(self.gpu_id)
         return {
             "max_running_requests": 64,
@@ -88,13 +143,21 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
         }
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        fast_ar_backend = _resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        fast_ar_backend = resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
         if overrides.get("attention_backend") is None:
             overrides["attention_backend"] = fast_ar_backend
+        else:
+            pass
+        if current_platform.is_npu():
+            # Bound decode graph buckets to avoid OOM on 64 GB cards.
+            overrides["cuda_graph_bs"] = [1, 2, 4, 8, 16]
+            overrides["cuda_graph_max_bs"] = 16
+        else:
+            pass
 
-    def customize_server_args(self, server_args: Any) -> None:
-        updates: dict[str, Any] = {"disable_overlap_schedule": True}
+    def customize_server_args(self, server_args: ServerArgs) -> None:
+        updates: dict[str, bool] = {"disable_overlap_schedule": True}
         override_server_args(
             server_args,
             "sglang_omni.fishaudio_s2_pro.runtime_defaults",
@@ -104,13 +167,15 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: ServerArgs,
     ) -> None:
         del gpu_id
+        from sglang.srt.runtime_context import get_schedule
+
         from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap
         from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
 
@@ -130,44 +195,65 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             semantic_begin_id=self.adapter.semantic_begin_id,
             semantic_end_id=self.adapter.semantic_end_id,
             im_end_token_id=self.adapter.eos_token_ids[0],
-            max_batch_size=server_args.max_running_requests,
+            max_batch_size=get_schedule().max_running_requests,
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
             ras_window=self.ras_window,
         )
+        model.async_decode_state_enabled = self.enable_async_decode
 
-    def get_model_buffer_bs(self, model: Any) -> int | None:
-        return fish_stages._resolve_s2pro_model_buffer_bs(model)
+    def get_model_buffer_bs(self, model: S2ProSGLangTextModel) -> int:
+        return fish_stages.resolve_s2pro_model_buffer_bs(model)
 
-    def compile_model(self, model: Any, server_args: Any) -> None:
-        if bool(server_args.enable_torch_compile):
-            fish_stages._compile_s2pro_codebook_decoder(
+    def compile_model(
+        self, model: S2ProSGLangTextModel | None, server_args: ServerArgs
+    ) -> None:
+        from sglang.srt.runtime_context import get_exec
+
+        if bool(get_exec().graph.enable_torch_compile):
+            fish_stages.compile_s2pro_codebook_decoder(
                 model,
-                max_batch_size=server_args.torch_compile_max_bs,
+                max_batch_size=get_exec().graph.torch_compile_max_bs,
             )
             override_server_args(
                 server_args,
                 "sglang_omni.fishaudio_s2_pro.compile_complete",
                 enable_torch_compile=False,
             )
+        else:
+            pass
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> FishS2ProModelRunner:
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.fishaudio_s2_pro.model_runner"
         )
 
         return model_runner_mod.FishS2ProModelRunner(model_worker, output_proc)
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: object) -> tuple[
+        Callable[[StagePayload], request_builders.S2ProSGLangRequestData],
+        Callable[[request_builders.S2ProSGLangRequestData], StagePayload],
+    ]:
         del model
-        request_builder, result_adapter, self._stream_output_builder = (
+        request_builder, result_adapter, self.stream_output_builder = (
             request_builders.make_tts_scheduler_adapters(
                 tokenizer=self.tokenizer,
                 max_new_tokens_cap=self.max_new_tokens,
                 context_length=self.context_length,
+                im_end_token_id=self.adapter.eos_token_ids[0],
             )
         )
         return request_builder, result_adapter
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
-        return {"stream_output_builder": self._stream_output_builder}
+    def extra_scheduler_kwargs(
+        self,
+    ) -> SchedulerExtras[request_builders.S2ProSGLangRequestData]:
+        return {
+            "stream_output_builder": self.stream_output_builder,
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_resolve_before_prefill": True,
+        }

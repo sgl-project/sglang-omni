@@ -1,0 +1,467 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Shared fixed-slot AudioVAE streaming scheduler."""
+
+from __future__ import annotations
+
+import logging
+import threading
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Protocol
+
+import torch
+
+from sglang_omni.modules.ming_audio.audio_decode import MingAudioDecoder
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
+
+logger = logging.getLogger(__name__)
+
+
+class FullDecode(Protocol):
+    def __call__(self, payload: StagePayload) -> StagePayload:
+        raise NotImplementedError
+
+
+class AudioVAEStreamingSlotBindings:
+    def __init__(
+        self,
+        decoder: MingAudioDecoder,
+    ) -> None:
+        self.decoder = decoder
+        self.request_to_slot: dict[str, int] = {}
+        self.free_slots = list(reversed(range(decoder.stream_capacity)))
+
+    def try_bind(self, request_id: str) -> int | None:
+        slot = self.request_to_slot.get(request_id)
+        if slot is not None:
+            return slot
+        else:
+            pass
+        if not self.free_slots:
+            return None
+        else:
+            pass
+        slot = self.free_slots.pop()
+        self.request_to_slot[request_id] = slot
+        return slot
+
+    def slot_for(self, request_id: str) -> int | None:
+        return self.request_to_slot.get(request_id)
+
+    def resolve_slots(self, request_ids: Sequence[str]) -> tuple[int, ...]:
+        slots = []
+        for request_id in request_ids:
+            slot = self.request_to_slot.get(request_id)
+            if slot is None:
+                raise RuntimeError(
+                    f"AudioVAE stream {request_id!r} has no AudioVAE slot"
+                )
+            else:
+                pass
+            slots.append(slot)
+        return tuple(slots)
+
+    def reset_and_release(self, request_ids: Sequence[str]) -> None:
+        bindings = {
+            request_id: self.request_to_slot[request_id]
+            for request_id in request_ids
+            if request_id in self.request_to_slot
+        }
+        if not bindings:
+            return
+        else:
+            pass
+
+        slots = tuple(bindings.values())
+        try:
+            self.decoder.reset_stream_rows(slots)
+        finally:
+            for request_id in bindings:
+                del self.request_to_slot[request_id]
+
+        for slot in bindings.values():
+            self.free_slots.append(slot)
+
+    def release_clean(self, request_ids: Sequence[str]) -> None:
+        slots = self.resolve_slots(request_ids)
+        for request_id, slot in zip(request_ids, slots, strict=True):
+            del self.request_to_slot[request_id]
+            self.free_slots.append(slot)
+
+    def reset_all(self) -> None:
+        self.decoder.reset_all_stream_rows()
+        self.request_to_slot.clear()
+        self.free_slots = list(reversed(range(self.decoder.stream_capacity)))
+
+
+@dataclass(slots=True)
+class StreamState:
+    expected_chunk_id: int = 0
+    pending_patches: list[torch.Tensor] = field(default_factory=list)
+    terminal_received: bool = False
+    initial_group_consumed: bool = False
+    emitted_samples: int = 0
+    terminal_committed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class StreamingStepItem:
+    patches: tuple[torch.Tensor, ...]
+    terminal: bool
+
+
+_StreamingStepPlan = tuple[StreamingStepItem, ...]
+
+
+class AudioVAEStreamingVocoder(StreamingVocoderBase[StreamState, _StreamingStepPlan]):
+    can_batch_stream_chunks = True
+
+    def __init__(
+        self,
+        decoder: MingAudioDecoder,
+        *,
+        patch_size: int,
+        latent_dim: int,
+        initial_chunk_patches: int,
+        steady_chunk_patches: int,
+        compute: FullDecode,
+        source_hint: str,
+    ) -> None:
+        self.decoder = decoder
+        self.slot_bindings = AudioVAEStreamingSlotBindings(decoder)
+        self.stream_chunk_batch_max = decoder.stream_capacity
+        self.patch_size = int(patch_size)
+        self.latent_dim = int(latent_dim)
+        self.initial_chunk_patches = int(initial_chunk_patches)
+        self.steady_chunk_patches = int(steady_chunk_patches)
+        self.pending_release_ids: set[str] = set()
+        self.stop_requested = threading.Event()
+        self.serving_stopped = False
+        super().__init__(
+            compute,
+            sample_rate=decoder.sample_rate,
+            stream_source_hint=source_hint,
+            stream_input_modality="audio_latents",
+        )
+
+    def stop(self) -> None:
+        self.stop_requested.set()
+        super().stop()
+
+    def next_message(self) -> IncomingMessage | None:
+        if self.stop_requested.is_set():
+            self.running = False
+            return None
+        else:
+            pass
+        msg = super().next_message()
+        if self.stop_requested.is_set():
+            self.running = False
+            return None
+        else:
+            pass
+        return msg
+
+    def create_stream_state(self, request_id: str) -> StreamState:
+        del request_id
+        return StreamState()
+
+    def ingest_stream_item(
+        self,
+        request_id: str,
+        item: StreamItem,
+    ) -> StreamState | None:
+        state = self.get_or_create_stream_state(request_id)
+        if state is None:
+            return None
+        else:
+            pass
+        metadata = item.metadata
+        if not isinstance(metadata, dict):
+            raise TypeError(
+                f"AudioVAE stream chunk for {request_id!r} must include " "metadata"
+            )
+        else:
+            pass
+        if item.chunk_id != state.expected_chunk_id:
+            raise ValueError(
+                f"AudioVAE stream chunk for {request_id!r} has "
+                f"chunk_id={item.chunk_id}, expected {state.expected_chunk_id}"
+            )
+        else:
+            pass
+        if state.terminal_received:
+            raise ValueError(
+                f"AudioVAE stream chunk arrived after the terminal patch "
+                f"for {request_id!r}"
+            )
+        else:
+            pass
+        is_last = metadata.get("is_last")
+        if not isinstance(is_last, bool):
+            raise TypeError(
+                f"AudioVAE stream chunk for {request_id!r} must include "
+                "boolean metadata['is_last']"
+            )
+        else:
+            pass
+        super().ingest_stream_item(request_id, item)
+        state.expected_chunk_id += 1
+        if is_last:
+            state.terminal_received = True
+        else:
+            pass
+        return state
+
+    def validate_chunk(
+        self,
+        request_id: str,
+        state: StreamState,
+        latents: torch.Tensor,
+    ) -> torch.Tensor:
+        del request_id, state
+        if latents.device.type != "cpu":
+            raise ValueError(
+                "AudioVAE stream latent must be on CPU, " f"got device {latents.device}"
+            )
+        else:
+            pass
+        if latents.dtype != torch.float32:
+            raise TypeError(
+                "AudioVAE stream latent dtype must be torch.float32, "
+                f"got {latents.dtype}"
+            )
+        else:
+            pass
+        expected_shape = (self.patch_size, self.latent_dim)
+        if tuple(latents.shape) != expected_shape:
+            raise ValueError(
+                f"AudioVAE stream latent shape must be {expected_shape}, "
+                f"got {tuple(latents.shape)}"
+            )
+        else:
+            pass
+        return latents.contiguous()
+
+    def ingest(
+        self,
+        request_id: str,
+        state: StreamState,
+        latents: torch.Tensor,
+    ) -> None:
+        del request_id
+        state.pending_patches.append(latents)
+
+    def has_executable_work(self, state: StreamState) -> bool:
+        if state.terminal_committed:
+            return False
+        else:
+            pass
+        if state.terminal_received:
+            return bool(state.pending_patches)
+        else:
+            pass
+        return len(state.pending_patches) >= self.next_chunk_patches(state)
+
+    def next_chunk_patches(self, state: StreamState) -> int:
+        if state.initial_group_consumed:
+            return self.steady_chunk_patches
+        else:
+            pass
+        return self.initial_chunk_patches
+
+    def select_step_participants(self) -> list[tuple[str, StreamState]]:
+        # Note (yzxiao): External abort only marks a binding dirty; the scheduler
+        # thread resets its CUDA row before that slot can be reused.
+        self.drain_pending_releases()
+        participants = []
+        for request_id, state in self.stream_state_items():
+            if self.is_aborted(request_id) or not self.has_executable_work(state):
+                continue
+            else:
+                pass
+            if self.slot_bindings.try_bind(request_id) is None:
+                continue
+            else:
+                pass
+            participants.append((request_id, state))
+        return participants
+
+    def build_step_plan(
+        self,
+        participants: list[tuple[str, StreamState]],
+    ) -> _StreamingStepPlan:
+        plan = []
+        for _, state in participants:
+            pending_count = len(state.pending_patches)
+            target = self.next_chunk_patches(state)
+            if state.terminal_received:
+                consume = min(target, pending_count)
+                terminal = pending_count <= target
+            else:
+                consume = target
+                terminal = False
+            plan.append(
+                StreamingStepItem(
+                    patches=tuple(state.pending_patches[:consume]),
+                    terminal=terminal,
+                )
+            )
+        return tuple(plan)
+
+    def run_step(
+        self,
+        participants: list[tuple[str, StreamState]],
+        plan: _StreamingStepPlan,
+    ) -> dict[str, torch.Tensor]:
+        request_ids = tuple(request_id for request_id, _ in participants)
+        slot_ids = self.slot_bindings.resolve_slots(request_ids)
+        # Note (yzxiao): The decoder returns owned CPU waveforms all-or-error, so
+        # request progress is committed only after it succeeds. Terminal transitions
+        # already clean their rows and need no second reset.
+        waveforms = self.decoder.run_streaming(
+            slot_ids=slot_ids,
+            patch_groups=tuple(item.patches for item in plan),
+            terminal_flags=tuple(item.terminal for item in plan),
+        )
+        step_results = tuple(zip(participants, plan, waveforms, strict=True))
+        for (_, state), item, waveform in step_results:
+            del state.pending_patches[: len(item.patches)]
+            if item.terminal:
+                state.terminal_committed = True
+            elif not state.initial_group_consumed:
+                state.initial_group_consumed = True
+            else:
+                pass
+            state.emitted_samples += int(waveform.numel())
+
+        terminal_request_ids = tuple(
+            request_id for (request_id, _), item, _ in step_results if item.terminal
+        )
+        if terminal_request_ids:
+            self.slot_bindings.release_clean(terminal_request_ids)
+        else:
+            pass
+
+        return {
+            request_id: waveform
+            for (request_id, _), _, waveform in step_results
+            if waveform.numel() > 0
+        }
+
+    def on_step_failure(
+        self,
+        participants: list[tuple[str, StreamState]],
+        exc: BaseException,
+    ) -> list[str]:
+        failed = super().on_step_failure(participants, exc)
+        self.drain_pending_releases()
+        return failed
+
+    def decode_delta(
+        self,
+        request_id: str,
+        state: StreamState,
+        *,
+        is_final: bool,
+    ) -> torch.Tensor | None:
+        del is_final
+        if not state.terminal_received:
+            raise RuntimeError(
+                f"AudioVAE stream {request_id!r} ended without a "
+                "terminal latent patch"
+            )
+        else:
+            pass
+        if not state.terminal_committed:
+            if self.slot_bindings.slot_for(request_id) is None:
+                return None
+            else:
+                pass
+            raise RuntimeError(
+                f"AudioVAE stream {request_id!r} ended before its terminal "
+                "AudioVAE transition completed"
+            )
+        else:
+            pass
+        if state.emitted_samples <= 0:
+            raise RuntimeError(
+                f"AudioVAE stream {request_id!r} completed without audio"
+            )
+        else:
+            pass
+        return None
+
+    def fallback_full_decode(
+        self,
+        request_id: str,
+        payload: StagePayload,
+        state: StreamState,
+    ) -> torch.Tensor:
+        del payload
+        latents = torch.stack(state.pending_patches, dim=0)
+        waveform = self.decoder.decode_full(latents)
+        sample_count = int(waveform.numel())
+        if sample_count == 0:
+            raise RuntimeError(
+                f"AudioVAE stream {request_id!r} completed without audio"
+            )
+        else:
+            pass
+        state.emitted_samples = sample_count
+        return waveform
+
+    def drain_pending_releases(self) -> None:
+        pending = tuple(self.pending_release_ids)
+        if not pending:
+            return
+        else:
+            pass
+        try:
+            self.slot_bindings.reset_and_release(pending)
+        except Exception:
+            logger.exception(
+                "AudioVAE failed to reset rows; their slots " "will remain unavailable"
+            )
+        finally:
+            self.pending_release_ids.difference_update(pending)
+
+    def release_stream_resources(
+        self,
+        request_id: str,
+        state: StreamState,
+    ) -> None:
+        del state
+        if self.slot_bindings.slot_for(request_id) is None:
+            return
+        else:
+            pass
+        self.pending_release_ids.add(request_id)
+
+    def warmup_now(self) -> None:
+        self.decoder.prepare_streaming()
+
+    def on_serving_start(self) -> None:
+        if self.stop_requested.is_set():
+            return
+        else:
+            pass
+        if not self.decoder.streaming_ready:
+            raise RuntimeError("AudioVAE streaming backend is not prepared")
+        else:
+            pass
+
+    def on_serving_stop(self) -> None:
+        if self.serving_stopped:
+            return
+        else:
+            pass
+        self.serving_stopped = True
+        try:
+            self.slot_bindings.reset_all()
+        finally:
+            self.pending_release_ids.clear()
+            self.decoder.close()

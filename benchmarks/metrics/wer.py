@@ -35,6 +35,7 @@ class SampleOutput:
     asr_latency_s: float = 0.0
     is_success: bool = False
     error: str = ""
+    is_transcribed: bool = False
 
 
 def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
@@ -53,6 +54,7 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
             "wer_per_sample_p95": 0.0,
             "wer_per_sample_max": 0.0,
             "wer_below_50_corpus": 0.0,
+            "wer_below_50_per_sample_mean": 0.0,
             "n_above_50_pct_wer": 0,
             "pct_above_50_pct_wer": 0.0,
             "latency_mean_s": 0.0,
@@ -99,6 +101,9 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
         "wer_per_sample_p95": float(np.percentile(wer_arr, 95)),
         "wer_per_sample_max": float(np.max(wer_arr)),
         "wer_below_50_corpus": float(wer_below_50_micro),
+        "wer_below_50_per_sample_mean": (
+            float(np.mean([o.wer for o in ok_samples])) if ok_samples else 0.0
+        ),
         "n_above_50_pct_wer": n_above_50,
         "pct_above_50_pct_wer": (n_above_50 / len(successes) * 100 if successes else 0),
         "latency_mean_s": float(np.mean(latency_arr)),
@@ -184,6 +189,11 @@ def _print_wer_summary_table(
         f"({_metric_value(metrics, 'wer_below_50_corpus') * 100:.2f}%)"
     )
     print(
+        f"  {'WER mean (excl >50%):':<{lw}} "
+        f"{_metric_value(metrics, 'wer_below_50_per_sample_mean'):.4f} "
+        f"({_metric_value(metrics, 'wer_below_50_per_sample_mean') * 100:.2f}%)"
+    )
+    print(
         f"  {'>50% WER samples:':<{lw}} "
         f"{metrics.get('n_above_50_pct_wer', 0)} "
         f"({metrics.get('pct_above_50_pct_wer', 0):.1f}%)"
@@ -242,12 +252,15 @@ def calculate_asr_speed_metrics(
     wall_time_s: float | None = None,
 ) -> dict:
     """Compute speed metrics for the ASR transcription phase."""
-    successes = [o for o in outputs if o.is_success and o.asr_latency_s > 0]
+    transcribed = [output for output in outputs if output.is_transcribed]
+    successes = [output for output in transcribed if output.asr_latency_s > 0]
+    failed_requests = len(outputs) - len(transcribed)
     if not successes:
         return {
             "total_samples": len(outputs),
             "evaluated": 0,
             "skipped": len(outputs),
+            "failed_requests": failed_requests,
             "asr_latency_mean_s": 0.0,
             "asr_latency_median_s": 0.0,
             "asr_latency_p95_s": 0.0,
@@ -281,6 +294,7 @@ def calculate_asr_speed_metrics(
         "total_samples": len(outputs),
         "evaluated": len(successes),
         "skipped": len(outputs) - len(successes),
+        "failed_requests": failed_requests,
         "asr_latency_mean_s": float(np.mean(latencies)),
         "asr_latency_median_s": float(np.median(latencies)),
         "asr_latency_p95_s": float(np.percentile(latencies, 95)),

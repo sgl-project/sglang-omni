@@ -30,20 +30,24 @@ FISH_BATCH_INVARIANT = os.getenv("FISH_BATCH_INVARIANT", "false").lower() in (
 
 
 @cache
-def _fast_ar_uses_fa3(device_index: int) -> bool:
+def fast_ar_uses_fa3(device_index: int) -> bool:
     major, minor = torch.cuda.get_device_capability(device_index)
     sm_version = major * 10 + minor
     if sm_version == 90:
         return True
+    else:
+        pass
     if sm_version in (89, 100, 120):
         return False
+    else:
+        pass
     raise RuntimeError(
         f"FishAudio S2-Pro Fast-AR does not support SM{sm_version}; "
         "supported architectures: SM89, SM90, SM100, SM120."
     )
 
 
-def _flashinfer_kvcache_attention(
+def flashinfer_kvcache_attention(
     *,
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -55,11 +59,17 @@ def _flashinfer_kvcache_attention(
 ) -> torch.Tensor:
     if k is None or v is None:
         raise ValueError("FlashInfer Fast-AR attention requires k and v")
+    else:
+        pass
     if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
         raise ValueError("Fast-AR q, k, and v batch sizes must match")
+    else:
+        pass
 
     if cache_position < 0:
         raise ValueError("FlashInfer Fast-AR attention requires cache_position")
+    else:
+        pass
 
     cache_end = cache_position + int(k.shape[1])
     k_cache[:, cache_position:cache_end].copy_(k)
@@ -81,6 +91,128 @@ def _flashinfer_kvcache_attention(
     return torch.stack(outputs, dim=0)
 
 
+def npu_kvcache_attention(
+    *,
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k: torch.Tensor | None,
+    v: torch.Tensor | None,
+    cache_position: int,
+) -> torch.Tensor:
+    """Run single-token Fast-AR attention with the Ascend fused kernel."""
+    if k is None or v is None:
+        raise ValueError("NPU Fast-AR attention requires k and v")
+    else:
+        pass
+    if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
+        raise ValueError("Fast-AR q, k, and v batch sizes must match")
+    else:
+        pass
+    if cache_position < 0:
+        raise ValueError("NPU Fast-AR attention requires cache_position")
+    else:
+        pass
+    if q.shape[1] != 1 or k.shape[1] != 1 or v.shape[1] != 1:
+        raise ValueError("NPU Fast-AR attention requires a single-token query/KV")
+    else:
+        pass
+
+    try:
+        fused_attention = torch.ops.npu.npu_fused_infer_attention_score
+    except AttributeError as exc:
+        raise RuntimeError(
+            "FishAudio S2-Pro on NPU requires "
+            "torch.ops.npu.npu_fused_infer_attention_score"
+        ) from exc
+
+    cache_end = cache_position + int(k.shape[1])
+    k_cache[:, cache_position:cache_end].copy_(k)
+    v_cache[:, cache_position:cache_end].copy_(v)
+
+    out, _ = fused_attention(
+        q.contiguous(),
+        k_cache[:, :cache_end].contiguous(),
+        v_cache[:, :cache_end].contiguous(),
+        num_heads=q.shape[2],
+        num_key_value_heads=k_cache.shape[2],
+        input_layout="BSND",
+        scale=1.0 / math.sqrt(q.shape[-1]),
+    )
+    return out
+
+
+def cuda_kvcache_attention(
+    *,
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k: torch.Tensor | None,
+    v: torch.Tensor | None,
+    cache_seqlens: torch.Tensor | None,
+    causal: bool,
+    num_splits: int,
+    cache_position: int,
+) -> torch.Tensor:
+    """Dispatch Fast-AR attention to the validated CUDA backend."""
+    device_index = q.device.index
+    if device_index is None:
+        raise RuntimeError("FishAudio S2-Pro Fast-AR requires an indexed CUDA device")
+    else:
+        pass
+    if fast_ar_uses_fa3(device_index):
+        from sgl_kernel.flash_attn import flash_attn_with_kvcache
+
+        return flash_attn_with_kvcache(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            k=k,
+            v=v,
+            cache_seqlens=cache_seqlens,
+            causal=causal,
+            num_splits=num_splits,
+        )
+    else:
+        pass
+    return flashinfer_kvcache_attention(
+        q=q,
+        k_cache=k_cache,
+        v_cache=v_cache,
+        k=k,
+        v=v,
+        causal=causal,
+        cache_position=cache_position,
+    )
+
+
+def musa_kvcache_attention(
+    *,
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k: torch.Tensor | None,
+    v: torch.Tensor | None,
+    cache_seqlens: torch.Tensor | None,
+    causal: bool,
+    num_splits: int,
+    cache_position: int,
+) -> torch.Tensor:
+    """Run Fast-AR attention with MATE's FA3 implementation on MUSA."""
+    from flash_attn_interface import flash_attn_with_kvcache
+
+    return flash_attn_with_kvcache(
+        q=q,
+        k_cache=k_cache,
+        v_cache=v_cache,
+        k=k,
+        v=v,
+        cache_seqlens=cache_seqlens,
+        causal=causal,
+        num_splits=num_splits,
+    )
+
+
 @torch.library.custom_op(
     "mylib::flash_attn_kvcache", mutates_args=("k_cache", "v_cache")
 )
@@ -95,12 +227,18 @@ def flash_attn_kvcache_op(
     num_splits: int = 0,
     cache_position: int = -1,
 ) -> torch.Tensor:
-    if q.device.type != "cuda" or q.device.index is None:
-        raise RuntimeError("FishAudio S2-Pro Fast-AR attention requires CUDA")
-    if _fast_ar_uses_fa3(q.device.index):
-        from sgl_kernel.flash_attn import flash_attn_with_kvcache
-
-        return flash_attn_with_kvcache(
+    device_type = q.device.type
+    if device_type == "npu":
+        output = npu_kvcache_attention(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            k=k,
+            v=v,
+            cache_position=cache_position,
+        )
+    elif device_type == "musa":
+        output = musa_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -111,16 +249,28 @@ def flash_attn_kvcache_op(
             ),
             causal=causal,
             num_splits=num_splits,
+            cache_position=cache_position,
         )
-    return _flashinfer_kvcache_attention(
-        q=q,
-        k_cache=k_cache,
-        v_cache=v_cache,
-        k=k,
-        v=v,
-        causal=causal,
-        cache_position=cache_position,
-    )
+    elif device_type == "cuda":
+        output = cuda_kvcache_attention(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            k=k,
+            v=v,
+            cache_seqlens=(
+                cache_seqlens.contiguous() if cache_seqlens is not None else None
+            ),
+            causal=causal,
+            num_splits=num_splits,
+            cache_position=cache_position,
+        )
+    else:
+        raise RuntimeError(
+            "FishAudio S2-Pro Fast-AR attention supports CUDA, NPU and MUSA, "
+            f"but got device type {device_type!r}"
+        )
+    return output
 
 
 @flash_attn_kvcache_op.register_fake
@@ -174,6 +324,8 @@ class Attention(nn.Module):
         if config.attention_qk_norm:
             self.q_norm = RMSNorm(config.head_dim, config.norm_eps)
             self.k_norm = RMSNorm(config.head_dim, config.norm_eps)
+        else:
+            pass
 
         self.n_head = config.n_head
         self.head_dim = config.head_dim
@@ -181,7 +333,9 @@ class Attention(nn.Module):
         self.attention_qk_norm = config.attention_qk_norm
         self.kv_cache: KVCache | None = None
 
-        self._register_load_state_dict_pre_hook(self.load_hook)
+        self._register_load_state_dict_pre_hook(
+            self.load_hook
+        )  # noqa: leading-underscore
 
     def load_hook(self, state_dict, prefix, *args):
         """Normalize legacy split-QKV checkpoints before strict loading."""
@@ -190,6 +344,8 @@ class Attention(nn.Module):
             wk = state_dict.pop(prefix + "wk.weight")
             wv = state_dict.pop(prefix + "wv.weight")
             state_dict[prefix + "wqkv.weight"] = torch.cat([wq, wk, wv])
+        else:
+            pass
 
     def forward_kvcached(
         self,
@@ -210,12 +366,16 @@ class Attention(nn.Module):
         if self.attention_qk_norm:
             q = self.q_norm(q)
             k = self.k_norm(k)
+        else:
+            pass
 
         q = apply_rotary_emb(q, freqs_cis)
         k = apply_rotary_emb(k, freqs_cis)
 
         if self.kv_cache is None:
             raise RuntimeError("Fast audio decoder KV cache is not initialized")
+        else:
+            pass
         k_cache, v_cache = self.kv_cache.get(bsz)
         y = flash_attn_kvcache_op(
             q=q,
@@ -316,13 +476,13 @@ class FishQwen3AudioDecoder(PreTrainedModel):
         self.layers = nn.ModuleList(
             [TransformerBlock(config) for _ in range(config.n_layer)]
         )
-        self._eager_forward_kvcached_layers: list[
+        self.eager_forward_kvcached_layers: list[
             Callable[[Tensor, Tensor, Tensor, int], Tensor]
         ] = [layer.forward_kvcached for layer in self.layers]
-        self._compiled_forward_kvcached_layers: (
+        self.compiled_forward_kvcached_layers: (
             list[Callable[[Tensor, Tensor, Tensor, int], Tensor]] | None
         ) = None
-        self._compiled_forward_kvcached_max_bs = 0
+        self.compiled_forward_kvcached_max_bs = 0
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
@@ -350,6 +510,8 @@ class FishQwen3AudioDecoder(PreTrainedModel):
         """Allocate persistent KV/input-position buffers for decode."""
         if self.max_batch_size >= max_batch_size:
             return
+        else:
+            pass
 
         self.max_batch_size = max_batch_size
         device = next(self.parameters()).device
@@ -373,9 +535,13 @@ class FishQwen3AudioDecoder(PreTrainedModel):
     def kv_cache_max_batch_size(self) -> int:
         if not self.layers:
             raise RuntimeError("Audio decoder layers are not initialized")
+        else:
+            pass
         kv_cache = self.layers[0].attention.kv_cache
         if kv_cache is None:
             raise RuntimeError("Audio decoder KV cache is not initialized")
+        else:
+            pass
         return int(kv_cache.k_cache.shape[0])
 
     def reset_caches(self) -> None:
@@ -384,6 +550,8 @@ class FishQwen3AudioDecoder(PreTrainedModel):
             if layer.attention.kv_cache is not None:
                 layer.attention.kv_cache.k_cache.zero_()
                 layer.attention.kv_cache.v_cache.zero_()
+            else:
+                pass
 
     def set_compiled_forward_kvcached_layers(
         self,
@@ -393,20 +561,26 @@ class FishQwen3AudioDecoder(PreTrainedModel):
     ) -> None:
         if max_batch_size < 1:
             raise ValueError("max_batch_size must be >= 1")
+        else:
+            pass
         if len(forward_kvcached_layers) != len(self.layers):
             raise ValueError("compiled layer count must match decoder layer count")
-        self._compiled_forward_kvcached_layers = forward_kvcached_layers
-        self._compiled_forward_kvcached_max_bs = max_batch_size
+        else:
+            pass
+        self.compiled_forward_kvcached_layers = forward_kvcached_layers
+        self.compiled_forward_kvcached_max_bs = max_batch_size
 
-    def _select_forward_kvcached_layers(
+    def select_forward_kvcached_layers(
         self, bsz: int
     ) -> list[Callable[[Tensor, Tensor, Tensor, int], Tensor]]:
         if (
-            self._compiled_forward_kvcached_layers is not None
-            and bsz <= self._compiled_forward_kvcached_max_bs
+            self.compiled_forward_kvcached_layers is not None
+            and bsz <= self.compiled_forward_kvcached_max_bs
         ):
-            return self._compiled_forward_kvcached_layers
-        return self._eager_forward_kvcached_layers
+            return self.compiled_forward_kvcached_layers
+        else:
+            pass
+        return self.eager_forward_kvcached_layers
 
     def forward_kvcached(self, x: Tensor, codebook_idx: int) -> Tensor:
         """Predict one residual codebook step with the persistent KV cache."""
@@ -415,7 +589,7 @@ class FishQwen3AudioDecoder(PreTrainedModel):
         freqs_cis = self.freqs_cis[self.input_pos]
         cache_seqlens = self.input_pos.expand(bsz).to(torch.int32)
 
-        for layer in self._select_forward_kvcached_layers(bsz):
+        for layer in self.select_forward_kvcached_layers(bsz):
             x = layer(x, freqs_cis, cache_seqlens, codebook_idx)
 
         return self.output(self.norm(x))
@@ -429,6 +603,8 @@ class FishQwen3AudioDecoder(PreTrainedModel):
         """Inject reference-code embeddings into Slow AR input embeddings."""
         if vq_parts is None or vq_mask_tokens is None:
             return x
+        else:
+            pass
 
         offset_parts = vq_parts + self.codebook_offsets[None, :]
         vq_embeds_sum = self.codebook_embeddings(offset_parts).sum(dim=1)

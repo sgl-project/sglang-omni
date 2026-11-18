@@ -1,0 +1,21 @@
+{
+  "name": "@egoist/mygo-cli-win32-x64",
+  "version": "0.5.5",
+  "description": "The Windows x64 binary of mygo-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/egoist/mygo.git",
+    "directory": "packages/cli/npm/win32-x64"
+  },
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "preferUnplugged": true
+}

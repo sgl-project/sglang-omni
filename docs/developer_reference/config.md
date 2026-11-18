@@ -92,6 +92,39 @@ stages:
 A value the factory does not accept is an error at stage construction, not a
 silent no-op.
 
+`engine.disable_speculative_decoding: true` never reaches SGLang. It drops
+every `speculative_*` key from the stage's `engine.*` block, whether the
+model's defaults, a config file or the CLI set it, so one setting turns off
+the stage's draft.
+
+The switch relies on one rule: a stage's draft is set only through its
+`engine.speculative_*` keys, and its engine builder reads the draft from the
+overrides, as every current draft does. A draft set under `factory.*`, or
+turned on by an engine builder's own defaults, would stay on. A new drafter
+follows the same rule, including one that is the model's own code rather than
+an SGLang draft worker.
+
+Every published draft a stage serves has one entry in
+`sglang_omni/speculative/draft_registry.py`: the draft repo, its full
+revision, the algorithm and its other `speculative_*` settings, the license
+and whether the model turns it on by default. A draft whose model card states
+no license stays off by default. No two entries share a draft repo. A stage
+that names a registry draft without a `speculative_draft_model_revision` key
+loads the entry's revision. A revision the stage sets wins, and `none` loads
+the repo's default branch. A cookbook command, an example config or a model's
+defaults that serve the draft give that entry's algorithm, draft repo and
+settings. They leave the revision out, and a revision they do give must match
+the entry. `sgl-omni serve` adds a default-on entry's draft after every
+source is merged, so the model path and TP size that launch decide it: only
+for that entry's model path, with or without an `@<revision>` pin, or a
+Hugging Face cache snapshot of it, only on CUDA, and only to a stage with
+`tp_size` 1 that does not set `disable_speculative_decoding`. Like the TP
+derivation, it fills only the `speculative_*` keys no source set.
+`sgl-omni config resolve` shows these keys and the engine block as written,
+and the pinned revision is added when the stage's server args are built.
+`tests/unit_test/speculative/test_draft_registry.py` checks these rules, so a
+new draft adds its entry in the same change.
+
 ## Setting Values: YAML and CLI
 
 There are exactly two user-facing spellings of one path language.
@@ -180,6 +213,7 @@ overrode. Both run the same merge as `serve`.
 | `stream_done_to_fn` | `str` or `None` | `None` | Dotted function path for request-aware stream-completion targets. |
 | `project_payload` | `dict[str, str]` | `{}` | Optional target-stage to dotted projection function mapping used before writing a downstream payload. |
 | `comm` | `CommConfig` or `None` | `None` | Per-stage communication pool and Mooncake options. |
+| `http_routes` | `list[str]` | `[]` | Path prefixes of HTTP routes this stage serves from its own process. The Omni server relays every request under them to the stage, so the routes start with the stage and the HTTP process never imports the runtime behind them. The stage's scheduler provides the ASGI app through `http_app()`, and the stage must run as one instance. |
 
 Routing rule: set exactly one of `next` or `terminal=True`. `route_fn` is an
 optional request-aware override for stages that already declare `next`.
@@ -198,8 +232,10 @@ as the static superset because runtime prep derives stream receivers from it.
 | `entry_stage` | `str` or `None` | first stage | Declared by the config class when the first stage is not the entry. Not settable from a config file or the CLI. |
 | `fused_stages` | `list[list[str]]` | `[]` | Adjacent linear stage groups to colocate in one runtime process. |
 | `env_defaults` | `dict[str, str]` | `{}` | Environment defaults applied before stage factory imports. Existing process values take precedence. |
+| `mps` | `off`, `on`, or `auto` | `off` | Native CUDA MPS policy for eligible same-GPU worker processes. |
 | `endpoints` | `EndpointsConfig` | IPC defaults | Endpoint allocation settings. |
 | `placement` | `PlacementConfig` | defaults | Placement planning limits, e.g. `max_total_gpu_memory_fraction_per_gpu`. |
+| `stream_delivery` | `StreamDeliveryConfig` | 1 GiB | `max_total_backlog_bytes`: undelivered stream bytes the coordinator may hold for all readers together; over it, the longest-idle streams fail. `none` turns it off. |
 | `terminal_stages_fn` | `str` or `None` | `None` | Dotted function path for request-aware terminal-stage resolution. |
 | `config_cls` | `str` | class name | Stored automatically and used when loading a saved config file. |
 
@@ -214,6 +250,12 @@ Class-level hooks a model config may declare:
 - `tensor_parallel_server_args_overrides(stage_name, tp_size)` /
   `topology_gated_custom_all_reduce_stages()` — engine overrides derived from
   the resolved TP topology at launch.
+- `entry_stage_admission_limit()` returns how many requests one entry stage
+  replica admits at once when that stage owns admission, such as a UMM
+  controller. The coordinator caps in-flight requests at this value times the
+  entry process replicas, or at the running+queued capacity of an engine stage
+  when that is lower, since the entry stage may send any request to any engine
+  stage. `None` (the default) derives the cap from the generation engine.
 
 Derived values are computed from stages, not manually maintained:
 `resolved_entry_stage`, `terminal_stages`, `gpu_placement`.
@@ -243,6 +285,41 @@ factory does not accept raises at construction. Standard kwargs
 (`model_path`, `gpu_id`, `total_gpu_memory_fraction`) are injected only when
 the factory signature declares them; `gpu_id` is owned by placement and is
 rejected from the author channel.
+
+### Device and GPU placement contract
+
+A stage's card is placement's decision, made in the parent process from
+`stage.gpu` (or `processes.<name>.replica_devices` when configured, including a single replica)
+and handed to the factory as `gpu_id`. The factory's `device` argument is
+only ever a device type: `cpu` to keep a stage on the host, or a platform
+type such as `cuda`/`npu` that must match the host. It never carries an
+index. `cuda:1` in a config is refused, and so are `factory.gpu_id` and the
+two memory-fraction kwargs listed in `PLACEMENT_OWNED_FACTORY_KWARGS`
+(`sglang_omni/config/schema.py`), because those are injected by placement.
+
+Replica devices take precedence over stage GPU IDs regardless of YAML/CLI precedence. Expansion logs the overridden stage GPU and effective replica assignments; CPU stages are unchanged. No special GPU sentinel is needed.
+
+Inside a factory the two values meet in one helper:
+
+1. Declare both parameters, `device: str | None = None` and
+   `gpu_id: int | None = None`. A GPU-placed stage whose factory has no
+   `gpu_id` parameter is refused by name before any weight is loaded.
+2. Call `sglang_omni.utils.device.resolve_concrete_device(device, gpu_id)`.
+   It checks the requested type against the host platform, takes the index
+   from `gpu_id`, and only when neither side supplied one asks the host
+   which card the process already sits on. Do not call `resolve_device_spec`
+   from a factory and do not combine the two values by hand.
+3. A factory that builds SGLang `ServerArgs` itself writes the resolved
+   type into `server_args_overrides["device"]` through
+   `sglang_omni.scheduling.sglang_backend.pin_resolved_device_type`, which
+   also rejects an operator override that names a different device. The
+   shared `SGLangGenerationEngineBuilder` already does this.
+
+`tests/unit_test/test_stage_device_contract.py` sweeps every model, topology
+and stage in the repository against these rules; a new model is covered
+without registering anything. Because every GPU factory follows them, any
+GPU process can be given `num_replicas`/`replica_devices`
+(`basic_usage/process_topology.md`).
 
 ## Runtime Prep and Runner
 

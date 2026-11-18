@@ -53,9 +53,9 @@ build step.
    python -m http.server 8080
    ```
 
-3. **Open** <http://127.0.0.1:8080> in a modern browser. Choose an output mode,
-   click **Open Wire**, then **Begin Transmission**,
-   and start speaking. The output mode is locked for the duration of the
+3. **Open** <http://127.0.0.1:8080> in a modern browser. Choose an output mode
+   and turn detector, click **Open Wire**, then **Begin Transmission**, and
+   start speaking. The selections are locked for the duration of the
    connection. **Text + audio** requires one of the speech-server configurations.
 
 ## Test
@@ -72,13 +72,24 @@ node --test playground/qwen-omni/realtime/playback.test.js
 |---|---|
 | **Endpoint** | WebSocket endpoint to connect to. |
 | **Output** | Defaults to **Text only**, which requests `["text"]` and displays the assistant reply followed by the user's verbatim transcript. **Text + audio** requests `["text", "audio"]`, plays the streamed spoken response, and displays only the assistant reply. |
+| **Turn Detection** | Smart Turn v3 semantic endpointing or fixed-silence `server_vad`. |
+| **Semantic Eagerness** | Controls how readily semantic VAD ends a turn. Defaults to the medium preset. |
 | **Instructions** | System prompt sent in `session.update`. Affects the assistant reply only — transcription always runs verbatim. |
 | **Responses** | Each VAD-driven turn appears as a card. Assistant text is rendered from `response.text.delta`; text-only mode also renders `conversation.item.input_audio_transcription.delta`. |
 
 ## Notes
 
-- VAD is always on server-side; there's no manual commit. Just speak,
-  pause, and the server picks up the turn.
+- Turn detection is always server-side; there's no manual commit. The page
+  waits for `session.created.capabilities` before requesting semantic VAD.
+  Older servers and servers without a usable Smart Turn model safely use
+  `server_vad`.
+- Semantic VAD scores each pause once after 160 ms. Medium eagerness commits
+  after 250 ms for high-confidence completion or 640 ms for normal completion;
+  low-confidence pauses use the 2-second hard stop.
+- Set `SGLANG_OMNI_SMART_TURN_MODEL_PATH` to a local BSD-2 licensed
+  [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3)
+  `smart-turn-v3.2-gpu.onnx` file or its containing directory before server
+  startup. The runtime never downloads the model and verifies its SHA-256.
 - The page constructs its own `AudioWorklet` inline so there's no build
   step / package.json required.
 - Audio is captured at 16 kHz, converted to PCM16 little-endian, and
@@ -120,9 +131,9 @@ node --test playground/qwen-omni/realtime/playback.test.js
     }
   }
   ```
-- Only `turn_detection.interrupt_response` is applied dynamically. The endpoint
-  constructs server VAD once with fixed defaults; `threshold`,
-  `prefix_padding_ms`, and `silence_duration_ms` do not reconfigure it.
+- Partial turn-detection updates preserve the active type and settings.
+  Detector behavior changes rebuild the detector and clear pending input audio;
+  changing `interrupt_response` does not.
 - The standalone `/v1/audio/speech` TTS API is unchanged because it does not
   have a live microphone/VAD session to trigger barge-in.
 - The page does no error handling beyond updating the status line —

@@ -9,9 +9,12 @@ from typing import Callable
 import numpy as np
 import torch
 
+# note (ratish): the longest reference the speech tokenizer takes, 30 s at its 16 kHz.
+MAX_REFERENCE_SECONDS = 30
+MAX_REFERENCE_SAMPLES = MAX_REFERENCE_SECONDS * 16000
+
 
 class CosyVoice3Tokenizer:
-
     def __init__(self, token_path: str, skip_special_tokens: bool = True):
         from transformers import AutoTokenizer
 
@@ -31,6 +34,8 @@ class CosyVoice3Tokenizer:
     def decode(self, tokens: list[int] | torch.Tensor) -> str:
         if isinstance(tokens, list):
             tokens = torch.tensor(tokens, dtype=torch.int64)
+        else:
+            pass
         return self.tokenizer.batch_decode(
             [tokens], skip_special_tokens=self.skip_special_tokens
         )[0]
@@ -41,18 +46,27 @@ class CosyVoice3Tokenizer:
 
 
 class SpeechTokenizerV3:
-
-    def __init__(self, model_path: str, device: str = "cpu"):
+    def __init__(
+        self,
+        model_path: str,
+        device: str = "cpu",
+        intra_op_threads: int = 8,
+    ):
         import onnxruntime
 
         option = onnxruntime.SessionOptions()
         option.graph_optimization_level = (
             onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         )
-        option.intra_op_num_threads = 1
+        option.intra_op_num_threads = max(1, int(intra_op_threads))
 
+        # note (db-ol): the cuDNN conv plan is rebuilt whenever the input shape differs
+        # from the previous call, and the default search setting makes rebuilds slow.
         providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            [
+                ("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"}),
+                "CPUExecutionProvider",
+            ]
             if device.startswith("cuda")
             else ["CPUExecutionProvider"]
         )
@@ -70,14 +84,21 @@ class SpeechTokenizerV3:
             raise ValueError(
                 f"Speech tokenizer expects 16kHz audio, got {sample_rate}Hz"
             )
+        else:
+            pass
 
         if audio.ndim == 1:
             audio = audio.reshape(1, -1)
+        else:
+            pass
 
-        if audio.shape[1] / sample_rate > 30:
+        if audio.shape[1] > MAX_REFERENCE_SAMPLES:
             raise ValueError(
-                "Audio longer than 30s is not supported for speech token extraction"
+                f"Audio longer than {MAX_REFERENCE_SAMPLES // sample_rate}s is not "
+                "supported for speech token extraction"
             )
+        else:
+            pass
 
         feat = whisper.log_mel_spectrogram(torch.from_numpy(audio), n_mels=128)
         feat_len = feat.shape[2]
@@ -92,15 +113,20 @@ class SpeechTokenizerV3:
 
 
 class SpeakerEncoder:
-
-    def __init__(self, model_path: str, device: str = "cpu"):
+    def __init__(
+        self,
+        model_path: str,
+        device: str = "cpu",
+        intra_op_threads: int = 8,
+    ):
         import onnxruntime
 
         option = onnxruntime.SessionOptions()
         option.graph_optimization_level = (
             onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         )
-        option.intra_op_num_threads = 1
+        option.intra_op_num_threads = max(1, int(intra_op_threads))
+        option.add_session_config_entry("session.intra_op.allow_spinning", "0")
 
         self.session = onnxruntime.InferenceSession(
             model_path,
@@ -116,6 +142,8 @@ class SpeakerEncoder:
 
         if audio.ndim == 1:
             audio = audio.reshape(1, -1)
+        else:
+            pass
 
         speech = torch.from_numpy(audio)
         feat = kaldi.fbank(
@@ -130,7 +158,7 @@ class SpeakerEncoder:
         return torch.tensor([embedding.flatten().tolist()])
 
 
-def _run_cosyvoice3_mel_spectrogram(waveform: torch.Tensor) -> torch.Tensor:
+def run_cosyvoice3_mel_spectrogram(waveform: torch.Tensor) -> torch.Tensor:
     """Run the official CosyVoice3 prompt-mel configuration."""
     from matcha.utils.audio import mel_spectrogram
 
@@ -162,22 +190,29 @@ def extract_prompt_speech_feat(
         raise ValueError(
             f"CosyVoice3 prompt mel extraction expects 24000Hz audio, got {sample_rate}Hz"
         )
+    else:
+        pass
 
     audio_array = np.asarray(audio, dtype=np.float32)
     if audio_array.ndim == 1:
         audio_array = audio_array.reshape(1, -1)
+    else:
+        pass
     if audio_array.ndim != 2:
         raise ValueError(
             "CosyVoice3 prompt audio must have shape [samples] or [channels, samples]"
         )
+    else:
+        pass
 
     waveform = torch.from_numpy(audio_array)
-    mel = _run_cosyvoice3_mel_spectrogram(waveform)
+    mel = run_cosyvoice3_mel_spectrogram(waveform)
     if mel.ndim != 3 or mel.shape[0] != waveform.shape[0] or mel.shape[1] != 80:
         raise RuntimeError(
-            "CosyVoice3 mel extractor returned an unexpected shape: "
-            f"{tuple(mel.shape)}"
+            f"CosyVoice3 mel extractor returned an unexpected shape: {tuple(mel.shape)}"
         )
+    else:
+        pass
     return mel.transpose(1, 2).contiguous()
 
 

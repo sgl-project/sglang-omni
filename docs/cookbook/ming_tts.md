@@ -42,8 +42,11 @@ sgl-omni serve \
   --port 8000
 ```
 
-The provided configuration enables the AR and acoustic-tail CUDA graphs. AudioVAE decode remains
-eager, and requests are non-streaming unless `stream` is set.
+The provided configuration enables the AR, acoustic-tail, and prefill CUDA graphs and a
+fixed-width CUDA graph for streaming AudioVAE transitions. Prefill uses the breakable backend
+(`cuda_graph_backend_prefill`) with token buckets up to 512; longer prefills run eager.
+Non-streaming full-sequence AudioVAE decode remains compact eager, and requests are non-streaming
+unless `stream` is set.
 
 For non-streaming requests, `audio_decode` sends the complete generated latent sequence through
 one full-sequence AudioVAE decode. Streaming requests use the separate incremental AudioVAE path
@@ -54,10 +57,9 @@ set `tts_engine.stream_to` to `[audio_decode]` to declare the latent stream edge
 `audio_decode.can_accept_stream_before_payload` to `true` so the consumer accepts latents that
 arrive while generation is still running. The provided YAML already carries all three.
 
-Cross-request AudioVAE batching is not implemented yet. The only supported audio-decode batch
-configuration is `max_batch_size: 1` with `max_batch_wait_ms: 0`, as shown in the provided YAML;
-other values are rejected before the server starts. A future batching change can expand this
-configuration only after it implements and validates a real multi-request AudioVAE decode.
+Cross-request non-streaming AudioVAE batching is not implemented yet. The only supported non-streaming batch configuration is `max_batch_size: 1` with `max_batch_wait_ms: 0`, as shown in the provided YAML; other values are rejected before the server starts.
+
+`stream_slots` is the maximum number of streaming requests that the AudioVAE decoder can keep active at the same time. Each active stream uses one slot to preserve its decoding progress between audio chunks. If all slots are occupied, additional streams wait until a slot is released. The provided configuration uses `stream_slots: 8` to match its concurrency-8 workload. Increasing it supports more simultaneous streams but uses more GPU memory and fixed-graph work; reducing it lowers those costs but also lowers streaming concurrency. It does not change non-streaming batching.
 
 ## Synthesizing Speech
 
@@ -118,6 +120,8 @@ later call supplies the right-hand context needed to emit that initial group. Su
 consume `steady_chunk_patches` at a time. The provided configuration uses two initial patches and
 four steady patches, and the terminal step flushes any remainder. Pipe the response to `ffplay`
 to play it during generation:
+
+Streaming AudioVAE automatically uses Triton BTH upsampling when Triton is available and the input is a non-empty CUDA BF16 BTH tensor with non-negative strides; other streaming inputs use the existing PyTorch upsampler, and non-streaming AudioVAE decode is unchanged.
 
 ```bash
 curl -sS --fail --no-buffer -X POST http://localhost:8000/v1/audio/speech \
@@ -220,32 +224,29 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 
 ### Recommended Single-H200 TP1
 
-The recommended TP1 configuration was evaluated on **1× H200 141 GB** with concurrency 8,
-eight warmup requests, and the full Seed-TTS-Eval EN and ZH splits. Streaming used two initial
-patches and four steady patches. AR and acoustic-tail CUDA graphs were enabled, while AudioVAE
-decode remained eager.
+The recommended TP1 configuration was evaluated on **1× H200 141 GB** with concurrency 8, eight warmup requests, and the full Seed-TTS-Eval EN and ZH splits. Streaming used two initial patches followed by four-patch steady groups, with the AR, breakable prefill, acoustic-tail, and streaming AudioVAE CUDA graphs enabled. Non-streaming requests continued to use compact full-sequence AudioVAE eager decode.
+
+`Corpus WER/CER` is the micro-averaged corpus rate over every sample, including outliers. The scorer splits Chinese into characters, so its ZH rate is a CER even though the log labels it WER.
 
 Streaming:
 
-| Slice | Lang | Samples | Failed | Corpus WER | RTF Mean | Latency Mean (s) | First Audio Mean (s) | Throughput (qps) | Audio s/s |
+| Slice | Lang | Samples | Failed | Corpus WER/CER | RTF Mean | Latency Mean (s) | First Audio Mean (s) | Throughput (qps) | Audio s/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.90% | 0.2686 | 1.236 | 0.6208 | 6.462 | 30.617 |
-| text-only | ZH | 2020 | 0 | 0.71% | 0.2592 | 1.278 | 0.6131 | 6.253 | 31.417 |
-| reference | EN | 1088 | 0 | 1.09% | 0.3107 | 1.358 | 0.7471 | 5.883 | 26.622 |
-| reference | ZH | 2020 | 0 | 0.75% | 0.2670 | 1.507 | 0.7326 | 5.303 | 30.377 |
+| text-only | EN | 1088 | 0 | 0.96% | 0.0950 | 0.450 | 0.1992 | 17.743 | 84.201 |
+| text-only | ZH | 2020 | 0 | 0.70% | 0.0937 | 0.470 | 0.1999 | 17.010 | 85.302 |
+| reference | EN | 1088 | 0 | 1.03% | 0.1222 | 0.541 | 0.3091 | 14.759 | 66.595 |
+| reference | ZH | 2020 | 0 | 0.62% | 0.1026 | 0.587 | 0.2780 | 13.621 | 78.198 |
 
 Non-streaming:
 
-| Slice | Lang | Samples | Failed | Corpus WER | RTF Mean | Latency Mean (s) | Throughput (qps) | Audio s/s |
+| Slice | Lang | Samples | Failed | Corpus WER/CER | RTF Mean | Latency Mean (s) | Throughput (qps) | Audio s/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.91% | 0.2035 | 0.959 | 8.328 | 39.369 |
-| text-only | ZH | 2020 | 0 | 0.69% | 0.1965 | 0.983 | 8.134 | 40.790 |
-| reference | EN | 1088 | 0 | 1.07% | 0.2308 | 1.031 | 7.742 | 35.021 |
-| reference | ZH | 2020 | 0 | 0.71% | 0.1966 | 1.125 | 7.103 | 40.737 |
+| text-only | EN | 1088 | 0 | 0.92% | 0.0924 | 0.433 | 18.432 | 86.966 |
+| text-only | ZH | 2020 | 0 | 0.64% | 0.0895 | 0.446 | 17.920 | 89.597 |
+| reference | EN | 1088 | 0 | 1.05% | 0.1162 | 0.510 | 15.668 | 70.747 |
+| reference | ZH | 2020 | 0 | 0.78% | 0.0923 | 0.528 | 15.131 | 87.042 |
 
-All 12,432 requests completed successfully. Streaming returned its first audio payload in
-0.61-0.75 seconds, while non-streaming retained higher complete-response throughput.
-The worst corpus WER was 1.09%.
+All 12,432 requests completed successfully. Streaming returned its first audio payload in 0.20-0.31 seconds, while non-streaming retained higher complete-response throughput. The worst corpus WER was 1.05%, and the worst corpus CER was 0.78%.
 
 Streaming playback continuity:
 
@@ -253,11 +254,58 @@ Streaming playback continuity:
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | text-only | EN | 1088 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 | text-only | ZH | 2020 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
-| reference | EN | 1071 | 17 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
+| reference | EN | 1076 | 12 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 | reference | ZH | 2020 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 
-`N/A` means that a request returned one PCM payload, so it had no inter-payload seam to score.
-All 11,641 later seams had zero measured playback underrun.
+`N/A` means that a request returned one PCM payload, so it had no inter-payload seam to score. Every scored slice has zero P95 and P99 measured playback underrun.
+
+## Apple Silicon: native MLX
+
+The standalone `ming_tts_server` serves `/v1/audio/speech` on an Apple Silicon Mac. Inference runs in C++ with the native runtime's pinned MLX toolchain, without Python, PyTorch or CUDA. It reads the official BF16 checkpoint and the pinned 4-bit conversion `mlx-community/Ming-omni-tts-16.8B-A3B-4bit`, which also quantizes the acoustic and AudioVAE linear layers; quantization is read from the checkpoint.
+
+```bash
+python sglang_omni_mlx/native/ci/provision_models.py "$MING_TTS_DATA" \
+  --model mlx-community/Ming-omni-tts-16.8B-A3B-4bit
+sglang_omni_mlx/native/scripts/build_runtime.sh "$MING_TTS_RUNTIME" "$MING_TTS_BUILD"
+"$MING_TTS_RUNTIME/bin/ming_tts_server" \
+  --model-path "$MING_TTS_DATA/models/mlx-community_Ming-omni-tts-16.8B-A3B-4bit" \
+  --model-name ming-omni-tts --port 8000
+```
+
+Set `MING_TTS_DATA`, `MING_TTS_RUNTIME` and `MING_TTS_BUILD` to separate local directories. Model provisioning uses the existing CI Python requirements and verifies the revision and hashes in `ci/model_pins.json`. For BF16, pass the directory that `hf download inclusionAI/Ming-omni-tts-16.8B-A3B` fills as `--model-path`. For Voxt's supervisor protocol, launch with `--supervised --model-kind ming_tts --model-directory DIR`: the server picks a free port and a model name unless `--port` and `--model-name` set them, reports both in a JSON `ready` event on stdout, and stops on `{"command":"shutdown"}` or when stdin closes.
+
+The requests under [Synthesizing Speech](#synthesizing-speech) work unchanged except voice cloning. The server cannot read a client's files, so the reference clip goes inline as a base64 WAV data URL in `ref_audio`, with its transcript in `ref_text`:
+
+```bash
+export MING_REFERENCE_WAV=/path/to/reference-mono.wav
+export MING_REFERENCE_TEXT='The exact words spoken in the reference clip.'
+python - <<'PY' | curl --fail-with-body http://127.0.0.1:8000/v1/audio/speech \
+  -H 'Content-Type: application/json' --data-binary @- --output cloned.wav
+import base64
+import json
+import os
+from pathlib import Path
+
+print(json.dumps({
+    "model": "ming-omni-tts",
+    "input": "Hello, this is a test of reference-conditioned speech.",
+    "ref_text": os.environ["MING_REFERENCE_TEXT"],
+    "ref_audio": "data:audio/wav;base64," + base64.b64encode(
+        Path(os.environ["MING_REFERENCE_WAV"]).read_bytes()
+    ).decode(),
+    "response_format": "wav",
+}))
+PY
+```
+
+Otherwise the server reads requests by the CUDA rules under [Known Limitations](#known-limitations). Where the two differ:
+
+| | CUDA server | Native MLX server |
+|---|---|---|
+| Reference audio | One local file in `references`, or `ref_audio` with `ref_text` | `ref_audio` with `ref_text` only, as a base64 data URL with an audio media type, such as `data:audio/wav;base64,...`, read by the CUDA server's data URL rules; `references` is refused. The WAV is mono 8/16/24/32-bit PCM or 32/64-bit float at any common rate, 0.1 to 30 seconds long, resampled from its own rate to 44.1 kHz for AudioVAE and 16 kHz for CampPlus as on CUDA |
+| CampPlus | `campplus.onnx` through ONNX Runtime | The same `campplus.onnx` weights, or the `campplus.safetensors` copy that the 4-bit checkpoint carries, run in C++ MLX. They load at startup; without either file, reference requests get 400 |
+| Requests | Batched | One at a time; `--max-queued-requests` more may wait (2 by default), the rest get 503. A request not done `--request-timeout-s` seconds after it arrives (600 by default) gets 504 or an early end to its stream, and a disconnected client's request is cancelled. Bodies over 32 MiB get 413 |
+| Streaming | Two initial patches, then four-patch groups; each group's audio waits for the next group | The same groups, but each holds back only its last latent frame, so audio starts after the first two patches |
 
 ## Known Limitations
 

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -15,6 +15,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.whisper_asr"
 
@@ -24,7 +25,12 @@ WHISPER_MAX_INPUT_SECONDS = 30
 class WhisperASRFactoryArgs(FactoryArgs):
     """Whisper's own constructor knobs, typed like the shared ones."""
 
+    encoder_attention_backend: Literal["auto", "sdpa", "fa4"] = "auto"
     enable_encoder_cuda_graph: bool | None = None
+    enable_dense_prefill_cuda_graph: bool | None = None
+    stream_emit_interval_s: float | None = Field(default=None, ge=0)
+    pre_lm_pipeline_batches: bool | None = None
+    cpu_intra_op_threads: int | None = Field(default=None, ge=1)
     enable_pre_lm_encoder: bool | None = None
     pre_lm_cache_max_entries: int | None = Field(default=None, ge=1)
     pre_lm_cache_size_bytes: int | None = Field(default=None, ge=1)
@@ -40,12 +46,11 @@ class WhisperASRPipelineConfig(PipelineConfig):
     """Single-stage batched ASR pipeline for Whisper checkpoints."""
 
     architecture: ClassVar[str] = "WhisperForConditionalGeneration"
-    audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig(
-        allow_audio_chunking=True,
+    allow_audio_chunking: ClassVar[bool] = True
+    max_native_clip_s: ClassVar[float] = float(WHISPER_MAX_INPUT_SECONDS)
+    min_tail_s: ClassVar[float] = 1.0
+    audio_chunking: AudioChunkingConfig = AudioChunkingConfig(
         max_audio_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
-        max_native_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
-        min_tail_s=1.0,
-        condition_on_previous_text=False,
     )
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
@@ -65,13 +70,12 @@ class WhisperASRPipelineConfig(PipelineConfig):
             factory_path=f"{_PKG}.stages.create_sglang_whisper_asr_executor",
             engine=EngineArgs(max_running_requests=64),
             factory=WhisperASRFactoryArgs(
-                device="cuda:0",
                 # The encoder CUDA-graph replay is a documented tuning knob for
                 # this pipeline; disable it when profiling eager encoder
                 # execution.
                 enable_encoder_cuda_graph=True,
                 enable_async_decode=True,
-                async_decode_min_batch_size=2,
+                async_decode_min_batch_size=1,
                 request_build_max_workers=8,
                 request_build_max_pending=16,
                 prefill_coalesce_requests=2,
@@ -94,6 +98,12 @@ class WhisperASRPipelineConfig(PipelineConfig):
             terminal=True,
         )
     ]
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, float]:
+        if current_platform.is_npu():
+            return {"mem_fraction_static": 0.50}
+        else:
+            return {}
 
 
 EntryClass = WhisperASRPipelineConfig

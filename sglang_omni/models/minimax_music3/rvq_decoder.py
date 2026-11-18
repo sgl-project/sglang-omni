@@ -93,6 +93,8 @@ class RVQDepthDecoder(nn.Module):
             source = audio_state.get(key)
             if source is None:
                 missing.append(key)
+            else:
+                pass
             return source
 
         def assign(
@@ -103,6 +105,8 @@ class RVQDepthDecoder(nn.Module):
                     f"{label}: checkpoint={tuple(source.shape)} model={tuple(target.shape)}"
                 )
                 return
+            else:
+                pass
             target.data.copy_(source.to(dtype=target.dtype))
             loaded.update(keys)
 
@@ -110,6 +114,8 @@ class RVQDepthDecoder(nn.Module):
             source = fetch(key)
             if source is not None:
                 assign(key, target, source, (key,))
+            else:
+                pass
 
         copy_tensor(prefix + "projection.weight", self.projection.weight)
         copy_tensor(prefix + "pos_embedding.weight", self.pos_embedding.weight)
@@ -135,6 +141,8 @@ class RVQDepthDecoder(nn.Module):
                     torch.cat(parts, dim=0),
                     qkv_keys,
                 )
+            else:
+                pass
             copy_tensor(lp + "self_attn.o_proj.weight", layer.self_attn.out_proj.weight)
             copy_tensor(lp + "mlp.gate_proj.weight", layer.gate_proj.weight)
             copy_tensor(lp + "mlp.up_proj.weight", layer.up_proj.weight)
@@ -147,6 +155,8 @@ class RVQDepthDecoder(nn.Module):
                 "MiniMax Music 3 RVQ decoder strict load failed: "
                 f"missing={missing[:8]}, mismatches={mismatches[:8]}, unexpected={unexpected[:8]}"
             )
+        else:
+            pass
 
 
 _TOP_K = 50

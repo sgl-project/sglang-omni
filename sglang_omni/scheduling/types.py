@@ -3,13 +3,29 @@
 
 from __future__ import annotations
 
-from concurrent.futures import Future
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any
+from typing import (
+    TYPE_CHECKING,
+    Generic,
+    Literal,
+    NotRequired,
+    Protocol,
+    SupportsIndex,
+    SupportsInt,
+    TypedDict,
+)
+
+from typing_extensions import TypeVar
+
+from sglang_omni.scheduling.message import OutgoingMessage
 
 if TYPE_CHECKING:
     import torch
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+else:
+    pass
 
 
 class SchedulerStatus(Enum):
@@ -23,22 +39,31 @@ class SchedulerStatus(Enum):
 class SchedulerRequest:
     request_id: str
     status: SchedulerStatus = SchedulerStatus.WAITING
-    data: Any = None
+    data: ARRequestData | None = None
     error: Exception | None = None
     arrival_time: float = 0.0
     finish_time: float | None = None
 
 
+ValueT = TypeVar("ValueT", default=object)
+
+
+class CompletionFuture(Protocol):
+    def done(self) -> bool: ...
+
+    def result(self, timeout: float | None = None) -> object: ...
+
+
 @dataclass(slots=True)
-class DeferredAdmission:
-    value: Any
-    ready: Future[Any]
+class DeferredAdmission(Generic[ValueT]):
+    value: ValueT
+    ready: CompletionFuture
 
 
 @dataclass
 class SchedulerOutput:
     requests: list[SchedulerRequest]
-    batch_data: Any
+    batch_data: ScheduleBatch | None
     step_id: int = 0
 
     @property
@@ -49,9 +74,9 @@ class SchedulerOutput:
 @dataclass
 class RequestOutput:
     request_id: str
-    data: Any = None
+    data: str | bytes | bytearray | SupportsInt | SupportsIndex | None = None
     finished: bool = False
-    extra: dict[str, Any] | None = None
+    extra: dict[str, torch.Tensor] | None = None
 
 
 @dataclass
@@ -68,26 +93,67 @@ class ModelRunnerOutput:
     host_token_ids: "torch.Tensor | None" = None
 
 
+class SpecTokensDetailsDict(TypedDict):
+    """Per-request speculative decoding statistics a finished request reports."""
+
+    spec_accept_rate: NotRequired[float]
+    spec_accept_length: float
+    spec_num_correct_drafts: int
+    spec_num_proposed_drafts: NotRequired[int]
+    spec_verify_ct: int
+    spec_correct_drafts_histogram: list[int]
+
+
 @dataclass
 class ARRequestData:
     """Backend-neutral autoregressive request state."""
 
     input_ids: "torch.Tensor | None" = None
     attention_mask: "torch.Tensor | None" = None
-    model_inputs: dict[str, Any] = field(default_factory=dict)
+    model_inputs: dict[str, object] = field(default_factory=dict)
     output_ids: list[int] = field(default_factory=list)
-    extra_model_outputs: dict[str, Any] = field(default_factory=dict)
+    extra_model_outputs: dict[str, torch.Tensor | list[torch.Tensor] | list[int]] = (
+        field(default_factory=dict)
+    )
     finish_reason: str | None = None
     weight_version: str | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     return_logprob: bool = False
-    output_token_logprobs: list[Any] = field(default_factory=list)
+    output_token_logprobs: list[list[float | int]] = field(default_factory=list)
     capture_model_output_keys: tuple[str, ...] = ()
     max_new_tokens: int | None = None
     enforce_request_limits: bool = False
     temperature: float = 0.0
+    decode_path: Literal["plain", "spec"] = "plain"
+    fallback_reason: str | None = None
+    # note(ratish): the scheduler clears both on every request it finishes and
+    # compacts the history of every request it retracts, whatever the model.
+    prefill_input_embeds: "torch.Tensor | None" = None
+    decode_input_embeds: list["torch.Tensor"] | None = field(default_factory=list)
 
 
-def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:
+RequestDataT = TypeVar("RequestDataT", bound=ARRequestData, default=ARRequestData)
+RequestDataInput = TypeVar(
+    "RequestDataInput",
+    bound=ARRequestData,
+    default=ARRequestData,
+    contravariant=True,
+)
+
+
+class StreamOutputBuilder(Protocol[RequestDataInput]):
+    def __call__(
+        self,
+        request_id: str,
+        request_data: RequestDataInput,
+        request_output: RequestOutput,
+        /,
+    ) -> Iterable[OutgoingMessage]: ...
+
+
+def sampled_logprobs_to_list(
+    next_token_logprobs: torch.Tensor | None,
+) -> list[float] | None:
     """Convert sampler-produced per-row selected-token logprobs to a list.
 
     The sampler owns logprob semantics such as temperature and original-logprob
@@ -97,6 +163,8 @@ def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:
 
     if next_token_logprobs is None:
         return None
+    else:
+        pass
     if hasattr(next_token_logprobs, "detach"):
         values = next_token_logprobs.detach().float().cpu().tolist()
     elif hasattr(next_token_logprobs, "tolist"):
@@ -105,14 +173,22 @@ def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:
         values = next_token_logprobs
     if isinstance(values, (int, float)):
         return [float(values)]
+    else:
+        pass
     if not isinstance(values, (list, tuple)):
         return None
+    else:
+        pass
 
     out: list[float] = []
     for value in values:
         if isinstance(value, (list, tuple)):
             if len(value) != 1:
                 return None
+            else:
+                pass
             value = value[0]
+        else:
+            pass
         out.append(float(value))
     return out

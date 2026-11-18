@@ -3,14 +3,32 @@
 
 from __future__ import annotations
 
+import threading
+from queue import Queue
 from types import SimpleNamespace
 from typing import Any
 
 import torch
 from torch import nn
 
+from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
+    Code2WavScheduler,
+)
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
+from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.session import SessionContext
+
+
+class RecordingOutbox(Queue[OutgoingMessage]):
+    """A real scheduler outbox whose messages a test reads back in order."""
+
+    @property
+    def sent(self) -> list[OutgoingMessage]:
+        return list(self.queue)
 
 
 class FakeQwenTokenizer:
@@ -66,6 +84,44 @@ def make_qwen_payload(
     )
 
 
+def make_thinker_config(
+    *,
+    image_token_id: int,
+    video_token_id: int,
+    audio_token_id: int,
+    vision_start_token_id: int,
+    audio_start_token_id: int,
+) -> SimpleNamespace:
+    """The thinker config fields the Qwen3-Omni request builder and its M-RoPE read."""
+    return SimpleNamespace(
+        image_token_id=image_token_id,
+        video_token_id=video_token_id,
+        audio_token_id=audio_token_id,
+        vision_start_token_id=vision_start_token_id,
+        audio_start_token_id=audio_start_token_id,
+        position_id_per_seconds=25,
+        vision_config=SimpleNamespace(spatial_merge_size=2, tokens_per_second=2),
+    )
+
+
+def make_dialog(
+    session_identity: SessionIdentity,
+) -> tuple[QwenInputHooks, list[TimedChunk], SessionContext]:
+    """An open dialog stage whose emitted chunks a test reads back in order."""
+    hooks = QwenInputHooks(
+        max_utterance_seconds=1, max_queued_turns=2, max_utterance_frames=4
+    )
+    outputs: list[TimedChunk] = []
+    hooks.open(session_identity, OmniRequest(None))
+    hooks.attach_output_stream(session_identity, outputs.append)
+    context = SessionContext(
+        session_identity=session_identity,
+        cancelled=threading.Event(),
+        emit=outputs.append,
+    )
+    return hooks, outputs, context
+
+
 class FakeCodecEmbedding(nn.Module):
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
@@ -81,7 +137,7 @@ class FakeTalkerProjectionModel(nn.Module):
         super().__init__()
         self.anchor = nn.Parameter(torch.zeros(1, dtype=torch.float32))
         self.config = SimpleNamespace(codec_eos_token_id=2150)
-        self._codec_embedding = FakeCodecEmbedding(hidden_size)
+        self.codec_embedding = FakeCodecEmbedding(hidden_size)
 
     def text_projection(self, tensor: torch.Tensor) -> torch.Tensor:
         return tensor + 100.0
@@ -90,7 +146,7 @@ class FakeTalkerProjectionModel(nn.Module):
         return tensor + 200.0
 
     def get_input_embeddings(self) -> FakeCodecEmbedding:
-        return self._codec_embedding
+        return self.codec_embedding
 
 
 class FakeImageEncoderModel:
@@ -155,12 +211,28 @@ class FakeAudioEncoderModel:
 
 class FakeCode2WavModel:
     def __init__(self, *, total_upsample: int = 2, output_deficit: int = 0) -> None:
+        self.decoder = torch.nn.Module()
         self.total_upsample = total_upsample
         self.output_deficit = output_deficit
         self.calls: list[tuple[int, ...]] = []
+
+    def parameters(self) -> list[torch.Tensor]:
+        return []
+
+    def buffers(self) -> list[torch.Tensor]:
+        return []
 
     def __call__(self, codes: torch.Tensor) -> torch.Tensor:
         self.calls.append(tuple(codes.shape))
         samples = int(codes.shape[-1]) * self.total_upsample - self.output_deficit
         base = codes.to(dtype=torch.float32).flatten(1).sum(dim=1).view(-1, 1, 1)
         return torch.arange(samples, dtype=torch.float32).view(1, 1, samples) + base
+
+
+def deliver_code2wav_chunk(
+    scheduler: Code2WavScheduler, request_id: str, item: StreamItem
+) -> None:
+    """One chunk in the serving loop's order: ingested, then every ready window decoded."""
+    scheduler.handle_stream_chunk(request_id, item)
+    while scheduler.has_ready_work():
+        scheduler.run_ready_step()

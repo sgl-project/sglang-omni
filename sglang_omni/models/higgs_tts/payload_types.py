@@ -7,9 +7,18 @@ Carried between stages via :class:`sglang_omni.proto.StagePayload.data`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
+
+import numpy.typing as npt
+import torch
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
+
+if TYPE_CHECKING:
+
+    from sglang_omni.models.higgs_tts.rollout_trace import HiggsRolloutTrace
+else:
+    pass
 
 
 @dataclass
@@ -25,7 +34,7 @@ class HiggsTtsState(DeclarativeStateBase):
     reference_codes_delayed: list[list[int]] | None = None
     target_text: str | None = None
     reference_text: str | None = None
-    reference_waveform: Any | None = None  # mono 24 kHz [1, 1, L] torch.Tensor
+    reference_waveform: torch.Tensor | None = None  # mono 24 kHz [1, 1, L] torch.Tensor
     reference_code_cache_key: str | None = None
     uploaded_voice_name: str | None = None
     uploaded_voice_created_at: int | None = None
@@ -46,15 +55,17 @@ class HiggsTtsState(DeclarativeStateBase):
 
     # tts_engine
     output_codes_delayed: list[list[int]] | None = None
-    omni_rollout: dict[str, Any] | None = None
+    omni_rollout: HiggsRolloutTrace | dict[str, object] | None = None
 
     # vocoder
-    audio_samples: Any | None = None
+    audio_samples: torch.Tensor | npt.ArrayLike | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         data = super().to_dict()
         if self.audio_samples is None:
             data.pop("sample_rate", None)
+        else:
+            pass
         return data
 
 

@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import torch
-from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
 from sglang.srt.runtime_context import get_parallel
 from torch import nn
+from transformers import PretrainedConfig
 
 from sglang_omni.models.ming_omni.configuration import (
     BailingMM2Config,
@@ -31,13 +31,9 @@ from sglang_omni.models.ming_omni.configuration import (
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import (
-    get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_reduce,
-)
+from sglang_omni.vendor.sglang.distributed import get_group_rank_size
 from sglang_omni.vendor.sglang.layers import (
-    LayerCommunicator,
-    LayerScatterModes,
+    LinearParallelGroup,
     MergedColumnParallelLinear,
     QKVParallelLinear,
     QuantizationConfig,
@@ -46,9 +42,15 @@ from sglang_omni.vendor.sglang.layers import (
     RMSNorm,
     RowParallelLinear,
     SiluAndMul,
+    StageDeclaration,
     VocabParallelEmbedding,
+    append_stages,
+    declare_attn,
+    declare_ffn,
     get_moe_impl_class,
     get_rope,
+    is_dense_ffn_fully_dp,
+    residual_batch,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
 from sglang_omni.vendor.sglang.models import apply_qk_norm
@@ -111,8 +113,7 @@ class BailingMoeV2Attention(nn.Module):
             self.num_kv_heads,
             bias=config.use_qkv_bias,
             quant_config=quant_config,
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
+            parallel_group="attn_tp",
             prefix=add_prefix("qkv_proj", prefix),
         )
 
@@ -122,8 +123,7 @@ class BailingMoeV2Attention(nn.Module):
             bias=False,
             reduce_results=False,
             quant_config=quant_config,
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
+            parallel_group="attn_tp",
             prefix=add_prefix("o_proj", prefix),
         )
 
@@ -131,6 +131,8 @@ class BailingMoeV2Attention(nn.Module):
         if self.use_qk_norm:
             self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
             self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        else:
+            pass
 
         # RoPE - using partial rotary factor
         self.rotary_emb = get_rope(
@@ -167,6 +169,8 @@ class BailingMoeV2Attention(nn.Module):
         # QK normalization
         if self.use_qk_norm:
             q, k = apply_qk_norm(q, k, self.q_norm, self.k_norm, self.head_dim)
+        else:
+            pass
 
         # Partial RoPE: only apply to first rotary_dim dimensions
         q_rot = q[..., : self.rotary_dim]
@@ -190,7 +194,7 @@ class BailingMoeV2Attention(nn.Module):
     ) -> torch.Tensor:
         """Attention computation with paged KV cache."""
         attn_output = self.attn(q, k, v, forward_batch)
-        return attn_output
+        return attn_output.flatten(1)
 
     def forward(
         self,
@@ -218,19 +222,17 @@ class BailingMoeV2MLP(nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         reduce_results: bool = True,
         prefix: str = "",
-        tp_rank: Optional[int] = None,
-        tp_size: Optional[int] = None,
+        *,
+        parallel_group: LinearParallelGroup = "tp",
     ):
         super().__init__()
-        self.tp_size = tp_size
         self.gate_up_proj = MergedColumnParallelLinear(
             config.hidden_size,
             [intermediate_size] * 2,
             bias=False,
             quant_config=quant_config,
             prefix=add_prefix("gate_up_proj", prefix),
-            tp_rank=tp_rank,
-            tp_size=tp_size,
+            parallel_group=parallel_group,
         )
         self.down_proj = RowParallelLinear(
             intermediate_size,
@@ -239,26 +241,23 @@ class BailingMoeV2MLP(nn.Module):
             reduce_results=reduce_results,
             quant_config=quant_config,
             prefix=add_prefix("down_proj", prefix),
-            tp_rank=tp_rank,
-            tp_size=tp_size,
+            parallel_group=parallel_group,
         )
+        self.tp_size = get_group_rank_size(self.gate_up_proj.tp_group)[1]
         self.act_fn = SiluAndMul()
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
         if (self.tp_size == 1) and hidden_states.shape[0] == 0:
             return hidden_states
+        else:
+            pass
         gate_up, _ = self.gate_up_proj(hidden_states)
         hidden_states = self.act_fn(gate_up)
-        hidden_states, _ = self.down_proj(
-            hidden_states,
-            skip_all_reduce=should_allreduce_fusion or use_reduce_scatter,
-        )
+        hidden_states, _ = self.down_proj(hidden_states)
         return hidden_states
 
 
@@ -293,7 +292,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         self.n_group = config.n_group
         self.topk_group = config.topk_group
         self.routed_scaling_factor = config.routed_scaling_factor
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_size = get_parallel().tp_size
 
         # Gate: linear projection for router scores
         self.gate = ReplicatedLinear(config.hidden_size, config.num_experts, bias=False)
@@ -307,7 +306,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             self.expert_bias = None
 
         # Routed and shared experts produce TP-partial outputs, combine first,
-        # then reduce once here or via LayerCommunicator all-reduce fusion.
+        # then reduce once here or in the next layer's input.
         FusedMoE = get_moe_impl_class(quant_config)
         self.experts = FusedMoE(
             num_experts=config.num_experts,
@@ -325,18 +324,17 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             shared_intermediate = (
                 config.moe_intermediate_size * config.num_shared_experts
             )
-            if should_use_flashinfer_cutlass_moe_fp4_allgather():
-                shared_tp_rank, shared_tp_size = 0, 1
-            else:
-                shared_tp_rank, shared_tp_size = None, None
             self.shared_experts = BailingMoeV2MLP(
                 config,
                 shared_intermediate,
                 quant_config,
                 reduce_results=False,
                 prefix=add_prefix("shared_experts", prefix),
-                tp_rank=shared_tp_rank,
-                tp_size=shared_tp_size,
+                parallel_group=(
+                    "replicated"
+                    if should_use_flashinfer_cutlass_moe_fp4_allgather()
+                    else "tp"
+                ),
             )
         else:
             self.shared_experts = None
@@ -345,8 +343,6 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         self,
         hidden_states: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
         del forward_batch
         num_tokens, hidden_dim = hidden_states.shape
@@ -367,7 +363,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             scores_for_routing = scores
 
         # Group-limited top-k selection
-        topk_weights, topk_ids = self._group_limited_topk(scores_for_routing)
+        topk_weights, topk_ids = self.group_limited_topk(scores_for_routing)
 
         # Gather actual scores (without bias) for the selected experts
         topk_weights = torch.gather(scores, dim=1, index=topk_ids)
@@ -377,6 +373,8 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             topk_weights = topk_weights / (
                 topk_weights.sum(dim=-1, keepdim=True) + 1e-20
             )
+        else:
+            pass
         topk_weights = topk_weights * self.routed_scaling_factor
 
         # FusedMoE forward — wrap in StandardTopKOutput
@@ -396,17 +394,9 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         else:
             final_hidden_states = routed_output
 
-        if (
-            self.tp_size > 1
-            and not should_allreduce_fusion
-            and not use_reduce_scatter
-            and not should_use_flashinfer_cutlass_moe_fp4_allgather()
-        ):
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
-
         return final_hidden_states.view(num_tokens, hidden_dim)
 
-    def _group_limited_topk(
+    def group_limited_topk(
         self, scores: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Group-limited top-k expert selection.
@@ -482,17 +472,13 @@ class BailingMoeV2DecoderLayer(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
         if self.is_dense:
-            if enable_moe_dense_fully_dp():
-                mlp_tp_rank, mlp_tp_size = 0, 1
-            else:
-                mlp_tp_rank, mlp_tp_size = None, None
             self.mlp = BailingMoeV2MLP(
                 config,
                 config.intermediate_size,
                 quant_config,
+                reduce_results=False,
                 prefix=add_prefix("mlp", prefix),
-                tp_rank=mlp_tp_rank,
-                tp_size=mlp_tp_size,
+                parallel_group="replicated" if is_dense_ffn_fully_dp() else "tp",
             )
         else:
             self.mlp = BailingMoeV2SparseMoeBlock(
@@ -502,75 +488,41 @@ class BailingMoeV2DecoderLayer(nn.Module):
                 prefix=add_prefix("mlp", prefix),
             )
 
-        is_layer_sparse = not self.is_dense
-        is_previous_layer_sparse = layer_id - 1 >= config.first_k_dense_replace
-        is_next_layer_sparse = layer_id + 1 >= config.first_k_dense_replace
-
-        self.layer_scatter_modes = LayerScatterModes.init_new(
-            layer_id=layer_id,
-            num_layers=config.num_hidden_layers,
-            is_layer_sparse=is_layer_sparse,
-            is_previous_layer_sparse=is_previous_layer_sparse,
-            is_next_layer_sparse=is_next_layer_sparse,
+        attn, ffn = self.stage_facts(config, layer_id)
+        self.attn_boundary, self.ffn_boundary = append_stages(
+            (attn, self.input_layernorm),
+            (ffn, self.post_attention_layernorm),
         )
-        self.layer_communicator = LayerCommunicator(
-            layer_scatter_modes=self.layer_scatter_modes,
-            input_layernorm=self.input_layernorm,
-            post_attention_layernorm=self.post_attention_layernorm,
-            allow_reduce_scatter=True,
-            is_last_layer=(self.layer_id == config.num_hidden_layers - 1),
+
+    @staticmethod
+    def stage_facts(
+        config: BailingMoeV2Config, layer_id: int
+    ) -> tuple[StageDeclaration, StageDeclaration]:
+        """The stages the layer declares, from the config alone (see make_layers)."""
+        is_layer_sparse = layer_id >= config.first_k_dense_replace
+        is_next_layer_sparse = layer_id + 1 >= config.first_k_dense_replace
+        return (
+            declare_attn(),
+            declare_ffn(sparse=is_layer_sparse, next_layer_sparse=is_next_layer_sparse),
         )
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
-        residual: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        hidden_states, residual = (
-            self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
-                hidden_states,
-                residual,
-                forward_batch,
-                captured_last_layer_outputs=None,
-            )
-        )
+    ) -> torch.Tensor:
+        hidden_states = self.attn_boundary.prepare(hidden_states, forward_batch)
 
         if hidden_states.shape[0] != 0:
             hidden_states = self.self_attn(hidden_states, forward_batch)
-
-        hidden_states, residual = self.layer_communicator.prepare_mlp(
-            hidden_states=hidden_states,
-            residual=residual,
-            forward_batch=forward_batch,
-        )
-
-        should_allreduce_fusion = (
-            self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
-                forward_batch
-            )
-        )
-        use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
-            forward_batch
-        )
-
-        hidden_states = self.mlp(
-            hidden_states,
-            forward_batch=forward_batch,
-            should_allreduce_fusion=should_allreduce_fusion,
-            use_reduce_scatter=use_reduce_scatter,
-        )
-
-        if should_allreduce_fusion:
-            hidden_states._sglang_needs_allreduce_fusion = True
         else:
-            hidden_states, residual = self.layer_communicator.postprocess_layer(
-                hidden_states,
-                residual,
-                forward_batch,
-            )
+            pass
 
-        return hidden_states, residual
+        hidden_states = self.attn_boundary.finish(hidden_states, forward_batch)
+        hidden_states = self.ffn_boundary.prepare(hidden_states, forward_batch)
+
+        hidden_states = self.mlp(hidden_states, forward_batch=forward_batch)
+        return self.ffn_boundary.finish(hidden_states, forward_batch)
 
 
 # ============================================================================
@@ -597,6 +549,7 @@ class BailingMoeV2TextModel(nn.Module):
                 config, idx, quant_config, prefix=prefix
             ),
             prefix="layers",
+            stage_facts=lambda idx: BailingMoeV2DecoderLayer.stage_facts(config, idx),
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -613,11 +566,13 @@ class BailingMoeV2TextModel(nn.Module):
         else:
             hidden_states = self.embed_tokens(input_ids)
 
-        residual = None
+        residual_batch.start(forward_batch)
         for layer in self.layers:
-            hidden_states, residual = layer(hidden_states, forward_batch, residual)
+            hidden_states = layer(hidden_states, forward_batch)
 
-        hidden_states, _ = self.norm(hidden_states, residual)
+        hidden_states = residual_batch.final_norm(
+            hidden_states, forward_batch, self.norm, skip_empty=True
+        )
         return hidden_states
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
@@ -646,14 +601,20 @@ class BailingMoeV2TextModel(nn.Module):
                 if name.startswith(prefix):
                     name = name[len(prefix) :]
                     break
+                else:
+                    pass
 
             # 0. Remap checkpoint naming conventions to our model's naming
             # gate.expert_bias -> expert_bias (MoE routing bias)
             if ".mlp.gate.expert_bias" in name:
                 name = name.replace(".mlp.gate.expert_bias", ".mlp.expert_bias")
+            else:
+                pass
             # word_embeddings -> embed_tokens
             if name == "word_embeddings.weight":
                 name = "embed_tokens.weight"
+            else:
+                pass
 
             # 1a. Handle checkpoint naming: attention.X -> self_attn.Y
             # Ming checkpoint uses "attention.query_key_value" / "attention.dense"
@@ -665,6 +626,8 @@ class BailingMoeV2TextModel(nn.Module):
                 name = name.replace(".attention.dense.", ".self_attn.o_proj.")
                 name = name.replace(".attention.q_norm.", ".self_attn.q_norm.")
                 name = name.replace(".attention.k_norm.", ".self_attn.k_norm.")
+            else:
+                pass
 
             # 1b. Handle separate q/k/v -> fused qkv_proj (if checkpoint has them)
             matched_attn = False
@@ -677,8 +640,14 @@ class BailingMoeV2TextModel(nn.Module):
                         _loaded_weight_count += 1
                         matched_attn = True
                         break
+                    else:
+                        pass
+                else:
+                    pass
             if matched_attn:
                 continue
+            else:
+                pass
 
             # 2. Handle MoE expert weights via FusedMoE weight_loader
             if ".mlp.experts." in name:
@@ -710,6 +679,12 @@ class BailingMoeV2TextModel(nn.Module):
                         )
                         _loaded_weight_count += 1
                         continue
+                    else:
+                        pass
+                else:
+                    pass
+            else:
+                pass
 
             # 3. Handle gate/up -> fused gate_up_proj
             # Applies to both shared_experts and dense MLP (layer 0)
@@ -719,6 +694,8 @@ class BailingMoeV2TextModel(nn.Module):
             for weight_name, shard_id in ((".gate_proj.", 0), (".up_proj.", 1)):
                 if weight_name not in name:
                     continue
+                else:
+                    pass
                 fused_key = name.replace(weight_name, ".gate_up_proj.")
                 if fused_key in params_dict:
                     param = params_dict[fused_key]
@@ -727,8 +704,12 @@ class BailingMoeV2TextModel(nn.Module):
                     _gate_up_fused_shards.setdefault(fused_key, set()).add(shard_id)
                     matched_mlp_gate_up = True
                     break
+                else:
+                    pass
             if matched_mlp_gate_up:
                 continue
+            else:
+                pass
 
             # 4. Handle shared expert gate_up_proj / down_proj directly
             # (already fused in checkpoint)
@@ -738,6 +719,8 @@ class BailingMoeV2TextModel(nn.Module):
                 weight_loader(param, loaded_weight)
                 _loaded_weight_count += 1
                 continue
+            else:
+                pass
 
             _skipped_weight_count += 1
             _unmatched_weight_names.append(name)
@@ -752,6 +735,8 @@ class BailingMoeV2TextModel(nn.Module):
                 "Incomplete Ming gate/up fused weights: "
                 f"missing_pairs={incomplete_gate_up_pairs}"
             )
+        else:
+            pass
         if _unmatched_weight_names:
             logger.warning(
                 "Ming thinker text loader skipped unmatched weights: "
@@ -759,6 +744,8 @@ class BailingMoeV2TextModel(nn.Module):
                 len(_unmatched_weight_names),
                 _unmatched_weight_names[:10],
             )
+        else:
+            pass
         logger.info(
             "Ming thinker text loader summary: loaded=%d skipped=%d unmatched=%d",
             _loaded_weight_count,
@@ -791,9 +778,9 @@ class BailingMoeV2ForCausalLM(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig] = None,
-    ):
+    ) -> None:
         super().__init__()
         # Keep the original HF config reference so SGLang runtime can read
         # patched attributes (audio_token_id, etc.) from the same object.
@@ -843,18 +830,26 @@ class BailingMoeV2ForCausalLM(nn.Module):
         # This runs during model loading, BEFORE SGLangModelScheduler reads
         # the config, so the patched values will be visible.
         # ------------------------------------------------------------------
-        self._patch_token_ids(config, llm_cfg)
+        self.patch_token_ids(config, llm_cfg)
 
     @staticmethod
-    def _patch_token_ids(config: Any, llm_cfg: Any) -> None:
+    def patch_token_ids(
+        config: PretrainedConfig, llm_cfg: PretrainedConfig | None
+    ) -> None:
         """Set image/video/audio token IDs on the HF config."""
         if not hasattr(config, "image_token_id"):
             config.image_token_id = getattr(llm_cfg, "image_patch_token", None)
+        else:
+            pass
         if not hasattr(config, "video_token_id"):
             config.video_token_id = getattr(llm_cfg, "video_patch_token", None)
+        else:
+            pass
         if not hasattr(config, "audio_token_id"):
             # audio_patch_token is NOT in config.json — resolve from tokenizer
-            model_path = getattr(config, "_name_or_path", None)
+            model_path = getattr(
+                config, "_name_or_path", None
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             if model_path:
                 try:
                     from sglang_omni.models.ming_omni.components.common import (
@@ -880,6 +875,8 @@ class BailingMoeV2ForCausalLM(nn.Module):
                     )
             else:
                 config.audio_token_id = None
+        else:
+            pass
 
     def forward(
         self,
@@ -917,6 +914,8 @@ class BailingMoeV2ForCausalLM(nn.Module):
                 "model.model."
             ):
                 stripped = stripped[len("model.") :]
+            else:
+                pass
 
             # Route lm_head weights
             if stripped in ("lm_head.weight",) or name in ("model.lm_head.weight",):
@@ -927,17 +926,25 @@ class BailingMoeV2ForCausalLM(nn.Module):
                     )
                     weight_loader(param, tensor)
                     _loaded_lm_head_count += 1
+                else:
+                    pass
                 continue
+            else:
+                pass
 
             # Skip vision encoder + projector weights (handled by IMAGE_STAGE)
             if stripped.startswith("vision."):
                 _skipped_tower_count += 1
                 continue
+            else:
+                pass
             if stripped.startswith("linear_proj.") and not stripped.startswith(
                 "linear_proj_audio."
             ):
                 _skipped_tower_count += 1
                 continue
+            else:
+                pass
 
             # Skip audio weights (handled by AUDIO_STAGE)
             if stripped.startswith("audio.") or stripped.startswith(
@@ -945,6 +952,8 @@ class BailingMoeV2ForCausalLM(nn.Module):
             ):
                 _skipped_tower_count += 1
                 continue
+            else:
+                pass
 
             # Pass original name to text model (it does its own prefix stripping)
             model_weights.append((name, tensor))
@@ -965,3 +974,7 @@ class BailingMoeV2ForCausalLM(nn.Module):
             lm_weight = lm_head_params.get("weight")
             if lm_weight is not None:
                 lm_weight.data = self.model.embed_tokens.weight.data
+            else:
+                pass
+        else:
+            pass

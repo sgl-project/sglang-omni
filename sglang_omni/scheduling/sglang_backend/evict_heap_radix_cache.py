@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: Apache-2.0
+"""A RadixCache whose eviction heap persists across evict() calls.
+
+Order-equivalent to RadixCache for lru only; the factory falls back to
+RadixCache for other policies.
+"""
+
+from __future__ import annotations
+
+import heapq
+import time
+
+from sglang.srt.mem_cache.base_prefix_cache import EvictParams, EvictResult
+from sglang.srt.mem_cache.radix_cache import RadixCache, TreeNode
+
+
+class EvictHeapRadixCache(RadixCache):
+    def __init__(self, params):
+        self.evict_heap: list = []
+        self.evict_heap_seq = 0
+        super().__init__(params)
+
+    def reset(self):
+        self.evict_heap.clear()
+        super().reset()
+
+    def evict_heap_push(self, node: TreeNode) -> None:
+        self.evict_heap_seq += 1
+        heapq.heappush(
+            self.evict_heap,
+            (self.eviction_strategy.get_priority(node), self.evict_heap_seq, node),
+        )
+        if len(self.evict_heap) > max(1024, 4 * len(self.evictable_leaves)):
+            self.evict_heap_rebuild()
+        else:
+            pass
+
+    def evict_heap_rebuild(self) -> None:
+        self.evict_heap = [
+            (self.eviction_strategy.get_priority(n), i, n)
+            for i, n in enumerate(self.evictable_leaves)
+        ]
+        self.evict_heap_seq = len(self.evict_heap)
+        heapq.heapify(self.evict_heap)
+
+    def _update_leaf_status(self, node: TreeNode) -> None:
+        was_evictable = node in self.evictable_leaves
+        super()._update_leaf_status(node)
+        if not was_evictable and node in self.evictable_leaves:
+            self.evict_heap_push(node)
+        else:
+            pass
+
+    def evict(self, params: EvictParams) -> EvictResult:
+        if self.disable:
+            return EvictResult()
+        else:
+            pass
+
+        start_time = time.perf_counter()
+        num_tokens = params.num_tokens
+
+        num_evicted = 0
+        while num_evicted < num_tokens and self.evict_heap:
+            priority, _seq, x = heapq.heappop(self.evict_heap)
+
+            if x not in self.evictable_leaves:
+                continue
+            else:
+                pass
+            current_priority = self.eviction_strategy.get_priority(x)
+            if current_priority != priority:
+                self.evict_heap_push(x)
+                continue
+            else:
+                pass
+
+            # Tree values are page-aligned copies of a kv row: page-exact segment.
+            self.token_to_kv_pool_allocator.free_segment(x.value, start_pos=0)
+            num_evicted += len(x.value)
+            # note (Junnan Li): _delete_leaf relands the parent via _update_leaf_status.
+            self._delete_leaf(x)  # noqa: leading-underscore
+            self.kv_events.record_remove(x)
+
+        self.update_eviction_metrics(num_evicted, start_time)
+        return EvictResult(num_tokens_evicted=num_evicted)

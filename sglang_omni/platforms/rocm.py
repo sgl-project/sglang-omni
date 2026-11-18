@@ -1,51 +1,46 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+import torch
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.rocm import RocmDeviceMixin
 
-from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.interface import (
+    OmniPlatform,
+    RMSNormKernel,
+    build_cuda_compatible_stage_process_env,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+    from sglang_omni.platforms.device_graph import DeviceGraphBackend
+else:
+    pass
 
 
 class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
     """ROCm policy with PyTorch's CUDA-compatible HIP device surface."""
+
+    def _get_device_graph_backend(self) -> DeviceGraphBackend:
+        from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
+
+        return CudaDeviceGraphBackend()
 
     def get_stage_process_env(
         self,
         spec: StageLaunchConfig,
         env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
-        if spec.tp_size <= 1:
-            return {}
-
-        source_env = env if env is not None else os.environ
-        original_visible = source_env.get("CUDA_VISIBLE_DEVICES")
-        if spec.gpu_id is None:
-            raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
-        if original_visible:
-            visible_devices = [item.strip() for item in original_visible.split(",")]
-            if spec.gpu_id >= len(visible_devices):
-                raise ValueError(
-                    f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
-                    f"but CUDA_VISIBLE_DEVICES only exposes {visible_devices}"
-                )
-            mapped_gpu = visible_devices[spec.gpu_id]
-        else:
-            mapped_gpu = str(spec.gpu_id)
-
-        return {
-            "CUDA_VISIBLE_DEVICES": mapped_gpu,
-            "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
-            "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
-        }
+        return build_cuda_compatible_stage_process_env(
+            spec,
+            env,
+            "HIP_VISIBLE_DEVICES",
+        )
 
     def get_intra_node_transport(self):
         from sglang_omni.comm.data_ref import TransportKind
@@ -57,6 +52,18 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
         # path works through PyTorch's HIP backend.
         return None
 
+    def get_rmsnorm(self) -> RMSNormKernel:
+        from aiter import rmsnorm2d_fwd
+
+        def aiter_rmsnorm(
+            hidden_states: torch.Tensor, weight: torch.Tensor, variance_epsilon: float
+        ) -> torch.Tensor:
+            normalized = torch.empty_like(hidden_states)
+            rmsnorm2d_fwd(normalized, hidden_states, weight, variance_epsilon)
+            return normalized
+
+        return aiter_rmsnorm
+
     def apply_model_worker_backend_policy(
         self,
         server_args: ServerArgs,
@@ -67,16 +74,20 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
             server_args, model_config, model_arch_override
         )
 
+        cfg = resolved_view(server_args)
+        moe_runner_backend = cfg.moe_runner_backend
         if model_arch_override in (
             "Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM",
-        ) and server_args.moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
+        ) and moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
             raise ValueError(
                 "Qwen3-Omni on AMD ROCm cannot use "
-                f"moe_runner_backend={server_args.moe_runner_backend!r}; the "
+                f"moe_runner_backend={moe_runner_backend!r}; the "
                 "CUTLASS MoE runners are NVIDIA CUDA-only. Leave the backend as "
                 "'auto' or pass 'aiter' or 'triton'."
             )
+        else:
+            pass
 
         return effective_quantization
 

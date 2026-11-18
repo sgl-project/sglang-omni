@@ -2,15 +2,21 @@
 """Unit tests for the ARK-ASR-3B adapter (CPU-only, no checkpoint download)."""
 
 import inspect
+import json
+from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 import torch.nn as nn
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
+from sglang.srt.models.qwen2 import Qwen2ForCausalLM
 from transformers import WhisperConfig
 
-import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.arkasr.engine_builder as arkasr_builder
 import sglang_omni.platforms as platforms
 import sglang_omni.scheduling.bootstrap as bootstrap
@@ -21,16 +27,18 @@ from sglang_omni.models.arkasr.audio_lengths import (
     arkasr_audio_token_lengths,
     arkasr_num_audio_tokens,
 )
-from sglang_omni.models.arkasr.audio_tower import ArkAudioMLPAdapter, ArkAudioTower
+from sglang_omni.models.arkasr.audio_tower import ArkAudioMLPAdapter
 from sglang_omni.models.arkasr.config import ArkasrPipelineConfig
 from sglang_omni.models.arkasr.configuration_arkasr import ArkasrConfig
-from sglang_omni.models.arkasr.request_builders import _build_suppressed_token_ids
+from sglang_omni.models.arkasr.request_builders import build_suppressed_token_ids
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
 
-def _tiny_config():
+def tiny_config():
     """Small ARK config for CPU shape tests (no checkpoint)."""
     whisper = WhisperConfig(
         d_model=32,
@@ -51,6 +59,10 @@ def _tiny_config():
         vocab_size=256,
         audio_token_id=151663,
     )
+
+
+def sglang_prefill_ladder(max_bs: int) -> list[int]:
+    return generate_prefill_cuda_graph_batch_sizes(max_bs)
 
 
 def test_arkasr_config_registered():
@@ -74,23 +86,114 @@ def test_arkasr_config_registered():
     }
 
 
-def test_arkasr_stage_defaults():
-    signature = inspect.signature(create_sglang_arkasr_executor)
-    assert signature.parameters["max_running_requests"].default == 32
-    assert signature.parameters["encoder_max_batch_size"].default == 8
-    assert signature.parameters["request_build_max_workers"].default == 2
-    assert signature.parameters["request_build_max_pending"].default == 16
-    assert signature.parameters["prefill_coalesce_requests"].default == 16
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 32.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
-    assert (
-        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
+@pytest.mark.parametrize(
+    ("is_npu", "configured_env_defaults", "expected_env_defaults"),
+    [
+        (True, {}, {"PER_STREAM_QUEUE": "1"}),
+        (False, {}, {}),
+        (True, {"PER_STREAM_QUEUE": "0"}, {"PER_STREAM_QUEUE": "0"}),
+    ],
+)
+def test_per_stream_queue_env_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    is_npu: bool,
+    configured_env_defaults: dict[str, str],
+    expected_env_defaults: dict[str, str],
+) -> None:
+    monkeypatch.setattr(arkasr_builder.current_platform, "is_npu", lambda: is_npu)
+    config = ArkasrPipelineConfig(
+        model_path="test", env_defaults=configured_env_defaults
     )
-    assert signature.parameters["enable_pre_lm_encoder"].default is True
-    assert signature.parameters["pre_lm_max_batch_size"].default == 8
-    assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 0
-    assert signature.parameters["pre_lm_max_pending"].default == 32
-    assert signature.parameters["enable_encoder_cuda_graph"].default is False
+
+    assert config.resolved_env_defaults() == expected_env_defaults
+    assert config.env_defaults == configured_env_defaults
+
+
+@pytest.mark.parametrize(
+    (
+        "is_npu",
+        "enable_pre_lm_encoder",
+        "enable_encoder_cuda_graph",
+        "enable_decode_graph",
+        "enable_prefill_graph",
+        "disable_cuda_graph",
+        "per_stream_queue",
+        "task_queue_enable",
+        "launch_blocking",
+        "is_valid",
+    ),
+    [
+        (True, True, True, True, False, False, "1", "1", "0", True),
+        (True, True, False, True, False, False, None, None, None, False),
+        (True, True, True, True, False, False, "0", "1", "0", False),
+        (True, True, True, True, False, False, "1", "0", "0", False),
+        (True, True, True, True, False, False, "1", "1", "1", False),
+        (True, True, False, False, False, True, None, None, None, True),
+        (False, True, True, True, False, False, None, None, None, True),
+        (True, False, True, True, False, False, None, None, None, True),
+        (True, True, False, False, True, False, "1", "0", None, False),
+        (True, True, False, True, False, True, "1", "0", None, False),
+    ],
+)
+def test_npu_graph_startup_requires_per_stream_queues(
+    monkeypatch: pytest.MonkeyPatch,
+    is_npu: bool,
+    enable_pre_lm_encoder: bool,
+    enable_encoder_cuda_graph: bool,
+    enable_decode_graph: bool,
+    enable_prefill_graph: bool,
+    disable_cuda_graph: bool,
+    per_stream_queue: str | None,
+    task_queue_enable: str | None,
+    launch_blocking: str | None,
+    is_valid: bool,
+) -> None:
+    for name, value in (
+        ("PER_STREAM_QUEUE", per_stream_queue),
+        ("TASK_QUEUE_ENABLE", task_queue_enable),
+        ("ASCEND_LAUNCH_BLOCKING", launch_blocking),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    monkeypatch.setattr(arkasr_builder.current_platform, "is_npu", lambda: is_npu)
+    monkeypatch.setattr(
+        arkasr_builder.AsrEngineBuilder,
+        "validate_before_infrastructure",
+        lambda self, server_args: None,
+    )
+    builder = object.__new__(arkasr_builder.ArkasrEngineBuilder)
+    builder.enable_pre_lm_encoder = enable_pre_lm_encoder
+    builder.enable_encoder_cuda_graph = enable_encoder_cuda_graph
+    server_args = SimpleNamespace(
+        disable_cuda_graph=disable_cuda_graph,
+        cuda_graph_config=SimpleNamespace(
+            decode=SimpleNamespace(
+                backend=(
+                    CudaGraphBackend.FULL
+                    if enable_decode_graph
+                    else CudaGraphBackend.DISABLED
+                ),
+                bs=[1],
+            ),
+            prefill=SimpleNamespace(
+                backend=(
+                    CudaGraphBackend.BREAKABLE
+                    if enable_prefill_graph
+                    else CudaGraphBackend.DISABLED
+                ),
+            ),
+        ),
+    )
+    expectation = (
+        nullcontext()
+        if is_valid
+        else pytest.raises(ValueError, match="PER_STREAM_QUEUE")
+    )
+
+    with expectation:
+        builder.validate_before_infrastructure(server_args)
 
 
 def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
@@ -104,20 +207,6 @@ def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
         signature.parameters["pre_lm_max_batch_size"].default
         == signature.parameters["encoder_max_batch_size"].default
     )
-
-
-def test_arkasr_pre_lm_encoder_knobs_are_stage_configurable():
-    factory = ArkasrPipelineConfig(model_path="AutoArk-AI/ARK-ASR-3B").stages[0].factory
-
-    assert factory.request_build_max_workers == 2
-    assert factory.request_build_max_pending == 16
-    assert factory.enable_pre_lm_encoder is True
-    assert factory.pre_lm_cache_max_entries == 4096
-    assert factory.pre_lm_cache_size_bytes == 2 * 1024**3
-    assert factory.pre_lm_max_batch_size == 8
-    assert factory.pre_lm_max_batch_wait_ms == 0
-    assert factory.pre_lm_max_pending == 32
-    assert factory.enable_encoder_cuda_graph is True
 
 
 def test_arkasr_rejects_invalid_pre_lm_batch_size():
@@ -164,18 +253,12 @@ def test_arkasr_rejects_invalid_pre_lm_pending_limit():
         )
 
 
-def test_arkasr_stage_default_enables_async_decode():
-    signature = inspect.signature(create_sglang_arkasr_executor)
-
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 2
-
-
-def _stub_arkasr_engine_build(
+def stub_arkasr_engine_build(
     monkeypatch: pytest.MonkeyPatch,
     *,
     want_cuda_graph: bool,
     encoder_service: object,
+    resolved_chunked_prefill_size: int | None = None,
 ) -> SimpleNamespace:
     """Stub every out-of-process dependency of ArkasrEngineBuilder.build().
 
@@ -186,6 +269,9 @@ def _stub_arkasr_engine_build(
     graph_init_workers: list[object] = []
     adapter_kwargs: dict[str, object] = {}
     encoder_service_kwargs: dict[str, object] = {}
+    stream_builder_calls: list[dict[str, object]] = []
+    stream_output_builder = object()
+    build_kwargs: dict[str, object] = {}
 
     encoder_batch_sizes: list[int] = []
     model_worker = SimpleNamespace(
@@ -241,31 +327,90 @@ def _stub_arkasr_engine_build(
         "make_arkasr_scheduler_adapters",
         lambda **k: (adapter_kwargs.update(k) or object(), object()),
     )
+    monkeypatch.setattr(
+        request_builders,
+        "make_arkasr_stream_output_builder",
+        lambda **k: stream_builder_calls.append(k) or stream_output_builder,
+    )
 
-    def _fake_server_args_builder(model_path, context_length, **overrides):
-        server_args = SimpleNamespace(context_length=context_length, **overrides)
+    def fake_server_args_builder(model_path, context_length, **overrides):
+        build_kwargs.update(overrides)
+        flat = dict(overrides)
+        if (
+            resolved_chunked_prefill_size is not None
+            and flat.get("chunked_prefill_size") is None
+        ):
+            flat["chunked_prefill_size"] = resolved_chunked_prefill_size
+        for name, default in (
+            ("attn_cp_size", 1),
+            ("dcp_size", 1),
+            ("lora_paths", None),
+            ("enable_lora", None),
+            ("moe_a2a_backend", "none"),
+        ):
+            flat.setdefault(name, default)
+        server_args = SimpleNamespace(context_length=context_length, **flat)
+        prefill_backend = (
+            overrides.get("cuda_graph_backend_prefill", "disabled")
+            if resolved_chunked_prefill_size is not None
+            else "disabled"
+        )
+        prefill_bs = overrides.get("cuda_graph_bs_prefill")
+        prefill_max_bs = overrides.get("cuda_graph_max_bs_prefill")
+        if resolved_chunked_prefill_size is not None:
+            if prefill_max_bs is None:
+                prefill_max_bs = server_args.chunked_prefill_size
+            if prefill_bs is None:
+                prefill_bs = sglang_prefill_ladder(prefill_max_bs)
+        decode_backend = overrides.get("cuda_graph_backend_decode")
+        if decode_backend is None:
+            if overrides.get("disable_cuda_graph") or overrides.get(
+                "disable_decode_cuda_graph"
+            ):
+                decode_backend = "disabled"
+            else:
+                decode_backend = "full"
+        else:
+            pass
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
+                # note: the resolved production config always carries a decode backend.
+                backend=decode_backend,
                 max_bs=overrides["cuda_graph_max_bs"],
                 bs=overrides["cuda_graph_bs"],
             ),
-            prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
+            prefill=SimpleNamespace(
+                backend=prefill_backend,
+                bs=prefill_bs,
+                max_bs=prefill_max_bs,
+            ),
+        )
+        server_args._cuda_graph_config_locked = (
+            {  # noqa: leading-underscore  # upstream name
+                ("prefill", field)
+                for field, key in (
+                    ("backend", "cuda_graph_backend_prefill"),
+                    ("bs", "cuda_graph_bs_prefill"),
+                    ("max_bs", "cuda_graph_max_bs_prefill"),
+                )
+                if key in overrides
+            }
         )
         return server_args
 
     monkeypatch.setattr(
-        sglang_backend, "build_sglang_server_args", _fake_server_args_builder
+        sglang_backend, "build_sglang_server_args", fake_server_args_builder
     )
     infra_kwargs_seen: dict[str, object] = {}
 
-    def _fake_defer_infra(server_args, gpu_id, **kwargs):
+    def fake_defer_infra(server_args, gpu_id, **kwargs):
         infra_kwargs_seen.update(kwargs)
         return infra
 
     monkeypatch.setattr(
         bootstrap,
         "create_sglang_infrastructure_defer_cuda_graph",
-        _fake_defer_infra,
+        fake_defer_infra,
     )
     monkeypatch.setattr(
         bootstrap,
@@ -273,8 +418,8 @@ def _stub_arkasr_engine_build(
         lambda worker: graph_init_workers.append(worker),
     )
     monkeypatch.setattr(
-        model_runner_base,
-        "ModelRunner",
+        arkasr_builder,
+        "ArkasrModelRunner",
         lambda *args, **kwargs: object(),
     )
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda **k: object())
@@ -283,10 +428,258 @@ def _stub_arkasr_engine_build(
         graph_init_workers=graph_init_workers,
         adapter_kwargs=adapter_kwargs,
         encoder_service_kwargs=encoder_service_kwargs,
+        stream_builder_calls=stream_builder_calls,
+        stream_output_builder=stream_output_builder,
         infra_kwargs_seen=infra_kwargs_seen,
         encoder_batch_sizes=encoder_batch_sizes,
         model_worker=model_worker,
+        build_kwargs=build_kwargs,
     )
+
+
+def write_ark_dflash_checkpoint(directory: Path) -> None:
+    (directory / "config.json").write_text(
+        json.dumps(
+            {
+                "speculators_model_type": "dflash",
+                "sliding_window_non_causal": False,
+                "dtype": "bfloat16",
+                "draft_vocab_size": 48000,
+                "aux_hidden_state_layer_ids": [2, 18, 33],
+                "mask_token_id": 151662,
+                "block_size": 8,
+                "transformer_layer_config": {"hidden_size": 2048},
+            }
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("draft_tokens", "context_length", "fail_build", "expected_context_length"),
+    [
+        (None, None, False, 1280),
+        (4, None, False, 1272),
+        (4, 2048, False, 2048),
+        (None, None, True, 1280),
+    ],
+)
+def test_arkasr_dflash_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    draft_tokens: int | None,
+    context_length: int | None,
+    fail_build: bool,
+    expected_context_length: int,
+) -> None:
+    """The draft must reach synchronous verification with enough KV space and no leaked config."""
+    stub = stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: True)
+    write_ark_dflash_checkpoint(tmp_path)
+    overrides = {
+        "speculative_algorithm": "DFLASH",
+        "speculative_draft_model_path": str(tmp_path),
+        "speculative_draft_model_revision": "pinned",
+        "speculative_num_draft_tokens": draft_tokens,
+    }
+    if context_length is not None:
+        overrides["context_length"] = context_length
+    draft_directories: list[Path] = []
+    original_server_args_builder = sglang_backend.build_sglang_server_args
+
+    def capture_server_args(
+        model_path: str, context_length: int, **overrides: object
+    ) -> SimpleNamespace:
+        draft_directory = Path(str(overrides["speculative_draft_model_path"]))
+        draft_directories.append(draft_directory)
+        config = json.loads((draft_directory / "config.json").read_text())
+        assert config["dflash_config"]["target_layer_ids"] == [1, 17, 32]
+        assert overrides["speculative_draft_model_revision"] is None
+        assert overrides["disable_overlap_schedule"] is True
+        assert overrides["enable_torch_compile"] is False
+        assert context_length == expected_context_length
+        if fail_build:
+            raise RuntimeError("engine failed")
+        return original_server_args_builder(model_path, context_length, **overrides)
+
+    monkeypatch.setattr(sglang_backend, "build_sglang_server_args", capture_server_args)
+    if fail_build:
+        with pytest.raises(RuntimeError, match="engine failed"):
+            create_sglang_arkasr_executor("target", server_args_overrides=overrides)
+    else:
+        scheduler = create_sglang_arkasr_executor(
+            "target", server_args_overrides=overrides
+        )
+        assert scheduler.enable_async_decode is False
+        assert stub.infra_kwargs_seen["enable_async_decode"] is False
+        assert stub.infra_kwargs_seen["supports_speculative_decoding"] is True
+        assert (
+            stub.infra_kwargs_seen["speculative_worker_class"]
+            is ReducedVocabularyDFlashWorker
+        )
+    assert len(draft_directories) == 1
+    assert not draft_directories[0].exists()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "is_cuda", "message"),
+    [
+        ({"speculative_algorithm": "EAGLE3"}, True, "supports DFLASH"),
+        ({"speculative_algorithm": "DFLASH"}, True, "needs speculative_draft"),
+        (
+            {"speculative_draft_model_path": "draft"},
+            True,
+            "needs a speculative_algorithm",
+        ),
+        (
+            {
+                "speculative_algorithm": "DFLASH",
+                "speculative_draft_model_path": "draft",
+            },
+            False,
+            "needs a CUDA GPU",
+        ),
+    ],
+)
+def test_arkasr_rejects_unsupported_speculative_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+    is_cuda: bool,
+    message: str,
+) -> None:
+    stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: is_cuda)
+    with pytest.raises(ValueError, match=message):
+        create_sglang_arkasr_executor("target", server_args_overrides=overrides)
+
+
+@pytest.mark.parametrize(
+    ("requested", "with_draft", "expected"),
+    [
+        (None, False, True),
+        (None, True, False),
+        (True, True, True),
+        (False, True, False),
+        (False, False, False),
+    ],
+)
+def test_arkasr_speculative_overlap_is_an_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    requested: bool | None,
+    with_draft: bool,
+    expected: bool,
+) -> None:
+    """Ordinary decode defaults to async; under a draft async decode means speculative overlap, so it runs only when the operator asks for it."""
+    stub = stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: True)
+    write_ark_dflash_checkpoint(tmp_path)
+    overrides = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+        if with_draft
+        else {}
+    )
+
+    scheduler = create_sglang_arkasr_executor(
+        "target", enable_async_decode=requested, server_args_overrides=overrides
+    )
+
+    assert scheduler.enable_async_decode is expected
+    # note (wilsonzheng0327): SGLang builds the draft worker for one loop or the other, so the infrastructure must hear the same choice as the scheduler.
+    if with_draft:
+        assert stub.infra_kwargs_seen["enable_async_decode"] is expected
+        assert stub.build_kwargs["disable_overlap_schedule"] is not expected
+    else:
+        assert "enable_async_decode" not in stub.infra_kwargs_seen
+
+
+def test_arkasr_runner_opts_into_speculative_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        arkasr_builder.ArkasrModelRunner, "__init__", lambda self, *args: None
+    )
+    builder = arkasr_builder.ArkasrEngineBuilder(
+        max_running_requests=32,
+        encoder_max_batch_size=8,
+        max_new_tokens=256,
+        enable_async_decode=None,
+        async_decode_min_batch_size=1,
+        mem_fraction_static=None,
+        mm_embedding_cache_size_bytes=0,
+        enable_torch_compile=False,
+        mm_attention_backend=None,
+        request_build_max_workers=2,
+        request_build_max_pending=16,
+        prefill_coalesce_requests=16,
+        prefill_coalesce_wait_ms=32.0,
+        prefill_coalesce_when_idle=True,
+        prefill_coalesce_requires_pending_builds=True,
+    )
+
+    runner = builder.make_model_runner(object(), object())
+
+    assert isinstance(runner, arkasr_builder.ArkasrModelRunner)
+    assert runner.supports_speculative_async_decode is True
+
+
+def test_arkasr_dflash_worker_reaches_the_decoder() -> None:
+    model = ArkasrForConditionalGeneration.__new__(ArkasrForConditionalGeneration)
+    nn.Module.__init__(model)
+    embedding = nn.Embedding(8, 4)
+    head = nn.Linear(4, 8, bias=False)
+    model.language_model = Qwen2ForCausalLM.__new__(Qwen2ForCausalLM)
+    nn.Module.__init__(model.language_model)
+    model.language_model.lm_head = head
+    model.language_model.model = SimpleNamespace(embed_tokens=embedding)
+    model.language_model.pp_group = SimpleNamespace(is_last_rank=True)
+    model.set_dflash_layers_to_capture([1, 17, 32])
+    assert model.get_input_embeddings() is embedding
+    assert model.lm_head is head
+    assert model.language_model.capture_aux_hidden_states is True
+    assert model.language_model.model.layers_to_capture == [2, 18, 33]
+
+
+def test_arkasr_prefill_graph_uses_resolved_auto_chunk_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub = stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+        resolved_chunked_prefill_size=2048,
+    )
+
+    scheduler = create_sglang_arkasr_executor(
+        "AutoArk-AI/ARK-ASR-3B",
+        server_args_overrides={"chunked_prefill_size": None},
+    )
+
+    prefill = scheduler.server_args.cuda_graph_config.prefill
+    assert stub.build_kwargs["chunked_prefill_size"] is None
+    assert "cuda_graph_bs_prefill" not in stub.build_kwargs
+    assert "cuda_graph_max_bs_prefill" not in stub.build_kwargs
+    assert list(prefill.bs) == sglang_prefill_ladder(2048)
+    assert prefill.max_bs == 2048
+    assert (
+        "prefill",
+        "bs",
+    ) not in scheduler.server_args._cuda_graph_config_locked  # noqa: leading-underscore  # upstream name
+    assert stub.infra_kwargs_seen["enable_prefill_input_embeds"] is True
 
 
 @pytest.mark.parametrize("want_cuda_graph", [True, False])
@@ -295,7 +688,7 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
 ) -> None:
     """The factory defers capture, then calls bootstrap.init_sglang_cuda_graphs
     exactly when the deferred-capture probe asked for graphs."""
-    stub = _stub_arkasr_engine_build(
+    stub = stub_arkasr_engine_build(
         monkeypatch,
         want_cuda_graph=want_cuda_graph,
         encoder_service=SimpleNamespace(close=lambda: None),
@@ -308,6 +701,7 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
         async_decode_min_batch_size=4,
         prefill_coalesce_requests=8,
         prefill_coalesce_wait_ms=24.0,
+        stream_emit_interval_s=0.125,
     )
 
     assert stub.graph_init_workers == ([stub.model_worker] if want_cuda_graph else [])
@@ -321,6 +715,13 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     assert scheduler.prefill_coalesce_wait_ms == 24.0
     assert scheduler.prefill_coalesce_when_idle is True
     assert scheduler.prefill_coalesce_requires_pending_builds is True
+    assert stub.stream_builder_calls == [
+        {
+            "tokenizer": stub.adapter_kwargs["tokenizer"],
+            "min_emit_interval_s": 0.125,
+        }
+    ]
+    assert scheduler.stream_output_builder is stub.stream_output_builder
     assert stub.adapter_kwargs["merge_factor"] == 7
     assert stub.adapter_kwargs["audio_token_id"] == 4242
     assert stub.adapter_kwargs["max_new_tokens"] == 256
@@ -343,7 +744,7 @@ def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(
     before LM admission) and its close() is registered as the scheduler's
     shutdown callback (so the worker thread cannot outlive the stage)."""
     encoder_service = SimpleNamespace(close=lambda: None)
-    stub = _stub_arkasr_engine_build(
+    stub = stub_arkasr_engine_build(
         monkeypatch, want_cuda_graph=False, encoder_service=encoder_service
     )
 
@@ -351,6 +752,13 @@ def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(
 
     assert stub.adapter_kwargs["audio_encoder_service"] is encoder_service
     assert scheduler.shutdown_callback == encoder_service.close
+    assert scheduler.stream_output_builder is stub.stream_output_builder
+    assert stub.stream_builder_calls == [
+        {
+            "tokenizer": stub.adapter_kwargs["tokenizer"],
+            "min_emit_interval_s": 0.05,
+        }
+    ]
     # Note (Akazaakane): The model-internal bound still applies behind the
     # pre-LM service because the two batch limits are independent.
     assert stub.encoder_batch_sizes == [8]
@@ -361,7 +769,7 @@ def test_arkasr_pre_lm_encoder_can_be_disabled(
 ) -> None:
     """With the service off, the request builder falls back to encoding inside
     the LM forward and no shutdown callback is registered."""
-    stub = _stub_arkasr_engine_build(
+    stub = stub_arkasr_engine_build(
         monkeypatch,
         want_cuda_graph=False,
         encoder_service=SimpleNamespace(close=lambda: None),
@@ -385,45 +793,25 @@ def test_arkasr_audio_token_count():
     assert arkasr_audio_token_lengths([400, 8]) == [50, 1]
 
 
-def test_arkasr_config_keeps_lm_params_at_top_level():
-    cfg = _tiny_config()
-    assert cfg.num_attention_heads == 4
-    assert cfg.num_key_value_heads == 2
-    assert cfg.hidden_size == 48
-    assert cfg.num_hidden_layers == 2
-
-
 def test_arkasr_import_does_not_register_auto_config():
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
-    assert "arkasr" not in CONFIG_MAPPING._extra_content
+    assert (
+        "arkasr" not in CONFIG_MAPPING._extra_content
+    )  # noqa: leading-underscore  # upstream name
 
 
-def test_ark_audio_tower_forward_shape():
-    torch.manual_seed(0)
-    cfg = _tiny_config()
-    adapter = ArkAudioMLPAdapter(cfg).eval()
-    mel_frames = 40  # -> conv2 stride2 -> ~20 -> merge4 -> ~5 audio tokens
-    mel = torch.randn(1, cfg.whisper_config.num_mel_bins, mel_frames)
-    with torch.no_grad():
-        out = adapter(mel)
-    assert out.dim() == 3
-    assert out.size(0) == 1
-    assert out.size(-1) == cfg.hidden_size  # projected to LLM hidden
-    assert out.size(1) >= 1
-
-
-def _tiny_ark_audio_mm_model() -> ArkasrForConditionalGeneration:
+def tiny_ark_audio_mm_model() -> ArkasrForConditionalGeneration:
     """Encoder-only ARK model used to test get_audio_feature without an LLM."""
     model = ArkasrForConditionalGeneration.__new__(ArkasrForConditionalGeneration)
     nn.Module.__init__(model)
-    model.audio_encoder = ArkAudioMLPAdapter(_tiny_config()).eval()
+    model.audio_encoder = ArkAudioMLPAdapter(tiny_config()).eval()
     model.encoder_max_batch_size = model.DEFAULT_ENCODER_MAX_BATCH_SIZE
     model.encoder_cuda_graph_runner = None
     return model
 
 
-def _ark_audio_item(
+def ark_audio_item(
     feature: torch.Tensor, valid_frames: int, *, hash_id: int
 ) -> MultimodalDataItem:
     return MultimodalDataItem(
@@ -446,10 +834,10 @@ def _ark_audio_item(
 
 def test_ark_get_audio_feature_batched_matches_serial_and_uses_one_encoder_call():
     torch.manual_seed(2)
-    model = _tiny_ark_audio_mm_model()
+    model = tiny_ark_audio_mm_model()
     lengths = [9, 18, 25]
     items = [
-        _ark_audio_item(torch.randn(1, 8, length), length, hash_id=index + 1)
+        ark_audio_item(torch.randn(1, 8, length), length, hash_id=index + 1)
         for index, length in enumerate(lengths)
     ]
     calls = []
@@ -479,13 +867,23 @@ def test_ark_get_audio_feature_batched_matches_serial_and_uses_one_encoder_call(
     assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
 
 
+def test_ark_get_audio_feature_does_not_build_an_autograd_graph():
+    model = tiny_ark_audio_mm_model()
+    item = ark_audio_item(torch.randn(1, 8, 18), 18, hash_id=99)
+
+    output = model.get_audio_feature([item])
+
+    assert output.grad_fn is None
+    assert not output.requires_grad
+
+
 def test_ark_get_audio_feature_splits_large_batches_in_order():
     torch.manual_seed(4)
-    model = _tiny_ark_audio_mm_model()
+    model = tiny_ark_audio_mm_model()
     model.set_encoder_max_batch_size(2)
     lengths = [9, 18, 25, 12, 20]
     items = [
-        _ark_audio_item(torch.randn(1, 8, length), length, hash_id=200 + index)
+        ark_audio_item(torch.randn(1, 8, length), length, hash_id=200 + index)
         for index, length in enumerate(lengths)
     ]
     calls = []
@@ -511,7 +909,7 @@ def test_ark_get_audio_feature_splits_large_batches_in_order():
 
 def test_ark_get_audio_feature_masks_pre_padded_garbage():
     torch.manual_seed(3)
-    model = _tiny_ark_audio_mm_model()
+    model = tiny_ark_audio_mm_model()
     lengths = [9, 25]
     t_max = max(lengths)
     items = []
@@ -520,7 +918,7 @@ def test_ark_get_audio_feature_masks_pre_padded_garbage():
         feature[:, :, :length] = torch.randn(1, 8, length)
         if length < t_max:
             feature[:, :, length:] = 50.0
-        items.append(_ark_audio_item(feature, length, hash_id=100 + index))
+        items.append(ark_audio_item(feature, length, hash_id=100 + index))
 
     with torch.no_grad():
         batched = model.get_audio_feature(items)
@@ -530,19 +928,12 @@ def test_ark_get_audio_feature_masks_pre_padded_garbage():
     assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
 
 
-def test_ark_tower_rope_toggle():
-    cfg = _tiny_config()
-    tower = ArkAudioTower(cfg)
-    assert tower.use_rope is True
-    assert hasattr(tower, "rotary_embedding")
-
-
 def test_ark_suppressed_token_ids():
     """The generation-suppression set must cover every ``<...>`` added/special
     token except EOS (mirrors the checkpoint's bad_words_ids), so markers like
     <|audio|> / <tool_call> cannot leak into transcripts."""
 
-    class _FakeTok:
+    class FakeTok:
         eos_token_id = 100
         all_special_ids = [100, 101, 102]
 
@@ -555,12 +946,49 @@ def test_ark_suppressed_token_ids():
                 "</tool_call>": 106,
             }
 
-    ids = _build_suppressed_token_ids(_FakeTok())
+    ids = build_suppressed_token_ids(FakeTok())
     assert 100 not in ids  # EOS kept
     assert 101 in ids and 102 in ids  # special ids
     assert 103 in ids and 104 in ids and 106 in ids  # <...> added tokens
     assert 105 not in ids  # normal token untouched
     assert ids == sorted(ids)  # deterministic order
+
+
+def test_ark_result_adapter_returns_spec_tokens_details() -> None:
+    class FakeTokenizer:
+        eos_token_id = 100
+        vocab_size = 200
+        all_special_ids = [100]
+
+        def get_added_vocab(self):
+            return {}
+
+        def decode(self, token_ids, skip_special_tokens, clean_up_tokenization_spaces):
+            return " ".join(str(token) for token in token_ids)
+
+    _, result_adapter = request_builders.make_arkasr_scheduler_adapters(
+        tokenizer=FakeTokenizer(),
+        max_new_tokens=8,
+        feature_extractor=object(),
+    )
+    data = request_builders.ArkASRRequestData(
+        input_ids=torch.tensor([1]),
+        output_ids=[7, 8],
+        stage_payload=SimpleNamespace(request_id="r", request=None),
+    )
+    data.spec_tokens_details = {
+        "spec_accept_rate": 0.5,
+        "spec_accept_length": 2.0,
+        "spec_num_correct_drafts": 1,
+        "spec_num_proposed_drafts": 2,
+        "spec_verify_ct": 1,
+        "spec_correct_drafts_histogram": [0, 1],
+    }
+
+    result = result_adapter(data)
+
+    assert result.data["text"] == "7 8"
+    assert result.data["spec_tokens_details"] == data.spec_tokens_details
 
 
 def test_ark_encoder_layer_fp16_clamp():
@@ -570,8 +998,8 @@ def test_ark_encoder_layer_fp16_clamp():
     """
     from sglang_omni.models.arkasr.audio_tower import WhisperSpecialEncoderLayer
 
-    cfg = _tiny_config().whisper_config
-    cfg._attn_implementation = "sdpa"
+    cfg = tiny_config().whisper_config
+    cfg._attn_implementation = "sdpa"  # noqa: leading-underscore  # production name
 
     # fp16: drive fc2 output large enough to exceed fp16 max (~65504) so an
     # unclamped residual would overflow to +/-inf. Clamp must keep it finite.

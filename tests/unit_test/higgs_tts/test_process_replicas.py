@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import sglang_omni.platforms as platforms
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_factory_signature_args,
@@ -14,13 +16,55 @@ from sglang_omni.config.runtime import (
 from sglang_omni.config.schema import EndpointsConfig, ProcessConfig
 from sglang_omni.models.higgs_tts import stages
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
-from sglang_omni.pipeline.mp_runner import _build_stage_groups
+from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 
 
-def _same_gpu_frontend_replica_config(tmp_path) -> HiggsTtsPipelineConfig:
+@pytest.mark.parametrize(
+    "stage_overrides",
+    [
+        [("vocoder.process", "tts_frontend")],
+        [("vocoder.process", "tts_frontend"), ("vocoder.gpu", "1")],
+        [("vocoder.process", "tts_frontend"), ("vocoder.gpu", "null")],
+    ],
+)
+def test_higgs_rejects_cuda_consumers_sharing_reference_encoder_process(
+    monkeypatch: pytest.MonkeyPatch,
+    stage_overrides: list[tuple[str, str]],
+) -> None:
+    """Encode backend settings must not reach another stage's CUDA launches."""
+    monkeypatch.setattr(platforms.current_platform, "device_type", "cuda")
+    config = HiggsTtsPipelineConfig(model_path="model")
+    with pytest.raises(
+        ValueError, match="CUDA audio_encoder must use a separate process"
+    ):
+        ConfigManager(config).merge_config(stage_overrides)
+
+
+@pytest.mark.parametrize("cpu_stage", ["audio_encoder", "vocoder"])
+def test_higgs_allows_cpu_codec_to_share_a_cuda_stage_process(
+    monkeypatch: pytest.MonkeyPatch,
+    cpu_stage: str,
+) -> None:
+    """CPU codecs do not change the CUDA backend policy of a shared process."""
+    monkeypatch.setattr(platforms.current_platform, "device_type", "cuda")
+    config = ConfigManager(HiggsTtsPipelineConfig(model_path="model")).merge_config(
+        [
+            ("audio_encoder.process", "tts_frontend"),
+            ("vocoder.process", "tts_frontend"),
+            (f"{cpu_stage}.factory.device", "cpu"),
+        ]
+    )
+    assert (
+        config.stage_named("audio_encoder").process
+        == config.stage_named("vocoder").process
+    )
+    assert config.stage_named(cpu_stage).factory.device == "cpu"
+
+
+def same_gpu_frontend_replica_config(tmp_path) -> HiggsTtsPipelineConfig:
     base = HiggsTtsPipelineConfig(model_path="model")
     stages_cfg = [stage.model_copy(deep=True) for stage in base.stages]
     tts_engine_idx = next(
@@ -43,10 +87,10 @@ def _same_gpu_frontend_replica_config(tmp_path) -> HiggsTtsPipelineConfig:
 
 
 def test_higgs_frontend_replicas_inject_same_gpu_id(tmp_path) -> None:
-    config = _same_gpu_frontend_replica_config(tmp_path)
+    config = same_gpu_frontend_replica_config(tmp_path)
     prep = prepare_pipeline_runtime(config)
     try:
-        groups = _build_stage_groups(
+        groups = build_stage_groups(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
@@ -84,7 +128,7 @@ def test_higgs_frontend_replicas_inject_same_gpu_id(tmp_path) -> None:
             require_gpu_id=audio_encoder.require_factory_gpu_id,
             stage_name=audio_encoder.stage_name,
         )
-        assert factory_args["device"] == "cuda"
+        assert "device" not in factory_args
         assert factory_args["gpu_id"] == 0
 
     gpu_plan = prep.placement_plan.gpus[0]
@@ -100,7 +144,7 @@ def test_higgs_audio_encoder_resolves_placement_gpu_id(monkeypatch) -> None:
         return f"{device}:{gpu_id}"
 
     class FakeAdapter:
-        def __init__(self, _tokenizer) -> None:
+        def __init__(self, tokenizer) -> None:
             pass
 
     class FakeCodec:
@@ -109,7 +153,7 @@ def test_higgs_audio_encoder_resolves_placement_gpu_id(monkeypatch) -> None:
         def __init__(self) -> None:
             self.model = SimpleNamespace(acoustic_encoder=object())
 
-        def encode_reference(self, _waveform, *, sample_rate: int) -> torch.Tensor:
+        def encode_reference(self, waveform, *, sample_rate: int) -> torch.Tensor:
             assert sample_rate == self.SAMPLE_RATE
             return torch.zeros((1, 8), dtype=torch.long)
 
@@ -119,9 +163,11 @@ def test_higgs_audio_encoder_resolves_placement_gpu_id(monkeypatch) -> None:
         codec_loads.append((checkpoint, device, dtype))
         return fake_codec
 
-    monkeypatch.setattr(stages, "resolve_device_spec", resolve)
+    import sglang_omni.utils.device as device_mod
+
+    monkeypatch.setattr(device_mod, "resolve_device_spec", resolve)
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
-    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda path: object())
     monkeypatch.setattr(
         stages,
         "PreTrainedTokenizerFast",

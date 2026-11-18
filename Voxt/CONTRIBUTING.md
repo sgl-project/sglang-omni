@@ -1,0 +1,46 @@
+# Contributing to Voxt
+
+**English** · [简体中文](#参与贡献)
+
+Voxt lives in the [SGLang-Omni](https://github.com/sgl-project/sglang-omni) repository and takes its issues and pull requests there, under the repository's licence, the Apache License 2.0. No contributor licence agreement is needed.
+
+- **Bugs**: Settings → About → Report a problem opens a GitHub issue with the diagnostics filled in. Or open an [issue](https://github.com/sgl-project/sglang-omni/issues) by hand, with "[VoxtNew]" in its title: what happened, what you expected, the steps.
+- **Changes**: Voxt does Transcribe, Translate and Rewrite, Meetings and Notes, with App enhancement, the dictionary and History, and `Voxt transcribe` for recordings. Speech runs on this Mac or a cloud speech API, and the language models are services the user sets up (README.md, What Voxt does). For anything larger than a fix, open an issue first.
+- Read [AGENTS.md](AGENTS.md) (the rules for changes) and [docs/architecture.md](docs/architecture.md) before changing code.
+
+## Pull requests
+
+1. Keep a pull request to one change, with tests. Commit messages and code comments are in English.
+2. Every user-visible string goes through `i18n.T` with an English message, and its Simplified Chinese translation goes into `internal/i18n/locales/zh-Hans/<area>.json`, the area of the code that uses it (`common.json` when shared).
+3. Keep feature changes out of view files and UI changes out of logic files. The feature side owns `internal/*`, wiring, view-state builders, actions, and fixtures. The UI side owns view files, `ui_*.go`, layout, and icons. If one change needs both sides, agree on the view-state or actions interface and split the pull request by ownership. `TestViewFiles` enforces the boundary.
+4. A change users notice gets a line in the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md), in English and Chinese.
+5. Run the checks below, and say in the pull request what changed and how you checked it. For a change in the UI, add before and after screenshots.
+
+## Development
+
+Voxt is a Go app on [MyGo](https://github.com/egoist/mygo) (native UI, no cgo) with a small Swift helper. Everything but the helper is plain Go and is tested on Linux; building the app needs a Mac with macOS 15 or later on Apple silicon and Xcode. Go 1.27.1 (`GOTOOLCHAIN=auto` fetches it). Run these from `Voxt/`:
+
+```sh
+CGO_ENABLED=0 go test ./...                                  # all tests (Linux and Mac)
+go tool mygo vet .                                           # go vet and MyGo's UI checks
+git ls-files '*.go' ':!:third_party/**' | xargs gofmt -l    # must print nothing
+go test -run TestKeyParity ./internal/i18n                   # strings and zh-Hans
+VOXTNEW_SNAPSHOTS=/tmp/shots go test -run TestSnapshots .   # every page as PNG
+cd helper && swift test                                      # the Swift helper (on a Mac)
+scripts/build-helper.sh && go tool mygo build   # build the app (on a Mac)
+scripts/release.sh                                           # the release build, the Omni runtime inside (docs/release.md)
+```
+
+The store's tests use MyGo's SQLite plugin, which downloads its library once (checked against its SHA-256) or uses `MYGO_SQLITE_LIBRARY`. On Linux the overlay's pixel checks of Chinese text need a CJK font (Ubuntu: `fonts-noto-cjk`). What needs permissions or a screen is checked by hand: [docs/manual-test.md](docs/manual-test.md).
+
+---
+
+## 参与贡献
+
+Voxt 在 [SGLang-Omni](https://github.com/sgl-project/sglang-omni) 仓库里，问题和 PR 都提到那里，按仓库的 Apache License 2.0 授权，不需要签贡献者协议。
+
+- **报告问题**：设置 → 诊断与关于 → 反馈问题，会打开一个已填好诊断信息的 GitHub issue；也可以手动开 [issue](https://github.com/sgl-project/sglang-omni/issues)，标题带上“[VoxtNew]”，写清发生了什么、你期望什么、复现步骤。
+- **改动**：Voxt 做转录、翻译、改写、会议和笔记，加上应用增强、词典和历史，以及转录录音文件的 `Voxt transcribe`。语音识别在本机或用云端语音服务，语言模型是用户自己设置的服务（README.zh-CN.md 的“Voxt 能做什么”）。比修 bug 更大的改动，先开 issue 讨论。
+- 改代码前先读 [AGENTS.md](AGENTS.md)（改动规则）和 [docs/architecture.md](docs/architecture.md)。
+- **PR 分工**：功能 PR 不改视图文件，UI PR 不改逻辑文件。功能侧拥有 `internal/*`、接线、view state 构造器、actions 和 fixture；UI 侧拥有视图文件、`ui_*.go`、布局和图标。需要跨界时，先约定 view state 或 actions 接口，再按归属拆 PR。`TestViewFiles` 检查这条边界。
+- PR：一个 PR 一件事，带测试；提交信息和代码注释用英文；界面文字都经过 `i18n.T`，中文补在 `internal/i18n/locales/zh-Hans/<区域>.json`（用到它的代码所在的区域，多处共用放 `common.json`）；用户能察觉的改动在 [CHANGELOG.md](CHANGELOG.md) 的 `Unreleased` 里中英文各写一行；跑一遍上面的检查。

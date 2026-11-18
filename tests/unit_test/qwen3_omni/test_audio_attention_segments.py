@@ -3,31 +3,39 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import torch
 import torch.nn as nn
+from sglang.srt.layers.attention.vision import prepare_vision_attention_metadata
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 from sglang_omni.models.qwen3_omni.components.audio_encoder import (
-    _SegmentSplits,
-    _share_segment_splits,
+    SegmentSplits,
+    share_segment_splits,
+)
+from sglang_omni.models.qwen3_omni.components.audio_layer_graph import (
+    stack_qkv_projection,
 )
 
 HEADS, HEAD_DIM = 4, 16
 DIM = HEADS * HEAD_DIM
 
 
-class _Attention(nn.Module):
+class Attention(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         for name in ("q_proj", "k_proj", "v_proj", "out_proj"):
-            setattr(self, name, nn.Linear(DIM, DIM, bias=False))
+            setattr(self, name, nn.Linear(DIM, DIM))
         self.num_heads = HEADS
         self.scaling = HEAD_DIM**-0.5
         self.attention_dropout = 0.0
         self.config = hf_modeling.Qwen3OmniMoeAudioEncoderConfig(
             d_model=DIM, encoder_attention_heads=HEADS
         )
-        self.config._attn_implementation = "sdpa"
+        self.config._attn_implementation = (
+            "sdpa"  # noqa: leading-underscore  # production name
+        )
 
     def forward(self, hidden_states, cu_seqlens, **kwargs):
         """Stands in for the stock per-layer device-to-host split."""
@@ -40,7 +48,8 @@ class _Attention(nn.Module):
             for proj in (self.q_proj, self.k_proj, self.v_proj)
         )
         fn = hf_modeling.ALL_ATTENTION_FUNCTIONS.get_interface(
-            self.config._attn_implementation, hf_modeling.eager_attention_forward
+            self.config._attn_implementation,
+            hf_modeling.eager_attention_forward,  # noqa: leading-underscore  # production name
         )
         lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
         splits = [torch.split(t, lengths, dim=2) for t in (q, k, v)]
@@ -61,41 +70,33 @@ class _Attention(nn.Module):
         return self.out_proj(out)
 
 
-class _Layer(nn.Module):
+class Layer(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.self_attn = _Attention()
+        self.self_attn = Attention()
 
 
-class _Tower(nn.Module):
+class Tower(nn.Module):
     def __init__(self, n: int = 3) -> None:
         super().__init__()
-        self.layers = nn.ModuleList(_Layer() for _ in range(n))
+        self.layers = nn.ModuleList(Layer() for _ in range(n))
 
 
-def _inputs(segments: list[int]):
+def inputs(segments: list[int]):
     total = sum(segments)
     hs = torch.randn(total, DIM)
     cu = torch.tensor([0, *segments], dtype=torch.int32).cumsum(0).to(torch.int32)
     return hs, cu
 
 
-def test_share_segment_splits_patches_every_layer() -> None:
-    tower, splits = _Tower(), _SegmentSplits()
-    _share_segment_splits(tower, splits)
-    for layer in tower.layers:
-        assert layer.self_attn._omni_segment_splits is splits
-        assert hasattr(layer.self_attn, "_omni_unshared_forward")
-
-
 def test_shared_splits_match_the_per_layer_split_bitwise() -> None:
     torch.manual_seed(0)
-    tower, splits = _Tower(), _SegmentSplits()
+    tower, splits = Tower(), SegmentSplits()
     segments = [104, 104, 52]
-    hs, cu = _inputs(segments)
+    hs, cu = inputs(segments)
     with torch.no_grad():
         reference = [layer.self_attn(hs, cu) for layer in tower.layers]
-    _share_segment_splits(tower, splits)
+    share_segment_splits(tower, splits, None)
     splits.value = segments
     with torch.no_grad():
         shared = [layer.self_attn(hs, cu) for layer in tower.layers]
@@ -103,13 +104,47 @@ def test_shared_splits_match_the_per_layer_split_bitwise() -> None:
         assert torch.equal(got, want)
 
 
+def test_packed_attention_receives_the_call_metadata_in_every_layer() -> None:
+    torch.manual_seed(0)
+    packed_attention = Mock(
+        side_effect=lambda query, key, value, cu_seqlens, **kwargs: value
+    )
+    tower, splits = Tower(), SegmentSplits()
+    for layer in tower.layers:
+        stack_qkv_projection(layer.self_attn)
+    share_segment_splits(tower, splits, packed_attention)
+    segments = [104, 104, 52]
+    hs, cu = inputs(segments)
+    splits.value = segments
+    splits.attention_metadata = prepare_vision_attention_metadata(
+        cu, cu.device, max_seqlen=max(segments)
+    )
+    with torch.no_grad():
+        for layer in tower.layers:
+            attention = layer.self_attn
+            torch.testing.assert_close(
+                attention(hs, cu), attention.out_proj(attention.v_proj(hs))
+            )
+            attention_call = packed_attention.call_args
+            for received, projection in zip(
+                attention_call.args[:3],
+                (attention.q_proj, attention.k_proj, attention.v_proj),
+            ):
+                torch.testing.assert_close(
+                    received, projection(hs).reshape(sum(segments), HEADS, HEAD_DIM)
+                )
+            assert (
+                attention_call.kwargs["forward_metadata"] is splits.attention_metadata
+            )
+
+
 def test_missing_splits_fall_back_to_the_stock_path() -> None:
     torch.manual_seed(0)
-    tower, splits = _Tower(), _SegmentSplits()
-    hs, cu = _inputs([104, 26])
+    tower, splits = Tower(), SegmentSplits()
+    hs, cu = inputs([104, 26])
     with torch.no_grad():
         reference = tower.layers[0].self_attn(hs, cu)
-    _share_segment_splits(tower, splits)
+    share_segment_splits(tower, splits, None)
     splits.value = None
     with torch.no_grad():
         assert torch.equal(tower.layers[0].self_attn(hs, cu), reference)
@@ -117,11 +152,11 @@ def test_missing_splits_fall_back_to_the_stock_path() -> None:
 
 def test_mismatched_splits_fall_back_instead_of_corrupting() -> None:
     torch.manual_seed(0)
-    tower, splits = _Tower(), _SegmentSplits()
-    hs, cu = _inputs([104, 26])
+    tower, splits = Tower(), SegmentSplits()
+    hs, cu = inputs([104, 26])
     with torch.no_grad():
         reference = tower.layers[0].self_attn(hs, cu)
-    _share_segment_splits(tower, splits)
+    share_segment_splits(tower, splits, None)
     splits.value = [64, 64]
     with torch.no_grad():
         assert torch.equal(tower.layers[0].self_attn(hs, cu), reference)
@@ -129,10 +164,10 @@ def test_mismatched_splits_fall_back_instead_of_corrupting() -> None:
 
 def test_shared_splits_do_not_copy_from_device_per_layer() -> None:
     """The whole point is one host round-trip per request, not one per layer."""
-    tower, splits = _Tower(), _SegmentSplits()
-    _share_segment_splits(tower, splits)
+    tower, splits = Tower(), SegmentSplits()
+    share_segment_splits(tower, splits, None)
     segments = [104, 26]
-    hs, cu = _inputs(segments)
+    hs, cu = inputs(segments)
     splits.value = segments
     calls = {"n": 0}
     original = torch.Tensor.tolist

@@ -2,22 +2,89 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory_args
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.models.qwen3_omni import config as qwen3_omni_config
 from sglang_omni.models.qwen3_omni.config import (
+    TALKER_START_MIN_CHUNKS,
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
+    Qwen3OmniSpeechPipelineConfig,
 )
-from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _stage(config, name: str):
+def make_stage(config, name: str):
     return next(stage for stage in config.stages if stage.name == name)
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [Qwen3OmniPipelineConfig, Qwen3OmniSpeechPipelineConfig],
+)
+def test_preprocessing_cpu_policy_is_resolved_at_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    config_cls: type[Qwen3OmniPipelineConfig | Qwen3OmniSpeechPipelineConfig],
+) -> None:
+    capacity = Mock(return_value=32)
+    monkeypatch.setattr(qwen3_omni_config, "effective_cpu_count", capacity)
+    config = config_cls(model_path="dummy")
+    document = config.model_dump()
+    capacity.assert_not_called()
+
+    assert (
+        config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "32"
+    )
+    for stage in config.stages:
+        if stage.name != "preprocessing":
+            assert "OMP_NUM_THREADS" not in config.resolved_stage_env_defaults(
+                stage.name
+            )
+    capacity.assert_called_once_with()
+    assert config.model_dump() == document
+
+    capacity.return_value = 2
+    rebuilt = config_cls.model_validate(document)
+    assert config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "2"
+    assert (
+        rebuilt.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "2"
+    )
+    assert rebuilt.model_dump() == document
+
+
+@pytest.mark.parametrize(
+    ("pipeline_env", "stage_env", "expected_threads"),
+    [
+        ({"OMP_NUM_THREADS": "12"}, {}, "12"),
+        ({}, {"OMP_NUM_THREADS": "6"}, "6"),
+        ({"OMP_NUM_THREADS": "12"}, {"OMP_NUM_THREADS": "6"}, "6"),
+    ],
+)
+def test_preprocessing_cpu_policy_preserves_explicit_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline_env: dict[str, str],
+    stage_env: dict[str, str],
+    expected_threads: str,
+) -> None:
+    capacity = Mock(side_effect=AssertionError("explicit OMP must win"))
+    monkeypatch.setattr(qwen3_omni_config, "effective_cpu_count", capacity)
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    config.env_defaults.update(pipeline_env)
+    config.stage_named("preprocessing").env.update(stage_env)
+    document = config.model_dump()
+
+    assert (
+        config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"]
+        == expected_threads
+    )
+    assert config.model_dump() == document
+    capacity.assert_not_called()
 
 
 def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
@@ -44,109 +111,11 @@ def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
     merged = manager.merge_config(extra_args)
     plan = build_stage_placement_plan(merged)
 
-    assert _stage(merged, "thinker").gpu_memory_fraction == pytest.approx(0.35)
-    assert _stage(merged, "thinker").engine.mem_fraction_static == pytest.approx(0.35)
+    assert make_stage(merged, "thinker").gpu_memory_fraction == pytest.approx(0.35)
+    assert make_stage(merged, "thinker").engine.mem_fraction_static == pytest.approx(
+        0.35
+    )
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.85)
-
-
-def test_config_manager_applies_dotted_tp_size_override() -> None:
-    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
-    merged = manager.merge_config({"thinker.tp_size": 2, "thinker.gpu": [0, 1]})
-    thinker = _stage(merged, "thinker")
-
-    assert thinker.tp_size == 2
-    assert thinker.gpu == [0, 1]
-
-
-def test_config_manager_sets_tp_size_directly() -> None:
-    """tp_size is the only spelling; the parallelism.tp mirror is gone."""
-    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
-    merged = manager.merge_config({"thinker.tp_size": 2, "thinker.gpu": [0, 1]})
-    thinker = _stage(merged, "thinker")
-
-    assert thinker.tp_size == 2
-    assert thinker.gpu == [0, 1]
-
-
-def test_config_manager_rejects_trailing_key_without_value() -> None:
-    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
-
-    with pytest.raises(ValueError, match="Missing value"):
-        manager.parse_extra_args(
-            [
-                "--thinker.gpu_memory_fraction",
-                "0.35",
-                "--thinker.engine.mem-fraction-static",
-            ]
-        )
-
-
-def test_qwen3_omni_h20_colocated_example_config_loads_and_plans() -> None:
-    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h20.yaml"
-
-    manager = ConfigManager.from_file(str(config_path))
-    config = manager.config
-    plan = build_stage_placement_plan(config)
-    topology = build_compiled_process_topology(config)
-
-    assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
-    assert config.name == "qwen3-omni-colocated-h20"
-    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
-    assert [group.name for group in topology.groups] == [
-        "preprocessing",
-        "image_encoder",
-        "audio_encoder",
-        "thinker",
-        "decode",
-        "talker_ar",
-        "code2wav",
-    ]
-    assert _stage(config, "thinker").engine.mem_fraction_static is None
-    assert _stage(config, "talker_ar").engine.mem_fraction_static is None
-    assert {
-        stage.name: stage.gpu
-        for stage in config.stages
-        if stage.name
-        in {
-            "image_encoder",
-            "audio_encoder",
-            "thinker",
-            "talker_ar",
-            "code2wav",
-        }
-    } == {
-        "image_encoder": 0,
-        "audio_encoder": 0,
-        "thinker": 0,
-        "talker_ar": 0,
-        "code2wav": 0,
-    }
-
-
-def test_qwen3_omni_mmsu_example_config_uses_text_pipeline() -> None:
-    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_mmsu.yaml"
-
-    manager = ConfigManager.from_file(str(config_path))
-    config = manager.config
-    plan = build_stage_placement_plan(config)
-    thinker_args = resolve_stage_factory_args(_stage(config, "thinker"), config)
-
-    assert isinstance(config, Qwen3OmniPipelineConfig)
-    assert config.name == "qwen3-omni-mmsu"
-    assert [stage.name for stage in config.stages] == [
-        "preprocessing",
-        "image_encoder",
-        "audio_encoder",
-        "mm_aggregate",
-        "thinker",
-        "decode",
-    ]
-    assert {stage.process for stage in config.stages} == {"pipeline"}
-    assert "talker_ar" not in {stage.name for stage in config.stages}
-    assert "code2wav" not in {stage.name for stage in config.stages}
-    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.8)
-    assert thinker_args["total_gpu_memory_fraction"] == pytest.approx(0.75)
-    assert thinker_args["server_args_overrides"]["max_running_requests"] == 4
 
 
 def test_qwen_preprocessing_model_video_fps_resolves_to_factory_arg() -> None:
@@ -155,20 +124,20 @@ def test_qwen_preprocessing_model_video_fps_resolves_to_factory_arg() -> None:
         [("preprocessing.factory.video_fps", "2.0")]
     )
 
-    args = resolve_stage_factory_args(_stage(merged, "preprocessing"), merged)
+    args = resolve_stage_factory_args(make_stage(merged, "preprocessing"), merged)
 
     assert args["video_fps"] == 2.0
 
 
 def test_h20_colocated_example_reserve_keeps_raw_budget_in_resolved_config() -> None:
-    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h20.yaml"
+    config_path = REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h20.yaml"
     config = ConfigManager.from_file(str(config_path)).config
 
     merged = ConfigManager(config).merge_config(
         [("thinker.factory.encoder_mem_reserve", "0.05")]
     )
     plan = build_stage_placement_plan(merged)
-    thinker = _stage(merged, "thinker")
+    thinker = make_stage(merged, "thinker")
     thinker_args = resolve_stage_factory_args(thinker, merged)
 
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
@@ -231,19 +200,128 @@ stages:
         ConfigManager.from_file(str(config_path))
 
 
-def test_qwen3_omni_h100_bf16_config_enables_speech_prefill_graph() -> None:
-    from pathlib import Path
+@pytest.mark.parametrize(
+    ("is_rocm", "expected_env"),
+    [
+        (True, {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}),
+        (False, {}),
+    ],
+)
+def test_qwen3_omni_talker_stage_env_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    is_rocm: bool,
+    expected_env: dict[str, str],
+) -> None:
+    """The talker stage disables aiter greedy sampling on ROCm only."""
+    monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: is_rocm)
 
-    repo_root = Path(__file__).resolve().parents[3]
-    config_path = (
-        repo_root / "examples" / "configs" / "qwen3_omni_colocated_h100_bf16.yaml"
+    for config_cls in (
+        Qwen3OmniSpeechPipelineConfig,
+        Qwen3OmniSpeechColocatedPipelineConfig,
+    ):
+        config = config_cls(model_path="dummy")
+
+        assert make_stage(config, "talker_ar").env == expected_env
+        assert make_stage(config, "thinker").env == {}
+
+
+def test_colocated_one_chunk_start_reaches_bootstrap(monkeypatch):
+    from sglang.srt import runtime_context
+
+    from sglang_omni.models.qwen3_omni import bootstrap, stages
+
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+    config = manager.merge_config({"talker_ar.engine.disable_cuda_graph": True})
+    args = resolve_stage_factory_args(make_stage(config, "talker_ar"), config)
+    monkeypatch.setattr(stages, "avail_gpu_mem", lambda *_: 0)
+    monkeypatch.setattr(stages, "get_process_gpu_memory_bytes", lambda *_: 0)
+    monkeypatch.setattr(stages, "validate_generation_batch_policy", lambda **_: None)
+    monkeypatch.setattr(
+        bootstrap, "create_talker_scheduler", lambda *_, **kwargs: kwargs
+    )
+    monkeypatch.setattr(
+        runtime_context,
+        "get_schedule",
+        lambda: SimpleNamespace(mem_fraction_static=0.5),
+    )
+    received = stages.create_talker_ar_executor_from_config(**args)
+    assert received["enable_partial_start"] is True
+    assert received["partial_start_min_chunks"] == TALKER_START_MIN_CHUNKS
+
+
+@pytest.mark.parametrize(
+    ("engine_overrides", "is_nvidia", "backend", "ladder_top", "operator_selected"),
+    [
+        ({}, True, "breakable", 2048, False),
+        (
+            {"talker_ar.engine.cuda_graph_max_bs_prefill": 512},
+            True,
+            "breakable",
+            512,
+            False,
+        ),
+        (
+            {"talker_ar.engine.disable_prefill_cuda_graph": True},
+            True,
+            "disabled",
+            None,
+            False,
+        ),
+        (
+            {"talker_ar.engine.cuda_graph_backend_prefill": "disabled"},
+            True,
+            "disabled",
+            2048,
+            True,
+        ),
+        ({}, False, "disabled", 2048, False),
+        (
+            {"talker_ar.engine.cuda_graph_backend_prefill": "breakable"},
+            False,
+            "breakable",
+            2048,
+            True,
+        ),
+    ],
+)
+def test_talker_stage_defaults_the_prefill_graph_on_nvidia_and_the_operator_wins(
+    monkeypatch, engine_overrides, is_nvidia, backend, ladder_top, operator_selected
+):
+    from sglang.srt import runtime_context
+
+    from sglang_omni.models.qwen3_omni import bootstrap, stages
+    from sglang_omni.platforms import current_platform
+
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+    config = manager.merge_config(engine_overrides)
+    args = resolve_stage_factory_args(make_stage(config, "talker_ar"), config)
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: is_nvidia)
+    monkeypatch.setattr(current_platform, "enable_talker_graph", lambda: True)
+    monkeypatch.setattr(stages, "avail_gpu_mem", lambda *_: 0)
+    monkeypatch.setattr(stages, "get_process_gpu_memory_bytes", lambda *_: 0)
+    monkeypatch.setattr(stages, "validate_generation_batch_policy", lambda **_: None)
+    monkeypatch.setattr(
+        stages,
+        "build_sglang_server_args",
+        lambda model_path, context_length, **overrides: SimpleNamespace(
+            mem_fraction_static=0.5, overrides=overrides
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "create_talker_scheduler",
+        lambda server_args, gpu_id, **kwargs: {**kwargs, **server_args.overrides},
+    )
+    monkeypatch.setattr(
+        runtime_context,
+        "get_schedule",
+        lambda: SimpleNamespace(mem_fraction_static=0.5),
     )
 
-    config = ConfigManager.from_file(str(config_path)).config
-    overrides = _stage(config, "thinker").engine.overrides()
+    built = stages.create_talker_ar_executor_from_config(**args)
 
-    assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
-    assert "disable_radix_cache" not in overrides
-    assert overrides["cuda_graph_backend_prefill"] == "breakable"
-    assert "cuda_graph_bs_prefill" not in overrides
-    assert overrides["cuda_graph_max_bs_prefill"] == 2048
+    assert built["cuda_graph_backend_prefill"] == backend
+    assert built.get("cuda_graph_max_bs_prefill") == ladder_top
+    ladder = built.get("cuda_graph_bs_prefill")
+    assert (max(ladder) if ladder else None) == ladder_top
+    assert built["operator_selected_prefill_backend"] is operator_selected

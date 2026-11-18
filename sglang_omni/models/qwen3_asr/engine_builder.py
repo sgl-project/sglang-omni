@@ -4,13 +4,27 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING, Callable
 
+from sglang.srt.environ import envs
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import get_hip_version, is_gfx95_supported
-from transformers import AutoFeatureExtractor, AutoTokenizer
+from transformers import (
+    AutoFeatureExtractor,
+    AutoTokenizer,
+    PreTrainedTokenizerBase,
+    WhisperFeatureExtractor,
+)
 
-from sglang_omni.models.qwen3_asr import mrope_fast_path, request_builders
+from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.models.qwen3_asr import (
+    metadata_glue,
+    mrope_fast_path,
+    request_builders,
+)
 from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_max_audio_tokens,
     qwen3_asr_max_output_tokens,
@@ -19,24 +33,60 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.models.qwen3_asr.request_builders import Qwen3ASRRequestData
 from sglang_omni.platforms import current_platform
-from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.platforms.npu import validate_npu_graph_environment
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
+from sglang_omni.scheduling.engine_factory import (
+    AsrEngineBuilder,
+    GenerationDefaults,
+    SchedulerExtras,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
-    build_default_prefill_cuda_graph_bs,
-    clamp_prefill_cuda_graph_max_bs,
     get_decode_cuda_graph_bs,
 )
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.types import DeferredAdmission
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
+
+if TYPE_CHECKING:
+    from sglang_omni.models.qwen3_asr.sglang_model import (
+        Qwen3ASRForConditionalGeneration,
+    )
+    from sglang_omni.models.qwen3_asr.torch_mps_runner import (
+        Qwen3ASRTorchMpsModelRunner,
+    )
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
 
-class Qwen3ASREngineBuilder(AsrEngineBuilder):
+QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS = 32
+
+
+class Qwen3ASRModelRunner(ModelRunner[Qwen3ASRRequestData]):
+    """The shared AR runner, opted into speculative overlap and, on CUDA, the shared verify repetition_penalty.
+
+    Audio embeddings enter only at prefill, so a decode round reads nothing but the tokens the previous round left on the device.
+    """
+
+    supports_speculative_async_decode: bool = True
+    # note (wilsonzheng0327): the verify penalty is validated on CUDA only, so other platforms keep refusing repetition_penalty under the draft.
+    speculative_repetition_penalty_owner = (
+        "verify_logits" if current_platform.is_cuda() else None
+    )
+
+
+class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
     model_name = "Qwen3-ASR"
     model_arch_override = "Qwen3ASRForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = True
+    supports_full_prefill_cuda_graph = True
 
     def __init__(
         self,
@@ -44,10 +94,11 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         max_running_requests: int,
         max_new_tokens: int,
         enable_async_decode: bool,
-        async_decode_min_batch_size: int,
+        enable_plain_fallback: bool,
+        async_decode_min_batch_size: int | None,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
-        enable_torch_compile: bool,
+        enable_torch_compile: bool | None,
         torch_compile_max_bs: int,
         mm_attention_backend: str | None,
         request_build_max_workers: int,
@@ -56,7 +107,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         prefill_coalesce_wait_ms: float,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
-        prefill_coalesce_after_builds_during_decode: bool,
+        prefill_coalesce_after_builds_during_decode: bool | None,
         stream_emit_interval_s: float,
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 4096,
@@ -64,18 +115,29 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         pre_lm_max_batch_size: int = 8,
         pre_lm_max_batch_wait_ms: int = 0,
         enable_encoder_cuda_graph: bool = True,
+        max_audio_clip_s: float | None = None,
     ) -> None:
         if pre_lm_max_batch_size < 1:
             raise ValueError(
                 f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
             )
+        else:
+            pass
+        if max_audio_clip_s is not None and max_audio_clip_s <= 0:
+            raise ValueError(f"max_audio_clip_s must be > 0, got {max_audio_clip_s}")
+        else:
+            pass
         if pre_lm_max_batch_wait_ms < 0:
             raise ValueError(
                 f"pre_lm_max_batch_wait_ms must be >= 0, got {pre_lm_max_batch_wait_ms}"
             )
+        else:
+            pass
         self.max_running_requests = max_running_requests
+        self.draft_checkpoint: TemporaryDirectory[str] | None = None
         self.max_new_tokens = max_new_tokens
         self.enable_async_decode = enable_async_decode
+        self.enable_plain_fallback = enable_plain_fallback
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.mem_fraction_static = mem_fraction_static
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
@@ -100,12 +162,18 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.pre_lm_max_batch_size = pre_lm_max_batch_size
         self.pre_lm_max_batch_wait_ms = pre_lm_max_batch_wait_ms
         self.enable_encoder_cuda_graph = enable_encoder_cuda_graph
-        self.tokenizer: Any = None
-        self.feature_extractor: Any = None
+        self.max_audio_clip_s = max_audio_clip_s
+        self.tokenizer: PreTrainedTokenizerBase | None = None
+        self.feature_extractor: WhisperFeatureExtractor | None = None
         self.context_length = 0
+        self.server_args_overrides = {}
+        self.device: str | None = None
         self.model_path: str | None = None
-        self.audio_encoder_service: Any = None
-        self._should_wait_for_encode: Callable[[], bool] | None = None
+        self.audio_encoder_service: Qwen3ASRPreLMEncoderService | None = None
+        self.torch_mps_model_runner: Qwen3ASRTorchMpsModelRunner | None = None
+        self._should_wait_for_encode: Callable[[], bool] | None = (
+            None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.model_path = checkpoint_dir
@@ -124,8 +192,36 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         max_output_budget = max(self.max_new_tokens, qwen3_asr_max_output_tokens())
         self.context_length = max_prompt_tokens + max_output_budget + 8
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        defaults: dict[str, Any] = {
+    def uses_torch_mps(self) -> bool:
+        import torch
+
+        return self.device is not None and torch.device(self.device).type == "mps"
+
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+
+        if self.uses_torch_mps():
+            # Note (yexiaodong): MPS has no CUDA graph or Triton lifecycle, and
+            # the audio embedding sidecar makes split prefill unsafe initially.
+            return {
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "context_length": 2048,
+                "max_total_tokens": 2048,
+                "max_prefill_tokens": 2048,
+                "chunked_prefill_size": -1,
+                "mem_fraction_static": self.mem_fraction_static,
+                "attention_backend": "torch_native",
+                "mm_attention_backend": "sdpa",
+                "sampling_backend": "pytorch",
+                "dtype": dtype,
+            }
+        else:
+            pass
+
+        defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
@@ -138,6 +234,14 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+        if current_platform.is_cuda():
+            # note (Zhuofeng Li): full capture removes per-layer attention dispatch.
+            defaults["cuda_graph_backend_prefill"] = CudaGraphBackend.FULL
+            defaults["cuda_graph_config"] = {
+                "prefill": {"full_prefill_max_req": QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS}
+            }
+        else:
+            pass
         # ROCm 7.2's AITER batch-prefill specialization is inaccurate for the
         # Qwen3-ASR attention shape on gfx950. Keep decode on the selected
         # backend, but use Triton for prefill until the affected stack is fixed.
@@ -147,15 +251,78 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             and get_hip_version()[:2] == (7, 2)
         ):
             defaults["prefill_attention_backend"] = "triton"
+        else:
+            pass
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
         else:
             sm_version = get_visible_gpu_sm_version(self.gpu_id)
             if sm_version is not None and sm_version >= 100:
                 defaults["mm_attention_backend"] = "triton_attn"
+            else:
+                pass
         return defaults
 
-    def _log_memory_checkpoint(self, checkpoint: str) -> None:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> ModelRunner[Qwen3ASRRequestData]:
+        if self.uses_torch_mps():
+            from sglang_omni.models.qwen3_asr.torch_mps_runner import (
+                Qwen3ASRTorchMpsModelRunner,
+            )
+
+            self.torch_mps_model_runner = Qwen3ASRTorchMpsModelRunner(
+                model_worker,
+                output_proc,
+            )
+            return self.torch_mps_model_runner
+        else:
+            pass
+        return Qwen3ASRModelRunner(model_worker, output_proc)
+
+    def setup_model(
+        self,
+        *,
+        model_worker: ModelWorker,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: ServerArgs,
+    ) -> None:
+        del device, gpu_id, server_args
+        if current_platform.is_cuda():
+            # note (Zhuofeng Li): host-fed FlashInfer plans cannot be replayed as metadata graphs.
+            runner = model_worker.model_runner
+            if (
+                runner.prefill_attention_backend_str
+                == runner.decode_attention_backend_str
+                == "fa3"
+            ):
+                if envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.get():
+                    metadata_glue.apply_thread_local_glue_capture()
+                else:
+                    pass
+            else:
+                envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.set(False)
+        elif current_platform.is_xpu():
+            envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.set(False)
+        else:
+            pass
+        if self.uses_torch_mps():
+            from sglang_omni.models.qwen3_asr.torch_mps_runner import (
+                install_torch_mps_language_model,
+            )
+
+            install_torch_mps_language_model(
+                model_worker.model_runner.model,
+                checkpoint_dir,
+            )
+        else:
+            pass
+
+    def log_memory_checkpoint(self, checkpoint: str) -> None:
         logger.info(
             "Qwen3-ASR memory checkpoint=%s gpu=%d process_gpu_memory=%s",
             checkpoint,
@@ -163,15 +330,41 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             format_bytes_gib(get_process_gpu_memory_bytes(self.gpu_id)),
         )
 
-    def validate_before_infrastructure(self, server_args: Any) -> None:
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        """Reject incompatible runtime settings before allocating engine resources."""
+        from sglang.srt.arg_groups.model_override_base import resolved_view
+
+        cfg = resolved_view(server_args)
+        # note (wangyao-i): NPU pre-LM graphs need independent Host queues so a blocked stream does not stall submission on another stream. See docs/other_platforms/installation_npu.md for further details.
+        if (
+            current_platform.is_npu()
+            and self.enable_pre_lm_encoder
+            and (
+                self.enable_encoder_cuda_graph
+                or cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED
+                or cfg.cuda_graph_config.prefill.backend != CudaGraphBackend.DISABLED
+            )
+        ):
+            validate_npu_graph_environment(self.model_name)
+        else:
+            pass
+        if self.uses_torch_mps() and cfg.max_running_requests != 1:
+            raise ValueError(
+                "Qwen3-ASR Torch MPS currently requires max_running_requests=1"
+            )
+        else:
+            pass
         super().validate_before_infrastructure(server_args)
-        # Replace the per-request decode mrope-position loop with a vectorized
-        # equivalent before any forward runs.
+        # Replace sglang's per-request decode and speculative mrope positions
+        # with text-only equivalents before any forward runs.
         mrope_fast_path.apply_asr_mrope_fast_path()
+        from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
+
+        kv_cache_bytes = peek_stage_kv_cache_bytes()
         logger.info(
             "Qwen3-ASR runtime profile: dtype=%s attention_backend=%s "
             "mm_attention_backend=%s cuda_graph=%s cuda_graph_bs=%s "
-            "torch_compile=%s max_running_requests=%s mem_fraction_static=%s",
+            "torch_compile=%s max_running_requests=%s kv_sizing=%s",
             getattr(server_args, "dtype", None),
             getattr(server_args, "attention_backend", None),
             getattr(server_args, "mm_attention_backend", None),
@@ -179,53 +372,151 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             get_decode_cuda_graph_bs(server_args),
             getattr(server_args, "enable_torch_compile", False),
             getattr(server_args, "max_running_requests", None),
-            getattr(server_args, "mem_fraction_static", None),
+            (
+                f"kv_cache_bytes={kv_cache_bytes}"
+                if kv_cache_bytes is not None
+                else "mem_fraction_static="
+                f"{getattr(server_args, 'mem_fraction_static', None)}"
+            ),
         )
-        self._log_memory_checkpoint("pre_model_load")
+        self.log_memory_checkpoint("pre_model_load")
 
-    def validate_after_model_setup(self, model: Any, server_args: Any) -> None:
+    def validate_after_model_setup(
+        self, model: object, server_args: ServerArgs
+    ) -> None:
         del model, server_args
-        self._log_memory_checkpoint("post_static_allocation")
+        self.log_memory_checkpoint("post_static_allocation")
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        algorithm = overrides.get("speculative_algorithm")
+        if algorithm is None:
+            pass
+        elif algorithm != "DFLASH":
+            raise ValueError(
+                "Qwen3-ASR speculative decoding currently supports DFLASH only"
+            )
+        elif (
+            not (current_platform.is_cuda() or current_platform.is_npu())
+            or overrides.get("tp_size", 1) != 1
+        ):
+            raise ValueError(
+                "Qwen3-ASR DFlash currently requires one CUDA GPU or Ascend NPU"
+            )
+        else:
+            # note (WilsonZheng0327): Draft modules import Triton kernels unavailable on Torch MPS hosts.
+            from sglang_omni.speculative.dflash_draft import (
+                materialize_draft_checkpoint,
+            )
+
+            draft_model_path = overrides.get("speculative_draft_model_path")
+            draft_revision = overrides.get("speculative_draft_model_revision")
+            if not isinstance(draft_model_path, str) or not draft_model_path:
+                raise ValueError(
+                    "Qwen3-ASR DFlash requires speculative_draft_model_path"
+                )
+            elif draft_revision is not None and not isinstance(draft_revision, str):
+                raise ValueError("speculative_draft_model_revision must be a string")
+            else:
+                pass
+            self.draft_checkpoint = materialize_draft_checkpoint(
+                draft_model_path, draft_revision, allow_non_causal=True
+            )
+            overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
+            overrides["speculative_draft_model_revision"] = None
+            # note (wilsonzheng0327): async decode under a draft is speculative overlap, which SGLang turns on through its overlap scheduler.
+            overrides["disable_overlap_schedule"] = not self.enable_async_decode
+            overrides["enable_mixed_chunk"] = False
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
-        if overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED:
-            return
-        if "cuda_graph_bs_prefill" in overrides:
-            return
-        cap = clamp_prefill_cuda_graph_max_bs(
-            overrides,
-            context_length=self.context_length,
-        )
-        ladder = build_default_prefill_cuda_graph_bs(cap)
-        overrides["cuda_graph_bs_prefill"] = ladder
+        else:
+            pass
+        if self.uses_torch_mps():
+            # Note (yexiaodong): Typed pipeline engine defaults are merged after
+            # the backend profile and otherwise re-enable Torch compilation.
+            overrides["enable_torch_compile"] = False
+        else:
+            pass
 
-    def customize_server_args(self, server_args: Any) -> None:
+        if current_platform.is_cuda():
+            graph_config = overrides.get("cuda_graph_config", {})
+            prefill_config = graph_config.get("prefill", {})
+            overrides["cuda_graph_config"] = {
+                **graph_config,
+                "prefill": {
+                    "full_prefill_max_req": QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS,
+                    **prefill_config,
+                },
+            }
+        else:
+            pass
+
+        if current_platform.is_cuda() and not overrides.get(
+            "disable_cuda_graph", False
+        ):
+            max_decode_rows = int(overrides["cuda_graph_max_bs"])
+            if "cuda_graph_bs" not in self.server_args_overrides:
+                # note (Zhuofeng Li): exact-size replay avoids resetting padded slots.
+                overrides["cuda_graph_bs"] = list(range(1, max_decode_rows + 1))
+            else:
+                pass
+        else:
+            pass
+
+    def customize_server_args(self, server_args: ServerArgs) -> None:
         self.context_length = int(server_args.context_length)
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if self.draft_checkpoint is None:
+            return {}
+        else:
+            # note (WilsonZheng0327): Draft modules import Triton kernels unavailable on Torch MPS hosts.
+            from sglang_omni.speculative.dflash_draft import (
+                ReducedVocabularyDFlashWorker,
+            )
+
+            # note (wilsonzheng0327): the worker is built for overlap or for the synchronous verify loop, so the choice must reach it at construction.
+            return {
+                "supports_speculative_decoding": True,
+                "speculative_worker_class": ReducedVocabularyDFlashWorker,
+                "enable_async_decode": self.enable_async_decode,
+            }
 
     def setup_model_resources(
         self,
-        model: Any,
-        server_args: Any,
+        model: Qwen3ASRForConditionalGeneration,
+        server_args: ServerArgs,
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
+        if self.uses_torch_mps():
+            # Note (yexiaodong): Torch MPS encodes audio inside model prefill,
+            # while the pre-LM service owns CUDA-only streams and graphs. The
+            # shared multimodal routine still requires its cache singleton.
+            init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
+            return
+        else:
+            pass
         del generation_cuda_graph_enabled
-        self._log_memory_checkpoint("post_cuda_graph_capture")
+        self.log_memory_checkpoint("post_cuda_graph_capture")
         if self.enable_encoder_cuda_graph:
             from sglang_omni.models.qwen3_asr.audio_lengths import (
                 qwen3_asr_num_audio_tokens,
             )
-            from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+            from sglang_omni.models.qwen3_asr.config import QWEN3_ASR_AUDIO_CHUNKING
 
-            clip_s = Qwen3ASRPipelineConfig.audio_chunking.max_audio_clip_s
+            clip_s = (
+                self.max_audio_clip_s
+                if self.max_audio_clip_s is not None
+                else QWEN3_ASR_AUDIO_CHUNKING.max_audio_clip_s
+            )
             max_tokens_per_clip = qwen3_asr_num_audio_tokens(int(clip_s * 100))
             model.init_encoder_graphs(
                 max_batch_size=self.pre_lm_max_batch_size,
                 max_tokens_per_clip=max_tokens_per_clip,
             )
-            self._log_memory_checkpoint("post_encoder_graph_capture")
+            self.log_memory_checkpoint("post_encoder_graph_capture")
+        else:
+            pass
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         if self.enable_pre_lm_encoder:
             # note (luojiaxuan): constructed after SGLang's generation CUDA
@@ -246,15 +537,23 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 max_batch_size=self.pre_lm_max_batch_size,
                 max_batch_wait_ms=self.pre_lm_max_batch_wait_ms,
             )
+        else:
+            pass
 
     def should_wait_for_encode(self) -> bool:
         return (
             False
-            if self._should_wait_for_encode is None
-            else self._should_wait_for_encode()
+            if self._should_wait_for_encode
+            is None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            else self._should_wait_for_encode()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: object) -> tuple[
+        Callable[
+            [StagePayload], Qwen3ASRRequestData | DeferredAdmission[Qwen3ASRRequestData]
+        ],
+        Callable[[Qwen3ASRRequestData], StagePayload],
+    ]:
         del model
         return request_builders.make_qwen3_asr_scheduler_adapters(
             tokenizer=self.tokenizer,
@@ -263,39 +562,76 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
+            # NPU DFlash verification uses argmax and cannot preserve sampling.
+            greedy_only=self.uses_torch_mps()
+            or (current_platform.is_npu() and self.draft_checkpoint is not None),
         )
 
-    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
-        del model_runner
-        self._should_wait_for_encode = scheduler.request_build_queue_fits_workers
+    def make_abort_callback(self) -> Callable[[str], None] | None:
+        if self.torch_mps_model_runner is None:
+            return None
+        else:
+            pass
+        return self.torch_mps_model_runner.abort_request
 
-    def extra_scheduler_callbacks(self) -> dict[str, Any]:
+    def post_scheduler_setup(
+        self, scheduler: OmniScheduler[Qwen3ASRRequestData], model_runner: object
+    ) -> None:
+        del model_runner
+        self._should_wait_for_encode = (
+            scheduler.request_build_queue_fits_workers
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+
+    def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
         if self.audio_encoder_service is None:
             return {}
-        return {"shutdown_callback": self.audio_encoder_service.close}
+        else:
+            return {"shutdown_callback": self.audio_encoder_service.close}
 
     def cleanup_build_failure(self) -> None:
         if self.audio_encoder_service is not None:
             self.audio_encoder_service.close()
             self.audio_encoder_service = None
+        else:
+            pass
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(self) -> SchedulerExtras[Qwen3ASRRequestData]:
+        use_torch_mps = self.uses_torch_mps()
         return {
+            "enable_plain_fallback": self.enable_plain_fallback,
             "stream_output_builder": request_builders.make_qwen3_asr_stream_output_builder(
                 tokenizer=self.tokenizer,
                 min_emit_interval_s=self.stream_emit_interval_s,
             ),
-            "enable_async_decode": self.enable_async_decode,
-            "async_decode_min_batch_size": self.async_decode_min_batch_size,
-            "request_build_max_workers": self.request_build_max_workers,
+            "enable_async_decode": (
+                False if use_torch_mps else self.enable_async_decode
+            ),
+            # note (wilsonzheng0327): with a draft a lone request decodes synchronously, because overlap made its first streamed text about 20% (2 ms) later than without a draft, while larger batches keep overlap.
+            "async_decode_min_batch_size": (
+                (1 if self.draft_checkpoint is None else 2)
+                if self.async_decode_min_batch_size is None
+                else self.async_decode_min_batch_size
+            ),
+            # note (rsi): ASR prompts fit one chunk, so a prefill's first
+            # tokens can be resolved after the next decode launches.
+            "async_prefill": current_platform.is_cuda()
+            and self.draft_checkpoint is None,
+            "request_build_max_workers": (
+                1 if use_torch_mps else self.request_build_max_workers
+            ),
             "request_build_max_pending": self.request_build_max_pending,
-            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_requests": (
+                0 if use_torch_mps else self.prefill_coalesce_requests
+            ),
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
             "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds
             ),
+            # note (ychu824): with a draft this defaults to off, because holding prefills during decode delayed the first text and did not raise throughput.
             "prefill_coalesce_after_builds_during_decode": (
-                self.prefill_coalesce_after_builds_during_decode
+                self.draft_checkpoint is None
+                if self.prefill_coalesce_after_builds_during_decode is None
+                else self.prefill_coalesce_after_builds_during_decode
             ),
         }

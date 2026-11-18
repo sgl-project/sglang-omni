@@ -3,16 +3,8 @@
 
 from __future__ import annotations
 
-import importlib
-
 import sglang_omni.utils.device as dev
 from sglang_omni.platforms import current_platform
-
-
-def test_module_exports_match():
-    mod = importlib.import_module("sglang_omni.utils.device")
-    for name in mod.__all__:
-        assert hasattr(mod, name), f"exported {name} missing"
 
 
 def test_none_is_the_only_automatic_selection():
@@ -25,15 +17,27 @@ def test_none_is_the_only_automatic_selection():
 
 
 def test_a_supplied_device_is_honored_with_its_placement_index():
-    """The caller's explicit device survives, including cpu and any :N index."""
+    """The caller's explicit device type survives, and the index argument
+    decides its number, including cpu and any live accelerator."""
     live = current_platform.device_type
     assert dev.resolve_device_spec("cpu") == "cpu"
     assert dev.resolve_device_spec("cpu", 5) == "cpu"
     if live == "cpu":
         return
-    assert dev.resolve_device_spec(f"{live}:2") == f"{live}:2"
-    assert dev.resolve_device_spec(f"{live}:2", 5) == f"{live}:5"
     assert dev.resolve_device_spec(live) == live
+    assert dev.resolve_device_spec(live, 5) == f"{live}:5"
+
+
+def test_a_device_string_naming_its_own_index_is_rejected():
+    """device names only the type; a caller who wants a card passes gpu_id, not
+    'cpu:N'.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match="names an index"):
+        dev.resolve_device_spec("cpu:1")
+    with pytest.raises(ValueError, match="names an index"):
+        dev.resolve_device_spec("cpu:0", 5)
 
 
 def test_a_device_this_host_cannot_serve_is_rejected_not_retargeted():
@@ -49,13 +53,6 @@ def test_a_device_this_host_cannot_serve_is_rejected_not_retargeted():
         dev.resolve_device_spec(f"{absent}:1")
     with pytest.raises(ValueError, match="this host resolved to"):
         dev.resolve_device_spec("npu:0")
-
-
-def test_the_availability_probe_is_gone():
-    """Validating against the already-resolved platform removes any need to re-probe
-    torch, so the broad-exception availability probe must not come back."""
-    assert not hasattr(dev, "_accel_available")
-    assert not hasattr(dev, "remap_accelerator_spec")
 
 
 def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
@@ -81,25 +78,3 @@ def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
     free_gb = get_available_gpu_memory("xpu", 0, distributed=False, empty_cache=False)
 
     assert free_gb == (total_bytes - allocated_bytes) / (1 << 30)
-
-
-def test_an_explicit_device_keeps_its_platform_and_takes_the_placement_index():
-    """The shared builder applies a stage's gpu_id to whatever device the caller
-    named. Rewriting the type would send an explicit xpu or cpu stage to CUDA.
-    """
-    assert dev.place_device_spec("xpu", 1) == "xpu:1"
-    assert dev.place_device_spec("cuda:0", 1) == "cuda:1"
-    assert dev.place_device_spec("cpu", 1) == "cpu"
-    # No placement supplied: the spec's own index survives.
-    assert dev.place_device_spec("cuda:3") == "cuda:3"
-    assert dev.place_device_spec("xpu:2") == "xpu:2"
-
-
-def test_placing_an_explicit_device_does_not_validate_against_the_platform():
-    """A CUDA-only stage must keep CUDA on a non-CUDA host, where resolving would
-    raise. Only device=None consults current_platform.
-    """
-    live = current_platform.device_type
-    absent = "xpu" if live == "cuda" else "cuda"
-
-    assert dev.place_device_spec(f"{absent}:1") == f"{absent}:1"

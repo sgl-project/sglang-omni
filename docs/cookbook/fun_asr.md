@@ -17,15 +17,54 @@ then download the model:
 hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 ```
 
+## Apple Silicon
+
+Fun-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
+with the [Apple Silicon installer](../other_platforms/installation_apple_silicon.md)
+and follow its environment-activation and `DYLD_LIBRARY_PATH` steps; TorchCodec
+needs Homebrew's keg-only FFmpeg libraries on the path before the server starts.
+
+Use the official `FunAudioLLM/Fun-ASR-Nano-2512-hf` checkpoint with unquantized
+BF16 weights; no converted artifact is needed.
+Inference runs one request at a time and additional requests queue. Use
+`temperature=0` and upload audio segments no longer than 30 seconds. JSON and
+SSE transcription are supported; quantized checkpoints are not.
+
+### Torch/MPS
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+```
+
 ## Server Configuration
 
-Fun-ASR-Nano runs a single ASR stage on one GPU.
+Fun-ASR-Nano runs a single ASR stage on one accelerator.
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
   --port 8000
 ```
+
+### Ascend NPU
+
+Prepare the runtime using the [NPU installation guide](../get_started/installation_npu.md). The NPU example uses a pipeline configuration to collect the recommended NPU settings in one reusable launch command.
+
+```bash
+# Recommended: use the model path from the config file
+sgl-omni serve \
+  --config examples/configs/fun_asr_npu.yaml \
+  --port 8000
+
+# Optional: override the config model_path with a local checkpoint
+sgl-omni serve \
+  --config examples/configs/fun_asr_npu.yaml \
+  --model-path /path/to/Fun-ASR-Nano-2512-hf \
+  --port 8000
+```
+
+The stage's `gpu` value selects a logical device among the visible NPUs; for example, add `--asr.gpu 1` to select the second visible NPU.
 
 ## Transcribe Audio
 
@@ -84,8 +123,35 @@ text; it does not change the final transcript.
 | `language` | string | unset | Language hint. `en`/`english`/`英文` transcribe to English; `zh`/`cn`/`chinese`/`中文` (or unset) transcribes to Chinese; other values pass through as the target language |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `stream` | boolean | `false` | Emit SSE text deltas. Streaming accepts only `json` or `text` response formats |
-| `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default |
+| `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default. A negative value returns HTTP 422 |
 | `max_new_tokens` | integer | duration-based | Generation budget scaled to the audio duration. Explicit values must be between 1 and 200 |
+
+## Speculative Decoding
+
+The decoder can verify tokens proposed by the DFlash draft [`wilsonzheng0327/Fun-ASR-Nano-dflash`](https://huggingface.co/wilsonzheng0327/Fun-ASR-Nano-dflash) on one CUDA GPU. The example config pins the draft revision:
+
+```bash
+sgl-omni serve --config examples/configs/fun_asr_nano_dflash.yaml --port 8000
+```
+
+- **Accuracy.** The decoder verifies every proposed token. On SeedTTS, corpus WER is 1.86% in both modes for EN, and 1.44% without the draft against 1.42% with it for ZH.
+- **Sampling.** `temperature` works. Requests with `repetition_penalty` are rejected, because the draft worker applies penalties once per verify block.
+- **Latency.** Streaming time to first text is 5% higher at concurrency 1 (13.7 against 13.0 ms median), lower at 4, and about 20% higher at 16. At 64 the median is 70% higher and p95 about the same.
+- **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes the draft half as fast as no draft at concurrency 1. Without a draft it stays on, since it speeds up concurrency 1 by about 17%. A server with the draft therefore starts in about 30 s, against about 3 minutes without it.
+- **Cost.** The draft's KV takes about 15% of the pool, and async decode is off.
+
+The 70-layer audio encoder takes a large share of each request, so the gain is well below the draft's accept length of about 5.3 tokens per verify. Speedup over the same config without the draft, on one H200 with SGLang 0.5.23, two fresh servers per side in A B B A order, and 600 SeedTTS clips per language with the prefix cache off:
+
+| Concurrency | SeedTTS EN | SeedTTS ZH |
+|---:|---:|---:|
+| 1 | 1.34x | 1.28x |
+| 4 | 1.61x | 1.42x |
+| 8 | 1.29x | 1.20x |
+| 16 | 1.08x | 1.06x |
+| 32 | 1.13x | 1.10x |
+| 64 | 1.11x | 1.07x |
+
+SeedTTS clips average 4.7 s. SeedTTS EN at concurrency 1 goes from 32.4 to 43.2 samples per second, and p95 latency is 2 to 39% lower at every concurrency in both languages.
 
 ## Benchmarking
 
@@ -152,7 +218,7 @@ concurrency 32:
 | 32 | 167.42 | 0.190 | 0.264 | 0.0410 | 784 |
 | 64 | 165.75 | 0.381 | 0.475 | 0.0825 | 776 |
 
-A single worker sheds requests with HTTP 500 by design once the
+A single worker sheds requests with HTTP 503 by design once the
 request-build backlog is full; the current default admits at most 32 pending
 builds per worker. Under the pre-coalescing defaults above (16 pending
 builds) that cost roughly 2 to 5 percent of requests at concurrency 64.
@@ -165,10 +231,11 @@ topology.
 - The endpoint accepts one uploaded file per request.
 - Each uploaded audio segment must be 30 seconds or shorter, matching the
   official Fun-ASR VAD segment limit. Split longer recordings before upload.
-- `itn` and `hotwords` are supported by the model request builder but not
-  exposed as form fields on the public transcription endpoint.
-- `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but
-  Fun-ASR-Nano currently ignores it (use `hotwords` inside the builder for
-  context biasing instead).
+- `prompt` carries context biasing: a comma-separated list of terms likely to
+  appear in the audio (names, jargon). Each term becomes a hotword in the
+  model's prompt. Biasing raises the model's preference for the supplied
+  terms; it does not force them, and an irrelevant list can hurt accuracy.
+- `itn` and explicit `hotwords` remain available to in-process callers of the
+  request builder; explicit `hotwords` take precedence over `prompt`.
 - Audio is resampled to 16 kHz before transcription.
 - bf16 is strongly recommended; fp16 can overflow to NaN in the adaptor path.

@@ -1,9 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
-ARG SGLANG_IMAGE=lmsysorg/sglang@sha256:9e148f5ac788e856a06166bd6347a831831eb9fcfab4d1770874823a7c29a1a1
-ARG FLASHINFER_CACHE_IMAGE=hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+ARG SGLANG_IMAGE=lmsysorg/sglang@sha256:f7876bef696ccf9cf75a2bf7ccb82970f5fac577f082fb8ca95c9a59d2160eb5
 
-FROM ${FLASHINFER_CACHE_IMAGE} AS flashinfer-cache
 FROM ${SGLANG_IMAGE} AS runtime
 
 ARG UCX_COMMIT=d8e50df6651b9ea5b76f23aee0aefbf053a4137a
@@ -34,21 +32,34 @@ RUN git clone --filter=blob:none https://github.com/openucx/ucx.git /tmp/ucx \
 
 # Install only project dependencies. The repository itself is fetched when the
 # container starts, so the image never contains a stale sglang-omni checkout.
+# The base image installs its stack into the /opt/sglang virtualenv that PATH
+# resolves. uv finds a virtualenv only through VIRTUAL_ENV or a .venv directory,
+# so name the interpreter explicitly.
+# Reuse the project's protobuf override for DAC, and include model extras so
+# startup does not need to install packages into a different Python environment.
+# The base image's FlashInfer AOT packages (cubin, the jit-cache umbrella and its
+# per-architecture providers) carry the pinned version, so they stay: every kernel
+# they hold loads without a compile, and only shapes outside them compile into
+# FLASHINFER_WORKSPACE_BASE. Uninstalling the umbrella alone leaves the providers
+# behind as a package without a version and breaks the flashinfer import.
 COPY pyproject.toml /tmp/pyproject.toml
-RUN uv pip install --system --break-system-packages --no-build-isolation \
-        -r /tmp/pyproject.toml \
-    && uv pip install --system --break-system-packages --no-deps qwen-tts==0.1.1 \
-    && uv pip install --system --break-system-packages --no-deps --reinstall flashinfer-python==0.6.17 \
-    && python3 -m pip uninstall -y flashinfer-cubin flashinfer-jit-cache \
-    && rm /tmp/pyproject.toml
-
-# Docker builds do not have a GPU to regenerate architecture-specific JIT
-# artifacts. Reuse the Python 3.12 cache validated on Ada (SM89) and Hopper
-# (SM90a); other architectures compile into their own cache directory.
-COPY --from=flashinfer-cache /root/.cache/flashinfer/0.6.17 /root/.cache/flashinfer/0.6.17
+RUN python3 -c 'import tomllib; print("\n".join(tomllib.load(open("/tmp/pyproject.toml", "rb"))["tool"]["uv"]["override-dependencies"]))' > /tmp/omni-overrides.txt \
+    && uv pip install --python /opt/sglang/bin/python3 --no-build-isolation \
+        --overrides /tmp/omni-overrides.txt -r /tmp/pyproject.toml \
+        descript-audiotools==0.7.2 descript-audio-codec==1.0.0 \
+    && CMAKE_ARGS='-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89;90;100;120' \
+        CMAKE_BUILD_PARALLEL_LEVEL=8 uv pip install --no-cache --python /opt/sglang/bin/python3 \
+        --overrides /tmp/omni-overrides.txt -r /tmp/pyproject.toml \
+        --extra audar-tts --extra fun-cosyvoice3 --extra minicpm-o \
+    && uv pip install --python /opt/sglang/bin/python3 --no-deps qwen-tts==0.1.1 \
+    && uv pip install --python /opt/sglang/bin/python3 --no-deps --reinstall flashinfer-python==0.7.2 \
+    && rm /tmp/pyproject.toml /tmp/omni-overrides.txt
 
 ENV FLASHINFER_WORKSPACE_BASE=/root \
     FLASHINFER_JIT_DEBUG=0
+
+# llama.cpp must load the same NCCL as Torch, not the older system copy.
+ENV LD_LIBRARY_PATH=/opt/sglang/lib/python3.12/site-packages/nvidia/nccl/lib:${LD_LIBRARY_PATH}
 
 RUN <<'EOF'
 cat >/usr/local/bin/sglang-omni-entrypoint <<'SCRIPT'

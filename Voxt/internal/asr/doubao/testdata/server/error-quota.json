@@ -1,0 +1,8 @@
+{
+  "source": "Error frame layout from Volcengine's SAUC docs (docs/6561/1354869). The docs' table lists no quota code: 45000030 and its message are constructed (the message's words make it KindQuota).",
+  "frames": [
+    {"after": 1, "seq": 1, "payload": {"audio_info": {"duration": 0}, "result": {"text": ""}}},
+    {"after": 3, "seq": 2, "payload": {"audio_info": {"duration": 400}, "result": {"text": "这是"}}},
+    {"after": 4, "kind": "error", "code": 45000030, "payload": {"error": "quota exceeded for resource volc.seedasr.sauc.duration"}}
+  ]
+}

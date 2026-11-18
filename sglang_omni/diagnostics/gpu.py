@@ -9,15 +9,89 @@ import os
 import subprocess
 import sys
 from collections.abc import Mapping
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING, TypedDict
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.gpu_memory import (
-    _decode_nvml_string,
-    _shutdown_nvml,
-    _try_import_pynvml,
+    decode_nvml_string,
     format_bytes_gib,
     parse_cuda_visible_devices,
+    shutdown_nvml,
+    try_import_pynvml,
 )
+
+if TYPE_CHECKING:
+    from torch._C import _CudaDeviceProperties
+else:
+    pass
+
+
+class BackendInfo(TypedDict):
+    category: str
+    name: str
+    distribution: str | None
+    version: str | None
+    module: str
+    installed: bool
+    importable: bool
+    reason: str | None
+
+
+class NvmlSystemInfo(TypedDict):
+    driver_version: str | None
+    cuda_driver_api_version: str | None
+
+
+class NvmlDeviceInfo(TypedDict):
+    physical_index: int
+    uuid: str | None
+    pci_bus_id: str | None
+    name: str | None
+    compute_capability: str | None
+    total_memory_bytes: int | None
+    free_memory_bytes: int | None
+
+
+class LogicalGpuInfo(TypedDict):
+    logical_index: int
+    visible_device: int | str
+    physical_index: int | None
+    uuid: str | None
+    pci_bus_id: str | None
+    name: str | None
+    compute_capability: str | None
+    total_memory_bytes: int | None
+    free_memory_bytes: int | None
+
+
+class GpuEnvironmentInfo(NvmlSystemInfo):
+    device_type: str
+    visible_devices_variable: str
+    visible_devices: str | None
+    cuda_visible_devices: str | None
+    cuda_runtime_version: str | None
+    pytorch_version: str | None
+    pytorch_accelerator_build_type: str
+    pytorch_accelerator_build: str | None
+    pytorch_cuda_build: str | None
+    cuda_available: bool
+    logical_device_count: int
+
+
+class GpuDiagnosticsReport(TypedDict):
+    schema_version: int
+    environment: GpuEnvironmentInfo
+    gpus: list[LogicalGpuInfo]
+    backends: list[BackendInfo]
+    warnings: list[str]
+
+
+VISIBLE_DEVICES_VARIABLES = {
+    "musa": "MUSA_VISIBLE_DEVICES",
+    "xpu": "ZE_AFFINITY_MASK",
+    "npu": "ASCEND_RT_VISIBLE_DEVICES",
+}
 
 _BACKENDS = (
     ("attention", "flash-attn-4", "flash_attn.cute"),
@@ -40,18 +114,20 @@ _IMPORT_PROBE_TIMEOUT_SECONDS = 30.0
 _IMPORT_PROBE_CODE = "import importlib, sys; importlib.import_module(sys.argv[1])"
 
 
-def _cuda_version(value: int | None) -> str | None:
+def cuda_version(value: int | None) -> str | None:
     if not value:
         return None
+    else:
+        pass
     return f"{value // 1000}.{(value % 1000) // 10}"
 
 
-def _normalize_uuid(value: Any) -> str | None:
+def normalize_uuid(value: object) -> str | None:
     normalized = str(value or "").strip().lower()
     return normalized.removeprefix("gpu-") or None
 
 
-def _probe_output(*values: str | bytes | None) -> str | None:
+def probe_output(*values: str | bytes | None) -> str | None:
     for value in values:
         if value:
             text = (
@@ -61,10 +137,14 @@ def _probe_output(*values: str | bytes | None) -> str | None:
             ).strip()
             if text:
                 return text[-2000:]
+            else:
+                pass
+        else:
+            pass
     return None
 
 
-def _module_import_error(module: str) -> str | None:
+def module_import_error(module: str) -> str | None:
     try:
         result = subprocess.run(
             [sys.executable, "-c", _IMPORT_PROBE_CODE, module],
@@ -74,23 +154,25 @@ def _module_import_error(module: str) -> str | None:
             timeout=_IMPORT_PROBE_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
-        detail = _probe_output(exc.stderr, exc.stdout)
+        detail = probe_output(exc.stderr, exc.stdout)
         reason = f"timed out after {_IMPORT_PROBE_TIMEOUT_SECONDS:g}s"
         return f"{reason}: {detail}" if detail else reason
 
     if result.returncode == 0:
         return None
+    else:
+        pass
 
     reason = (
         f"terminated by signal {-result.returncode}"
         if result.returncode < 0
         else f"exited with code {result.returncode}"
     )
-    detail = _probe_output(result.stderr, result.stdout)
+    detail = probe_output(result.stderr, result.stdout)
     return f"{reason}: {detail}" if detail else reason
 
 
-def _distribution_info(module: str) -> tuple[str | None, str | None]:
+def distribution_info(module: str) -> tuple[str | None, str | None]:
     package = module.partition(".")[0]
     try:
         distributions = importlib.metadata.packages_distributions().get(package, ())
@@ -107,11 +189,11 @@ def _distribution_info(module: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _backend_inventory() -> list[dict[str, Any]]:
-    backends = []
+def backend_inventory() -> list[BackendInfo]:
+    backends: list[BackendInfo] = []
     for category, name, module in _BACKENDS:
-        import_error = _module_import_error(module)
-        distribution, version = _distribution_info(module)
+        import_error = module_import_error(module)
+        distribution, version = distribution_info(module)
         importable = import_error is None
         installed = distribution is not None or importable
         reason = None
@@ -123,6 +205,8 @@ def _backend_inventory() -> list[dict[str, Any]]:
                 )
             else:
                 reason = f"Module {module!r} failed to import: {import_error}"
+        else:
+            pass
         backends.append(
             {
                 "category": category,
@@ -138,23 +222,28 @@ def _backend_inventory() -> list[dict[str, Any]]:
     return backends
 
 
-def _cuda_runtime_version() -> str | None:
+def cuda_runtime_version() -> str | None:
     try:
         runtime = importlib.import_module("cuda.bindings.runtime")
         status, version = runtime.cudaRuntimeGetVersion()
-        return _cuda_version(int(version)) if int(status) == 0 else None
+        return cuda_version(int(version)) if int(status) == 0 else None
     except Exception:
         return None
 
 
-def _nvml_inventory(
-    pynvml: Any | None,
-) -> tuple[list[dict[str, Any]], dict[str, str | None], list[str]]:
-    system = {"driver_version": None, "cuda_driver_api_version": None}
-    inventory: list[dict[str, Any]] = []
+def nvml_inventory(
+    pynvml: ModuleType | None,
+) -> tuple[list[NvmlDeviceInfo], NvmlSystemInfo, list[str]]:
+    system: NvmlSystemInfo = {
+        "driver_version": None,
+        "cuda_driver_api_version": None,
+    }
+    inventory: list[NvmlDeviceInfo] = []
     warnings: list[str] = []
     if pynvml is None:
         return inventory, system, warnings
+    else:
+        pass
 
     try:
         pynvml.nvmlInit()
@@ -162,13 +251,13 @@ def _nvml_inventory(
         return inventory, system, [f"NVML initialization failed: {exc}"]
 
     try:
-        system["driver_version"] = _decode_nvml_string(
+        system["driver_version"] = decode_nvml_string(
             pynvml.nvmlSystemGetDriverVersion()
         )
     except Exception as exc:
         warnings.append(f"NVML driver query failed: {exc}")
     try:
-        system["cuda_driver_api_version"] = _cuda_version(
+        system["cuda_driver_api_version"] = cuda_version(
             int(pynvml.nvmlSystemGetCudaDriverVersion_v2())
         )
     except Exception as exc:
@@ -190,7 +279,7 @@ def _nvml_inventory(
             )
             continue
 
-        device = {
+        device: NvmlDeviceInfo = {
             "physical_index": physical_index,
             "uuid": None,
             "pci_bus_id": None,
@@ -205,12 +294,11 @@ def _nvml_inventory(
             device["free_memory_bytes"] = int(memory.free)
         except Exception as exc:
             warnings.append(
-                f"NVML memory query failed for physical_index="
-                f"{physical_index}: {exc}"
+                f"NVML memory query failed for physical_index={physical_index}: {exc}"
             )
         try:
             pci = pynvml.nvmlDeviceGetPciInfo(handle)
-            device["pci_bus_id"] = _decode_nvml_string(pci.busId)
+            device["pci_bus_id"] = decode_nvml_string(pci.busId)
         except Exception as exc:
             warnings.append(
                 f"NVML PCI query failed for physical_index={physical_index}: {exc}"
@@ -224,13 +312,13 @@ def _nvml_inventory(
                 f"{physical_index}: {exc}"
             )
         try:
-            device["uuid"] = _decode_nvml_string(pynvml.nvmlDeviceGetUUID(handle))
+            device["uuid"] = decode_nvml_string(pynvml.nvmlDeviceGetUUID(handle))
         except Exception as exc:
             warnings.append(
                 f"NVML UUID query failed for physical_index={physical_index}: {exc}"
             )
         try:
-            device["name"] = _decode_nvml_string(pynvml.nvmlDeviceGetName(handle))
+            device["name"] = decode_nvml_string(pynvml.nvmlDeviceGetName(handle))
         except Exception as exc:
             warnings.append(
                 f"NVML name query failed for physical_index={physical_index}: {exc}"
@@ -239,42 +327,50 @@ def _nvml_inventory(
     return inventory, system, warnings
 
 
-def _physical_device(
+def physical_device(
     logical_index: int,
-    properties: Any | None,
+    properties: _CudaDeviceProperties | None,
     visible_devices: list[int | str],
-    by_index: dict[int, dict[str, Any]],
-    by_uuid: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    torch_uuid = _normalize_uuid(getattr(properties, "uuid", None))
+    by_index: dict[int, NvmlDeviceInfo],
+    by_uuid: dict[str, NvmlDeviceInfo],
+) -> NvmlDeviceInfo | dict[str, None]:
+    torch_uuid = normalize_uuid(getattr(properties, "uuid", None))
     if torch_uuid in by_uuid:
         return by_uuid[torch_uuid]
+    else:
+        pass
 
     if logical_index < len(visible_devices):
         visible = visible_devices[logical_index]
         if isinstance(visible, int):
             return by_index.get(visible, {})
-        return by_uuid.get(_normalize_uuid(visible), {})
+        else:
+            pass
+        return by_uuid.get(normalize_uuid(visible), {})
+    else:
+        pass
 
     return by_index.get(logical_index, {}) if not visible_devices else {}
 
 
-def _logical_devices(
-    torch: Any,
+def logical_devices(
+    torch: ModuleType,
     visible_devices: list[int | str],
-    inventory: list[dict[str, Any]],
+    inventory: list[NvmlDeviceInfo],
     warnings: list[str],
-) -> list[dict[str, Any]]:
+) -> list[LogicalGpuInfo]:
     if not torch.cuda.is_available():
         return []
+    else:
+        pass
 
     by_index = {device["physical_index"]: device for device in inventory}
     by_uuid = {
         uuid: device
         for device in inventory
-        if (uuid := _normalize_uuid(device.get("uuid"))) is not None
+        if (uuid := normalize_uuid(device.get("uuid"))) is not None
     }
-    devices = []
+    devices: list[LogicalGpuInfo] = []
     for logical_index in range(int(torch.cuda.device_count())):
         try:
             properties = torch.cuda.get_device_properties(logical_index)
@@ -286,7 +382,7 @@ def _logical_devices(
             if logical_index < len(visible_devices)
             else logical_index
         )
-        physical = _physical_device(
+        physical = physical_device(
             logical_index, properties, visible_devices, by_index, by_uuid
         )
         if (
@@ -298,6 +394,8 @@ def _logical_devices(
                 f"CUDA_VISIBLE_DEVICES entry {visible_device!r} is a MIG device; "
                 "physical GPU mapping and free memory are unsupported."
             )
+        else:
+            pass
         torch_cc = (
             f"{properties.major}.{properties.minor}" if properties is not None else None
         )
@@ -320,43 +418,179 @@ def _logical_devices(
     return devices
 
 
+def musa_driver_version(warnings: list[str]) -> str | None:
+    """Query the optional MTML driver version and release its library handle."""
+    try:
+        mtml = importlib.import_module("pymtml")
+    except ModuleNotFoundError as exc:
+        if exc.name == "pymtml":
+            return None
+        else:
+            raise
+
+    try:
+        mtml.mtmlLibraryInit()
+    except Exception as exc:
+        warnings.append(f"MUSA driver query failed: {exc}")
+        return None
+
+    driver_version: str | None = None
+    try:
+        system = mtml.mtmlLibraryInitSystem()
+        driver_version = decode_nvml_string(mtml.mtmlSystemGetDriverVersion(system))
+    except Exception as exc:
+        warnings.append(f"MUSA driver query failed: {exc}")
+    finally:
+        try:
+            mtml.mtmlLibraryShutDown()
+        except Exception as exc:
+            warnings.append(f"MUSA driver query cleanup failed: {exc}")
+    return driver_version
+
+
+def accelerator_logical_devices(
+    torch: ModuleType,
+    device_type: str,
+    visible_devices: list[int | str],
+    warnings: list[str],
+) -> tuple[list[LogicalGpuInfo], str | None]:
+    """Enumerate a non-CUDA accelerator through its torch device module.
+
+    Returns the devices and the vendor driver version, which is reported per
+    device but pinned host-wide in practice.
+    """
+
+    device_module = torch.get_device_module(device_type)
+    driver_version = musa_driver_version(warnings) if device_type == "musa" else None
+    if not device_module.is_available():
+        return [], driver_version
+    else:
+        pass
+
+    # note (siju): Level Zero admits each masked card once, in ascending order.
+    if device_type == "xpu" and all(
+        isinstance(entry, int) for entry in visible_devices
+    ):
+        visible_devices = sorted(set(visible_devices))
+    else:
+        pass
+
+    devices: list[LogicalGpuInfo] = []
+    for logical_index in range(int(device_module.device_count())):
+        try:
+            properties = device_module.get_device_properties(logical_index)
+        except Exception as exc:
+            warnings.append(
+                f"PyTorch {device_type} {logical_index} query failed: {exc}"
+            )
+            properties = None
+        visible_device = (
+            visible_devices[logical_index]
+            if logical_index < len(visible_devices)
+            else logical_index
+        )
+        if device_type == "xpu" and properties is not None and driver_version is None:
+            driver_version = properties.driver_version
+        else:
+            pass
+        uuid = normalize_uuid(getattr(properties, "uuid", None))
+        free_memory_bytes = None
+        try:
+            free_memory_bytes = device_module.mem_get_info(logical_index)[0]
+        except Exception as exc:
+            warnings.append(
+                f"free memory on {device_type}:{logical_index} is unavailable: {exc}"
+            )
+        devices.append(
+            {
+                "logical_index": logical_index,
+                "visible_device": visible_device,
+                "physical_index": (
+                    visible_device if isinstance(visible_device, int) else None
+                ),
+                "uuid": uuid,
+                "pci_bus_id": None,
+                "name": getattr(properties, "name", None),
+                "compute_capability": None,
+                "total_memory_bytes": getattr(properties, "total_memory", None),
+                "free_memory_bytes": free_memory_bytes,
+            }
+        )
+    return devices, driver_version
+
+
 def collect_gpu_diagnostics(
     *,
     env: Mapping[str, str] | None = None,
-    torch_module: Any | None = None,
-    pynvml_module: Any | None = None,
-) -> dict[str, Any]:
+    torch_module: ModuleType | None = None,
+    pynvml_module: ModuleType | None = None,
+) -> GpuDiagnosticsReport:
     """Collect diagnostics without loading model configuration or weights."""
 
     source_env = os.environ if env is None else env
-    visible_value = source_env.get("CUDA_VISIBLE_DEVICES")
-    visible_devices = parse_cuda_visible_devices(visible_value)
+    device_type = current_platform.device_type
+    visible_variable = VISIBLE_DEVICES_VARIABLES.get(
+        device_type, "CUDA_VISIBLE_DEVICES"
+    )
+    visible_value = source_env.get(visible_variable)
+    visible_devices = parse_cuda_visible_devices(visible_value or "")
     torch = torch_module or importlib.import_module("torch")
-    pynvml = pynvml_module if pynvml_module is not None else _try_import_pynvml()
+    uses_accelerator_device_module = (
+        current_platform.is_xpu()
+        or current_platform.is_npu()
+        or current_platform.is_musa()
+    )
 
-    inventory, system, warnings = _nvml_inventory(pynvml)
-    try:
-        devices = _logical_devices(torch, visible_devices, inventory, warnings)
-    finally:
-        if pynvml is not None:
-            _shutdown_nvml(pynvml)
+    if uses_accelerator_device_module:
+        warnings: list[str] = []
+        devices, driver_version = accelerator_logical_devices(
+            torch, device_type, visible_devices, warnings
+        )
+        system: NvmlSystemInfo = {
+            "driver_version": driver_version,
+            "cuda_driver_api_version": None,
+        }
+    else:
+        pynvml = pynvml_module if pynvml_module is not None else try_import_pynvml()
+        inventory, system, warnings = nvml_inventory(pynvml)
+        try:
+            devices = logical_devices(torch, visible_devices, inventory, warnings)
+        finally:
+            if pynvml is not None:
+                shutdown_nvml(pynvml)
+            else:
+                pass
 
-    backends = _backend_inventory()
+    torch_version = torch.version
+    build_device_type = device_type if uses_accelerator_device_module else "cuda"
+    if current_platform.is_rocm():
+        build_device_type = "hip"
+        accelerator_build = torch_version.hip
+    elif current_platform.is_musa():
+        accelerator_build = torch_version.musa
+    elif build_device_type == "cuda":
+        accelerator_build = torch_version.cuda
+    else:
+        accelerator_build = None
+    backends = backend_inventory()
     warnings.extend(
         backend["reason"]
         for backend in backends
         if backend["installed"] and not backend["importable"]
     )
     return {
-        "schema_version": 1,
+        "schema_version": 3,
         "environment": {
-            "cuda_visible_devices": visible_value,
+            "device_type": device_type,
+            "visible_devices_variable": visible_variable,
+            "visible_devices": visible_value,
+            "cuda_visible_devices": source_env.get("CUDA_VISIBLE_DEVICES"),
             **system,
-            "cuda_runtime_version": _cuda_runtime_version(),
+            "cuda_runtime_version": cuda_runtime_version(),
             "pytorch_version": getattr(torch, "__version__", None),
-            "pytorch_cuda_build": getattr(
-                getattr(torch, "version", None), "cuda", None
-            ),
+            "pytorch_accelerator_build_type": build_device_type,
+            "pytorch_accelerator_build": accelerator_build,
+            "pytorch_cuda_build": torch_version.cuda,
             "cuda_available": bool(torch.cuda.is_available()),
             "logical_device_count": len(devices),
         },
@@ -366,14 +600,20 @@ def collect_gpu_diagnostics(
     }
 
 
-def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
+def render_gpu_diagnostics(report: GpuDiagnosticsReport) -> str:
     """Render a compact diagnostic summary for terminal output."""
 
     environment = report["environment"]
-    visible = environment["cuda_visible_devices"]
+    device_type = environment["device_type"]
+    build_device_type = environment["pytorch_accelerator_build_type"]
+    visible = environment["visible_devices"]
     lines = [
         "SGLang-Omni GPU diagnostics (no model loaded)",
-        f"CUDA_VISIBLE_DEVICES: {visible if visible is not None else '<unset>'}",
+        f"Device type: {device_type}",
+        (
+            f"{environment['visible_devices_variable']}: "
+            f"{visible if visible is not None else '<unset>'}"
+        ),
         f"Driver: {environment['driver_version'] or 'unavailable'}",
         (
             "CUDA driver/runtime: "
@@ -381,14 +621,16 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
             f"{environment['cuda_runtime_version'] or 'unavailable'}"
         ),
         (
-            "PyTorch/CUDA build: "
+            f"PyTorch/{build_device_type.upper()} build: "
             f"{environment['pytorch_version'] or 'unavailable'} / "
-            f"{environment['pytorch_cuda_build'] or 'unavailable'}"
+            f"{environment['pytorch_accelerator_build'] or 'unavailable'}"
         ),
         "GPUs:",
     ]
     if not report["gpus"]:
-        lines.append("  No CUDA devices are visible to PyTorch.")
+        lines.append("  No GPUs are visible to PyTorch.")
+    else:
+        pass
     for device in report["gpus"]:
         lines.append(
             f"  logical {device['logical_index']} -> physical "
@@ -420,4 +662,6 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
     if report["warnings"]:
         lines.append("Warnings:")
         lines.extend(f"  {warning}" for warning in report["warnings"])
+    else:
+        pass
     return "\n".join(lines)

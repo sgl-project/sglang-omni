@@ -1,0 +1,465 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Drama 3 pipeline configuration: topology, launch kwargs and the speech allowlist."""
+
+from __future__ import annotations
+
+from typing import ClassVar
+
+import pytest
+from pydantic import ValidationError
+
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_args
+from sglang_omni.config.schema import ProcessConfig
+from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.models.fishaudio_drama3.config import (
+    DEFAULT_CODEC_PATH,
+    Drama3PipelineConfig,
+)
+from sglang_omni.pipeline.mp_runner import resolve_coordinator_max_in_flight
+from sglang_omni.serve.speech_errors import SpeechAPIError
+from sglang_omni.serve.speech_service import SpeechRequestValidator
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
+
+VOCODER_WINDOWS = {
+    "stream_stride": 4,
+    "stream_followup_stride_ramp": (10, 12, 32),
+    "stream_followup_stride": 64,
+    "stream_overlap_tokens": 32,
+    "stream_crossfade_samples": 0,
+    "max_batch_size": 1,
+    "max_batch_wait_ms": 2,
+}
+
+
+def launch_kwargs(config: Drama3PipelineConfig, stage_name: str) -> dict[str, object]:
+    """What the launcher passes the stage's factory."""
+    return resolve_stage_factory_args(config.stage_named(stage_name), config)
+
+
+def test_every_process_on_the_shared_gpu_declares_its_memory() -> None:
+    config = Drama3PipelineConfig(model_path="checkpoint")
+    preprocessing, tts_engine, vocoder = config.stages
+
+    topology = build_compiled_process_topology(config)
+
+    assert topology.stage_to_process == {
+        "preprocessing": "preprocessing",
+        "tts_engine": "pipeline",
+        "vocoder": "pipeline",
+    }
+    assert (preprocessing.total_reserve_bytes, preprocessing.enforce_total_reserve) == (
+        6 * 1024**3,
+        True,
+    )
+    assert (tts_engine.gpu_memory_fraction, vocoder.gpu_memory_fraction) == (0.65, 0.15)
+
+
+def test_a_tensor_parallel_engine_keeps_its_process_to_itself() -> None:
+    """A tensor-parallel stage cannot share its process, so the vocoder, which
+    otherwise runs in the engine's, moves to its own."""
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [
+            ("tts_engine.tp_size", "2"),
+            ("tts_engine.gpu", "[0, 1]"),
+            ("vocoder.gpu", "1"),
+        ]
+    )
+
+    topology = build_compiled_process_topology(config)
+    assert topology.stage_to_process == {
+        "preprocessing": "preprocessing",
+        "vocoder": "vocoder",
+    }
+    assert set(topology.tp_stage_to_processes) == {"tts_engine"}
+
+
+def test_each_factory_gets_the_defaults_written_once() -> None:
+    config = Drama3PipelineConfig(model_path="checkpoint")
+
+    assert launch_kwargs(config, "preprocessing") == {
+        "model_path": "checkpoint",
+        "gpu_id": 0,
+        "max_concurrency": 8,
+        "reference_encode_dtype": "bfloat16",
+        "max_reference_audio_seconds": 60.0,
+        "reference_encode_graph_max_seconds": 20.0,
+        "max_prompt_rows": 8192,
+        "codec_path": DEFAULT_CODEC_PATH,
+    }
+    assert launch_kwargs(config, "tts_engine") == {
+        "model_path": "checkpoint",
+        "gpu_id": 0,
+        "total_gpu_memory_fraction": 0.65,
+        "context_length": 16384,
+        "max_running_requests": 16,
+        "max_new_tokens": 2048,
+        "max_prompt_rows": 8192,
+        "first_frame_cuda_graphs": True,
+        "first_frame_cuda_graph_max_requests": 16,
+        "gdn_prefill_cuda_graphs": True,
+        "triton_sampling": True,
+        "tower_fused_layers": True,
+        "enable_async_decode": False,
+        "async_decode_min_batch_size": 1,
+        "stream_stride": 4,
+        "stream_followup_stride_ramp": (10, 12, 32),
+        "stream_followup_stride": 64,
+    }
+    assert launch_kwargs(config, "vocoder") == {
+        "gpu_id": 0,
+        "total_gpu_memory_fraction": 0.15,
+        "codec_path": DEFAULT_CODEC_PATH,
+        **VOCODER_WINDOWS,
+        "window_cuda_graphs": True,
+        "non_streaming_cuda_graph_max_frames": 512,
+        "stream_window_batch_size": 4,
+        "stateful_decode": False,
+        "stateful_gemm_upsample": False,
+        "stateful_folded_codebooks": False,
+        "stateful_fuse_snake_history": False,
+        "stateful_compile_attention": False,
+        "stateful_max_streams": 16,
+        "decode_dtype": "float16",
+        "stream_decode": "incremental",
+        "max_stream_batch_size": 16,
+        "stream_slot_count": 256,
+        "decode_step_message_budget": 8,
+        "max_new_tokens": 2048,
+    }
+
+
+def test_preprocessing_follows_the_engine_cap_and_the_vocoder_codec() -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [
+            ("tts_engine.factory.max_prompt_rows", "4096"),
+            ("vocoder.factory.codec_path", "local/codec.pth"),
+        ]
+    )
+    assert isinstance(config, Drama3PipelineConfig)
+
+    assert launch_kwargs(config, "preprocessing") == {
+        "model_path": "checkpoint",
+        "gpu_id": 0,
+        "max_concurrency": 8,
+        "reference_encode_dtype": "bfloat16",
+        "max_reference_audio_seconds": 60.0,
+        "reference_encode_graph_max_seconds": 20.0,
+        "max_prompt_rows": 4096,
+        "codec_path": "local/codec.pth",
+    }
+    assert launch_kwargs(config, "tts_engine")["max_prompt_rows"] == 4096
+    assert launch_kwargs(config, "vocoder")["codec_path"] == "local/codec.pth"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "owner"),
+    [
+        pytest.param("max_prompt_rows", "4096", "tts_engine", id="max-prompt-rows"),
+        pytest.param("codec_path", "local/codec.pth", "vocoder", id="codec-path"),
+    ],
+)
+def test_preprocessing_cannot_set_what_it_derives(
+    field_name: str, value: str, owner: str
+) -> None:
+    manager = ConfigManager(Drama3PipelineConfig(model_path="checkpoint"))
+
+    with pytest.raises(ValidationError) as rejection:
+        manager.merge_config([(f"preprocessing.factory.{field_name}", value)])
+
+    assert f"set stages.{owner}.factory.{field_name} instead" in str(rejection.value)
+
+
+def test_the_engine_streams_by_the_vocoder_windows() -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [
+            ("vocoder.factory.stream_stride", "8"),
+            ("vocoder.factory.stream_followup_stride_ramp", "[8, 16]"),
+            ("vocoder.factory.stream_followup_stride", "48"),
+        ]
+    )
+    assert isinstance(config, Drama3PipelineConfig)
+
+    engine_kwargs = launch_kwargs(config, "tts_engine")
+    vocoder_kwargs = launch_kwargs(config, "vocoder")
+    for field_name, value in (
+        ("stream_stride", 8),
+        ("stream_followup_stride_ramp", (8, 16)),
+        ("stream_followup_stride", 48),
+    ):
+        assert engine_kwargs[field_name] == vocoder_kwargs[field_name] == value
+
+
+def test_the_vocoder_sizes_its_decodes_by_the_engine_cap_on_new_frames() -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [("tts_engine.factory.max_new_tokens", "1024")]
+    )
+    assert isinstance(config, Drama3PipelineConfig)
+
+    assert launch_kwargs(config, "vocoder")["max_new_tokens"] == 1024
+
+
+def test_the_vocoder_cannot_set_the_engine_cap_on_new_frames() -> None:
+    manager = ConfigManager(Drama3PipelineConfig(model_path="checkpoint"))
+
+    with pytest.raises(ValidationError) as rejection:
+        manager.merge_config([("vocoder.factory.max_new_tokens", "1024")])
+
+    assert "set stages.tts_engine.factory.max_new_tokens instead" in str(
+        rejection.value
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        pytest.param("stream_stride", "8", id="stride"),
+        pytest.param("stream_followup_stride_ramp", "[8, 16]", id="ramp"),
+        pytest.param("stream_followup_stride", "48", id="followup-stride"),
+    ],
+)
+def test_the_engine_cannot_set_the_vocoder_windows(field_name: str, value: str) -> None:
+    manager = ConfigManager(Drama3PipelineConfig(model_path="checkpoint"))
+
+    with pytest.raises(ValidationError) as rejection:
+        manager.merge_config([(f"tts_engine.factory.{field_name}", value)])
+
+    assert f"set stages.vocoder.factory.{field_name} instead" in str(rejection.value)
+
+
+def speech_validator() -> SpeechRequestValidator:
+    return SpeechRequestValidator(
+        default_model="drama3",
+        supported_speech_fields=Drama3PipelineConfig.supported_speech_fields,
+    )
+
+
+def test_every_supported_speech_field_is_accepted() -> None:
+    validator = speech_validator()
+
+    validator.parse_raw_request(
+        {
+            "model": "drama3",
+            "input": "hello",
+            "voice": "default",
+            "response_format": "pcm",
+            "speed": 1.0,
+            "stream": True,
+            "stream_format": "sse",
+            "references": [{"text": "take", "vq_codes": [[0]] * 10}],
+            "ref_audio": "data:audio/wav;base64,AAAA",
+            "ref_text": "take",
+            "task_type": "Base",
+            "max_new_tokens": 16,
+            "temperature": 0.5,
+            "top_p": 0.9,
+            "top_k": 30,
+            "repetition_penalty": 1.0,
+        }
+    )
+    validator.parse_raw_request({"input": "hello", "speaker": "default"})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("instructions", "whisper"),
+        ("language", "English"),
+        ("seed", 0),
+        ("stage_params", {}),
+        ("x_vector_only_mode", False),
+        ("stream_codec_output", False),
+        ("suppress_bootstrap_silence", False),
+        ("token_count", 1),
+        ("duration_tokens", 1),
+        ("initial_codec_chunk_frames", 0),
+        ("stage_sampling", {}),
+        ("infill", None),
+    ],
+)
+def test_speech_fields_the_model_cannot_honor_are_refused(
+    field_name: str, value: object
+) -> None:
+    with pytest.raises(SpeechAPIError) as rejection:
+        speech_validator().parse_raw_request({"input": "hello", field_name: value})
+
+    assert rejection.value.param == field_name
+
+
+class EntryLimitedDrama(Drama3PipelineConfig):
+    admission_limit: ClassVar[int] = 7
+
+    def entry_stage_admission_limit(self) -> int | None:
+        return self.admission_limit
+
+
+@pytest.mark.parametrize("queued", [0, 1, 64])
+@pytest.mark.parametrize("entry_limited", [False, True])
+def test_stateful_capacity_tracks_coordinator_entry_limit(
+    queued: int, entry_limited: bool
+) -> None:
+    config_type = EntryLimitedDrama if entry_limited else Drama3PipelineConfig
+    config = ConfigManager(config_type(model_path="checkpoint")).merge_config(
+        [
+            ("tts_engine.engine.max_running_requests", "16"),
+            ("tts_engine.engine.max_queued_requests", str(queued)),
+            ("vocoder.factory.stateful_decode", "true"),
+        ]
+    )
+    plan, _ = compile_logical_processes(config)
+    capacity = launch_kwargs(config, "vocoder")["stateful_max_streams"]
+    assert capacity == 16
+    assert resolve_coordinator_max_in_flight(config, logical_process_plan=plan) == (
+        7 if entry_limited else 16 + queued
+    )
+
+
+@pytest.mark.parametrize("process_name", ["preprocessing", "pipeline", "vocoder"])
+def test_stateful_rejects_replicas_without_changing_stateless(
+    process_name: str,
+) -> None:
+    config = Drama3PipelineConfig(model_path="checkpoint").model_dump()
+    # note (Wenyao Gao): the vocoder in its own process, so each name is a process.
+    config["stages"][2]["process"] = "vocoder"
+    config["processes"] = {
+        process_name: ProcessConfig(num_replicas=2, replica_devices=[0, 1]).model_dump()
+    }
+    stateless = Drama3PipelineConfig.model_validate(config)
+    assert stateless.processes[process_name].num_replicas == 2
+    config["stages"][2]["factory"]["stateful_decode"] = True
+    config["stages"][1]["engine"] = {
+        "max_running_requests": 16,
+        "max_queued_requests": 0,
+    }
+    with pytest.raises(ValidationError, match="single replicas"):
+        Drama3PipelineConfig.model_validate(config)
+
+
+@pytest.mark.parametrize("factory_limit,engine_limit", [(16, 64), (64, 16)])
+def test_stateful_capacity_follows_engine_not_vocoder_batch(
+    factory_limit: int, engine_limit: int
+) -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [
+            ("tts_engine.factory.max_running_requests", str(factory_limit)),
+            ("tts_engine.engine.max_running_requests", str(engine_limit)),
+            ("tts_engine.engine.max_queued_requests", "64"),
+            ("vocoder.factory.max_batch_size", "2"),
+            ("vocoder.factory.window_cuda_graphs", "false"),
+            ("vocoder.factory.stateful_decode", "true"),
+        ]
+    )
+    assert launch_kwargs(config, "vocoder")["stateful_max_streams"] == engine_limit
+    assert launch_kwargs(config, "vocoder")["stateful_decode"] is True
+    assert "stateful_decode" not in launch_kwargs(config, "tts_engine")
+    logical_process_plan, _ = compile_logical_processes(config)
+    assert (
+        resolve_coordinator_max_in_flight(
+            config, logical_process_plan=logical_process_plan
+        )
+        == engine_limit + 64
+    )
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        [("vocoder.factory.stateful_max_streams", "32")],
+        [
+            ("vocoder.factory.stateful_decode", "true"),
+            ("vocoder.factory.window_cuda_graphs", "false"),
+            ("vocoder.factory.stream_crossfade_samples", "1"),
+        ],
+    ],
+)
+def test_unsupported_stateful_configuration_rejected(
+    override: list[tuple[str, str]],
+) -> None:
+    with pytest.raises(ValidationError, match="stateful"):
+        ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+            override
+        )
+
+
+@pytest.mark.parametrize("decode_dtype", ["float16", "float32"])
+def test_stateful_is_opt_in_without_changing_default_admission(
+    decode_dtype: str,
+) -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [("vocoder.factory.decode_dtype", decode_dtype)]
+    )
+    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
+    assert config.entry_stage_admission_limit() is None
+    explicit = ConfigManager(config).merge_config(
+        [("vocoder.factory.stateful_decode", "true")]
+    )
+    kwargs = launch_kwargs(explicit, "vocoder")
+    assert all(
+        kwargs[name]
+        for name in (
+            "stateful_decode",
+            "stateful_gemm_upsample",
+            "stateful_folded_codebooks",
+            "stateful_fuse_snake_history",
+            "stateful_compile_attention",
+        )
+    )
+    assert kwargs["stateful_max_streams"] == 16
+    assert explicit.entry_stage_admission_limit() is None
+    rebuilt = Drama3PipelineConfig.model_validate(explicit.model_dump())
+    assert launch_kwargs(rebuilt, "vocoder") == kwargs
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        [("vocoder.process", "pipeline")],
+        [("vocoder.gpu_memory_fraction", "null")],
+        [("vocoder.gpu", "null")],
+        [("vocoder.tp_size", "2"), ("vocoder.gpu", "[0, 1]")],
+    ],
+    ids=["shared-process", "no-memory-budget", "no-gpu", "tp2"],
+)
+def test_default_window_codec_preserves_existing_placements(
+    overrides: list[tuple[str, str]],
+) -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        overrides
+    )
+    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
+    assert config.entry_stage_admission_limit() is None
+
+
+def test_default_window_codec_preserves_dynamic_routing() -> None:
+    document = Drama3PipelineConfig(model_path="checkpoint").model_dump()
+    document["stages"][0][
+        "route_fn"
+    ] = "tests.unit_test.fixtures.pipeline_fakes.route_to_undeclared_talker"
+    config = Drama3PipelineConfig.model_validate(document)
+    assert not launch_kwargs(config, "vocoder")["stateful_decode"]
+    assert config.entry_stage_admission_limit() is None
+
+
+def test_reference_sampling_reaches_the_engine_only_when_set() -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [
+            ("tts_engine.factory.reference_sampling", "true"),
+            ("tts_engine.factory.reference_sampling_fallback", "ras"),
+        ]
+    )
+    assert isinstance(config, Drama3PipelineConfig)
+
+    engine_kwargs = launch_kwargs(config, "tts_engine")
+
+    assert (
+        engine_kwargs["reference_sampling"],
+        engine_kwargs["reference_sampling_fallback"],
+    ) == (True, "ras")
+    with pytest.raises(ValidationError, match="reference_sampling_fallback"):
+        ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+            [("tts_engine.factory.reference_sampling_fallback", "greedy")]
+        )
+
+
+def test_epsilon_cutoff_is_a_supported_speech_field() -> None:
+    speech_validator().parse_raw_request({"input": "hello", "epsilon_cutoff": 1e-3})

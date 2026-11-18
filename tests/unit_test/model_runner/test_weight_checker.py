@@ -4,12 +4,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 import torch
+from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.runtime_context import get_context, get_serving
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.model_runner.weight_checker import StrictWeightChecker, _tensor_bytes
+from sglang_omni.model_runner.weight_checker import StrictWeightChecker
 
 
 def test_strict_weight_checker_snapshot_compare_and_checksum() -> None:
@@ -51,27 +51,6 @@ def test_strict_weight_checker_checksums_bfloat16_tensor_bytes() -> None:
     )
 
 
-def test_tensor_bytes_supports_bfloat16_fallback_path() -> None:
-    tensor = torch.tensor([1.0, -2.0, 3.5], dtype=torch.bfloat16)
-
-    raw = _tensor_bytes(tensor)
-
-    assert isinstance(raw, bytes)
-    assert len(raw) == tensor.numel() * tensor.element_size()
-
-
-def test_tensor_bytes_supports_float8_fallback_path() -> None:
-    dtype = getattr(torch, "float8_e4m3fn", None)
-    if dtype is None:
-        pytest.skip("torch does not expose float8_e4m3fn")
-    tensor = torch.tensor([1.0, -2.0, 0.5], dtype=dtype)
-
-    raw = _tensor_bytes(tensor)
-
-    assert isinstance(raw, bytes)
-    assert len(raw) == tensor.numel() * tensor.element_size()
-
-
 def test_model_worker_update_weights_from_disk_publishes_the_weight_version() -> None:
     calls: list[tuple[str, str, bool]] = []
 
@@ -108,7 +87,7 @@ def test_model_worker_update_weights_from_disk_publishes_the_weight_version() ->
         assert get_context().overrides_log() == [
             ("sglang-omni-weight-update-disk", {"weight_version": "v2"})
         ]
-        assert published.weight_version == "old"
+        assert resolution_result(published, "weight_version") == "old"
 
 
 def test_model_worker_update_weights_from_disk_without_a_version_leaves_the_bags() -> (
@@ -145,8 +124,8 @@ def test_model_worker_update_weights_from_disk_without_a_version_leaves_the_bags
 
 def test_model_worker_info_uses_effective_hybrid_swa_capacity() -> None:
     worker = object.__new__(ModelWorker)
+    worker.model_config = SimpleNamespace(context_len=4096)
     worker.server_args = SimpleNamespace(
-        context_length=4096,
         max_prefill_tokens=1024,
         max_running_requests=8,
         max_queued_requests=32,
@@ -289,7 +268,7 @@ def test_model_worker_update_weights_from_distributed_passes_positional_args() -
         assert get_context().overrides_log() == [
             ("sglang-omni-weight-update-distributed", {"weight_version": "v2"})
         ]
-        assert published.weight_version == "old"
+        assert resolution_result(published, "weight_version") == "old"
 
 
 def test_model_worker_update_weights_from_distributed_requires_names() -> None:

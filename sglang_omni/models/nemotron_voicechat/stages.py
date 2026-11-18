@@ -1,0 +1,306 @@
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+import torch
+from torch import nn
+from transformers import AutoTokenizer
+
+from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
+    DECODE_WINDOW_FRAMES,
+    NemotronCode2WavScheduler,
+)
+from sglang_omni.models.nemotron_voicechat.codec import RVQVAEDecoder
+from sglang_omni.models.nemotron_voicechat.codec_cuda_graph import (
+    CodecDecodeGraphRunner,
+)
+from sglang_omni.models.nemotron_voicechat.conformer import (
+    AudioPerception,
+    GraphPerception,
+    StreamingPerception,
+)
+from sglang_omni.models.nemotron_voicechat.engine_builder import (
+    NemotronVoiceChatEngineBuilder,
+    NemotronVoiceChatTalkerEngineBuilder,
+)
+from sglang_omni.models.nemotron_voicechat.payload_types import (
+    OUTPUT_SAMPLE_RATE,
+    NemotronVoiceChatState,
+)
+from sglang_omni.models.weight_loader import (
+    load_module,
+    load_weights_by_prefix,
+    resolve_dtype,
+    resolve_model_path,
+)
+from sglang_omni.platforms import current_platform
+from sglang_omni.preprocessing.transcription import (
+    police_request_audio,
+    resolve_audio_source,
+)
+from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.utils.audio import load_audio
+from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.device import resolve_concrete_device
+
+logger = logging.getLogger(__name__)
+
+PERCEPTION_PREFIX = "stt_model.perception."
+SAMPLES_PER_FRAME = 1_280
+INPUT_SAMPLE_RATE = 16_000
+# note (Xinhao Tan): no 16, on H200 one B=32 step (7.2 ms) is faster than one B=16 step (8.0 ms).
+PERCEPTION_BATCH_SIZES = (1, 2, 4, 8, 32)
+
+
+def perception_config(model_path: str) -> dict:
+    config_path = Path(resolve_model_path(model_path)) / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    return config["model"]["stt"]["model"]["perception"]
+
+
+def create_preprocessing_executor(
+    model_path: str, *, max_concurrency: int = 4, **_
+) -> ThreadedSimpleScheduler[StagePayload, StagePayload]:
+    del model_path
+
+    def preprocess(payload: StagePayload) -> StagePayload:
+        # Channel 0, not a downmix: this model speaks the other side of the
+        # conversation, so a two-party recording carries the agent on channel 1.
+        channels = load_audio(
+            police_request_audio(resolve_audio_source(payload)),
+            source_name="VoiceChat",
+            target_sample_rate=INPUT_SAMPLE_RATE,
+            mono=False,
+        )
+        waveform = torch.as_tensor(channels[0], dtype=torch.float32)
+        remainder = waveform.shape[-1] % SAMPLES_PER_FRAME
+        if remainder:
+            waveform = nn.functional.pad(waveform, (0, SAMPLES_PER_FRAME - remainder))
+        else:
+            pass
+        waveform = waveform.contiguous()
+
+        state = NemotronVoiceChatState.from_dict(payload.data)
+        state.waveform = waveform
+        state.num_frames = waveform.shape[-1] // SAMPLES_PER_FRAME
+        payload.data = state.to_dict()
+        return payload
+
+    return ThreadedSimpleScheduler(preprocess, max_concurrency=max_concurrency)
+
+
+def create_perception_executor(
+    model_path: str,
+    *,
+    dtype: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    enable_cuda_graph: bool = True,
+) -> SimpleScheduler[StagePayload, StagePayload]:
+    device = resolve_concrete_device(device, gpu_id)
+    module = AudioPerception(perception_config(model_path))
+    load_module(
+        module,
+        model_path,
+        prefix=PERCEPTION_PREFIX,
+        dtype=resolve_dtype(dtype),
+        device=device,
+        strict=True,
+    )
+    module.eval()
+    parameter_dtype = module.proj.weight.dtype
+    perception_streams = [
+        (
+            GraphPerception(module, batch_size=batch_size)
+            if enable_cuda_graph
+            else StreamingPerception(module, batch_size=batch_size)
+        )
+        for batch_size in PERCEPTION_BATCH_SIZES
+    ]
+    # note (Junnan Li): a bucket captured on its first batch would stall live requests, so every bucket captures before serving.
+    for perception_stream in perception_streams:
+        if enable_cuda_graph and perception_stream.device.type == "cuda":
+            perception_stream.push(
+                torch.zeros(
+                    perception_stream.batch_size,
+                    SAMPLES_PER_FRAME,
+                    device=perception_stream.device,
+                )
+            )
+            perception_stream.reset()
+        else:
+            pass
+
+    @torch.inference_mode()
+    def encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
+        states = [
+            NemotronVoiceChatState.from_dict(payload.data) for payload in payloads
+        ]
+        perception_stream = next(
+            stream for stream in perception_streams if stream.batch_size >= len(states)
+        )
+        frames_list = module(
+            [
+                state.waveform.to(device=device, dtype=parameter_dtype)
+                for state in states
+            ],
+            stream=perception_stream,
+        )
+        for payload, state, frames in zip(payloads, states, frames_list, strict=True):
+            assert frames.shape[0] == state.num_frames + 1, (
+                f"Perception returned {frames.shape[0]} rows for {state.num_frames} "
+                "frames of audio; expected one more than the frame count."
+            )
+            state.acoustic_frames = frames
+            payload.data = state.to_dict()
+        return payloads
+
+    def encode(payload: StagePayload) -> StagePayload:
+        return encode_batch([payload])[0]
+
+    return SimpleScheduler(
+        encode,
+        batch_compute_fn=encode_batch,
+        max_batch_size=PERCEPTION_BATCH_SIZES[-1],
+    )
+
+
+def create_thinker_executor(
+    model_path,
+    *,
+    dtype=None,
+    device=None,
+    gpu_id=None,
+    server_args_overrides=None,
+    **overrides,
+):
+    builder = NemotronVoiceChatEngineBuilder(max_running_requests=1)
+    return builder.build(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
+        dtype=dtype or "float32",
+        server_args_overrides={**overrides, **(server_args_overrides or {})} or None,
+    )
+
+
+def speech_generation_config(model_path: str) -> dict:
+    config_path = Path(resolve_model_path(model_path)) / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    return config["model"]["speech_generation"]["model"]
+
+
+def create_talker_executor(
+    model_path,
+    *,
+    dtype=None,
+    device=None,
+    gpu_id=None,
+    context_length=None,
+    server_args_overrides=None,
+    **overrides,
+):
+    builder = NemotronVoiceChatTalkerEngineBuilder(
+        max_running_requests=1,
+        context_length=context_length,
+    )
+    return builder.build(
+        model_path,
+        device=device,
+        gpu_id=gpu_id,
+        dtype=dtype or "bfloat16",
+        server_args_overrides={**overrides, **(server_args_overrides or {})} or None,
+    )
+
+
+def create_code2wav_executor(
+    model_path: str,
+    *,
+    chunk_frames: tuple[int, ...] = (1,),
+    max_batch_size: int = 1,
+    dtype: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    enable_cuda_graph: bool = True,
+) -> NemotronCode2WavScheduler:
+    device = resolve_concrete_device(device, gpu_id)
+    generation = speech_generation_config(model_path)
+    weights = load_weights_by_prefix(model_path, prefix=("tts_model.audio_codec.",))
+    markers = {
+        name: load_weights_by_prefix(model_path, prefix=f"tts_model.{name}")[""]
+        for name in ("_control_codes", "codec_silence_tokens")
+    }
+    decoder_weights = {
+        key: value
+        for key, value in weights.items()
+        if key.startswith("decoder.") or key.startswith("prvq.mus_list.")
+    }
+    decoder = RVQVAEDecoder(generation["codec_config"])
+    decoder.load_state_dict(decoder_weights, strict=True)
+    # What counts as a control code, and the silence that stands in for it,
+    # are the checkpoint's to say.
+    decoder.control_codes.copy_(markers["_control_codes"].reshape(-1))
+    decoder.silence_codes.copy_(markers["codec_silence_tokens"].reshape(-1))
+    decoder = decoder.to(device=device, dtype=resolve_dtype(dtype)).eval()
+    graph_backend = current_platform.get_device_graph_backend(device)
+    stream_decoder: RVQVAEDecoder | CodecDecodeGraphRunner
+    if (
+        enable_cuda_graph
+        and current_platform.enable_codec_decode_graph()
+        and graph_backend is not None
+        and current_platform.supports_graph_captured_fft()
+    ):
+        stream_decoder = CodecDecodeGraphRunner(
+            decoder, graph_backend, device, DECODE_WINDOW_FRAMES
+        )
+    else:
+        logger.info(f"Nemotron codec decode runs eagerly on {device}")
+        stream_decoder = decoder
+
+    @torch.inference_mode()
+    def decode(payload: StagePayload) -> StagePayload:
+        """Render a whole code stack at once, for a reply that never streamed."""
+        state = NemotronVoiceChatState.from_dict(payload.data)
+        waveform = decoder(state.codes.to(device)).float().cpu()
+        payload.data = audio_waveform_payload(
+            waveform,
+            sample_rate=OUTPUT_SAMPLE_RATE,
+            modality="audio",
+            source_hint="NemotronVoiceChat",
+        )
+        return payload
+
+    return NemotronCode2WavScheduler(
+        stream_decoder,
+        device,
+        chunk_frames=chunk_frames,
+        compute_fn=decode,
+        max_batch_size=max_batch_size,
+    )
+
+
+def create_decode_executor(model_path, **_):
+    """Turn the thinker's frame-locked token timeline into the reply text.
+
+    Most frames carry a marker rather than a word — the model is listening, or
+    punctuating a turn — so only the ids that spell something are detokenized.
+    """
+    speech = speech_generation_config(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        speech["tts_config"]["cas_config"]["pretrained_tokenizer_name"]
+    )
+    silent_ids = set(tokenizer.all_special_ids) | {
+        tokenizer.convert_tokens_to_ids(token) for token in ("<s>", "</s>")
+    }
+
+    def detokenize(payload: StagePayload) -> StagePayload:
+        state = NemotronVoiceChatState.from_dict(payload.data)
+        spoken = [int(i) for i in state.text_ids if int(i) not in silent_ids]
+        payload.data = {"text": tokenizer.decode(spoken) if spoken else ""}
+        return payload
+
+    return SimpleScheduler(detokenize)

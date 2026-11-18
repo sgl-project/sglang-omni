@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class AudioConfig:
     norm_query_embeds: bool = True
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "AudioConfig":
+    def from_dict(cls, d: Mapping[str, object]) -> "AudioConfig":
         wec = d.get("whisper_encoder_config", {})
         return cls(
             whisper_encoder_config=WhisperEncoderConfig(**wec),
@@ -59,7 +59,7 @@ class VisionConfig:
     initializer_range: float = 0.02
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "VisionConfig":
+    def from_dict(cls, d: Mapping[str, object]) -> "VisionConfig":
         return cls(
             depth=d.get("depth", 27),
             hidden_size=d.get("hidden_size", 1152),
@@ -118,7 +118,7 @@ class BailingMoeV2LLMConfig:
     use_interleaved_frame_timestamp: bool = True
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BailingMoeV2LLMConfig":
+    def from_dict(cls, d: Mapping[str, object]) -> "BailingMoeV2LLMConfig":
         rope_scaling = d.get("rope_scaling", {})
         return cls(
             vocab_size=d.get("vocab_size", 157184),
@@ -174,7 +174,7 @@ class MingOmniConfig:
     architecture: str = "BailingMM2NativeForConditionalGeneration"
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "MingOmniConfig":
+    def from_dict(cls, d: Mapping[str, object]) -> "MingOmniConfig":
         llm_config = BailingMoeV2LLMConfig.from_dict(d.get("llm_config", {}))
         audio_config = AudioConfig.from_dict(d.get("audio_config", {}))
         vision_raw = d.get("vision_config", {})

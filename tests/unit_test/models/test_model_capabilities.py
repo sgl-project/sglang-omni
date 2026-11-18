@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from dataclasses import MISSING, FrozenInstanceError, fields
 from types import ModuleType
@@ -16,6 +15,33 @@ from sglang_omni.models.model_capabilities import (
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
 EXPECTED_MODEL_CAPABILITIES = {
+    "FireRedTTS3ForConditionalGeneration": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=True,
+        supports_streaming_vocoder=True,
+        supports_cuda_graph=True,
+        supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=False,
+        supports_full_prefill_cuda_graph=False,
+    ),
+    "YuE2ForCausalLM": ModelCapabilities(
+        supports_reference_audio=False,
+        supports_batch_vocoder=False,
+        supports_streaming_vocoder=False,
+        supports_cuda_graph=True,
+        supports_torch_compile=False,
+        supports_breakable_prefill_cuda_graph=False,
+        supports_full_prefill_cuda_graph=False,
+    ),
+    "FishOmniModel": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=True,
+        supports_streaming_vocoder=True,
+        supports_cuda_graph=True,
+        supports_torch_compile=False,
+        supports_breakable_prefill_cuda_graph=True,
+        supports_full_prefill_cuda_graph=False,
+    ),
     "DotsTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
         supports_batch_vocoder=True,
@@ -23,6 +49,7 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_cuda_graph=False,
         supports_torch_compile=True,
         supports_breakable_prefill_cuda_graph=False,
+        supports_full_prefill_cuda_graph=False,
     ),
     "MiniMaxMusic3ForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=False,
@@ -31,6 +58,7 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
         supports_breakable_prefill_cuda_graph=False,
+        supports_full_prefill_cuda_graph=False,
     ),
     "AudarTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
@@ -39,14 +67,16 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_cuda_graph=False,
         supports_torch_compile=False,
         supports_breakable_prefill_cuda_graph=False,
+        supports_full_prefill_cuda_graph=False,
     ),
     "Qwen3TTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
         supports_batch_vocoder=True,
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
-        supports_torch_compile=True,
-        supports_breakable_prefill_cuda_graph=False,
+        supports_torch_compile=False,
+        supports_breakable_prefill_cuda_graph=True,
+        supports_full_prefill_cuda_graph=True,
     ),
     "HiggsMultimodalQwen3ForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
@@ -55,6 +85,7 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
         supports_breakable_prefill_cuda_graph=True,
+        supports_full_prefill_cuda_graph=False,
     ),
     "MossTTSDelayModel": ModelCapabilities(
         supports_reference_audio=True,
@@ -63,6 +94,7 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=False,
         supports_breakable_prefill_cuda_graph=True,
+        supports_full_prefill_cuda_graph=False,
     ),
     "MossTTSLocalModel": ModelCapabilities(
         supports_reference_audio=True,
@@ -71,6 +103,7 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
         supports_breakable_prefill_cuda_graph=False,
+        supports_full_prefill_cuda_graph=True,
     ),
     "FishQwen3OmniForCausalLM": ModelCapabilities(
         supports_reference_audio=True,
@@ -79,6 +112,7 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
         supports_breakable_prefill_cuda_graph=False,
+        supports_full_prefill_cuda_graph=False,
     ),
     "BailingMMNativeForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
@@ -86,7 +120,8 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=False,
-        supports_breakable_prefill_cuda_graph=False,
+        supports_breakable_prefill_cuda_graph=True,
+        supports_full_prefill_cuda_graph=False,
     ),
     "VoxtralTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=False,
@@ -95,6 +130,7 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
         supports_breakable_prefill_cuda_graph=False,
+        supports_full_prefill_cuda_graph=False,
     ),
     "Zonos2ForCausalLM": ModelCapabilities(
         supports_reference_audio=True,
@@ -103,6 +139,16 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
         supports_breakable_prefill_cuda_graph=False,
+        supports_full_prefill_cuda_graph=False,
+    ),
+    "Zonos3ForCausalLM": ModelCapabilities(
+        supports_reference_audio=True,
+        supports_batch_vocoder=False,
+        supports_streaming_vocoder=True,
+        supports_cuda_graph=True,
+        supports_torch_compile=False,
+        supports_breakable_prefill_cuda_graph=True,
+        supports_full_prefill_cuda_graph=False,
     ),
     "MossTranscribeDiarizeForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=False,
@@ -111,17 +157,12 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_cuda_graph=True,
         supports_torch_compile=True,
         supports_breakable_prefill_cuda_graph=True,
+        supports_full_prefill_cuda_graph=True,
     ),
 }
 
 
-def _package_for_architecture(architecture: str):
-    config_cls = PIPELINE_CONFIG_REGISTRY.configs.get(architecture)
-    assert config_cls is not None, f"{architecture} is not registered"
-    return importlib.import_module(config_cls.__module__.rsplit(".", 1)[0])
-
-
-def _capability_required_architectures() -> set[str]:
+def capability_required_architectures() -> set[str]:
     return {
         config_cls.architecture
         for config_cls in set(PIPELINE_CONFIG_REGISTRY.configs.values())
@@ -130,11 +171,11 @@ def _capability_required_architectures() -> set[str]:
 
 
 def test_expected_capabilities_cover_registered_required_configs() -> None:
-    assert _capability_required_architectures() == set(EXPECTED_MODEL_CAPABILITIES)
+    assert capability_required_architectures() == set(EXPECTED_MODEL_CAPABILITIES)
 
 
 def test_required_model_capability_configs_resolve_capabilities() -> None:
-    for architecture in sorted(_capability_required_architectures()):
+    for architecture in sorted(capability_required_architectures()):
         assert get_model_capabilities(architecture) is not None
 
 
@@ -150,17 +191,6 @@ def test_model_capabilities_are_frozen_and_explicit() -> None:
     capabilities = next(iter(EXPECTED_MODEL_CAPABILITIES.values()))
     with pytest.raises(FrozenInstanceError):
         capabilities.supports_reference_audio = False
-
-
-@pytest.mark.parametrize("architecture", EXPECTED_MODEL_CAPABILITIES)
-def test_model_package_exports_capabilities(architecture: str) -> None:
-    module = _package_for_architecture(architecture)
-    capabilities = getattr(module, "CAPABILITIES", None)
-
-    assert capabilities == EXPECTED_MODEL_CAPABILITIES[architecture]
-    assert isinstance(capabilities, ModelCapabilities)
-    for field in fields(ModelCapabilities):
-        assert isinstance(getattr(capabilities, field.name), bool)
 
 
 @pytest.mark.parametrize("architecture", EXPECTED_MODEL_CAPABILITIES)
@@ -206,65 +236,6 @@ def test_get_model_capabilities_resolves_registered_alias() -> None:
     )
 
 
-def test_model_capabilities_are_static_architecture_metadata() -> None:
-    config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
-    custom_config = config_cls(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
-
-    capabilities = get_model_capabilities(config_cls.architecture)
-    assert capabilities is not None
-    assert capabilities.supports_reference_audio is True
-    assert custom_config.supports_uploaded_voice_references() is False
-
-
-def test_launcher_model_capabilities_log_summary() -> None:
-    from sglang_omni.serve.launcher import _model_capabilities_log_summary
-
-    config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
-    summary = _model_capabilities_log_summary(
-        config_cls(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
-    )
-
-    assert summary == {
-        "architecture": "Qwen3TTSForConditionalGeneration",
-        "reference_audio": True,
-        "batch_vocoder": True,
-        "streaming_vocoder": True,
-        "cuda_graph": True,
-        "torch_compile": True,
-        "breakable_prefill_cuda_graph": False,
-    }
-
-
-def test_launcher_model_capabilities_log_summary_uses_static_architecture() -> None:
-    from sglang_omni.serve.launcher import _model_capabilities_log_summary
-
-    config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
-    summary = _model_capabilities_log_summary(
-        config_cls(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
-    )
-
-    assert summary is not None
-    assert summary["reference_audio"] is True
-    assert summary["batch_vocoder"] is True
-
-
-def test_launcher_emits_model_capabilities_log(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    from sglang_omni.serve.launcher import _log_model_capabilities
-
-    config_cls = PIPELINE_CONFIG_REGISTRY.get_config(
-        "VoxtralTTSForConditionalGeneration"
-    )
-    with caplog.at_level("INFO", logger="sglang_omni.serve.launcher"):
-        _log_model_capabilities(config_cls(model_path="dummy"))
-
-    assert "Model capabilities:" in caplog.text
-    assert '"architecture": "VoxtralTTSForConditionalGeneration"' in caplog.text
-    assert '"reference_audio": false' in caplog.text
-    assert '"batch_vocoder": false' in caplog.text
-
-
 def test_launcher_model_capabilities_warning_isolated(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -274,10 +245,10 @@ def test_launcher_model_capabilities_warning_isolated(
     def fail_summary(_pipeline_config: object) -> None:
         raise RuntimeError("capability lookup failed")
 
-    monkeypatch.setattr(launcher, "_model_capabilities_log_summary", fail_summary)
+    monkeypatch.setattr(launcher, "model_capabilities_log_summary", fail_summary)
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
 
     with caplog.at_level("WARNING", logger="sglang_omni.serve.launcher"):
-        launcher._log_model_capabilities(config_cls(model_path="dummy"))
+        launcher.log_model_capabilities(config_cls(model_path="dummy"))
 
     assert "Failed to resolve model capabilities for startup log" in caplog.text

@@ -9,6 +9,13 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+from sglang.srt.layers.attention.vision import (
+    VisionAttentionMetadata,
+    prepare_vision_attention_metadata,
+)
+from sglang.srt.model_executor.runner.base_cuda_graph_runner import freeze_gc
+
+from sglang_omni.models.qwen3_omni.components.packed_attention import PackedAttention
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +24,7 @@ WARMUP_ITERATIONS = 3
 
 
 @dataclass(frozen=True, slots=True)
-class _Captured:
+class Captured:
     graph: torch.cuda.CUDAGraph
     hidden_states: torch.Tensor
     cu_seqlens: torch.Tensor
@@ -25,54 +32,46 @@ class _Captured:
     segment_slots: int
 
 
-_HOPPER = 9
+def stack_qkv_projection(attention: nn.Module) -> None:
+    """Give the attention one q, k and v projection; q_proj, k_proj and v_proj become views of it."""
+    projections = (attention.q_proj, attention.k_proj, attention.v_proj)
+    with torch.no_grad():
+        weight = torch.cat([projection.weight for projection in projections])
+        bias = torch.cat([projection.bias for projection in projections])
+    stacked_projection = nn.Linear(weight.shape[1], weight.shape[0], device="meta")
+    stacked_projection.weight = nn.Parameter(weight)
+    stacked_projection.bias = nn.Parameter(bias)
+    attention.qkv_proj = stacked_projection
+    start_row = 0
+    for projection in projections:
+        end_row = start_row + projection.out_features
+        projection.weight = nn.Parameter(weight[start_row:end_row])
+        projection.bias = nn.Parameter(bias[start_row:end_row])
+        start_row = end_row
 
 
-def _packed_attention_backend(capability: tuple[int, int]) -> str:
-    """FA3 on Hopper, Triton on every other CUDA device.
-
-    sglang's VisionAttention rule also picks FA4 on Blackwell. Omni validates
-    Hopper only, and Triton is the arm sglang itself uses on the other parts.
-    """
-    major, _ = capability
-    return "fa3" if major == _HOPPER else "triton_attn"
-
-
-def _resolve_packed_attention(device: torch.device) -> tuple[nn.Module, str]:
-    # Local import: only a process that requests the graphs loads sglang's kernels.
-    from sglang.srt.layers.attention import vision
-
-    backend = _packed_attention_backend(torch.cuda.get_device_capability(device))
-    if backend == "fa3":
-        impl_class = vision.VisionFlash3Attention
-    else:
-        impl_class = vision.VisionTritonAttention
-    # The encoder process holds no sglang parallel state to read.
-    return impl_class(use_data_parallel=True), backend
-
-
-def _packed_attention_forward(
+def packed_attention_forward(
     attention: nn.Module,
-    packed_attention: nn.Module,
+    packed_attention: PackedAttention,
     hidden_states: torch.Tensor,
-    cu_seqlens: torch.Tensor,
-    max_seqlen: int,
+    attention_metadata: VisionAttentionMetadata,
 ) -> torch.Tensor:
     seq_length, _ = hidden_states.size()
-    heads = attention.num_heads
-    query_states = attention.q_proj(hidden_states).reshape(seq_length, heads, -1)
-    key_states = attention.k_proj(hidden_states).reshape(seq_length, heads, -1)
-    value_states = attention.v_proj(hidden_states).reshape(seq_length, heads, -1)
-    # An int max_seqlen avoids the device-to-host max() that would break capture.
+    # note (ratish): the packed attention reads strided q, k and v, so one GEMM projects all three without copies.
+    query_states, key_states, value_states = (
+        attention.qkv_proj(hidden_states)
+        .reshape(seq_length, 3, attention.num_heads, -1)
+        .unbind(1)
+    )
     attn_output = packed_attention(
         query_states,
         key_states,
         value_states,
-        cu_seqlens,
+        attention_metadata.cu_seqlens,
         bsz=1,
         seq_len=seq_length,
         softmax_scale=attention.scaling,
-        max_seqlen=max_seqlen,
+        forward_metadata=attention_metadata,
     )
     return attention.out_proj(attn_output.reshape(seq_length, -1).contiguous())
 
@@ -80,10 +79,8 @@ def _packed_attention_forward(
 class AudioLayerGraphRunner:
     """Replays the audio encoder's layer stack from a captured CUDA graph.
 
-    One instance owns one tower on one CUDA device. Replay is opt-in because
-    it runs the packed attention kernel sglang picks for the device where
-    serving otherwise runs sdpa: outputs agree to bf16 kernel noise, not
-    bitwise, so it needs the content gate rather than an equality check.
+    One instance owns one tower on one CUDA device and attends through the
+    encoder's packed attention.
     """
 
     def __init__(
@@ -92,81 +89,72 @@ class AudioLayerGraphRunner:
         *,
         device: torch.device,
         window: int,
+        packed_attention: PackedAttention,
         token_buckets: tuple[int, ...] = DEFAULT_TOKEN_BUCKETS,
         max_batch_rows: int = 32,
     ) -> None:
         if device.type != "cuda":
             raise ValueError("audio layer CUDA graphs require a CUDA device")
-        self._tower = tower
+        else:
+            pass
+        self.tower = tower
         # Note (wenyao): an indexless "cuda" never equals a tensor's "cuda:N",
         # so resolve the index or every replay silently declines.
-        self._device = torch.device(
+        self.device = torch.device(
             "cuda",
             torch.cuda.current_device() if device.index is None else device.index,
         )
-        self._window = int(window)
-        self._token_buckets = tuple(sorted(token_buckets))
-        self._max_batch_rows = int(max_batch_rows)
-        self._graphs: dict[int, _Captured] = {}
-        self._pool = None
-        self._disabled_reason: str | None = None
-        self._owner_pid = os.getpid()
-        self._dtype = next(tower.parameters()).dtype
-        self._hidden = tower.config.d_model
-        self._packed_attention: nn.Module | None = None
-        self._backend: str | None = None
+        self.window = int(window)
+        self.token_buckets = tuple(sorted(token_buckets))
+        self.max_batch_rows = int(max_batch_rows)
+        self.graphs: dict[int, Captured] = {}
+        self.pool = None
+        self.disabled_reason: str | None = None
+        self.owner_pid = os.getpid()
+        self.dtype = next(tower.parameters()).dtype
+        self.hidden = tower.config.d_model
+        self.packed_attention: PackedAttention = packed_attention
 
     @property
     def has_graphs(self) -> bool:
-        return bool(self._graphs) and self._disabled_reason is None
+        return bool(self.graphs) and self.disabled_reason is None
 
-    def _segment_slots(self, bucket: int) -> int:
+    def segment_slots(self, bucket: int) -> int:
         # Note (wenyao): a row contributes one window per full block plus a
         # remainder, so slack has to cover every row in the batch, not just
         # the bucket's own window count.
-        return bucket // self._window + self._max_batch_rows + 2
+        return bucket // self.window + self.max_batch_rows + 2
 
-    def _window_segments(self, tokens: int) -> list[int]:
-        full, remainder = divmod(tokens, self._window)
-        segments = [self._window] * full
+    def window_segments(self, tokens: int) -> list[int]:
+        full, remainder = divmod(tokens, self.window)
+        segments = [self.window] * full
         if remainder:
             segments.append(remainder)
+        else:
+            pass
         return segments
 
-    def _capture_segments(self, bucket: int) -> list[int]:
+    def capture_segments(self, bucket: int) -> list[int]:
         # Note (wenyao): every dummy segment must fit the window declared as
         # max_seqlen, or capture records attention kernels sized for a shorter
         # sequence than the tail segment actually is.
-        segments = self._window_segments(bucket)
-        segments.extend([0] * (self._segment_slots(bucket) - len(segments)))
+        segments = self.window_segments(bucket)
+        segments.extend([0] * (self.segment_slots(bucket) - len(segments)))
         return segments
 
-    def _resolve_attention(self) -> None:
-        if self._packed_attention is not None or self._disabled_reason is not None:
-            return
-        try:
-            self._packed_attention, self._backend = _resolve_packed_attention(
-                self._device
-            )
-        except Exception as exc:
-            # Like a failed capture: the encoder stays eager, the stage lives.
-            self._disabled_reason = f"packed attention unavailable: {exc}"
-            logger.warning(
-                "audio layer CUDA graphs unavailable: %s",
-                self._disabled_reason,
-                exc_info=True,
-            )
-
-    def _run_layers(self, hidden_states, cu_seqlens, max_seqlen: int):
-        for layer in self._tower.layers:
+    def run_layers(self, hidden_states, cu_seqlens, max_seqlen: int):
+        # An int max_seqlen avoids the device-to-host max() that would break capture.
+        attention_metadata = prepare_vision_attention_metadata(
+            cu_seqlens, cu_seqlens.device, max_seqlen=max_seqlen
+        )
+        for layer in self.tower.layers:
             residual = hidden_states
             hidden_states = layer.self_attn_layer_norm(hidden_states)
-            hidden_states = _packed_attention_forward(
+            hidden_states = packed_attention_forward(
                 layer.self_attn,
-                self._packed_attention,
+                self.packed_attention,
                 hidden_states,
-                cu_seqlens,
-                max_seqlen,
+                attention_metadata,
             )
             hidden_states = residual + hidden_states
             residual = hidden_states
@@ -176,36 +164,34 @@ class AudioLayerGraphRunner:
             if hidden_states.dtype == torch.float16:
                 clamp_value = torch.finfo(hidden_states.dtype).max - 1000
                 hidden_states = torch.clamp(hidden_states, -clamp_value, clamp_value)
+            else:
+                pass
         return hidden_states
 
-    def _capture(self, bucket: int) -> _Captured | None:
-        slots = self._segment_slots(bucket)
+    def capture(self, bucket: int) -> Captured | None:
+        slots = self.segment_slots(bucket)
         hidden_states = torch.zeros(
-            bucket, self._hidden, device=self._device, dtype=self._dtype
+            bucket, self.hidden, device=self.device, dtype=self.dtype
         )
         cu_seqlens = (
-            torch.tensor([0, *self._capture_segments(bucket)], dtype=torch.int32)
+            torch.tensor([0, *self.capture_segments(bucket)], dtype=torch.int32)
             .cumsum(0)
             .to(torch.int32)
-            .to(self._device)
+            .to(self.device)
         )
         try:
             with torch.no_grad():
                 for _ in range(WARMUP_ITERATIONS):
-                    self._run_layers(hidden_states, cu_seqlens, self._window)
+                    self.run_layers(hidden_states, cu_seqlens, self.window)
                 torch.cuda.synchronize()
                 graph = torch.cuda.CUDAGraph()
-                if self._pool is None:
+                if self.pool is None:
                     with torch.cuda.graph(graph):
-                        output = self._run_layers(
-                            hidden_states, cu_seqlens, self._window
-                        )
-                    self._pool = graph.pool()
+                        output = self.run_layers(hidden_states, cu_seqlens, self.window)
+                    self.pool = graph.pool()
                 else:
-                    with torch.cuda.graph(graph, pool=self._pool):
-                        output = self._run_layers(
-                            hidden_states, cu_seqlens, self._window
-                        )
+                    with torch.cuda.graph(graph, pool=self.pool):
+                        output = self.run_layers(hidden_states, cu_seqlens, self.window)
             torch.cuda.synchronize()
         except Exception:
             logger.warning(
@@ -214,53 +200,66 @@ class AudioLayerGraphRunner:
                 exc_info=True,
             )
             return None
-        return _Captured(graph, hidden_states, cu_seqlens, output, slots)
+        return Captured(graph, hidden_states, cu_seqlens, output, slots)
 
     def capture_all(self) -> None:
-        self._resolve_attention()
-        if self._disabled_reason is not None:
-            return
-        for bucket in self._token_buckets:
-            captured = self._capture(bucket)
-            if captured is None:
-                self._disabled_reason = f"capture failed at bucket {bucket}"
-                self._graphs.clear()
-                return
-            self._graphs[bucket] = captured
+        # note (ratish): a collection during capture can free what a reference cycle holds,
+        # a dead runner's graphs among them, and invalidate the capture.
+        with freeze_gc(enable_cudagraph_gc=False):
+            for bucket in self.token_buckets:
+                captured = self.capture(bucket)
+                if captured is None:
+                    self.disabled_reason = f"capture failed at bucket {bucket}"
+                    self.graphs.clear()
+                    return
+                else:
+                    pass
+                self.graphs[bucket] = captured
         logger.info(
-            "audio layer CUDA graphs captured for buckets %s with %s attention",
-            list(self._graphs),
-            self._backend,
+            f"audio layer CUDA graphs captured for buckets {list(self.graphs)} "
+            f"with {type(self.packed_attention).__name__}"
         )
 
-    def _select(self, tokens: int, segments: list[int]) -> int | None:
+    def select(self, tokens: int, segments: list[int]) -> int | None:
         if sum(segments) != tokens or any(
-            segment < 0 or segment > self._window for segment in segments
+            segment < 0 or segment > self.window for segment in segments
         ):
             return None
-        for bucket in self._token_buckets:
-            if bucket >= tokens and self._graphs.get(bucket) is not None:
+        else:
+            pass
+        for bucket in self.token_buckets:
+            if bucket >= tokens and self.graphs.get(bucket) is not None:
                 required_slots = len(segments) + len(
-                    self._window_segments(bucket - tokens)
+                    self.window_segments(bucket - tokens)
                 )
-                if required_slots <= self._graphs[bucket].segment_slots:
+                if required_slots <= self.graphs[bucket].segment_slots:
                     return bucket
+                else:
+                    pass
+            else:
+                pass
         return None
 
     def maybe_replay(
         self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor, segments: list[int]
     ) -> torch.Tensor | None:
         """Return the layer-stack output, or None when the caller must run eager."""
-        if self._disabled_reason is not None or not self._graphs:
+        if self.disabled_reason is not None or not self.graphs:
             return None
-        if os.getpid() != self._owner_pid or hidden_states.device != self._device:
+        else:
+            pass
+        if os.getpid() != self.owner_pid or hidden_states.device != self.device:
             return None
+        else:
+            pass
         tokens = hidden_states.shape[0]
-        bucket = self._select(tokens, segments)
+        bucket = self.select(tokens, segments)
         if bucket is None:
             return None
-        captured = self._graphs[bucket]
-        padded = [*segments, *self._window_segments(bucket - tokens)]
+        else:
+            pass
+        captured = self.graphs[bucket]
+        padded = [*segments, *self.window_segments(bucket - tokens)]
         # Note (wenyao): real segments are never widened, only new ones added,
         # so padding rows form their own attention window and cannot reach the
         # real tokens sharing this replay.
@@ -268,6 +267,6 @@ class AudioLayerGraphRunner:
         cu = torch.tensor([0, *padded], dtype=torch.int32).cumsum(0).to(torch.int32)
         captured.hidden_states[:tokens].copy_(hidden_states)
         captured.hidden_states[tokens:].zero_()
-        captured.cu_seqlens.copy_(cu.to(self._device, non_blocking=True))
+        captured.cu_seqlens.copy_(cu.to(self.device, non_blocking=True))
         captured.graph.replay()
         return captured.output[:tokens]

@@ -3,32 +3,80 @@
 
 from __future__ import annotations
 
-from typing import Any
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
+from sglang.srt.dllm.algorithm import algo_name_to_cls
+from sglang.srt.dllm.config import DllmConfig
+from sglang.srt.environ import envs
+from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
+from sglang.srt.server_args import ServerArgs
+from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
+from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+    CFG_ATTENTION_BACKEND,
+    register_llada2_cfg_flashinfer_backend,
+)
+from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
+from sglang_omni.models.llada2_uni.request_builders import (
+    make_dllm_thinker_scheduler_adapters,
+)
+from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 
+def register_llada2_uni_cfg() -> None:
+    """Call before build_server_args for the omni LowConfidenceCFG variant.
+
+    The text-only LowConfidence variant does not need this registration.
+    """
+    algo_name_to_cls["LowConfidenceCFG"] = LowConfidenceCFG
+    register_llada2_cfg_flashinfer_backend()
+
+
+def validate_cfg(server_args: ServerArgs) -> None:
+    cfg = resolved_view(server_args)
+    if cfg.dllm_algorithm != "LowConfidenceCFG":
+        return
+    else:
+        pass
+    register_llada2_uni_cfg()
+    if any(backend != CFG_ATTENTION_BACKEND for backend in attention_backends_of(cfg)):
+        raise ValueError("LowConfidenceCFG requires llada2_uni_cfg_flashinfer")
+    else:
+        pass
+    if cfg.dllm_fdfo:
+        raise ValueError("LowConfidenceCFG requires synchronous DLLM, not FDFO")
+    else:
+        pass
+    if (
+        envs.SGLANG_FLASHINFER_USE_PAGED.get()
+        and cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED
+    ):
+        raise ValueError(
+            "LowConfidenceCFG decode CUDA graphs do not support "
+            "SGLANG_FLASHINFER_USE_PAGED=1; unset it or set "
+            "cuda_graph_backend_decode=disabled"
+        )
+    else:
+        pass
+
+
 def create_dllm_thinker_scheduler(
-    server_args: Any,
+    server_args: ServerArgs,
     gpu_id: int = 0,
     *,
     tp_rank: int = 0,
     nccl_port: int | None = None,
-):
+) -> DllmScheduler:
     """Create an DllmScheduler for the LLaDA2-Uni thinker.
 
     Returns a ``DllmScheduler`` with ``dllm_config`` set, ready to be
     driven by a ``Stage``.
     """
-    from sglang.srt.dllm.config import DllmConfig
-    from sglang.srt.utils.hf_transformers_utils import get_tokenizer
-
-    from sglang_omni.models.llada2_uni.request_builders import (
-        make_dllm_thinker_scheduler_adapters,
-    )
-    from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
-    from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
-
+    validate_cfg(server_args)
     dllm_config = DllmConfig.from_server_args(server_args)
 
     # sglang supports radix cache with dLLM, but Omni's dLLM staging

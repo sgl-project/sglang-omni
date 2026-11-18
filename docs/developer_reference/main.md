@@ -31,6 +31,7 @@ sglang_omni/
 |-- pipeline/       # Inter-stage orchestration, stages, coordinator, processes
 |-- scheduling/     # Scheduler loops and inbox/outbox message types
 |-- model_runner/   # Shared model runner abstractions for AR stages
+|-- speculative/    # Adapters that run SGLang's draft workers on AR stages
 |-- models/         # Model-specific configs, stages, request builders, modules
 |-- config/         # PipelineConfig, StageConfig, config manager, topology
 |-- relay/          # Data transfer backends
@@ -59,3 +60,7 @@ models/<model>/
 Only model-local behavior belongs here. The framework-owned layers are still
 `Stage`, `Coordinator`, schedulers, model-runner bases, relay, runtime prep, and
 runners.
+
+<a id="naming-and-lint-checks"></a>
+<a id="documentation-checks"></a>
+See the [Contribution Guide](contribution_guide.md#naming-and-lint-checks) for code lint and the [documentation README](https://github.com/sgl-project/sglang-omni/blob/main/docs/README.md#documentation-checks) for documentation checks.

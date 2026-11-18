@@ -1,0 +1,660 @@
+package sqlitestore
+
+// These tests need the plugin's native SQLite library. Outside a packaged
+// app it is found through MYGO_SQLITE_LIBRARY or downloaded once (SHA-256
+// checked) into os.UserCacheDir()/mygo/natives; see docs/development.md.
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
+)
+
+var ctx = context.Background()
+
+func openTest(t *testing.T, dir string) *Store {
+	t.Helper()
+	s, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+func TestSplitSQL(t *testing.T) {
+	got := splitSQL(`-- a comment; with a semicolon;
+CREATE TABLE a (x);
+
+CREATE TRIGGER t AFTER INSERT ON a BEGIN
+  INSERT INTO b VALUES (1);
+  INSERT INTO b VALUES (2);
+END;
+-- trailing;
+CREATE INDEX i ON a(x);
+`)
+	if len(got) != 3 || !strings.HasPrefix(got[1], "CREATE TRIGGER") || !strings.HasSuffix(got[1], "END;") {
+		t.Fatalf("%q", got)
+	}
+	if n := len(migrations[0].statements); n < 9 {
+		t.Errorf("migration 1 has %d statements", n)
+	}
+}
+
+func TestOpenMigratesAndReopens(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != Version() {
+		t.Fatalf("user_version %d", v)
+	}
+	if fi, err := os.Stat(s.History().AudioDir()); err != nil || !fi.IsDir() || filepath.Dir(s.History().AudioDir()) != dir {
+		t.Errorf("audio dir: %v", err)
+	}
+	for _, table := range []string{"documents", "history", "history_fts", "dictionary_profiles", "dictionary_terms", "notes", "meetings", "meeting_segments", "meeting_segments_fts"} {
+		rows, err := s.db.Query(ctx, `SELECT name FROM sqlite_master WHERE name = ?`, table)
+		if err != nil || len(rows.Values) != 1 {
+			t.Errorf("table %s: %v", table, err)
+		}
+	}
+	s.Close()
+	s = openTest(t, dir)
+	if matches, _ := filepath.Glob(filepath.Join(dir, "*.bak-*")); len(matches) != 0 {
+		t.Errorf("backups without a migration: %v", matches)
+	}
+}
+
+func TestNotesMigrateWithoutAppName(t *testing.T) {
+	dir := t.TempDir()
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = saved[:8]
+	s := openTest(t, dir)
+	at := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
+	if _, err := s.db.Execute(ctx, `INSERT INTO notes (id, text, created_at) VALUES (?, ?, ?)`, "old", "buy milk", at.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	migrations = saved
+	s = openTest(t, dir)
+	list, err := s.Notes().List(ctx)
+	if err != nil || len(list) != 1 || list[0].Text != "buy milk" || !list[0].CreatedAt.Equal(at) || list[0].AppName != "" {
+		t.Fatalf("old note %+v, %v", list, err)
+	}
+}
+
+func TestBackupBeforeMigrating(t *testing.T) {
+	dir := t.TempDir()
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+
+	s := openTest(t, dir)
+	if err := s.Documents().Put(ctx, "k", []byte(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	// One more migration: the file is copied first.
+	cur := len(saved)
+	migrations = append(slices.Clone(saved), migration{version: cur + 1, statements: []string{"CREATE TABLE extra (x)"}})
+	s = openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != cur+1 {
+		t.Fatalf("user_version %d", v)
+	}
+	bak := filepath.Join(dir, FileName+".bak-"+strconv.Itoa(cur))
+	if _, err := os.Stat(bak); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	// The backup is the database as it was, with its data.
+	migrations = saved
+	old := t.TempDir()
+	if err := copyFile(bak, filepath.Join(old, FileName)); err != nil {
+		t.Fatal(err)
+	}
+	b := openTest(t, old)
+	if v, _ := userVersion(ctx, b.db); v != cur {
+		t.Errorf("backup version %d", v)
+	}
+	if doc, ok, _ := b.Documents().Get(ctx, "k"); !ok || string(doc) != `{"v":1}` {
+		t.Errorf("backup data %s %v", doc, ok)
+	}
+
+	// A database newer than the app is refused, untouched.
+	if _, err := Open(ctx, dir); !errors.Is(err, core.ErrUnsupported) {
+		t.Fatalf("newer database: %v", err)
+	}
+
+	// A failing migration rolls back and leaves the version as it was.
+	migrations = append(slices.Clone(saved), migration{version: cur + 1, statements: []string{"CREATE TABLE ok (x)", "NOT SQL"}})
+	fresh := t.TempDir()
+	if _, err := Open(ctx, fresh); err == nil {
+		t.Fatal("bad migration succeeded")
+	}
+	migrations = saved
+	s = openTest(t, fresh)
+	if rows, _ := s.db.Query(ctx, "SELECT name FROM sqlite_master WHERE name = 'ok'"); len(rows.Values) != 0 {
+		t.Error("partial migration kept")
+	}
+	if v, _ := userVersion(ctx, s.db); v != cur {
+		t.Errorf("version after failed migration %d", v)
+	}
+}
+
+func TestDocuments(t *testing.T) {
+	d := openTest(t, t.TempDir()).Documents()
+	if _, ok, err := d.Get(ctx, "settings:app"); ok || err != nil {
+		t.Fatalf("missing: %v %v", ok, err)
+	}
+	if err := d.Put(ctx, "settings:app", []byte(`{"version":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	d.Put(ctx, "settings:app", []byte(`{"version":2}`))
+	if doc, ok, _ := d.Get(ctx, "settings:app"); !ok || string(doc) != `{"version":2}` {
+		t.Errorf("got %s", doc)
+	}
+	if err := d.Put(ctx, "x", []byte(`not json`)); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("bad JSON: %v", err)
+	}
+	d.Delete(ctx, "settings:app")
+	d.Delete(ctx, "settings:app")
+	if _, ok, _ := d.Get(ctx, "settings:app"); ok {
+		t.Error("not deleted")
+	}
+}
+
+func entry(id string, kind store.Kind, at time.Time, raw, result string) store.Entry {
+	return store.Entry{ID: id, Kind: kind, CreatedAt: at, RawText: raw, Result: result, AppBundle: "com.tinyspeck.slackmacgap",
+		AppName: "Slack", RuleID: "g1", RuleName: "工作沟通", RuleSource: "app", ASRProvider: "doubao", ASRModel: "volc.seedasr.sauc.duration",
+		LLMProvider: "deepseek", LLMModel: "deepseek-chat", AudioMS: 4200, ASRMS: 310, LLMMS: 820, TotalMS: 5400, Delivery: "insert"}
+}
+
+func TestHistory(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	h := s.History()
+	t0 := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	es := []store.Entry{
+		entry("a", store.KindTranscribe, t0, "嗯 明天上午十点开会", "明天上午十点开会。"),
+		entry("b", store.KindTranslate, t0.Add(time.Minute), "send the draft to Anna", "把草稿发给 Anna"),
+		entry("c", store.KindRewrite, t0.Add(2*time.Minute), "", "Dear team, the release moves to Friday."),
+	}
+	es[2].SourceText, es[2].PromptText = "release friday", "改正式一点"
+	es[0].Conversation, es[1].Conversation, es[2].Conversation = "first", "first", "second"
+	es[2].Title, es[2].Replaces = "Release", "b"
+	es[0].Audio = "a.wav"
+	es[0].SentMS, es[0].DSP, es[0].GainDB = 3100, "highpass+level", 7.5
+	if err := os.WriteFile(filepath.Join(h.AudioDir(), "a.wav"), []byte("RIFF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range es {
+		if err := h.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := h.Get(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := es[0]
+	want.Status = store.StatusDone
+	if !got.CreatedAt.Equal(want.CreatedAt) {
+		t.Errorf("time %v", got.CreatedAt)
+	}
+	got.CreatedAt = want.CreatedAt
+	if got != want {
+		t.Errorf("round trip:\n%+v\n%+v", got, want)
+	}
+	if got, err := h.Get(ctx, "c"); err != nil || got.Title != "Release" || got.Replaces != "b" {
+		t.Errorf("rewrite round trip: %+v, %v", got, err)
+	}
+	ids := func(q store.HistoryQuery) string {
+		list, err := h.List(ctx, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, e := range list {
+			out = append(out, e.ID)
+		}
+		return strings.Join(out, ",")
+	}
+	for q, want := range map[store.HistoryQuery]string{
+		{}:                                        "c,b,a",
+		{Kind: store.KindTranslate}:               "b",
+		{Conversation: "first"}:                   "b,a",
+		{Search: "十点开会"}:                          "a", // trigram, CJK
+		{Search: "开会"}:                            "a", // under 3 characters: LIKE
+		{Search: "Anna"}:                          "b",
+		{Search: "改正式"}:                           "c", // the spoken instruction
+		{Search: "release", Limit: 1}:             "c",
+		{Limit: 2, Offset: 1}:                     "b,a",
+		{Search: "nothing like this"}:             "",
+		{Kind: store.KindRewrite, Search: "Anna"}: "",
+	} {
+		if got := ids(q); got != want {
+			t.Errorf("%+v: %q, want %q", q, got, want)
+		}
+	}
+	// Put replaces, and the index follows.
+	es[1].Result = "把草稿交给 Anna"
+	h.Put(ctx, es[1])
+	if got := ids(store.HistoryQuery{Search: "交给 Anna"}); got != "b" {
+		t.Errorf("after update: %q", got)
+	}
+	if err := h.Put(ctx, store.Entry{ID: "x", Kind: "meeting"}); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("bad kind: %v", err)
+	}
+	if err := h.Put(ctx, store.Entry{ID: "../x", Kind: store.KindTranscribe}); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("bad id: %v", err)
+	}
+	// Delete takes the audio with it.
+	if err := h.Delete(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(h.AudioDir(), "a.wav")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("audio kept: %v", err)
+	}
+	if err := h.Delete(ctx, "a"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("deleted twice: %v", err)
+	}
+	if _, err := h.Get(ctx, "a"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("get deleted: %v", err)
+	}
+	if got := ids(store.HistoryQuery{Search: "十点开会"}); got != "" {
+		t.Errorf("index kept a deleted row: %q", got)
+	}
+	if n, err := h.DeleteAll(ctx, store.KindRewrite); n != 1 || err != nil {
+		t.Errorf("delete rewrite: %d %v", n, err)
+	}
+	if st, _ := s.Stats(ctx); st.History != 1 {
+		t.Errorf("stats %+v", st)
+	}
+	if n, err := h.DeleteAll(ctx, ""); n != 1 || err != nil {
+		t.Errorf("delete all: %d %v", n, err)
+	}
+}
+
+// TestClearHistoryLeavesNoText: after Clear history, the texts are gone
+// from the database's files too, not only from its tables: neither the
+// text itself nor the search index's trigrams of it. A plain DELETE left
+// them in freed pages (and in the write-ahead log), and the index kept
+// its trigrams, readable by anyone who opens the file.
+func TestClearHistoryLeavesNoText(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	h := s.History()
+	const secret = "zebra-qzxjv-7731 my bank PIN" // qzx, zxj, xjv: trigrams found nowhere else
+	for i := range 50 {                           // enough rows to fill pages of their own
+		e := store.Entry{ID: fmt.Sprintf("e%d", i), Kind: store.KindTranscribe, CreatedAt: time.Now(), Result: secret + strings.Repeat(" padding", 40), RawText: secret}
+		if err := h.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := h.DeleteAll(ctx, ""); n != 50 || err != nil {
+		t.Fatalf("clear: %d %v", n, err)
+	}
+	for _, name := range []string{FileName, FileName + "-wal"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		for _, s := range []string{"zebra-qzxjv-7731", "qzx", "zxj", "xjv"} {
+			if bytes.Contains(data, []byte(s)) {
+				t.Errorf("%s still holds %q of the cleared text", name, s)
+			}
+		}
+	}
+}
+
+// TestClearHistoryCompactionFails: a compaction that fails after Clear
+// history does not make it a failure: the entries are gone, so DeleteAll
+// reports them and no error, and the app says so and refreshes the
+// history instead of "Could not clear the history".
+func TestClearHistoryCompactionFails(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	h := s.History()
+	for _, id := range []string{"a", "b"} {
+		if err := h.Put(ctx, store.Entry{ID: id, Kind: store.KindTranscribe, CreatedAt: time.Now(), Result: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func(c []string) { compaction = c }(compaction)
+	compaction = []string{"VACUUM no_such_schema"}
+	if n, err := h.DeleteAll(ctx, ""); n != 2 || err != nil {
+		t.Errorf("clear, the compaction failing: %d %v", n, err)
+	}
+	if st, _ := s.Stats(ctx); st.History != 0 {
+		t.Errorf("stats %+v", st)
+	}
+}
+
+func TestDictionary(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	d := s.Dictionary()
+	t0 := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	for _, term := range []store.Term{
+		{ID: "1", Term: " VoxtNew ", Aliases: []string{"vox tunew", "vox tunew", " "}, Enabled: true, CreatedAt: t0},
+		{ID: "2", Term: "Kubernetes", Aliases: []string{"k8s"}, Note: "work", Enabled: true},
+		{ID: "3", Term: "豆包", Enabled: false},
+	} {
+		if err := d.Put(ctx, term); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := d.Get(ctx, "1")
+	if err != nil || got.Term != "VoxtNew" || !slices.Equal(got.Aliases, []string{"vox tunew"}) || !got.Enabled ||
+		!got.CreatedAt.Equal(t0) || !got.UpdatedAt.Equal(t0) {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if got, _ := d.Get(ctx, "3"); got.Enabled || got.Aliases != nil {
+		t.Errorf("disabled term %+v", got)
+	}
+	// Unique ignoring case.
+	if err := d.Put(ctx, store.Term{ID: "4", Term: "voxtnew"}); !errors.Is(err, core.ErrExists) {
+		t.Errorf("duplicate: %v", err)
+	}
+	if err := d.Put(ctx, store.Term{ID: "5", Term: "  "}); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("empty: %v", err)
+	}
+	names := func(search string) string {
+		list, err := d.List(ctx, search)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, t := range list {
+			out = append(out, t.Term)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := names(""); got != "Kubernetes,VoxtNew,豆包" {
+		t.Errorf("all: %q", got)
+	}
+	if got := names("k8s"); got != "Kubernetes" {
+		t.Errorf("by alias: %q", got)
+	}
+	if got := names("VOX"); got != "VoxtNew" {
+		t.Errorf("ignoring case: %q", got)
+	}
+	if err := d.Delete(ctx, "2", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Delete(ctx, "2", ""); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("deleted twice: %v", err)
+	}
+	if st, _ := s.Stats(ctx); st.Dictionary != 2 {
+		t.Errorf("stats %+v", st)
+	}
+}
+
+func TestDictionaryProfiles(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	d := s.Dictionary()
+	profiles, err := d.Profiles(ctx)
+	if err != nil || len(profiles) != 1 || profiles[0].ID != "default" || profiles[0].Name != "Default" || !profiles[0].Active {
+		t.Fatalf("initial profiles %+v, %v", profiles, err)
+	}
+	if err := d.Put(ctx, store.Term{ID: "default-term", Term: "Voxt", Note: "default", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CreateProfile(ctx, store.DictionaryProfile{ID: "work", Name: " Work "}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CreateProfile(ctx, store.DictionaryProfile{ID: "other", Name: "default"}); !errors.Is(err, core.ErrExists) {
+		t.Errorf("duplicate profile name: %v", err)
+	}
+	if err := d.CreateProfile(ctx, store.DictionaryProfile{ID: "empty", Name: " "}); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("empty profile name: %v", err)
+	}
+	if err := d.ActivateProfile(ctx, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.List(ctx, ""); err != nil || len(got) != 0 {
+		t.Fatalf("new profile starts with %+v, %v", got, err)
+	}
+	// The same spelling can mean something different in another profile.
+	if err := d.Put(ctx, store.Term{ID: "work-term", Term: "voxt", Note: "work", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.Get(ctx, "work-term"); got.Note != "work" {
+		t.Errorf("active Get returned %+v", got)
+	}
+	if got, _ := d.List(ctx, ""); len(got) != 1 || got[0].ID != "work-term" {
+		t.Errorf("active List returned %+v", got)
+	}
+	if err := d.ActivateProfile(ctx, "default"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.List(ctx, ""); len(got) != 1 || got[0].ID != "default-term" {
+		t.Errorf("Default's terms changed: %+v", got)
+	}
+	if err := d.RenameProfile(ctx, "work", "Office"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RenameProfile(ctx, "work", "DEFAULT"); !errors.Is(err, core.ErrExists) {
+		t.Errorf("rename to a duplicate: %v", err)
+	}
+	profiles, _ = d.Profiles(ctx)
+	if len(profiles) != 2 || profiles[1].Name != "Office" || !profiles[0].Active || profiles[1].Active {
+		t.Errorf("after rename %+v", profiles)
+	}
+	if err := d.ActivateProfile(ctx, "missing"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("activate missing: %v", err)
+	}
+	profiles, _ = d.Profiles(ctx)
+	if !profiles[0].Active {
+		t.Error("a missing profile deactivated Default")
+	}
+	// Deleting the active profile chooses a remaining one and takes its terms.
+	if err := d.ActivateProfile(ctx, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DeleteProfile(ctx, "work"); err != nil {
+		t.Fatal(err)
+	}
+	profiles, _ = d.Profiles(ctx)
+	if len(profiles) != 1 || !profiles[0].Active {
+		t.Errorf("after deleting active %+v", profiles)
+	}
+	if got, _ := d.List(ctx, ""); len(got) != 1 || got[0].ID != "default-term" {
+		t.Errorf("terms after deleting active %+v", got)
+	}
+	if stats, _ := s.Stats(ctx); stats.Dictionary != 1 {
+		t.Errorf("deleted profile left its terms behind: %+v", stats)
+	}
+	if err := d.DeleteProfile(ctx, "default"); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("delete the last profile: %v", err)
+	}
+}
+
+func TestDictionaryProfileMigrationKeepsOldTerms(t *testing.T) {
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = saved[:8]
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	at := time.Date(2026, 10, 15, 9, 0, 0, 123000000, time.UTC)
+	for _, term := range []store.Term{
+		{ID: "one", Term: "Voxt", Aliases: []string{"vox t"}, Note: "keep me", Enabled: true, CreatedAt: at, UpdatedAt: at},
+		{ID: "two", Term: "Kubernetes", Aliases: []string{"k8s"}, Enabled: false, CreatedAt: at, UpdatedAt: at},
+	} {
+		enabled := 0
+		if term.Enabled {
+			enabled = 1
+		}
+		_, err := s.db.Execute(ctx, `INSERT INTO dictionary_terms (id, term, aliases, note, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			term.ID, term.Term, `["`+term.Aliases[0]+`"]`, term.Note, enabled, at.UnixMilli(), at.UnixMilli())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	migrations = saved
+	s = openTest(t, dir)
+	profiles, err := s.Dictionary().Profiles(ctx)
+	if err != nil || len(profiles) != 1 || profiles[0].Name != "Default" || !profiles[0].Active {
+		t.Fatalf("migrated profiles %+v, %v", profiles, err)
+	}
+	got, err := s.Dictionary().List(ctx, "")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("migrated terms %+v, %v", got, err)
+	}
+	if got[1].ID != "one" || got[1].Term != "Voxt" || !slices.Equal(got[1].Aliases, []string{"vox t"}) || got[1].Note != "keep me" || !got[1].Enabled ||
+		!got[1].CreatedAt.Equal(at) || !got[1].UpdatedAt.Equal(at) || got[0].ID != "two" || got[0].Enabled {
+		t.Errorf("old dictionary changed meaning: %+v", got)
+	}
+	if got, _ := s.Dictionary().List(ctx, "k8s"); len(got) != 1 || got[0].ID != "two" {
+		t.Errorf("old aliases no longer search: %+v", got)
+	}
+}
+
+func TestNotes(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	n := s.Notes()
+	t0 := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
+	for i, text := range []string{" buy milk ", "call Ana", "写周报"} {
+		if err := n.Put(ctx, store.Note{ID: strconv.Itoa(i + 1), Text: text, CreatedAt: t0.Add(time.Duration(i) * time.Minute), AppName: []string{"Notes", "", ""}[i]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := n.Put(ctx, store.Note{ID: "4", Text: " \n "}); !errors.Is(err, core.ErrInvalid) {
+		t.Errorf("empty: %v", err)
+	}
+	texts := func() string {
+		list, err := n.List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, x := range list {
+			out = append(out, x.Text)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := texts(); got != "写周报,call Ana,buy milk" { // newest first, trimmed
+		t.Errorf("list: %q", got)
+	}
+	if list, _ := n.List(ctx); !list[2].CreatedAt.Equal(t0) || list[2].ID != "1" || list[2].AppName != "Notes" {
+		t.Errorf("oldest %+v", list[2])
+	}
+	if err := n.Delete(ctx, "2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Delete(ctx, "2"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("deleted twice: %v", err)
+	}
+	if got := texts(); got != "写周报,buy milk" {
+		t.Errorf("after delete: %q", got)
+	}
+	// They stay when the history is cleared.
+	if _, err := s.History().DeleteAll(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := texts(); got != "写周报,buy milk" {
+		t.Errorf("after clearing the history: %q", got)
+	}
+}
+
+func TestCheckAndRewritePaths(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	e := entry("a", store.KindTranscribe, time.Now(), "x", "y")
+	e.Error = "could not read " + dir + "/audio/a.wav"
+	s.History().Put(ctx, e)
+	s.Documents().Put(ctx, "k", []byte(`{"path":"`+dir+`/audio/a.wav"}`))
+	s.Close()
+	db := filepath.Join(dir, FileName)
+	n, err := RewritePaths(ctx, db, dir, "/Volumes/Data/VoxtNew")
+	if err != nil || n == 0 {
+		t.Fatalf("rewrite: %d %v", n, err)
+	}
+	if v, err := CheckFile(ctx, db); err != nil || v != Version() {
+		t.Fatalf("check: %d %v", v, err)
+	}
+	s = openTest(t, dir)
+	got, _ := s.History().Get(ctx, "a")
+	if got.Error != "could not read /Volumes/Data/VoxtNew/audio/a.wav" {
+		t.Errorf("history: %q", got.Error)
+	}
+	if doc, _, _ := s.Documents().Get(ctx, "k"); string(doc) != `{"path":"/Volumes/Data/VoxtNew/audio/a.wav"}` {
+		t.Errorf("document: %s", doc)
+	}
+}
+
+// TestHistoryInsertedInto: the app a result was inserted into, when the
+// user moved on, rides in the delivery column (no migration) and comes
+// back as it went in, the entry's app staying the start app; entries
+// without it (older rows: a plain "insert") read as before.
+func TestHistoryInsertedInto(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	h := s.History()
+	t0 := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	moved := entry("m", store.KindTranscribe, t0, "hi", "Hi.")
+	moved.InsertedBundle, moved.InsertedName = "com.apple.TextEdit", "Text|Edit" // a "|" in a name
+	plain := entry("p", store.KindTranscribe, t0.Add(time.Minute), "hi", "Hi.")
+	card := entry("c", store.KindTranscribe, t0.Add(2*time.Minute), "hi", "Hi.")
+	card.Delivery = "card"
+	for _, e := range []store.Entry{moved, plain, card} {
+		if err := h.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []store.Entry{moved, plain, card} {
+		got, err := h.Get(ctx, want.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Delivery != want.Delivery || got.InsertedBundle != want.InsertedBundle || got.InsertedName != want.InsertedName || got.AppBundle != "com.tinyspeck.slackmacgap" || got.AppName != "Slack" {
+			t.Errorf("%s: %q %q %q, app %q %q", want.ID, got.Delivery, got.InsertedBundle, got.InsertedName, got.AppBundle, got.AppName)
+		}
+	}
+	for id, want := range map[string]string{"p": "insert", "c": "card", "m": "insert|com.apple.TextEdit|Text|Edit"} {
+		rows, err := s.db.Query(ctx, `SELECT delivery FROM history WHERE id = ?`, id)
+		if err != nil || len(rows.Values) != 1 || asString(rows.Values[0][0]) != want {
+			t.Errorf("%s: the column %v %v", id, rows, err)
+		}
+	}
+}
+
+// The notes change's migration 9 ran first; upgrading then applies the
+// history reopen migration (the two share no number).
+func TestHistoryReopenMigratesAfterNotesAppName(t *testing.T) {
+	dir := t.TempDir()
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = slices.Clone(saved[:9])
+	s := openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != 9 {
+		t.Fatalf("user_version %d", v)
+	}
+	s.Close()
+	migrations = saved
+	s = openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != Version() {
+		t.Fatalf("user_version %d", v)
+	}
+	// Migration 9 is the notes one: its column is there beside 10's.
+	if _, err := s.db.Query(ctx, `SELECT app_name FROM notes LIMIT 1`); err != nil {
+		t.Fatalf("migration 9's column: %v", err)
+	}
+	e := store.Entry{ID: "e1", Kind: store.KindRewrite, Status: store.StatusDone, Result: "body", Title: "A title", Replaces: "e0"}
+	if err := s.History().Put(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.History().Get(ctx, "e1")
+	if err != nil || got.Title != "A title" || got.Replaces != "e0" {
+		t.Fatalf("entry %+v, %v", got, err)
+	}
+}

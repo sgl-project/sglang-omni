@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: Apache-2.0
+// Whisper on MLX: checkpoint loading, the log-mel front end, encoder and
+// decoder, op for op as Voxt's Swift port runs them, except that the encoder
+// and decoder run in the weights' dtype.
+#pragma once
+
+#include <atomic>
+#include <filesystem>
+#include <optional>
+#include <span>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "common/kv_cache.h"
+#include "common/layers.h"
+#include "mlx/mlx.h"
+
+namespace whisper {
+
+// Whisper encodes 30 s windows of 16 kHz audio into 3000 mel frames.
+inline constexpr int kWindowSampleCount = 30 * 16000;
+
+struct WhisperConfig {
+  int mel_bin_count = 0;
+  int audio_context_length = 0;
+  int audio_width = 0;
+  int audio_head_count = 0;
+  int audio_layer_count = 0;
+  int vocabulary_size = 0;
+  int text_context_length = 0;
+  int text_head_count = 0;
+  int text_layer_count = 0;
+};
+
+// Self-attention keys and values grow in the cache's steps; cross-attention
+// keys and values are projected once per window.
+struct DecoderLayerCache {
+  omni_common::KVCache self_attention;
+  std::optional<mlx::core::array> cross_keys;
+  std::optional<mlx::core::array> cross_values;
+};
+
+// Keeps the first token_count positions of each layer's self-attention keys
+// and values.
+void TruncateCaches(std::vector<DecoderLayerCache> &caches, int token_count);
+// Keeps the batch rows at indices, int32 [rows], of every layer's keys and
+// values.
+void KeepCacheRows(std::vector<DecoderLayerCache> &caches,
+                   const mlx::core::array &rows);
+
+class WhisperModel {
+public:
+  // Reads config.json and the weights (*.safetensors, else weights.npz) of an
+  // mlx-community Whisper checkpoint.
+  explicit WhisperModel(const std::filesystem::path &model_directory);
+  // Loads the decoder of a native MLX or Transformers draft in the target's
+  // dtype to decode against the target's encoder states.
+  WhisperModel(const std::filesystem::path &draft_directory,
+               const WhisperModel &target);
+
+  const WhisperConfig &config() const { return config_; }
+  // A batch of contiguous, padded windows to states [batch, 1500, width].
+  mlx::core::array Encode(std::span<const float> padded_samples,
+                          const std::atomic<bool> &cancel) const;
+  // Token ids [batch, length] placed from start_position on, to the logits
+  // of the last logit_count positions [batch * logit_count, vocabulary].
+  mlx::core::array Decode(const mlx::core::array &token_ids, int start_position,
+                          const mlx::core::array &encoder_states,
+                          std::vector<DecoderLayerCache> &caches,
+                          int logit_count) const;
+
+private:
+  mlx::core::array Attention(const mlx::core::array &queries_input,
+                             const mlx::core::array &keys,
+                             const mlx::core::array &values,
+                             const std::string &prefix, int head_count,
+                             bool is_causal) const;
+  mlx::core::array EncoderLayer(const mlx::core::array &x, int layer) const;
+  mlx::core::array DecoderLayer(const mlx::core::array &x, int layer,
+                                const mlx::core::array &encoder_states,
+                                bool is_causal, DecoderLayerCache &cache) const;
+
+  WhisperConfig config_;
+  omni_common::Checkpoint checkpoint_;
+};
+
+} // namespace whisper

@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-import os
-from typing import ClassVar
+from typing import ClassVar, Literal
 
+import torch
+import typer
 from pydantic import Field
 
 from sglang_omni.config import (
@@ -15,21 +16,17 @@ from sglang_omni.config import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.config.path import ConfigPath
+from sglang_omni.platforms import current_platform
+from sglang_omni.scheduling.stage_residency import offload_environment
 
 from .constants import DEFAULT_DIT_CFG_SCALE, DEFAULT_DIT_STEPS
 
 _PKG = "sglang_omni.models.minimax_music3"
 
 
-def _visible_gpu_count() -> int:
-    """GPUs this process could place a stage on, without initializing CUDA."""
-    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if visible is not None:
-        entries = [entry.strip() for entry in visible.split(",")]
-        return len([entry for entry in entries if entry and entry != "-1"])
-    import torch
-
-    return torch.cuda.device_count()
+def visible_gpu_count() -> int:
+    return torch.get_device_module(current_platform.device_type).device_count()
 
 
 class DitDavFactoryArgs(FactoryArgs):
@@ -41,13 +38,25 @@ class DitDavFactoryArgs(FactoryArgs):
     cache_dit: bool | None = None
     compile_acoustic: bool | None = None
     breakable_cuda_graph: bool | None = None
+    enable_serial_offload: bool | None = None
+    fp32_flex_attention: bool | None = None
+
+
+class ArFactoryArgs(FactoryArgs):
+    enable_serial_offload: bool | None = None
+    serial_offload_source: Literal["mmap", "ram"] = "mmap"
+    serial_offload_cache_dir: str | None = None
+
+
+class ArStageConfig(EngineStageConfig):
+    factory: ArFactoryArgs = Field(default_factory=ArFactoryArgs)
 
 
 class DitDavStageConfig(StageConfig):
     factory: DitDavFactoryArgs = Field(default_factory=DitDavFactoryArgs)
 
 
-def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
+def stages(*, acoustic_gpu: int) -> list[StageConfig]:
     return [
         StageConfig(
             name="preprocessing",
@@ -55,11 +64,11 @@ def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             next="minimax_music3_ar",
         ),
-        EngineStageConfig(
+        ArStageConfig(
             name="minimax_music3_ar",
             process="minimax_music3_ar",
             factory_path=f"{_PKG}.stages.create_ar_executor",
-            factory=FactoryArgs(max_concurrency=16),
+            factory=ArFactoryArgs(max_concurrency=16),
             gpu=0,
             next="dit_dav",
             stream_to=["dit_dav"],
@@ -84,15 +93,15 @@ def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
     ]
 
 
-def _colocated_stages() -> list[StageConfig]:
-    return _stages(acoustic_gpu=0)
+def colocated_stages() -> list[StageConfig]:
+    return stages(acoustic_gpu=0)
 
 
-def _two_gpu_stages() -> list[StageConfig]:
-    return _stages(acoustic_gpu=1)
+def two_gpu_stages() -> list[StageConfig]:
+    return stages(acoustic_gpu=1)
 
 
-def _colocated_placement() -> PlacementConfig:
+def colocated_placement() -> PlacementConfig:
     return PlacementConfig(require_memory_fraction_for_colocation=False)
 
 
@@ -103,18 +112,18 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
     requires_model_capabilities: ClassVar[bool] = True
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "minimax_music3_ar": EngineStageConfig,
+        "minimax_music3_ar": ArStageConfig,
         "dit_dav": DitDavStageConfig,
     }
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: (
-            _two_gpu_stages() if _visible_gpu_count() >= 2 else _colocated_stages()
+            two_gpu_stages() if visible_gpu_count() >= 2 else colocated_stages()
         )
     )
     placement: PlacementConfig = Field(
         default_factory=lambda: (
-            PlacementConfig() if _visible_gpu_count() >= 2 else _colocated_placement()
+            PlacementConfig() if visible_gpu_count() >= 2 else colocated_placement()
         )
     )
 
@@ -122,19 +131,68 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
     def process_local_edges(cls) -> frozenset[tuple[str, str]]:
         return frozenset({("preprocessing", "minimax_music3_ar")})
 
+    def resolved_env_defaults(self) -> dict[str, str]:
+        environment = super().resolved_env_defaults()
+        if self.stage_named("minimax_music3_ar").factory.enable_serial_offload:
+            environment = offload_environment(environment)
+        else:
+            pass
+        return environment
+
+    def with_serial_offload(
+        self, components: frozenset[str]
+    ) -> MiniMaxMusic3PipelineConfig:
+        role_to_stage = {"ar": "minimax_music3_ar", "dit": "dit_dav"}
+        unknown = components - role_to_stage.keys()
+        missing = role_to_stage.keys() - components
+        if unknown:
+            raise typer.BadParameter(
+                "--stage-offload-components does not support: "
+                f"{', '.join(sorted(unknown))}; supported: ar, dit"
+            )
+        elif missing:
+            raise typer.BadParameter(
+                "--stage-offload-components currently requires all of: ar, dit "
+                f"(missing {', '.join(sorted(missing))})"
+            )
+        else:
+            pass
+        ar_stage = self.stage_named(role_to_stage["ar"])
+        dit_stage = self.stage_named(role_to_stage["dit"])
+        if ar_stage.gpu != dit_stage.gpu:
+            raise typer.BadParameter(
+                "--stage-offload-components ar,dit requires the "
+                f"{ar_stage.name!r} and {dit_stage.name!r} stages on the same GPU "
+                f"(currently {ar_stage.gpu!r} and {dit_stage.gpu!r}); use the "
+                "'single-gpu' config variant"
+            )
+        else:
+            pass
+        configuration = self.model_dump()
+        process = ar_stage.process or ar_stage.name
+        for stage in (ar_stage, dit_stage):
+            for field_name, value in (
+                ("process", process),
+                ("factory.enable_serial_offload", True),
+            ):
+                ConfigPath.parse(f"stages.{stage.name}.{field_name}", type(self)).write(
+                    configuration, value
+                )
+        return type(self)(**configuration)
+
 
 class MiniMaxMusic3SingleGPUPipelineConfig(MiniMaxMusic3PipelineConfig):
     """Both stages on one GPU. Acoustic DIT/DAV is FP32, same as dual-GPU."""
 
-    placement: PlacementConfig = Field(default_factory=_colocated_placement)
-    stages: list[StageConfig] = Field(default_factory=_colocated_stages)
+    placement: PlacementConfig = Field(default_factory=colocated_placement)
+    stages: list[StageConfig] = Field(default_factory=colocated_stages)
 
 
 class MiniMaxMusic3DualGPUPipelineConfig(MiniMaxMusic3PipelineConfig):
     """DIT/DAV on a second GPU. Acoustic DIT/DAV is FP32, same as single-GPU."""
 
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
-    stages: list[StageConfig] = Field(default_factory=_two_gpu_stages)
+    stages: list[StageConfig] = Field(default_factory=two_gpu_stages)
 
 
 EntryClass = MiniMaxMusic3PipelineConfig

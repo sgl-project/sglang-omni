@@ -36,9 +36,15 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+import httpx
 import pytest
 
 from benchmarks.dataset.prepare import DATASETS, download_dataset
+from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.eval.benchmark_tts_generation_budget import (
+    PROBE_CASES,
+    run_generation_probe,
+)
 from benchmarks.eval.benchmark_tts_seedtts import (
     TtsSeedttsBenchmarkConfig,
     run_tts_seedtts_benchmark,
@@ -46,12 +52,14 @@ from benchmarks.eval.benchmark_tts_seedtts import (
 from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_saved_tts_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
+from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechReference
 from tests.test_model.conftest import (
     TTS_STAGE_CONSISTENCY,
     TTS_STAGE_NONSTREAM,
     TTS_STAGE_STREAM,
 )
 from tests.test_model.omni_router_utils import (
+    CiRouterTopology,
     ManagedRouterHandle,
     assert_workers_served_requests_since,
     launch_managed_router,
@@ -73,10 +81,10 @@ PER_REQUEST_STORE: dict[str, list[dict]] = {}
 SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
 
 
-_MODEL_NAME, _TTS_CI_PRESET = select_tts_ci_preset()
-_PRESET = _TTS_CI_PRESET.model
-_THRESHOLDS = _TTS_CI_PRESET.thresholds
-TTS_MODEL_PATH = _PRESET.model_path
+MODEL_NAME, TTS_CI_PRESET = select_tts_ci_preset()
+PRESET = TTS_CI_PRESET.model
+THRESHOLDS = TTS_CI_PRESET.thresholds
+TTS_MODEL_PATH = PRESET.model_path
 
 SEEDTTS_50_DATASET_LABEL = format_benchmark_dataset_label(
     dataset="seedtts-50",
@@ -87,7 +95,7 @@ SEEDTTS_DATASET_LABEL = format_benchmark_dataset_label(
     repo_id=DATASETS["seedtts"],
 )
 
-STARTUP_TIMEOUT = _PRESET.startup_timeout
+STARTUP_TIMEOUT = PRESET.startup_timeout
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
@@ -117,7 +125,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WER_MODULE = "benchmarks.eval.benchmark_tts_seedtts"
 
 
-def _validate_speed_results_keys(speed_results: dict) -> None:
+def validate_speed_results_keys(speed_results: dict) -> None:
     assert (
         "summary" in speed_results
     ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
@@ -126,7 +134,7 @@ def _validate_speed_results_keys(speed_results: dict) -> None:
     ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
 
 
-def _print_saved_tts_speed_summary(
+def check_and_print_tts_speed_summary(
     output_dir: str,
     *,
     concurrency: int | None = None,
@@ -137,7 +145,7 @@ def _print_saved_tts_speed_summary(
     assert results_path.exists(), f"TTS speed results file not found: {results_path}"
     with open(results_path) as f:
         speed_results = json.load(f)
-    _validate_speed_results_keys(speed_results)
+    validate_speed_results_keys(speed_results)
     printed = print_saved_tts_speed_summary(
         output_dir,
         TTS_MODEL_PATH,
@@ -148,7 +156,7 @@ def _print_saved_tts_speed_summary(
     assert printed, f"Failed to print TTS speed summary from {results_path}"
 
 
-def _run_benchmark(
+def run_benchmark(
     port: int,
     testset: str,
     output_dir: str,
@@ -157,6 +165,8 @@ def _run_benchmark(
     max_samples: int | None = None,
     warmup: int = 1,
     stream: bool = False,
+    request_rate: float = float("inf"),
+    arrival_seed: int | None = None,
 ) -> dict:
     benchmark_config = TtsSeedttsBenchmarkConfig(
         model=TTS_MODEL_PATH,
@@ -167,12 +177,16 @@ def _run_benchmark(
         max_samples=max_samples,
         warmup=warmup,
         stream=stream,
-        ref_format=_PRESET.ref_format,
-        token_count=_PRESET.token_count,
+        request_rate=request_rate,
+        arrival_seed=arrival_seed,
+        ref_format=PRESET.ref_format,
+        token_count=PRESET.token_count,
+        voice=PRESET.voice,
+        voice_clone=PRESET.voice_clone,
     )
     speed_results = asyncio.run(run_tts_seedtts_benchmark(benchmark_config))
-    _validate_speed_results_keys(speed_results)
-    _print_saved_tts_speed_summary(
+    validate_speed_results_keys(speed_results)
+    check_and_print_tts_speed_summary(
         output_dir,
         concurrency=concurrency,
         stream=stream,
@@ -180,7 +194,7 @@ def _run_benchmark(
     return speed_results
 
 
-def _run_wer_transcribe(
+def run_wer_transcribe(
     meta: str,
     output_dir: str,
     *,
@@ -205,8 +219,10 @@ def _run_wer_transcribe(
         stream=stream,
         concurrency=concurrency,
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
-        ref_format=_PRESET.ref_format,
-        token_count=_PRESET.token_count,
+        ref_format=PRESET.ref_format,
+        token_count=PRESET.token_count,
+        voice=PRESET.voice,
+        voice_clone=PRESET.voice_clone,
     )
     run_tts_seedtts_transcribe(
         config,
@@ -238,7 +254,7 @@ def _run_wer_transcribe(
     return wer_results
 
 
-def _run_similarity(
+def run_similarity(
     meta: str,
     output_dir: str,
     checkpoint_path: str | None,
@@ -299,7 +315,7 @@ def _run_similarity(
     return similarity_results
 
 
-def _assert_similarity_results(
+def assert_similarity_results(
     results: dict,
     min_mean: float,
     *,
@@ -325,7 +341,7 @@ def _assert_similarity_results(
         checks.assert_all()
 
 
-def _run_utmos(output_dir: str, *, device: str = "cuda:0") -> dict:
+def run_utmos(output_dir: str, *, device: str = "cuda:0") -> dict:
     cmd = [
         sys.executable,
         "-m",
@@ -363,7 +379,7 @@ def _run_utmos(output_dir: str, *, device: str = "cuda:0") -> dict:
         return json.load(f)
 
 
-def _assert_utmos_results(
+def assert_utmos_results(
     results: dict,
     threshold: float,
     *,
@@ -388,15 +404,15 @@ def _assert_utmos_results(
         checks.assert_all()
 
 
-def _load_speed_results(results_path: Path) -> dict:
+def load_speed_results(results_path: Path) -> dict:
     assert results_path.exists(), f"Speed results file not found: {results_path}"
     with open(results_path) as f:
         speed_results = json.load(f)
-    _validate_speed_results_keys(speed_results)
+    validate_speed_results_keys(speed_results)
     return speed_results
 
 
-def _assert_tts_audio_result_integrity(
+def assert_tts_audio_result_integrity(
     summary: dict,
     per_request: list[dict],
     *,
@@ -421,6 +437,10 @@ def _assert_tts_audio_result_integrity(
             failed_requests == len(failed_rows),
             f"{label}: summary failed_requests={failed_requests}, "
             f"per_request failures={len(failed_rows)}",
+        )
+        collector.check(
+            failed_requests == 0,
+            f"{label}: failed_requests={failed_requests}, expected 0",
         )
     if isinstance(failed_requests, int) and isinstance(completed_requests, int):
         collector.check(
@@ -452,7 +472,7 @@ def _assert_tts_audio_result_integrity(
         )
 
 
-def _store_consistency_inputs(
+def store_consistency_inputs(
     *,
     mode: Literal["non_stream", "stream"],
     concurrency: int,
@@ -464,7 +484,7 @@ def _store_consistency_inputs(
         f"TTS {mode} speed results at concurrency {concurrency}"
     )
     summary, per_request = results["summary"], results["per_request"]
-    _assert_tts_audio_result_integrity(
+    assert_tts_audio_result_integrity(
         summary,
         per_request,
         label=f"TTS {mode} c{concurrency}",
@@ -477,12 +497,15 @@ def _store_consistency_inputs(
             f"TTS {mode} c{concurrency}: expected positive output_tokens_mean, "
             f"got {output_tokens_mean}",
         )
-        prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
-        checks.check(
-            prompt_tokens_mean > 0,
-            f"TTS {mode} c{concurrency}: expected positive prompt_tokens_mean, "
-            f"got {prompt_tokens_mean}",
-        )
+        # note (luojiaxuan): prompt_tokens counts the reference codes, so a
+        # named-voice request has none to report.
+        if PRESET.voice_clone:
+            prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
+            checks.check(
+                prompt_tokens_mean > 0,
+                f"TTS {mode} c{concurrency}: expected positive prompt_tokens_mean, "
+                f"got {prompt_tokens_mean}",
+            )
         for request in per_request:
             request_id = request.get("id", "<missing id>")
             if request.get("is_success") is not True:
@@ -490,7 +513,8 @@ def _store_consistency_inputs(
             prompt_tokens = request.get("prompt_tokens")
             completion_tokens = request.get("completion_tokens")
             checks.check(
-                prompt_tokens is not None and prompt_tokens > 0,
+                not PRESET.voice_clone
+                or (prompt_tokens is not None and prompt_tokens > 0),
                 f"TTS {mode} c{concurrency}: request {request_id} "
                 f"prompt_tokens={prompt_tokens}, expected > 0",
             )
@@ -499,18 +523,18 @@ def _store_consistency_inputs(
                 f"TTS {mode} c{concurrency}: request {request_id} "
                 f"completion_tokens={completion_tokens}, expected > 0",
             )
-        if _PRESET.gate_thresholds:
+        if PRESET.gate_thresholds:
             assert_speed_thresholds(
                 summary,
-                _THRESHOLDS.non_stream_speed,
+                THRESHOLDS.non_stream_speed,
                 concurrency,
                 collector=checks,
             )
         store_key = f"vc_nonstream_c{concurrency}"
     else:
-        if _PRESET.gate_thresholds:
+        if PRESET.gate_thresholds:
             assert_speed_thresholds(
-                summary, _THRESHOLDS.stream_speed, concurrency, collector=checks
+                summary, THRESHOLDS.stream_speed, concurrency, collector=checks
             )
         store_key = f"vc_stream_c{concurrency}"
     PER_REQUEST_STORE[store_key] = per_request
@@ -519,18 +543,20 @@ def _store_consistency_inputs(
         checks.assert_all()
 
 
-def _assert_stage_used_all_router_workers(
+def assert_stage_used_all_router_workers(
     *,
     router_server: ManagedRouterHandle,
     before_workers: dict,
     results: dict,
     label: str,
     collector: MetricCheckCollector | None = None,
+    expected_workers: int = 2,
 ) -> None:
     kwargs = {
-        "port": router_server.port,
+        "handle": router_server,
         "before_snapshot": before_workers,
         "label": label,
+        "expected_workers": expected_workers,
         "min_total_requests": results["summary"]["completed_requests"],
     }
     if collector is None:
@@ -543,7 +569,7 @@ def _assert_stage_used_all_router_workers(
         )
 
 
-def _find_downloaded_speed_results(
+def find_downloaded_speed_results(
     artifact_root: str,
     output_dir_name: str,
 ) -> tuple[str, dict]:
@@ -553,10 +579,10 @@ def _find_downloaded_speed_results(
         matches
     ), f"Downloaded speed results not found under {artifact_root}: {output_dir_name}"
     results_path = matches[0]
-    return str(results_path.parent), _load_speed_results(results_path)
+    return str(results_path.parent), load_speed_results(results_path)
 
 
-def _load_consistency_artifact_inputs(
+def load_consistency_artifact_inputs(
     selected_tts_concurrencies: tuple[int, ...],
 ) -> bool:
     non_stream_results_root = os.environ.get(TTS_STAGE1_SPEED_RESULTS_DIR_ENV)
@@ -565,19 +591,19 @@ def _load_consistency_artifact_inputs(
         return False
 
     for concurrency in selected_tts_concurrencies:
-        non_stream_output_dir, non_stream_results = _find_downloaded_speed_results(
+        non_stream_output_dir, non_stream_results = find_downloaded_speed_results(
             non_stream_results_root, f"vc_nonstream_c{concurrency}"
         )
-        stream_output_dir, stream_results = _find_downloaded_speed_results(
+        stream_output_dir, stream_results = find_downloaded_speed_results(
             stream_results_root, f"vc_stream_c{concurrency}"
         )
-        _store_consistency_inputs(
+        store_consistency_inputs(
             mode="non_stream",
             concurrency=concurrency,
             output_dir=non_stream_output_dir,
             results=non_stream_results,
         )
-        _store_consistency_inputs(
+        store_consistency_inputs(
             mode="stream",
             concurrency=concurrency,
             output_dir=stream_output_dir,
@@ -586,7 +612,7 @@ def _load_consistency_artifact_inputs(
     return True
 
 
-def _generate_consistency_inputs(
+def generate_consistency_inputs(
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,
     selected_tts_concurrencies: tuple[int, ...],
@@ -600,13 +626,13 @@ def _generate_consistency_inputs(
 
         if non_stream_key not in PER_REQUEST_STORE:
             output_dir = str(output_root / f"vc_nonstream_c{concurrency}")
-            results = _run_benchmark(
+            results = run_benchmark(
                 router_server.port,
                 dataset_repo,
                 output_dir,
                 concurrency=concurrency,
             )
-            _store_consistency_inputs(
+            store_consistency_inputs(
                 mode="non_stream",
                 concurrency=concurrency,
                 output_dir=output_dir,
@@ -615,7 +641,7 @@ def _generate_consistency_inputs(
 
         if stream_key not in PER_REQUEST_STORE:
             output_dir = str(output_root / f"vc_stream_c{concurrency}")
-            results = _run_benchmark(
+            results = run_benchmark(
                 router_server.port,
                 dataset_repo,
                 output_dir,
@@ -623,7 +649,7 @@ def _generate_consistency_inputs(
                 max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
                 stream=True,
             )
-            _store_consistency_inputs(
+            store_consistency_inputs(
                 mode="stream",
                 concurrency=concurrency,
                 output_dir=output_dir,
@@ -631,7 +657,7 @@ def _generate_consistency_inputs(
             )
 
 
-def _resolve_stage_output_dir(tmp_path: Path, output_dir_name: str) -> str:
+def resolve_stage_output_dir(tmp_path: Path, output_dir_name: str) -> str:
     output_root = os.environ.get(TTS_STAGE_OUTPUT_ROOT_ENV)
     if output_root:
         output_dir = Path(output_root) / output_dir_name
@@ -640,20 +666,20 @@ def _resolve_stage_output_dir(tmp_path: Path, output_dir_name: str) -> str:
     return str(tmp_path / output_dir_name)
 
 
-def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> None:
+def print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> None:
     message = f"\n[Stage] {stage} benchmark | mode={mode} | concurrency={concurrency}"
     if details:
         message += f" | {details}"
     print(message)
 
 
-def _sample_scope_label(max_samples: int | None) -> str:
+def sample_scope_label(max_samples: int | None) -> str:
     if max_samples is None:
         return "full SeedTTS EN set"
     return f"max_samples={max_samples}"
 
 
-def _assert_full_seedtts_en_speed_results(
+def assert_full_seedtts_en_speed_results(
     results: dict,
     *,
     label: str,
@@ -667,7 +693,7 @@ def _assert_full_seedtts_en_speed_results(
     )
 
 
-def _assert_full_seedtts_en_wer_results(
+def assert_full_seedtts_en_wer_results(
     results: dict,
     *,
     label: str,
@@ -716,10 +742,12 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         tmp_path_factory=tmp_path_factory,
         model_path=TTS_MODEL_PATH,
         model_name=TTS_MODEL_PATH,
-        worker_extra_args=f"{TTS_WORKER_EXTRA_ARGS} {_PRESET.worker_extra_args}".strip(),
-        num_gpus_per_worker=_PRESET.num_gpus_per_worker,
+        worker_extra_args=f"{TTS_WORKER_EXTRA_ARGS} {PRESET.worker_extra_args}".strip(),
+        router_topology=CiRouterTopology.TTS,
+        num_gpus_per_worker=PRESET.num_gpus_per_worker,
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
+        named_voice=not PRESET.voice_clone,
     ) as router:
         yield router
 
@@ -734,7 +762,7 @@ def consistency_stage_inputs(
     if selected_tts_ci_stage != TTS_STAGE_CONSISTENCY:
         return
 
-    if _load_consistency_artifact_inputs(selected_tts_concurrencies):
+    if load_consistency_artifact_inputs(selected_tts_concurrencies):
         return
 
     if os.environ.get("GITHUB_ACTIONS") == "true":
@@ -742,7 +770,7 @@ def consistency_stage_inputs(
             "Stage 3 requires downloaded stage 1/2 speed artifacts when running in CI."
         )
 
-    _generate_consistency_inputs(
+    generate_consistency_inputs(
         request,
         tmp_path_factory,
         selected_tts_concurrencies,
@@ -764,6 +792,60 @@ def wer_input_dirs(
     return SPEED_OUTPUT_DIRS
 
 
+@pytest.mark.benchmark
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    "stream",
+    [
+        pytest.param(False, marks=pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)),
+        pytest.param(True, marks=pytest.mark.tts_stage(TTS_STAGE_STREAM)),
+    ],
+)
+def test_qwen3_tts_repeated_short_speech_budget(
+    request: pytest.FixtureRequest, tmp_path: Path, stream: bool
+) -> None:
+    """The server default never cuts repeated short speech that the 2048-frame limit let finish."""
+    if "qwen3-tts" not in TTS_MODEL_PATH.lower():
+        pytest.skip("The codec-frame budget belongs to Qwen3-TTS")
+    else:
+        pass
+    router_server = request.getfixturevalue("router_server")
+    speech_request = CreateSpeechRequest(
+        input="unused", model=TTS_MODEL_PATH, voice=PRESET.voice or "default"
+    )
+    if PRESET.voice_clone:
+        sample = load_seedtts_samples(
+            request.getfixturevalue("dataset_repo"), max_samples=1
+        )[0]
+        speech_request.references = [
+            SpeechReference(audio_path=sample.ref_audio, text=sample.ref_text)
+        ]
+    else:
+        pass
+    output_dir = (
+        Path(resolve_stage_output_dir(tmp_path, f"generation_budget_{stream}"))
+        / f"attempt-{os.environ.get('OMNI_CI_ATTEMPT', '1')}"
+        / "samples"
+    )
+
+    async def run() -> None:
+        async with httpx.AsyncClient(timeout=BENCHMARK_TIMEOUT) as client:
+            results = await run_generation_probe(
+                client,
+                f"http://127.0.0.1:{router_server.port}/v1",
+                speech_request,
+                list(PROBE_CASES),
+                range(8),
+                stream,
+                output_dir,
+                keep_passing_audio=False,
+            )
+        failures = [result.model_dump() for result in results if result.errors]
+        assert not failures, f"Generation-budget failures: {failures}"
+
+    asyncio.run(run())
+
+
 @pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
@@ -774,23 +856,23 @@ def test_voice_cloning_non_streaming(
 ) -> None:
     print(f"\n[TTS benchmark] selected concurrency: {selected_tts_concurrencies}")
     for concurrency in selected_tts_concurrencies:
-        _print_stage("TTS speed", "non-streaming", concurrency, "generate WAVs for WER")
-        output_dir = _resolve_stage_output_dir(tmp_path, f"vc_nonstream_c{concurrency}")
-        before_workers = router_get_json(router_server.port, "/workers")
+        print_stage("TTS speed", "non-streaming", concurrency, "generate WAVs for WER")
+        output_dir = resolve_stage_output_dir(tmp_path, f"vc_nonstream_c{concurrency}")
+        before_workers = router_get_json(router_server.port, "/diagnostics")
         try:
-            results = _run_benchmark(
+            results = run_benchmark(
                 router_server.port,
                 dataset_repo,
                 output_dir,
                 concurrency=concurrency,
             )
             checks = MetricCheckCollector(f"TTS non-streaming benchmark c{concurrency}")
-            _assert_full_seedtts_en_speed_results(
+            assert_full_seedtts_en_speed_results(
                 results,
                 label=f"TTS non-stream c{concurrency}",
                 collector=checks,
             )
-            _assert_stage_used_all_router_workers(
+            assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
                 results=results,
@@ -800,7 +882,7 @@ def test_voice_cloning_non_streaming(
         except Exception:
             print_router_diagnostics(router_server)
             raise
-        _store_consistency_inputs(
+        store_consistency_inputs(
             mode="non_stream",
             concurrency=concurrency,
             output_dir=output_dir,
@@ -819,17 +901,17 @@ def test_voice_cloning_streaming(
     selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
     for concurrency in selected_tts_concurrencies:
-        _print_stage(
+        print_stage(
             "TTS speed",
             "streaming",
             concurrency,
-            f"{_sample_scope_label(STREAMING_BENCHMARK_MAX_SAMPLES)} | "
+            f"{sample_scope_label(STREAMING_BENCHMARK_MAX_SAMPLES)} | "
             "generate WAVs for WER",
         )
-        output_dir = _resolve_stage_output_dir(tmp_path, f"vc_stream_c{concurrency}")
-        before_workers = router_get_json(router_server.port, "/workers")
+        output_dir = resolve_stage_output_dir(tmp_path, f"vc_stream_c{concurrency}")
+        before_workers = router_get_json(router_server.port, "/diagnostics")
         try:
-            results = _run_benchmark(
+            results = run_benchmark(
                 router_server.port,
                 dataset_repo,
                 output_dir,
@@ -838,12 +920,12 @@ def test_voice_cloning_streaming(
                 stream=True,
             )
             checks = MetricCheckCollector(f"TTS streaming benchmark c{concurrency}")
-            _assert_full_seedtts_en_speed_results(
+            assert_full_seedtts_en_speed_results(
                 results,
                 label=f"TTS stream c{concurrency}",
                 collector=checks,
             )
-            _assert_stage_used_all_router_workers(
+            assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
                 results=results,
@@ -853,7 +935,7 @@ def test_voice_cloning_streaming(
         except Exception:
             print_router_diagnostics(router_server)
             raise
-        _store_consistency_inputs(
+        store_consistency_inputs(
             mode="stream",
             concurrency=concurrency,
             output_dir=output_dir,
@@ -902,14 +984,14 @@ def test_voice_cloning_wer(
 ) -> None:
     checks = MetricCheckCollector("TTS non-streaming WER")
     for concurrency in selected_tts_concurrencies:
-        _print_stage(
+        print_stage(
             "WER",
             "non-streaming",
             concurrency,
             "transcribe speed-stage WAVs",
         )
         output_dir = wer_input_dirs["non_stream"][concurrency]
-        results = _run_wer_transcribe(
+        results = run_wer_transcribe(
             dataset_repo,
             output_dir,
             asr_router_port=qwen3_asr_wer_router.port,
@@ -920,15 +1002,15 @@ def test_voice_cloning_wer(
             TTS_MODEL_PATH,
             dataset=SEEDTTS_DATASET_LABEL,
         )
-        _assert_full_seedtts_en_wer_results(
+        assert_full_seedtts_en_wer_results(
             results,
             label=f"TTS non-stream c{concurrency}",
             collector=checks,
         )
-        if _PRESET.gate_thresholds:
+        if PRESET.gate_thresholds:
             assert_wer_results(
                 results,
-                _THRESHOLDS.wer_corpus,
+                THRESHOLDS.wer_corpus,
                 collector=checks,
             )
     checks.assert_all()
@@ -942,23 +1024,28 @@ def test_voice_cloning_similarity(
     similarity_checkpoint: str | None,
     selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    if not PRESET.voice_clone:
+        pytest.skip(
+            "speaker similarity scores generated audio against the request's "
+            "reference clip, and this preset serves a named voice instead"
+        )
     checks = MetricCheckCollector("TTS non-streaming speaker similarity")
     for concurrency in selected_tts_concurrencies:
-        _print_stage(
+        print_stage(
             "SIM",
             "non-streaming",
             concurrency,
             "score speed-stage WAVs",
         )
-        results = _run_similarity(
+        results = run_similarity(
             dataset_repo,
             wer_input_dirs["non_stream"][concurrency],
             similarity_checkpoint,
             max_samples=TTS_SIMILARITY_MAX_SAMPLES,
         )
-        if _PRESET.gate_thresholds:
-            _assert_similarity_results(
-                results, _THRESHOLDS.similarity_mean_min, collector=checks
+        if PRESET.gate_thresholds:
+            assert_similarity_results(
+                results, THRESHOLDS.similarity_mean_min, collector=checks
             )
     checks.assert_all()
 
@@ -971,10 +1058,10 @@ def test_voice_cloning_utmos(
 ) -> None:
     checks = MetricCheckCollector("TTS non-streaming UTMOS")
     for concurrency in selected_tts_concurrencies:
-        _print_stage("UTMOS", "non-streaming", concurrency, "score speed-stage WAVs")
-        results = _run_utmos(wer_input_dirs["non_stream"][concurrency])
-        if _PRESET.gate_thresholds:
-            _assert_utmos_results(results, _THRESHOLDS.utmos_mean_min, collector=checks)
+        print_stage("UTMOS", "non-streaming", concurrency, "score speed-stage WAVs")
+        results = run_utmos(wer_input_dirs["non_stream"][concurrency])
+        if PRESET.gate_thresholds:
+            assert_utmos_results(results, THRESHOLDS.utmos_mean_min, collector=checks)
     checks.assert_all()
 
 
@@ -988,15 +1075,15 @@ def test_voice_cloning_streaming_wer(
 ) -> None:
     checks = MetricCheckCollector("TTS streaming WER")
     for concurrency in selected_tts_concurrencies:
-        _print_stage(
+        print_stage(
             "WER",
             "streaming",
             concurrency,
-            f"transcribe {_sample_scope_label(STREAMING_BENCHMARK_MAX_SAMPLES)} "
+            f"transcribe {sample_scope_label(STREAMING_BENCHMARK_MAX_SAMPLES)} "
             "speed-stage WAVs",
         )
         output_dir = wer_input_dirs["stream"][concurrency]
-        results = _run_wer_transcribe(
+        results = run_wer_transcribe(
             dataset_repo,
             output_dir,
             stream=True,
@@ -1009,15 +1096,15 @@ def test_voice_cloning_streaming_wer(
             generation_mode="streaming",
             dataset=SEEDTTS_DATASET_LABEL,
         )
-        _assert_full_seedtts_en_wer_results(
+        assert_full_seedtts_en_wer_results(
             results,
             label=f"TTS stream c{concurrency}",
             collector=checks,
         )
-        if _PRESET.gate_thresholds:
+        if PRESET.gate_thresholds:
             assert_wer_results(
                 results,
-                _THRESHOLDS.stream_wer_corpus,
+                THRESHOLDS.stream_wer_corpus,
                 collector=checks,
             )
     checks.assert_all()

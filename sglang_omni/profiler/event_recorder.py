@@ -1,262 +1,208 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Request-level event recorder.
-
-Each process appends events to ``<dir>/events_<stage>_<pid>.jsonl``; the
-views layer merges files by ``request_id``. Kept free of sglang-omni
-imports so it can be loaded from any process without circular risk.
-"""
+"""Request-level event recorder API and deferred event buffer."""
 
 from __future__ import annotations
 
-import contextvars
 import functools
-import json
-import logging
-import os
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Mapping
 
-logger = logging.getLogger(__name__)
-
-
-# Active-stage binding used when ``emit(stage=None)`` is called from code
-# that can't plumb the stage name down (preprocessor, encoder callable,
-# scheduler internals). Stage._run_scheduler binds the active stage on
-# the scheduler thread; the contextvar propagates through
-# ``asyncio.to_thread`` / ``loop.run_in_executor``, the thread-local
-# covers plain ``threading.Thread`` workers.
-
-_thread_active_stage = threading.local()
-_active_stage_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "sglang_omni_active_stage", default=None
+from sglang_omni.profiler.event_recorder_types import (
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+    MAX_EVENT_TEXT_LENGTH,
+    PendingRequestEvent,
+    ProducerBuffer,
+    RequestEvent,
+    RequestEventFinalization,
+    RequestEventSnapshot,
+    active_stage_context,
+    get_active_stage,
+    json_default,
+    reset_active_stage,
+    set_active_stage,
+    snapshot_metadata,
+    snapshot_metadata_value,
+    thread_active_stage,
 )
+from sglang_omni.profiler.event_recorder_writer import RequestEventRecorder
+
+__all__ = [
+    "DEFAULT_FINALIZATION_TIMEOUT_SECONDS",
+    "PendingRequestEvent",
+    "RequestEvent",
+    "RequestEventBuffer",
+    "RequestEventFinalization",
+    "RequestEventRecorder",
+    "RequestEventSnapshot",
+    "active_stage_context",
+    "emit",
+    "emit_model_path",
+    "emit_model_path_end",
+    "emit_model_path_start",
+    "get_active_stage",
+    "get_recorder",
+    "json_default",
+    "read_host_boot_id",
+    "reset_active_stage",
+    "set_active_stage",
+    "snapshot_metadata",
+    "snapshot_metadata_value",
+    "thread_active_stage",
+]
 
 
-def set_active_stage(stage: str | None) -> contextvars.Token:
-    """Bind ``stage`` for this thread / task. Returns a Token for reset."""
-    _thread_active_stage.stage = stage
-    return _active_stage_cv.set(stage)
-
-
-def reset_active_stage(token: contextvars.Token | None) -> None:
-    """Undo :func:`set_active_stage`. ``token=None`` clears the binding."""
-    if token is not None:
-        _active_stage_cv.reset(token)
-    else:
-        _active_stage_cv.set(None)
-    _thread_active_stage.stage = None
-
-
-def get_active_stage() -> str | None:
-    """Active stage for this thread / task, contextvar first."""
-    stage = _active_stage_cv.get()
-    if stage is not None:
-        return stage
-    return getattr(_thread_active_stage, "stage", None)
-
-
-@dataclass(frozen=True)
-class RequestEvent:
-    """A single point-in-time profiling event for one request."""
-
-    request_id: str
-    stage: str
-    event_name: str
-    timestamp_ns: int
-    run_id: str | None = None
-    pid: int | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-class RequestEventRecorder:
-    """Process-local JSONL event sink. Toggled via profiler control plane."""
+class RequestEventBuffer(threading.local):
+    """Defer bounded event records until serving locks are released."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._run_id: str | None = None
-        self._stage: str | None = None
-        self._stages: set[str] = set()
-        self._path: Path | None = None
-        self._fp: Any = None
-        self._pid: int = os.getpid()
-        self._dropped: int = 0
+        self.producer_buffer: ProducerBuffer | None = None
+        self.pending_events: list[PendingRequestEvent] = []
 
-    # ---- lifecycle -----------------------------------------------------
-
-    def is_active(self) -> bool:
-        return self._fp is not None
-
-    def active_run_id(self) -> str | None:
-        return self._run_id
-
-    def active_path(self) -> str | None:
-        return None if self._path is None else str(self._path)
-
-    def start(self, run_id: str, event_dir: str, stage: str) -> str:
-        """Open (or join) the per-process JSONL file for ``run_id``.
-
-        Co-located stages share one file per ``(run_id, pid)``; only a
-        new ``run_id`` rotates. Returns the absolute path.
-        """
-        with self._lock:
-            if self._fp is not None:
-                if self._run_id == run_id:
-                    if stage not in self._stages:
-                        self._stages.add(stage)
-                    assert self._path is not None
-                    return str(self._path)
-                logger.warning(
-                    "RequestEventRecorder already active (run_id=%s); "
-                    "rotating to run_id=%s",
-                    self._run_id,
-                    run_id,
-                )
-                self._close_unlocked()
-
-            directory = Path(event_dir).expanduser().resolve()
-            directory.mkdir(parents=True, exist_ok=True)
-            # Filename uses the first stage to join; per-event ``stage``
-            # disambiguates owners once others join.
-            path = directory / f"events_{stage}_{self._pid}.jsonl"
-            self._fp = path.open("a", buffering=1, encoding="utf-8")
-            self._run_id = run_id
-            self._stage = stage
-            self._stages = {stage}
-            self._path = path
-            self._dropped = 0
-            logger.info(
-                "RequestEventRecorder started run_id=%s stage=%s path=%s",
-                run_id,
-                stage,
-                path,
-            )
-            return str(path)
-
-    def stop(self, *, run_id: str | None = None) -> str | None:
-        """Close the active file. ``run_id=None`` stops any active session."""
-        with self._lock:
-            if self._fp is None:
-                return None
-            if (
-                run_id is not None
-                and self._run_id is not None
-                and run_id != self._run_id
-            ):
-                logger.warning(
-                    "Ignoring RequestEventRecorder stop for run_id=%s; active run_id=%s",
-                    run_id,
-                    self._run_id,
-                )
-                return None
-            path = str(self._path) if self._path is not None else None
-            self._close_unlocked()
-            return path
-
-    def _close_unlocked(self) -> None:
-        if self._fp is not None:
-            try:
-                self._fp.flush()
-                self._fp.close()
-            except Exception:
-                logger.warning(
-                    "RequestEventRecorder failed to close cleanly", exc_info=True
-                )
-        self._fp = None
-        self._run_id = None
-        self._stage = None
-        self._stages = set()
-        self._path = None
-
-    # ---- emit ----------------------------------------------------------
-
-    def emit(
+    def capture(
         self,
-        *,
-        request_id: str,
-        stage: str | None,
         event_name: str,
-        metadata: Mapping[str, Any] | None = None,
-        timestamp_ns: int | None = None,
+        snapshots: Iterable[RequestEventSnapshot],
+        metadata: dict[str, object],
     ) -> None:
-        """Append one event. No-op when inactive; errors are swallowed."""
-        if self._fp is None:
-            return
-        ts = timestamp_ns if timestamp_ns is not None else time.time_ns()
-        with self._lock:
-            fp = self._fp
-            if fp is None:
-                return
-            if stage is None:
-                # Prefer thread/task binding over the process-global
-                # ``_stage``, which is wrong in shared-process topologies.
-                stage = get_active_stage() or self._stage or "unknown"
-            event = RequestEvent(
-                request_id=request_id,
-                stage=stage,
-                event_name=event_name,
-                timestamp_ns=ts,
-                run_id=self._run_id,
-                pid=self._pid,
-                metadata=dict(metadata) if metadata else {},
-            )
-            try:
-                fp.write(json.dumps(event.to_dict(), default=_json_default))
-                fp.write("\n")
-            except Exception:
-                self._dropped += 1
-                if self._dropped == 1:
-                    logger.warning(
-                        "RequestEventRecorder failed to write event %s for %s",
-                        event_name,
-                        request_id,
-                        exc_info=True,
-                    )
-
-
-def _json_default(obj: Any) -> Any:
-    """Safe fallback for ``json.dumps``: summarise tensors, never materialise.
-
-    Tensors / arrays return ``{__tensor_summary__, type, shape, dtype,
-    device}``; 0-D variants serialise as plain scalars; everything else
-    falls back to ``repr``.
-    """
-    shape = getattr(obj, "shape", None)
-    dtype = getattr(obj, "dtype", None)
-    if shape is not None and dtype is not None:
+        """Snapshot one cohort once into the current producer's buffer."""
+        recorder = get_recorder()
         try:
-            if len(shape) == 0 and hasattr(obj, "item"):
-                return obj.item()
-        except TypeError:
-            # ``.shape`` without ``__len__`` — skip the 0-D fast path
-            # and fall through to the summary serializer below.
-            pass
-        try:
-            shape_list: Any = [int(d) for d in shape]
+            producer_buffer = recorder.begin_buffer_operation()
         except Exception:
-            shape_list = repr(shape)
-        device = getattr(obj, "device", None)
-        return {
-            "__tensor_summary__": True,
-            "type": type(obj).__name__,
-            "shape": shape_list,
-            "dtype": str(dtype),
-            "device": str(device) if device is not None else None,
-        }
-    return repr(obj)
+            return
+        else:
+            pass
+        if producer_buffer is None:
+            return
+        else:
+            pass
+        run_state = producer_buffer.run_state
+        timestamp_ns = time.time_ns()
+        monotonic_seconds = time.monotonic()
+        worker_name = threading.current_thread().name
+        try:
+            if self.producer_buffer is not producer_buffer:
+                producer_buffer.deferred_event_buffers.append(self.pending_events)
+                self.producer_buffer = producer_buffer
+            else:
+                pass
+            for snapshot in snapshots:
+                if (
+                    len(producer_buffer.events) + producer_buffer.pending_event_count
+                    >= producer_buffer.capacity
+                ):
+                    producer_buffer.dropped_events += 1
+                    producer_buffer.incomplete_reasons.add("producer_buffer_overflow")
+                    continue
+                else:
+                    pass
+                if (
+                    len(snapshot.request_id) > MAX_EVENT_TEXT_LENGTH
+                    or len(event_name) > MAX_EVENT_TEXT_LENGTH
+                ):
+                    producer_buffer.dropped_events += 1
+                    producer_buffer.incomplete_reasons.add("event_payload_too_large")
+                    continue
+                else:
+                    pass
+                try:
+                    captured_metadata = snapshot_metadata(
+                        {
+                            **metadata,
+                            **snapshot.metadata,
+                            "worker": worker_name,
+                            "monotonic_s": monotonic_seconds,
+                        }
+                    )
+                except Exception:
+                    producer_buffer.metadata_snapshot_failures += 1
+                    producer_buffer.dropped_events += 1
+                    producer_buffer.incomplete_reasons.add("metadata_snapshot_failure")
+                    continue
+                else:
+                    pass
+                if "__metadata_truncated__" in captured_metadata:
+                    producer_buffer.metadata_truncations += 1
+                    producer_buffer.incomplete_reasons.add("metadata_truncated")
+                else:
+                    pass
+                self.pending_events.append(
+                    PendingRequestEvent(
+                        request_id=snapshot.request_id,
+                        event_name=event_name,
+                        metadata=captured_metadata,
+                        timestamp_ns=timestamp_ns,
+                    )
+                )
+                producer_buffer.pending_event_count += 1
+        except Exception:
+            producer_buffer.dropped_events += 1
+            producer_buffer.incomplete_reasons.add("deferred_buffer_capture_failure")
+        finally:
+            producer_buffer.in_flight -= 1
+
+    def flush(self, *, stage: str | None) -> None:
+        """Move captured events to the main producer buffer outside serving locks."""
+        producer_buffer = self.producer_buffer
+        pending_events = self.pending_events
+        if producer_buffer is None or not pending_events:
+            return
+        else:
+            pass
+        run_state = producer_buffer.run_state
+        producer_buffer.in_flight += 1
+        if get_recorder().active_state is not run_state:
+            producer_buffer.in_flight -= 1
+            return
+        else:
+            pass
+
+        resolved_stage = stage or get_active_stage() or run_state.stage or "unknown"
+        pending_event_count = len(pending_events)
+        try:
+            for pending_event in pending_events:
+                try:
+                    if not RequestEventRecorder.event_text_is_bounded(
+                        pending_event.request_id,
+                        resolved_stage,
+                        pending_event.event_name,
+                        run_state.run_id,
+                    ):
+                        producer_buffer.dropped_events += 1
+                        producer_buffer.incomplete_reasons.add(
+                            "event_payload_too_large"
+                        )
+                    else:
+                        request_event = RequestEvent(
+                            request_id=pending_event.request_id,
+                            stage=resolved_stage,
+                            event_name=pending_event.event_name,
+                            timestamp_ns=pending_event.timestamp_ns,
+                            run_id=run_state.run_id,
+                            pid=get_recorder().pid,
+                            metadata=pending_event.metadata,
+                        )
+                        producer_buffer.events.append(request_event)
+                        producer_buffer.accepted_events += 1
+                except Exception:
+                    producer_buffer.dropped_events += 1
+                    producer_buffer.incomplete_reasons.add(
+                        "deferred_buffer_flush_failure"
+                    )
+        finally:
+            producer_buffer.pending_event_count -= pending_event_count
+            pending_events.clear()
+            producer_buffer.in_flight -= 1
 
 
-_RECORDER = RequestEventRecorder()
+RECORDER = RequestEventRecorder()
 
 
 def get_recorder() -> RequestEventRecorder:
     """Return the process-local recorder singleton."""
-    return _RECORDER
+    return RECORDER
 
 
 def emit(
@@ -264,11 +210,11 @@ def emit(
     request_id: str,
     stage: str | None,
     event_name: str,
-    metadata: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, object] | None = None,
     timestamp_ns: int | None = None,
 ) -> None:
-    """Module-level shortcut for ``get_recorder().emit(...)``."""
-    _RECORDER.emit(
+    """Module-level shortcut for the process recorder."""
+    RECORDER.emit(
         request_id=request_id,
         stage=stage,
         event_name=event_name,
@@ -278,26 +224,26 @@ def emit(
 
 
 @functools.cache
-def _read_host_boot_id() -> str | None:
-    # Note: (Jiaxin Deng) constant for the process lifetime, and these events
-    # are emitted from the scheduler loop while profiling is active, which is
-    # exactly when extra syscalls would contaminate what is being measured.
+def read_host_boot_id() -> str | None:
+    """Read the process boot ID once for model-path events."""
     try:
         return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
     except OSError:
         return None
 
 
-def _emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
-    if not _RECORDER.is_active():
+def emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
+    if not RECORDER.is_active():
         return
+    else:
+        pass
     emit(
         request_id=request_id,
         stage=None,
         event_name=event_name,
         metadata={
             "clock": "CLOCK_MONOTONIC",
-            "host_boot_id": _read_host_boot_id(),
+            "host_boot_id": read_host_boot_id(),
             "monotonic_ns": time.monotonic_ns(),
             **extra,
         },
@@ -305,8 +251,8 @@ def _emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
 
 
 def emit_model_path_start(request_id: str) -> None:
-    _emit_model_path("model_path_start", request_id)
+    emit_model_path("model_path_start", request_id)
 
 
 def emit_model_path_end(request_id: str, *, status: str) -> None:
-    _emit_model_path("model_path_end", request_id, status=status)
+    emit_model_path("model_path_end", request_id, status=status)

@@ -5,12 +5,19 @@ from __future__ import annotations
 
 import types
 
+import pytest
 import torch
 
 from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 
 
-def _runner(*, vocab_size: int, codec_eos_token_id: int) -> Qwen3TTSModelRunner:
+def make_runner(
+    *,
+    vocab_size: int,
+    codec_eos_token_id: int,
+    leading_silence_mask_frames: int = 0,
+    silence_codec_ids: tuple[int, ...] = (),
+) -> Qwen3TTSModelRunner:
     runner = object.__new__(Qwen3TTSModelRunner)
     runner.model = types.SimpleNamespace(
         config=types.SimpleNamespace(
@@ -18,41 +25,19 @@ def _runner(*, vocab_size: int, codec_eos_token_id: int) -> Qwen3TTSModelRunner:
             codec_eos_token_id=codec_eos_token_id,
         )
     )
+    runner.leading_silence_mask_frames = leading_silence_mask_frames
+    runner.silence_codec_ids = torch.tensor(silence_codec_ids, dtype=torch.long)
     return runner
 
 
-def _sampling_request(repetition_penalty: float) -> types.SimpleNamespace:
-    sampling_params = types.SimpleNamespace(
-        repetition_penalty=repetition_penalty,
-        frequency_penalty=0.0,
-        presence_penalty=0.0,
-        min_new_tokens=0,
-    )
+def make_scheduled_request(
+    *, mask_leading_silence: bool, generated_frames: int
+) -> types.SimpleNamespace:
     return types.SimpleNamespace(
-        sampling_params=sampling_params,
-        custom_logit_processor=None,
-    )
-
-
-def test_qwen3_tts_leaves_repetition_penalty_to_sglang() -> None:
-    runner = _runner(vocab_size=128, codec_eos_token_id=127)
-    logits = torch.randn(2, 128)
-    original = logits.clone()
-    logits_output = types.SimpleNamespace(next_token_logits=logits)
-
-    runner._apply_repetition_penalty(logits_output, [object(), object()])
-
-    assert torch.equal(logits_output.next_token_logits, original)
-
-
-def test_qwen3_tts_public_penalty_disables_async_lookahead() -> None:
-    runner = _runner(vocab_size=128, codec_eos_token_id=127)
-
-    assert runner.lookahead_eligible(
-        types.SimpleNamespace(reqs=[_sampling_request(1.0)])
-    )
-    assert not runner.lookahead_eligible(
-        types.SimpleNamespace(reqs=[_sampling_request(1.05)])
+        data=types.SimpleNamespace(
+            mask_leading_silence=mask_leading_silence,
+            output_codes=[torch.zeros(16)] * generated_frames,
+        )
     )
 
 
@@ -60,7 +45,7 @@ def test_qwen3_tts_suppresses_configured_codec_tail_with_basic_slices() -> None:
     configured_vocab = 3072
     codec_eos = 2150
     materialized_vocab = 6144
-    runner = _runner(
+    runner = make_runner(
         vocab_size=configured_vocab,
         codec_eos_token_id=codec_eos,
     )
@@ -68,7 +53,13 @@ def test_qwen3_tts_suppresses_configured_codec_tail_with_basic_slices() -> None:
     original = logits.clone()
     logits_output = types.SimpleNamespace(next_token_logits=logits)
 
-    runner._apply_codec_suppress_tokens(logits_output, [object(), object()])
+    runner.apply_codec_suppress_tokens(
+        logits_output,
+        [
+            make_scheduled_request(mask_leading_silence=False, generated_frames=2),
+            make_scheduled_request(mask_leading_silence=False, generated_frames=2),
+        ],
+    )
 
     suppress_start = configured_vocab - 1024
     assert torch.equal(logits[:2, :suppress_start], original[:2, :suppress_start])
@@ -80,12 +71,85 @@ def test_qwen3_tts_suppresses_configured_codec_tail_with_basic_slices() -> None:
 
 
 def test_qwen3_tts_suppression_skips_empty_request_batch() -> None:
-    runner = _runner(vocab_size=3072, codec_eos_token_id=2150)
+    runner = make_runner(vocab_size=3072, codec_eos_token_id=2150)
     logits = torch.randn(1, 6144)
     original = logits.clone()
 
-    runner._apply_codec_suppress_tokens(
+    runner.apply_codec_suppress_tokens(
         types.SimpleNamespace(next_token_logits=logits), []
     )
 
     assert torch.equal(logits, original)
+
+
+def test_qwen3_tts_masks_silence_ids_only_in_opening_frames_of_flagged_requests() -> (
+    None
+):
+    configured_vocab = 3072
+    silence_ids = (5, 7, 11)
+    runner = make_runner(
+        vocab_size=configured_vocab,
+        codec_eos_token_id=2150,
+        leading_silence_mask_frames=2,
+        silence_codec_ids=silence_ids,
+    )
+    requests = [
+        make_scheduled_request(mask_leading_silence=True, generated_frames=0),
+        make_scheduled_request(mask_leading_silence=True, generated_frames=1),
+        make_scheduled_request(mask_leading_silence=True, generated_frames=2),
+        make_scheduled_request(mask_leading_silence=False, generated_frames=0),
+    ]
+    logits = torch.randn(len(requests), 6144)
+    original = logits.clone()
+
+    runner.apply_codec_suppress_tokens(
+        types.SimpleNamespace(next_token_logits=logits), requests
+    )
+
+    silence = list(silence_ids)
+    speech = [
+        token for token in range(configured_vocab - 1024) if token not in silence_ids
+    ]
+    assert torch.isneginf(logits[:2, silence]).all()
+    assert torch.equal(logits[:2, speech], original[:2, speech])
+    assert torch.equal(logits[2:, silence], original[2:, silence])
+
+
+def test_qwen3_tts_holds_codec_eos_until_the_second_frame() -> None:
+    codec_eos = 2150
+    runner = make_runner(vocab_size=3072, codec_eos_token_id=codec_eos)
+    requests = [
+        make_scheduled_request(mask_leading_silence=False, generated_frames=frames)
+        for frames in (0, 1, 2)
+    ]
+    logits = torch.randn(len(requests), 6144)
+    original = logits.clone()
+
+    runner.apply_codec_suppress_tokens(
+        types.SimpleNamespace(next_token_logits=logits), requests
+    )
+
+    assert torch.isneginf(logits[:2, codec_eos]).all()
+    assert torch.equal(logits[2, codec_eos], original[2, codec_eos])
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_qwen3_tts_logit_shaping_never_waits_on_the_device() -> None:
+    codec_eos = 2150
+    runner = make_runner(vocab_size=3072, codec_eos_token_id=codec_eos)
+    requests = [
+        make_scheduled_request(mask_leading_silence=False, generated_frames=frames)
+        for frames in (0, 1, 2)
+    ]
+    logits = torch.randn(len(requests), 6144, device="cuda")
+
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        runner.apply_codec_suppress_tokens(
+            types.SimpleNamespace(next_token_logits=logits), requests
+        )
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
+
+    assert torch.isneginf(logits[:2, codec_eos]).all()

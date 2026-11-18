@@ -21,7 +21,7 @@ class Interval:
     end_ns: int
 
 
-def _intervals(
+def make_intervals(
     events: Iterable[dict[str, Any]], *, expected_run_id: str
 ) -> list[Interval]:
     points: dict[tuple[int, str], dict[str, int]] = {}
@@ -81,7 +81,7 @@ def build_overlap_verdict(
     if measurement_uncertainty_ns < 0:
         raise ValueError("measurement uncertainty must be non-negative")
 
-    intervals = _intervals(events, expected_run_id=expected_run_id)
+    intervals = make_intervals(events, expected_run_id=expected_run_id)
     left = [item for item in intervals if item.replica_id == 0]
     right = [item for item in intervals if item.replica_id == 1]
     if len(left) > MAX_INTERVALS_PER_REPLICA or len(right) > MAX_INTERVALS_PER_REPLICA:

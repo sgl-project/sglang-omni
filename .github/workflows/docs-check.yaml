@@ -7,6 +7,12 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+    # A pull request that changes only the MLX path is tested by Mac CI and Voxt CI.
+    paths-ignore:
+      - "sglang_omni_mlx/**"
+      - "Voxt/**"
+      - ".github/workflows/mac-ci.yaml"
+      - ".github/workflows/voxt*.yaml"
   workflow_dispatch:
 
 concurrency:
@@ -31,12 +37,17 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # Note (Akazaakane): The third-party Chrome repo is unnecessary for docs builds.
+          sudo find /etc/apt/sources.list.d -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec grep -qE 'https?://dl\.google\.com/linux/chrome(-stable)?/deb([/[:space:]]|$)' {} \; \
+            -delete
+
           timeout 5m sudo apt-get \
             -o Acquire::Retries=3 \
             -o Acquire::http::Timeout=30 \
             -o Acquire::https::Timeout=30 \
             update
-          sudo apt-get install -y pandoc parallel retry
+          sudo apt-get install -y --no-install-recommends pandoc parallel retry
           pip install -r docs/requirements.txt
 
       - name: Build documentation
@@ -44,3 +55,19 @@ jobs:
           cd docs
           make compile
           make html
+
+  doc-style-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install documentation lint dependencies
+        run: python -m pip install -r scripts/requirements-doc-lint.txt pytest
+
+      - name: Test documentation style checker
+        run: python -m pytest tests/unit_test/scripts/test_check_doc_style*.py -q

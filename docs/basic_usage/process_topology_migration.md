@@ -38,5 +38,5 @@ exclusively.
 
 The top-level `processes` mapping only configures replicas for process names
 already declared by stages. See the
-[configuration reference](../developer_reference/config.md#logical-processes-and-replicas)
+[configuration reference](../developer_reference/config.md)
 for validation and placement rules.

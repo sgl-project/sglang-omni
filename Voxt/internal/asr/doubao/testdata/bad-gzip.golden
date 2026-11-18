@@ -1,0 +1,31 @@
+GET /api/v3/sauc/bigmodel_async
+X-Api-Access-Key: test-token
+X-Api-App-Key: test-app
+X-Api-Connect-Id: <uuid>
+X-Api-Request-Id: <uuid>
+X-Api-Resource-Id: volc.seedasr.sauc.duration
+> full-client-request flags=seq ser=json comp=gzip seq=1
+{
+  "audio": {
+    "bits": 16,
+    "channel": 1,
+    "codec": "raw",
+    "format": "pcm",
+    "rate": 16000
+  },
+  "request": {
+    "enable_ddc": true,
+    "enable_itn": true,
+    "enable_nonstream": true,
+    "enable_punc": true,
+    "model_name": "bigmodel",
+    "show_utterances": true
+  },
+  "user": {
+    "uid": "voxt"
+  }
+}
+> audio-only-request flags=seq ser=none comp=gzip seq=2 bytes=6400
+(server sent raw and closes)
+--- events
+< error: kind=protocol status=0 code="" retryable=false detail="bad gzip payload: unexpected EOF"

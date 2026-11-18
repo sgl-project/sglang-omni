@@ -5,6 +5,8 @@ from torch import Tensor
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n
+    else:
+        pass
     return n + k - (n % k)
 
 

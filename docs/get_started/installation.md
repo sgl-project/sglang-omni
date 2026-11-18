@@ -1,26 +1,46 @@
-# 🚀 Installation
+# Installation — CUDA
 
-Current stable release: **v0.1.3** on [PyPI](https://pypi.org/project/sglang-omni/).
+Install SGLang-Omni on Linux with an NVIDIA GPU. Docker is recommended.
+The current stable release is [v0.2.0 on PyPI](https://pypi.org/project/sglang-omni/).
 
-Two install paths. Docker is recommended — UCX, flash-attn, sglang, and CUDA are prebuilt.
+## Other platforms
 
-> **Intel GPU (XPU)?** This page targets **NVIDIA CUDA**. For Intel Arc GPUs, see [Installation — Intel XPU](./installation_xpu.md), which uses [`pyproject_xpu.toml`](../../pyproject_xpu.toml) + the PyTorch XPU wheel index instead of the CUDA-only pins below.
+Using a different device? Choose the installation guide for your hardware:
+[Apple Silicon](../other_platforms/installation_apple_silicon.md),
+[Ascend NPU](../other_platforms/installation_npu.md),
+[Intel XPU](../other_platforms/installation_xpu.md),
+[Intel CPU](../other_platforms/installation_cpu.md), and
+[Moore Threads MUSA](../other_platforms/installation_musa.md).
 
-## 🐳 Option A: Docker (recommended)
+## Install SGLang-Omni
 
-**1. Pull the image**
+Choose [Docker](#docker-recommended) for a prebuilt CUDA environment,
+[pip / uv](#pip-uv) to install into your own environment, or
+[From source](#from-source) to work on the code.
+
+(option-a-docker-recommended)=
+### Docker (recommended)
+
+**Prerequisites.** Use a CUDA-compatible NVIDIA driver, Docker, and the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+The image includes UCX, flash-attn, SGLang, and CUDA.
+
+**Pull the image.**
 
 ```bash
 docker pull hongccc/sglang-omni:dev
 ```
 
-Only the `dev` tag is published today. It moves with main — pin by digest for reproducible runs:
+````{note}
+The `:dev` tag moves with `main`. For reproducible runs, use the pulled image's
+repository digest in place of `hongccc/sglang-omni:dev` in both the pull and run commands:
 
 ```bash
-docker pull lmsysorg/sglang-omni@sha256:<digest>
+docker image inspect --format '{{index .RepoDigests 0}}' hongccc/sglang-omni:dev
 ```
+````
 
-**2. Run the container**
+**Start a container.**
 
 ```bash
 docker run -it \
@@ -33,7 +53,7 @@ docker run -it \
     /bin/zsh
 ```
 
-**3. Install `sglang-omni` inside the container**
+**Install SGLang-Omni** inside the container.
 
 ```bash
 pip install --upgrade pip
@@ -42,17 +62,19 @@ pip install uv
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install --prerelease=allow "sglang-omni==0.1.3"
+uv pip install --prerelease=allow "sglang-omni==0.2.0"
 ```
 
-## 🛠️ Option B: Manual install
+(option-b-manual-install)=
+### pip / uv
 
-Build prerequisites first:
+**Prerequisites.** Use a CUDA environment with glibc 2.34 or newer and install
+these build dependencies first:
 
 - **UCX 1.20.x** with CUDA + verbs — [upstream](https://github.com/openucx/ucx), or reuse flags in [`docker/Dockerfile`](../../docker/Dockerfile).
-- **flash-attn-4** `>=4.0.0b18`, matching `torch==2.13.0` and SGLang 0.5.18's `nvidia-cutlass-dsl` 4.6.2 pin.
+- **flash-attn-4** `>=4.0.0b18`, matching `torch==2.14.1` and SGLang 0.5.23's `nvidia-cutlass-dsl` 4.8.0 pin.
 
-Then:
+**Prepare the environment.**
 
 ```bash
 pip install --upgrade pip
@@ -60,20 +82,32 @@ pip install uv
 
 uv venv .venv -p 3.12
 source .venv/bin/activate
-
-uv pip install --prerelease=allow "sglang-omni==0.1.3"
 ```
 
-Latest on the index without a pin: `uv pip install --prerelease=allow sglang-omni`.
+**Install SGLang-Omni.**
 
-### Install from source
+```bash
+uv pip install --prerelease=allow "sglang-omni==0.2.0"
+```
 
-For development or unreleased changes:
+To install the latest version on the index, run `uv pip install --prerelease=allow sglang-omni`.
+
+(install-from-source)=
+### From source
+
+Use this path for development or unreleased changes. Start with the
+[pip / uv prerequisites](#pip-uv).
+
+**Get the source.**
 
 ```bash
 git clone git@github.com:sgl-project/sglang-omni.git
 cd sglang-omni
+```
 
+**Install in editable mode.**
+
+```bash
 pip install --upgrade pip
 pip install uv
 
@@ -82,3 +116,14 @@ source .venv/bin/activate
 
 uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```
+
+## Next steps
+
+[Start the Qwen3-ASR server, send a request, and check the transcript](quickstart.md#install-and-start).
+For model-specific configuration and other request formats, see the
+[Qwen3-ASR Cookbook](../cookbook/qwen3_asr.md).
+
+## Troubleshooting
+
+See [Troubleshooting](./troubleshooting.md) for installation errors. Compare
+`uv pip check` output against the [expected CUDA dependency messages](./troubleshooting.md#expected-output-of-uv-pip-check).

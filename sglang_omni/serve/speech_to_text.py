@@ -8,11 +8,12 @@ import io
 import json
 import logging
 import math
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Collection, Coroutine
 from contextlib import aclosing
 from dataclasses import dataclass
-from typing import Any
 
+import av
+import soundfile as sf
 from fastapi import File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
@@ -24,13 +25,14 @@ from sglang_omni.client import (
     GenerateRequest,
     SamplingParams,
 )
-from sglang_omni.serve.generation_params import record_explicit_generation_params
-from sglang_omni.serve.openai_errors import is_bad_request_error
+from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
+    SglExt,
     TranscriptionResponse,
     TranscriptionTextDeltaEvent,
     TranscriptionTextDoneEvent,
     TranscriptionUsage,
+    build_sglext,
 )
 from sglang_omni.serve.streaming import (
     STREAM_DONE_SENTINEL,
@@ -40,6 +42,7 @@ from sglang_omni.serve.streaming import (
 from sglang_omni.serve.subtitles import segments_to_srt, segments_to_vtt
 from sglang_omni.serve.transcription_adapters import resolve_adapter
 from sglang_omni.serve.transcription_adapters.base import TranscriptionAdapter
+from sglang_omni.utils.g711 import resolve_g711_encoding, wrap_g711_as_wav
 
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
@@ -59,8 +62,10 @@ class SpeechToTextForm:
     prompt: str | None
     response_format: str
     temperature: float | None
+    repetition_penalty: float | None
     max_new_tokens: int | None
     stream: bool
+    return_spec_tokens_details: bool
 
 
 async def parse_speech_to_text_form(
@@ -69,9 +74,11 @@ async def parse_speech_to_text_form(
     language: str | None = Form(default=None),
     prompt: str | None = Form(default=None),
     response_format: str = Form(default="json"),
-    temperature: float | None = Form(default=None),
+    temperature: float | None = Form(default=None, ge=0.0),
+    repetition_penalty: float | None = Form(default=None, gt=0.0, le=2.0),
     max_new_tokens: int | None = Form(default=None, ge=1),
     stream: bool = Form(default=False),
+    return_spec_tokens_details: bool = Form(default=False),
 ) -> SpeechToTextForm:
     return SpeechToTextForm(
         file=file,
@@ -80,16 +87,26 @@ async def parse_speech_to_text_form(
         prompt=prompt,
         response_format=response_format,
         temperature=temperature,
+        repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
         stream=stream,
+        return_spec_tokens_details=return_spec_tokens_details,
     )
 
 
 async def read_and_validate_speech_to_text_audio(file: UploadFile) -> bytes:
-    """Reject empty uploads before dispatch can consume backend resources."""
+    """Reject empty uploads, then give headerless uploads a container."""
     audio_bytes = await file.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+    else:
+        pass
+
+    g711_encoding = resolve_g711_encoding(file.content_type, file.filename)
+    if g711_encoding is not None:
+        audio_bytes = wrap_g711_as_wav(audio_bytes, g711_encoding)
+    else:
+        pass
     return audio_bytes
 
 
@@ -111,6 +128,8 @@ def validate_speech_to_text_response_format(
                 f"'text', got {response_format!r}"
             ),
         )
+    else:
+        pass
     if not stream and normalized_response_format not in response_formats:
         raise HTTPException(
             status_code=400,
@@ -118,6 +137,8 @@ def validate_speech_to_text_response_format(
                 f"Unsupported response_format for {endpoint_path}: {response_format!r}"
             ),
         )
+    else:
+        pass
     return normalized_response_format
 
 
@@ -130,6 +151,7 @@ def build_speech_to_text_generate_request(
     language: str | None,
     prompt: str | None,
     temperature: float | None,
+    repetition_penalty: float | None = None,
     max_new_tokens: int | None = None,
     stream: bool = False,
     task: str = "transcribe",
@@ -137,24 +159,28 @@ def build_speech_to_text_generate_request(
     segment_timestamps: bool = False,
 ) -> GenerateRequest:
     """Keep endpoint policy out of model-neutral request construction."""
-    params: dict[str, Any] = {"task": task}
+    params: dict[str, str | bool] = {"task": task}
     if detect_language:
         params["detect_language"] = True
-    metadata: dict[str, Any] = {"task": "asr"}
-    explicit_fields: list[str] = []
+    else:
+        pass
+    metadata: dict[str, object] = {"task": "asr"}
     if language is not None:
         params["language"] = language
+    else:
+        pass
     if prompt is not None:
         params["prompt"] = prompt
-    if temperature is not None:
-        explicit_fields.append("temperature")
-    if max_new_tokens is not None:
-        explicit_fields.append("max_new_tokens")
+    else:
+        pass
     if segment_timestamps:
         params["segment_timestamps"] = True
-    record_explicit_generation_params(metadata, sorted(explicit_fields))
+    else:
+        pass
+    # note (ratish): 0.0 is the transcription API's own default temperature.
     sampling = SamplingParams(
         temperature=temperature if temperature is not None else 0.0,
+        repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
     )
 
@@ -211,7 +237,45 @@ async def detect_speech_language(
     return code or None
 
 
+async def complete_unless_disconnected(
+    request: Request,
+    client: Client,
+    completion: Coroutine[None, None, CompletionResult],
+    *,
+    request_id: str,
+) -> CompletionResult:
+    """Await a buffered completion; if the HTTP client disconnects first, abort its
+    pipeline request and raise ClientError, which the route maps to an error response.
+    """
+    completion_task = asyncio.create_task(completion)
+    disconnect_task = asyncio.create_task(wait_for_request_disconnect(request))
+    try:
+        done, _ = await asyncio.wait(
+            {completion_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if completion_task in done:
+            return completion_task.result()
+        else:
+            pass
+        await client.abort(request_id)
+        raise ClientError(f"Client disconnected; aborted request {request_id}")
+    except asyncio.CancelledError:
+        await client.abort(request_id)
+        raise
+    finally:
+        if not completion_task.done():
+            await cancel_task_bounded(completion_task)
+        else:
+            pass
+        if not disconnect_task.done():
+            await cancel_task_bounded(disconnect_task)
+        else:
+            pass
+
+
 async def complete_speech_to_text_request(
+    request: Request,
     client: Client,
     gen_req: GenerateRequest,
     *,
@@ -220,16 +284,23 @@ async def complete_speech_to_text_request(
 ) -> CompletionResult:
     """Keep sibling endpoints on the same backend-to-HTTP error mapping."""
     try:
-        return await client.completion(gen_req, request_id=request_id)
+        return await complete_unless_disconnected(
+            request,
+            client,
+            client.completion(gen_req, request_id=request_id),
+            request_id=request_id,
+        )
     except ClientError as exc:
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=generation_error_status_code(exc), detail=str(exc)
+        ) from exc
     except Exception as exc:
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        logger.exception(error_log_message, request_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        status_code = generation_error_status_code(exc)
+        if status_code == 500:
+            logger.exception(error_log_message, request_id)
+        else:
+            pass
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 def resolve_speech_to_text_adapter(
@@ -243,7 +314,17 @@ def resolve_speech_to_text_adapter(
 # MPEG_LAYER_III, legal inside RIFF/WAVE, where libsndfile extrapolates
 # from early-frame bitrate and mismeasures VBR streams severalfold.
 _EXACT_LENGTH_SUBTYPES = frozenset(
-    {"PCM_S8", "PCM_U8", "PCM_16", "PCM_24", "PCM_32", "FLOAT", "DOUBLE"}
+    {
+        "PCM_S8",
+        "PCM_U8",
+        "PCM_16",
+        "PCM_24",
+        "PCM_32",
+        "FLOAT",
+        "DOUBLE",
+        "ULAW",
+        "ALAW",
+    }
 )
 
 # libsndfile reports this sentinel when the header omits the count, e.g. a
@@ -251,21 +332,23 @@ _EXACT_LENGTH_SUBTYPES = frozenset(
 _UNKNOWN_LENGTH_FRAMES = 2**63 - 1
 
 
-def _looks_like_wav_or_flac(audio_bytes: bytes) -> bool:
+def looks_like_wav_or_flac(audio_bytes: bytes) -> bool:
     # Cheap prefilter so only the two formats the fast path serves are ever
     # handed to libsndfile; every other container goes straight to PyAV.
     header = audio_bytes[:12]
     if header[:4] in (b"RIFF", b"RF64") and header[8:12] == b"WAVE":
         return True
+    else:
+        pass
     return header[:4] == b"fLaC"
 
 
-def _soundfile_duration(audio_bytes: bytes) -> float:
-    if not _looks_like_wav_or_flac(audio_bytes):
+def soundfile_duration(audio_bytes: bytes) -> float:
+    if not looks_like_wav_or_flac(audio_bytes):
         return 0.0
+    else:
+        pass
     try:
-        import soundfile as sf
-
         info = sf.info(io.BytesIO(audio_bytes))
         if (
             info.samplerate
@@ -273,24 +356,34 @@ def _soundfile_duration(audio_bytes: bytes) -> float:
             and 0 < info.frames < _UNKNOWN_LENGTH_FRAMES
         ):
             return info.frames / float(info.samplerate)
+        else:
+            pass
     except (RuntimeError, ValueError):
         pass
     return 0.0
 
 
-def _av_duration(audio_bytes: bytes) -> float:
+def av_duration(audio_bytes: bytes) -> float:
     try:
-        import av
-
-        with av.open(io.BytesIO(audio_bytes), metadata_errors="ignore") as container:
+        # note (cristianchiriac): PyAV 19 removed metadata_errors from av.open.
+        open_kwargs = (
+            {"metadata_errors": "ignore"}
+            if int(av.__version__.split(".")[0]) < 19
+            else {}
+        )
+        with av.open(io.BytesIO(audio_bytes), **open_kwargs) as container:
             if container.duration:  # in av.time_base units (microseconds)
                 return max(container.duration / 1_000_000, 0.0)
+            else:
+                pass
             for audio_stream in container.streams.audio:
                 if audio_stream.duration and audio_stream.time_base:
                     return max(
                         float(audio_stream.duration * audio_stream.time_base), 0.0
                     )
-    except Exception:
+                else:
+                    pass
+    except (av.error.FFmpegError, ValueError):
         logger.debug("Could not probe audio duration", exc_info=True)
     return 0.0
 
@@ -305,10 +398,28 @@ def probe_audio_duration(audio_bytes: bytes) -> float:
     decodes with, so their measurements are unchanged. 0.0 means unknown;
     callers treat that as "duration not available".
     """
-    duration_s = _soundfile_duration(audio_bytes)
+    duration_s = soundfile_duration(audio_bytes)
     if duration_s > 0:
         return duration_s
-    return _av_duration(audio_bytes)
+    else:
+        pass
+    return av_duration(audio_bytes)
+
+
+def reported_truncation(finish_reason: str | None) -> str | None:
+    """Expose a token-budget stop; a normal stop stays off the response."""
+    if finish_reason == "length":
+        return finish_reason
+    else:
+        return None
+
+
+def truncation_headers(finish_reason: str | None) -> dict[str, str]:
+    reported = reported_truncation(finish_reason)
+    if reported is None:
+        return {}
+    else:
+        return {"X-Finish-Reason": reported}
 
 
 def assemble_speech_to_text_response(
@@ -322,6 +433,8 @@ def assemble_speech_to_text_response(
     architectures: list[str] | None,
     duration_s: float | None = None,
     response_formats: Collection[str] = DEFAULT_RESPONSE_FORMATS,
+    finish_reason: str | None = None,
+    sglext: SglExt | None = None,
 ) -> Response:
     """Keep response schemas consistent across sibling endpoints."""
     normalized_response_format = validate_speech_to_text_response_format(
@@ -330,10 +443,17 @@ def assemble_speech_to_text_response(
         endpoint_path=endpoint_path,
         response_formats=response_formats,
     )
-    if normalized_response_format == "text":
-        return PlainTextResponse(text)
-
     adapter = resolve_speech_to_text_adapter(architectures)
+    raw_text = text
+    headers = truncation_headers(finish_reason)
+    visible_finish_reason = reported_truncation(finish_reason)
+    if normalized_response_format == "text":
+        return PlainTextResponse(raw_text, headers=headers)
+    else:
+        pass
+
+    text = adapter.postprocess_text(raw_text)
+
     if (
         normalized_response_format in SEGMENT_RESPONSE_FORMATS
         and not adapter.supports_segment_timestamps
@@ -345,10 +465,12 @@ def assemble_speech_to_text_response(
                 "segment-timestamp capability"
             ),
         )
-    raw_text = text
-    text = adapter.postprocess_text(raw_text)
+    else:
+        pass
     if duration_s is None:
         duration_s = probe_audio_duration(audio_bytes)
+    else:
+        pass
     usage = (
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
     )
@@ -370,28 +492,47 @@ def assemble_speech_to_text_response(
             )
         response.task = task
         response.usage = usage
+        response.finish_reason = visible_finish_reason
+        response.sglext = sglext
         if normalized_response_format == "srt":
-            return PlainTextResponse(segments_to_srt(response.segments))
+            return PlainTextResponse(
+                segments_to_srt(response.segments), headers=headers
+            )
+        else:
+            pass
         if normalized_response_format == "vtt":
-            return PlainTextResponse(segments_to_vtt(response.segments))
-        return JSONResponse(content=response.model_dump(exclude_none=True))
-    return JSONResponse(
-        content=TranscriptionResponse(text=text, usage=usage).model_dump(
-            exclude_none=True
+            return PlainTextResponse(
+                segments_to_vtt(response.segments), headers=headers
+            )
+        else:
+            pass
+        return JSONResponse(
+            content=response.model_dump(exclude_none=True), headers=headers
         )
+    else:
+        pass
+    return JSONResponse(
+        content=TranscriptionResponse(
+            text=text, usage=usage, finish_reason=visible_finish_reason, sglext=sglext
+        ).model_dump(exclude_none=True),
+        headers=headers,
     )
 
 
-async def _cancel_task_bounded(task: asyncio.Task[Any]) -> None:
+async def cancel_task_bounded(
+    task: asyncio.Task[CompletionResult | GenerateChunk | list[str] | None],
+) -> None:
     task.cancel()
     done, _ = await asyncio.wait({task}, timeout=HTTP_DISCONNECT_CANCEL_TIMEOUT_S)
     if done:
         await asyncio.gather(*done, return_exceptions=True)
     else:
-        task.add_done_callback(_discard_cancelled_task_result)
+        task.add_done_callback(discard_cancelled_task_result)
 
 
-def _discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
+def discard_cancelled_task_result(
+    task: asyncio.Task[CompletionResult | GenerateChunk | list[str] | None],
+) -> None:
     try:
         task.result()
     except asyncio.CancelledError:
@@ -400,15 +541,15 @@ def _discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
         logger.debug("Cancelled request task finished with an error", exc_info=True)
 
 
-async def _wait_for_request_disconnect(request: Request) -> None:
+async def wait_for_request_disconnect(request: Request) -> None:
     while not await request.is_disconnected():
         await asyncio.sleep(HTTP_DISCONNECT_POLL_INTERVAL_S)
 
 
-async def _abort_and_close_speech_to_text_stream(
+async def abort_and_close_speech_to_text_stream(
     client: Client,
     request_id: str,
-    stream: AsyncIterator[Any],
+    stream: AsyncIterator[GenerateChunk],
 ) -> None:
     try:
         await client.abort(request_id)
@@ -416,7 +557,7 @@ async def _abort_and_close_speech_to_text_stream(
         await close_async_iterator_if_supported(stream)
 
 
-async def _first_speech_to_text_chunk(
+async def first_speech_to_text_chunk(
     request: Request,
     client: Client,
     chunk_stream: AsyncIterator[GenerateChunk],
@@ -424,7 +565,7 @@ async def _first_speech_to_text_chunk(
 ) -> GenerateChunk | None:
     # note (Junnan Li): Admit before headers so model validation remains an
     # HTTP error instead of becoming an SSE error event.
-    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
+    disconnect_task = asyncio.create_task(wait_for_request_disconnect(request))
     first_chunk_task = asyncio.create_task(anext(chunk_stream))
     try:
         done, _ = await asyncio.wait(
@@ -432,18 +573,22 @@ async def _first_speech_to_text_chunk(
             return_when=asyncio.FIRST_COMPLETED,
         )
         if disconnect_task in done:
-            await _cancel_task_bounded(first_chunk_task)
-            await _abort_and_close_speech_to_text_stream(
+            await cancel_task_bounded(first_chunk_task)
+            await abort_and_close_speech_to_text_stream(
                 client, request_id, chunk_stream
             )
             raise asyncio.CancelledError
+        else:
+            pass
         try:
             return first_chunk_task.result()
         except StopAsyncIteration:
             return None
     finally:
         if not disconnect_task.done():
-            await _cancel_task_bounded(disconnect_task)
+            await cancel_task_bounded(disconnect_task)
+        else:
+            pass
 
 
 async def speech_to_text_stream(
@@ -454,19 +599,36 @@ async def speech_to_text_stream(
     adapter: TranscriptionAdapter,
     duration_s: float,
     operation_name: str = "transcription",
+    return_spec_tokens_details: bool = False,
 ) -> AsyncIterator[str]:
     """Keep terminal event ordering stable for OpenAI-compatible clients."""
     final_text: str | None = None
+    finish_reason: str | None = None
+    sglext: SglExt | None = None
 
     def _event_for(chunk: GenerateChunk) -> str | None:
-        nonlocal final_text
+        nonlocal final_text, finish_reason, sglext
+        chunk_sglext = build_sglext(
+            return_spec_tokens_details, chunk.spec_tokens_details
+        )
+        if chunk_sglext is not None:
+            sglext = chunk_sglext
+        else:
+            pass
         if chunk.finish_reason is not None:
+            finish_reason = chunk.finish_reason
             if isinstance(chunk.text, str) and chunk.text:
                 final_text = chunk.text
+            else:
+                pass
             return None
+        else:
+            pass
         if chunk.modality == "text" and chunk.text:
             event = TranscriptionTextDeltaEvent(delta=chunk.text)
             return f"data: {event.model_dump_json(exclude_none=True)}\n\n"
+        else:
+            pass
         return None
 
     try:
@@ -475,10 +637,16 @@ async def speech_to_text_stream(
                 line = _event_for(first_chunk)
                 if line is not None:
                     yield line
+                else:
+                    pass
+            else:
+                pass
             async for chunk in chunk_stream:
                 line = _event_for(chunk)
                 if line is not None:
                     yield line
+                else:
+                    pass
     except Exception as exc:
         logger.exception(
             "Error streaming %s for request %s", operation_name, request_id
@@ -491,7 +659,12 @@ async def speech_to_text_stream(
     usage = (
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
     )
-    done_event = TranscriptionTextDoneEvent(text=text, usage=usage)
+    done_event = TranscriptionTextDoneEvent(
+        text=text,
+        usage=usage,
+        finish_reason=reported_truncation(finish_reason),
+        sglext=sglext,
+    )
     yield f"data: {done_event.model_dump_json(exclude_none=True)}\n\n"
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
@@ -506,31 +679,36 @@ async def create_speech_to_text_streaming_response(
     architectures: list[str] | None,
     operation_name: str = "transcription",
     duration_s: float | None = None,
+    return_spec_tokens_details: bool = False,
 ) -> Response:
     """Delay headers until backend admission can still return an HTTP error."""
     adapter = resolve_speech_to_text_adapter(architectures)
     if duration_s is None:
         duration_s = await asyncio.to_thread(probe_audio_duration, audio_bytes)
+    else:
+        pass
     chunk_stream = client.generate(gen_req, request_id=request_id)
     try:
-        first_chunk = await _first_speech_to_text_chunk(
+        first_chunk = await first_speech_to_text_chunk(
             request, client, chunk_stream, request_id
         )
     except ClientError as exc:
         await close_async_iterator_if_supported(chunk_stream)
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=generation_error_status_code(exc), detail=str(exc)
+        ) from exc
     except Exception as exc:
         await close_async_iterator_if_supported(chunk_stream)
-        if is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        logger.exception(
-            "Error starting %s stream for request %s",
-            operation_name,
-            request_id,
-        )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        status_code = generation_error_status_code(exc)
+        if status_code == 500:
+            logger.exception(
+                "Error starting %s stream for request %s",
+                operation_name,
+                request_id,
+            )
+        else:
+            pass
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return ClosableStreamingResponse(
         speech_to_text_stream(
             chunk_stream,
@@ -539,6 +717,7 @@ async def create_speech_to_text_streaming_response(
             adapter=adapter,
             duration_s=duration_s,
             operation_name=operation_name,
+            return_spec_tokens_details=return_spec_tokens_details,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Request-Id": request_id},

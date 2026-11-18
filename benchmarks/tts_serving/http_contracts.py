@@ -103,20 +103,12 @@ def classify_http_failure(
         return
     if 400 <= status < 500 and _is_expected_client_error_scenario(scenario):
         expected_status = _expected_client_error_status(scenario)
-        if status != expected_status:
-            mark_protocol_error(
-                result,
-                status="invalid_error_response",
-                error=(
-                    "expected client-error scenario returned wrong HTTP status "
-                    f"(expected={expected_status}, observed={status}): {body}"
-                ),
-            )
-            return
         if not is_valid_error_response(
             status,
             body,
             expected_status=expected_status,
+            expected_error_type=scenario.expected_error_type,
+            alternate_error_signatures=scenario.alternate_error_signatures,
         ):
             mark_protocol_error(
                 result,
@@ -233,10 +225,22 @@ def is_valid_error_response(
     body: str,
     *,
     expected_status: int,
+    expected_error_type: str | None = None,
+    alternate_error_signatures: tuple[tuple[int, str, int | str], ...] = (),
 ) -> bool:
-    return status == expected_status and is_openai_error_response(
-        body,
-        expected_status=expected_status,
+    signatures = (
+        (expected_status, expected_error_type, expected_status),
+        *alternate_error_signatures,
+    )
+    return any(
+        status == signature_status
+        and is_openai_error_response(
+            body,
+            expected_status=signature_status,
+            expected_error_type=error_type,
+            expected_error_code=error_code,
+        )
+        for signature_status, error_type, error_code in signatures
     )
 
 
