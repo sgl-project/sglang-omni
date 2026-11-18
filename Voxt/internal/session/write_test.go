@@ -171,13 +171,15 @@ func TestWrite(t *testing.T) {
 				}
 			},
 		},
-		{
-			name: "numbers can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "12:30"}, llm: &fakeLLM{text: "12:30"},
+		{name: "numbers can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "12:30"}, llm: &fakeLLM{text: "12:30"},
 			req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "12:30", pasted: true,
 		},
-		{
-			name: "text already in a Latin target can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "Good morning"},
+		{name: "text already in a Latin target can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "Good morning"},
 			req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "Good morning", pasted: true,
+		},
+		{
+			name: "English is not a French translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "Good morning"},
+			req: StartRequest{TargetLanguage: "fr"}, set: func(s *settings.Settings) { s.General.MainLanguage = "en" }, states: "reading composing failed", state: Failed, problem: ProblemLLM,
 		},
 		{
 			name: "translate into a card", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "早上好"},

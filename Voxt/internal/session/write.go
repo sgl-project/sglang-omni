@@ -11,6 +11,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -164,15 +165,25 @@ func (r *run) write(raw, selection string) {
 		return
 	}
 	if kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) {
-		sameScript := true
+		sameScript, hasLetters := true, false
 		for _, r := range source {
-			if unicode.IsLetter(r) && !compose.Written(string(r), in.TargetLanguage) {
+			if !unicode.IsLetter(r) {
+				continue
+			}
+			hasLetters = true
+			if !compose.Written(string(r), in.TargetLanguage) {
 				sameScript = false
 				break
 			}
 		}
-		// Numbers and text written entirely in the target script can stay unchanged; mixed script cannot.
-		if !sameScript {
+		unchangedAllowed := sameScript
+		if hasLetters && sameScript {
+			if target, ok := lang.Lookup(in.TargetLanguage); ok && target.Script == "Latn" {
+				unchangedAllowed = lang.Canonical(in.MainLanguage) == lang.Canonical(in.TargetLanguage)
+			}
+		}
+		// Numbers and genuine same-language text can stay unchanged; a shared Latin script proves no language.
+		if !unchangedAllowed {
 			r.logf("warning", "the translation still looks untranslated after the strict retry")
 			r.endWriteFailed(&Problem{Code: ProblemLLM, Err: ErrNotTranslated}, true)
 			return
