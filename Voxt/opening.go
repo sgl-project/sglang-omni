@@ -37,11 +37,14 @@ func openingImage(name string) *ui.Bitmap {
 }
 
 func (a *app) startOpening() {
-	if a.prefs.Setup.Done || a.prefs.Setup.OpeningShown {
+	version := a.version
+	if a.prefs.Setup.OpeningShown && a.prefs.Setup.OpeningVersion == version {
 		return
 	}
 	a.openingStarted = time.Now()
-	a.updateSettings(func(s *settings.Settings) { s.Setup.OpeningShown = true })
+	a.updateSettings(func(s *settings.Settings) {
+		s.Setup.OpeningShown, s.Setup.OpeningVersion = true, version
+	})
 }
 
 func openingProgress(elapsed, start, duration time.Duration) float32 {

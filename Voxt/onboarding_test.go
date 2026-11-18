@@ -30,13 +30,14 @@ func obTester(t *testing.T) (*app, *ui.Tester) {
 
 func TestOpeningLeadsToGuideOnce(t *testing.T) {
 	a, _, tt := newTestApp(t)
+	a.version = "2.1.1"
 	a.startOpening()
 	a.maybeOnboard()
 	frames(tt)
 	if a.openingStarted.IsZero() || has(tt, "Get started") {
 		t.Fatal("the first launch did not show the opening before the guide")
 	}
-	if !a.lib.settings.Get().Setup.OpeningShown || a.prefs.Setup.Done {
+	if saved := a.lib.settings.Get().Setup; !saved.OpeningShown || saved.OpeningVersion != a.version || saved.Done {
 		t.Fatal("the opening did not persist independently of guide completion")
 	}
 	a.openingStarted = time.Now().Add(-openingDuration)
@@ -57,20 +58,27 @@ func TestOpeningLeadsToGuideOnce(t *testing.T) {
 	}
 }
 
-func TestOpeningSkipsExistingSetupsAndReducedMotion(t *testing.T) {
-	for _, mode := range []string{"existing", "app-reduced-motion", "system-reduced-motion"} {
+func TestOpeningSkipsReducedMotion(t *testing.T) {
+	for _, mode := range []string{"app-reduced-motion", "system-reduced-motion"} {
 		t.Run(mode, func(t *testing.T) {
 			a, _, tt := newTestApp(t)
+			a.version = "2.1.1"
 			a.updateSettings(func(s *settings.Settings) {
-				s.Setup.Done = mode == "existing"
 				s.Appearance.ReduceMotion = mode == "app-reduced-motion"
 			})
 			tt.SetPreferences(ui.Preferences{ReduceMotion: mode == "system-reduced-motion"})
 			a.startOpening()
 			a.maybeOnboard()
 			frames(tt)
-			if !a.openingStarted.IsZero() || (mode != "existing" && !has(tt, "Get started")) {
-				t.Fatal("an existing setup or reduced motion did not skip the opening")
+			if !a.openingStarted.IsZero() || !has(tt, "Get started") {
+				t.Fatal("reduced motion did not skip the opening")
+			}
+			a.updateSettings(func(s *settings.Settings) { s.Appearance.ReduceMotion = false })
+			tt.SetPreferences(ui.Preferences{})
+			a.startOpening()
+			frames(tt)
+			if !a.openingStarted.IsZero() {
+				t.Fatal("turning reduced motion off replayed the opening for the same version")
 			}
 		})
 	}
