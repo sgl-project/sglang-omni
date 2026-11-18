@@ -58,13 +58,12 @@ public:
   // in the checkpoint's dtype; each of the three stages maps n frames to
   // n / 2 + 1, so a window yields one frame beyond its eighth.
   mlx::core::array Subsample(const mlx::core::array &mel) const;
-  // Relative positions length - 1 down to -(length - 1), [1, 2 * length - 1,
-  // width] in dtype; every layer of a chunk shares them.
-  // One conformer layer over a chunk [1, frames, width], reading and replacing
-  // the layer's cache.
-  mlx::core::array StreamLayer(const mlx::core::array &x, int layer,
-                               const mlx::core::array &relative_positions,
-                               LayerCache &cache) const;
+  // The conformer layers over whole chunks of subsampled frames [1, chunks *
+  // chunk_frames, width], reading and replacing each layer's cache: every
+  // chunk attends to the left_context_frames before it and to itself, as
+  // one chunk at a time would.
+  mlx::core::array Encode(const mlx::core::array &x, int chunk_frames,
+                          std::vector<LayerCache> &caches) const;
   // Encoder frames conditioned on the language prompt.
   mlx::core::array ApplyPrompt(const mlx::core::array &encoded,
                                int prompt_index) const;
@@ -76,8 +75,11 @@ public:
   std::pair<mlx::core::array, LstmState>
   Predict(std::optional<int> token,
           const std::optional<LstmState> &state) const;
-  // Joint logits [1, 1, 1, classes] for one encoder frame [1, 1, width].
-  mlx::core::array JointLogits(const mlx::core::array &frame,
+  // joint.enc of encoder frames [1, frames, width]: [1, frames, joint].
+  mlx::core::array ProjectFrames(const mlx::core::array &frames) const;
+  // The joint's most likely class, int32 [frames], of projected frames [1,
+  // frames, joint] joined with one prediction [1, 1, hidden].
+  mlx::core::array JointTokens(const mlx::core::array &projected_frames,
                                const mlx::core::array &prediction) const;
 
   const NemotronConfig &config() const { return config_; }
@@ -88,6 +90,11 @@ private:
                 const std::filesystem::path &model_directory);
   mlx::core::array Conv2d(const mlx::core::array &x, const std::string &prefix,
                           int stride, int groups) const;
+  // One conformer layer; the first padding_frames attention keys are masked.
+  mlx::core::array Layer(const mlx::core::array &x, int layer, int chunk_frames,
+                         int padding_frames,
+                         const mlx::core::array &relative_positions,
+                         LayerCache &cache) const;
 
   NemotronConfig config_;
   omni_common::Checkpoint checkpoint_;

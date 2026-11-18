@@ -11,7 +11,6 @@
 
 namespace qwen3_asr {
 
-using omni_common::BatchedKVCache;
 using omni_common::Qwen3DecoderConfig;
 
 using omni_common::KVCache;
@@ -245,13 +244,6 @@ mx::array Qwen3ASR::EmbedTokens(const mx::array &ids) const {
 mx::array Qwen3ASR::Decode(const mx::array &embeddings,
                            std::vector<KVCache> &caches) const {
   return decoder_.LastLogits(decoder_.Forward(embeddings, caches));
-}
-
-mx::array Qwen3ASR::DecodeBatch(const mx::array &embeddings,
-                                std::vector<BatchedKVCache> &caches,
-                                const mx::array &offsets,
-                                const mx::array &pads) const {
-  return decoder_.DecodeBatch(embeddings, caches, offsets, pads);
 }
 
 std::vector<KVCache> Qwen3ASR::NewCaches() const {

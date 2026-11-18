@@ -313,17 +313,10 @@ mx::array WhisperModel::DecoderLayer(const mx::array &x, int layer,
   const int head_count = config_.text_head_count;
   const mx::array normed =
       checkpoint_.LayerNorm(x, prefix + ".attn_ln", kLayerNormEpsilon);
-  mx::array keys =
-      SplitHeads(checkpoint_.Linear(normed, prefix + ".attn.key"), head_count);
-  mx::array values = SplitHeads(
-      checkpoint_.Linear(normed, prefix + ".attn.value"), head_count);
-  if (cache.self_keys.has_value()) {
-    keys = mx::concatenate({*cache.self_keys, keys}, 2);
-    values = mx::concatenate({*cache.self_values, values}, 2);
-  } else {
-  }
-  cache.self_keys = keys;
-  cache.self_values = values;
+  const auto [keys, values] = cache.self_attention.UpdateAndFetch(
+      SplitHeads(checkpoint_.Linear(normed, prefix + ".attn.key"), head_count),
+      SplitHeads(checkpoint_.Linear(normed, prefix + ".attn.value"),
+                 head_count));
   mx::array hidden =
       mx::add(x, Attention(normed, keys, values, prefix + ".attn", head_count,
                            is_causal));
@@ -383,16 +376,22 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
                               "decoder.token_embedding.weight")));
 }
 
+void KeepCacheRows(std::vector<DecoderLayerCache> &caches,
+                   const mx::array &rows) {
+  for (auto &cache : caches) {
+    cache.self_attention.KeepRows(rows);
+    if (cache.cross_keys.has_value()) {
+      cache.cross_keys = mx::take(*cache.cross_keys, rows, 0);
+      cache.cross_values = mx::take(*cache.cross_values, rows, 0);
+    } else {
+    }
+  }
+}
+
 void TruncateCaches(std::vector<DecoderLayerCache> &caches, int token_count) {
   for (auto &cache : caches) {
-    for (auto *values : {&cache.self_keys, &cache.self_values}) {
-      if (values->has_value()) {
-        auto shape = values->value().shape();
-        shape[2] = token_count;
-        *values = mx::slice(values->value(), {0, 0, 0, 0}, shape);
-      } else {
-      }
-    }
+    cache.self_attention.Trim(
+        std::max(0, cache.self_attention.offset() - token_count));
   }
 }
 

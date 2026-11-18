@@ -5,8 +5,8 @@
 #include <cctype>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <random>
-#include <set>
 #include <stdexcept>
 
 #include "common/generation.h"
@@ -34,59 +34,28 @@ mx::array Rows(const mx::array &x, int start, int stop) {
   return mx::slice(x, {0, start, 0}, {1, stop, x.shape(2)});
 }
 
-// logits [1, vocabulary] with entries at ids set to value.
-mx::array PutValues(const mx::array &logits, const std::vector<int> &ids,
-                    const mx::array &values) {
-  const mx::array indices =
-      mx::array(ids.begin(), {1, static_cast<int>(ids.size())}, mx::int32);
-  return mx::put_along_axis(logits, indices, values, -1);
-}
-
-// A token [1, 1] from the last logits [1, vocabulary]: control codes
-// suppressed, recent tokens penalized, then temperature, top-k, top-p and a
+// A token [1, 1] from the last logits [1, vocabulary] and Gumbel noise of
+// their shape: temperature, top-k, top-p, then a Gumbel-max draw, which is a
 // categorical draw, in the reference sampler's order.
-mx::array Sample(mx::array logits, const SamplerConfig &sampler,
-                 const std::vector<int> &suppressed_ids,
-                 float repetition_penalty, int repetition_window_frames,
-                 const std::vector<int> &history,
-                 mx::random::KeySequence &keys) {
-  const mx::Dtype dtype = logits.dtype();
-  const mx::array negative_infinity =
-      mx::array(-std::numeric_limits<float>::infinity(), dtype);
-  if (!suppressed_ids.empty()) {
-    logits = PutValues(logits, suppressed_ids, negative_infinity);
-  } else {
-  }
-  if (!history.empty() && repetition_penalty != 1.0f) {
-    const size_t window = static_cast<size_t>(repetition_window_frames);
-    const size_t window_start =
-        window > 0 && history.size() > window ? history.size() - window : 0;
-    const std::set<int> recent(history.begin() + window_start, history.end());
-    const std::vector<int> ids(recent.begin(), recent.end());
-    const mx::array indices =
-        mx::array(ids.begin(), {static_cast<int>(ids.size())}, mx::int32);
-    const mx::array selected = mx::take(logits, indices, -1);
-    const mx::array penalty = mx::array(repetition_penalty, dtype);
-    logits = PutValues(logits, ids,
-                       mx::where(mx::less(selected, mx::array(0.0f, dtype)),
-                                 mx::multiply(selected, penalty),
-                                 mx::divide(selected, penalty)));
-  } else {
-  }
+mx::array Sample(const mx::array &last_logits, const SamplerConfig &sampler,
+                 const mx::array &noise) {
   if (sampler.temperature <= 0.0f) {
-    return mx::astype(mx::argmax(logits, -1, true), mx::int32);
+    return mx::astype(mx::argmax(last_logits, -1, true), mx::int32);
   } else {
   }
+  const mx::array negative_infinity =
+      mx::array(-std::numeric_limits<float>::infinity());
+  mx::array logits = mx::astype(last_logits, mx::float32);
   if (sampler.temperature != 1.0f) {
-    logits = mx::divide(logits, mx::array(sampler.temperature, dtype));
+    logits = mx::multiply(logits, mx::array(1.0f / sampler.temperature));
   } else {
   }
   const int vocabulary_size = logits.shape(-1);
   if (sampler.top_k > 0 && sampler.top_k < vocabulary_size) {
-    const mx::array masked_ids =
-        mx::slice(mx::argpartition(mx::negative(logits), sampler.top_k - 1, -1),
-                  {0, sampler.top_k}, {1, vocabulary_size});
-    logits = mx::put_along_axis(logits, masked_ids, negative_infinity, -1);
+    const int kth = vocabulary_size - sampler.top_k;
+    const mx::array threshold =
+        mx::slice(mx::partition(logits, kth, -1), {0, kth}, {1, kth + 1});
+    logits = mx::where(mx::less(logits, threshold), negative_infinity, logits);
   } else {
   }
   if (sampler.top_p > 0.0f && sampler.top_p < 1.0f) {
@@ -104,20 +73,12 @@ mx::array Sample(mx::array logits, const SamplerConfig &sampler,
     // keeps it, even where 1 - top_p rounds to 1.
     const mx::array kept = mx::logical_or(
         mx::greater(mx::take_along_axis(cumulative, inverse_ids, -1),
-                    mx::array(1.0f - sampler.top_p, dtype)),
+                    mx::array(1.0f - sampler.top_p)),
         mx::equal(log_probabilities, mx::max(log_probabilities, -1, true)));
-    logits = mx::where(
-        mx::equal(mx::where(kept, log_probabilities, negative_infinity),
-                  negative_infinity),
-        negative_infinity, logits);
+    logits = mx::where(kept, logits, negative_infinity);
   } else {
   }
-  return mx::astype(
-      mx::expand_dims(
-          mx::random::categorical(mx::multiply(logits, mx::array(1.0f, dtype)),
-                                  -1, keys.next()),
-          1),
-      mx::int32);
+  return mx::astype(mx::argmax(mx::add(logits, noise), -1, true), mx::int32);
 }
 
 } // namespace
@@ -293,6 +254,10 @@ mx::array Qwen3TtsModel::PredictCodes(const mx::array &hidden,
                                       const SamplerConfig &sampler,
                                       mx::random::KeySequence &keys) const {
   std::vector<omni_common::KVCache> caches = code_predictor_.NewCaches();
+  const int vocabulary_size =
+      checkpoint_.Weight("talker.code_predictor.lm_head.0.weight").shape(0);
+  const mx::array noise = mx::random::gumbel(
+      {codebook_count_ - 1, vocabulary_size}, mx::float32, keys.next());
   std::vector<mx::array> codes = {first_code};
   mx::array input = mx::concatenate(
       {hidden, checkpoint_.Embed(first_code, std::string(kTalkerPrefix) +
@@ -308,13 +273,13 @@ mx::array Qwen3TtsModel::PredictCodes(const mx::array &hidden,
     const mx::array normed = checkpoint_.RmsNorm(
         code_predictor_.Forward(input, caches),
         std::string(kCodePredictorPrefix) + ".norm", code_predictor_norm_eps_);
-    const mx::array logits =
-        checkpoint_.Linear(normed, "talker.code_predictor.lm_head." +
-                                       std::to_string(codebook - 1));
-    const int length = logits.shape(1);
+    const int length = normed.shape(1);
+    const mx::array logits = checkpoint_.Linear(
+        Rows(normed, length - 1, length),
+        "talker.code_predictor.lm_head." + std::to_string(codebook - 1));
     codes.push_back(Sample(
-        mx::reshape(Rows(logits, length - 1, length), {1, logits.shape(2)}),
-        sampler, {}, 1.0f, 0, {}, keys));
+        mx::reshape(logits, {1, logits.shape(2)}), sampler,
+        mx::slice(noise, {codebook - 1, 0}, {codebook, vocabulary_size})));
   }
   return mx::concatenate(codes, 1);
 }
@@ -399,52 +364,90 @@ omni_common::FinishReason Qwen3TtsModel::Generate(
   const int trailing_length = prompt.text_up_front ? 0 : trailing.shape(1);
   mx::random::KeySequence keys(sampling.seed.value_or(std::random_device()()));
 
-  std::vector<int> suppressed_ids;
-  for (int id = codec_vocabulary_size_ - kControlCodeCount;
-       id < codec_vocabulary_size_; ++id) {
-    if (id != codec_eos_id_) {
-      suppressed_ids.push_back(id);
+  // Note (XXXXRT666): control codes are masked and recent first codes
+  // penalized on the GPU, so a frame needs nothing from the host and the next
+  // one is queued before this one is read.
+  const mx::array control_codes = mx::logical_and(
+      mx::greater_equal(mx::arange(codec_vocabulary_size_, mx::int32),
+                        mx::array(codec_vocabulary_size_ - kControlCodeCount)),
+      mx::not_equal(mx::arange(codec_vocabulary_size_, mx::int32),
+                    mx::array(codec_eos_id_)));
+  const mx::array negative_infinity =
+      mx::array(-std::numeric_limits<float>::infinity());
+  // First codes [1, frames] inside the repetition window.
+  std::optional<mx::array> recent_codes;
+  std::vector<omni_common::KVCache> caches = talker_.NewCaches();
+  struct QueuedFrame {
+    mx::array first_code;
+    mx::array codes;
+  };
+  const auto queue_frame = [&](const mx::array &frame_embeddings) {
+    const mx::array hidden = checkpoint_.RmsNorm(
+        talker_.Forward(frame_embeddings, caches),
+        std::string(kTalkerPrefix) + ".norm", talker_norm_eps_);
+    const int length = hidden.shape(1);
+    const mx::array last_hidden = Rows(hidden, length - 1, length);
+    mx::array logits =
+        mx::reshape(checkpoint_.Linear(last_hidden, "talker.codec_head"),
+                    {1, codec_vocabulary_size_});
+    logits = mx::where(control_codes, negative_infinity, logits);
+    if (recent_codes.has_value() && sampling.repetition_penalty != 1.0f) {
+      const mx::array is_recent =
+          mx::put_along_axis(mx::zeros({1, codec_vocabulary_size_}, mx::bool_),
+                             *recent_codes, mx::array(true), -1);
+      logits = mx::where(
+          is_recent,
+          mx::where(
+              mx::less(logits, mx::array(0.0f)),
+              mx::multiply(logits, mx::array(sampling.repetition_penalty)),
+              mx::divide(logits, mx::array(sampling.repetition_penalty))),
+          logits);
     } else {
     }
-  }
-  std::vector<int> history;
-  std::vector<omni_common::KVCache> caches = talker_.NewCaches();
+    const mx::array first_code =
+        Sample(logits, sampling.talker,
+               mx::random::gumbel(logits.shape(), mx::float32, keys.next()));
+    recent_codes = recent_codes.has_value()
+                       ? mx::concatenate({*recent_codes, first_code}, 1)
+                       : first_code;
+    const int window = sampling.repetition_window_frames;
+    if (window > 0 && recent_codes->shape(1) > window) {
+      recent_codes =
+          mx::slice(*recent_codes, {0, recent_codes->shape(1) - window},
+                    recent_codes->shape());
+    } else {
+    }
+    const mx::array codes =
+        PredictCodes(last_hidden, first_code, sampling.code_predictor, keys);
+    mx::async_eval({first_code, codes});
+    return QueuedFrame{first_code, codes};
+  };
+  QueuedFrame current = queue_frame(embeddings);
   for (int frame = 0; frame < max_frames; ++frame) {
     if (cancel.load()) {
       throw omni_common::GenerationCancelled();
     } else {
     }
-    const mx::array hidden = checkpoint_.RmsNorm(
-        talker_.Forward(embeddings, caches),
-        std::string(kTalkerPrefix) + ".norm", talker_norm_eps_);
-    const mx::array logits = checkpoint_.Linear(hidden, "talker.codec_head");
-    const int length = logits.shape(1);
-    const mx::array first_code = Sample(
-        mx::reshape(Rows(logits, length - 1, length), {1, logits.shape(2)}),
-        sampling.talker, suppressed_ids, sampling.repetition_penalty,
-        sampling.repetition_window_frames, history, keys);
-    mx::eval(first_code);
-    const int first_code_id = static_cast<int>(first_code.item<int32_t>());
-    if (first_code_id == codec_eos_id_) {
+    std::optional<QueuedFrame> next;
+    if (frame + 1 < max_frames) {
+      // Note (Minyi Tang): the talker steps on the GPU while on_frame
+      // decodes audio.
+      next = queue_frame(mx::add(
+          frame < trailing_length ? Rows(trailing, frame, frame + 1) : tts_pad,
+          EmbedFrame(current.codes)));
+    } else {
+    }
+    if (current.first_code.item<int32_t>() == codec_eos_id_) {
       return omni_common::FinishReason::kStop;
     } else {
     }
-    history.push_back(first_code_id);
-    const mx::array codes =
-        PredictCodes(Rows(hidden, length - 1, length), first_code,
-                     sampling.code_predictor, keys);
-    const mx::array frame_codes = mx::reshape(codes, {-1});
+    const mx::array frame_codes = mx::reshape(current.codes, {-1});
     mx::eval(frame_codes);
-    if (frame + 1 < max_frames) {
-      embeddings = mx::add(
-          frame < trailing_length ? Rows(trailing, frame, frame + 1) : tts_pad,
-          EmbedFrame(codes));
-      // Note (Minyi Tang): the talker steps on the GPU while on_frame
-      // decodes audio.
-      mx::async_eval(embeddings);
+    on_frame(frame_codes);
+    if (next.has_value()) {
+      current = std::move(*next);
     } else {
     }
-    on_frame(frame_codes);
   }
   return omni_common::FinishReason::kLength;
 }

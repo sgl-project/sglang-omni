@@ -54,6 +54,14 @@ KVCache::UpdateAndFetch(const mx::array &keys, const mx::array &values) {
           mx::slice(*values_, {0, 0, 0, 0}, positions(*values_, offset_))};
 }
 
+void KVCache::KeepRows(const mx::array &rows) {
+  if (keys_.has_value()) {
+    keys_ = mx::take(*keys_, rows, 0);
+    values_ = mx::take(*values_, rows, 0);
+  } else {
+  }
+}
+
 void KVCache::Trim(int token_count) {
   assert(token_count <= offset_);
   offset_ -= token_count;

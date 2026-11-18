@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "mlx/mlx.h"
 
@@ -32,11 +33,10 @@ struct WhisperConfig {
   int text_layer_count = 0;
 };
 
-// Self-attention keys and values grow by one token per step; cross-attention
+// Self-attention keys and values grow in the cache's steps; cross-attention
 // keys and values are projected once per window.
 struct DecoderLayerCache {
-  std::optional<mlx::core::array> self_keys;
-  std::optional<mlx::core::array> self_values;
+  omni_common::KVCache self_attention;
   std::optional<mlx::core::array> cross_keys;
   std::optional<mlx::core::array> cross_values;
 };
@@ -44,6 +44,10 @@ struct DecoderLayerCache {
 // Keeps the first token_count positions of each layer's self-attention keys
 // and values.
 void TruncateCaches(std::vector<DecoderLayerCache> &caches, int token_count);
+// Keeps the batch rows at indices, int32 [rows], of every layer's keys and
+// values.
+void KeepCacheRows(std::vector<DecoderLayerCache> &caches,
+                   const mlx::core::array &rows);
 
 class WhisperModel {
 public:

@@ -47,10 +47,12 @@ public:
   // 16 kHz samples to encoder states projected to the decoder width [1,
   // frames, width].
   mlx::core::array Encode(const std::vector<float> &samples) const;
-  // Token ids [1, length] placed from start_position on, to the logits of the
-  // last position [vocabulary].
+  // Token ids [rows, length] placed from start_position on, to the logits of
+  // each row's last position [rows, vocabulary]. encoder_mask, additive
+  // [rows, 1, 1, frames], hides the encoder frames past a shorter row's.
   mlx::core::array Decode(const mlx::core::array &token_ids, int start_position,
                           const mlx::core::array &encoder_states,
+                          const std::optional<mlx::core::array> &encoder_mask,
                           std::vector<DecoderLayerCache> &caches) const;
 
 private:
@@ -61,11 +63,11 @@ private:
   mlx::core::array EncoderLayer(const mlx::core::array &x,
                                 const mlx::core::array &positions,
                                 int layer) const;
-  mlx::core::array DecoderAttention(const mlx::core::array &queries_input,
-                                    const mlx::core::array &keys,
-                                    const mlx::core::array &values,
-                                    const std::string &prefix,
-                                    bool is_causal) const;
+  mlx::core::array
+  DecoderAttention(const mlx::core::array &queries_input,
+                   const mlx::core::array &keys, const mlx::core::array &values,
+                   const std::string &prefix, bool is_causal,
+                   const std::optional<mlx::core::array> &mask) const;
 
   CohereConfig config_;
   // The log-mel front end's centered Hann window [512] and mel filters

@@ -76,11 +76,27 @@ SileroVAD::SileroVAD(const std::filesystem::path &model_directory)
   }
 }
 
-float SileroVAD::Feed(const float *chunk, StreamState &state) const {
-  std::vector<float> window(state.context);
-  window.insert(window.end(), chunk, chunk + kChunkSamples);
-  const int window_length = static_cast<int>(window.size());
-  mx::array x(window.data(), {1, window_length}, mx::float32);
+std::vector<float> SileroVAD::Feed(const float *samples, int chunk_count,
+                                   StreamState &state) const {
+  if (chunk_count == 0) {
+    return {};
+  } else {
+  }
+  // Note (XXXXRT666): every chunk's window goes through the front end at once;
+  // only the LSTM runs chunk by chunk, and the probabilities are read back
+  // together.
+  constexpr int window_length = kContextSamples + kChunkSamples;
+  std::vector<float> windows(static_cast<size_t>(chunk_count) * window_length);
+  for (int chunk = 0; chunk < chunk_count; ++chunk) {
+    const float *context =
+        chunk == 0 ? state.context.data()
+                   : samples + chunk * kChunkSamples - kContextSamples;
+    float *window = windows.data() + static_cast<size_t>(chunk) * window_length;
+    std::copy(context, context + kContextSamples, window);
+    std::copy(samples + chunk * kChunkSamples,
+              samples + (chunk + 1) * kChunkSamples, window + kContextSamples);
+  }
+  mx::array x(windows.data(), {chunk_count, window_length}, mx::float32);
   // Note (Jiaxin Deng): right-only reflect pad as torch: x[n-2], x[n-3], ...
   std::vector<int32_t> reflected_indices;
   for (int i = window_length - 2; i > window_length - pad_ - 2; --i) {
@@ -93,41 +109,45 @@ float SileroVAD::Feed(const float *chunk, StreamState &state) const {
   x = mx::conv1d(mx::expand_dims(x, -1), checkpoint_.Weight("stft_conv.weight"),
                  hop_length_, 0);
   const int frames = x.shape(1);
-  const mx::array real = mx::slice(x, {0, 0, 0}, {1, frames, cutoff_});
+  const mx::array real =
+      mx::slice(x, {0, 0, 0}, {chunk_count, frames, cutoff_});
   const mx::array imaginary =
-      mx::slice(x, {0, 0, cutoff_}, {1, frames, cutoff_ * 2});
+      mx::slice(x, {0, 0, cutoff_}, {chunk_count, frames, cutoff_ * 2});
   x = mx::sqrt(
       mx::add(mx::multiply(real, real), mx::multiply(imaginary, imaginary)));
   x = Relu(checkpoint_.Conv1d(x, "conv1", 1, 1));
   x = Relu(checkpoint_.Conv1d(x, "conv2", 2, 1));
   x = Relu(checkpoint_.Conv1d(x, "conv3", 2, 1));
   x = Relu(checkpoint_.Conv1d(x, "conv4", 1, 1));
+  const int steps_per_chunk = x.shape(1);
+  const int step_count = chunk_count * steps_per_chunk;
 
-  // Note (Jiaxin Deng): MLXNN's LSTM formulation, to match Swift (one timestep
-  // per 512-sample chunk).
-  x = mx::addmm(checkpoint_.Weight("lstm.bias"), x,
-                mx::transpose(checkpoint_.Weight("lstm.Wx")));
+  // Note (Jiaxin Deng): MLXNN's LSTM formulation, to match Swift.
+  const mx::array gates = mx::addmm(
+      checkpoint_.Weight("lstm.bias"), mx::reshape(x, {step_count, x.shape(2)}),
+      mx::transpose(checkpoint_.Weight("lstm.Wx")));
   std::optional<omni_common::LstmCell> lstm =
       state.hidden.has_value()
           ? std::optional<omni_common::LstmCell>({*state.hidden, *state.cell})
           : std::nullopt;
   std::vector<mx::array> hidden_steps;
-  for (int step = 0; step < x.shape(1); ++step) {
-    const mx::array gates =
-        mx::reshape(mx::slice(x, {0, step, 0}, {1, step + 1, 4 * kLstmHidden}),
-                    {1, 4 * kLstmHidden});
-    lstm = omni_common::LstmStep(gates, lstm, checkpoint_.Weight("lstm.Wh"));
+  for (int step = 0; step < step_count; ++step) {
+    lstm = omni_common::LstmStep(
+        mx::slice(gates, {step, 0}, {step + 1, 4 * kLstmHidden}), lstm,
+        checkpoint_.Weight("lstm.Wh"));
     hidden_steps.push_back(lstm->hidden);
   }
-  mx::array out = Relu(mx::stack(hidden_steps, -2));
+  mx::array out = mx::reshape(Relu(mx::concatenate(hidden_steps, 0)),
+                              {chunk_count, steps_per_chunk, kLstmHidden});
   out = mx::sigmoid(checkpoint_.Conv1d(out, "final_conv", 1, 0));
-  const mx::array probability = mx::mean(mx::squeeze(out, -1), 1, true);
-  mx::eval({probability, lstm->hidden, lstm->cell});
+  const mx::array probabilities = mx::mean(mx::squeeze(out, -1), 1);
+  mx::eval({probabilities, lstm->hidden, lstm->cell});
   state.hidden = lstm->hidden;
   state.cell = lstm->cell;
-  state.context.assign(chunk + kChunkSamples - kContextSamples,
-                       chunk + kChunkSamples);
-  return probability.item<float>();
+  const float *last_chunk_end = samples + chunk_count * kChunkSamples;
+  state.context.assign(last_chunk_end - kContextSamples, last_chunk_end);
+  return {probabilities.data<float>(),
+          probabilities.data<float>() + chunk_count};
 }
 
 std::vector<float>
@@ -137,11 +157,8 @@ SileroVAD::PredictProbabilities(const std::vector<float> &samples) const {
                     kChunkSamples,
                 0.0f);
   StreamState state;
-  std::vector<float> probabilities;
-  for (size_t offset = 0; offset < padded.size(); offset += kChunkSamples) {
-    probabilities.push_back(Feed(padded.data() + offset, state));
-  }
-  return probabilities;
+  return Feed(padded.data(), static_cast<int>(padded.size() / kChunkSamples),
+              state);
 }
 
 std::vector<Timestamp>

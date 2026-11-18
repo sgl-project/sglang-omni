@@ -365,19 +365,24 @@ mx::array CohereModel::Encode(const std::vector<float> &samples) const {
   return checkpoint_.Linear(x, "bridge_proj");
 }
 
-mx::array CohereModel::DecoderAttention(const mx::array &queries,
-                                        const mx::array &keys,
-                                        const mx::array &values,
-                                        const std::string &prefix,
-                                        bool is_causal) const {
+mx::array
+CohereModel::DecoderAttention(const mx::array &queries, const mx::array &keys,
+                              const mx::array &values,
+                              const std::string &prefix, bool is_causal,
+                              const std::optional<mx::array> &mask) const {
   const int batch = queries.shape(0);
   const int length = queries.shape(2);
   const float scale = std::pow(
       static_cast<float>(config_.decoder_width / config_.decoder_head_count),
       -0.5f);
-  const mx::array attended = mx::fast::scaled_dot_product_attention(
-      queries, keys, values, scale, /*window_size=*/-1,
-      is_causal ? "causal" : "");
+  const mx::array attended =
+      mask.has_value()
+          ? mx::fast::scaled_dot_product_attention(queries, keys, values, scale,
+                                                   /*window_size=*/-1, "array",
+                                                   *mask)
+          : mx::fast::scaled_dot_product_attention(queries, keys, values, scale,
+                                                   /*window_size=*/-1,
+                                                   is_causal ? "causal" : "");
   return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                         {batch, length, config_.decoder_width}),
                             prefix + ".out_proj");
@@ -385,7 +390,9 @@ mx::array CohereModel::DecoderAttention(const mx::array &queries,
 
 mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
                               const mx::array &encoder_states,
+                              const std::optional<mx::array> &encoder_mask,
                               std::vector<DecoderLayerCache> &caches) const {
+  const int rows = token_ids.shape(0);
   const int length = token_ids.shape(1);
   const int width = config_.decoder_width;
   const int head_count = config_.decoder_head_count;
@@ -417,7 +424,7 @@ mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
     hidden = mx::add(hidden,
                      DecoderAttention(SplitHeads(self_parts[0], head_count),
                                       keys, values, prefix + ".first_sub_layer",
-                                      length > 1));
+                                      length > 1, std::nullopt));
     if (!cache.cross_keys.has_value()) {
       const std::vector<mx::array> source_parts = mx::split(
           checkpoint_.Linear(encoder_states,
@@ -434,7 +441,8 @@ mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
     hidden =
         mx::add(hidden, DecoderAttention(SplitHeads(cross_queries, head_count),
                                          *cache.cross_keys, *cache.cross_values,
-                                         prefix + ".second_sub_layer", false));
+                                         prefix + ".second_sub_layer", false,
+                                         encoder_mask));
     hidden = mx::add(
         hidden, checkpoint_.Linear(
                     swift_port::Relu(checkpoint_.Linear(
@@ -445,8 +453,9 @@ mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
   }
   hidden = checkpoint_.LayerNorm(hidden, "decoder.core.final_layer_norm",
                                  kLayerNormEpsilon);
-  const mx::array last = mx::reshape(
-      mx::slice(hidden, {0, length - 1, 0}, {1, length, width}), {width});
+  const mx::array last =
+      mx::reshape(mx::slice(hidden, {0, length - 1, 0}, {rows, length, width}),
+                  {rows, width});
   return checkpoint_.Linear(last, "lm_head");
 }
 

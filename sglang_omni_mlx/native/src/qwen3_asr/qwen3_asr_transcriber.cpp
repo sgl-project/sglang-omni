@@ -16,7 +16,6 @@
 
 namespace qwen3_asr {
 
-using omni_common::BatchedKVCache;
 using omni_common::DraftPolicy;
 using omni_common::DraftStatistics;
 
@@ -448,12 +447,9 @@ TranscriptionResult Qwen3ASRTranscriber::FinishedResult(
 
 struct Qwen3ASRTranscriber::BatchRow {
   size_t request_index;
-  int prompt_length;
   int max_new_tokens;
-  std::vector<KVCache> prefill_caches;
-  mx::array first_token;
+  omni_common::PrefilledSequence sequence;
   std::vector<int> output_ids;
-  bool is_done = false;
 };
 
 void Qwen3ASRTranscriber::TranscribeBatch(
@@ -485,32 +481,16 @@ Qwen3ASRTranscriber::PrefillRows(const std::vector<BatchRequest> &requests,
       const mx::array first_token =
           mx::argmax(model_.Decode(prompt.embeddings, caches));
       mx::async_eval({first_token});
-      rows.push_back({i,
-                      prompt.embeddings.shape(1),
-                      prompt.max_new_tokens,
-                      std::move(caches),
-                      first_token,
-                      {}});
+      rows.push_back(
+          {i,
+           prompt.max_new_tokens,
+           {std::move(caches), prompt.embeddings.shape(1), first_token},
+           {}});
     } catch (...) {
       on_finished(i, {std::nullopt, std::current_exception()});
     }
   }
   return rows;
-}
-
-std::vector<BatchedKVCache>
-Qwen3ASRTranscriber::StackCaches(const std::vector<BatchRow> &rows) {
-  const int layer_count = static_cast<int>(rows[0].prefill_caches.size());
-  std::vector<BatchedKVCache> caches;
-  caches.reserve(layer_count);
-  for (int layer = 0; layer < layer_count; ++layer) {
-    std::vector<std::pair<mx::array, mx::array>> filled;
-    for (const BatchRow &row : rows) {
-      filled.push_back(row.prefill_caches[layer].Filled());
-    }
-    caches.emplace_back(filled);
-  }
-  return caches;
 }
 
 bool Qwen3ASRTranscriber::AcceptToken(BatchRow &row, int token_id,
@@ -537,67 +517,27 @@ bool Qwen3ASRTranscriber::AcceptToken(BatchRow &row, int token_id,
 void Qwen3ASRTranscriber::DecodeRows(const std::vector<BatchRequest> &requests,
                                      std::vector<BatchRow> &rows,
                                      const BatchFinished &on_finished) const {
-  const int batch = static_cast<int>(rows.size());
-  int longest_prompt = 0;
-  std::vector<mx::array> first_tokens;
-  // Rows are left-padded to the longest prompt; the pad slots are masked out.
-  std::vector<int32_t> pads;
-  // Each row's true position, which differs from the shared cache index.
-  std::vector<int32_t> positions;
-  for (const BatchRow &row : rows) {
-    longest_prompt = std::max(longest_prompt, row.prompt_length);
-    first_tokens.push_back(mx::reshape(row.first_token, {1}));
-    positions.push_back(row.prompt_length);
-  }
-  for (const BatchRow &row : rows) {
-    pads.push_back(longest_prompt - row.prompt_length);
-  }
-  std::vector<BatchedKVCache> caches = StackCaches(rows);
-  // The stacked caches hold the prefill keys and values; drop the per-row
-  // copies so the decode does not keep both alive.
+  std::vector<omni_common::PrefilledSequence> sequences;
   for (BatchRow &row : rows) {
-    row.prefill_caches.clear();
+    sequences.push_back(std::move(row.sequence));
   }
-  const mx::array pad_counts(pads.data(), {batch, 1}, mx::int32);
-  mx::array next_tokens = mx::concatenate(first_tokens, 0);
-  mx::async_eval({next_tokens});
-  int active_count = batch;
-  while (active_count > 0) {
-    const mx::array tokens = next_tokens;
-    // Queue the next step for the whole batch before reading this one, as the
-    // single-request loop does.
-    next_tokens = mx::argmax(
-        model_.DecodeBatch(
-            model_.EmbedTokens(mx::reshape(tokens, {batch, 1})), caches,
-            mx::array(positions.data(), {batch}, mx::int32), pad_counts),
-        -1);
-    mx::async_eval({next_tokens});
-    mx::eval(tokens);
-    const uint32_t *token_ids = tokens.data<uint32_t>();
-    for (int i = 0; i < batch; ++i) {
-      BatchRow &row = rows[i];
-      ++positions[i];
-      if (row.is_done) {
-        continue;
-      } else {
-      }
-      const BatchRequest &request = requests[row.request_index];
-      BatchOutcome outcome;
-      if (request.cancel->load()) {
-        outcome.error = std::make_exception_ptr(GenerationCancelled());
-        row.is_done = true;
-      } else if (AcceptToken(row, static_cast<int>(token_ids[i]),
-                             *request.options, outcome)) {
-        row.is_done = true;
-      } else {
-      }
-      if (row.is_done) {
-        --active_count;
-        on_finished(row.request_index, std::move(outcome));
-      } else {
-      }
-    }
-  }
+  model_.decoder().DecodeGreedyBatch(
+      sequences, [&](size_t index, int token_id) {
+        BatchRow &row = rows[index];
+        const BatchRequest &request = requests[row.request_index];
+        BatchOutcome outcome;
+        bool is_done = true;
+        if (request.cancel->load()) {
+          outcome.error = std::make_exception_ptr(GenerationCancelled());
+        } else {
+          is_done = AcceptToken(row, token_id, *request.options, outcome);
+        }
+        if (is_done) {
+          on_finished(row.request_index, std::move(outcome));
+        } else {
+        }
+        return is_done;
+      });
 }
 
 std::pair<std::string, std::optional<std::string>>
