@@ -372,6 +372,16 @@ func TestAppEnhancementBrowsers(t *testing.T) {
 	}
 }
 
+// TestAppEnhancementBrowsersWithoutGroups: the browsers are a page setting, so the header's Browsers button opens them before any group exists.
+func TestAppEnhancementBrowsersWithoutGroups(t *testing.T) {
+	_, _, tt := aeTester(t)
+	click(t, tt, "Browsers")
+	frames(tt)
+	if !has(tt, "Microsoft Edge") {
+		t.Fatalf("no browsers dialog in %q", firstTexts(tt))
+	}
+}
+
 // TestAppEnhancementReload: the groups come back after a restart.
 func TestAppEnhancementReload(t *testing.T) {
 	dir := t.TempDir()

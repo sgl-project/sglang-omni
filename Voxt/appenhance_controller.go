@@ -76,7 +76,7 @@ func (a *app) updateGroup(id string, change func(*appctx.Group)) {
 func (a *app) appEnhancementModel() appEnhancementViewState {
 	group, index := a.aeGroup()
 	if index < 0 {
-		a.aeUI.appsOpen, a.aeUI.browsersOpen, a.aeUI.delAsk = false, false, false
+		a.aeUI.appsOpen, a.aeUI.delAsk = false, false
 	}
 	selected := ""
 	if index >= 0 {
