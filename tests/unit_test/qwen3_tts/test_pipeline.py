@@ -4851,17 +4851,25 @@ def one_slot_stream_scheduler(
     return scheduler, owner.codec_slot
 
 
-def open_finished_stream(
-    scheduler: Qwen3TTSStreamingVocoderScheduler,
-    request_id: str,
-    codes: torch.Tensor = SLOT_WAIT_CODES,
+def open_stream(
+    scheduler: Qwen3TTSStreamingVocoderScheduler, request_id: str
 ) -> Qwen3TTSStreamState:
-    """A stream whose first chunk reaches the initial worker and whose generation has ended."""
-    state = admit_reference_stream(scheduler, request_id, codes, ref_code_len=0)
+    """A stream whose first chunk reaches the initial worker."""
+    state = admit_reference_stream(
+        scheduler, request_id, SLOT_WAIT_CODES, ref_code_len=0
+    )
     scheduler.stream_payloads[request_id] = make_payload(
         inputs=request_id, params={"stream": True}
     )
     scheduler.run_initial_batch([(request_id, state)])
+    return state
+
+
+def open_finished_stream(
+    scheduler: Qwen3TTSStreamingVocoderScheduler, request_id: str
+) -> Qwen3TTSStreamState:
+    """A stream whose first chunk reaches the initial worker and whose generation has ended."""
+    state = open_stream(scheduler, request_id)
     scheduler.handle_stream_done(request_id)
     return state
 
@@ -4933,23 +4941,35 @@ def test_qwen3_tts_new_stream_waits_behind_streams_already_waiting_for_a_slot(
     assert scheduler.codec_arena.active_slots() == 0
 
 
-def test_qwen3_tts_waiting_stream_falls_back_when_its_slot_faults(
+def test_qwen3_tts_streams_take_the_fallback_once_the_last_slot_faults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """After a reset fault retired the only stream slot, the stream waiting behind the faulted one and every later stream waited forever while the decoder still ran."""
     scheduler, owner_slot = one_slot_stream_scheduler(monkeypatch)
-    waiting = open_finished_stream(scheduler, "waiting")
+    faulted = open_finished_stream(scheduler, "faulted")
+    behind = open_finished_stream(scheduler, "behind")
 
     def fail_zero_slot(slot: int) -> None:
         raise RuntimeError("device fault")
 
-    monkeypatch.setattr(scheduler.codec_arena, "zero_slot", fail_zero_slot)
-    scheduler.abort("owner")
-    messages = drain_stream_decodes(scheduler)
+    with monkeypatch.context() as fault:
+        fault.setattr(scheduler.codec_arena, "zero_slot", fail_zero_slot)
+        scheduler.abort("owner")
+        messages = drain_stream_decodes(scheduler)
+    later = open_finished_stream(scheduler, "later")
+    messages.update(drain_stream_decodes(scheduler))
 
-    assert waiting.incremental_codec_fallback is True
-    assert_stream_completed(messages["waiting"])
+    for request_id, state in (
+        ("faulted", faulted),
+        ("behind", behind),
+        ("later", later),
+    ):
+        assert state.incremental_codec_fallback is True
+        assert_stream_completed(messages[request_id])
     assert scheduler.codec_arena.retired == {owner_slot}
+    assert scheduler.codec_arena.usable_slots() == 0
     assert scheduler.codec_slot_waiting_queue == {}
+    assert scheduler.cuda_decode_failed is False
 
 
 def test_qwen3_tts_slot_freed_while_a_stream_parks_goes_to_that_stream(
@@ -5010,16 +5030,42 @@ def test_qwen3_tts_a_cancelled_waiter_hands_its_turn_to_the_next(
 def test_qwen3_tts_waiting_streams_fail_once_the_decoder_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A waiting stream whose generation ended while the waiters ahead of it were being failed was finished synchronously, decoding after decode was disabled."""
     scheduler, owner_slot = one_slot_stream_scheduler(monkeypatch)
-    open_finished_stream(scheduler, "waiting")
+    open_finished_stream(scheduler, "head")
+    open_stream(scheduler, "tail")
+    decode_delta = scheduler.decode_delta
+    cleanup_aborted_request = scheduler.cleanup_aborted_request
+    synchronous_decodes: list[str] = []
+
+    def record_decode_delta(
+        request_id: str, state: Qwen3TTSStreamState, *, is_final: bool
+    ) -> torch.Tensor | None:
+        synchronous_decodes.append(request_id)
+        return decode_delta(request_id, state, is_final=is_final)
+
+    def end_tail_generation_at_the_first_cleanup(request_id: str) -> None:
+        if request_id == "head":
+            scheduler.handle_stream_done("tail")
+        else:
+            pass
+        cleanup_aborted_request(request_id)
+
+    monkeypatch.setattr(scheduler, "decode_delta", record_decode_delta)
+    monkeypatch.setattr(
+        scheduler, "cleanup_aborted_request", end_tail_generation_at_the_first_cleanup
+    )
     scheduler.codec_arena.retire(owner_slot)
     scheduler.cuda_decode_failed = True
     scheduler.wake_codec_slot_admission()
 
     messages = drain_stream_decodes(scheduler)
 
-    assert [message.type for message in messages["waiting"]] == ["error"]
-    assert "waiting" not in scheduler.stream_states
+    assert [message.type for message in messages["head"]] == ["error"]
+    assert [message.type for message in messages["tail"]] == ["error"]
+    assert synchronous_decodes == []
+    assert "head" not in scheduler.stream_states
+    assert "tail" not in scheduler.stream_states
     assert scheduler.codec_slot_waiting_queue == {}
     later = open_finished_stream(scheduler, "later")
     assert later.is_waiting_for_codec_slot is False
