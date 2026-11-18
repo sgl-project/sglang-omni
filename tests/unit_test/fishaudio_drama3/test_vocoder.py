@@ -2131,6 +2131,14 @@ def test_phase_projection_preserves_transposed_convolution_samples(
 
     assert actual.is_contiguous()
     torch.testing.assert_close(actual, expected, rtol=tolerance, atol=tolerance)
+    if device == "cuda":
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            replayed = upsample(hidden_states)
+        graph.replay()
+        torch.testing.assert_close(replayed, actual, rtol=0, atol=0)
+    else:
+        pass
 
 
 @pytest.mark.parametrize(
