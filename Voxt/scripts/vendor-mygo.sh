@@ -41,6 +41,7 @@ for p in "$PATCHES"/*.patch; do
   # Hunks of the parts left out (a patch's docs) stay upstream with them.
   (cd "$out" && git apply --whitespace=nowarn --exclude='website/*' --exclude='docs/*' --exclude='examples/*' --exclude='.github/*' "$p") || { echo "patch $(basename "$p") does not apply to mygo $version" >&2; exit 1; }
 done
+chmod 0755 "$out/packages/cli/bin/mygo.js"
 # Patch 0017 carries the atlas regression test; run it before tests leave the tree.
 (cd "$out" && CGO_ENABLED=0 go test ./internal/scene/)
 # Tests and their data stay upstream (some hold sample credentials that
@@ -58,6 +59,14 @@ unformatted="$(gofmt -l "$out")"
 echo "github.com/egoist/mygo $version + $(ls "$PATCHES"/*.patch 2>/dev/null | wc -l | tr -d ' ') patches (scripts/vendor-mygo.sh)" > "$out/VOXTNEW-VENDORED"
 
 if [[ "${1:-}" == "--check" ]]; then
+  if [[ ! -x "$out/packages/cli/bin/mygo.js" ]]; then
+    echo "generated MyGo CLI is not executable" >&2
+    exit 1
+  fi
+  if [[ ! -x "$DEST/packages/cli/bin/mygo.js" ]]; then
+    echo "third_party/mygo CLI is not executable: run scripts/vendor-mygo.sh" >&2
+    exit 1
+  fi
   if ! diff -r "$out" "$DEST" > "$work/diff"; then
     head -20 "$work/diff" >&2
     echo "third_party/mygo is not mygo $version with the patches: run scripts/vendor-mygo.sh" >&2
