@@ -1,0 +1,21 @@
+{
+  "name": "key-recorder-window-recording",
+  "kind": "key-recorder",
+  "key_recorder": {
+    "helper_records_keys": false,
+    "displayed_keys": "⌃⌥Space",
+    "typed": {
+      "valid": true,
+      "canonical_keys": "Control+Option+Space",
+      "formatted_keys": "⌃⌥Space",
+      "error_text": ""
+    },
+    "raw_keys": "Control+Option+Space",
+    "custom": true,
+    "typing": false,
+    "edited": false,
+    "unknown": false,
+    "record_denied": false,
+    "focused": true
+  }
+}

@@ -45,13 +45,12 @@ public:
   // Stacked, normalized fbank frames [frames, input_size] of 16 kHz samples;
   // no frames for audio shorter than one 25 ms window.
   mlx::core::array Features(const std::vector<float> &samples) const;
-  // Log probabilities [4 + frames, vocabulary] of features [frames,
+  // CTC logits [4 + frames, vocabulary] of features [frames,
   // input_size]: the language, emotion, event and text normalization query
   // frames first, then the speech.
-  mlx::core::array
-  LogProbabilities(const mlx::core::array &features, int language_id,
-                   bool use_itn,
-                   const std::atomic<bool> *cancel = nullptr) const;
+  mlx::core::array Logits(const mlx::core::array &features, int language_id,
+                          bool use_itn,
+                          const std::atomic<bool> *cancel = nullptr) const;
 
   const SenseVoiceConfig &config() const { return config_; }
 

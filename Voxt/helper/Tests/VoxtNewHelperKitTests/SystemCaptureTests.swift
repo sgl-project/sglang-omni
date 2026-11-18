@@ -53,4 +53,22 @@ final class SystemCaptureTests: XCTestCase {
         XCTAssertEqual(c.levelHz, 20)
         XCTAssertEqual(c.maxSeconds, 7200)
     }
+
+    func testIdleOutputKeepsItsPlaceBeforeFirstBuffer() {
+        var clock = SystemCaptureClock(sampleRate: 16000, startedAt: 1000)
+        XCTAssertEqual(clock.silenceWhileIdle(at: 1150, written: 0), 0)
+        XCTAssertEqual(clock.silenceWhileIdle(at: 3100, written: 0), 30400)
+        // A 20 ms buffer arrives 2.2 seconds into the recording. Account
+        // for both its duration and the silence already emitted.
+        XCTAssertEqual(clock.silenceBeforeBuffer(at: 3200, samples: 320, written: 30400), 4480)
+        XCTAssertEqual(clock.silenceBeforeBuffer(at: 3220, samples: 320, written: 35200), 0)
+        XCTAssertEqual(clock.silenceWhileIdle(at: 3350, written: 35520), 0)
+        XCTAssertEqual(clock.silenceWhileIdle(at: 3720, written: 35520), 4800)
+    }
+
+    func testIdleOutputFillsToStopWithoutOverwritingAudio() {
+        let clock = SystemCaptureClock(sampleRate: 16000, startedAt: 500)
+        XCTAssertEqual(clock.silenceWhileIdle(at: 1500, written: 9600, stopping: true), 6400)
+        XCTAssertEqual(clock.silenceWhileIdle(at: 1500, written: 16200, stopping: true), 0)
+    }
 }

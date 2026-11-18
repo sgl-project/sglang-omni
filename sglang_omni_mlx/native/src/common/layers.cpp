@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "common/layers.h"
-#include "common/generation.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <fstream>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "common/generation.h"
 #include "yaml-cpp/yaml.h"
 
 namespace omni_common {
@@ -89,7 +91,99 @@ std::vector<mx::array> SiluGraph(const std::vector<mx::array> &inputs) {
   return {mx::multiply(inputs[0], mx::sigmoid(inputs[0]))};
 }
 
+std::vector<mx::array> SwigluGraph(const std::vector<mx::array> &inputs) {
+  return {mx::multiply(SiluGraph({inputs[0]})[0], inputs[1])};
+}
+
+// Note (XXXXRT666): computed in float32 and returned in the inputs' promoted
+// dtype, since a half-precision alpha * x of a few hundred loses the sine's
+// phase.
+mx::array SnakeFloat(const mx::array &x, const mx::array &alpha,
+                     const mx::array &beta, mx::Dtype dtype) {
+  return mx::astype(
+      mx::add(x, mx::divide(mx::square(mx::sin(mx::multiply(alpha, x))),
+                            mx::add(beta, mx::array(1e-9f)))),
+      dtype);
+}
+
+mx::Dtype SnakeDtype(const std::vector<mx::array> &inputs) {
+  return mx::promote_types(
+      inputs[0].dtype(),
+      mx::promote_types(inputs[1].dtype(), inputs[2].dtype()));
+}
+
+std::vector<mx::array> SnakeGraph(const std::vector<mx::array> &inputs) {
+  return {SnakeFloat(mx::astype(inputs[0], mx::float32),
+                     mx::astype(inputs[1], mx::float32),
+                     mx::astype(inputs[2], mx::float32), SnakeDtype(inputs))};
+}
+
+std::vector<mx::array>
+LogScaleSnakeGraph(const std::vector<mx::array> &inputs) {
+  return {SnakeFloat(mx::astype(inputs[0], mx::float32),
+                     mx::exp(mx::astype(inputs[1], mx::float32)),
+                     mx::exp(mx::astype(inputs[2], mx::float32)),
+                     SnakeDtype(inputs))};
+}
+
 } // namespace
+
+namespace {
+
+std::atomic<bool> load_time_quantization{true};
+
+} // namespace
+
+void SetLoadTimeQuantization(bool enabled) { load_time_quantization = enabled; }
+
+bool LoadTimeQuantization() { return load_time_quantization; }
+
+Checkpoint QuantizedCheckpoint(WeightMap weights, nlohmann::json config,
+                               int group_size,
+                               const QuantizationBits &bits_for) {
+  if ((config.contains("quantization") &&
+       !config.at("quantization").is_null()) ||
+      !LoadTimeQuantization()) {
+    return Checkpoint(std::move(weights), config);
+  } else {
+  }
+  WeightMap quantized;
+  nlohmann::json layers = nlohmann::json::object();
+  int largest_bits = 0;
+  while (!weights.empty()) {
+    const auto stored = weights.extract(weights.begin());
+    const std::string &name = stored.key();
+    const mx::array &array = stored.mapped();
+    // A row that does not split into whole groups stays as stored.
+    const int bits = array.ndim() == 2 && name.ends_with(".weight") &&
+                             mx::issubdtype(array.dtype(), mx::floating) &&
+                             array.shape(1) % group_size == 0
+                         ? bits_for(name)
+                         : 0;
+    if (bits > 0) {
+      const std::vector<mx::array> parts =
+          mx::quantize(array, group_size, bits);
+      // note (wilsonzheng0327): evaluated one weight at a time, so each
+      // stored weight is released before the next one is read.
+      mx::async_eval(parts);
+      const std::string layer = name.substr(0, name.size() - 7);
+      quantized.insert_or_assign(layer + ".weight", parts[0]);
+      quantized.insert_or_assign(layer + ".scales", parts[1]);
+      quantized.insert_or_assign(layer + ".biases", parts[2]);
+      layers[layer] = {{"group_size", group_size}, {"bits", bits}};
+      largest_bits = std::max(largest_bits, bits);
+    } else {
+      quantized.insert_or_assign(name, array);
+    }
+  }
+  if (largest_bits > 0) {
+    layers["group_size"] = group_size;
+    layers["bits"] = largest_bits;
+    config["quantization"] = std::move(layers);
+  } else {
+  }
+  return Checkpoint(std::move(quantized), config);
+}
 
 mx::array Scalar(float value, mx::Dtype dtype) {
   return mx::array(value, dtype);
@@ -116,6 +210,20 @@ mx::array Silu(const mx::array &x) {
   return compiled({x})[0];
 }
 
+// Note (XXXXRT666): one kernel instead of Silu's and the multiply's, which
+// takes a dependent dispatch per layer off a decode step.
+mx::array Swiglu(const mx::array &gate, const mx::array &up) {
+  static const auto compiled = mx::compile(SwigluGraph, true);
+  return compiled({gate, up})[0];
+}
+
+mx::array Snake(const mx::array &x, const mx::array &alpha,
+                const mx::array &beta, bool log_scale) {
+  static const auto compiled = mx::compile(SnakeGraph, true);
+  static const auto compiled_log_scale = mx::compile(LogScaleSnakeGraph, true);
+  return (log_scale ? compiled_log_scale : compiled)({x, alpha, beta})[0];
+}
+
 mx::array RouteToExperts(const mx::array &hidden, const mx::array &indices,
                          const ExpertRunner &run_experts) {
   const int tokens = hidden.shape(0), width = hidden.shape(1);
@@ -140,6 +248,17 @@ mx::array RouteToExperts(const mx::array &hidden, const mx::array &indices,
         run_experts(mx::reshape(hidden, {tokens, 1, 1, width}), indices, false),
         -2);
   }
+}
+
+std::string ReadFile(const std::filesystem::path &path) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    throw std::runtime_error("cannot read " + path.string());
+  } else {
+  }
+  std::ostringstream contents;
+  contents << stream.rdbuf();
+  return contents.str();
 }
 
 nlohmann::json ReadJson(const std::filesystem::path &path) {
@@ -208,7 +327,7 @@ Checkpoint::Checkpoint(WeightMap weights, const nlohmann::json &config)
   parameters.reserve(weights_.size());
   for (const auto &[name, array] : weights_)
     parameters.push_back(array);
-  mx::eval(parameters);
+  mx::async_eval(parameters);
 }
 
 const mx::array &Checkpoint::Weight(const std::string &name) const {
@@ -267,6 +386,30 @@ mx::array Checkpoint::Linear(const mx::array &x,
   }
 }
 
+mx::array Checkpoint::Conv1d(const mx::array &x, const std::string &prefix,
+                             int stride, int padding, int dilation,
+                             int groups) const {
+  const mx::array y = mx::conv1d(x, Weight(prefix + ".weight"), stride, padding,
+                                 dilation, groups);
+  if (Has(prefix + ".bias")) {
+    return mx::add(y, Weight(prefix + ".bias"));
+  } else {
+    return y;
+  }
+}
+
+mx::array Checkpoint::Conv2d(const mx::array &x, const std::string &prefix,
+                             int stride, int padding, int groups) const {
+  const mx::array y =
+      mx::conv2d(x, Weight(prefix + ".weight"), {stride, stride},
+                 {padding, padding}, {1, 1}, groups);
+  if (Has(prefix + ".bias")) {
+    return mx::add(y, Weight(prefix + ".bias"));
+  } else {
+    return y;
+  }
+}
+
 mx::array Checkpoint::LayerNorm(const mx::array &x, const std::string &prefix,
                                 float eps) const {
   return mx::fast::layer_norm(x, Weight(prefix + ".weight"),
@@ -311,35 +454,134 @@ mx::array Checkpoint::TiedProjection(const mx::array &x,
   }
 }
 
-mx::array RelativeShift(const mx::array &scores) {
+mx::array RelativeShift(const mx::array &scores, int key_count) {
   const int batch = scores.shape(0);
   const int heads = scores.shape(1);
   const int query_length = scores.shape(2);
   const int position_length = scores.shape(3);
-  mx::array padded = mx::pad(scores, {{0, 0}, {0, 0}, {0, 0}, {1, 0}});
-  padded =
-      mx::reshape(padded, {batch, heads, position_length + 1, query_length});
-  padded = mx::slice(padded, {0, 0, 1, 0},
-                     {batch, heads, position_length + 1, query_length});
-  return mx::reshape(padded, {batch, heads, query_length, position_length});
+  if (position_length < query_length + key_count - 1) {
+    throw std::invalid_argument(
+        "relative shift needs a position for every query-key distance");
+  } else {
+  }
+  // Note (XXXXRT666): the padded reshape as a view: row i starts query_length
+  // - 1 - i columns in, so no copy of the scores is made.
+  return mx::as_strided(
+      scores, {batch, heads, query_length, key_count},
+      {static_cast<int64_t>(heads) * query_length * position_length,
+       static_cast<int64_t>(query_length) * position_length,
+       position_length - 1, 1},
+      query_length - 1);
+}
+
+mx::array TransposedConvolutionPhases(const mx::array &weight, int stride) {
+  const int out = weight.shape(0);
+  const int kernel_size = weight.shape(1);
+  const int in = weight.shape(2);
+  const int taps = (kernel_size + stride - 1) / stride;
+  const mx::array padded =
+      taps * stride == kernel_size
+          ? weight
+          : mx::pad(weight, {{0, 0}, {0, taps * stride - kernel_size}, {0, 0}});
+  // Kernel step j * stride + p meets input q - j at output q * stride + p, so
+  // phase p's taps run backwards over j.
+  const mx::array phases =
+      mx::take(mx::reshape(padded, {out, taps, stride, in}),
+               mx::arange(taps - 1, -1, -1), 1);
+  return mx::reshape(mx::transpose(phases, {2, 0, 1, 3}),
+                     {stride * out, taps, in});
+}
+
+mx::array ConvolveTransposed(const mx::array &x, const mx::array &phases,
+                             int stride, int kernel_size, int padding) {
+  const int batch = x.shape(0);
+  const int length = x.shape(1);
+  const int taps = phases.shape(1);
+  const int out = phases.shape(0) / stride;
+  const mx::array padded =
+      taps > 1 ? mx::pad(x, {{0, 0}, {taps - 1, taps - 1}, {0, 0}}) : x;
+  const mx::array steps = mx::reshape(
+      mx::conv1d(padded, phases), {batch, (length + taps - 1) * stride, out});
+  return mx::slice(steps, {0, padding, 0},
+                   {batch, (length - 1) * stride + kernel_size - padding, out});
+}
+
+void FoldBatchNorms(WeightMap &weights, const std::string &norm_name,
+                    float eps) {
+  const std::string suffix = "." + norm_name + ".running_mean";
+  std::vector<std::string> modules;
+  for (const auto &[name, weight] : weights) {
+    if (name.ends_with(suffix)) {
+      modules.push_back(name.substr(0, name.size() - suffix.size()));
+    } else {
+    }
+  }
+  const auto float_weight = [&](const std::string &name) {
+    return mx::astype(weights.at(name), mx::float32);
+  };
+  for (const std::string &module : modules) {
+    const std::string norm = module + "." + norm_name;
+    const std::string convolution = module + ".depthwise_conv";
+    const mx::array scale =
+        mx::multiply(float_weight(norm + ".weight"),
+                     mx::rsqrt(mx::add(float_weight(norm + ".running_var"),
+                                       mx::array(eps))));
+    const mx::array convolution_bias = weights.contains(convolution + ".bias")
+                                           ? float_weight(convolution + ".bias")
+                                           : mx::zeros_like(scale);
+    const mx::array &kernel = weights.at(convolution + ".weight");
+    mx::Shape scale_shape(kernel.ndim(), 1);
+    scale_shape[0] = kernel.shape(0);
+    const mx::Dtype dtype = kernel.dtype();
+    weights.insert_or_assign(
+        convolution + ".weight",
+        mx::astype(mx::multiply(mx::astype(kernel, mx::float32),
+                                mx::reshape(scale, scale_shape)),
+                   dtype));
+    weights.insert_or_assign(
+        convolution + ".bias",
+        mx::astype(
+            mx::add(
+                mx::multiply(mx::subtract(convolution_bias,
+                                          float_weight(norm + ".running_mean")),
+                             scale),
+                float_weight(norm + ".bias")),
+            dtype));
+    for (const char *part : {".weight", ".bias", ".running_mean",
+                             ".running_var", ".num_batches_tracked"}) {
+      weights.erase(norm + part);
+    }
+  }
 }
 
 LstmCell LstmStep(const mx::array &gates, const std::optional<LstmCell> &state,
                   const mx::array &recurrent_weight) {
-  const mx::array all_gates =
+  // Note (XXXXRT666): the gate math compiled into one kernel, since a decode
+  // step's LSTM runs one dependent dispatch per op.
+  static const auto compiled_first =
+      mx::compile([](const std::vector<mx::array> &inputs) {
+        const std::vector<mx::array> pieces = mx::split(inputs[0], 4, -1);
+        const mx::array cell =
+            mx::multiply(mx::sigmoid(pieces[0]), mx::tanh(pieces[2]));
+        return std::vector<mx::array>{
+            mx::multiply(mx::sigmoid(pieces[3]), mx::tanh(cell)), cell};
+      });
+  static const auto compiled_next =
+      mx::compile([](const std::vector<mx::array> &inputs) {
+        const std::vector<mx::array> pieces = mx::split(inputs[0], 4, -1);
+        const mx::array cell =
+            mx::add(mx::multiply(mx::sigmoid(pieces[1]), inputs[1]),
+                    mx::multiply(mx::sigmoid(pieces[0]), mx::tanh(pieces[2])));
+        return std::vector<mx::array>{
+            mx::multiply(mx::sigmoid(pieces[3]), mx::tanh(cell)), cell};
+      });
+  const std::vector<mx::array> next =
       state.has_value()
-          ? mx::addmm(gates, state->hidden, mx::transpose(recurrent_weight))
-          : gates;
-  const std::vector<mx::array> pieces = mx::split(all_gates, 4, -1);
-  const mx::array input_gate = mx::sigmoid(pieces[0]);
-  const mx::array forget_gate = mx::sigmoid(pieces[1]);
-  const mx::array candidate = mx::tanh(pieces[2]);
-  const mx::array output_gate = mx::sigmoid(pieces[3]);
-  const mx::array cell = state.has_value()
-                             ? mx::add(mx::multiply(forget_gate, state->cell),
-                                       mx::multiply(input_gate, candidate))
-                             : mx::multiply(input_gate, candidate);
-  return {mx::multiply(output_gate, mx::tanh(cell)), cell};
+          ? compiled_next({mx::addmm(gates, state->hidden,
+                                     mx::transpose(recurrent_weight)),
+                           state->cell})
+          : compiled_first({gates});
+  return {next[0], next[1]};
 }
 
 void EncoderCheckpoint(const mx::array &hidden, const std::atomic<bool> *cancel,

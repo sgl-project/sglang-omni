@@ -24,6 +24,8 @@ struct QuantizationConfig {
 
 using WeightMap = std::unordered_map<std::string, mlx::core::array>;
 
+// A file's bytes; throws std::runtime_error when it cannot be read.
+std::string ReadFile(const std::filesystem::path &path);
 nlohmann::json ReadJson(const std::filesystem::path &path);
 // A YAML file as JSON, its plain scalars typed as PyYAML's safe loader types
 // them and its quoted scalars kept as strings.
@@ -46,6 +48,14 @@ public:
   const QuantizationConfig &Quantization(const std::string &prefix) const;
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
+  // Convolutions of channels-last x by prefix.weight [out, kernel..., in /
+  // groups], plus prefix.bias when the checkpoint has one.
+  mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,
+                          int stride = 1, int padding = 0, int dilation = 1,
+                          int groups = 1) const;
+  mlx::core::array Conv2d(const mlx::core::array &x, const std::string &prefix,
+                          int stride = 1, int padding = 0,
+                          int groups = 1) const;
   mlx::core::array LayerNorm(const mlx::core::array &x,
                              const std::string &prefix, float eps) const;
   mlx::core::array RmsNorm(const mlx::core::array &x, const std::string &prefix,
@@ -63,6 +73,24 @@ private:
   std::unordered_map<std::string, QuantizationConfig> quantization_by_prefix_;
 };
 
+// Whether models quantize weights at load (QuantizedCheckpoint and their own
+// expert stacks); --full-precision clears it before a model loads.
+void SetLoadTimeQuantization(bool enabled);
+bool LoadTimeQuantization();
+
+// The bits a weight is quantized to at load, by name; 0 leaves it as stored.
+using QuantizationBits = std::function<int(const std::string &name)>;
+
+// A checkpoint of weights whose two-dimensional .weight arrays are quantized
+// at load to bits_for's bits in groups of group_size, as an MLX checkpoint
+// stores them (.weight packed, with .scales and .biases), with each quantized
+// layer's quantization added to config. Rows not a whole number of groups
+// stay as stored, and every weight does without LoadTimeQuantization or when
+// config already has a quantization, the checkpoint's own.
+Checkpoint QuantizedCheckpoint(WeightMap weights, nlohmann::json config,
+                               int group_size,
+                               const QuantizationBits &bits_for);
+
 // A scalar operand as MLX's Python and Swift bindings make one: a constant
 // of the other operand's dtype, so a half-precision tensor is not promoted.
 mlx::core::array Scalar(float value, mlx::core::Dtype dtype);
@@ -73,6 +101,14 @@ mlx::core::array Gelu(const mlx::core::array &x);
 // GELU's tanh approximation, mlx.nn.gelu_approx.
 mlx::core::array TanhGelu(const mlx::core::array &x);
 mlx::core::array Silu(const mlx::core::array &x);
+// Silu(gate) * up, the gated MLP's activation.
+mlx::core::array Swiglu(const mlx::core::array &gate,
+                        const mlx::core::array &up);
+// The vocoders' Snake, x + sin(alpha * x)^2 / (beta + 1e-9), alpha and beta
+// per channel and broadcast against x: BigVGAN's SnakeBeta, or DAC's Snake
+// with beta = alpha. With log_scale they hold log alpha and log beta.
+mlx::core::array Snake(const mlx::core::array &x, const mlx::core::array &alpha,
+                       const mlx::core::array &beta, bool log_scale = false);
 
 // A mixture of experts' outputs [tokens, experts_per_token, width] for hidden
 // [tokens, width] routed to indices [tokens, experts_per_token]. run_experts
@@ -92,10 +128,30 @@ void EncoderCheckpoint(const mlx::core::array &hidden,
                        const std::atomic<bool> *cancel, int completed_layers);
 
 // Transformer-XL's relative shift of position scores [batch, heads, queries,
-// positions]: a left zero column, then rows reread one step along, so each
-// row's columns line up with its keys' relative positions. Callers keep the
-// first key-count columns.
-mlx::core::array RelativeShift(const mlx::core::array &scores);
+// positions] to [batch, heads, queries, key_count]: each row's columns line up
+// with its keys' relative positions. Needs positions >= queries + key_count -
+// 1.
+mlx::core::array RelativeShift(const mlx::core::array &scores, int key_count);
+
+// A transposed convolution's weight [out, kernel, in] at stride as one
+// stride-1 convolution's [stride * out, ceil(kernel / stride), in], output
+// channel p * out + o giving output step q * stride + p. MLX runs transposed
+// convolutions as an unfold of the zero-dilated input and a GEMM, stride
+// times the work and off its implicit-GEMM path.
+mlx::core::array TransposedConvolutionPhases(const mlx::core::array &weight,
+                                             int stride);
+// mlx::core::conv_transpose1d(x, weight, stride, padding) for x [batch, time,
+// in], from TransposedConvolutionPhases(weight, stride) and weight's kernel
+// size.
+mlx::core::array ConvolveTransposed(const mlx::core::array &x,
+                                    const mlx::core::array &phases, int stride,
+                                    int kernel_size, int padding = 0);
+
+// Folds every batch norm module.norm_name (running statistics, weight, bias)
+// into the module's depthwise_conv before it, giving that convolution a bias,
+// and drops the norm's tensors.
+void FoldBatchNorms(WeightMap &weights, const std::string &norm_name,
+                    float eps);
 
 // One LSTM step in MLXNN's formulation. gates [1, 4 * hidden] are x * Wx^T +
 // bias in input, forget, candidate, output order; with no state the step

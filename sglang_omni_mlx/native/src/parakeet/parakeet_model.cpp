@@ -8,6 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "common/fastconformer.h"
 #include "common/swift_port.h"
 
 namespace parakeet {
@@ -21,7 +22,6 @@ constexpr float kBatchNormEps = 1e-5f;
 constexpr float kFeatureStdGuard = 1e-5f;
 constexpr int kSubsamplingStride = 2;
 constexpr int kSubsamplingPadding = 1;
-constexpr float kPositionTimescale = 10000.0f;
 
 // Note (Dayuxiaoshui): NeMo exports Infinity and NaN, which JSON lacks; the
 // Swift port reads them as null.
@@ -41,9 +41,13 @@ omni_common::WeightMap
 BFloat16Weights(const std::filesystem::path &model_directory) {
   omni_common::WeightMap weights =
       omni_common::LoadSafetensors(model_directory);
+  omni_common::FoldBatchNorms(weights, "batch_norm", kBatchNormEps);
+  // Note (XXXXRT666): each cast is evaluated on its own, so a float32 tensor
+  // is freed before the next loads and the two copies never all coexist.
   for (auto &[name, weight] : weights) {
     if (mx::issubdtype(weight.dtype(), mx::floating)) {
       weight = mx::astype(weight, mx::bfloat16);
+      mx::eval(weight);
     } else {
     }
   }
@@ -90,11 +94,11 @@ ParakeetModel::ParakeetModel(const nlohmann::json &config,
       static_cast<int>(preprocessor.at("window_stride").get<float>() *
                        static_cast<float>(sample_rate));
   front_end_.preemphasis = preprocessor.value("preemph", 0.97f);
-  features_ = sortformer::FeatureExtractor(front_end_);
+  features_ = omni_common::NemoFeatureExtractor(front_end_);
   prediction_width_ =
       checkpoint_.Weight("decoder.prediction.dec_rnn.lstm.0.Wh").shape(1);
-  compiled_decode_ = mx::compile([this](const std::vector<mx::array> &inputs) {
-    return DecodeGraph(inputs);
+  compiled_predict_ = mx::compile([this](const std::vector<mx::array> &inputs) {
+    return PredictGraph(inputs);
   });
   // Note (Dayuxiaoshui): the graph below is the published TDT checkpoint's:
   // per-feature normalized Hann features, 8x dw-striding subsampling,
@@ -173,81 +177,6 @@ mx::array ParakeetModel::Conv2d(const mx::array &x, const std::string &prefix,
                  checkpoint_.Weight(prefix + ".bias"));
 }
 
-mx::array ParakeetModel::FeedForward(const mx::array &x,
-                                     const std::string &prefix) const {
-  return checkpoint_.Linear(
-      swift_port::Silu(checkpoint_.Linear(x, prefix + ".linear1")),
-      prefix + ".linear2");
-}
-
-mx::array ParakeetModel::Attention(const mx::array &x,
-                                   const mx::array &positions,
-                                   const std::string &prefix) const {
-  const int time = x.shape(1);
-  const int position_count = positions.shape(1);
-  const int head_count = config_.head_count;
-  const int head_width = config_.model_width / head_count;
-  const float scale = std::pow(static_cast<float>(head_width), -0.5f);
-  const auto heads = [&](const mx::array &projected, int length) {
-    return mx::transpose(
-        mx::reshape(projected, {1, length, head_count, head_width}),
-        {0, 2, 1, 3});
-  };
-  const mx::array query_heads =
-      mx::reshape(checkpoint_.Linear(x, prefix + ".linear_q"),
-                  {1, time, head_count, head_width});
-  const mx::Dtype dtype = query_heads.dtype();
-  const mx::array content_queries = mx::transpose(
-      mx::add(query_heads,
-              mx::astype(checkpoint_.Weight(prefix + ".pos_bias_u"), dtype)),
-      {0, 2, 1, 3});
-  const mx::array position_queries = mx::transpose(
-      mx::add(query_heads,
-              mx::astype(checkpoint_.Weight(prefix + ".pos_bias_v"), dtype)),
-      {0, 2, 1, 3});
-  const mx::array keys =
-      heads(checkpoint_.Linear(x, prefix + ".linear_k"), time);
-  const mx::array values =
-      heads(checkpoint_.Linear(x, prefix + ".linear_v"), time);
-  const mx::array position_keys = heads(
-      checkpoint_.Linear(positions, prefix + ".linear_pos"), position_count);
-  mx::array position_scores = omni_common::RelativeShift(
-      mx::matmul(position_queries, mx::swapaxes(position_keys, -2, -1)));
-  position_scores = mx::multiply(
-      mx::slice(position_scores, {0, 0, 0, 0}, {1, head_count, time, time}),
-      mx::array(scale, position_scores.dtype()));
-  const mx::array attended = mx::fast::scaled_dot_product_attention(
-      content_queries, keys, values, scale, "array", position_scores);
-  return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
-                                        {1, time, config_.model_width}),
-                            prefix + ".linear_out");
-}
-
-mx::array ParakeetModel::Convolution(const mx::array &x,
-                                     const std::string &prefix) const {
-  const std::vector<mx::array> halves = mx::split(
-      mx::conv1d(x, checkpoint_.Weight(prefix + ".pointwise_conv1.weight")), 2,
-      2);
-  const mx::array gated = mx::multiply(halves[0], mx::sigmoid(halves[1]));
-  const mx::array &depthwise =
-      checkpoint_.Weight(prefix + ".depthwise_conv.weight");
-  mx::array convolved =
-      mx::conv1d(gated, depthwise, 1, (depthwise.shape(1) - 1) / 2, 1,
-                 config_.model_width);
-  // Note (Dayuxiaoshui): batch norm with its running statistics, in MLXNN's
-  // order.
-  const std::string norm = prefix + ".batch_norm";
-  convolved = mx::multiply(
-      mx::subtract(convolved, checkpoint_.Weight(norm + ".running_mean")),
-      mx::rsqrt(mx::add(checkpoint_.Weight(norm + ".running_var"),
-                        mx::array(kBatchNormEps, convolved.dtype()))));
-  convolved =
-      mx::add(mx::multiply(checkpoint_.Weight(norm + ".weight"), convolved),
-              checkpoint_.Weight(norm + ".bias"));
-  return mx::conv1d(swift_port::Silu(convolved),
-                    checkpoint_.Weight(prefix + ".pointwise_conv2.weight"));
-}
-
 mx::array ParakeetModel::Encode(const mx::array &features,
                                 const std::atomic<bool> *cancel) const {
   const std::string pre_encode = "encoder.pre_encode";
@@ -265,26 +194,8 @@ mx::array ParakeetModel::Encode(const mx::array &features,
                                      {1, time, channels * frequency_bins}),
                          pre_encode + ".out");
 
-  // Note (Dayuxiaoshui): each position row depends only on its position, so
-  // building the rows this length needs equals slicing the Swift port's
-  // 5000-position table; float math in its order keeps the values.
-  const int width = config_.model_width;
-  const int row_count = 2 * time - 1;
-  const float log_timescale =
-      static_cast<float>(std::log(static_cast<double>(kPositionTimescale))) /
-      static_cast<float>(width);
-  std::vector<float> table(static_cast<size_t>(row_count) * width);
-  for (int row = 0; row < row_count; ++row) {
-    const float position = static_cast<float>(time - 1 - row);
-    for (int column = 0; column < width; column += 2) {
-      const float angle =
-          position * std::exp(-static_cast<float>(column) * log_timescale);
-      table[static_cast<size_t>(row) * width + column] = std::sin(angle);
-      table[static_cast<size_t>(row) * width + column + 1] = std::cos(angle);
-    }
-  }
   const mx::array positions = mx::astype(
-      mx::array(table.data(), {1, row_count, width}, mx::float32), x.dtype());
+      omni_common::RelativePositionTable(time, config_.model_width), x.dtype());
 
   const mx::array half(0.5f, x.dtype());
   for (int layer = 0; layer < config_.layer_count; ++layer) {
@@ -292,31 +203,37 @@ mx::array ParakeetModel::Encode(const mx::array &features,
     const auto norm = [&](const mx::array &input, const std::string &name) {
       return checkpoint_.LayerNorm(input, prefix + "." + name, kLayerNormEps);
     };
-    x = mx::add(x, mx::multiply(half, FeedForward(norm(x, "norm_feed_forward1"),
-                                                  prefix + ".feed_forward1")));
-    x = mx::add(x, Attention(norm(x, "norm_self_att"), positions,
-                             prefix + ".self_attn"));
-    x = mx::add(x, Convolution(norm(x, "norm_conv"), prefix + ".conv"));
-    x = mx::add(x, mx::multiply(half, FeedForward(norm(x, "norm_feed_forward2"),
-                                                  prefix + ".feed_forward2")));
+    x = mx::add(
+        x, mx::multiply(half, omni_common::ConformerFeedForward(
+                                  checkpoint_, norm(x, "norm_feed_forward1"),
+                                  prefix + ".feed_forward1")));
+    const mx::array attention_input = norm(x, "norm_self_att");
+    x = mx::add(x, omni_common::RelativePositionAttention(
+                       checkpoint_, attention_input, attention_input, positions,
+                       prefix + ".self_attn", config_.head_count));
+    x = mx::add(x, omni_common::ConformerConvolution(
+                       checkpoint_, norm(x, "norm_conv"), prefix + ".conv"));
+    x = mx::add(
+        x, mx::multiply(half, omni_common::ConformerFeedForward(
+                                  checkpoint_, norm(x, "norm_feed_forward2"),
+                                  prefix + ".feed_forward2")));
     x = norm(x, "norm_out");
     omni_common::EncoderCheckpoint(x, cancel, layer + 1);
   }
   return x;
 }
 
-std::pair<mx::array, mx::array> ParakeetModel::InitialState() const {
+std::pair<mx::array, mx::array> ParakeetModel::InitialState(int rows) const {
   const mx::array zeros = mx::zeros(
-      {config_.prediction_layer_count, 1, prediction_width_}, mx::bfloat16);
+      {config_.prediction_layer_count, rows, prediction_width_}, mx::bfloat16);
   return {zeros, zeros};
 }
 
 std::vector<mx::array>
-ParakeetModel::DecodeGraph(const std::vector<mx::array> &inputs) const {
-  const mx::array &frame = inputs[0];
-  const mx::array &token = inputs[1];
-  const mx::array &hidden = inputs[2];
-  const mx::array &cell = inputs[3];
+ParakeetModel::PredictGraph(const std::vector<mx::array> &inputs) const {
+  const mx::array &token = inputs[0];
+  const mx::array &hidden = inputs[1];
+  const mx::array &cell = inputs[2];
   const std::string prediction = "decoder.prediction";
   const mx::array embedded = checkpoint_.Embed(token, prediction + ".embed");
   mx::array output = mx::where(
@@ -327,46 +244,55 @@ ParakeetModel::DecodeGraph(const std::vector<mx::array> &inputs) const {
   for (int layer = 0; layer < config_.prediction_layer_count; ++layer) {
     const std::string lstm =
         prediction + ".dec_rnn.lstm." + std::to_string(layer);
+    const int rows = hidden.shape(1);
     const auto layer_state = [&](const mx::array &state) {
       return mx::squeeze(
-          mx::slice(state, {layer, 0, 0}, {layer + 1, 1, prediction_width_}),
+          mx::slice(state, {layer, 0, 0}, {layer + 1, rows, prediction_width_}),
           0);
     };
     const mx::array gates =
         mx::addmm(checkpoint_.Weight(lstm + ".bias"), output,
                   mx::transpose(checkpoint_.Weight(lstm + ".Wx")));
     const omni_common::LstmCell next = omni_common::LstmStep(
-        mx::squeeze(mx::slice(gates, {0, 0, 0}, {1, 1, gates.shape(2)}), 1),
+        mx::reshape(gates, {rows, gates.shape(2)}),
         omni_common::LstmCell{layer_state(hidden), layer_state(cell)},
         checkpoint_.Weight(lstm + ".Wh"));
     hidden_states.push_back(next.hidden);
     cell_states.push_back(next.cell);
     output = mx::expand_dims(next.hidden, 1);
   }
-  const mx::array combined =
-      mx::add(mx::expand_dims(checkpoint_.Linear(frame, "joint.enc"), 2),
-              mx::expand_dims(checkpoint_.Linear(output, "joint.pred"), 1));
-  const mx::array logits = mx::reshape(
-      checkpoint_.Linear(swift_port::Relu(combined), "joint.joint_net.2"),
-      {-1});
-  const int class_count = blank_id() + 1;
-  return {
-      mx::stack({mx::astype(mx::argmax(mx::slice(logits, {0}, {class_count})),
-                            mx::int32),
-                 mx::astype(mx::argmax(mx::slice(logits, {class_count},
-                                                 {logits.shape(0)})),
-                            mx::int32)}),
-      mx::stack(hidden_states, 0), mx::stack(cell_states, 0)};
+  return {checkpoint_.Linear(output, "joint.pred"), mx::stack(hidden_states, 0),
+          mx::stack(cell_states, 0)};
 }
 
-DecoderStep ParakeetModel::Decode(const mx::array &frame, int token,
+mx::array ParakeetModel::ProjectFrames(const mx::array &encoded) const {
+  return checkpoint_.Linear(encoded, "joint.enc");
+}
+
+Prediction ParakeetModel::Predict(const mx::array &tokens,
                                   const mx::array &hidden,
                                   const mx::array &cell) const {
-  const std::vector<mx::array> outputs = compiled_decode_(
-      {frame, mx::array({token}, {1, 1}, mx::int32), hidden, cell});
-  mx::eval(outputs);
-  const int32_t *decisions = outputs[0].data<int32_t>();
-  return {decisions[0], decisions[1], outputs[1], outputs[2]};
+  const std::vector<mx::array> outputs =
+      compiled_predict_({tokens, hidden, cell});
+  return {outputs[0], outputs[1], outputs[2]};
+}
+
+mx::array ParakeetModel::Decisions(const mx::array &projected_frames,
+                                   const Prediction &prediction) const {
+  const mx::array logits = checkpoint_.Linear(
+      swift_port::Relu(mx::add(projected_frames, prediction.projection)),
+      "joint.joint_net.2");
+  const int class_count = blank_id() + 1;
+  const int rows = logits.shape(0);
+  const int frame_count = logits.shape(1);
+  return mx::astype(
+      mx::stack({mx::argmax(mx::slice(logits, {0, 0, 0},
+                                      {rows, frame_count, class_count}),
+                            -1),
+                 mx::argmax(mx::slice(logits, {0, 0, class_count},
+                                      {rows, frame_count, logits.shape(2)}),
+                            -1)}),
+      mx::int32);
 }
 
 } // namespace parakeet

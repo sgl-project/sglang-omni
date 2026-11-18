@@ -75,6 +75,13 @@ type FileRequest struct {
 	MaxBytes int
 }
 
+// SpeakerSegment is one timed part of a diarized transcription.
+type SpeakerSegment struct {
+	Start, End time.Duration
+	Speaker    string
+	Text       string
+}
+
 // Result is a finished transcription.
 type Result struct {
 	Text     string
@@ -82,6 +89,13 @@ type Result struct {
 	Duration time.Duration // of the audio, when the speech model reported it
 	Model    string
 	Latency  time.Duration // from the end of the audio to the final text
+	Segments []SpeakerSegment
+}
+
+// Diarizer transcribes a recording with timestamps and speaker labels.
+type Diarizer interface {
+	Provider
+	Diarize(ctx context.Context, req FileRequest) (Result, error)
 }
 
 // FileTranscriber transcribes a whole recording and returns its text.

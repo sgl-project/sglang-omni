@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "common/layers.h"
 #include "common/swift_port.h"
 
 namespace sensevoice {
@@ -33,17 +34,6 @@ constexpr int kWithItnId = 14;
 constexpr int kWithoutItnId = 15;
 // The query rows the Swift port's embedding table holds.
 constexpr int kEmbeddingRows = 16;
-
-std::string ReadFile(const std::filesystem::path &path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream) {
-    throw std::runtime_error("cannot read " + path.string());
-  } else {
-  }
-  std::ostringstream contents;
-  contents << stream.rdbuf();
-  return contents.str();
-}
 
 // Note (Dayuxiaoshui): the bracketed list after <LearnRateCoef> N in the
 // component a tag opens, as the Swift port's regex reads am.mvn; words that
@@ -138,6 +128,22 @@ int NextPowerOfTwo(int value) {
   return power;
 }
 
+// Note (XXXXRT666): the checkpoint is float32; the encoder runs in bfloat16,
+// its FSMN kernels already in MLX's layout.
+omni_common::WeightMap HalfPrecisionWeights(omni_common::WeightMap weights) {
+  for (auto &[name, weight] : weights) {
+    if (name.ends_with(".fsmn_block.weight")) {
+      weight = mx::contiguous(mx::transpose(weight, {0, 2, 1}));
+    } else {
+    }
+    if (mx::issubdtype(weight.dtype(), mx::floating)) {
+      weight = mx::astype(weight, mx::bfloat16);
+    } else {
+    }
+  }
+  return weights;
+}
+
 } // namespace
 
 SenseVoiceModel::SenseVoiceModel(const std::filesystem::path &model_directory)
@@ -146,7 +152,9 @@ SenseVoiceModel::SenseVoiceModel(const std::filesystem::path &model_directory)
 
 SenseVoiceModel::SenseVoiceModel(const nlohmann::json &config,
                                  const std::filesystem::path &model_directory)
-    : checkpoint_(omni_common::LoadSafetensors(model_directory), config),
+    : checkpoint_(
+          HalfPrecisionWeights(omni_common::LoadSafetensors(model_directory)),
+          config),
       mel_filters_(mx::array(0.0f)) {
   const nlohmann::json &encoder = config.at("encoder_conf");
   const nlohmann::json &front_end = config.at("frontend_conf");
@@ -214,7 +222,8 @@ SenseVoiceModel::SenseVoiceModel(const nlohmann::json &config,
   std::vector<float> means;
   std::vector<float> inverse_stddevs;
   if (std::filesystem::exists(model_directory / "am.mvn")) {
-    const std::string statistics = ReadFile(model_directory / "am.mvn");
+    const std::string statistics =
+        omni_common::ReadFile(model_directory / "am.mvn");
     means = BracketedValues(statistics, "<AddShift>");
     inverse_stddevs = BracketedValues(statistics, "<Rescale>");
   } else if (config.contains("cmvn_means") && config.contains("cmvn_istd")) {
@@ -233,7 +242,7 @@ SenseVoiceModel::SenseVoiceModel(const nlohmann::json &config,
         mx::array(inverse_stddevs.data(), {config_.input_size}, mx::float32);
   } else {
   }
-  mx::eval(mel_filters_);
+  mx::async_eval(mel_filters_);
 }
 
 mx::array SenseVoiceModel::Fbank(const std::vector<float> &samples) const {
@@ -330,9 +339,7 @@ mx::array SenseVoiceModel::EncoderLayer(const mx::array &x,
   const mx::array memory = mx::add(
       mx::conv1d(
           mx::pad(qkv[2], {{0, 0}, {left_padding, right_padding}, {0, 0}}),
-          mx::transpose(checkpoint_.Weight(attention + ".fsmn_block.weight"),
-                        {0, 2, 1}),
-          1, 0, 1, width),
+          checkpoint_.Weight(attention + ".fsmn_block.weight"), 1, 0, 1, width),
       qkv[2]);
   const auto heads = [&](const mx::array &projected) {
     return mx::transpose(
@@ -360,8 +367,7 @@ mx::array SenseVoiceModel::EncoderLayer(const mx::array &x,
   return mx::add(hidden, feed_forward);
 }
 
-mx::array
-SenseVoiceModel::LogProbabilities(const mx::array &features, int language_id,
+mx::array SenseVoiceModel::Logits(const mx::array &features, int language_id,
                                   bool use_itn,
                                   const std::atomic<bool> *cancel) const {
   const auto query = [&](std::vector<int32_t> ids) {
@@ -369,13 +375,15 @@ SenseVoiceModel::LogProbabilities(const mx::array &features, int language_id,
         mx::array(ids.data(), {1, static_cast<int>(ids.size())}, mx::int32),
         "embed");
   };
-  mx::array x = mx::concatenate({query({language_id}),
-                                 query({kEventQueryId, kEmotionQueryId}),
-                                 query({use_itn ? kWithItnId : kWithoutItnId}),
-                                 mx::expand_dims(features, 0)},
-                                1);
-  x = mx::multiply(x, mx::array(static_cast<float>(std::sqrt(
-                          static_cast<double>(config_.model_width)))));
+  mx::array x = mx::concatenate(
+      {query({language_id}), query({kEventQueryId, kEmotionQueryId}),
+       query({use_itn ? kWithItnId : kWithoutItnId}),
+       mx::expand_dims(mx::astype(features, mx::bfloat16), 0)},
+      1);
+  x = mx::multiply(
+      x, omni_common::Scalar(static_cast<float>(std::sqrt(
+                                 static_cast<double>(config_.model_width))),
+                             x));
   // Note (Dayuxiaoshui): sinusoids at positions 1 onward, sines then
   // cosines, in MLX ops as the Swift port builds them.
   const int time = x.shape(1);
@@ -410,7 +418,7 @@ SenseVoiceModel::LogProbabilities(const mx::array &features, int language_id,
   }
   x = checkpoint_.LayerNorm(x, "encoder.tp_norm", kLayerNormEps);
   const mx::array logits = checkpoint_.Linear(x, "ctc.ctc_lo");
-  return mx::squeeze(mx::subtract(logits, mx::logsumexp(logits, -1, true)), 0);
+  return mx::squeeze(logits, 0);
 }
 
 } // namespace sensevoice

@@ -12,8 +12,8 @@
 #include <vector>
 
 #include "common/layers.h"
+#include "common/nemo_features.h"
 #include "mlx/mlx.h"
-#include "sortformer/sortformer_features.h"
 
 namespace parakeet {
 
@@ -32,11 +32,11 @@ struct ParakeetConfig {
   int max_symbols_per_frame = 0;
 };
 
-// One TDT decoder step: the predicted token and duration class, and the
-// prediction network state after feeding the step's input token.
-struct DecoderStep {
-  int token = 0;
-  int duration_index = 0;
+// The prediction network's joint.pred output [rows, 1, joint] for each
+// row's state, and the states after feeding its token, kept once a token is
+// emitted.
+struct Prediction {
+  mlx::core::array projection;
   mlx::core::array hidden;
   mlx::core::array cell;
 };
@@ -46,7 +46,7 @@ public:
   // Reads config.json and model.safetensors, cast to bfloat16 as the Swift
   // port loads them.
   explicit ParakeetModel(const std::filesystem::path &model_directory);
-  // Note (Jiaxin Deng): the compiled decoder step captures this.
+  // Note (Jiaxin Deng): the compiled prediction network captures this.
   ParakeetModel(const ParakeetModel &) = delete;
   ParakeetModel &operator=(const ParakeetModel &) = delete;
 
@@ -55,13 +55,19 @@ public:
   // Encoder frames [1, frames, width] of features, in bfloat16.
   mlx::core::array Encode(const mlx::core::array &features,
                           const std::atomic<bool> *cancel = nullptr) const;
-  // The prediction network fed token (the blank feeds zeros) from state
-  // [layers, 1, hidden], joined with one encoder frame [1, 1, width].
-  DecoderStep Decode(const mlx::core::array &frame, int token,
+  // joint.enc of encoder frames [1, frames, width]: [1, frames, joint].
+  mlx::core::array ProjectFrames(const mlx::core::array &encoded) const;
+  // The prediction network fed each row's token, int32 [rows, 1] (the blank
+  // feeds zeros), from states [layers, rows, hidden].
+  Prediction Predict(const mlx::core::array &tokens,
                      const mlx::core::array &hidden,
                      const mlx::core::array &cell) const;
-  // Zero prediction state [layers, 1, hidden] in bfloat16.
-  std::pair<mlx::core::array, mlx::core::array> InitialState() const;
+  // Token and duration classes, int32 [2, rows, frames], of projected frames
+  // [rows, frames, joint] joined with each row's prediction.
+  mlx::core::array Decisions(const mlx::core::array &projected_frames,
+                             const Prediction &prediction) const;
+  // Zero prediction states [layers, rows, hidden] in bfloat16.
+  std::pair<mlx::core::array, mlx::core::array> InitialState(int rows) const;
 
   const ParakeetConfig &config() const { return config_; }
   int blank_id() const { return static_cast<int>(config_.vocabulary.size()); }
@@ -74,26 +80,20 @@ private:
                 const std::filesystem::path &model_directory);
   mlx::core::array Conv2d(const mlx::core::array &x, const std::string &prefix,
                           int groups) const;
-  mlx::core::array FeedForward(const mlx::core::array &x,
-                               const std::string &prefix) const;
-  mlx::core::array Attention(const mlx::core::array &x,
-                             const mlx::core::array &positions,
-                             const std::string &prefix) const;
-  mlx::core::array Convolution(const mlx::core::array &x,
-                               const std::string &prefix) const;
-  // [frame, token, hidden, cell] to [token and duration class, hidden, cell].
+  // [token, hidden, cell] to [joint.pred projection, hidden, cell].
   std::vector<mlx::core::array>
-  DecodeGraph(const std::vector<mlx::core::array> &inputs) const;
+  PredictGraph(const std::vector<mlx::core::array> &inputs) const;
 
   ParakeetConfig config_;
-  sortformer::ProcessorConfig front_end_;
-  sortformer::FeatureExtractor features_;
+  omni_common::NemoProcessorConfig front_end_;
+  omni_common::NemoFeatureExtractor features_;
   omni_common::Checkpoint checkpoint_;
   int prediction_width_ = 0;
-  // Note (Dayuxiaoshui): the decoder step compiled, as the Swift port runs it.
+  // Note (Dayuxiaoshui): the prediction network compiled, as the Swift port
+  // runs its decoder step.
   std::function<std::vector<mlx::core::array>(
       const std::vector<mlx::core::array> &)>
-      compiled_decode_;
+      compiled_predict_;
 };
 
 } // namespace parakeet

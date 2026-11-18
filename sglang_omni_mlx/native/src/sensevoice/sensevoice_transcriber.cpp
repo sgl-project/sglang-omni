@@ -34,9 +34,7 @@ int LanguageQueryId(const std::optional<std::string> &language) {
   } else {
   }
   std::string key = swift_port::TrimWhitespace(*language, true);
-  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
+  key = omni_common::AsciiLowercase(key);
   const auto found = ids.find(key);
   return found == ids.end() ? 0 : found->second;
 }
@@ -261,10 +259,11 @@ SenseVoiceTranscriber::TranscribePass(const std::vector<float> &samples,
                                                      {24995, "BGM"},
                                                      {24997, "Laughter"},
                                                      {24999, "Applause"}};
-  const mx::array log_probabilities = model_.LogProbabilities(
-      model_.Features(samples), language_id, use_itn, cancel);
   const mx::array predictions =
-      mx::astype(mx::argmax(log_probabilities, -1), mx::int32);
+      mx::astype(mx::argmax(model_.Logits(model_.Features(samples), language_id,
+                                          use_itn, cancel),
+                            -1),
+                 mx::int32);
   mx::eval(predictions);
   const int32_t *ids = predictions.data<int32_t>();
   const int frame_count = static_cast<int>(predictions.size());

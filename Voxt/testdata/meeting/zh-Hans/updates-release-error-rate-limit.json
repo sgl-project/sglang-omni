@@ -1,0 +1,14 @@
+{
+  "name": "updates-release-error-rate-limit",
+  "kind": "updates-release",
+  "updates_release": {
+    "available": true,
+    "done": true,
+    "newer": false,
+    "title": "无法检查更新",
+    "subtitle": "",
+    "error_text": "GitHub 限制了检查的频率。请一小时后再试。",
+    "notes": "",
+    "download": ""
+  }
+}

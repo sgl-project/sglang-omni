@@ -18,24 +18,16 @@
 #include <memory>
 #include <stdexcept>
 
-#include "qwen3_asr/asr_service.h"
+#include "common/asr_service.h"
 #include "sensevoice/sensevoice_transcriber.h"
 
 namespace {
 
-template <typename Value>
-Value Required(const std::optional<Value> &value, const std::string &name) {
-  if (!value.has_value()) {
-    throw std::invalid_argument(name + " is required with vad_model_directory");
-  } else {
-  }
-  return *value;
-}
-
 // Note (Jiaxin Deng): a finite number of seconds read as a double, as Voxt
 // holds the chunk lengths it sends.
 double Seconds(const asr_service::FormFields &form, const std::string &name) {
-  Required(asr_service::NumberField(form, name), name);
+  asr_service::RequiredField(asr_service::NumberField(form, name), name,
+                             "vad_model_directory");
   return std::stod(*asr_service::TextField(form, name));
 }
 
@@ -60,14 +52,18 @@ public:
         asr_service::TextField(form, "vad_model_directory");
     if (vad_directory.has_value()) {
       options.speech = {
-          Required(asr_service::NumberField(form, "vad_threshold"),
-                   "vad_threshold"),
-          Required(asr_service::IntegerField(form, "vad_min_speech_ms"),
-                   "vad_min_speech_ms"),
-          Required(asr_service::IntegerField(form, "vad_min_silence_ms"),
-                   "vad_min_silence_ms"),
-          Required(asr_service::IntegerField(form, "vad_speech_pad_ms"),
-                   "vad_speech_pad_ms")};
+          asr_service::RequiredField(
+              asr_service::NumberField(form, "vad_threshold"), "vad_threshold",
+              "vad_model_directory"),
+          asr_service::RequiredField(
+              asr_service::IntegerField(form, "vad_min_speech_ms"),
+              "vad_min_speech_ms", "vad_model_directory"),
+          asr_service::RequiredField(
+              asr_service::IntegerField(form, "vad_min_silence_ms"),
+              "vad_min_silence_ms", "vad_model_directory"),
+          asr_service::RequiredField(
+              asr_service::IntegerField(form, "vad_speech_pad_ms"),
+              "vad_speech_pad_ms", "vad_model_directory")};
       options.max_chunk_seconds = Seconds(form, "vad_max_chunk_seconds");
       options.chunk_overlap_seconds =
           Seconds(form, "vad_chunk_overlap_seconds");
@@ -87,13 +83,7 @@ public:
     return [this, samples = std::move(samples), options,
             vad_directory](const std::atomic<bool> &cancel) mutable {
       if (vad_directory.has_value()) {
-        if (detector_ == nullptr || detector_directory_ != *vad_directory) {
-          detector_.reset();
-          detector_ = std::make_unique<silero_vad::SileroVAD>(*vad_directory);
-          detector_directory_ = *vad_directory;
-        } else {
-        }
-        options.voice_activity_detector = detector_.get();
+        options.voice_activity_detector = &detectors_.Load(*vad_directory);
       } else {
       }
       return transcriber_.Transcribe(samples, options, cancel);
@@ -102,10 +92,8 @@ public:
 
 private:
   sensevoice::SenseVoiceTranscriber transcriber_;
-  // Note (Dayuxiaoshui): as the Cohere server keeps it, the Silero VAD of the
-  // last directory a request named, used on the worker thread only.
-  mutable std::unique_ptr<silero_vad::SileroVAD> detector_;
-  mutable std::string detector_directory_;
+  // Touched on the worker thread only.
+  mutable silero_vad::SileroVADCache detectors_;
 };
 
 } // namespace

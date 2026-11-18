@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Greedy speculation must preserve output across rejection, EOS and budgets."""
+"""Greedy Whisper speculation and window batching preserve serial output."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import pytest
-from native_server import silent_wav
+from native_server import VOXT_SAMPLE_RATE, SupervisedServer, silent_wav, sse_payloads
 
 WIDTH = 8
 VOCABULARY_SIZE = 32
@@ -46,7 +46,7 @@ def write_safetensors(path: Path, tensors: dict[str, Tensor]) -> None:
 @pytest.fixture
 def checkpoints(tmp_path: Path) -> tuple[Path, Path, Path]:
     """A one-layer target, a draft equal to it, and a decoder-only draft unlike it."""
-    generator = random.Random(42)
+    generator = random.Random(7)
 
     def normal(standard_deviation: float, shape: tuple[int, ...]) -> Tensor:
         return Tensor(
@@ -240,3 +240,70 @@ def test_immediate_eos(
         assert row["text"] == ""
         assert row["generated_token_count"] == 0
         assert row["finish_reason"] == "stop"
+
+
+def test_batched_windows_match_separate_requests(
+    runtime_bin: Path, checkpoints: tuple[Path, Path, Path]
+) -> None:
+    """An early EOS in the middle of a batch leaves the later windows in order."""
+    target, _, _ = checkpoints
+    generation = json.loads((target / "generation_config.json").read_text())
+    generation["eos_token_id"] = ord("V") - FIRST_TOKEN_CODE
+    (target / "generation_config.json").write_text(json.dumps(generation))
+
+    window_frames = 30 * VOXT_SAMPLE_RATE
+    waveform = []
+    for seconds, amplitude, frequency in (
+        (27, 10000, 440),
+        (30, 0, 100),
+        (30, 26000, 1500),
+        (30, 20000, 250),
+        (5, 32000, 300),
+    ):
+        frame_count = seconds * VOXT_SAMPLE_RATE
+        pcm = struct.pack(
+            f"<{frame_count}h",
+            *(
+                int(
+                    amplitude * math.sin(2 * math.pi * frequency * i / VOXT_SAMPLE_RATE)
+                )
+                for i in range(frame_count)
+            ),
+        )
+        waveform.append(pcm)
+
+    server = SupervisedServer(runtime_bin / "whisper_server", "whisper", target)
+
+    def transcribe(pcm: bytes) -> dict[str, object]:
+        wav_header = silent_wav(len(pcm) // 2)[:44]
+        response = server.post_form(
+            {
+                "stream": "true",
+                "include_generation_metadata": "true",
+                "max_new_tokens": "20",
+            },
+            wav_header + pcm,
+        )
+        assert response.status == 200
+        return json.loads(sse_payloads(response.body)[0])
+
+    try:
+        separate = [transcribe(pcm) for pcm in waveform]
+        joined_pcm = (
+            b"".join(pcm.ljust(window_frames * 2, b"\0") for pcm in waveform[:-1])
+            + waveform[-1]
+        )
+        batch = transcribe(joined_pcm)
+    finally:
+        server.stop()
+
+    separate_texts = [row["text"] for row in separate]
+    assert separate[1]["generation_metadata"]["finish_reason"] == "stop"
+    assert separate[2]["generation_metadata"]["finish_reason"] == "length"
+    assert len(set(separate_texts)) > 2
+    metadata = batch["generation_metadata"]
+    assert metadata["window_texts"] == separate_texts
+    assert metadata["finish_reason"] == "length"
+    assert metadata["generated_token_count"] == sum(
+        row["generation_metadata"]["generated_token_count"] for row in separate
+    )
