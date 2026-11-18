@@ -91,14 +91,16 @@ func TestShortcutsSettings(t *testing.T) {
 		t.Error("a feature without shortcut")
 	}
 	// The Strict shortcuts row above the table pushes this row near the
-	// bottom; with taller fonts (Linux CI) it is below the window.
-	scrollToText(tt, "Paste the last result ⌃⌥V")
-	click(t, tt, "Paste the last result ⌃⌥V")
+	// bottom; with taller fonts (Linux CI) it is below the window. The
+	// rows name the keys as the OS writes them (uitext.HotkeyText).
+	pasteRow := "Paste the last result " + uitext.HotkeyText("Control+Option+V")
+	scrollToText(tt, pasteRow)
+	click(t, tt, pasteRow)
 	if a.settingsOpen || a.shownPath() != "/transcribe" {
 		t.Fatalf("row click: %v %s", a.settingsOpen, a.shownPath())
 	}
 	a.navigate("/settings/shortcuts")
-	click(t, tt, "Translate Right ⌥")
+	click(t, tt, "Translate "+uitext.HotkeyText("RightOption"))
 	if a.shownPath() != "/translate" {
 		t.Fatalf("Translate row: %s", a.shownPath())
 	}
