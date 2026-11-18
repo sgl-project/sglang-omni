@@ -155,11 +155,12 @@ func (a *app) rebuildMeetingDetail() {
 	if a.mv.translator == nil || a.mv.locale != i18n.Locale() {
 		a.mv.translator = i18n.NewTranslator(i18n.Locale())
 	}
+	a.mv.detailMTD, a.mv.detailActive = a.meetingMTDInstalled(), a.meetingActive()
 	a.mv.detailView = buildMeetingDetailViewState(a.mv.translator, meetingDetailStateInput{
 		Meeting: detail.meeting, Segments: detail.segments, Chat: detail.chat,
 		Loading: detail.loading, Answering: detail.busy, Correcting: detail.correcting,
 		Error: detail.err, CanUseLLM: len(a.installed(local.LLM)) > 0,
-		MeetingActive: a.meetingActive(), AudioReady: detail.audioReady, MTDInstalled: a.meetingMTDInstalled(),
+		MeetingActive: a.mv.detailActive, AudioReady: detail.audioReady, MTDInstalled: a.mv.detailMTD,
 		Playback: meetingPlaybackStateInput{
 			Position: detail.playback.pos, Playing: detail.playback.playing, Highlight: detail.playback.highlight,
 		},

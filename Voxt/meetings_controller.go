@@ -42,10 +42,13 @@ type meetingsView struct {
 	hasMore    bool
 	detail     *meetingDetail
 	detailView *meetingDetailViewState
-	locale     string
-	translator *i18n.Translator
-	listItems  []meetingItemViewState
-	listKey    meetingListCacheKey
+	// The detail's other inputs that change outside its own events, to rebuild it when they do.
+	detailMTD    bool
+	detailActive bool
+	locale       string
+	translator   *i18n.Translator
+	listItems    []meetingItemViewState
+	listKey      meetingListCacheKey
 }
 
 type meetingsState struct {
@@ -133,7 +136,8 @@ func (a *app) prepareMeetingsPage() {
 	a.refreshMeetingAudio()
 	if a.mv.detail != nil {
 		canUseLLM := len(a.installed(local.LLM)) > 0
-		if a.mv.detailView == nil || a.mv.detailView.CanUseLLM != canUseLLM || a.mv.locale != i18n.Locale() {
+		if a.mv.detailView == nil || a.mv.detailView.CanUseLLM != canUseLLM || a.mv.locale != i18n.Locale() ||
+			a.mv.detailMTD != a.meetingMTDInstalled() || a.mv.detailActive != a.meetingActive() {
 			a.rebuildMeetingDetail()
 		}
 		if a.mvUI.detail == nil {

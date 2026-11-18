@@ -229,6 +229,31 @@ func TestMeetingDetailExplainsSpeakerLabelsWithoutMTD(t *testing.T) {
 	}
 }
 
+// Installing MTD while a finished meeting is open hides the hint at once.
+func TestMeetingDetailHidesSpeakerHintOnceMTDInstalled(t *testing.T) {
+	const guidance = "Download MOSS-Transcribe-Diarize on the Speech models page to label the other side as Speaker 1–4."
+	a, _, tt := newTestApp(t)
+	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
+	if _, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
+		ID: "m-speaker-install", CreatedAt: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+		Status: store.MeetingDone, Mode: store.MeetingModeMeeting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tt.SetSize(windowWidth, 900)
+	a.navigate("/meetings")
+	a.openMeetingDetail("m-speaker-install")
+	frames(tt)
+	if _, ok := tt.Find(guidance); !ok {
+		t.Fatalf("no guidance before MTD (%q)", firstTexts(tt))
+	}
+	a.local = &meetingMTDLocal{provider: &meetingDiarizerFake{}}
+	frames(tt)
+	if _, ok := tt.Find(guidance); ok {
+		t.Fatalf("guidance still shows with MTD installed (%q)", firstTexts(tt))
+	}
+}
+
 // #4019: an open meeting gets the room beside a narrow list, or the page
 // alone in a narrow window, and its details scroll as one: the transcript
 // is not a scroll box of its own under the summary.
