@@ -358,10 +358,15 @@ func TestSessionEscapeAndFailures(t *testing.T) {
 				s.History.KeepCount = 50
 			}, keys)
 			base := time.Now()
+			midnight := time.Date(base.Year(), base.Month(), base.Day(), 0, 0, 0, 0, base.Location())
 			for i := range 50 {
+				createdAt := midnight
+				if base.Sub(midnight) >= 100*time.Millisecond {
+					createdAt = base.Add(-time.Duration(i+1) * time.Millisecond)
+				}
 				if err := a.lib.store.History().Put(context.Background(), store.Entry{
 					ID: fmt.Sprintf("01DONEBEFORE000000000000%02d", i), Kind: store.KindTranscribe, Status: store.StatusDone,
-					CreatedAt: base.Add(-time.Duration(i+1) * time.Millisecond), Result: fmt.Sprintf("Earlier result %d.", i),
+					CreatedAt: createdAt, Result: fmt.Sprintf("Earlier result %d.", i),
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -374,15 +379,18 @@ func TestSessionEscapeAndFailures(t *testing.T) {
 			frames(tt)
 			drain(a)
 			frames(tt)
-			countBefore := a.hm.today.count
+			if a.hm.today.count != 50 {
+				t.Fatalf("initial today count %d, want 50", a.hm.today.count)
+			}
 			genBefore := a.hm.gen
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
+			a.pump("Home post-prune refresh", func() bool { return a.hm.gen > genBefore && a.hm.today.count == 49 })
 			drain(a)
 			frames(tt)
 			if a.hm.gen <= genBefore {
 				t.Fatalf("Home did not refresh after cancel: gen %d -> %d", genBefore, a.hm.gen)
 			}
-			if countBefore == 50 && a.hm.today.count != 49 {
+			if a.hm.today.count != 49 {
 				t.Errorf("Home today count after pruning cancel: %d, want 49", a.hm.today.count)
 			}
 			if !a.hist.stale {
