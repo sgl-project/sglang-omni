@@ -29,7 +29,7 @@ func snapshotsHome(t *testing.T, out string) {
 			for _, state := range []string{"first-missing", "first-ready", "returning"} {
 				a, _, tt := newTestApp(t)
 				tt.SetSize(size[0], size[1])
-				tt.SetDark(run.dark)
+				setSnapshotMode(a, tt, run.dark)
 				tt.SetScale(2)
 				a.version = "0.1.0"
 				if run.lang != "en" {

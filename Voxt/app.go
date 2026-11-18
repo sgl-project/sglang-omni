@@ -18,30 +18,30 @@ import (
 //	trayState         tray.go         the menu bar icon
 //	permissionsState  permissions.go  Settings → Permissions
 //	familyState       family.go       the ActNow family (internal/actnow): the other apps, shared settings
-//	modelsState       models_page.go  the Speech models page, the local models (internal/local)
+//	modelsState       models_controller.go  the Speech models page, the local models (internal/local)
 //	memoryState       models_memory.go  the loaded models' memory (the Speech models page)
 //	omniState         models_omni.go  the speech models' runtime (internal/omni)
 //	remoteState       remote_link.go  the remote language models, the Language models page
 //	sessionState      session_link.go  sessions, shortcuts, the answer card
 //	overlayState      overlay.go      the recording overlay
-//	transcribeState   feature_page.go  the feature pages (Transcribe, Translate, Rewrite)
-//	historyState      history_page.go the History page
+//	transcribeState   feature_controller.go  the feature pages (Transcribe, Translate, Rewrite)
+//	historyState      history_controller.go the History page
 //	appEnhanceState   appenhance.go   App enhancement: the groups, address reads, the page
-//	dictionaryState   dictionary_page.go  the Dictionary page
-//	homeState         home_page.go    Home: readiness, today, recent results
+//	dictionaryState   dictionary_controller.go  the Dictionary page
+//	homeState         home_controller.go Home: readiness, today, recent results
 //	onboardingState   onboarding.go   the setup guide
-//	scPromptState     settings_shortcuts_family.go  a shortcut another ActNow app uses too: the prompt
+//	scPromptState     settings_shortcuts_family_controller.go  a shortcut another ActNow app uses too: the prompt
 //	audioState        settings_audio.go   Settings → Audio, the recording's sounds
 //	soundsState       settings_sounds.go  the sounds' presets and previews
 //	muteState         mute_link.go    the system's output, muted while recording
 //	updateState       updates.go      the updater, an update installed while running
-//	notesState        notes_page.go   the Notes page
+//	notesState        notes_controller.go   the Notes page
 //	learnState        learn_link.go   the watch that learns from the user's corrections
-//	historyAccessState history_access.go  other programs reading the history
+//	historyAccessState history_access_controller.go  other programs reading the history
 //	transcribeSocketState transcribe_socket.go  `Voxt transcribe`'s socket
 //	meetingState        meeting_link.go meetings (dev builds)
-//	meetingOverlayState meeting_overlay.go the meeting floating window
-//	meetingsState       meetings_page.go the Meetings page (dev builds)
+//	meetingOverlayState meeting_overlay_window.go the meeting floating window
+//	meetingsState       meetings_controller.go the Meetings page (dev builds)
 //
 // Add fields to your area's struct, not here.
 type app struct {
@@ -63,7 +63,7 @@ type app struct {
 	modelsState
 	memoryState
 	omniState
-	llmDbg llmDebugUI // llm_debug.go
+	llmDbg llmDebugState // llm_debug.go
 	remoteState
 	sessionState
 	overlayState
@@ -84,8 +84,7 @@ type app struct {
 	learnState
 	historyAccessState
 	transcribeSocketState
-	mainTranscript, overlayTranscript transcriptPreview
-	bubbleTranscripts                 []*transcriptPreview
+	mainTranscript transcriptPreview // transcript_preview_controller.go
 	meetingState
 	meetingOverlayState
 	meetingsState
@@ -98,7 +97,7 @@ func newApp(lib *library, h *helperHost) *app {
 	a.openShell(lib)
 	a.openPermissions()
 	a.openFamily()          // family.go: before the models, whose library is the family's
-	a.openModels()          // models_page.go
+	a.openModels()          // models_controller.go
 	a.openAppEnhancement()  // appenhance.go
 	a.openAudio()           // settings_audio.go
 	a.openHistorySettings() // history_settings_ops.go: the recordings folder, the clean-up
@@ -144,6 +143,7 @@ func (a *app) quit() {
 	}
 	a.closeSessions() // session_link.go
 	a.closeOverlay()  // overlay.go
+	a.stopMeetingAudioWatch(a.mv.detail)
 	a.destroyMeetingOverlay()
 	a.closeTray()
 	a.closeMute() // mute_link.go: the output back before the helper goes

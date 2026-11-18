@@ -1,6 +1,6 @@
 html, body { margin: 0; background: var(--background); }
 body { font: 1rem/1.55 -apple-system, BlinkMacSystemFont, sans-serif; overflow-wrap: anywhere; }
-main { display: flow-root; }
+main { display: flow-root; box-sizing: border-box; padding-right: var(--padding-right); }
 main > :first-child { margin-top: 0; }
 main > :last-child { margin-bottom: 0; }
 p, ul, ol, blockquote, pre, .table-viewport, .math.display { margin: .8em 0; }

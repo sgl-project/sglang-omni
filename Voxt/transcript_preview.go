@@ -1,48 +1,25 @@
 package main
 
+// The transcript preview's view half: the result's WebView once its markup
+// is ready (transcript_preview_controller.go builds it), and the markup.
+
 import (
-	"context"
-	"fmt"
 	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown/parser"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/transcriptpreview"
 )
 
-type transcriptPreviewInput struct {
-	key, source            string
-	size                   float32
-	text, link, background ui.Color
-	dark                   bool
-	streaming              bool
-}
-
-// Preview state belongs to its host window's main thread.
-type transcriptPreview struct {
-	input                          transcriptPreviewInput
-	view                           *mygo.WebView
-	version                        uint64
-	height                         int
-	ready, loaded, running, closed bool
-}
-
-var transcriptUpdate = mygo.NewEvent[transcriptpreview.Update]("transcript-preview")
+// uiColor names ui.Color for the preview's logic file, which does not
+// import MyGo's UI (shell.go's aliases do the same).
+type uiColor = ui.Color
 
 func (p *transcriptPreview) place(c *ui.Context, win *mygo.Window, in transcriptPreviewInput, fallback, limit float32) ui.Element {
 	if win == nil || in.source == "" {
 		return ui.Element{}
 	}
-	if p.input != in || p.view != nil && p.view.IsDestroyed() {
-		old := p.input
-		p.input = in
-		p.version++
-		if old.key != in.key || old.size != in.size || old.text != in.text || old.link != in.link || old.dark != in.dark || old.background != in.background || p.view != nil && p.view.IsDestroyed() {
-			p.height, p.ready, p.loaded = 0, false, false
-		}
-		win.Update(func() { p.update(win) })
-	}
+	p.request(win, in)
 	if !p.ready || p.view == nil || p.view.IsDestroyed() {
 		return ui.Element{}
 	}
@@ -51,82 +28,6 @@ func (p *transcriptPreview) place(c *ui.Context, win *mygo.Window, in transcript
 		height = float32(p.height)
 	}
 	return ui.WebView(c, p.view).Height(min(height, limit)).MinWidth(0).Shrink(0)
-}
-
-// Only one parse runs per preview. Updates arriving meanwhile replace the
-// pending input, so a fast stream cannot queue an unbounded number of jobs.
-func (p *transcriptPreview) update(win *mygo.Window) {
-	if p.running || p.closed || win.IsDestroyed() {
-		return
-	}
-	in, version := p.input, p.version
-	p.running = true
-	go func() {
-		markup := transcriptMarkup(in.source, in.streaming)
-		win.Update(func() {
-			p.running = false
-			if p.closed || win.IsDestroyed() {
-				return
-			}
-			if p.version != version {
-				p.update(win)
-				return
-			}
-			if markup == "" {
-				p.ready = false
-				return
-			}
-			if p.view == nil || p.view.IsDestroyed() {
-				view, err := win.NewWebView(mygo.WebViewOptions{BackgroundColor: cssColor(in.background)})
-				if err != nil {
-					return
-				}
-				p.view, p.loaded = view, false
-			}
-			data := transcriptpreview.Update{HTML: markup, Version: version, Streaming: in.streaming}
-			if !p.loaded {
-				p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
-				p.loaded = true
-			} else {
-				_ = transcriptUpdate.EmitPage(p.view.Page(), data)
-			}
-			p.ready = true
-		})
-	}()
-}
-
-func cssColor(c ui.Color) string { return fmt.Sprintf("#%02x%02x%02x%02x", c.R, c.G, c.B, c.A) }
-
-func (a *app) transcriptResult(c *ui.Context, key, source string, streaming bool) {
-	t := c.Theme()
-	in := transcriptPreviewInput{key: key, source: source, size: t.FontSize, text: t.Text, link: t.Accent, background: tok(t).Subtle, dark: t.Dark, streaming: streaming}
-	if !a.mainTranscript.place(c, a.win, in, px(t, 110), px(t, 510)).Valid() {
-		ui.Text(c, source).Selectable()
-	}
-}
-
-type transcriptPreviewBridge struct{ app *app }
-
-func (b transcriptPreviewBridge) Resize(ctx context.Context, version uint64, height int) {
-	page := mygo.CallerPage(ctx)
-	if page == nil || page.WebView() == nil || height < 1 {
-		return
-	}
-	host := page.Window()
-	host.Update(func() {
-		a := b.app
-		previews := append([]*transcriptPreview{&a.mainTranscript, &a.overlayTranscript}, a.bubbleTranscripts...)
-		for _, p := range previews {
-			if p == nil || !p.ready || p.view != page.WebView() || p.version != version || p.height == height {
-				continue
-			}
-			p.height = height
-			if p != &a.mainTranscript {
-				a.overlayRestyle()
-			}
-			break
-		}
-	})
 }
 
 // transcriptMarkdown returns the markup for a formatted transcript. An empty result

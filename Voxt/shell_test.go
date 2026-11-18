@@ -22,6 +22,24 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
+func TestNoticeModelsChangeWithTimeZone(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	instant := time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
+	a.notices = []core.Notification{{ID: "zone", Time: instant.Add(-time.Hour)}}
+	first := a.noticesModel(instant)
+	second := a.noticesModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	if len(first) != 1 || len(second) != 1 || first[0].TimeHint == second[0].TimeHint {
+		t.Fatalf("notice cache kept stale timezone %q and %q", first[0].TimeHint, second[0].TimeHint)
+	}
+	a.announceShown = core.Notification{ID: "zone", Time: instant.Add(-time.Hour)}
+	a.announceShownOpen = true
+	firstAnnouncement := a.announcementModel(instant)
+	secondAnnouncement := a.announcementModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	if firstAnnouncement == nil || secondAnnouncement == nil || firstAnnouncement.Sub == secondAnnouncement.Sub {
+		t.Fatalf("announcement cache kept stale timezone %q and %q", firstAnnouncement.Sub, secondAnnouncement.Sub)
+	}
+}
+
 func TestSidebarAndShortcuts(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	if got := a.router.Path(); got != "/home" {
@@ -99,6 +117,32 @@ func TestPaletteFitsTheWindow(t *testing.T) {
 	}
 	if red, _, _, _ := tt.Image().At(3, int(r.Y+r.H/2)).RGBA(); red>>8 > 240 {
 		t.Errorf("the palette reaches the window's left edge (red %d at x=3 beside its search field)", red>>8)
+	}
+}
+
+func TestPalettePopulatesItsFirstFrame(t *testing.T) {
+	for _, name := range []string{"keyboard", "sidebar"} {
+		t.Run(name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			var counts []int
+			var opens []bool
+			tt := ui.NewTester(func(c *ui.Context) {
+				a.view(c)
+				counts = append(counts, len(a.paletteView.Items))
+				opens = append(opens, a.paletteOpen)
+			}, windowWidth, windowHeight)
+			before := len(counts)
+			if name == "keyboard" {
+				tt.Key(ui.Cmd, ui.KeyK)
+			} else if err := tt.Click("Command palette"); err != nil {
+				t.Fatal(err)
+			}
+			for i, open := range opens[before:] {
+				if open && counts[before+i] == 0 {
+					t.Fatalf("the palette's first open frame has no commands: counts %v, opens %v", counts, opens)
+				}
+			}
+		})
 	}
 }
 
@@ -225,9 +269,11 @@ func TestProblemCards(t *testing.T) {
 		t.Fatal("hovering the problem card shows its timestamp over the sidebar navigation")
 	}
 	click(t, tt, "Open Speech models")
-	if a.router.Path() != modelsPath {
-		t.Errorf("its action: %s", a.router.Path())
+	if a.shownPath() != modelsPath {
+		t.Errorf("its action: %s", a.shownPath())
 	}
+	tt.Key(0, ui.KeyEscape)
+	frames(tt)
 	// The helper: a card while it does not run, the newest on top.
 	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailMissing, Err: "voxtnew-helper was not found"})
 	if !has(tt, "Helper missing") || !has(tt, "2 notifications") || a.notices[0].ID != problemHelper {
@@ -371,6 +417,57 @@ func TestPermissionsMoved(t *testing.T) {
 	}
 	if a.router.Path() != "/home" {
 		t.Errorf("page under the dialog %s", a.router.Path())
+	}
+}
+
+// TestModelsMovedToSettings: both model resources have one home in Settings;
+// their old pages, deep links and palette commands open the same sections.
+func TestModelsMovedToSettings(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	for _, path := range []string{"/models", "/language-models"} {
+		if slices.ContainsFunc(pages, func(p navPage) bool { return p.path == path }) {
+			t.Errorf("%s is still a page of the sidebar", path)
+		}
+	}
+	for _, tc := range []struct {
+		open func()
+		want string
+	}{
+		{func() { a.navigate("/models") }, "/settings/models"},
+		{func() { a.openURL("voxtnew://models") }, "/settings/models"},
+		{func() { a.navigate("/language-models") }, "/settings/language-models"},
+		{func() { a.openURL("voxtnew://language-models") }, "/settings/language-models"},
+	} {
+		a.settingsOpen = false
+		a.navigate("/home")
+		tc.open()
+		frames(tt)
+		if got := a.shownPath(); got != tc.want {
+			t.Errorf("shown %s, want %s", got, tc.want)
+		}
+		if a.router.Path() != "/home" {
+			t.Errorf("page under the dialog %s", a.router.Path())
+		}
+	}
+	for _, link := range []string{"voxtnew://models/network", "voxtnew://settings/models/network"} {
+		a.netOpen = false
+		a.openURL(link)
+		if a.shownPath() != "/settings/models" || !a.netOpen {
+			t.Errorf("%s → %s, Network open %v", link, a.shownPath(), a.netOpen)
+		}
+	}
+	for id, want := range map[string]string{"go/models": "/settings/models", "go/language-models": "/settings/language-models"} {
+		i := slices.IndexFunc(a.commands(), func(cmd command) bool { return cmd.id == id })
+		if i < 0 {
+			t.Errorf("palette command %s is gone", id)
+			continue
+		}
+		cmd := a.commands()[i]
+		a.runCommand(cmd)
+		frames(tt)
+		if a.shownPath() != want {
+			t.Errorf("%s → %s, want %s", id, a.shownPath(), want)
+		}
 	}
 }
 
@@ -580,4 +677,18 @@ func TestHelperProcess(t *testing.T) {
 			return e.Message == "hotkey transcribe/0 trigger in com.tinyspeck.slackmacgap"
 		})
 	})
+}
+
+// A page that moved into Settings keeps its section's icon in the
+// command palette.
+func TestCommandIconsMovedPages(t *testing.T) {
+	if ic := commandIcon("go/models"); ic == nil || *ic != modelsIcon {
+		t.Error("go/models lost the Speech models icon")
+	}
+	if ic := commandIcon("go/language-models"); ic == nil || *ic != remoteIcon {
+		t.Error("go/language-models lost the Language models icon")
+	}
+	if ic := commandIcon("go/history"); ic == nil || *ic != historyIcon {
+		t.Error("go/history lost the page icon")
+	}
 }

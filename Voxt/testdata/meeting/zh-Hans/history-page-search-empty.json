@@ -1,0 +1,28 @@
+{
+  "name": "history-page-search-empty",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "error": "",
+    "kind": "transcribe",
+    "query": "nothing like this",
+    "tabs": [
+      "转录",
+      "翻译",
+      "改写",
+      "全部"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [],
+    "empty": {
+      "search": true,
+      "kind": "",
+      "title": "没有与“nothing like this”匹配的记录",
+      "body": "",
+      "action_label": "清除搜索"
+    }
+  }
+}
