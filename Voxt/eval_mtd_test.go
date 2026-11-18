@@ -211,25 +211,33 @@ func TestEvalMTDExpectedLanguages(t *testing.T) {
 		if cfg.draft != "" {
 			a = a.WithDraft(cfg.draft)
 		}
-		checked, failures := 0, 0
+		required := map[string][]string{
+			"en-1": {"first thing is we need to update the docs", "login bug"},
+			"en-3": {"remind me to call the dentist"},
+		}
+		seen := map[string]int{}
+		failures := 0
 		for _, c := range e.clips() {
-			if c.ID != "en-1" && c.ID != "en-3" {
+			wants, ok := required[c.ID]
+			if !ok {
 				continue
 			}
-			checked++
+			seen[c.ID]++
 			res, err := a.Transcribe(ctx, asr.FileRequest{Audio: c.PCM, Format: "pcm", Lang: c.Lang, Hints: e.set.Dictionary})
 			if err != nil {
 				t.Fatalf("%s %s: %v", cfg.name, c.ID, err)
 			}
-			for _, want := range c.Must {
+			for _, want := range wants {
 				if !strings.Contains(res.Text, want) {
 					failures++
 					t.Errorf("%s %s: expected English %q in %q", cfg.name, c.ID, want, res.Text)
 				}
 			}
 		}
-		if checked == 0 {
-			t.Fatal("en-1 and en-3 are required; leave VOXTNEW_EVAL_ONLY unset or include both")
+		for _, id := range []string{"en-1", "en-3"} {
+			if seen[id] != 1 {
+				t.Fatalf("%s: required en-1 and en-3 exactly once, got %s=%d", cfg.name, id, seen[id])
+			}
 		}
 		if failures > 0 {
 			t.Errorf("%s: %d expected-language assertions failed", cfg.name, failures)
