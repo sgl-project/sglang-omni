@@ -29,6 +29,13 @@ func rewriteNoCard(s *settings.Settings) { s.Features.Rewrite.ShowCard = false }
 // answer and its fallback, failures and the text given at Start.
 func TestWrite(t *testing.T) {
 	type check func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector)
+	requests := func(want int) check {
+		return func(t *testing.T, _ *harness, _ Snapshot, model *fakeLLM, _ *fakeSelector) {
+			if got := len(model.requests()); got != want {
+				t.Errorf("%d requests, want %d", got, want)
+			}
+		}
+	}
 	for _, tc := range []struct {
 		name    string
 		kind    Kind
@@ -140,46 +147,38 @@ func TestWrite(t *testing.T) {
 				}
 			},
 		},
-		{
-			name: "still untranslated: the source is not pasted", kind: store.KindTranslate, sel: &fakeSelector{text: "我们周五发布"}, llm: &fakeLLM{text: "我们周五发布。"},
+		{name: "still untranslated: the source is not pasted", kind: store.KindTranslate, sel: &fakeSelector{text: "我们周五发布"}, llm: &fakeLLM{text: "我们周五发布。"},
 			req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM,
-			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
-				if len(model.requests()) != 2 {
-					t.Errorf("%d requests", len(model.requests()))
-				}
-			},
+			check: requests(2),
 		},
-		{
-			name: "an unchanged mixed-language source is not pasted", kind: store.KindTranslate, sel: &fakeSelector{text: "Voxt supports 中文"}, llm: &fakeLLM{text: "Voxt supports 中文"},
+		{name: "an unchanged mixed-language source is not pasted", kind: store.KindTranslate, sel: &fakeSelector{text: "Voxt supports 中文"}, llm: &fakeLLM{text: "Voxt supports 中文"},
 			req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM,
 		},
-		{
-			name: "a failed strict retry does not paste the source", kind: store.KindTranslate, sel: &fakeSelector{text: "我们周五发布"}, llm: &fakeLLM{texts: []string{"我们周五发布"}, err: errors.New("503"), failOn: 2},
+		{name: "a failed strict retry does not paste the source", kind: store.KindTranslate, sel: &fakeSelector{text: "我们周五发布"}, llm: &fakeLLM{texts: []string{"我们周五发布"}, err: errors.New("503"), failOn: 2},
 			req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM,
-			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
-				if len(model.requests()) != 2 {
-					t.Errorf("%d requests", len(model.requests()))
-				}
-			},
+			check: requests(2),
 		},
-		{
-			name: "text already in the target language stays unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "我们周五发布"}, llm: &fakeLLM{text: "我们周五发布"},
+		{name: "text already in the target language stays unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "我们周五发布"}, llm: &fakeLLM{text: "我们周五发布"},
 			req: StartRequest{TargetLanguage: "zh-Hans"}, states: "reading composing delivering done", state: Done, result: "我们周五发布", pasted: true,
-			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
-				if len(model.requests()) != 1 {
-					t.Errorf("%d requests", len(model.requests()))
-				}
-			},
+			check: requests(1),
 		},
 		{name: "numbers can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "12:30"}, llm: &fakeLLM{text: "12:30"},
-			req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "12:30", pasted: true,
-		},
+			req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "12:30", pasted: true},
 		{name: "text already in a Latin target can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "Good morning"},
-			req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "Good morning", pasted: true,
-		},
-		{
-			name: "English is not a French translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "Good morning"},
-			req: StartRequest{TargetLanguage: "fr"}, set: func(s *settings.Settings) { s.General.MainLanguage = "en" }, states: "reading composing failed", state: Failed, problem: ProblemLLM,
+			req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "Good morning", pasted: true},
+		{name: "English is not a French translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "Good morning"},
+			req: StartRequest{TargetLanguage: "fr"}, set: func(s *settings.Settings) { s.General.MainLanguage = "en" }, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "a language-neutral name can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "Kubernetes"}, llm: &fakeLLM{text: "Kubernetes"},
+			req: StartRequest{TargetLanguage: "fr"}, set: func(s *settings.Settings) { s.General.MainLanguage = "en" }, states: "reading composing delivering done", state: Done, result: "Kubernetes", pasted: true},
+		{name: "French can stay unchanged in French", kind: store.KindTranslate, sel: &fakeSelector{text: "Bonjour, comment ça va ?"}, llm: &fakeLLM{text: "Bonjour, comment ça va ?"},
+			req: StartRequest{TargetLanguage: "fr"}, set: func(s *settings.Settings) { s.General.MainLanguage = "en" }, states: "reading composing delivering done", state: Done, result: "Bonjour, comment ça va ?", pasted: true},
+		{name: "French is not an English translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Bonjour, comment ça va ?"}, llm: &fakeLLM{text: "Bonjour, comment ça va ?"},
+			req: StartRequest{TargetLanguage: "en"}, set: func(s *settings.Settings) { s.General.MainLanguage = "en" }, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "English words are not a Chinese translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Hello, world!"}, llm: &fakeLLM{text: "Hello world, friends"},
+			req: StartRequest{TargetLanguage: "zh-Hans"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "a preserved name in the strict retry is delivered", kind: store.KindTranslate, sel: &fakeSelector{text: "发布“豆包”"}, llm: &fakeLLM{texts: []string{"发布“豆包”", "Release \"豆包\""}},
+			req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "Release \"豆包\"", pasted: true,
+			check: requests(2),
 		},
 		{
 			name: "translate into a card", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "早上好"},
