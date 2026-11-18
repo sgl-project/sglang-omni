@@ -45,6 +45,10 @@ public:
   const QuantizationConfig &Quantization(const std::string &prefix) const;
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
+  // Linear of a dense layer on its weight, transposed and possibly cast by
+  // the caller, so one cast can serve several calls.
+  mlx::core::array Linear(const mlx::core::array &x, const std::string &prefix,
+                          const mlx::core::array &transposed_weight) const;
   mlx::core::array LayerNorm(const mlx::core::array &x,
                              const std::string &prefix, float eps) const;
   mlx::core::array RmsNorm(const mlx::core::array &x, const std::string &prefix,
