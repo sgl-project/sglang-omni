@@ -1,0 +1,24 @@
+sglang_omni/models/duo/reference.py
+  s_9be4bd449be508::t_c3feadb5ee8271 6,12
+  s_9be4bd449be508::t_05602321eb6b1e 13-15
+docs/models/duo.md
+  s_9be4bd449be508::t_fb1985b9cf032c 7,17-20
+tests/unit_test/kernels/test_duo_kernels.py
+  s_9be4bd449be508::t_9e835dd8370455 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9076cce76696029decd06f83c9a69f5c21ff3fa3",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
