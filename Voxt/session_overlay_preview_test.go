@@ -38,17 +38,26 @@ func TestPreviewReopensWhenAskedAgain(t *testing.T) {
 }
 
 func TestPlainEndingRelayoutsTheCard(t *testing.T) {
-	// A stream whose markup only heals while it streams ($$ closed by
-	// inlineMathTail) ends as plain text with the source unchanged:
-	// adopt already dropped the height, and the page still relayouts.
+	// A stream whose markup only heals while it streams (the unclosed $$
+	// is preserved by inlineMathTail) ends as plain text with the source
+	// unchanged: adopt already dropped the height, and the final parse
+	// must still take the page down and relayout the card.
+	in := transcriptPreviewInput{key: "card", source: "so $$x^2", streaming: true}
+	if transcriptMarkup(in.source, true) == "" {
+		t.Fatal("this regression needs a nonempty streaming markup")
+	}
+	if transcriptMarkup(in.source, false) != "" {
+		t.Fatal("this regression needs the final markup to be plain")
+	}
 	restyled := 0
 	preview := &transcriptPreview{
-		input:   transcriptPreviewInput{key: "card", source: "so $$x^2", streaming: true},
+		input:   in,
+		version: 1,
 		ready:   true,
 		height:  132,
 		restyle: func() { restyled++ },
 	}
-	final := preview.input
+	final := in
 	final.streaming = false
 	if !preview.adopt(final) {
 		t.Fatal("a stream that ends renders once more")
@@ -56,17 +65,18 @@ func TestPlainEndingRelayoutsTheCard(t *testing.T) {
 	if preview.height != 0 {
 		t.Fatalf("adopt kept the stream's height %d", preview.height)
 	}
-	preview.dropPage()
-	if preview.ready || preview.height != 0 {
-		t.Fatalf("the plain text kept the preview: ready=%v height=%d", preview.ready, preview.height)
+	// The parse adopt scheduled, completed the way update completes it.
+	preview.parsed(nil, preview.input, transcriptMarkup(preview.input.source, preview.input.streaming))
+	if preview.ready || preview.height != 0 || preview.view != nil {
+		t.Fatalf("the plain ending kept the page: ready=%v height=%d view=%v", preview.ready, preview.height, preview.view != nil)
 	}
 	if restyled != 1 {
 		t.Fatalf("the card did not relayout when its page went away (restyled %d times)", restyled)
 	}
-	// Plain from the start: no page, no relayout.
+	// Plain from the start: no page ever showed, no relayout.
 	restyled = 0
-	plain := &transcriptPreview{restyle: func() { restyled++ }}
-	plain.dropPage()
+	plain := &transcriptPreview{input: in, restyle: func() { restyled++ }}
+	plain.parsed(nil, plain.input, transcriptMarkup(plain.input.source, false))
 	if restyled != 0 {
 		t.Fatalf("a preview that never showed relayouts (restyled %d times)", restyled)
 	}

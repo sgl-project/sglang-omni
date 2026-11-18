@@ -85,27 +85,33 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 				p.update(win)
 				return
 			}
-			if markup == "" {
-				p.dropPage()
-				return
-			}
-			if p.view == nil || p.view.IsDestroyed() {
-				view, err := win.NewWebView(mygo.WebViewOptions{BackgroundColor: cssColor(in.background)})
-				if err != nil {
-					return
-				}
-				p.view, p.loaded = view, false
-			}
-			data := transcriptpreview.Update{HTML: markup, Version: version, Streaming: in.streaming}
-			if !p.loaded {
-				p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, in.rightPadding, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
-				p.loaded = true
-			} else {
-				_ = transcriptUpdate.EmitPage(p.view.Page(), data)
-			}
-			p.ready = true
+			p.parsed(win, in, markup)
 		})
 	}()
+}
+
+// parsed applies a finished parse: plain text takes the shown page down
+// (dropPage); markup loads into the page, creating it first when needed.
+func (p *transcriptPreview) parsed(win *mygo.Window, in transcriptPreviewInput, markup string) {
+	if markup == "" {
+		p.dropPage()
+		return
+	}
+	if p.view == nil || p.view.IsDestroyed() {
+		view, err := win.NewWebView(mygo.WebViewOptions{BackgroundColor: cssColor(in.background)})
+		if err != nil {
+			return
+		}
+		p.view, p.loaded = view, false
+	}
+	data := transcriptpreview.Update{HTML: markup, Version: p.version, Streaming: in.streaming}
+	if !p.loaded {
+		p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, in.rightPadding, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
+		p.loaded = true
+	} else {
+		_ = transcriptUpdate.EmitPage(p.view.Page(), data)
+	}
+	p.ready = true
 }
 
 // dropPage takes the shown page down when its text turned plain: the
