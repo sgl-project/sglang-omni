@@ -2,6 +2,18 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+
+- **Translate does not silently deliver an untranslated answer** (#4153): after a strict retry, Voxt rejects an answer with clear script or vocabulary evidence of no translation and shows a localized failure with Try again. Parenthesized original names, language-neutral names, numbers, same-language text, and shared vocabulary still count as valid results.
+
+### 中文
+
+#### 修复
+
+- **翻译不会再静默交付未翻译的回答**（#4153）：严格重试后，如果回答仍有明确的文字系统或常见词汇证据表明没有翻译，Voxt 会显示对应语言的失败提示，可以重试。括号中的原名、语言中立名称、数字、同语言文本和共享词仍算有效结果。
+
 ## [2.1.1] - 2026-11-17
 
 ### Added
