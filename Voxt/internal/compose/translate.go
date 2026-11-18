@@ -97,16 +97,22 @@ func LanguageMismatch(text, target string) bool {
 	if !isLatin(target) {
 		return false
 	}
+	code := lang.Canonical(target)
+	switch code {
+	case "en", "fr", "es":
+	default:
+		return false // other Latin targets have no model, so stay fail-open
+	}
 	detected := latinLanguage(text)
-	return detected != "" && detected != lang.Canonical(target)
+	return detected != "" && detected != code
 }
 
 // commonLatinWords identifies a language from function words and common
 // greetings, not from capitalization or a script shared with another language.
 var commonLatinWords = map[string][]string{
 	"en": {"the", "a", "an", "and", "or", "is", "are", "am", "to", "of", "in", "on", "for", "with", "this", "that", "these", "those", "good", "morning", "goodbye", "hello", "hi", "world", "friends", "you", "your", "we", "our", "it", "its", "thank", "thanks", "please", "yes", "no"},
-	"fr": {"le", "la", "les", "des", "de", "du", "et", "ou", "est", "sont", "à", "au", "aux", "ce", "cette", "ces", "bonjour", "salut", "bonsoir", "comment", "ça", "va", "merci", "je", "tu", "il", "elle", "une", "un", "nous", "vous", "ils", "elles", "pas", "oui", "non"},
-	"es": {"el", "la", "los", "las", "de", "del", "y", "o", "es", "son", "en", "con", "por", "para", "una", "un", "hola", "adiós", "gracias", "cómo", "como", "qué", "que", "sí", "no", "buenos", "buenas", "días", "noches", "señor", "señora", "yo", "tú", "usted", "nosotros", "ellos", "ellas"},
+	"fr": {"le", "la", "les", "des", "de", "du", "et", "ou", "est", "sont", "à", "au", "aux", "ce", "cette", "ces", "bonjour", "salut", "bonsoir", "comment", "ça", "va", "merci", "je", "tu", "il", "elle", "une", "un", "nous", "vous", "ils", "elles", "pas", "oui", "non", "on", "a"},
+	"es": {"el", "la", "los", "las", "de", "del", "y", "o", "es", "son", "en", "con", "por", "para", "una", "un", "hola", "adiós", "gracias", "cómo", "como", "qué", "que", "sí", "no", "buenos", "buenas", "días", "noches", "señor", "señora", "yo", "tú", "usted", "nosotros", "ellos", "ellas", "a"},
 }
 
 func latinLanguage(text string) string {
