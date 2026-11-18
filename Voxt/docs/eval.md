@@ -157,6 +157,8 @@ Since 11-09 (#3644 FB27, rambling left in) each example also repeats a phrase, w
 The faults without the example were the self-corrections kept and "uh" left in. No answer copied the example. A check that took three shared words for a copy ("Please send the report to me by Thursday") was too strict: it now needs five words in a row.
 
 **Decision: the example turn is in.** It applies to Transcribe and spoken Translate, with Cleanup on, for both template sets. For Translate, the example is sent only when the target is English or Simplified Chinese, the two languages the example's answer is written in.
+
+**Update (#4228):** Transcribe no longer sends this example turn. A third-party model treated a short dictation as an instruction to rewrite the example and returned its text instead of the transcript. Transcribe now puts the cleanup rules in the system prompt without an example, in both the built-in and custom prompt paths. Spoken Translate keeps the translated example described here.
 - `llm.fast` gains the most: its faultless clean-ups go from 14 to 16 of 20, and its translations from 2 to 6 of 6.
 - `llm.balanced`'s translations go from 4 to 6 of 6. Its clean-ups stay at 18 of 20, a little closer to the expected text.
 - It costs about 80–160 ms more of the first token: the example is about 60 more prompt tokens.

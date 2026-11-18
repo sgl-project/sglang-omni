@@ -12,7 +12,7 @@
 //	       + [Scene]         app enhancement: the app and the group's rules (M5)
 //	       + [Glossary]      the dictionary's terms (a dictionary of up to GlossaryAllUpTo), or the rule for a <glossary> block
 //	       + Output contract only the final text
-//	[user, assistant]        the clean-up's example (speech: Example)
+//	[user, assistant]        spoken Translate's clean-up example (Example)
 //	user   = [<glossary>…</glossary>]  a larger dictionary's terms that the text mentions
 //	         <input>…</input>
 //
@@ -286,6 +286,9 @@ func Build(in Input) (Output, error) {
 	switch in.Task {
 	case Transcribe:
 		add("input", render("input-speech", nil))
+		if in.Cleanup {
+			add("cleanup", render("cleanup", nil))
+		}
 		if in.Structure {
 			add("structure", render("structure", nil))
 		} else {
@@ -359,11 +362,6 @@ func Build(in Input) (Output, error) {
 	} else {
 		out.User = out.withGlossary(UserMessage(in.Text))
 		if input, answer, ok := Example(in); ok {
-			if in.Task == Transcribe {
-				// The example answers in the form the output contract
-				// asks for: the final text between <output> tags.
-				answer = outputOpen + "\n" + answer + "\n" + outputClose
-			}
 			out.History = []Message{{Role: "user", Content: UserMessage(input)}, {Role: "assistant", Content: answer}}
 		}
 	}
