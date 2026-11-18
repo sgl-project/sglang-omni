@@ -7,6 +7,7 @@ Browser playgrounds for SGLang-Omni.
 | `realtime/` | Native full-duplex audio/video (MiniCPM-o validated). | HTML / CSS / JS |
 | `qwen-omni/` | Qwen3-Omni — multimodal chat (text / audio / image / video). | HTML / CSS / JS |
 | `s2pro/` | S2 Pro — text-to-speech with voice cloning, streaming and non-streaming. | Gradio |
+| [duo/](duo/) | Duo — streaming video and speech with a reference portrait. | HTML / CSS / JS |
 | `higgs/` | Higgs Audio v3 — multilingual TTS with inline control tokens (emotion / style / sfx / prosody) and streaming. | HTML / CSS / JS |
 
 Each `start.sh` launches the backend, waits for `/health`, then launches the

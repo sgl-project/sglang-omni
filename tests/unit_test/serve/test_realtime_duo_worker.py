@@ -161,10 +161,10 @@ async def test_realization_worker_keeps_loop_live_and_defers_cleanup() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "interval_seconds,expected_resets", [(30.0, [43, 86]), (0.0, [])]
+    "interval_blocks,expected_resets", [(43, [43, 86]), (None, [2])]
 )
 async def test_server_resets_dit_on_generated_media_boundaries(
-    interval_seconds: float, expected_resets: list[int]
+    interval_blocks: int | None, expected_resets: list[int]
 ) -> None:
     """Reset generated history without reopening Intent or requiring a client update."""
     hooks = Mock(spec=LiveDuoSessionHooks)
@@ -173,7 +173,7 @@ async def test_server_resets_dit_on_generated_media_boundaries(
             hooks,
             max_blocks=88,
             supports_realization_kv_reset=True,
-            realization_kv_reset_interval_seconds=interval_seconds,
+            realization_kv_reset_interval_blocks=interval_blocks,
         )
     )
 
@@ -188,6 +188,17 @@ async def test_server_resets_dit_on_generated_media_boundaries(
     spec = DUO_DECODE_SPECS["duo_5_17"]
     try:
         for block in range(88):
+            if interval_blocks is None and block in (2, 3):
+                await adapter.update(
+                    {
+                        "sglang": {
+                            "realization": {
+                                **configuration["sglang"]["realization"],
+                                "kv_reset_generation": 1,
+                            }
+                        }
+                    }
+                )
             await adapter.process(
                 Unit(
                     block,
@@ -424,7 +435,7 @@ async def test_realization_decode_overlaps_next_plan_and_preserves_delivery_life
                 max_blocks=2,
                 decode_executor=executor,
                 supports_realization_kv_reset=True,
-                realization_kv_reset_interval_seconds=spec.duration_ms / 1000,
+                realization_kv_reset_interval_blocks=1,
             )
         )
         await adapter.open(

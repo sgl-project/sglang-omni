@@ -1,0 +1,23 @@
+:root{color-scheme:dark;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#10171b;color:#edf4f0}*{box-sizing:border-box}body{margin:0}main{max-width:1140px;margin:auto;padding:4vh 5vw}h1{font-size:clamp(30px,5vw,51px);letter-spacing:-.04em;margin:.15em 0}.kicker{color:#85e0b4;font:600 12px/1.4 monospace;letter-spacing:.14em}header p,.note,article span,footer{color:#acbbb9}p{margin:.3rem 0 1rem}.toolbar,footer,article>div:first-child{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.toolbar{margin:23px 0}button{font:inherit;font-weight:650;border:1px solid transparent;border-radius:8px;background:#a3f3c9;color:#15251e;padding:8px 17px;cursor:pointer}button:disabled{opacity:.44;cursor:default}.secondary,.ghost{background:#233039;color:#ebf3ef}.ghost{background:transparent;border-color:#4b575a}#status{margin-left:auto;color:#96e9bb}.streams{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}article{padding:12px;background:#192328;border:1px solid #334047;border-radius:13px}article>div:first-child,footer{justify-content:space-between}article span,footer,.note{font-size:13px}.screen{position:relative;height:clamp(230px,53vh,590px);background:#0c1013;margin-top:10px;border-radius:6px;overflow:hidden;display:grid;place-items:center}video,canvas{width:100%;height:100%;object-fit:contain}.screen i{position:absolute;color:#869597;font-style:normal;font-size:14px}.screen i[hidden]{display:none}footer{padding:13px 2px}.note{margin-top:10px}@media(max-width:650px){main{padding:20px 12px}.streams{gap:6px}article{padding:5px}article span{font-size:10px}.screen{height:auto;aspect-ratio:3/4}.toolbar{gap:6px}button{padding:7px 9px}#status{width:100%;margin-left:0}}
+
+details{margin-top:18px;background:#192328;border:1px solid #334047;border-radius:12px;padding:12px 16px}summary{cursor:pointer;color:#baf4d6;font-weight:650}fieldset{border:0;padding:10px 0 0;display:grid;grid-template-columns:minmax(110px,190px) minmax(0,1fr);gap:16px;margin:0}label{display:block;font-size:13px;color:#c1ccc9}textarea,select,input[type=file]{display:block;width:100%;color:#edf4f0;background:#172126;border:1px solid #415353;border-radius:6px;padding:5px;font:inherit}.portrait img{width:100%;max-height:224px;object-fit:contain}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.fields small{font-size:12px;color:#aabbb7;align-self:center}@media(max-width:660px){fieldset{grid-template-columns:95px minmax(0,1fr)}.fields{grid-template-columns:1fr}}
+
+.file-upload{margin:16px 0;padding:16px;border:1px solid #334047;border-radius:12px;background:#192328;display:flex;align-items:end;gap:12px;flex-wrap:wrap}
+.file-upload>label:first-child{flex:1;min-width:220px}.file-upload input[type=number]{display:block;width:110px;background:#172126;border:1px solid #415353;border-radius:6px;padding:7px;color:#edf4f0;font:inherit}
+.file-upload p{flex-basis:100%;margin:0}.file-result{margin:16px 0;padding:16px;background:#192328;border:1px solid #334047;border-radius:12px}
+.file-result>div{display:flex;align-items:center;justify-content:space-between;gap:12px}.file-result video{display:block;max-height:65vh;margin-top:12px;background:#0c1013}
+.download{color:#a3f3c9;text-decoration:underline}
+
+#fileResultBox>.result-grid{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:14px}
+.result-card{min-width:0}.file-result .result-card video{width:auto;height:auto;max-width:100%;max-height:360px;object-fit:contain;margin:12px auto 0}
+@media(max-width:650px){#fileResultBox>.result-grid{grid-template-columns:1fr}.file-result .result-card video{max-height:280px}}
+
+.streams[hidden]{display:none}
+
+.fields .system-setting{grid-column:1/-1}.fields [hidden]{display:none}
+
+#input.live-mirror{transform:scaleX(-1)}
+
+[hidden]{display:none!important}
+
+.seed-control{display:flex;gap:6px}.seed-control input{min-width:0;flex:1;color:#edf4f0;background:#172126;border:1px solid #415353;border-radius:6px;padding:5px;font:inherit}.seed-control button{white-space:nowrap;padding:5px 10px}.system-setting{grid-column:1/-1}#systemPrompt{font:12px/1.5 monospace;resize:vertical}

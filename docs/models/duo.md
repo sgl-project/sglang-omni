@@ -1,6 +1,6 @@
 # Duo realtime backend
 
-Duo consumes video and speech, produces Intent hidden states with Qwen3-VL, and generates audio/video blocks with a causal Realization DiT. The backend uses the shared `/v1/realtime` endpoint. The browser demo is not included in this integration.
+Duo consumes video and speech, produces Intent hidden states with Qwen3-VL, and generates audio/video blocks with a causal Realization DiT. The backend uses the shared `/v1/realtime` endpoint. The [Duo playground](../../playground/duo/) connects to that endpoint.
 
 ## Dependencies and checkpoints
 
@@ -68,7 +68,7 @@ python scripts/serve_duo_realtime.py \
   --realization-optimize-copy-sync --overlap-intent-codec \
   --realization-kv-window-tokens 65536 --realization-reference-window-chunks 14 \
   --realization-kv-workspace-capacity-tokens 131072 \
-  --realization-kv-reset-interval-seconds 30 \
+  --realization-kv-reset-interval-blocks 43 \
   --codec-device cuda:4 --codec-worker-devices 4 5 6 7 \
   --codec-decode-backend solarx --codec-attention-backend torch_cudnn_sdpa \
   --max-context-tokens 32768 --intent-kv-window-tokens 32768 \
@@ -84,6 +84,6 @@ Add `--realization-modelopt-checkpoint /models/Duo-1.0-distill-quant/realization
 
 Send `session.update` selecting audio/video outputs and `sglang.realization.decode="duo_5_17"` with `sglang.max_slice_nums=2`. Each block contains 17 camera frames at 24 FPS and approximately 708.33 ms of 16 kHz mono PCM. The runtime uses sample counts rather than rounded 708 ms windows. Output consists of timestamped video frames and PCM audio. The 1→4 mode is only available with a compatible checkpoint.
 
-The server controls periodic DiT history reset through `--realization-kv-reset-interval-seconds` (default 30; zero disables it). The interval counts generated media, not wall time. With 5→17 blocks the first reset occurs before zero-based block 43, after 30.458 seconds of generated media. Reset happens at a block boundary and preserves the Qwen conversation KV and Codec continuity. Clients do not need a reset button or a session-update counter.
+Omit `--realization-kv-reset-interval-blocks` to enable manual DiT history reset with a native Realization checkpoint. Set it to a positive block count to enable automatic reset and disable the manual control. With 5→17 decoding, 43 blocks represent about 30.46 seconds. The first automatic reset runs before zero-based block 43. Both modes preserve Qwen conversation KV and Codec state.
 
 The reset interval and sliding-window limits are different controls: eviction bounds memory continuously, while periodic reset drops accumulated Realization history to limit long-generation drift. Clean commit still computes KV from the final denoised block. Session cancellation drains outstanding model/Codec work before freeing state; a new session starts with its own history.

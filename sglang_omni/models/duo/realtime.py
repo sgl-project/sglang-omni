@@ -6,7 +6,6 @@ import asyncio
 import base64
 import io
 import logging
-import math
 import tempfile
 import threading
 from collections.abc import Callable
@@ -71,6 +70,7 @@ from sglang_omni.serve.realtime.types import (
     Capabilities,
     InteractionAdapter,
     OutputSink,
+    ProtocolError,
     RuntimeLimits,
     Unit,
 )
@@ -102,9 +102,16 @@ class DuoLiveResources:
     inference_lock: threading.Lock = field(default_factory=threading.Lock)
     shutdown: Callable[[], None] | None = None
     supports_realization_kv_reset: bool = False
-    realization_kv_reset_interval_seconds: float = 30.0
+    realization_kv_reset_interval_blocks: int | None = None
     reference_size: tuple[int, int] | None = None
     decode_executor: ThreadPoolExecutor | None = None
+
+    @property
+    def manual_reset_enabled(self) -> bool:
+        return (
+            self.supports_realization_kv_reset
+            and self.realization_kv_reset_interval_blocks is None
+        )
 
 
 class DuoRealtimeAdapter(InteractionAdapter):
@@ -125,6 +132,7 @@ class DuoRealtimeAdapter(InteractionAdapter):
         self.cancelled = threading.Event()
         self.started = False
         self.response_id = ""
+        self.applied_reset_generation = 0
         self.item_id = ""
         self.decode_mode = "duo_1_4"
         self.blocks_since_kv_reset = 0
@@ -154,10 +162,21 @@ class DuoRealtimeAdapter(InteractionAdapter):
         self.delivery_task = None
         self.delivery_error = None
         self.response_id = f"realization_{session_id}"
+        self.applied_reset_generation = 0
         self.item_id = f"{self.response_id}_item"
         self.blocks_since_kv_reset = 0
 
     async def update(self, config: SessionConfiguration) -> None:
+        previous = self.config.get("sglang", {}).get("realization", {})
+        updated = config.get("sglang", {}).get("realization", {})
+        if updated.get("kv_reset_generation", 0) < previous.get(
+            "kv_reset_generation", 0
+        ):
+            raise ProtocolError(
+                "invalid_request", "DiT reset generation cannot decrease"
+            )
+        else:
+            pass
         self.config = config
 
     async def process(self, unit: Unit) -> int:
@@ -241,11 +260,12 @@ class DuoRealtimeAdapter(InteractionAdapter):
             pass
 
         spec = DUO_DECODE_SPECS[self.decode_mode]
-        reset_interval = self.resources.realization_kv_reset_interval_seconds
-        reset_realization_kv = (
+        reset_interval = self.resources.realization_kv_reset_interval_blocks
+        reset_generation = options.get("kv_reset_generation", 0)
+        reset_realization_kv = reset_generation > self.applied_reset_generation or (
             self.resources.supports_realization_kv_reset
-            and reset_interval > 0
-            and self.blocks_since_kv_reset * spec.duration_ms >= reset_interval * 1000
+            and reset_interval is not None
+            and self.blocks_since_kv_reset >= reset_interval
         )
         expected_samples = spec.input_audio_samples
         pcm = unit.pcm[: expected_samples * 2]
@@ -279,6 +299,7 @@ class DuoRealtimeAdapter(InteractionAdapter):
             self.run_block, request, chunk, payload, context
         )
         if reset_realization_kv:
+            self.applied_reset_generation = reset_generation
             self.blocks_since_kv_reset = 0
         else:
             pass
@@ -568,7 +589,7 @@ def load_duo_live_resources(
     intent_kv_window_tokens: int | None = None,
     realization_kv_window_tokens: int = 65536,
     realization_reference_window_chunks: int = 0,
-    realization_kv_reset_interval_seconds: float = 30.0,
+    realization_kv_reset_interval_blocks: int | None = None,
     realization_kv_workspace_capacity_tokens: int | None = None,
     enable_cuda_graph: bool = True,
     realization_enable_cuda_graph: bool = False,
@@ -676,10 +697,17 @@ def load_duo_live_resources(
     elif realization_kv_window_tokens <= 0:
         raise ValueError("Realization KV window must be positive")
     elif (
-        not math.isfinite(realization_kv_reset_interval_seconds)
-        or realization_kv_reset_interval_seconds < 0
+        realization_kv_reset_interval_blocks is not None
+        and realization_kv_reset_interval_blocks <= 0
     ):
-        raise ValueError("Realization KV reset interval must be finite and nonnegative")
+        raise ValueError(
+            "Realization KV reset interval must be a positive number of blocks"
+        )
+    elif (
+        realization_kv_reset_interval_blocks is not None
+        and realization_checkpoint is None
+    ):
+        raise ValueError("Automatic KV reset requires a DCP checkpoint")
     elif realization_reference_window_chunks < 0:
         raise ValueError("Realization reference window must be nonnegative")
     elif realization_reference_window_chunks and realization_checkpoint is None:
@@ -1047,7 +1075,7 @@ def load_duo_live_resources(
             else ("duo_1_4", "duo_5_17")
         ),
         supports_realization_kv_reset=realization_checkpoint is not None,
-        realization_kv_reset_interval_seconds=realization_kv_reset_interval_seconds,
+        realization_kv_reset_interval_blocks=realization_kv_reset_interval_blocks,
         reference_size=(height, width),
         decode_executor=decode_executor,
     )
@@ -1065,6 +1093,7 @@ def build_duo_realtime_deployment(resources: DuoLiveResources) -> RealtimeDeploy
         native_unit_ms=167,
         tail_policy="pad",
         supports_truncate=False,
+        supports_realization_kv_reset=resources.manual_reset_enabled,
         default_max_slice_nums=2 if resources.decode_modes == ("duo_5_17",) else 1,
         input_samples_per_slice=(
             DUO_DECODE_SPECS["duo_1_4"].input_audio_samples,

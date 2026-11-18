@@ -41,6 +41,17 @@ def open_session(negotiation: SessionNegotiation) -> SessionConfiguration:
     return config
 
 
+def test_manual_reset_can_follow_admission_without_realization_options() -> None:
+    negotiation = build_negotiation(Capabilities(supports_realization_kv_reset=True))
+    config = open_session(negotiation)
+    patch = {"sglang": {"realization": {"kv_reset_generation": 1}}}
+    updated, _ = negotiation.negotiate(config, "OPEN", patch)
+    assert updated["sglang"]["realization"]["kv_reset_generation"] == 1
+
+    with pytest.raises(ProtocolError):
+        build_negotiation().negotiate(config, "OPEN", patch)
+
+
 def test_empty_update_grants_deployment_defaults() -> None:
     limits = RuntimeLimits()
     config, granted = build_negotiation(limits=limits).negotiate({}, "CREATED", {})

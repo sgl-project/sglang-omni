@@ -122,6 +122,7 @@ class Capabilities:
     supports_reference_audio: bool = False
     voices: tuple[str, ...] = ()
     supports_instruction_updates: bool = False
+    supports_realization_kv_reset: bool = False
     supports_sampling_updates: bool = False
     supports_truncate: bool = False
     supports_cancel: bool = False

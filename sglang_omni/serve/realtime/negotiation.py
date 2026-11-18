@@ -35,6 +35,12 @@ def admission_fields(
     admission_config = copy.deepcopy(config)
     admission_config.pop("output_modalities", None)
     admission_config.get("audio", {}).get("input", {}).pop("turn_detection", None)
+    if capabilities.supports_realization_kv_reset:
+        admission_config.setdefault("sglang", {}).setdefault("realization", {}).pop(
+            "kv_reset_generation", None
+        )
+    else:
+        pass
     if capabilities.supports_instruction_updates:
         admission_config.pop("instructions", None)
     else:
@@ -154,6 +160,13 @@ class SessionNegotiation:
 
     def validate_extension(self, candidate: SessionConfiguration) -> None:
         extension = candidate.get("sglang", {})
+        if (
+            "kv_reset_generation" in extension.get("realization", {})
+            and not self.capabilities.supports_realization_kv_reset
+        ):
+            raise ProtocolError("not_applicable", "Manual DiT reset is unavailable")
+        else:
+            pass
         unsupported_sampling = set(extension.get("sampling", {})) - set(
             self.capabilities.sampling_parameters
         )
