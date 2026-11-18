@@ -1,0 +1,84 @@
+{
+  "name": "settings-overlay-normal",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/overlay",
+    "shown_path": "/settings/overlay",
+    "sections": [
+      {
+        "id": "general",
+        "title": "General",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "Speech models",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "Language models",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "Permissions",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "Audio",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "Overlay style",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "Shortcuts",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "Appearance",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "Privacy",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "Storage",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "About",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "overlay": {
+      "position": 0,
+      "position_options": [
+        "Bottom centre",
+        "Top centre"
+      ],
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_text": true,
+      "live_layout": 0,
+      "live_layout_options": [
+        "One line",
+        "Lines"
+      ],
+      "palette": "#0d9384"
+    }
+  }
+}

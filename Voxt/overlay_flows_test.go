@@ -63,9 +63,9 @@ func (f *ovFlow) sample() {
 			st.text = "raw"
 		}
 	case ovAnswer:
-		v := a.cardNow()
+		v := a.cachedCard()
 		st.text = "card"
-		if v.conversation {
+		if v.Conversation {
 			st.text = "card:conversation"
 		}
 	}
@@ -282,9 +282,10 @@ func TestOverlayFlows(t *testing.T) {
 					if s.w != layout.AnswerW {
 						t.Errorf("step %v: the card is %d wide, not %d", s, s.w, layout.AnswerW)
 					}
-					// Rewrite's answer writes into the card (#3644); every
-					// other result comes in the card when it is done.
-					writing := strings.HasPrefix(fl.name, "rewrite") && s.state == session.Composing
+					// Translate's and Rewrite's answers write into the card
+					// (#3644); every other result comes in the card when it
+					// is done.
+					writing := (strings.HasPrefix(fl.name, "translate") || strings.HasPrefix(fl.name, "rewrite")) && s.state == session.Composing
 					if fl.name != "follow-up" && s.state.Live() && !writing {
 						t.Errorf("step %v: a card before the result", s)
 					}

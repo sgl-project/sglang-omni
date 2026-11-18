@@ -20,6 +20,9 @@ void WriteResponse(mg_connection *connection, int status,
                    const std::string &body);
 int WriteJson(mg_connection *connection, int status, const Json &body);
 int BadRequest(mg_connection *connection, const std::string &detail);
+// Writes one WebSocket text frame under the connection's lock; false once
+// the socket is gone.
+bool SendWebSocketText(mg_connection *connection, const std::string &text);
 std::string ReadBody(mg_connection *connection);
 // The request's body, or nullopt once it is longer than max_bytes, which is
 // then answered with 413 without reading further; civetweb drops the rest of

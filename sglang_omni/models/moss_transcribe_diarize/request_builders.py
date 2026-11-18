@@ -604,24 +604,22 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                     min(max_new_tokens, _MIN_SCALED_OUTPUT_TOKENS),
                     math.ceil(audio_duration_s * _OUTPUT_TOKENS_PER_AUDIO_SECOND),
                 )
-                if speculative_reserve_tokens > 0:
-                    # note (wilsonzheng0327): the scheduler clamps a budget to the
-                    # remaining context and then refuses it for leaving a draft no
-                    # reserve, so a budget no client chose leaves that reserve here.
-                    request_max_new_tokens = max(
-                        1,
-                        min(
-                            request_max_new_tokens,
-                            context_length
-                            - 1
-                            - len(padded_input_ids)
-                            - speculative_reserve_tokens,
-                        ),
-                    )
-                else:
-                    pass
         else:
             request_max_new_tokens = max_new_tokens
+        if speculative_reserve_tokens > 0:
+            # note (wilsonzheng0327): without a draft the scheduler clamps a budget past the context; with one it would refuse it for leaving no reserve, so every budget leaves that reserve here.
+            request_max_new_tokens = max(
+                1,
+                min(
+                    request_max_new_tokens,
+                    context_length
+                    - 1
+                    - len(padded_input_ids)
+                    - speculative_reserve_tokens,
+                ),
+            )
+        else:
+            pass
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,

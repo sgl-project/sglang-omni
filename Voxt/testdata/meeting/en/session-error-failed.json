@@ -1,0 +1,54 @@
+{
+  "name": "session-error-failed",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "session-problem",
+    "state": "failed",
+    "problem_code": "internal",
+    "mode": "notice",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "notice": {
+      "text": "Something went wrong: fixture problem detail",
+      "tone": "error"
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

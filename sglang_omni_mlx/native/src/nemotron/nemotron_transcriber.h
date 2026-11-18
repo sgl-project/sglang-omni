@@ -10,9 +10,9 @@
 #include <string>
 #include <vector>
 
+#include "common/nemo_features.h"
 #include "common/transcription.h"
 #include "nemotron/nemotron_model.h"
-#include "sortformer/sortformer_features.h"
 
 namespace nemotron {
 
@@ -28,7 +28,8 @@ class NemotronTranscriber;
 
 // One audio stream decoded as it arrives: audio is encoded in whole chunks
 // of mel frames that later audio can no longer change, and Finish flushes
-// the rest, so the text equals one Transcribe of all the audio.
+// the rest, so every chunk sees the context one Transcribe of all the audio
+// gives it, and the text matches up to rounding.
 class NemotronStream {
 public:
   NemotronStream(const NemotronTranscriber &transcriber,
@@ -53,6 +54,12 @@ private:
   };
 
   void Decode(int mel_frame_limit, bool flush, const std::atomic<bool> &cancel);
+  // Subsampled frames of mel frames consumed_mel_frames_ up to end, from the
+  // kept audio's mel, which starts at first_frame; none once the last chunk
+  // adds no frame.
+  std::optional<mlx::core::array> SubsampleTo(const mlx::core::array &mel,
+                                              int first_frame, int end,
+                                              bool last_chunk);
   void DecodeChunk(const mlx::core::array &prompted);
 
   const NemotronTranscriber &transcriber_;
@@ -83,14 +90,19 @@ public:
 
   // The whole recording through the streaming loop; with no chunk_frames,
   // at the native chunk size, as Voxt's Swift port decodes its Final pass.
-  // The audio goes in one chunk at a time, so memory stays flat with length.
+  // The audio goes in one block of chunks at a time, so memory stays flat
+  // with length.
   omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const NemotronOptions &options,
              const std::atomic<bool> &cancel) const;
 
   const NemotronModel &model() const { return model_; }
-  const sortformer::FeatureExtractor &features() const { return features_; }
-  const sortformer::ProcessorConfig &front_end() const { return front_end_; }
+  const omni_common::NemoFeatureExtractor &features() const {
+    return features_;
+  }
+  const omni_common::NemoProcessorConfig &front_end() const {
+    return front_end_;
+  }
   // Seconds of audio per encoder frame.
   double frame_seconds() const;
   bool IsSpecialToken(int token_id) const;
@@ -100,8 +112,8 @@ public:
 
 private:
   NemotronModel model_;
-  sortformer::ProcessorConfig front_end_;
-  sortformer::FeatureExtractor features_;
+  omni_common::NemoProcessorConfig front_end_;
+  omni_common::NemoFeatureExtractor features_;
   std::vector<std::string> token_texts_;
   std::vector<bool> standalone_spaces_;
   std::vector<bool> special_tokens_;
