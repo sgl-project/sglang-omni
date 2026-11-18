@@ -21,6 +21,8 @@ public:
   UpdateAndFetch(const mlx::core::array &keys, const mlx::core::array &values);
   // Drops the newest token_count positions; the next update overwrites them.
   void Trim(int token_count);
+  // Keeps the batch rows at indices, int32 [rows], in their order.
+  void KeepRows(const mlx::core::array &rows);
   int offset() const { return offset_; }
   // The cache's buffers, to evaluate; empty before the first update.
   std::vector<mlx::core::array> Arrays() const;

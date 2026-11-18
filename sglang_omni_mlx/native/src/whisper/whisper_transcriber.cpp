@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
-#include <numeric>
 #include <stdexcept>
 
 #include "common/generation.h"
@@ -21,7 +20,9 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr float kSuppressedLogit = -1e9f;
-constexpr size_t kMaxBatchWindows = 4;
+// Windows decoded together; their cross-attention keys and values take about
+// 250 MB each on large-v3.
+constexpr size_t kBatchWindows = 8;
 
 // Note (khazic): the English names Swift's WhisperTokenizer maps to codes, as
 // it lists them.
@@ -259,123 +260,82 @@ mx::array WhisperTranscriber::NextToken(mx::array logits, bool first_step,
   }
 }
 
-WhisperTranscriber::WindowResult
-WhisperTranscriber::TranscribeWindow(const mx::array &encoder_states,
-                                     const std::vector<int> &prompt_ids,
-                                     int max_new_tokens, float temperature,
-                                     const std::atomic<bool> &cancel) const {
-  std::vector<DecoderLayerCache> caches(model_.config().text_layer_count);
-  const mx::array prompt(prompt_ids.data(),
-                         {1, static_cast<int>(prompt_ids.size())}, mx::int32);
-  mx::array token = NextToken(
-      model_.Decode(prompt, 0, encoder_states, caches, 1), true, temperature);
-  mx::async_eval({token});
-  if (draft_.has_value() && temperature <= 0.0f) {
-    return DecodeWithDraft(encoder_states, prompt, token, caches,
-                           max_new_tokens, cancel);
-  } else {
-  }
-  WindowResult result;
-  std::vector<int> generated_ids;
-  for (int step = 0;; ++step) {
-    if (cancel.load()) {
-      throw omni_common::GenerationCancelled();
-    } else if (step == max_new_tokens) {
-      result.reached_token_limit = true;
-      break;
-    } else {
-    }
-    const mx::array current = token;
-    // Note (khazic): queue the next step before reading this token, so the GPU
-    // decodes while the end of text is checked.
-    if (step + 1 < max_new_tokens) {
-      token =
-          NextToken(model_.Decode(mx::reshape(current, {1, 1}),
-                                  static_cast<int>(prompt_ids.size()) + step,
-                                  encoder_states, caches, 1),
-                    false, temperature);
-      mx::async_eval({token});
-    } else {
-    }
-    const int token_id = static_cast<int>(current.item<uint32_t>());
-    if (token_id == end_of_text_id_) {
-      break;
-    } else {
-    }
-    generated_ids.push_back(token_id);
-  }
-  result.text = DecodeText(generated_ids);
-  result.generated_token_count = static_cast<int>(generated_ids.size());
-  return result;
-}
-
 std::vector<WhisperTranscriber::WindowResult>
-WhisperTranscriber::TranscribeBatch(const mx::array &encoder_states,
-                                    const std::vector<int> &prompt_ids,
-                                    int max_new_tokens,
-                                    const std::atomic<bool> &cancel) const {
-  const int batch_size = encoder_states.shape(0);
+WhisperTranscriber::TranscribeWindows(const mx::array &encoder_states,
+                                      const std::vector<int> &prompt_ids,
+                                      int max_new_tokens, float temperature,
+                                      const std::atomic<bool> &cancel) const {
+  const int window_count = encoder_states.shape(0);
+  std::vector<DecoderLayerCache> caches(model_.config().text_layer_count);
   const int prompt_length = static_cast<int>(prompt_ids.size());
   const mx::array prompt = mx::broadcast_to(
       mx::array(prompt_ids.data(), {1, prompt_length}, mx::int32),
-      {batch_size, prompt_length});
-  std::vector<DecoderLayerCache> caches(model_.config().text_layer_count);
-  mx::array active_encoder_states = encoder_states;
+      {window_count, prompt_length});
   mx::array tokens = NextToken(
-      model_.Decode(prompt, 0, encoder_states, caches, 1), true, 0.0f);
-  std::vector<std::vector<int>> generated_ids(batch_size);
-  std::vector<int> active_windows(batch_size);
-  std::iota(active_windows.begin(), active_windows.end(), 0);
-  std::vector<int> remaining_rows;
-  remaining_rows.reserve(batch_size);
-  for (int step = 0; step < max_new_tokens; ++step) {
+      model_.Decode(prompt, 0, encoder_states, caches, 1), true, temperature);
+  mx::async_eval({tokens});
+  if (draft_.has_value() && temperature <= 0.0f) {
+    return {DecodeWithDraft(encoder_states, prompt, tokens, caches,
+                            max_new_tokens, cancel)};
+  } else {
+  }
+  std::vector<WindowResult> results(window_count);
+  std::vector<std::vector<int>> generated_ids(window_count);
+  // The window each batch row decodes; a finished window's row leaves the
+  // batch, so later steps read only the unfinished windows' caches.
+  std::vector<int> row_windows(window_count);
+  for (int window = 0; window < window_count; ++window) {
+    row_windows[window] = window;
+  }
+  for (int step = 0; !row_windows.empty(); ++step) {
     if (cancel.load()) {
       throw omni_common::GenerationCancelled();
+    } else if (step == max_new_tokens) {
+      for (const int window : row_windows) {
+        results[window].reached_token_limit = true;
+      }
+      break;
     } else {
     }
-    mx::eval(tokens);
-    const uint32_t *token_ids = tokens.data<uint32_t>();
-    const int active_count = static_cast<int>(active_windows.size());
-    remaining_rows.clear();
-    for (int row = 0; row < active_count; ++row) {
-      const int token_id = static_cast<int>(token_ids[row]);
-      if (token_id != end_of_text_id_) {
-        generated_ids[active_windows[row]].push_back(token_id);
-        active_windows[remaining_rows.size()] = active_windows[row];
-        remaining_rows.push_back(row);
+    const int batch = static_cast<int>(row_windows.size());
+    const mx::array current = tokens;
+    // Note (khazic): queue the next step before reading this token, so the GPU
+    // decodes while the end of text is checked.
+    if (step + 1 < max_new_tokens) {
+      tokens = NextToken(model_.Decode(mx::reshape(current, {batch, 1}),
+                                       prompt_length + step, encoder_states,
+                                       caches, 1),
+                         false, temperature);
+      mx::async_eval({tokens});
+    } else {
+    }
+    mx::eval(current);
+    const uint32_t *token_ids = current.data<uint32_t>();
+    std::vector<int32_t> kept_rows;
+    std::vector<int> kept_windows;
+    for (int row = 0; row < batch; ++row) {
+      const int window = row_windows[row];
+      if (static_cast<int>(token_ids[row]) == end_of_text_id_) {
+        continue;
       } else {
       }
+      generated_ids[window].push_back(static_cast<int>(token_ids[row]));
+      kept_rows.push_back(row);
+      kept_windows.push_back(window);
     }
-    const int remaining_count = static_cast<int>(remaining_rows.size());
-    if (remaining_count == 0 || step + 1 == max_new_tokens) {
-      break;
-    } else if (remaining_count < active_count) {
-      active_windows.resize(remaining_count);
-      const mx::array rows(remaining_rows.data(), {remaining_count}, mx::int32);
+    if (kept_windows.size() < row_windows.size() && !kept_windows.empty()) {
+      const mx::array rows(kept_rows.data(),
+                           {static_cast<int>(kept_rows.size())}, mx::int32);
       tokens = mx::take(tokens, rows, 0);
-      active_encoder_states = mx::take(active_encoder_states, rows, 0);
-      for (DecoderLayerCache &cache : caches) {
-        for (auto *values : {&cache.self_keys, &cache.self_values,
-                             &cache.cross_keys, &cache.cross_values}) {
-          *values = mx::take(values->value(), rows, 0);
-        }
-      }
+      KeepCacheRows(caches, rows);
     } else {
     }
-    tokens = NextToken(model_.Decode(mx::reshape(tokens, {remaining_count, 1}),
-                                     prompt_length + step,
-                                     active_encoder_states, caches, 1),
-                       false, 0.0f);
+    row_windows = std::move(kept_windows);
   }
-  std::vector<WindowResult> results;
-  results.reserve(batch_size);
-  for (int window = 0; window < batch_size; ++window) {
-    results.push_back(
-        {.text = DecodeText(generated_ids[window]),
-         .generated_token_count =
-             static_cast<int>(generated_ids[window].size()),
-         .reached_token_limit =
-             static_cast<int>(generated_ids[window].size()) == max_new_tokens});
+  for (int window = 0; window < window_count; ++window) {
+    results[window].text = DecodeText(generated_ids[window]);
+    results[window].generated_token_count =
+        static_cast<int>(generated_ids[window].size());
   }
   return results;
 }
@@ -515,10 +475,11 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
   // decoded on its own.
   const size_t window_count = std::max<size_t>(
       1, (samples.size() + kWindowSampleCount - 1) / kWindowSampleCount);
-  // Draft verification has per-window cache positions. Sampling keeps its
-  // existing order of draws.
+  // Note (XXXXRT666): up to kBatchWindows windows decode together, so a step
+  // costs about what one window's does; draft verification has per-window
+  // cache positions, so the draft decodes one window at a time.
   const size_t max_batch_size =
-      draft_.has_value() || options.temperature > 0.0f ? 1 : kMaxBatchWindows;
+      draft_.has_value() && options.temperature <= 0.0f ? 1 : kBatchWindows;
   for (size_t first_window = 0; first_window < window_count;) {
     if (cancel.load()) {
       throw omni_common::GenerationCancelled();
@@ -532,17 +493,25 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
     std::vector<float> window_samples(batch_sample_count, 0.0f);
     std::copy(samples.begin() + start, samples.begin() + end,
               window_samples.begin());
-    const mx::array encoder_states = model_.Encode(window_samples, cancel);
+    // Each window is encoded on its own, which bounds the encoder's peak
+    // memory; only the decoder steps run as a batch.
+    std::vector<mx::array> window_states;
+    for (size_t window = 0; window < batch_size; ++window) {
+      window_states.push_back(model_.Encode(
+          std::span<const float>(window_samples)
+              .subspan(window * kWindowSampleCount, kWindowSampleCount),
+          cancel));
+    }
+    const mx::array encoder_states = batch_size == 1
+                                         ? window_states.front()
+                                         : mx::concatenate(window_states, 0);
     if (cancel.load()) {
       throw omni_common::GenerationCancelled();
     } else {
     }
     const std::vector<WindowResult> windows =
-        batch_size == 1 ? std::vector<WindowResult>{TranscribeWindow(
-                              encoder_states, prompt_ids, max_new_tokens,
-                              options.temperature, cancel)}
-                        : TranscribeBatch(encoder_states, prompt_ids,
-                                          max_new_tokens, cancel);
+        TranscribeWindows(encoder_states, prompt_ids, max_new_tokens,
+                          options.temperature, cancel);
     for (const WindowResult &window : windows) {
       const std::string text = swift_port::TrimWhitespace(window.text, true);
       if (!text.empty()) {
