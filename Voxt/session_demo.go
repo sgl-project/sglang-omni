@@ -291,3 +291,11 @@ func (host *meetingDemoHost) copyBubble(block sessionCardBlock) {
 	host.sessionUI.bubbleSeq++
 	host.record("copyBubble %q", text)
 }
+
+// The demo has no WebView. Record formatted requests and draw their native fallback.
+func (host *meetingDemoHost) overlayTranscriptResult(_ *uiContext, request sessionOverlayPreviewRequest) bool {
+	if transcriptMarkdown(request.text.text) != "" {
+		host.record("overlayTranscriptResult %q", request.text.text)
+	}
+	return false
+}

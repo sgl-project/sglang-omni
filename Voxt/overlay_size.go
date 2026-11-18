@@ -68,12 +68,13 @@ type sessionOverlayLayoutMemory struct {
 }
 
 type sessionOverlayLayoutInput struct {
-	Measure  func(ovSized) (ovMeasured, bool)
-	WorkArea mygo.Rectangle
-	Overlay  sessionOverlayLayoutStyle
-	Memory   sessionOverlayLayoutMemory
-	Measured map[ovSized]ovMeasured
-	Reveal   bool
+	Measure        func(ovSized) (ovMeasured, bool)
+	WorkArea       mygo.Rectangle
+	Overlay        sessionOverlayLayoutStyle
+	Memory         sessionOverlayLayoutMemory
+	Measured       map[ovSized]ovMeasured
+	PreviewHeights map[string]int
+	Reveal         bool
 }
 
 const streamGrowStep = 4 * 19
@@ -102,7 +103,7 @@ func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverla
 			break
 		}
 		bodyMax := sessionOverlayCardBodyMax(card, input.WorkArea.Height, input.Overlay.Margin)
-		body, streamHeight, exact := sessionOverlayCardBodyHeight(card, measureHeight, bodyMax, input.Memory.StreamHeight)
+		body, streamHeight, exact := sessionOverlayCardBodyHeight(state.SessionID, card, measureHeight, input.PreviewHeights, bodyMax, input.Memory.StreamHeight)
 		model.Width, model.Height, model.Exact, model.StreamHeight = layout.CardSizes[card.SizeStep].W, layout.CardChrome+body, exact, streamHeight
 		if card.Message != "" {
 			model.Height += layout.CardMsgGap + layout.CardMsgH
@@ -173,9 +174,12 @@ func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverla
 	return model
 }
 
-func sessionOverlayBlockHeight(card *sessionCardViewState, block sessionCardBlock, measureHeight func(ovSized) (float32, bool)) (float32, bool) {
+func sessionOverlayBlockHeight(card *sessionCardViewState, block sessionCardBlock, measureHeight func(ovSized) (float32, bool), previewHeight int) (float32, bool) {
 	text, title, quote := sessionCardBlockText(card, block)
 	height, exact := measureHeight(text)
+	if previewHeight > 0 {
+		height, exact = float32(previewHeight), true
+	}
 	if block.Kind == sessionCardProblem {
 		height = max(height, layout.ProblemIcon)
 	}
@@ -204,13 +208,18 @@ func sessionOverlayCardBodyMax(card *sessionCardViewState, workAreaHeight int, m
 	return max(room, layout.CardBodyMax)
 }
 
-func sessionOverlayCardBodyHeight(card *sessionCardViewState, measureHeight func(ovSized) (float32, bool), bodyMax int, previousStreamHeight float32) (int, float32, bool) {
+func sessionOverlayCardBodyHeight(sessionID string, card *sessionCardViewState, measureHeight func(ovSized) (float32, bool), previewHeights map[string]int, bodyMax int, previousStreamHeight float32) (int, float32, bool) {
 	var height float32
 	exact := true
 	streamHeight := previousStreamHeight
 	for index := 0; index < sessionCardBlockCount(card); index++ {
 		block := sessionCardBlockAt(card, index)
-		blockHeight, ok := sessionOverlayBlockHeight(card, block, measureHeight)
+		blockIndex := index
+		if !card.Conversation {
+			blockIndex = -1
+		}
+		previewHeight := previewHeights[sessionCardPreviewKey(sessionID, card, blockIndex)]
+		blockHeight, ok := sessionOverlayBlockHeight(card, block, measureHeight, previewHeight)
 		height += sessionCardBlockGap(block, index) + blockHeight
 		exact = exact && ok
 	}

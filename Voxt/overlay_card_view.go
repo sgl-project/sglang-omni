@@ -247,6 +247,13 @@ func cardWave(context *ui.Context, card *sessionCardViewState, motion bool, phas
 }
 
 func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+	if !card.Conversation && !card.Failed && bodyHeight > 0 && sessionCardBlockCount(card) > 0 {
+		block := sessionCardBlockAt(card, 0)
+		request := newSessionOverlayPreviewRequest(context, sessionID, card, block, -1, ovCardText, bodyHeight)
+		if actions.overlayTranscriptResult(context.Key("ov-transcript"), request) {
+			return
+		}
+	}
 	scroll := &local.Overlay.cardScroll
 	key := card.ID + "/" + sessionID
 	if card.Writing {
@@ -268,18 +275,18 @@ func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState,
 	ui.Scroll(context.Key("ov-card-body")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).TrackScroll(scroll).Children(func() {
 		ui.Column(context).Padding(0, layout.CardInset, 0, 0).Children(func() {
 			for index := 0; index < sessionCardBlockCount(card); index++ {
-				cardBlockView(context.Key(index), card, sessionCardBlockAt(card, index), index, actions, local, onMeasured)
+				cardBlockView(context.Key(index), sessionID, card, sessionCardBlockAt(card, index), index, actions, local, onMeasured)
 			}
 		})
 	})
 }
 
-func cardBlockView(context *ui.Context, card *sessionCardViewState, block sessionCardBlock, index int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
 	text, _, _ := sessionCardBlockText(card, block)
 	gap := sessionCardBlockGap(block, index)
 	switch {
 	case block.Kind == sessionCardBubble:
-		cardBubbleView(context, card, block, gap, actions, local, onMeasured)
+		cardBubbleView(context, sessionID, card, block, index, gap, actions, local, onMeasured)
 	case block.Markdown:
 		cardMarkdown(context, local.Overlay, text, ovCardText, block.Live, onMeasured).Margin(gap, 0, 0, 0)
 	case block.Kind == sessionCardProblem:
@@ -306,7 +313,7 @@ func cardBlockView(context *ui.Context, card *sessionCardViewState, block sessio
 // RewriteConversationBubble): the user's input fits its text on the right,
 // up to 340 wide in the small card; an answer takes that width and shows
 // Copy under the pointer.
-func cardBubbleView(context *ui.Context, card *sessionCardViewState, block sessionCardBlock, gap float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, gap float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
 	text, title, quote := sessionCardBlockText(card, block)
 	justify := ui.Start
 	background, line := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.08)
@@ -339,10 +346,14 @@ func cardBubbleView(context *ui.Context, card *sessionCardViewState, block sessi
 			if block.Title != "" {
 				ui.Text(context, block.Title).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleAlpha)).SingleLine().Ellipsis("…").MaxWidth(text.wrap)
 			}
-			if block.Markdown {
-				cardMarkdown(context, local.Overlay, text, ui.RGBA(255, 255, 255, textAlpha), block.Live, onMeasured)
-			} else {
-				textView := ui.Text(context, block.Text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(ui.RGBA(255, 255, 255, textAlpha))
+			textColor := ui.RGBA(255, 255, 255, textAlpha)
+			request := newSessionOverlayPreviewRequest(context, sessionID, card, block, index, textColor, 0)
+			switch {
+			case !block.User && actions.overlayTranscriptResult(context.Key("preview"), request):
+			case block.Markdown:
+				cardMarkdown(context, local.Overlay, text, textColor, block.Live, onMeasured)
+			default:
+				textView := ui.Text(context, block.Text).FontSize(layout.BubbleTextSize).FontWeight(500).TextColor(textColor)
 				if block.User {
 					textView.TextAlign(ui.End)
 				}

@@ -10,7 +10,9 @@ import (
 
 // overlayState owns the session overlay's native and current-frame state.
 type overlayState struct {
-	ov struct {
+	overlayTranscript transcriptPreview
+	bubbleTranscripts []*transcriptPreview
+	ov                struct {
 		win     *mygo.Window
 		shown   bool
 		visible bool

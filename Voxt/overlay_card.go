@@ -4,6 +4,8 @@ package main
 // builds the displayed blocks; this file only maps them to their draw metrics.
 
 import (
+	"strconv"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
@@ -20,6 +22,40 @@ type answerCardUI struct {
 }
 
 const quoteGap, quoteToggleH, quoteSize = layout.BubbleTitleGap, 16, 12
+
+type sessionOverlayPreviewRequest struct {
+	key             string
+	text            ovSized
+	textColor, link uiColor
+	background      uiColor
+	blockIndex      int
+	streaming       bool
+	bodyHeight      float32
+}
+
+func sessionCardPreviewKey(sessionID string, card *sessionCardViewState, blockIndex int) string {
+	key := card.ID
+	if key == "" {
+		key = sessionID
+	}
+	if blockIndex >= 0 {
+		key += "/" + strconv.Itoa(blockIndex)
+	}
+	return key
+}
+
+func newSessionOverlayPreviewRequest(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, blockIndex int, textColor uiColor, bodyHeight float32) sessionOverlayPreviewRequest {
+	text, _, _ := sessionCardBlockText(card, block)
+	background := ui.RGB(36, 36, 40)
+	if blockIndex < 0 {
+		background = ui.RGB(22, 22, 26)
+	}
+	return sessionOverlayPreviewRequest{
+		key: sessionCardPreviewKey(sessionID, card, blockIndex), text: text,
+		textColor: textColor, link: context.Theme().Accent, background: background,
+		blockIndex: blockIndex, streaming: block.Live, bodyHeight: bodyHeight,
+	}
+}
 
 func sessionCardBlockCount(card *sessionCardViewState) int {
 	if card == nil {

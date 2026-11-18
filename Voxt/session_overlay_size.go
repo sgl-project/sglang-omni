@@ -13,6 +13,11 @@ func (a *app) overlaySize(mode overlayMode) (width, height int, exact bool) {
 }
 
 func (a *app) sessionOverlaySize(state *sessionOverlayViewState) (width, height int, exact bool) {
+	previewCount := 0
+	if state.Card != nil && state.Card.Conversation {
+		previewCount = sessionCardBlockCount(state.Card)
+	}
+	a.trimBubblePreviews(previewCount)
 	overlay := a.prefs.Overlay
 	if a.measure == nil {
 		a.measure = a.ovText
@@ -27,8 +32,9 @@ func (a *app) sessionOverlaySize(state *sessionOverlayViewState) (width, height 
 		Memory: sessionOverlayLayoutMemory{
 			LiveID: a.ov.live.id, LiveWidth: a.ov.live.w, StreamHeight: a.ov.stream.h,
 		},
-		Measured: a.ov.textW,
-		Reveal:   a.ov.reveal,
+		Measured:       a.ov.textW,
+		PreviewHeights: a.sessionOverlayPreviewHeights(state),
+		Reveal:         a.ov.reveal,
 	})
 	a.ov.live.id, a.ov.live.w = model.LiveID, model.LiveWidth
 	a.ov.stream.h = model.StreamHeight

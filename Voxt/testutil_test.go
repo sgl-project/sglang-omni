@@ -415,7 +415,7 @@ func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
 }
 
 func (a *app) cardBodyHeight(card *sessionCardViewState) (int, bool) {
-	body, streamHeight, exact := sessionOverlayCardBodyHeight(card, a.ovTextHeight, a.cardBodyMax(card), a.ov.stream.h)
+	body, streamHeight, exact := sessionOverlayCardBodyHeight(a.ov.projection.view.SessionID, card, a.ovTextHeight, a.sessionOverlayPreviewHeights(&a.ov.projection.view), a.cardBodyMax(card), a.ov.stream.h)
 	a.ov.stream.h = streamHeight
 	return body, exact
 }

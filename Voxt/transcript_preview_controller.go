@@ -113,9 +113,17 @@ func (b transcriptPreviewBridge) Resize(ctx context.Context, version uint64, hei
 		return
 	}
 	page.Window().Update(func() {
-		p := &b.app.mainTranscript
-		if p.ready && p.view == page.WebView() && p.version == version {
-			p.height = height
+		a := b.app
+		previews := append([]*transcriptPreview{&a.mainTranscript, &a.overlayTranscript}, a.bubbleTranscripts...)
+		for _, preview := range previews {
+			if preview == nil || !preview.ready || preview.view != page.WebView() || preview.version != version || preview.height == height {
+				continue
+			}
+			preview.height = height
+			if preview != &a.mainTranscript {
+				a.overlayRestyle()
+			}
+			break
 		}
 	})
 }

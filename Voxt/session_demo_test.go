@@ -23,6 +23,19 @@ func newSessionDemoActionTester(t *testing.T, host *meetingDemoHost) *ui.Tester 
 	return tester
 }
 
+func TestAnswerCardMathRequestsPreview(t *testing.T) {
+	host, err := loadMeetingDemoHost("testdata/meeting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectMeetingDemoFixture(t, host, "en/card-rewrite")
+	host.sessionState.Card.Blocks[0].Text = "$x^2$"
+	newSessionDemoActionTester(t, host)
+	if !slices.Contains(host.calls, `overlayTranscriptResult "$x^2$"`) {
+		t.Fatalf("math answer did not ask for the transcript preview: %q", host.calls)
+	}
+}
+
 type sessionDemoActionCase struct {
 	name           string
 	fixture        string
@@ -315,7 +328,9 @@ func TestSessionDemoActionCoverage(t *testing.T) {
 	if len(required) == 0 {
 		t.Fatal("sessionOverlayActions has no methods")
 	}
-	covered := map[string]bool{}
+	covered := map[string]bool{
+		"overlayTranscriptResult": true, // TestAnswerCardMathRequestsPreview covers this automatic action.
+	}
 	for _, test := range sessionDemoActionCases() {
 		for _, method := range test.methods {
 			covered[method] = true

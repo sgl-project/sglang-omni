@@ -461,7 +461,7 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 			card := &sessionCardViewState{Conversation: true, Blocks: []sessionCardBlock{{Kind: sessionCardBubble, User: true, Title: "You", Text: tc.text}}}
 			local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
 			tt := hudTester(func(c *ui.Context) {
-				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { cardBlockView(c, card, card.Blocks[0], 0, a, local, nil) })
+				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { cardBlockView(c, "", card, card.Blocks[0], 0, a, local, nil) })
 			}, layout.AnswerW, 500)
 			frames(tt)
 			title, ok := tt.Find("You")

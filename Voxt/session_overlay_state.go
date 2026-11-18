@@ -44,6 +44,9 @@ type sessionOverlayActions interface {
 	cycleOverlayCardSize()
 	toggleQuote(turn int)
 	copyBubble(block sessionCardBlock)
+	// overlayTranscriptResult shows formatted text in the overlay's WebView
+	// and says whether it did; the view uses its native renderer when not.
+	overlayTranscriptResult(context *uiContext, request sessionOverlayPreviewRequest) bool
 }
 
 // sessionOverlayViewState is the serializable display state of a session
