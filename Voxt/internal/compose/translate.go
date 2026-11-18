@@ -65,7 +65,7 @@ func Untranslated(source, result, target string) bool {
 	if src == res {
 		return isLatin(target) || ScriptMismatch(source, target)
 	}
-	if resLetters > 0 && resShare >= 0.25 && !strings.HasPrefix(res, src) {
+	if resLetters > 0 && resShare >= 0.25 && !strings.Contains(res, src) {
 		return false // enough target text to allow preserved names, not a source echo
 	}
 	return resLetters > 0 && resShare < 0.5 && srcShare < 0.5
@@ -110,8 +110,8 @@ func LanguageMismatch(text, target string) bool {
 // commonLatinWords identifies a language from function words and common
 // greetings, not from capitalization or a script shared with another language.
 var commonLatinWords = map[string][]string{
-	"en": {"the", "a", "an", "and", "or", "is", "are", "am", "to", "of", "in", "on", "for", "with", "this", "that", "these", "those", "good", "morning", "goodbye", "hello", "hi", "world", "friends", "you", "your", "we", "our", "it", "its", "thank", "thanks", "please", "yes", "no"},
-	"fr": {"le", "la", "les", "des", "de", "du", "et", "ou", "est", "sont", "à", "au", "aux", "ce", "cette", "ces", "bonjour", "salut", "bonsoir", "comment", "ça", "va", "merci", "je", "tu", "il", "elle", "une", "un", "nous", "vous", "ils", "elles", "pas", "oui", "non", "on", "a"},
+	"en": {"the", "a", "an", "and", "or", "is", "are", "am", "to", "of", "in", "on", "for", "with", "this", "that", "these", "those", "good", "morning", "goodbye", "hello", "hi", "world", "friends", "you", "your", "we", "our", "it", "its", "thank", "thanks", "please", "yes", "no", "son", "comment", "con", "non", "est"},
+	"fr": {"le", "la", "les", "des", "de", "du", "et", "ou", "est", "sont", "à", "au", "aux", "ce", "cette", "ces", "bonjour", "salut", "bonsoir", "comment", "ça", "va", "merci", "je", "tu", "il", "elle", "une", "un", "nous", "vous", "ils", "elles", "pas", "oui", "non", "on", "a", "son"},
 	"es": {"el", "la", "los", "las", "de", "del", "y", "o", "es", "son", "en", "con", "por", "para", "una", "un", "hola", "adiós", "gracias", "cómo", "como", "qué", "que", "sí", "no", "buenos", "buenas", "días", "noches", "señor", "señora", "yo", "tú", "usted", "nosotros", "ellos", "ellas", "a"},
 }
 
