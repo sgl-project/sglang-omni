@@ -103,6 +103,9 @@ func (a *app) runImport(ctx context.Context, imp *meetingImport, path string) (s
 	if err != nil {
 		return "", err
 	}
+	if !a.meetingDiarizerLanguage() {
+		return "", meeting.ErrNoDiarizer
+	}
 	req := meeting.ImportRequest{
 		Name:      strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
 		CreatedAt: time.Now(),

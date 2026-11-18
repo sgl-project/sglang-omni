@@ -64,6 +64,54 @@ func TestCombinedUpgradeLegacyImportVersion9(t *testing.T) {
 	}
 }
 
+func TestCombinedUpgradeLegacyDictionaryVersion9(t *testing.T) {
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+
+	dir := t.TempDir()
+	migrations = slices.Clone(saved[:8])
+	migrations = append(migrations, migration{version: 9, statements: saved[10].statements})
+	s := openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != 9 {
+		t.Fatalf("user_version %d, want the old dictionary migration's 9", v)
+	}
+	if _, err := s.db.Execute(ctx, `INSERT INTO dictionary_profiles (id, name, active) VALUES ('work', 'Work', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Execute(ctx, `INSERT INTO dictionary_terms (profile_id, id, term, aliases, note, enabled, created_at, updated_at) VALUES ('work', 't1', 'voxt', '["voxted"]', 'keep', 1, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	migrations = saved
+	s = openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != 12 {
+		t.Fatalf("user_version %d, want 12", v)
+	}
+	rows, err := s.db.Query(ctx, "PRAGMA table_info(notes)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasAppName := false
+	for _, row := range rows.Values {
+		hasAppName = hasAppName || asString(row[1]) == "app_name"
+	}
+	if !hasAppName {
+		t.Fatal("the old dictionary version 9 skipped the notes app_name migration")
+	}
+	if err := s.Dictionary().ActivateProfile(ctx, "work"); err != nil {
+		t.Fatal(err)
+	}
+	terms, err := s.Dictionary().List(ctx, "")
+	if err != nil || len(terms) != 1 || terms[0].Term != "voxt" || terms[0].Note != "keep" || !slices.Equal(terms[0].Aliases, []string{"voxted"}) {
+		t.Errorf("work terms after upgrade: %+v, %v", terms, err)
+	}
+	profiles, err := s.Dictionary().Profiles(ctx)
+	if err != nil || len(profiles) != 2 {
+		t.Errorf("profiles after upgrade: %+v, %v", profiles, err)
+	}
+}
+
 // TestCombinedUpgrade opens a database at each schema the merged tree can
 // meet — 8 (before the notes, history and profile changes), 9 (notes app
 // name), 10 (plus history reopen), 11 (plus dictionary profiles) — and

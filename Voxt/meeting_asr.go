@@ -57,7 +57,7 @@ func (a *app) meetingDiarizerLanguage() bool {
 }
 
 func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
-	if !a.meetingMTDInstalled() || !a.meetingDiarizerLanguage() {
+	if !a.meetingMTDInstalled() {
 		return nil, nil
 	}
 	p, opened, err := a.local.ASR(ctx, models.ASRMoss)
