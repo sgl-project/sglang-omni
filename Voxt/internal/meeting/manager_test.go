@@ -297,8 +297,7 @@ func TestSnapshotKeepsLevelHistory(t *testing.T) {
 	}
 	defer m.Finish(ctx, id)
 	// A full buffer can still contain the first levels. Wait for the
-	// complete sequence, then for the manager to record its last level,
-	// before checking which levels were retained.
+	// complete sequence, then for the manager to take in the last level.
 	select {
 	case <-mic.levelsSent:
 	case <-time.After(2 * time.Second):

@@ -12,9 +12,10 @@
 #include <vector>
 
 #include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 #include "voxtral_tts/voxtral_tts_codec.h"
 #include "voxtral_tts/voxtral_tts_tokenizer.h"
 
@@ -48,7 +49,7 @@ private:
 
   // The final-normed hidden state [1, dim] after the embeddings.
   mlx::core::array LastHidden(const mlx::core::array &embeddings,
-                              std::vector<qwen3_asr::KVCache> &caches) const;
+                              std::vector<omni_common::KVCache> &caches) const;
   // A frame's codes [1 + acoustic codebooks]: the semantic code, then the
   // acoustic codes the flow reaches from noise.
   mlx::core::array PredictFrame(const mlx::core::array &hidden) const;
@@ -62,7 +63,7 @@ private:
   omni_common::Checkpoint checkpoint_;
   AudioCodec codec_;
   SpeechTokenizer tokenizer_;
-  qwen3_asr::Qwen3Decoder decoder_;
+  omni_common::Qwen3Decoder decoder_;
   float norm_eps_;
   int semantic_code_count_;
   int acoustic_codebook_count_;
@@ -74,8 +75,8 @@ private:
   float acoustic_norm_eps_;
   // Each codebook's first row in the audio codebook embeddings.
   mlx::core::array codebook_offsets_;
-  // Sinusoid frequencies of the flow's time embedding.
-  mlx::core::array time_frequencies_;
+  // The flow's time_projection of each step's time embedding, [steps, dim].
+  mlx::core::array time_features_;
   std::map<std::string, mlx::core::array> voices_;
 };
 

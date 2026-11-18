@@ -1,0 +1,50 @@
+{
+  "name": "overlay-waiting-model-recognizing",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot3",
+    "state": "recognizing",
+    "mode": "working",
+    "pill": {
+      "kind": "",
+      "title": "转录",
+      "working_label": "识别中…",
+      "waiting_label": "正在加载语音识别模型…",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": true,
+      "waiting": "model",
+      "can_skip": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

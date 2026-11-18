@@ -39,7 +39,7 @@ func TestDictionaryProfileControls(t *testing.T) {
 	if err := tt.ChooseMenuItem("Rename “Work”…"); err != nil {
 		t.Fatal(err)
 	}
-	a.dictProfiles.editName = "Office"
+	a.dictUI.profileEdit.name = "Office"
 	click(t, tt, "Save")
 	profiles, _ = a.lib.store.Dictionary().Profiles(context.Background())
 	if profiles[1].Name != "Office" || !profiles[1].Active || !has(tt, "Office") {
@@ -128,7 +128,7 @@ func TestDictionaryTermDialogStaysInItsProfile(t *testing.T) {
 
 	// Open Alpha's editor in Default, switch to Work, then save.
 	a.openTerm(store.Term{ID: "t1", Term: "Alpha", Enabled: true})
-	a.dv.edit.term = "AlphaTwo"
+	a.dictUI.edit.term = "AlphaTwo"
 	a.switchDictionaryProfile("work")
 	a.submitTerm()
 	if got := terms(t, a); len(got) != 1 || got[0].Term != "WorkAlpha" {
@@ -145,7 +145,7 @@ func TestDictionaryTermDialogStaysInItsProfile(t *testing.T) {
 	a.switchDictionaryProfile("default")
 	a.openTerm(store.Term{ID: "t1", Term: "AlphaTwo", Enabled: true})
 	a.switchDictionaryProfile("work")
-	a.deleteTerm(store.Term{ID: a.dv.edit.id, Term: a.dv.edit.original, ProfileID: a.dv.edit.profile})
+	a.deleteTerm(store.Term{ID: a.dictUI.edit.id, Term: a.dictUI.edit.original, ProfileID: a.dictUI.edit.profile})
 	if got := terms(t, a); len(got) != 1 || got[0].Term != "WorkAlpha" {
 		t.Fatalf("the delete took Work's term: %+v", got)
 	}

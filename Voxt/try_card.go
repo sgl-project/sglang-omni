@@ -1,241 +1,185 @@
 package main
 
-// The Try area: a session started from a page (a feature page, Home, the
-// setup guide) whose result stays on it instead of going to the app in
-// front, with its recording, its notice and its result's timings.
-
 import (
-	"strings"
-	"time"
-
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// ---- Try it ----
-
-// trySessionOf reports whether the current session is a try of feature.
-func (a *app) trySessionOf(feature string) bool {
-	s := a.sess
-	return s.ID != "" && s.Try && s.Kind == featureKind(feature)
-}
-
-// tryIntro is what a feature's Try area says before a try: its shortcut
-// (pressed while VoxtNew is in front, it starts a try here) or Start.
-func (a *app) tryIntro(feature string) string {
-	keys := a.featureKeys(feature)
-	switch feature {
-	case hotkey.Translate:
-		if keys != "" {
-			return i18n.T("Press %s or Start, then say a sentence or two. The translation shows here and is not typed anywhere.", keys)
-		}
-		return i18n.T("Say a sentence or two. The translation shows here and is not typed anywhere.")
-	case hotkey.Rewrite:
-		if keys != "" {
-			return i18n.T("Press %s or Start, then say what to write (\"a short note saying I will be late\"). The answer shows here and is not typed anywhere.", keys)
-		}
-		return i18n.T("Say what to write (\"a short note saying I will be late\"). The answer shows here and is not typed anywhere.")
-	}
-	if keys != "" {
-		return i18n.T("Press %s or Start, then say a sentence or two. The result shows here and is not typed anywhere.", keys)
-	}
-	return i18n.T("Say a sentence or two. The result shows here and is not typed anywhere.")
-}
-
-func (a *app) featureTry(c *ui.Context, feature string) {
-	u := a.fui(feature)
-	sectionTitle(c, i18n.T("Try it"))
-	a.tryCard(c, tryOpts{
-		prefix: uitext.FeaturePrefix(feature), feature: feature, mine: a.trySessionOf(feature),
-		intro: a.tryIntro(feature), block: &u.block,
-		start: func() *sessionNotice { _, n := a.startTry(featureKind(feature)); return n },
-	})
-}
-
-// tryOpts describe a Try card: a feature page's, Home's, a step of the
-// setup guide's.
-type tryOpts struct {
-	prefix  string // keys its controls
-	feature string // what Start tries
-	// mine: the current session is this card's try (its id, for the
-	// setup guide: a late or another place's session never shows).
-	mine  bool
-	intro string // before a try
-	// block is why Start (or the shortcut) did not start, nil for
-	// nothing; start starts a try and says why not.
-	block **sessionNotice
-	start func() *sessionNotice
-}
-
-// tryCard is a Try area: Start, the try while it records and works, its
-// result, why it did not start.
-func (a *app) tryCard(c *ui.Context, o tryOpts) {
+// tryCard draws one Try area from its display state and user-intent actions.
+func tryCard(c *ui.Context, state *tryCardViewState, actions tryCardActions) {
 	t := c.Theme()
-	p := o.prefix
-	s := a.sess
-	try := o.mine
-	clear := func() { *o.block = nil }
-	card(c.Key(p + "-try")).Children(func() {
-		switch {
-		case try && s.State == session.Recording:
-			a.tryRecording(c, p, s)
+	prefix := state.Prefix
+	panel := card(c.Key(prefix + "-try"))
+	if state.Transcript && state.Mode == "recording" {
+		if k := tok(t); k.TranscriptFace != k.Subtle {
+			panel.Background(k.TranscriptFace)
+		}
+	}
+	panel.Children(func() {
+		switch state.Mode {
+		case "recording":
+			tryRecording(c, state.Prefix, state.Recording, state.CustomPalette, actions)
 			return
-		case try && s.State.Live():
+		case "working":
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
 				ui.Spinner(c).Size(px(t, 16), px(t, 16))
-				ui.Text(c, uitext.WorkingText(s)).Grow(1).MinWidth(0)
-				if ghostButton(c.Key(p+"-try-cancel"), i18n.T("Cancel")).Clicked() {
-					a.cancelSession()
+				ui.Text(c, state.WorkingText).Grow(1).MinWidth(0)
+				if ghostButton(c.Key(prefix+"-try-cancel"), i18n.T("Cancel")).Clicked() {
+					actions.cancelTry()
 				}
 			})
-			if d := strings.TrimSpace(s.Draft); d != "" && s.State == session.Composing {
-				fillCard(c.Key(p + "-try-draft")).Padding(px(t, sp3)).Children(func() {
-					a.transcriptResult(c, s.ID, d, true)
+			if state.Draft != "" {
+				sessionTextCard(c.Key(prefix+"-try-draft"), state.Transcript).Padding(px(t, sp3)).Children(func() {
+					if !actions.transcriptResult(c, state.SessionID, state.Draft, state.Transcript, true) {
+						ui.Text(c, state.Draft).Selectable()
+					}
 				})
 			}
 			return
 		}
-		if try && s.State.Ended() {
-			a.tryEnded(c, p, s, clear)
-		} else if o.intro != "" {
-			caption(c, o.intro)
+		if state.Ended != nil {
+			tryEnded(c, prefix, state.SessionID, state.Transcript, state.Ended, actions)
+		} else if state.Intro != "" {
+			caption(c, state.Intro)
 		}
-		if n := *o.block; n != nil {
-			notice(c, p+"-try-block", noticeError, n.text, n.more, a.noticeButton(c, p+"-try-block-action", n.action, clear), clear)
-		}
+		tryNotice(c, prefix+"-try-block", noticeError, state.Block, actions)
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-			label := i18n.T("Start")
-			if try && s.State.Ended() {
-				label = i18n.T("Try again")
+			if tryRecordButton(c.Key(prefix+"-try-start"), state.StartLabel, state.CustomPalette).Label(i18n.T("Start a test")).Disabled(state.Busy).Clicked() {
+				actions.startTry()
 			}
-			busy := s.State.Live()
-			if recordButton(c.Key(p+"-try-start"), label).Label(i18n.T("Start a test")).Disabled(busy).Clicked() {
-				*o.block = o.start()
-			}
-			if busy {
-				if s.Kind == store.KindTranscribe {
-					caption(c, i18n.T("A transcription is running."))
-				} else {
-					caption(c, i18n.T("Another task is running."))
-				}
+			if state.Busy {
+				caption(c, state.BusyText)
 			}
 		})
 	})
 }
 
-// noticeButton is a notice's action button, nil for none; clear hides
-// the notice.
-func (a *app) noticeButton(c *ui.Context, key, action string, clear func()) func() {
-	label := noticeActionLabel(action)
-	if label == "" {
-		return nil
+func tryNotice(c *ui.Context, key string, tone noticeKind, state *tryNoticeViewState, actions tryCardActions) {
+	if state == nil {
+		return
 	}
-	return func() {
-		if ui.Button(c.Key(key), label).Clicked() {
-			clear()
-			a.noticeAction(action)
+	var dismiss func()
+	if state.Dismiss {
+		dismiss = actions.clearTryNotice
+	}
+	notice(c, key, tone, state.Text, state.More, func() func() {
+		if state.ActionLabel == "" {
+			return nil
 		}
-	}
+		return func() {
+			if ui.Button(c.Key(key+"-action"), state.ActionLabel).Clicked() {
+				actions.runTryNoticeAction(state.Action)
+			}
+		}
+	}(), dismiss)
 }
 
-// tryRecording is the Try area while it records: the levels, the time,
-// the live text, Stop and Cancel.
-func (a *app) tryRecording(c *ui.Context, p string, s session.Snapshot) {
+func tryRecording(c *ui.Context, prefix string, state *tryRecordingViewState, customPalette bool, actions tryCardActions) {
 	t := c.Theme()
 	k := tok(t)
+	icon := transcribeIcon
+	switch state.Kind {
+	case "translate":
+		icon = translateIcon
+	case "rewrite":
+		icon = rewriteIcon
+	}
 	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Children(func() {
-		ui.Icon(c, kindIcon(s.Kind).Bold).Size(px(t, 18), px(t, 18)).TextColor(k.Record).Shrink(0)
-		levelBars(c, s.Levels, !s.HeardAt.IsZero())
-		ui.Text(c, clock(s.Elapsed(time.Now()))).FontSize(px(t, fsCaption)).Font("monospace").TextColor(k.Text2).Shrink(0)
+		ui.Icon(c, icon.Bold).Size(px(t, 18), px(t, 18)).TextColor(k.Record).Shrink(0)
+		levelBars(c, state.Levels, state.Heard)
+		ui.Text(c, state.ElapsedText).FontSize(px(t, fsCaption)).Font("monospace").TextColor(k.Text2).Shrink(0)
 	})
-	live := strings.TrimSpace(s.Partial)
-	if live == "" {
+	if state.LiveText == "" {
 		caption(c, i18n.T("Listening…"))
 	} else {
-		ui.Text(c, live).MaxLines(4).Ellipsis("…")
+		ui.Text(c, state.LiveText).MaxLines(4).Ellipsis("…")
 	}
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-		if recordButton(c.Key(p+"-try-stop"), i18n.T("Stop")).Label(i18n.T("Stop recording")).Clicked() {
-			a.stopSession()
+		if tryRecordButton(c.Key(prefix+"-try-stop"), i18n.T("Stop"), customPalette).Label(i18n.T("Stop recording")).Clicked() {
+			actions.stopTry()
 		}
-		if ghostButton(c.Key(p+"-try-cancel"), i18n.T("Cancel")).Clicked() {
-			a.cancelSession()
+		if ghostButton(c.Key(prefix+"-try-cancel"), i18n.T("Cancel")).Clicked() {
+			actions.cancelTry()
 		}
 	})
 }
 
-// levelBars draws the input levels as session.Bars bars, newest on the
-// right, in the recording colour once the microphone is heard.
+const tryLevelBarCount = 16
+
 func levelBars(c *ui.Context, levels []float64, heard bool) {
 	t := c.Theme()
 	k := tok(t)
 	ui.Row(c.Key("tr-wave")).Grow(1).MinWidth(0).Height(px(t, 24)).Gap(px(t, 3)).AlignItems(ui.Center).Label(i18n.T("Input level")).Children(func() {
-		pad := session.Bars - len(levels)
-		col := k.Record
+		pad := tryLevelBarCount - len(levels)
+		col := k.Waveform
 		if !heard {
 			col = k.G[5]
 		}
-		for i := range session.Bars {
-			v := 0.0
-			if i >= pad {
-				v = levels[i-pad]
+		for index := range tryLevelBarCount {
+			value := 0.0
+			if index >= pad {
+				value = levels[index-pad]
 			}
-			ui.Box(c).Width(px(t, 3)).Height(px(t, float32(3+min(max(v, 0), 1)*21))).Radius(px(t, 1.5)).Background(col)
+			ui.Box(c).Width(px(t, 3)).Height(px(t, float32(3+min(max(value, 0), 1)*21))).Radius(px(t, 1.5)).Background(col)
 		}
 	})
 }
 
-// tryEnded is a finished try: its result (or why there is none), what
-// was recognised, the stage times and Copy.
-func (a *app) tryEnded(c *ui.Context, p string, s session.Snapshot, clear func()) {
+// tryRecordButton keeps the record colours with the default palette.
+func tryRecordButton(c *ui.Context, label string, customPalette bool) ui.Element {
+	if !customPalette {
+		return recordButton(c, label)
+	}
+	return ui.PrimaryButton(c, label).Border(1, ui.Color{})
+}
+
+func tryEnded(c *ui.Context, prefix, sessionID string, transcript bool, state *tryEndedViewState, actions tryCardActions) {
 	t := c.Theme()
 	k := tok(t)
-	switch s.State {
-	case session.Cancelled:
+	if state.Cancelled {
 		caption(c, i18n.T("Cancelled."))
 		return
-	case session.Failed:
-		if s.Problem != nil {
-			text, more, action := sessionProblemText(s.Problem)
-			if text != "" {
-				notice(c, p+"-try-failed", noticeError, text, more, a.noticeButton(c, p+"-try-failed-action", action, clear), nil)
-				return
-			}
-		}
-		caption(c, i18n.T("Nothing was heard."))
+	}
+	if state.Failure != nil {
+		tryNotice(c, prefix+"-try-failed", noticeError, state.Failure, actions)
 		return
 	}
-	if pr := s.Problem; pr != nil {
-		if text, more, action := sessionProblemText(pr); text != "" {
-			notice(c, p+"-try-warn", noticeWarn, text, more, a.noticeButton(c, p+"-try-warn-action", action, clear), nil)
-		}
+	if state.FailureText != "" {
+		caption(c, state.FailureText)
+		return
 	}
+	tryNotice(c, prefix+"-try-warn", noticeWarn, state.Warning, actions)
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, i18n.T("Result")).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2).Grow(1)
-		if ghostIconButton(c.Key(p+"-try-copy"), icons.Copy, i18n.T("Copy")).Label(i18n.T("Copy result")).Disabled(s.Result == "").Clicked() {
-			c.Services().WriteClipboard(s.Result)
-			a.toast(i18n.T("Copied"))
+		if ghostIconButton(c.Key(prefix+"-try-copy"), icons.Copy, i18n.T("Copy")).Label(i18n.T("Copy result")).Disabled(state.Result == "").Clicked() {
+			actions.copyTryResult(state.Result)
 		}
 	})
-	fillCard(c.Key(p + "-try-result")).Padding(px(t, sp3)).Children(func() {
-		a.transcriptResult(c, s.ID, s.Result, false)
-	})
-	if raw := strings.TrimSpace(s.Raw); raw != "" && raw != strings.TrimSpace(s.Result) {
-		title := i18n.T("As recognised")
-		if s.Kind == store.KindRewrite {
-			title = i18n.T("Your instruction")
+	sessionTextCard(c.Key(prefix+"-try-result"), transcript).Padding(px(t, sp3)).Children(func() {
+		if !actions.transcriptResult(c, sessionID, state.Result, transcript, false) {
+			dictionaryText(c, state.Result, state.Highlights).Selectable()
 		}
+	})
+	if state.Raw != "" {
 		ui.Column(c).Gap(px(t, 4)).Children(func() {
-			ui.Text(c, title).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
-			ui.Text(c, raw).FontSize(px(t, fsCaption)).TextColor(k.Text2).Selectable()
+			ui.Text(c, state.RawTitle).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(k.Text2)
+			ui.Text(c, state.Raw).FontSize(px(t, fsCaption)).TextColor(k.Text2).Selectable()
 		})
 	}
-	if line := uitext.TimingsText(s); line != "" {
-		caption(c, line)
+	if state.TimingsText != "" {
+		caption(c, state.TimingsText)
 	}
+}
+
+func sessionTextCard(c *ui.Context, transcript bool) ui.Element {
+	return fillCard(c).Background(sessionTextBackground(c.Theme(), transcript))
+}
+
+// The native card and its embedded Markdown page must use the same fill.
+func sessionTextBackground(t *ui.Theme, transcript bool) ui.Color {
+	if transcript {
+		return tok(t).TranscriptFace
+	}
+	return tok(t).Subtle
 }

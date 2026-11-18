@@ -1,0 +1,57 @@
+{
+  "name": "remote-cards-error",
+  "kind": "remote-cards",
+  "remote_cards": {
+    "kind": "asr",
+    "groups": [
+      {
+        "key": "remote-asr-mine",
+        "title": "Set up",
+        "cards": [
+          {
+            "kind": "asr",
+            "id": "fixture",
+            "account": "asr.fixture",
+            "name": "Fixture service",
+            "model": "fixture-model",
+            "where": "Remote",
+            "realtime": true,
+            "configured": true,
+            "status": "danger",
+            "status_text": "Test failed",
+            "key_text": "••••",
+            "key_status": "neutral",
+            "test": {
+              "state": "failure",
+              "code": "network",
+              "text": "Failed",
+              "long_text": "The speech model stopped or did not answer. Try again in a moment.",
+              "tooltip": "The speech model stopped or did not answer. Try again in a moment.\n\nredacted fixture detail",
+              "long_tooltip": "The speech model stopped or did not answer. Try again in a moment.\n\nredacted fixture detail"
+            }
+          }
+        ]
+      },
+      {
+        "key": "remote-asr-online",
+        "title": "Online services",
+        "caption": "A service gets your recordings only for the features you choose it for.",
+        "cards": [
+          {
+            "kind": "asr",
+            "id": "online-speech",
+            "account": "asr.online-speech",
+            "name": "Online speech",
+            "model": "fixture-model",
+            "where": "Remote",
+            "configured": false,
+            "status": "neutral",
+            "status_text": "Not set up",
+            "key_text": "…",
+            "key_status": "neutral"
+          }
+        ]
+      }
+    ]
+  }
+}
