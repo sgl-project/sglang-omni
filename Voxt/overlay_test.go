@@ -47,7 +47,9 @@ func snap(a *app, s session.Snapshot) {
 func wave() []float64 {
 	var out []float64
 	for i := range session.Bars {
-		out = append(out, 0.35+0.3*math.Sin(float64(i)/2))
+		// Rounded: arm64 fuses this multiply-add and amd64 does not, so the raw
+		// values differ in the last bit and the goldens would differ by platform.
+		out = append(out, math.Round((0.35+0.3*math.Sin(float64(i)/2))*1e9)/1e9)
 	}
 	return out
 }
@@ -100,7 +102,7 @@ func TestOverlayModes(t *testing.T) {
 		t.Fatalf("notice %s %+v", a.ov.mode, a.notice)
 	}
 	a.noticeAction(a.notice.action)
-	if a.router.Path() != modelsPath || a.ov.mode != ovHidden {
+	if a.shownPath() != modelsPath || a.ov.mode != ovHidden {
 		t.Errorf("action: %s %s", a.router.Path(), a.ov.mode)
 	}
 	// Cancelled and too short: nothing.
@@ -216,7 +218,7 @@ func TestAnswerCardButtons(t *testing.T) {
 // mustBody is the card's text's height now.
 func (a *app) mustBody(t *testing.T) int {
 	t.Helper()
-	h, _ := a.cardBodyHeight(a.cardNow())
+	h, _ := a.cardBodyHeight(a.cachedCardRef())
 	return h
 }
 

@@ -97,9 +97,9 @@ func snapshotsMain(t *testing.T, out string) {
 		}
 		// The Language models page's foot, with the way to the prompt debug
 		// page, and that page (llm_debug.go).
-		a.navigate("/language-models")
+		a.navigate(remotePath)
 		scrollToText(tt, i18n.T("Try prompts on a model…"))
-		save("page-language-models-debug")
+		save("settings-language-models-debug")
 		a.navigate(llmDebugPath)
 		save("page-llm-debug")
 		// Set up: the prompt, long as the saved ones are, the page around it.
@@ -139,6 +139,7 @@ func snapshotsMain(t *testing.T, out string) {
 		transcribeShots(a, tt, save)     // the Try area's states (feature_page_test.go)
 		appEnhanceShots(a, fs, tt, save) // appenhance_page_test.go
 		dictShots(t, a, tt, save)        // dictionary_page_test.go
+		notesShots(t, a, tt, save)       // notes_page_test.go
 		speechShots(a, tt, save)         // remote_speech_e2e_test.go
 		// The settings dialog, section by section.
 		a.updateSettings(func(s *settings.Settings) {
@@ -269,7 +270,7 @@ func snapshotsMain(t *testing.T, out string) {
 		save("settings-about-releases")
 		a.settingsOpen = false
 		a.navigate("/home")
-		a.relOpen = true // checking: the answer has not come yet
+		a.updUI.relOpen = true // checking: the answer has not come yet
 		save("release-checking")
 		a.checkForUpdates()
 		save("release-available")
@@ -282,7 +283,7 @@ func snapshotsMain(t *testing.T, out string) {
 		})
 		a.checkForUpdates()
 		save("release-failed")
-		a.relOpen = false
+		a.updUI.relOpen = false
 		srv.set(func(s *ghServer) { s.status, s.list = 0, newerReleases })
 		a.clearNotices()
 		a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck, s.Updates.Dismissed = time.Time{}, "" })
@@ -290,6 +291,22 @@ func snapshotsMain(t *testing.T, out string) {
 		save("sidebar-notices-release")
 		a.clearNotices()
 		a.upd, a.updKnown = fake, false
+
+		// The current version's short announcement and its full-notes entry
+		// in Settings → About → Updates (announcements.go).
+		a.version = "2.0.3"
+		announcements := &announceServer{revision: "r1", list: newAnnouncement}
+		a.announceURL = announcements.start(t)
+		a.checkAnnouncements()
+		a.navigate("/home")
+		save("sidebar-announcement-short")
+		a.navigate("/settings/about")
+		scrollToText(tt, i18n.T("What's new in %s", a.version))
+		save("settings-about-whats-new")
+		a.settingsOpen = false
+		a.announceURL = ""
+		a.version = "0.1.0"
+		a.clearNotices()
 
 		// The recording overlay, state by state (overlay_test.go).
 		overlayShots(t, a, out, suffix, run.dark)
@@ -310,6 +327,19 @@ func scrollToText(tt *ui.Tester, s string) {
 	if r, ok := tt.Find(s); ok {
 		w, h := snapshotSize()
 		tt.Scroll(float32(w)*0.6, float32(h)*0.5, 0, r.Y-float32(h)*0.2)
+	}
+}
+
+// scrollSettingsToText scrolls a settings section until s is near its top.
+// The search field locates the dialog even in a tall test window.
+func scrollSettingsToText(tt *ui.Tester, s string) {
+	frames(tt)
+	r, ok := tt.Find(s)
+	anchor, anchored := tt.Find(i18n.T("Find in settings"))
+	if ok && anchored {
+		y := anchor.Y + anchor.H + 100
+		tt.Scroll(anchor.X+anchor.W/2, y, 0, r.Y-y)
+		frames(tt)
 	}
 }
 

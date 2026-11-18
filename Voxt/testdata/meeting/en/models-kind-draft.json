@@ -1,0 +1,122 @@
+{
+  "name": "models-kind-draft",
+  "kind": "models",
+  "models": {
+    "asr": [
+      {
+        "key": "model-asr.qwen3-6bit",
+        "rows": [
+          {
+            "id": "asr.qwen3-6bit",
+            "kind": "asr",
+            "name": "Qwen3-ASR 1.7B (6bit)",
+            "default": false,
+            "installed": true,
+            "size_text": "2.0 GB on disk",
+            "about": "Qwen3-ASR 1.7B using less memory than the 8-bit model, and nearly as accurate. Shows the text as you speak.",
+            "languages": "30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean",
+            "tags": [
+              "Local",
+              "Accurate",
+              "Realtime",
+              "Supports your main language"
+            ],
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.qwen3-6bit",
+                "label": "Hide",
+                "accessibility_label": "Hide Qwen3-ASR 1.7B (6bit)",
+                "tooltip": "Hide it from the features' menus"
+              },
+              {
+                "kind": "delete",
+                "model_id": "asr.qwen3-6bit",
+                "label": "Delete",
+                "accessibility_label": "Delete Qwen3-ASR 1.7B (6bit)…"
+              }
+            ],
+            "draft": {
+              "model_id": "asr.accurate.draft",
+              "parent_id": "asr.qwen3-6bit",
+              "help": "Uses speculative decoding: a small draft model (725.7 MB) proposes several words at a time, and the speech model checks them. It needs the draft downloaded.",
+              "installed": false,
+              "needs_download": false,
+              "size_text": "725.7 MB on disk",
+              "on": false,
+              "switch_label": "Faster transcription for Qwen3-ASR 1.7B (6bit)",
+              "actions": [
+                {
+                  "kind": "use",
+                  "model_id": "asr.accurate.draft",
+                  "label": "Use it",
+                  "accessibility_label": "Use Qwen3-ASR 1.7B DFlash draft"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "llm": null,
+    "show_llm": false,
+    "hidden": null,
+    "hidden_open": false,
+    "advanced": {
+      "open": false,
+      "locale": "en",
+      "value": "",
+      "selection": "Automatic",
+      "options": [
+        {
+          "label": "Automatic",
+          "value": ""
+        },
+        {
+          "label": "5 minutes",
+          "value": "5m"
+        },
+        {
+          "label": "15 minutes",
+          "value": "15m"
+        },
+        {
+          "label": "30 minutes",
+          "value": "30m"
+        },
+        {
+          "label": "1 hour",
+          "value": "1h"
+        },
+        {
+          "label": "Until Voxt quits",
+          "value": "quit"
+        }
+      ]
+    },
+    "delete": {},
+    "network": {
+      "open": false,
+      "proxy_mode": 0,
+      "proxy_caption": "The proxy in this Mac's network settings, or one set by an environment variable.",
+      "source": 0,
+      "source_labels": [
+        "Automatic",
+        "Hugging Face only",
+        "hf-mirror.com only"
+      ],
+      "source_caption": "Whichever answers first. Every file is checked.",
+      "proxy_family": {
+        "key": "network.proxy",
+        "kind": "",
+        "text": ""
+      },
+      "source_family": {
+        "key": "network.hfEndpoints",
+        "kind": "",
+        "text": ""
+      }
+    },
+    "speech_context": ""
+  }
+}

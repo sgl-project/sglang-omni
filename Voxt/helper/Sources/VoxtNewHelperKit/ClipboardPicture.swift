@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// The picture clipboard.image sends, from what the clipboard holds.
 public enum ClipboardPicture {
     /// The image types read, in order of preference.
-    public static let imageTypes = [UTType.png, .jpeg, .heic, .tiff].map(\.identifier)
+    public static let imageTypes = [UTType.png, .jpeg, .heic, .tiff, .webP].map(\.identifier)
 
     /// The clipboard's picture, its longer side at most maxSide pixels:
     /// a copied file's when it is an image file (Finder also puts the

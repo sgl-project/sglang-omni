@@ -1,0 +1,144 @@
+{
+  "name": "history-detail-transcribe-again",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "error": "",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "1 entry",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [
+      {
+        "id": "history-inserted",
+        "title": "Weekly plan",
+        "failed_title": false,
+        "meta": "5 minutes ago · Notes · 0:08",
+        "selected": true,
+        "copy_text": "Weekly plan\nI'll send the new agenda tonight.",
+        "raw_copy_text": "weekly plan\nI'll send the new agenda tonight",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "Transcribe again",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "Recognise the recording again. Nothing is inserted."
+        },
+        "marks": null
+      }
+    ],
+    "detail": {
+      "id": "history-inserted",
+      "error_text": "",
+      "error_detail": "",
+      "error_warning": false,
+      "can_reveal": true,
+      "retry": {
+        "available": true,
+        "wanted": false,
+        "active": false,
+        "label": "Transcribe again",
+        "disabled": false,
+        "stage": "",
+        "stage_text": "",
+        "tooltip": "Recognise the recording again. Nothing is inserted."
+      },
+      "recording_kept_text": "",
+      "text_blocks": [
+        {
+          "key": "hist-result",
+          "title": "Result",
+          "copy_label": "Copy result",
+          "text": "Weekly plan\nI'll send the new agenda tonight.",
+          "formatted": true
+        },
+        {
+          "key": "hist-raw",
+          "title": "Recognised text",
+          "copy_label": "Copy recognised text",
+          "text": "weekly plan\nI'll send the new agenda tonight"
+        }
+      ],
+      "transcript": true,
+      "sections": [
+        {
+          "title": "Details",
+          "facts": [
+            {
+              "label": "Time",
+              "value": "Jan 2 14:59",
+              "empty": false
+            },
+            {
+              "label": "App",
+              "value": "Notes",
+              "empty": false
+            },
+            {
+              "label": "Delivery",
+              "value": "Inserted",
+              "empty": false
+            },
+            {
+              "label": "Speech recognition",
+              "value": "Fixture speech model",
+              "empty": false
+            },
+            {
+              "label": "Sound optimisation",
+              "value": "Hum filtered, volume +1.5 dB",
+              "empty": false
+            },
+            {
+              "label": "Language model",
+              "value": "Fixture language model",
+              "empty": false
+            },
+            {
+              "label": "App rule",
+              "value": "Fixture rule (app)",
+              "empty": false
+            }
+          ]
+        },
+        {
+          "title": "Timing",
+          "facts": [
+            {
+              "label": "Recording",
+              "value": "7.5 s, 2.5 s sent",
+              "empty": false
+            },
+            {
+              "label": "Recognition",
+              "value": "850 ms",
+              "empty": false
+            },
+            {
+              "label": "Language model",
+              "value": "1.2 s",
+              "empty": false
+            },
+            {
+              "label": "Total",
+              "value": "2.4 s",
+              "empty": false
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

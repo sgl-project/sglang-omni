@@ -63,9 +63,9 @@ func (f *ovFlow) sample() {
 			st.text = "raw"
 		}
 	case ovAnswer:
-		v := a.cardNow()
+		v := a.cachedCard()
 		st.text = "card"
-		if v.conversation {
+		if v.Conversation {
 			st.text = "card:conversation"
 		}
 	}

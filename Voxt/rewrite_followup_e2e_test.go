@@ -67,9 +67,9 @@ func TestRewriteFollowUpNewSelection(t *testing.T) {
 	if !strings.Contains(msgs[0][1], "the user selected it since") {
 		t.Errorf("the system prompt does not say what the new selection is:\n%s", msgs[0][1])
 	}
-	v := a.cardNow()
-	if len(v.bubbles) != 4 || v.bubbles[0].quote != "" || v.bubbles[2].text != "add the new messages" || v.bubbles[2].quote != chatB || v.bubbles[2].cut {
-		t.Errorf("bubbles %+v", v.bubbles)
+	v := a.cachedCard()
+	if len(cardBubblesForTest(v)) != 4 || cardBubblesForTest(v)[0].quote != "" || cardBubblesForTest(v)[2].text != "add the new messages" || cardBubblesForTest(v)[2].quote != chatB || cardBubblesForTest(v)[2].cut {
+		t.Errorf("bubbles %+v", cardBubblesForTest(v))
 	}
 	if len(a.answer.turns) != 2 || a.answer.turns[1].Selection != chatB {
 		t.Errorf("turns %+v", a.answer.turns)
@@ -106,8 +106,8 @@ func TestRewriteFollowUpSelectionKinds(t *testing.T) {
 				t.Errorf("follow-up %q, want %q", got, want)
 			}
 			quote, _ := quoteText(tc.want, false)
-			if v := a.cardNow(); len(v.bubbles) != 4 || v.bubbles[2].quote != quote {
-				t.Errorf("bubbles %+v", v.bubbles)
+			if v := a.cachedCard(); len(cardBubblesForTest(v)) != 4 || cardBubblesForTest(v)[2].quote != quote {
+				t.Errorf("bubbles %+v", cardBubblesForTest(v))
 			}
 		})
 	}
@@ -137,9 +137,9 @@ func TestRewriteThreeFollowUpsSelecting(t *testing.T) {
 	if strings.Join(sels, " ") != "s0 s1 s2 s3" {
 		t.Errorf("selections %q in %q", sels, msgs)
 	}
-	v := a.cardNow()
-	if len(v.bubbles) != 8 || v.bubbles[2].quote != "s1" || v.bubbles[4].quote != "s2" || v.bubbles[6].quote != "s3" {
-		t.Errorf("bubbles %+v", v.bubbles)
+	v := a.cachedCard()
+	if len(cardBubblesForTest(v)) != 8 || cardBubblesForTest(v)[2].quote != "s1" || cardBubblesForTest(v)[4].quote != "s2" || cardBubblesForTest(v)[6].quote != "s3" {
+		t.Errorf("bubbles %+v", cardBubblesForTest(v))
 	}
 }
 
@@ -157,8 +157,8 @@ func TestRewriteFollowUpSelectionEscape(t *testing.T) {
 	a.pump("the follow-up's selection", func() bool {
 		return a.sess.ID != before && a.sess.State == session.Recording && a.sess.Selection == chatB
 	})
-	if v := a.cardNow(); len(v.bubbles) != 3 || !v.bubbles[2].live || v.bubbles[2].quote != chatB {
-		t.Errorf("while it records %+v", v.bubbles)
+	if v := a.cachedCard(); len(cardBubblesForTest(v)) != 3 || !cardBubblesForTest(v)[2].live || cardBubblesForTest(v)[2].quote != chatB {
+		t.Errorf("while it records %+v", cardBubblesForTest(v))
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("the cancel", func() bool { return a.sess.State == session.Cancelled })

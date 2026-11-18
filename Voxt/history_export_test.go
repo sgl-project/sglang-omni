@@ -63,7 +63,7 @@ func TestHistoryExportText(t *testing.T) {
 		t.Errorf("toast %q", a.toasts)
 	}
 	// Markdown, shown scope (the Transcribe tab).
-	a.hist.tab = 0
+	a.histUI.tab = 0
 	a.exportHistoryText(filepath.Join(dir, "b.md"), historyapi.FormatMarkdown, true)
 	md := read("b.md")
 	if !strings.Contains(md, "Notes: 第一条") || strings.Contains(md, "second") {
@@ -94,7 +94,7 @@ func TestHistoryExportDialog(t *testing.T) {
 	if !has(tt, "Export text") || !has(tt, "Markdown") {
 		t.Fatalf("no row: %q", firstTexts(tt))
 	}
-	a.histSet.textFormat = "JSONL"
+	a.histSetUI.textFormat = "JSONL"
 	frames(tt)
 	click(t, tt, "Export text…")
 	if saved != "voxt-history.jsonl" {

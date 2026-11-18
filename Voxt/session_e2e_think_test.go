@@ -34,7 +34,7 @@ func TestCardThinkingLevel(t *testing.T) {
 	}
 	// A model that is not a service set up here (or takes no thinking
 	// setting): no button.
-	if v := a.cardNow(); v.thinks {
+	if v := a.cachedCard(); v.ShowThinking {
 		t.Errorf("thinking offered for %q", a.answer.llmID)
 	}
 	tt := cardTester(t, a.app)
@@ -48,12 +48,12 @@ func TestCardThinkingLevel(t *testing.T) {
 	a.answer.llmID = "deepseek"
 	a.overlaySync()
 	frames(tt)
-	if v := a.cardNow(); !v.thinks || !v.canThink || v.think != nil || !has(tt, "Thinking level") {
+	if v := a.cachedCard(); !v.ShowThinking || !v.CanThink || v.Thinking != (sessionThinkingValue{}) || !has(tt, "Thinking level") {
 		t.Fatalf("no button: %+v %q", v, firstTexts(tt))
 	}
 	click(t, tt, "Thinking level")
-	if !a.answer.langOpen || !a.answer.thinkMenu || !a.ov.lang.shown {
-		t.Fatalf("menu: open %v think %v shown %v", a.answer.langOpen, a.answer.thinkMenu, a.ov.lang.shown)
+	if !a.answer.ui.langOpen || !a.answer.ui.thinkMenu || !a.ov.lang.shown {
+		t.Fatalf("menu: open %v think %v shown %v", a.answer.ui.langOpen, a.answer.ui.thinkMenu, a.ov.lang.shown)
 	}
 	if h := a.ov.lang.frame.Height; h != thinkMenuFrame(a.ov.lang.frame, true, 7).Height {
 		t.Errorf("menu %d high for 7 levels", h)
@@ -69,7 +69,7 @@ func TestCardThinkingLevel(t *testing.T) {
 	if err := mt.Click("Default"); err != nil {
 		t.Fatal(err)
 	}
-	if a.answer.langOpen || a.sess.State.Live() || len(chat.requests()) != 1 {
+	if a.answer.ui.langOpen || a.sess.State.Live() || len(chat.requests()) != 1 {
 		t.Errorf("the same level asked again: %d requests", len(chat.requests()))
 	}
 	// Low: asked again, the card keeps its text meanwhile.
@@ -84,7 +84,7 @@ func TestCardThinkingLevel(t *testing.T) {
 	}
 	a.pump("the second session", func() bool { return a.sess.ID != first && a.sess.State == session.Composing })
 	low := llm.Thinking{Mode: llm.ThinkEffort, Effort: "low"}
-	if v := a.cardNow(); !v.busy || v.text != "See you on Thursday." || v.canThink || v.think == nil || *v.think != low {
+	if v := a.cachedCard(); !v.Busy || cardTextForTest(v) != "See you on Thursday." || v.CanThink || v.Thinking == (sessionThinkingValue{}) || v.Thinking != sessionThinkingValueOf(&low) {
 		t.Errorf("on its way: %+v", v)
 	}
 	a.pump("the second end", func() bool { return a.sess.ID != first && a.sess.State.Ended() })
@@ -94,7 +94,7 @@ func TestCardThinkingLevel(t *testing.T) {
 	if body := chat.requests()[1]; body["thinking"] != low || chatMessages(body)[len(chatMessages(body))-1][1] != "<input>\n周四见\n</input>" {
 		t.Errorf("second request %v", body)
 	}
-	if tip := thinkButtonText(a.cardNow().think, settings.Generation{}); tip != "Thinking level: Low" {
+	if tip := a.cachedCard().ThinkingLabel; tip != "Thinking level: Low" {
 		t.Errorf("tip %q", tip)
 	}
 	if a.prefs.Providers.LLM[0].Generation.Thinking != "" {
@@ -102,7 +102,7 @@ func TestCardThinkingLevel(t *testing.T) {
 	}
 	// Off fails: the card stays as it was and says so.
 	second := a.sess.ID
-	a.chooseThinking(&llm.Thinking{Mode: llm.ThinkOff})
+	a.chooseThinking(sessionThinkingValue{Mode: llm.ThinkOff})
 	a.pump("the third end", func() bool { return a.sess.ID != second && a.sess.State.Ended() })
 	if a.answer.text != "See you Thursday!" || *a.answer.think != low || !strings.HasPrefix(a.answer.msg, "Not answered again (Thinking: Off): ") {
 		t.Errorf("failed: %+v", a.answer)
@@ -120,7 +120,7 @@ func TestCardThinkingLevel(t *testing.T) {
 	chat.delay = time.Second
 	chat.mu.Unlock()
 	fourth := a.sess.ID
-	a.chooseThinking(&llm.Thinking{Mode: llm.ThinkOn})
+	a.chooseThinking(sessionThinkingValue{Mode: llm.ThinkOn})
 	a.pump("the fifth session", func() bool { return a.sess.ID != fourth && a.sess.State == session.Composing })
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("the cancel", func() bool { return a.sess.State.Ended() })
@@ -137,18 +137,22 @@ func TestRewriteCardThinkingLevel(t *testing.T) {
 	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
 	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
 	a.answer.llmID = "deepseek"
-	if v := a.cardNow(); !v.thinks || !v.canThink {
+	if v := a.cachedCard(); !v.ShowThinking || !v.CanThink {
 		t.Fatalf("no button: %+v", v)
 	}
 	first := a.sess.ID
 	high := llm.Thinking{Mode: llm.ThinkEffort, Effort: "high"}
-	a.chooseThinking(&high)
+	a.chooseThinking(sessionThinkingValueOf(&high))
 	a.pump("the redo", func() bool { return a.sess.ID != first && a.sess.State.Ended() })
 	if body := chat.requests()[1]; body["thinking"] != high || !strings.Contains(lastUser(chat, 1), "summarize") {
 		t.Errorf("request %v", body)
 	}
 	if a.answer.text != "Docs are ready; the tests still run." || len(a.answer.turns) != 1 || a.answer.turns[0].Answer.Content != a.answer.text || a.answer.conversation || len(a.pasted()) != 0 {
 		t.Fatalf("card %+v, pasted %v", a.answer, a.pasted())
+	}
+	a.pump("the redo in history", func() bool { return len(a.history()) == 2 })
+	if got := a.history()[0]; got.ID != a.answer.id || got.Conversation != a.answer.conv || got.Replaces != first {
+		t.Fatalf("redo history %+v; first %q, card %+v", got, first, a.answer)
 	}
 	// Continue: the follow-up holds the new answer.
 	a.recordFollowUp(t, tr, "shorter")

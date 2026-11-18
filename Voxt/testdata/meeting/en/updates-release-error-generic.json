@@ -1,0 +1,14 @@
+{
+  "name": "updates-release-error-generic",
+  "kind": "updates-release",
+  "updates_release": {
+    "available": true,
+    "done": true,
+    "newer": false,
+    "title": "Couldn't check for updates",
+    "subtitle": "",
+    "error_text": "Voxt could not read the list of releases on GitHub: fixture release list failed",
+    "notes": "",
+    "download": ""
+  }
+}

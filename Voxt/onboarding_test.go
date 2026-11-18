@@ -1,15 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"math"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/hehehai/actnowkit/shortcuts"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -97,7 +102,7 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	for _, s := range []string{
 		"No language model is set up. Set one up to translate.",
 		"Set up a language model",
-		"Set one up on the Language models page",
+		"Set one up in Settings → Language models",
 		"Skip this step",
 	} {
 		if !has(tt, s) {
@@ -109,7 +114,7 @@ func TestOnboardingLanguageModelGuide(t *testing.T) {
 	}
 	readyModels(a)
 	frames(tt)
-	if has(tt, "set one up on the Language models page") {
+	if has(tt, "set one up in Settings → Language models") {
 		t.Errorf("guide still shown with LLM: %q", tt.Texts())
 	}
 	if n := a.obTry(""); n != nil {
@@ -419,6 +424,7 @@ func TestOnboardingComesBack(t *testing.T) {
 		t.Fatalf("back: open %v, step %d", a.ob.open, a.ob.step)
 	}
 	a.closeOnboarding() // its ×
+	a.navigate("/logs") // no Open setup guide under the Settings dialog too
 	a.navigate("/settings/general")
 	frames(tt)
 	tt.Scroll(windowWidth*0.7, windowHeight*0.6, 0, 600) // the row is under the fold
@@ -461,6 +467,91 @@ func TestOnboardingTryStepLeaves(t *testing.T) {
 // TestKeyboardLit: the setup guide's keyboard lights the keys of the
 // shortcut: a modifier on its side, on both sides when either does, fn,
 // the space bar (#3644: "Right ⌥" did not say which physical key).
+func TestOnboardingViewStateAdapterUsesExplicitLocale(t *testing.T) {
+	previousLocale := i18n.Locale()
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	a, _ := obTester(t)
+	a.ob.legacyAvailable, a.ob.legacyDone = true, true
+	a.ob.legacy.todo = []legacyTodo{{text: "Finish custom setup", kind: local.LLM, id: llm.Custom}}
+	a.famConflicts = []shortcuts.Conflict{{Mine: shortcuts.Shortcut{ID: "transcribe"}, Other: shortcuts.Holder{Name: "AudioSmith"}, Theirs: shortcuts.Shortcut{ID: "transcribe"}}}
+	translator := i18n.NewTranslator("en")
+	for _, step := range []int{obWelcome, obTranscribe, obMore} {
+		a.ob.step = step
+		for _, globalLocale := range []string{"zh-Hans", "en"} {
+			i18n.SetLocale(globalLocale)
+			state := a.onboardingViewStateForTranslator(translator)
+			switch step {
+			case obWelcome:
+				if got := state.Welcome.Legacy.Todos[0].ServiceName; got != "Custom (OpenAI-compatible)" {
+					t.Errorf("global locale %s changed service name to %q", globalLocale, got)
+				}
+			case obTranscribe:
+				if got := state.Try.Conflicts[0]; got != "Also used by AudioSmith (Transcribe)" {
+					t.Errorf("global locale %s changed conflict to %q", globalLocale, got)
+				}
+			case obMore:
+				if got := state.More.Shortcuts[0].Problems[0]; got != "Also used by AudioSmith (Transcribe)" {
+					t.Errorf("global locale %s changed conflict to %q", globalLocale, got)
+				}
+			}
+		}
+	}
+}
+
+func TestOnboardingWelcomeViewStateCache(t *testing.T) {
+	a, _ := obTester(t)
+	first := a.onboardingViewState()
+	if second := a.onboardingViewState(); !reflect.DeepEqual(second, first) {
+		t.Fatal("unchanged welcome state differs")
+	}
+	a.ob.tries[obTranscribe] = "mine"
+	snapshot := obSnap(a, "mine", store.KindTranscribe, session.Done)
+	snapshot.Rev = a.sess.Rev + 1
+	a.sessionChanged(snapshot)
+	if third := a.onboardingViewState(); !third.Passed[obTranscribe] {
+		t.Fatal("cached welcome kept stale breadcrumbs")
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	if fourth := a.onboardingViewState(); fourth.StepTitles[obWelcome] != "欢迎" {
+		t.Fatalf("cached welcome kept the old locale: %q", fourth.StepTitles[obWelcome])
+	}
+}
+
+// The guide's Try result tints the dictionary's words, as the feature pages' Try does.
+func TestOnboardingTryDictionaryHighlights(t *testing.T) {
+	const result = "Voxt uses SGLang."
+	a, tt := obTester(t)
+	readyModels(a)
+	a.ob.step = obTranscribe
+	a.ob.tries[obTranscribe] = "mine"
+	s := obSnap(a, "mine", store.KindTranscribe, session.Done)
+	s.Result = result
+	a.sessionChanged(s)
+	frames(tt)
+	if r, ok := tt.Find(result); ok {
+		tt.Scroll(windowWidth/2, windowHeight/2, 0, r.Y-windowHeight/2) // the result sits below the guide's fold
+		frames(tt)
+	}
+	before := bytes.Clone(tt.Image().Pix)
+	s.Rev++
+	s.Highlights = testDictionaryHighlights(result)
+	a.sessionChanged(s)
+	frames(tt)
+	if bytes.Equal(before, tt.Image().Pix) {
+		t.Error("the matched terms have no visible highlight")
+	}
+	if !hasExact(tt, result) {
+		t.Errorf("the whole result is not readable: %q", tt.Texts())
+	}
+}
+
+func TestOnboardingTimingsText(t *testing.T) {
+	snapshot := session.Snapshot{ASR: session.Model{Name: "Speech One"}, LLM: session.Model{Name: "Language Two"}}
+	if got := onboardingTimingsText(i18n.NewTranslator("en"), snapshot); got != "Speech One, Language Two" {
+		t.Fatalf("model names %q", got)
+	}
+}
+
 func TestKeyboardLit(t *testing.T) {
 	for _, c := range []struct {
 		keys string

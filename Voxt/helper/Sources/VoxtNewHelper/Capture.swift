@@ -103,7 +103,7 @@ private struct Candidate {
 }
 
 /// One recording, possibly over several engines (restarts).
-private final class CaptureRun: @unchecked Sendable {
+final class CaptureRun: @unchecked Sendable {
     let out: Writer
     let job: String
     let params: CaptureParams
@@ -269,14 +269,14 @@ private final class CaptureRun: @unchecked Sendable {
         timer.resume()
     }
 
-    private func padSystemSilence(_ samples: Int) {
+    func padSystemSilence(_ samples: Int) {
         let capacity = maxSamples.map { max(0, $0 - framer.samplesSeen) } ?? samples
         var remaining = min(samples, capacity)
         Self.silence.withUnsafeBufferPointer { silence in
             while remaining > 0 {
                 let count = min(remaining, silence.count)
-                let (frames, _) = framer.push(UnsafeBufferPointer(rebasing: silence[..<count]))
-                emit(frames, [])
+                let (frames, levels) = framer.push(UnsafeBufferPointer(rebasing: silence[..<count]))
+                emit(frames, levels)
                 remaining -= count
             }
         }

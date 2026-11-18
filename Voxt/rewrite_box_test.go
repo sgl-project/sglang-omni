@@ -245,10 +245,10 @@ func TestRewriteBoxRedoSameBytes(t *testing.T) {
 	// Another thinking level asks the same input again.
 	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
 	a.answer.llmID = "deepseek"
-	if !a.cardNow().canThink {
+	if !a.cachedCard().CanThink {
 		t.Fatal("no thinking levels on the card")
 	}
-	a.postQueue(func() { a.chooseThinking(&llm.Thinking{Mode: llm.ThinkOn}) })
+	a.postQueue(func() { a.chooseThinking(sessionThinkingValueOf(&llm.Thinking{Mode: llm.ThinkOn})) })
 	a.pump("the redo", func() bool { return len(chat.requests()) == 2 && a.answer.redo == "" })
 	reqs := chat.requests()
 	first, _ := reqs[0]["images"].([][]byte)
@@ -347,6 +347,7 @@ func TestAnswerCardAttach(t *testing.T) {
 			}
 			_, with, _ := a.cardSize()
 			a.answer.attach = ""
+			frames(tt)
 			_, without, _ := a.cardSize()
 			if with != without+layout.CardAttachH {
 				t.Errorf("card height %d with the row, %d without", with, without)

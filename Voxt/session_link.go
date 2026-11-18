@@ -25,9 +25,9 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -51,25 +51,21 @@ type sessionState struct {
 	// sess is the current (or last) session, as its newest snapshot said.
 	sess session.Snapshot
 	// answer is the answer card: open while a result waits there.
-	answer answerCard
-	// box is Rewrite's card with the input box (rewrite_box.go): the
-	// Rewrite shortcut opens it with the microphone. boxShare is its
-	// content as the sending session reads it (Config.BoxInput).
+	answer   answerCard
 	box      rewriteBox
 	boxShare boxShare
-	// boxGen numbers the box's lives: a picture conversion posted for an
-	// older life is dropped. boxPending counts the conversions not yet
-	// posted; boxSendQueued: Enter came while one converted.
+	// boxGen invalidates conversions from an older box life; boxSeq and
+	// boxNext preserve the drop order when conversions finish out of order.
 	boxGen, boxPending int
 	boxSendQueued      bool
-	// boxSeq numbers the picture conversions in drop (or paste) order;
-	// one lands only after every earlier number (boxNext is the next
-	// due), boxHeld keeping one whose earlier numbers still convert.
-	boxSeq, boxNext int
-	boxHeld         map[int]boxLanding
+	boxSeq, boxNext    int
+	boxHeld            map[int]boxLanding
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
+	// reopen is the history's continuable conversations, newest first.
+	reopen     []reopenConversation
+	restoreSeq int
 	// notice is the overlay's one-line message, when it shows one;
 	// noticeSeq numbers them, so that a notice's timer hides only itself.
 	notice    *sessionNotice
@@ -92,49 +88,42 @@ type sessionState struct {
 
 // answerCard is the answer card's state (overlay_card.go draws it).
 type answerCard struct {
-	open      bool
-	id        string // the session whose result it shows
-	conv      string // the first session of its conversation (store.Entry.Conversation)
-	kind      store.Kind
-	text      string
-	title     string // Rewrite's answer title ("" for none)
-	target    proto.App
-	inserting bool   // Insert pastes: the card is hidden meanwhile (Voxt's)
-	msg       string // a line under the text: why Insert, or another language, did not work
+	open       bool
+	id         string // the session whose result it shows
+	conv       string // the first session of its conversation (store.Entry.Conversation)
+	kind       store.Kind
+	text       string
+	highlights []dict.Span
+	title      string // Rewrite's answer title ("" for none)
+	target     proto.App
+	inserting  bool   // Insert pastes: the card is hidden meanwhile (Voxt's)
+	msg        string // a line under the text: why Insert, or another language, did not work
 	// why says why the result is in the card and not in place (Insert's
 	// tip: Voxt says nothing; one line of orange was too loud, 10-15).
 	why string
 	// problem: the session failed (the card shows why, and Try again);
 	// input is what it worked on, for Try again and another language.
-	problem  *session.Problem
-	input    session.TextInput
-	lang     string // Translate's target
-	langOpen bool   // the language menu shows (overlay_lang.go)
+	problem *session.Problem
+	input   session.TextInput
+	lang    string // Translate's target
 	// turns are a Rewrite conversation so far, the shown answer last
 	// (a follow-up adds to them); conversation: a follow-up began, and
 	// the card shows them as one (Voxt's conversation mode), from then on.
 	turns        []compose.Turn
 	conversation bool
-	// attach says which picture went to the language model
-	// (Snapshot.ImageHint); images and thumbs are the input box's
-	// pictures, shown in the card (rewrite_box.go).
-	attach string
-	images [][]byte
-	thumbs []*ui.Bitmap
-	// quotesOpen are the turns whose selection shows whole (#3816).
-	quotesOpen map[int]bool
+	attach       string
+	images       [][]byte
+	thumbs       []*boxThumbnail
 	// redo is the session translating the text into redoLang, another
 	// language chosen in the card, while it runs: the card keeps the text
 	// it shows, with a spinner, until the new one replaces it (Voxt's).
 	redo, redoLang string
 	// llmID is the language model service that answered (its settings'
 	// Provider.ID); think the thinking level the answer was asked with,
-	// nil the service's; redoThink the redo's; thinkMenu: the card's menu
-	// (langOpen) lists the thinking levels, not the languages; pillMenu:
-	// the working pill's (#3940), not the card's.
-	llmID               string
-	think, redoThink    *llm.Thinking
-	thinkMenu, pillMenu bool
+	// nil the service's; redoThink the redo's.
+	llmID            string
+	think, redoThink *llm.Thinking
+	ui               answerCardUI
 	// copied: Copy's mark shows (2 s, Voxt's); copySeq numbers the
 	// copies, so that a copy's timer clears only its own mark.
 	copied  bool
@@ -298,10 +287,10 @@ func (a *app) sessionChanged(s session.Snapshot) {
 				a.box.instruction = s.Spoken
 			}
 			if was.State == session.Recording && s.State != session.Recording {
-				a.box.shown = false // sent: the pill and the card take over
+				a.box.shown = false
 			}
 		}
-		a.boxSync() // the box's lines follow its session
+		a.boxSync()
 	}
 	for _, fn := range a.onSession { // events.go: the setup guide, the sounds
 		fn(was, s)
@@ -337,8 +326,6 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	case a.answer.open && a.answer.redo != "" && a.answer.redo == s.ID:
 		a.endRedo(s)
 	case s.Card && (s.Result != "" || s.State == session.Failed):
-		// The box's send failed: the box shows the error and keeps its
-		// text and pictures, no failed card.
 		if s.State != session.Failed || s.ID != a.box.sending && s.ID != a.box.session {
 			a.openAnswer(s)
 			a.syncHotkeys() // the cancel shortcut closes the card

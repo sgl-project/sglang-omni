@@ -1,0 +1,119 @@
+{
+  "name": "page-search-match",
+  "kind": "page",
+  "page": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "query": "needle",
+    "page": 0,
+    "has_more": false,
+    "active": true,
+    "settings_available": true,
+    "meeting_count": 6,
+    "items": [
+      {
+        "key": "head/Today",
+        "heading": "Today"
+      },
+      {
+        "key": "meeting-recording",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-recording",
+          "title": "Fixture recording",
+          "snippet": "Microphone and system audio",
+          "status_code": "recording",
+          "status_label": "In progress",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "1 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "head/Yesterday",
+        "heading": "Yesterday"
+      },
+      {
+        "key": "meeting-interrupted",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-interrupted",
+          "title": "Untitled meeting",
+          "snippet": "System audio only",
+          "status_code": "interrupted",
+          "status_label": "Interrupted",
+          "mode_code": "subtitles",
+          "clock_text": "15:04",
+          "duration_text": "2 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "head/Previous 7 days",
+        "heading": "Previous 7 days"
+      },
+      {
+        "key": "meeting-asking",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-asking",
+          "title": "Fixture asking",
+          "snippet": "Microphone only",
+          "status_code": "asking",
+          "status_label": "In progress",
+          "mode_code": "recording",
+          "clock_text": "15:04",
+          "duration_text": "3 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-finishing",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-finishing",
+          "title": "Untitled meeting",
+          "snippet": "Microphone and system audio",
+          "status_code": "finishing",
+          "status_label": "Finishing",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "4 min",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-done",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-done",
+          "title": "Fixture done",
+          "snippet": "a needle in the transcript",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "subtitles",
+          "clock_text": "15:04",
+          "duration_text": "5 min",
+          "selected": true
+        }
+      },
+      {
+        "key": "meeting-failed",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-failed",
+          "title": "Untitled meeting",
+          "snippet": "Microphone only",
+          "status_code": "failed",
+          "status_label": "Failed",
+          "mode_code": "recording",
+          "clock_text": "15:04",
+          "duration_text": "6 min",
+          "selected": false
+        }
+      }
+    ]
+  }
+}

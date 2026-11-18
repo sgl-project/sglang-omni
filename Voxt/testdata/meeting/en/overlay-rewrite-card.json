@@ -1,0 +1,120 @@
+{
+  "name": "overlay-rewrite-card",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot39",
+    "state": "done",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "shot39",
+      "kind": "rewrite",
+      "title": "技术分享开场自我介绍",
+      "target_name": "Slack",
+      "thinking": {},
+      "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
+      "insert_tooltip": "Insert into Slack",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "answer",
+          "kind": "body",
+          "turn": 0,
+          "text": "大家好，我是关伟，一名专注于桌面应用和语音交互的工程师。过去几年，我主要在做跨平台的原生界面框架，也参与了几个语音输入工具的设计和开发。\n\n今天想和大家聊聊：怎样让语音输入真正融入日常的写作流程——从按下快捷键的那一刻，到文字出现在光标处，中间发生了什么，又有哪些地方值得打磨。",
+          "selectable": true,
+          "markdown": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": false,
+      "failed": false,
+      "copied": false,
+      "heard": false,
+      "can_insert": true,
+      "can_copy": true,
+      "can_follow_up": true,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}
