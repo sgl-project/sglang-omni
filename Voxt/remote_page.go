@@ -126,7 +126,9 @@ func remoteProviderCard(c *ui.Context, state remoteProviderCardState, actions re
 					keyRow()
 				}
 				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
-					tagChip(c, state.Where)
+					if state.Where != "" {
+						tagChip(c, state.Where)
+					}
 					if state.Realtime {
 						tagChip(c, i18n.T("Realtime"))
 					}
@@ -138,7 +140,9 @@ func remoteProviderCard(c *ui.Context, state remoteProviderCardState, actions re
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Start).MinHeight(px(t, 22)).Children(func() {
 				ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { statusDot(c, remoteDotColor(c, state.Status)) })
 				ui.Text(c, state.Name).FontWeight(600).Grow(1).MinWidth(0).MaxLines(2).Ellipsis("…").Margin(px(t, 2), 0, 0, 0)
-				ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { tagChip(c, state.Where) })
+				if state.Where != "" {
+					ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { tagChip(c, state.Where) })
+				}
 			})
 			truncText(c, state.Model).FontSize(px(t, fsCaption)).TextColor(colors.Text2)
 			if !state.Configured {

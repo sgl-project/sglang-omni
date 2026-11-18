@@ -70,7 +70,10 @@ func buildHomeReadinessList(translator *i18n.Translator, features settings.Featu
 			Text:   translator.T("Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work."),
 			Action: translator.T("Open Permissions"), Fix: homeFixPermissions})
 	}
-	out = append(out, buildHomeShortcutReadiness(translator, features, input.HotkeysInstalled))
+	// While Accessibility is a step to go, its line already says the shortcut waits for it.
+	if keys := buildHomeShortcutReadiness(translator, features, input.HotkeysInstalled); !keys.Warn || input.Accessibility || !input.PermissionsChecked {
+		out = append(out, keys)
+	}
 	switch status := input.Helper; {
 	case status.State == helper.Ready, status.State == helper.Starting:
 	case status.Reason == helper.FailUpdated:

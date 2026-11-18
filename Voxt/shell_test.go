@@ -255,6 +255,7 @@ func TestMainLanguagesAreKnown(t *testing.T) {
 // it, gone once solved; a card dismissed stays away until solved.
 func TestProblemCards(t *testing.T) {
 	a, fs, tt := newTestApp(t)
+	a.navigate("/history") // Home shows the models card among its steps instead
 	frames(tt)
 	if has(tt, "Helper ready") || has(tt, "No provider set up") {
 		t.Errorf("a status bar: %q", firstTexts(tt))

@@ -184,8 +184,9 @@ func TestRemotePage(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate(remotePath)
 	frames(tt)
-	if !has(tt, "On this Mac") || !has(tt, "Remote") || !has(tt, "Online services") { // Ollama's card and group, DeepSeek's
-		t.Errorf("no where labels: %q", tt.Texts())
+	// The groups say where a service runs; their cards carry no label of it.
+	if !has(tt, "On this Mac") || !has(tt, "Online services") || has(tt, "Remote") {
+		t.Errorf("where labels: %q", tt.Texts())
 	}
 	scrollSettingsToText(tt, "DeepSeek")
 	clickControl(t, tt, "DeepSeek")
@@ -203,8 +204,9 @@ func TestRemotePage(t *testing.T) {
 	if strings.Contains(string(raw), "sk-deep") {
 		t.Fatal("the key is in the settings")
 	}
-	if !has(tt, "sk-…6789") || !has(tt, "Used by Transcribe · Translate · Rewrite") {
-		t.Errorf("no mask of the saved key, or where it is used: %q", tt.Texts())
+	// Set up, it leaves the online group, so its card says where it runs.
+	if !has(tt, "sk-…6789") || !has(tt, "Used by Transcribe · Translate · Rewrite") || !has(tt, "Remote") {
+		t.Errorf("no mask of the saved key, where it is used, or where it runs: %q", tt.Texts())
 	}
 	m, ok := a.featureModel(local.LLM, hotkey.Rewrite)
 	if !ok || m.ID != "deepseek" || m.Name != "DeepSeek · deepseek-flash" {
@@ -230,7 +232,7 @@ func TestSetupMissingItsKey(t *testing.T) {
 	a.updateSettings(func(s *settings.Settings) { s.Providers.LLM = []settings.Provider{{ID: "deepseek"}} })
 	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}} // the speech models came over: only the language model is missing
 	a.checkModels()
-	a.navigate("/home")
+	a.navigate("/history") // Home shows it among its steps instead
 	if !has(tt, "DeepSeek needs its API key. Paste it again to use it.") || !has(tt, "Complete setup") {
 		t.Fatalf("sidebar: %q", tt.Texts())
 	}

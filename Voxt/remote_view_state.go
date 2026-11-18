@@ -181,6 +181,13 @@ func buildRemoteCardsViewState(translator *i18n.Translator, input remoteCardsSta
 		}
 		return state
 	}
+	// Under "On this Mac" and "Online services" the heading already says where a service runs.
+	for i := range here {
+		here[i].Where = ""
+	}
+	for i := range online {
+		online[i].Where = ""
+	}
 	if len(mine) > 0 {
 		state.Groups = append(state.Groups, remoteServiceGroupState{Key: "remote-mine", Title: translator.T("Set up"), Cards: mine})
 	}
