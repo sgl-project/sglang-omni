@@ -14,7 +14,9 @@ import pytest
 import torch
 from sglang.srt.models.registry import ModelRegistry
 from transformers import AutoConfig
+from typer.testing import CliRunner
 
+from sglang_omni.cli import app
 from sglang_omni.cli.config import resolve_sources
 from sglang_omni.client.client import Client
 from sglang_omni.config.manager import ConfigManager
@@ -137,6 +139,7 @@ def test_checkpoint_config_drives_pipeline_topology(
     text_required: bool,
     dual_stream: bool,
 ) -> None:
+    """A local model path must resolve checkpoint topology without a Hub lookup."""
     checkpoint_directory = tmp_path / "checkpoint@local"
     checkpoint_directory.mkdir()
     (checkpoint_directory / "config.json").write_text(
@@ -160,9 +163,12 @@ def test_checkpoint_config_drives_pipeline_topology(
         / "configs"
         / f"firered_tts3_{variant}.yaml"
     )
-    with mock.patch(
-        "sglang_omni.models.firered_tts3.hf_config.hf_hub_download",
-        return_value=str(checkpoint_directory / "config.json"),
+    with (
+        mock.patch(
+            "sglang_omni.models.firered_tts3.hf_config.hf_hub_download",
+            side_effect=AssertionError("Local checkpoint must not query the Hub"),
+        ),
+        mock.patch("sglang_omni.cli.serve.launch_server") as launch_server,
     ):
         resolved = resolve_sources(
             model_path=str(checkpoint_directory),
@@ -172,6 +178,19 @@ def test_checkpoint_config_drives_pipeline_topology(
             mem_fraction_static=None,
             argv=[],
         ).resolved.config
+        launch = CliRunner().invoke(
+            app,
+            [
+                "serve",
+                "--config",
+                str(config_path),
+                "--model-path",
+                str(checkpoint_directory),
+            ],
+        )
+    assert launch.exit_code == 0, launch.exception
+    launch_server.assert_called_once()
+    assert launch_server.call_args.args[0] == resolved
     assert resolved.model_path == str(checkpoint_directory)
     assert [stage.name for stage in resolved.stages] == stage_names
     service = import_string(pipeline.speech_request_validator_factory)(
