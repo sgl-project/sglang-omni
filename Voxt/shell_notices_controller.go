@@ -47,9 +47,11 @@ type noticesState struct {
 // matches the last build's, noticesModel reuses the state instead of
 // rebuilding it every frame.
 type noticesCacheKey struct {
-	gen    int
-	year   int
-	locale string
+	gen        int
+	year       int
+	location   string
+	zoneOffset int
+	locale     string
 }
 
 // noticePosted adds a notification to the centre's snapshot: the sidebar
@@ -224,10 +226,10 @@ func (a *app) cardAction(n core.Notification) {
 }
 
 // noticesModel is the notifications' view state, rebuilt when the
-// snapshot, the year or the language changed.
-func (a *app) noticesModel() []noticeViewState {
-	now := time.Now()
-	key := noticesCacheKey{gen: a.noticesGen, year: now.Year(), locale: i18n.Locale()}
+// snapshot, the year, the time zone or the language changed.
+func (a *app) noticesModel(now time.Time) []noticeViewState {
+	_, zoneOffset := now.Zone()
+	key := noticesCacheKey{gen: a.noticesGen, year: now.Year(), location: now.Location().String(), zoneOffset: zoneOffset, locale: i18n.Locale()}
 	if key != a.noticesViewKey {
 		a.noticesView = buildNoticesViewState(i18n.CurrentTranslator(), a.notices, now)
 		a.noticesViewKey = key

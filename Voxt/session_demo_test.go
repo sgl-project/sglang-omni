@@ -1,15 +1,45 @@
 package main
 
 import (
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
+
+func TestSessionDemoRejectsInvalidCardFixture(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		card sessionCardViewState
+		want string
+	}{
+		{name: "size step", card: sessionCardViewState{SizeStep: 99}, want: "size step 99"},
+		{name: "live count", card: sessionCardViewState{LiveCount: 3}, want: "live count 3"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := meetingFixtureState{Name: "invalid", Kind: "session-overlay", Session: &sessionOverlayViewState{Card: &test.card}, SessionUI: &sessionOverlayFixtureUI{}}
+			data, err := json.Marshal(fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "invalid.json")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readMeetingDemoFixture(path); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("invalid fixture error %v, want text %q", err, test.want)
+			}
+		})
+	}
+}
 
 func newSessionDemoActionTester(t *testing.T, host *meetingDemoHost) *ui.Tester {
 	t.Helper()

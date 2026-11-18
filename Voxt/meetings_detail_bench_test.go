@@ -31,19 +31,26 @@ func BenchmarkW0MeetingDetailUpdates(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for _, segment := range segments {
-		snapshot.Segments = append(snapshot.Segments, segment)
-		if len(snapshot.Segments) > meetingSnapshotSegmentCap {
-			snapshot.Segments = snapshot.Segments[len(snapshot.Segments)-meetingSnapshotSegmentCap:]
+	for b.Loop() {
+		snapshot.Segments = nil
+		a.mv.detail.segments = a.mv.detail.segments[:1]
+		a.mv.detail.segmentIndex = map[int]int{a.mv.detail.segments[0].Idx: 0}
+		a.mv.detailView = nil
+		a.rebuildMeetingDetail()
+		for _, segment := range segments {
+			snapshot.Segments = append(snapshot.Segments, segment)
+			if len(snapshot.Segments) > meetingSnapshotSegmentCap {
+				snapshot.Segments = snapshot.Segments[len(snapshot.Segments)-meetingSnapshotSegmentCap:]
+			}
+			a.meetingChanged(snapshot)
+			tester.Frame()
 		}
-		a.meetingChanged(snapshot)
-		tester.Frame()
+		if len(a.mv.detailView.Segments) != len(segments)+1 {
+			b.Fatalf("detail has %d rows, want %d", len(a.mv.detailView.Segments), len(segments)+1)
+		}
+		if a.mv.detailView.Segments[0].Text != "first" || a.mv.detailView.Segments[len(a.mv.detailView.Segments)-1].Text != "update 899" {
+			b.Fatal("detail update lost the first or last row")
+		}
 	}
 	b.StopTimer()
-	if len(a.mv.detailView.Segments) != len(segments)+1 {
-		b.Fatalf("detail has %d rows, want %d", len(a.mv.detailView.Segments), len(segments)+1)
-	}
-	if a.mv.detailView.Segments[0].Text != "first" || a.mv.detailView.Segments[len(a.mv.detailView.Segments)-1].Text != "update 899" {
-		b.Fatal("detail update lost the first or last row")
-	}
 }

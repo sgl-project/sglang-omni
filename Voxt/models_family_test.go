@@ -370,6 +370,35 @@ func TestModelFamilyText(t *testing.T) {
 	}
 }
 
+func queuedModelTester(a *app) *ui.Tester {
+	drain := queuePosts(a)
+	return ui.NewTester(func(context *ui.Context) {
+		drain()
+		a.view(context)
+	}, windowWidth, windowHeight)
+}
+
+func TestModelPostedUpdatesQueueUntilFrame(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	tester := queuedModelTester(a)
+	posted := make(chan struct{})
+	go func() {
+		a.post(func() {
+			a.modelStatus = map[string]models.Status{"posted": {}}
+			a.modelMem = map[string]int64{"posted": 1}
+		})
+		close(posted)
+	}()
+	<-posted
+	if _, ok := a.modelStatus["posted"]; ok || a.modelMem != nil {
+		t.Fatal("background post ran outside the frame's serialized queue")
+	}
+	tester.Frame()
+	if _, ok := a.modelStatus["posted"]; !ok || a.modelMem["posted"] != 1 {
+		t.Fatalf("frame did not apply both posted model maps: %+v %+v", a.modelStatus, a.modelMem)
+	}
+}
+
 // TestBorrowedModel: a model of VoxtNew's catalogue another app
 // installed on this Mac: Use it, then Remove from VoxtNew (its files stay
 // for the app). The card used to offer Download, which does nothing for a
@@ -377,7 +406,8 @@ func TestModelFamilyText(t *testing.T) {
 // (the borrowed language models) another app installed is not listed.
 func TestBorrowedModel(t *testing.T) {
 	t.Run("retired", func(t *testing.T) {
-		a, _, tt := newTestApp(t)
+		a, _, _ := newTestApp(t)
+		tt := queuedModelTester(a)
 		tt.SetSize(windowWidth, 1600)
 		m, _ := models.Lookup(models.LLMQwen3)
 		if err := modelstest.SeedModel(a.models.Hub(), m); err != nil {
@@ -399,7 +429,8 @@ func TestBorrowedModel(t *testing.T) {
 		{models.ASRFast, false, "Delete", true},
 	} {
 		t.Run(fmt.Sprintf("%s/needs-installed=%v", tc.id, tc.needsThere), func(t *testing.T) {
-			a, _, tt := newTestApp(t)
+			a, _, _ := newTestApp(t)
+			tt := queuedModelTester(a)
 			tt.SetSize(windowWidth, 1600)
 			name := uitext.ModelName(tc.id)
 			a.navigate(modelsPath)

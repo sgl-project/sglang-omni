@@ -22,6 +22,24 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
+func TestNoticeModelsChangeWithTimeZone(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	instant := time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
+	a.notices = []core.Notification{{ID: "zone", Time: instant.Add(-time.Hour)}}
+	first := a.noticesModel(instant)
+	second := a.noticesModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	if len(first) != 1 || len(second) != 1 || first[0].TimeHint == second[0].TimeHint {
+		t.Fatalf("notice cache kept stale timezone %q and %q", first[0].TimeHint, second[0].TimeHint)
+	}
+	a.announceShown = core.Notification{ID: "zone", Time: instant.Add(-time.Hour)}
+	a.announceShownOpen = true
+	firstAnnouncement := a.announcementModel(instant)
+	secondAnnouncement := a.announcementModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	if firstAnnouncement == nil || secondAnnouncement == nil || firstAnnouncement.Sub == secondAnnouncement.Sub {
+		t.Fatalf("announcement cache kept stale timezone %q and %q", firstAnnouncement.Sub, secondAnnouncement.Sub)
+	}
+}
+
 func TestSidebarAndShortcuts(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	if got := a.router.Path(); got != "/home" {

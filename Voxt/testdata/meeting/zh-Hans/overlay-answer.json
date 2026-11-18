@@ -8,9 +8,9 @@
     "mode": "answer",
     "pill": {
       "kind": "",
-      "title": "转录",
-      "working_label": "识别中…",
-      "elapsed_text": "0:00",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
       "levels": [
         0,
         0,

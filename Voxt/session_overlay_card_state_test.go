@@ -56,6 +56,33 @@ func chineseLanguageTitle(t *testing.T, title string) string {
 	return i18n.NewTranslator("zh-Hans").T(title)
 }
 
+func TestSessionCardRedoStreamsOnlyNewAnswerAndTitle(t *testing.T) {
+	answer := answerCard{open: true, id: "rewrite-old", kind: store.KindRewrite, text: "committed answer", redo: "rewrite-new"}
+	input := sessionCardProjectionInput{
+		Snapshot: session.Snapshot{ID: "rewrite-new", Kind: store.KindRewrite, State: session.Composing, Draft: "streamed answer"},
+		Answer:   answer, Own: true, ShownDraft: "streamed answer",
+	}
+	state := buildSessionCardViewState(i18n.NewTranslator("en"), input)
+	if len(state.Blocks) != 0 || state.LiveCount != 1 || state.Live[0].Text != "streamed answer" {
+		t.Fatalf("redo mixes committed and streaming content: %+v", state)
+	}
+
+	a := &app{prefs: settings.Defaults()}
+	a.answer, a.sess = answer, input.Snapshot
+	projection := &a.ov.projection
+	projection.translator = i18n.NewTranslator("en")
+	var next sessionOverlayViewState
+	a.refreshSessionCardProjection(projection, &next)
+	if projection.card.Title != "AI answer" {
+		t.Fatalf("initial redo title %q", projection.card.Title)
+	}
+	a.sess.Title = "Streamed title"
+	a.refreshSessionCardProjection(projection, &next)
+	if projection.card.Title != "Streamed title" {
+		t.Fatalf("redo kept stale title %q", projection.card.Title)
+	}
+}
+
 func TestSessionCardBuilderFollowUpQuotesAndLiveTail(t *testing.T) {
 	longQuote := strings.Repeat("selected text\n", 40)
 	answer := answerCard{open: true, id: "rewrite-1", kind: store.KindRewrite, text: "First answer", conversation: true,

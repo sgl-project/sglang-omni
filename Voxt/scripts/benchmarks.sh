@@ -15,7 +15,7 @@ export CGO_ENABLED=0 GOMAXPROCS="${GOMAXPROCS:-4}"
 rm -f "$out/a.txt" "$out/b.txt"
 for iteration in {1..10}; do
 	for run in a b; do
-		go test -run '^$' -bench '^BenchmarkW0(AnswerCards|LongLists|MeetingOverlayHour|MeetingOverlayStates|OverlayStates|Pages|WaveformUpdate)$' -benchmem -count 1 -benchtime "$benchtime" . >>"$out/$run.txt"
+		go test -run '^$' -bench '^BenchmarkW0(AnswerCards|LongLists|MeetingDetailUpdates|MeetingOverlayHour|MeetingOverlayStates|OverlayStates|Pages|WaveformUpdate)$' -benchmem -count 1 -benchtime "$benchtime" . >>"$out/$run.txt"
 		go test -run '^$' -bench '^BenchmarkW0AnswerStreaming$' -benchmem -count 1 -benchtime "${stream_frames}x" . >>"$out/$run.txt"
 	done
 done
@@ -68,4 +68,7 @@ pathlib.Path(sys.argv[3]).write_text("\n".join(lines) + "\n")
 noisy = [line for line in lines[1:] if abs(float(line.split("\t")[3])) > 5]
 if noisy:
     raise SystemExit("A/A median delta exceeds 5%: " + ", ".join(noisy))
+unstable = [line for line in lines[1:] if max(float(line.split("\t")[4]), float(line.split("\t")[5])) > 5]
+if unstable:
+    raise SystemExit("A/A within-side spread exceeds 5%: " + ", ".join(unstable))
 ' "$out/a.txt" "$out/b.txt" "$out/summary.txt"

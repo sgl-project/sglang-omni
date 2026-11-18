@@ -7,10 +7,10 @@
     "state": "recording",
     "mode": "answer",
     "pill": {
-      "kind": "rewrite",
-      "title": "Rewrite",
-      "working_label": "Recognising…",
-      "elapsed_text": "0:00",
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
       "levels": [
         0,
         0,

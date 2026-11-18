@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -24,6 +25,20 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
+
+func TestCardRedoKeepsScrollKeyWhenWritingStarts(t *testing.T) {
+	local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
+	card := &sessionCardViewState{ID: "old-card", Blocks: []sessionCardBlock{{Kind: sessionCardBody, Text: "old answer"}}}
+	tester := ui.NewTester(func(context *ui.Context) { cardBody(context, "redo-session", card, 120, nil, local) }, 400, 300)
+	frames(tester)
+	card.Writing = true
+	card.Live[0] = sessionCardWritingBlock("new answer")
+	card.LiveCount = 1
+	frames(tester)
+	if local.Overlay.cardScrollKey != "old-card/redo-session" {
+		t.Fatalf("redo changed scroll key to %q", local.Overlay.cardScrollKey)
+	}
+}
 
 // cardLong is a translation longer than the card's 220 of text.
 var cardLong = strings.Repeat("goroutine 是由 Go 运行时管理的轻量级线程，启动成本很低，一个程序里同时运行成千上万个也很常见。", 12)

@@ -19,6 +19,17 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+func TestDictionarySuggestionCaseChangeRebuildsLabel(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.suggestions = []learn.Suggestion{{Term: "Ghostty", Source: learn.FromHistory}}
+	first := a.dictionaryPageModel()
+	a.suggestions[0].Term = "ghostty"
+	second := a.dictionaryPageModel()
+	if len(first.Suggestions) != 1 || len(second.Suggestions) != 1 || first.Suggestions[0].Term != "Ghostty" || second.Suggestions[0].Term != "ghostty" {
+		t.Fatalf("case-only suggestion change kept stale labels %+v and %+v", first.Suggestions, second.Suggestions)
+	}
+}
+
 // seedTerms puts sample terms in the dictionary.
 func seedTerms(t *testing.T, a *app) {
 	t.Helper()

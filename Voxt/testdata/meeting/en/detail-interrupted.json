@@ -7,10 +7,10 @@
     "error": "",
     "query": "",
     "page": 0,
-    "has_more": true,
+    "has_more": false,
     "active": true,
     "settings_available": true,
-    "meeting_count": 6,
+    "meeting_count": 7,
     "items": [
       {
         "key": "head/Today",
@@ -29,6 +29,21 @@
           "clock_text": "15:04",
           "duration_text": "1 min",
           "selected": false
+        }
+      },
+      {
+        "key": "detail-1",
+        "heading": "",
+        "meeting": {
+          "id": "detail-1",
+          "title": "Detailed meeting",
+          "snippet": "A generated summary.",
+          "status_code": "interrupted",
+          "status_label": "Interrupted",
+          "mode_code": "meeting",
+          "clock_text": "14:04",
+          "duration_text": "1 h 5 min",
+          "selected": true
         }
       },
       {
@@ -96,7 +111,7 @@
           "mode_code": "subtitles",
           "clock_text": "15:04",
           "duration_text": "5 min",
-          "selected": true
+          "selected": false
         }
       },
       {

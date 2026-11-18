@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -158,6 +160,28 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 	} {
 		input := meetingFixturePageInput()
 		scenario.mutate(&input)
+		if len(input.List) == 0 {
+			input.HasMore = false
+		}
+		input.HasMore = input.HasMore && scenario.name == "page-normal"
+		if input.HasMore {
+			for len(input.List) < meetingsPageSize {
+				index := len(input.List)
+				input.List = append(input.List, store.Meeting{ID: fmt.Sprintf("meeting-page-%d", index), CreatedAt: meetingFixtureNow.Add(-time.Duration(index) * 24 * time.Hour), Status: store.MeetingDone, Mode: store.MeetingModeMeeting})
+			}
+		}
+		if input.Detail != nil {
+			input.SelectedID = input.Detail.Meeting.ID
+			if !slices.ContainsFunc(input.List, func(stored store.Meeting) bool { return stored.ID == input.Detail.Meeting.ID }) {
+				index := slices.IndexFunc(input.List, func(stored store.Meeting) bool {
+					return stored.CreatedAt.Before(input.Detail.Meeting.CreatedAt) || stored.CreatedAt.Equal(input.Detail.Meeting.CreatedAt) && stored.ID < input.Detail.Meeting.ID
+				})
+				if index < 0 {
+					index = len(input.List)
+				}
+				input.List = slices.Insert(input.List, index, input.Detail.Meeting)
+			}
+		}
 		scenarios = append(scenarios, meetingFixtureScenario{name: scenario.name, kind: "page", page: input})
 	}
 	scenarios = append(scenarios, historyFixtureScenarios()...)
