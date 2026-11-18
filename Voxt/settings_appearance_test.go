@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"image/png"
@@ -127,14 +128,59 @@ func TestDefaultAppearanceRetainsOriginalPalette(t *testing.T) {
 	for _, seed := range []string{"", settings.Defaults().Appearance.Palette, upgraded.Appearance.Palette} {
 		for _, dark := range []bool{false, true} {
 			background, surface, accent := "#ffffff", "#f7f7f7", "#0d9384"
+			selection, recording := "#ebebeb", "#eb5230"
 			if dark {
 				background, surface, accent = "#151515", "#1c1c1c", "#2bb3a3"
+				selection, recording = "#2b2b2b", "#ff6b47"
 			}
 			th := ui.Theme{Dark: dark}
 			styleTheme(&th, seed)
 			k := tok(&th)
 			if th.Background != ui.Hex(background) || th.Accent != ui.Hex(accent) || k.Sidebar != ui.Hex(surface) || k.TranscriptFace != ui.Hex(surface) {
-				t.Errorf("seed %q dark=%t: original background, accent or card color changed: %+v", seed, dark, k)
+				t.Errorf("seed %q dark=%t: original background, accent or card color changed", seed, dark)
+			}
+			if k.NavSelected != ui.Hex(selection) || k.NavInk != k.Text || k.Waveform != ui.Hex(recording) {
+				t.Errorf("seed %q dark=%t: original selection or recording color changed", seed, dark)
+			}
+		}
+	}
+}
+
+func TestDefaultRecordingButtonColor(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		a, _, _ := newTestApp(t)
+		draw := func(original bool) *ui.Tester {
+			tt := ui.NewTester(func(c *ui.Context) {
+				a.applyTheme(c)
+				c.DisableAnimations()
+				ui.Column(c).Children(func() {
+					if original {
+						recordButton(c, "Start")
+					} else {
+						a.tryRecordButton(c, "Start")
+					}
+				})
+			}, 200, 100)
+			tt.SetDark(dark)
+			frames(tt)
+			return tt
+		}
+		tt, original := draw(false), draw(true)
+		r, ok := tt.Find("Start")
+		if !ok {
+			t.Fatal("recording button is missing")
+		}
+		for state := range 3 {
+			for _, button := range []*ui.Tester{tt, original} {
+				if state == 1 {
+					button.Move(r.X+r.W/2, r.Y+r.H/2)
+				} else if state == 2 {
+					button.Press(r.X+r.W/2, r.Y+r.H/2)
+				}
+				frames(button)
+			}
+			if !bytes.Equal(tt.Image().Pix, original.Image().Pix) {
+				t.Errorf("dark=%t state=%d: default recording button differs from its original colors", dark, state)
 			}
 		}
 	}
