@@ -102,6 +102,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+firered-asr2 = ["kaldi-native-fbank>=1.20.0"]
 qwen3-tts-cutedsl = [
     "nvidia-cutlass-dsl==4.8.0",
 ]

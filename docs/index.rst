@@ -201,6 +201,7 @@ Community & Resources
    cookbook/companies/tencent.md
    cookbook/companies/zyphra.md
    cookbook/companies/autoark_ai.md
+   cookbook/companies/firered_team.md
    cookbook/companies/mistral_ai.md
    cookbook/companies/dots_studio.md
 
