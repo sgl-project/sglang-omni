@@ -16,7 +16,77 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+func TestOnboardingProblemFixtureScenarios(t *testing.T) {
+	tests := map[string]struct {
+		step     int
+		kind     store.Kind
+		state    session.State
+		degraded bool
+	}{
+		"problem-noASR":      {step: obTranscribe, kind: store.KindTranscribe, state: session.Failed},
+		"problem-speechWait": {step: obTranscribe, kind: store.KindTranscribe, state: session.Failed},
+		"problem-microphone": {step: obTranscribe, kind: store.KindTranscribe, state: session.Failed},
+		"problem-device":     {step: obTranscribe, kind: store.KindTranscribe, state: session.Failed},
+		"problem-helper":     {step: obTranscribe, kind: store.KindTranscribe, state: session.Failed},
+		"problem-asr":        {step: obTranscribe, kind: store.KindTranscribe, state: session.Done, degraded: true},
+		"problem-llm":        {step: obTranscribe, kind: store.KindTranscribe, state: session.Done, degraded: true},
+		"problem-noSpeech":   {step: obTranscribe, kind: store.KindTranscribe, state: session.Done},
+		"problem-tooShort":   {step: obTranscribe, kind: store.KindTranscribe, state: session.Cancelled},
+		"problem-noLLM":      {step: obTranslate, kind: store.KindTranslate, state: session.Failed},
+		"problem-empty":      {step: obRewrite, kind: store.KindRewrite, state: session.Failed},
+		"problem-truncated":  {step: obTranslate, kind: store.KindTranslate, state: session.Done, degraded: true},
+		"problem-internal":   {step: obTranscribe, kind: store.KindTranscribe, state: session.Failed},
+	}
+	scenarios := map[string]onboardingViewStateInput{}
+	for _, scenario := range onboardingFixtureScenarios() {
+		if strings.HasPrefix(scenario.name, "problem-") {
+			scenarios[scenario.name] = scenario.onboarding
+		}
+	}
+	if _, ok := scenarios["problem-unsupported"]; ok {
+		t.Error("supported onboarding Try steps cannot produce an unknown-kind unsupported error")
+	}
+	if len(scenarios) != len(tests) {
+		t.Fatalf("got %d problem scenarios, want %d", len(scenarios), len(tests))
+	}
+	for name, want := range tests {
+		input, ok := scenarios[name]
+		if !ok {
+			t.Errorf("missing %s", name)
+			continue
+		}
+		snapshot := input.Session
+		if input.Step != want.step || snapshot.Kind != want.kind || snapshot.State != want.state || snapshot.Problem == nil || snapshot.Problem.Degraded != want.degraded {
+			t.Errorf("%s: step %d, kind %s, state %s, problem %+v", name, input.Step, snapshot.Kind, snapshot.State, snapshot.Problem)
+		}
+		if name == "problem-empty" && (snapshot.Raw == "" || snapshot.Result != "" || snapshot.Draft != "") {
+			t.Errorf("%s: empty Rewrite needs a raw instruction and no result or draft: %+v", name, snapshot)
+		}
+		mine := input.Tries[input.Step] != "" && input.Tries[input.Step] == snapshot.ID
+		assertTryFixtureSnapshot(t, name, snapshot, mine)
+	}
+}
+
+func TestOnboardingTryFixtureStateReachability(t *testing.T) {
+	expected := map[string]bool{"session-idle": true}
+	for _, scenario := range tryFixtureActiveStateScenarios {
+		expected[scenario.onboardingName] = true
+	}
+	actual := map[string]bool{}
+	for _, scenario := range onboardingFixtureScenarios() {
+		if !strings.HasPrefix(scenario.name, "session-") && scenario.name != "try-error" {
+			continue
+		}
+		actual[scenario.name] = true
+		input := scenario.onboarding
+		mine := input.Tries[input.Step] != "" && input.Tries[input.Step] == input.Session.ID
+		assertTryFixtureSnapshot(t, scenario.name, input.Session, mine)
+	}
+	assertMeetingFixtureSet(t, "Onboarding Try scenarios", expected, actual)
+}
 
 func TestOnboardingFixtureCoverage(t *testing.T) {
 	for _, locale := range i18n.Supported() {
@@ -63,8 +133,11 @@ func TestOnboardingFixtureCoverage(t *testing.T) {
 		if len(steps) != obSteps {
 			t.Errorf("%s: onboarding steps %v, want %d values", locale, steps, obSteps)
 		}
-		assertMeetingFixtureSet(t, locale+" onboarding session states", meetingTypedConstants(t, "internal/session/session.go", "State"), states)
-		assertMeetingFixtureSet(t, locale+" onboarding problem codes", meetingNamedConstants(t, "internal/session/session.go", "Problem"), problems)
+		assertMeetingFixtureSet(t, locale+" onboarding session states", expectedTryFixtureStateCoverage(t), states)
+		expectedProblems := meetingNamedConstants(t, "internal/session/session.go", "Problem")
+		// Supported onboarding Try sessions cannot produce an unknown-kind error.
+		delete(expectedProblems, session.ProblemUnsupported)
+		assertMeetingFixtureSet(t, locale+" onboarding problem codes", expectedProblems, problems)
 		assertMeetingFixtureSet(t, locale+" onboarding permission states", onboardingPermissionStateCodes(t), permissions)
 		for _, preset := range append(append([]string{}, settings.Presets...), "") {
 			name := preset
@@ -86,9 +159,9 @@ func TestOnboardingViewStateIgnoresGlobalLocale(t *testing.T) {
 		input.Step = step
 		input.Models.Found = []models.Found{{ID: models.ASRFast, Bytes: 1}}
 		input.Models.Status[models.ASRAccurate] = models.Status{Err: errors.New("fixture download error")}
-		input.Session = onboardingFixtureSession(session.Done)
+		input.Session = onboardingFixtureSession(session.Failed)
 		input.Session.Problem = &session.Problem{Code: session.ProblemNoASR, Err: errors.New("fixture problem")}
-		input.Tries[step] = input.Session.ID
+		input.Tries[obTranscribe] = input.Session.ID
 		input.LegacyAvailable = true
 		input.Legacy.todo = []legacyTodo{{text: "Finish custom setup", kind: local.LLM, id: llm.Custom}}
 		input.Conflicts = []shortcuts.Conflict{{Mine: shortcuts.Shortcut{ID: "transcribe"}, Other: shortcuts.Holder{Name: "AudioSmith"}, Theirs: shortcuts.Shortcut{ID: "transcribe"}}}

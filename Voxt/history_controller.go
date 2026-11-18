@@ -157,7 +157,7 @@ func (a *app) historyPageModel(now time.Time) historyViewState {
 		a.hist.view = buildHistoryViewState(i18n.CurrentTranslator(), historyViewStateInput{
 			Entries: a.hist.list, Kind: a.histUI.kind(), Read: a.hist.listFor != "",
 			Error: a.hist.err, Query: a.histUI.query, SelectedID: a.histUI.sel, Retry: a.hist.retry,
-			KeepHistory: a.prefs.Privacy.KeepHistory, SettingsAvailable: true, AudioMissing: a.histSet.audioMissing,
+			KeepHistory: a.prefs.Privacy.KeepHistory, AudioMissing: a.histSet.audioMissing,
 			DefaultAudioDir: a.defaultAudioDir, HomeDir: a.homeDir, Now: now, Detail: detail,
 		})
 		a.hist.viewKey = key
@@ -188,15 +188,10 @@ func (a *app) copyHistoryText(text string) {
 	if text == "" {
 		return
 	}
-	var err error
 	if a.copyText != nil {
-		err = a.copyText(text)
+		_ = a.copyText(text)
 	} else {
-		err = mygo.Clipboard.Write(transfer.TextData(text))
-	}
-	if err != nil {
-		a.toast(i18n.T("Could not copy: %v", err))
-		return
+		_ = mygo.Clipboard.Write(transfer.TextData(text))
 	}
 	a.toast(i18n.T("Copied"))
 }

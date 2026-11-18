@@ -76,7 +76,7 @@
         },
         "failure_text": "",
         "show_result": false,
-        "result": "Fixture cleaned result",
+        "result": "",
         "raw": "fixture raw speech",
         "show_raw": true,
         "raw_title": "识别原文",

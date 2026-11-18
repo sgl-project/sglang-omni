@@ -121,7 +121,7 @@ func buildTryCardViewState(translator *i18n.Translator, input tryCardStateInput)
 		state.Mode = "recording"
 		state.Recording = &tryRecordingViewState{
 			Kind: string(snapshot.Kind), Levels: snapshot.Levels,
-			Heard: !snapshot.HeardAt.IsZero(), ElapsedText: tryElapsedText(snapshot.Elapsed(input.Now)),
+			Heard: !snapshot.HeardAt.IsZero(), ElapsedText: uitext.ClockMS(snapshot.Elapsed(input.Now).Truncate(time.Second).Milliseconds()),
 			LiveText: strings.TrimSpace(snapshot.Partial),
 		}
 		return state
@@ -179,31 +179,6 @@ func buildTryNotice(translator *i18n.Translator, input *tryNoticeStateInput) *tr
 	}
 	return &tryNoticeViewState{
 		Text: input.Text, More: input.More, Action: input.Action,
-		ActionLabel: tryNoticeActionLabel(translator, input.Action), Dismiss: input.Dismiss,
+		ActionLabel: noticeActionLabelFor(translator, input.Action), Dismiss: input.Dismiss,
 	}
-}
-
-func tryNoticeActionLabel(translator *i18n.Translator, action string) string {
-	switch action {
-	case actionSignIn:
-		return translator.T("Sign in")
-	case actionUsage:
-		return translator.T("Manage usage")
-	case actionModels:
-		return translator.T("Open Speech models")
-	case actionLanguage:
-		return translator.T("Open Language models")
-	case actionPermissions:
-		return translator.T("Open Permissions")
-	case actionHelper:
-		return translator.T("Restart helper")
-	case actionRetry:
-		return translator.T("Retry")
-	}
-	return ""
-}
-
-func tryElapsedText(elapsed time.Duration) string {
-	seconds := int(elapsed.Seconds())
-	return itoa(seconds/60) + ":" + string(rune('0'+seconds%60/10)) + string(rune('0'+seconds%10))
 }

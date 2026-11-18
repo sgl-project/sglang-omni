@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -67,6 +68,55 @@ func TestMeetingPlaybackMissingAudioKeepsState(t *testing.T) {
 			if stopped {
 				t.Fatal("missing audio stopped the current player")
 			}
+		})
+	}
+}
+
+// TestMeetingPlaybackStartsWithoutCachedReadiness: real WAVs play even when the cached readiness poll is stale or has not run.
+func TestMeetingPlaybackStartsWithoutCachedReadiness(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		run      func(*app, string)
+		position time.Duration
+	}{
+		{name: "play", run: func(a *app, id string) { a.toggleMeetingPlayback(id) }, position: 2 * time.Second},
+		{name: "seek", run: func(a *app, id string) { a.seekMeetingPlayback(id, 4000) }, position: 4 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			t.Cleanup(func() {
+				a.stopMeetingPlayback()
+				a.win = nil
+			})
+			const id = "m-valid-audio"
+			directory := filepath.Join(a.dataDir(), "meetings", "valid-audio")
+			if err := os.MkdirAll(directory, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			pcm := make([]byte, asr.SampleRate*2*5)
+			if err := os.WriteFile(filepath.Join(directory, "mic.wav"), asr.WAV(pcm, asr.SampleRate), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			a.mv.detail = &meetingDetail{
+				id: id, meeting: store.Meeting{Audio: "valid-audio"}, audioReady: false,
+				playback: meetingDetailPlayback{pos: 2 * time.Second, highlight: 1, seq: 7},
+			}
+			var pending []func()
+			a.postQueue = func(fn func()) { pending = append(pending, fn) }
+			test.run(a, id)
+			if len(pending) != 1 {
+				t.Fatalf("audio load posts %d, want 1", len(pending))
+			}
+			a.win = new(mygo.Window)
+			pending[0]()
+			if got := a.mv.detail.playback.pos; got != test.position || !a.mv.detail.playback.playing {
+				t.Fatalf("playback %+v, want position %v and playing", a.mv.detail.playback, test.position)
+			}
+			if players := a.mtPlayer.players; len(players) != 1 || !players[0].Playing() {
+				t.Fatalf("audio players %+v did not start", players)
+			}
+			a.stopMeetingPlayback()
+			a.win = nil
 		})
 	}
 }

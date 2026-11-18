@@ -251,6 +251,8 @@ func FeatureTitleFor(translator *i18n.Translator, feature string) string {
 		return translator.T("Notes")
 	case hotkey.Meeting:
 		return translator.T("Meetings")
+	case settings.HideAppEnhancement:
+		return translator.T("App enhancement")
 	}
 	return translator.T("Transcribe")
 }

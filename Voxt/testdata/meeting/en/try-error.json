@@ -70,7 +70,7 @@
         "busy_text": "",
         "failure_text": "Nothing was heard.",
         "show_result": false,
-        "result": "Fixture cleaned result",
+        "result": "",
         "raw": "fixture raw speech",
         "show_raw": true,
         "raw_title": "As recognised",

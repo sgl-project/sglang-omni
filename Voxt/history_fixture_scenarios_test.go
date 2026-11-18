@@ -176,7 +176,7 @@ func historyFixtureScenarios() []meetingFixtureScenario {
 func historyFixturePageInput() historyViewStateInput {
 	return historyViewStateInput{
 		Entries: historyFixtureEntries(), Kind: store.KindTranscribe, Read: true, KeepHistory: true,
-		SettingsAvailable: true, DefaultAudioDir: "/fixture/home/Default Recordings", HomeDir: "/fixture/home", Now: meetingFixtureNow,
+		DefaultAudioDir: "/fixture/home/Default Recordings", HomeDir: "/fixture/home", Now: meetingFixtureNow,
 	}
 }
 

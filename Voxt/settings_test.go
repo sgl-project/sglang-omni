@@ -14,6 +14,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -55,6 +56,63 @@ func TestOverlaySettingsPreviewProjection(t *testing.T) {
 		if _, ok := previewFields[field]; !ok {
 			t.Errorf("preview projection has no %s", field)
 		}
+	}
+}
+
+type overlayPreviewTestActions struct {
+	local *overlayForm
+}
+
+func (actions overlayPreviewTestActions) overlayEdited() settingsOverlayViewState {
+	return buildSettingsOverlayViewState(i18n.CurrentTranslator(), actions.local.overlay(), meetingFixtureNow)
+}
+
+func TestOverlayPreviewUpdatesInChangedFrame(t *testing.T) {
+	newTester := func(t *testing.T) (*ui.Tester, *settingsOverlayViewState) {
+		t.Helper()
+		previousLocale := i18n.Locale()
+		i18n.SetLocale("en")
+		t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+		local := &overlayForm{opacity: 0.8, radius: 24, margin: 96, liveText: true}
+		state := buildSettingsOverlayViewState(i18n.CurrentTranslator(), local.overlay(), meetingFixtureNow)
+		actions := overlayPreviewTestActions{local: local}
+		tester := ui.NewTester(func(c *ui.Context) {
+			overlaySettings(c, &state, actions, local)
+		}, windowWidth, 1200)
+		return tester, &state
+	}
+	t.Run("recording time", func(t *testing.T) {
+		tt, capturedState := newTester(t)
+		if err := tt.ClickControl("Show recording time"); err != nil {
+			t.Fatal(err)
+		}
+		preview := capturedState.Preview
+		if preview == nil || !preview.ShowTime || preview.pill.Pill.ElapsedText != "0:07" {
+			t.Fatalf("preview did not show the recording time in the Changed frame: %+v", preview)
+		}
+	})
+	t.Run("position", func(t *testing.T) {
+		tt, capturedState := newTester(t)
+		if err := tt.ClickControl("Top centre"); err != nil {
+			t.Fatal(err)
+		}
+		if preview := capturedState.Preview; preview == nil || preview.Position != "top" {
+			t.Fatalf("preview position in the Changed frame is %+v, want top", preview)
+		}
+	})
+}
+
+func TestOverlayEditedReturnsFreshPreview(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.settingsForm.ovStyle.showTime = true
+	state := a.overlayEdited()
+	if state.Preview == nil || !state.Preview.ShowTime || state.Preview.pill.Pill.ElapsedText != "0:07" {
+		t.Fatalf("returned preview has no recording time: %+v", state.Preview)
+	}
+	a.settingsForm.ovStyle.position = 1
+	state = a.overlayEdited()
+	if state.Preview == nil || state.Preview.Position != "top" {
+		t.Fatalf("returned preview has position %+v, want top", state.Preview)
 	}
 }
 

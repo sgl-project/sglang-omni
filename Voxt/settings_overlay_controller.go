@@ -37,16 +37,16 @@ func (a *app) loadOverlayForm() {
 
 // overlayEdited applies the controls: at once to the overlay and the
 // preview, to the settings after ovSaveDelay without another change.
-func (a *app) overlayEdited() {
+func (a *app) overlayEdited() settingsOverlayViewState {
 	f := &a.settingsForm.ovStyle
 	o := f.overlay()
 	a.prefs.Overlay = o
 	a.overlayRestyle() // overlay.go
+	at := time.Now()
 	if a.win == nil {
 		a.updateSettings(func(s *settings.Settings) { s.Overlay = o })
-		return
+		return a.overlaySettingsModel(at)
 	}
-	at := time.Now()
 	f.saveAt = at
 	time.AfterFunc(ovSaveDelay, func() {
 		a.post(func() {
@@ -58,13 +58,15 @@ func (a *app) overlayEdited() {
 			a.updateSettings(func(s *settings.Settings) { s.Overlay = o })
 		})
 	})
+	return a.overlaySettingsModel(at)
 }
 
-func (host *meetingDemoHost) overlayEdited() {
+func (host *meetingDemoHost) overlayEdited() settingsOverlayViewState {
 	fixtureNow := previewSession().StoppedAt
 	state := buildSettingsOverlayViewState(i18n.CurrentTranslator(), host.settingsForm.ovStyle.overlay(), fixtureNow)
 	*host.current().state.Settings.Overlay = state
 	host.record("overlayEdited")
+	return state
 }
 
 // previewSession is the recording the preview shows: Transcribe, seven

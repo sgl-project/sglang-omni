@@ -255,7 +255,7 @@ func (a *app) shellLocal() *shellLocalUI {
 	if a.shellUI.nav == nil {
 		a.shellUI = shellLocalUI{
 			nav: a.navLocal(), logs: a.logsLocal(), palette: a.paletteLocal(),
-			sheetOpen: &a.sheetOpen, announcementOpen: &a.announceShownOpen,
+			sheetOpen: &a.sheetOpen,
 		}
 	}
 	return &a.shellUI

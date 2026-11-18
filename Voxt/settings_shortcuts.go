@@ -133,18 +133,13 @@ func shortcutIcon(code string) icons.Icon {
 	}
 }
 
-// shortcutPresetPicker is the preset dropdown and warnings (settings and
-// the setup guide). key prefixes control ids ("sc" or "ob").
+// shortcutPresetPicker is the Settings preset dropdown and warnings.
 func shortcutPresetPicker(c *ui.Context, key string, state shortcutPresetPickerViewState, actions shortcutPresetActions) {
 	t := c.Theme()
 	selected := state.Selected
 	options := make([]string, len(state.Options))
-	selectedAbout := ""
 	for index, option := range state.Options {
 		options[index] = option.Title
-		if option.Title == state.Selected {
-			selectedAbout = option.About
-		}
 	}
 	settingRow(c, key+"-preset", i18n.T("Preset"), state.About, func() {
 		if ui.Select(c.Key(key+"-preset-sel"), &selected, options).Label(i18n.T("Shortcut preset")).Width(px(t, 220)).Changed() {
@@ -155,9 +150,6 @@ func shortcutPresetPicker(c *ui.Context, key string, state shortcutPresetPickerV
 			}
 		}
 	})
-	if selectedAbout != "" && key == "ob" {
-		caption(c, selectedAbout)
-	}
 	for _, warning := range state.Warnings {
 		warnLine(c, warning)
 	}

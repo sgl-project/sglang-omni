@@ -91,6 +91,12 @@ func TestShortcutTextExplicitLocale(t *testing.T) {
 	if got := FeatureTitleFor(translator, hotkey.Translate); got != "翻译" {
 		t.Errorf("FeatureTitleFor = %q", got)
 	}
+	if got := FeatureTitleFor(translator, settings.HideAppEnhancement); got != "应用增强" {
+		t.Errorf("FeatureTitleFor App enhancement = %q", got)
+	}
+	if got := FeatureTitleFor(translator, "unknown-feature"); got != "转录" {
+		t.Errorf("FeatureTitleFor unknown feature = %q, want the existing Transcribe fallback", got)
+	}
 	features := settings.Defaults().Features
 	features.Transcribe.Hotkeys = []settings.Hotkey{
 		{Keys: "RightOption", Trigger: settings.TriggerTap},

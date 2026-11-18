@@ -42,11 +42,9 @@ func featureFixtureScenarios() []meetingFixtureScenario {
 	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
 		add("feature-"+feature+"-normal", featureFixtureBaseInput(feature))
 	}
-	for _, state := range []session.State{
-		session.Idle, session.Reading, session.Recording, session.Recognizing, session.Composing,
-		session.Delivering, session.Done, session.Cancelled, session.Failed,
-	} {
-		add("feature-try-state-"+string(state), featureFixtureTryInput(hotkey.Transcribe, state, ""))
+	add("feature-try-state-idle", featureFixtureBaseInput(hotkey.Transcribe))
+	for _, scenario := range tryFixtureActiveStateScenarios {
+		add(scenario.featureName, featureFixtureTryInput(hotkey.Transcribe, scenario.state, ""))
 	}
 	for _, code := range historyFixtureProblemCodes() {
 		if code != session.ProblemUnsupported {
@@ -152,6 +150,9 @@ func featureFixtureTryInput(feature string, state session.State, problemCode str
 		Rev: 1, ID: "fixture-try", Kind: featureKind(feature), State: state, Try: true,
 		StartedAt: meetingFixtureNow.Add(-4 * time.Second), HeardAt: meetingFixtureNow.Add(-3 * time.Second),
 	}
+	if feature == hotkey.Translate {
+		snapshot.TargetLanguage = "en"
+	}
 	switch state {
 	case session.Recording:
 		snapshot.Levels = []float64{0.1, 0.3, 0.6, 0.9, 0.5, 0.2, 0.4, 0.7, 0.3, 0.1}
@@ -180,8 +181,10 @@ func featureFixtureProblemInput(code string, degraded bool) featureFixtureScenar
 		state = session.Done
 	case session.ProblemTooShort:
 		state = session.Cancelled
-	case session.ProblemNoLLM, session.ProblemEmpty:
+	case session.ProblemNoLLM:
 		feature = hotkey.Translate
+	case session.ProblemEmpty:
+		feature = hotkey.Rewrite
 	case session.ProblemLLM:
 		if !degraded {
 			feature = hotkey.Translate
@@ -198,6 +201,9 @@ func featureFixtureProblemInput(code string, degraded bool) featureFixtureScenar
 	case session.ProblemNoSpeech:
 		input.Snapshot.Raw, input.Snapshot.Result, input.Snapshot.LLM = "", "", session.Model{}
 		input.Snapshot.Timings.LLM, input.Snapshot.Timings.Total = 0, 4000*time.Millisecond
+	case session.ProblemEmpty:
+		input.Snapshot.Raw = "make this more formal"
+		input.Snapshot.Result, input.Snapshot.Draft = "", ""
 	}
 	return input
 }

@@ -87,11 +87,10 @@ func newShellRouter(path string, fade bool) *uiRouter {
 // app's (shell_controller.go's shellLocal); the fixture demo substitutes
 // its own.
 type shellLocalUI struct {
-	nav              *navLocalUI
-	logs             *logsLocalUI
-	palette          *paletteLocalUI
-	sheetOpen        *bool
-	announcementOpen *bool
+	nav       *navLocalUI
+	logs      *logsLocalUI
+	palette   *paletteLocalUI
+	sheetOpen *bool
 }
 
 // shellView is the frame: the sidebar and the page, the logs panel, the

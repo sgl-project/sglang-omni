@@ -62,31 +62,41 @@ func onboardingFixtureScenarios() []meetingFixtureScenario {
 	add("step-translate", obTranslate, func(input *onboardingViewStateInput) {})
 	add("step-rewrite", obRewrite, func(input *onboardingViewStateInput) {})
 	add("step-more", obMore, func(input *onboardingViewStateInput) {})
-	for _, state := range []session.State{
-		session.Idle, session.Reading, session.Recording, session.Recognizing, session.Composing,
-		session.Delivering, session.Done, session.Cancelled, session.Failed,
-	} {
-		name := "session-" + string(state)
-		if state == session.Failed {
-			name = "try-error"
-		}
-		add(name, obTranscribe, func(input *onboardingViewStateInput) {
-			input.Session = onboardingFixtureSession(state)
+	add("session-idle", obTranscribe, func(input *onboardingViewStateInput) {
+		input.Session = session.Snapshot{}
+	})
+	for _, scenario := range tryFixtureActiveStateScenarios {
+		add(scenario.onboardingName, obTranscribe, func(input *onboardingViewStateInput) {
+			input.Session = onboardingFixtureSession(scenario.state)
 			input.Tries[obTranscribe] = input.Session.ID
 		})
 	}
 	for _, code := range historyFixtureProblemCodes() {
-		add("problem-"+code, obTranscribe, func(input *onboardingViewStateInput) {
-			problem := &session.Problem{Code: code, Err: errors.New("fixture problem"), Degraded: code == session.ProblemASR || code == session.ProblemLLM}
-			input.Session = onboardingFixtureSession(session.Failed)
-			input.Session.Problem = problem
-			if code == session.ProblemNoSpeech || code == session.ProblemTruncated || problem.Degraded {
-				input.Session.State = session.Done
+		if code == session.ProblemUnsupported {
+			continue
+		}
+		step, state, degraded := onboardingFixtureProblemScenario(code)
+		add("problem-"+code, step, func(input *onboardingViewStateInput) {
+			input.Session = onboardingFixtureSession(state)
+			input.Session.Problem = &session.Problem{Code: code, Err: errors.New("fixture problem"), Degraded: degraded}
+			switch step {
+			case obTranslate:
+				input.Session.Kind, input.Session.TargetLanguage = store.KindTranslate, "en"
+			case obRewrite:
+				input.Session.Kind = store.KindRewrite
 			}
-			if code == session.ProblemTooShort {
-				input.Session.State = session.Cancelled
+			switch code {
+			case session.ProblemNoSpeech:
+				input.Session.Raw, input.Session.Result, input.Session.Draft, input.Session.LLM = "", "", "", session.Model{}
+				input.Session.Timings.LLM, input.Session.Timings.Total = 0, 3800*time.Millisecond
+			case session.ProblemTooShort:
+				input.Session.Raw, input.Session.Result, input.Session.Draft = "", "", ""
+				input.Session.ASR, input.Session.LLM, input.Session.Timings = session.Model{}, session.Model{}, session.Timings{}
+			case session.ProblemEmpty:
+				input.Session.Raw = "make this more formal"
+				input.Session.Result, input.Session.Draft = "", ""
 			}
-			input.Tries[obTranscribe] = input.Session.ID
+			input.Tries[step] = input.Session.ID
 		})
 	}
 	for _, preset := range append(append([]string{}, settings.Presets...), "") {
@@ -158,13 +168,37 @@ func onboardingFixtureModelSize(id string) int64 {
 	return model.Size()
 }
 
+func onboardingFixtureProblemScenario(code string) (step int, state session.State, degraded bool) {
+	step, state = obTranscribe, session.Failed
+	degraded = code == session.ProblemASR || code == session.ProblemLLM
+	switch code {
+	case session.ProblemNoSpeech:
+		state = session.Done
+	case session.ProblemTooShort:
+		state = session.Cancelled
+	case session.ProblemNoLLM:
+		step = obTranslate
+	case session.ProblemEmpty:
+		step = obRewrite
+	case session.ProblemTruncated:
+		step, degraded = obTranslate, true
+	}
+	if degraded {
+		state = session.Done
+	}
+	return step, state, degraded
+}
+
 func onboardingFixtureSession(state session.State) session.Snapshot {
-	return session.Snapshot{
-		ID: "fixture-onboarding-try", Kind: store.KindTranscribe, State: state, Try: true,
+	snapshot := session.Snapshot{
+		Rev: 1, ID: "fixture-onboarding-try", Kind: store.KindTranscribe, State: state, Try: true,
 		StartedAt: meetingFixtureNow.Add(-65 * time.Second), HeardAt: meetingFixtureNow.Add(-time.Minute),
-		Levels: []float64{0.1, 0.4, 0.8}, Partial: "fixture live text", Draft: "fixture streaming answer",
-		Result: "Fixture cleaned result", Raw: "fixture raw speech",
+		Levels: []float64{0.1, 0.4, 0.8}, Partial: "fixture live text", Draft: "fixture streaming answer", Raw: "fixture raw speech",
 		Timings: session.Timings{Audio: 3 * time.Second, ASR: 800 * time.Millisecond, LLM: 1100 * time.Millisecond, Total: 5 * time.Second},
 		ASR:     session.Model{Name: "Fixture speech model"}, LLM: session.Model{Name: "Fixture language model"},
 	}
+	if state == session.Done {
+		snapshot.Result = "Fixture cleaned result"
+	}
+	return snapshot
 }

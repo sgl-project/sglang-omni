@@ -117,13 +117,17 @@ func LogSourceLabelFor(translator *i18n.Translator, s string) string {
 // LangLabel names a language in the UI's language, with its own name
 // when that differs: "Japanese · 日本語", "日语 · 日本語".
 func LangLabel(code string) string {
-	l, ok := lang.Lookup(code)
+	return LangLabelFor(i18n.CurrentTranslator(), code)
+}
+
+func LangLabelFor(translator *i18n.Translator, code string) string {
+	language, ok := lang.Lookup(code)
 	if !ok {
 		return code
 	}
-	name := l.NameIn(i18n.Locale())
-	if l.Native != "" && l.Native != name {
-		return name + " · " + l.Native
+	name := language.NameIn(translator.Locale())
+	if language.Native != "" && language.Native != name {
+		return name + " · " + language.Native
 	}
 	return name
 }

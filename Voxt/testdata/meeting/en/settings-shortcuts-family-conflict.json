@@ -59,23 +59,19 @@
         "options": [
           {
             "id": "option",
-            "title": "Right ⌥ (default)",
-            "about": "Right ⌥: one-handed and Voxt's default. Good when fn is the Globe key or shared with Auralink."
+            "title": "Right ⌥ (default)"
           },
           {
             "id": "fn",
-            "title": "fn (Auralink's keys)",
-            "about": "fn: matches Auralink and many Voxt 1.x setups. Watch for clashes with the Globe key and input sources."
+            "title": "fn (Auralink's keys)"
           },
           {
             "id": "command",
-            "title": "⌘ combination",
-            "about": "⌘ combination: right ⌘ only, away from the letter keys. Good if you keep Option for typing."
+            "title": "⌘ combination"
           },
           {
             "id": "mouseMiddle",
-            "title": "Middle mouse + fn⇧",
-            "about": "Middle mouse + fn⇧: click the wheel to transcribe, double-click to rewrite. Mouse shortcuts need Accessibility."
+            "title": "Middle mouse + fn⇧"
           }
         ],
         "selected": "Right ⌥ (default)",

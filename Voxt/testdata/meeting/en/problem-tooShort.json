@@ -70,11 +70,11 @@
         "busy_text": "",
         "failure_text": "",
         "show_result": false,
-        "result": "Fixture cleaned result",
-        "raw": "fixture raw speech",
-        "show_raw": true,
+        "result": "",
+        "raw": "",
+        "show_raw": false,
         "raw_title": "As recognised",
-        "timings": "Recording 3.0 s · Recognition 0.8 s · Clean-up 1.1 s · Total 5.0 s · Fixture speech model, Fixture language model",
+        "timings": "",
         "problem_code": "tooShort"
       }
     },

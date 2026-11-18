@@ -60,7 +60,7 @@ func (a *app) toggleMeetingPlayback(id string) {
 
 func (a *app) seekMeetingPlayback(id string, startMS int64) {
 	detail := a.mv.detail
-	if detail == nil || detail.id != id || detail.meeting.Audio == "" || !detail.audioReady {
+	if detail == nil || detail.id != id || detail.meeting.Audio == "" {
 		return
 	}
 	at := time.Duration(startMS) * time.Millisecond

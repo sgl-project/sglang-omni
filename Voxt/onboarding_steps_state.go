@@ -6,6 +6,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 func onboardingPermission(translator *i18n.Translator, state permission.State, askAction string) onboardingPermissionRowViewState {
@@ -86,7 +87,7 @@ func buildOnboardingMore(translator *i18n.Translator, input onboardingViewStateI
 			keys = translator.T("None")
 		}
 		state.Shortcuts = append(state.Shortcuts, onboardingShortcutRowViewState{
-			Title: onboardingFeatureTitle(translator, feature), Keys: keys, Problems: onboardingConflictLines(translator, input.Conflicts, feature, 0),
+			Title: uitext.FeatureTitleFor(translator, feature), Keys: keys, Problems: onboardingConflictLines(translator, input.Conflicts, feature, 0),
 		})
 	}
 	return state

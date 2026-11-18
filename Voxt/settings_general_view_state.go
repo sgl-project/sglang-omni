@@ -7,6 +7,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 type settingsLanguageViewState struct {
@@ -59,7 +60,7 @@ func buildSettingsGeneralViewState(translator *i18n.Translator, prefs settings.S
 	mainCode := lang.Canonical(session.MainLanguage(prefs, translator.Locale()))
 	otherCodes := withoutLanguage(prefs.General.OtherLanguages, mainCode)
 	for _, code := range otherCodes {
-		state.OtherLanguages = append(state.OtherLanguages, settingsLanguageViewState{Code: code, Label: settingsLanguageLabel(translator, code)})
+		state.OtherLanguages = append(state.OtherLanguages, settingsLanguageViewState{Code: code, Label: uitext.LangLabelFor(translator, code)})
 	}
 	for _, code := range mainLanguages {
 		if lang.Canonical(code) == mainCode || slices.ContainsFunc(otherCodes, func(other string) bool {
@@ -67,11 +68,11 @@ func buildSettingsGeneralViewState(translator *i18n.Translator, prefs settings.S
 		}) {
 			continue
 		}
-		state.AvailableLanguages = append(state.AvailableLanguages, settingsLanguageViewState{Code: code, Label: settingsLanguageLabel(translator, code)})
+		state.AvailableLanguages = append(state.AvailableLanguages, settingsLanguageViewState{Code: code, Label: uitext.LangLabelFor(translator, code)})
 	}
 	for _, featureID := range []string{settings.HideTranslate, settings.HideRewrite, settings.HideAppEnhancement} {
 		state.Features = append(state.Features, settingsFeatureViewState{
-			ID: featureID, Title: settingsFeatureTitle(translator, featureID), Shown: !prefs.Features.IsHidden(featureID),
+			ID: featureID, Title: uitext.FeatureTitleFor(translator, featureID), Shown: !prefs.Features.IsHidden(featureID),
 		})
 	}
 	return state
@@ -88,33 +89,13 @@ func settingsAppLanguageOptions(translator *i18n.Translator) []settingsLanguageV
 func settingsMainLanguageOptions(translator *i18n.Translator) []settingsLanguageViewState {
 	options := []settingsLanguageViewState{{Label: translator.T("Same as the app")}}
 	for _, code := range mainLanguages {
-		options = append(options, settingsLanguageViewState{Code: code, Label: settingsLanguageLabel(translator, code)})
+		options = append(options, settingsLanguageViewState{Code: code, Label: uitext.LangLabelFor(translator, code)})
 	}
 	return options
 }
 
 func settingsLanguageLabel(translator *i18n.Translator, code string) string {
-	language, ok := lang.Lookup(code)
-	if !ok {
-		return code
-	}
-	name := language.NameIn(translator.Locale())
-	if language.Native != "" && language.Native != name {
-		return name + " · " + language.Native
-	}
-	return name
-}
-
-func settingsFeatureTitle(translator *i18n.Translator, featureID string) string {
-	switch featureID {
-	case settings.HideTranslate:
-		return translator.T("Translate")
-	case settings.HideRewrite:
-		return translator.T("Rewrite")
-	case settings.HideAppEnhancement:
-		return translator.T("App enhancement")
-	}
-	return featureID
+	return uitext.LangLabelFor(translator, code)
 }
 
 // withoutLanguage is list without code (in any spelling: "zh", "zh-Hans").

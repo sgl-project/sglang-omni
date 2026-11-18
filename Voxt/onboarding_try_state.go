@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -241,8 +240,7 @@ func buildOnboardingTry(translator *i18n.Translator, input onboardingViewStateIn
 	}
 	if mine && card.Recording {
 		elapsed := snapshot.Elapsed(input.Now)
-		seconds := int(elapsed.Seconds())
-		card.ElapsedText = fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
+		card.ElapsedText = uitext.ClockMS(elapsed.Truncate(time.Second).Milliseconds())
 	}
 	if mine && snapshot.State.Live() && !card.Recording {
 		card.WorkingText = onboardingWorkingText(translator, snapshot)

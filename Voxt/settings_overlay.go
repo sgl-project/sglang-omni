@@ -36,19 +36,19 @@ const (
 )
 
 // overlaySettings is the Overlay style section of the settings dialog.
-func overlaySettings(c *ui.Context, state settingsOverlayViewState, actions settingsOverlayActions, local *overlayForm) {
+func overlaySettings(c *ui.Context, state *settingsOverlayViewState, actions settingsOverlayActions, local *overlayForm) {
 	t := c.Theme()
 	slider := func(key, label string, value *float64, lo, hi, step float64, text string) {
 		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Children(func() {
 			if ui.Slider(c.Key(key), value, lo, hi).Step(step).Label(label).Width(px(t, 160)).Shrink(1).MinWidth(px(t, 100)).Changed() {
-				actions.overlayEdited()
+				*state = actions.overlayEdited()
 			}
 			ui.Text(c, text).FontSize(px(t, fsCaption)).TextColor(tok(t).Text2).Font("monospace").Width(px(t, 40)).Shrink(0).SingleLine()
 		})
 	}
 	settingRow(c, "ov-position", i18n.T("Position"), i18n.T("On the display under the pointer, centred."), func() {
 		if ui.Segmented(c.Key("ov-position-seg"), &local.position, state.PositionOptions...).Label(i18n.T("Position")).Changed() {
-			actions.overlayEdited()
+			*state = actions.overlayEdited()
 		}
 	})
 	settingRow(c, "ov-margin", i18n.T("Distance from the edge"), "", func() {
@@ -62,17 +62,17 @@ func overlaySettings(c *ui.Context, state settingsOverlayViewState, actions sett
 	})
 	settingRow(c, "ov-time", i18n.T("Show recording time"), "", func() {
 		if ui.Switch(c.Key("ov-time-switch"), &local.showTime).Label(i18n.T("Show recording time")).Changed() {
-			actions.overlayEdited()
+			*state = actions.overlayEdited()
 		}
 	})
 	settingRow(c, "ov-live", i18n.T("Show live text"), "", func() {
 		if ui.Switch(c.Key("ov-live-switch"), &local.liveText).Label(i18n.T("Show live text")).Changed() {
-			actions.overlayEdited()
+			*state = actions.overlayEdited()
 		}
 	})
 	settingRow(c, "ov-lines", i18n.T("Live text layout"), "", func() {
 		if ui.Segmented(c.Key("ov-lines-seg"), &local.liveLayout, state.LiveLayoutOptions...).Label(i18n.T("Live text layout")).Disabled(!local.liveText).Changed() {
-			actions.overlayEdited()
+			*state = actions.overlayEdited()
 		}
 	})
 

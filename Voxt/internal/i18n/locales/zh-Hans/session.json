@@ -22,5 +22,6 @@
   "Your ChatGPT plan has no usage left, so the recognised text was saved to Notes.": "ChatGPT 套餐的额度用完了，已把识别原文存到笔记。",
   "The length limit stops the recording in %s": "%s 后到达时长上限，录音会停止",
   "Over the upload size limit: Voxt sends the recording in pieces": "已超过上传大小上限：Voxt 会分段发送录音",
-  "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音"
+  "Near the upload size limit: Voxt will send the recording in pieces": "快到上传大小上限：Voxt 会分段发送录音",
+  "Sign in": "登录"
 }

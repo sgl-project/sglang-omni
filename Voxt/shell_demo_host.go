@@ -51,7 +51,7 @@ func (host *meetingDemoHost) resetShellDemo(fixture meetingDemoFixture) {
 		host.announcementOpen = state.AnnouncementOpen
 	}
 	host.paletteUI = paletteLocalUI{open: &host.paletteOpen, query: &host.paletteQuery, sel: &host.paletteSel}
-	host.shellUI = shellLocalUI{nav: &host.navUI, logs: &host.logsUI, palette: &host.paletteUI, sheetOpen: &host.sheetOpen, announcementOpen: &host.announcementOpen}
+	host.shellUI = shellLocalUI{nav: &host.navUI, logs: &host.logsUI, palette: &host.paletteUI, sheetOpen: &host.sheetOpen}
 }
 
 // The shell's actions, recorded.

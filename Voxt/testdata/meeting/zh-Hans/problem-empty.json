@@ -3,7 +3,7 @@
   "kind": "onboarding",
   "onboarding": {
     "open": true,
-    "step": 3,
+    "step": 5,
     "step_titles": [
       "欢迎",
       "权限",
@@ -22,20 +22,22 @@
       false,
       false
     ],
-    "title": "试一试转录",
-    "subtitle": "转录把你说的话写成文字。按下快捷键（或点“开始”），读下面这句话，再按一次结束。",
+    "title": "试一试改写",
+    "subtitle": "改写按你的要求写内容，或者按你说的修改选中的文字。按快捷键（或点“开始”），让它写一段短内容。",
     "recording": false,
     "try": {
-      "prefix": "ob-tr",
+      "prefix": "ob-rw",
       "shortcut": {
         "present": true,
-        "feature_title": "转录",
-        "text": "右 ⌥",
+        "feature_title": "改写",
+        "text": "⌃ 右 ⌥",
         "how": "按一下开始，再按一下停止。",
         "accessibility_warning": false,
         "keyboard": {
           "visible": true,
           "lit_keys": {
+            "control-left": true,
+            "control-right": true,
             "option-right": true
           },
           "extra_key": ""
@@ -43,14 +45,14 @@
       },
       "conflicts": null,
       "passed": false,
-      "sample_title": "读这句话，或者随便说点什么",
-      "sample_text": "嗯，那个设计评审改到周四下午，不对，周五上午，议程我今晚发出来。",
+      "sample_title": "比如说",
+      "sample_text": "给团队写一条短消息，说我站会要晚到十分钟。",
       "sample_action": false,
       "hint": "",
       "card": {
         "mine": true,
         "state": "failed",
-        "session_kind": "transcribe",
+        "session_kind": "rewrite",
         "live": false,
         "ended": true,
         "recording": false,
@@ -76,11 +78,11 @@
         },
         "failure_text": "",
         "show_result": false,
-        "result": "Fixture cleaned result",
-        "raw": "fixture raw speech",
+        "result": "",
+        "raw": "make this more formal",
         "show_raw": true,
-        "raw_title": "识别原文",
-        "timings": "录音 3.0 秒 · 识别 0.8 秒 · 整理 1.1 秒 · 总计 5.0 秒 · Fixture speech model, Fixture language model",
+        "raw_title": "你的指令",
+        "timings": "录音 3.0 秒 · 识别 0.8 秒 · 生成 1.1 秒 · 总计 5.0 秒 · Fixture speech model, Fixture language model",
         "problem_code": "empty"
       }
     },

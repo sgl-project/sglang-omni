@@ -268,51 +268,13 @@ func onboardingKindTitle(translator *i18n.Translator, kind store.Kind) string {
 	return translator.T("Transcribe")
 }
 
-func onboardingFeatureTitle(translator *i18n.Translator, feature string) string {
-	switch feature {
-	case hotkey.Translate:
-		return translator.T("Translate")
-	case hotkey.Rewrite:
-		return translator.T("Rewrite")
-	case hotkey.PasteLast:
-		return translator.T("Paste the last result")
-	case hotkey.CancelID:
-		return translator.T("Cancel recording")
-	case hotkey.Note:
-		return translator.T("Notes")
-	case hotkey.Meeting:
-		return translator.T("Meetings")
-	}
-	return translator.T("Transcribe")
-}
-
-func onboardingNoticeActionLabel(translator *i18n.Translator, action string) string {
-	switch action {
-	case actionSignIn:
-		return translator.T("Sign in")
-	case actionUsage:
-		return translator.T("Manage usage")
-	case actionModels:
-		return translator.T("Open Speech models")
-	case actionLanguage:
-		return translator.T("Open Language models")
-	case actionPermissions:
-		return translator.T("Open Permissions")
-	case actionHelper:
-		return translator.T("Restart helper")
-	case actionRetry:
-		return translator.T("Retry")
-	}
-	return ""
-}
-
 func onboardingNotice(translator *i18n.Translator, notice *sessionNotice) *onboardingNoticeViewState {
 	if notice == nil {
 		return nil
 	}
 	return &onboardingNoticeViewState{
 		Text: notice.text, More: notice.more, Action: notice.action,
-		ActionLabel: onboardingNoticeActionLabel(translator, notice.action),
+		ActionLabel: noticeActionLabelFor(translator, notice.action),
 	}
 }
 

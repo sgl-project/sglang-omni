@@ -380,7 +380,7 @@
     "try": {
       "prefix": "tr",
       "feature": "transcribe",
-      "state": "idle",
+      "state": "",
       "problem_code": "",
       "mode": "idle",
       "intro": "Press Right ⌥ or Start, then say a sentence or two. The result shows here and is not typed anywhere.",

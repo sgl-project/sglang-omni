@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,6 +11,18 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+var tryFixtureActiveStateScenarios = []struct {
+	featureName, onboardingName string
+	state                       session.State
+}{
+	{featureName: "feature-try-state-recording", onboardingName: "session-recording", state: session.Recording},
+	{featureName: "feature-try-state-recognizing", onboardingName: "session-recognizing", state: session.Recognizing},
+	{featureName: "feature-try-state-composing", onboardingName: "session-composing", state: session.Composing},
+	{featureName: "feature-try-state-done", onboardingName: "session-done", state: session.Done},
+	{featureName: "feature-try-state-cancelled", onboardingName: "session-cancelled", state: session.Cancelled},
+	{featureName: "feature-try-state-failed", onboardingName: "try-error", state: session.Failed},
+}
 
 func TestFeatureViewStateUsesExplicitLocale(t *testing.T) {
 	previousLocale := i18n.Locale()
@@ -59,7 +72,7 @@ func TestFeatureProblemFixtureScenarios(t *testing.T) {
 		"feature-problem-noSpeech":     {kind: store.KindTranscribe, state: session.Done},
 		"feature-problem-tooShort":     {kind: store.KindTranscribe, state: session.Cancelled},
 		"feature-problem-noLLM":        {kind: store.KindTranslate, state: session.Failed},
-		"feature-problem-empty":        {kind: store.KindTranslate, state: session.Failed},
+		"feature-problem-empty":        {kind: store.KindRewrite, state: session.Failed},
 		"feature-problem-truncated":    {kind: store.KindTranslate, state: session.Done, degraded: true},
 		"feature-problem-internal":     {kind: store.KindTranscribe, state: session.Failed},
 		"feature-problem-asr-degraded": {kind: store.KindTranscribe, state: session.Done, degraded: true},
@@ -84,6 +97,9 @@ func TestFeatureProblemFixtureScenarios(t *testing.T) {
 		if snapshot.Kind != want.kind || snapshot.State != want.state || snapshot.Problem == nil || snapshot.Problem.Degraded != want.degraded {
 			t.Errorf("%s: kind %s, state %s, problem %+v", name, snapshot.Kind, snapshot.State, snapshot.Problem)
 		}
+		if name == "feature-problem-empty" && (snapshot.Raw == "" || snapshot.Result != "" || snapshot.Draft != "") {
+			t.Errorf("%s: empty Rewrite needs a raw instruction and no result or draft: %+v", name, snapshot)
+		}
 		try := buildFeatureFixtureViewState(i18n.NewTranslator("en"), input).Try
 		if try.State != string(want.state) || try.Ended == nil {
 			t.Errorf("%s: view %+v", name, try)
@@ -96,6 +112,102 @@ func TestFeatureProblemFixtureScenarios(t *testing.T) {
 			t.Errorf("%s: warning %+v", name, try.Ended.Warning)
 		}
 	}
+}
+
+func assertTryFixtureSnapshot(t *testing.T, name string, snapshot session.Snapshot, mine bool) {
+	t.Helper()
+	switch snapshot.State {
+	case "":
+		if !reflect.DeepEqual(snapshot, session.Snapshot{}) || mine {
+			t.Errorf("%s: idle must be a zero snapshot with no Try owner: %+v, mine %t", name, snapshot, mine)
+		}
+		return
+	case session.Idle:
+		t.Errorf("%s: Manager.Start never starts in Idle; use a zero snapshot", name)
+		return
+	case session.Reading:
+		t.Errorf("%s: Try cannot read a selection, so Reading is unreachable", name)
+		return
+	case session.Delivering:
+		t.Errorf("%s: Try skips delivery, so Delivering is unreachable", name)
+		return
+	}
+	legal := false
+	for _, scenario := range tryFixtureActiveStateScenarios {
+		legal = legal || scenario.state == snapshot.State
+	}
+	if !legal {
+		t.Errorf("%s: unexpected active Try state %s", name, snapshot.State)
+		return
+	}
+	if snapshot.ID == "" || !snapshot.Try || snapshot.Rev == 0 || !mine {
+		t.Errorf("%s: active Try needs an ID, Try, a revision, and an owner: %+v, mine %t", name, snapshot, mine)
+	}
+	if snapshot.SelectionVia != "" {
+		t.Errorf("%s: Try cannot read a selection: %+v", name, snapshot)
+	}
+	if snapshot.Delivery != "" || snapshot.Inserted || snapshot.Card {
+		t.Errorf("%s: Try skips delivery and the answer card: %+v", name, snapshot)
+	}
+}
+
+func TestTryFixtureSnapshotSuppliedSelection(t *testing.T) {
+	suppliedSnapshot := func(state session.State, via string) session.Snapshot {
+		snapshot := session.Snapshot{
+			Rev: 1, ID: "sample-text", Kind: store.KindRewrite, State: state, Try: true,
+			Raw: "rewrite this", Selection: "sample text", SelectionVia: via,
+		}
+		switch state {
+		case session.Composing:
+			snapshot.Draft = "partial answer"
+		case session.Done:
+			snapshot.Result = "answer"
+		case session.Failed:
+			snapshot.Problem = &session.Problem{Code: session.ProblemEmpty}
+		}
+		return snapshot
+	}
+	for _, state := range []session.State{session.Composing, session.Done, session.Failed} {
+		t.Run(string(state), func(t *testing.T) {
+			assertTryFixtureSnapshot(t, "supplied sample text", suppliedSnapshot(state, ""), true)
+		})
+	}
+	t.Run("selection read", func(t *testing.T) {
+		passed := testing.RunTests(func(string, string) (bool, error) { return true, nil }, []testing.InternalTest{{
+			Name: "selection via ax",
+			F: func(t *testing.T) {
+				assertTryFixtureSnapshot(t, "selection read", suppliedSnapshot(session.Composing, "ax"), true)
+			},
+		}})
+		if passed {
+			t.Fatal("selection read passed Try fixture validation")
+		}
+	})
+}
+
+func expectedTryFixtureStateCoverage(t *testing.T) map[string]bool {
+	t.Helper()
+	expected := meetingTypedConstants(t, "internal/session/session.go", "State")
+	delete(expected, string(session.Idle))       // Start has no Idle state; reachability tests check the zero snapshot.
+	delete(expected, string(session.Reading))    // canSelect rejects Try.
+	delete(expected, string(session.Delivering)) // finish bypasses delivery for Try.
+	return expected
+}
+
+func TestFeatureTryFixtureStateReachability(t *testing.T) {
+	expected := map[string]bool{"feature-try-state-idle": true}
+	for _, scenario := range tryFixtureActiveStateScenarios {
+		expected[scenario.featureName] = true
+	}
+	actual := map[string]bool{}
+	for _, scenario := range featureFixtureScenarios() {
+		if !strings.HasPrefix(scenario.name, "feature-try-state-") {
+			continue
+		}
+		actual[scenario.name] = true
+		assertTryFixtureSnapshot(t, scenario.name, scenario.feature.Snapshot, scenario.feature.Mine)
+	}
+	assertMeetingFixtureSet(t, "Feature Try scenarios", expected, actual)
 }
 
 func TestFeatureFixtureCoverage(t *testing.T) {
@@ -158,7 +270,7 @@ func checkFeatureFixtureValues(t *testing.T, locale string, fixtures map[string]
 	}
 	delete(states, "")
 	assertMeetingFixtureSet(t, locale+" feature names", map[string]bool{hotkey.Transcribe: true, hotkey.Translate: true, hotkey.Rewrite: true}, features)
-	assertMeetingFixtureSet(t, locale+" feature session states", meetingTypedConstants(t, "internal/session/session.go", "State"), states)
+	assertMeetingFixtureSet(t, locale+" feature session states", expectedTryFixtureStateCoverage(t), states)
 	expectedProblems := meetingNamedConstants(t, "internal/session/session.go", "Problem")
 	// Supported Feature Try sessions cannot produce an unknown-kind error.
 	delete(expectedProblems, session.ProblemUnsupported)

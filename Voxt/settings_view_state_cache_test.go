@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -36,6 +37,27 @@ func TestGeneralSettingsModelCacheInvalidatesOnPreferences(t *testing.T) {
 	}
 	if got := a.generalSettingsModel(); got.CloseToTray != newPreferences.General.CloseToTray {
 		t.Fatal("settingsChanged reused stale general view state")
+	}
+}
+
+func TestGeneralSettingsLabelsExplicitLocale(t *testing.T) {
+	previousLocale := i18n.Locale()
+	i18n.SetLocale("en")
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	preferences := settings.Defaults()
+	preferences.General.OtherLanguages = []string{"ja"}
+	state := buildSettingsGeneralViewState(i18n.NewTranslator("zh-Hans"), preferences)
+	if len(state.OtherLanguages) != 1 || state.OtherLanguages[0].Label != "日语 · 日本語" {
+		t.Fatalf("other languages = %+v, want the explicit zh-Hans label", state.OtherLanguages)
+	}
+	wantFeatures := []string{"翻译", "改写", "应用增强"}
+	if len(state.Features) != len(wantFeatures) {
+		t.Fatalf("features = %+v", state.Features)
+	}
+	for index, feature := range state.Features {
+		if feature.Title != wantFeatures[index] {
+			t.Errorf("feature %s title = %q, want %q", feature.ID, feature.Title, wantFeatures[index])
+		}
 	}
 }
 

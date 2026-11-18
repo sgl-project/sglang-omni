@@ -70,11 +70,11 @@
         "busy_text": "",
         "failure_text": "",
         "show_result": false,
-        "result": "Fixture cleaned result",
-        "raw": "fixture raw speech",
-        "show_raw": true,
+        "result": "",
+        "raw": "",
+        "show_raw": false,
         "raw_title": "识别原文",
-        "timings": "录音 3.0 秒 · 识别 0.8 秒 · 整理 1.1 秒 · 总计 5.0 秒 · Fixture speech model, Fixture language model",
+        "timings": "",
         "problem_code": "tooShort"
       }
     },

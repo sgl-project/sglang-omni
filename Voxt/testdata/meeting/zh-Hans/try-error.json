@@ -70,7 +70,7 @@
         "busy_text": "",
         "failure_text": "没有听到说话。",
         "show_result": false,
-        "result": "Fixture cleaned result",
+        "result": "",
         "raw": "fixture raw speech",
         "show_raw": true,
         "raw_title": "识别原文",

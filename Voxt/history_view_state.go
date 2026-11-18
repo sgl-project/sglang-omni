@@ -78,18 +78,17 @@ type historyEmptyViewState struct {
 }
 
 type historyViewState struct {
-	Read              bool                    `json:"read"`
-	Error             string                  `json:"error"`
-	Kind              string                  `json:"kind"`
-	Query             string                  `json:"query"`
-	Tabs              []string                `json:"tabs"`
-	CountLabel        string                  `json:"count_label"`
-	KeepHistory       bool                    `json:"keep_history"`
-	SettingsAvailable bool                    `json:"settings_available"`
-	FolderNotice      string                  `json:"folder_notice"`
-	Rows              []historyRowViewState   `json:"rows"`
-	Empty             *historyEmptyViewState  `json:"empty,omitempty"`
-	Detail            *historyDetailViewState `json:"detail,omitempty"`
+	Read         bool                    `json:"read"`
+	Error        string                  `json:"error"`
+	Kind         string                  `json:"kind"`
+	Query        string                  `json:"query"`
+	Tabs         []string                `json:"tabs"`
+	CountLabel   string                  `json:"count_label"`
+	KeepHistory  bool                    `json:"keep_history"`
+	FolderNotice string                  `json:"folder_notice"`
+	Rows         []historyRowViewState   `json:"rows"`
+	Empty        *historyEmptyViewState  `json:"empty,omitempty"`
+	Detail       *historyDetailViewState `json:"detail,omitempty"`
 }
 
 type historyDetailStateInput struct {
@@ -100,20 +99,19 @@ type historyDetailStateInput struct {
 }
 
 type historyViewStateInput struct {
-	Entries           []store.Entry
-	Kind              store.Kind
-	Read              bool
-	Error             string
-	Query             string
-	SelectedID        string
-	Retry             entryRetry
-	KeepHistory       bool
-	SettingsAvailable bool
-	AudioMissing      string
-	DefaultAudioDir   string
-	HomeDir           string
-	Now               time.Time
-	Detail            *historyDetailStateInput
+	Entries         []store.Entry
+	Kind            store.Kind
+	Read            bool
+	Error           string
+	Query           string
+	SelectedID      string
+	Retry           entryRetry
+	KeepHistory     bool
+	AudioMissing    string
+	DefaultAudioDir string
+	HomeDir         string
+	Now             time.Time
+	Detail          *historyDetailStateInput
 }
 
 func historyTabsFor(translator *i18n.Translator) []string {
@@ -132,7 +130,7 @@ func historyKindName(translator *i18n.Translator, kind store.Kind) string {
 func buildHistoryViewState(translator *i18n.Translator, input historyViewStateInput) historyViewState {
 	state := historyViewState{
 		Read: input.Read, Error: input.Error, Kind: string(input.Kind), Query: input.Query,
-		Tabs: historyTabsFor(translator), KeepHistory: input.KeepHistory, SettingsAvailable: input.SettingsAvailable,
+		Tabs: historyTabsFor(translator), KeepHistory: input.KeepHistory,
 	}
 	if count := len(input.Entries); count > 0 {
 		state.CountLabel = translator.N(count, "%d entry", "%d entries", count)

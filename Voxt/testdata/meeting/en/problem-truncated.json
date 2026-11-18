@@ -3,7 +3,7 @@
   "kind": "onboarding",
   "onboarding": {
     "open": true,
-    "step": 3,
+    "step": 4,
     "step_titles": [
       "Welcome",
       "Permissions",
@@ -22,35 +22,37 @@
       false,
       false
     ],
-    "title": "Try Transcribe",
-    "subtitle": "Transcribe writes down what you say. Press the shortcut (or Start), read the sentence below, then press it again to stop.",
+    "title": "Try Translate",
+    "subtitle": "Translate turns the selected text, or what you say, into the language you choose. Translate the sample below, or press the shortcut (or Start) and say a sentence.",
     "recording": false,
     "try": {
-      "prefix": "ob-tr",
+      "prefix": "ob-tl",
       "shortcut": {
         "present": true,
-        "feature_title": "Transcribe",
-        "text": "Right ⌥",
+        "feature_title": "Translate",
+        "text": "Right ⌥ ⇧",
         "how": "Press to start, press again to stop.",
         "accessibility_warning": false,
         "keyboard": {
           "visible": true,
           "lit_keys": {
-            "option-right": true
+            "option-right": true,
+            "shift-left": true,
+            "shift-right": true
           },
           "extra_key": ""
         }
       },
       "conflicts": null,
       "passed": false,
-      "sample_title": "Read this, or say anything",
-      "sample_text": "Um, so the design review moves to Thursday afternoon, no, Friday morning, and I'll send the agenda tonight.",
-      "sample_action": false,
+      "sample_title": "Sample text · into Simplified Chinese",
+      "sample_text": "Let's go camping in the mountains this weekend; remember to bring a warm jacket and a torch.",
+      "sample_action": true,
       "hint": "",
       "card": {
         "mine": true,
         "state": "done",
-        "session_kind": "transcribe",
+        "session_kind": "translate",
         "live": false,
         "ended": true,
         "recording": false,
@@ -80,7 +82,7 @@
         "raw": "fixture raw speech",
         "show_raw": true,
         "raw_title": "As recognised",
-        "timings": "Recording 3.0 s · Recognition 0.8 s · Clean-up 1.1 s · Total 5.0 s · Fixture speech model, Fixture language model",
+        "timings": "Recording 3.0 s · Recognition 0.8 s · Translation 1.1 s · Total 5.0 s · Fixture speech model, Fixture language model",
         "problem_code": "truncated"
       }
     },

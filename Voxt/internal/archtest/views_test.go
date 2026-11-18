@@ -52,14 +52,19 @@ func parseRootFiles(t *testing.T) []rootFile {
 		if f.dir() != "." || f.test() {
 			continue
 		}
-		fset := token.NewFileSet()
-		syntax, err := parser.ParseFile(fset, f.path, f.data, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
-		}
-		files = append(files, rootFile{f, fset, syntax})
+		files = append(files, parseRootFile(t, f.path, string(f.data)))
 	}
 	return files
+}
+
+func parseRootFile(t *testing.T, path, source string) rootFile {
+	t.Helper()
+	fset := token.NewFileSet()
+	syntax, err := parser.ParseFile(fset, path, source, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rootFile{goFile{path: path, data: []byte(source)}, fset, syntax}
 }
 
 func appType(expr ast.Expr, aliases map[string]bool) bool {
@@ -87,7 +92,7 @@ func parameterTypeAt(syntax *ast.File, position token.Pos, name string) string {
 		if !ok || position < fn.Pos() || position > fn.End() {
 			continue
 		}
-		for _, field := range fn.Type.Params.List {
+		for _, field := range functionValueFields(fn) {
 			for _, parameter := range field.Names {
 				if parameter.Name == name {
 					return valueTypeName(field.Type)
@@ -98,20 +103,122 @@ func parameterTypeAt(syntax *ast.File, position token.Pos, name string) string {
 	return ""
 }
 
-func viewStateProjection(declaration *ast.FuncDecl) bool {
-	if declaration.Type.Results == nil {
+func domainPackage(path, module string) bool {
+	internal := module + "/internal/"
+	allowedInternal := path == internal+"icons" || path == internal+"i18n" || path == internal+"overlay/layout"
+	switch {
+	case path == "" || path == mygoPath || strings.HasPrefix(path, mygoPath+"/") || allowedInternal:
 		return false
+	case strings.HasPrefix(path, internal) || viewIOImport(path):
+		return true
+	default:
+		return strings.Contains(strings.Split(path, "/")[0], ".")
 	}
-	for _, result := range declaration.Type.Results.List {
-		name := valueTypeName(result.Type)
-		if strings.HasSuffix(name, "ViewState") || strings.HasSuffix(name, "PreviewState") {
-			return true
+}
+
+type typeAlias struct {
+	expression ast.Expr
+	imports    map[string]string
+}
+
+type packageTypes struct {
+	aliases   map[string]typeAlias
+	actions   map[string]bool
+	viewTypes map[string]bool
+}
+
+func packageTypesFor(files []rootFile, views map[string]bool) packageTypes {
+	types := packageTypes{
+		aliases:   map[string]typeAlias{},
+		actions:   map[string]bool{},
+		viewTypes: map[string]bool{},
+	}
+	viewNames := map[string]bool{}
+	for _, file := range files {
+		imports := importNames(file.syntax)
+		for _, declaration := range file.syntax.Decls {
+			gen, ok := declaration.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
+				continue
+			}
+			for _, raw := range gen.Specs {
+				spec := raw.(*ast.TypeSpec)
+				name := spec.Name.Name
+				if views[file.path] {
+					viewNames[name] = true
+				}
+				if strings.HasSuffix(name, "Actions") {
+					switch spec.Type.(type) {
+					case *ast.StructType, *ast.InterfaceType:
+						types.actions[name] = true
+					}
+				}
+				if spec.Assign.IsValid() {
+					types.aliases[name] = typeAlias{spec.Type, imports}
+				}
+			}
 		}
+	}
+	for name := range viewNames {
+		types.viewTypes[types.name(ast.NewIdent(name))] = true
+	}
+	return types
+}
+
+func (types packageTypes) name(expression ast.Expr) string {
+	if star, ok := expression.(*ast.StarExpr); ok {
+		return types.name(star.X)
+	}
+	identifier, ok := expression.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	if alias, ok := types.aliases[identifier.Name]; ok {
+		if name := types.name(alias.expression); name != "" {
+			return name
+		}
+	}
+	return identifier.Name
+}
+
+func (types packageTypes) domain(expression ast.Expr, imports map[string]string, module string) bool {
+	switch expression := expression.(type) {
+	case *ast.StarExpr:
+		return types.domain(expression.X, imports, module)
+	case *ast.ArrayType:
+		return types.domain(expression.Elt, imports, module)
+	case *ast.Ident:
+		alias, ok := types.aliases[expression.Name]
+		return ok && types.domain(alias.expression, alias.imports, module)
+	case *ast.SelectorExpr:
+		identifier, ok := expression.X.(*ast.Ident)
+		return ok && domainPackage(imports[identifier.Name], module)
 	}
 	return false
 }
 
-func localStateTypes(files []rootFile, views map[string]bool) map[string]bool {
+func projectionResults(declaration *ast.FuncDecl, imports map[string]string, module string, types packageTypes) (viewState, domain bool) {
+	if declaration.Type.Results == nil {
+		return false, false
+	}
+	for _, result := range declaration.Type.Results.List {
+		name := types.name(result.Type)
+		viewState = viewState || strings.HasSuffix(name, "ViewState") || strings.HasSuffix(name, "PreviewState")
+		domain = domain || types.domain(result.Type, imports, module)
+	}
+	return viewState, domain
+}
+
+func functionValueFields(declaration *ast.FuncDecl) []*ast.Field {
+	fields := append([]*ast.Field{}, declaration.Type.Params.List...)
+	if declaration.Recv != nil {
+		fields = append(fields, declaration.Recv.List...)
+	}
+	return fields
+}
+
+func localStateTypes(files []rootFile, views map[string]bool, aliases map[string]bool) map[string]bool {
+	declarations := packageTypesFor(files, views)
 	types := map[string]bool{}
 	for _, file := range files {
 		if !views[file.path] {
@@ -122,16 +229,14 @@ func localStateTypes(files []rootFile, views map[string]bool) map[string]bool {
 			if !ok {
 				continue
 			}
-			for _, field := range fn.Type.Params.List {
-				for _, parameter := range field.Names {
-					if parameter.Name == "local" {
-						types[valueTypeName(field.Type)] = true
-					}
+			for _, field := range functionValueFields(fn) {
+				name := declarations.name(field.Type)
+				if declarations.viewTypes[name] && name != "" && !declarations.actions[name] && !aliases[name] {
+					types[name] = true
 				}
 			}
 		}
 	}
-	delete(types, "")
 	return types
 }
 
@@ -295,7 +400,6 @@ func viewIOImport(path string) bool {
 }
 
 func functionUsesDomain(declaration ast.Decl, imports map[string]string, module string) bool {
-	internal := module + "/internal/"
 	found := false
 	ast.Inspect(declaration, func(node ast.Node) bool {
 		selector, ok := node.(*ast.SelectorExpr)
@@ -307,14 +411,7 @@ func functionUsesDomain(declaration ast.Decl, imports map[string]string, module 
 			return true
 		}
 		path := imports[ident.Name]
-		allowedInternal := path == internal+"icons" || path == internal+"i18n" || path == internal+"overlay/layout"
-		switch {
-		case path == "" || path == mygoPath || strings.HasPrefix(path, mygoPath+"/") || allowedInternal:
-		case strings.HasPrefix(path, internal) || viewIOImport(path):
-			found = true
-		case strings.Contains(strings.Split(path, "/")[0], "."):
-			found = true
-		}
+		found = found || domainPackage(path, module)
 		return !found
 	})
 	return found
@@ -339,7 +436,8 @@ func functionHasLogic(candidate functionCandidate, module string, aliases map[st
 // UI helpers stay callable; calls through actions are selectors. Repeating
 // the check catches wrappers of logic calls.
 func logicFunctionFiles(files []rootFile, views map[string]bool, module string, aliases map[string]bool) map[string]string {
-	localTypes := localStateTypes(files, views)
+	declarations := packageTypesFor(files, views)
+	localTypes := localStateTypes(files, views, aliases)
 	cleanViews := map[string]bool{}
 	for _, f := range files {
 		if views[f.path] && len(viewViolations(f, module, nil, aliases, true)) == 0 {
@@ -356,11 +454,18 @@ func logicFunctionFiles(files []rootFile, views map[string]bool, module string, 
 			switch decl := decl.(type) {
 			case *ast.FuncDecl:
 				if decl.Recv != nil {
-					if !views[f.path] && viewStateProjection(decl) {
+					if !views[f.path] {
+						viewState, domain := projectionResults(decl, importNames(f.syntax), module, declarations)
 						for _, receiver := range decl.Recv.List {
-							name := valueTypeName(receiver.Type)
-							if localTypes[name] {
-								logicFunctions[name+"."+decl.Name.Name] = f.path
+							name := declarations.name(receiver.Type)
+							if name != "" && !declarations.actions[name] && (domain || viewState && localTypes[name]) {
+								method := "." + decl.Name.Name
+								logicFunctions[name+method] = f.path
+								for alias := range declarations.aliases {
+									if declarations.name(ast.NewIdent(alias)) == name {
+										logicFunctions[alias+method] = f.path
+									}
+								}
 							}
 						}
 					}
@@ -591,47 +696,25 @@ func TestViewFiles(t *testing.T) {
 func TestViewFileRules(t *testing.T) {
 	const module = "example.test/Voxt"
 	source := `package main
-import (
-	f "fmt"
-	_ "example.test/Voxt/internal/store"
-	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
-)
+import (f "fmt"; _ "example.test/Voxt/internal/store")
+import ("github.com/egoist/mygo"; "github.com/egoist/mygo/ui")
 type appAlias = app
 func (b *appAlias) paint(c *ui.Context) {
 	go func() {}()
-	settingsName()
-	logic[string]()
-	f.Println("probe")
+	settingsName(); logic[string](); f.Println("probe")
 	c.Services().OpenURL("https://example.com")
-	mygo.Clipboard.Write("probe")
-	mygo.Clipboard.Read()
-	mygo.Shell.OpenExternal("https://example.com")
-	mygo.Shell.OpenPath("probe")
-	mygo.Clipboard.ReadText()
-	mygo.Clipboard.WriteText("probe")
-	mygo.Clipboard.Formats()
-	mygo.Clipboard.ReadFormat(nil)
-	mygo.Clipboard.ReadFiles()
-	mygo.Clipboard.WriteFiles("probe")
-	mygo.Clipboard.Flush()
-	c.WriteClipboard("probe")
-	c.ReadClipboard()
-	c.OpenURLThen("https://example.com", nil)
+	mygo.Clipboard.Write("probe"); mygo.Clipboard.Read()
+	mygo.Shell.OpenExternal("https://example.com"); mygo.Shell.OpenPath("probe")
+	mygo.Clipboard.ReadText(); mygo.Clipboard.WriteText("probe")
+	mygo.Clipboard.Formats(); mygo.Clipboard.ReadFormat(nil)
+	mygo.Clipboard.ReadFiles(); mygo.Clipboard.WriteFiles("probe"); mygo.Clipboard.Flush()
+	c.WriteClipboard("probe"); c.ReadClipboard(); c.OpenURLThen("https://example.com", nil)
 	var s ui.Services
-	s.WriteClipboard("probe")
-	s.OpenURL("https://example.com")
-	actions.ShowItemInFolder("probe")
-	state.Dialog.Open()
-	c.Services().Invalidate()
+	s.WriteClipboard("probe"); s.OpenURL("https://example.com")
+	actions.ShowItemInFolder("probe"); state.Dialog.Open(); c.Services().Invalidate()
 }
 `
-	fset := token.NewFileSet()
-	syntax, err := parser.ParseFile(fset, "probe_page.go", source, parser.SkipObjectResolution)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := rootFile{goFile{path: "probe_page.go", data: []byte(source)}, fset, syntax}
+	f := parseRootFile(t, "probe_page.go", source)
 	aliases := appAliases([]rootFile{f})
 	logic := map[string]string{"settingsName": "settings_filter.go", "logic": "logic.go"}
 	got := viewViolations(f, module, logic, aliases, true)
@@ -644,76 +727,72 @@ func (b *appAlias) paint(c *ui.Context) {
 	if len(got) != 23 {
 		t.Errorf("got %d violations, want 23 (actions, local dialog state and Invalidate are allowed):\n%s", len(got), violations)
 	}
-	if !viewFile("probe_page.go", syntax) {
+	if !viewFile("probe_page.go", f.syntax) {
 		t.Error("a MyGo import must mark a root file as a view")
 	}
-	if viewFile("probe_page_test.go", syntax) {
+	if viewFile("probe_page_test.go", f.syntax) {
 		t.Error("a test file is not a view")
 	}
 }
 
 func TestViewFileRulesRejectLogicMethodsOnLocalState(t *testing.T) {
 	const module = "example.test/Voxt"
-	parse := func(path, source string) rootFile {
-		t.Helper()
-		fset := token.NewFileSet()
-		syntax, err := parser.ParseFile(fset, path, source, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return rootFile{goFile{path: path, data: []byte(source)}, fset, syntax}
-	}
-	view := parse("probe_page.go", `package main
-import (
-	"github.com/egoist/mygo/ui"
-	_ "example.test/Voxt/internal/hotkey"
-)
-type overlayForm struct{}
-type searchLocalUI struct{}
-func paint(c *ui.Context, local *overlayForm) {
-	local.previewState()
-	local.layout()
-}
-func paintSearch(c *ui.Context, local *searchLocalUI) {
-	local.previewState()
-}
-func compose(c *ui.Context, local *overlayForm) {
-	paint(c, local)
-}
-func direct() {
-	buildFeatureCustomKeysViewState()
-}
-`)
-	clean := parse("clean_page.go", `package main
+	view := parseRootFile(t, "probe_page.go", `package main
 import "github.com/egoist/mygo/ui"
-func cleanView(c *ui.Context, local *overlayForm) {
-	compose(c, local)
+import _ "example.test/Voxt/internal/hotkey"
+type overlayForm struct{}; type overlayAlias = overlayForm; type renamedForm struct{}; type receiverForm struct{}; type actionNamedForm struct{}; type searchLocalUI struct{}
+func paint(c *ui.Context, local *overlayForm) { local.previewState(); local.layout(); local.overlay() }
+func paintRenamed(context *ui.Context, form *renamedForm, a *probeActions, local *probeActions, controls probeViewActions, actions *actionNamedForm) {
+	context.Theme(); form.overlay(); form.aliased(); form.slice()
+	form.pointers(); a.overlay(); local.overlay(); controls.overlay(); actions.overlay()
 }
+func (renamed *receiverForm) paint() { renamed.previewState() }
+func paintAlias(alias *overlayAlias) { alias.previewState() }
+func paintGeneration(form *genForm) { form.settings() }
+func paintDemo(local *meetingDemoHost) { local.modelsViewState() }
+func paintSearch(local *searchLocalUI) { local.previewState(); local.overlay() }
+func compose(c *ui.Context, local *overlayForm) { paint(c, local) }
+func direct() { buildFeatureCustomKeysViewState() }
 `)
-	logic := parse("settings_overlay_view_state.go", `package main
-type overlayForm struct{}
-type searchLocalUI struct{}
-type settingsOverlayPreviewState struct{}
-func (f *overlayForm) previewState() settingsOverlayPreviewState { return settingsOverlayPreviewState{} }
-func (f *overlayForm) layout() {}
-func (s *searchLocalUI) previewState() {}
-func buildFeatureCustomKeysViewState() {}
+	clean := parseRootFile(t, "clean_page.go", `package main
+import "github.com/egoist/mygo/ui"
+func cleanView(c *ui.Context, local *overlayForm) { compose(c, local) }
+`)
+	logic := parseRootFile(t, "settings_overlay_view_state.go", `package main
+import "example.test/Voxt/internal/settings"
+type settingsOverlayPreviewState struct{}; type overlayResult = settings.Overlay; type genForm struct{}; type meetingDemoHost struct{}; type modelsViewState struct{}; type probeActions struct{}; type probeViewActions interface { overlay() *settings.Overlay }
+func (f *overlayForm) previewState() settingsOverlayPreviewState { return settingsOverlayPreviewState{} }; func (f *overlayForm) layout() {}; func (f *overlayForm) overlay() *settings.Overlay { return nil }
+func (f *renamedForm) overlay() *settings.Overlay { return nil }; func (f *renamedForm) aliased() overlayResult { return overlayResult{} }; func (f *renamedForm) slice() []*settings.Overlay { return nil }; func (f *renamedForm) pointers() **settings.Overlay { return nil }
+func (f *actionNamedForm) overlay() *settings.Overlay { return nil }; func (f *receiverForm) previewState() settingsOverlayPreviewState { return settingsOverlayPreviewState{} }; func (f *genForm) settings() (g settings.Generation, bad string) { return }; func (host *meetingDemoHost) modelsViewState() *modelsViewState { return nil }
+func (s *searchLocalUI) previewState() {}; func (s *searchLocalUI) overlay() {}; func (a *probeActions) overlay() *settings.Overlay { return nil }; func buildFeatureCustomKeysViewState() {}
 `)
 	files := []rootFile{view, clean, logic}
-	views := map[string]bool{"probe_page.go": true, "clean_page.go": true, "settings_overlay_view_state.go": false}
-	logicFunctions := logicFunctionFiles(files, views, module, appAliases(files))
-	got := viewViolations(view, module, logicFunctions, appAliases(files), true)
+	views := map[string]bool{"probe_page.go": true, "clean_page.go": true}
+	aliases := appAliases(files)
+	if localStateTypes(files, views, aliases)["probeActions"] || localStateTypes(files, views, aliases)["probeViewActions"] {
+		t.Error("declared action types must not become local state through parameter names")
+	}
+	logicFunctions := logicFunctionFiles(files, views, module, aliases)
+	got := viewViolations(view, module, logicFunctions, aliases, true)
 	violations := strings.Join(got, "\n")
-	for _, want := range []string{"internal/hotkey", "calls logic method overlayForm.previewState", "calls logic function buildFeatureCustomKeysViewState"} {
+	for _, want := range []string{"internal/hotkey", "calls logic method overlayForm.previewState", "calls logic method overlayAlias.previewState", "calls logic method overlayForm.overlay", "calls logic method renamedForm.overlay", "calls logic method renamedForm.aliased", "calls logic method renamedForm.slice", "calls logic method renamedForm.pointers", "calls logic method actionNamedForm.overlay", "calls logic method receiverForm.previewState", "calls logic method genForm.settings", "calls logic function buildFeatureCustomKeysViewState"} {
 		if !strings.Contains(violations, want) {
 			t.Errorf("no violation containing %q:\n%s", want, violations)
 		}
 	}
-	if len(got) != 3 || strings.Contains(violations, "calls logic function paint") {
-		t.Fatalf("got %q, want the three genuine violations without same-view composition; local layout methods and same-named methods on other local UI types are allowed", got)
+	if len(got) != 12 || strings.Contains(violations, "calls logic function paint") {
+		t.Errorf("got %q, want 12 genuine violations; actions, meetingDemoHost composition, ordinary local UI methods and same-view composition are allowed", got)
 	}
-	cleanViolations := viewViolations(clean, module, logicFunctions, appAliases(files), true)
+	cleanViolations := viewViolations(clean, module, logicFunctions, aliases, true)
 	if len(cleanViolations) != 1 || !strings.Contains(cleanViolations[0], "calls logic function compose (probe_page.go)") {
 		t.Fatalf("clean view violations are %q, want logic propagated through the same-file wrapper in probe_page.go", cleanViolations)
+	}
+	ordered := parseRootFile(t, "ordered.go", `package main
+import ("example.test/Voxt/internal/settings"; "example.test/Voxt/internal/i18n")
+func ordered() { settings.Normalize(); i18n.T("ok") }
+`)
+	declaration := ordered.syntax.Decls[len(ordered.syntax.Decls)-1]
+	if !functionUsesDomain(declaration, importNames(ordered.syntax), module) {
+		t.Error("an allowed selector after a domain selector must not clear domain use")
 	}
 }

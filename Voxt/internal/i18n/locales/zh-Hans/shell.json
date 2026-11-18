@@ -94,5 +94,6 @@
   "Read": "查看全文",
   "Version %s": "版本 %s",
   "No microphone available": "没有可用的麦克风",
-  "Transcribing": "转录中"
+  "Transcribing": "转录中",
+  "Could not copy: %v": "无法复制：%v"
 }

@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/hehehai/actnowkit/shortcuts"
@@ -470,6 +471,88 @@ func TestOnboardingTimingsText(t *testing.T) {
 	snapshot := session.Snapshot{ASR: session.Model{Name: "Speech One"}, LLM: session.Model{Name: "Language Two"}}
 	if got := onboardingTimingsText(i18n.NewTranslator("en"), snapshot); got != "Speech One, Language Two" {
 		t.Fatalf("model names %q", got)
+	}
+}
+
+func TestNoticeActionLabels(t *testing.T) {
+	for _, test := range []struct {
+		action, english, chinese string
+	}{
+		{actionSignIn, "Sign in", "登录"},
+		{actionUsage, "Manage usage", "管理用量"},
+		{actionModels, "Open Speech models", "打开语音识别模型页"},
+		{actionLanguage, "Open Language models", "打开语言模型页"},
+		{actionPermissions, "Open Permissions", "打开权限页"},
+		{actionHelper, "Restart helper", "重启辅助进程"},
+		{actionRetry, "Retry", "重试"},
+		{"unknown", "", ""},
+	} {
+		t.Run(test.action, func(t *testing.T) {
+			for _, locale := range []string{"en", "zh-Hans"} {
+				want := test.english
+				if locale == "zh-Hans" {
+					want = test.chinese
+				}
+				translator := i18n.NewTranslator(locale)
+				onboardingState := buildOnboardingTry(translator, onboardingViewStateInput{
+					Step: obTranscribe, Passed: map[int]bool{}, Tries: map[int]string{}, Settings: settings.Defaults(),
+					Block: &sessionNotice{action: test.action},
+				})
+				if got := onboardingState.Card.Block.ActionLabel; got != want {
+					t.Errorf("%s onboarding action label %q, want %q", locale, got, want)
+				}
+				tryState := buildTryCardViewState(translator, tryCardStateInput{Block: &tryNoticeStateInput{Action: test.action}})
+				if got := tryState.Block.ActionLabel; got != want {
+					t.Errorf("%s try action label %q, want %q", locale, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestOnboardingMoreFeatureTitles(t *testing.T) {
+	for _, test := range []struct {
+		locale string
+		want   []string
+	}{
+		{"en", []string{"Transcribe", "Translate", "Rewrite", "Paste the last result"}},
+		{"zh-Hans", []string{"转录", "翻译", "改写", "粘贴最近结果"}},
+	} {
+		state := buildOnboardingMore(i18n.NewTranslator(test.locale), onboardingViewStateInput{Settings: settings.Defaults()})
+		got := make([]string, len(state.Shortcuts))
+		for index, shortcut := range state.Shortcuts {
+			got[index] = shortcut.Title
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%s feature titles %q, want %q", test.locale, got, test.want)
+		}
+	}
+}
+
+func TestRecordingElapsedText(t *testing.T) {
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	for _, test := range []struct {
+		elapsed time.Duration
+		want    string
+	}{
+		{0, "0:00"},
+		{500 * time.Millisecond, "0:00"},
+		{1500 * time.Millisecond, "0:01"},
+		{time.Minute + 500*time.Millisecond, "1:00"},
+		{time.Minute + 1500*time.Millisecond, "1:01"},
+	} {
+		snapshot := session.Snapshot{ID: "mine", Kind: store.KindTranscribe, State: session.Recording, HeardAt: now.Add(-test.elapsed)}
+		tryState := buildTryCardViewState(i18n.NewTranslator("en"), tryCardStateInput{Mine: true, Snapshot: snapshot, Now: now})
+		if got := tryState.Recording.ElapsedText; got != test.want {
+			t.Errorf("%s try elapsed %q, want %q", test.elapsed, got, test.want)
+		}
+		onboardingState := buildOnboardingTry(i18n.NewTranslator("en"), onboardingViewStateInput{
+			Step: obTranscribe, Passed: map[int]bool{}, Tries: map[int]string{obTranscribe: snapshot.ID},
+			Settings: settings.Defaults(), Session: snapshot, Now: now,
+		})
+		if got := onboardingState.Card.ElapsedText; got != test.want {
+			t.Errorf("%s onboarding elapsed %q, want %q", test.elapsed, got, test.want)
+		}
 	}
 }
 

@@ -54,7 +54,7 @@ func historyPage(c *ui.Context, state *historyViewState, actions historyActions,
 			if hits[len(state.Rows)] > 0 {
 				local.find.count(c, query, hits[len(state.Rows)])
 			}
-			if state.SettingsAvailable && iconButton(c.Key("hist-settings"), icons.Tuning2, i18n.T("History settings")).Shrink(0).Clicked() {
+			if iconButton(c.Key("hist-settings"), icons.Tuning2, i18n.T("History settings")).Shrink(0).Clicked() {
 				actions.openHistorySettingsDialog()
 			}
 		})

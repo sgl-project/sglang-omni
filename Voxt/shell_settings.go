@@ -243,7 +243,7 @@ func settingsSection(c *ui.Context, r *ui.Route, state settingsDialogViewState, 
 		case "audio":
 			audioSettings(c, *state.Audio, actions, &local.Form.settingsAudioLocalUI)
 		case "overlay":
-			overlaySettings(c, *state.Overlay, actions, &local.Form.ovStyle)
+			overlaySettings(c, state.Overlay, actions, &local.Form.ovStyle)
 		case "shortcuts":
 			shortcutsSettings(c, *state.Shortcuts, actions, &local.Form.settingsShortcutsLocalUI)
 		case "appearance":

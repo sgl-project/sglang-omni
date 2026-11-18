@@ -57,7 +57,7 @@ type settingsStorageActions interface {
 }
 
 type settingsOverlayActions interface {
-	overlayEdited()
+	overlayEdited() settingsOverlayViewState
 }
 
 type shortcutPresetActions interface {

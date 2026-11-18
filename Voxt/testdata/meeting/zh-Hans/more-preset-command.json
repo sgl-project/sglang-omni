@@ -45,7 +45,7 @@
         }
       ],
       "preset_selected": "⌘ 组合",
-      "preset_about": "⌘ 组合：只用右 ⌘，离字母键远。适合要用 Option 键打字的用户。",
+      "preset_about": "⌘ 组合：只用右 ⌥，离字母键远。适合要用 Option 键打字的用户。",
       "preset_warnings": null,
       "shortcuts": [
         {
