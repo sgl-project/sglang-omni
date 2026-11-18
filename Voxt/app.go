@@ -84,6 +84,7 @@ type app struct {
 	learnState
 	historyAccessState
 	transcribeSocketState
+	mainTranscript transcriptPreview // transcript_preview_controller.go
 	meetingState
 	meetingOverlayState
 	meetingsState

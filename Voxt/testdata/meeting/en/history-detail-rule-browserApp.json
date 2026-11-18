@@ -61,7 +61,8 @@
           "key": "hist-result",
           "title": "Result",
           "copy_label": "Copy result",
-          "text": "Weekly plan\nI'll send the new agenda tonight."
+          "text": "Weekly plan\nI'll send the new agenda tonight.",
+          "formatted": true
         },
         {
           "key": "hist-raw",

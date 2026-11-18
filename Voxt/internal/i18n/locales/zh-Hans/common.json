@@ -314,6 +314,7 @@
   "Voxt does not have Speech Recognition access. Allow it in Settings → Permissions.": "Voxt 没有语音识别权限，请在“设置 → 权限”里允许。",
   "Voxt does not have microphone access.": "Voxt 没有麦克风权限。",
   "Voxt was updated. Restart it to finish.": "Voxt 已更新，重启后生效。",
+  "Welcome to Voxt": "欢迎使用 Voxt",
   "Without Accessibility, only shortcuts like ⌃⌥Space work. fn, single modifiers, double taps and long presses need it.": "没有辅助功能权限时，只能用 ⌃⌥空格 这类组合键。fn、单个修饰键、双击和长按都需要这个权限。",
   "Works only with Accessibility access.": "需要辅助功能权限才能用。",
   "Writes well in many languages, but is slower and needs more memory.": "多种语言都写得好，但更慢，占用的内存也更多。",

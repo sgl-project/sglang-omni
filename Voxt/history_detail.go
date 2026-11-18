@@ -46,11 +46,13 @@ func historyDetail(c *ui.Context, state *historyDetailViewState, actions history
 					}
 				})
 				fillCard(c).Padding(px(t, sp2), px(t, sp3)).Children(func() {
-					ui.Text(c, block.Text).Selectable()
+					if !block.Formatted || !actions.transcriptResult(c, state.ID, block.Text, block.Streaming) {
+						ui.Text(c, block.Text).Selectable()
+					}
 				})
 			})
 		}
-		sectionGap := [2]float32{sp1, sp4}
+		sectionGap := [2]float32{sp1, sp4} // above the first heading, above the others
 		ui.Grid(c.Key("hist-facts")).ColumnTracks(ui.FitContent(), ui.Fr(1)).GapX(px(t, sp3)).GapY(px(t, sp1)).Children(func() {
 			for sectionIndex, section := range state.Sections {
 				sectionTitleText(c, section.Title).ColumnSpan(2).Margin(px(t, sectionGap[min(sectionIndex, 1)]), 0, px(t, 2), 0)

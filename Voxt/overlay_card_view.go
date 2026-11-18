@@ -315,8 +315,10 @@ func cardBubbleView(context *ui.Context, card *sessionCardViewState, block sessi
 		justify, background, line, titleAlpha = ui.End, ui.RGBA(255, 255, 255, 0.1), ui.RGBA(255, 255, 255, 0.12), 0.7
 	}
 	if block.Live {
-		textAlpha = 0.84
-		if !block.User {
+		// An answer being written keeps its text's full strength (#4105).
+		if block.User {
+			textAlpha = 0.84
+		} else {
 			titleAlpha = 0.54
 		}
 	}

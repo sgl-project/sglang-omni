@@ -86,3 +86,7 @@ func (controller *tryController) runTryNoticeAction(action string) {
 	controller.clearTryNotice()
 	controller.app.noticeAction(action)
 }
+
+func (controller *tryController) transcriptResult(c *uiContext, key, source string, streaming bool) bool {
+	return controller.app.transcriptResult(c, key, source, streaming)
+}

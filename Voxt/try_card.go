@@ -25,13 +25,15 @@ func tryCard(c *ui.Context, state *tryCardViewState, actions tryCardActions) {
 			})
 			if state.Draft != "" {
 				fillCard(c.Key(prefix + "-try-draft")).Padding(px(t, sp3)).Children(func() {
-					ui.Text(c, state.Draft).Selectable()
+					if !actions.transcriptResult(c, state.SessionID, state.Draft, true) {
+						ui.Text(c, state.Draft).Selectable()
+					}
 				})
 			}
 			return
 		}
 		if state.Ended != nil {
-			tryEnded(c, prefix, state.Ended, actions)
+			tryEnded(c, prefix, state.SessionID, state.Ended, actions)
 		} else if state.Intro != "" {
 			caption(c, state.Intro)
 		}
@@ -118,7 +120,7 @@ func levelBars(c *ui.Context, levels []float64, heard bool) {
 	})
 }
 
-func tryEnded(c *ui.Context, prefix string, state *tryEndedViewState, actions tryCardActions) {
+func tryEnded(c *ui.Context, prefix, sessionID string, state *tryEndedViewState, actions tryCardActions) {
 	t := c.Theme()
 	k := tok(t)
 	if state.Cancelled {
@@ -141,7 +143,9 @@ func tryEnded(c *ui.Context, prefix string, state *tryEndedViewState, actions tr
 		}
 	})
 	fillCard(c.Key(prefix + "-try-result")).Padding(px(t, sp3)).Children(func() {
-		dictionaryText(c, state.Result, state.Highlights).Selectable()
+		if !actions.transcriptResult(c, sessionID, state.Result, false) {
+			dictionaryText(c, state.Result, state.Highlights).Selectable()
+		}
 	})
 	if state.Raw != "" {
 		ui.Column(c).Gap(px(t, 4)).Children(func() {

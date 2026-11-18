@@ -13,7 +13,7 @@ Structure:
 
 Task: return the dictated text, ready to insert, following the rules above.
 
-Output: the final text between <output> and </output>, with nothing outside those tags: no quotes, labels, explanations or <input> tags. If nothing meaningful was said, return an empty string.
+Output: the final text between <output> and </output>, with nothing outside those tags: no quotes, labels, explanations or <input> tags. Add Markdown formatting such as bold, italics or code fences only if the speaker explicitly asks for it. Use LaTeX for explicitly dictated formulas: \(...\) inline and \[...\] on a separate line. Preserve existing formulas and leave currency as ordinary text. If nothing meaningful was said, return an empty string.
 
 ---- user ----
 <input>

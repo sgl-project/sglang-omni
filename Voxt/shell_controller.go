@@ -25,7 +25,8 @@ import (
 
 // shellState is the shell's view state and the services it owns.
 type shellState struct {
-	router *uiRouter
+	router         *uiRouter
+	openingStarted time.Time // the first-use opening's start (opening_controller.go)
 	// nav is the sidebar's choice; navShown the router path it was last
 	// synced from (see syncNav).
 	nav, navShown string
@@ -192,6 +193,7 @@ func (a *app) openWindow() {
 	a.hasMenu = true
 	a.applyLocale() // the system's language, unless the settings name one
 	a.buildMenu()
+	a.startOpening() // opening_controller.go
 	a.win = mygo.NewWindow(mygo.WindowOptions{
 		Title:          "Voxt",
 		Width:          windowWidth,
@@ -236,7 +238,11 @@ func (a *app) shellModel() *shellViewState {
 		LogsHeight:   a.logsHeight,
 		SettingsOpen: a.settingsOpen,
 	}
-	a.toasts = nil
+	if a.openingStarted.IsZero() {
+		a.toasts = nil
+	} else {
+		model.Toasts = nil // shown after the opening
+	}
 	if a.logsPanel && section(a.router.Path()) != "/logs" {
 		model.Logs = a.logsModel()
 	}
@@ -269,6 +275,7 @@ func (a *app) view(c *uiContext) {
 	shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
 	a.syncNav()
 	model := a.shellModel()
+	model.Opening = a.openingModel(c.Preferences().ReduceMotion) // opening_controller.go
 	now := time.Now()
 	shellView(c, model, a, a.shellLocal(), func() { a.pages(c) }, func() {
 		settingsDialog(c, a.settingsDialogModel(now), a, settingsDialogLocalUI{

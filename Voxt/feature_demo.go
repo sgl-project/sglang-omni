@@ -156,3 +156,6 @@ func (host *meetingDemoHost) runTryNoticeAction(action string) {
 	host.feature.block = nil
 	host.record("runTryNoticeAction %s", action)
 }
+
+// transcriptResult (tryCardActions, historyActions): the demo has no WebView, so results draw as plain text.
+func (host *meetingDemoHost) transcriptResult(*uiContext, string, string, bool) bool { return false }

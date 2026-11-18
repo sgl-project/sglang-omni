@@ -59,6 +59,8 @@ type Opts struct {
 	// Text is a Final's text (default "fake transcript"); "{n}" in it is
 	// the request's number (1 for the server's first Final).
 	Text string
+	// WindowTexts adds Whisper's per-window metadata to a Final.
+	WindowTexts []string
 	// FailFrom: the Finals from this one on (1 = the first) answer an
 	// error event, as ModeError does; 0: none.
 	FailFrom int
@@ -93,6 +95,7 @@ func Env(o Opts) []string {
 	v.Set("mode", o.Mode)
 	v.Set("log", o.Log)
 	v.Set("text", o.Text)
+	v["windows"] = o.WindowTexts
 	v.Set("delay", o.Delay.String())
 	v.Set("load", o.Load.String())
 	v.Set("failfrom", strconv.Itoa(o.FailFrom))
@@ -111,7 +114,7 @@ func Enabled() bool { return os.Getenv(EnvFake) != "" }
 
 func opts() Opts {
 	v, _ := url.ParseQuery(os.Getenv(EnvFake))
-	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text")}
+	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text"), WindowTexts: v["windows"]}
 	o.Delay, _ = time.ParseDuration(v.Get("delay"))
 	o.Load, _ = time.ParseDuration(v.Get("load"))
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))

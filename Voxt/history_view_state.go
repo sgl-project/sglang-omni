@@ -44,6 +44,10 @@ type historyTextBlockViewState struct {
 	Title     string `json:"title"`
 	CopyLabel string `json:"copy_label"`
 	Text      string `json:"text"`
+	// Formatted: the result, which shows its Markdown, code and math
+	// (#4105); Streaming: a retry's answer as the model writes it.
+	Formatted bool `json:"formatted,omitempty"`
+	Streaming bool `json:"streaming,omitempty"`
 }
 
 type historyFactViewState struct {
@@ -300,10 +304,14 @@ func buildHistoryDetailViewState(translator *i18n.Translator, input historyDetai
 		}
 	}
 	result := entry.Result
-	if input.Retry.id == entry.ID && strings.TrimSpace(input.Retry.draft) != "" {
+	streaming := input.Retry.id == entry.ID && strings.TrimSpace(input.Retry.draft) != ""
+	if streaming {
 		result = input.Retry.draft // a retry's answer as the model writes it
 	}
 	addTextBlock("hist-result", translator.T("Result"), translator.T("Copy result"), result)
+	if blocks := state.TextBlocks; len(blocks) > 0 && blocks[0].Key == "hist-result" {
+		blocks[0].Formatted, blocks[0].Streaming = true, streaming
+	}
 	if entry.PromptText != "" {
 		addTextBlock("hist-prompt", translator.T("Instruction"), translator.T("Copy instruction"), entry.PromptText)
 	}

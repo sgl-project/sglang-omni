@@ -54,7 +54,9 @@ type tryCardViewState struct {
 	Recording   *tryRecordingViewState `json:"recording,omitempty"`
 	WorkingText string                 `json:"working_text"`
 	Draft       string                 `json:"draft"`
-	Ended       *tryEndedViewState     `json:"ended,omitempty"`
+	// SessionID keys the draft's and the result's preview (#4105).
+	SessionID string             `json:"session_id,omitempty"`
+	Ended     *tryEndedViewState `json:"ended,omitempty"`
 }
 
 type tryNoticeStateInput struct {
@@ -133,6 +135,7 @@ func buildTryCardViewState(translator *i18n.Translator, input tryCardStateInput)
 		state.WorkingText = uitext.WorkingTextFor(translator, snapshot)
 		if snapshot.State == session.Composing {
 			state.Draft = strings.TrimSpace(snapshot.Draft)
+			state.SessionID = snapshot.ID
 		}
 		return state
 	}
@@ -140,6 +143,7 @@ func buildTryCardViewState(translator *i18n.Translator, input tryCardStateInput)
 		return state
 	}
 	state.Mode = "ended"
+	state.SessionID = snapshot.ID
 	ended := &tryEndedViewState{Result: snapshot.Result, Highlights: snapshot.Highlights, TimingsText: uitext.TimingsTextFor(translator, snapshot)}
 	state.Ended = ended
 	if snapshot.State == session.Cancelled {

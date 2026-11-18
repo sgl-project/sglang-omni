@@ -550,6 +550,24 @@ func TestModelsPageFaster(t *testing.T) {
 	}
 }
 
+func TestModelsPageWhisperDraft(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1600)
+	seedModels(t, a, models.ASRWhisperLarge, models.AuxWhisperLarge)
+	a.navigate(modelsPath)
+	frames(tt)
+	// The models page is a Settings section on the release branch.
+	const toggle = "Faster transcription for Whisper Large v3"
+	drain := queuePosts(a)
+	scrollSettingsToText(tt, toggle)
+	clickControl(t, tt, toggle)
+	drain()
+	frames(tt)
+	if !tt.HasText("Download Whisper Large v3 Distil draft") {
+		t.Fatalf("Whisper draft download missing: %q", tt.Texts())
+	}
+}
+
 // TestModelCardsLineUp: a speech model in a card of its own starts its
 // text at the card's edge, as the models of a family card do, its icon
 // beside its name (#3854: the text sat after an empty icon column). The

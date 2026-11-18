@@ -67,7 +67,8 @@
           "key": "hist-result",
           "title": "Result",
           "copy_label": "Copy result",
-          "text": "A formal answer"
+          "text": "A formal answer",
+          "formatted": true
         },
         {
           "key": "hist-prompt",

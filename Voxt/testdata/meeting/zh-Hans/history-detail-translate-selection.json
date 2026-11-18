@@ -67,7 +67,8 @@
           "key": "hist-result",
           "title": "结果",
           "copy_label": "复制结果",
-          "text": "晚上好"
+          "text": "晚上好",
+          "formatted": true
         },
         {
           "key": "hist-source",

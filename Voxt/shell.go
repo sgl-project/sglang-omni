@@ -105,6 +105,10 @@ func shellView(c *ui.Context, state *shellViewState, actions shellActions, local
 		// user's Reduce motion.
 		c.DisableAnimations()
 	}
+	if state.Opening != nil {
+		openingView(c, state.Opening)
+		return
+	}
 	for _, m := range state.Toasts {
 		c.Toast(m)
 	}
