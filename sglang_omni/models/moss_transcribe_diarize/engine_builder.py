@@ -281,6 +281,10 @@ class MossTranscribeDiarizeEngineBuilder(
     ) -> ModelRunner[MossTranscribeDiarizeRequestData]:
         model_runner = MossTranscribeDiarizeModelRunner(model_worker, output_proc)
         model_runner.speculative_ignores_request_seed = True
+        # note (wilsonzheng0327): the shared verify penalty is validated on CUDA only, where MOSS-TD's draft runs.
+        model_runner.speculative_repetition_penalty_owner = (
+            "verify_logits" if current_platform.is_cuda() else None
+        )
         return model_runner
 
     def setup_model_resources(
