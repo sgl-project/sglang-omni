@@ -8,6 +8,7 @@ import subprocess
 import sys
 from contextlib import nullcontext
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -29,6 +30,7 @@ from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
+from sglang_omni.scheduling.engine_factory import GenerationDefaults
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_cuda_graph_bs,
@@ -920,14 +922,17 @@ def test_qwen3_asr_async_decode_false_turns_speculative_overlap_off(
     ("is_cuda", "sm_version", "expected_backend"),
     [
         (True, 90, None),
+        (True, 99, None),
         (True, 100, "flashinfer"),
-        (True, 103, "flashinfer"),
+        (True, 101, None),
+        (True, 103, None),
+        (True, 119, None),
         (True, 120, None),
         (True, None, None),
         (False, 100, None),
     ],
 )
-def test_qwen3_asr_defaults_attention_to_flashinfer_on_datacenter_blackwell(
+def test_qwen3_asr_defaults_prefill_attention_to_flashinfer_only_on_sm100(
     monkeypatch: pytest.MonkeyPatch,
     is_cuda: bool,
     sm_version: int | None,
@@ -944,10 +949,12 @@ def test_qwen3_asr_defaults_attention_to_flashinfer_on_datacenter_blackwell(
 
     defaults = builder.generation_defaults(dtype="bfloat16")
 
-    assert defaults.get("attention_backend") == expected_backend
+    assert defaults.get("prefill_attention_backend") == expected_backend
+    assert "attention_backend" not in defaults
+    assert "decode_attention_backend" not in defaults
 
 
-def test_qwen3_asr_explicit_attention_backend_overrides_blackwell_default(
+def test_qwen3_asr_explicit_attention_backend_overrides_sm100_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
@@ -958,16 +965,51 @@ def test_qwen3_asr_explicit_attention_backend_overrides_blackwell_default(
         raising=False,
     )
     builder = make_engine_builder(mm_attention_backend="fa3")
+    builder.server_args_overrides = {"attention_backend": "trtllm_mha"}
 
     overrides = build_generation_batch_overrides(
         **builder.generation_defaults(dtype="bfloat16"),
-        server_args_overrides={"attention_backend": "trtllm_mha"},
+        server_args_overrides=builder.server_args_overrides,
     )
 
     assert overrides["attention_backend"] == "trtllm_mha"
+    assert "prefill_attention_backend" not in overrides
 
 
-def test_qwen3_asr_draft_retains_automatic_blackwell_attention_backend(
+@pytest.mark.parametrize(
+    "phase_override",
+    [
+        {"prefill_attention_backend": "trtllm_mha"},
+        {"decode_attention_backend": "trtllm_mha"},
+    ],
+)
+def test_qwen3_asr_explicit_phase_backend_survives_sm100_default(
+    monkeypatch: pytest.MonkeyPatch, phase_override: dict[str, str]
+) -> None:
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        qwen3_asr_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: 100,
+        raising=False,
+    )
+    builder = make_engine_builder(mm_attention_backend="fa3")
+    builder.server_args_overrides = phase_override
+
+    overrides = build_generation_batch_overrides(
+        **builder.generation_defaults(dtype="bfloat16"),
+        server_args_overrides=builder.server_args_overrides,
+    )
+
+    for key, value in phase_override.items():
+        assert overrides[key] == value
+    if "decode_attention_backend" in phase_override:
+        assert overrides["prefill_attention_backend"] == "flashinfer"
+    else:
+        pass
+
+
+def test_qwen3_asr_draft_request_keeps_automatic_attention_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
@@ -978,36 +1020,60 @@ def test_qwen3_asr_draft_retains_automatic_blackwell_attention_backend(
         raising=False,
     )
     builder = make_engine_builder(mm_attention_backend="fa3")
-    builder.draft_checkpoint = Mock()
+    # note (Xuanfei): generation_defaults runs before adjust_overrides materializes the draft, so the request is the signal.
+    builder.server_args_overrides = {"speculative_algorithm": "DFLASH"}
 
     defaults = builder.generation_defaults(dtype="bfloat16")
 
     assert "attention_backend" not in defaults
+    assert "prefill_attention_backend" not in defaults
 
 
-@pytest.mark.parametrize(
-    ("sm_version", "expected"), [(90, True), (100, False), (120, True)]
-)
-def test_qwen3_asr_coalesce_during_decode_defaults_off_on_datacenter_blackwell(
-    monkeypatch: pytest.MonkeyPatch, sm_version: int, expected: bool
+@pytest.mark.parametrize("with_draft", [False, True])
+def test_qwen3_asr_build_applies_sm100_prefill_backend_only_without_a_draft(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, with_draft: bool
 ) -> None:
+    """Through the real build: the draft is only requested when generation_defaults runs, its checkpoint comes later."""
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_npu", lambda: False)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
     monkeypatch.setattr(
         qwen3_asr_builder,
         "get_visible_gpu_sm_version",
-        lambda gpu_id: sm_version,
+        lambda gpu_id: 100,
         raising=False,
     )
-    monkeypatch.setattr(
-        request_builders,
-        "make_qwen3_asr_stream_output_builder",
-        lambda **kwargs: object(),
+    checkpoints_at_defaults: list[TemporaryDirectory[str] | None] = []
+    generation_defaults = Qwen3ASREngineBuilder.generation_defaults
+
+    def record_defaults(
+        builder: Qwen3ASREngineBuilder, *, dtype: str
+    ) -> GenerationDefaults:
+        checkpoints_at_defaults.append(builder.draft_checkpoint)
+        return generation_defaults(builder, dtype=dtype)
+
+    monkeypatch.setattr(Qwen3ASREngineBuilder, "generation_defaults", record_defaults)
+    write_dflash_checkpoint(tmp_path, non_causal=False)
+    overrides = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+        if with_draft
+        else {}
     )
-    builder = make_engine_builder(prefill_coalesce_after_builds_during_decode=None)
 
-    kwargs = builder.extra_scheduler_kwargs()
+    qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy", server_args_overrides=overrides
+    )
 
-    assert kwargs["prefill_coalesce_after_builds_during_decode"] is expected
+    assert checkpoints_at_defaults == [None]
+    assert recorded.build_kwargs.get("attention_backend") is None
+    if with_draft:
+        assert recorded.build_kwargs.get("prefill_attention_backend") is None
+    else:
+        assert recorded.build_kwargs["prefill_attention_backend"] == "flashinfer"
 
 
 @pytest.mark.parametrize("with_draft", [False, True])

@@ -69,15 +69,6 @@ logger = logging.getLogger(__name__)
 QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS = 32
 
 
-def is_datacenter_blackwell(sm_version: int | None) -> bool:
-    """SM100/SM103 (B200/B300 class), where the B200-measured serving defaults apply."""
-    return (
-        current_platform.is_cuda()
-        and sm_version is not None
-        and 100 <= sm_version < 120
-    )
-
-
 class Qwen3ASRModelRunner(ModelRunner[Qwen3ASRRequestData]):
     """The shared AR runner, opted into speculative overlap and, on CUDA, the shared verify repetition_penalty.
 
@@ -267,9 +258,16 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             if current_platform.is_cuda() or self.mm_attention_backend is None
             else None
         )
-        if is_datacenter_blackwell(sm_version) and self.draft_checkpoint is None:
-            # note (Xuanfei): the automatic SM100 choice, trtllm_mha, cannot capture the full prefill graph.
-            defaults["attention_backend"] = "flashinfer"
+        requested = self.server_args_overrides
+        if (
+            current_platform.is_cuda()
+            and sm_version == 100
+            and requested.get("speculative_algorithm") is None
+            and requested.get("attention_backend") is None
+            and requested.get("prefill_attention_backend") is None
+        ):
+            # note (Xuanfei): the automatic SM100 choice, trtllm_mha, cannot capture the full prefill graph; decode keeps it.
+            defaults["prefill_attention_backend"] = "flashinfer"
         else:
             pass
         if self.mm_attention_backend is not None:
@@ -655,13 +653,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
                 self.prefill_coalesce_requires_pending_builds
             ),
             # note (ychu824): with a draft this defaults to off, because holding prefills during decode delayed the first text and did not raise throughput.
-            # note (Xuanfei): on SM100 the hold also costs throughput without a draft, once prefill runs as a full graph.
             "prefill_coalesce_after_builds_during_decode": (
                 self.draft_checkpoint is None
-                and not (
-                    current_platform.is_cuda()
-                    and is_datacenter_blackwell(get_visible_gpu_sm_version(self.gpu_id))
-                )
                 if self.prefill_coalesce_after_builds_during_decode is None
                 else self.prefill_coalesce_after_builds_during_decode
             ),
