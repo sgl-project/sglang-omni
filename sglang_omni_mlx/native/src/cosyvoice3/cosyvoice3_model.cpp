@@ -661,7 +661,7 @@ Reference CosyVoice3Model::EncodeReference(const ReferenceAudio &audio) const {
       mx::slice(mel, {0, 0, 0},
                 {1, kMelFramesPerToken * flow_token_count, kMelBinCount}),
       speaker_encoder_.Embed(audio.samples_16k)};
-  mx::eval({reference.prompt_mel, reference.speaker_embedding});
+  mx::async_eval({reference.prompt_mel, reference.speaker_embedding});
   return reference;
 }
 
@@ -889,7 +889,7 @@ mx::array CosyVoice3Model::Vocode(const std::vector<int> &speech_tokens,
                                   const std::optional<Reference> &reference,
                                   const std::function<void()> &on_step) const {
   const mx::array mel = Mel(speech_tokens, reference, on_step);
-  mx::eval(mel);
+  mx::async_eval(mel);
   on_step();
   return Samples(mel);
 }

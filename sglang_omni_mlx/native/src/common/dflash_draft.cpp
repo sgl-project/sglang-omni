@@ -235,7 +235,7 @@ DraftStatistics DFlashDraft::Decode(
       const auto arrays = cache.Arrays();
       evaluated.insert(evaluated.end(), arrays.begin(), arrays.end());
     }
-    mx::eval(evaluated);
+    mx::async_eval(evaluated);
     aux_hidden_states.clear();
     processed += token_count;
   }

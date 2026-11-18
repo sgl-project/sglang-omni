@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
-#include <set>
+#include <map>
 #include <stdexcept>
 #include <string_view>
 
@@ -23,6 +23,11 @@ constexpr float kTransformerNormEps = 1e-5f;
 constexpr int kEncoderWindow = 512;
 constexpr float kConvNeXtNormEps = 1e-6f;
 constexpr float kMaskedScore = -1e9f;
+// The decoder's weights and activations; the encoder keeps the checkpoint's
+// float32, whose codes a lower precision could flip.
+constexpr mx::Dtype kDecoderDtype = mx::float16;
+constexpr std::string_view kDecoderPrefixes[] = {
+    "decoder.", "quantizer.upsample.", "quantizer.post_module."};
 // The encoder's output and the decoder's input run at 4 latent frames per code
 // frame.
 constexpr int kLatentFrameSamples = kFrameSamples / 4;
@@ -109,7 +114,8 @@ mx::array AudioCodec::ConvolveTransposed(const mx::array &x,
                                          const ConvolutionWeights &weights,
                                          int stride) {
   mx::array y =
-      mx::conv_transpose1d(mx::swapaxes(x, 1, 2), weights.kernel, stride);
+      omni_common::ConvolveTransposed(mx::swapaxes(x, 1, 2), weights.kernel,
+                                      stride, weights.kernel.shape(1) * stride);
   if (weights.bias.has_value()) {
     y = mx::add(y, *weights.bias);
   } else {
@@ -145,19 +151,24 @@ AudioCodec::LoadWeights(const std::filesystem::path &model_directory) {
   auto [loaded, metadata] =
       mx::load_safetensors((model_directory / "codec.safetensors").string());
   const std::string_view plain_kernel = ".conv.weight";
-  std::set<std::string> transposed_prefixes;
+  // Each transposed convolution's stride.
+  std::map<std::string, int> transposed_strides;
   for (int block = 0; block < kDownsampleCount; ++block) {
-    transposed_prefixes.insert(Index("quantizer.upsample", block) + ".0");
+    transposed_strides.emplace(Index("quantizer.upsample", block) + ".0", 2);
   }
   for (int block = 0; block < 4; ++block) {
-    transposed_prefixes.insert(Index("decoder.model", block + 1) + ".block.1");
+    transposed_strides.emplace(Index("decoder.model", block + 1) + ".block.1",
+                               kDecoderStrides[block]);
   }
-  // Transposed convolutions store [in, out, kernel]; the rest [out, in,
-  // kernel].
-  const auto to_mlx_layout = [&transposed_prefixes](const std::string &prefix,
-                                                    const mx::array &kernel) {
-    return transposed_prefixes.count(prefix) ? mx::transpose(kernel, {1, 2, 0})
-                                             : mx::transpose(kernel, {0, 2, 1});
+  // Transposed convolutions store [in, out, kernel] and are kept as their
+  // stride-1 phases; the rest store [out, in, kernel].
+  const auto to_mlx_layout = [&transposed_strides](const std::string &prefix,
+                                                   const mx::array &kernel) {
+    const auto found = transposed_strides.find(prefix);
+    return found != transposed_strides.end()
+               ? omni_common::TransposedConvolutionPhases(
+                     mx::transpose(kernel, {1, 2, 0}), found->second)
+               : mx::transpose(kernel, {0, 2, 1});
   };
   omni_common::WeightMap weights;
   for (auto &[name, array] : loaded) {
@@ -189,6 +200,17 @@ AudioCodec::LoadWeights(const std::filesystem::path &model_directory) {
                                to_mlx_layout(prefix, array));
     } else {
       weights.insert_or_assign(name, array);
+    }
+  }
+  for (auto &[name, array] : weights) {
+    if (mx::issubdtype(array.dtype(), mx::floating) &&
+        !name.ends_with(".freqs_cis") &&
+        std::any_of(std::begin(kDecoderPrefixes), std::end(kDecoderPrefixes),
+                    [&name](std::string_view prefix) {
+                      return name.starts_with(prefix);
+                    })) {
+      array = mx::astype(array, kDecoderDtype);
+    } else {
     }
   }
   return weights;
@@ -423,7 +445,7 @@ mx::array AudioCodec::Encode(const std::vector<float> &samples) const {
       y = CausalConvolve(y, Index(prefix, 4), 2 * stride, stride, 1, 1);
     }
     windows.push_back(SliceTime(y, context, y.shape(2)));
-    mx::eval(windows.back());
+    mx::async_eval(windows.back());
   }
   mx::array x = Transformer(mx::concatenate(windows, 2), kEncoderTransformer,
                             kEncoderWindow);
@@ -543,7 +565,7 @@ mx::array AudioCodec::QuantizedFeatures(const mx::array &codes) const {
         residual.has_value() ? *residual : omni_common::Scalar(0, projection),
         projection);
   }
-  return mx::add(semantic, *residual);
+  return mx::astype(mx::add(semantic, *residual), kDecoderDtype);
 }
 
 mx::array AudioCodec::Decode(const mx::array &codes) const {
@@ -562,7 +584,7 @@ mx::array AudioCodec::Decode(const mx::array &codes) const {
                           CausalConvolve(x, prefix + ".1.dwconv", 7, 1, 1, dim),
                           prefix + ".1");
   }
-  mx::eval(x);
+  mx::async_eval(x);
 
   const int latent_frames = x.shape(2);
   std::vector<mx::array> windows;
@@ -585,9 +607,9 @@ mx::array AudioCodec::Decode(const mx::array &codes) const {
     windows.push_back(mx::slice(mx::reshape(y, {-1}),
                                 {context * kLatentFrameSamples},
                                 {static_cast<int>(y.size())}));
-    mx::eval(windows.back());
+    mx::async_eval(windows.back());
   }
-  return mx::concatenate(windows, 0);
+  return mx::astype(mx::concatenate(windows, 0), mx::float32);
 }
 
 } // namespace fish_dac

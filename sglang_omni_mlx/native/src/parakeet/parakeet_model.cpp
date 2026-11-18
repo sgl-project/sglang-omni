@@ -42,9 +42,12 @@ BFloat16Weights(const std::filesystem::path &model_directory) {
   omni_common::WeightMap weights =
       omni_common::LoadSafetensors(model_directory);
   omni_common::FoldBatchNorms(weights, "batch_norm", kBatchNormEps);
+  // Note (XXXXRT666): each cast is evaluated on its own, so a float32 tensor
+  // is freed before the next loads and the two copies never all coexist.
   for (auto &[name, weight] : weights) {
     if (mx::issubdtype(weight.dtype(), mx::floating)) {
       weight = mx::astype(weight, mx::bfloat16);
+      mx::eval(weight);
     } else {
     }
   }

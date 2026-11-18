@@ -170,7 +170,7 @@ mx::array Model::GenerateFrames(const Request &request,
     // acoustic frame.
     if (frame > 0) {
       frames.push_back(mx::concatenate(hidden_parts, -1));
-      mx::eval(frames.back());
+      mx::async_eval(frames.back());
     } else {
     }
     const mx::array feedback = mx::expand_dims(
@@ -181,7 +181,7 @@ mx::array Model::GenerateFrames(const Request &request,
                       last_hidden.dtype()),
         1);
     last_hidden = forward(feedback);
-    mx::eval(last_hidden);
+    mx::async_eval(last_hidden);
     if (static_cast<int>(frames.size()) >= request.max_frames) {
       break;
     } else {

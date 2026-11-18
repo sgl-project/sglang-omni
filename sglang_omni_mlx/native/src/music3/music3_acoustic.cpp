@@ -264,7 +264,7 @@ Result Model::DecodeFrames(const mx::array &frames, const Request &request,
       latent =
           latent +
           mx::array(sigma_at(step + 1) - sigma, velocity.dtype()) * velocity;
-      mx::eval(latent);
+      mx::async_eval(latent);
     }
     if (overlap > 0) {
       latent =

@@ -329,7 +329,7 @@ mx::array WhisperModel::Encode(std::span<const float> padded_samples,
     // Note (Jiaxin Deng): evaluated layer by layer; as one graph the whole
     // encoder keeps each layer's temporaries until it finishes, about 0.6 GB
     // more at its peak for large-v3-turbo, at no measurable speed gain.
-    mx::eval(x);
+    mx::async_eval(x);
   }
   return checkpoint_.LayerNorm(x, "encoder.ln_post", kLayerNormEpsilon);
 }

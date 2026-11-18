@@ -29,8 +29,9 @@ public:
 private:
   SpeechDecoder(const nlohmann::json &config, omni_common::WeightMap weights);
   // Codebook embeddings from their usage counts, and convolution kernels in
-  // MLX's layout.
-  static omni_common::WeightMap PrepareWeights(omni_common::WeightMap weights);
+  // MLX's layout, transposed ones as their stride-1 phases.
+  static omni_common::WeightMap PrepareWeights(const nlohmann::json &config,
+                                               omni_common::WeightMap weights);
   mlx::core::array TransformerLayer(const mlx::core::array &x, int layer) const;
   mlx::core::array Snake(const mlx::core::array &x,
                          const std::string &prefix) const;

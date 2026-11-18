@@ -285,7 +285,7 @@ mx::array MingAudioDecoder::DecodeChunk(const mx::array &latents,
     const int ready = frames.shape(1) - (last_chunk ? 0 : 1);
     if (ready == 0) {
       state.pending = frames;
-      mx::eval(*state.pending);
+      mx::async_eval(*state.pending);
       return mx::zeros({latents.shape(0), 0}, mx::float32);
     } else {
     }
@@ -319,7 +319,7 @@ mx::array MingAudioDecoder::DecodeChunk(const mx::array &latents,
     } else {
     }
   }
-  mx::eval(arrays);
+  mx::async_eval(arrays);
   if (last_chunk) {
     state = AudioDecoderState{};
   } else {

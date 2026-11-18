@@ -66,7 +66,8 @@ bool EndsWith(const std::string &text, const std::string &suffix) {
 } // namespace
 
 omni_common::WeightMap
-SpeechDecoder::PrepareWeights(omni_common::WeightMap weights) {
+SpeechDecoder::PrepareWeights(const nlohmann::json &config,
+                              omni_common::WeightMap weights) {
   omni_common::WeightMap prepared;
   const std::string usage_suffix = "._codebook.cluster_usage";
   for (auto &[name, array] : weights) {
@@ -100,6 +101,29 @@ SpeechDecoder::PrepareWeights(omni_common::WeightMap weights) {
       prepared.insert_or_assign(name, array);
     }
   }
+  // Transposed convolutions run as their stride-1 phases.
+  const nlohmann::json &decoder = config.at("decoder_config");
+  const auto phase = [&prepared](const std::string &name, int stride) {
+    mx::array &weight = prepared.at(name);
+    weight = omni_common::TransposedConvolutionPhases(weight, stride);
+  };
+  const auto ratios = decoder.at("upsampling_ratios").get<std::vector<int>>();
+  for (size_t stage = 0; stage < ratios.size(); ++stage) {
+    phase(std::string(kPrefix) + ".upsample." + std::to_string(stage) +
+              ".0.conv.weight",
+          ratios[stage]);
+  }
+  const auto rates = decoder.at("upsample_rates").get<std::vector<int>>();
+  for (size_t stage = 0; stage < rates.size(); ++stage) {
+    phase(std::string(kPrefix) + ".decoder." + std::to_string(stage + 1) +
+              ".block.1.conv.weight",
+          rates[stage]);
+  }
+  // Note (XXXXRT666): the checkpoint is float32; the decoder runs in float16,
+  // with Snake computed in float32.
+  for (auto &[name, array] : prepared) {
+    array = mx::astype(array, mx::float16);
+  }
   return prepared;
 }
 
@@ -111,7 +135,7 @@ SpeechDecoder::SpeechDecoder(
 
 SpeechDecoder::SpeechDecoder(const nlohmann::json &config,
                              omni_common::WeightMap weights)
-    : checkpoint_(PrepareWeights(std::move(weights)),
+    : checkpoint_(PrepareWeights(config, std::move(weights)),
                   nlohmann::json::object()) {
   const nlohmann::json &decoder = config.at("decoder_config");
   codebook_count_ = decoder.at("num_quantizers").get<int>();
@@ -157,15 +181,12 @@ mx::array SpeechDecoder::CausalConvolution(const mx::array &x,
 mx::array SpeechDecoder::TransposedConvolution(const mx::array &x,
                                                const std::string &prefix,
                                                int stride) const {
-  const mx::array &weight = checkpoint_.Weight(prefix + ".weight");
-  const mx::array y = mx::add(mx::conv_transpose1d(x, weight, stride),
-                              checkpoint_.Weight(prefix + ".bias"));
-  const int trim = weight.shape(1) - stride;
-  if (trim > 0) {
-    return mx::slice(y, {0, 0, 0}, {y.shape(0), y.shape(1) - trim, y.shape(2)});
-  } else {
-    return y;
-  }
+  const mx::array &phases = checkpoint_.Weight(prefix + ".weight");
+  const mx::array y = omni_common::ConvolveTransposed(x, phases, stride,
+                                                      phases.shape(1) * stride);
+  return mx::add(
+      mx::slice(y, {0, 0, 0}, {y.shape(0), x.shape(1) * stride, y.shape(2)}),
+      checkpoint_.Weight(prefix + ".bias"));
 }
 
 mx::array SpeechDecoder::TransformerLayer(const mx::array &x, int layer) const {
@@ -228,9 +249,7 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
       const mx::array rows = checkpoint_.Embed(
           ids, quantizer_prefix + ".vq.layers." + std::to_string(codebook) +
                    ".codebook.embed");
-      sum = sum.has_value()
-                ? mx::add(*sum, rows)
-                : mx::add(mx::zeros(rows.shape(), mx::float32), rows);
+      sum = sum.has_value() ? mx::add(*sum, rows) : rows;
     }
     return mx::conv1d(
         *sum, checkpoint_.Weight(quantizer_prefix + ".output_proj.weight"));
@@ -286,12 +305,19 @@ mx::array SpeechDecoder::Decode(const mx::array &codes) const {
       x = CausalConvolution(x, unit_prefix + ".conv2.conv", 1, 1);
       wave = mx::add(x, wave);
     }
+    // Note (XXXXRT666): each stage's buffers are larger than the last's, so as
+    // one graph the freed ones stay live until the end; evaluated per stage
+    // and waited on, so the next stage reuses this one's buffers, a 19 s chunk
+    // peaks 1.5 GB lower.
+    mx::eval(wave);
   }
   const int output_stage = static_cast<int>(upsample_rates_.size()) + 1;
   wave = Snake(wave, stack + "." + std::to_string(output_stage));
   wave = CausalConvolution(
       wave, stack + "." + std::to_string(output_stage + 1) + ".conv", 1, 1);
-  return mx::reshape(mx::clip(wave, mx::array(-1.0f), mx::array(1.0f)), {-1});
+  return mx::reshape(mx::clip(mx::astype(wave, mx::float32), mx::array(-1.0f),
+                              mx::array(1.0f)),
+                     {-1});
 }
 
 SpeechStream::SpeechStream(const SpeechDecoder &decoder, bool streamed,

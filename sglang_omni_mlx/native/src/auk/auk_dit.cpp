@@ -233,7 +233,7 @@ DiT::PrepareReference(const std::optional<mx::array> &reference,
       embeddings.push_back(*prepared.unconditional);
     } else {
     }
-    mx::eval(embeddings);
+    mx::async_eval(embeddings);
   } else {
   }
   return prepared;
@@ -398,7 +398,7 @@ mx::array DiT::Sample(const mx::array &conditioning,
     }
     latents = latents + (mx::take(times, mx::array(step + 1)) - timestep) *
                             mx::squeeze(velocity, 0);
-    mx::eval(latents);
+    mx::async_eval(latents);
   }
   check_cancelled();
   return latents;

@@ -417,7 +417,7 @@ mx::array MossTranscriber::PromptEmbeddings(
   } else {
   }
   const mx::array embeddings = mx::expand_dims(mx::concatenate(pieces, 0), 0);
-  mx::eval(embeddings);
+  mx::async_eval(embeddings);
   return embeddings;
 }
 
@@ -437,7 +437,7 @@ MossTranscriber::Prefill(const mx::array &embeddings,
     }
     const int step =
         std::min(kPrefillStepTokens, prompt_length - processed - 1);
-    mx::eval(model_.decoder().Forward(
+    mx::async_eval(model_.decoder().Forward(
         mx::slice(embeddings, {0, processed, 0}, {1, processed + step, hidden}),
         caches));
     processed += step;
