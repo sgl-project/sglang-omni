@@ -45,8 +45,13 @@ mx::array Scalar(double value, mx::Dtype dtype) {
   return mx::array(static_cast<float>(value), dtype);
 }
 
-mx::array PlainLayerNorm(const mx::array &x) {
-  return mx::fast::layer_norm(x, std::nullopt, std::nullopt, kNormEps);
+// LayerNorm(x) * (1 + scale) + shift as one fused norm, scale and shift [1,
+// width] shared by every row.
+mx::array ModulatedLayerNorm(const mx::array &x, const mx::array &shift,
+                             const mx::array &scale) {
+  return mx::fast::layer_norm(
+      x, mx::reshape(mx::add(Scalar(1.0, x.dtype()), scale), {-1}),
+      mx::reshape(shift, {-1}), kNormEps);
 }
 
 mx::array LeakyRelu(const mx::array &x, double slope) {
@@ -56,28 +61,6 @@ mx::array LeakyRelu(const mx::array &x, double slope) {
 mx::array Mish(const mx::array &x) {
   return mx::multiply(x,
                       mx::tanh(mx::logaddexp(x, mx::array(0.0f, x.dtype()))));
-}
-
-// Interleaved rotation of the first 64 channels, as the DiT applies rotary
-// embeddings before it splits heads.
-mx::array Rotate(const mx::array &x, const mx::array &cos,
-                 const mx::array &sin) {
-  const int batch = x.shape(0);
-  const int length = x.shape(1);
-  const int width = x.shape(2);
-  const mx::array rotated = mx::slice(x, {0, 0, 0}, {batch, length, 64});
-  const mx::array passed = mx::slice(x, {0, 0, 64}, {batch, length, width});
-  const mx::array pairs = mx::reshape(rotated, {batch, length, 32, 2});
-  const mx::array even =
-      mx::squeeze(mx::slice(pairs, {0, 0, 0, 0}, {batch, length, 32, 1}), 3);
-  const mx::array odd =
-      mx::squeeze(mx::slice(pairs, {0, 0, 0, 1}, {batch, length, 32, 2}), 3);
-  const mx::array half_turn = mx::reshape(
-      mx::stack({mx::negative(odd), even}, -1), {batch, length, 64});
-  const mx::array result = mx::astype(
-      mx::add(mx::multiply(rotated, cos), mx::multiply(half_turn, sin)),
-      x.dtype());
-  return mx::concatenate({result, passed}, -1);
 }
 
 // The periodic Hann window torch.stft uses.
@@ -111,21 +94,8 @@ Flow::Flow(const omni_common::Checkpoint &checkpoint)
       // Note (yexiaodong): one fixed noise draw, so a request's mel depends
       // only on its tokens.
       noise_(mx::random::normal({1, kMelBinCount, kMaxMelFrames}, mx::float32,
-                                0.0f, 1.0f, mx::random::key(0))),
-      rope_cos_(mx::array(0.0f)), rope_sin_(mx::array(0.0f)) {
-  const mx::array inverse_frequencies = mx::divide(
-      mx::array(1.0f),
-      mx::power(
-          mx::array(10000.0f),
-          mx::divide(mx::astype(mx::arange(0, kDitHeadSize, 2), mx::float32),
-                     mx::array(static_cast<float>(kDitHeadSize)))));
-  const mx::array angles =
-      mx::repeat(mx::outer(mx::astype(mx::arange(kMaxMelFrames), mx::float32),
-                           inverse_frequencies),
-                 2, -1);
-  rope_cos_ = mx::cos(angles);
-  rope_sin_ = mx::sin(angles);
-  mx::eval({noise_, rope_cos_, rope_sin_});
+                                0.0f, 1.0f, mx::random::key(0))) {
+  mx::eval(noise_);
 }
 
 mx::array Flow::Decode(const std::vector<int> &speech_tokens,
@@ -199,54 +169,79 @@ mx::array Flow::Decode(const std::vector<int> &speech_tokens,
       mx::astype(mx::slice(noise_, {0, 0, 0}, {1, kMelBinCount, frame_count}),
                  dtype),
       {0, 2, 1});
-  mx::array t = span(0);
-  mx::array dt = mx::squeeze(mx::subtract(span(1), span(0)));
+  // Note (XXXXRT666): the times the steps run at do not depend on x, so
+  // every step's modulations come from one pass over them, and the
+  // modulation weights are read once, not once a step.
+  std::vector<mx::array> times;
+  std::vector<mx::array> steps;
+  {
+    mx::array time = span(0);
+    for (int step = 1; step <= kFlowStepCount; ++step) {
+      const mx::array delta = mx::squeeze(mx::subtract(span(step), time));
+      times.push_back(time);
+      steps.push_back(delta);
+      time = mx::add(time, delta);
+    }
+  }
+  const std::vector<mx::array> modulations =
+      TimeModulations(mx::concatenate(times, 0));
   for (int step = 1; step <= kFlowStepCount; ++step) {
     on_step();
     const mx::array velocity =
-        Velocity(mx::concatenate({x, x}, 0), mu_pair,
-                 mx::concatenate({t, t}, 0), speaker_pair, conditioning_pair);
+        Velocity(mx::concatenate({x, x}, 0), mu_pair, modulations, step - 1,
+                 speaker_pair, conditioning_pair);
     const std::vector<mx::array> halves = mx::split(velocity, 2, 0);
     const mx::array guided = mx::subtract(
         mx::multiply(Scalar(1.0 + kGuidanceRate, dtype), halves[0]),
         mx::multiply(Scalar(kGuidanceRate, dtype), halves[1]));
-    x = mx::add(x, mx::multiply(dt, guided));
+    x = mx::add(x, mx::multiply(steps[step - 1], guided));
     // Note (yexiaodong): one evaluation per step bounds the graph and the
     // memory it holds.
     mx::eval(x);
-    t = mx::add(t, dt);
-    if (step < kFlowStepCount) {
-      dt = mx::squeeze(mx::subtract(span(step + 1), t));
-    } else {
-    }
   }
   return mx::transpose(
       mx::slice(x, {0, prompt_frames, 0}, {1, frame_count, kMelBinCount}),
       {0, 2, 1});
 }
 
-mx::array Flow::Velocity(const mx::array &x, const mx::array &mu,
-                         const mx::array &timesteps,
-                         const mx::array &speaker_features,
-                         const mx::array &mel_conditioning) const {
-  const mx::Dtype dtype = x.dtype();
-  const int batch = x.shape(0);
-  const int length = x.shape(1);
+std::vector<mx::array> Flow::TimeModulations(const mx::array &times) const {
+  const mx::Dtype dtype = times.dtype();
   const mx::array frequencies = mx::exp(
       mx::multiply(mx::astype(mx::arange(kTimeFrequencyCount), mx::float32),
                    mx::array(static_cast<float>(-std::log(10000.0) /
                                                 (kTimeFrequencyCount - 1)))));
   const mx::array time_angles = mx::multiply(
-      mx::expand_dims(mx::multiply(Scalar(1000.0, dtype), timesteps), 1),
+      mx::expand_dims(mx::multiply(Scalar(1000.0, dtype), times), 1),
       mx::expand_dims(frequencies, 0));
   // Note (yuhui): the float32 sinusoid is cast before the time MLP so
   // it does not promote the half-precision DiT.
-  mx::array timestep_embedding = mx::astype(
+  const mx::array timestep_embedding = mx::astype(
       mx::concatenate({mx::sin(time_angles), mx::cos(time_angles)}, -1), dtype);
-  timestep_embedding = checkpoint_.Linear(
+  const mx::array activated = omni_common::Silu(checkpoint_.Linear(
       omni_common::Silu(checkpoint_.Linear(
           timestep_embedding, kEstimator + "time_embed.time_mlp_0")),
-      kEstimator + "time_embed.time_mlp_2");
+      kEstimator + "time_embed.time_mlp_2"));
+  std::vector<mx::array> modulations;
+  for (int block = 0; block < kDitBlockCount; ++block) {
+    modulations.push_back(checkpoint_.Linear(
+        activated, kEstimator + "transformer_blocks." + std::to_string(block) +
+                       ".attn_norm.linear"));
+  }
+  modulations.push_back(
+      checkpoint_.Linear(activated, kEstimator + "norm_out.linear"));
+  mx::async_eval(modulations);
+  return modulations;
+}
+
+mx::array Flow::Velocity(const mx::array &x, const mx::array &mu,
+                         const std::vector<mx::array> &modulations, int step,
+                         const mx::array &speaker_features,
+                         const mx::array &mel_conditioning) const {
+  const int batch = x.shape(0);
+  const int length = x.shape(1);
+  const auto step_row = [&](const mx::array &all_steps) {
+    return mx::slice(all_steps, {step, 0}, {step + 1, all_steps.shape(1)});
+  };
 
   const mx::array speakers =
       mx::broadcast_to(mx::expand_dims(speaker_features, 1),
@@ -268,54 +263,43 @@ mx::array Flow::Velocity(const mx::array &x, const mx::array &mu,
   hidden = mx::add(position, hidden);
 
   for (int block = 0; block < kDitBlockCount; ++block) {
-    hidden = Block(hidden, timestep_embedding, block);
+    hidden = Block(hidden, step_row(modulations[block]), block);
   }
   const std::vector<mx::array> modulation =
-      mx::split(checkpoint_.Linear(omni_common::Silu(timestep_embedding),
-                                   kEstimator + "norm_out.linear"),
-                2, -1);
-  hidden =
-      mx::add(mx::multiply(PlainLayerNorm(hidden),
-                           mx::expand_dims(
-                               mx::add(Scalar(1.0, dtype), modulation[0]), 1)),
-              mx::expand_dims(modulation[1], 1));
-  return checkpoint_.Linear(hidden, kEstimator + "proj_out");
+      mx::split(step_row(modulations.back()), 2, -1);
+  return checkpoint_.Linear(
+      ModulatedLayerNorm(hidden, modulation[1], modulation[0]),
+      kEstimator + "proj_out");
 }
 
-mx::array Flow::Block(const mx::array &x, const mx::array &timestep_embedding,
+mx::array Flow::Block(const mx::array &x, const mx::array &step_modulation,
                       int block) const {
   const std::string prefix =
       kEstimator + "transformer_blocks." + std::to_string(block) + ".";
-  const mx::Dtype dtype = x.dtype();
   const int batch = x.shape(0);
   const int length = x.shape(1);
   const int width = x.shape(2);
-  // Shift, scale and gate for attention, then for the feed-forward.
-  const std::vector<mx::array> modulation =
-      mx::split(checkpoint_.Linear(omni_common::Silu(timestep_embedding),
-                                   prefix + "attn_norm.linear"),
-                6, -1);
+  // Shift, scale and gate for attention, then for the feed-forward, each [1,
+  // width].
+  const std::vector<mx::array> modulation = mx::split(step_modulation, 6, -1);
   const auto modulate = [&](const mx::array &input, int shift, int scale) {
-    return mx::add(
-        mx::multiply(
-            PlainLayerNorm(input),
-            mx::expand_dims(mx::add(Scalar(1.0, dtype), modulation[scale]), 1)),
-        mx::expand_dims(modulation[shift], 1));
+    return ModulatedLayerNorm(input, modulation[shift], modulation[scale]);
   };
   const mx::array normed = modulate(x, 0, 1);
-  const mx::array cos =
-      mx::expand_dims(mx::slice(rope_cos_, {0, 0}, {length, 64}), 0);
-  const mx::array sin =
-      mx::expand_dims(mx::slice(rope_sin_, {0, 0}, {length, 64}), 0);
+  // Note (XXXXRT666): the DiT rotates adjacent pairs of the first head's
+  // channels only, since it applies rotary embeddings before it splits heads.
+  const auto rotated = [&](const mx::array &projection) {
+    return mx::fast::rope(projection, kDitHeadSize, true, 10000.0f, 1.0f, 0);
+  };
   const auto heads = [&](const mx::array &projection) {
     return mx::transpose(
         mx::reshape(projection, {batch, length, kDitHeadCount, kDitHeadSize}),
         {0, 2, 1, 3});
   };
   const mx::array q =
-      heads(Rotate(checkpoint_.Linear(normed, prefix + "attn.to_q"), cos, sin));
+      heads(rotated(checkpoint_.Linear(normed, prefix + "attn.to_q")));
   const mx::array k =
-      heads(Rotate(checkpoint_.Linear(normed, prefix + "attn.to_k"), cos, sin));
+      heads(rotated(checkpoint_.Linear(normed, prefix + "attn.to_k")));
   const mx::array v = heads(checkpoint_.Linear(normed, prefix + "attn.to_v"));
   const mx::array attended = mx::reshape(
       mx::transpose(mx::fast::scaled_dot_product_attention(
@@ -323,14 +307,13 @@ mx::array Flow::Block(const mx::array &x, const mx::array &timestep_embedding,
                     {0, 2, 1, 3}),
       {batch, length, width});
   mx::array hidden = mx::add(
-      x, mx::multiply(mx::expand_dims(modulation[2], 1),
+      x, mx::multiply(modulation[2],
                       checkpoint_.Linear(attended, prefix + "attn.to_out_0")));
   const mx::array feed_forward =
       checkpoint_.Linear(omni_common::TanhGelu(checkpoint_.Linear(
                              modulate(hidden, 3, 4), prefix + "ff.ff_0_0")),
                          prefix + "ff.ff_2");
-  return mx::add(hidden,
-                 mx::multiply(mx::expand_dims(modulation[5], 1), feed_forward));
+  return mx::add(hidden, mx::multiply(modulation[5], feed_forward));
 }
 
 Hift::Hift(const omni_common::Checkpoint &checkpoint)
@@ -357,16 +340,7 @@ mx::array Hift::ResBlock(const mx::array &x, const std::string &prefix,
                          int kernel_size) const {
   const auto snake = [&](const mx::array &input, const std::string &name) {
     const mx::array &alpha = checkpoint_.Weight(prefix + "." + name + ".alpha");
-    const mx::Dtype dtype = alpha.dtype();
-    const mx::array magnitude = mx::abs(alpha);
-    const mx::array divisor =
-        mx::where(mx::less(magnitude, Scalar(1e-9, dtype)), Scalar(1e-4, dtype),
-                  mx::multiply(mx::sign(alpha),
-                               mx::maximum(magnitude, Scalar(1e-4, dtype))));
-    return mx::add(input,
-                   mx::divide(mx::power(mx::sin(mx::multiply(input, alpha)),
-                                        mx::array(2.0f, input.dtype())),
-                              divisor));
+    return omni_common::Snake(input, alpha, alpha);
   };
   mx::array hidden = x;
   for (int i = 0; i < 3; ++i) {
@@ -440,7 +414,6 @@ mx::array Hift::HarmonicSource(const mx::array &f0) const {
 mx::array Hift::Decode(const mx::array &mel) const {
   const mx::Dtype dtype =
       checkpoint_.Weight("hifigan.conv_pre.conv.weight").dtype();
-  const int frame_count = mel.shape(2);
   const mx::array frames = mx::transpose(mel, {0, 2, 1});
 
   // Note (yuhui): pitch runs in float32, since its error accumulates in
@@ -463,14 +436,11 @@ mx::array Hift::Decode(const mx::array &mel) const {
       {mx::slice(source, {half}, {0}, {-1}), source,
        mx::slice(source, {sample_count - 2}, {sample_count - half - 2}, {-1})});
   const int fft_frames = sample_count / kFftHop + 1;
-  const mx::array starts =
-      mx::multiply(mx::arange(fft_frames, mx::int32), mx::array(kFftHop));
-  const mx::array spectrum = mx::fft::fft(
-      mx::multiply(mx::take(padded, mx::add(mx::expand_dims(starts, 1),
-                                            mx::arange(kFftSize, mx::int32))),
-                   window_),
-      -1);
-  const mx::array bins = mx::slice(spectrum, {0, 0}, {fft_frames, kFftBins});
+  const mx::array bins =
+      mx::fft::rfft(mx::multiply(mx::as_strided(padded, {fft_frames, kFftSize},
+                                                {kFftHop, 1}, 0),
+                                 window_),
+                    -1);
   // Note (yuhui): the float32 source spectrum is cast so it does not
   // promote the half-precision convolutions.
   const mx::array source_spectrum = mx::astype(
@@ -514,20 +484,13 @@ mx::array Hift::Decode(const mx::array &mel) const {
                   mx::array(kMaxMagnitude));
   const mx::array phase =
       mx::sin(mx::slice(hidden, {0, kFftBins}, {count, 2 * kFftBins}));
-  const mx::array real = mx::multiply(magnitude, mx::cos(phase));
-  const mx::array imaginary = mx::multiply(magnitude, mx::sin(phase));
-  const auto mirrored = [&](const mx::array &values) {
-    return mx::slice(values, {0, kFftBins - 2}, {count, 0}, {1, -1});
-  };
-  const mx::array full_spectrum = mx::add(
-      mx::astype(mx::concatenate({real, mirrored(real)}, -1), mx::complex64),
+  const mx::array spectrum = mx::add(
+      mx::astype(mx::multiply(magnitude, mx::cos(phase)), mx::complex64),
       mx::multiply(
           mx::array(mx::complex64_t{0.0f, 1.0f}),
-          mx::astype(mx::concatenate(
-                         {imaginary, mx::negative(mirrored(imaginary))}, -1),
-                     mx::complex64)));
+          mx::astype(mx::multiply(magnitude, mx::sin(phase)), mx::complex64)));
   const mx::array windowed =
-      mx::multiply(mx::real(mx::fft::ifft(full_spectrum, -1)), window_);
+      mx::multiply(mx::fft::irfft(spectrum, kFftSize, -1), window_);
   const mx::array window_sum = mx::maximum(
       OverlapAdd(mx::broadcast_to(mx::square(window_), {count, kFftSize})),
       mx::array(1e-8f));

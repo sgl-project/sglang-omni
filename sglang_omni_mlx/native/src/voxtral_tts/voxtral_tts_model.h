@@ -75,8 +75,8 @@ private:
   float acoustic_norm_eps_;
   // Each codebook's first row in the audio codebook embeddings.
   mlx::core::array codebook_offsets_;
-  // Sinusoid frequencies of the flow's time embedding.
-  mlx::core::array time_frequencies_;
+  // The flow's time_projection of each step's time embedding, [steps, dim].
+  mlx::core::array time_features_;
   std::map<std::string, mlx::core::array> voices_;
 };
 

@@ -16,7 +16,6 @@ namespace {
 
 constexpr int kActivationUpsampleRatio = 2;
 constexpr int kActivationFilterSize = 12;
-constexpr float kSnakeEpsilon = 1e-9f;
 constexpr int kEncoderResidualStacks = 6;
 
 // Released weights in float32, with weight normalization folded and Torch
@@ -217,13 +216,9 @@ mx::array VAE::Activation(const mx::array &hidden_states,
       static_cast<float>(kActivationUpsampleRatio);
   activated = mx::slice(activated, {0, left_trim, 0},
                         {1, activated.shape(1) - right_trim, channels});
-  const auto &stored_alpha = checkpoint_.Weight(prefix + ".act.alpha");
-  const auto &stored_beta = checkpoint_.Weight(prefix + ".act.beta");
-  const mx::array alpha =
-      snake_logscale_ ? mx::exp(stored_alpha) : stored_alpha;
-  const mx::array beta = snake_logscale_ ? mx::exp(stored_beta) : stored_beta;
-  activated = activated +
-              mx::square(mx::sin(activated * alpha)) / (beta + kSnakeEpsilon);
+  activated = omni_common::Snake(
+      activated, checkpoint_.Weight(prefix + ".act.alpha"),
+      checkpoint_.Weight(prefix + ".act.beta"), snake_logscale_);
   const auto &downsample_filter =
       checkpoint_.Weight(prefix + ".downsample.lowpass.filter");
   const int downsample_kernel_size = downsample_filter.shape(1);

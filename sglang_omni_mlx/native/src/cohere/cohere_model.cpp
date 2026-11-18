@@ -251,30 +251,27 @@ mx::array CohereModel::EncoderSelfAttention(const mx::array &x,
   const mx::array values = SplitHeads(parts[2], head_count);
   const mx::array projected_positions = SplitHeads(
       checkpoint_.Linear(positions, prefix + ".pos_proj"), head_count);
-  const mx::array content_scores = mx::matmul(
-      mx::add(queries, mx::expand_dims(
-                           checkpoint_.Weight(prefix + ".pos_bias_u"), {0, 2})),
-      mx::transpose(keys, {0, 1, 3, 2}));
+  const mx::array content_queries = mx::add(
+      queries,
+      mx::expand_dims(checkpoint_.Weight(prefix + ".pos_bias_u"), {0, 2}));
   mx::array position_scores = mx::matmul(
       mx::add(queries, mx::expand_dims(
                            checkpoint_.Weight(prefix + ".pos_bias_v"), {0, 2})),
       mx::transpose(projected_positions, {0, 1, 3, 2}));
   // Note (khazic): relative shift: row i of [length, 2 * length - 1] scores
   // moves left by length - 1 - i, so column j is relative position j - i.
-  const int length = position_scores.shape(2);
-  position_scores = omni_common::RelativeShift(position_scores);
-  position_scores =
-      mx::slice(position_scores, {0, 0, 0, 0},
-                {batch, head_count, length, content_scores.shape(3)});
   const float scale = std::pow(static_cast<float>(head_width), -0.5f);
-  const mx::array attention =
-      mx::softmax(mx::multiply(mx::add(content_scores, position_scores),
-                               mx::array(scale, content_scores.dtype())),
-                  -1, true);
-  return checkpoint_.Linear(
-      mx::reshape(mx::transpose(mx::matmul(attention, values), {0, 2, 1, 3}),
-                  {batch, -1, head_count * head_width}),
-      prefix + ".out_proj");
+  // The scaled position scores ride in as the additive mask, so the fused
+  // kernel adds them to the content scores before the softmax.
+  position_scores =
+      mx::multiply(omni_common::RelativeShift(position_scores, keys.shape(2)),
+                   mx::array(scale, position_scores.dtype()));
+  const mx::array attended = mx::fast::scaled_dot_product_attention(
+      content_queries, keys, values, scale, /*window_size=*/-1, "array",
+      position_scores);
+  return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
+                                        {batch, -1, head_count * head_width}),
+                            prefix + ".out_proj");
 }
 
 mx::array CohereModel::EncoderLayer(const mx::array &x,

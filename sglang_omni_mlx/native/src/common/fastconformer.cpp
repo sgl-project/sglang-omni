@@ -70,12 +70,11 @@ mx::array RelativePositionAttention(const Checkpoint &checkpoint,
   const mx::array positions =
       heads(checkpoint.Linear(relative_positions, prefix + ".linear_pos"),
             position_count);
-  mx::array position_scores = RelativeShift(
-      mx::matmul(position_queries, mx::swapaxes(positions, -2, -1)));
-  position_scores =
-      mx::multiply(mx::slice(position_scores, {0, 0, 0, 0},
-                             {1, head_count, query_count, key_count}),
-                   Scalar(scale, position_scores.dtype()));
+  const mx::array position_scores =
+      mx::multiply(RelativeShift(mx::matmul(position_queries,
+                                            mx::swapaxes(positions, -2, -1)),
+                                 key_count),
+                   Scalar(scale, dtype));
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       content_queries, keys, values, scale, /*window_size=*/-1, "array",
       position_scores);

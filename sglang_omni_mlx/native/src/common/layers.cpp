@@ -93,6 +93,19 @@ std::vector<mx::array> SwigluGraph(const std::vector<mx::array> &inputs) {
   return {mx::multiply(SiluGraph({inputs[0]})[0], inputs[1])};
 }
 
+std::vector<mx::array> SnakeGraph(const std::vector<mx::array> &inputs) {
+  const mx::array &x = inputs[0];
+  const mx::array &alpha = inputs[1];
+  const mx::array &beta = inputs[2];
+  return {mx::add(x, mx::divide(mx::square(mx::sin(mx::multiply(alpha, x))),
+                                mx::add(beta, Scalar(1e-9f, beta))))};
+}
+
+std::vector<mx::array>
+LogScaleSnakeGraph(const std::vector<mx::array> &inputs) {
+  return SnakeGraph({inputs[0], mx::exp(inputs[1]), mx::exp(inputs[2])});
+}
+
 } // namespace
 
 mx::array Scalar(float value, mx::Dtype dtype) {
@@ -125,6 +138,13 @@ mx::array Silu(const mx::array &x) {
 mx::array Swiglu(const mx::array &gate, const mx::array &up) {
   static const auto compiled = mx::compile(SwigluGraph, true);
   return compiled({gate, up})[0];
+}
+
+mx::array Snake(const mx::array &x, const mx::array &alpha,
+                const mx::array &beta, bool log_scale) {
+  static const auto compiled = mx::compile(SnakeGraph, true);
+  static const auto compiled_log_scale = mx::compile(LogScaleSnakeGraph, true);
+  return (log_scale ? compiled_log_scale : compiled)({x, alpha, beta})[0];
 }
 
 mx::array RouteToExperts(const mx::array &hidden, const mx::array &indices,
@@ -357,17 +377,24 @@ mx::array Checkpoint::TiedProjection(const mx::array &x,
   }
 }
 
-mx::array RelativeShift(const mx::array &scores) {
+mx::array RelativeShift(const mx::array &scores, int key_count) {
   const int batch = scores.shape(0);
   const int heads = scores.shape(1);
   const int query_length = scores.shape(2);
   const int position_length = scores.shape(3);
-  mx::array padded = mx::pad(scores, {{0, 0}, {0, 0}, {0, 0}, {1, 0}});
-  padded =
-      mx::reshape(padded, {batch, heads, position_length + 1, query_length});
-  padded = mx::slice(padded, {0, 0, 1, 0},
-                     {batch, heads, position_length + 1, query_length});
-  return mx::reshape(padded, {batch, heads, query_length, position_length});
+  if (position_length < query_length + key_count - 1) {
+    throw std::invalid_argument(
+        "relative shift needs a position for every query-key distance");
+  } else {
+  }
+  // Note (XXXXRT666): the padded reshape as a view: row i starts query_length
+  // - 1 - i columns in, so no copy of the scores is made.
+  return mx::as_strided(
+      scores, {batch, heads, query_length, key_count},
+      {static_cast<int64_t>(heads) * query_length * position_length,
+       static_cast<int64_t>(query_length) * position_length,
+       position_length - 1, 1},
+      query_length - 1);
 }
 
 void FoldBatchNorms(WeightMap &weights, const std::string &norm_name,
@@ -420,20 +447,32 @@ void FoldBatchNorms(WeightMap &weights, const std::string &norm_name,
 
 LstmCell LstmStep(const mx::array &gates, const std::optional<LstmCell> &state,
                   const mx::array &recurrent_weight) {
-  const mx::array all_gates =
+  // Note (XXXXRT666): the gate math compiled into one kernel, since a decode
+  // step's LSTM runs one dependent dispatch per op.
+  static const auto compiled_first =
+      mx::compile([](const std::vector<mx::array> &inputs) {
+        const std::vector<mx::array> pieces = mx::split(inputs[0], 4, -1);
+        const mx::array cell =
+            mx::multiply(mx::sigmoid(pieces[0]), mx::tanh(pieces[2]));
+        return std::vector<mx::array>{
+            mx::multiply(mx::sigmoid(pieces[3]), mx::tanh(cell)), cell};
+      });
+  static const auto compiled_next =
+      mx::compile([](const std::vector<mx::array> &inputs) {
+        const std::vector<mx::array> pieces = mx::split(inputs[0], 4, -1);
+        const mx::array cell =
+            mx::add(mx::multiply(mx::sigmoid(pieces[1]), inputs[1]),
+                    mx::multiply(mx::sigmoid(pieces[0]), mx::tanh(pieces[2])));
+        return std::vector<mx::array>{
+            mx::multiply(mx::sigmoid(pieces[3]), mx::tanh(cell)), cell};
+      });
+  const std::vector<mx::array> next =
       state.has_value()
-          ? mx::addmm(gates, state->hidden, mx::transpose(recurrent_weight))
-          : gates;
-  const std::vector<mx::array> pieces = mx::split(all_gates, 4, -1);
-  const mx::array input_gate = mx::sigmoid(pieces[0]);
-  const mx::array forget_gate = mx::sigmoid(pieces[1]);
-  const mx::array candidate = mx::tanh(pieces[2]);
-  const mx::array output_gate = mx::sigmoid(pieces[3]);
-  const mx::array cell = state.has_value()
-                             ? mx::add(mx::multiply(forget_gate, state->cell),
-                                       mx::multiply(input_gate, candidate))
-                             : mx::multiply(input_gate, candidate);
-  return {mx::multiply(output_gate, mx::tanh(cell)), cell};
+          ? compiled_next({mx::addmm(gates, state->hidden,
+                                     mx::transpose(recurrent_weight)),
+                           state->cell})
+          : compiled_first({gates});
+  return {next[0], next[1]};
 }
 
 } // namespace omni_common

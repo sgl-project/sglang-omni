@@ -72,10 +72,8 @@ mx::array Drama3Model::TowerLayer(
       block + ".attention.wqkv");
   const mx::array gate = SliceLast(qkv, query_width, 2 * query_width);
   const auto rotate = [&](const mx::array &input) {
-    return mx::astype(mx::fast::rope(mx::astype(input, mx::float32),
-                                     tower_rotary_dims_, true, tower_rope_base_,
-                                     1.0f, cache.offset()),
-                      input.dtype());
+    return mx::fast::rope(input, tower_rotary_dims_, true, tower_rope_base_,
+                          1.0f, cache.offset());
   };
   const mx::array queries = rotate(mx::transpose(
       Fp32Norm(mx::reshape(SliceLast(qkv, 0, query_width),

@@ -85,6 +85,11 @@ mlx::core::array Silu(const mlx::core::array &x);
 // Silu(gate) * up, the gated MLP's activation.
 mlx::core::array Swiglu(const mlx::core::array &gate,
                         const mlx::core::array &up);
+// The vocoders' Snake, x + sin(alpha * x)^2 / (beta + 1e-9), alpha and beta
+// per channel and broadcast against x: BigVGAN's SnakeBeta, or DAC's Snake
+// with beta = alpha. With log_scale they hold log alpha and log beta.
+mlx::core::array Snake(const mlx::core::array &x, const mlx::core::array &alpha,
+                       const mlx::core::array &beta, bool log_scale = false);
 
 // A mixture of experts' outputs [tokens, experts_per_token, width] for hidden
 // [tokens, width] routed to indices [tokens, experts_per_token]. run_experts
@@ -99,10 +104,10 @@ mlx::core::array RouteToExperts(const mlx::core::array &hidden,
                                 const ExpertRunner &run_experts);
 
 // Transformer-XL's relative shift of position scores [batch, heads, queries,
-// positions]: a left zero column, then rows reread one step along, so each
-// row's columns line up with its keys' relative positions. Callers keep the
-// first key-count columns.
-mlx::core::array RelativeShift(const mlx::core::array &scores);
+// positions] to [batch, heads, queries, key_count]: each row's columns line up
+// with its keys' relative positions. Needs positions >= queries + key_count -
+// 1.
+mlx::core::array RelativeShift(const mlx::core::array &scores, int key_count);
 
 // Folds every batch norm module.norm_name (running statistics, weight, bias)
 // into the module's depthwise_conv before it, giving that convolution a bias,

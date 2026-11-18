@@ -177,20 +177,20 @@ SpeechPrompt FishS2ProModel::BuildPrompt(
 mx::array FishS2ProModel::Embed(const mx::array &ids,
                                 const mx::array &codebook_rows,
                                 const mx::array &is_audio) const {
-  std::vector<mx::array> codebook_embeddings;
-  for (int codebook = 0; codebook < codebook_count_; ++codebook) {
-    const mx::array row = mx::slice(codebook_rows, {codebook, 0},
-                                    {codebook + 1, codebook_rows.shape(1)});
-    codebook_embeddings.push_back(
-        checkpoint_.Embed(mx::add(row, mx::array(codebook * codebook_size_)),
-                          "model.codebook_embeddings"));
-  }
+  // Every codebook's rows in one lookup, each codebook's ids offset into
+  // its block of the table.
+  const mx::array offsets =
+      mx::reshape(mx::multiply(mx::arange(codebook_count_, mx::int32),
+                               mx::array(codebook_size_)),
+                  {codebook_count_, 1});
+  const mx::array codebook_embeddings = checkpoint_.Embed(
+      mx::add(codebook_rows, offsets), "model.codebook_embeddings");
   const mx::array audio_mask = mx::reshape(is_audio, {1, -1, 1});
   const mx::array token_embeddings = checkpoint_.Embed(ids, "model.embeddings");
-  const mx::array mixed = mx::add(
-      token_embeddings,
-      mx::where(audio_mask, mx::sum(mx::stack(codebook_embeddings, 0), 0),
-                mx::array(0, token_embeddings.dtype())));
+  const mx::array mixed =
+      mx::add(token_embeddings,
+              mx::where(audio_mask, mx::sum(codebook_embeddings, 0, true),
+                        mx::array(0, token_embeddings.dtype())));
   // Note (Jiaxin Deng): a mixed row is scaled as the reference divides it,
   // by sqrt(codebooks + 1) in the embeddings' dtype.
   return mx::where(
@@ -216,10 +216,8 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
   };
   const int offset = caches[0].offset();
   const auto rotate = [&](const mx::array &heads) {
-    return mx::astype(mx::fast::rope(mx::astype(heads, mx::float32),
-                                     config.head_dim, true, config.rope_base,
-                                     1.0f, offset),
-                      heads.dtype());
+    return mx::fast::rope(heads, config.head_dim, true, config.rope_base, 1.0f,
+                          offset);
   };
   const auto split_heads = [&](const mx::array &projection, int start, int size,
                                int head_count) {
