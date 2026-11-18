@@ -125,8 +125,25 @@ func (r *meetingsRepo) UpdateSegmentTranslation(ctx context.Context, seq int64, 
 	return r.updateSegment(ctx, "translation", seq, idx, translation)
 }
 
-func (r *meetingsRepo) UpdateSegmentText(ctx context.Context, seq int64, idx int, text string) error {
-	return r.updateSegment(ctx, "text", seq, idx, text)
+// UpdateSegmentTexts rewrites several segments' text atomically (a
+// correction lands whole or not at all: internal/meeting's CorrectTranscript).
+func (r *meetingsRepo) UpdateSegmentTexts(ctx context.Context, seq int64, texts map[int]string) error {
+	if seq <= 0 {
+		return fmt.Errorf("meeting seq: %w", core.ErrInvalid)
+	}
+	if len(texts) == 0 {
+		return nil
+	}
+	stmts := make([]sqlite.Statement, 0, len(texts))
+	for idx, text := range texts {
+		if idx < 0 {
+			return fmt.Errorf("meeting segment: %w", core.ErrInvalid)
+		}
+		stmts = append(stmts, sqlite.Statement{SQL: `UPDATE meeting_segments SET text = ? WHERE meeting_seq = ? AND idx = ?`,
+			Args: []any{text, seq, idx}})
+	}
+	_, err := r.db.Transaction(ctx, stmts)
+	return wrap("meeting segment text", err)
 }
 
 // updateSegment sets one column (a constant of the callers) of a segment.

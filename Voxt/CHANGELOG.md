@@ -7,6 +7,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Dictation with MOSS-Transcribe-Diarize never inserts its speaker or timestamp markup**: on some recordings, mostly English ones, the model answers even its plain-text instruction with diarization tags ([S01], [2.62]), which dictation inserted as said. The plain-text path now drops the markup; the meetings' speaker transcription keeps it.
+- **A failed meeting transcript correction no longer applies by halves**: when the language model corrected a meeting's transcript and failed part-way, the batches already done stayed, so the summary ran over a mix of corrected and recognised lines with nothing saying which was which. The correction now lands only as a whole; a failure, the model's or the save's, leaves every line as recognised.
+- **A failed or cancelled meeting's recording is deleted after seven days**: the recording was meant to be kept for seven days when the settings keep no audio, but nothing ever deleted it. It is now swept once its time is up, and a recording that cannot be deleted stays tracked and is tried again instead of being forgotten on disk. A finished meeting's recording still follows the settings right away.
 
 ### Added
 
@@ -14,18 +16,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Profile long recordings on a Mac**: an opt-in test harness measures meeting import or plain subtitles with local speech models, optional transcript correction and summaries, per-stage and per-request timings, draft acceptance counters, text accuracy hashes, process and system resources, Go profiles, native logs and Instruments signposts. A loop copies the input, hard-links models, runs three isolated processes per configuration and keeps the raw results and median without touching Voxt's data. A separate overlap experiment compares one-shot, serial, and recording-overlapped scheduling for dictation and meetings with real ASR and an explicitly simulated, deterministic language model.
 - **Import a recording as a meeting**: Import recording… on the Meetings page turns an audio file, or the sound of a video (m4a, mp3, wav, aiff, caf, mp4, mov), into a meeting. MOSS-Transcribe-Diarize transcribes the whole file and labels every voice Speaker 1, 2, 3 and so on: the file is one mixed track, so there is no You/Others split. Then the same transcript clean-up and summary as a recorded meeting's run. The meeting keeps the file's name, date and length until the summary names it, the page shows progress with Cancel for long files, and an interrupted import can be finished with Continue processing. Importing needs MOSS-Transcribe-Diarize: without it Voxt says so and opens Speech models, instead of transcribing without speaker labels.
 - **Dictionary profiles**: keep named sets of dictionary entries for different situations. Existing entries move into the active Default profile with their meaning unchanged. Create, rename, delete, and switch profiles on the Dictionary page; Transcribe, Translate, and Rewrite use only the active profile. Hammerspoon, macOS Shortcuts, and shell scripts can switch without opening the Dictionary page by running `open -g 'voxtnew://dictionary/profile?name=Work'`. See docs/dictionary-profiles.md.
-
-### 中文
-
-#### 修复
-
-- **用 MOSS-Transcribe-Diarize 听写不会再插入说话人或时间戳标记**：在部分录音（多为英语）上，即使要求纯文本，模型也会输出区分说话人的标记（[S01]、[2.62]），听写会照原样插入。现在纯文本路径会去掉这些标记；会议的说话人转录保持不变。
-
-#### 新增
-
-- **会议把对方标为说话人 1、2、3……**：安装 MOSS-Transcribe-Diarize 后，Voxt 在会议结束时用它转录对方的话并区分说话人，你的话仍标为“我”，然后再校对转录稿和写总结。长会议分段送给它，听写最多等一段，同一个人的编号跨段不变。遇到它不认识的语种（它只认识中文和英文），或语言保持自动而无法判断时，会议沿用所选模型的转录。没装时会议照常工作，会议详情提供语音识别模型页入口。
-- **在 Mac 上测量长录音**：新增显式启用的测试 harness，可测量会议导入或普通字幕的本地语音识别、可选转录稿校对和总结，记录各阶段与每请求耗时、draft acceptance 计数、文本准确率和 hash、进程与系统资源、Go profile、native 日志和 Instruments signpost。配套循环会复制输入、硬链接模型，每个配置用三个独立进程运行并保留原始结果与中位数，不接触 Voxt 的真实数据。另有独立的 overlap 实验，以真实 ASR 和明确标注的 deterministic 模拟语言模型比较听写与会议的整段、停止后串行、录音期重叠调度。
-- **把录音导入成会议**：会议页新增“导入录音…”，把音频文件或视频的声音（m4a、mp3、wav、aiff、caf、mp4、mov）变成一场会议。MOSS-Transcribe-Diarize 整段转录，把所有人的声音标为说话人 1、2、3……文件只有一条混合音轨，所以不分“我/对方”；之后照常校对转录稿和写总结。会议先保留文件的名字、日期和时长，总结写完后再改名；导入长文件时页面显示进度并可取消，中断的导入可以用“继续处理”完成。导入需要 MOSS-Transcribe-Diarize，未安装时 Voxt 会说明并打开语音识别模型页，不会不区分说话人就直接转录。
 
 ### Changed
 
@@ -36,8 +26,17 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### 中文
 
+#### 修复
+
+- **用 MOSS-Transcribe-Diarize 听写不会再插入说话人或时间戳标记**：在部分录音（多为英语）上，即使要求纯文本，模型也会输出区分说话人的标记（[S01]、[2.62]），听写会照原样插入。现在纯文本路径会去掉这些标记；会议的说话人转录保持不变。
+- **会议转录稿校对失败时不再改一半**：语言模型校对会议转录稿中途失败时，已完成的批次会留下，总结因此混用校对过和未校对的文字，且看不出区别。现在校对只会整体生效，无论模型还是保存失败，每一行都保持识别原文。
+- **失败或取消的会议录音七天后会被删除**：设置不保留音频时，这类录音本应保留七天，但一直没有东西去删它。现在到期后会被清理；删不掉的录音会保留记录、之后重试，不会被遗忘在磁盘上。正常结束的会议录音仍按设置立即处理。
+
 #### 新增
 
+- **会议把对方标为说话人 1、2、3……**：安装 MOSS-Transcribe-Diarize 后，Voxt 在会议结束时用它转录对方的话并区分说话人，你的话仍标为“我”，然后再校对转录稿和写总结。长会议分段送给它，听写最多等一段，同一个人的编号跨段不变。遇到它不认识的语种（它只认识中文和英文），或语言保持自动而无法判断时，会议沿用所选模型的转录。没装时会议照常工作，会议详情提供语音识别模型页入口。
+- **在 Mac 上测量长录音**：新增显式启用的测试 harness，可测量会议导入或普通字幕的本地语音识别、可选转录稿校对和总结，记录各阶段与每请求耗时、draft acceptance 计数、文本准确率和 hash、进程与系统资源、Go profile、native 日志和 Instruments signpost。配套循环会复制输入、硬链接模型，每个配置用三个独立进程运行并保留原始结果与中位数，不接触 Voxt 的真实数据。另有独立的 overlap 实验，以真实 ASR 和明确标注的 deterministic 模拟语言模型比较听写与会议的整段、停止后串行、录音期重叠调度。
+- **把录音导入成会议**：会议页新增“导入录音…”，把音频文件或视频的声音（m4a、mp3、wav、aiff、caf、mp4、mov）变成一场会议。MOSS-Transcribe-Diarize 整段转录，把所有人的声音标为说话人 1、2、3……文件只有一条混合音轨，所以不分“我/对方”；之后照常校对转录稿和写总结。会议先保留文件的名字、日期和时长，总结写完后再改名；导入长文件时页面显示进度并可取消，中断的导入可以用“继续处理”完成。导入需要 MOSS-Transcribe-Diarize，未安装时 Voxt 会说明并打开语音识别模型页，不会不区分说话人就直接转录。
 - **词典分组**：为不同场合保存几组词条。现有词条移入当前使用的“默认”分组，含义不变。在词典页新建、改名、删除和切换分组；转录、翻译和改写只用当前分组。Hammerspoon、macOS 快捷指令和 shell 脚本可以不打开词典页就切换：运行 `open -g 'voxtnew://dictionary/profile?name=Work'`。见 docs/dictionary-profiles.md。
 
 #### 变更
