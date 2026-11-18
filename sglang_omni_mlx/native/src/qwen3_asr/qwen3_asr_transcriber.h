@@ -34,11 +34,42 @@ struct TranscriptionOptions {
   // Realtime refreshes continue from text already shown, as ids and text.
   std::vector<int> prefix_token_ids;
   std::string prefix_text;
+  // Tokens likely to come next (a realtime refresh's previous text after the
+  // prefix), checked in the prompt's pass and kept while greedy decoding
+  // agrees.
+  std::vector<int> guessed_token_ids;
 };
 
 // The canonical prompt name for a Qwen3-ASR language code or name. Like
 // Voxt's Swift port, a name outside the table is used as given; blank is none.
 std::optional<std::string> NormalizeLanguage(const std::string &language);
+
+// Text already shown, split where a realtime refresh continues from it.
+struct RetainedText {
+  std::vector<int> prefix_ids;
+  std::string prefix_text;
+  // The tokens after the prefix, which may still change.
+  std::vector<int> rest_ids;
+};
+
+// What a realtime segment's refreshes keep for the next: the encoder rows of
+// the attention windows whose audio is complete, and the decoder's keys and
+// values through them, with the speculative draft's context over the same
+// positions. The next refresh's audio extends this one's; a refresh whose mel
+// differs over those windows (a louder frame raises the log-mel floor), or
+// whose draft context is gone (the draft backed off), starts over.
+struct RefreshReuse {
+  // The windows' mel frames, [mel_bins, frames].
+  std::optional<mlx::core::array> mel;
+  // Their encoder rows, [rows, hidden].
+  std::optional<mlx::core::array> audio_rows;
+  // The prompt's tokens before the audio.
+  std::vector<int> head_ids;
+  // Keys and values of head_ids and audio_rows.
+  std::vector<KVCache> caches;
+  // The draft's context over them; empty without the draft.
+  std::vector<KVCache> draft_caches;
+};
 
 struct BatchRequest {
   const std::vector<float> *samples;
@@ -65,12 +96,14 @@ public:
   std::vector<int> PromptIds(int audio_token_count,
                              const TranscriptionOptions &options) const;
   // Text already shown minus its last tokens, cut back to whole characters.
-  std::pair<std::vector<int>, std::string>
-  RetainedPrefix(const std::string &text, int rollback_token_count) const;
-  omni_common::TranscriptionResult
-  Transcribe(const std::vector<float> &samples,
-             const TranscriptionOptions &options,
-             const std::atomic<bool> &cancel) const;
+  RetainedText RetainedPrefix(const std::string &text,
+                              int rollback_token_count) const;
+  // With reuse, a realtime refresh: the audio windows reuse holds are not
+  // encoded or prefilled again, and reuse then holds this refresh's for the
+  // next.
+  omni_common::TranscriptionResult Transcribe(
+      const std::vector<float> &samples, const TranscriptionOptions &options,
+      const std::atomic<bool> &cancel, RefreshReuse *reuse = nullptr) const;
   // Whether the request can decode together with others: the batched loop
   // has neither the draft nor the repetition penalty.
   bool CanBatch(const TranscriptionOptions &options) const {
@@ -92,6 +125,21 @@ private:
   // token budget.
   Prompt BuildPrompt(const std::vector<float> &samples,
                      const TranscriptionOptions &options) const;
+  struct RefreshPrompt {
+    // The prompt after the positions held has keys and values for.
+    mlx::core::array embeddings;
+    // The cache positions the next refresh can reuse.
+    int kept_length;
+  };
+  // A refresh's prompt over what held can reuse, after which held holds this
+  // refresh's complete windows; held starts over when it cannot be reused,
+  // with the draft's context when the refresh decodes with the draft.
+  RefreshPrompt BuildRefreshPrompt(const std::vector<float> &samples,
+                                   const TranscriptionOptions &options,
+                                   bool uses_draft, RefreshReuse &held) const;
+  // The token budget: the request's, else one that grows with the audio.
+  static int MaxNewTokens(size_t sample_count,
+                          const TranscriptionOptions &options);
   bool IsStopToken(int token_id, const TranscriptionOptions &options) const;
   // The result for a finished output; a stop on a token loop keeps one copy
   // of the looping unit.

@@ -229,10 +229,10 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer, KVCache &cache,
   const mx::array mlp_input =
       checkpoint_.RmsNorm(hidden, prefix + ".post_attention_layernorm", eps);
   return mx::add(
-      hidden, Project(mx::multiply(omni_common::Silu(Project(
-                                       mlp_input, prefix + ".mlp.gate_proj")),
-                                   Project(mlp_input, prefix + ".mlp.up_proj")),
-                      prefix + ".mlp.down_proj"));
+      hidden,
+      Project(omni_common::Swiglu(Project(mlp_input, prefix + ".mlp.gate_proj"),
+                                  Project(mlp_input, prefix + ".mlp.up_proj")),
+              prefix + ".mlp.down_proj"));
 }
 
 mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
@@ -411,12 +411,11 @@ mx::array Qwen3Decoder::BatchLayer(const mx::array &x, int layer,
   const mx::array mlp_input =
       checkpoint_.RmsNorm(hidden, prefix + ".post_attention_layernorm", eps);
   return mx::add(
-      hidden,
-      checkpoint_.Linear(
-          mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                           mlp_input, prefix + ".mlp.gate_proj")),
-                       checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
-          prefix + ".mlp.down_proj"));
+      hidden, checkpoint_.Linear(
+                  omni_common::Swiglu(
+                      checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj"),
+                      checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
+                  prefix + ".mlp.down_proj"));
 }
 
 mx::array Qwen3Decoder::DecodeBatch(const mx::array &embeddings,
