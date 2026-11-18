@@ -256,12 +256,5 @@ func (a *app) clearPillNote(id, text string) {
 // pillSession is the session as the pill shows it: its note on the live
 // text's line while it shows (Voxt's status line comes before the text).
 func (a *app) pillSession() session.Snapshot {
-	s := a.sess
-	if a.prefs.Overlay.HideLiveText {
-		s.Partial, s.Draft, s.Selection = "", "", "" // "Show live text" off: no words
-	}
-	if a.pillNote.text != "" && a.pillNote.id == s.ID && s.State == session.Recording {
-		s.Partial = a.pillNote.text
-	}
-	return s
+	return pillSessionFor(a.sess, a.prefs.Overlay.HideLiveText, a.pillNote.id, a.pillNote.text)
 }

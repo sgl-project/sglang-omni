@@ -18,7 +18,7 @@ func TestOneEscapeClosesDialogs(t *testing.T) {
 		open       func(a *app)
 		isOpen     func(a *app) bool
 	}{
-		{"history settings", "/history", func(a *app) { a.histSet.open = true }, func(a *app) bool { return a.histSet.open }},
+		{"history settings", "/history", func(a *app) { a.histSetUI.open = true }, func(a *app) bool { return a.histSetUI.open }},
 		{"setup guide", "/", (*app).openOnboarding, func(a *app) bool { return a.ob.open }},
 		{"network", modelsPath, (*app).openNetwork, func(a *app) bool { return a.netOpen }},
 		{"custom", remotePath, func(a *app) { a.openProviderDialog(local.LLM, llm.Custom) }, func(a *app) bool { return a.provDlg.open }},

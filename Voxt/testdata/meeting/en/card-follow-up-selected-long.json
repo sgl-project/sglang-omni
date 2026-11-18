@@ -1,0 +1,187 @@
+{
+  "name": "card-follow-up-selected-long",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 14,
+    "session_id": "r4",
+    "state": "done",
+    "mode": "answer",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "card": {
+      "id": "r4",
+      "kind": "rewrite",
+      "title": "AI answer",
+      "target_name": "Slack",
+      "thinking": {},
+      "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
+      "insert_tooltip": "Insert into Slack",
+      "size_step": 0,
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "blocks": [
+        {
+          "key": "turn-0-user",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "You",
+          "text": "write that I am late",
+          "user": true,
+          "selectable": true
+        },
+        {
+          "key": "turn-0-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "Running late",
+          "text": "Sorry, I am running about ten minutes late: please start without me.",
+          "selectable": true,
+          "markdown": true
+        },
+        {
+          "key": "turn-1-user",
+          "kind": "bubble",
+          "turn": 1,
+          "title": "You",
+          "text": "shorter",
+          "user": true,
+          "selectable": true
+        },
+        {
+          "key": "turn-1-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "title": "Late",
+          "text": "Ten minutes late: start without me.",
+          "selectable": true,
+          "markdown": true
+        },
+        {
+          "key": "turn-2-user",
+          "kind": "bubble",
+          "turn": 2,
+          "title": "You",
+          "text": "add these",
+          "quote": "Anna: I can start the meeting.",
+          "full_quote": "Anna: I can start the meeting.",
+          "user": true,
+          "selectable": true
+        },
+        {
+          "key": "turn-2-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "text": "Ten minutes late, Anna starts.",
+          "selectable": true,
+          "markdown": true
+        },
+        {
+          "key": "turn-3-user",
+          "kind": "bubble",
+          "turn": 3,
+          "title": "You",
+          "text": "and these",
+          "quote": "Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the n…",
+          "full_quote": "Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I wil",
+          "user": true,
+          "selectable": true,
+          "cut": true
+        },
+        {
+          "key": "turn-3-answer",
+          "kind": "bubble",
+          "turn": 0,
+          "text": "Late; Anna starts; notes later.",
+          "selectable": true,
+          "markdown": true
+        }
+      ],
+      "live": [
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        },
+        {
+          "key": "",
+          "kind": "",
+          "turn": 0,
+          "text": "",
+          "selectable": false
+        }
+      ],
+      "live_count": 0,
+      "busy": false,
+      "recording": false,
+      "writing": false,
+      "conversation": true,
+      "failed": false,
+      "copied": false,
+      "heard": false,
+      "can_insert": true,
+      "can_copy": true,
+      "can_follow_up": true,
+      "can_stop": false,
+      "can_stop_answer": false,
+      "can_retry": false,
+      "can_language": false,
+      "show_thinking": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": true
+    }
+  }
+}
