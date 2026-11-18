@@ -8,8 +8,6 @@ VoxtNew is a Go app on MyGo (native UI, no cgo) with one small Swift helper proc
 
 ## 1. Package map
 
-History details keep their original 290 DIP minimum width and can widen to 350 DIPs with the divider, while the list keeps at least 300 DIPs. The chosen width is saved at 100% scale; double-clicking resets it. Narrow windows retain the existing drawer.
-
 On a new setup, `opening.go` shows the black opening animation once before the existing setup guide. `settings.Setup.OpeningShown` is persisted separately from guide completion, so restarting an unfinished guide does not replay it; completed setups and reduced-motion preferences skip it. The opening artwork uses the centered microphone with orange and peach stars and the official SGLang-Omni logo in its attribution.
 
 ```
@@ -179,6 +177,8 @@ Event types live next to their publisher, and their topic starts with the publis
 ### Why the UI stays in package main
 
 MyGo builds the root `main` package (`mygo dev`, `mygo build`, `ui.View`); views need the window and its main thread. The domain, which must be goroutine-safe and testable, is in `internal/`. Each area of the UI keeps its fields in a struct of its own, embedded in `app` (app.go).
+
+History details keep their original 290 DIP minimum width and can widen to 350 DIPs with the divider, while the list keeps at least 300 DIPs. The chosen width is saved at 100% scale; double-clicking resets it. Narrow windows retain the existing drawer.
 
 ### Code structure rules
 
