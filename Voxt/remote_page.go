@@ -40,6 +40,7 @@ func (a *app) remotePage(c *ui.Context) {
 		})
 	})
 	a.providerDialogView(c) // remote_dialog.go
+	a.modelAssignmentDialog(c)
 }
 
 // providerCards lists kind's services: those set up first, then the
@@ -175,6 +176,7 @@ func (a *app) providerCard(c *ui.Context, sv service, w float32) {
 					kr := a.keys
 					a.testProvider(kind, p, func() (string, error) { return kr.Get(acct) })
 				}
+				a.modelAssignmentButton(c, kind, sv.id)
 			default:
 				if ghostButton(c.Key("remote-complete-"+acct), i18n.T("Complete setup")).Label(i18n.T("Complete setup of %s", sv.name)).Clicked() {
 					a.openProviderDialog(kind, sv.id)

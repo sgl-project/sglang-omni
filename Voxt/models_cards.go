@@ -61,6 +61,7 @@ func (a *app) modelsPage(c *ui.Context) {
 	a.modelDeleteDialogs(c) // models_delete.go
 	a.networkDialog(c)      // models_network.go
 	a.providerDialogView(c) // remote_dialog.go
+	a.modelAssignmentDialog(c)
 }
 
 // modelCards groups visible speech models by family and shows the other
@@ -268,7 +269,10 @@ func (a *app) dictationCard(c *ui.Context) {
 					}
 				})
 			})
-			ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.hideButton(c, dictation.ModelID) })
+			ui.Column(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() {
+				a.modelAssignmentButton(c, local.ASR, dictation.ModelID)
+				a.hideButton(c, dictation.ModelID)
+			})
 		})
 	})
 }
@@ -339,8 +343,9 @@ func (a *app) modelRow(c *ui.Context, m models.Model, alone bool) {
 				})
 			}
 		})
-		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() {
+		ui.Column(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() {
 			if m.Kind == models.ASR {
+				a.modelAssignmentButton(c, local.ASR, m.ID)
 				a.hideButton(c, m.ID)
 			}
 			a.modelActions(c, m, st)

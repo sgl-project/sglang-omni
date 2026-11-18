@@ -80,6 +80,7 @@ type modelsState struct {
 	modelHiddenOpen bool
 	// speechContext is the Speech context field (models_context.go).
 	speechContext speechContextState
+	assignment    modelAssignment
 }
 
 // openModels reads the models on disk and sets up the local models,
