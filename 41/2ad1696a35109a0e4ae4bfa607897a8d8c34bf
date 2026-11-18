@@ -1,0 +1,45 @@
+docs/developer_reference/realtime_video_output.md
+  s_9be4bd449be508::t_2496f3482af962 1-50
+sglang_omni/proto/streams.py
+  s_9be4bd449be508::t_886a2c4606e140 8,13-14,141-151,163,196-203,210
+sglang_omni/serve/realtime/negotiation.py
+  s_9be4bd449be508::t_52f46c24c8ee26 233-242
+sglang_omni/serve/realtime/output.py
+  s_9be4bd449be508::t_81cd98489f85a0 6-7,37-52,85,126-127
+sglang_omni/serve/realtime/output_buffer.py
+  s_9be4bd449be508::t_0565d3d643e3a2 21-22,42-43,64-65,121-134,147-148,177-184,193,223,239-241,255-261,270,294-297,319-320
+sglang_omni/serve/realtime/projection.py
+  s_9be4bd449be508::t_233c167df0550c 8,37-38,50,139,166-169,194-198,211-218,230-253
+sglang_omni/serve/realtime/protocol.py
+  s_9be4bd449be508::t_13a5d970b04d6a 121-122,128-138
+sglang_omni/serve/realtime/runtime.py
+  s_9be4bd449be508::t_8e7459d2fde6aa 42-47,107,129-136,212-216,249,371,375,402,404,499,507-508,531,613
+sglang_omni/serve/realtime/schema.py
+  s_9be4bd449be508::t_9592fe7b88c613 19,47-50,74-87,159,189
+sglang_omni/serve/realtime/session_bridge.py
+  s_9be4bd449be508::t_ceca141f084615 49,69-70,113-116,127-131,200-203,240,445,473-498,549-552,554-561
+sglang_omni/serve/realtime/types.py
+  s_9be4bd449be508::t_4e3a0c7cc01e13 16,38,132-133,150-156,166-167,178-186,222-225
+tests/unit_test/fixtures/realtime_client.py
+  s_9be4bd449be508::t_35aed60d21fa22 1-79
+tests/unit_test/serve/test_realtime_duplex_session.py
+  s_9be4bd449be508::t_218743b95c9454 25,27-32,34
+tests/unit_test/serve/test_realtime_video.py
+  s_9be4bd449be508::t_5471fc035b1ccf 1-417
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "412ad1696a35109a0e4ae4bfa607897a8d8c34bf",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
