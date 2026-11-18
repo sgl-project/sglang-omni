@@ -1,0 +1,41 @@
+scripts/merge_duo_intent_adapter.py
+  s_9be4bd449be508::t_434d33b9b502ab 1-37
+sglang_omni/model_runner/base.py
+  s_9be4bd449be508::t_54f954e8eca5f6 17
+sglang_omni/models/duo/__init__.py
+  s_9be4bd449be508::t_5586e2ea13c4ad 1
+sglang_omni/models/duo/conditioning.py
+  s_9be4bd449be508::t_d72d0f998048c9 1-55
+sglang_omni/models/duo/frame_intent.py
+  s_9be4bd449be508::t_66db2dcb0c33ff 1-3,6-10,11-57
+sglang_omni/models/duo/intent_conditioning_compat.py
+  s_9be4bd449be508::t_81783c57d706cc 1-156
+sglang_omni/models/duo/intent_srt.py
+  s_9be4bd449be508::t_3866afc516e7e8 1-384
+sglang_omni/models/duo/kernels.py
+  s_9be4bd449be508::t_e07e8c071f3af3 1-59
+sglang_omni/models/duo/live_intent.py
+  s_9be4bd449be508::t_30e38c437e02b2 1-353
+sglang_omni/models/duo/live_intent_srt.py
+  s_9be4bd449be508::t_c22c3718c80e11 1-23,25-26,27-364
+tests/unit_test/kernels/test_duo_kernels.py
+  s_9be4bd449be508::t_f03b51382ae369 1-72
+tests/unit_test/kernels/test_duo_native.py
+  s_9be4bd449be508::t_04e9c7b8cff0ea 1-155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "df7a009bbfe62c44af06259bae31504182fdd3d1",
+  "prompts": {},
+  "sessions": {
+    "s_9be4bd449be508": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cdac-4885-7332-9ede-7f9187da0e71",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
