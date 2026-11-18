@@ -148,7 +148,7 @@ func sessionFixtureScenarios() []sessionFixtureScenario {
 		}},
 		sessionFixtureScenario{name: "session-inserting-hidden", source: sessionFixtureCustom, apply: func(a *app) {
 			snap(a, session.Snapshot{ID: "session-inserting", State: session.Recording})
-			snap(a, session.Snapshot{ID: "session-inserting", State: session.Done, Card: true, Delivery: deliver.ReasonCard, Result: "Insert this answer"})
+			snap(a, session.Snapshot{ID: "session-inserting", State: session.Done, Card: true, Delivery: deliver.ReasonNotEditable, Result: "Insert this answer"})
 			a.answer.inserting = true
 			a.overlaySync()
 		}},
