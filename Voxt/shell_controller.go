@@ -281,7 +281,11 @@ func (a *app) shellLocal() *shellLocalUI {
 // each area's dialogs.
 func (a *app) view(c *uiContext) {
 	a.mainUI = c.Services()
-	shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
+	// A focused shortcut recorder takes ⌘K, ⌘, and the like as keys to
+	// record: the window's shortcuts would take them first.
+	if !a.keysListening {
+		shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
+	}
 	a.syncNav()
 	now := time.Now()
 	model := a.shellModel(now)

@@ -59,6 +59,44 @@ func TestKeyRecorder(t *testing.T) {
 	}
 }
 
+// TestKeyRecorderTakesWindowShortcuts: the window's own shortcuts (⌘K
+// opens the palette, ⌘, Settings, ⌘1 a page, ⌘F a search) are keys to
+// record while a recorder has the focus, and work again once it has not.
+func TestKeyRecorderTakesWindowShortcuts(t *testing.T) {
+	a, tt := trTester(t)
+	saved := func() string { return a.prefs.Features.Transcribe.Hotkeys[0].Keys }
+	cmd := "Command"
+	if ui.Cmd == ui.Ctrl {
+		cmd = "Control"
+	}
+	for _, k := range []struct {
+		key  ui.Key
+		name string
+	}{{ui.KeyK, "K"}, {ui.KeyComma, ","}, {ui.Key1, "1"}, {ui.KeyF, "F"}} {
+		click(t, tt, "Keys of shortcut 1")
+		tt.Key(ui.Cmd, k.key)
+		frames(tt)
+		if want := cmd + "+" + k.name; saved() != want || a.paletteOpen || a.settingsOpen || a.fui("transcribe").rules {
+			t.Fatalf("pressed %s: saved %q, palette %v, settings %v, rules %v", want, saved(), a.paletteOpen, a.settingsOpen, a.fui("transcribe").rules)
+		}
+	}
+	a.navigate("/settings/shortcuts")
+	scrollToText(tt, "Cancel recording Esc")
+	click(t, tt, "Cancel recording Esc")
+	tt.Key(ui.Cmd, ui.KeyF)
+	frames(tt)
+	if k := a.prefs.Features.Cancel.Keys; k != cmd+"+F" || !a.settingsOpen || a.settingsForm.searchFocus {
+		t.Fatalf("⌘F in Settings: saved %q, open %v, search focused %v", k, a.settingsOpen, a.settingsForm.searchFocus)
+	}
+	tt.Key(0, ui.KeyTab)
+	frames(tt)
+	tt.Key(ui.Cmd, ui.KeyK)
+	frames(tt)
+	if !a.paletteOpen && !a.settingsOpen {
+		t.Error("⌘K did nothing once the recorder lost the focus")
+	}
+}
+
 // TestKeyRecorderHidden: the shortcuts come back when the page with the
 // focused recorder goes away.
 func TestKeyRecorderHidden(t *testing.T) {

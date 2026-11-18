@@ -238,6 +238,7 @@ func (a *app) settingsDialogModel(now time.Time) settingsDialogViewState {
 		a.dialogCache.key, a.dialogCache.valid = key, true
 	}
 	state := a.dialogCache.state
+	state.KeysListening = a.keysListening
 	if !state.Open {
 		return state
 	}

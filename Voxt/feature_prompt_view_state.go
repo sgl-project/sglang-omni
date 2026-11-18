@@ -29,6 +29,7 @@ type featureRulesViewState struct {
 	PreviewOpen   bool                       `json:"preview_open"`
 	FindQuery     string                     `json:"find_query"`
 	SettingsOpen  bool                       `json:"settings_open"`
+	KeysListening bool                       `json:"-"` // a shortcut recorder has the focus: ⌘F is a key to record
 	Prompt        string                     `json:"prompt"`
 	Summary       string                     `json:"summary"`
 	ResetDisabled bool                       `json:"reset_disabled"`
@@ -54,7 +55,9 @@ type featurePromptStateInput struct {
 	Feature      string
 	Settings     settings.Settings
 	SettingsOpen bool
-	Local        *featureUI
+	// KeysListening: a shortcut recorder has the focus.
+	KeysListening bool
+	Local         *featureUI
 	// Glossary is the whole dictionary (loadGlossaryTerms), for the preview.
 	Glossary []store.Term
 }
@@ -106,7 +109,7 @@ func buildFeatureRulesViewState(translator *i18n.Translator, input featurePrompt
 	if local == nil {
 		local = &featureUI{}
 	}
-	state := featureRulesViewState{Open: local.rules, PreviewOpen: local.preview, FindQuery: local.find, SettingsOpen: input.SettingsOpen, Prompt: local.prompt, Summary: translator.T("Not set")}
+	state := featureRulesViewState{Open: local.rules, PreviewOpen: local.preview, FindQuery: local.find, SettingsOpen: input.SettingsOpen, KeysListening: input.KeysListening, Prompt: local.prompt, Summary: translator.T("Not set")}
 	if count := utf8.RuneCountInString(strings.TrimSpace(local.prompt)); count > 0 {
 		state.Summary = translator.N(count, "%d character", "%d characters", count)
 	}

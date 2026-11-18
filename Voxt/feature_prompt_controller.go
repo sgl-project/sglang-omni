@@ -19,7 +19,7 @@ const promptSaveDelay = 800 * time.Millisecond
 
 func (a *app) featurePromptModel(feature string) featurePromptViewState {
 	a.promptSync(feature)
-	return buildFeaturePromptViewState(i18n.CurrentTranslator(), featurePromptStateInput{Feature: feature, Settings: a.prefs, SettingsOpen: a.settingsOpen, Local: a.fui(feature), Glossary: a.glossaryTerms})
+	return buildFeaturePromptViewState(i18n.CurrentTranslator(), featurePromptStateInput{Feature: feature, Settings: a.prefs, SettingsOpen: a.settingsOpen, KeysListening: a.keysListening, Local: a.fui(feature), Glossary: a.glossaryTerms})
 }
 
 // loadGlossaryTerms reads the whole dictionary for the feature pages'

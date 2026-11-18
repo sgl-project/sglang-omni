@@ -52,6 +52,9 @@ type settingsDialogViewState struct {
 	Storage     *settingsStorageViewState        `json:"storage,omitempty"`
 	About       *settingsAboutViewState          `json:"about,omitempty"`
 	Updates     *updatesViewState                `json:"updates,omitempty"`
+	// KeysListening: a shortcut recorder has the focus, so ⌘F is a key
+	// to record rather than the search.
+	KeysListening bool `json:"-"`
 }
 
 // settingsModelsViewState is Settings → Speech models: the models of

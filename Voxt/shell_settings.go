@@ -105,7 +105,7 @@ func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settin
 	if !state.Open {
 		return
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyF) {
+	if !state.KeysListening && c.Shortcut(ui.Cmd, ui.KeyF) {
 		local.Form.searchFocus = true
 	}
 	t := c.Theme()

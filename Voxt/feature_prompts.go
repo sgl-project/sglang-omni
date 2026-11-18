@@ -70,7 +70,7 @@ func cardSetting(c *ui.Context, prefix, feature string, state *featureCardViewSt
 func featureRules(c *ui.Context, prefix, feature string, state *featureRulesViewState, actions featureActions, local *featureUI) {
 	t := c.Theme()
 	colors := tok(t)
-	if !state.SettingsOpen && c.Shortcut(ui.Cmd, ui.KeyF) {
+	if !state.SettingsOpen && !state.KeysListening && c.Shortcut(ui.Cmd, ui.KeyF) {
 		local.rules, local.findFocus = true, true
 	}
 	collapsible(c.Key(prefix+"-rules"), i18n.T("Your rules"), &local.rules, func() {
