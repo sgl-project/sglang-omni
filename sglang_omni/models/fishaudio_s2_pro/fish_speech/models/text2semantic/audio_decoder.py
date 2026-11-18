@@ -161,25 +161,27 @@ def cuda_kvcache_attention(
         pass
     if fast_ar_uses_fa3(device_index):
         from sgl_kernel.flash_attn import flash_attn_with_kvcache
-    else:
-        return flashinfer_kvcache_attention(
+
+        return flash_attn_with_kvcache(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
             k=k,
             v=v,
+            cache_seqlens=cache_seqlens,
             causal=causal,
-            cache_position=cache_position,
+            num_splits=num_splits,
         )
-    return flash_attn_with_kvcache(
+    else:
+        pass
+    return flashinfer_kvcache_attention(
         q=q,
         k_cache=k_cache,
         v_cache=v_cache,
         k=k,
         v=v,
-        cache_seqlens=cache_seqlens,
         causal=causal,
-        num_splits=num_splits,
+        cache_position=cache_position,
     )
 
 
