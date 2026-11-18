@@ -102,6 +102,7 @@ def raw_report(wall, status="success"):
         "resources": {
             "peak_rss_bytes": {"value": wall * 10},
             "peak_physical_footprint_bytes": {"value": wall * 20},
+            "peak_memory_pressure": {"value": "normal"},
         },
     }
 
@@ -357,6 +358,61 @@ class IsolationTests(unittest.TestCase):
             path.write_text(json.dumps(report), encoding="utf-8")
             valid, _ = loop.valid_result(path, 0)
             self.assertFalse(valid)
+
+    def test_valid_result_and_summary_reject_midrun_warning_or_missing_pressure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "result.json"
+            normal_report = raw_report(100)
+            normal_report["resources"]["memory_start"] = {
+                "pressure": {"value": "normal"}
+            }
+            normal_report["resources"]["memory_end"] = {"pressure": {"value": "normal"}}
+            normal_report["resources"]["memory_pressure_warnings"] = []
+            path.write_text(json.dumps(normal_report), encoding="utf-8")
+            valid, _ = loop.valid_result(path, 0)
+            self.assertTrue(valid)
+
+            midrun_warning = raw_report(150)
+            midrun_warning["resources"]["memory_start"] = {
+                "pressure": {"value": "normal"}
+            }
+            midrun_warning["resources"]["memory_end"] = {
+                "pressure": {"value": "normal"}
+            }
+            midrun_warning["resources"]["peak_memory_pressure"] = {"value": "warning"}
+            midrun_warning["resources"]["memory_pressure_warnings"] = [
+                {"at_ms": 2000.0, "pressure": "warning"}
+            ]
+            path.write_text(json.dumps(midrun_warning), encoding="utf-8")
+            valid, _ = loop.valid_result(path, 0)
+            self.assertFalse(valid)
+            with self.assertRaises(ValueError):
+                loop.summarize_reports(
+                    [raw_report(100), midrun_warning, raw_report(200)]
+                )
+
+            missing_pressure = raw_report(150)
+            del missing_pressure["resources"]["peak_memory_pressure"]
+            path.write_text(json.dumps(missing_pressure), encoding="utf-8")
+            valid, _ = loop.valid_result(path, 0)
+            self.assertFalse(valid)
+            with self.assertRaises(ValueError):
+                loop.summarize_reports(
+                    [raw_report(100), missing_pressure, raw_report(200)]
+                )
+
+            unavailable_pressure = raw_report(150)
+            unavailable_pressure["resources"]["peak_memory_pressure"] = {
+                "value": None,
+                "unavailable_reason": "denied",
+            }
+            path.write_text(json.dumps(unavailable_pressure), encoding="utf-8")
+            valid, _ = loop.valid_result(path, 0)
+            self.assertFalse(valid)
+            with self.assertRaises(ValueError):
+                loop.summarize_reports(
+                    [raw_report(100), unavailable_pressure, raw_report(200)]
+                )
 
 
 if __name__ == "__main__":

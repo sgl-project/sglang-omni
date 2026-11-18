@@ -200,14 +200,35 @@ def numeric_path(report: dict[str, object], path: list[str]) -> float:
     return current
 
 
+def report_peak_memory_pressure(report: dict[str, object]) -> str | None:
+    resources = report.get("resources")
+    if not isinstance(resources, dict):
+        return None
+    pressure = resources.get("peak_memory_pressure")
+    if not isinstance(pressure, dict):
+        return None
+    value = pressure.get("value")
+    return value if isinstance(value, str) else None
+
+
+def report_memory_pressure_valid(report: dict[str, object]) -> bool:
+    return report_peak_memory_pressure(report) == "normal"
+
+
 def summarize_reports(reports: list[dict[str, object]]) -> dict[str, object]:
     if len(reports) != 3 or any(
         report.get("status") != "success"
         or report.get("warnings")
         or report.get("errors")
+        or (
+            ("resources" in report or "stop_to_final_ms" not in report)
+            and not report_memory_pressure_valid(report)
+        )
         for report in reports
     ):
-        raise ValueError("three successful, warning-free raw reports are required")
+        raise ValueError(
+            "three successful, warning-free, normal-memory-pressure raw reports are required"
+        )
     stage_keys = set()
     for report in reports:
         stages = report.get("stages")
@@ -440,6 +461,7 @@ def valid_result(path: Path, returncode: int) -> tuple[bool, dict[str, object] |
         or report.get("status") != "success"
         or report.get("warnings")
         or report.get("errors")
+        or not report_memory_pressure_valid(report)
     ):
         return False, report if isinstance(report, dict) else None
     return True, report
