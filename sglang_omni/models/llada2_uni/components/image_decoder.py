@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import nullcontext
 from typing import Literal
 
 import torch
@@ -180,6 +181,10 @@ class LLaDA2ImageDecoder:
         else:
             pass
 
+    @property
+    def is_leader(self) -> bool:
+        return self.runtime is None or self.runtime.is_leader
+
     def ensure_sigvq(self) -> None:
         if self.sigvq is not None:
             return
@@ -267,10 +272,10 @@ class LLaDA2ImageDecoder:
         num_steps: int | None = None,
         resolution_multiplier: int | None = None,
         seed: int | None = None,
-    ) -> Image:
+    ) -> Image | None:
         """Decode unoffset VQ IDs on an h-by-w semantic grid into a PIL image.
 
-        Switching decode_mode reloads weights; seed=None uses the global RNG.
+        Only the leader returns an image. SP peers share the noise seed.
         """
         mode: DecoderMode = decode_mode if decode_mode is not None else self.decode_mode
         steps = num_steps if num_steps is not None else self.num_steps
@@ -279,35 +284,67 @@ class LLaDA2ImageDecoder:
             if resolution_multiplier is not None
             else self.resolution_multiplier
         )
-        self.validate_settings(mode, steps, output_resolution_multiplier)
-        if not isinstance(h, int) or not isinstance(w, int) or h < 1 or w < 1:
-            raise ValueError("Image decoder grid dimensions must be positive integers")
-        else:
-            pass
-        if len(token_ids) != h * w:
-            raise ValueError("Image decoder requires exactly h * w VQ tokens")
-        else:
-            pass
-        if any(not isinstance(i, int) or not 0 <= i < 16384 for i in token_ids):
-            raise ValueError(
-                "Image decoder VQ token IDs must be integers in [0, 16383]"
+        with (
+            self.runtime.preparation("request validation")
+            if self.runtime
+            else nullcontext()
+        ):
+            self.validate_settings(mode, steps, output_resolution_multiplier)
+            if not isinstance(h, int) or not isinstance(w, int) or h < 1 or w < 1:
+                raise ValueError(
+                    "Image decoder grid dimensions must be positive integers"
+                )
+            else:
+                pass
+            if len(token_ids) != h * w:
+                raise ValueError("Image decoder requires exactly h * w VQ tokens")
+            else:
+                pass
+            if any(not isinstance(i, int) or not 0 <= i < 16384 for i in token_ids):
+                raise ValueError(
+                    "Image decoder VQ token IDs must be integers in [0, 16383]"
+                )
+            else:
+                pass
+        if self.runtime:
+            seed = self.runtime.request_seed(
+                (h, w, mode, steps, output_resolution_multiplier), seed
             )
         else:
             pass
 
         image_height = h * 16 * output_resolution_multiplier
         image_width = w * 16 * output_resolution_multiplier
-        self.ensure_sigvq()
-        token_grid = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
-        upsampled_tokens = (
-            F.interpolate(token_grid, scale_factor=2, mode="nearest").long().view(1, -1)
-        )
-        positive_caption_features = [
-            self.sigvq(upsampled_tokens).squeeze(0).contiguous()
-        ]
-        negative_caption_features = [torch.zeros_like(positive_caption_features[0])]
+        with (
+            self.runtime.preparation("weight loading and conditioning")
+            if self.runtime
+            else nullcontext()
+        ):
+            self.ensure_diff_model(mode)
+            if self.is_leader:
+                self.ensure_sigvq()
+                token_grid = (
+                    torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+                )
+                upsampled_tokens = (
+                    F.interpolate(token_grid, scale_factor=2, mode="nearest")
+                    .long()
+                    .view(1, -1)
+                )
+                features = self.sigvq(upsampled_tokens).squeeze(0).contiguous()
+            else:
+                features = torch.empty(
+                    (4 * h * w, self.diff_config["cap_feat_dim"]),
+                    device=self.device,
+                    dtype=self.dtype,
+                )
+        if self.runtime:
+            features = self.runtime.broadcast_features(features)
+        else:
+            pass
+        positive_caption_features = [features]
+        negative_caption_features = [torch.zeros_like(features)]
 
-        self.ensure_diff_model(mode)
         decoder_config = self.diff_config
         noise_shape = [1, 16, 1, 2 * (image_height // 16), 2 * (image_width // 16)]
         if seed is not None:
@@ -336,12 +373,20 @@ class LLaDA2ImageDecoder:
             generator=generator,
         ).squeeze(2)
 
-        self.ensure_vae()
-        vae_latents = samples.to(self.dtype)
-        vae_latents = (
-            vae_latents / self.vae.config.scaling_factor
-        ) + self.vae.config.shift_factor
-        pixels = ((self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2).clamp_(
-            0, 1
-        )
-        return to_pil_image(pixels[0].float())
+        image = None
+        with (
+            self.runtime.preparation("VAE decoding") if self.runtime else nullcontext()
+        ):
+            if self.is_leader:
+                self.ensure_vae()
+                vae_latents = samples.to(self.dtype)
+                vae_latents = (
+                    vae_latents / self.vae.config.scaling_factor
+                ) + self.vae.config.shift_factor
+                pixels = (
+                    (self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2
+                ).clamp_(0, 1)
+                image = to_pil_image(pixels[0].float())
+            else:
+                pass
+        return image

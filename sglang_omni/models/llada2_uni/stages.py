@@ -276,11 +276,21 @@ def create_image_decode_executor(
     resolution_multiplier: int = 2,
     backend: DecoderBackend = "diffusers",
     attention_backend: str = "torch_sdpa",
+    runtime_gpu_ids: list[int] | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     concrete_device = resolve_concrete_device(device, gpu_id)
     dtype = resolve_dtype(dtype)
     runtime = None
-    if backend == "sglang":
+    native_decoder = None
+    if runtime_gpu_ids is not None:
+        from sglang_omni.models.llada2_uni.native_sp_host import NativeSPDecoder
+
+        if (backend, attention_backend, decode_mode, num_steps, resolution_multiplier) != (
+            "sglang", "fa", "decoder-turbo", 8, 2
+        ) or len(runtime_gpu_ids) != 2:
+            raise ValueError("Experimental native SP2 requires FA, turbo8 and multiplier 2")
+        native_decoder = NativeSPDecoder(model_path, runtime_gpu_ids[0], runtime_gpu_ids)
+    elif backend == "sglang":
         runtime = initialize_decoder_runtime(
             model_path,
             gpu_id=concrete_device.index if concrete_device.type == "cuda" else None,
@@ -291,7 +301,7 @@ def create_image_decode_executor(
         pass
     try:
         with runtime.compute_context() if runtime else nullcontext():
-            decoder = LLaDA2ImageDecoder(
+            decoder = native_decoder or LLaDA2ImageDecoder(
                 model_path=model_path,
                 device=str(concrete_device),
                 dtype=dtype,
@@ -371,6 +381,8 @@ def create_image_decode_executor(
         }
         return payload
 
+    if native_decoder is not None:
+        return SimpleScheduler(decode_image, shutdown_callback=native_decoder.close)
     if runtime is None:
         return SimpleScheduler(decode_image)
     else:

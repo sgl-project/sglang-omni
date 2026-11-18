@@ -15,6 +15,26 @@ import torch.distributed as dist
 class DecoderRuntimeHandle:
     """Own the single-rank SGLang diffusion state used by one decoder stage."""
 
+    sp_size = 1
+    sp_rank = 0
+    ulysses_degree = 1
+
+    @property
+    def is_leader(self) -> bool:
+        return self.sp_rank == 0
+
+    def preparation(self, phase: str):
+        return nullcontext()
+
+    def request_seed(self, metadata: tuple, seed: int | None) -> int | None:
+        return seed
+
+    def broadcast_features(self, features: torch.Tensor) -> torch.Tensor:
+        if self.sp_size > 1:
+            group = self.parallel_state.get_sp_group().device_group
+            dist.broadcast(features, src=dist.get_global_rank(group, 0), group=group)
+        return features
+
     def __init__(
         self,
         device: torch.device,
@@ -80,7 +100,7 @@ class DecoderRuntimeHandle:
             parallel_state.get_sp_world_size(),
             parallel_state.get_sp_parallel_rank(),
         )
-        if topology != (1, 1, 1, 0):
+        if topology != (self.sp_size, 1, self.sp_size, self.sp_rank):
             raise RuntimeError(
                 f"SGLang decoder requires a single-rank runtime, got {topology}"
             )
