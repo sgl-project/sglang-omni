@@ -116,6 +116,7 @@ def launch_managed_router(
     force_log: bool = False,
     external_worker_urls: list[str] | None = None,
     worker_env: dict[str, str] | None = None,
+    capture_worker_logs: bool = False,
     generation_streaming: bool = True,
     named_voice: bool = False,
 ) -> Iterator[ManagedRouterHandle]:
@@ -192,10 +193,24 @@ def launch_managed_router(
                 ),
                 worker_extra_args=worker_extra_args,
                 worker_env=worker_env,
+                worker_log_directory=(
+                    tmp_path_factory.mktemp("omni_worker_logs")
+                    if capture_worker_logs
+                    else None
+                ),
             )
             for worker in workers:
                 record_process_group(cleanup_manifest, worker.process_group_id)
-            wait_for_workers(workers, wait_timeout)
+            worker_logs = [worker.log_file for worker in workers]
+            try:
+                wait_for_workers(workers, wait_timeout)
+            except (RuntimeError, TimeoutError):
+                for log_file in worker_logs:
+                    if log_file is not None:
+                        print_log_tail("worker", log_file)
+                    else:
+                        pass
+                raise
         else:
             pass
 
@@ -382,6 +397,11 @@ def print_router_diagnostics(handle: ManagedRouterHandle) -> None:
         except Exception as exc:  # pragma: no cover - diagnostic path
             print(f"[Omni Router CI] failed to fetch /diagnostics: {exc}")
     print_log_tail("router", handle.log_file)
+    for worker in handle.workers:
+        if worker.log_file is not None:
+            print_log_tail("worker", worker.log_file)
+        else:
+            pass
 
 
 def assert_workers_served_requests(

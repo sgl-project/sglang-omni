@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Literal
@@ -30,6 +31,16 @@ PCM_SAMPLE_RATE_HZ = 24000
 PCM_SAMPLE_BYTES = 2
 PROBE_REQUEST_TIMEOUT_SECONDS = 300.0
 MAX_PROBE_RESPONSE_BYTES = 32 * 1024 * 1024
+CODEC_EOS_ERROR = (
+    "Qwen3-TTS reached max_new_tokens without emitting codec EOS; "
+    "the generated audio is incomplete."
+)
+CODEC_EOS_FAILURE_BLOCK = re.compile(
+    r"OmniScheduler terminal output handling failed for request (\S+)\r?\n"
+    r"(?:(?:Traceback[^\n]*|[ \t][^\n]*|\r?)\n)*"
+    rf"RuntimeError: {re.escape(CODEC_EOS_ERROR)}\r?$",
+    re.MULTILINE,
+)
 
 
 class GenerationProbeCase(BaseModel):
@@ -79,6 +90,9 @@ class GenerationProbeResult(BaseModel):
     policy: Literal["baseline", "text"]
     request_id: str | None = None
     worker_id: str | None = None
+    speech_outcome_id: str | None = None
+    server_error: str | None = None
+    stream_interrupted: bool = False
     finish_reason: str | None = None
     completion_frames: int | None = None
     audio_seconds: float = 0.0
@@ -87,6 +101,84 @@ class GenerationProbeResult(BaseModel):
     chunk_bytes: list[int] = Field(default_factory=list)
     audio_sha256: str | None = None
     errors: list[str] = Field(default_factory=list)
+
+
+def codec_eos_request_ids(worker_logs: list[Path]) -> set[str]:
+    """Associate raw-stream failures with worker errors for the same request."""
+    return {
+        request_id
+        for worker_log in worker_logs
+        for request_id in CODEC_EOS_FAILURE_BLOCK.findall(
+            worker_log.read_text(encoding="utf-8", errors="replace")
+        )
+    }
+
+
+def is_codec_eos_http_error(error: str | None) -> bool:
+    prefix = "HTTP 500: "
+    if error is None or not error.startswith(prefix):
+        return False
+    else:
+        pass
+    try:
+        envelope = json.loads(error.removeprefix(prefix))
+    except json.JSONDecodeError:
+        return False
+    if isinstance(envelope, dict) and isinstance(envelope.get("error"), dict):
+        detail = envelope["error"]
+        return (
+            detail.get("type") == "server_error"
+            and detail.get("message") == CODEC_EOS_ERROR
+        )
+    else:
+        return False
+
+
+def generation_budget_failures(
+    results: list[GenerationProbeResult], request_ids: set[str]
+) -> list[str]:
+    """Reject new default-budget cutoffs while retaining failed-request evidence."""
+    missing_eos_baselines = {
+        (result.case_id, result.request.seed)
+        for result in results
+        if result.policy == "baseline"
+        and (
+            is_codec_eos_http_error(result.server_error)
+            or (result.stream_interrupted and result.speech_outcome_id in request_ids)
+        )
+    }
+    failures: list[str] = []
+    completed_cases: set[str] = set()
+    for result in results:
+        codec_eos_missing = is_codec_eos_http_error(result.server_error) or (
+            result.stream_interrupted and result.speech_outcome_id in request_ids
+        )
+        if (
+            codec_eos_missing
+            and (
+                result.case_id,
+                result.request.seed,
+            )
+            in missing_eos_baselines
+        ):
+            pass
+        elif result.errors or result.finish_reason != "stop":
+            failures.append(
+                f"{result.case_id} seed={result.request.seed} {result.policy}: "
+                f"{result.errors or ['No natural codec EOS']}"
+            )
+        elif result.policy == "text":
+            completed_cases.add(result.case_id)
+        else:
+            pass
+    unfinished_cases = {result.case_id for result in results} - completed_cases
+    if unfinished_cases:
+        failures.append(
+            f"No natural completion with the default budget for {sorted(unfinished_cases)}"
+        )
+    else:
+        pass
+    return failures
 
 
 async def synthesize_probe(
@@ -105,10 +197,18 @@ async def synthesize_probe(
             f"{base_url.rstrip('/')}/audio/speech",
             json=result.request.model_dump(exclude_none=True),
         ) as response:
-            response.raise_for_status()
             result.request_id = response.headers.get("X-Request-Id")
             result.worker_id = response.headers.get("X-SGLang-Omni-Worker")
+            if response.status_code == 500:
+                await response.aread()
+                result.server_error = f"HTTP 500: {response.text}"
+            else:
+                pass
+            response.raise_for_status()
             if result.request.stream:
+                result.speech_outcome_id = response.headers.get(
+                    "X-SGLang-Omni-Speech-Id"
+                )
                 sample_rate_header = response.headers.get("X-Sample-Rate", "")
                 sample_rate_hz = (
                     int(sample_rate_header) if sample_rate_header.isdigit() else 0
@@ -120,16 +220,25 @@ async def synthesize_probe(
                     )
                 else:
                     pass
-            async for chunk in response.aiter_bytes():
-                result.chunk_arrival_seconds.append(
-                    time.perf_counter() - started_seconds
+            try:
+                async for chunk in response.aiter_bytes():
+                    result.chunk_arrival_seconds.append(
+                        time.perf_counter() - started_seconds
+                    )
+                    result.chunk_bytes.append(len(chunk))
+                    audio_bytes.extend(chunk)
+                    if len(audio_bytes) > MAX_PROBE_RESPONSE_BYTES:
+                        raise ValueError("Audio response exceeded the probe byte limit")
+                    else:
+                        pass
+            except httpx.RemoteProtocolError:
+                result.stream_interrupted = bool(
+                    result.speech_outcome_id
+                    and audio_bytes
+                    and len(audio_bytes) % PCM_SAMPLE_BYTES == 0
+                    and not result.errors
                 )
-                result.chunk_bytes.append(len(chunk))
-                audio_bytes.extend(chunk)
-                if len(audio_bytes) > MAX_PROBE_RESPONSE_BYTES:
-                    raise ValueError("Audio response exceeded the probe byte limit")
-                else:
-                    pass
+                raise
             if result.request.stream:
                 outcome_id = response.headers["X-SGLang-Omni-Speech-Id"]
             else:
@@ -208,7 +317,7 @@ async def synthesize_probe(
         )
     else:
         pass
-    if result.finish_reason not in ("stop", "length"):
+    if result.finish_reason != "stop":
         result.errors.append(f"Unexpected finish reason: {result.finish_reason}")
     else:
         pass
@@ -248,7 +357,6 @@ async def run_generation_probe(
     with (output_dir / "results.jsonl").open("w", encoding="utf-8") as report:
         for case in cases:
             for seed in seeds:
-                baseline: GenerationProbeResult | None = None
                 pair_start = len(results)
                 for policy in policies:
                     request = request_template.model_copy(
@@ -288,25 +396,6 @@ async def run_generation_probe(
                         result.errors.append(
                             "Speech request exceeded its total time limit"
                         )
-                    if policy == "baseline":
-                        baseline = result
-                    else:
-                        pass
-                    # note(Alistairshi): Seeded pairs can diverge with prefix-cache or batch changes.
-                    if (
-                        policy == "text"
-                        and baseline is not None
-                        and baseline.finish_reason == "stop"
-                        and result.finish_reason == "length"
-                        and baseline.completion_frames is not None
-                        and result.completion_frames is not None
-                        and result.completion_frames < baseline.completion_frames
-                    ):
-                        result.errors.append(
-                            "Text budget is shorter than a naturally completed baseline"
-                        )
-                    else:
-                        pass
                     results.append(result)
                     report.write(result.model_dump_json() + "\n")
                     report.flush()
@@ -357,6 +446,13 @@ def main() -> None:
     parser.add_argument("--stream", action="store_true")
     parser.add_argument("--skip-baseline", action="store_true")
     parser.add_argument(
+        "--worker-log",
+        type=Path,
+        action="append",
+        default=[],
+        help="Worker log for attributing interrupted PCM streams; repeat for each worker",
+    )
+    parser.add_argument(
         "--timeout-seconds", type=float, default=PROBE_REQUEST_TIMEOUT_SECONDS
     )
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
@@ -398,25 +494,22 @@ def main() -> None:
             )
 
     results = asyncio.run(run())
+    failures = generation_budget_failures(
+        results, codec_eos_request_ids(arguments.worker_log)
+    )
     summary = {
         "server_revision": arguments.server_revision,
         "model_revision": arguments.model_revision,
         "requests": len(results),
         "failed": sum(bool(result.errors) for result in results),
-        "length_stops": {
-            policy: sum(
-                result.policy == policy and result.finish_reason == "length"
-                for result in results
-            )
-            for policy in ("baseline", "text")
-        },
+        "regression_failures": failures,
         "quality_validation": "Requires transcript comparison and listening to saved audio",
     }
     (arguments.output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n"
     )
     print(json.dumps(summary, indent=2))
-    raise SystemExit(1 if summary["failed"] else 0)
+    raise SystemExit(1 if failures else 0)
 
 
 def seedtts_probe_cases(

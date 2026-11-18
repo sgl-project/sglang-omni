@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_model.tts_ci_config import select_tts_ci_preset
+from tests.test_model.tts_ci_eos import assert_expected_codec_eos_failures
 from tests.utils import MetricCheckCollector, assert_streaming_consistency
 
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
@@ -86,6 +88,18 @@ def test_tts_streaming_consistency_from_artifacts() -> None:
     )
 
     checks = MetricCheckCollector("TTS artifact streaming consistency")
+    _, preset = select_tts_ci_preset()
+    max_codec_eos_failures = preset.model.max_codec_eos_failures
+    for label, results in (
+        ("non-stream", non_stream_results),
+        ("stream", stream_results),
+    ):
+        assert_expected_codec_eos_failures(
+            results["per_request"],
+            max_codec_eos_failures=max_codec_eos_failures,
+            label=label,
+            collector=checks,
+        )
     checks.check(
         len(non_stream_results["per_request"]) == SEEDTTS_EN_FULLSET_SAMPLES,
         f"non-stream artifact has {len(non_stream_results['per_request'])}/"
@@ -100,10 +114,7 @@ def test_tts_streaming_consistency_from_artifacts() -> None:
         non_stream_results["per_request"],
         stream_results["per_request"],
         expected_stream_count=len(non_stream_results["per_request"]),
-        # Stage 1/2 speed tests may keep a small failure budget so WER and
-        # diagnostics can still run. Stage 3 is the strict consistency gate:
-        # downloaded artifacts must prove that every streaming request finished.
-        max_failed_requests=0,
+        max_failed_requests=max_codec_eos_failures,
         collector=checks,
     )
     checks.assert_all()

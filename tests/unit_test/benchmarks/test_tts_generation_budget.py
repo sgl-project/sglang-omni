@@ -7,7 +7,10 @@ import json
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Literal
+from unittest.mock import MagicMock, Mock
 
+import aiohttp
 import httpx
 import numpy as np
 import pytest
@@ -16,18 +19,109 @@ import soundfile as sf
 from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.eval import benchmark_tts_generation_budget
 from benchmarks.eval.benchmark_tts_generation_budget import (
+    CODEC_EOS_ERROR,
     SEEDTTS_RUNAWAY_SAMPLE_IDS,
     GenerationProbeCase,
+    codec_eos_request_ids,
+    generation_budget_failures,
     run_generation_probe,
     seedtts_probe_cases,
 )
+from benchmarks.metrics.performance import build_speed_results
+from benchmarks.tasks.tts import make_tts_send_fn
 from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechReference
+from tests.test_model.tts_ci_eos import (
+    TtsCiRequestOutcome,
+    assert_expected_codec_eos_failures,
+    record_codec_eos_failures,
+)
+from tests.utils import MetricCheckCollector
+
+
+@pytest.mark.parametrize("include_traceback", [False, True])
+def test_ci_speed_eos_budget_requires_matching_worker_evidence(
+    tmp_path: Path, include_traceback: bool
+) -> None:
+    """An interrupted stream only counts as missing EOS for its own worker request ID."""
+    worker_log = tmp_path / "worker.log"
+    prefix = "worker ERROR: "
+    traceback = (
+        'Traceback (most recent call last):\n  File "request_builders.py", line 1\n'
+        if include_traceback
+        else ""
+    )
+    worker_log.write_text(
+        f"{prefix}OmniScheduler terminal output handling failed for request speech-other\n"
+        f"{traceback}RuntimeError: vocoder failed\n"
+        f"{prefix}OmniScheduler terminal output handling failed for request speech-eos\n"
+        f"{traceback}RuntimeError: {CODEC_EOS_ERROR}\n",
+        encoding="utf-8",
+    )
+    requests: list[TtsCiRequestOutcome] = [
+        {
+            "id": sample,
+            "is_success": False,
+            "speech_stream_interrupted": True,
+            "speech_outcome_id": request_id,
+            "error": "incomplete chunked read",
+        }
+        for sample, request_id in (("eos", "speech-eos"), ("other", "speech-other"))
+    ]
+    assert codec_eos_request_ids([worker_log]) == {"speech-eos"}
+    record_codec_eos_failures(requests, [worker_log])
+    saved = requests
+    assert saved[0]["codec_eos_missing"] and saved[0]["is_success"] is False
+    assert "codec_eos_missing" not in saved[1]
+
+    allowed = MetricCheckCollector()
+    assert_expected_codec_eos_failures(
+        saved[:1], max_codec_eos_failures=1, label="latency", collector=allowed
+    )
+    allowed.assert_all()
+
+    rejected = MetricCheckCollector()
+    assert_expected_codec_eos_failures(
+        saved, max_codec_eos_failures=0, label="latency", collector=rejected
+    )
+    assert len(rejected.failures) == 2
+    assert any(
+        "unexpected failures ['other']" in failure for failure in rejected.failures
+    )
+    assert any("(1 > 0)" in failure for failure in rejected.failures)
+
+
+@pytest.mark.asyncio
+async def test_speed_artifact_retains_request_identity_after_raw_stream_failure() -> (
+    None
+):
+    """The benchmark must keep the worker's ID even when reading PCM fails."""
+
+    async def iter_pcm_chunks() -> AsyncIterator[tuple[bytes, bool]]:
+        yield bytes(8), True
+        raise aiohttp.ClientPayloadError("incomplete chunked read")
+
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.post.return_value.__aenter__.return_value = MagicMock(
+        status=200,
+        headers={"Content-Type": "audio/pcm", "X-SGLang-Omni-Speech-Id": "speech-eos"},
+        content=Mock(iter_chunks=iter_pcm_chunks),
+    )
+    send = make_tts_send_fn("test", "http://test/v1/audio/speech", stream=True)
+    result = await send(
+        session,
+        SampleInput(sample_id="sample", ref_text="", ref_audio="", target_text="Hi."),
+    )
+    row = build_speed_results([result], {}, {})["per_request"][0]
+    assert row["id"] == "sample"
+    assert row["is_success"] is False
+    assert row["speech_stream_interrupted"] is True
+    assert row["speech_outcome_id"] == "speech-eos"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
-async def test_probe_pairs_seeds_and_records_truncated_audio(
+async def test_probe_pairs_seeds_and_rejects_incomplete_audio(
     tmp_path: Path, stream: bool, finish_reason: str
 ) -> None:
     requests: list[dict[str, object]] = []
@@ -95,48 +189,89 @@ async def test_probe_pairs_seeds_and_records_truncated_audio(
         assert result.completion_frames == 2
         assert result.audio_sha256
         assert sum(result.chunk_bytes) > 0
-        assert not result.errors
+        assert bool(result.errors) == (result.finish_reason == "length")
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
-    ("baseline", "text", "errors"),
+    ("baseline", "text", "expected_failure"),
     [
-        (("stop", 40), ("length", 125), []),
-        (("length", 2048), ("length", 125), []),
-        (("stop", 200), ("length", 125), ["Text budget is shorter"]),
-        (("stop", 200), ("stop", 100), []),
+        ("codec_eos", "codec_eos", False),
+        ("stop", "codec_eos", True),
+        ("codec_eos", "stop", False),
+        ("length", "stop", True),
+        ("other", "other", True),
     ],
 )
-async def test_paired_probe_only_fails_when_text_budget_is_below_natural_baseline(
+async def test_paired_probe_rejects_new_cutoffs_and_unknown_failures(
     tmp_path: Path,
-    baseline: tuple[str, int],
-    text: tuple[str, int],
-    errors: list[str],
+    stream: bool,
+    baseline: Literal["stop", "codec_eos", "length", "other"],
+    text: Literal["stop", "codec_eos", "other"],
+    expected_failure: bool,
 ) -> None:
-    bodies: list[dict[str, object]] = []
+    """Only matched missing-EOS failures may pass the paired-budget regression gate."""
+
+    class InterruptedAudio(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield bytes(4800)
+            raise httpx.RemoteProtocolError("incomplete chunked read")
+
+    audio = io.BytesIO()
+    sf.write(audio, np.zeros(2400), 24000, format="WAV", subtype="PCM_16")
+    finish_reasons: dict[str, str] = {}
+    request_ids = {"speech-1-baseline", "speech-1-text"}
 
     def answer(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST":
-            body = json.loads(request.content)
-            bodies.append(body)
+        if request.method == "GET":
+            request_id = request.url.path.rsplit("/", 1)[1]
             return httpx.Response(
                 200,
-                content=bytes(4800),
-                headers={
-                    "X-Sample-Rate": "24000",
-                    "X-SGLang-Omni-Speech-Id": "speech-1",
+                json={
+                    "request_id": request_id,
+                    "finish_reason": finish_reasons[request_id],
+                    "usage": {"completion_tokens": 2},
                 },
             )
-        reason, frames = baseline if "max_new_tokens" in bodies[-1] else text
-        return httpx.Response(
-            200,
-            json={
-                "request_id": "speech-1",
-                "finish_reason": reason,
-                "usage": {"completion_tokens": frames},
-            },
+        else:
+            payload = json.loads(request.content)
+        policy = "baseline" if "max_new_tokens" in payload else "text"
+        request_id = f"speech-{payload['seed']}-{policy}"
+        finish_reason = (
+            "stop"
+            if payload["seed"] == 0
+            else baseline if policy == "baseline" else text
         )
+        finish_reasons[request_id] = finish_reason
+        headers = {
+            "X-Sample-Rate": "24000",
+            "X-SGLang-Omni-Speech-Id": request_id,
+            "X-Finish-Reason": finish_reason,
+            "X-Completion-Tokens": "2",
+        }
+        if finish_reason == "codec_eos" and stream:
+            return httpx.Response(200, headers=headers, stream=InterruptedAudio())
+        elif finish_reason in ("codec_eos", "other"):
+            return httpx.Response(
+                500,
+                json={
+                    "error": {
+                        "type": "server_error",
+                        "message": (
+                            CODEC_EOS_ERROR
+                            if finish_reason == "codec_eos"
+                            else "vocoder failed"
+                        ),
+                    }
+                },
+            )
+        else:
+            return httpx.Response(
+                200,
+                headers=headers,
+                content=bytes(4800) if stream else audio.getvalue(),
+            )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as client:
         results = await run_generation_probe(
@@ -144,16 +279,24 @@ async def test_paired_probe_only_fails_when_text_budget_is_below_natural_baselin
             "http://test/v1",
             CreateSpeechRequest(input="unused"),
             [GenerationProbeCase(id="short", input="Hi.", language="English")],
-            range(1),
-            True,
+            range(2),
+            stream,
             tmp_path / "probe",
         )
-    assert [result.policy for result in results] == ["baseline", "text"]
-    assert results[0].errors == []
-    if errors:
-        assert any(errors[0] in error for error in results[1].errors)
+    assert bool(generation_budget_failures(results, request_ids)) == expected_failure
+    recorded = [
+        json.loads(line)
+        for line in (tmp_path / "probe" / "results.jsonl").read_text().splitlines()
+    ]
+    assert bool(recorded[2]["errors"]) == (baseline != "stop")
+    assert bool(recorded[3]["errors"]) == (text != "stop")
+    if baseline == text == "codec_eos":
+        assert generation_budget_failures(results[2:], request_ids) == [
+            "No natural completion with the default budget for ['short']"
+        ]
+        assert bool(generation_budget_failures(results, set())) == stream
     else:
-        assert results[1].errors == []
+        pass
 
 
 @pytest.mark.asyncio

@@ -450,6 +450,8 @@ def _request_result_to_dict(output: RequestResult) -> dict:
         "prompt_tokens": output.prompt_tokens or None,
         "completion_tokens": output.completion_tokens or None,
         "finish_reason": output.finish_reason.value,
+        "speech_outcome_id": output.speech_outcome_id or None,
+        "speech_stream_interrupted": output.speech_stream_interrupted,
         "output_token_rate": (
             round(output.tok_per_s, 1) if output.tok_per_s > 0 else None
         ),

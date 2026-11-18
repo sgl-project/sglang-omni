@@ -42,7 +42,7 @@ Qwen3-TTS-12Hz-0.6B-Base on Seed-TTS EN (1088 utterances, reference voice clonin
 | Output throughput (tok/s) | 115.4 |
 | Completed / failed requests | 1088 / 0 |
 
-Typical output is clean (0.00% median WER, 9.09% p95). Two utterances (0.2%) ran away into a repetition loop and generated ~164 s of looping audio up to `max_new_tokens`, which alone lifts the raw micro-average to 18.29%; excluding those, corpus WER is 1.07%. RTF > 1 reflects the 0.6B codec pipeline at concurrency 16, not single-stream latency. The 1.7B checkpoint trades latency for quality.
+Typical output is clean (0.00% median WER, 9.09% p95). Two utterances (0.2%) ran away into a repetition loop and generated ~164 s of looping audio up to `max_new_tokens`, which alone lifts the raw micro-average to 18.29%; excluding those, corpus WER is 1.07%. These historical measurements counted budget-exhausted audio as completed requests; with missing-codec-EOS error handling, those requests fail. RTF > 1 reflects the 0.6B codec pipeline at concurrency 16, not single-stream latency. The 1.7B checkpoint trades latency for quality.
 
 ### 1.7B CustomVoice
 
@@ -68,7 +68,7 @@ TTFA measures arrival of the first PCM payload, not the first audible speech; it
 
 ### Runaway Regression
 
-`benchmarks.eval.benchmark_tts_generation_budget` sends each case twice with the same text, voice, and seed: once with the legacy 2048-frame limit and once with the server default. It saves the audio, finish reasons, codec frame counts, and chunk timings. The text request fails only when it stops on `length` before its paired baseline stopped naturally.
+`benchmarks.eval.benchmark_tts_generation_budget` sends each case twice with the same text, voice, and seed: once with the legacy 2048-frame limit and once with the server default. It saves the audio, finish reasons, codec frame counts, and chunk timings. A default-budget failure passes the regression gate only when its paired baseline also fails for confirmed missing codec EOS. Other errors fail the gate, and every case must complete naturally with the default budget for at least one seed. An HTTP 200 response with `finish_reason=length` is an incomplete result and fails the gate.
 
 Create a request template, for example `request.json`:
 
@@ -94,6 +94,6 @@ python -m benchmarks.eval.benchmark_tts_generation_budget \
   --repeats 8 --seed 123 --output-dir results/budget-runaway
 ```
 
-Add `--stream` to check raw PCM streams. Output directories must be new. A fixed seed does not make waveforms bitwise identical because prefix-cache state and batch composition can change between requests.
+Add `--stream` to check raw PCM streams and `--worker-log <worker.log>` for each worker to identify missing-EOS failures after audio starts. An interrupted transfer without matching worker evidence fails the gate. Failed requests remain errors in `results.jsonl` and count toward `summary.json`'s `failed` field; `regression_failures` and the exit status report the same gate used by TTS CI. Output directories must be new. A fixed seed does not make waveforms bitwise identical because prefix-cache state and batch composition can change between requests.
 
 The TTS CI non-streaming and streaming stages run this probe for Qwen3-TTS on four short cases with eight seeds, 64 requests per stage, and upload `results.jsonl` with the audio of the pairs that failed.

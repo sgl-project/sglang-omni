@@ -28,6 +28,7 @@ from tests.test_model.omni_router_utils import (
     router_get_json,
 )
 from tests.test_model.test_tts_ci import (
+    IS_QWEN3_TTS,
     PRESET,
     STARTUP_TIMEOUT,
     TTS_CI_PRESET,
@@ -38,6 +39,7 @@ from tests.test_model.test_tts_ci import (
     resolve_stage_output_dir,
     run_benchmark,
 )
+from tests.test_model.tts_ci_eos import assert_expected_codec_eos_failures
 from tests.utils import MetricCheckCollector
 
 # note (luojiaxuan): every run offers the same Poisson arrival sequence, so run
@@ -70,6 +72,7 @@ def single_worker_router_server(tmp_path_factory: pytest.TempPathFactory):
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_latency_router_logs",
         named_voice=not PRESET.voice_clone,
+        capture_worker_logs=IS_QWEN3_TTS,
     ) as router:
         yield router
 
@@ -91,18 +94,26 @@ def assert_open_loop_latency_results(
     results: dict,
     *,
     samples: int,
+    max_codec_eos_failures: int,
     label: str,
     collector: MetricCheckCollector,
 ) -> None:
     summary = results["summary"]
     per_request = results.get("per_request") or []
+    completed = [row for row in per_request if row.get("is_success") is True]
     collector.check(
-        len(per_request) == samples and summary.get("completed_requests") == samples,
-        f"{label}: {summary.get('completed_requests')}/{len(per_request)} completed, "
-        f"expected {samples}/{samples}",
+        len(per_request) == samples
+        and summary.get("completed_requests") == len(completed)
+        and summary.get("failed_requests") == len(per_request) - len(completed),
+        f"{label}: expected {samples} samples with matching summary counts, "
+        f"got {len(completed)}/{len(per_request)} completed",
     )
-    failed = [r["id"] for r in per_request if not r.get("is_success")]
-    collector.check(not failed, f"{label}: failed requests {failed[:5]}")
+    assert_expected_codec_eos_failures(
+        per_request,
+        max_codec_eos_failures=max_codec_eos_failures,
+        label=label,
+        collector=collector,
+    )
     silent = [
         r["id"]
         for r in per_request
@@ -166,7 +177,7 @@ def test_streaming_first_audio_latency(
         )
         try:
             results = run_benchmark(
-                single_worker_router_server.port,
+                single_worker_router_server,
                 dataset_repo,
                 output_dir,
                 concurrency=client_cap,
@@ -180,7 +191,11 @@ def test_streaming_first_audio_latency(
             raise
         print_latency_point(results["summary"], label=label)
         assert_open_loop_latency_results(
-            results, samples=point.samples, label=label, collector=checks
+            results,
+            samples=point.samples,
+            max_codec_eos_failures=point.max_codec_eos_failures,
+            label=label,
+            collector=checks,
         )
         assert_stage_used_all_router_workers(
             router_server=single_worker_router_server,
@@ -192,11 +207,11 @@ def test_streaming_first_audio_latency(
         )
         if latency.calibrated:
             summary = results["summary"]
-            median = summary["audio_ttfp_from_arrival_median_s"]
+            median = summary.get("audio_ttfp_from_arrival_median_s")
             checks.check(
-                median <= point.ttfp_median_max_s,
-                f"{label}: first playable median from arrival {median} s exceeds "
-                f"{point.ttfp_median_max_s} s",
+                median is not None and median <= point.ttfp_median_max_s,
+                f"{label}: expected first playable median from arrival at most "
+                f"{point.ttfp_median_max_s} s, got {median}",
             )
     checks.assert_all()
 
